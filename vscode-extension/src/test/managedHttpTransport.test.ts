@@ -537,9 +537,11 @@ describe('createManagedHttpRequest CONNECT tunnels', () => {
     );
 
     await waitFor(() => proxy?.connects.length === 1, 'the CONNECT to reach the fixture');
-    cancellation.cancel();
+    // No cancellation here: the 250 ms deadline alone must drive the teardown,
+    // so this test exercises the timeout path and not the cancellation path
+    // (covered by the test below).
     await pending;
-    expect(settled?.message).toMatch(/cancelled|timeout/);
+    expect(settled?.message).toMatch(/Release fetch timeout/);
     // The tunnel teardown contract: destroying the bounded request must not
     // leave the in-flight CONNECT connection open (peer observes FIN/close).
     await waitFor(

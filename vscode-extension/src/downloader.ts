@@ -1481,7 +1481,10 @@ export class BinaryDownloader {
     timeoutMs: number,
     cancellationToken?: vscode.CancellationToken,
   ): Promise<unknown> {
-    const isHttps = url.startsWith('https:');
+    // Case-insensitive: URL normalization lowercases the scheme, so the
+    // transport and the redirect-downgrade guard must classify `HTTPS://`
+    // identically instead of trusting the raw string's case.
+    const isHttps = /^https:/i.test(url);
     const httpConfig = vscode.workspace.getConfiguration('http');
     const proxyStrictSSL = httpConfig.get<boolean>('proxyStrictSSL', true);
     const authDisposition = resolveGitHubAuthDisposition({
@@ -1626,7 +1629,10 @@ export class BinaryDownloader {
       headers: { 'User-Agent': 'vscode-perl-lsp' },
       rejectUnauthorized: proxyStrictSSL,
     };
-    const isHttps = url.startsWith('https:');
+    // Case-insensitive: URL normalization lowercases the scheme, so the
+    // HTTPS→HTTP redirect-downgrade guard below must classify `HTTPS://`
+    // identically to the transport instead of trusting the raw string's case.
+    const isHttps = /^https:/i.test(url);
     const bounded: Parameters<typeof downloadBoundedFile>[0] = {
       requestFactory: (listener) => this.httpGet(isHttps, url, options, listener),
       dest,

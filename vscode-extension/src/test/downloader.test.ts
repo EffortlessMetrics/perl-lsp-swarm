@@ -4111,25 +4111,45 @@ describe('BinaryDownloader.downloadFile through the configured proxy', () => {
   });
 
   test('routes the artifact fetch through http.proxy while the direct path is unavailable', async () => {
-    const vscode = require('vscode');
-    const deadTargetPort = await closedLocalPort();
-    vscode.workspace.getConfiguration.mockReturnValue({
-      get: jest.fn((key: string, defaultValue?: unknown) => {
-        if (key === 'proxy') {
-          return `http://${PROXY_CREDENTIALS}@127.0.0.1:${proxyPort}`;
-        }
-        return defaultValue;
-      }),
-      has: jest.fn(() => false),
-      inspect: jest.fn(),
-      update: jest.fn(),
-    });
+    // A runner-level NO_PROXY entry for the loopback (common on CI) would
+    // otherwise take precedence over the fixture's `http.proxy` and silently
+    // bypass the route under test; clear both spellings for this test only.
+    const savedNoProxy = process.env.NO_PROXY;
+    const savedNoProxyLower = process.env.no_proxy;
+    delete process.env.NO_PROXY;
+    delete process.env.no_proxy;
+    try {
+      const vscode = require('vscode');
+      const deadTargetPort = await closedLocalPort();
+      vscode.workspace.getConfiguration.mockReturnValue({
+        get: jest.fn((key: string, defaultValue?: unknown) => {
+          if (key === 'proxy') {
+            return `http://${PROXY_CREDENTIALS}@127.0.0.1:${proxyPort}`;
+          }
+          return defaultValue;
+        }),
+        has: jest.fn(() => false),
+        inspect: jest.fn(),
+        update: jest.fn(),
+      });
 
-    const dest = path.join(tmpDir, 'proxied.bin');
-    await seams.downloadFile(`http://127.0.0.1:${deadTargetPort}/asset.bin`, dest, 4000);
+      const dest = path.join(tmpDir, 'proxied.bin');
+      await seams.downloadFile(`http://127.0.0.1:${deadTargetPort}/asset.bin`, dest, 4000);
 
-    expect(fs.readFileSync(dest, 'utf8')).toBe(PROXIED_BODY);
-    expect(proxiedRequests).toEqual([`http://127.0.0.1:${deadTargetPort}/asset.bin`]);
+      expect(fs.readFileSync(dest, 'utf8')).toBe(PROXIED_BODY);
+      expect(proxiedRequests).toEqual([`http://127.0.0.1:${deadTargetPort}/asset.bin`]);
+    } finally {
+      if (savedNoProxy === undefined) {
+        delete process.env.NO_PROXY;
+      } else {
+        process.env.NO_PROXY = savedNoProxy;
+      }
+      if (savedNoProxyLower === undefined) {
+        delete process.env.no_proxy;
+      } else {
+        process.env.no_proxy = savedNoProxyLower;
+      }
+    }
   }, 10000);
 
   test('failure messages for a credential-bearing proxy route stay credential-free', async () => {

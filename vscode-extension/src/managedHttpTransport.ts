@@ -79,7 +79,14 @@ export type ManagedProxyResolution =
     };
 
 /**
- * Redact `user:password` userinfo from a URL string, keeping scheme, host, and
+ * A scheme-less URL such as `user:pass@host:3128` either fails to parse or
+ * parses with the credentials as the scheme and an opaque path, so the
+ * structural userinfo redaction never sees them. Strip a bare
+ * `name:password@` prefix as well; only strings that start with one match.
+ */
+const BARE_USERINFO_PREFIX = /^[^/@\s]*:[^/@\s]*@/;
+
+/** Redact `user:password` userinfo from a URL string, keeping scheme, host, and
  * port. Unparseable input only has the userinfo pattern removed. This is the
  * only form of a proxy URL allowed into errors or logs.
  */
@@ -92,10 +99,10 @@ export function redactCredentialUrl(value: string | URL): string {
     parsed = undefined;
   }
   if (!parsed) {
-    return raw.replace(/\/\/[^@/\s]+@/, '//***@');
+    return raw.replace(/\/\/[^@/\s]+@/, '//***@').replace(BARE_USERINFO_PREFIX, '***@');
   }
   if (!parsed.username && !parsed.password) {
-    return parsed.toString();
+    return parsed.toString().replace(BARE_USERINFO_PREFIX, '***@');
   }
   const redacted = new URL(parsed.toString());
   redacted.username = '***';
@@ -105,17 +112,25 @@ export function redactCredentialUrl(value: string | URL): string {
 
 /** Suffix/port no-proxy match used for both `http.noProxy` and `NO_PROXY`. */
 function matchesNoProxy(targetUrl: URL, entries: readonly string[]): boolean {
-  const hostname = targetUrl.hostname.toLowerCase();
+  // `URL.hostname` keeps IPv6 brackets; the entries below are compared in
+  // bare form, so the target is normalized the same way.
+  const hostname = targetUrl.hostname.toLowerCase().replace(/^\[(.+)\]$/, '$1');
   const port = targetUrl.port || (targetUrl.protocol === 'https:' ? '443' : '80');
   return entries.some((entryRaw) => {
     const entry = entryRaw.trim().toLowerCase();
     if (!entry) {
       return false;
     }
-    // `[::1]:8080`-style IPv6 entries carry the host in brackets.
+    // The conventional `*` entry excludes every target.
+    if (entry === '*') {
+      return true;
+    }
+    // `[::1]:8080`-style IPv6 entries carry the host in brackets. A bare
+    // multi-colon entry has no separable port: the whole entry is the host.
     const bracketed = /^\[(.+)\](?::(\d+))?$/.exec(entry);
-    const entryHost = bracketed?.[1] ?? entry.split(':')[0];
-    const entryPort = bracketed?.[2] ?? (bracketed ? undefined : entry.split(':')[1]);
+    const bareIpv6 = !bracketed && (entry.match(/:/g)?.length ?? 0) > 1;
+    const entryHost = bracketed?.[1] ?? (bareIpv6 ? entry : entry.split(':')[0]);
+    const entryPort = bracketed?.[2] ?? (bracketed || bareIpv6 ? undefined : entry.split(':')[1]);
     if (!entryHost) {
       return false;
     }
@@ -226,10 +241,33 @@ function parseResolvedProxy(proxyUrl: URL): ResolvedProxy {
   const defaultPort = proxyUrl.protocol === 'https:' ? 443 : 80;
   return {
     protocol: proxyUrl.protocol === 'https:' ? 'https:' : 'http:',
-    hostname: proxyUrl.hostname,
+    // `URL.hostname` keeps IPv6 brackets, which Node resolves as a literal
+    // DNS name (ENOTFOUND); the request options want the bare address.
+    hostname: proxyUrl.hostname.replace(/^\[(.+)\]$/, '$1'),
     port: proxyUrl.port ? Number(proxyUrl.port) : defaultPort,
     credentials,
     redactedUrl: redactCredentialUrl(proxyUrl),
+  };
+}
+
+/**
+ * The request module that reaches the proxy itself: an `https:` proxy speaks
+ * TLS, and `http.request` rejects a `protocol: 'https:'` option outright
+ * (ERR_INVALID_PROTOCOL). The proxy hop carries the caller's TLS policy.
+ */
+function proxyRequestFor(
+  protocol: 'http:' | 'https:',
+  rejectUnauthorized: boolean,
+): (
+  options: https.RequestOptions,
+  callback: (response: http.IncomingMessage) => void,
+) => http.ClientRequest {
+  return (options, callback) => {
+    const requestModule = protocol === 'https:' ? https.request : http.request;
+    return requestModule(
+      protocol === 'https:' ? { ...options, rejectUnauthorized } : options,
+      callback,
+    );
   };
 }
 
@@ -298,19 +336,26 @@ class ConnectTunnelAgent extends https.Agent {
       callback(err, stream as Duplex);
     };
 
-    const connectRequest = http.request({
-      protocol: this.proxy.protocol,
-      hostname: this.proxy.hostname,
-      port: this.proxy.port,
-      method: 'CONNECT',
-      path: `${targetHost}:${targetPort}`,
-      headers: {
-        host: `${targetHost}:${targetPort}`,
-        ...proxyAuthorizationHeader(this.proxy),
+    const connectRequest = proxyRequestFor(
+      this.proxy.protocol,
+      connectOptions.rejectUnauthorized ?? this.fallbackRejectUnauthorized,
+    )(
+      {
+        hostname: this.proxy.hostname,
+        port: this.proxy.port,
+        method: 'CONNECT',
+        path: `${targetHost}:${targetPort}`,
+        headers: {
+          host: `${targetHost}:${targetPort}`,
+          ...proxyAuthorizationHeader(this.proxy),
+        },
+        // One-shot tunnel setup: never pool through another agent.
+        agent: false,
       },
-      // One-shot tunnel setup: never pool through another agent.
-      agent: false,
-    });
+      // The CONNECT response is consumed by the `connect` listener below; a
+      // proxied CONNECT never emits `response`, so this stays inert.
+      () => undefined,
+    );
     this.pendingConnect = connectRequest;
 
     connectRequest.once('connect', (res, socket, head) => {
@@ -341,8 +386,25 @@ class ConnectTunnelAgent extends https.Agent {
         }
         tlsOptions.rejectUnauthorized =
           connectOptions.rejectUnauthorized ?? this.fallbackRejectUnauthorized;
-        if (connectOptions.ca !== undefined) {
-          tlsOptions.ca = connectOptions.ca;
+        // Parity with Node's default https.Agent: the caller's TLS options
+        // ride through the tunnel exactly as on a direct request instead of
+        // being silently dropped at the upgrade.
+        const callerOptions = connectOptions as unknown as Record<string, unknown>;
+        const forwarded = tlsOptions as unknown as Record<string, unknown>;
+        for (const key of [
+          'ca',
+          'cert',
+          'checkServerIdentity',
+          'ciphers',
+          'key',
+          'minVersion',
+          'passphrase',
+          'pfx',
+          'secureProtocol',
+        ] as const) {
+          if (callerOptions[key] !== undefined) {
+            forwarded[key] = callerOptions[key];
+          }
         }
         settle(null, tls.connect(tlsOptions));
       } catch (error) {
@@ -415,9 +477,8 @@ function httpOverProxyRequest(
   callback: (response: http.IncomingMessage) => void,
 ): http.ClientRequest {
   const proxy = parseResolvedProxy(proxyUrl);
-  const request = http.request(
+  const request = proxyRequestFor(proxy.protocol, options.rejectUnauthorized ?? true)(
     {
-      protocol: proxy.protocol,
       hostname: proxy.hostname,
       port: proxy.port,
       method: 'GET',
