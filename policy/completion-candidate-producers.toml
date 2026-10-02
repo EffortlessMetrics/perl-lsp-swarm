@@ -124,7 +124,10 @@ outcome_owner = "#10230"
 # Post-conversion re-anchor (same PR): the freshness-seam test fixtures moved
 # from index_file to the canonical index_initial_file (behavior-identical
 # forward) plus rustfmt layout; producer rows unchanged.
-source_digest = "sha256:e3cdec39da0445be3c900acd970dbdb7efa78c03ef16fcee11177ea5c8fa7489"
+# Re-anchor (same PR, CodeRabbit thread): canonical_document_identity now
+# normalizes URI-form identities via perl_uri::normalize_uri, matching the
+# workspace index's identity comparison; producer rows unchanged.
+source_digest = "sha256:9ca083709376d6ecb4b43a737972835c1dbd7098514512b4592026aae5d0d77b"
 
 [[delegations]]
 module = "dancer2"

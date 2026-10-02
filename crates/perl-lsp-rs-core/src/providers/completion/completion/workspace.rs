@@ -2701,7 +2701,7 @@ fn canonical_document_identity(current_document_uri: &str) -> String {
         return String::new();
     }
     if current_document_uri.contains("://") {
-        return current_document_uri.to_string();
+        return perl_uri::normalize_uri(current_document_uri);
     }
     perl_workspace::workspace_index::fs_path_to_uri(current_document_uri).unwrap_or_default()
 }
