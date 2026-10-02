@@ -90,7 +90,7 @@ outcome_owner = "#10230"
 # test setup in scanned completion/workspace.rs, and a test-only module already
 # excluded above. The 42-file product scan, discovered producer population,
 # authored dispositions, entry routes, delegations, and finalizer are unchanged.
-source_digest = "sha256:2521f636463acbed91b0ddcc060897b72c341fb897b04a8b10fb1977f5d64d3f"
+source_digest = "sha256:7d3c0254e4c710db6b15285dc0cf30920dd964c233b0acaaafd999c9f2a7a9f6"
 
 [[delegations]]
 module = "dancer2"

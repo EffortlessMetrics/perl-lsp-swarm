@@ -510,10 +510,16 @@ pub struct LspServer {
     /// per-family hard cap; it never holds semantic state and never
     /// influences configuration, diagnostics, provider, or readiness truth.
     pub(crate) session_warning_dedup: session_warning_dedup::SessionWarningDedupStore,
-    /// Test-only hook invoked after push diagnostics capture their document
-    /// snapshot and before the stale-generation guard decides whether to
-    /// publish. This keeps concurrency boundary tests deterministic without
-    /// adding production synchronization.
+    /// Test-only barrier hook for deterministic concurrency tests. Beyond
+    /// the original push-diagnostics site (after the document snapshot is
+    /// captured and before the stale-generation guard decides whether to
+    /// publish), the NativeCritic transition proof (#16756) also invokes it
+    /// after the completed push payload is built, after the document-pull
+    /// and workspace-pull projections are assembled (the workspace site only
+    /// while the aggregate identity still matches its snapshot), and at the
+    /// staged code-action finalizer before its response commits. This keeps
+    /// multi-consumer boundary tests deterministic without adding production
+    /// synchronization.
     #[cfg(test)]
     pub(crate) diagnostic_after_snapshot_hook: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
     /// Accepted-ticket document-symbol sink (#11674): per-URI record of the
