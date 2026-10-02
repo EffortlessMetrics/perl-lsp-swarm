@@ -1506,6 +1506,44 @@ void test('an accessibility receipt describing another VSIX is rejected', () => 
   );
 });
 
+void test('an accessibility receipt naming another VS Code host is rejected', () => {
+  const result = validateChild(
+    childReceipt({
+      accessibility: boundAccessibilitySection({
+        candidate: {
+          ...boundAccessibilitySection().candidate,
+          vscode_version: '1.125.0',
+        },
+      }),
+    }),
+    { accessibilityExpectation: fakeAccessibilityExpectation() },
+  );
+  assert.equal(result.ok, false);
+  assert.match(
+    result.violations.join('; '),
+    /accessibility receipt candidate VS Code version is not this run's host/,
+  );
+});
+
+void test('an accessibility receipt naming another platform is rejected', () => {
+  const result = validateChild(
+    childReceipt({
+      accessibility: boundAccessibilitySection({
+        candidate: {
+          ...boundAccessibilitySection().candidate,
+          platform: process.platform === 'linux' ? 'darwin' : 'linux',
+        },
+      }),
+    }),
+    { accessibilityExpectation: fakeAccessibilityExpectation() },
+  );
+  assert.equal(result.ok, false);
+  assert.match(
+    result.violations.join('; '),
+    /accessibility receipt candidate platform is not this run's host/,
+  );
+});
+
 void test('structural accessibility receipt errors are propagated as violations', () => {
   const result = validateChild(
     childReceipt({
