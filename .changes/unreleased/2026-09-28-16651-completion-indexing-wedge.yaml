@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: "A `textDocument/completion` sent while the workspace index was building no longer permanently wedges the server (#16651). The startup scan's per-file critical section held the `workspace_folders` mutex across each `index_file` commit, while a diagnostics publication running inside `with_semantic_queries_for_uri` held the workspace index's four semantic-map read guards and resolved modules through that same mutex from inside its callback — an ABBA deadlock that froze indexing mid-scan and left every subsequent request (completion, hover, definition, didOpen, and eventually shutdown) unanswered for the rest of the session. The folder-membership recheck now scopes its guard to the check itself, so the indexer never holds the folders mutex while blocking on the semantic-map commit locks. Wire receipts on a ~2,025-file workspace: mid-scan completion answered in 2.0s (100 items) with indexing reaching `index-ready ready` afterwards, versus pre-fix 170-260s of total inbound silence and a permanently frozen scan. Regression scenario `ux_scenario_71_completion_during_indexing` reproduces the wedge against the unfixed server (completion deadline expires at 45s with the stream still live) and passes on the fix."
+time: 2026-09-28T00:00:00Z
+custom:
+  PR: "16651"
+  Slug: completion-indexing-wedge
+  Breaking: "no"
