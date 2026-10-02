@@ -26,6 +26,195 @@ fn to_json_array<T: serde::Serialize>(values: &[T]) -> Value {
     serde_json::to_value(values).unwrap_or(Value::Array(Vec::new()))
 }
 
+/// Identify inert single-quoted text from the current parsed generation.
+fn in_single_quoted_literal(
+    snapshot: Option<&crate::state::ParsedSnapshot>,
+    offset: usize,
+) -> bool {
+    snapshot.is_some_and(|snapshot| {
+        snapshot.source_region_index().regions().iter().any(|region| {
+            region.kind == perl_parser_core::SourceRegionKind::StringLiteral
+                && region.contains_offset(offset)
+                && snapshot.source().as_bytes().get(region.start) == Some(&b'\'')
+        })
+    })
+}
+
+/// A line parser may recognize statement-looking text inside a multiline string.
+/// Accept its leading keyword only when the current parse marks that byte as code.
+fn statement_keyword_is_code(
+    snapshot: Option<&crate::state::ParsedSnapshot>,
+    text: &str,
+    line_start: usize,
+) -> bool {
+    let Some(line) = text.get(line_start..) else { return false };
+    let keyword_offset = line_start + line.len().saturating_sub(line.trim_start().len());
+    snapshot.is_some_and(|snapshot| {
+        snapshot.source_region_index().classify_offset(keyword_offset).proven_kind()
+            == Some(perl_parser_core::SourceRegionKind::Code)
+    })
+}
+
+/// Accept plain, grouped, and `-norequire` parent/base lists with comma or
+/// fat-arrow separators before a quoted module name. `Use` stores expression
+/// tokens without argument spans, so a function-call opener must not be treated
+/// like the list's grouping parenthesis.
+fn standalone_parent_base_prefix(mut prefix: &str) -> bool {
+    prefix = prefix.trim_start();
+    if let Some(rest) = prefix.strip_prefix('(') {
+        prefix = rest.trim_start();
+    }
+    if let Some(after_flag) = prefix.strip_prefix("-norequire") {
+        let after_flag = after_flag.trim_start();
+        prefix = if let Some(rest) = after_flag.strip_prefix("=>") {
+            rest
+        } else if let Some(rest) = after_flag.strip_prefix(',') {
+            rest
+        } else {
+            return false;
+        };
+    }
+    prefix = prefix.trim_start();
+    if let Some(rest) = prefix.strip_prefix('(') {
+        prefix = rest;
+    }
+    loop {
+        prefix = prefix.trim_start();
+        if prefix.is_empty() {
+            return true;
+        }
+        if let Some(rest) = prefix.strip_prefix('\'') {
+            let Some(close) = rest.find('\'') else { return false };
+            prefix = &rest[close + 1..];
+        } else {
+            let token_end = prefix
+                .bytes()
+                .take_while(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b':'))
+                .count();
+            if token_end == 0 {
+                return false;
+            }
+            prefix = &prefix[token_end..];
+        }
+        let separator = prefix.trim_start();
+        let Some(rest) = separator.strip_prefix(',').or_else(|| separator.strip_prefix("=>"))
+        else {
+            return false;
+        };
+        prefix = rest;
+    }
+}
+
+/// Permit early parent/base module lookup only for a complete quoted argument.
+/// The text scanner also sees tokens inside expressions such as 'Foo' . 'Bar',
+/// where neither literal names the module passed to parent/base.
+fn standalone_quoted_parent_base_argument(
+    snapshot: &crate::state::ParsedSnapshot,
+    text: &str,
+    offset: usize,
+) -> bool {
+    let (line_start, line_end) = perl_parser_core::text_line::line_bounds_at(text, offset);
+    if !statement_keyword_is_code(Some(snapshot), text, line_start) {
+        return false;
+    }
+    let Some(line) = text.get(line_start..line_end) else { return false };
+    let Some(head) = perl_module::parse_module_import_head(line) else { return false };
+    if !matches!(
+        head.kind,
+        perl_module::ModuleImportKind::UseParent | perl_module::ModuleImportKind::UseBase
+    ) {
+        return false;
+    }
+    let region_index = snapshot.source_region_index();
+    let Some(region) = region_index.regions().iter().find(|region| {
+        region.kind == perl_parser_core::SourceRegionKind::StringLiteral
+            && region.contains_offset(offset)
+            && text.as_bytes().get(region.start) == Some(&b'\'')
+            && text.as_bytes().get(region.end.saturating_sub(1)) == Some(&b'\'')
+    }) else {
+        return false;
+    };
+    let Some(quote_start) = region.start.checked_sub(line_start) else { return false };
+    let Some(quote_end) = region.end.checked_sub(line_start) else { return false };
+    let Some(before) = line.get(head.token_end..quote_start) else { return false };
+    if !standalone_parent_base_prefix(before) {
+        return false;
+    }
+    let Some(after) = line.get(quote_end..) else { return false };
+    let after = after.trim_start();
+    let after = after.strip_prefix(')').unwrap_or(after).trim_start();
+    after.starts_with("=>")
+        || after.as_bytes().first().is_none_or(|byte| matches!(byte, b',' | b';' | b'#'))
+}
+
+/// Find the parsed `use` statement that owns a cursor, including a member on
+/// a later physical line of its import list.
+fn use_statement_at_offset(node: &crate::ast::Node, offset: usize) -> Option<&crate::ast::Node> {
+    if offset < node.location.start || offset > node.location.end {
+        return None;
+    }
+    for child in crate::declaration::get_node_children(node) {
+        if let Some(owner) = use_statement_at_offset(child, offset) {
+            return Some(owner);
+        }
+    }
+    matches!(node.kind, crate::ast::NodeKind::Use { .. }).then_some(node)
+}
+
+/// A quoted member of a parsed `use` import list has a semantic Sub key from
+/// that same Use node. Require the statement keyword to be code so a quoted
+/// imitation cannot borrow a module target from a containing declaration.
+fn quoted_import_list_symbol(
+    ast: &crate::ast::Node,
+    snapshot: &crate::state::ParsedSnapshot,
+    source: &str,
+    offset: usize,
+) -> bool {
+    let Some(owner) = use_statement_at_offset(ast, offset) else { return false };
+    let crate::ast::NodeKind::Use { module, .. } = &owner.kind else { return false };
+    if snapshot.source_region_index().classify_offset(owner.location.start).proven_kind()
+        != Some(perl_parser_core::SourceRegionKind::Code)
+    {
+        return false;
+    }
+    let region_index = snapshot.source_region_index();
+    let Some(region) = region_index.regions().iter().find(|region| {
+        region.kind == perl_parser_core::SourceRegionKind::StringLiteral
+            && region.contains_offset(offset)
+            && source.as_bytes().get(region.start) == Some(&b'\'')
+            && source.as_bytes().get(region.end.saturating_sub(1)) == Some(&b'\'')
+    }) else {
+        return false;
+    };
+    let Some(argument_text) = source.get(region.start + 1..region.end - 1) else {
+        return false;
+    };
+    // The parser records tokens from expressions in `use` arguments
+    // separately. A literal followed by concatenation is only part of one
+    // argument, even when its text matches an imported symbol elsewhere.
+    let Some(before) = source.get(owner.location.start..region.start) else { return false };
+    let before = before.trim_end();
+    if !(before.ends_with('(') || before.ends_with(',') || before.ends_with(module)) {
+        return false;
+    }
+    let Some(after) = source.get(region.end..owner.location.end) else { return false };
+    if !after.trim_start().as_bytes().first().is_none_or(|byte| matches!(byte, b',' | b')' | b';'))
+    {
+        return false;
+    }
+    crate::declaration::symbol_at_cursor_with_source(
+        ast,
+        offset,
+        crate::declaration::current_package_at(ast, offset),
+        source,
+    )
+    .is_some_and(|key| {
+        key.kind == perl_semantic_analyzer::workspace_index::SymKind::Sub
+            && key.pkg.as_ref() == module
+            && key.name.as_ref() == argument_text
+    })
+}
+
 #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
 use perl_lsp_rs_core::providers::navigation::definition_shadow::{
     DefinitionCutoverResult, goto_definition_live_exact_or_imported,
@@ -99,6 +288,9 @@ static ARROW_METHOD_RE: OnceLock<Result<regex::Regex, regex::Error>> = OnceLock:
 
 #[cfg(feature = "workspace")]
 static PACKAGE_ARROW_RE: OnceLock<Result<regex::Regex, regex::Error>> = OnceLock::new();
+
+#[cfg(feature = "workspace")]
+static PACKAGE_METHOD_RECEIVER_RE: OnceLock<Result<regex::Regex, regex::Error>> = OnceLock::new();
 
 #[cfg(feature = "workspace")]
 static VAR_METHOD_RE: OnceLock<Result<regex::Regex, regex::Error>> = OnceLock::new();
@@ -462,6 +654,25 @@ fn get_package_arrow_regex() -> Result<&'static regex::Regex, JsonRpcError> {
         })
 }
 
+/// Package receiver followed by a method selector: an arrow-dereference that
+/// is not a method call (`Some::Module->()` invokes the bareword as a sub;
+/// `->[`, `->{`, `->$` dereference) must not classify as a receiver.
+#[cfg(feature = "workspace")]
+fn get_package_method_receiver_regex() -> Result<&'static regex::Regex, JsonRpcError> {
+    PACKAGE_METHOD_RECEIVER_RE
+        .get_or_init(|| {
+            regex::Regex::new(
+                r"([A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)*)\s*->\s*[A-Za-z_]",
+            )
+        })
+        .as_ref()
+        .map_err(|err| {
+            crate::protocol::internal_error(&format!(
+                "Failed to initialize package method receiver regex: {err}"
+            ))
+        })
+}
+
 /// Get regex for matching `$var->method` patterns (variable-based method calls).
 ///
 /// Captures: group 1 = variable name (without sigil), group 2 = method name.
@@ -533,11 +744,15 @@ fn get_quoted_framework_module_regex() -> Result<&'static regex::Regex, JsonRpcE
 fn quoted_framework_module_at_cursor(
     text: &str,
     cursor: usize,
+    keyword_is_code: impl Fn(usize) -> bool,
 ) -> Result<Option<FrameworkModuleReference>, JsonRpcError> {
     for cap in get_quoted_framework_module_regex()?.captures_iter(text) {
         let Some(keyword) = cap.get(1) else {
             continue;
         };
+        if !keyword_is_code(keyword.start()) {
+            continue;
+        }
         let Some(module_match) = cap.get(2).or_else(|| cap.get(3)) else {
             continue;
         };
@@ -593,13 +808,20 @@ fn normalize_framework_module_reference(
 /// - non-`.pm` paths (e.g. `require "script.pl"`) and dynamic forms
 ///   (`require $var`) never resolve here, so they keep their documented
 ///   non-resolution behavior.
-fn literal_require_path_module_at_offset(text: &str, offset: usize) -> Option<String> {
+fn literal_require_path_module_at_offset(
+    text: &str,
+    offset: usize,
+    snapshot: Option<&crate::state::ParsedSnapshot>,
+) -> Option<String> {
     let mut cursor = offset.min(text.len());
     while cursor > 0 && !text.is_char_boundary(cursor) {
         cursor -= 1;
     }
 
     let line_start = text[..cursor].rfind('\n').map_or(0, |idx| idx + 1);
+    if !statement_keyword_is_code(snapshot, text, line_start) {
+        return None;
+    }
     let line_end = text[cursor..].find('\n').map_or(text.len(), |idx| cursor + idx);
     let line = &text[line_start..line_end];
     let cursor_in_line = cursor.saturating_sub(line_start);
@@ -1369,6 +1591,52 @@ impl LspServer {
         Ok(Some(json!([])))
     }
 
+    /// Emit the core-module goto-definition notice at most once per server
+    /// session **per module**. Returns whether *this* call emitted (#16551).
+    ///
+    /// Extracted from [`Self::handle_definition_inner`] so the once-per-session
+    /// contract is enforced in one place.
+    ///
+    /// The identity is the requested module name fingerprinted in the bounded
+    /// [`crate::runtime::session_warning_dedup::SessionWarningDedupStore`]
+    /// `CoreModuleNotice` family, not a session-wide flag: the notice text
+    /// embeds the module, so F12 on `use strict` and F12 on `use warnings`
+    /// produce genuinely different messages and each keeps its first notice,
+    /// while a repeat of the same module stays suppressed (#16666).
+    ///
+    /// Emission goes through `emit_once_with`, which retains the identity only
+    /// when the enqueue succeeds and rolls it back on a failed enqueue: a
+    /// `window/logMessage` the bounded outbound queue rejected must stay
+    /// eligible to fire on the next request instead of being suppressed for
+    /// the rest of the session (#16666 review). Saturation emits without
+    /// retaining, so the bounded cap can never silently drop a first notice.
+    fn emit_core_module_notice_once(&self, module_name: &str) -> bool {
+        use crate::runtime::session_warning_dedup::{
+            SessionWarningCode, SessionWarningFamily, SessionWarningIdentity,
+            SessionWarningSubjectTag,
+        };
+        let notice = format!(
+            "'{module_name}' is a Perl core module. \
+             No source file is available for goto-definition. \
+             Use hover (K) to view documentation."
+        );
+        matches!(
+            self.session_warning_dedup.emit_once_with(
+                SessionWarningFamily::CoreModuleNotice,
+                SessionWarningIdentity::fingerprinted(
+                    SessionWarningCode::CoreModuleGotoDefNotice,
+                    SessionWarningSubjectTag::CoreModuleName,
+                    module_name,
+                ),
+                || {
+                    self.log_message(crate::runtime::window::MessageType::Info, &notice).is_ok()
+                },
+            ),
+            crate::runtime::session_warning_dedup::SessionWarningDecision::EmitFirst
+                | crate::runtime::session_warning_dedup::SessionWarningDecision::EmitWithoutRetaining
+        )
+    }
+
     /// Handle textDocument/definition request
     #[tracing::instrument(skip(self, params), name = "textDocument/definition")]
     pub(crate) fn handle_definition(
@@ -1448,6 +1716,13 @@ impl LspServer {
                     if is_in_comment_naive(offset, text) {
                         return Ok(Some(Value::Null));
                     }
+                    let current_parsed = doc.current_parsed();
+                    let cursor_in_single_quoted_literal =
+                        in_single_quoted_literal(current_parsed.as_deref(), offset);
+                    let quoted_parent_base_argument = cursor_in_single_quoted_literal
+                        && current_parsed.as_ref().is_some_and(|snapshot| {
+                            standalone_quoted_parent_base_argument(snapshot, text, offset)
+                        });
 
                     let radius = 50;
                     let (text_start, text_around) =
@@ -1459,25 +1734,39 @@ impl LspServer {
                             |ast| crate::declaration::current_package_at(&ast, offset).to_string(),
                         );
 
-                    if let Some(module_name) =
-                        extract_xs_bootstrap_target(&text_around, cursor_in_text, &current_package)
-                    {
+                    if let Some(module_name) = extract_xs_bootstrap_target(
+                        &text_around,
+                        cursor_in_text,
+                        &current_package,
+                        |marker| {
+                            !cursor_in_single_quoted_literal
+                                || current_parsed.as_ref().is_some_and(|snapshot| {
+                                    snapshot
+                                        .source_region_index()
+                                        .kind_at_offset(text_start + marker)
+                                        == perl_parser_core::SourceRegionKind::Code
+                                })
+                        },
+                    ) {
                         Some((
                             EarlyDefinitionTarget::XsBootstrap(module_name),
                             doc.text_arc.to_string(),
                             offset,
                         ))
-                    } else if let Some(module_name) =
-                        self.extract_module_reference_extended(&text_around, cursor_in_text)
+                    } else if (!cursor_in_single_quoted_literal || quoted_parent_base_argument)
+                        && let Some(module_name) =
+                            self.extract_module_reference_extended(&text_around, cursor_in_text)
                     {
                         Some((
                             EarlyDefinitionTarget::UseModule(module_name),
                             doc.text_arc.to_string(),
                             offset,
                         ))
-                    } else if let Some(module_name) =
-                        literal_require_path_module_at_offset(text, offset)
-                    {
+                    } else if let Some(module_name) = literal_require_path_module_at_offset(
+                        text,
+                        offset,
+                        current_parsed.as_deref(),
+                    ) {
                         // Literal-path require (`require "Foo/Bar.pm"`): the
                         // quoted form cannot enter the bareword extraction
                         // chain, so normalize it here (#12559).
@@ -1486,9 +1775,19 @@ impl LspServer {
                             doc.text_arc.to_string(),
                             offset,
                         ))
-                    } else if let Some(module_name) =
-                        quoted_framework_module_at_cursor(&text_around, cursor_in_text)?
-                    {
+                    } else if let Some(module_name) = quoted_framework_module_at_cursor(
+                        &text_around,
+                        cursor_in_text,
+                        |keyword| {
+                            !cursor_in_single_quoted_literal
+                                || current_parsed.as_ref().is_some_and(|snapshot| {
+                                    snapshot
+                                        .source_region_index()
+                                        .kind_at_offset(text_start + keyword)
+                                        == perl_parser_core::SourceRegionKind::Code
+                                })
+                        },
+                    )? {
                         Some((
                             EarlyDefinitionTarget::FrameworkModule(module_name),
                             doc.text_arc.to_string(),
@@ -1499,7 +1798,9 @@ impl LspServer {
                         let mut package_name_result = None;
                         let package_pattern = get_package_arrow_regex()?;
                         for cap in package_pattern.captures_iter(&text_around) {
-                            if let Some(package_match) = cap.get(1) {
+                            if !cursor_in_single_quoted_literal
+                                && let Some(package_match) = cap.get(1)
+                            {
                                 let match_start = package_match.start();
                                 let match_end = package_match.end();
                                 if cursor_in_text >= match_start && cursor_in_text <= match_end {
@@ -1617,36 +1918,18 @@ impl LspServer {
                                 },
                             }])));
                         } else if is_core_perl_module(&module_name) {
-                            // Core pragma — not on disk in the user's workspace, so no file jump
+                            // Core pragma - not on disk in the user's workspace, so no file jump
                             // is possible.  Log an info message to the LSP output channel
                             // (visible in the VSCode Output panel) so users can discover that
-                            // hover (K) shows documentation for core modules. Once per session
-                            // per module: repeated F12 on `use strict` must not append an
-                            // identical output-panel line on every request (#16551). The
-                            // notice text names the requested module, so the dedup identity
-                            // is per module — distinct core modules each keep their first
-                            // notice — and a failed enqueue rolls the retention back so the
-                            // next request can retry (#16551 review).
-                            let notice = format!(
-                                "'{module_name}' is a Perl core module. \
-                                 No source file is available for goto-definition. \
-                                 Use hover (K) to view documentation."
-                            );
-                            let _ = self.session_warning_dedup.emit_once_with(
-                                crate::runtime::session_warning_dedup::SessionWarningFamily::CoreModuleNotice,
-                                crate::runtime::session_warning_dedup::SessionWarningIdentity::fingerprinted(
-                                    crate::runtime::session_warning_dedup::SessionWarningCode::CoreModuleGotoDefNotice,
-                                    crate::runtime::session_warning_dedup::SessionWarningSubjectTag::CoreModuleName,
-                                    &module_name,
-                                ),
-                                || {
-                                    self.log_message(
-                                        crate::runtime::window::MessageType::Info,
-                                        &notice,
-                                    )
-                                    .is_ok()
-                                },
-                            );
+                            // hover (K) shows documentation for core modules.
+                            //
+                            // Once per session per module: goto-definition is a per-request
+                            // action, so an unguarded notice repeats every time the user
+                            // presses F12 on `use strict`, filling the Output panel with a
+                            // line they have already read (#16551). The notice text names the
+                            // requested module, so the dedup identity is per module: a
+                            // different core module still gets its own first notice (#16666).
+                            self.emit_core_module_notice_once(&module_name);
                             tracing::debug!(
                                 module = %module_name,
                                 "core pragma requested via goto-def — no file target"
@@ -1739,6 +2022,12 @@ impl LspServer {
                 let _analyze_span =
                     crate::runtime::timing::ScopedSpan::start("provider.navigation.analyze", uri);
                 let offset = self.pos16_to_offset(doc, line, character);
+                // Use the current parse generation to identify inert quoted
+                // text. Explicit quoted targets (module paths and framework
+                // references) have already had their own routing above.
+                let parsed = doc.current_parsed();
+                let cursor_in_single_quoted_literal =
+                    in_single_quoted_literal(parsed.as_deref(), offset);
                 let radius = 50;
                 let (text_start, text_around) =
                     self.get_text_window_around_offset(&doc.text, offset, radius);
@@ -1746,7 +2035,8 @@ impl LspServer {
 
                 let goto_label_re = get_goto_label_regex()?;
                 for cap in goto_label_re.captures_iter(&text_around) {
-                    if let Some(label_match) = cap.get(1)
+                    if !cursor_in_single_quoted_literal
+                        && let Some(label_match) = cap.get(1)
                         && cursor_in_text >= label_match.start()
                         && cursor_in_text <= label_match.end()
                         && let Some((target_start, target_end)) =
@@ -1770,7 +2060,9 @@ impl LspServer {
                     }
                 }
 
-                if let Some(mason_location) = self.resolve_mason_definition(uri, &doc.text, offset)
+                if !cursor_in_single_quoted_literal
+                    && let Some(mason_location) =
+                        self.resolve_mason_definition(uri, &doc.text, offset)
                     && let Some(lsp_location) =
                         crate::workspace_index::lsp_adapter::to_lsp_location(&mason_location)
                 {
@@ -1778,8 +2070,7 @@ impl LspServer {
                 }
 
                 #[cfg(feature = "workspace")]
-                if workspace_index_is_fresh() {
-                    let parsed = doc.current_parsed();
+                if !cursor_in_single_quoted_literal && workspace_index_is_fresh() {
                     if let Some(ast) = parsed.as_ref().and_then(|p| p.ast())
                         && let Some(coordinator) = self.coordinator()
                     {
@@ -1886,11 +2177,32 @@ impl LspServer {
                 #[cfg(feature = "workspace")]
                 {
                     let fqn_regex = get_fqn_regex()?;
-                    if let Some(component) =
-                        fqn_component_at_cursor(fqn_regex, &text_around, cursor_in_text)
+                    if !cursor_in_single_quoted_literal
+                        && let Some(component) =
+                            fqn_component_at_cursor(fqn_regex, &text_around, cursor_in_text)
                     {
                         match component {
                             FqnCursorComponent::Final { package, name } => {
+                                // `Some::Module` is the final component of the
+                                // qualified-name match in `Some::Module->new()`,
+                                // but it is the method call's receiver. Looking
+                                // up Some::Module as a callable can jump to an
+                                // unrelated `sub Module` in package Some (#14776).
+                                // The earlier module-path lookup has already had
+                                // its chance to resolve this receiver.
+                                let qualified_name = format!("{package}::{name}");
+                                if get_package_method_receiver_regex()?
+                                    .captures_iter(&text_around)
+                                    .any(|cap| {
+                                        cap.get(1).is_some_and(|receiver| {
+                                            receiver.as_str() == qualified_name
+                                                && cursor_in_text >= receiver.start()
+                                                && cursor_in_text <= receiver.end()
+                                        })
+                                    })
+                                {
+                                    return Ok(Some(Value::Null));
+                                }
                                 if workspace_index_is_fresh()
                                     && let Some(result) = lookup_workspace_definition(
                                         self.coordinator(),
@@ -1909,7 +2221,7 @@ impl LspServer {
                 }
 
                 #[cfg(feature = "workspace")]
-                if workspace_index_is_fresh() {
+                if !cursor_in_single_quoted_literal && workspace_index_is_fresh() {
                     // Attempt to resolve Package->method calls
                     let arrow_re = get_arrow_method_regex()?;
                     for cap in arrow_re.captures_iter(&text_around) {
@@ -2026,12 +2338,19 @@ impl LspServer {
                     }
                 }
 
-                let parsed = doc.current_parsed();
                 if let Some(ast) = parsed.as_ref().and_then(|p| p.ast()) {
                     let offset = self.pos16_to_offset(doc, line, character);
+                    // A literal has no generic symbol of its own. Keep the
+                    // AST-aware DeclarationProvider below for method modifiers.
+                    // A quoted import-list member is an intentional exception:
+                    // the semantic Use node supplies a Sub key for that member.
+                    let quoted_import_list_symbol = cursor_in_single_quoted_literal
+                        && parsed.as_ref().is_some_and(|snapshot| {
+                            quoted_import_list_symbol(ast, snapshot, &doc.text, offset)
+                        });
 
                     #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
-                    if workspace_index_is_fresh() {
+                    if !cursor_in_single_quoted_literal && workspace_index_is_fresh() {
                         let cursor_on_arrow_method = cursor_in_regex_capture(
                             get_arrow_method_regex()?,
                             &text_around,
@@ -2118,6 +2437,10 @@ impl LspServer {
                         }
                     }
 
+                    if cursor_in_single_quoted_literal && !quoted_import_list_symbol {
+                        return Ok(Some(json!([])));
+                    }
+
                     // Try workspace index for cross-file definitions using routing policy
                     #[cfg(feature = "workspace")]
                     if workspace_index_is_fresh()
@@ -2183,11 +2506,40 @@ impl LspServer {
                     }
                     // No coordinator: fall through to same-file semantic model
 
+                    if cursor_in_single_quoted_literal {
+                        return Ok(Some(json!([])));
+                    }
+
                     // Fall back to same-file definition
                     let model = crate::semantic::SemanticModel::build(ast, &doc.text);
 
                     // Find definition at the position
                     if let Some(definition) = model.definition_at(offset) {
+                        // These built-in variables have no local declaration. The
+                        // semantic analyzer can instead return the sub whose span
+                        // contains them, which is not their definition.
+                        let on_special_variable = ["$|", "@_"].into_iter().any(|special| {
+                            [Some(offset), offset.checked_sub(1)].into_iter().flatten().any(
+                                |start| {
+                                    doc.text.get(start..).is_some_and(|tail| {
+                                        tail.starts_with(special)
+                                            && (special != "@_"
+                                                || !tail.as_bytes().get(2).is_some_and(|byte| {
+                                                    byte.is_ascii_alphanumeric() || *byte == b'_'
+                                                }))
+                                    })
+                                },
+                            )
+                        });
+                        if on_special_variable
+                            && matches!(
+                                definition.kind,
+                                crate::symbol::SymbolKind::Subroutine
+                                    | crate::symbol::SymbolKind::Method
+                            )
+                        {
+                            return Ok(Some(json!([])));
+                        }
                         let (def_line, def_char) =
                             self.offset_to_pos16(doc, definition.location.start);
                         let (def_end_line, def_end_char) =
@@ -3165,126 +3517,6 @@ mod tests {
         Ok((result, receipt))
     }
 
-    /// Shared-buffer writer for capturing outbound LSP notifications in tests
-    /// (same fixture pattern as the diagnostics tests).
-    struct CoreModuleNoticeWriter {
-        inner: std::sync::Arc<parking_lot::Mutex<Vec<u8>>>,
-    }
-    impl std::io::Write for CoreModuleNoticeWriter {
-        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-            self.inner.lock().extend_from_slice(buf);
-            Ok(buf.len())
-        }
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
-
-    /// #16551: the core-module goto-definition notice must be emitted at most
-    /// once per server session. Repeated F12 on `use strict` used to append an
-    /// identical `window/logMessage` line to the client output panel on every
-    /// request.
-    #[test]
-    fn core_module_goto_def_notice_emits_once_across_two_requests()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let buffer = std::sync::Arc::new(parking_lot::Mutex::new(Vec::<u8>::new()));
-        let server = LspServer::with_io(
-            Box::new(std::io::Cursor::new(Vec::<u8>::new())),
-            Box::new(CoreModuleNoticeWriter { inner: std::sync::Arc::clone(&buffer) }),
-        );
-        server.publish_position_encoding_session_context();
-
-        let uri = "file:///core_module_notice.pl";
-        server.test_handle_did_open(Some(json!({
-            "textDocument": {"uri": uri, "languageId": "perl", "version": 1, "text": "use strict;\n"}
-        })))?;
-
-        for _ in 0..2 {
-            server.test_handle_definition(Some(json!({
-                "textDocument": { "uri": uri },
-                "position": { "line": 0, "character": 5 }
-            })))?;
-        }
-
-        // Outbound notifications are flushed by the dedicated writer thread,
-        // so poll for arrival instead of reading the buffer once (same fixture
-        // pattern as the diagnostics tests' `capture_until`).
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-        let output = loop {
-            let current = String::from_utf8_lossy(&buffer.lock()).into_owned();
-            if current.contains("is a Perl core module") || std::time::Instant::now() >= deadline {
-                // Final drain window: a duplicate queued behind the first
-                // frame must be counted by the exact-count assertion below.
-                std::thread::sleep(std::time::Duration::from_millis(250));
-                break String::from_utf8_lossy(&buffer.lock()).into_owned();
-            }
-            std::thread::yield_now();
-        };
-        assert_eq!(
-            output.matches("is a Perl core module").count(),
-            1,
-            "the core-module notice must be emitted once per session: {output}"
-        );
-        Ok(())
-    }
-
-    /// #16551 review: the notice names the requested module, so the once-per-
-    /// session dedup must be per module. F12 on `use strict` then F12 on
-    /// `use warnings` are different output-panel lines; the second must not be
-    /// suppressed by the first, while a repeat of either stays suppressed.
-    #[test]
-    fn core_module_notice_is_per_module_not_session_wide() -> Result<(), Box<dyn std::error::Error>>
-    {
-        let buffer = std::sync::Arc::new(parking_lot::Mutex::new(Vec::<u8>::new()));
-        let server = LspServer::with_io(
-            Box::new(std::io::Cursor::new(Vec::<u8>::new())),
-            Box::new(CoreModuleNoticeWriter { inner: std::sync::Arc::clone(&buffer) }),
-        );
-        server.publish_position_encoding_session_context();
-
-        let uri = "file:///core_module_notice_per_module.pl";
-        server.test_handle_did_open(Some(json!({
-            "textDocument": {"uri": uri, "languageId": "perl", "version": 1, "text": "use strict;
-use warnings;
-"}
-        })))?;
-
-        let f12 = |line: u32| {
-            server.test_handle_definition(Some(json!({
-                "textDocument": { "uri": uri },
-                "position": { "line": line, "character": 5 }
-            })))
-        };
-        f12(0)?;
-        f12(1)?;
-        // Repeats of either module stay suppressed.
-        f12(0)?;
-        f12(1)?;
-
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-        let output = loop {
-            let current = String::from_utf8_lossy(&buffer.lock()).into_owned();
-            if current.matches("is a Perl core module").count() >= 2
-                || std::time::Instant::now() >= deadline
-            {
-                std::thread::sleep(std::time::Duration::from_millis(250));
-                break String::from_utf8_lossy(&buffer.lock()).into_owned();
-            }
-            std::thread::yield_now();
-        };
-        assert_eq!(
-            output.matches("'strict' is a Perl core module").count(),
-            1,
-            "the strict notice must emit exactly once: {output}"
-        );
-        assert_eq!(
-            output.matches("'warnings' is a Perl core module").count(),
-            1,
-            "the warnings notice must not be suppressed by the strict notice: {output}"
-        );
-        Ok(())
-    }
-
     /// Cross-file definition must not consume predecessor workspace facts while
     /// a Full-sync violation is outstanding, and must recover after an admitted
     /// full replacement plus index catch-up (#8129).
@@ -3915,5 +4147,161 @@ use warnings;
         // mutex's poisoned flag from being permanently true after this test
         // runs, matching "no test leaving the mutex poisoned".
         NAVIGATION_SAME_DOC_FALLBACK_GAP.clear_poison();
+    }
+
+    /// The core-module goto-definition notice must reach the output channel
+    /// once per server session per module, not once per F12 (#16551), and a
+    /// different core module must keep its own notice (#16666).
+    ///
+    /// `window/logMessage` is a per-request action path, so an unguarded notice
+    /// repeats on every jump to `use strict` and trains the user to ignore the
+    /// channel that carries it.
+    ///
+    /// Drives [`LspServer::emit_core_module_notice_once`] — the unit that
+    /// actually enforces the dedup — so deleting the guard fails this test.
+    #[test]
+    fn the_core_module_notice_emits_once_per_module_per_session() {
+        let first = crate::runtime::LspServer::new();
+        assert!(
+            first.emit_core_module_notice_once("strict"),
+            "the first notice in a session must be emitted"
+        );
+        assert!(
+            !first.emit_core_module_notice_once("strict"),
+            "a second F12 on the same module must stay silent, not repeat the notice"
+        );
+        assert!(
+            first.emit_core_module_notice_once("warnings"),
+            "the identity is per module: the notice names the requested module, so a \
+             different core module keeps its own first notice (#16666)"
+        );
+        assert!(
+            !first.emit_core_module_notice_once("warnings"),
+            "a repeat of the second module must also stay silent"
+        );
+
+        let second = crate::runtime::LspServer::new();
+        assert!(
+            second.emit_core_module_notice_once("strict"),
+            "the dedup state is instance-level: a second server session must still emit"
+        );
+    }
+
+    /// Shared-buffer writer for capturing outbound LSP notifications in tests
+    /// (same fixture pattern as the diagnostics tests).
+    struct CoreModuleNoticeWriter {
+        inner: std::sync::Arc<parking_lot::Mutex<Vec<u8>>>,
+    }
+    impl std::io::Write for CoreModuleNoticeWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.inner.lock().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// #16551: the core-module goto-definition notice must be emitted at most
+    /// once per server session per module. Repeated F12 on `use strict` used to
+    /// append an identical `window/logMessage` line to the client output panel
+    /// on every request.
+    #[test]
+    fn core_module_goto_def_notice_emits_once_across_two_requests()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let buffer = std::sync::Arc::new(parking_lot::Mutex::new(Vec::<u8>::new()));
+        let server = LspServer::with_io(
+            Box::new(std::io::Cursor::new(Vec::<u8>::new())),
+            Box::new(CoreModuleNoticeWriter { inner: std::sync::Arc::clone(&buffer) }),
+        );
+        server.publish_position_encoding_session_context();
+
+        let uri = "file:///core_module_notice.pl";
+        server.test_handle_did_open(Some(json!({
+            "textDocument": {"uri": uri, "languageId": "perl", "version": 1, "text": "use strict;\n"}
+        })))?;
+
+        for _ in 0..2 {
+            server.test_handle_definition(Some(json!({
+                "textDocument": { "uri": uri },
+                "position": { "line": 0, "character": 5 }
+            })))?;
+        }
+
+        // Outbound notifications are flushed by the dedicated writer thread,
+        // so poll for arrival instead of reading the buffer once (same fixture
+        // pattern as the diagnostics tests' `capture_until`).
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let output = loop {
+            let current = String::from_utf8_lossy(&buffer.lock()).into_owned();
+            if current.contains("is a Perl core module") || std::time::Instant::now() >= deadline {
+                // Final drain window: a duplicate queued behind the first
+                // frame must be counted by the exact-count assertion below.
+                std::thread::sleep(std::time::Duration::from_millis(250));
+                break String::from_utf8_lossy(&buffer.lock()).into_owned();
+            }
+            std::thread::yield_now();
+        };
+        assert_eq!(
+            output.matches("is a Perl core module").count(),
+            1,
+            "the core-module notice must be emitted once per session: {output}"
+        );
+        Ok(())
+    }
+
+    /// #16551 review: the notice names the requested module, so the once-per-
+    /// session dedup must be per module. F12 on `use strict` then F12 on
+    /// `use warnings` are different output-panel lines; the second must not be
+    /// suppressed by the first, while a repeat of either stays suppressed.
+    #[test]
+    fn core_module_notice_is_per_module_not_session_wide() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let buffer = std::sync::Arc::new(parking_lot::Mutex::new(Vec::<u8>::new()));
+        let server = LspServer::with_io(
+            Box::new(std::io::Cursor::new(Vec::<u8>::new())),
+            Box::new(CoreModuleNoticeWriter { inner: std::sync::Arc::clone(&buffer) }),
+        );
+        server.publish_position_encoding_session_context();
+
+        let uri = "file:///core_module_notice_per_module.pl";
+        server.test_handle_did_open(Some(json!({
+            "textDocument": {"uri": uri, "languageId": "perl", "version": 1, "text": "use strict;\nuse warnings;\n"}
+        })))?;
+
+        let f12 = |line: u32| {
+            server.test_handle_definition(Some(json!({
+                "textDocument": { "uri": uri },
+                "position": { "line": line, "character": 5 }
+            })))
+        };
+        f12(0)?;
+        f12(1)?;
+        // Repeats of either module stay suppressed.
+        f12(0)?;
+        f12(1)?;
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let output = loop {
+            let current = String::from_utf8_lossy(&buffer.lock()).into_owned();
+            if current.matches("is a Perl core module").count() >= 2
+                || std::time::Instant::now() >= deadline
+            {
+                std::thread::sleep(std::time::Duration::from_millis(250));
+                break String::from_utf8_lossy(&buffer.lock()).into_owned();
+            }
+            std::thread::yield_now();
+        };
+        assert_eq!(
+            output.matches("'strict' is a Perl core module").count(),
+            1,
+            "the strict notice must emit exactly once: {output}"
+        );
+        assert_eq!(
+            output.matches("'warnings' is a Perl core module").count(),
+            1,
+            "the warnings notice must not be suppressed by the strict notice: {output}"
+        );
+        Ok(())
     }
 }
