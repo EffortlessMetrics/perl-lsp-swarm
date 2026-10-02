@@ -131,6 +131,11 @@
       "static_floor": 8.0,
       "learned": false
     },
+    "vscode_installed_first_hour_windows": {
+      "samples": 0,
+      "static_floor": 70.0,
+      "learned": false
+    },
     "vscode_smoke_matrix": {
       "samples": 0,
       "static_floor": 35.0,
