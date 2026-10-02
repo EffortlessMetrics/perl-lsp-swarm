@@ -90,7 +90,18 @@ outcome_owner = "#10230"
 # test setup in scanned completion/workspace.rs, and a test-only module already
 # excluded above. The 42-file product scan, discovered producer population,
 # authored dispositions, entry routes, delegations, and finalizer are unchanged.
-source_digest = "sha256:2521f636463acbed91b0ddcc060897b72c341fb897b04a8b10fb1977f5d64d3f"
+# Re-audit 2026-10-01 (#16962 / #16972): split-file source composition and
+# current-file/root admission changed workspace behavior. Producer identities,
+# candidate channels, entry reach, finalizer route, and the 42-file scan set
+# remain unchanged. Index/scope argument grouping preserves traversal semantics;
+# new tests propagate failures without panic. Native cloud reconciliation must
+# verify this exact source binding and generated projection before acceptance.
+# Re-audit 2026-10-02 (#17062): the indexed-method collector now applies
+# explicit-before-generated precedence in both branches and rejects descendant
+# package members before name deduplication. Current-buffer and URI/root
+# admission remain unchanged. Producer population, channels, entry reach and
+# finalizer route are unchanged; native reconciliation remains required.
+source_digest = "sha256:f445112adbae2b8c7920126be952e490282473eed8219ead2688aedb77bf648a"
 
 [[delegations]]
 module = "dancer2"

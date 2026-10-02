@@ -33,6 +33,7 @@ use perl_workspace::semantic::{
     queries::{SemanticQueries, WorkspaceSemanticQueries},
     references::ReferenceIndex,
 };
+use perl_workspace::workspace::document_store::DocumentStore;
 use perl_workspace::workspace_index::{
     SymbolKind as WsSymbolKind, WorkspaceIndex, WorkspaceSymbol,
 };
@@ -1830,6 +1831,7 @@ pub fn add_workspace_method_completions(
     type_engine: Option<&TypeInferenceEngine>,
     workspace_index: &Option<Arc<WorkspaceIndex>>,
     used_modules: &HashSet<String>,
+    current_uri: Option<&str>,
 ) {
     let Some(index) = workspace_index else {
         return;
@@ -1851,7 +1853,14 @@ pub fn add_workspace_method_completions(
     // the enum variant's internals.
     let union_packages = evidence.candidate_packages();
     if !union_packages.is_empty() {
-        add_union_receiver_method_completions(completions, context, source, index, union_packages);
+        add_union_receiver_method_completions(
+            completions,
+            context,
+            source,
+            index,
+            union_packages,
+            current_uri,
+        );
         return;
     }
 
@@ -1870,7 +1879,8 @@ pub fn add_workspace_method_completions(
 
     // Collect all methods from the receiver package AND its ancestor chain
     // (parents + roles). Child methods take priority.
-    let members = collect_all_package_members_with_source(index, &package_name, source);
+    let members =
+        collect_all_package_members_with_source(index, &package_name, source, current_uri);
     drop_generic_local_methods_rebound_from_composition(completions, &package_name, &members);
 
     let method_symbols = {
@@ -1957,6 +1967,7 @@ fn add_union_receiver_method_completions(
     source: &str,
     index: &WorkspaceIndex,
     packages: &[String],
+    current_uri: Option<&str>,
 ) {
     let method_prefix = context.prefix.rsplit("->").next().unwrap_or("");
     // Snapshot existing labels before any push to avoid borrow conflicts.
@@ -1968,7 +1979,7 @@ fn add_union_receiver_method_completions(
     let per_package_methods: Vec<HashSet<String>> = packages
         .iter()
         .map(|pkg| {
-            collect_all_package_members(index, pkg)
+            collect_all_package_members_with_source(index, pkg, source, current_uri)
                 .into_iter()
                 .filter(|s| matches!(s.kind, WsSymbolKind::Subroutine | WsSymbolKind::Method))
                 .filter(|s| method_prefix.is_empty() || s.name.starts_with(method_prefix))
@@ -1992,7 +2003,8 @@ fn add_union_receiver_method_completions(
     // Emit one completion per method, iterating packages in declaration order
     // so the first arm's definition wins for the detail label.
     for package_name in packages {
-        let members = collect_all_package_members_with_source(index, package_name, source);
+        let members =
+            collect_all_package_members_with_source(index, package_name, source, current_uri);
         for symbol in &members {
             if !matches!(symbol.kind, WsSymbolKind::Subroutine | WsSymbolKind::Method) {
                 continue;
@@ -2662,7 +2674,38 @@ pub(super) fn collect_all_package_members(
     index: &WorkspaceIndex,
     package_name: &str,
 ) -> Vec<WorkspaceSymbol> {
-    collect_all_package_members_with_source(index, package_name, "")
+    collect_all_package_members_with_source(index, package_name, "", None)
+}
+
+/// The open source wins over its indexed predecessor. Configured workspace
+/// roots also bound newly composed index facts to the request's owning root.
+struct IndexedSourceScope {
+    current_uri_key: Option<String>,
+    current_root: Option<String>,
+    roots_configured: bool,
+}
+
+impl IndexedSourceScope {
+    fn new(index: &WorkspaceIndex, current_uri: Option<&str>) -> Self {
+        Self {
+            current_uri_key: current_uri
+                .map(|uri| DocumentStore::uri_key(&perl_uri::normalize_uri(uri))),
+            current_root: current_uri.and_then(|uri| index.workspace_folder_for_uri(uri)),
+            roots_configured: !index.workspace_folders().is_empty(),
+        }
+    }
+
+    fn admits(&self, index: &WorkspaceIndex, indexed_uri: &str) -> bool {
+        if self.current_uri_key.as_deref() == Some(DocumentStore::uri_key(indexed_uri).as_str()) {
+            return false;
+        }
+        if self.current_uri_key.is_some() && self.roots_configured {
+            return self.current_root.as_ref()
+                == index.workspace_folder_for_uri(indexed_uri).as_ref()
+                && self.current_root.is_some();
+        }
+        true
+    }
 }
 
 /// Collect package members and use the current open document as a model source
@@ -2671,25 +2714,28 @@ pub(super) fn collect_all_package_members(
 /// for persisted members and inherited packages.
 ///
 /// Current-document class models are parsed once and preferred over persisted
-/// index members for packages declared in the open buffer (#16809). This adapter
-/// retires when [`WorkspaceSemanticQueries`] can consume a source-only shard
-/// for the accepted document generation.
+/// index members for packages declared in the open buffer (#16809). Indexed
+/// members and inheritance edges from split-file packages remain visible.
+/// This adapter retires when [`WorkspaceSemanticQueries`] can consume a
+/// source-only shard for the accepted document generation.
 fn collect_all_package_members_with_source(
     index: &WorkspaceIndex,
     package_name: &str,
     source: &str,
+    current_uri: Option<&str>,
 ) -> Vec<WorkspaceSymbol> {
     let mut seen_names: HashSet<String> = HashSet::new();
     let mut result: Vec<WorkspaceSymbol> = Vec::new();
     let mut visited: HashSet<String> = HashSet::new();
     let (current_models, current_methods) = current_document_package_facts(source);
+    let scope = IndexedSourceScope::new(index, current_uri);
     let mut model_cache: HashMap<String, SourcePackageFacts> = HashMap::new();
 
     let load_model = |pkg: &str, cache: &mut HashMap<String, SourcePackageFacts>| {
         cache
             .entry(pkg.to_string())
             .or_insert_with(|| {
-                load_source_package_facts(pkg, index, &current_models, &current_methods)
+                load_source_package_facts(pkg, index, &current_models, &current_methods, &scope)
             })
             .clone()
     };
@@ -2698,7 +2744,7 @@ fn collect_all_package_members_with_source(
     // in MRO order, then roles. This ensures child definitions shadow parents.
     fn visit_mro(
         pkg: &str,
-        index: &WorkspaceIndex,
+        indexed_source: (&WorkspaceIndex, &IndexedSourceScope),
         load_model: &impl Fn(&str, &mut HashMap<String, SourcePackageFacts>) -> SourcePackageFacts,
         model_cache: &mut HashMap<String, SourcePackageFacts>,
         visited: &mut HashSet<String>,
@@ -2706,6 +2752,7 @@ fn collect_all_package_members_with_source(
         result: &mut Vec<WorkspaceSymbol>,
         depth: usize,
     ) {
+        let (index, scope) = indexed_source;
         const MAX_DEPTH: usize = 50;
         if depth >= MAX_DEPTH || !visited.insert(pkg.to_string()) {
             return;
@@ -2718,20 +2765,19 @@ fn collect_all_package_members_with_source(
                     result.push(symbol);
                 }
             }
-            // Current-buffer source wins for explicit methods; still consume
-            // persisted generated members (Moo `has` readers, etc.) so
-            // indexing the same package does not drop workspace facts.
-            push_index_method_symbols(index.get_generated_package_members(pkg), seen_names, result);
-        } else {
-            push_index_method_symbols(
-                index
-                    .get_package_members(pkg)
-                    .into_iter()
-                    .chain(index.get_generated_package_members(pkg)),
-                seen_names,
-                result,
-            );
         }
+        // Current-buffer source wins first. In both collector branches,
+        // explicit indexed methods override same-named generated accessors.
+        push_index_method_symbols(
+            pkg,
+            index
+                .get_package_members(pkg)
+                .into_iter()
+                .chain(index.get_generated_package_members(pkg))
+                .filter(|symbol| scope.admits(index, &symbol.uri)),
+            seen_names,
+            result,
+        );
 
         // Traverse @ISA ancestors in MRO order. C3 uses the same parent walk as
         // DFS here: completion only needs consistent visitation, not a second
@@ -2739,7 +2785,7 @@ fn collect_all_package_members_with_source(
         for parent in &facts.parents {
             visit_mro(
                 parent,
-                index,
+                indexed_source,
                 load_model,
                 model_cache,
                 visited,
@@ -2751,13 +2797,22 @@ fn collect_all_package_members_with_source(
 
         // Traverse roles after @ISA (role composition is distinct from MRO)
         for role in &facts.roles {
-            visit_mro(role, index, load_model, model_cache, visited, seen_names, result, depth + 1);
+            visit_mro(
+                role,
+                indexed_source,
+                load_model,
+                model_cache,
+                visited,
+                seen_names,
+                result,
+                depth + 1,
+            );
         }
     }
 
     visit_mro(
         package_name,
-        index,
+        (index, &scope),
         &load_model,
         &mut model_cache,
         &mut visited,
@@ -2787,11 +2842,23 @@ fn empty_source_package_facts() -> SourcePackageFacts {
 }
 
 fn push_index_method_symbols(
+    package_name: &str,
     symbols: impl IntoIterator<Item = WorkspaceSymbol>,
     seen_names: &mut HashSet<String>,
     result: &mut Vec<WorkspaceSymbol>,
 ) {
     for symbol in symbols {
+        // The legacy index query includes qualified-name prefixes. A nested
+        // package is not its parent's method owner, so require the immediate
+        // declaring package before name-based deduplication.
+        let owner = symbol
+            .qualified_name
+            .as_deref()
+            .and_then(|name| name.rsplit_once("::").map(|(owner, _)| owner))
+            .or(symbol.container_name.as_deref());
+        if symbol.is_lexical || owner != Some(package_name) {
+            continue;
+        }
         match symbol.kind {
             WsSymbolKind::Subroutine | WsSymbolKind::Method => {}
             _ => continue,
@@ -2805,7 +2872,7 @@ fn push_index_method_symbols(
 fn current_document_package_facts(
     source: &str,
 ) -> (
-    HashMap<String, perl_semantic_analyzer::class_model::ClassModel>,
+    HashMap<String, Vec<perl_semantic_analyzer::class_model::ClassModel>>,
     HashMap<String, Vec<WorkspaceSymbol>>,
 ) {
     if source.is_empty() {
@@ -2815,11 +2882,11 @@ fn current_document_package_facts(
     let Ok(ast) = parser.parse() else {
         return (HashMap::new(), HashMap::new());
     };
-    let models = perl_semantic_analyzer::class_model::ClassModelBuilder::new()
-        .build(&ast)
-        .into_iter()
-        .map(|model| (model.name.clone(), model))
-        .collect();
+    let mut models: HashMap<String, Vec<perl_semantic_analyzer::class_model::ClassModel>> =
+        HashMap::new();
+    for model in perl_semantic_analyzer::class_model::ClassModelBuilder::new().build(&ast) {
+        models.entry(model.name.clone()).or_default().push(model);
+    }
     (models, current_document_methods_from_ast(&ast, source))
 }
 
@@ -2864,74 +2931,97 @@ fn package_name_from_qualified(qualified_name: &str) -> Option<&str> {
 fn load_source_package_facts(
     pkg: &str,
     index: &WorkspaceIndex,
-    current_models: &HashMap<String, perl_semantic_analyzer::class_model::ClassModel>,
+    current_models: &HashMap<String, Vec<perl_semantic_analyzer::class_model::ClassModel>>,
     current_methods: &HashMap<String, Vec<WorkspaceSymbol>>,
+    scope: &IndexedSourceScope,
 ) -> SourcePackageFacts {
-    if let Some(model) = current_models.get(pkg) {
-        let methods = current_methods.get(pkg).cloned().unwrap_or_else(|| {
-            model
-                .methods
+    if let Some(models) = current_models.get(pkg) {
+        let mut methods = current_methods.get(pkg).cloned().unwrap_or_else(|| {
+            models
                 .iter()
-                .filter_map(|method| current_document_method_symbol(&model.name, method))
+                .flat_map(|model| &model.methods)
+                .filter_map(|method| current_document_method_symbol(pkg, method))
                 .collect()
         });
+        // Rebuild framework members from the accepted buffer. The indexed
+        // generation for this URI may still contain a deleted `has`.
+        methods.extend(
+            perl_semantic_analyzer::analysis::generated_member_extractor::GeneratedMemberExtractor::extract_from_models(
+                models,
+                pkg,
+            )
+            .into_iter()
+            .filter_map(|member| {
+                let mut symbol = current_document_method_symbol_from_parts(pkg, &member.name, 0, 0)?;
+                symbol.has_body = false;
+                symbol.documentation = Some("Generated/framework member from current document".to_string());
+                Some(symbol)
+            }),
+        );
+        let indexed = load_indexed_source_package_facts(pkg, index, scope);
+        let merged = perl_semantic_analyzer::class_model::merge_reopened_class_models(models);
+        let parents = merged.iter().flat_map(|model| model.parents.iter().cloned()).collect();
+        let roles = merged.iter().flat_map(|model| model.roles.iter().cloned()).collect();
         return SourcePackageFacts {
-            parents: model.parents.clone(),
-            roles: model.roles.clone(),
+            parents: merge_named_edges(parents, indexed.parents),
+            roles: merge_named_edges(roles, indexed.roles),
             methods,
             from_current_document: true,
         };
     }
 
     if let Some(methods) = current_methods.get(pkg) {
+        let indexed = load_indexed_source_package_facts(pkg, index, scope);
         return SourcePackageFacts {
-            parents: Vec::new(),
-            roles: Vec::new(),
+            parents: indexed.parents,
+            roles: indexed.roles,
             methods: methods.clone(),
             from_current_document: true,
         };
     }
 
-    let indexed_text = index.find_definition(pkg).and_then(|pkg_location| {
-        index.document_store().get_text(&pkg_location.uri).or_else(|| {
-            perl_workspace::workspace_index::uri_to_fs_path(&pkg_location.uri)
-                .and_then(|path| std::fs::read_to_string(path).ok())
-        })
-    });
-    let Some(text) = indexed_text else {
-        return empty_source_package_facts();
-    };
-    let mut parser = perl_semantic_analyzer::Parser::new(&text);
-    let Ok(ast) = parser.parse() else {
-        return empty_source_package_facts();
-    };
-    perl_semantic_analyzer::class_model::ClassModelBuilder::new()
-        .build(&ast)
-        .into_iter()
-        .find(|model| model.name == pkg)
-        .map(|model| source_package_facts_from_model(&model, false))
-        .unwrap_or_else(empty_source_package_facts)
+    load_indexed_source_package_facts(pkg, index, scope)
 }
 
-fn source_package_facts_from_model(
-    model: &perl_semantic_analyzer::class_model::ClassModel,
-    from_current_document: bool,
-) -> SourcePackageFacts {
-    let methods = if from_current_document {
-        model
-            .methods
-            .iter()
-            .filter_map(|method| current_document_method_symbol(&model.name, method))
-            .collect()
-    } else {
-        Vec::new()
-    };
-    SourcePackageFacts {
-        parents: model.parents.clone(),
-        roles: model.roles.clone(),
-        methods,
-        from_current_document,
+fn merge_named_edges(mut preferred: Vec<String>, extra: Vec<String>) -> Vec<String> {
+    for name in extra {
+        if !preferred.iter().any(|existing| existing == &name) {
+            preferred.push(name);
+        }
     }
+    preferred
+}
+
+fn load_indexed_source_package_facts(
+    pkg: &str,
+    index: &WorkspaceIndex,
+    scope: &IndexedSourceScope,
+) -> SourcePackageFacts {
+    let mut merged = empty_source_package_facts();
+    let mut seen_uris = HashSet::new();
+    for location in index.find_package_declarations(pkg) {
+        let uri = location.uri.as_str();
+        if !scope.admits(index, uri) || !seen_uris.insert(uri.to_string()) {
+            continue;
+        }
+        let text = index.document_store().get_text(&location.uri).or_else(|| {
+            perl_workspace::workspace_index::uri_to_fs_path(&location.uri)
+                .and_then(|path| std::fs::read_to_string(path).ok())
+        });
+        let Some(text) = text else { continue };
+        let mut parser = perl_semantic_analyzer::Parser::new(&text);
+        let Ok(ast) = parser.parse() else { continue };
+        if let Some(model) = perl_semantic_analyzer::class_model::merge_reopened_class_models(
+            &perl_semantic_analyzer::class_model::ClassModelBuilder::new().build(&ast),
+        )
+        .into_iter()
+        .find(|model| model.name == pkg)
+        {
+            merged.parents = merge_named_edges(merged.parents, model.parents);
+            merged.roles = merge_named_edges(merged.roles, model.roles);
+        }
+    }
+    merged
 }
 
 fn current_document_method_symbol(
@@ -3044,7 +3134,7 @@ sub greet {
 }
 "#;
         let members =
-            collect_all_package_members_with_source(index.as_ref(), "Child", child_source);
+            collect_all_package_members_with_source(index.as_ref(), "Child", child_source, None);
         let names: Vec<_> = members.iter().map(|member| member.name.as_str()).collect();
         assert!(
             names.contains(&"name"),
@@ -3064,7 +3154,7 @@ package User;
 use Moo;
 with 'Printable';
 "#;
-        let members = collect_all_package_members_with_source(index.as_ref(), "User", source);
+        let members = collect_all_package_members_with_source(index.as_ref(), "User", source, None);
         let names: Vec<_> = members.iter().map(|member| member.name.as_str()).collect();
         assert!(
             names.contains(&"stringify"),
@@ -3093,7 +3183,7 @@ sub own_method { 1 }
             ),
         );
         assert!(index.has_symbols(), "indexed current-document package must publish symbols");
-        let members = collect_all_package_members_with_source(index.as_ref(), "User", source);
+        let members = collect_all_package_members_with_source(index.as_ref(), "User", source, None);
         let names: Vec<_> = members.iter().map(|member| member.name.as_str()).collect();
         assert!(
             names.contains(&"own_method"),
@@ -3103,6 +3193,496 @@ sub own_method { 1 }
             names.contains(&"name"),
             "indexed generated reader must remain after current-document composition, got {names:?}"
         );
+    }
+
+    #[test]
+    fn collect_all_keeps_split_file_methods_and_current_collision_precedence()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let index = WorkspaceIndex::new();
+        index.index_initial_file(
+            Url::parse("file:///workspace/Indexed.pm")?,
+            "package User;\nsub indexed_only { 1 }\nsub own_method { 'index' }\n".to_string(),
+        )?;
+        let current = "package User;\nsub own_method { 'current' }\nsub consume { 1 }\n";
+        let members = collect_all_package_members_with_source(
+            &index,
+            "User",
+            current,
+            Some("file:///workspace/Current.pl"),
+        );
+        let names: Vec<_> = members.iter().map(|member| member.name.as_str()).collect();
+        if !(names.contains(&"indexed_only")) {
+            return Err(format!("split-file method missing: {names:?}").into());
+        }
+        if !(names.contains(&"consume")) {
+            return Err(format!("current method missing: {names:?}").into());
+        }
+        let own = members.iter().find(|member| member.name == "own_method");
+        {
+            let actual = own.map(|member| member.uri.as_str());
+            let expected = Some("");
+            if actual != expected {
+                return Err(
+                    format!("expected equality: actual={actual:?}; expected={expected:?}").into()
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn collect_all_prefers_explicit_split_methods_to_generated_accessors()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let index = WorkspaceIndex::new();
+        index.index_initial_file(
+            Url::parse("file:///workspace/Generated.pm")?,
+            "package User; use Moo; has 'name' => (is => 'ro'); \
+             has 'generated_only' => (is => 'ro');"
+                .to_string(),
+        )?;
+        index.index_initial_file(
+            Url::parse("file:///workspace/Explicit.pm")?,
+            "package User; sub name { 'explicit' }".to_string(),
+        )?;
+        assert!(
+            index.get_generated_package_members("User").iter().any(|m| m.name == "name"),
+            "fixture must include the competing generated accessor"
+        );
+        for source in ["package User; sub local { 1 }", ""] {
+            let members = collect_all_package_members_with_source(
+                &index,
+                "User",
+                source,
+                Some("file:///workspace/Current.pm"),
+            );
+            let named: Vec<_> = members.iter().filter(|m| m.name == "name").collect();
+            assert_eq!(named.len(), 1, "the collision must produce one method");
+            assert!(named[0].has_body, "explicit method must win over virtual accessor");
+            assert!(
+                members.iter().any(|m| m.name == "generated_only" && !m.has_body),
+                "noncolliding generated accessors must remain"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn collect_all_keeps_nested_package_methods_with_their_exact_owner()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let index = WorkspaceIndex::new();
+        index.index_initial_file(
+            Url::parse("file:///workspace/Split.pm")?,
+            "package User; sub own { 1 } package User::Private; sub secret { 1 }".to_string(),
+        )?;
+        assert!(
+            index.get_package_members("User").iter().any(|m| m.name == "secret"),
+            "fixture must challenge the legacy prefix-based query"
+        );
+        for source in ["package User; sub local { 1 }", ""] {
+            let members = collect_all_package_members_with_source(
+                &index,
+                "User",
+                source,
+                Some("file:///workspace/Current.pm"),
+            );
+            assert!(members.iter().any(|m| m.name == "own"), "same-package method retained");
+            assert!(
+                !members.iter().any(|m| m.name == "secret"),
+                "descendant method must not be offered on its parent"
+            );
+        }
+        let nested = collect_all_package_members_with_source(
+            &index,
+            "User::Private",
+            "package User::Private; sub local { 1 }",
+            Some("file:///workspace/Current.pm"),
+        );
+        assert!(
+            nested.iter().any(|m| m.name == "secret"),
+            "the same method must remain available to its actual receiver"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn collect_all_excludes_lexical_subs_from_split_file()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let index = WorkspaceIndex::new();
+        index.index_initial_file(
+            Url::parse("file:///workspace/Split.pm")?,
+            "package User;\nmy sub hidden { 1 }\nstate sub state_hidden { 1 }\nsub public { 1 }\n"
+                .to_string(),
+        )?;
+        let indexed = index.get_package_members("User");
+        for name in ["hidden", "state_hidden"] {
+            if !(indexed.iter().any(|symbol| {
+                symbol.name == name
+                    && symbol.kind == perl_symbol::SymbolKind::Subroutine
+                    && symbol.is_lexical
+            })) {
+                return Err(format!("fixture must index {name} as a lexical sub to challenge the collector: {indexed:?}").into());
+            }
+        }
+        let members = collect_all_package_members_with_source(
+            &index,
+            "User",
+            "package User;\nsub local { 1 }\n",
+            Some("file:///workspace/Current.pl"),
+        );
+        let names: Vec<_> = members.iter().map(|member| member.name.as_str()).collect();
+        if !(names.contains(&"public")) {
+            return Err(format!("public split-file method missing: {names:?}").into());
+        }
+        if names.contains(&"hidden") {
+            return Err(format!("lexical sub leaked as method: {names:?}").into());
+        }
+        if names.contains(&"state_hidden") {
+            return Err(format!("state sub leaked as method: {names:?}").into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn collect_all_keeps_split_file_isa_when_current_buffer_omits_it()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let index = WorkspaceIndex::new();
+        index.index_initial_file(
+            Url::parse("file:///workspace/Parent.pm")?,
+            "package Parent;\nsub inherited { 1 }\n".to_string(),
+        )?;
+        index.index_initial_file(
+            Url::parse("file:///workspace/IndexedChild.pm")?,
+            "package Child;\nuse parent 'Parent';\n".to_string(),
+        )?;
+        let current = "package Child;\nsub run { 1 }\n";
+        let members = collect_all_package_members_with_source(
+            &index,
+            "Child",
+            current,
+            Some("file:///workspace/Current.pl"),
+        );
+        if !(members.iter().any(|member| member.name == "inherited")) {
+            return Err("split-file ISA edge must retain Parent::inherited".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn collect_all_does_not_resurrect_deleted_current_file_method_or_isa()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let index = WorkspaceIndex::new();
+        index.index_initial_file(
+            Url::parse("file:///workspace/Parent.pm")?,
+            "package Parent;\nsub inherited { 1 }\n".to_string(),
+        )?;
+        index.index_initial_file(
+            Url::parse("file:///workspace/Child.pm")?,
+            "package Child;\nuse parent 'Parent';\nsub removed { 1 }\n".to_string(),
+        )?;
+        // The open Child.pm buffer has removed both declarations; the index
+        // still contains its predecessor generation.
+        let current = "package Child;\nsub live { 1 }\n";
+        let members = collect_all_package_members_with_source(
+            &index,
+            "Child",
+            current,
+            Some("file:///workspace/Child.pm"),
+        );
+        let names: Vec<_> = members.iter().map(|member| member.name.as_str()).collect();
+        if !(names.contains(&"live")) {
+            return Err(format!("current method missing: {names:?}").into());
+        }
+        if names.contains(&"removed") {
+            return Err(format!("stale method resurfaced: {names:?}").into());
+        }
+        if names.contains(&"inherited") {
+            return Err(format!("stale ISA resurfaced: {names:?}").into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn collect_all_excludes_indexed_predecessor_for_filesystem_path()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let index = WorkspaceIndex::new();
+        let path = std::env::temp_dir().join("perl-lsp-completion-open-child.pm");
+        let uri = Url::from_file_path(&path)
+            .map_err(|()| std::io::Error::other("absolute test path has no file URI"))?;
+        index.index_initial_file(uri, "package Child; sub removed { 1 }".to_string())?;
+        let current_path = path.to_string_lossy();
+        let members = collect_all_package_members_with_source(
+            &index,
+            "Child",
+            "package Child; sub live { 1 }",
+            Some(&current_path),
+        );
+        let names: Vec<_> = members.iter().map(|member| member.name.as_str()).collect();
+        if !(names.contains(&"live")) {
+            return Err(format!("current method missing: {names:?}").into());
+        }
+        if names.contains(&"removed") {
+            return Err(format!("stale method resurfaced: {names:?}").into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn collect_all_rebuilds_current_generated_members_without_stale_accessors()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let index = WorkspaceIndex::new();
+        index.index_initial_file(
+            Url::parse("file:///workspace/User.pm")?,
+            "package User;\nuse Moo;\nhas 'removed' => (is => 'ro');\n".to_string(),
+        )?;
+        let current = "package User;\nuse Moo;\nhas 'live' => (is => 'ro');\n";
+        let members = collect_all_package_members_with_source(
+            &index,
+            "User",
+            current,
+            Some("file:///workspace/User.pm"),
+        );
+        let names: Vec<_> = members.iter().map(|member| member.name.as_str()).collect();
+        if !(names.contains(&"live")) {
+            return Err(format!("current accessor missing: {names:?}").into());
+        }
+        if names.contains(&"removed") {
+            return Err(format!("stale accessor resurfaced: {names:?}").into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn collect_all_keeps_generated_members_from_reopened_current_package()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let index = WorkspaceIndex::new();
+        index.index_initial_file(
+            Url::parse("file:///workspace/User.pm")?,
+            "package User;\nuse Moo;\nhas 'removed' => (is => 'ro');\n".to_string(),
+        )?;
+        let current = "package User;\nuse Moo;\nhas 'first' => (is => 'ro');\npackage Other;\npackage User;\nuse Moo;\nhas 'second' => (is => 'ro');\n";
+        let members = collect_all_package_members_with_source(
+            &index,
+            "User",
+            current,
+            Some("file:///workspace/User.pm"),
+        );
+        let names: Vec<_> = members.iter().map(|member| member.name.as_str()).collect();
+        if !(names.contains(&"first")) {
+            return Err(format!("first segment accessor missing: {names:?}").into());
+        }
+        if !(names.contains(&"second")) {
+            return Err(format!("second segment accessor missing: {names:?}").into());
+        }
+        if names.contains(&"removed") {
+            return Err(format!("stale accessor resurfaced: {names:?}").into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn collect_all_reopened_package_replaces_prior_explicit_parents()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let index = WorkspaceIndex::new();
+        index.index_initial_file(
+            Url::parse("file:///workspace/Old.pm")?,
+            "package Old; sub old_only { 1 }".to_string(),
+        )?;
+        index.index_initial_file(
+            Url::parse("file:///workspace/New.pm")?,
+            "package New; sub new_only { 1 }".to_string(),
+        )?;
+        let current =
+            "package User; use parent 'Old'; package Other; package User; our @ISA = ('New');";
+        let members = collect_all_package_members_with_source(
+            &index,
+            "User",
+            current,
+            Some("file:///workspace/User.pm"),
+        );
+        let names: Vec<_> = members.iter().map(|member| member.name.as_str()).collect();
+        if !(names.contains(&"new_only")) {
+            return Err(format!("later parent missing: {names:?}").into());
+        }
+        if names.contains(&"old_only") {
+            return Err(format!("replaced parent leaked: {names:?}").into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn collect_all_reopened_package_keeps_prior_role_on_silent_segment()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let index = WorkspaceIndex::new();
+        let current = "package Printable; use Moo::Role; sub stringify { 1 } package User; use Moo; with 'Printable'; package Other; sub unrelated { 1 } package User; sub run { 1 }";
+        let user = collect_all_package_members_with_source(
+            &index,
+            "User",
+            current,
+            Some("file:///workspace/Current.pm"),
+        );
+        let names: Vec<_> = user.iter().map(|member| member.name.as_str()).collect();
+        if !(names.contains(&"stringify")) {
+            return Err(format!("prior role lost on silent reopen: {names:?}").into());
+        }
+        if !(names.contains(&"run")) {
+            return Err(format!("later segment method missing: {names:?}").into());
+        }
+        let other = collect_all_package_members_with_source(
+            &index,
+            "Other",
+            current,
+            Some("file:///workspace/Current.pm"),
+        );
+        if other.iter().any(|member| member.name == "stringify") {
+            return Err(format!("role leaked to unrelated package: {other:?}").into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn collect_all_excludes_same_package_from_other_workspace_root()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let index = WorkspaceIndex::new();
+        index.set_workspace_folders(vec![
+            "file:///root-a".to_string(),
+            "file:///root-b".to_string(),
+        ]);
+        index.index_initial_file(
+            Url::parse("file:///root-a/Split.pm")?,
+            "package User;\nsub same_root_only { 1 }\n".to_string(),
+        )?;
+        index.index_initial_file(
+            Url::parse("file:///root-b/Other.pm")?,
+            "package User;\nsub other_root_only { 1 }\n".to_string(),
+        )?;
+        let current = "package User;\nsub local { 1 }\n";
+        let members = collect_all_package_members_with_source(
+            &index,
+            "User",
+            current,
+            Some("file:///root-a/Current.pl"),
+        );
+        let names: Vec<_> = members.iter().map(|member| member.name.as_str()).collect();
+        if !(names.contains(&"local")) {
+            return Err(format!("current method missing: {names:?}").into());
+        }
+        if !(names.contains(&"same_root_only")) {
+            return Err(format!("same-root method missing: {names:?}").into());
+        }
+        if names.contains(&"other_root_only") {
+            return Err(format!("cross-root member leaked: {names:?}").into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn collect_all_scopes_indexed_ancestor_members_to_current_root()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let index = WorkspaceIndex::new();
+        index.set_workspace_folders(vec![
+            "file:///root-a".to_string(),
+            "file:///root-b".to_string(),
+        ]);
+        index.index_initial_file(
+            Url::parse("file:///root-a/ChildEdge.pm")?,
+            "package Child;\nuse parent 'Parent';\n".to_string(),
+        )?;
+        index.index_initial_file(
+            Url::parse("file:///root-a/Parent.pm")?,
+            "package Parent;\nuse Moo;\nhas 'same_root' => (is => 'ro');\nsub own { 1 }\n"
+                .to_string(),
+        )?;
+        index.index_initial_file(
+            Url::parse("file:///root-b/Parent.pm")?,
+            "package Parent;\nuse Moo;\nhas 'foreign_accessor' => (is => 'ro');\nsub foreign_method { 1 }\n".to_string(),
+        )?;
+        let members = collect_all_package_members_with_source(
+            &index,
+            "Child",
+            "package Child;\nsub run { 1 }\n",
+            Some("file:///root-a/Current.pl"),
+        );
+        let names: Vec<_> = members.iter().map(|member| member.name.as_str()).collect();
+        if !(names.contains(&"own")) {
+            return Err(format!("same-root ancestor method missing: {names:?}").into());
+        }
+        if !(names.contains(&"same_root")) {
+            return Err(format!("same-root ancestor accessor missing: {names:?}").into());
+        }
+        if names.contains(&"foreign_method") {
+            return Err(format!("cross-root method leaked: {names:?}").into());
+        }
+        if names.contains(&"foreign_accessor") {
+            return Err(format!("cross-root accessor leaked: {names:?}").into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn collect_all_accepts_localhost_alias_for_current_root()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let index = WorkspaceIndex::new();
+        index.set_workspace_folders(vec!["file:///root-a".to_string()]);
+        index.index_initial_file(
+            Url::parse("file:///root-a/Split.pm")?,
+            "package User;\nsub from_split { 1 }\n".to_string(),
+        )?;
+        let members = collect_all_package_members_with_source(
+            &index,
+            "User",
+            "package User;\nsub run { 1 }\n",
+            Some("file://localhost/root-a/Current.pl"),
+        );
+        if !(members.iter().any(|member| member.name == "from_split")) {
+            return Err("localhost alias lost same-root split-file member".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn collect_all_accepts_localhost_alias_for_configured_root()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let index = WorkspaceIndex::new();
+        index.set_workspace_folders(vec!["file://localhost/root-a".to_string()]);
+        index.index_initial_file(
+            Url::parse("file:///root-a/Split.pm")?,
+            "package User;\nsub from_split { 1 }\n".to_string(),
+        )?;
+        let members = collect_all_package_members_with_source(
+            &index,
+            "User",
+            "package User;\nsub run { 1 }\n",
+            Some("file:///root-a/Current.pl"),
+        );
+        if !(members.iter().any(|member| member.name == "from_split")) {
+            return Err("configured localhost root alias lost same-root member".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn collect_all_outside_configured_roots_uses_current_buffer_only()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let index = WorkspaceIndex::new();
+        index.set_workspace_folders(vec!["file:///root-a".to_string()]);
+        index.index_initial_file(
+            Url::parse("file:///root-a/User.pm")?,
+            "package User;\nsub indexed_only { 1 }\n".to_string(),
+        )?;
+        let members = collect_all_package_members_with_source(
+            &index,
+            "User",
+            "package User;\nsub local { 1 }\n",
+            Some("file:///outside/Current.pl"),
+        );
+        let names: Vec<_> = members.iter().map(|member| member.name.as_str()).collect();
+        if !(names.contains(&"local")) {
+            return Err(format!("current-buffer method missing: {names:?}").into());
+        }
+        if names.contains(&"indexed_only") {
+            return Err(format!("root A leaked outside roots: {names:?}").into());
+        }
+        Ok(())
     }
 }
 
@@ -3171,6 +3751,7 @@ mod union_receiver_method_completion_tests {
             source,
             &index,
             &["Foo".to_string(), "Bar".to_string()],
+            None,
         );
 
         let labels: Vec<&str> = completions.iter().map(|c| c.label.as_ref()).collect();
@@ -3198,6 +3779,7 @@ mod union_receiver_method_completion_tests {
             source,
             &index,
             &["Foo".to_string(), "Bar".to_string()],
+            None,
         );
 
         let count = completions.iter().filter(|c| c.label.as_ref() == "shared_method").count();
@@ -3219,6 +3801,7 @@ mod union_receiver_method_completion_tests {
             source,
             &index,
             &["Foo".to_string(), "Bar".to_string()],
+            None,
         );
 
         let shared = completions.iter().find(|c| c.label.as_ref() == "shared_method");

@@ -1692,24 +1692,26 @@ impl WorkspaceIndex {
     /// assert_eq!(folder, Some("file:///project1".to_string()));
     /// ```
     fn determine_folder_uri(&self, file_uri: &str) -> Option<String> {
+        let file_uri = Self::normalize_uri(file_uri);
         let folders = self.workspace_folders.read();
-        let mut best_match: Option<&String> = None;
+        let mut best_match: Option<(&String, usize)> = None;
         for folder_uri in folders.iter() {
+            let normalized_folder = Self::normalize_uri(folder_uri);
             // Check if the file URI starts with the folder URI
             // We need to ensure proper URI matching (with or without trailing slash)
-            let folder_with_slash = if folder_uri.ends_with('/') {
-                folder_uri.clone()
+            let folder_with_slash = if normalized_folder.ends_with('/') {
+                normalized_folder.clone()
             } else {
-                format!("{}/", folder_uri)
+                format!("{}/", normalized_folder)
             };
-            if file_uri.starts_with(&folder_with_slash) || file_uri == folder_uri {
+            if file_uri.starts_with(&folder_with_slash) || file_uri == normalized_folder {
                 match best_match {
-                    Some(existing) if existing.len() >= folder_uri.len() => {}
-                    _ => best_match = Some(folder_uri),
+                    Some((_, length)) if length >= normalized_folder.len() => {}
+                    _ => best_match = Some((folder_uri, normalized_folder.len())),
                 }
             }
         }
-        best_match.cloned()
+        best_match.map(|(folder, _)| folder.clone())
     }
 
     fn find_definition_in_files(
@@ -2049,6 +2051,13 @@ impl WorkspaceIndex {
     #[must_use]
     pub fn workspace_folders(&self) -> Vec<String> {
         self.workspace_folders.read().clone()
+    }
+
+    /// Return the owning configured workspace folder for a document URI.
+    /// Uses the same longest-prefix rule as indexed symbol attribution.
+    #[must_use]
+    pub fn workspace_folder_for_uri(&self, uri: &str) -> Option<String> {
+        self.determine_folder_uri(uri)
     }
 
     /// Return the document generation represented by the indexed file snapshot.
@@ -3404,6 +3413,26 @@ impl WorkspaceIndex {
     /// ```
     pub fn find_definition(&self, symbol_name: &str) -> Option<Location> {
         self.find_definitions(symbol_name).into_iter().next()
+    }
+
+    /// Return indexed declarations that can own package or class facts.
+    ///
+    /// A bare name may also identify a subroutine or constant. Callers that
+    /// need package ancestry should not parse those unrelated candidate files.
+    pub fn find_package_declarations(&self, name: &str) -> Vec<Location> {
+        let symbols = self.symbols.read();
+        symbols
+            .get(name)
+            .map(|candidates| {
+                candidates
+                    .iter()
+                    .filter(|candidate| {
+                        matches!(candidate.kind, SymbolKind::Package | SymbolKind::Class)
+                    })
+                    .map(|candidate| candidate.location.clone())
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     pub(crate) fn definition_candidates(&self, symbol_name: &str) -> Vec<Location> {
@@ -11402,6 +11431,46 @@ helper_one();
     }
 
     #[test]
+    fn package_declarations_exclude_same_named_callables_and_keep_classes()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let index = WorkspaceIndex::new();
+        for (uri, source) in [
+            ("file:///lib/Sub.pm", "package Other; sub Shared { 1 }"),
+            ("file:///lib/Package.pm", "package Shared; sub from_package { 1 }"),
+            ("file:///lib/Package2.pm", "package Shared; sub from_split { 1 }"),
+            (
+                "file:///lib/Class.pm",
+                "use feature 'class'; class Shared { method from_class () { 1 } }",
+            ),
+        ] {
+            index.index_initial_file(url::Url::parse(uri)?, source.to_string())?;
+        }
+
+        let locations = index.find_package_declarations("Shared");
+        let uris: Vec<_> = locations.iter().map(|location| location.uri.as_str()).collect();
+        {
+            let actual = uris;
+            let expected =
+                ["file:///lib/Class.pm", "file:///lib/Package.pm", "file:///lib/Package2.pm"];
+            if actual != expected {
+                return Err(
+                    format!("expected equality: actual={actual:?}; expected={expected:?}").into()
+                );
+            }
+        }
+        {
+            let actual = index.find_definitions("Shared").len();
+            let expected = 4;
+            if actual != expected {
+                return Err(
+                    format!("expected equality: actual={actual:?}; expected={expected:?}").into()
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
     fn test_definition_candidates_include_duplicate_qualified_name_across_files() {
         let index = WorkspaceIndex::new();
         let uri_v2 = must(url::Url::parse("file:///lib/A-v2.pm"));
@@ -11695,6 +11764,24 @@ sub other_sub {
             Some("file:///project/lib".to_string()),
             "Nested workspace folders should attribute files to the most specific folder"
         );
+    }
+
+    #[test]
+    fn test_determine_folder_uri_accepts_localhost_root_alias()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let index = WorkspaceIndex::new();
+        index.set_workspace_folders(vec!["file://localhost/project".to_string()]);
+
+        {
+            let actual = index.workspace_folder_for_uri("file:///project/lib/Module.pm");
+            let expected = Some("file://localhost/project".to_string());
+            if actual != expected {
+                return Err(
+                    "canonical document URI should retain the registered root identity".into()
+                );
+            }
+        }
+        Ok(())
     }
 
     #[test]
