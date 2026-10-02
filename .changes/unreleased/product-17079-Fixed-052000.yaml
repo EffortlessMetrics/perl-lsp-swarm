@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: "Preserve immediately parenthesized uppercase and qualified calls passed to print, printf, or say, avoiding false strict-subs bareword errors while retaining explicit filehandles."
+time: 2026-10-02T05:20:00Z
+custom:
+  PR: "17079"
+  Slug: output-adjacent-call-arguments
+  Breaking: "no"
