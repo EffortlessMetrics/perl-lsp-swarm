@@ -99,7 +99,16 @@ outcome_owner = "#10230"
 # route are unchanged. Open-buffer method candidates may again include
 # inherited members from the persisted index — this is a source re-audit, not
 # a claim that completion behavior is unchanged.
-source_digest = "sha256:6d4d4d008178bb5bebf93d408d2f88c7abb0d2b9a49a6cf6e0a8ad3ce5280600"
+# Re-anchor 2026-10-01 (#17084): the same-document freshness seam filters
+# persisted explicit members and persisted inheritance edges sourced from the
+# edited document's own URI out of open-buffer composition. Scan-root changes
+# are completion/completion/workspace.rs plus its request/dispatch.rs caller
+# (main's #17079 merge window also touched lexical_visibility.rs,
+# scope_distance.rs, variables.rs, and tests.rs in the same scan set);
+# producer population, identities, authored dispositions, entry routes,
+# delegations, and finalizer route are unchanged. Open-buffer candidates may
+# drop stale same-document rows the previous digest could offer.
+source_digest = "sha256:f5cb46d44a22edb2c25a99c9fc3b5f1477b50c55dca9f6ad0f33b2955ba830de"
 
 [[delegations]]
 module = "dancer2"
