@@ -1371,6 +1371,7 @@ impl<'a> Parser<'a> {
     ) -> ParseResult<Node> {
         let binary_operator_starts_missing_arg =
             self.peek_kind().is_some_and(Self::is_binary_operator)
+                && !self.peek_is_autoquoted_word_operator()
                 && !(Self::is_optional_arg_builtin(func_name)
                     && self.is_explicit_sub_sigil_argument_start());
         let omit_optional_arg = allow_no_args
@@ -1387,17 +1388,22 @@ impl<'a> Parser<'a> {
         // Identifier tokens, so `is_binary_operator` won't catch them. When a
         // nullary builtin like `ref` is followed by one of these, don't consume
         // the operator as an argument -- let it become a binary operator instead.
-        let next_is_str_cmp_op = self.peek_kind() == Some(TokenKind::Identifier)
-            && self
-                .tokens
-                .peek()
-                .is_ok_and(|t| matches!(t.text.as_ref(), "eq" | "ne" | "lt" | "le" | "gt" | "ge"));
+        // Before `=>` they are autoquoted arguments (`ref eq => 1`, #16691).
+        let next_is_str_cmp_op =
+            self.peek_is_identifier_string_comparison() && !self.is_keyword_before_fat_arrow();
 
-        let args = if self.is_at_statement_end() || omit_optional_arg || next_is_str_cmp_op {
+        let mut args = if self.is_at_statement_end() || omit_optional_arg || next_is_str_cmp_op {
             vec![]
         } else {
             vec![self.parse_shift()?]
         };
+        // `ref cmp => 1` is `(ref('cmp'), 1)`: autoquote the unary argument and
+        // leave `=>` as the surrounding comma (#16691).
+        if self.peek_kind() == Some(TokenKind::FatArrow)
+            && let Some(arg) = args.last_mut()
+        {
+            self.auto_quote_bareword_before_fat_comma(arg)?;
+        }
 
         if args.is_empty() && !allow_no_args && !next_is_str_cmp_op {
             return Err(ParseError::unexpected(

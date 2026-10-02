@@ -8,6 +8,7 @@ mod body;
 pub mod disposition;
 mod lower;
 mod model;
+mod sub_exporter;
 
 pub use body::{
     AccessMode, Arena, AssignMode, BinaryOp, BodyOwner, BodyOwnerKind, BodySourceMap,
@@ -27,20 +28,20 @@ pub use model::{
     CompilePhaseBlock, CompileProvenance, ControlTransfer, ControlTransferKind, DataSectionDecl,
     DataSectionMarker, DeferExpr, DerefAggregateKind, DerefExpr, DerefOperandKind, DynamicBoundary,
     DynamicBoundaryKind, ExportDeclaration, ExportDeclarationKind, FrameworkAdapterKind,
-    FrameworkAdapterRegistry, FrameworkDynamicBoundaryFact, FrameworkExportedSymbolFact,
-    FrameworkExportedSymbolKind, FrameworkFactGraph, GlobMigrationAdapter, GlobSlot, GlobSlotKind,
-    GlobSlotSource, HIR_BODY_MODEL_VERSION, HeredocMigrationAdapter, HirBindingId, HirFile, HirId,
-    HirItem, HirKind, HirScopeId, IncRootAction, IncRootFact, IncRootKind, IndirectCallExpr,
-    InheritanceSource, LiteralExpr, LiteralKind, LoopKind, LoopShell, MatchExpr, MethodCallExpr,
-    MethodDecl, ModuleRequest, ModuleRequestKind, ModuleResolutionCacheInvalidation,
-    ModuleResolutionCacheKey, ModuleResolutionCacheRootKey, ModuleResolutionCandidate,
-    ModuleResolutionCandidatePathState, ModuleResolutionCandidateRoot,
-    ModuleResolutionCandidateStatus, ModuleResolutionRoot, ModuleResolutionStatus, PackageDecl,
-    PackageInheritanceEdge, PackageStash, PragmaArgumentKind, PragmaEffect, PragmaStateFact,
-    PrototypeFact, PrototypeTable, ReadlineMigrationAdapter, ReadlineSource, RecoveryConfidence,
-    RegexExpr, RegexTargetKind, RequireDecl, ScopeFrame, ScopeGraph, ScopeKind, StashConfidence,
-    StashDynamicBoundary, StashDynamicBoundaryKind, StashGraph, StashProvenance,
-    StatementModifierKind, StatementModifierShell, StorageClass, SubDecl, SubstitutionExpr,
-    TransliterationExpr, TryExpr, UseDecl, VariableBinding, VariableDecl,
-    arguments_outside_configuration_hashes,
+    FrameworkAdapterRegistry, FrameworkDynamicBoundaryFact, FrameworkExportMechanism,
+    FrameworkExportedSymbolFact, FrameworkExportedSymbolKind, FrameworkFactGraph,
+    GlobMigrationAdapter, GlobSlot, GlobSlotKind, GlobSlotSource, HIR_BODY_MODEL_VERSION,
+    HeredocMigrationAdapter, HirBindingId, HirFile, HirId, HirItem, HirKind, HirScopeId,
+    IncRootAction, IncRootFact, IncRootKind, IndirectCallExpr, InheritanceSource, LiteralExpr,
+    LiteralKind, LoopKind, LoopShell, MatchExpr, MethodCallExpr, MethodDecl, ModuleRequest,
+    ModuleRequestKind, ModuleResolutionCacheInvalidation, ModuleResolutionCacheKey,
+    ModuleResolutionCacheRootKey, ModuleResolutionCandidate, ModuleResolutionCandidatePathState,
+    ModuleResolutionCandidateRoot, ModuleResolutionCandidateStatus, ModuleResolutionRoot,
+    ModuleResolutionStatus, PackageDecl, PackageInheritanceEdge, PackageStash, PragmaArgumentKind,
+    PragmaEffect, PragmaStateFact, PrototypeFact, PrototypeTable, ReadlineMigrationAdapter,
+    ReadlineSource, RecoveryConfidence, RegexExpr, RegexTargetKind, RequireDecl, ScopeFrame,
+    ScopeGraph, ScopeKind, StashConfidence, StashDynamicBoundary, StashDynamicBoundaryKind,
+    StashGraph, StashProvenance, StatementModifierKind, StatementModifierShell, StorageClass,
+    SubDecl, SubstitutionExpr, TransliterationExpr, TryExpr, UseDecl, VariableBinding,
+    VariableDecl, arguments_outside_configuration_hashes,
 };

@@ -1646,6 +1646,13 @@ pub fn perl_parser_core::hir::FrameworkAdapterKind::clone(&self) -> perl_parser_
 pub fn perl_parser_core::hir::FrameworkAdapterKind::eq(&self, other: &perl_parser_core::hir::FrameworkAdapterKind) -> bool
 pub fn perl_parser_core::hir::FrameworkAdapterKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_parser_core::hir::FrameworkAdapterKind::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+#[non_exhaustive] pub enum perl_parser_core::hir::FrameworkExportMechanism
+pub perl_parser_core::hir::FrameworkExportMechanism::Direct
+pub perl_parser_core::hir::FrameworkExportMechanism::GeneratorBacked
+pub fn perl_parser_core::hir::FrameworkExportMechanism::clone(&self) -> perl_parser_core::hir::FrameworkExportMechanism
+pub fn perl_parser_core::hir::FrameworkExportMechanism::eq(&self, other: &perl_parser_core::hir::FrameworkExportMechanism) -> bool
+pub fn perl_parser_core::hir::FrameworkExportMechanism::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_parser_core::hir::FrameworkExportMechanism::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
 #[non_exhaustive] pub enum perl_parser_core::hir::FrameworkExportedSymbolKind
 pub perl_parser_core::hir::FrameworkExportedSymbolKind::Default
 pub perl_parser_core::hir::FrameworkExportedSymbolKind::Optional
@@ -2080,6 +2087,7 @@ pub perl_parser_core::hir::Binding::scope_id: perl_parser_core::hir::HirScopeId
 pub perl_parser_core::hir::Binding::shadows: core::option::Option<perl_parser_core::hir::HirBindingId>
 pub perl_parser_core::hir::Binding::sigil: alloc::string::String
 pub perl_parser_core::hir::Binding::storage: perl_parser_core::hir::StorageClass
+pub perl_parser_core::hir::Binding::visible_from: usize
 pub fn perl_parser_core::hir::Binding::clone(&self) -> perl_parser_core::hir::Binding
 pub fn perl_parser_core::hir::Binding::eq(&self, other: &perl_parser_core::hir::Binding) -> bool
 pub fn perl_parser_core::hir::Binding::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -2245,6 +2253,7 @@ pub fn perl_parser_core::hir::DynamicBoundary::fmt(&self, f: &mut core::fmt::For
 #[non_exhaustive] pub struct perl_parser_core::hir::ExportDeclaration
 pub perl_parser_core::hir::ExportDeclaration::confidence: perl_parser_core::hir::StashConfidence
 pub perl_parser_core::hir::ExportDeclaration::declaration_item: core::option::Option<perl_parser_core::hir::HirId>
+pub perl_parser_core::hir::ExportDeclaration::generator_backed: alloc::vec::Vec<alloc::string::String>
 pub perl_parser_core::hir::ExportDeclaration::kind: perl_parser_core::hir::ExportDeclarationKind
 pub perl_parser_core::hir::ExportDeclaration::package: alloc::string::String
 pub perl_parser_core::hir::ExportDeclaration::provenance: perl_parser_core::hir::StashProvenance
@@ -2280,6 +2289,7 @@ pub perl_parser_core::hir::FrameworkExportedSymbolFact::adapter: perl_parser_cor
 pub perl_parser_core::hir::FrameworkExportedSymbolFact::confidence: perl_semantic_facts::Confidence
 pub perl_parser_core::hir::FrameworkExportedSymbolFact::declaration_item: core::option::Option<perl_parser_core::hir::HirId>
 pub perl_parser_core::hir::FrameworkExportedSymbolFact::kind: perl_parser_core::hir::FrameworkExportedSymbolKind
+pub perl_parser_core::hir::FrameworkExportedSymbolFact::mechanism: perl_parser_core::hir::FrameworkExportMechanism
 pub perl_parser_core::hir::FrameworkExportedSymbolFact::name: alloc::string::String
 pub perl_parser_core::hir::FrameworkExportedSymbolFact::package: alloc::string::String
 pub perl_parser_core::hir::FrameworkExportedSymbolFact::provenance: perl_semantic_facts::Provenance

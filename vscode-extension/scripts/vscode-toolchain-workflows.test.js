@@ -10,6 +10,7 @@ const extensionRoot = path.resolve(__dirname, '..');
 const repositoryRoot = path.resolve(extensionRoot, '..');
 const extensionWorkflows = [
   'vscode-current-source-linux-smoke.yml',
+  'vscode-installed-first-hour-windows.yml',
   'vscode-managed-binary-smoke.yml',
   'vscode-published-extension-smoke.yml',
   'vscode-prebuilt-payload-adapter.yml',
@@ -81,6 +82,44 @@ void test('current-source smoke does not reinstall dependencies after setup', ()
 void test('current-source Linux smoke runs when the DAP crate changes', () => {
   const source = readWorkflow('vscode-current-source-linux-smoke.yml');
   assert.match(source, /^      - 'crates\/perl-dap\/\*\*'$/m);
+});
+
+void test('Linux first-hour byte leaf uses one standalone stable leg and retains its receipts', () => {
+  const source = readWorkflow('vscode-current-source-linux-smoke.yml');
+  assert.match(source, /branches: \[main, master, codex\/6056-installed-identity\]/);
+  const start = source.indexOf('- name: Run installed first-hour byte leaf under Xvfb');
+  const end = source.indexOf('- name: Record exact-subject scheduling result', start);
+  assert.ok(start > 0 && end > start);
+  const step = source.slice(start, end);
+  assert.match(step, /matrix\.vscode_version == 'stable'/);
+  assert.match(step, /steps\.build\.outcome == 'success'/);
+  assert.match(step, /PERL_LSP_FIRST_HOUR_SERVER_PATH:.*\/release\/perllsp/);
+  assert.match(step, /PERL_LSP_DAP_PATH:.*\/release\/perl-dap/);
+  assert.match(step, /PERL_LSP_SERVER_SOURCE_SHA: \$\{\{ env\.PERL_LSP_SMOKE_SUBJECT_SHA \}\}/);
+  assert.match(
+    step,
+    /PERL_LSP_SMOKE_RECEIPTS_DIR:.*\/target\/receipts\/vscode-smoke\/installed-first-hour-stable/,
+  );
+  assert.match(step, /run: xvfb-run -a npm run test:published:local/);
+  assert.doesNotMatch(
+    step,
+    /PERL_LSP_(?:CANDIDATE_ID|ARTIFACT_SET_ID|CANDIDATE_ARTIFACT_MANIFEST|CONSTRUCT_CANDIDATE_MANIFEST|TEST_EXPLORER_JOURNEY):/,
+  );
+  assert.match(source, /path: target\/receipts\/vscode-smoke\/\*\*/);
+});
+
+void test('installed current-source smoke keeps E2E tuning but enables normal diagnostics', () => {
+  const source = readWorkflow('vscode-current-source-linux-smoke.yml');
+  const smokeIndex = source.indexOf('- name: Run exact current-source smoke under Xvfb');
+  assert.notEqual(smokeIndex, -1);
+  const nextStepIndex = source.slice(smokeIndex + 1).search(/\r?\n\s+- name:/);
+  const smokeStep = source.slice(
+    smokeIndex,
+    nextStepIndex === -1 ? source.length : smokeIndex + 1 + nextStepIndex,
+  );
+  assert.match(smokeStep, /^          PERL_LSP_E2E: '1'\r?$/m);
+  assert.match(smokeStep, /^          PERL_LSP_DIAGNOSTIC_MODE: normal\r?$/m);
+  assert.match(smokeStep, /run: xvfb-run -a npm run test:published:local/);
 });
 
 void test('current-source Linux smoke enables the candidate-bound Test Explorer leg', () => {
@@ -255,6 +294,46 @@ void test('managed Windows smoke packages and runs the current Test Explorer VSI
     vsixAssignment < publishedTest,
     'the selected VSIX path must be bound before the published test',
   );
+});
+
+void test('Windows first-hour byte leaf builds both release binaries at the exact PR head', () => {
+  const source = readWorkflow('vscode-installed-first-hour-windows.yml');
+  assert.match(source, /branches: \[main, master, codex\/6056-installed-identity\]/);
+  const job = source.slice(source.indexOf('  installed-first-hour-windows:'));
+  for (const trigger of [
+    'vscode-extension/**',
+    'crates/perl-lsp*/**',
+    'crates/perllsp/**',
+    'crates/perl-dap/**',
+    'Cargo.toml',
+    'Cargo.lock',
+    '.github/workflows/vscode-installed-first-hour-windows.yml',
+  ]) {
+    assert.ok(source.includes(`      - '${trigger}'`), `missing Windows leaf trigger ${trigger}`);
+  }
+  assert.doesNotMatch(source, /workflow_dispatch:/);
+  assert.match(job, /runs-on: windows-latest/);
+  assert.match(job, /ref: \$\{\{ github\.event\.pull_request\.head\.sha \}\}/);
+  assert.match(
+    job,
+    /cargo build -p perllsp --bin perllsp -p perl-dap --bin perl-dap --release --locked/,
+  );
+  assert.match(job, /PERL_LSP_FIRST_HOUR_SERVER_PATH:.*\/release\/perllsp\.exe/);
+  assert.match(job, /PERL_LSP_DAP_PATH:.*\/release\/perl-dap\.exe/);
+  assert.match(
+    job,
+    /PERL_LSP_SERVER_SOURCE_SHA: \$\{\{ github\.event\.pull_request\.head\.sha \}\}/,
+  );
+  assert.match(
+    job,
+    /PERL_LSP_SMOKE_RECEIPTS_DIR:.*\/target\/receipts\/vscode-smoke\/installed-first-hour-windows/,
+  );
+  assert.match(job, /run: npm run test:published:local/);
+  assert.doesNotMatch(
+    job,
+    /PERL_LSP_(?:CANDIDATE_ID|ARTIFACT_SET_ID|CANDIDATE_ARTIFACT_MANIFEST|CONSTRUCT_CANDIDATE_MANIFEST|TEST_EXPLORER_JOURNEY):/,
+  );
+  assert.match(job, /if-no-files-found: warn/);
 });
 
 void test('managed-binary smoke proves TypeScript authority before compilation on every OS', () => {

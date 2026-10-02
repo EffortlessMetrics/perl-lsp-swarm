@@ -6,6 +6,8 @@ export interface DocumentCommandContext {
   readonly formatDocument: () => Promise<void>;
   readonly showIncPaths: () => Promise<void>;
   readonly openModule: () => Promise<void>;
+  readonly createModule: () => Promise<void>;
+  readonly createTest: () => Promise<void>;
   readonly showParserAst: () => Promise<void>;
 }
 
@@ -29,6 +31,14 @@ export function registerDocumentCommandGroup(
     'perl-lsp.openModule',
     dependencies.openModule,
   );
+  const createModuleCommand = vscode.commands.registerCommand(
+    'perl-lsp.createModule',
+    dependencies.createModule,
+  );
+  const createTestCommand = vscode.commands.registerCommand(
+    'perl-lsp.createTest',
+    dependencies.createTest,
+  );
   const showParserAstCommand = vscode.commands.registerCommand(
     'perl-lsp.showParserAst',
     dependencies.showParserAst,
@@ -39,6 +49,8 @@ export function registerDocumentCommandGroup(
     formatDocumentCommand,
     showIncPathsCommand,
     openModuleCommand,
+    createModuleCommand,
+    createTestCommand,
     showParserAstCommand,
   ];
 }
