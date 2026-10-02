@@ -101,7 +101,7 @@ outcome_owner = "#10230"
 # package members before name deduplication. Current-buffer and URI/root
 # admission remain unchanged. Producer population, channels, entry reach and
 # finalizer route are unchanged; native reconciliation remains required.
-source_digest = "sha256:579f79fcf33f78f5dbd9f0530c2c0ee559888592b3acac58f5cf14fd55138c98"
+source_digest = "sha256:f445112adbae2b8c7920126be952e490282473eed8219ead2688aedb77bf648a"
 
 [[delegations]]
 module = "dancer2"

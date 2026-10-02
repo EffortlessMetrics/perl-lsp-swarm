@@ -3272,8 +3272,7 @@ sub own_method { 1 }
         let index = WorkspaceIndex::new();
         index.index_initial_file(
             Url::parse("file:///workspace/Split.pm")?,
-            "package User; sub own { 1 } package User::Private; sub secret { 1 }"
-                .to_string(),
+            "package User; sub own { 1 } package User::Private; sub secret { 1 }".to_string(),
         )?;
         assert!(
             index.get_package_members("User").iter().any(|m| m.name == "secret"),
