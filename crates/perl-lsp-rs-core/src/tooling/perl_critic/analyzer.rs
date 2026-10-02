@@ -125,13 +125,20 @@ impl CriticAnalyzer {
         let output =
             self.runtime.run_command("perlcritic", &args_refs, stdin).map_err(|e| e.message)?;
         let violations = self.parse_output(&output.stdout, path_str)?;
-        // `perlcritic` exits non-zero both when it reports violations (the
-        // parsed rows above are the legitimate result) and when it fails
-        // outright — most commonly an unparsable `.perlcriticrc`, which
-        // produces a message on stderr and empty stdout. Only that failure
-        // shape is an error: reporting it as an empty success told a user
-        // with a broken profile that their file was clean (#16550).
-        if violations.is_empty() && !output.success() {
+        // `perlcritic` reserves exit status 2 for "policy violations found"
+        // and status 1 for its own failures (a `.perlcriticrc` that does not
+        // compile, internal errors), exiting 0 only on a clean run (Perl-
+        // Critic EXIT STATUS, metacpan). Only status 2 may carry an
+        // actionable violation list: accepting parsed stdout alongside any
+        // other non-zero status would let a perlcritic that died halfway
+        // through supply a partial violation set that the caller then caches
+        // as complete, and status 1 with empty stdout would report the file
+        // as clean - a false all-clear, strictly worse than no message
+        // (#16550). The failure text is bounded: only the first non-empty
+        // stderr line survives, capped to `MAX_STDERR_EXCERPT_CHARS`, so a
+        // chatty or newline-free diagnostic cannot flood the client
+        // (#16550 review).
+        if !output.success() && output.status_code != 2 {
             return Err(perlcritic_exit_failure(output.status_code, &output.stderr));
         }
         Ok(violations)
@@ -293,19 +300,19 @@ fn decode_perlcritic_output(output: &[u8]) -> String {
 /// the client-facing error (#16550 review).
 const MAX_STDERR_EXCERPT_CHARS: usize = 512;
 
-/// Bounded failure text for a non-zero `perlcritic` exit that yielded no
-/// parsable violations (#16550).
+/// Bounded failure text for a non-zero `perlcritic` exit other than the
+/// violations-only status 2 (#16550).
 ///
 /// The dominant real cause is an unparsable `.perlcriticrc` profile, so the
-/// remediation names the profile; only the first stderr line is retained, and
-/// that line is itself truncated, so the error text stays bounded no matter
-/// how much diagnostic output the subprocess produced.
+/// remediation names the profile; only the first non-empty stderr line is
+/// retained, and that line is itself truncated, so the error text stays
+/// bounded no matter how much diagnostic output the subprocess produced.
 fn perlcritic_exit_failure(status_code: i32, stderr: &[u8]) -> String {
     let first_stderr_line = decode_perlcritic_output(stderr)
         .lines()
-        .next()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
         .unwrap_or_default()
-        .trim()
         .chars()
         .take(MAX_STDERR_EXCERPT_CHARS)
         .collect::<String>();
@@ -384,6 +391,94 @@ mod tests {
         (analyzer, runtime)
     }
 
+    // ── perlcritic exit statuses: 0 clean, 2 violations, 1 tool failure (#16550) ──
+
+    /// An analyzer whose every `perlcritic` call returns `response`.
+    fn analyzer_returning(response: MockResponse) -> CriticAnalyzer {
+        let mut runtime = MockSubprocessRuntime::new();
+        runtime.set_default_response(response);
+        CriticAnalyzer::new(CriticConfig::default(), Arc::new(runtime))
+    }
+
+    /// Run the analyzer over a one-line buffer at a path that need not exist:
+    /// `doc_text` is piped to perlcritic via stdin, so no file is read.
+    fn analyze_with(
+        analyzer: &mut CriticAnalyzer,
+        path: &str,
+        text: &str,
+    ) -> Result<Vec<Violation>, String> {
+        analyzer.analyze_file_with_hash(Path::new(path), super::hash_content(text), Some(text))
+    }
+
+    #[test]
+    fn a_broken_profile_is_an_error_not_a_clean_report() {
+        // `.perlcriticrc` that does not compile: perlcritic's own error, so
+        // exit status 1 with empty stdout and the diagnosis on stderr. Before
+        // the fix this surfaced as `status: success, violationCount: 0` -
+        // telling the user their file is clean because the tool never ran.
+        let mut analyzer = analyzer_returning(MockResponse::failure(
+            b"Cannot load perlcritic config from .perlcriticrc at line 3\n".to_vec(),
+            1,
+        ));
+        let error = analyze_with(&mut analyzer, "t.pl", "1;\n")
+            .expect_err("a perlcritic that failed must not report a clean file");
+        assert!(
+            error.contains("perlcritic failed (exit 1)"),
+            "the message must carry the exit status, got: {error}"
+        );
+        assert!(
+            error.contains(".perlcriticrc"),
+            "the message must name the likely cause, got: {error}"
+        );
+        assert!(
+            error.contains("line 3"),
+            "the message must surface the tool's own diagnostic, got: {error}"
+        );
+    }
+
+    #[test]
+    fn violations_with_exit_status_2_are_still_violations() {
+        // The control that keeps the guard from over-firing: `perlcritic`
+        // reserves exit status 2 for "policy violations found". Treating that
+        // status as failure would convert every finding into an error.
+        let mut analyzer = analyzer_returning(MockResponse {
+            // `path:line:col:severity:policy:message` - the three consecutive
+            // numerics are what `parse_perlcritic_line` looks for.
+            stdout: b"t.pl:1:1:3:Subroutines::ReopenPackage:msg\n".to_vec(),
+            stderr: Vec::new(),
+            status_code: 2,
+        });
+        let violations = analyze_with(&mut analyzer, "t.pl", "1;\n")
+            .expect("violations reported with exit status 2 are not a tool failure");
+        assert_eq!(violations.len(), 1, "the violation must survive the guard");
+    }
+
+    #[test]
+    fn exit_status_1_is_a_tool_failure_even_when_stdout_parses() {
+        // `perlcritic` uses status 1 for its own errors. A run that died
+        // halfway can still leave parseable lines on stdout; accepting them
+        // would cache a partial violation set as complete.
+        let mut analyzer = analyzer_returning(MockResponse {
+            stdout: b"t.pl:1:1:3:Subroutines::ReopenPackage:msg\n".to_vec(),
+            stderr: b"Perltidy state file error\n".to_vec(),
+            status_code: 1,
+        });
+        let error = analyze_with(&mut analyzer, "t.pl", "1;\n")
+            .expect_err("exit status 1 must be reported as a tool failure");
+        assert!(
+            error.contains("perlcritic failed"),
+            "the error must identify the tool failure, got: {error}"
+        );
+    }
+
+    #[test]
+    fn a_clean_success_is_unaffected() {
+        let mut analyzer = analyzer_returning(MockResponse::success(b"t.pl: 1: ok\n".to_vec()));
+        let violations = analyze_with(&mut analyzer, "t.pl", "1;\n")
+            .expect("a successful run must not become an error");
+        assert!(violations.is_empty(), "expected no violations, got {violations:?}");
+    }
+
     #[test]
     fn decode_perlcritic_output_preserves_utf8() {
         let original = "critic: café — naïve";
@@ -401,13 +496,13 @@ mod tests {
 
     #[test]
     fn nonzero_exit_with_empty_stdout_is_a_bounded_error() {
-        // The #16550 repro: a broken `.perlcriticrc` makes perlcritic exit 2
-        // with its complaint on stderr and nothing on stdout. That must be an
-        // error, not a clean result.
+        // The #16550 repro: a broken `.perlcriticrc` makes perlcritic exit 1
+        // (its own failure status) with its complaint on stderr and nothing on
+        // stdout. That must be an error, not a clean result.
         let (mut analyzer, runtime) = make_analyzer_with_mock();
         runtime.add_response(MockResponse::failure(
             "Unable to parse profile .perlcriticrc: syntax error at line 3\n\nmore context\n",
-            2,
+            1,
         ));
 
         // The workspace denies `clippy::expect_used` in test targets too, so
@@ -420,7 +515,7 @@ mod tests {
         assert_eq!(
             result.err(),
             Some(String::from(
-                "perlcritic failed (exit 2); check .perlcriticrc: Unable to parse profile \
+                "perlcritic failed (exit 1); check .perlcriticrc: Unable to parse profile \
                  .perlcriticrc: syntax error at line 3"
             )),
             "the error must pin the exit code and only the first stderr line"
@@ -451,7 +546,7 @@ mod tests {
     #[test]
     fn nonzero_exit_with_empty_stderr_still_names_the_profile() {
         let (mut analyzer, runtime) = make_analyzer_with_mock();
-        runtime.add_response(MockResponse::failure("", 2));
+        runtime.add_response(MockResponse::failure("", 1));
 
         let result = analyzer.analyze_file(std::path::Path::new("/tmp/test.pl"));
         assert!(
@@ -460,7 +555,7 @@ mod tests {
         );
         assert_eq!(
             result.err(),
-            Some(String::from("perlcritic failed (exit 2); check .perlcriticrc")),
+            Some(String::from("perlcritic failed (exit 1); check .perlcriticrc")),
             "no stderr means no trailing separator"
         );
     }
