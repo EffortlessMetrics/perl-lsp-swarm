@@ -257,8 +257,9 @@ class Domain6FragmentTest(unittest.TestCase):
         # the executable `install.ps1 | iex` form the install-surface check
         # forbids on active surfaces.
         text = ARTIFACT.read_text(encoding="utf-8")
-        self.assertFalse(
-            "install.ps1 | iex" in text,
+        self.assertNotIn(
+            "install.ps1 | iex",
+            text,
             "closeout quotes the forbidden piped install.ps1 form",
         )
 
