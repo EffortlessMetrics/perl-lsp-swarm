@@ -90,7 +90,17 @@ outcome_owner = "#10230"
 # test setup in scanned completion/workspace.rs, and a test-only module already
 # excluded above. The 42-file product scan, discovered producer population,
 # authored dispositions, entry routes, delegations, and finalizer are unchanged.
-source_digest = "sha256:2521f636463acbed91b0ddcc060897b72c341fb897b04a8b10fb1977f5d64d3f"
+# Re-anchor 2026-10-01 (#17043): #16860 (merged via #16877) drifted the surface
+# to 7d3c0254... with sigil-visibility edge tests and a scope-walk refactor
+# confined to completion/lexical_visibility.rs, completion/scope_distance.rs,
+# and completion/variables.rs (plus the excluded completion/tests.rs). The only
+# new scan-visible functions are a callback-based ancestor walk returning
+# ControlFlow (no candidate channel), a Vec<&Symbol> admission filter, and a
+# single-CompletionItem construction helper reached through the existing
+# variable producer's push seam: no producer add/remove/re-channel, scanned
+# set unchanged, entry and finalizer routes untouched. Projection diff is
+# digest-only, `check` passes.
+source_digest = "sha256:7d3c0254e4c710db6b15285dc0cf30920dd964c233b0acaaafd999c9f2a7a9f6"
 
 [[delegations]]
 module = "dancer2"
