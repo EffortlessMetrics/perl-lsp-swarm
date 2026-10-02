@@ -97,7 +97,12 @@ outcome_owner = "#10230"
 # finalizer, or candidate-channel shape changed, so the discovered producer
 # population, authored dispositions, entry routes, delegations, and finalizer
 # are unchanged; only the digest-bearing file text moved.
-source_digest = "sha256:894c35a85c0aab64da4a37bf10f699dfbb55e4912cc4f0768786e17c7843ee58"
+# Re-audit 2026-10-01 (#16775): workspace.rs method collection composes
+# persisted package members and ancestry again for packages reopened in the
+# open buffer (#2536 regression repair on top of #16850). Edits stay inside
+# existing functions plus a private facts helper; no candidate channel,
+# producer signature, entry route, delegation, or finalizer changed.
+source_digest = "sha256:fcd8bb9725fad9e07bb230f8c1af7432788f53852b488871e8257b8b571873b4"
 
 [[delegations]]
 module = "dancer2"

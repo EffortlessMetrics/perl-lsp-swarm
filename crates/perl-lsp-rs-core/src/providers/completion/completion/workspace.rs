@@ -2718,9 +2718,12 @@ fn collect_all_package_members_with_source(
                     result.push(symbol);
                 }
             }
-            // Current-buffer source wins for explicit methods; still consume
-            // persisted generated members (Moo `has` readers, etc.) so
-            // indexing the same package does not drop workspace facts.
+            // Current-buffer source wins for explicit methods, but a package
+            // may span files: persisted members for the same package must
+            // still compose (#2536), exactly like the generated Moo `has`
+            // readers below. In-file declarations keep precedence through
+            // `seen_names`.
+            push_index_method_symbols(index.get_package_members(pkg), seen_names, result);
             push_index_method_symbols(index.get_generated_package_members(pkg), seen_names, result);
         } else {
             push_index_method_symbols(
@@ -2775,6 +2778,26 @@ struct SourcePackageFacts {
     roles: Vec<String>,
     methods: Vec<WorkspaceSymbol>,
     from_current_document: bool,
+}
+
+impl SourcePackageFacts {
+    /// A package reopened in the open buffer composes persisted ancestry
+    /// (#2536): declarations in the buffer stay authoritative and keep their
+    /// order, while parents/roles that only the indexed defining file
+    /// publishes still apply. Composition (dedup, buffer first) — not
+    /// replacement — keeps the #16809 empty-index path intact.
+    fn compose_persisted_ancestry(&mut self, persisted: SourcePackageFacts) {
+        for parent in persisted.parents {
+            if !self.parents.contains(&parent) {
+                self.parents.push(parent);
+            }
+        }
+        for role in persisted.roles {
+            if !self.roles.contains(&role) {
+                self.roles.push(role);
+            }
+        }
+    }
 }
 
 fn empty_source_package_facts() -> SourcePackageFacts {
@@ -2867,6 +2890,11 @@ fn load_source_package_facts(
     current_models: &HashMap<String, perl_semantic_analyzer::class_model::ClassModel>,
     current_methods: &HashMap<String, Vec<WorkspaceSymbol>>,
 ) -> SourcePackageFacts {
+    // Persisted class facts for the same package compose with current-document
+    // facts (#2536): a reopened package may carry parents/roles that only the
+    // indexed defining file publishes.
+    let persisted = indexed_source_package_facts(pkg, index);
+
     if let Some(model) = current_models.get(pkg) {
         let methods = current_methods.get(pkg).cloned().unwrap_or_else(|| {
             model
@@ -2875,23 +2903,33 @@ fn load_source_package_facts(
                 .filter_map(|method| current_document_method_symbol(&model.name, method))
                 .collect()
         });
-        return SourcePackageFacts {
+        let mut facts = SourcePackageFacts {
             parents: model.parents.clone(),
             roles: model.roles.clone(),
             methods,
             from_current_document: true,
         };
+        facts.compose_persisted_ancestry(persisted);
+        return facts;
     }
 
     if let Some(methods) = current_methods.get(pkg) {
-        return SourcePackageFacts {
+        let mut facts = SourcePackageFacts {
             parents: Vec::new(),
             roles: Vec::new(),
             methods: methods.clone(),
             from_current_document: true,
         };
+        facts.compose_persisted_ancestry(persisted);
+        return facts;
     }
 
+    persisted
+}
+
+/// Parse the indexed file that defines `pkg` and extract its class facts.
+/// Returns empty facts when the package is not indexed or does not parse.
+fn indexed_source_package_facts(pkg: &str, index: &WorkspaceIndex) -> SourcePackageFacts {
     let indexed_text = index.find_definition(pkg).and_then(|pkg_location| {
         index.document_store().get_text(&pkg_location.uri).or_else(|| {
             perl_workspace::workspace_index::uri_to_fs_path(&pkg_location.uri)
