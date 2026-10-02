@@ -43,12 +43,56 @@ pub struct BuiltInCriticObservation {
     /// Producer-owned user-visible remediation of the ordinary twin row
     /// (#12004): the exact suggestion text the ordinary diagnostic rendered.
     suggestion: Option<String>,
+    /// Remediation availability declared by the ordinary core producer.
+    fix_available: bool,
     /// Producer-owned related information of the ordinary twin row, as
     /// byte spans over the same source the emitter observed.
     related_information: Vec<((usize, usize), String)>,
 }
 
 impl BuiltInCriticObservation {
+    /// Built-in PL100 missing file-level `strict` pragma.
+    #[must_use]
+    pub(crate) fn pl100_missing_strict(
+        severity: Severity,
+        byte_range: (usize, usize),
+        message: String,
+        explanation: Option<String>,
+    ) -> Self {
+        Self::new(
+            CriticObservedIdentity::built_in_missing_strict(),
+            severity,
+            byte_range,
+            message,
+            explanation,
+        )
+    }
+
+    /// Built-in PL101 missing file-level `warnings` pragma.
+    #[must_use]
+    pub(crate) fn pl101_missing_warnings(
+        severity: Severity,
+        byte_range: (usize, usize),
+        message: String,
+        explanation: Option<String>,
+    ) -> Self {
+        Self::new(
+            CriticObservedIdentity::built_in_missing_warnings(),
+            severity,
+            byte_range,
+            message,
+            explanation,
+        )
+    }
+
+    /// Preserve the ordinary producer's existing remediation availability.
+    /// This flag does not classify an action's safety or authorize execution.
+    #[must_use]
+    pub(crate) fn with_fix_availability(mut self, fix_available: bool) -> Self {
+        self.fix_available = fix_available;
+        self
+    }
+
     /// Built-in PL404 comparison against an explicit literal `undef`.
     #[must_use]
     pub fn pl404_literal_undef_comparison(
@@ -183,6 +227,7 @@ impl BuiltInCriticObservation {
             message: message.into(),
             explanation,
             suggestion: None,
+            fix_available: false,
             related_information: Vec::new(),
         }
     }
@@ -265,13 +310,14 @@ impl BuiltInCriticObservation {
                 message: message.clone(),
             })
             .collect();
-        CriticFindingCandidate::new(
+        CriticFindingCandidate::with_fix_availability(
             self.identity,
             source_identity,
             self.severity,
             range,
             self.message,
             self.explanation,
+            self.fix_available,
         )
         .with_remediation(self.suggestion, related_information)
     }

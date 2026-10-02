@@ -167,6 +167,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Missing `strict`/`warnings` pragma diagnostics now merge their core/native
+  aliases before push, document-pull, and workspace-pull publication, eliminating
+  duplicate pull warnings while preserving distinct same-range findings,
+  core remediation, catalog documentation, and Critic policy ownership (#6965).
+
 #### LSP integration
 
 - **"Find All References" no longer silently degrades for its default request
