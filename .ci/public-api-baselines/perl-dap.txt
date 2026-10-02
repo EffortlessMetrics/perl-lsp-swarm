@@ -3299,6 +3299,9 @@ pub perl_dap::security::launch_authority::LaunchAuthorityError::TrustedRootAlias
 pub perl_dap::security::launch_authority::LaunchAuthorityError::TrustedRootAliasConflict::canonical: std::path::PathBuf
 pub perl_dap::security::launch_authority::LaunchAuthorityError::TrustedRootAliasConflict::first: std::path::PathBuf
 pub perl_dap::security::launch_authority::LaunchAuthorityError::TrustedRootAliasConflict::second: std::path::PathBuf
+pub perl_dap::security::launch_authority::LaunchAuthorityError::TrustedRootIdentityUnavailable
+pub perl_dap::security::launch_authority::LaunchAuthorityError::TrustedRootIdentityUnavailable::detail: alloc::string::String
+pub perl_dap::security::launch_authority::LaunchAuthorityError::TrustedRootIdentityUnavailable::path: std::path::PathBuf
 pub perl_dap::security::launch_authority::LaunchAuthorityError::TrustedRootNotADirectory
 pub perl_dap::security::launch_authority::LaunchAuthorityError::TrustedRootNotADirectory::path: std::path::PathBuf
 pub perl_dap::security::launch_authority::LaunchAuthorityError::TrustedRootNotFound
@@ -3376,6 +3379,9 @@ pub perl_dap::security::LaunchAuthorityError::TrustedRootAliasConflict
 pub perl_dap::security::LaunchAuthorityError::TrustedRootAliasConflict::canonical: std::path::PathBuf
 pub perl_dap::security::LaunchAuthorityError::TrustedRootAliasConflict::first: std::path::PathBuf
 pub perl_dap::security::LaunchAuthorityError::TrustedRootAliasConflict::second: std::path::PathBuf
+pub perl_dap::security::LaunchAuthorityError::TrustedRootIdentityUnavailable
+pub perl_dap::security::LaunchAuthorityError::TrustedRootIdentityUnavailable::detail: alloc::string::String
+pub perl_dap::security::LaunchAuthorityError::TrustedRootIdentityUnavailable::path: std::path::PathBuf
 pub perl_dap::security::LaunchAuthorityError::TrustedRootNotADirectory
 pub perl_dap::security::LaunchAuthorityError::TrustedRootNotADirectory::path: std::path::PathBuf
 pub perl_dap::security::LaunchAuthorityError::TrustedRootNotFound
@@ -4001,6 +4007,9 @@ pub perl_dap::LaunchAuthorityError::TrustedRootAliasConflict
 pub perl_dap::LaunchAuthorityError::TrustedRootAliasConflict::canonical: std::path::PathBuf
 pub perl_dap::LaunchAuthorityError::TrustedRootAliasConflict::first: std::path::PathBuf
 pub perl_dap::LaunchAuthorityError::TrustedRootAliasConflict::second: std::path::PathBuf
+pub perl_dap::LaunchAuthorityError::TrustedRootIdentityUnavailable
+pub perl_dap::LaunchAuthorityError::TrustedRootIdentityUnavailable::detail: alloc::string::String
+pub perl_dap::LaunchAuthorityError::TrustedRootIdentityUnavailable::path: std::path::PathBuf
 pub perl_dap::LaunchAuthorityError::TrustedRootNotADirectory
 pub perl_dap::LaunchAuthorityError::TrustedRootNotADirectory::path: std::path::PathBuf
 pub perl_dap::LaunchAuthorityError::TrustedRootNotFound

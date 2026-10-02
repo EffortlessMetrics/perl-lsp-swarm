@@ -27,7 +27,6 @@
 //! stable identities and counts, never private absolute paths.
 
 use sha2::{Digest, Sha256};
-use std::fs::Metadata;
 use std::path::{Path, PathBuf};
 
 /// User/machine-owned source of a startup authority decision.
@@ -122,26 +121,64 @@ struct FilesystemIdentity {
     #[cfg(unix)]
     inode: u64,
     #[cfg(windows)]
-    created: u64,
+    volume_serial: u64,
+    #[cfg(windows)]
+    file_id: [u8; 16],
     #[cfg(not(any(unix, windows)))]
     canonical: PathBuf,
 }
 
 impl FilesystemIdentity {
-    fn from_metadata(metadata: &Metadata) -> Self {
+    fn from_path(path: &Path) -> std::io::Result<Self> {
         #[cfg(unix)]
         {
             use std::os::unix::fs::MetadataExt;
-            Self { device: metadata.dev(), inode: metadata.ino() }
+            let metadata = std::fs::symlink_metadata(path)?;
+            Ok(Self { device: metadata.dev(), inode: metadata.ino() })
         }
         #[cfg(windows)]
         {
-            use std::os::windows::fs::MetadataExt;
-            Self { created: metadata.creation_time() }
+            use std::os::windows::fs::OpenOptionsExt;
+            use std::os::windows::io::AsRawHandle;
+            use winapi::um::fileapi::FILE_ID_INFO;
+            use winapi::um::minwinbase::FileIdInfo;
+            use winapi::um::winbase::{
+                FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+                GetFileInformationByHandleEx,
+            };
+
+            // Query the directory object, not its creation time. NTFS tunneling
+            // can copy that timestamp to a new object at the same pathname.
+            // FileIdInfo carries the full 128-bit ID needed on ReFS.
+            let file = std::fs::OpenOptions::new()
+                .access_mode(0)
+                .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+                .open(path)?;
+            let mut information = std::mem::MaybeUninit::<FILE_ID_INFO>::uninit();
+            // SAFETY: file owns a live directory handle; the API initializes
+            // information on success, and we read it only after that result.
+            if unsafe {
+                GetFileInformationByHandleEx(
+                    file.as_raw_handle().cast(),
+                    FileIdInfo,
+                    information.as_mut_ptr().cast(),
+                    std::mem::size_of::<FILE_ID_INFO>() as u32,
+                )
+            } == 0
+            {
+                return Err(std::io::Error::last_os_error());
+            }
+            // SAFETY: GetFileInformationByHandleEx succeeded and filled the struct.
+            let information = unsafe { information.assume_init() };
+            let file_id = information.FileId.Identifier;
+            if information.VolumeSerialNumber == 0 || file_id == [0; 16] {
+                return Err(std::io::Error::other("directory object identity unavailable"));
+            }
+            Ok(Self { volume_serial: information.VolumeSerialNumber, file_id })
         }
         #[cfg(not(any(unix, windows)))]
         {
-            Self { canonical: PathBuf::new() }
+            Ok(Self { canonical: PathBuf::new() })
         }
     }
 }
@@ -212,6 +249,14 @@ pub enum LaunchAuthorityError {
         /// The shared canonical directory.
         canonical: PathBuf,
     },
+    /// The directory object identity could not be read at startup.
+    #[error("trusted root {path:?} has no readable directory identity: {detail}")]
+    TrustedRootIdentityUnavailable {
+        /// The offending raw path.
+        path: PathBuf,
+        /// The underlying filesystem error, retained for on-host diagnosis.
+        detail: String,
+    },
     /// The explicit unbounded acknowledgement is malformed.
     #[error("invalid unbounded acknowledgement: {0}")]
     InvalidAcknowledgement(String),
@@ -272,7 +317,8 @@ fn trusted_root_is_current(root: &TrustedRoot) -> bool {
     };
     metadata.is_dir()
         && !metadata.file_type().is_symlink()
-        && FilesystemIdentity::from_metadata(&metadata) == root.filesystem_identity
+        && FilesystemIdentity::from_path(&root.canonical)
+            .is_ok_and(|identity| identity == root.filesystem_identity)
 }
 
 /// Return the first recorded raw input whose canonical directory matches
@@ -334,10 +380,13 @@ impl LaunchAuthority {
                 });
             }
             seen_canonical.push((raw.clone(), canonical.clone()));
-            let filesystem_identity = FilesystemIdentity::from_metadata(
-                &std::fs::symlink_metadata(&canonical)
-                    .map_err(|_| LaunchAuthorityError::TrustedRootNotFound { path: raw.clone() })?,
-            );
+            let filesystem_identity =
+                FilesystemIdentity::from_path(&canonical).map_err(|error| {
+                    LaunchAuthorityError::TrustedRootIdentityUnavailable {
+                        path: raw.clone(),
+                        detail: error.to_string(),
+                    }
+                })?;
             roots.push(TrustedRoot {
                 identity: short_identity(&canonical.to_string_lossy()),
                 canonical,
@@ -505,6 +554,34 @@ mod tests {
     };
     use std::path::{Path, PathBuf};
 
+    #[cfg(windows)]
+    fn set_creation_time(path: &Path, time: u64) {
+        use std::os::windows::fs::OpenOptionsExt;
+        use std::os::windows::io::AsRawHandle;
+        use winapi::shared::minwindef::FILETIME;
+        use winapi::um::fileapi::SetFileTime;
+        use winapi::um::winbase::FILE_FLAG_BACKUP_SEMANTICS;
+        use winapi::um::winnt::FILE_WRITE_ATTRIBUTES;
+
+        let file = std::fs::OpenOptions::new()
+            .access_mode(FILE_WRITE_ATTRIBUTES)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+            .open(path)
+            .expect("open replacement directory for timestamp fixture");
+        let created = FILETIME { dwLowDateTime: time as u32, dwHighDateTime: (time >> 32) as u32 };
+        // SAFETY: file owns a live directory handle and created points to a
+        // fully initialized FILETIME for the duration of the call.
+        let changed = unsafe {
+            SetFileTime(file.as_raw_handle().cast(), &created, std::ptr::null(), std::ptr::null())
+        };
+        assert_ne!(
+            changed,
+            0,
+            "set replacement creation time: {}",
+            std::io::Error::last_os_error()
+        );
+    }
+
     fn tempfile_name(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!("pldap-authority-{name}-{}", std::process::id()))
     }
@@ -594,6 +671,21 @@ mod tests {
             LaunchAuthorityError::TrustedRootNotADirectory { path: file.clone() }
         );
         let _ = std::fs::remove_file(&file);
+    }
+
+    #[test]
+    fn identity_unavailable_error_reports_underlying_detail() {
+        // The filesystem's own error text must survive into the surfaced
+        // error so an on-host operator can diagnose the admission refusal.
+        let error = LaunchAuthorityError::TrustedRootIdentityUnavailable {
+            path: tempfile_name("unreadable"),
+            detail: "access is denied (os error 5)".to_string(),
+        };
+        let rendered = error.to_string();
+        assert!(
+            rendered.contains("has no readable directory identity: access is denied (os error 5)"),
+            "error must retain the underlying detail: {rendered}"
+        );
     }
 
     #[test]
@@ -741,10 +833,32 @@ mod tests {
         let startup =
             LaunchAuthorityStartup { trusted_roots: vec![root.clone()], allow_unbounded: None };
         let authority = LaunchAuthority::resolve(&startup).expect("resolution");
+        #[cfg(windows)]
+        let original_created = {
+            use std::os::windows::fs::MetadataExt;
+            std::fs::symlink_metadata(&root).expect("original root metadata").creation_time()
+        };
         let displaced = tempfile_name("retarget-displaced");
         let _ = std::fs::remove_dir_all(&displaced);
         std::fs::rename(&root, &displaced).expect("displace startup root");
         std::fs::create_dir_all(&root).expect("replacement root");
+        #[cfg(windows)]
+        {
+            use super::FilesystemIdentity;
+            use std::os::windows::fs::MetadataExt;
+            // Force the old creation-time-only comparison to accept the
+            // replacement even on filesystems without timestamp tunneling.
+            set_creation_time(&root, original_created);
+            let replacement_created = std::fs::symlink_metadata(&root)
+                .expect("replacement root metadata")
+                .creation_time();
+            assert_eq!(replacement_created, original_created);
+            assert_ne!(
+                FilesystemIdentity::from_path(&root).expect("replacement identity"),
+                authority.roots[0].filesystem_identity,
+                "replacement must be a different directory object"
+            );
+        }
         let replacement_program = root.join("replacement.pl");
         std::fs::write(&replacement_program, b"print 1;").expect("replacement script");
 
@@ -757,10 +871,8 @@ mod tests {
 
     #[test]
     fn workspace_bound_survives_child_writes_after_startup() {
-        // N3 (#14523 review): the f35ad3218 identity (unix device+inode,
-        // Windows creation_time, no mtime) must stay current when children
-        // change while the root object itself is stable — unlike the
-        // rename-and-replace case above, which must stop admitting.
+        // Directory object identity must stay current when children change,
+        // unlike the rename-and-replace case above, which must stop admitting.
         let root = make_root("childwrite");
         let startup =
             LaunchAuthorityStartup { trusted_roots: vec![root.clone()], allow_unbounded: None };

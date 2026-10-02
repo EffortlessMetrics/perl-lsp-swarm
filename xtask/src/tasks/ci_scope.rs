@@ -204,6 +204,13 @@ pub fn requires_windows_runner(files: &[String]) -> bool {
             // exercise the bound and prove it terminates its probe child.
             || normalized.starts_with("crates/perl-dap/src/reload/")
             || normalized == "crates/perl-dap/src/reload.rs"
+            // The launch-authority identity query (#16979) is Windows-only
+            // FFI behind cfg(windows) inside a shared file: trusted-root
+            // admission binds volume serial + 128-bit FileIdInfo, and its
+            // replacement witness only discriminates on a Windows
+            // filesystem. This seam admits that file to the hosted Windows
+            // smoke; the rest of the security module stays out.
+            || normalized == "crates/perl-dap/src/security/launch_authority.rs"
             || normalized.starts_with("crates/perl-uri/")
             || normalized.contains("workspace-index")
             || normalized.contains("workspace_index")
@@ -1182,6 +1189,9 @@ mod tests {
             "crates/perl-dap/src/reload/mod.rs",
             "crates/perl-dap/src/reload/runtime.rs",
             "crates/perl-dap/src/reload/measurement.rs",
+            // #16979: the launch-authority identity query is Windows-only
+            // FFI in a shared file; the file (not its module) is the seam.
+            "crates/perl-dap/src/security/launch_authority.rs",
             "crates/perl-uri/src/fs.rs",
             "crates/perl-workspace/src/workspace-index.rs",
             "crates/perl-workspace/src/platform/windows.rs",
@@ -1200,11 +1210,12 @@ mod tests {
             "docs/windows.md".to_string(),
             "scripts/check-shell.py".to_string(),
             "crates/perl-parser/src/lib.rs".to_string(),
-            // perl-dap siblings outside the reload module should not
-            // select a Windows runner; the bounded-probe Windows
-            // coverage claim is scoped to the reload seam.
+            // perl-dap siblings outside the reload module and the
+            // launch-authority seam should not select a Windows runner;
+            // the Windows coverage claims are scoped to those seams.
             "crates/perl-dap/src/lib.rs".to_string(),
             "crates/perl-dap/src/debug_adapter/protocol.rs".to_string(),
+            "crates/perl-dap/src/security/mod.rs".to_string(),
         ];
         assert!(!requires_windows_runner(&files));
     }

@@ -99,7 +99,7 @@ toml = "1.1.2"
 nix = { version = "0.31.3", features = ["signal", "poll"] }  # For SIGINT handling (AC9) and bounded stdio polling
 
 [target.'cfg(windows)'.dependencies]
-winapi = { version = "0.3.9", features = ["processthreadsapi", "winnt", "handleapi", "namedpipeapi", "jobapi2", "tlhelp32", "fileapi", "winbase"] }  # For bounded test-process-tree cleanup and pipe polling
+winapi = { version = "0.3.9", features = ["processthreadsapi", "winnt", "handleapi", "namedpipeapi", "jobapi2", "tlhelp32", "fileapi", "minwinbase", "winbase"] }  # For bounded test-process-tree cleanup, pipe polling, and launch-root identity
 
 [target.'cfg(unix)'.dev-dependencies]
 libc = "0.2"
