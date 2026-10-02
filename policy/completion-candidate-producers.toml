@@ -111,6 +111,16 @@ outcome_owner = "#10230"
 # hardening pass canonicalizes path-form document identity and selects
 # cross-file inheritance facts before the stale-document skip; scan-root file
 # set and producer population are unchanged by it.
+# Re-anchor 2026-10-01 (#17043): #16860 (merged via #16877) drifted the surface
+# to 7d3c0254... with sigil-visibility edge tests and a scope-walk refactor
+# confined to completion/lexical_visibility.rs, completion/scope_distance.rs,
+# and completion/variables.rs (plus the excluded completion/tests.rs). The only
+# new scan-visible functions are a callback-based ancestor walk returning
+# ControlFlow (no candidate channel), a Vec<&Symbol> admission filter, and a
+# single-CompletionItem construction helper reached through the existing
+# variable producer's push seam: no producer add/remove/re-channel, scanned
+# set unchanged, entry and finalizer routes untouched. Projection diff is
+# digest-only, `check` passes.
 source_digest = "sha256:c751ddf440403d38bb9775efe3d49b396e609616042b87fbdf988da2ffab62c0"
 
 [[delegations]]
