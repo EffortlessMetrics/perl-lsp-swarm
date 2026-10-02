@@ -20,6 +20,12 @@ exclusion domain; independent clones and Windows/WSL do not. Within that slot,
 each worktree. Invoking from a nested directory resolves the same worktree root.
 Git path output is read as bytes and removes exactly its final LF; valid POSIX
 trailing spaces, tabs, carriage returns and newlines remain part of path identity.
+POSIX non-UTF-8 path bytes also remain lossless when hashing the common directory
+and worktree. Inherited `GIT_DIR`, `GIT_WORK_TREE` or `GIT_COMMON_DIR` overrides
+refuse before allocation, including empty values: Cargo would still execute from
+the invocation directory while Git could identify another source. Unset the
+selector explicitly and invoke from the intended worktree; the route does not
+silently retarget an inherited subject.
 Both paths must be isolated: separate final output with shared intermediates still
 reuses incompatible libraries. Cargo home remains independently reusable.
 
@@ -151,5 +157,9 @@ translation/junction refusal and non-destructive failure. Set
 `CARGO_ADMITTED_REAL_BUILD_TEST=1` for the offline two-crate linked-worktree A/B/A
 behavior regression; use an already installed toolchain. It executes real Cargo
 through the production Python entrypoint, but uses a fixture capacity observation
-and makes no host-budget claim. The cleanup sweep fixture checks command-local fetch
+and makes no host-budget claim. Its TemporaryDirectory has one sequential owner;
+no next build starts until the current behavior assertion returns. It does not
+prove concurrent or independent post-lease binary consumption. Production callers
+must still hold ownership through consumers or capture immutable artifacts before
+releasing that ownership. The cleanup sweep fixture checks command-local fetch
 maintenance suppression; it does not change global Git configuration.

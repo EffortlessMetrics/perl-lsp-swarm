@@ -262,7 +262,7 @@ class AdmissionTests(unittest.TestCase):
         import json
         repo = self.root / "repo"
         linked = self.root / "linked"
-        env = os.environ.copy()
+        env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
         env.update(GIT_CONFIG_GLOBAL=str(self.root / "no-global"), GIT_CONFIG_NOSYSTEM="1")
         def git(*args, cwd=self.root):
             subprocess.run(["git", *args], cwd=cwd, env=env, check=True, capture_output=True)
@@ -301,7 +301,7 @@ class AdmissionTests(unittest.TestCase):
         # Git permits trailing space/tab in a separate common directory too.
         # Trailing newlines in gitdir files are not supported by Git itself.
         common = self.root / "common \t"
-        env = os.environ.copy()
+        env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
         env.update(GIT_CONFIG_GLOBAL=str(self.root / "no-global"), GIT_CONFIG_NOSYSTEM="1",
                    DEVPLANE=str(self.root / "plane"), CARGO_HOME=str(self.root / "cargo"))
         for key in ("CARGO_TARGET_DIR", "CARGO_BUILD_BUILD_DIR", "RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER"):
@@ -343,6 +343,56 @@ class AdmissionTests(unittest.TestCase):
             path = self.root / "tree\n"
             with patch.object(safe.subprocess, "check_output", return_value=git_output(path)):
                 self.assertEqual(safe.git_path("--show-toplevel"), path.resolve())
+
+    def test_real_git_location_overrides_refuse_before_allocation(self):
+        repo, other = self.root / "repo", self.root / "other"
+        env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+        env.update(GIT_CONFIG_GLOBAL=str(self.root / "no-global"), GIT_CONFIG_NOSYSTEM="1",
+                   DEVPLANE=str(self.root / "plane"), CARGO_HOME=str(self.root / "cargo"))
+        for path in (repo, other):
+            subprocess.run(["git", "init", "-q", str(path)], env=env, check=True, capture_output=True)
+        for name in ("CARGO_TARGET_DIR", "CARGO_BUILD_BUILD_DIR", "RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER"):
+            env.pop(name, None)
+        selectors = {"GIT_DIR": str(other / ".git"), "GIT_WORK_TREE": str(other),
+                     "GIT_COMMON_DIR": str(other / ".git")}
+        previous = Path.cwd()
+        try:
+            os.chdir(repo)
+            redirected = dict(env, **selectors)
+            # Real negative control: Git's view is no longer Cargo's CWD.
+            result = subprocess.check_output(["git", "rev-parse", "--show-toplevel"], env=redirected)
+            self.assertEqual(result, git_output(other.resolve()))
+            for selection in (selectors, *({name: selected} for name, value in selectors.items() for selected in (value, ""))):
+                with patch.dict(os.environ, dict(env, **selection), clear=True), \
+                     patch.object(safe, "check_capacity", return_value={"fixture": "identity-only"}) as capacity, \
+                     patch.object(safe.subprocess, "call", return_value=0) as cargo:
+                    self.assertEqual(safe.main(["check"]), 75)
+                    capacity.assert_not_called()
+                    cargo.assert_not_called()
+                self.assertFalse((self.root / "plane").exists())
+        finally:
+            os.chdir(previous)
+
+    @unittest.skipIf(os.name == "nt", "POSIX filename bytes may be non-UTF-8")
+    def test_real_git_non_utf8_common_and_worktree_paths_are_lossless(self):
+        repo = self.root / os.fsdecode(b"repo-\xff")
+        env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+        env.update(GIT_CONFIG_GLOBAL=str(self.root / "no-global"), GIT_CONFIG_NOSYSTEM="1",
+                   DEVPLANE=str(self.root / "plane"), CARGO_HOME=str(self.root / "cargo"))
+        for name in ("CARGO_TARGET_DIR", "CARGO_BUILD_BUILD_DIR"):
+            env.pop(name, None)
+        subprocess.run(["git", "init", "-q", str(repo)], env=env, check=True, capture_output=True)
+        previous = Path.cwd()
+        try:
+            os.chdir(repo)
+            with patch.dict(os.environ, env, clear=True):
+                first = safe.resource_plan(env)
+                self.assertEqual(first, safe.resource_plan(env))
+            self.assertEqual(os.fsencode(first[0]), os.fsencode(repo.resolve()))
+            self.assertNotEqual(first[2]["target"], first[2]["build"])
+            self.assertFalse(first[1].exists())
+        finally:
+            os.chdir(previous)
 
     def test_same_named_worktrees_and_stale_shared_overrides(self):
         env = {"DEVPLANE": str(self.root / "plane"), "CARGO_HOME": str(self.root / "cargo")}
@@ -396,7 +446,7 @@ class AdmissionTests(unittest.TestCase):
         import io
         import json
         repo, linked = self.root / "repo", self.root / "linked"
-        env = os.environ.copy()
+        env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
         for name in ("CARGO_TARGET_DIR", "CARGO_BUILD_BUILD_DIR", "RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER"):
             env.pop(name, None)
         env.update(DEVPLANE=str(self.root / "plane"), TMPDIR=str(self.root / "tmp"),
@@ -436,6 +486,9 @@ class AdmissionTests(unittest.TestCase):
                 descriptor = json.loads(output.getvalue().split("cargo-admitted resources: ", 1)[1])
                 descriptors.append(descriptor)
                 executable = Path(descriptor["resources"]["target"]) / "debug" / ("identity-app.exe" if os.name == "nt" else "identity-app")
+                # This one test owns the TemporaryDirectory and runs builds
+                # sequentially: no next build starts before this assertion ends.
+                # It proves source isolation, not concurrent/post-lease consumers.
                 self.assertEqual(run([str(executable)], worktree), expected)
         finally:
             os.chdir(previous)

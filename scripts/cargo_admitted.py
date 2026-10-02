@@ -109,20 +109,25 @@ def check_capacity(paths, env):
     return report
 
 
-def git_path(*args):
+def git_path(*args, env=None):
     # Read bytes: text mode also translates CR/LF that may belong to a POSIX
     # filename. Git emits one terminal LF; preserve every preceding path byte.
-    output = subprocess.check_output(["git", "rev-parse", *args])
+    output = subprocess.check_output(["git", "rev-parse", *args], env=env)
     if not output.endswith(b"\n"):
         raise Denied("Git path output is missing its terminal newline")
     return native_path(os.fsdecode(output[:-1]))
 
 
 def resource_plan(env):
-    worktree = git_path("--show-toplevel")
-    common = git_path("--path-format=absolute", "--git-common-dir")
+    # Cargo uses the invocation directory, not Git's repository-location
+    # overrides. Refuse an ambiguous subject instead of silently retargeting it.
+    for name in ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR"):
+        if name in env:
+            raise Denied(name + " repository-location override is unsupported; unset it and invoke from the intended worktree")
+    worktree = git_path("--show-toplevel", env=env)
+    common = git_path("--path-format=absolute", "--git-common-dir", env=env)
     identity = str(common).casefold() if os.name == "nt" else str(common)
-    key = hashlib.sha256(identity.encode()).hexdigest()[:16]
+    key = hashlib.sha256(os.fsencode(identity)).hexdigest()[:16]
     base = native_path(env.get("DEVPLANE", str(Path.home() / ".cache" / "devplane")))
     # Keep one admission/lease domain per common repository and OS/host.
     # Cargo fingerprints deliberately omit the workspace absolute path, so
