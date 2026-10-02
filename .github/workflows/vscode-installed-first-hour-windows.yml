@@ -1,0 +1,84 @@
+name: VS Code Installed First-Hour Windows
+
+on:
+  pull_request:
+    # The installed-byte leaf stacks on #16981 until its observer lands.
+    # Remove this temporary base when #16991 retargets to main.
+    branches: [main, master, codex/6056-installed-identity]
+    paths:
+      - 'vscode-extension/**'
+      - 'crates/perl-lsp*/**'
+      - 'crates/perllsp/**'
+      - 'crates/perl-dap/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/vscode-installed-first-hour-windows.yml'
+
+concurrency:
+  group: vscode-installed-first-hour-windows-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  installed-first-hour-windows:
+    name: Installed first-hour bytes (Windows, stable)
+    # Governed as vscode_installed_first_hour_windows in policy/ci-lane-whitelist.toml.
+    runs-on: windows-latest
+    timeout-minutes: 35
+
+    defaults:
+      run:
+        working-directory: vscode-extension
+
+    steps:
+      - name: Checkout exact pull-request head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Install Perl
+        uses: shogo82148/actions-setup-perl@53e33bb27be492a926eee378e8a5f7ff6618b061  # v1.43.1
+        with:
+          perl-version: '5.40'
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # stable (master)
+        with:
+          toolchain: 1.95.0
+
+      - name: Setup VS Code toolchain
+        uses: ./.github/actions/setup-vscode-toolchain
+
+      - name: Build current release server and DAP
+        working-directory: .
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/perl-lsp-first-hour-target
+        run: cargo build -p perllsp --bin perllsp -p perl-dap --bin perl-dap --release --locked
+
+      - name: Run installed first-hour byte leaf
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PERL_LSP_E2E: '1'
+          PERL_LSP_DIAGNOSTIC_MODE: normal
+          PERL_LSP_VSCODE_VERSION: stable
+          PERL_LSP_FIRST_HOUR_SERVER_PATH: ${{ runner.temp }}/perl-lsp-first-hour-target/release/perllsp.exe
+          PERL_LSP_DAP_PATH: ${{ runner.temp }}/perl-lsp-first-hour-target/release/perl-dap.exe
+          PERL_LSP_PACKAGE_BASE_MODE: pull_request
+          PERL_LSP_PACKAGE_PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PERL_LSP_SERVER_SOURCE_SHA: ${{ github.event.pull_request.head.sha }}
+          PERL_LSP_SMOKE_SOURCE_LABEL: hosted-windows-installed-first-hour
+          PERL_LSP_SMOKE_RECEIPTS_DIR: ${{ github.workspace }}/target/receipts/vscode-smoke/installed-first-hour-windows
+        run: npm run test:published:local
+
+      - name: Upload installed first-hour receipts
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: vscode-installed-first-hour-windows-${{ github.event.pull_request.head.sha }}
+          path: target/receipts/vscode-smoke/installed-first-hour-windows/**
+          if-no-files-found: warn
+          retention-days: 14
