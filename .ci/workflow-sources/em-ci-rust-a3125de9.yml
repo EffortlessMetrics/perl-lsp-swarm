@@ -1,0 +1,676 @@
+name: EM CI Rust
+
+on:
+  workflow_call:
+    outputs:
+      evidence:
+        description: Subject-bound selected proof result; missing evidence is NOT_PROVEN
+        value: ${{ jobs.result.outputs.evidence }}
+      receipt_name:
+        description: Artifact containing the exact successful result envelope
+        value: ${{ jobs.result.outputs.receipt_name }}
+    inputs:
+      force_hosted:
+        description: Use the enabled hosted route; never grants external source trusted access
+        required: false
+        default: false
+        type: boolean
+      profile:
+        description: light, standard, heavy, or large
+        required: true
+        type: string
+      script:
+        description: Repository-owned proof script
+        required: false
+        default: .ci/run.sh
+        type: string
+      result_script:
+        description: Optional repository result policy, run read-only after exact proof validation
+        required: false
+        default: ''
+        type: string
+      fetch_depth:
+        description: Checkout depth; use 0 only when the proof compares Git history
+        required: false
+        default: 1
+        type: number
+
+permissions:
+  contents: read
+
+env:
+  # The reusable workflow and image move together. Keeping this explicit lets the
+  # currently activated image enforce the same version before the replacement
+  # image carrying the ENV marker is published and activated.
+  EM_CI_RUST_VERSION: "1.98.1"
+  EM_CI_RUST_COMPATIBILITY_VERSION: "1.95.0"
+  RUSTUP_TOOLCHAIN: "1.98.1"
+
+jobs:
+  classify:
+    name: Classify trust and profile
+    # Native selection allocates no hosted coordinator on the owned path.
+    # The classifier executes only this immutable workflow's code, no checkout.
+    runs-on: >-
+      ${{ fromJSON((vars.EM_CI_GITHUB_HOSTED_ENABLED == 'true' && (inputs.force_hosted || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || github.event.pull_request.user.type == 'Bot')))) && '"ubuntu-24.04"' || '{"group":"em-ci-build","labels":["self-hosted","linux","x64","rust-standard"]}') }}
+    timeout-minutes: 5
+    outputs:
+      profile: ${{ steps.classify.outputs.profile }}
+      self_hosted: ${{ steps.classify.outputs.self_hosted }}
+      hosted_enabled: ${{ steps.classify.outputs.hosted_enabled }}
+      runner_image: ${{ steps.classify.outputs.runner_image }}
+    steps:
+      # This job executes only the immutable reusable-workflow source. It does not
+      # check out caller-controlled code or consume repository secrets.
+      - id: classify
+        shell: bash
+        env:
+          REQUESTED_FORCE_HOSTED: ${{ inputs.force_hosted }}
+          REQUESTED_PROFILE: ${{ inputs.profile }}
+          REQUESTED_FETCH_DEPTH: ${{ inputs.fetch_depth }}
+          REQUESTED_RESULT_SCRIPT: ${{ inputs.result_script }}
+          HOSTED_ENABLED: ${{ vars.EM_CI_GITHUB_HOSTED_ENABLED }}
+          RUNNER_IMAGE: ${{ vars.EM_CI_RUNNER_IMAGE }}
+        run: |
+          set -euo pipefail
+
+          case "$REQUESTED_PROFILE" in
+            light|standard|heavy|large) ;;
+            *)
+              echo "::error::unknown EM CI profile: $REQUESTED_PROFILE"
+              exit 64
+              ;;
+          esac
+
+          case "$REQUESTED_FETCH_DEPTH" in
+            0|1) ;;
+            *)
+              echo "::error::fetch_depth must be 0 or 1"
+              exit 64
+              ;;
+          esac
+
+          if [[ -n "${REQUESTED_RESULT_SCRIPT:-}" ]]; then
+            [[ "$REQUESTED_RESULT_SCRIPT" =~ ^[A-Za-z0-9._/-]+$ && "$REQUESTED_RESULT_SCRIPT" != /* && "$REQUESTED_RESULT_SCRIPT" != *..* ]] || {
+              echo '::error::result_script must be a safe relative repository path'
+              exit 64
+            }
+          fi
+
+          if [[ "${HOSTED_ENABLED,,}" == true ]]; then
+            hosted_enabled=true
+          else
+            hosted_enabled=false
+          fi
+
+          case "$GITHUB_EVENT_NAME" in
+            push|merge_group|workflow_dispatch|schedule)
+              self_hosted=true
+              ;;
+            pull_request)
+              head_repo=$(jq -r '.pull_request.head.repo.full_name // ""' "$GITHUB_EVENT_PATH")
+              author_type=$(jq -r '.pull_request.user.type // ""' "$GITHUB_EVENT_PATH")
+              if [[ "$head_repo" == "$GITHUB_REPOSITORY" && "$author_type" != Bot ]]; then
+                self_hosted=true
+              else
+                self_hosted=false
+              fi
+              ;;
+            *)
+              echo "::error::event $GITHUB_EVENT_NAME is not approved for the EM CI reusable workflow"
+              exit 64
+              ;;
+          esac
+
+          case "$REQUESTED_FORCE_HOSTED" in
+            true)
+              [[ "$hosted_enabled" == true ]] || {
+                echo '::error::forced hosted execution requires the existing hosted-enable policy'
+                exit 64
+              }
+              self_hosted=false
+              ;;
+            false) ;;
+            *) echo '::error::force_hosted must be a boolean'; exit 64 ;;
+          esac
+
+          if [[ "$hosted_enabled" == true ]]; then
+            [[ "$RUNNER_IMAGE" =~ ^ghcr\.io/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$ ]] || {
+              echo '::error::EM_CI_RUNNER_IMAGE must be an immutable GHCR sha256 digest reference'
+              exit 64
+            }
+          fi
+
+          {
+            echo "profile=$REQUESTED_PROFILE"
+            echo "self_hosted=$self_hosted"
+            echo "hosted_enabled=$hosted_enabled"
+            echo "runner_image=$RUNNER_IMAGE"
+          } >> "$GITHUB_OUTPUT"
+
+          {
+            echo '## EM CI classification'
+            echo
+            echo "- profile: \`$REQUESTED_PROFILE\`"
+            echo "- fetch_depth: \`$REQUESTED_FETCH_DEPTH\`"
+            echo "- self_hosted: \`$self_hosted\`"
+            echo "- hosted_enabled: \`$hosted_enabled\`"
+            echo "- event: \`$GITHUB_EVENT_NAME\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  light:
+    name: Rust light
+    needs: classify
+    if: needs.classify.outputs.self_hosted == 'true' && needs.classify.outputs.profile == 'light'
+    runs-on:
+      group: em-ci-build
+      labels: [self-hosted, linux, x64, rust-light]
+    timeout-minutes: 45
+    env:
+      EM_CI_EXECUTION_SELF_HOSTED: "true"
+    outputs: &proof_outputs
+      infrastructure_failure: ${{ steps.toolchain.outputs.infrastructure_failure || steps.prepare.outputs.infrastructure_failure }}
+      proof_outcome: ${{ steps.proof.outcome }}
+      proof_entered_at: ${{ steps.proof.outputs.proof_entered_at }}
+      proof_run_attempt: ${{ steps.proof.outputs.proof_run_attempt }}
+    steps: &proof_steps
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955
+        with:
+          persist-credentials: false
+          fetch-depth: ${{ inputs.fetch_depth }}
+      - name: Verify Rust toolchain contract
+        id: toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          primary=$EM_CI_RUST_VERSION
+          compat=${EM_CI_RUST_COMPATIBILITY_VERSION:-}
+          [[ "$primary" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+            echo '::error::the reusable workflow does not expose an exact EM CI primary Rust version'
+            exit 78
+          }
+          if [[ -n "$compat" ]]; then
+            [[ "$compat" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+              echo '::error::the reusable workflow does not expose an exact EM CI compatibility Rust version'
+              exit 78
+            }
+          fi
+
+          requested=''
+          toolchain_file=''
+          if [[ -f rust-toolchain.toml ]]; then
+            toolchain_file=rust-toolchain.toml
+          elif [[ -f rust-toolchain ]]; then
+            toolchain_file=rust-toolchain
+          fi
+          if [[ -n "$toolchain_file" ]]; then
+            if grep -Eq '^[[:space:]]*\[' "$toolchain_file"; then
+              requested=$(python3 - "$toolchain_file" <<'PY'
+          import pathlib
+          import sys
+          import tomllib
+
+          path = pathlib.Path(sys.argv[1])
+          with path.open("rb") as stream:
+              data = tomllib.load(stream)
+          print(data.get("toolchain", {}).get("channel", ""))
+          PY
+              )
+            else
+              requested=$(tr -d '[:space:]' < "$toolchain_file")
+            fi
+          fi
+
+          if [[ -z "$requested" || "$requested" == "$primary" ]]; then
+            selected=$primary
+          elif [[ -n "$compat" && "$requested" == "$compat" ]]; then
+            selected=$compat
+          else
+            echo "::error::$toolchain_file requests Rust '$requested', but EM CI only supports primary ($primary) or compatibility (${compat:-none})"
+            exit 78
+          fi
+
+          # Only an approved exact toolchain that cannot execute is eligible.
+          # Repository pin/parse policy and version mismatches stay blocking.
+          # Probe outside the checkout so repository rustup configuration cannot
+          # masquerade as a runner/toolchain availability failure.
+          if ! probe_dir=$(mktemp -d "$RUNNER_TEMP/em-ci-toolchain-probe.XXXXXX"); then
+            echo 'infrastructure_failure=disposable_paths_unavailable' >> "$GITHUB_OUTPUT"
+            echo '::warning::cannot create disposable toolchain probe path; proof admission withdrawn'
+            exit 0
+          fi
+          if ! actual=$(cd "$probe_dir" && rustc +"$selected" --version | awk '{print $2}'); then
+            echo 'infrastructure_failure=toolchain_unavailable' >> "$GITHUB_OUTPUT"
+            echo '::warning::approved immutable-image toolchain cannot execute; proof admission withdrawn'
+            exit 0
+          fi
+          [[ "$actual" == "$selected" ]] || {
+            echo "::error::runner resolved Rust $actual for toolchain $selected, expected $selected"
+            exit 78
+          }
+
+          echo "RUSTUP_TOOLCHAIN=$selected" >> "$GITHUB_ENV"
+          echo "Rust toolchain selected: $selected"
+      - name: Record EM CI job context
+        if: steps.toolchain.outputs.infrastructure_failure == ''
+        shell: bash
+        env:
+          EM_CI_SELECTED_PROFILE: ${{ needs.classify.outputs.profile }}
+          EM_CI_SELF_HOSTED: ${{ env.EM_CI_EXECUTION_SELF_HOSTED }}
+        run: |
+          set -euo pipefail
+          jq -n \
+            --arg schema 'em-ci-job-context.v1' \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --arg workflow "$GITHUB_WORKFLOW" \
+            --arg workflow_ref "$GITHUB_WORKFLOW_REF" \
+            --arg run_id "$GITHUB_RUN_ID" \
+            --arg run_attempt "$GITHUB_RUN_ATTEMPT" \
+            --arg job "$GITHUB_JOB" \
+            --arg event "$GITHUB_EVENT_NAME" \
+            --arg ref "$GITHUB_REF" \
+            --arg sha "$GITHUB_SHA" \
+            --arg profile "$EM_CI_SELECTED_PROFILE" \
+            --arg self_hosted "$EM_CI_SELF_HOSTED" \
+            --arg started_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            '{schema:$schema,repository:$repository,workflow:$workflow,workflow_ref:$workflow_ref,run_id:$run_id,run_attempt:$run_attempt,job:$job,event:$event,ref:$ref,sha:$sha,profile:$profile,self_hosted:($self_hosted == "true"),admission_recorded_at:$started_at}' \
+            > "$RUNNER_TEMP/em-ci-job-context.json"
+      - name: Prepare disposable paths
+        id: prepare
+        if: steps.toolchain.outputs.infrastructure_failure == ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! mkdir -p "$RUNNER_TEMP/cargo-target" "$RUNNER_TEMP/tmp"; then
+            echo 'infrastructure_failure=disposable_paths_unavailable' >> "$GITHUB_OUTPUT"
+            echo '::warning::cannot create disposable runner paths; proof admission withdrawn'
+            exit 0
+          fi
+          echo "CARGO_TARGET_DIR=$RUNNER_TEMP/cargo-target" >> "$GITHUB_ENV"
+          echo "TMPDIR=$RUNNER_TEMP/tmp" >> "$GITHUB_ENV"
+      - name: Run repository proof
+        id: proof
+        if: steps.toolchain.outcome == 'success' && steps.prepare.outcome == 'success' && steps.toolchain.outputs.infrastructure_failure == '' && steps.prepare.outputs.infrastructure_failure == ''
+        shell: bash
+        env:
+          EM_CI_PROOF_SCRIPT: ${{ inputs.script }}
+        run: |
+          set -euo pipefail
+          [[ "$EM_CI_PROOF_SCRIPT" =~ ^[A-Za-z0-9._/-]+$ ]]
+          [[ "$EM_CI_PROOF_SCRIPT" != /* ]]
+          [[ "$EM_CI_PROOF_SCRIPT" != *..* ]]
+          [[ -f "$EM_CI_PROOF_SCRIPT" ]]
+          # Validate the repository-owned entry point before recording entry.
+          # The marker is immediately before execution, never path preparation.
+          entered_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          context="$RUNNER_TEMP/em-ci-job-context.json"
+          jq --arg entered_at "$entered_at" '. + {proof_started_at:$entered_at}' \
+            "$context" > "$context.entry"
+          mv -- "$context.entry" "$context"
+          echo "proof_entered_at=$entered_at" >> "$GITHUB_OUTPUT"
+          echo "proof_run_attempt=$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
+          bash -- "$EM_CI_PROOF_SCRIPT"
+      - name: Record compiler cache statistics
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          if sccache --show-stats --stats-format json > "$RUNNER_TEMP/em-ci-sccache.json" 2>/dev/null; then
+            cat "$RUNNER_TEMP/em-ci-sccache.json"
+          else
+            sccache --show-stats | tee "$RUNNER_TEMP/em-ci-sccache.txt" || true
+          fi
+      - name: Finalize EM CI job context
+        if: always()
+        shell: bash
+        env:
+          EM_CI_JOB_STATUS: ${{ job.status }}
+        run: |
+          set -euo pipefail
+          context="$RUNNER_TEMP/em-ci-job-context.json"
+          [[ -f "$context" ]] || exit 0
+          temporary="$context.tmp"
+          jq \
+            --arg status "$EM_CI_JOB_STATUS" \
+            --arg finished_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            '. + {job_status:$status,proof_finished_at:$finished_at}' \
+            "$context" > "$temporary"
+          mv "$temporary" "$context"
+      - name: Preserve self-hosted job evidence
+        if: always() && env.EM_CI_EXECUTION_SELF_HOSTED == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          evidence_dir=/home/runner/_diag/em-ci-evidence
+          install -d -m 0755 "$evidence_dir"
+          for file in \
+            "$RUNNER_TEMP/em-ci-job-context.json" \
+            "$RUNNER_TEMP/em-ci-sccache.json" \
+            "$RUNNER_TEMP/em-ci-sccache.txt"
+          do
+            [[ -f "$file" ]] || continue
+            cp -- "$file" "$evidence_dir/$(basename "$file")"
+          done
+
+  standard:
+    name: Rust standard
+    needs: classify
+    if: needs.classify.outputs.self_hosted == 'true' && needs.classify.outputs.profile == 'standard'
+    runs-on:
+      group: em-ci-build
+      labels: [self-hosted, linux, x64, rust-standard]
+    timeout-minutes: 75
+    env:
+      EM_CI_EXECUTION_SELF_HOSTED: "true"
+    outputs: *proof_outputs
+    steps: *proof_steps
+
+  heavy:
+    name: Rust heavy
+    needs: classify
+    if: needs.classify.outputs.self_hosted == 'true' && needs.classify.outputs.profile == 'heavy'
+    runs-on:
+      group: em-ci-build
+      labels: [self-hosted, linux, x64, rust-heavy]
+    timeout-minutes: 120
+    env:
+      EM_CI_EXECUTION_SELF_HOSTED: "true"
+    outputs: *proof_outputs
+    steps: *proof_steps
+
+  large:
+    name: Rust large
+    needs: classify
+    if: needs.classify.outputs.self_hosted == 'true' && needs.classify.outputs.profile == 'large'
+    runs-on:
+      group: em-ci-build
+      labels: [self-hosted, linux, x64, rust-large]
+    timeout-minutes: 240
+    env:
+      EM_CI_EXECUTION_SELF_HOSTED: "true"
+    outputs: *proof_outputs
+    steps: *proof_steps
+
+  hosted:
+    name: Rust hosted external
+    needs: classify
+    if: needs.classify.outputs.self_hosted == 'false' && needs.classify.outputs.hosted_enabled == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: ${{ needs.classify.outputs.runner_image }}
+      # GitHub-hosted job containers need root access to the mounted workspace.
+      # The same image runs as UID 1001 when it is itself the JIT runner.
+      options: --user 0
+    env:
+      EM_CI_EXECUTION_SELF_HOSTED: "false"
+    outputs: *proof_outputs
+    steps: *proof_steps
+
+  external-unavailable:
+    name: Rust hosted external unavailable
+    needs: classify
+    if: needs.classify.outputs.self_hosted == 'false' && needs.classify.outputs.hosted_enabled != 'true'
+    # Report policy refusal with trusted static code; external source is never checked out.
+    runs-on:
+      group: em-ci-build
+      labels: [self-hosted, linux, x64, rust-standard]
+    timeout-minutes: 5
+    steps:
+      # No checkout: external source must never fall through to the trusted fleet.
+      - name: Report unavailable external route
+        shell: bash
+        run: |
+          echo '::error::GitHub-hosted EM CI is currently disabled; external and bot pull requests cannot run on the trusted self-hosted fleet.'
+          exit 75
+
+  hosted-fallback:
+    name: Rust hosted pre-proof recovery
+    needs: [classify, light, standard, heavy, large]
+    # Only a positively withdrawn admission is normalized; the proof remains skipped.
+    # Queued/cancelled/failed/policy/entered jobs are never eligible.
+    # Execution timeout is not a queue-availability deadline.
+    if: >-
+      ${{ !cancelled() && needs.classify.result == 'success' &&
+          needs.classify.outputs.self_hosted == 'true' &&
+          needs.classify.outputs.hosted_enabled == 'true' &&
+          ((needs.classify.outputs.profile == 'light' && needs.light.result == 'success' && needs.light.outputs.proof_outcome == 'skipped' && (needs.light.outputs.infrastructure_failure == 'toolchain_unavailable' || needs.light.outputs.infrastructure_failure == 'disposable_paths_unavailable')) ||
+           (needs.classify.outputs.profile == 'standard' && needs.standard.result == 'success' && needs.standard.outputs.proof_outcome == 'skipped' && (needs.standard.outputs.infrastructure_failure == 'toolchain_unavailable' || needs.standard.outputs.infrastructure_failure == 'disposable_paths_unavailable')) ||
+           (needs.classify.outputs.profile == 'heavy' && needs.heavy.result == 'success' && needs.heavy.outputs.proof_outcome == 'skipped' && (needs.heavy.outputs.infrastructure_failure == 'toolchain_unavailable' || needs.heavy.outputs.infrastructure_failure == 'disposable_paths_unavailable')) ||
+           (needs.classify.outputs.profile == 'large' && needs.large.result == 'success' && needs.large.outputs.proof_outcome == 'skipped' && (needs.large.outputs.infrastructure_failure == 'toolchain_unavailable' || needs.large.outputs.infrastructure_failure == 'disposable_paths_unavailable'))) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: ${{ needs.classify.outputs.runner_image }}
+      options: --user 0
+    env:
+      EM_CI_EXECUTION_SELF_HOSTED: "false"
+    outputs: *proof_outputs
+    steps: *proof_steps
+
+  repository-policy:
+    name: Rust repository result policy
+    needs: [classify, light, standard, heavy, large, hosted, hosted-fallback, external-unavailable]
+    if: always() && inputs.result_script != '' && needs.classify.result == 'success'
+    runs-on: &result_runner >-
+      ${{ fromJSON(((needs.classify.result == 'success' && needs.classify.outputs.self_hosted == 'false' && needs.classify.outputs.hosted_enabled == 'true') || (needs.classify.result == 'success' && needs.classify.outputs.self_hosted == 'true' && needs.classify.outputs.hosted_enabled == 'true' && (needs.hosted-fallback.result == 'success' || needs.hosted-fallback.result == 'failure' || (needs.hosted-fallback.result == 'cancelled' && needs.hosted-fallback.outputs.proof_entered_at != ''))) || (needs.classify.result != 'success' && (vars.EM_CI_GITHUB_HOSTED_ENABLED == 'true' && (inputs.force_hosted || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || github.event.pull_request.user.type == 'Bot')))))) && '"ubuntu-24.04"' || '{"group":"em-ci-build","labels":["self-hosted","linux","x64","rust-standard"]}') }}
+    # This caller-executing job has ordinary proof isolation and read-only access.
+    # The immutable aggregate below never checks out or executes caller source.
+    permissions:
+      contents: read
+      checks: read
+      actions: read
+      pull-requests: read
+    timeout-minutes: 35
+    steps:
+      - &evaluate_selected_proof
+        name: Evaluate selected implementation
+        id: evaluate
+        shell: bash
+        env:
+          CLASSIFY_RESULT: ${{ needs.classify.result }}
+          PROFILE: ${{ needs.classify.outputs.profile }}
+          SELF_HOSTED: ${{ needs.classify.outputs.self_hosted }}
+          HOSTED_ENABLED: ${{ needs.classify.outputs.hosted_enabled }}
+          LIGHT_RESULT: ${{ needs.light.result }}
+          STANDARD_RESULT: ${{ needs.standard.result }}
+          HEAVY_RESULT: ${{ needs.heavy.result }}
+          LARGE_RESULT: ${{ needs.large.result }}
+          HOSTED_RESULT: ${{ needs.hosted.result }}
+          LIGHT_INFRASTRUCTURE_FAILURE: ${{ needs.light.outputs.infrastructure_failure }}
+          LIGHT_PROOF_OUTCOME: ${{ needs.light.outputs.proof_outcome }}
+          LIGHT_PROOF_ENTERED_AT: ${{ needs.light.outputs.proof_entered_at }}
+          LIGHT_PROOF_RUN_ATTEMPT: ${{ needs.light.outputs.proof_run_attempt }}
+          STANDARD_INFRASTRUCTURE_FAILURE: ${{ needs.standard.outputs.infrastructure_failure }}
+          STANDARD_PROOF_OUTCOME: ${{ needs.standard.outputs.proof_outcome }}
+          STANDARD_PROOF_ENTERED_AT: ${{ needs.standard.outputs.proof_entered_at }}
+          STANDARD_PROOF_RUN_ATTEMPT: ${{ needs.standard.outputs.proof_run_attempt }}
+          HEAVY_INFRASTRUCTURE_FAILURE: ${{ needs.heavy.outputs.infrastructure_failure }}
+          HEAVY_PROOF_OUTCOME: ${{ needs.heavy.outputs.proof_outcome }}
+          HEAVY_PROOF_ENTERED_AT: ${{ needs.heavy.outputs.proof_entered_at }}
+          HEAVY_PROOF_RUN_ATTEMPT: ${{ needs.heavy.outputs.proof_run_attempt }}
+          LARGE_INFRASTRUCTURE_FAILURE: ${{ needs.large.outputs.infrastructure_failure }}
+          LARGE_PROOF_OUTCOME: ${{ needs.large.outputs.proof_outcome }}
+          LARGE_PROOF_ENTERED_AT: ${{ needs.large.outputs.proof_entered_at }}
+          LARGE_PROOF_RUN_ATTEMPT: ${{ needs.large.outputs.proof_run_attempt }}
+          HOSTED_INFRASTRUCTURE_FAILURE: ${{ needs.hosted.outputs.infrastructure_failure }}
+          HOSTED_PROOF_OUTCOME: ${{ needs.hosted.outputs.proof_outcome }}
+          HOSTED_PROOF_ENTERED_AT: ${{ needs.hosted.outputs.proof_entered_at }}
+          HOSTED_PROOF_RUN_ATTEMPT: ${{ needs.hosted.outputs.proof_run_attempt }}
+          HOSTED_FALLBACK_INFRASTRUCTURE_FAILURE: ${{ needs.hosted-fallback.outputs.infrastructure_failure }}
+          HOSTED_FALLBACK_PROOF_OUTCOME: ${{ needs.hosted-fallback.outputs.proof_outcome }}
+          HOSTED_FALLBACK_PROOF_ENTERED_AT: ${{ needs.hosted-fallback.outputs.proof_entered_at }}
+          HOSTED_FALLBACK_PROOF_RUN_ATTEMPT: ${{ needs.hosted-fallback.outputs.proof_run_attempt }}
+          HOSTED_FALLBACK_RESULT: ${{ needs.hosted-fallback.result }}
+          SUBJECT_REPOSITORY: ${{ github.repository }}
+          SUBJECT_SHA: ${{ github.sha }}
+          SUBJECT_RUN_ID: ${{ github.run_id }}
+          SUBJECT_RUN_ATTEMPT: ${{ github.run_attempt }}
+          EXTERNAL_UNAVAILABLE_RESULT: ${{ needs.external-unavailable.result }}
+        run: |
+          set -euo pipefail
+
+          [[ "$CLASSIFY_RESULT" == success ]] || {
+            echo "::error::classification failed: $CLASSIFY_RESULT"
+            exit 1
+          }
+
+          if [[ "$SELF_HOSTED" == false ]]; then
+            if [[ "$HOSTED_ENABLED" == true ]]; then
+              selected=$HOSTED_RESULT
+            else
+              selected=$EXTERNAL_UNAVAILABLE_RESULT
+            fi
+          else
+            case "$PROFILE" in
+              light) selected=$LIGHT_RESULT ;;
+              standard) selected=$STANDARD_RESULT ;;
+              heavy) selected=$HEAVY_RESULT ;;
+              large) selected=$LARGE_RESULT ;;
+              *) echo "::error::invalid selected profile: $PROFILE"; exit 1 ;;
+            esac
+          fi
+
+          route=self_hosted
+          if [[ "$SELF_HOSTED" == false ]]; then route=hosted; fi
+          prefix=${PROFILE^^}
+          if [[ "$SELF_HOSTED" == false ]]; then prefix=HOSTED; fi
+          reason_name=${prefix}_INFRASTRUCTURE_FAILURE
+          outcome_name=${prefix}_PROOF_OUTCOME
+          entry_name=${prefix}_PROOF_ENTERED_AT
+          attempt_name=${prefix}_PROOF_RUN_ATTEMPT
+          reason=${!reason_name:-}
+          proof_outcome=${!outcome_name:-}
+          proof_entered_at=${!entry_name:-}
+          proof_run_attempt=${!attempt_name:-}
+
+          if [[ "$HOSTED_FALLBACK_RESULT" != skipped ]]; then
+            # Recheck the exact eligibility; recovery cannot hide a proof or policy failure.
+            [[ "$SELF_HOSTED" == true && "$HOSTED_ENABLED" == true &&
+               "$selected" == success && "$proof_outcome" == skipped &&
+               -z "$proof_entered_at" ]] || exit 1
+            case "$reason" in
+              toolchain_unavailable|disposable_paths_unavailable) ;;
+              *) exit 1 ;;
+            esac
+            selected=$HOSTED_FALLBACK_RESULT
+            route=hosted_fallback
+            proof_outcome=$HOSTED_FALLBACK_PROOF_OUTCOME
+            proof_entered_at=$HOSTED_FALLBACK_PROOF_ENTERED_AT
+            proof_run_attempt=$HOSTED_FALLBACK_PROOF_RUN_ATTEMPT
+          fi
+
+          # A partial rerun must not relabel a cached proof from an older attempt.
+          [[ "$proof_run_attempt" =~ ^[1-9][0-9]*$ &&
+             "$proof_run_attempt" == "$SUBJECT_RUN_ATTEMPT" ]] || {
+            echo "::error::proof attempt does not match this result attempt; rerun all jobs"
+            exit 1
+          }
+
+          # This control step executes no caller code. Missing/failed job outputs
+          # remain blocking; callers must also require this reusable result success.
+          evidence=$(jq -cn \
+            --arg repository "$SUBJECT_REPOSITORY" --arg sha "$SUBJECT_SHA" \
+            --arg run_id "$SUBJECT_RUN_ID" --arg run_attempt "$SUBJECT_RUN_ATTEMPT" \
+            --arg profile "$PROFILE" --arg route "$route" --arg result "$selected" \
+            --arg infrastructure_failure "$reason" --arg proof_outcome "$proof_outcome" \
+            --arg proof_entered_at "$proof_entered_at" \
+            '{schema:"em-ci-rust-result.v1",repository:$repository,sha:$sha,run_id:$run_id,run_attempt:$run_attempt,profile:$profile,route:$route,result:$result,infrastructure_failure:$infrastructure_failure,proof_outcome:$proof_outcome,proof_entered_at:$proof_entered_at}')
+          echo "evidence=$evidence" >> "$GITHUB_OUTPUT"
+
+          {
+            echo '## Rust CI result'
+            echo
+            echo "- profile: \`$PROFILE\`"
+            echo "- self_hosted: \`$SELF_HOSTED\`"
+            echo "- hosted_enabled: \`$HOSTED_ENABLED\`"
+            echo "- selected_result: \`$selected\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          [[ "$selected" == success && "$proof_outcome" == success && -n "$proof_entered_at" ]] || {
+            echo "::error::selected proof did not succeed: $selected"
+            exit 1
+          }
+      - name: Checkout exact result-policy source
+        if: inputs.result_script != '' && steps.evaluate.outcome == 'success'
+        uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Run repository result policy
+        if: inputs.result_script != '' && steps.evaluate.outcome == 'success'
+        env:
+          EM_CI_RESULT_SCRIPT: ${{ inputs.result_script }}
+          EM_CI_EVIDENCE: ${{ steps.evaluate.outputs.evidence }}
+          EM_CI_SELECTED_PROOF_RESULT: ${{ steps.evaluate.outcome }}
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$(git rev-parse HEAD)" == "$GITHUB_SHA" ]]
+          [[ "$EM_CI_RESULT_SCRIPT" =~ ^[A-Za-z0-9._/-]+$ ]]
+          [[ "$EM_CI_RESULT_SCRIPT" != /* && "$EM_CI_RESULT_SCRIPT" != *..* ]]
+          [[ -f "$EM_CI_RESULT_SCRIPT" ]]
+          bash -- "$EM_CI_RESULT_SCRIPT"
+
+  result:
+    name: Rust CI / Required
+    needs: [classify, light, standard, heavy, large, hosted, hosted-fallback, external-unavailable, repository-policy]
+    if: always()
+    runs-on: *result_runner
+    permissions:
+      contents: read
+    timeout-minutes: 5
+    outputs:
+      evidence: ${{ job.status == 'success' && steps.upload_receipt.outcome == 'success' && steps.evaluate.outputs.evidence || '' }}
+      receipt_name: ${{ job.status == 'success' && steps.upload_receipt.outcome == 'success' && steps.receipt.outputs.name || '' }}
+    steps:
+      - *evaluate_selected_proof
+      - name: Require configured repository policy success
+        id: policy_result
+        env:
+          RESULT_SCRIPT: ${{ inputs.result_script }}
+          POLICY_RESULT: ${{ needs.repository-policy.result }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -n "$RESULT_SCRIPT" ]]; then
+            [[ "$POLICY_RESULT" == success ]] || {
+              echo "::error::repository result policy did not succeed: $POLICY_RESULT"
+              exit 1
+            }
+          else
+            [[ "$POLICY_RESULT" == skipped ]] || exit 1
+          fi
+      - name: Preserve exact result receipt
+        id: receipt
+        env:
+          EM_CI_EVIDENCE: ${{ steps.evaluate.outputs.evidence }}
+          EM_CI_JOB_CONTEXT: ${{ toJSON(job) }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PYTHON'
+          import json, os, pathlib
+          evidence = json.loads(os.environ['EM_CI_EVIDENCE'])
+          context = json.loads(os.environ['EM_CI_JOB_CONTEXT'])
+          job_id = context['check_run_id']
+          assert type(job_id) is int and job_id > 0, 'native result job identity missing'
+          assert evidence['repository'] == os.environ['GITHUB_REPOSITORY']
+          assert evidence['sha'] == os.environ['GITHUB_SHA']
+          assert evidence['run_id'] == os.environ['GITHUB_RUN_ID']
+          assert evidence['run_attempt'] == os.environ['GITHUB_RUN_ATTEMPT']
+          name = 'em-ci-rust-result-' + evidence['run_id'] + '-' + evidence['run_attempt'] + '-' + str(job_id)
+          pathlib.Path(os.environ['RUNNER_TEMP'], 'em-ci-result.json').write_text(json.dumps(evidence, sort_keys=True))
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write('name=' + name + '\n')
+          PYTHON
+      - name: Upload exact result receipt
+        id: upload_receipt
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: ${{ steps.receipt.outputs.name }}
+          path: ${{ runner.temp }}/em-ci-result.json
+          if-no-files-found: error
+          retention-days: 7

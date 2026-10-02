@@ -12,6 +12,7 @@ import sys
 import tempfile
 import textwrap
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 SCRIPT = Path(__file__).with_name("validate_gate_enforcement_contract.py")
@@ -904,6 +905,104 @@ class ContractTests(unittest.TestCase):
         self.assertEqual("SUCCESS", left["status"])
         self.assertEqual("SUCCESS", right["status"])
         self.assertNotEqual(left["subject_sha256"], right["subject_sha256"])
+
+
+# Proposed migration row, following the existing10536 draft-row precedent.
+# This candidate includes the same proposed row in its declaration.
+# Neither row claims that live protection has already changed.
+OWNED_RUST_DRAFT_ROW = {
+    "name": "Perl LSP Rust Small governed proof / Rust CI / Required",
+    "producer": "reusable-workflow-job",
+    "workflow": ".github/workflows/em-ci-routed-rust.yml",
+    "job": "rust-small-proof",
+    "callee_workflow": "EffortlessMetrics/em-ci-workflows/.github/workflows/rust.yml@a3125de962a74e7ec2e127d41d7532f66c69334d",
+    "callee_source": ".ci/workflow-sources/em-ci-rust-a3125de9.yml",
+    "callee_sha256": "275203f28721f1b209b0b09695392e9996c3717981c1eb56ab7a412d483e22fc",
+    "callee_job": "result",
+    "workflow_result": "propagate",
+    "events": ["pull_request", "merge_group", "push", "workflow_dispatch"],
+    "required": True, "policy_role": "required", "applicability": "conditional",
+    "enforcement": "github-ruleset", "ruleset_integration_id": 15368,
+    "reason": "Proposed owned Rust Small aggregate; activation requires native exact-subject qualification and explicit settings approval.",
+}
+
+class ReusableProducerTests(unittest.TestCase):
+    def findings(self, row, workflows=None):
+        original = contract.read_workflow_catalog(ROOT) if workflows is None else workflows
+        projected, subjects, findings = contract.project_reusable_workflows(ROOT, original, [row])
+        local, mapped = contract.validate_context(row, projected, contract.build_producer_index(projected))
+        return findings + local, subjects, mapped
+
+    def test_reviewed_immutable_proposed_row_maps_without_claiming_live_enforcement(self):
+        findings, subjects, mapped = self.findings(OWNED_RUST_DRAFT_ROW)
+        self.assertEqual(findings, [])
+        self.assertTrue(mapped)
+        self.assertEqual(subjects, [{"reference": OWNED_RUST_DRAFT_ROW["callee_workflow"],
+                                   "path": OWNED_RUST_DRAFT_ROW["callee_source"],
+                                   "sha256": OWNED_RUST_DRAFT_ROW["callee_sha256"]}])
+        source = ROOT / OWNED_RUST_DRAFT_ROW["callee_source"]
+        data = source.read_bytes()
+        self.assertEqual(hashlib.sha1(b"blob " + str(len(data)).encode() + b"\0" + data).hexdigest(),
+                         "6d202cfd6861bb359381dfb128c1574c04505285")
+
+    def test_candidate_declaration_matches_reviewed_proposed_row(self):
+        import tomllib
+        policy = tomllib.loads((ROOT/".ci/policies/required-checks.toml").read_text())
+        current = next(row for row in policy["checks"] if row["name"] == OWNED_RUST_DRAFT_ROW["name"])
+        self.assertEqual(current, OWNED_RUST_DRAFT_ROW)
+        self.assertNotIn("Perl LSP Rust Small Result", [row["name"] for row in policy["checks"]])
+
+    def test_row_identity_mutations_fail_closed(self):
+        mutations = {"unpinned": {"callee_workflow": OWNED_RUST_DRAFT_ROW["callee_workflow"].split("@")[0]+"@main"},
+                     "wrong pin": {"callee_workflow": OWNED_RUST_DRAFT_ROW["callee_workflow"].split("@")[0]+"@"+"b"*40},
+                     "wrong prefix": {"name": "Other / Rust CI / Required"},
+                     "wrong leaf": {"callee_job": "standard"},
+                     "absent leaf": {"callee_job": "absent"},
+                     "absent caller": {"job": "absent"},
+                     "invalid caller type": {"job": {}},
+                     "invalid callee type": {"callee_job": []},
+                     "invalid workflow type": {"workflow": {}},
+                     "wrong app": {"ruleset_integration_id": 99},
+                     "missing digest": {"callee_sha256": ""},
+                     "wrong bytes": {"callee_sha256": "0"*64},
+                     "missing source": {"callee_source": ".ci/missing.yml"},
+                     "unsafe source": {"callee_source": "../rust.yml"}}
+        for name, delta in mutations.items():
+            with self.subTest(name=name):
+                self.assertTrue(self.findings(dict(OWNED_RUST_DRAFT_ROW, **delta))[0])
+
+    def test_duplicate_unlisted_caller_and_bad_posture_are_detected(self):
+        original = contract.read_workflow_catalog(ROOT)
+        path = OWNED_RUST_DRAFT_ROW["workflow"]
+        workflow = original[path]
+        call = workflow.jobs["rust-small-proof"]
+        for mutant in (call._replace(job_id="duplicate"),
+                       call._replace(job_id="duplicate", strategy=True),
+                       call._replace(job_id="duplicate", name=None, name_static=False),
+                       call._replace(name="Other prefix"),
+                       call._replace(continue_on_error=True), call._replace(name=None, name_static=False),
+                       call._replace(condition_class="never"), call._replace(strategy=True)):
+            jobs = dict(workflow.jobs)
+            jobs[mutant.job_id] = mutant
+            candidate = dict(original, **{path: workflow._replace(jobs=jobs)})
+            with self.subTest(mutant=mutant):
+                self.assertTrue(self.findings(OWNED_RUST_DRAFT_ROW, candidate)[0])
+
+    def test_unsupported_unmapped_callee_jobs_do_not_disappear(self):
+        workflows = contract.read_workflow_catalog(ROOT)
+        callee = contract.read_workflow(ROOT, OWNED_RUST_DRAFT_ROW["callee_source"])
+        other = callee.jobs["classify"]
+        for altered in (other._replace(strategy=True), other._replace(uses="other/repo/.github/workflows/child.yml@"+"a"*40),
+                        other._replace(name_static=False, name=None)):
+            jobs = dict(callee.jobs, classify=altered)
+            with self.subTest(altered=altered), patch.object(contract, "read_workflow", return_value=callee._replace(jobs=jobs)):
+                findings = self.findings(OWNED_RUST_DRAFT_ROW, workflows)[0]
+                self.assertIn("ambiguous_reusable_emitter", [item.code for item in findings])
+
+    def test_source_and_ref_are_in_canonical_identity(self):
+        row = contract._canonical_context(OWNED_RUST_DRAFT_ROW)
+        for key in contract.REUSABLE_FIELDS:
+            self.assertEqual(row[key], OWNED_RUST_DRAFT_ROW[key])
 
 
 if __name__ == "__main__":

@@ -26,7 +26,7 @@ Each `[[checks]]` row keeps these fields distinct:
 
 ```text
 producer
-  repository-job | external
+  repository-job | reusable-workflow-job | external
 
 workflow_result
   propagate | continue
@@ -94,3 +94,32 @@ A receipt with missing subject identity is not reusable evidence. Changing any g
 The static validator proves checked-in policy/workflow consistency. It does **not** discover the live protected-context union. Live enforcement is additive across classic branch protection and active repository rulesets.
 
 The receipt therefore records live enforcement as `NOT_PROVEN`. An authenticated observer must read both systems and must preserve `NOT_PROVEN` when either source is inaccessible. No checked-in `required = true`, green workflow name, or single accessible GitHub API can substitute for that observation.
+
+## Immutable reusable workflow producers
+
+`reusable-workflow-job` is an explicit one-level native producer. Alongside the
+ordinary caller workflow/job, events, role and result posture, its row supplies
+`callee_workflow` (the exact full-SHA uses reference), `callee_source` (tracked
+verbatim YAML), `callee_sha256`, and `callee_job`. Native checks must be bound to
+GitHub Actions integration15368. Dynamic names, matrix expansion and nested
+reusable emitting jobs are outside this bounded contract.
+
+The validator checks caller/ref agreement and source bytes, then derives the
+caller-name / callee-name context and combined condition/failure posture. It
+indexes every direct callee job for every caller of the declared immutable pin,
+including undeclared duplicate callers. Existing direct-job validation is
+unchanged. The source identities join the exact-source receipt, and all callee
+fields join canonical context identity.
+
+The parser proves local source consistency. Independent upstream retrieval and
+review must establish that the vendored bytes belong to that immutable public
+ref; a digest supplied alongside arbitrary bytes is insufficient provenance.
+Native qualification must still confirm the real emitted name, app ID, PR head,
+tested merge SHA, run and attempt before any protection change.
+
+The proposed owned Rust row is OWNED_RUST_DRAFT_ROW in the existing validator's
+test module, following TRUSTED_BASE_DRAFT_ROW's pre-registration pattern. The
+assembled candidate declaration includes that identical proposed row and an
+explicit pending-activation notice. Neither source asserts live enforcement.
+Its changed producer/doc contracts require deliberate final qualification of
+this complete candidate before an approved protection transaction.

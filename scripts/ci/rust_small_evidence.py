@@ -26,6 +26,15 @@ def validate_evidence(environment: Mapping[str, str]) -> dict[str, str]:
     """Require successful entry/completion and bind the central result to its caller."""
     if environment.get("EM_CI_CALL_RESULT") != "success":
         raise ValueError("governed workflow did not succeed")
+    return validate_proof_evidence(environment)
+
+
+def validate_proof_evidence(environment: Mapping[str, str]) -> dict[str, str]:
+    """Validate selected-proof evidence inside a still-running governed policy job.
+
+    The caller owns the successful evaluator prerequisite. This does not certify
+    that the reusable workflow, its policy or its receipt has completed.
+    """
     evidence = json.loads(
         environment.get("EM_CI_EVIDENCE", ""), object_pairs_hook=unique_object
     )

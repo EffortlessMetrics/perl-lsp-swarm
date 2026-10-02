@@ -27,7 +27,7 @@ RUST_SMALL_KEY = ".github/workflows/em-ci-routed-rust.yml"
 
 DECLARED_REASON = (
     "Advisory receipt-producing dedicated formatter context. "
-    "Live merge blocking is owned by the required Perl LSP Rust Small Result "
+    "Live merge blocking is owned by the required Perl LSP Rust Small governed proof / Rust CI / Required "
     "path (#9127/#12320). Duplicate meta-shard fmt execution is retired by "
     "#9959. Settings-app promotion of this context remains #7087 and is not "
     "claimed here."
@@ -236,10 +236,9 @@ class HostedFormatterProducerTests(unittest.TestCase):
     def test_undeclared_cargo_fmt_in_rust_small_result_fails_closed(self) -> None:
         rust_small = self.retired_workflows[RUST_SMALL_KEY]
         broken_workflows = dict(self.retired_workflows)
-        broken_workflows[RUST_SMALL_KEY] = rust_small.replace(
-            "python3 -m unittest \\",
-            "cargo fmt --all -- --check\n          python3 -m unittest \\",
-            1,
+        broken_workflows[RUST_SMALL_KEY] = rust_small + (
+            "\n  rust-small-result:\n    runs-on: ubuntu-latest\n"
+            "    steps:\n      - run: cargo fmt --all -- --check\n"
         )
         with self.assertRaisesRegex(
             AssertionError,

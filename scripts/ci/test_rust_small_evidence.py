@@ -96,47 +96,22 @@ class RustSmallEvidenceTests(unittest.TestCase):
             with self.subTest(key=key), self.assertRaises(ValueError):
                 validate_evidence({**environment, "EM_CI_EVIDENCE": json.dumps(self.evidence)})
 
-    def test_workflow_wires_exact_subject_and_required_guard(self) -> None:
+    def test_workflow_reaches_isolated_policy_without_local_aggregate(self) -> None:
         import yaml
         workflow = yaml.safe_load((ROOT / ".github/workflows/em-ci-routed-rust.yml").read_text())
-        steps = workflow["jobs"]["rust-small-result"]["steps"]
-        guard = next(step for step in steps if step.get("id") == "evidence")
-        self.assertEqual(guard, {
-            "name": "Validate subject-bound governed proof", "id": "evidence",
-            "if": "github.event_name != 'pull_request' || github.event.pull_request.draft != true",
-            "shell": "bash", "run": "python3 scripts/ci/rust_small_evidence.py",
-            "env": {
-                "EM_CI_CALL_RESULT": "${{ needs.rust-small-proof.result }}",
-                "EM_CI_EVIDENCE": "${{ needs.rust-small-proof.outputs.evidence }}",
-                "EXPECTED_REPOSITORY": "${{ github.repository }}",
-                "EXPECTED_SHA": "${{ github.sha }}",
-                "EXPECTED_RUN_ID": "${{ github.run_id }}",
-                "EXPECTED_RUN_ATTEMPT": "${{ github.run_attempt }}",
-            },
-        })
-        names = [step.get("name") for step in steps]
-        self.assertLess(names.index("Validate subject-bound governed proof"), names.index("Probe main-red refusal"))
-        evaluate = next(step for step in steps if step.get("name") == "Evaluate routed result")
-        self.assertNotIn("if", evaluate)
-        self.assertNotIn("continue-on-error", evaluate)
+        self.assertEqual(set(workflow["jobs"]), {"rust-small-proof"})
+        call = workflow["jobs"]["rust-small-proof"]
+        self.assertEqual(call["with"]["result_script"], ".ci/rust-standard-result.sh")
+        self.assertEqual(call["uses"], "EffortlessMetrics/em-ci-workflows/.github/workflows/rust.yml@a3125de962a74e7ec2e127d41d7532f66c69334d")
+        self.assertEqual(call["if"], "github.event.pull_request.draft != true || github.event_name != 'pull_request'")
+        self.assertNotIn("secrets", call)
+        self.assertNotIn("continue-on-error", call)
 
-    def test_final_evaluator_requires_validated_proof_and_preserves_draft(self) -> None:
-        import yaml
-        workflow = yaml.safe_load((ROOT / ".github/workflows/em-ci-routed-rust.yml").read_text())
-        step = next(step for step in workflow["jobs"]["rust-small-result"]["steps"] if step.get("name") == "Evaluate routed result")
-        self.assertEqual(step["env"]["PROOF_VALIDATED"], "${{ steps.evidence.outputs.proof_validated }}")
-        script = "gh() { return 1; }\n" + step["run"]
-        cases = (("success", "true", "false", True), ("success", "false", "false", False), ("success", "", "false", False), ("failure", "true", "false", False), ("cancelled", "true", "false", False), ("skipped", "", "true", False), ("skipped", "", "false", True))
-        with tempfile.TemporaryDirectory() as directory:
-            summary = Path(directory) / "summary"
-            for result, evidence, draft, expected in cases:
-                with self.subTest(result=result, evidence=evidence, draft=draft):
-                    summary.unlink(missing_ok=True)
-                    output = subprocess.run(["bash", "--noprofile", "--norc", "-c", script], env={**os.environ, "ROUTE_RESULT": result, "PROOF_VALIDATED": evidence, "IS_DRAFT_PR": draft, "GITHUB_STEP_SUMMARY": str(summary)}, capture_output=True, text=True, check=False)
-                    self.assertEqual(output.returncode == 0, expected, output.stderr + output.stdout)
-                    self.assertTrue(summary.is_file())
-                    if draft == "true":
-                        self.assertIn("RUST_SMALL_GATE_VERDICT=draft-no-proof", output.stdout)
+    def test_completed_call_validator_never_accepts_internal_proof_alone(self) -> None:
+        for result in ("failure", "cancelled", "skipped", ""):
+            with self.subTest(result=result), self.assertRaises(ValueError):
+                validate_evidence({**self.environment, "EM_CI_CALL_RESULT": result,
+                                   "EM_CI_SELECTED_PROOF_RESULT": "success"})
 
     def test_cli_emits_validation_only_after_complete_success(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

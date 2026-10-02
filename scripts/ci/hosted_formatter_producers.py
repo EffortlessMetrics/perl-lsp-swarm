@@ -41,7 +41,7 @@ GOVERNED_PROOF_SCRIPT_RE = re.compile(r"(?<![A-Za-z0-9_./-])\.ci/rust-standard-p
 GOVERNED_WORKFLOW_RE = re.compile(r"uses:\s*EffortlessMetrics/em-ci-workflows/\.github/workflows/rust\.yml@[0-9a-f]{40}(?:\s|$)")
 PARITY_REASON_NEEDLES = (
     "advisory receipt-producing dedicated formatter",
-    "perl lsp rust small result",
+    "perl lsp rust small governed proof / rust ci / required",
 )
 
 

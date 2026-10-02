@@ -80,7 +80,7 @@ def canonical_invocation_count(job_body: str) -> int:
     )
 
 
-def validate_rust_small_route_contract(workflow_text: str, proof_text: str | None = None) -> None:
+def validate_rust_small_route_contract(workflow_text: str, proof_text: str | None = None, policy_text: str | None = None) -> None:
     """Validate execution reachability as well as the canonical proof body."""
     proof_text = PROOF_PATH.read_text(encoding="utf-8") if proof_text is None else proof_text
     workflow = yaml.safe_load(workflow_text)
@@ -88,12 +88,14 @@ def validate_rust_small_route_contract(workflow_text: str, proof_text: str | Non
     call = jobs.get("rust-small-proof")
     if not isinstance(call, dict):
         raise AssertionError("governed Rust Small proof job missing")
+    if call.get("name") != "Perl LSP Rust Small governed proof":
+        raise AssertionError("native result context prefix drifted")
     if not re.fullmatch(r"EffortlessMetrics/em-ci-workflows/\.github/workflows/rust\.yml@[0-9a-f]{40}", call.get("uses", "")):
         raise AssertionError("governed workflow must use a full-SHA pin")
     if set(call) != {"name", "if", "uses", "with"}:
         raise AssertionError("thin caller must not own runners, permissions, secrets or implementation")
     inputs = call.get("with", {})
-    if set(inputs) != {"profile", "script", "fetch_depth", "force_hosted"} or inputs.get("profile") != "standard" or inputs.get("script") != ".ci/rust-standard-proof.sh" or inputs.get("fetch_depth") != 1:
+    if set(inputs) != {"profile", "script", "result_script", "fetch_depth", "force_hosted"} or inputs.get("profile") != "standard" or inputs.get("script") != ".ci/rust-standard-proof.sh" or inputs.get("fetch_depth") != 1 or inputs.get("result_script") != ".ci/rust-standard-result.sh":
         raise AssertionError("canonical script/profile/depth inputs drifted")
     expected_force = "${{ (github.event_name == 'workflow_dispatch' && inputs.force_target == 'github') || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || github.event.pull_request.user.type == 'Bot' || startsWith(github.event.pull_request.user.login, 'dependabot') || startsWith(github.event.pull_request.user.login, 'app/') || endsWith(github.event.pull_request.user.login, '[bot]'))) }}"
     if inputs.get("force_hosted") != expected_force:
@@ -112,14 +114,12 @@ def validate_rust_small_route_contract(workflow_text: str, proof_text: str | Non
     for line in active_lines:
         if line.strip().startswith("cargo ") and line.strip() not in ALLOWED_CARGO_COMMANDS:
             raise AssertionError(f".ci/rust-standard-proof.sh cargo-allowlist rejected {line.strip()!r}")
-    aggregate = jobs.get("rust-small-result", {})
-    if aggregate.get("needs") != "rust-small-proof" or aggregate.get("name") != "Perl LSP Rust Small Result" or aggregate.get("if") != "always()":
-        raise AssertionError("required aggregate identity/dependency drifted")
-    result_text = job_bodies(workflow_text).get("rust-small-result", "")
-    if CONTRACT_TEST_FILE not in "\n".join(active_code_lines(result_text)):
-        raise AssertionError(f"required aggregate must run {CONTRACT_TEST_FILE}")
-    if set(jobs) != {"rust-small-proof", "rust-small-result"}:
-        raise AssertionError("consumer must not retain ungoverned proof routes")
+    policy = (ROOT / ".ci/rust-standard-result.sh").read_text() if policy_text is None else policy_text
+    if CONTRACT_TEST_FILE not in "\n".join(active_code_lines(policy)):
+        raise AssertionError(f"owned result policy must run {CONTRACT_TEST_FILE}")
+    if set(jobs) != {"rust-small-proof"}:
+        raise AssertionError("consumer must not retain hosted controls or duplicate proof routes")
+
 
 
 class RustStandardProofScriptTests(unittest.TestCase):
@@ -293,20 +293,28 @@ class RustSmallRouteContractTests(unittest.TestCase):
             validate_rust_small_route_contract(self.workflow_text, self.proof_text.replace("set -euo pipefail", "set +e"))
 
     def test_caller_mutations_fail_closed(self) -> None:
-        for old, new in (("profile: standard", "profile: heavy"), ("script: .ci/rust-standard-proof.sh", "script: .ci/other.sh"), ("fetch_depth: 1", "fetch_depth: 0"), (".github/workflows/rust.yml@92c170b052d046c3c98acf8a1a4aab4510dda42d", ".github/workflows/rust.yml@main"), ("inputs.force_target == 'github'", "inputs.force_target == 'auto'"), (" || endsWith(github.event.pull_request.user.login, '[bot]')", ""), ("    with:\n", "    secrets: inherit\n    with:\n"), ("    if: github.event.pull_request.draft != true", "    if: github.event.pull_request.draft == true"), ("  rust-small-proof:\n", "  removed:\n")):
-            with self.subTest(old=old), self.assertRaises(AssertionError):
+        for old, new in (("name: Perl LSP Rust Small governed proof", "name: Unbound proof"), ("profile: standard", "profile: heavy"), ("script: .ci/rust-standard-proof.sh", "script: .ci/other.sh"), ("fetch_depth: 1", "fetch_depth: 0"), (".github/workflows/rust.yml@a3125de962a74e7ec2e127d41d7532f66c69334d", ".github/workflows/rust.yml@main"), ("inputs.force_target == 'github'", "inputs.force_target == 'auto'"), (" || endsWith(github.event.pull_request.user.login, '[bot]')", ""), ("    with:\n", "    secrets: inherit\n    with:\n"), ("    if: github.event.pull_request.draft != true", "    if: github.event.pull_request.draft == true"), ("  rust-small-proof:\n", "  removed:\n")):
+            with self.subTest(old=old):
                 broken = self.workflow_text.replace(old, new, 1)
                 self.assertNotEqual(broken, self.workflow_text)
+                with self.assertRaises(AssertionError):
+                    validate_rust_small_route_contract(broken, self.proof_text)
+
+    def test_policy_binding_and_duplicate_job_regressions_fail_closed(self) -> None:
+        variants = [self.workflow_text.replace("result_script: .ci/rust-standard-result.sh", "result_script: .ci/other.sh"),
+                    self.workflow_text.replace("      result_script: .ci/rust-standard-result.sh\n", ""),
+                    self.workflow_text + "\n  duplicate:\n    runs-on: ubuntu-latest\n    steps: []\n"]
+        for broken in variants:
+            self.assertNotEqual(broken, self.workflow_text)
+            with self.assertRaises(AssertionError):
                 validate_rust_small_route_contract(broken, self.proof_text)
 
-    def test_aggregate_identity_and_dependencies_remain_required(self) -> None:
-        for old, new in (("name: Perl LSP Rust Small Result", "name: CI Result"), ("needs: rust-small-proof", "needs: []"), ("if: always()", "if: false")):
-            with self.subTest(old=old), self.assertRaises(AssertionError):
-                validate_rust_small_route_contract(self.workflow_text.replace(old, new, 1), self.proof_text)
-
-    def test_result_job_without_contract_reference_fails_closed(self) -> None:
+    def test_policy_without_contract_reference_fails_closed(self) -> None:
+        policy = (ROOT / ".ci/rust-standard-result.sh").read_text()
+        broken = policy.replace(CONTRACT_TEST_FILE, "scripts/ci/removed.py")
+        self.assertNotEqual(broken, policy)
         with self.assertRaisesRegex(AssertionError, "must run"):
-            validate_rust_small_route_contract(self.workflow_text.replace(CONTRACT_TEST_FILE, "scripts/ci/removed.py"), self.proof_text)
+            validate_rust_small_route_contract(self.workflow_text, self.proof_text, broken)
 
 
 if __name__ == "__main__":
