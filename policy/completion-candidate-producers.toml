@@ -102,10 +102,53 @@ outcome_owner = "#10230"
 # reopened package — an inherited or composed method that was previously dropped
 # is now reachable — so it is a source re-audit, not a claim that completion
 # behavior is unchanged. Projection diff is digest-only.
+# Re-anchor 2026-10-01 (#17045): the #16850/#16809 regression repair restored
+# persisted `use parent`/role inheritance edges and persisted explicit and
+# generated members for current-document packages whenever the open buffer is
+# silent on them; buffer-stated facts keep precedence. The only scan-root
+# change is completion/completion/workspace.rs; producer population,
+# identities, authored dispositions, entry routes, delegations, and finalizer
+# route are unchanged. Open-buffer method candidates may again include
+# inherited members from the persisted index — this is a source re-audit, not
+# a claim that completion behavior is unchanged.
+# Re-anchor 2026-10-01 (#17084): the same-document freshness seam filters
+# persisted explicit members and persisted inheritance edges sourced from the
+# edited document's own URI out of open-buffer composition. Scan-root changes
+# are completion/completion/workspace.rs plus its request/dispatch.rs caller
+# (main's #17079 merge window also touched lexical_visibility.rs,
+# scope_distance.rs, variables.rs, and tests.rs in the same scan set);
+# producer population, identities, authored dispositions, entry routes,
+# delegations, and finalizer route are unchanged. Open-buffer candidates may
+# drop stale same-document rows the previous digest could offer. A follow-up
+# hardening pass canonicalizes path-form document identity and selects
+# cross-file inheritance facts before the stale-document skip; scan-root file
+# set and producer population are unchanged by it.
+# Re-anchor 2026-10-01 (#17043): #16860 (merged via #16877) drifted the surface
+# to 7d3c0254... with sigil-visibility edge tests and a scope-walk refactor
+# confined to completion/lexical_visibility.rs, completion/scope_distance.rs,
+# and completion/variables.rs (plus the excluded completion/tests.rs). The only
+# new scan-visible functions are a callback-based ancestor walk returning
+# ControlFlow (no candidate channel), a Vec<&Symbol> admission filter, and a
+# single-CompletionItem construction helper reached through the existing
+# variable producer's push seam: no producer add/remove/re-channel, scanned
+# set unchanged, entry and finalizer routes untouched. Projection diff is
+# digest-only, `check` passes.
+# Post-conversion re-anchor (same PR): the freshness-seam test fixtures moved
+# from index_file to the canonical index_initial_file (behavior-identical
+# forward) plus rustfmt layout; producer rows unchanged.
+# Re-anchor (same PR, CodeRabbit thread): canonical_document_identity now
+# normalizes URI-form identities via perl_uri::normalize_uri, matching the
+# workspace index's identity comparison; producer rows unchanged.
 # Re-anchor 2026-10-02 (merge of origin/main into #16853): main moved scanned
 # completion sources (lexical_visibility.rs, scope_distance.rs, variables.rs);
 # digest recomputed over the merged tree, producer rows unchanged.
-source_digest = "sha256:cb6e8b0317551507f0b38fa3a56961c223783beb5099dcdfda28b5637c74acb9"
+# Re-anchor 2026-10-02 (merge of #17045/#17043 into #16853): the freshness-seam
+# rewrite of completion/workspace.rs and this branch's per-segment class-model
+# merge compose — the reopened-consumer proof module was re-aimed at the seam's
+# 4-argument `collect_all_package_members_with_source` signature; no producer
+# add/remove/re-channel and no entry/finalizer change. Digest recomputed over
+# the merged tree.
+source_digest = "sha256:d9269500b743739ed6618e435919af2aeab94a3787b9e3faf706f13583c76b33"
 
 [[delegations]]
 module = "dancer2"
