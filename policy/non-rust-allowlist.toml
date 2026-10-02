@@ -632,6 +632,32 @@ created = "2026-08-04"
 review_after = "2026-11-04"
 
 [[allow]]
+id = "non-rust-vscode-installed-byte-observer-6056"
+path = "vscode-extension/src/test/installedArtifactObservation.ts"
+kind = "test_harness"
+language = "typescript"
+surface = "editor"
+classification = "test"
+owner = "editor/vscode"
+reason = "Node-only child harness reads canonical installed paths and actual bytes without a runtime product API."
+covered_by = ["node scripts/run-jest.js --runTestsByPath src/test/installedArtifactObservation.test.ts", "cargo xtask non-rust inventory --check"]
+created = "2026-09-29"
+review_after = "2027-03-29"
+
+[[allow]]
+id = "non-rust-vscode-installed-byte-tests-6056"
+path = "vscode-extension/src/test/installedArtifactObservation.test.ts"
+kind = "test_harness"
+language = "typescript"
+surface = "editor"
+classification = "test"
+owner = "editor/vscode"
+reason = "Focused filesystem fixtures discriminate wrong bytes, canonical containment escape and changed restart selection."
+covered_by = ["node scripts/run-jest.js --runTestsByPath src/test/installedArtifactObservation.test.ts", "cargo xtask non-rust inventory --check"]
+created = "2026-09-29"
+review_after = "2027-03-29"
+
+[[allow]]
 id = "non-rust-vscode-extension"
 glob = "vscode-extension/**"
 kind = "editor_extension"

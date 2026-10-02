@@ -5567,7 +5567,7 @@ mod tests {
         server.test_gate_workspace_indexing_start(started_tx, release_rx);
 
         server.start_workspace_indexing();
-        started_rx.recv_timeout(std::time::Duration::from_secs(5))?;
+        started_rx.recv_timeout(SCAN_GATE_WAIT)?;
         server.handle_progress_cancel(Some(json!({
             "token": "workspace-index"
         })));
@@ -5657,7 +5657,7 @@ mod tests {
         server.test_gate_workspace_indexing_start(started_tx, release_rx);
 
         server.start_workspace_indexing();
-        started_rx.recv_timeout(std::time::Duration::from_secs(5))?;
+        started_rx.recv_timeout(SCAN_GATE_WAIT)?;
 
         server.handle_did_change_workspace_folders(Some(json!({
             "event": {
@@ -5761,11 +5761,50 @@ mod tests {
         Ok(server)
     }
 
+    /// Budget for waiting on the background workspace-indexing scan to reach
+    /// one of its test gates, or to exit.
+    ///
+    /// This has to outlast the harness's own lease, and it deliberately
+    /// matches it. `readiness::INDEXING_START_GATE_WAIT_MS` parks a scan for
+    /// 30s waiting to be released, and `wait_for_indexing_completion` below
+    /// already waits 30s for that same scan to finish. A shorter test-side
+    /// wait is not a stricter measurement of anything — it is a structural
+    /// race with the harness. When the whole `perl-lsp-rs` lib suite runs in
+    /// parallel, thousands of tests contend for the scheduler, the spawned
+    /// scan thread can be started well after the test has begun waiting, and
+    /// the test then reports `RecvTimeoutError::Timeout` at 5s with
+    /// `admitted: true, started: true, commit_gate_reached: false`. That
+    /// failure reads like a product defect and is not one: the invariant the
+    /// test exists to prove was simply never exercised.
+    ///
+    /// These are scheduling budgets, not assertions. What the test asserts
+    /// about the scan's behavior is unchanged.
+    #[cfg(feature = "workspace")]
+    const SCAN_GATE_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+
+    /// #16695: a test that waits less than the gate's own release lease can
+    /// time out while its scan is still legitimately parked at the gate, and
+    /// the resulting `RecvTimeoutError` reports a defect that was never
+    /// measured. This pins the relationship so a future edit to either side
+    /// cannot silently reintroduce that race.
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn scan_gate_test_budget_outlasts_the_harness_gate_lease() {
+        let lease = std::time::Duration::from_millis(
+            crate::runtime::readiness::INDEXING_START_GATE_WAIT_MS,
+        );
+        assert!(
+            SCAN_GATE_WAIT >= lease,
+            "test wait budget {SCAN_GATE_WAIT:?} is shorter than the gate's own release lease \
+             {lease:?}, so a scan parked at the gate can outlive the test that is waiting for it"
+        );
+    }
+
     /// Shared harness: block until the background scan releases the indexing
     /// slot.
     #[cfg(feature = "workspace")]
     fn wait_for_indexing_completion(server: &LspServer) -> Result<(), Box<dyn std::error::Error>> {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        let deadline = std::time::Instant::now() + SCAN_GATE_WAIT;
         while server.indexing_in_progress.load(std::sync::atomic::Ordering::Acquire) {
             if std::time::Instant::now() >= deadline {
                 return Err("indexing thread did not finish before timeout".into());
@@ -5798,7 +5837,7 @@ mod tests {
         server.start_workspace_indexing();
         // The scan is now paused at the first file's commit seam, before
         // `zzz_swapped.pm` is read.
-        started_rx.recv_timeout(std::time::Duration::from_secs(5))?;
+        started_rx.recv_timeout(SCAN_GATE_WAIT)?;
         std::fs::remove_file(&swapped_path)?;
         let fifo = std::process::Command::new("mkfifo")
             .arg(&swapped_path)
@@ -5845,7 +5884,7 @@ mod tests {
         server.start_workspace_indexing();
         // The scan is now paused holding `indexing_transition_lock` at the
         // first file's commit seam, before `zzz_swapped_script` is read.
-        started_rx.recv_timeout(std::time::Duration::from_secs(5))?;
+        started_rx.recv_timeout(SCAN_GATE_WAIT)?;
         // The replacement keeps the symbol text but loses the Perl shebang:
         // unfixed code indexes it (shell content as Perl), fixed code must
         // reject it at the seam, so the assertion discriminates both ways.
@@ -5984,7 +6023,7 @@ mod tests {
         let (release_tx, release_rx) = std::sync::mpsc::channel();
         server.test_gate_indexing_commit(started_tx, release_rx);
         server.start_workspace_indexing();
-        started_rx.recv_timeout(std::time::Duration::from_secs(5))?;
+        started_rx.recv_timeout(SCAN_GATE_WAIT)?;
         std::fs::write(&script_path, "#!/bin/sh\npackage Hook;\nsub hook_symbol { 1 }\n1;\n")?;
         release_tx.send(())?;
         wait_for_indexing_completion(&server)?;
@@ -6491,7 +6530,7 @@ mod tests {
         server.test_gate_indexing_commit(started, release_receiver);
         let mut observation = server.test_observe_indexing_scan()?;
         server.start_workspace_indexing();
-        observation.wait_for_exit(std::time::Duration::from_secs(5));
+        observation.wait_for_exit(SCAN_GATE_WAIT);
         let snapshot = observation.snapshot_at(std::time::Instant::now());
         if snapshot.state() != "exited_before_first_commit_gate" {
             return Err(
@@ -6520,7 +6559,7 @@ mod tests {
         let (release, release_receiver) = std::sync::mpsc::channel();
         server.test_gate_workspace_indexing_start(started, release_receiver);
         server.start_workspace_indexing();
-        if let Err(error) = receiver.recv_timeout(std::time::Duration::from_secs(5)) {
+        if let Err(error) = receiver.recv_timeout(SCAN_GATE_WAIT) {
             let _ = release.send(());
             first.wait_for_exit(std::time::Duration::from_secs(1));
             return Err(error.into());
@@ -6539,8 +6578,8 @@ mod tests {
         server.start_workspace_indexing();
         let queued_snapshot = second.snapshot_at(std::time::Instant::now());
         let _ = release.send(());
-        first.wait_for_exit(std::time::Duration::from_secs(5));
-        second.wait_for_exit(std::time::Duration::from_secs(5));
+        first.wait_for_exit(SCAN_GATE_WAIT);
+        second.wait_for_exit(SCAN_GATE_WAIT);
         if queued_snapshot.state() != "no_scan_admission_observed"
             || first.snapshot_at(std::time::Instant::now()).state()
                 != "exited_before_first_commit_gate"
@@ -6568,7 +6607,7 @@ mod tests {
         let mut observation = server.test_observe_indexing_scan()?;
         server.start_workspace_indexing();
         let wait_started = std::time::Instant::now();
-        let wait_budget = std::time::Duration::from_secs(5);
+        let wait_budget = SCAN_GATE_WAIT;
         let deadline =
             wait_started.checked_add(wait_budget).ok_or("commit-gate deadline overflow")?;
         if let Err(error) = started_rx.recv_timeout(wait_budget) {
@@ -6787,7 +6826,7 @@ mod tests {
         let (release_tx, release_rx) = std::sync::mpsc::channel();
         server.test_gate_workspace_indexing_start(started_tx, release_rx);
         server.start_workspace_indexing();
-        started_rx.recv_timeout(std::time::Duration::from_secs(5))?;
+        started_rx.recv_timeout(SCAN_GATE_WAIT)?;
         server.test_apply_did_open(&active_uri, active_text, 1)?;
 
         let provider_result = server.test_handle_completion(Some(json!({
@@ -6907,7 +6946,7 @@ mod tests {
             .store(receipt_observer_guard.id(), std::sync::atomic::Ordering::Relaxed);
 
         server.start_workspace_indexing();
-        started_rx.recv_timeout(std::time::Duration::from_secs(5))?;
+        started_rx.recv_timeout(SCAN_GATE_WAIT)?;
         server.test_apply_did_open(&active_uri, active_text, 1)?;
 
         let provider_result = server.test_handle_completion(Some(json!({
