@@ -116,6 +116,28 @@ package main;
 my $other = bless {}, 'Other';
 $other->"#;
 
+/// #16983: a resolved receiver must not inherit document-resident members of
+/// packages it neither is nor composes. `Other` reaches neither `User` nor the
+/// `Printable` role that only `User` composes, yet both packages live in the
+/// same current document as the completion request.
+const NON_RECEIVER_PACKAGE_SOURCE: &str = r#"package Printable;
+use Moo::Role;
+sub stringify { "ok" }
+
+package User;
+use Moo;
+with 'Printable';
+
+package User;
+sub extra_method { 2 }
+
+package Other;
+sub other_method { 1 }
+
+package main;
+my $other = bless {}, 'Other';
+$other->"#;
+
 fn completions_for(source: &str, index: Arc<WorkspaceIndex>) -> Vec<CompletionItem> {
     let mut parser = Parser::new(source);
     let ast = must(parser.parse());
@@ -314,6 +336,26 @@ fn unrelated_empty_index_file_does_not_receive_other_package_role_methods() {
     assert!(
         !completions.iter().any(|item| item.label == "stringify"),
         "unrelated empty-index file must not receive another package's role methods; got {:?}",
+        labels(&completions)
+    );
+}
+
+#[test]
+fn resolved_receiver_does_not_offer_non_receiver_package_members() {
+    let completions = completions_for(NON_RECEIVER_PACKAGE_SOURCE, empty_index());
+    assert!(
+        completions.iter().any(|item| item.label == "other_method"),
+        "the resolved receiver's own method must stay offered; got {:?}",
+        labels(&completions)
+    );
+    assert!(
+        !completions.iter().any(|item| item.label == "stringify"),
+        "a role method of a package the receiver does not compose must not be offered; got {:?}",
+        labels(&completions)
+    );
+    assert!(
+        !completions.iter().any(|item| item.label == "extra_method"),
+        "another document-resident package's method must not be offered for this receiver; got {:?}",
         labels(&completions)
     );
 }

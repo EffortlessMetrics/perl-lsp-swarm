@@ -90,6 +90,14 @@ outcome_owner = "#10230"
 # test setup in scanned completion/workspace.rs, and a test-only module already
 # excluded above. The 42-file product scan, discovered producer population,
 # authored dispositions, entry routes, delegations, and finalizer are unchanged.
+# Re-anchor 2026-09-29 (#16983): methods.rs gained two helpers and one
+# non-candidate parameter. `receiver_packages` returns `Option<Vec<String>>`
+# and `symbol_package` returns `&str`; neither takes a `&mut Vec<CompletionItem>`
+# channel nor returns a container of candidates, so neither is a producer. The
+# 42-file product scan, discovered producer population, authored dispositions,
+# entry routes, delegations, and finalizer route are unchanged. This re-anchor
+# is a source re-audit, not a claim that completion behavior is unchanged: the
+# methods row below narrows document-resident candidates to a resolved receiver.
 # Re-anchor 2026-10-01 (#17045): the #16850/#16809 regression repair restored
 # persisted `use parent`/role inheritance edges and persisted explicit and
 # generated members for current-document packages whenever the open buffer is
@@ -127,7 +135,13 @@ outcome_owner = "#10230"
 # Re-anchor (same PR, CodeRabbit thread): canonical_document_identity now
 # normalizes URI-form identities via perl_uri::normalize_uri, matching the
 # workspace index's identity comparison; producer rows unchanged.
-source_digest = "sha256:9ca083709376d6ecb4b43a737972835c1dbd7098514512b4592026aae5d0d77b"
+# Re-anchor 2026-10-02 (merge of #17045/#17043 into #16983): the freshness-seam
+# rewrite touched request/dispatch.rs beside this branch's type_engine threading
+# of the same call sites; both compose (URI argument retained on the workspace
+# call, type_engine added to the methods calls). No producer
+# add/remove/re-channel and no entry/finalizer change. Digest recomputed over
+# the merged tree.
+source_digest = "sha256:35551e20d68aa2710c8e1330c7bec4880cbb469500b8e775954f6e74b3d9c81d"
 
 [[delegations]]
 module = "dancer2"
@@ -467,7 +481,7 @@ finalizer_route = "compatibility_adapter_before_shared_finalizer"
 reach_evidence = "provider_seam"
 reached_by = ["handle_completion", "handle_completion_cancellable"]
 migration_owner = "#8958"
-limitations = "Identity is the label today, so a same-named binding in another scope, package, or document instance can merge with this one. Nothing here proves visibility."
+limitations = "Identity is the label today, so a same-named binding in another scope, package, or document instance can merge with this one. A receiver resolving to exact evidence scopes candidates to its own package (#16983); Unknown and Dynamic receivers still prove nothing about visibility, and their bounded fallback is owned by add_workspace_method_completions."
 note = "Method candidates for an arrow receiver."
 
 [[producers]]
