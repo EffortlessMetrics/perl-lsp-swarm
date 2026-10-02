@@ -12,8 +12,8 @@
     "track": {"const": "public-beta"},
     "subject_sha": {"$ref": "#/$defs/sha40"},
     "topology_digest": {"$ref": "#/$defs/sha256_digest"},
-    "install_routes": {"type": "array", "items": {"$ref": "#/$defs/install_route"}},
-    "claims": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/claim"}}
+    "install_routes": {"type": "array", "items": {"$ref": "#/$defs/install_route"}, "uniqueItems": true},
+    "claims": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/claim"}, "uniqueItems": true}
   },
   "$defs": {
     "sha40": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
@@ -28,7 +28,7 @@
       "enum": ["native_windows", "wsl_linux", "macos", "linux_gnu", "linux_musl", "admitted_remote_host"]
     },
     "execution_class": {"enum": ["native", "emulated"]},
-    "executable": {"enum": ["perllsp", "perllsp-dap"]},
+    "executable": {"enum": ["perllsp", "perl-dap"]},
     "source_kind": {
       "enum": [
         "github_release",

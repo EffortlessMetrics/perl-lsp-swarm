@@ -1,5 +1,5 @@
 project: product
-component: Release and distribution
+component: Packaging and distribution
 kind: Added
 body: "Land the distribution install-train control plane (#10712/#11164/#10333): the checked `distribution_train.v1` dependency graph (79 nodes) with deterministic `cargo xtask distribution-train check|graph|explain|next`, checked per-node spec dispositions with eleven compiled route packets and deterministic `cargo xtask distribution-spec check|explain|index`, and `public_release_claims.v2` as the sole current route-aware claim contract — a typed schema, Rust model, and fail-closed validator whose fixtures reject server-only-as-pair, native-Windows-as-WSL, emulated-as-native, declared-as-public, cross-SHA, cross-target, missing-evidence-as-pass, v1-as-current, npm-active, and private-path collapses. No route population, ranking, guidance, installer, package, release, or public behavior changes."
 time: 2026-10-01T00:00:00Z

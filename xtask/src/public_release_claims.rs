@@ -40,9 +40,10 @@ pub const CURRENT_TRACK: &str = "public-beta";
 /// The claim namespace that binds an exact route ID under v2.
 const INSTALL_NAMESPACE: &str = "install.";
 
-/// Executable members a first-party delivery can name.
+/// Executable members a first-party delivery can name. These are the exact
+/// shipped binary names (`perl-dap` per crates/perl-dap/Cargo.toml `[[bin]]`).
 const SERVER_EXECUTABLE: &str = "perllsp";
-const DAP_EXECUTABLE: &str = "perllsp-dap";
+const DAP_EXECUTABLE: &str = "perl-dap";
 
 // ── Typed dimensions ────────────────────────────────────────────────────────
 
@@ -95,12 +96,30 @@ pub enum Platform {
 
 impl Platform {
     /// The target-triple family this platform can truthfully name.
+    ///
+    /// Deliberately coarse (`linux`, not gnu/musl): this feeds command-kind
+    /// compatibility (V12), where a shell install runs on any Linux libc.
+    /// Triple truthfulness is judged by [`Platform::names_target`].
     fn triple_family(self) -> Option<&'static str> {
         match self {
             Self::NativeWindows => Some("windows"),
             Self::WslLinux | Self::LinuxGnu | Self::LinuxMusl => Some("linux"),
             Self::Macos => Some("darwin"),
             Self::AdmittedRemoteHost => None,
+        }
+    }
+
+    /// Whether a route with this platform can truthfully name `triple` as its
+    /// target. The libc flavor is part of the claim: a `linux_musl` route
+    /// cannot name a GNU triple, and vice versa.
+    fn names_target(self, triple: &str) -> bool {
+        match self {
+            Self::NativeWindows => triple.contains("windows"),
+            Self::WslLinux | Self::LinuxGnu => triple.contains("linux-gnu"),
+            Self::LinuxMusl => triple.contains("linux-musl"),
+            Self::Macos => triple.contains("darwin"),
+            // No concrete platform claim, so no triple to contradict.
+            Self::AdmittedRemoteHost => true,
         }
     }
 }
@@ -566,10 +585,10 @@ impl Catalog {
             violations.push(law("V03", "debug_preview ships only inside the archive pair"));
         }
 
-        // V04 platform/environment vs target family (native-Windows-as-WSL).
-        if let Some(family) = route.platform.triple_family()
-            && !route.target_triple.contains(family)
-        {
+        // V04 platform/environment vs target family (native-Windows-as-WSL,
+        // musl-route-naming-a-GNU-triple): the libc flavor is part of the
+        // target claim, so the family substring alone cannot admit it.
+        if !route.platform.names_target(&route.target_triple) {
             violations.push(law(
                 "V04",
                 format!(
@@ -753,7 +772,10 @@ impl Catalog {
                     format!("claim is proven but route {route_id} is {:?}", route.status),
                 ));
             }
-        } else if claim.limitation.is_none() {
+        } else if claim.limitation.as_deref().is_none_or(|limitation| limitation.trim().is_empty())
+        {
+            // A blank limitation is no limitation: bounded, blocked, and
+            // not_proven claims must state why their evidence is incomplete.
             violations.push(law(
                 "V15",
                 format!("{:?} claim requires an explicit limitation", claim.status),
@@ -896,7 +918,7 @@ mod tests {
                 "target_triple": "x86_64-pc-windows-msvc",
                 "execution_class": "native",
                 "product_units": ["archive_pair"],
-                "executables": ["perllsp", "perllsp-dap"],
+                "executables": ["perllsp", "perl-dap"],
                 "source": {
                     "kind": "github_release",
                     "identity": "release 0.18.0 asset perllsp-0.18.0-x86_64-pc-windows-msvc.zip"
@@ -1015,6 +1037,18 @@ mod tests {
         let mut catalog = positive_catalog();
         mutate_route(&mut catalog, |route| {
             route["platform"] = json!("wsl_linux");
+        });
+        expect_rejected(catalog, "V04");
+    }
+
+    #[test]
+    fn musl_route_cannot_name_a_gnu_triple() {
+        // The libc flavor is part of the target claim: `linux` as a bare
+        // family substring would admit a GNU binary into a musl route.
+        let mut catalog = positive_catalog();
+        mutate_route(&mut catalog, |route| {
+            route["platform"] = json!("linux_musl");
+            route["target_triple"] = json!("x86_64-unknown-linux-gnu");
         });
         expect_rejected(catalog, "V04");
     }
@@ -1163,6 +1197,17 @@ mod tests {
         let mut catalog = positive_catalog();
         catalog["claims"][0]["evidence_refs"] = json!(["unrelated repository check"]);
         expect_rejected(catalog, "V17");
+    }
+
+    #[test]
+    fn a_blank_limitation_is_no_limitation() {
+        // Bounded/not_proven claims must state why their evidence is
+        // incomplete; whitespace-only limitations fail V15 exactly like an
+        // absent one.
+        let mut catalog = positive_catalog();
+        catalog["claims"][0]["status"] = json!("bounded");
+        catalog["claims"][0]["limitation"] = json!("   ");
+        expect_rejected(catalog, "V15");
     }
 
     #[test]

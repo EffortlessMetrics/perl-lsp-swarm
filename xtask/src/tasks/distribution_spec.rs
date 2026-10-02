@@ -114,6 +114,16 @@ fn spec_violations(graph: &TrainGraph, root: &Path) -> Vec<String> {
         violations.push(format!("S01 [{extra}]: SPEC_COMPILED outside the reviewed #11164 set"));
     }
 
+    // S03 fails closed on the instrument itself: a missing or unreadable
+    // `.spec` directory is not evidence that controllers are packet-free.
+    if !root.join(".spec").is_dir() {
+        violations.push(
+            "S03: the .spec directory is missing or unreadable, so controller packet absence \
+             is not established"
+                .to_string(),
+        );
+    }
+
     for node in graph.nodes() {
         let id = &node.node_id;
 
@@ -141,7 +151,9 @@ fn spec_violations(graph: &TrainGraph, root: &Path) -> Vec<String> {
                     match std::fs::read_to_string(&file_path) {
                         Ok(content) if !content.trim().is_empty() => {
                             if file == "context.md" {
-                                if !content.contains(&format!("#{}", node.issue_number)) {
+                                // Digit-bounded match: `#1143` must not pass
+                                // by prefixing `#11432`.
+                                if !names_issue(&content, node.issue_number) {
                                     violations.push(format!(
                                         "S02 [{id}]: packet context.md does not name #{}, so the packet/node link is broken",
                                         node.issue_number
@@ -219,6 +231,15 @@ fn packet_dir_exists(root: &Path, issue: u64) -> bool {
     entries.filter_map(Result::ok).any(|entry| {
         entry.path().is_dir()
             && entry.file_name().to_str().is_some_and(|name| name.starts_with(&prefix))
+    })
+}
+
+/// Digit-bounded `#{issue}` containment: `#1143` must not pass by matching
+/// the prefix of `#11432`.
+fn names_issue(content: &str, issue: u64) -> bool {
+    let needle = format!("#{issue}");
+    content.match_indices(&needle).any(|(index, matched)| {
+        content[index + matched.len()..].chars().next().is_none_or(|next| !next.is_ascii_digit())
     })
 }
 
@@ -425,6 +446,13 @@ mod tests {
             .expect("probe dir");
         assert!(packet_dir_exists(&probe, 8087));
         assert!(!packet_dir_exists(&probe, 11463));
+        // The fabricated packet actually trips the S03 rule in the check
+        // itself, not just the directory probe.
+        let probe_violations = spec_violations(&graph, &probe);
+        assert!(
+            probe_violations.iter().any(|v| v.starts_with("S03 [8087]")),
+            "unexpected violations: {probe_violations:?}"
+        );
     }
 
     #[test]

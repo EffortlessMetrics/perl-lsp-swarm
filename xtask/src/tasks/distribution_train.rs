@@ -479,13 +479,17 @@ impl TrainGraph {
                         "SPEC_COMPILED spec_ref must name a .spec/ packet or bundle",
                     ));
                 }
-                "NO_SPEC_DELTA" | "ISSUE_PLAN_SUFFICIENT" if !node.spec_ref.starts_with('#') => {
+                "NO_SPEC_DELTA" | "ISSUE_PLAN_SUFFICIENT"
+                    if node.spec_ref != format!("#{}", node.issue_number) =>
+                {
+                    // Exactly the owning issue: a `#`-prefixed reference to a
+                    // different (or malformed) issue is not a node link.
                     violations.push(law(
                         "L10",
                         &node.node_id,
                         &format!(
-                            "{} spec_ref must reference the owning issue",
-                            node.spec_disposition
+                            "{} spec_ref must reference the owning issue #{}, not {}",
+                            node.spec_disposition, node.issue_number, node.spec_ref
                         ),
                     ));
                 }
@@ -723,7 +727,9 @@ impl TrainGraph {
     pub fn next_frontier(&self) -> BTreeMap<&str, Vec<&Node>> {
         let mut frontier: BTreeMap<&str, Vec<&Node>> = BTreeMap::new();
         for node in &self.manifest.nodes {
-            if node.is_settled() || node.is_governance() {
+            // The frontier names implementable work: governance nodes and
+            // non-buildable kinds (claims, evidence joins) never enter it.
+            if node.is_settled() || node.is_governance() || !node.is_buildable() {
                 continue;
             }
             if node.hard_ready(&self.landed) {
