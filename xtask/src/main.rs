@@ -174,10 +174,12 @@ enum Commands {
     /// Validate declared differential real-Perl oracle fixtures.
     CheckOracleFixtureManifest,
 
-    /// Generate, validate, list, and fail-closed check the versioned
-    /// activation inventory (`activation_inventory.v1`, #9204/#9205): a
-    /// classified catalog plus class-specific connection checking.
-    /// Cargo dependency membership is topology evidence only.
+    /// Generate, validate, and list the versioned activation inventory
+    /// (`activation_inventory.v1`, #9204): a deterministic classified catalog
+    /// of product, preview, compatibility-shim, test-api, lab, oracle,
+    /// benchmark, and gate surfaces derived from existing authorities plus a
+    /// narrow, typed, owner/expiry-bound override ledger. Does not implement
+    /// activation checking (#9205).
     Activation {
         /// Operation to run against the activation inventory.
         #[command(subcommand)]
@@ -2494,8 +2496,7 @@ enum Commands {
     /// Enforce crate layer-dependency constraints.
     LayerCheck,
 
-    /// Scan Cargo topology (tests present, not a direct dep of perl-lsp-rs).
-    /// Not product activation; see `activation check`.
+    /// Scan for built-but-not-wired crates.
     UnwiredScan {
         #[command(flatten)]
         args: UnwiredScanArgs,

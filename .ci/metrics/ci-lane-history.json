@@ -3,7 +3,7 @@
   "generated_at": "2026-09-28T05:32:40Z",
   "window_days": 14,
   "min_samples_for_learned": 5,
-  "lane_count": 26,
+  "lane_count": 25,
   "lanes": {
     "check_all_targets": {
       "samples": 0,
@@ -124,11 +124,6 @@
     "ux_tests": {
       "samples": 0,
       "static_floor": 8.0,
-      "learned": false
-    },
-    "vscode_installed_first_hour_windows": {
-      "samples": 0,
-      "static_floor": 70.0,
       "learned": false
     },
     "vscode_smoke_matrix": {

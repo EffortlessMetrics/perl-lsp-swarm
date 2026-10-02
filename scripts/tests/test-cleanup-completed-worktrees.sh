@@ -66,10 +66,6 @@ if [[ "${1:-}" == "--no-optional-locks" ]]; then
   shift
 fi
 
-if [[ "${1:-}" == "-c" && "${2:-}" == "maintenance.auto=false" ]]; then
-  shift 2
-fi
-
 handle_rev_parse() {
   if [[ "$*" == *"--path-format=absolute --git-common-dir"* ]]; then
     printf '%s/.git\n' "${MOCK_REPO_ROOT}"
@@ -595,7 +591,6 @@ test_real_run_fetches_without_global_prune() {
   output="$(run_cleanup_real "$case_dir")"
 
   assert_git_log_contains "real run refreshes remote refs" "$case_dir" "fetch"
-  assert_git_log_contains "real run fetch maintenance guard" "$case_dir" "maintenance.auto=false"
   assert_not_contains "real run preserves unrelated administrative metadata" \
     "$(cat "${case_dir}/git.log")" "worktree prune"
   assert_contains "real run reports fresh remote refs" "$output" "Remote refs: fresh"

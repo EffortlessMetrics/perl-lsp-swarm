@@ -4,10 +4,8 @@
 # Run from a reviewed clone or through the identity-bound root install.sh
 # wrapper. The canonical installer is not itself a mutable curl-pipe authority.
 #
-# Options via environment variables or the wrapper's fixed-slot positionals
-# (slot 1 VERSION, slot 2 INSTALL_DIR; env wins the matching slot):
+# Options via environment variables:
 #   VERSION=v0.12.0 INSTALL_DIR=/usr/local/bin bash scripts/install.sh
-#   bash scripts/install.sh v0.12.0 /usr/local/bin
 #   PERL_LSP_LINUX_LIBC=gnu bash scripts/install.sh
 #   PERL_LSP_LINUX_LIBC=musl bash scripts/install.sh
 #   BUILD_FROM_SOURCE=1 bash scripts/install.sh   # force cargo build/install
@@ -17,18 +15,6 @@
 # Supported platforms:
 #   Linux x86_64 (musl/gnu), Linux aarch64 (musl/gnu), macOS x86_64, macOS aarch64
 set -euo pipefail
-
-# Snapshot caller-supplied VERSION/INSTALL_DIR before defaults so positional
-# slots stay fixed: an environment value wins its matching slot and does not
-# shift a later positional (#16310). Empty and unset both count as absent.
-_plsp_version_from_env=0
-_plsp_install_dir_from_env=0
-if [ -n "${VERSION:-}" ]; then
-    _plsp_version_from_env=1
-fi
-if [ -n "${INSTALL_DIR:-}" ]; then
-    _plsp_install_dir_from_env=1
-fi
 
 REPO="EffortlessMetrics/perl-lsp"
 BIN_NAME="perllsp"
@@ -139,32 +125,6 @@ need_cmd() {
     fi
 }
 
-# Leading non-flag args are the wrapper's two fixed slots. Flags end the
-# prefix: `scripts/install.sh --print-target 1.2.3` still rejects `1.2.3`.
-_plsp_positional_count=0
-while [ "$#" -gt 0 ]; do
-    case "$1" in
-        -*)
-            break
-            ;;
-        *)
-            _plsp_positional_count=$((_plsp_positional_count + 1))
-            if [ "$_plsp_positional_count" -eq 1 ]; then
-                if [ "$_plsp_version_from_env" -eq 0 ]; then
-                    VERSION="$1"
-                fi
-            elif [ "$_plsp_positional_count" -eq 2 ]; then
-                if [ "$_plsp_install_dir_from_env" -eq 0 ]; then
-                    INSTALL_DIR="$1"
-                fi
-            else
-                err "unexpected argument: $1 (expected at most positional VERSION and INSTALL_DIR)"
-            fi
-            shift
-            ;;
-    esac
-done
-
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --print-target)
@@ -177,13 +137,7 @@ while [ "$#" -gt 0 ]; do
             ;;
         -h|--help)
             cat <<'USAGE'
-Usage: scripts/install.sh [VERSION] [INSTALL_DIR] [--print-target] [--with-claude]
-
-Positionals (optional):
-  VERSION                                Same as VERSION=... Slot 1.
-  INSTALL_DIR                            Same as INSTALL_DIR=... Slot 2.
-                                         Environment wins the matching slot
-                                         and does not shift a later positional.
+Usage: scripts/install.sh [--print-target] [--with-claude]
 
 Options:
   --print-target                         Print selected release target and exit.

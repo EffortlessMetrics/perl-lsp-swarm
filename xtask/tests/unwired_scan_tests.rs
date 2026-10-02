@@ -561,12 +561,8 @@ fn test_check_mode_exits_nonzero_on_real_workspace() {
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("topology evidence only"),
-        "--check stderr must name topology-only claim; got: {stderr}"
-    );
-    assert!(
-        stderr.contains("activation check"),
-        "--check stderr must point at activation check; got: {stderr}"
+        stderr.contains("unwired crate"),
+        "--check stderr must mention 'unwired crate'; got: {stderr}"
     );
 }
 
@@ -586,14 +582,9 @@ fn test_json_mode_emits_valid_json_with_expected_fields() {
         serde_json::from_str(&stdout).expect("--json output must be valid JSON");
 
     // All top-level fields from ScanReport must be present.
-    for field in ["claim", "lsp_crate", "crates", "flagged", "total_crates", "total_flagged"] {
+    for field in ["lsp_crate", "crates", "flagged", "total_crates", "total_flagged"] {
         assert!(parsed.get(field).is_some(), "JSON must contain '{field}'; full output: {parsed}");
     }
-    assert_eq!(
-        parsed["claim"].as_str(),
-        Some("cargo_topology"),
-        "unwired-scan JSON must declare cargo_topology, not product activation"
-    );
 
     // lsp_crate must be the default value.
     assert_eq!(

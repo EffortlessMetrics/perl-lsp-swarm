@@ -372,21 +372,6 @@
       "reason": "Keep the complete non-interpolated postfix-dereference matrix executable: exact AST identity, receiver/selector ownership, byte geometry, children() reachability, HIR disposition, and the #13891/#14174 defect pins.",
       "disposition": "execute",
       "boundedness": "focused"
-    },
-    {
-      "id": "parser.output.adjacent_call",
-      "package": "perl-parser-core",
-      "target": "output_adjacent_call_17078",
-      "features": [],
-      "no_default_features": false,
-      "cargo_args": [],
-      "test_args": [
-        "--test-threads=4"
-      ],
-      "owner": "#17078",
-      "reason": "Keep adjacent uppercase and qualified output-call arguments distinct from spaced, scalar, and braced filehandles.",
-      "disposition": "execute",
-      "boundedness": "focused"
     }
   ]
 }

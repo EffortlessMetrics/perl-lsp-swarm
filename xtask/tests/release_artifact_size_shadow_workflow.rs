@@ -353,10 +353,9 @@ fn shadow_lane_compares_per_variant_smoke_receipts() -> Result<()> {
 fn shadow_lane_cannot_promote_a_borderline_win_from_a_dispatcher_input() -> Result<()> {
     let (_, workflow) = workflow()?;
 
-    // `--repeat-confirmed` used to be promotion authority: with it, the
-    // instrument treated a 0.5%-1.0% reduction as confirmed from a
-    // checkbox. Confirmation is now `--prior-receipt`, which the instrument
-    // verifies. A single run still cannot testify that it ran twice.
+    // `--repeat-confirmed` is promotion authority: with it, the instrument
+    // treats a 0.5%-1.0% reduction as confirmed. A dispatcher checkbox is not
+    // a second measurement, and a single run cannot testify that it ran twice.
     for step in steps(&workflow)? {
         ensure!(
             !run_body(step).contains("--repeat-confirmed"),
@@ -375,13 +374,6 @@ fn shadow_lane_cannot_promote_a_borderline_win_from_a_dispatcher_input() -> Resu
         "the lane takes only the measured target; every other input is an unproven assertion, \
          found {names:?}"
     );
-
-    for step in steps(&workflow)? {
-        ensure!(
-            !run_body(step).contains("--prior-receipt"),
-            "one run must not feed its own receipt back as the confirming prior"
-        );
-    }
 
     Ok(())
 }

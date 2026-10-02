@@ -936,7 +936,7 @@ mod tests {
     }
 
     #[test]
-    fn marking_native_build_hints_live_without_bound_refresh_writer_fails() {
+    fn marking_native_build_hints_live_against_current_sources_fails_without_a_route() {
         let field = must_some_with(
             CONFIGURATION_AUTHORITY.iter().find(|field| field.id == "workspace.native_build_hints"),
             "native_build_hints catalog row",
@@ -947,8 +947,6 @@ mod tests {
             writer_source: CONFIG_MOD,
             init_route: Some("refresh_workspace_metadata"),
             init_route_source: Some(WORKSPACE_FOLDER),
-            // Deliberately omit the captured-read writer: falling back to the disk
-            // writer must not establish invalidation reachability.
             refresh_writer: None,
             invalidation_route: Some("refresh_workspace_metadata_from_reads"),
             invalidation_route_source: Some(WORKSPACE_FOLDER),
@@ -972,7 +970,7 @@ mod tests {
                 DerivedWorkspaceViolation::WriterUnreachable {
                     id: "workspace.native_build_hints",
                     writer: "refresh_native_build_hints",
-                    route: "refresh_workspace_metadata_from_reads",
+                    route: "refresh_workspace_metadata",
                     source: WORKSPACE_FOLDER
                 }
             )),

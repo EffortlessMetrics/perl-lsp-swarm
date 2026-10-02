@@ -40,26 +40,13 @@ Dispatch `Release Artifact Size Shadow` from the Actions tab, once per target:
 | `x86_64-apple-darwin` | `macos-15-intel` |
 
 The target is the only input. In particular there is no "repeat confirmed"
-checkbox and the lane never passes `--prior-receipt`: confirmation requires a
-previous same-subject receipt that the instrument verifies for target, source
-SHA, lock digest, flags, and policy. A dispatcher ticking a box is not evidence
-that a second measurement happened. A single run cannot testify that it ran
-twice, so a borderline win resolves to `not_proven` naming the unmet repeat
-requirement. Confirming such a result is a separate, deliberate act performed
-with two receipts actually in hand.
-
-Current #16783 controller dispositions, recorded in
-`xtask/src/bin/release_artifact_size/policy.rs`:
-
-| Target | Disposition | Why |
-| --- | --- | --- |
-| `aarch64-apple-darwin` | `not_proven` | no native same-SHA measurement has been dispatched |
-| `x86_64-apple-darwin` | `not_proven` | no native same-SHA measurement has been dispatched |
-
-`release.yml` may apply the safe-ICF flags only to a row whose recorded
-disposition is `adopt`. Unmeasured, rejected, and no-win targets keep the
-platform linker. That binding is proven by
-`xtask/tests/release_artifact_size_disposition.rs`.
+checkbox: `--repeat-confirmed` is promotion authority — it lets the instrument
+treat a borderline 0.5%–1.0% reduction as confirmed — and a dispatcher ticking
+a box is not evidence that a second measurement happened. A single run cannot
+testify that it ran twice, so this lane never passes the flag and a borderline
+win resolves to `not_proven` naming the unmet repeat requirement. Confirming
+such a result is a separate, deliberate act performed with two receipts
+actually in hand.
 
 The receipts are uploaded as the `release-artifact-size-<target>` artifact and
 the Markdown summary is written to the job summary.
@@ -103,11 +90,9 @@ closed structurally rather than by convention:
   disagree with the policy.
 
 Because the lane never runs on a pull request, its contract is proven by
-`xtask/tests/release_artifact_size_shadow_workflow.rs`,
-`xtask/tests/release_artifact_size_stage_script.rs`, and
-`xtask/tests/release_artifact_size_disposition.rs`, which bind the workflow,
-the staging adapter, production `release.yml` flags, and repeat confirmation
-to the instrument's own constants in
+`xtask/tests/release_artifact_size_shadow_workflow.rs` and
+`xtask/tests/release_artifact_size_stage_script.rs`, which bind the workflow and
+the staging adapter to the instrument's own constants in
 `xtask/src/bin/release_artifact_size/policy.rs`.
 
 The lane is deliberately absent from `policy/ci-lane-whitelist.toml`: it carries
