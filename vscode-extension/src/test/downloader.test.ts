@@ -4153,31 +4153,54 @@ describe('BinaryDownloader.downloadFile through the configured proxy', () => {
   }, 10000);
 
   test('failure messages for a credential-bearing proxy route stay credential-free', async () => {
-    const vscode = require('vscode');
-    const unreachableProxyPort = await closedLocalPort();
-    vscode.workspace.getConfiguration.mockReturnValue({
-      get: jest.fn((key: string, defaultValue?: unknown) => {
-        if (key === 'proxy') {
-          return `http://${PROXY_CREDENTIALS}@127.0.0.1:${unreachableProxyPort}`;
-        }
-        return defaultValue;
-      }),
-      has: jest.fn(() => false),
-      inspect: jest.fn(),
-      update: jest.fn(),
-    });
+    // Same determinism guard as the proxied-route test above: a runner-level
+    // NO_PROXY loopback entry would send this test down the direct route,
+    // where the credential-free assertions pass without exercising the proxy
+    // error path at all.
+    const savedNoProxy = process.env.NO_PROXY;
+    const savedNoProxyLower = process.env.no_proxy;
+    delete process.env.NO_PROXY;
+    delete process.env.no_proxy;
+    try {
+      const vscode = require('vscode');
+      const unreachableProxyPort = await closedLocalPort();
+      vscode.workspace.getConfiguration.mockReturnValue({
+        get: jest.fn((key: string, defaultValue?: unknown) => {
+          if (key === 'proxy') {
+            return `http://${PROXY_CREDENTIALS}@127.0.0.1:${unreachableProxyPort}`;
+          }
+          return defaultValue;
+        }),
+        has: jest.fn(() => false),
+        inspect: jest.fn(),
+        update: jest.fn(),
+      });
 
-    const dest = path.join(tmpDir, 'unreachable.bin');
-    let rejection = '';
-    await seams.downloadFile('http://127.0.0.1:9/asset.bin', dest, 4000).catch((error: unknown) => {
-      rejection = error instanceof Error ? error.message : String(error);
-    });
-    expect(rejection).toMatch(/ECONNREFUSED/);
+      const dest = path.join(tmpDir, 'unreachable.bin');
+      let rejection = '';
+      await seams
+        .downloadFile('http://127.0.0.1:9/asset.bin', dest, 4000)
+        .catch((error: unknown) => {
+          rejection = error instanceof Error ? error.message : String(error);
+        });
+      expect(rejection).toMatch(/ECONNREFUSED/);
 
-    // The rejected error is exactly what lands in the output channel and
-    // failure banners, so its contents bound what any log seam can leak.
-    expect(rejection).not.toContain(PROXY_CREDENTIALS);
-    expect(rejection).not.toContain('proxyuser');
-    expect(rejection).not.toContain('proxypass');
+      // The rejected error is exactly what lands in the output channel and
+      // failure banners, so its contents bound what any log seam can leak.
+      expect(rejection).not.toContain(PROXY_CREDENTIALS);
+      expect(rejection).not.toContain('proxyuser');
+      expect(rejection).not.toContain('proxypass');
+    } finally {
+      if (savedNoProxy === undefined) {
+        delete process.env.NO_PROXY;
+      } else {
+        process.env.NO_PROXY = savedNoProxy;
+      }
+      if (savedNoProxyLower === undefined) {
+        delete process.env.no_proxy;
+      } else {
+        process.env.no_proxy = savedNoProxyLower;
+      }
+    }
   }, 10000);
 });
