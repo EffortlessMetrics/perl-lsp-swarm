@@ -167,6 +167,18 @@ pub fn wait_with_subject<T, E: std::error::Error + Send + Sync + 'static>(
     })
 }
 
+/// Emit the accepted-absence breadcrumb for an optional wait to stderr so a
+/// later starved assertion keeps the terminal reason in CI test logs (#15870).
+#[expect(
+    clippy::print_stderr,
+    reason = "the breadcrumb must survive into cargo test output for starved-\
+              completion triage; the harness initializes no tracing subscriber, \
+              so a tracing event would be invisible (issue #16952 review)"
+)]
+fn trace_accepted_absence(subject: &str, reason: &str) {
+    eprintln!("wait for {subject}: {reason} (accepted as absence)");
+}
+
 /// Retain an optional readiness wait without hiding a closed or failed stream.
 /// A live deadline leaves the later useful-result predicate in charge.
 pub fn optional_wait_with_subject<T>(
@@ -178,7 +190,7 @@ pub fn optional_wait_with_subject<T>(
         // A live deadline is accepted as absence, but not silently: a later
         // starved assertion keeps the terminal reason as a breadcrumb (#15870).
         Err(end @ WaitEnd::Deadline { .. }) => {
-            eprintln!("wait for {subject}: {} (accepted as absence)", end.describe());
+            trace_accepted_absence(subject, &end.describe());
             Ok(None)
         }
         Err(end) => {
