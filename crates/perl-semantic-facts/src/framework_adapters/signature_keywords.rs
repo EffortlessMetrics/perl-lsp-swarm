@@ -580,14 +580,6 @@ pub fn classify_signature_keyword_import(
                 keywords = keywords.with(SignatureKeyword::Method);
                 saw_keyword_tag = true;
             }
-            (SignatureKeywordFamily::MethodSignatures, "func") => {
-                keywords = keywords.with(SignatureKeyword::Func);
-                saw_keyword_tag = true;
-            }
-            (SignatureKeywordFamily::MethodSignatures, "method") => {
-                keywords = keywords.with(SignatureKeyword::Method);
-                saw_keyword_tag = true;
-            }
             (_, ":modifiers" | "before" | "after" | "around" | "augment" | "override") => {
                 return SignatureKeywordImportDisposition::Unmodeled { arguments: tokens };
             }
@@ -1373,15 +1365,15 @@ mod tests {
     }
 
     #[test]
-    fn qw_func_enables_only_func() {
+    fn method_signatures_qw_func_is_unmodeled() {
         let disposition = classify_signature_keyword_import(
             SignatureKeywordFamily::MethodSignatures,
             &["qw(func)".to_string()],
             false,
         );
-        assert_eq!(
-            disposition,
-            SignatureKeywordImportDisposition::Exact { keywords: SignatureKeywordSet::func_only() }
+        assert!(
+            !disposition.is_exact(),
+            "Method::Signatures 20170211 does not accept selective keyword imports"
         );
     }
 }

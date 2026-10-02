@@ -448,8 +448,10 @@ func helper ($value) { $value }
 method run ($arg) { $arg }
 "#;
     let facts = minted(code, SignatureKeywordFamily::MethodSignatures, "20170211", "gen-1");
-    assert!(lookup_signature_keyword_callable(&facts, Some("App"), "helper").is_some());
-    assert!(lookup_signature_keyword_callable(&facts, Some("App"), "run").is_none());
+    assert!(
+        facts.is_empty(),
+        "Method::Signatures qw(func) is not a reviewed import and must mint nothing"
+    );
 }
 
 #[test]
@@ -535,8 +537,10 @@ func helper ($value) { $value }
 method run ($arg) { $arg }
 "#;
     let facts = minted(code, SignatureKeywordFamily::MethodSignatures, "20170211", "gen-1");
-    assert!(lookup_signature_keyword_callable(&facts, Some("App"), "helper").is_none());
-    assert!(lookup_signature_keyword_callable(&facts, Some("App"), "run").is_some());
+    assert!(
+        facts.is_empty(),
+        "Method::Signatures qw(method) is not a reviewed import and must mint nothing"
+    );
 }
 
 #[test]
