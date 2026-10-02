@@ -52,6 +52,7 @@ pub mod source_authority;
 pub mod stack_increment;
 pub mod standalone_diagnostics;
 pub mod utils;
+pub mod vendored_catalog;
 pub mod vim_host_diagnostics_run;
 pub mod vim_host_freshness_run;
 pub mod vim_host_lifecycle_run;
