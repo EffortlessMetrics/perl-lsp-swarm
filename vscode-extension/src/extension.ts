@@ -160,9 +160,9 @@ export { workspaceTrustClientRuntimeState } from './workspaceTrustRuntimeState';
 import {
   buildDisabledFeaturesFromConfig,
   buildPerlCriticConfiguration as buildPerlCriticConfigurationPayload,
-  CRITIC_SETTINGS,
   hasExplicitPerlCriticOverrides,
   syncLanguageClientConfiguration,
+  syncLiveLanguageClientConfiguration,
   syncUserAiCompletionConfiguration,
   syncPerlCriticConfiguration as syncPerlCriticConfigurationFromConfig,
 } from './languageClientConfiguration';
@@ -1328,12 +1328,7 @@ async function runExtensionActivation(
           await rerunIncludePathGuidance(context);
         }
 
-        const criticChanged = CRITIC_SETTINGS.some((setting) =>
-          event.affectsConfiguration(setting),
-        );
-        if (event.affectsConfiguration('perl-lsp.includePaths') || criticChanged) {
-          await syncLanguageClientConfiguration(client);
-        }
+        await syncLiveLanguageClientConfiguration(client, event);
 
         // Advisory coexistence findings re-evaluate when an owned input
         // changes; every collected input is classified live, so this block is

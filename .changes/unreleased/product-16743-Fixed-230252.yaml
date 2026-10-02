@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: "Hover no longer requires an open editor: a workspace file that is indexed on disk but not open now answers hover from the same disk index references, go-to-definition, and workspace symbols already use. Lexical variables and sub declarations in never-opened files return the same cards open documents get (declaration, declared-at line, lexical scope), instead of null. Files the index does not hold, or whose disk content is unreadable, still answer nothing; if the file is opened while a hover on its disk content is in flight, the open buffer supersedes the disk answer."
+time: 2026-09-28T23:02:50Z
+custom:
+  PR: "16743"
+  Slug: hover-disk-index-closed-files
+  Breaking: "no"

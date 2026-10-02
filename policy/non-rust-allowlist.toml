@@ -5654,3 +5654,55 @@ reason = "Synthetic FF01 #13855 round-trip and shape fixture with placeholder id
 covered_by = ["cargo test -p xtask --locked --bin xtask release_scope_v2", "cargo xtask check-file-policy"]
 created = "2026-09-20"
 review_after = "2026-12-20"
+
+[[allow]]
+id = "non-rust-cargo-admitted-entrypoint"
+path = "scripts/cargo-admitted"
+kind = "ci_tooling"
+language = "shell"
+surface = "tooling"
+classification = "tooling"
+owner = "tooling/agents"
+reason = "Portable shell bootstrap must refuse stale toolchains before invoking the cross-platform pre-build capacity gate; compiling a Rust gate first defeats admission."
+covered_by = ["CARGO_SAFE_UNDER_TEST=scripts/cargo-admitted bash scripts/tests/test-cargo-safe-toolchain-guard.sh"]
+created = "2026-10-01"
+review_after = "2027-01-01"
+
+[[allow]]
+id = "non-rust-cargo-admitted-gate"
+path = "scripts/cargo_admitted.py"
+kind = "ci_tooling"
+language = "python"
+surface = "tooling"
+classification = "tooling"
+owner = "tooling/agents"
+reason = "Standard-library cross-platform capacity/path/lease admission must run before Rust compilation and cannot require a Cargo build to protect storage."
+covered_by = ["python scripts/tests/test_cargo_admitted_storage.py"]
+created = "2026-10-01"
+review_after = "2027-01-01"
+
+[[allow]]
+id = "non-rust-cargo-admitted-proof"
+path = "scripts/tests/test_cargo_admitted_storage.py"
+kind = "ci_tooling"
+language = "python"
+surface = "tooling"
+classification = "test"
+owner = "tooling/agents"
+reason = "Lightweight Windows/POSIX path and process-termination fixtures exercise pre-build admission without compiling the repository."
+covered_by = ["python scripts/tests/test_cargo_admitted_storage.py"]
+created = "2026-10-01"
+review_after = "2027-01-01"
+
+[[allow]]
+id = "non-rust-cleanup-fetch-maintenance-proof"
+path = "scripts/tests/test_cleanup_fetch_maintenance.py"
+kind = "ci_tooling"
+language = "python"
+surface = "tooling"
+classification = "test"
+owner = "tooling/agents"
+reason = "Disposable real Git negative-control fixture proves fetch maintenance suppression preserves expiring registrations without Rust compilation."
+covered_by = ["python scripts/tests/test_cleanup_fetch_maintenance.py"]
+created = "2026-10-01"
+review_after = "2027-01-01"
