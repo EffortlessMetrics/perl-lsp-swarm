@@ -470,6 +470,16 @@ sha = 'cdf488f595d80d6e07e03d4674febd5ab45fa938'
 kind = 'release_tag'
 value = 'v4.37.9'
 
+# Verified against upstream on 2026-10-01:
+#   git ls-remote --tags https://github.com/github/codeql-action v4.38.0
+#   4bd7200e1f146b1c937cae12d258b50f41a53cf8  refs/tags/v4.38.0  (tag object)
+#   -> commit b96794f015dfd88f77b49b1c93e0fa7110f94c63 (annotated tag)
+[[pin]]
+action = 'github/codeql-action/upload-sarif'
+sha = 'b96794f015dfd88f77b49b1c93e0fa7110f94c63'
+kind = 'release_tag'
+value = 'v4.38.0'
+
 # Verified against upstream on 2026-08-29:
 # docker/setup-buildx-action v4.3.0 -> 37fe631027851001ddb9b187196cc803df7f5f0e
 [[pin]]
