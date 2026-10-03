@@ -2879,10 +2879,12 @@ enum Commands {
         force: bool,
     },
 
-    /// Collect read-only evidence for one explicitly selected damaged worktree.
+    /// Collect read-only evidence, or write a forensic backup to an explicit destination.
     ///
-    /// This route never discovers candidates or performs backup, recovery, repair,
-    /// prune, reset, checkout, stash, clean, or other filesystem mutations.
+    /// The plan route never discovers candidates or performs backup, recovery,
+    /// repair, prune, reset, checkout, stash, clean, or other filesystem
+    /// mutations. The backup route writes only to `--backup-dir` and never
+    /// restores or applies recovery.
     #[command(name = "worktree-recovery")]
     WorktreeRecovery {
         #[command(subcommand)]
@@ -5398,6 +5400,29 @@ enum WorktreeRecoveryCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Write a content-addressed forensic backup to an explicit destination.
+    ///
+    /// The destination is the only permitted write location. This command never
+    /// restores, synthesizes `.git/worktrees`, reconstructs an index, or applies
+    /// recovery.
+    Backup {
+        /// Repository whose common Git directory owns the candidate evidence.
+        #[arg(long, value_name = "PATH")]
+        repository: PathBuf,
+
+        /// One candidate directory to back up; candidates are never auto-discovered.
+        #[arg(long, value_name = "PATH")]
+        candidate: PathBuf,
+
+        /// Explicit backup directory. Parent must already exist. This is the only
+        /// permitted write location.
+        #[arg(long, value_name = "PATH")]
+        backup_dir: PathBuf,
+
+        /// Render the backup receipt as JSON instead of human-readable text.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -7567,6 +7592,17 @@ fn run_cli(cli: Cli) -> Result<()> {
                 if code != 0 {
                     std::process::exit(code);
                 }
+                Ok(())
+            }
+            WorktreeRecoveryCommand::Backup { repository, candidate, backup_dir, json } => {
+                let receipt =
+                    xtask::worktree_forensic_backup::create(&repository, &candidate, &backup_dir)?;
+                let format = if json {
+                    xtask::worktree_forensic_recovery::OutputFormat::Json
+                } else {
+                    xtask::worktree_forensic_recovery::OutputFormat::Human
+                };
+                print!("{}", xtask::worktree_forensic_backup::render(&receipt, format)?);
                 Ok(())
             }
         },
