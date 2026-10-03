@@ -563,7 +563,7 @@ fn hir_lowers_first_slice_constructs_with_stable_metadata() -> Result<(), Box<dy
          4 SubDecl greet proto=true sig=false attrs=1 pkg=My::Module recovery=Parsed anchor=Subroutine via=name scope=2\n\
          5 BlockShell statements=1 pkg=My::Module recovery=Parsed anchor=Block via=node scope=3\n\
          6 LiteralExpr Number value=1 interp=<none> elements=<none> pairs=<none> pkg=My::Module recovery=Parsed anchor=Number via=node scope=3\n\
-         7 MethodDecl run sig=false attrs=0 pkg=My::Module recovery=Parsed anchor=Method via=node scope=4\n\
+         7 MethodDecl run sig=false attrs=0 pkg=My::Module recovery=Parsed anchor=Method via=name scope=4\n\
          8 BlockShell statements=1 pkg=My::Module recovery=Parsed anchor=Block via=node scope=5\n\
          9 LiteralExpr Number value=1 interp=<none> elements=<none> pairs=<none> pkg=My::Module recovery=Parsed anchor=Number via=node scope=5"
     );

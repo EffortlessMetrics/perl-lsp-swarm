@@ -1895,6 +1895,39 @@ pub fn perl_parser_core::hir::ModuleResolutionStatus::clone(&self) -> perl_parse
 pub fn perl_parser_core::hir::ModuleResolutionStatus::eq(&self, other: &perl_parser_core::hir::ModuleResolutionStatus) -> bool
 pub fn perl_parser_core::hir::ModuleResolutionStatus::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_parser_core::hir::ModuleResolutionStatus::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+#[non_exhaustive] pub enum perl_parser_core::hir::NativeMethodInvocantBoundary
+pub perl_parser_core::hir::NativeMethodInvocantBoundary::AmbiguousClassProfile
+pub perl_parser_core::hir::NativeMethodInvocantBoundary::ClassFeatureDisabled
+pub perl_parser_core::hir::NativeMethodInvocantBoundary::MethodAttributes
+pub perl_parser_core::hir::NativeMethodInvocantBoundary::MissingNameAnchor
+pub perl_parser_core::hir::NativeMethodInvocantBoundary::NamedSubroutine
+pub perl_parser_core::hir::NativeMethodInvocantBoundary::NoBlockClassOwner
+pub perl_parser_core::hir::NativeMethodInvocantBoundary::ParseAuthorityUnsupplied
+pub perl_parser_core::hir::NativeMethodInvocantBoundary::RecoveredSyntax
+pub fn perl_parser_core::hir::NativeMethodInvocantBoundary::clone(&self) -> perl_parser_core::hir::NativeMethodInvocantBoundary
+pub fn perl_parser_core::hir::NativeMethodInvocantBoundary::eq(&self, other: &perl_parser_core::hir::NativeMethodInvocantBoundary) -> bool
+pub fn perl_parser_core::hir::NativeMethodInvocantBoundary::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+#[non_exhaustive] pub enum perl_parser_core::hir::NativeMethodInvocantLookup
+pub perl_parser_core::hir::NativeMethodInvocantLookup::Exact
+pub perl_parser_core::hir::NativeMethodInvocantLookup::Exact::binding: perl_parser_core::hir::HirBindingId
+pub perl_parser_core::hir::NativeMethodInvocantLookup::Exact::class_item: perl_parser_core::hir::HirId
+pub perl_parser_core::hir::NativeMethodInvocantLookup::Exact::class_scope: perl_parser_core::hir::HirScopeId
+pub perl_parser_core::hir::NativeMethodInvocantLookup::Exact::method_item: perl_parser_core::hir::HirId
+pub perl_parser_core::hir::NativeMethodInvocantLookup::Exact::method_scope: perl_parser_core::hir::HirScopeId
+pub perl_parser_core::hir::NativeMethodInvocantLookup::Partial(perl_parser_core::hir::NativeMethodInvocantBoundary)
+pub perl_parser_core::hir::NativeMethodInvocantLookup::Unavailable
+pub fn perl_parser_core::hir::NativeMethodInvocantLookup::clone(&self) -> perl_parser_core::hir::NativeMethodInvocantLookup
+pub fn perl_parser_core::hir::NativeMethodInvocantLookup::eq(&self, other: &perl_parser_core::hir::NativeMethodInvocantLookup) -> bool
+pub fn perl_parser_core::hir::NativeMethodInvocantLookup::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+#[non_exhaustive] pub enum perl_parser_core::hir::NativeMethodOwner
+pub perl_parser_core::hir::NativeMethodOwner::Exact
+pub perl_parser_core::hir::NativeMethodOwner::Exact::class_item: perl_parser_core::hir::HirId
+pub perl_parser_core::hir::NativeMethodOwner::Exact::class_scope: perl_parser_core::hir::HirScopeId
+pub perl_parser_core::hir::NativeMethodOwner::Exact::invocant_binding: perl_parser_core::hir::HirBindingId
+pub perl_parser_core::hir::NativeMethodOwner::Partial(perl_parser_core::hir::NativeMethodInvocantBoundary)
+pub fn perl_parser_core::hir::NativeMethodOwner::clone(&self) -> perl_parser_core::hir::NativeMethodOwner
+pub fn perl_parser_core::hir::NativeMethodOwner::eq(&self, other: &perl_parser_core::hir::NativeMethodOwner) -> bool
+pub fn perl_parser_core::hir::NativeMethodOwner::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 #[non_exhaustive] pub enum perl_parser_core::hir::PragmaArgumentKind
 pub perl_parser_core::hir::PragmaArgumentKind::Broad
 pub perl_parser_core::hir::PragmaArgumentKind::Categories
@@ -2402,6 +2435,7 @@ pub fn perl_parser_core::hir::HirFile::compile_effects(&self) -> alloc::vec::Vec
 pub fn perl_parser_core::hir::HirFile::compile_effects_with_source_hash(&self, source_hash: core::option::Option<alloc::string::String>) -> alloc::vec::Vec<perl_parser_core::hir::CompileEffect>
 pub fn perl_parser_core::hir::HirFile::framework_facts(&self) -> perl_parser_core::hir::FrameworkFactGraph
 pub fn perl_parser_core::hir::HirFile::is_empty(&self) -> bool
+pub fn perl_parser_core::hir::HirFile::native_method_invocant_at(&self, offset: usize) -> perl_parser_core::hir::NativeMethodInvocantLookup
 pub fn perl_parser_core::hir::HirFile::root_body(&self) -> core::option::Option<&perl_parser_core::hir::HirBody>
 pub fn perl_parser_core::hir::HirFile::clone(&self) -> perl_parser_core::hir::HirFile
 pub fn perl_parser_core::hir::HirFile::eq(&self, other: &perl_parser_core::hir::HirFile) -> bool
@@ -2569,6 +2603,7 @@ pub fn perl_parser_core::hir::MethodCallExpr::fmt(&self, f: &mut core::fmt::Form
 pub perl_parser_core::hir::MethodDecl::attribute_count: usize
 pub perl_parser_core::hir::MethodDecl::has_signature: bool
 pub perl_parser_core::hir::MethodDecl::name: alloc::string::String
+pub perl_parser_core::hir::MethodDecl::native_owner: perl_parser_core::hir::NativeMethodOwner
 pub fn perl_parser_core::hir::MethodDecl::clone(&self) -> perl_parser_core::hir::MethodDecl
 pub fn perl_parser_core::hir::MethodDecl::eq(&self, other: &perl_parser_core::hir::MethodDecl) -> bool
 pub fn perl_parser_core::hir::MethodDecl::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -2879,6 +2914,7 @@ pub const perl_parser_core::hir::COMPILE_EFFECT_MODEL_VERSION: u32
 pub const perl_parser_core::hir::HIR_BODY_MODEL_VERSION: u32
 pub fn perl_parser_core::hir::arguments_outside_configuration_hashes(args: &[alloc::string::String]) -> alloc::vec::Vec<&str>
 pub fn perl_parser_core::hir::lower_ast(ast: &perl_ast::ast::Node) -> perl_parser_core::hir::HirFile
+pub fn perl_parser_core::hir::lower_ast_with_parse_diagnostics(ast: &perl_ast::ast::Node, diagnostics: &[perl_parser_core::syntax::error::ParseError]) -> perl_parser_core::hir::HirFile
 pub fn perl_parser_core::hir::lower_body(ast: &perl_ast::ast::Node) -> perl_parser_core::hir::HirBody
 pub type perl_parser_core::hir::LoopControlVerb = perl_parser_core::hir::ControlTransferKind
 pub mod perl_parser_core::incremental

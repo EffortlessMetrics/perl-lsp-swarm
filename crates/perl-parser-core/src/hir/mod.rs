@@ -18,7 +18,7 @@ pub use body::{
     LoopControlResolution, LoopControlVerb, RegexAnalysisAnchor, ReplacementEvaluation, Sigil,
     SubscriptKind, UnaryMode, VariableKind, lower_body,
 };
-pub use lower::lower_ast;
+pub use lower::{lower_ast, lower_ast_with_parse_diagnostics};
 pub use model::{
     AstAnchor, BarewordExpr, BarewordFact, BarewordRole, BarewordTable, Binding, BindingReference,
     BlockShell, BranchKeyword, BranchShell, COMPILE_EFFECT_MODEL_VERSION, CallExpr, CallForm,
@@ -37,7 +37,8 @@ pub use model::{
     ModuleRequestKind, ModuleResolutionCacheInvalidation, ModuleResolutionCacheKey,
     ModuleResolutionCacheRootKey, ModuleResolutionCandidate, ModuleResolutionCandidatePathState,
     ModuleResolutionCandidateRoot, ModuleResolutionCandidateStatus, ModuleResolutionRoot,
-    ModuleResolutionStatus, PackageDecl, PackageInheritanceEdge, PackageStash, PragmaArgumentKind,
+    ModuleResolutionStatus, NativeMethodInvocantBoundary, NativeMethodInvocantLookup,
+    NativeMethodOwner, PackageDecl, PackageInheritanceEdge, PackageStash, PragmaArgumentKind,
     PragmaEffect, PragmaStateFact, PrototypeFact, PrototypeTable, ReadlineMigrationAdapter,
     ReadlineSource, RecoveryConfidence, RegexExpr, RegexTargetKind, RequireDecl, ScopeFrame,
     ScopeGraph, ScopeKind, StashConfidence, StashDynamicBoundary, StashDynamicBoundaryKind,
