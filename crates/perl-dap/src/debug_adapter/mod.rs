@@ -1189,6 +1189,7 @@ impl DebugAdapter {
             entry_stop_pending: false,
             initial_stop_pending: false,
             stopped_generation: 0,
+            pending_auto_continued_stop: false,
             module_generation: RuntimeModuleGenerationClock::new(),
         });
         Ok(())
@@ -1225,6 +1226,7 @@ impl DebugAdapter {
             entry_stop_pending: false,
             initial_stop_pending: false,
             stopped_generation: 0,
+            pending_auto_continued_stop: false,
             module_generation: RuntimeModuleGenerationClock::new(),
         });
         Ok(())
@@ -1334,6 +1336,7 @@ impl DebugAdapter {
             entry_stop_pending: false,
             initial_stop_pending: false,
             stopped_generation: 0,
+            pending_auto_continued_stop: false,
             module_generation: RuntimeModuleGenerationClock::new(),
         });
     }
