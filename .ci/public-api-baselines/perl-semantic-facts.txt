@@ -1367,6 +1367,151 @@ pub fn perl_semantic_facts::framework_adapters::quickorm_api::quickorm_api_cases
 pub fn perl_semantic_facts::framework_adapters::quickorm_api::quickorm_api_cases_for_method<'a>(package: &'a str, method: &'a str) -> impl core::iter::traits::iterator::Iterator<Item = &'static perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmApiCase> + 'a
 pub fn perl_semantic_facts::framework_adapters::quickorm_api::quickorm_api_cases_for_receiver(receiver: perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmReceiver) -> impl core::iter::traits::iterator::Iterator<Item = &'static perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmApiCase>
 pub fn perl_semantic_facts::framework_adapters::quickorm_api::quickorm_uncovered_methods() -> &'static [perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmUncoveredMethod]
+pub mod perl_semantic_facts::framework_adapters::signature_keywords
+#[non_exhaustive] pub enum perl_semantic_facts::framework_adapters::signature_keywords::SignatureCallableKind
+pub perl_semantic_facts::framework_adapters::signature_keywords::SignatureCallableKind::Function
+pub perl_semantic_facts::framework_adapters::signature_keywords::SignatureCallableKind::Method
+pub fn perl_semantic_facts::framework_adapters::signature_keywords::SignatureCallableKind::clone(&self) -> perl_semantic_facts::framework_adapters::signature_keywords::SignatureCallableKind
+pub fn perl_semantic_facts::framework_adapters::signature_keywords::SignatureCallableKind::cmp(&self, other: &perl_semantic_facts::framework_adapters::signature_keywords::SignatureCallableKind) -> core::cmp::Ordering
+pub fn perl_semantic_facts::framework_adapters::signature_keywords::SignatureCallableKind::eq(&self, other: &perl_semantic_facts::framework_adapters::signature_keywords::SignatureCallableKind) -> bool
+pub fn perl_semantic_facts::framework_adapters::signature_keywords::SignatureCallableKind::partial_cmp(&self, other: &perl_semantic_facts::framework_adapters::signature_keywords::SignatureCallableKind) -> core::option::Option<core::cmp::Ordering>
+pub fn perl_semantic_facts::framework_adapters::signature_keywords::SignatureCallableKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_semantic_facts::framework_adapters::signature_keywords::SignatureCallableKind::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+#[non_exhaustive] pub enum perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeyword
+pub perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeyword::Fun
+pub perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeyword::Func
+pub perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeyword::Method
+pub const fn perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeyword::as_str(self) -> &'static str
+pub const fn perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeyword::callable_kind(self) -> perl_semantic_facts::framework_adapters::signature_keywords::SignatureCallableKind
+pub fn perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeyword::from_source_token(name: &str) -> core::option::Option<perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeyword>
+pub fn perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeyword::clone(&self) -> perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeyword
+pub fn perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeyword::cmp(&self, other: &perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeyword) -> core::cmp::Ordering
+pub fn perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeyword::eq(&self, other: &perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeyword) -> bool
+pub fn perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeyword::partial_cmp(&self, other: &perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeyword) -> core::option::Option<core::cmp::Ordering>
+pub fn perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeyword::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeyword::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+#[non_exhaustive] pub enum perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordFamily
+pub perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordFamily::FunctionParameters
+pub perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordFamily::MethodSignatures
+pub const fn perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordFamily::adapter_name(self) -> &'static str
+pub const fn perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordFamily::default_keywords(self) -> perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordSet
+pub fn perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordFamily::descriptor(self) -> perl_semantic_facts::framework::AdapterDescriptor
+pub fn perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordFamily::detect(self, input: &perl_semantic_facts::framework::AdapterDetectionInput) -> perl_semantic_facts::framework::AdapterDetectionResult
+pub fn perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordFamily::from_module_spelling(module: &str) -> core::option::Option<(perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordFamily, core::option::Option<alloc::string::String>)>
+pub const fn perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordFamily::module_name(self) -> &'static str
+pub const fn perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordFamily::profile_version(self) -> &'static str
+pub const fn perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordFamily::version_constraint(self) -> &'static str
+pub fn perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordFamily::clone(&self) -> perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordFamily
+pub fn perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordFamily::cmp(&self, other: &perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordFamily) -> core::cmp::Ordering
+pub fn perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordFamily::eq(&self, other: &perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordFamily) -> bool
+pub fn perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordFamily::partial_cmp(&self, other: &perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordFamily) -> core::option::Option<core::cmp::Ordering>
+pub fn perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordFamily::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordFamily::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+#[non_exhaustive] pub enum perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordImportDisposition
+pub perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordImportDisposition::Exact
+pub perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordImportDisposition::Exact::keywords: perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordSet
+pub perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordImportDisposition::Unmodeled
+pub perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordImportDisposition::Unmodeled::arguments: alloc::vec::Vec<alloc::string::String>
+pub const fn perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordImportDisposition::is_exact(&self) -> bool
+pub fn perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordImportDisposition::keywords(&self) -> perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordSet
+pub fn perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordImportDisposition::clone(&self) -> perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordImportDisposition
+pub fn perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordImportDisposition::eq(&self, other: &perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordImportDisposition) -> bool
+pub fn perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordImportDisposition::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+#[non_exhaustive] pub enum perl_semantic_facts::framework_adapters::signature_keywords::SignatureParameterKind
+pub perl_semantic_facts::framework_adapters::signature_keywords::SignatureParameterKind::Optional
+pub perl_semantic_facts::framework_adapters::signature_keywords::SignatureParameterKind::Positional
+pub perl_semantic_facts::framework_adapters::signature_keywords::SignatureParameterKind::Slurpy
+pub fn perl_semantic_facts::framework_adapters::signature_keywords::SignatureParameterKind::clone(&self) -> perl_semantic_facts::framework_adapters::signature_keywords::SignatureParameterKind
+pub fn perl_semantic_facts::framework_adapters::signature_keywords::SignatureParameterKind::cmp(&self, other: &perl_semantic_facts::framework_adapters::signature_keywords::SignatureParameterKind) -> core::cmp::Ordering
+pub fn perl_semantic_facts::framework_adapters::signature_keywords::SignatureParameterKind::eq(&self, other: &perl_semantic_facts::framework_adapters::signature_keywords::SignatureParameterKind) -> bool
+pub fn perl_semantic_facts::framework_adapters::signature_keywords::SignatureParameterKind::partial_cmp(&self, other: &perl_semantic_facts::framework_adapters::signature_keywords::SignatureParameterKind) -> core::option::Option<core::cmp::Ordering>
+pub fn perl_semantic_facts::framework_adapters::signature_keywords::SignatureParameterKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_semantic_facts::framework_adapters::signature_keywords::SignatureParameterKind::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+#[non_exhaustive] pub struct perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordCallableFact
+pub perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordCallableFact::body_anchor: core::option::Option<perl_semantic_facts::SourceAnchor>
+pub perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordCallableFact::callable_kind: perl_semantic_facts::framework_adapters::signature_keywords::SignatureCallableKind
+pub perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordCallableFact::envelope: perl_semantic_facts::SemanticFactEnvelope
+pub perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordCallableFact::family: perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordFamily
+pub perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordCallableFact::keyword: perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeyword
+pub perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordCallableFact::name: alloc::string::String
+pub perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordCallableFact::name_anchor: perl_semantic_facts::SourceAnchor
+pub perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordCallableFact::parameters: alloc::vec::Vec<perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordParameter>
+pub perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordCallableFact::profile_version: &'static str
+pub perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordCallableFact::signature_anchor: core::option::Option<perl_semantic_facts::SourceAnchor>
+pub fn perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordCallableFact::matches_signature_query(&self, package: core::option::Option<&str>, name: &str) -> bool
+pub fn perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordCallableFact::clone(&self) -> perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordCallableFact
+pub fn perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordCallableFact::eq(&self, other: &perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordCallableFact) -> bool
+pub fn perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordCallableFact::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+#[non_exhaustive] pub struct perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordDeclaration
+pub perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordDeclaration::body_anchor: core::option::Option<perl_semantic_facts::SourceAnchor>
+pub perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordDeclaration::declaration_anchor: perl_semantic_facts::SourceAnchor
+pub perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordDeclaration::declaration_index: u32
+pub perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordDeclaration::family: perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordFamily
+pub perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordDeclaration::file_id: perl_semantic_facts::FileId
+pub perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordDeclaration::keyword: perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeyword
+pub perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordDeclaration::name: alloc::string::String
+pub perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordDeclaration::name_anchor: perl_semantic_facts::SourceAnchor
+pub perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordDeclaration::package: core::option::Option<alloc::string::String>
+pub perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordDeclaration::parameter_limitations: alloc::vec::Vec<alloc::string::String>
+pub perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordDeclaration::parameters: alloc::vec::Vec<perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordParameter>
+pub perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordDeclaration::signature_anchor: core::option::Option<perl_semantic_facts::SourceAnchor>
+pub perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordDeclaration::source_generation: perl_semantic_facts::SourceGeneration
+pub fn perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordDeclaration::new(package: core::option::Option<alloc::string::String>, file_id: perl_semantic_facts::FileId, declaration_index: u32, family: perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordFamily, keyword: perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeyword, name: impl core::convert::Into<alloc::string::String>, name_anchor: perl_semantic_facts::SourceAnchor, declaration_anchor: perl_semantic_facts::SourceAnchor, signature_anchor: core::option::Option<perl_semantic_facts::SourceAnchor>, body_anchor: core::option::Option<perl_semantic_facts::SourceAnchor>, parameters: alloc::vec::Vec<perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordParameter>, parameter_limitations: alloc::vec::Vec<alloc::string::String>) -> perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordDeclaration
+pub fn perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordDeclaration::clone(&self) -> perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordDeclaration
+pub fn perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordDeclaration::eq(&self, other: &perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordDeclaration) -> bool
+pub fn perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordDeclaration::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+#[non_exhaustive] pub struct perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordParameter
+pub perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordParameter::kind: perl_semantic_facts::framework_adapters::signature_keywords::SignatureParameterKind
+pub perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordParameter::name: alloc::string::String
+pub perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordParameter::sigil: alloc::string::String
+pub fn perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordParameter::new(name: impl core::convert::Into<alloc::string::String>, sigil: impl core::convert::Into<alloc::string::String>, kind: perl_semantic_facts::framework_adapters::signature_keywords::SignatureParameterKind) -> perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordParameter
+pub fn perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordParameter::clone(&self) -> perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordParameter
+pub fn perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordParameter::eq(&self, other: &perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordParameter) -> bool
+pub fn perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordParameter::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordSet
+pub const fn perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordSet::contains(self, keyword: perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeyword) -> bool
+pub const fn perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordSet::fun_only() -> Self
+pub const fn perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordSet::func_only() -> Self
+pub const fn perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordSet::function_parameters_default() -> Self
+pub const fn perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordSet::is_empty(self) -> bool
+pub const fn perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordSet::method_only() -> Self
+pub const fn perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordSet::method_signatures_default() -> Self
+pub const fn perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordSet::none() -> Self
+pub const fn perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordSet::with(self, keyword: perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeyword) -> Self
+pub fn perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordSet::clone(&self) -> perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordSet
+pub fn perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordSet::eq(&self, other: &perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordSet) -> bool
+pub fn perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordSet::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordSet::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+#[non_exhaustive] pub struct perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordSiteAnchor
+pub perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordSiteAnchor::package: core::option::Option<alloc::string::String>
+pub perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordSiteAnchor::source_generation: perl_semantic_facts::SourceGeneration
+pub perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordSiteAnchor::span_end_byte: u32
+pub perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordSiteAnchor::span_start_byte: u32
+pub fn perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordSiteAnchor::new(package: core::option::Option<alloc::string::String>, span_start_byte: u32, span_end_byte: u32, source_generation: perl_semantic_facts::SourceGeneration) -> perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordSiteAnchor
+pub fn perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordSiteAnchor::clone(&self) -> perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordSiteAnchor
+pub fn perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordSiteAnchor::eq(&self, other: &perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordSiteAnchor) -> bool
+pub fn perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordSiteAnchor::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub const perl_semantic_facts::framework_adapters::signature_keywords::FUNCTION_PARAMETERS_ADAPTER_ID: perl_semantic_facts::framework::AdapterId
+pub const perl_semantic_facts::framework_adapters::signature_keywords::FUNCTION_PARAMETERS_PROFILE_VERSION: &str
+pub const perl_semantic_facts::framework_adapters::signature_keywords::FUNCTION_PARAMETERS_VERSION_CONSTRAINT: &str
+pub const perl_semantic_facts::framework_adapters::signature_keywords::METHOD_SIGNATURES_ADAPTER_ID: perl_semantic_facts::framework::AdapterId
+pub const perl_semantic_facts::framework_adapters::signature_keywords::METHOD_SIGNATURES_PROFILE_VERSION: &str
+pub const perl_semantic_facts::framework_adapters::signature_keywords::METHOD_SIGNATURES_VERSION_CONSTRAINT: &str
+pub const perl_semantic_facts::framework_adapters::signature_keywords::SIGNATURE_KEYWORD_DESCRIPTOR_REVISION: u32
+pub fn perl_semantic_facts::framework_adapters::signature_keywords::callable_fact_status(fact: &perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordCallableFact) -> perl_semantic_facts::SemanticFactStatus
+pub fn perl_semantic_facts::framework_adapters::signature_keywords::classify_signature_keyword_import(family: perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordFamily, args: &[alloc::string::String], explicit_empty: bool) -> perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordImportDisposition
+pub fn perl_semantic_facts::framework_adapters::signature_keywords::classify_signature_keyword_use(module: &str, args: &[alloc::string::String], source_span: core::option::Option<&str>) -> core::option::Option<(perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordFamily, core::option::Option<alloc::string::String>, perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordImportDisposition)>
+pub fn perl_semantic_facts::framework_adapters::signature_keywords::detect_function_parameters(input: &perl_semantic_facts::framework::AdapterDetectionInput) -> perl_semantic_facts::framework::AdapterDetectionResult
+pub fn perl_semantic_facts::framework_adapters::signature_keywords::detect_method_signatures(input: &perl_semantic_facts::framework::AdapterDetectionInput) -> perl_semantic_facts::framework::AdapterDetectionResult
+pub fn perl_semantic_facts::framework_adapters::signature_keywords::function_parameters_descriptor() -> perl_semantic_facts::framework::AdapterDescriptor
+pub fn perl_semantic_facts::framework_adapters::signature_keywords::is_version_spelling(value: &str) -> bool
+pub fn perl_semantic_facts::framework_adapters::signature_keywords::lookup_signature_keyword_callable<'a>(facts: &'a [perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordCallableFact], package: core::option::Option<&str>, name: &str) -> core::option::Option<&'a perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordCallableFact>
+pub fn perl_semantic_facts::framework_adapters::signature_keywords::method_signatures_descriptor() -> perl_semantic_facts::framework::AdapterDescriptor
+pub fn perl_semantic_facts::framework_adapters::signature_keywords::signature_keyword_anchor(file_id: perl_semantic_facts::FileId, start: usize, end: usize) -> perl_semantic_facts::SourceAnchor
+pub fn perl_semantic_facts::framework_adapters::signature_keywords::signature_keyword_callable_facts(detection: &perl_semantic_facts::framework::AdapterDetectionResult, family: perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordFamily, package: core::option::Option<&str>, declarations: &[perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordDeclaration]) -> alloc::vec::Vec<perl_semantic_facts::framework_adapters::signature_keywords::SignatureKeywordCallableFact>
+pub fn perl_semantic_facts::framework_adapters::signature_keywords::signature_keyword_callable_identity(file_id: perl_semantic_facts::FileId, declaration_index: u32, generation: &perl_semantic_facts::SourceGeneration) -> (perl_semantic_facts::FactId, perl_semantic_facts::EntityId)
+pub fn perl_semantic_facts::framework_adapters::signature_keywords::signature_keyword_descriptors() -> [perl_semantic_facts::framework::AdapterDescriptor; 2]
+pub fn perl_semantic_facts::framework_adapters::signature_keywords::source_has_explicit_empty_import(source_span: &str, module: &str) -> bool
 pub mod perl_semantic_facts::handler
 #[non_exhaustive] pub enum perl_semantic_facts::handler::FrameworkHandler
 pub perl_semantic_facts::handler::FrameworkHandler::Bounded
