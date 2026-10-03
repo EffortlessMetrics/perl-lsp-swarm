@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "owner_issue": 16595,
-  "reason": "Folder-scoped includePaths configuration fix increases the combined bundled extension entrypoint by 639 bytes.",
-  "base_baseline_file_sha256": "02be3f2c70c23fe13159d7f0c3e1e84ac7f53ab291c51a28b21c22cb0d5a5791",
-  "candidate_baseline_file_sha256": "975f428f8ea36ca04de3ee3ae5093b961b9a0002dfd61a9fc3b25e8c9fdb42eb",
-  "base_inventory_sha256": "91c883030a238ffa984d0fe649ff56cb0f1669efb096f1beaaa3eabaa976c9cf",
-  "candidate_inventory_sha256": "02fe6fe2c7ab70962c657b90ca6b341bf245a1a1e7c6f1d637a3994500c4645e"
+  "owner_issue": 16531,
+  "reason": "4th heal re-measure: main advanced by #16595 (folder-scoped include paths) and #16766 (formatter and VSIX inventory restore), so this claim's update-lifecycle body (+6698 bytes in the bundled out/extension.js) is re-measured from the exact healed merge-tip archive on top of main's accepted baseline; size-only, no packaged file added or removed.",
+  "base_baseline_file_sha256": "975f428f8ea36ca04de3ee3ae5093b961b9a0002dfd61a9fc3b25e8c9fdb42eb",
+  "candidate_baseline_file_sha256": "1a4514a5e317f815c7d763a7bd23f3c469e6f5b4ba1cf7efc45c1376e94b0268",
+  "base_inventory_sha256": "02fe6fe2c7ab70962c657b90ca6b341bf245a1a1e7c6f1d637a3994500c4645e",
+  "candidate_inventory_sha256": "7a56e613af73034704487cf8a5e445a16dde9c24db4e1d86112fcc60dbe43d83"
 }
