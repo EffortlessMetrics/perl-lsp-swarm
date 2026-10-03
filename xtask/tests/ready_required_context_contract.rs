@@ -44,7 +44,7 @@ fn draft_activity_cannot_create_the_required_title_context() {
     assert!(
         findings(&source).is_empty(),
         "{:?}",
-        findings(&source)
+        findings(&source),
     );
 }
 
