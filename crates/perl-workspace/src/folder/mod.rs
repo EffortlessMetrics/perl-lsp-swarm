@@ -414,10 +414,12 @@ mod tests {
     }
 
     #[test]
-    fn four_slash_file_uri_is_rejected_as_a_remote_file_host() {
-        // `file:////host/share` has an empty authority; WHATWG parse puts
-        // `//host/share` in the path. That is the same UNC root as path-origin
-        // `//host/share` and must not be admitted as a local filesystem URI.
+    fn four_slash_file_uri_is_an_honest_absolute_local_path_not_unc() {
+        // rust `url` 2.x (WHATWG) collapses `file:////host/share` to an empty
+        // authority and path `/host/share`. That is the same class as
+        // `file:///relative/rel2`: a client-named absolute local path, not a
+        // remote UNC root (`\\host\share`). Path-origin `//host/share` remains
+        // RemoteFileHost via `is_unc_style_path` before conversion.
         let uri = "file:////evil.example.com/share/project";
         let parsed = url::Url::parse(uri).expect("four-slash file URI parses");
         assert!(
@@ -425,24 +427,21 @@ mod tests {
             "four-slash form must not carry the host in the authority, got {:?}",
             parsed.host_str()
         );
-        assert!(
-            parsed.path().starts_with("//") && !parsed.path().starts_with("///"),
-            "four-slash form must place UNC in the path, got {:?}",
-            parsed.path()
+        assert_eq!(
+            parsed.path(),
+            "/evil.example.com/share/project",
+            "rust url must collapse extra slashes; a `//host` path would be UNC"
         );
 
-        let entries = vec![json!({"uri": uri, "name": "unc-uri"})];
+        let admitted = admit_workspace_folder_uris(&[json!({"uri": uri, "name": "unc-uri"})])
+            .expect("collapsed four-slash is an absolute local file URI");
+        assert_eq!(admitted, vec![uri]);
+
+        let path = workspace_folder_to_path(uri);
+        let native = path.to_string_lossy();
         assert!(
-            extract_workspace_folder_uris(&entries).is_empty(),
-            "{uri} must not be extracted as a filesystem root"
-        );
-        let rejection = admit_workspace_folder_uris(&entries).expect_err("four-slash file URI");
-        assert_eq!(rejection.kind, WorkspaceFolderRejectionKind::RemoteFileHost);
-        assert_eq!(rejection.input, uri);
-        assert!(
-            !rejection.message().contains("file://evil.example.com/share"),
-            "rejection must not advertise a manufactured remote URI: {}",
-            rejection.message()
+            !native.starts_with(r"\\") && !native.starts_with("//"),
+            "admitted four-slash URI must not resolve to a UNC path, got {native}"
         );
     }
 

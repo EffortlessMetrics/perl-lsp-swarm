@@ -1639,7 +1639,6 @@ mod tests {
             "git:///repo",
             "file://evil.example.com/share/project",
             "file:relative/rel2",
-            "file:////evil.example.com/share/project",
         ] {
             let server = LspServer::new();
             let params = json!({
