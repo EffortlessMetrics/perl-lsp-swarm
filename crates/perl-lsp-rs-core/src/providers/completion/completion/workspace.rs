@@ -2718,10 +2718,18 @@ fn collect_all_package_members_with_source(
                     result.push(symbol);
                 }
             }
-            // Current-buffer source wins for explicit methods; still consume
-            // persisted generated members (Moo `has` readers, etc.) so
-            // indexing the same package does not drop workspace facts.
-            push_index_method_symbols(index.get_generated_package_members(pkg), seen_names, result);
+            // Current-buffer source wins for explicit methods; persisted
+            // members still compose for names the buffer does not define, so
+            // indexing the same package cannot drop workspace facts. Buffer
+            // names stay first via `seen_names`, preserving local precedence.
+            push_index_method_symbols(
+                index
+                    .get_package_members(pkg)
+                    .into_iter()
+                    .chain(index.get_generated_package_members(pkg)),
+                seen_names,
+                result,
+            );
         } else {
             push_index_method_symbols(
                 index
@@ -2875,42 +2883,80 @@ fn load_source_package_facts(
                 .filter_map(|method| current_document_method_symbol(&model.name, method))
                 .collect()
         });
-        return SourcePackageFacts {
-            parents: model.parents.clone(),
-            roles: model.roles.clone(),
-            methods,
-            from_current_document: true,
-        };
+        // The open buffer wins for explicit methods, but it does not own
+        // inheritance it never declares: union the persisted parents/roles so
+        // workspace members and inherited packages keep resolving while the
+        // buffer is being edited. Without this, declaring the receiver package
+        // in the buffer silently dropped every indexed ancestor (#16850).
+        let (parents, roles) = union_buffer_index_inheritance(
+            &model.parents,
+            &model.roles,
+            indexed_package_model(pkg, index).as_ref(),
+        );
+        return SourcePackageFacts { parents, roles, methods, from_current_document: true };
     }
 
     if let Some(methods) = current_methods.get(pkg) {
+        // Partial buffers that yield methods but no class model (e.g. an
+        // unterminated `$self->` line still being typed) own no inheritance
+        // either: the persisted parents/roles still apply.
+        let (parents, roles) =
+            union_buffer_index_inheritance(&[], &[], indexed_package_model(pkg, index).as_ref());
         return SourcePackageFacts {
-            parents: Vec::new(),
-            roles: Vec::new(),
+            parents,
+            roles,
             methods: methods.clone(),
             from_current_document: true,
         };
     }
 
+    indexed_package_model(pkg, index)
+        .map(|model| source_package_facts_from_model(&model, false))
+        .unwrap_or_else(empty_source_package_facts)
+}
+
+/// Union buffer-declared inheritance with persisted inheritance the buffer
+/// never declares. Buffer entries stay first so local `use parent` / `with`
+/// keeps precedence; indexed entries fill only the gaps.
+fn union_buffer_index_inheritance(
+    buffer_parents: &[String],
+    buffer_roles: &[String],
+    indexed_model: Option<&perl_semantic_analyzer::class_model::ClassModel>,
+) -> (Vec<String>, Vec<String>) {
+    let mut parents: Vec<String> = buffer_parents.to_vec();
+    let mut roles: Vec<String> = buffer_roles.to_vec();
+    if let Some(indexed_model) = indexed_model {
+        for parent in &indexed_model.parents {
+            if !parents.contains(parent) {
+                parents.push(parent.clone());
+            }
+        }
+        for role in &indexed_model.roles {
+            if !roles.contains(role) {
+                roles.push(role.clone());
+            }
+        }
+    }
+    (parents, roles)
+}
+
+fn indexed_package_model(
+    pkg: &str,
+    index: &WorkspaceIndex,
+) -> Option<perl_semantic_analyzer::class_model::ClassModel> {
     let indexed_text = index.find_definition(pkg).and_then(|pkg_location| {
         index.document_store().get_text(&pkg_location.uri).or_else(|| {
             perl_workspace::workspace_index::uri_to_fs_path(&pkg_location.uri)
                 .and_then(|path| std::fs::read_to_string(path).ok())
         })
     });
-    let Some(text) = indexed_text else {
-        return empty_source_package_facts();
-    };
+    let text = indexed_text?;
     let mut parser = perl_semantic_analyzer::Parser::new(&text);
-    let Ok(ast) = parser.parse() else {
-        return empty_source_package_facts();
-    };
+    let ast = parser.parse().ok()?;
     perl_semantic_analyzer::class_model::ClassModelBuilder::new()
         .build(&ast)
         .into_iter()
         .find(|model| model.name == pkg)
-        .map(|model| source_package_facts_from_model(&model, false))
-        .unwrap_or_else(empty_source_package_facts)
 }
 
 fn source_package_facts_from_model(
