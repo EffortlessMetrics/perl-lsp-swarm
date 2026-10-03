@@ -93,6 +93,8 @@ pub(crate) enum CliCommand {
     CheckDocLinks { docs_dir: Option<String> },
     /// Check active status docs agree with the canonical workspace version and published-crate count.
     CheckDocDrift,
+    /// Reject trailing commas in fenced `json` examples under a documentation subtree.
+    CheckDocJson { docs_dir: Option<String> },
     /// Enforce linked-only task-marker policy.
     CheckTodos {
         #[arg(long)]
