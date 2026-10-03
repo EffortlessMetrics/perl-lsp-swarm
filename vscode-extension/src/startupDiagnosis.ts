@@ -121,7 +121,7 @@ export function classifyStartupError(output: string): StartupErrorDiagnosis {
  * specific error (glibc mismatch, wrong arch, permission error, etc.).  When
  * the probe returns `Unknown` — meaning execFile gave no useful output — fall
  * back to the health-check string from `runStartupDiagnostics`, which can
- * detect environment issues like a missing Perl interpreter.
+ * detect an explicitly missing server binary or unavailable diagnostics.
  *
  * @param probe      Result of `probeStartupFailure`.
  * @param healthMsg  Result of `onboardingManager.runStartupDiagnostics`, or
@@ -141,8 +141,7 @@ export function selectBestDiagnosis(
     // Nothing better available — return the probe as-is.
     return probe;
   }
-  // Probe was inconclusive; promote the health-check string as the hint so
-  // the user sees "Perl interpreter not found" instead of the generic message.
+  // Probe was inconclusive; promote the health-check string as the hint.
   return {
     kind: StartupErrorKind.Unknown,
     hint: healthMsg,
@@ -154,8 +153,7 @@ export function selectBestDiagnosis(
  * Format the startup failure dialog shown to the user.
  *
  * When the health-check fallback returns a specific onboarding message, we
- * surface that verbatim so the user sees the actionable Perl-missing guidance
- * immediately instead of a generic wrapper.
+ * surface that verbatim so the user sees the health-check diagnosis.
  */
 export function formatStartupFailureDialog(
   probe: StartupErrorDiagnosis,
