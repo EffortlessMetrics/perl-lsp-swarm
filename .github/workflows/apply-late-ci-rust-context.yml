@@ -34,6 +34,39 @@ jobs:
 
           path = Path('.github/workflows/em-ci-routed-rust.yml')
           source = path.read_text(encoding='utf-8')
+
+          expression_open = '$' + '{{'
+          expression_close = '}}'
+          group_old = (
+              '  group: em-ci-routed-rust-'
+              + expression_open
+              + ' github.repository '
+              + expression_close
+              + '-'
+              + expression_open
+              + " github.event.pull_request.number || github.event_name == 'push' && github.sha || github.ref "
+              + expression_close
+          )
+          group_new = (
+              group_old
+              + '-'
+              + expression_open
+              + ' github.event_name '
+              + expression_close
+          )
+          cancel_old = (
+              '  cancel-in-progress: '
+              + expression_open
+              + " github.event_name == 'pull_request' && github.event.action == 'synchronize' "
+              + expression_close
+          )
+          cancel_new = (
+              '  cancel-in-progress: '
+              + expression_open
+              + " github.event_name == 'pull_request' "
+              + expression_close
+          )
+
           replacements = (
               (
                   '    types: [opened, synchronize, reopened, ready_for_review]',
@@ -41,14 +74,8 @@ jobs:
                   '    # Draft -> Ready is the explicit PR qualification request.\n'
                   '    types: [ready_for_review]',
               ),
-              (
-                  "  group: em-ci-routed-rust-${{ github.repository }}-${{ github.event.pull_request.number || github.event_name == 'push' && github.sha || github.ref }}",
-                  "  group: em-ci-routed-rust-${{ github.repository }}-${{ github.event.pull_request.number || github.event_name == 'push' && github.sha || github.ref }}-${{ github.event_name }}",
-              ),
-              (
-                  "  cancel-in-progress: ${{ github.event_name == 'pull_request' && github.event.action == 'synchronize' }}",
-                  "  cancel-in-progress: ${{ github.event_name == 'pull_request' }}",
-              ),
+              (group_old, group_new),
+              (cancel_old, cancel_new),
               (
                   "    if: github.event.pull_request.draft != true || github.event_name != 'pull_request'\n",
                   '',
