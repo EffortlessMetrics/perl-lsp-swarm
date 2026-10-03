@@ -4,7 +4,8 @@ use super::implementation::counters::{self, NativePipelineCounters, PipelineColl
 use super::implementation::{
     BracePlacement, ElsePlacement, FinalNewline, FormatConfig, FormatDiagnosticSeverity,
     FormatResult, FormatterMode, KeywordSpacing, NativeFormatter, PerlFormatter, TextEdit,
-    TextRange, TrailingComma, format_simple_line, range_includes_line,
+    TextRange, TrailingComma, format_simple_line, indent_unit, is_rendered_block_boundary_line,
+    range_includes_line, rendered_boundary_role,
 };
 use serde::{Deserialize, Serialize};
 
@@ -522,21 +523,81 @@ fn utf16_len(source: &str) -> u32 {
     source.encode_utf16().count() as u32
 }
 
+/// Whether every included line stays inside the formatter's supported
+/// envelope, with the document-level evidence that the block boundaries the
+/// renderers own are in rendered form.
+///
+/// Boundary *shape* is necessary but not sufficient: a hand-written block
+/// reuses exactly the header and tail shapes the renderers emit, so per-line
+/// recognition alone would classify a never-rendered document as
+/// `AlreadyFormatted` and silence its pinned unsupported-syntax warning. The
+/// evidence that separates rendered output from hand-written input is the
+/// layout `push_simple_block_body_docs` produces, and only a walk over the
+/// target's lines can check it:
+///
+/// - every `}`-prefixed tail closes the block opened at the same indent;
+/// - every non-inert line inside an open block sits at least one
+///   [`indent_unit`] past that block's indent — a body at or above its
+///   header's indent (`sub f {` / `return 1;` / `}`) is hand-written, not
+///   rendered;
+/// - the included lines end with every opened block closed. Document targets
+///   always balance (this walk runs only after a clean parse); a range that
+///   stops inside a block has no closing evidence in scope and stays refused,
+///   exactly as before boundary admission existed.
+///
+/// Blank and comment lines impose no indent constraint: they pass the
+/// formatter through unchanged wherever they appear.
 fn target_has_only_supported_lines(
     source: &str,
     config: &FormatConfig,
     target: FormatRequestTarget,
 ) -> bool {
-    source.split('\n').enumerate().all(|(line, text)| {
+    let body_indent = indent_unit(config);
+    let mut open_blocks: Vec<&str> = Vec::new();
+    for (line, text) in source.split('\n').enumerate() {
         let included = match target {
             FormatRequestTarget::Document => true,
             FormatRequestTarget::Range { range } => range_includes_line(range, line as u32),
         };
-        !included
-            || text.trim().is_empty()
-            || text.trim_start().starts_with('#')
-            || format_simple_line(text, config).is_some()
-    })
+        if !included {
+            continue;
+        }
+        let trimmed = text.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let indent_len = text.len() - text.trim_start_matches([' ', '\t']).len();
+        let indent = &text[..indent_len];
+        // Block boundaries the renderers own. Without this a block the
+        // formatter itself rendered refused on the second pass, because no
+        // header or tail line is a `format_simple_line` candidate.
+        if is_rendered_block_boundary_line(text, config) {
+            let role = rendered_boundary_role(text);
+            if role.closes_block {
+                let closes_matched_block = open_blocks.last().is_some_and(|open| *open == indent);
+                if !closes_matched_block {
+                    return false;
+                }
+                open_blocks.pop();
+            }
+            let outside_renderer_layout = open_blocks
+                .last()
+                .is_some_and(|open| !indent.starts_with(&format!("{open}{body_indent}")));
+            if outside_renderer_layout {
+                return false;
+            }
+            if role.opens_block {
+                open_blocks.push(indent);
+            }
+        } else if format_simple_line(text, config).is_none()
+            || open_blocks
+                .last()
+                .is_some_and(|open| !indent.starts_with(&format!("{open}{body_indent}")))
+        {
+            return false;
+        }
+    }
+    open_blocks.is_empty()
 }
 
 fn safety_evidence(
