@@ -25,6 +25,49 @@ export interface DocumentCommandDependencies {
 let incPathsChannel: vscode.OutputChannel | undefined;
 let parserAstChannel: vscode.OutputChannel | undefined;
 
+function checkSyntaxFailureMessage(
+  error: Error,
+  output: string,
+): { message: string; outputEmbedded: boolean } {
+  const processError = error as Error & { code?: number | string | null; killed?: boolean };
+  if (processError.code === 'ENOENT') {
+    return {
+      message:
+        'Could not check syntax: Perl was not found on PATH. Install Perl and add it to PATH.',
+      outputEmbedded: false,
+    };
+  }
+  if (
+    processError.killed &&
+    (processError.code === null ||
+      processError.code === undefined ||
+      typeof processError.code === 'number')
+  ) {
+    // Node kills the child when the 10-second budget expires. A null code means
+    // the child died from that signal; a numeric code means it trapped the
+    // signal (e.g. a SIGTERM handler in a BEGIN block) and still exited
+    // nonzero. Both are the timeout ending the check. A string code (killed for
+    // a different reason, such as a maxBuffer truncation) is reported below by
+    // its own message.
+    return {
+      message: 'Could not check syntax: perl -c timed out after 10 seconds.',
+      outputEmbedded: false,
+    };
+  }
+  if (typeof processError.code === 'number') {
+    return {
+      message: output
+        ? `Syntax check failed: ${output}`
+        : `Syntax check failed: perl -c exited with code ${processError.code} without output.`,
+      outputEmbedded: output.length > 0,
+    };
+  }
+  return {
+    message: `Could not check syntax: ${error.message || output || 'Perl process failed without output.'}`,
+    outputEmbedded: !error.message && output.length > 0,
+  };
+}
+
 /** Check the active Perl document with the local Perl interpreter. */
 export async function runCheckSyntaxCommand(
   dependencies: DocumentCommandDependencies,
@@ -60,15 +103,17 @@ export async function runCheckSyntaxCommand(
     run('perl', perlArgs, { timeout: 10_000 }, (error, stdout, stderr) => {
       const output = (stdout + stderr).trim();
       if (error) {
-        vscode.window
-          .showErrorMessage(`Syntax error: ${output}`, 'Show Output')
-          .then((selection) => {
-            if (selection === 'Show Output') {
-              dependencies.outputChannel.appendLine(`[check-syntax] ${output}`);
-              dependencies.outputChannel.show();
+        const failure = checkSyntaxFailureMessage(error, output);
+        vscode.window.showErrorMessage(failure.message, 'Show Output').then((selection) => {
+          if (selection === 'Show Output') {
+            dependencies.outputChannel.appendLine(`[check-syntax] ${failure.message}`);
+            if (output && !failure.outputEmbedded) {
+              dependencies.outputChannel.appendLine(output);
             }
-            resolve();
-          });
+            dependencies.outputChannel.show();
+          }
+          resolve();
+        });
         return;
       }
 
