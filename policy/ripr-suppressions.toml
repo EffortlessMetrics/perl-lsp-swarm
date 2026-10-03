@@ -11,7 +11,7 @@ schema_version = 1
 policy = "ripr-suppressions"
 owner = "EffortlessMetrics"
 status = "advisory"
-updated = "2026-09-17"
+updated = "2026-10-01"
 
 # -----------------------------------------------------------------------------
 # Generated status docs: validated through status-generation checks, not
@@ -4985,3 +4985,28 @@ created = "2026-09-17"
 review_after = "2026-10-17"
 expires = "2026-12-31"
 removal_criteria = "Remove when EffortlessMetrics/ripr#1429 traces declaration-line probes to the tests that construct or exercise their owners, or at expiry. Narrow immediately if a receipt reports an executable no_static_path seam in semantic/mod.rs or semantic/quickorm.rs outside the five identities listed in gap_ids. Do not keep this entry if those probe ids rotate and the receipt names a different executable owner."
+
+# -----------------------------------------------------------------------------
+# PIR lexical extractor write-arm side-effect probe: the in-diff
+# call-observation test drives the production entry point directly and asserts
+# the appended fact's fields, but the diff-scoped classifier does not
+# associate its assertions with this probe.
+#
+# Tracks #17063. Identity key: `gap_ids` lists the one probe identity from
+# runs 36879139519 and 36931845598. Path + classification are additional
+# filters, not the selector. A different probe id in this file stays visible.
+# `kind` is descriptive metadata, not a declaration selector.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-16880-extractor-write-arm-side-effect-probe"
+kind = "call_presence_static_tracing_limit"
+paths = ["crates/perl-parser-core/src/pir/extractor.rs"]
+classification = ["reachable_unrevealed"]
+gap_ids = ["probe:crates_perl-parser-core_src_pir_extractor.rs:side_effect:b3371bc1"]
+owner = "proof-lane"
+issue = "#17063"
+reason = "PR #16880 changes extract_lexical_facts (the hir_bindings_by_range join) and adds pir_lexical_extractor_test::write_arm_facts_carry_joined_binding_and_advance_write_count, which drives the production entry point directly and asserts the appended LexicalWrite fact's role, source anchor, body_idx, joined binding, and total_write_count. Local mutation probes prove the test observes and discriminates this arm: skipping the write-arm push_anchored_lexical_fact call fails exactly that test with 'must produce exactly one write fact: []', and restoring it passes. ripr 0.10.0 still scores this probe observe=no/discriminate=no on both measured heads (runs 36879139519 at a565a02d07 and 36931845598 at e02b46a63a, new_unresolved=1 each) while citing the same test file's assertions for the sibling probe at extractor.rs:224 (classified exposed) -- the related-test association misses the assertion-to-call link for this side_effect probe. Identity-pinned to the one probe id (fail-closed: a moved or re-hashed probe stops matching) and to the reachable_unrevealed class only, so exposed/weakly_exposed findings and any new probe in this file stay live. Remove when #17063's classifier fix lands, when a ripr run on the same diff scores probe b3371bc1 observe=yes/discriminate=yes (that run falsifies this entry), or when a finer function-level selector or targeted mutation replaces this advisory path."
+created = "2026-10-01"
+review_after = "2026-11-01"
+expires = "2026-12-31"
+removal_criteria = "Remove when EffortlessMetrics ripr credits the in-diff call-observation test (probe b3371bc1 scores observe=yes/discriminate=yes on any run over this diff), when #17063 records the upstream fix, or at expiry. Narrow immediately if a receipt reports a different reachable_unrevealed probe in crates/perl-parser-core/src/pir/extractor.rs outside the one identity listed in gap_ids. Do not keep this entry if the probe id rotates and the receipt names a different executable owner."

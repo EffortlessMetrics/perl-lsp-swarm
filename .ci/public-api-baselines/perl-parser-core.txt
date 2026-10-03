@@ -3454,6 +3454,7 @@ pub fn perl_parser_core::pir::FilePirLexicalContributionV1::eq(&self, other: &pe
 pub fn perl_parser_core::pir::FilePirLexicalContributionV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_parser_core::pir::FilePirLexicalContributionV1::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 #[non_exhaustive] pub struct perl_parser_core::pir::LexicalBindingFact
+pub perl_parser_core::pir::LexicalBindingFact::binding: core::option::Option<perl_parser_core::hir::HirBindingId>
 pub perl_parser_core::pir::LexicalBindingFact::body_idx: usize
 pub perl_parser_core::pir::LexicalBindingFact::body_owner: perl_parser_core::hir::BodyOwnerKind
 pub perl_parser_core::pir::LexicalBindingFact::name: perl_parser_core::pir::LexicalName

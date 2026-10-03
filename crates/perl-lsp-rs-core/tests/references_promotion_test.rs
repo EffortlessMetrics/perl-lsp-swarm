@@ -94,7 +94,7 @@ fn sorted_ranges(mut ranges: Vec<lsp_types::Range>) -> Vec<lsp_types::Range> {
 }
 
 fn opts_all() -> ReferenceOptions {
-    ReferenceOptions { include_declaration: true }
+    ReferenceOptions::default()
 }
 
 fn nth_byte_range(source: &str, needle: &str, occurrence: usize) -> TestResult<(usize, usize)> {
@@ -166,7 +166,7 @@ fn exact_ranges_for(
         &[],
         body_idx,
         &uri_mapper,
-        ReferenceOptions { include_declaration },
+        ReferenceOptions { include_declaration, query_byte_offset: None },
     );
 
     match outcome {
@@ -397,7 +397,7 @@ fn p6_provider_shadow_receipt_for_curated_references_slice() -> TestResult {
         &legacy,
         0,
         &|start, end| lsp_range_from_bytes(&mapper, start, end),
-        ReferenceOptions { include_declaration: false },
+        ReferenceOptions { include_declaration: false, query_byte_offset: None },
     );
     match shadow_outcome {
         ReferencesPirPromoteOutcome::LegacyFallback { result, reason } => {
@@ -1157,6 +1157,98 @@ fn f10_scope_shadow_exact_range_set_with_utf16_mapper() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn inner_cursor_returns_only_the_inner_shadow_binding() -> TestResult {
+    let mapper = PositionMapper::new(F1_SOURCE);
+    let uri_mapper = |start: usize, end: usize| lsp_range_from_bytes(&mapper, start, end);
+    let receipt = receipt_for(F1_SOURCE);
+    let inner_decl_start =
+        F1_SOURCE.match_indices("$x").nth(1).map(|(i, _)| i).ok_or("inner $x")?;
+
+    let outcome = references_pir_promote(
+        PromotionMode::PromoteExact,
+        "$",
+        "x",
+        &receipt,
+        &[],
+        0,
+        &uri_mapper,
+        ReferenceOptions { include_declaration: true, query_byte_offset: Some(inner_decl_start) },
+    );
+    let ranges = match outcome {
+        ReferencesPirPromoteOutcome::Exact(r) => sorted_ranges(r),
+        other => return Err(format!("expected Exact for inner $x, got {other:?}").into()),
+    };
+
+    let inner_decl = lsp_range_from_bytes(&mapper, 20, 22);
+    let inner_read = lsp_range_from_bytes(&mapper, 38, 40);
+    let outer_write = lsp_range_from_bytes(&mapper, 3, 5);
+    let expected = sorted_ranges(vec![inner_decl, inner_read]);
+    assert_eq!(
+        ranges, expected,
+        "cursor on inner `$x` must return only the inner binding;\nexpected: {expected:?}\ngot: {ranges:?}"
+    );
+    assert!(
+        !ranges.contains(&outer_write),
+        "outer `$x` must not appear in the inner-cursor result"
+    );
+    Ok(())
+}
+
+#[test]
+fn cursor_on_inner_modify_refuses_exact_instead_of_retargeting_outer() -> TestResult {
+    let source = "my $x = 1;\n{\n    my $x = 2;\n    $x++;\n}\nprint $x;\n";
+    let receipt = receipt_for(source);
+    let increment = source.find("$x++").ok_or("inner `$x++`")?;
+
+    let outcome = references_pir_promote(
+        PromotionMode::PromoteExact,
+        "$",
+        "x",
+        &receipt,
+        &[],
+        0,
+        &byte_mapper,
+        ReferenceOptions { include_declaration: true, query_byte_offset: Some(increment) },
+    );
+    match outcome {
+        ReferencesPirPromoteOutcome::LegacyFallback {
+            reason: PirShadowRefusalReason::NoExactFacts,
+            ..
+        } => Ok(()),
+        other => Err(format!(
+            "cursor on inner `$x++` must refuse Exact rather than retarget outer `$x`, got {other:?}"
+        )
+        .into()),
+    }
+}
+
+#[test]
+fn cursorless_incomparable_shadows_refuse_exact() -> TestResult {
+    let source = "{ my $x = 2; print $x; } my $x = 1; print $x;\n";
+    let receipt = receipt_for(source);
+    let outcome = references_pir_promote(
+        PromotionMode::PromoteExact,
+        "$",
+        "x",
+        &receipt,
+        &[],
+        0,
+        &byte_mapper,
+        opts_all(),
+    );
+    match outcome {
+        ReferencesPirPromoteOutcome::LegacyFallback {
+            reason: PirShadowRefusalReason::NoExactFacts,
+            ..
+        } => Ok(()),
+        other => {
+            Err(format!("cursorless incomparable `$x` shadows must refuse Exact, got {other:?}")
+                .into())
+        }
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // F11: includeDeclaration=true includes both declaration and use
 //
@@ -1180,7 +1272,7 @@ fn f11_include_declaration_filtering_is_above_promote_layer() -> TestResult {
         &[],
         0,
         &uri_mapper,
-        ReferenceOptions { include_declaration: true },
+        ReferenceOptions { include_declaration: true, query_byte_offset: None },
     );
 
     let ranges = match outcome {
