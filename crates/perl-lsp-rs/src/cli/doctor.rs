@@ -777,7 +777,18 @@ const FIX_BASH_INSTALL_GIT_WINDOWS: &str =
     "fix: install Git for Windows so a POSIX bash is available: winget install --id Git.Git -e";
 const FIX_BASH_INSTALL_UNIX: &str = "fix: install bash with your distribution's package manager so repository .sh entrypoints can run";
 
-const FIX_PERL_IDENTITY_DIVERGENCE: &str = "fix: reorder PATH so your intended perl resolves first ('where perl' lists resolution order on Windows, 'which -a perl' elsewhere), or pin [perl] perl_path in .perl-lsp.toml";
+// `ProjectPerlConfig` has no interpreter-path field, and
+// `WorkspaceConfig::update_from_value` refuses the interpreter-path and argv
+// keys from every client-settings payload so a hostile workspace cannot choose
+// the program or its arguments. The second half of the previous string
+// pointed at a project-config key that does not exist, so following it changed
+// nothing and said nothing (#16612). The debugger's `launch.json` interpreter
+// path is a different field on a different channel and is unaffected.
+//
+// This identity probe selects the first Perl on PATH, then a fixed install
+// candidate if PATH has none. Its remedy must describe that probe, rather than
+// the separate language-server module probe's perlbrew/plenv priority.
+const FIX_PERL_IDENTITY_DIVERGENCE: &str = "fix: select the intended Perl for this doctor probe by putting it first on PATH ('where perl' on Windows, 'which -a perl' elsewhere); if PATH has no Perl, add the intended installation to PATH. Check the other reported identities and keep only the ones you intend to use";
 const FIX_PERL_MISSING_WINDOWS: &str =
     "fix: install a native perl (for example Strawberry Perl) ahead of MSYS entries on PATH";
 const FIX_PERL_MISSING_UNIX: &str =

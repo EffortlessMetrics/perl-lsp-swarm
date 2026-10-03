@@ -40,21 +40,29 @@ perllsp --info
 perl --version
 ```
 
-Then run **Perl LSP: Show Workspace Trust Report** and compare:
+Then run **Perl LSP: Show Workspace Trust Report** and compare the reported
+configuration and resolution policy:
 
-- language-server Perl path or resolution state
-- DAP Perl path, when reported by the VS Code extension
+- language-server resolution state (the report does not probe or show the selected Perl path)
+- DAP state, when reported by the VS Code extension
 - workspace root
 - setup hints
 
 If you manage the server binary yourself, set the VS Code extension setting
-`perl-lsp.serverPath` to the `perllsp` binary. If module probing must use a
-specific Perl interpreter, configure the server-side `perl.workspace.perlPath`
-setting through your editor or `.perl-lsp.toml`.
+`perl-lsp.serverPath` to the `perllsp` binary. The language server accepts no
+interpreter-path setting: `perl.workspace.perlPath` (and the project-config
+equivalent) is refused on every channel and silently ignored. To select Perl
+for the optional startup `@INC` module probe, change the active
+perlbrew or plenv version when one is present; when neither is active, put the
+intended `perl` first on `PATH` (`where perl` on Windows, `which -a perl`
+elsewhere). The separate initialization availability check prefers Strawberry
+or ActiveState over MSYS on Windows, regardless of their `PATH` order. The
+debugger is a separate channel: it takes a per-launch `perlPath` in
+`launch.json`, and that one is honored.
 
-Do not assume the Perl used by your terminal, the LSP server, and the debugger
-are the same until the trust report shows the same path or an intentional
-difference.
+The trust report does not establish which Perl was selected. Use a request-local
+module lookup explanation or provider receipt to inspect module-probe evidence;
+check the debugger's launch configuration separately.
 
 ## Modules Are Missing From `@INC`
 
