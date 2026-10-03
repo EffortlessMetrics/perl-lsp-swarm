@@ -726,6 +726,43 @@ fn test_execute_command_workspace_trust_report() -> Result<(), Box<dyn std::erro
         result.pointer("/setup_hints/perl_binary/version_status").and_then(|value| value.as_str()),
         Some("not_probed_by_report")
     );
+    let resolution_status =
+        result.pointer("/setup_hints/perl_binary/resolution_status").and_then(Value::as_str);
+    if resolution_status
+        != Some("module_probe_uses_toolchain_resolution_when_needed_not_probed_by_report")
+    {
+        return Err(format!("unexpected Perl resolution status: {resolution_status:?}").into());
+    }
+    let perl_hint = result
+        .pointer("/setup_hints/hints")
+        .and_then(Value::as_array)
+        .and_then(|hints| {
+            hints.iter().find(|hint| {
+                hint.get("code").and_then(Value::as_str)
+                    == Some("perl_module_probe_uses_toolchain_resolution")
+            })
+        })
+        .ok_or("missing Perl resolution hint")?;
+    for field in ["message", "action"] {
+        let advice = perl_hint.get(field).and_then(Value::as_str).ok_or("missing Perl advice")?;
+        let perlbrew = advice.find("perlbrew").ok_or("perlbrew missing from advice")?;
+        let plenv = advice.find("plenv").ok_or("plenv missing from advice")?;
+        let path = advice.find("PATH").ok_or("PATH missing from advice")?;
+        if !(perlbrew < plenv && plenv < path) {
+            return Err(format!("{field} must follow perlbrew, plenv, PATH order: {advice}").into());
+        }
+    }
+    let action = perl_hint.get("action").and_then(Value::as_str).ok_or("missing Perl action")?;
+    if !action.contains("prefers Strawberry or ActiveState over MSYS") {
+        return Err("Windows startup selection difference missing from Perl advice".into());
+    }
+    if !perl_hint
+        .get("message")
+        .and_then(Value::as_str)
+        .is_some_and(|message| message.contains("This report does not probe Perl"))
+    {
+        return Err("Perl advice implies the trust report resolved an interpreter".into());
+    }
     assert!(
         result
             .pointer("/setup_hints/claim_boundary")

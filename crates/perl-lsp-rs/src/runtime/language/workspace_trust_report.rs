@@ -52,11 +52,22 @@ fn setup_hints_summary(config: &WorkspaceConfig) -> Value {
     let mut hints = Vec::new();
 
     if configured_perl_path(config).is_none() {
+        // No channel can set an interpreter path for the language server:
+        // `ProjectPerlConfig` has no such field, and `WorkspaceConfig::update_from_value`
+        // refuses `perlPath`/`perlArgs` from every client-settings payload so a hostile
+        // workspace cannot choose the interpreter or its argv. This hint
+        // therefore fires on every clean report, and naming the setting here told
+        // every user to configure something that is silently discarded (#16612).
+        //
+        // Module probing follows perlbrew, plenv, then PATH. The separate
+        // initialization availability check ranks Windows PATH candidates.
+        // The debugger has a real per-launch `perlPath` in `launch.json`; that is
+        // a different field on a different channel and is deliberately not named here.
         hints.push(setup_hint(
-            "perl_path_uses_path",
+            "perl_module_probe_uses_toolchain_resolution",
             "info",
-            "No explicit Perl binary is configured; perl-lsp will resolve `perl` from PATH when a subprocess needs it.",
-            "Set `perl.workspace.perlPath` when the editor should use a specific Perl.",
+            "No explicit Perl binary is configured. The optional startup `@INC` module probe selects an active perlbrew interpreter, then an active plenv interpreter, then `perl` on `PATH`. This report does not probe Perl.",
+            "For the module probe, change the active perlbrew or plenv version first; when neither is active, put the intended `perl` first on `PATH` (`where perl` on Windows, `which -a perl` elsewhere). The separate startup availability check may select a different Perl: on Windows it prefers Strawberry or ActiveState over MSYS even when MSYS is first on `PATH`. The language server accepts no interpreter-path setting.",
         ));
     }
 
@@ -113,7 +124,7 @@ fn setup_hints_summary(config: &WorkspaceConfig) -> Value {
             "resolution_status": if configured_perl_path(config).is_some() {
                 "configured_not_probed_by_report"
             } else {
-                "uses_path_when_needed_not_probed_by_report"
+                "module_probe_uses_toolchain_resolution_when_needed_not_probed_by_report"
             },
             "version_status": "not_probed_by_report",
             "args_count": config.perl_args.len(),
@@ -502,5 +513,56 @@ impl LspServer {
             },
             "copyable_payload": copyable_payload,
         })))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn perl5lib_precedence_labels_preserve_report_values() -> Result<(), Box<dyn std::error::Error>>
+    {
+        for (precedence, expected) in
+            [(Perl5LibPrecedence::Prepend, "prepend"), (Perl5LibPrecedence::Append, "append")]
+        {
+            let actual = perl5lib_precedence_label(&precedence);
+            if actual != expected {
+                return Err(format!("unexpected PERL5LIB precedence label: {actual}").into());
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn setup_hints_report_module_probe_policy_without_claiming_a_probe()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let hints = setup_hints_summary(&WorkspaceConfig::default());
+        let status = hints
+            .pointer("/perl_binary/resolution_status")
+            .and_then(Value::as_str)
+            .ok_or("missing Perl resolution status")?;
+        if status != "module_probe_uses_toolchain_resolution_when_needed_not_probed_by_report" {
+            return Err(format!("unexpected module-probe resolution status: {status}").into());
+        }
+        let perl_hint = hints
+            .pointer("/hints")
+            .and_then(Value::as_array)
+            .and_then(|items| {
+                items.iter().find(|item| {
+                    item.get("code").and_then(Value::as_str)
+                        == Some("perl_module_probe_uses_toolchain_resolution")
+                })
+            })
+            .ok_or("missing module-probe setup hint")?;
+        let message = perl_hint.get("message").and_then(Value::as_str).ok_or("missing message")?;
+        let action = perl_hint.get("action").and_then(Value::as_str).ok_or("missing action")?;
+        if !message.contains("This report does not probe Perl") {
+            return Err("setup hint claims the report resolved Perl".into());
+        }
+        if !action.contains("prefers Strawberry or ActiveState over MSYS") {
+            return Err("setup hint omits the Windows availability-check distinction".into());
+        }
+        Ok(())
     }
 }
