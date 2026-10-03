@@ -1873,42 +1873,39 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// Parse old-style prototype
+    /// Parse old-style prototype.
+    ///
+    /// The returned string is the exact source between the parentheses so
+    /// formatting whitespace is retained (#16810). Token kinds still drive
+    /// consumption. If the inner slice is missing or not UTF-8, the consumed
+    /// token texts are used instead of degrading to an exact empty prototype.
     fn parse_prototype(&mut self) -> ParseResult<String> {
-        let open_paren_pos = self.current_position();
-        self.expect(TokenKind::LeftParen)?; // consume (
-        let mut prototype = String::new();
+        let open = self.expect(TokenKind::LeftParen)?;
+        let open_paren_pos = open.start();
+        let inner_start = open.end();
+        let mut inner_end = inner_start;
+        let mut token_fallback = String::new();
 
         while !self.tokens.is_eof() {
             let token = self.consume_token()?;
-
-            match token.kind() {
-                TokenKind::RightParen => {
-                    // End of prototype
-                    break;
-                }
-                TokenKind::ScalarSigil => prototype.push('$'),
-                TokenKind::ArraySigil => prototype.push('@'),
-                TokenKind::HashSigil => prototype.push('%'),
-                TokenKind::GlobSigil | TokenKind::Star => prototype.push('*'),
-                TokenKind::SubSigil | TokenKind::BitwiseAnd => prototype.push('&'),
-                TokenKind::Semicolon => prototype.push(';'),
-                TokenKind::Backslash => prototype.push('\\'),
-                // `+` means "scalar or array/hash ref" (perlsub prototype character).
-                // `++` is the Increment token produced when two `+` chars appear together.
-                TokenKind::Plus => prototype.push('+'),
-                TokenKind::Increment => prototype.push_str("++"),
-                _ => {
-                    // For any other token, just add its text
-                    // This handles cases where sigils might be parsed differently
-                    prototype.push_str(&token.text);
-                }
+            if token.kind() == TokenKind::RightParen {
+                inner_end = token.start();
+                break;
             }
+            token_fallback.push_str(token.text.as_ref());
+            inner_end = token.end();
         }
 
+        // Prefer the exact source slice so formatting whitespace is retained.
+        // A failed slice must not become `""` (an exact nullary shape); fall
+        // back to the consumed token texts instead.
+        let prototype =
+            prototype_inner_text(self.src_bytes, inner_start, inner_end, &token_fallback);
+
         // Validate every character in the collected prototype string.
-        // Perl allows: $ @ % & * \ ; + _ bracketed ref groups, and ASCII space.
-        // Anything else triggers Perl's "Illegal character in prototype" warning.
+        // Perl allows: $ @ % & * \ ; + _ bracketed ref groups, and ASCII
+        // whitespace (space, tab, newline, CR, form-feed). Anything else
+        // triggers Perl's "Illegal character in prototype" warning.
         // We emit a SyntaxError diagnostic (collected as a warning by the LSP layer
         // via DiagnosticCode::InvalidPrototype / PL302) but do NOT abort parsing —
         // the prototype string is preserved so the caller still gets a Subroutine node.
@@ -2183,10 +2180,53 @@ fn shift_node_locations(node: &mut Node, offset: usize) -> bool {
 
 /// Return `true` if `c` is a character that Perl permits in old-style prototypes.
 ///
-/// Valid characters (from perlsub):
-/// `$` `@` `%` `&` `*` `\` `;` `+` `_`, bracketed ref groups, and ASCII space.
+/// Valid characters (from perlsub): `$` `@` `%` `&` `*` `\` `;` `+` `_`,
+/// bracketed ref groups, and ASCII whitespace.
 fn is_valid_prototype_char(c: char) -> bool {
-    matches!(c, '$' | '@' | '%' | '&' | '*' | '\\' | ';' | '+' | '_' | '[' | ']' | ' ')
+    crate::prototype_shape::is_prototype_char(c)
+}
+
+/// Inner prototype spelling between `(` and `)`.
+///
+/// A successful empty slice is the empty prototype. A failed slice (out of
+/// range or invalid UTF-8) uses `token_fallback` so lowering cannot mint an
+/// exact nullary shape from a missing source range.
+fn prototype_inner_text(
+    src_bytes: &[u8],
+    inner_start: usize,
+    inner_end: usize,
+    token_fallback: &str,
+) -> String {
+    src_bytes
+        .get(inner_start..inner_end)
+        .and_then(|bytes| std::str::from_utf8(bytes).ok())
+        .map(str::to_string)
+        .unwrap_or_else(|| token_fallback.to_string())
+}
+
+#[cfg(test)]
+mod prototype_inner_text_tests {
+    use super::prototype_inner_text;
+
+    #[test]
+    fn valid_slice_keeps_source_spelling() {
+        assert_eq!(prototype_inner_text(b"$ $", 0, 3, "$$"), "$ $");
+    }
+
+    #[test]
+    fn empty_in_range_slice_is_the_empty_prototype() {
+        assert_eq!(prototype_inner_text(b"sub f () {}", 7, 7, "ignored"), "");
+    }
+
+    #[test]
+    fn invalid_utf8_uses_token_fallback() {
+        assert_eq!(prototype_inner_text(&[0xff, b'$'], 0, 2, "$"), "$");
+    }
+
+    #[test]
+    fn out_of_range_uses_token_fallback() {
+        assert_eq!(prototype_inner_text(b"$", 0, 8, "$"), "$");
+    }
 }
 
 /// Return `true` if `name` is a simple bareword identifier suitable for the
