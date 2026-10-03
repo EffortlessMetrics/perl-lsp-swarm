@@ -114,7 +114,7 @@ jobs:
               );
 
               const commentBody = [
-                '## ⚠️ PR Title Check Failed',
+                '## \u26a0\ufe0f PR Title Check Failed',
                 '',
                 BOT_MARKER,
                 '',
@@ -135,7 +135,7 @@ jobs:
             // for "issue number not yet known" (issue #724). They are NON-BLOCKING:
             // the check passes, but the PR is flagged with `needs-issue-link` and a
             // real issue must be linked before merge (ops is the backstop). This
-            // removes any incentive to guess a real issue number — a wrong-but-real
+            // removes any incentive to guess a real issue number \u2014 a wrong-but-real
             // reference silently pollutes an unrelated issue's thread.
             const nonZeroMatch = issueMatches.find((match) => parseInt(match[1], 10) !== 0);
             const zeroIssueMatch = issueMatches.find((match) => parseInt(match[1], 10) === 0);
@@ -146,11 +146,11 @@ jobs:
                 `Flagging needs-issue-link.`
               );
               const commentBody = [
-                '## ℹ️ PR Title — placeholder issue reference',
+                '## \u2139\ufe0f PR Title \u2014 placeholder issue reference',
                 '',
                 BOT_MARKER,
                 '',
-                `This PR title uses the placeholder issue reference \`${zeroIssueMatch[0]}\`. The title check **passes** (non-blocking), but a **real issue must be linked before merge** — this PR is labeled \`needs-issue-link\`.`,
+                `This PR title uses the placeholder issue reference \`${zeroIssueMatch[0]}\`. The title check **passes** (non-blocking), but a **real issue must be linked before merge** \u2014 this PR is labeled \`needs-issue-link\`.`,
                 '',
                 'If you know the issue, update the title to reference it, e.g. `(#1234)`. Never guess a real issue number.',
                 '',
