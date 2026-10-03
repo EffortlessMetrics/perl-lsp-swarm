@@ -361,6 +361,70 @@ fn client_setting_identity_is_setting_and_value_type_aware() {
 }
 
 #[test]
+fn project_warning_is_distinct_from_client_warning_and_retries_failed_send() {
+    let server = LspServer::new();
+    let dedup = &server.session_warning_dedup;
+    assert_eq!(
+        dedup.note_client_setting("critic.engine", "string", "turbo"),
+        SessionWarningDecision::EmitFirst
+    );
+    assert_eq!(
+        dedup.emit_project_setting_with("critic.engine", "turbo", || false),
+        SessionWarningDecision::EmitFirst
+    );
+    assert_eq!(
+        dedup.emit_project_setting_with("critic.engine", "turbo", || true),
+        SessionWarningDecision::EmitFirst,
+        "a failed outbound project warning must be retried"
+    );
+    let sent_again = std::cell::Cell::new(false);
+    assert_eq!(
+        dedup.emit_project_setting_with("critic.engine", "turbo", || {
+            sent_again.set(true);
+            true
+        }),
+        SessionWarningDecision::Suppress
+    );
+    assert!(!sent_again.get(), "a retained project warning must be suppressed");
+    assert_eq!(
+        dedup.emit_project_setting_with("formatting.engine", "compat", || true),
+        SessionWarningDecision::EmitFirst
+    );
+    assert_eq!(
+        dedup.note_client_setting("formatting.engine", "string", "compat"),
+        SessionWarningDecision::EmitFirst,
+        "a project warning must not suppress the editor-setting warning"
+    );
+
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let pressured = LspServer::new();
+        for index in 0..PER_FAMILY_ENTRY_CAP {
+            assert_eq!(
+                pressured.session_warning_dedup.note_client_setting(
+                    "critic.engine",
+                    "string",
+                    &format!("invalid-{index}")
+                ),
+                SessionWarningDecision::EmitFirst
+            );
+        }
+        assert_eq!(
+            pressured.session_warning_dedup.emit_project_setting_with(
+                "critic.engine",
+                "turbo",
+                || true
+            ),
+            SessionWarningDecision::EmitFirst,
+            "editor-setting pressure must not consume project-warning capacity"
+        );
+        let snapshot = pressured.session_warning_dedup_snapshot();
+        assert_eq!(snapshot.client_setting.entries, PER_FAMILY_ENTRY_CAP);
+        assert_eq!(snapshot.project_config.entries, 1);
+    }
+}
+
+#[test]
 fn fresh_servers_start_with_zero_retained_warning_state() {
     // No global/static registry exists: every server session begins empty and
     // shutdown releases its store by drop.

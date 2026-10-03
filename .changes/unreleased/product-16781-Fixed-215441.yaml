@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: "A .perl-lsp.toml include_paths list whose every entry is rejected (absolute, or escaping the workspace root) no longer wipes the built-in module-resolution defaults: the previously effective roots stay in effect, and doctor plus the editor warning state that consequence and the fix. Invalid critic.engine, critic.profile, and formatting.engine values in .perl-lsp.toml are now also reported to the editor via a window/showMessage warning — once per setting and value per session — naming the accepted values, instead of only a server-log line an editor user never sees."
+time: 2026-09-28T21:54:00Z
+custom:
+  PR: "16781"
+  Slug: config-wipe-guard-visible-rejections
+  Breaking: "no"

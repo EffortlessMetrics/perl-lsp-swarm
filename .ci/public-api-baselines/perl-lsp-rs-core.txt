@@ -341,8 +341,9 @@ pub perl_lsp_rs_core::config::ProjectConfig::features: perl_lsp_rs_core::config:
 pub perl_lsp_rs_core::config::ProjectConfig::formatting: perl_lsp_rs_core::config::ProjectFormattingConfig
 pub perl_lsp_rs_core::config::ProjectConfig::next_edit: perl_lsp_rs_core::config::ProjectNextEditConfig
 pub perl_lsp_rs_core::config::ProjectConfig::perl: perl_lsp_rs_core::config::ProjectPerlConfig
-pub fn perl_lsp_rs_core::config::ProjectConfig::apply_to_server_config(&self, config: &mut perl_lsp_rs_core::config::ServerConfig)
+pub fn perl_lsp_rs_core::config::ProjectConfig::apply_to_server_config(&self, config: &mut perl_lsp_rs_core::config::ServerConfig) -> alloc::vec::Vec<perl_lsp_rs_core::config::RejectedProjectConfigValue>
 pub fn perl_lsp_rs_core::config::ProjectConfig::apply_to_workspace_config(&self, config: &mut perl_lsp_rs_core::config::WorkspaceConfig, workspace_root: &std::path::Path) -> alloc::vec::Vec<perl_lsp_rs_core::config::RejectedIncludePath>
+pub fn perl_lsp_rs_core::config::ProjectConfig::include_paths_defaults_retained(&self, rejected: &[perl_lsp_rs_core::config::RejectedIncludePath]) -> bool
 pub fn perl_lsp_rs_core::config::ProjectConfig::clone(&self) -> perl_lsp_rs_core::config::ProjectConfig
 pub fn perl_lsp_rs_core::config::ProjectConfig::eq(&self, other: &perl_lsp_rs_core::config::ProjectConfig) -> bool
 pub fn perl_lsp_rs_core::config::ProjectConfig::default() -> perl_lsp_rs_core::config::ProjectConfig
@@ -427,6 +428,13 @@ pub fn perl_lsp_rs_core::config::RejectedIncludePath::render(&self) -> alloc::st
 pub fn perl_lsp_rs_core::config::RejectedIncludePath::clone(&self) -> perl_lsp_rs_core::config::RejectedIncludePath
 pub fn perl_lsp_rs_core::config::RejectedIncludePath::eq(&self, other: &perl_lsp_rs_core::config::RejectedIncludePath) -> bool
 pub fn perl_lsp_rs_core::config::RejectedIncludePath::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_lsp_rs_core::config::RejectedProjectConfigValue
+pub perl_lsp_rs_core::config::RejectedProjectConfigValue::setting: &'static str
+pub perl_lsp_rs_core::config::RejectedProjectConfigValue::valid_options: &'static str
+pub perl_lsp_rs_core::config::RejectedProjectConfigValue::value: alloc::string::String
+pub fn perl_lsp_rs_core::config::RejectedProjectConfigValue::clone(&self) -> perl_lsp_rs_core::config::RejectedProjectConfigValue
+pub fn perl_lsp_rs_core::config::RejectedProjectConfigValue::eq(&self, other: &perl_lsp_rs_core::config::RejectedProjectConfigValue) -> bool
+pub fn perl_lsp_rs_core::config::RejectedProjectConfigValue::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_lsp_rs_core::config::ServerConfig
 pub perl_lsp_rs_core::config::ServerConfig::ai_completion: perl_lsp_rs_core::config::AiCompletionConfig
 pub perl_lsp_rs_core::config::ServerConfig::critic_engine: perl_lsp_rs_core::config::CriticEngine
