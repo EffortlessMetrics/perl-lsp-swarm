@@ -212,6 +212,95 @@ fn doctor_reports_workspace_setup() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// End-to-end proof for #16664: the path typed on the command line survives
+/// into the report even when the OS substitutes a junction/symlink target.
+///
+/// The unit tests in `cli::doctor` pin the report shape; this one pins the
+/// wiring, which is the part the user's claim actually depends on — a
+/// `Workspace:` line that is byte-identical for two different aliases is the
+/// defect, and only the spawned binary can show that end to end.
+#[test]
+fn doctor_discloses_substituted_workspace_path() -> Result<(), Box<dyn std::error::Error>> {
+    let temp = tempfile::tempdir()?;
+    let real = temp.path().join("real target");
+    std::fs::create_dir_all(&real)?;
+    let alias = temp.path().join("alias-dir");
+    let created = directory_alias(&alias, &real)?;
+
+    // Windows directory junctions need no elevated privilege; POSIX uses a
+    // symlink. A host that can build neither cannot prove the claim, so this
+    // fails loudly rather than reporting a vacuous pass.
+    if !created {
+        return Err(
+            "environment prerequisite: this host cannot create a directory alias, so the #16664 \
+             disclosure is NOT_PROVEN here"
+                .into(),
+        );
+    }
+
+    let alias_str = alias.to_str().ok_or("non-UTF-8 alias path")?;
+    let mut cmd = product_command();
+    cmd.env_remove("PERL5LIB");
+    let output = cmd.args(["--doctor", alias_str]).output()?;
+    let stdout = String::from_utf8(output.stdout)?;
+
+    assert_eq!(output.status.code(), Some(0));
+    assert!(
+        stdout.contains(&format!("Workspace path as requested: {}", alias.display())),
+        "the report must name the path the user passed, got:\n{stdout}"
+    );
+    // The resolved workspace is still disclosed, so the actionable guidance
+    // below it keeps referring to a real directory.
+    assert!(
+        stdout.contains(&format!("Workspace: {}", real.canonicalize()?.display())),
+        "the report must still name the resolved workspace, got:\n{stdout}"
+    );
+    // Two aliases for one target must no longer produce identical reports. This
+    // is the issue's headline symptom, so it is a hard requirement rather than a
+    // conditional: if the second alias cannot be created the claim is
+    // unproven, and an unproven claim must not report as a pass.
+    let second = temp.path().join("second-alias");
+    if !directory_alias(&second, &real)? {
+        return Err("environment prerequisite: cannot create a second alias, so the two-alias \
+             distinction is NOT_PROVEN here"
+            .into());
+    }
+    let mut other = product_command();
+    other.env_remove("PERL5LIB");
+    let second_str = second.to_str().ok_or("non-UTF-8 alias path")?;
+    let other_stdout = String::from_utf8(other.args(["--doctor", second_str]).output()?.stdout)?;
+    assert_ne!(
+        stdout, other_stdout,
+        "two aliases for one workspace must not produce identical reports"
+    );
+    Ok(())
+}
+
+/// Create a directory alias at `alias` pointing at `target`; report whether the
+/// host could build it.
+///
+/// Windows uses a directory junction (`mklink /J`), which needs no elevated
+/// privilege — unlike the *file* symlink probe of #12567. POSIX uses a directory
+/// symlink, which needs none.
+fn directory_alias(
+    alias: &std::path::Path,
+    target: &std::path::Path,
+) -> Result<bool, std::io::Error> {
+    #[cfg(windows)]
+    let created = std::process::Command::new("cmd")
+        .args(["/C", "mklink", "/J"])
+        .arg(alias)
+        .arg(target)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false);
+    #[cfg(unix)]
+    let created = std::os::unix::fs::symlink(target, alias).is_ok();
+    Ok(created && alias.is_dir())
+}
+
 #[test]
 fn doctor_invalid_project_config_fails() -> Result<(), Box<dyn std::error::Error>> {
     let dir = tempfile::tempdir()?;
