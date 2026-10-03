@@ -1,0 +1,19 @@
+{
+  "schema_version": "standalone_path_persistence.v1",
+  "bound_plan_id": "path-plan-posix-installer-user",
+  "bound_plan_sha256": "8dc46f4b15d02e34610798ccf6011eef516a3184ee17333b3291940e78cd7858",
+  "result": "conflict_or_wrong_existing_entry",
+  "mutation_performed": false,
+  "entry_state": "conflicting",
+  "observed_scope": "user",
+  "current_process_env_mutated": false,
+  "new_session_required": false,
+  "owned_entries_observed": 1,
+  "conflicting_entry": {
+    "entry_kind": "profile_line",
+    "entry_location": "/home/operator/.profile",
+    "reason": "user_edited_owned_entry"
+  },
+  "instrument_complete": true,
+  "redaction_policy": "bounded_typed_fields_only"
+}

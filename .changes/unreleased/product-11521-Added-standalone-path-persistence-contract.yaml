@@ -1,0 +1,9 @@
+project: product
+component: Packaging and distribution
+kind: Added
+body: "Standalone installation gains the versioned contracts that keep PATH's three propositions apart (#11521). `standalone_path_plan.v1` carries policy and mutation intent, `standalone_path_persistence.v1` carries what durable state actually changed, and `standalone_fresh_process.v1` carries what a genuinely new ordinary process resolved — so \"the candidate has an exact executable path\" can no longer be read as \"the profile or registry was changed correctly\", and neither can be read as \"a fresh process finds the command\". A checked validator (`cargo run -p xtask --example standalone_path_persistence`) and a schema-only parity harness enforce the laws for Rust and non-Rust installer adapters alike: installer-owned PATH mutation requires the confirmed current selection; only the installer owns an entry, and exactly one canonical one; user, system, shell-specific, and session-only scopes never widen silently; native Windows, WSL, and POSIX evidence is not interchangeable; and a visibility claim cannot be manufactured by an absolute-path invocation, a harness-prepared PATH, the installer's own mutated process environment, or by ignoring a wrong ambient binary that won the lookup. Path text is a literal exact identity, so shell, script, registry, and environment expansion syntax is refused, and complete PATH, profile, and home values never enter a durable receipt. This lane mutates no PATH, profile, registry, or environment and launches no process, proven against the validator's own source."
+time: 2026-09-19T00:00:00Z
+custom:
+  PR: "16014"
+  Slug: standalone-path-persistence-contract-11521
+  Breaking: "no"

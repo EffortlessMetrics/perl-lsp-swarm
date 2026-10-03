@@ -1,0 +1,34 @@
+{
+  "schema_version": "standalone_fresh_process.v1",
+  "bound_plan_id": "path-plan-posix-installer-user",
+  "bound_plan_sha256": "8dc46f4b15d02e34610798ccf6011eef516a3184ee17333b3291940e78cd7858",
+  "bound_persistence_result": "installer_persisted",
+  "observed_environment": {
+    "platform": "posix",
+    "shell_family": "bash"
+  },
+  "session": {
+    "origin": "new_login_session",
+    "environment_source": "ambient_session",
+    "path_prepared_by_harness": false
+  },
+  "lookup": {
+    "method": "command_lookup",
+    "resolved": {
+      "path": "/home/operator/.local/share/perl-lsp/versions/0.18.0/bin/perllsp",
+      "sha256": "b100000000000000000000000000000000000000000000000000000000000000",
+      "matches_candidate": true
+    },
+    "competing_candidates": [
+      {
+        "path": "/home/operator/.local/share/perl-lsp/versions/0.18.0/bin/perllsp",
+        "sha256": "b100000000000000000000000000000000000000000000000000000000000000"
+      }
+    ],
+    "ambiguous": false
+  },
+  "startup_disposition": "healthy",
+  "result": "path_visible_after_documented_new_session",
+  "instrument_complete": true,
+  "redaction_policy": "bounded_typed_fields_only"
+}
