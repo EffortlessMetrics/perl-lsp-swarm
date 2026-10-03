@@ -1228,7 +1228,23 @@ impl Lowerer {
                     self.package_context.clone(),
                     Some(self.current_scope()),
                 );
-                self.visit_children(node, confidence);
+                // The orphaned-`else` recovery shell fabricates its "true"
+                // condition to keep the stranded block visible (#15032). That
+                // fabrication must not inherit the enclosing `Parsed`
+                // confidence, or a consumer reading condition truth or branch
+                // reachability would treat an invented operand as source-backed.
+                // Only the condition changes: the block's real contents are
+                // genuinely in the file and keep their own confidence.
+                if is_synthesized_true_condition(condition) {
+                    self.visit_children_distinguishing(
+                        node,
+                        confidence,
+                        condition,
+                        RecoveryConfidence::Recovered,
+                    );
+                } else {
+                    self.visit_children(node, confidence);
+                }
             }
             NodeKind::Ternary { condition, .. } => {
                 self.push_item(
@@ -1463,6 +1479,33 @@ impl Lowerer {
 
     fn visit_children(&mut self, node: &Node, confidence: RecoveryConfidence) {
         node.for_each_child(|child| self.visit(child, confidence));
+    }
+
+    /// Visit a node's children in order, lowering the child identical to
+    /// `distinguished` with `distinguished_confidence` and every other child
+    /// with `confidence`.
+    ///
+    /// Child identity is compared by address so the shared `for_each_child` walk
+    /// stays the single source of child order and shape; this only changes the
+    /// confidence one already-known child is lowered with. That keeps a
+    /// fabricated child from inheriting its parent's provenance without
+    /// re-deriving the AST child walk (which would risk a silent reorder or a
+    /// dropped branch).
+    fn visit_children_distinguishing(
+        &mut self,
+        node: &Node,
+        confidence: RecoveryConfidence,
+        distinguished: &Node,
+        distinguished_confidence: RecoveryConfidence,
+    ) {
+        node.for_each_child(|child| {
+            let child_confidence = if std::ptr::eq(child, distinguished) {
+                distinguished_confidence
+            } else {
+                confidence
+            };
+            self.visit(child, child_confidence);
+        });
     }
 
     fn current_scope(&self) -> HirScopeId {
@@ -3521,6 +3564,25 @@ fn classify_regex_target(expr: &Node) -> (RegexTargetKind, &'static str) {
 fn is_synthesized_default_topic(expr: &Node) -> bool {
     matches!(&expr.kind, NodeKind::Identifier { name } if name == "$_")
         && expr.location.start == expr.location.end
+}
+
+/// Whether a branch condition is the parser-fabricated "true" operand of an
+/// orphaned-`else` recovery shell.
+///
+/// `parse_orphaned_else` wraps a stranded `else` block in an `If` whose
+/// condition is a fabricated zero-width `Number("1")`, so the block stays visible
+/// to the LSP. Both conditions here are load-bearing: a written `1` in an `if`
+/// always spans at least one source character, so a zero-width `Number` reached
+/// through a branch arm can only be the fabrication.
+///
+/// The predicate is deliberately scoped to branch conditions. `while () { }`
+/// fabricates the same shape for the empty-condition infinite-loop idiom, but
+/// that is a `While` node and never reaches the `If` arm, so this cannot silently
+/// claim a sibling arm it has not been proven against. Broadening that is a
+/// separate change under #6666's honesty sweep, not a widening of this one.
+fn is_synthesized_true_condition(condition: &Node) -> bool {
+    matches!(&condition.kind, NodeKind::Number { value } if value == "1")
+        && condition.location.start == condition.location.end
 }
 
 fn variable_binding(node: &Node) -> Option<VariableBinding> {
