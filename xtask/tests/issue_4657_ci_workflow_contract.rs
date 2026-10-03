@@ -552,3 +552,43 @@ fn rust_small_draft_result_is_not_proof() -> Result<(), Box<dyn std::error::Erro
         "RUST_SMALL_GATE_VERDICT=draft-no-proof",
     )
 }
+
+/// The failure digests run under `always()`, so they must never read a receipt
+/// surface this run did not write. `target/` is restored from a shared
+/// rust-cache (#12085), so both jobs clear those surfaces up front — but the
+/// clearance is only worth anything if it runs *after* the cache restores
+/// them. A clearance step placed before `Cache cargo dependencies` reads as a
+/// fix and does nothing, which is the failure mode this contract exists to
+/// catch: the digest would publish an unrelated SHA's `first_failure` as this
+/// run's cause, and nothing else in CI would notice.
+#[test]
+fn receipt_clearance_runs_after_the_cache_that_restores_it()
+-> Result<(), Box<dyn std::error::Error>> {
+    let ci =
+        fs::read_to_string(project_root()?.join(".github/workflows/ci.yml"))?.replace("\r\n", "\n");
+
+    for (job, clearance) in [
+        ("pr-smoke", "      - name: Clear cache-restored PR-fast receipt surfaces (#12085)\n"),
+        (
+            "merge-gate-shards",
+            "      - name: Clear cache-restored shard receipt surfaces (#12085)\n",
+        ),
+    ] {
+        let block =
+            job_block(&ci, job).ok_or_else(|| format!("ci.yml no longer defines `{job}`"))?;
+        let cache = block
+            .find("      - name: Cache cargo dependencies\n")
+            .ok_or_else(|| format!("`{job}` no longer restores the shared rust-cache"))?;
+        let cleared = block.find(clearance).ok_or_else(|| {
+            format!("`{job}` no longer clears its cache-restored receipt surfaces (#12085)")
+        })?;
+
+        assert!(
+            cleared > cache,
+            "`{job}` clears its receipt surfaces before `Cache cargo dependencies` restores \
+             them, so the clearance is a no-op and the digest can still read another run's \
+             receipt (#12085)"
+        );
+    }
+    Ok(())
+}

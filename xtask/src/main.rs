@@ -19,6 +19,7 @@ mod tasks;
 mod test_support;
 mod types;
 mod utils;
+use tasks::cargo_failure_digest;
 #[cfg(feature = "legacy")]
 use tasks::corpus;
 use tasks::dead_code::{DeadCodeConfig, DeadCodeMode};
@@ -906,6 +907,23 @@ enum Commands {
         /// Validate the generated summary instead of rewriting it.
         #[arg(long)]
         check: bool,
+    },
+
+    /// Render each non-success gate's failing tests, panic location and repro
+    /// command from a merge-gate shard summary and its per-gate logs.
+    GateFailureDigest {
+        /// Shard summary written by scripts/ci/run_gate_shard.py.
+        #[arg(long)]
+        summary: PathBuf,
+        /// Directory holding <gate>.log for each executed gate.
+        #[arg(long, default_value = "target/receipts/logs")]
+        logs: PathBuf,
+        /// Markdown destination; replaced, never appended to.
+        #[arg(long, default_value = "target/receipts/gate-failure-digest.md")]
+        out: PathBuf,
+        /// Also print the digest to stdout.
+        #[arg(long)]
+        print: bool,
     },
 
     /// Report the RIPR suppression ledger's own lifecycle dates against today.
@@ -6188,6 +6206,14 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::RiprPrSummary { check } => ripr_evidence::ripr_pr_summary(check),
         Commands::RiprSuppressionAudit { suppressions, out, json, print } => {
             ripr_evidence::ripr_suppression_audit(&suppressions, &out, &json, print)
+        }
+        Commands::GateFailureDigest { summary, logs, out, print } => {
+            cargo_failure_digest::run(cargo_failure_digest::GateFailureDigestConfig {
+                summary,
+                logs,
+                out,
+                print,
+            })
         }
         Commands::RiprAnnotations { comments, out, check } => {
             ripr_evidence::ripr_annotations(&comments, &out, check)
