@@ -534,6 +534,77 @@ try {
     } else {
         Fail-Case "no installer reads PERL_LSP_INSTALL_POINTER" ($installerHits | Out-String)
     }
+
+    # ── Crash-window durability proof (#13289) ───────────────────────────────
+    # Process-level fault injection cannot reproduce power loss, so these cases
+    # use the production refuse-closed guard as the discriminator: a candidate
+    # that could not be made durable must never become the selected unit.
+
+    # A successful commit has to say it proved durability, not imply it.
+    Setup-Root
+    Stage-Pair -Dest $script:ExtractDir -Server "durable-receipt" -Dap "durable-receipt-dap"
+    Invoke-Promote "release"
+    if ($script:LastStatus -eq 0 -and $script:LastOutput -like "*durability=flushed*") {
+        Pass-Case "commit proves durability before the pointer move"
+    } else {
+        Fail-Case "commit proves durability before the pointer move" "status=$($script:LastStatus) receipt=$($script:LastOutput)"
+    }
+
+    # An unflushed candidate must not be published; the previous complete unit
+    # stays selected, which is the state a crash between the candidate publish
+    # and the pointer move would otherwise leave current in.
+    Setup-Root
+    Stage-Pair -Dest $script:ExtractDir -Server "flush-a" -Dap "flush-a-dap"
+    Invoke-Promote "release"
+    $flushFirst = [IO.Path]::GetFileName((Read-StandalonePointerRelative -Path (Join-Path (Get-StandaloneProductStore -InstallDir $script:InstallDir) "current") -Store (Get-StandaloneProductStore -InstallDir $script:InstallDir)))
+    Stage-Pair -Dest $script:ExtractDir -Server "flush-b" -Dap "flush-b-dap"
+    $env:PERL_LSP_PRODUCT_UNIT_NO_FLUSH = "1"
+    try {
+        Invoke-Promote "release"
+    } finally {
+        Remove-Item Env:PERL_LSP_PRODUCT_UNIT_NO_FLUSH -ErrorAction SilentlyContinue
+    }
+    $store = Get-StandaloneProductStore -InstallDir $script:InstallDir
+    $stillFirst = [IO.Path]::GetFileName((Read-StandalonePointerRelative -Path (Join-Path $store "current") -Store $store))
+    if ($script:LastStatus -ne 0 -and $stillFirst -eq $flushFirst -and (Assert-CompletePair -Server "flush-a" -Dap "flush-a-dap")) {
+        Pass-Case "candidate that could not be made durable is not published"
+    } else {
+        Fail-Case "candidate that could not be made durable is not published" "status=$($script:LastStatus) first=$flushFirst now=$stillFirst"
+    }
+
+    # Startup recovery: a current pointer left naming an incomplete candidate is
+    # rolled back to the last complete unit instead of serving a truncated pair.
+    Setup-Root
+    Stage-Pair -Dest $script:ExtractDir -Server "recover-a" -Dap "recover-a-dap"
+    Invoke-Promote "release"
+    $recoverStore = Get-StandaloneProductStore -InstallDir $script:InstallDir
+    $recoverFirstRel = Read-StandalonePointerRelative -Path (Join-Path $recoverStore "current") -Store $recoverStore
+    Stage-Pair -Dest $script:ExtractDir -Server "recover-b" -Dap "recover-b-dap"
+    Invoke-Promote "release"
+    $recoverSecondRel = Read-StandalonePointerRelative -Path (Join-Path $recoverStore "current") -Store $recoverStore
+    Remove-Item -LiteralPath (Join-Path $recoverStore ($recoverSecondRel -replace '/', '\') "perl-dap.exe") -Force -ErrorAction SilentlyContinue
+    $recoveryResult = Repair-StandaloneCurrentSelection -InstallDir $script:InstallDir
+    $recoverNowRel = Read-StandalonePointerRelative -Path (Join-Path $recoverStore "current") -Store $recoverStore
+    if ($recoveryResult -eq "rolled_back" -and $recoverNowRel -eq $recoverFirstRel -and (Assert-CompletePair -Server "recover-a" -Dap "recover-a-dap")) {
+        Pass-Case "incomplete current selection rolls back to the last complete unit"
+    } else {
+        Fail-Case "incomplete current selection rolls back to the last complete unit" "recovery=$recoveryResult first=$recoverFirstRel now=$recoverNowRel"
+    }
+
+    # With no complete unit to fall back to there is no proven rollback, so the
+    # installer has to fail closed rather than serve a truncated pair.
+    Remove-Item -LiteralPath (Join-Path $recoverStore ($recoverFirstRel -replace '/', '\') "perl-dap.exe") -Force -ErrorAction SilentlyContinue
+    $unrecoverable = "not-thrown"
+    try {
+        Repair-StandaloneCurrentSelection -InstallDir $script:InstallDir | Out-Null
+    } catch {
+        $unrecoverable = "thrown"
+    }
+    if ($unrecoverable -eq "thrown") {
+        Pass-Case "incomplete current with no complete previous unit fails closed"
+    } else {
+        Fail-Case "incomplete current with no complete previous unit fails closed" "expected a throw, got none"
+    }
 } finally {
     Remove-Item -LiteralPath $TempRoot -Recurse -Force -ErrorAction SilentlyContinue
 }
