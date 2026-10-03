@@ -36,3 +36,12 @@ and any future non-fresh state degrade, while `Stale` remains a distinct status.
 codes are positively allowlisted; unrecognized serialized variants normalize to `Unknown`, so
 future reason-code variants fail closed to `Degraded`. Dependency order is canonicalized by the
 constructor and on deserialization so serialized receipts remain deterministic.
+
+## Compile-effect source vocabulary
+
+`CompileEffectSourceKind` is the shared source-construct vocabulary used by HIR
+and compile-environment boundary records. Its fourteen variants retain the
+existing HIR meanings; `perl_parser_core::hir::CompileEffectSourceKind` re-exports
+this same type. Rust matching remains non-exhaustive. The snake-case wire tokens
+are closed: unknown source kinds are rejected rather than relabeled as a directive.
+This vocabulary does not execute or classify the effects of a construct.
