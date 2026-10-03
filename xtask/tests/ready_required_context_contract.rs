@@ -41,7 +41,11 @@ fn findings(source: &str) -> Vec<&'static str> {
 #[test]
 fn draft_activity_cannot_create_the_required_title_context() {
     let source = source();
-    assert!(findings(&source).is_empty(), "{:?}", findings(&source));
+    assert!(
+        findings(&source).is_empty(),
+        "{:?}",
+        findings(&source)
+    );
 }
 
 #[test]
