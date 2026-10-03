@@ -5,7 +5,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use perl_parser_core::error::ParseError;
+use perl_parser_core::error::{ParseError, found_is_value_like};
 use perl_parser_core::{Node, RegexAnalysisTable};
 use perl_semantic_facts::{
     DefinitionCandidate, EntityFact, EntityId, FileId, OccurrenceFact, RenamePlan, SafeDeletePlan,
@@ -935,6 +935,15 @@ pub fn build_parse_error_hint(error: &ParseError, base_message: &str) -> Option<
             if expected.contains('{') || expected.contains("block") {
                 return Some(format!(
                     "Add an opening '{{' to start the block (found {found})"
+                ));
+            }
+            // Missing comma/operator between list items (#16606): a literal
+            // value where the group's closer is expected usually means the
+            // separating comma is missing, not that the group is unclosed.
+            // Shared discriminator with the parser-core suggestion table.
+            if expected.contains(')') && found_is_value_like(found) {
+                return Some(format!(
+                    "A `,` or operator is likely missing before this {found} -- check for a missing comma between list items"
                 ));
             }
             // Missing closing paren in function call or condition

@@ -31,5 +31,5 @@ pub use crate::syntax::error::{
     InvalidSignatureParameterKind, ParseBudget, ParseCoreDimension, ParseDiagnosticAnchor,
     ParseDiagnosticSeverity, ParseError, ParseOutput, ParseResult, ParseStopCause, RecoveryKind,
     RecoverySalvageClass, RecoverySalvageProfile, RecoverySite, ResolvedParseDiagnosticAnchor,
-    get_error_contexts,
+    found_is_value_like, get_error_contexts,
 };
