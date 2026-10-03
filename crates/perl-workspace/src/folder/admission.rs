@@ -131,6 +131,8 @@ fn classify_raw(input: &str, origin: AsPath) -> WorkspaceFolderAdmission {
     }
 
     if has_file_uri_scheme(input) {
+        // Includes four-slash `file:////host/share` (UNC lives in the path,
+        // authority is empty). Path-origin UNC below is not reachable here.
         return classify_file_uri(input);
     }
 
@@ -196,6 +198,16 @@ fn classify_file_uri(input: &str) -> WorkspaceFolderAdmission {
             if path.is_empty() {
                 return WorkspaceFolderAdmission::Rejected(WorkspaceFolderRejection::new(
                     WorkspaceFolderRejectionKind::Empty,
+                    input,
+                ));
+            }
+            // Four-slash `file:////host/share` has an empty authority, so
+            // `file_uri_has_remote_host` does not fire. The host lives in the
+            // path as `//host/share` — the same UNC root path-origin already
+            // rejects before conversion.
+            if is_unc_style_path(path) {
+                return WorkspaceFolderAdmission::Rejected(WorkspaceFolderRejection::new(
+                    WorkspaceFolderRejectionKind::RemoteFileHost,
                     input,
                 ));
             }

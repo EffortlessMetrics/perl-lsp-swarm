@@ -414,6 +414,39 @@ mod tests {
     }
 
     #[test]
+    fn four_slash_file_uri_is_rejected_as_a_remote_file_host() {
+        // `file:////host/share` has an empty authority; WHATWG parse puts
+        // `//host/share` in the path. That is the same UNC root as path-origin
+        // `//host/share` and must not be admitted as a local filesystem URI.
+        let uri = "file:////evil.example.com/share/project";
+        let parsed = url::Url::parse(uri).expect("four-slash file URI parses");
+        assert!(
+            parsed.host_str().is_none(),
+            "four-slash form must not carry the host in the authority, got {:?}",
+            parsed.host_str()
+        );
+        assert!(
+            parsed.path().starts_with("//") && !parsed.path().starts_with("///"),
+            "four-slash form must place UNC in the path, got {:?}",
+            parsed.path()
+        );
+
+        let entries = vec![json!({"uri": uri, "name": "unc-uri"})];
+        assert!(
+            extract_workspace_folder_uris(&entries).is_empty(),
+            "{uri} must not be extracted as a filesystem root"
+        );
+        let rejection = admit_workspace_folder_uris(&entries).expect_err("four-slash file URI");
+        assert_eq!(rejection.kind, WorkspaceFolderRejectionKind::RemoteFileHost);
+        assert_eq!(rejection.input, uri);
+        assert!(
+            !rejection.message().contains("file://evil.example.com/share"),
+            "rejection must not advertise a manufactured remote URI: {}",
+            rejection.message()
+        );
+    }
+
+    #[test]
     fn string_form_uri_passes_through_without_normalization() {
         // Value::String arm passes the string through as-is, matching the behavior
         // of the Value::Object{"uri": ...} arm which also does not normalize.
