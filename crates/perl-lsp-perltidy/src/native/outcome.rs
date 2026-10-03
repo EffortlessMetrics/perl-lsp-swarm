@@ -109,6 +109,25 @@ pub struct FormatContext {
     pub source_generation: Option<u64>,
 }
 
+impl FormatIdentity {
+    /// Build the stable identity for one formatter request.
+    #[must_use]
+    pub fn for_request(source: &str, config: &FormatConfig, context: &FormatContext) -> Self {
+        Self {
+            source_id: context.source_id.clone(),
+            content_digest: stable_digest("source-v1", source.as_bytes()),
+            source_generation: context.source_generation,
+            actual_engine: if matches!(config.mode, FormatterMode::Off) {
+                FormatEngine::Disabled
+            } else {
+                FormatEngine::Native
+            },
+            requested_mode: config.mode,
+            config_fingerprint: config_fingerprint(config),
+        }
+    }
+}
+
 impl FormatContext {
     /// Create a source context from an optional logical identifier and generation.
     #[must_use]
@@ -325,6 +344,18 @@ fn observe_elapsed(counters: &mut NativePipelineCounters, elapsed: std::time::Du
     counters::record_with(|outer| outer.observe_elapsed(elapsed));
 }
 
+/// Classify a formatter result with the native terminal-outcome contract.
+#[must_use]
+pub fn classify_format_result(
+    source: &str,
+    config: &FormatConfig,
+    context: &FormatContext,
+    target: FormatRequestTarget,
+    result: FormatResult,
+) -> TypedFormatResult {
+    classify_native_result(source, config, context, target, result)
+}
+
 fn classify_native_result(
     source: &str,
     config: &FormatConfig,
@@ -442,7 +473,7 @@ fn classify(
     }
 }
 
-fn valid_range(source: &str, range: TextRange) -> bool {
+pub(super) fn valid_range(source: &str, range: TextRange) -> bool {
     if (range.start.line, range.start.character) > (range.end.line, range.end.character) {
         return false;
     }
