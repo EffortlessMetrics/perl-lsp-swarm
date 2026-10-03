@@ -76,6 +76,8 @@ pub mod dev;
 pub mod devex_docs;
 pub mod devex_doctor;
 pub mod devex_plan;
+pub mod distribution_spec;
+pub mod distribution_train;
 pub mod doc;
 pub mod doc_claims;
 pub mod e2e_validate;
