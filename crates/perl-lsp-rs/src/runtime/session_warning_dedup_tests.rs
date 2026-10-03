@@ -693,3 +693,119 @@ fn two_selected_config_paths_never_cross_suppress_through_the_emit_path() {
     let snapshot = server.session_warning_dedup_snapshot();
     assert_eq!(snapshot.project_config.entries, 2);
 }
+
+// -------------------------------------------------------------------------
+// Rejected `.perl-lsp.toml` setting values (#16598)
+//
+// A file that loads cleanly but carries an unusable value is a *persistent
+// per-setting* condition: the folder is re-read on every `didOpen`, so the
+// same setting must warn once, while a second unusable setting in the same
+// file is a different edit and must not be hidden behind the first.
+// -------------------------------------------------------------------------
+
+fn emit_setting_value(
+    server: &LspServer,
+    path: &str,
+    setting: &str,
+    delivered: bool,
+) -> SessionWarningDecision {
+    server.session_warning_dedup.emit_project_setting_value_warning(path, setting, || delivered)
+}
+
+#[test]
+fn two_unusable_settings_in_one_file_each_warn_once() {
+    let server = LspServer::new();
+
+    assert_eq!(
+        emit_setting_value(&server, "t.toml", "critic.engine", true),
+        SessionWarningDecision::EmitFirst
+    );
+    // A different setting in the same file is a different edit, so it must not
+    // be suppressed behind the first identity.
+    assert_eq!(
+        emit_setting_value(&server, "t.toml", "formatting.engine", true),
+        SessionWarningDecision::EmitFirst
+    );
+    // Re-reading the file on every didOpen must not re-pop either of them.
+    assert_eq!(
+        emit_setting_value(&server, "t.toml", "critic.engine", true),
+        SessionWarningDecision::Suppress
+    );
+    assert_eq!(
+        emit_setting_value(&server, "t.toml", "formatting.engine", true),
+        SessionWarningDecision::Suppress
+    );
+
+    let snapshot = server.session_warning_dedup_snapshot();
+    assert_eq!(snapshot.project_config.entries, 2, "one retained identity per setting");
+}
+
+#[test]
+fn a_setting_value_warning_is_distinct_from_a_load_failure_in_the_same_file() {
+    let server = LspServer::new();
+
+    // The file loaded fine, so a later value rejection is a genuinely new
+    // condition and not a restatement of a load failure for the same path.
+    assert_eq!(
+        emit_project_config(&server, SessionWarningCode::ProjectConfigInvalid, "t.toml", true),
+        SessionWarningDecision::EmitFirst
+    );
+    assert_eq!(
+        emit_setting_value(&server, "t.toml", "critic.engine", true),
+        SessionWarningDecision::EmitFirst
+    );
+    // ...and it is distinct from the invalid-`[perl].version` kind too, so
+    // fixing one and tripping the other in one file still warns.
+    assert_eq!(
+        emit_project_config(
+            &server,
+            SessionWarningCode::ProjectConfigVersionInvalid,
+            "t.toml",
+            true
+        ),
+        SessionWarningDecision::EmitFirst
+    );
+
+    let snapshot = server.session_warning_dedup_snapshot();
+    assert_eq!(snapshot.project_config.entries, 3);
+}
+
+#[test]
+fn a_failed_setting_value_delivery_rolls_back_and_can_retry() {
+    let server = LspServer::new();
+
+    assert_eq!(
+        emit_setting_value(&server, "t.toml", "critic.engine", false),
+        SessionWarningDecision::EmitFirst
+    );
+    assert_eq!(
+        server.session_warning_dedup_snapshot().project_config.entries,
+        0,
+        "a warning the client never received must stay eligible to re-fire"
+    );
+    assert_eq!(
+        emit_setting_value(&server, "t.toml", "critic.engine", true),
+        SessionWarningDecision::EmitFirst
+    );
+    assert_eq!(
+        emit_setting_value(&server, "t.toml", "critic.engine", true),
+        SessionWarningDecision::Suppress
+    );
+}
+
+#[test]
+fn the_same_setting_in_two_config_files_warns_once_per_file() {
+    let server = LspServer::new();
+
+    assert_eq!(
+        emit_setting_value(&server, "/a/.perl-lsp.toml", "critic.engine", true),
+        SessionWarningDecision::EmitFirst
+    );
+    assert_eq!(
+        emit_setting_value(&server, "/b/.perl-lsp.toml", "critic.engine", true),
+        SessionWarningDecision::EmitFirst
+    );
+
+    let snapshot = server.session_warning_dedup_snapshot();
+    assert_eq!(snapshot.project_config.entries, 2);
+}

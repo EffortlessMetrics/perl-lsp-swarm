@@ -3309,6 +3309,133 @@ mod tests {
         Ok(())
     }
 
+    /// #16598: the reported defect is that an unusable `[critic]` /
+    /// `[formatting]` value reached only `tracing` (stderr), so an editor user
+    /// saw the setting silently do nothing. This asserts the message reaches
+    /// the LSP wire as a `window/showMessage` Warning naming the setting.
+    #[test]
+    fn unusable_critic_and_formatting_values_reach_the_editor_as_warnings()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let folder = temp.path().join("rejected-values");
+        std::fs::create_dir_all(&folder)?;
+        std::fs::write(
+            folder.join(".perl-lsp.toml"),
+            "[critic]\nengine = \"turbo\"\n\n[formatting]\nengine = \"perltide\"\n",
+        )?;
+        let (server, output) = make_server_with_capture();
+        server.workspace_folders.lock().push(
+            crate::runtime::workspace_folder::WorkspaceFolderState::new(
+                url::Url::from_directory_path(&folder)
+                    .map_err(|()| "failed to build rejected-values folder URI")?
+                    .to_string(),
+            )
+            .with_path(folder.clone()),
+        );
+
+        server.load_and_apply_project_config();
+
+        let warning_output = capture_until(&output, |output| {
+            output.contains("critic.engine")
+                && output.contains("formatting.engine")
+                && output.contains("window/showMessage")
+        });
+
+        assert!(
+            warning_output.contains("window/showMessage"),
+            "a rejected .perl-lsp.toml value must reach the client, not only stderr: {warning_output}"
+        );
+        assert!(
+            warning_output.contains("critic.engine"),
+            "the unusable critic.engine must be named: {warning_output}"
+        );
+        assert!(
+            warning_output.contains("turbo"),
+            "the rejected value must be shown so the user can correct it: {warning_output}"
+        );
+        assert!(
+            warning_output.contains("formatting.engine"),
+            "the unusable formatting.engine must be named: {warning_output}"
+        );
+        assert!(
+            warning_output.contains("perltide"),
+            "the rejected formatting value must be shown: {warning_output}"
+        );
+        // The message is a Warning, not an Error: a bad value is recoverable by
+        // editing the file, and the rest of the file stays in force.
+        assert!(
+            warning_output.contains("\"type\":2") || warning_output.contains("\"type\": 2"),
+            "the warning must be LSP Warning level: {warning_output}"
+        );
+        Ok(())
+    }
+
+    /// The rejected value must not have been applied: the prior accepted
+    /// setting survives, so the file fails visibly rather than half- applying.
+    #[test]
+    fn an_unusable_setting_value_leaves_the_prior_accepted_value_in_force()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let folder = temp.path().join("retained-value");
+        std::fs::create_dir_all(&folder)?;
+        std::fs::write(folder.join(".perl-lsp.toml"), "[formatting]\nengine = \"perltide\"\n")?;
+        let (server, _output) = make_server_with_capture();
+        server.workspace_folders.lock().push(
+            crate::runtime::workspace_folder::WorkspaceFolderState::new(
+                url::Url::from_directory_path(&folder)
+                    .map_err(|()| "failed to build retained-value folder URI")?
+                    .to_string(),
+            )
+            .with_path(folder.clone()),
+        );
+        let prior = server.config.lock().formatting_engine;
+
+        server.load_and_apply_project_config();
+
+        let after = server.config.lock().formatting_engine;
+        assert_eq!(
+            after, prior,
+            "an unusable .perl-lsp.toml value must not change the accepted setting"
+        );
+        Ok(())
+    }
+
+    /// Re-reading the same config on every `didOpen` must not re-pop the same
+    /// warning: the folder load runs again, and the user is warned once.
+    #[test]
+    fn a_repeated_config_load_does_not_repeat_the_same_setting_warning()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let folder = temp.path().join("repeat-warning");
+        std::fs::create_dir_all(&folder)?;
+        std::fs::write(folder.join(".perl-lsp.toml"), "[critic]\nengine = \"turbo\"\n")?;
+        let (server, output) = make_server_with_capture();
+        server.workspace_folders.lock().push(
+            crate::runtime::workspace_folder::WorkspaceFolderState::new(
+                url::Url::from_directory_path(&folder)
+                    .map_err(|()| "failed to build repeat-warning folder URI")?
+                    .to_string(),
+            )
+            .with_path(folder.clone()),
+        );
+
+        server.load_and_apply_project_config();
+        capture_until(&output, |output| {
+            output.contains("critic.engine") && output.contains("window/showMessage")
+        });
+
+        // Second load of the identical file: the persisted condition is the
+        // same, so the client must not be asked to dismiss it again (#16548).
+        let first_count = output.matches("critic.engine").count();
+        server.load_and_apply_project_config();
+        assert_eq!(
+            output.matches("critic.engine").count(),
+            first_count,
+            "an unchanged rejected value must warn once per session, not once per load"
+        );
+        Ok(())
+    }
+
     #[test]
     fn workspace_reload_drops_malformed_and_absent_project_versions()
     -> Result<(), Box<dyn std::error::Error>> {
