@@ -1,0 +1,1777 @@
+//! `cargo xtask ux cases discover` — emit `ux_case_inventory.v1` (#9890).
+//!
+//! This module owns command orchestration only. Case identity, the inventory
+//! schema, Cargo/libtest parsing, and every failure classification live in
+//! `perl_lsp_ux_tests::case_inventory`, which is the single UX control-plane
+//! authority those types belong to. Nothing here re-implements them.
+//!
+//! Concretely, this file supplies:
+//!
+//! - the real [`UxDiscoveryCommands`] implementation (Cargo, libtest, sha256);
+//! - the subject facts discovery cannot observe for itself (repository SHA and
+//!   dirty state, `Cargo.lock` and manifest digests, toolchain, host target);
+//! - CLI plumbing and deterministic output.
+
+use color_eyre::eyre::{Result, eyre};
+use perl_lsp_ux_tests::case_inventory::{
+    self, UxCaseInventory, UxCaseInventoryInvalid, UxDirtyState, UxDiscoveryCommands,
+    UxDiscoveryFailure, UxDiscoveryRequest, sha256_hex,
+};
+use perl_lsp_ux_tests::taxonomy::UxCiTier;
+use std::fs;
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::process::{Command, ExitStatus, Stdio};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::mpsc;
+use std::thread;
+use std::time::{Duration, Instant};
+
+use crate::utils;
+
+/// Default location for the emitted inventory.
+pub const DEFAULT_OUT: &str = "target/receipts/editor-ux/ux-case-inventory.json";
+
+/// Distinguishes staging files written by one process.
+static STAGING_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// Maximum bytes of failing command output retained in a failure.
+const DETAIL_LIMIT: usize = 2000;
+
+/// The production [`UxDiscoveryCommands`] implementation.
+///
+/// Every method is read-only: it compiles test targets, asks executables to
+/// list themselves, and digests files. It never runs a test case.
+struct SystemDiscoveryCommands {
+    workspace_root: PathBuf,
+}
+
+fn truncate(text: &str) -> String {
+    if text.len() <= DETAIL_LIMIT {
+        return text.to_string();
+    }
+    let mut end = DETAIL_LIMIT;
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}… (truncated)", &text[..end])
+}
+
+/// How often the parent checks a running child against its ceilings.
+const POLL_INTERVAL: Duration = Duration::from_millis(50);
+
+/// Wall-clock and output ceilings for one discovery subprocess.
+///
+/// `Command::output` waits for EOF on both pipes with no deadline and no
+/// ceiling, so a child that hangs or spews forever stops discovery from ever
+/// reaching a typed outcome — the in-progress tombstone would stay in place
+/// indefinitely. Every bound below is set far above any observed healthy run so
+/// that it only catches a genuinely stuck or runaway child, never a slow or
+/// loaded machine.
+#[derive(Clone, Copy)]
+struct RunBound {
+    wall: Duration,
+    /// Ceiling on *collecting* the pipes once the child has exited or been
+    /// killed. Separate from `wall` because a child's exit does not close a pipe
+    /// a descendant still holds — `cargo` exiting does not close the handle its
+    /// `rustc` inherited — so waiting for EOF is its own unbounded operation.
+    collect: Duration,
+    stdout_limit: usize,
+    stderr_limit: usize,
+}
+
+impl RunBound {
+    /// `cargo test --no-run` compiles the whole UX target set — minutes warm,
+    /// considerably longer cold — and emits a JSON message per unit.
+    const COMPILE: Self = Self {
+        wall: Duration::from_hours(1),
+        collect: Duration::from_mins(5),
+        stdout_limit: 256 * 1024 * 1024,
+        stderr_limit: 64 * 1024 * 1024,
+    };
+    /// `--list` enumerates cases that are already built and returns promptly. A
+    /// listing still running after minutes is not listing.
+    const LIST: Self = Self {
+        wall: Duration::from_mins(5),
+        collect: Duration::from_mins(1),
+        stdout_limit: 64 * 1024 * 1024,
+        stderr_limit: 8 * 1024 * 1024,
+    };
+    /// `git` and `rustc` subject probes answer immediately or not at all.
+    const PROBE: Self = Self {
+        wall: Duration::from_mins(1),
+        collect: Duration::from_secs(15),
+        stdout_limit: 8 * 1024 * 1024,
+        stderr_limit: 1024 * 1024,
+    };
+    /// `cargo metadata --no-deps` resolves the workspace quickly but emits one
+    /// JSON document for every member, so it gets a probe's patience and a
+    /// listing's room.
+    const METADATA: Self = Self {
+        wall: Duration::from_mins(2),
+        collect: Duration::from_secs(30),
+        stdout_limit: 64 * 1024 * 1024,
+        stderr_limit: 8 * 1024 * 1024,
+    };
+}
+
+/// A completed bounded run.
+struct BoundedOutput {
+    status: std::process::ExitStatus,
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+}
+
+/// Why a bounded run produced no usable result.
+enum RunRefused {
+    /// The child could not be started. Callers map this to their own typed
+    /// invocation failure, preserving the pre-bound behaviour exactly.
+    Spawn(std::io::Error),
+    /// The wall-clock ceiling elapsed with the child still running.
+    TimedOut { wall: Duration, termination: Termination },
+    /// A stream exceeded its retention ceiling.
+    Overflowed { stream: &'static str, limit: usize, termination: Termination },
+    /// A stream did not reach EOF within the collection ceiling, which a
+    /// descendant holding the pipe can cause even after the child has exited.
+    CollectionTimedOut { stream: &'static str, collect: Duration },
+    /// A stream could not be read to completion.
+    ReaderFailed { stream: &'static str, detail: String },
+    /// The child could not be waited on.
+    Wait(std::io::Error),
+}
+
+/// Ceiling on confirming that a signalled child has been reaped.
+///
+/// Reaping a killed child is an OS operation measured in microseconds, so this
+/// is not tuned to the child's work. It exists because `Child::wait` blocks with
+/// no deadline: a process wedged in uninterruptible sleep would otherwise sit
+/// inside the very ceiling this module documents.
+const REAP_CEILING: Duration = Duration::from_secs(5);
+
+/// What the refusal path could actually establish about the child's fate.
+///
+/// Four outcomes, not a boolean: an exit this operation did not cause, a
+/// confirmed reap, a kill whose reap could not be confirmed, and a kill that
+/// failed are different facts, and a failure message that calls all of them
+/// "terminated" is wrong about three of them.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Termination {
+    /// The child exited on its own; there was nothing to terminate.
+    ExitedOnItsOwn,
+    /// Signalled and reaped inside [`REAP_CEILING`].
+    Reaped,
+    /// Signalled, but not confirmed reaped before the ceiling expired.
+    ReapUnconfirmed,
+    /// The kill itself failed and the child was not already gone, so it may
+    /// still be running.
+    NotSignalled,
+}
+
+impl Termination {
+    /// How to describe this outcome in a failure reason, without overclaiming.
+    fn describe(self) -> &'static str {
+        match self {
+            Self::ExitedOnItsOwn => "the command had already exited",
+            Self::Reaped => "the command was terminated and reaped",
+            Self::ReapUnconfirmed => {
+                "the command was signalled but its exit could not be confirmed \
+                 within the reap ceiling"
+            }
+            Self::NotSignalled => "the command could not be signalled and may still be running",
+        }
+    }
+}
+
+/// Classify a child's fate after a kill that **failed**, from what `try_wait`
+/// then observed.
+///
+/// A separate seam because the branch is not portably reachable through a live
+/// process — on Unix `Child::kill` returns `Ok` when the exit status is already
+/// cached, deliberately, so that it cannot signal a recycled pid, and an
+/// already-reaped child therefore accepts a kill. Classifying from the observed
+/// wait result instead of from a real process is what makes the mapping
+/// falsifiable: `reap_bounded` cannot be driven into this branch, but this
+/// function can, in both directions.
+///
+/// An exit seen here is [`Termination::ExitedOnItsOwn`], never
+/// [`Termination::Reaped`]: the kill failed, so this operation terminated
+/// nothing, and `Reaped` would have `describe` claim "was terminated and
+/// reaped" about a child that left of its own accord.
+fn classify_failed_kill(waited: &std::io::Result<Option<ExitStatus>>) -> Termination {
+    match waited {
+        Ok(Some(_)) => Termination::ExitedOnItsOwn,
+        _ => Termination::NotSignalled,
+    }
+}
+
+/// Kill a child and confirm the reap within [`REAP_CEILING`].
+///
+/// `Child::wait` is deliberately not used: it blocks without a deadline, which
+/// would put an unbounded wait inside the operation ceiling.
+fn reap_bounded(child: &mut std::process::Child) -> Termination {
+    if child.kill().is_err() {
+        // A failed kill means something other than "already exited" — EPERM, or
+        // a platform where the call can fail for a reaped child. Whatever the
+        // cause, this operation signalled nothing, so the outcome is classified
+        // from the wait result rather than assumed. See `classify_failed_kill`.
+        return classify_failed_kill(&child.try_wait());
+    }
+    let deadline = Instant::now() + REAP_CEILING;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return Termination::Reaped,
+            Ok(None) => {}
+            Err(_) => return Termination::ReapUnconfirmed,
+        }
+        if Instant::now() >= deadline {
+            return Termination::ReapUnconfirmed;
+        }
+        thread::sleep(POLL_INTERVAL);
+    }
+}
+
+/// What one drain thread concluded about its stream.
+enum StreamOutcome {
+    /// Reached EOF inside its ceiling; every byte written is retained.
+    Complete(Vec<u8>),
+    /// Exceeded the retention ceiling, so no prefix is trustworthy.
+    Overflowed,
+    /// Could not be read to completion.
+    Failed(String),
+}
+
+impl RunRefused {
+    /// Render the reason carried by [`UxDiscoveryFailure::InstrumentFailure`].
+    ///
+    /// The child's fate is described from what was actually established, never
+    /// asserted: a kill can fail outright, and a successful kill can go
+    /// unconfirmed, so neither may be reported as "terminated".
+    fn reason(&self, source: &str) -> String {
+        match self {
+            Self::Spawn(error) => format!("`{source}` could not be started: {error}"),
+            Self::TimedOut { wall, termination } => format!(
+                "`{source}` exceeded its {}s ceiling; {}. \
+                 Discovery cannot derive a result from an unfinished command",
+                wall.as_secs(),
+                termination.describe()
+            ),
+            Self::Overflowed { stream, limit, termination } => format!(
+                "`{source}` wrote more than {limit} bytes to {stream}; {}. \
+                 A truncated stream cannot be trusted to list every case",
+                termination.describe()
+            ),
+            Self::CollectionTimedOut { stream, collect } => format!(
+                "`{source}` left {stream} open past its {}s collection ceiling, which a surviving \
+                 descendant holding the pipe can cause even after the command itself exited; \
+                 the stream is incomplete and cannot be trusted to list every case",
+                collect.as_secs()
+            ),
+            Self::ReaderFailed { stream, detail } => format!(
+                "`{source}` could not be read to completion on {stream} ({detail}); \
+                 a partial stream cannot be trusted to list every case"
+            ),
+            Self::Wait(error) => format!("`{source}` could not be waited on: {error}"),
+        }
+    }
+}
+
+/// Drain a child stream to EOF, retaining at most `limit` bytes.
+///
+/// Draining deliberately continues past the ceiling: if the reader stopped, the
+/// child would block on a full pipe while the parent was still deciding to kill
+/// it. The retained prefix is *discarded* on overflow rather than truncated,
+/// because a short identity-bearing stream would yield a short case list — the
+/// silent-shrinkage outcome this module exists to make impossible.
+/// The flag is set the moment the ceiling trips, so the polling parent can kill
+/// a runaway child without waiting for EOF; the outcome is *also* sent at EOF,
+/// so a finite over-limit writer that exits before the next poll is still
+/// refused. A read error is reported rather than swallowed, because a partial
+/// stream and a complete one are indistinguishable once the error is dropped.
+fn drain_bounded<R: std::io::Read + Send + 'static>(
+    mut stream: R,
+    limit: usize,
+    overflowed: Arc<AtomicBool>,
+    outcome: mpsc::Sender<StreamOutcome>,
+) {
+    thread::spawn(move || {
+        let mut retained: Vec<u8> = Vec::new();
+        let mut buf = [0_u8; 8192];
+        let concluded = loop {
+            match stream.read(&mut buf) {
+                Ok(0) => {
+                    break if overflowed.load(Ordering::Relaxed) {
+                        StreamOutcome::Overflowed
+                    } else {
+                        StreamOutcome::Complete(retained)
+                    };
+                }
+                Ok(read) => {
+                    if overflowed.load(Ordering::Relaxed) {
+                        continue;
+                    }
+                    if retained.len().saturating_add(read) > limit {
+                        overflowed.store(true, Ordering::Relaxed);
+                        retained = Vec::new();
+                    } else {
+                        retained.extend_from_slice(&buf[..read]);
+                    }
+                }
+                Err(error) => break StreamOutcome::Failed(error.to_string()),
+            }
+        };
+        // The receiver is gone when collection already timed out; the send
+        // failing is that case and carries no further information.
+        let _ = outcome.send(concluded);
+    });
+}
+
+/// Collect one stream's outcome within the remaining collection budget.
+///
+/// Bounded rather than joined: a `JoinHandle` has no timed wait, and the thread
+/// cannot reach EOF while any process still holds the write end. On timeout the
+/// reader is abandoned — see the note on [`run_bounded`].
+fn collect_stream(
+    outcome: &mpsc::Receiver<StreamOutcome>,
+    stream: &'static str,
+    limit: usize,
+    deadline: Instant,
+    collect: Duration,
+    termination: Termination,
+) -> Result<Vec<u8>, RunRefused> {
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    match outcome.recv_timeout(remaining) {
+        Ok(StreamOutcome::Complete(bytes)) => Ok(bytes),
+        Ok(StreamOutcome::Overflowed) => Err(RunRefused::Overflowed { stream, limit, termination }),
+        Ok(StreamOutcome::Failed(detail)) => Err(RunRefused::ReaderFailed { stream, detail }),
+        Err(_) => Err(RunRefused::CollectionTimedOut { stream, collect }),
+    }
+}
+
+/// Run one child under a wall-clock ceiling, a per-stream output ceiling, and a
+/// separate ceiling on collecting the pipes afterwards.
+///
+/// Both pipes are drained concurrently, so neither can deadlock the other, and
+/// the child is killed and reaped when either ceiling trips.
+///
+/// **The whole operation is bounded, not just the child wait.** A child's exit
+/// does not close a pipe a descendant inherited, so EOF is not guaranteed by
+/// killing or reaping the child — `cargo` exiting leaves its `rustc` holding the
+/// handle. Collection is therefore bounded by `RunBound::collect` and the reader
+/// is abandoned on timeout rather than joined.
+///
+/// **Declared residue:** an abandoned reader is a detached thread holding a pipe
+/// until the surviving descendant closes it, and that descendant is not reaped
+/// here. Discovery runs as a short-lived command and reports the condition as a
+/// typed failure, so the residue is bounded by the process lifetime; killing a
+/// descendant process group portably is deliberately not attempted.
+///
+/// **A stream problem outranks the child's exit status.** An overflowed,
+/// unreadable, or uncollectable stream is refused even when the child exited
+/// zero: the alternative is handing the caller a short listing that parses as a
+/// smaller case population.
+fn run_bounded(command: &mut Command, bound: RunBound) -> Result<BoundedOutput, RunRefused> {
+    let mut child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(RunRefused::Spawn)?;
+
+    let stdout_over = Arc::new(AtomicBool::new(false));
+    let stderr_over = Arc::new(AtomicBool::new(false));
+    let (stdout_tx, stdout_rx) = mpsc::channel();
+    let (stderr_tx, stderr_rx) = mpsc::channel();
+    if let Some(stream) = child.stdout.take() {
+        drain_bounded(stream, bound.stdout_limit, Arc::clone(&stdout_over), stdout_tx);
+    }
+    if let Some(stream) = child.stderr.take() {
+        drain_bounded(stream, bound.stderr_limit, Arc::clone(&stderr_over), stderr_tx);
+    }
+
+    let started = Instant::now();
+    let mut exited: Option<std::process::ExitStatus> = None;
+    let mut refusal: Option<RunRefused> = None;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                exited = Some(status);
+                break;
+            }
+            Ok(None) => {}
+            Err(error) => {
+                refusal = Some(RunRefused::Wait(error));
+                break;
+            }
+        }
+        if stdout_over.load(Ordering::Relaxed) {
+            refusal = Some(RunRefused::Overflowed {
+                stream: "stdout",
+                limit: bound.stdout_limit,
+                termination: Termination::ExitedOnItsOwn,
+            });
+            break;
+        }
+        if stderr_over.load(Ordering::Relaxed) {
+            refusal = Some(RunRefused::Overflowed {
+                stream: "stderr",
+                limit: bound.stderr_limit,
+                termination: Termination::ExitedOnItsOwn,
+            });
+            break;
+        }
+        if started.elapsed() >= bound.wall {
+            refusal = Some(RunRefused::TimedOut {
+                wall: bound.wall,
+                termination: Termination::ExitedOnItsOwn,
+            });
+            break;
+        }
+        thread::sleep(POLL_INTERVAL);
+    }
+
+    // Kill before collecting: a child still running will not close its pipes, so
+    // the readers cannot reach EOF while it lives. The reap is bounded for the
+    // same reason collection is — `Child::wait` blocks with no deadline, and a
+    // child wedged in uninterruptible sleep would sit inside the ceiling this
+    // function documents.
+    let termination = match refusal {
+        Some(_) => reap_bounded(&mut child),
+        None => Termination::ExitedOnItsOwn,
+    };
+
+    // Collection is its own bounded phase. Stream problems are evaluated before
+    // the exit status precisely because `try_wait` can observe a clean exit while
+    // a stream was already ruined — a finite writer that crosses its ceiling and
+    // exits before the next poll is the case that reaches here with
+    // `exited == Some(0)` and an empty buffer.
+    let collect_deadline = Instant::now() + bound.collect;
+    let stdout = collect_stream(
+        &stdout_rx,
+        "stdout",
+        bound.stdout_limit,
+        collect_deadline,
+        bound.collect,
+        termination,
+    )?;
+    let stderr = collect_stream(
+        &stderr_rx,
+        "stderr",
+        bound.stderr_limit,
+        collect_deadline,
+        bound.collect,
+        termination,
+    )?;
+
+    match (exited, refusal) {
+        (Some(status), _) => Ok(BoundedOutput { status, stdout, stderr }),
+        (None, Some(RunRefused::TimedOut { wall, .. })) => {
+            Err(RunRefused::TimedOut { wall, termination })
+        }
+        (None, Some(RunRefused::Overflowed { stream, limit, .. })) => {
+            Err(RunRefused::Overflowed { stream, limit, termination })
+        }
+        (None, Some(other)) => Err(other),
+        // `exited` and `refusal` are set on every loop exit, so this is
+        // unreachable; reported rather than panicked on.
+        (None, None) => Err(RunRefused::Wait(std::io::Error::other(
+            "bounded run ended without an exit status or a refusal",
+        ))),
+    }
+}
+
+/// Decode stdout that case and target identity are derived from.
+///
+/// Strict on purpose. `from_utf8_lossy` would substitute U+FFFD for invalid
+/// bytes, so a runner emitting a non-UTF-8 test name would yield a `UxCaseId`
+/// that silently disagrees with the name the executable actually holds — and
+/// the listing summary cross-check could not catch it, because replacement does
+/// not change the case count. Rust identifiers are always valid UTF-8, so this
+/// cannot trigger for conforming libtest output; it fails closed exactly when
+/// the instrument is not what discovery assumes.
+///
+/// Human-facing stderr keeps lossy decoding: a mangled diagnostic is better
+/// than no diagnostic, and nothing derives identity from it.
+fn decode_identity_bearing(stdout: &[u8], source: &str) -> Result<String, UxDiscoveryFailure> {
+    String::from_utf8(stdout.to_vec()).map_err(|error| UxDiscoveryFailure::InstrumentFailure {
+        reason: format!(
+            "`{source}` produced output that is not valid UTF-8 at byte {}; \
+             identity cannot be derived from it",
+            error.utf8_error().valid_up_to()
+        ),
+    })
+}
+
+impl UxDiscoveryCommands for SystemDiscoveryCommands {
+    fn compile_test_targets(&self, argv: &[String]) -> Result<String, UxDiscoveryFailure> {
+        let (program, args) = argv.split_first().ok_or_else(|| {
+            UxDiscoveryFailure::InstrumentFailure { reason: "empty compile argv".to_string() }
+        })?;
+        let output = run_bounded(
+            Command::new(program).args(args).current_dir(&self.workspace_root),
+            RunBound::COMPILE,
+        )
+        .map_err(|refused| match refused {
+            // A child that never started is the same fact it was before the run
+            // gained a ceiling, so it keeps its established typed failure.
+            RunRefused::Spawn(error) => UxDiscoveryFailure::CargoInvocationFailed {
+                argv: argv.to_vec(),
+                status: None,
+                detail: error.to_string(),
+            },
+            bounded => UxDiscoveryFailure::InstrumentFailure {
+                reason: bounded.reason("cargo test --no-run"),
+            },
+        })?;
+        if !output.status.success() {
+            return Err(UxDiscoveryFailure::CargoInvocationFailed {
+                argv: argv.to_vec(),
+                status: output.status.code(),
+                detail: truncate(&String::from_utf8_lossy(&output.stderr)),
+            });
+        }
+        decode_identity_bearing(&output.stdout, "cargo test --no-run")
+    }
+
+    fn list_cases(
+        &self,
+        target_identity: &str,
+        executable: &Path,
+        argv: &[String],
+    ) -> Result<String, UxDiscoveryFailure> {
+        // `argv` on the failure is contractually the exact invoked command, so
+        // it must name the executable rather than only its arguments.
+        let invoked: Vec<String> = std::iter::once(executable.to_string_lossy().into_owned())
+            .chain(argv.iter().cloned())
+            .collect();
+        let output = run_bounded(
+            Command::new(executable).args(argv).current_dir(&self.workspace_root),
+            RunBound::LIST,
+        )
+        .map_err(|refused| match refused {
+            RunRefused::Spawn(error) => UxDiscoveryFailure::ListCommandFailed {
+                target: target_identity.to_string(),
+                argv: invoked.clone(),
+                status: None,
+                detail: error.to_string(),
+            },
+            bounded => UxDiscoveryFailure::InstrumentFailure {
+                reason: bounded.reason(&format!("{target_identity} --list")),
+            },
+        })?;
+        if !output.status.success() {
+            return Err(UxDiscoveryFailure::ListCommandFailed {
+                target: target_identity.to_string(),
+                argv: invoked,
+                status: output.status.code(),
+                detail: truncate(&String::from_utf8_lossy(&output.stderr)),
+            });
+        }
+        decode_identity_bearing(&output.stdout, &format!("{target_identity} --list"))
+    }
+
+    fn executable_digest(
+        &self,
+        target_identity: &str,
+        executable: &Path,
+    ) -> Result<String, UxDiscoveryFailure> {
+        let bytes =
+            fs::read(executable).map_err(|error| UxDiscoveryFailure::DigestUnavailable {
+                target: target_identity.to_string(),
+                reason: error.to_string(),
+            })?;
+        Ok(sha256_hex(&bytes))
+    }
+
+    fn executable_exists(&self, executable: &Path) -> bool {
+        executable.is_file()
+    }
+}
+
+/// Capture a command's stdout, returning `None` when the probe cannot run.
+///
+/// A failed probe becomes an explicit unknown subject fact rather than a
+/// fabricated default.
+fn probe(root: &Path, program: &str, args: &[&str]) -> Option<String> {
+    let label = format!("{program} {}", args.join(" "));
+    match run_bounded(Command::new(program).args(args).current_dir(root), RunBound::PROBE) {
+        Ok(output) if output.status.success() => {
+            Some(String::from_utf8_lossy(&output.stdout).into_owned())
+        }
+        // The subject fact still becomes `unknown`; this only makes the reason
+        // recoverable during triage, where "missing binary" and "non-zero exit"
+        // are otherwise indistinguishable.
+        Ok(output) => {
+            report_probe_failure(
+                &label,
+                &format!(
+                    "exit {:?}: {}",
+                    output.status.code(),
+                    String::from_utf8_lossy(&output.stderr).trim()
+                ),
+            );
+            None
+        }
+        Err(refused) => {
+            // A probe that hung is a different fact from one that was missing,
+            // and the ceiling is what makes the difference reportable at all.
+            report_probe_failure(&label, &refused.reason(&label));
+            None
+        }
+    }
+}
+
+/// Record why a subject probe could not answer, without changing the subject.
+fn report_probe_failure(label: &str, detail: &str) {
+    eprintln!(
+        "ux cases discover: subject probe `{label}` unavailable ({}) — the affected subject field is recorded as unknown and declared as a limitation",
+        truncate(detail)
+    );
+}
+
+fn file_digest(path: &Path) -> Option<String> {
+    let bytes = fs::read(path).ok()?;
+    Some(sha256_hex(&bytes))
+}
+
+/// Deterministic description of any environment-declared compiler wrapper.
+///
+/// `RUSTC_WRAPPER` and `RUSTC_WORKSPACE_WRAPPER` sit between Cargo and the
+/// compiler, so two otherwise identical toolchains with different wrappers are
+/// different build environments and must not share a subject digest.
+///
+/// Two boundaries, both declared rather than half-closed.
+///
+/// **Environment only.** A wrapper declared as `build.rustc-wrapper` in a Cargo
+/// `config.toml` — which this repository documents in
+/// `.cargo/config.local.toml.example` — is not seen here, so two builds
+/// differing only by such a wrapper share a subject digest. Cargo resolves the
+/// setting across the workspace file, every parent directory, and
+/// `$CARGO_HOME`, with the environment taking precedence; reading just the
+/// workspace file would still miss `$CARGO_HOME/config.toml`, where a global
+/// `rustc-wrapper` usually lives, while making the subject look complete.
+///
+/// **By name, not by content.** `RUSTC_WRAPPER=sccache` records the string
+/// `sccache`. Replacing that binary in place leaves this value — and so the
+/// subject digest — unchanged, even though the program between Cargo and the
+/// compiler is different. Digesting it means resolving a bare command name
+/// along `$PATH` the way the operating system does; a near-miss of that search
+/// would report a precise identity for a program that never ran.
+///
+/// Declared as `cargo_config_toolchain_not_resolved` and
+/// `compiler_wrapper_content_not_identified`. Full resolution is tracked
+/// separately.
+fn compiler_wrappers() -> Option<String> {
+    let mut declared: Vec<String> = Vec::new();
+    for key in ["RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER"] {
+        if let Ok(value) = std::env::var(key)
+            && !value.trim().is_empty()
+        {
+            declared.push(format!("{key}: {}", value.trim()));
+        }
+    }
+    (!declared.is_empty()).then(|| declared.join(" | "))
+}
+
+/// Collapse `rustc -vV` into one deterministic identity string.
+///
+/// Line endings and trailing whitespace are normalized; every field is kept, so
+/// `commit-hash`, `commit-date`, and `llvm-version` all participate in the
+/// subject digest rather than collapsing into the release number.
+fn normalize_rustc_identity(verbose: &str) -> String {
+    let fields: Vec<&str> =
+        verbose.lines().map(str::trim_end).filter(|line| !line.trim().is_empty()).collect();
+    if fields.is_empty() { "unknown".to_string() } else { fields.join(" | ") }
+}
+
+/// Extract `key: value` from `rustc -vV` output.
+fn rustc_field(verbose: &str, key: &str) -> Option<String> {
+    verbose.lines().find_map(|line| {
+        line.strip_prefix(key).and_then(|rest| rest.strip_prefix(": ")).map(str::to_string)
+    })
+}
+
+/// Absolute Cargo target directory, from `cargo metadata`.
+///
+/// Establishes the second normalization root so an external `CARGO_TARGET_DIR`
+/// still yields a runnable durable replay.
+/// `cargo metadata` for `root`, or `None` when it could not be read.
+///
+/// Always run in `root`, not the launch directory: resolving against another
+/// workspace would classify executables under the wrong target directory.
+fn cargo_metadata_value(root: &Path) -> Option<serde_json::Value> {
+    // Bounded like every other child discovery spawns. Review found this one
+    // still on bare `Command::output` after the compile, listing and probe paths
+    // had moved: it is not identity-bearing, but "every spawned child is bounded"
+    // has to be true of the whole file or it is not a claim.
+    let output = match run_bounded(
+        Command::new("cargo")
+            .args(["metadata", "--format-version", "1", "--no-deps"])
+            .current_dir(root),
+        RunBound::METADATA,
+    ) {
+        Ok(output) => output,
+        Err(refused) => {
+            report_probe_failure("cargo metadata", &refused.reason("cargo metadata"));
+            return None;
+        }
+    };
+    if !output.status.success() {
+        report_probe_failure("cargo metadata", &String::from_utf8_lossy(&output.stderr));
+        return None;
+    }
+    serde_json::from_slice(&output.stdout).ok()
+}
+
+/// Both readers take the metadata document rather than fetching their own, so
+/// one discovery sees one consistent view of the workspace and spawns one
+/// `cargo metadata` rather than two.
+fn cargo_target_root(root: &Path, value: &serde_json::Value) -> Option<PathBuf> {
+    let directory = value.get("target_directory")?.as_str()?;
+    let directory = PathBuf::from(directory);
+    if directory.is_absolute() { Some(directory) } else { Some(root.join(directory)) }
+}
+
+/// Manifest path for the UX package, as `cargo metadata` resolves it.
+fn package_manifest_path(value: &serde_json::Value) -> Option<PathBuf> {
+    let packages = value.get("packages")?.as_array()?;
+    packages
+        .iter()
+        .find(|package| {
+            package.get("name").and_then(serde_json::Value::as_str)
+                == Some(case_inventory::UX_INVENTORY_PACKAGE)
+        })
+        .and_then(|package| package.get("manifest_path"))
+        .and_then(serde_json::Value::as_str)
+        .map(PathBuf::from)
+}
+
+fn build_request(root: &Path, tier: UxCiTier, include_local_execution: bool) -> UxDiscoveryRequest {
+    let mut request = UxDiscoveryRequest::new(tier, root.to_path_buf());
+    let metadata = cargo_metadata_value(root);
+    request.cargo_target_root = metadata.as_ref().and_then(|value| cargo_target_root(root, value));
+
+    request.repository_sha = probe(root, "git", &["rev-parse", "HEAD"])
+        .map(|sha| sha.trim().to_string())
+        .filter(|sha| !sha.is_empty());
+    request.repository_dirty_state = match probe(root, "git", &["status", "--porcelain"]) {
+        Some(status) if status.trim().is_empty() => UxDirtyState::Clean,
+        Some(_) => UxDirtyState::Dirty,
+        None => UxDirtyState::Unknown,
+    };
+    request.cargo_lock_digest = file_digest(&root.join("Cargo.lock"));
+    // Resolved through `cargo metadata` so a package rename or a workspace
+    // relayout cannot silently drop the digest; the hardcoded layout is only a
+    // fallback, and a miss is a declared limitation either way.
+    request.package_manifest_digest = metadata
+        .as_ref()
+        .and_then(package_manifest_path)
+        .as_deref()
+        .and_then(file_digest)
+        .or_else(|| {
+            file_digest(
+                &root.join("crates").join(case_inventory::UX_INVENTORY_PACKAGE).join("Cargo.toml"),
+            )
+        });
+
+    // Cargo compiles with `$RUSTC` when it is set, so probing the PATH `rustc`
+    // would record a compiler that never touched these executables.
+    //
+    // `build.rustc` in a Cargo `config.toml` selects the compiler the same way
+    // and is *not* read here, for the reason `compiler_wrappers` documents: the
+    // configuration hierarchy cannot be resolved correctly without reproducing
+    // all of it. A configuration-selected compiler therefore leaves this probe
+    // naming the wrong one, which is declared as
+    // `cargo_config_toolchain_not_resolved` rather than presented as exact.
+    let compiler = std::env::var("RUSTC").unwrap_or_else(|_| "rustc".to_string());
+    let verbose = probe(root, &compiler, &["-vV"]).unwrap_or_default();
+    // A wrapper sits between Cargo and rustc and can change what is built, so
+    // it belongs in the subject even though `rustc -vV` cannot see it.
+    let wrappers = compiler_wrappers();
+    // The whole `rustc -vV` block, not just `release`: two builds of the same
+    // release with different commit hashes are different discovery
+    // environments and must not share one subject digest.
+    request.rust_toolchain = match wrappers {
+        Some(wrappers) => format!("{} | {wrappers}", normalize_rustc_identity(&verbose)),
+        None => normalize_rustc_identity(&verbose),
+    };
+    request.host_target = rustc_field(&verbose, "host").unwrap_or_else(|| "unknown".to_string());
+    // Cargo builds test executables under the `test` profile.
+    request.cargo_profile = "test".to_string();
+
+    request.include_local_execution = include_local_execution;
+    // Every probe above can fail. `UxDiscoveryRequest` records `None`/`unknown`
+    // for those, and `discover_cases` turns each into a declared limitation, so
+    // a subject assembled from partial evidence never reads as fully known.
+    request.generated_at = include_local_execution.then(|| chrono::Utc::now().to_rfc3339());
+    request
+}
+
+/// Serialize an inventory deterministically, with a trailing newline.
+fn render(inventory: &UxCaseInventory) -> Result<String> {
+    Ok(format!("{}\n", serde_json::to_string_pretty(inventory)?))
+}
+
+/// Replace `path` with `body` atomically, so a reader never sees a torn file.
+///
+/// The staging file is unique per invocation: two discoveries racing on one
+/// output path would otherwise share `<out>.json.tmp` and could publish each
+/// other's document or fail when their staging file vanished underneath them.
+/// Directory that receives the staged file and the post-rename durability sync.
+///
+/// `Path::parent` of a bare file name is `Some("")`, and `create_dir_all("")`
+/// fails — so `--out inventory.json` would never write anything. Resolving the
+/// empty case to `.` also keeps the durability step applicable to a bare output
+/// rather than silently skipped.
+///
+/// Separated from [`write_atomic`] so the rule is provable without a process
+/// working directory: `set_current_dir` is process-wide, and a test that moved
+/// it could race any sibling test that reads it.
+fn output_parent(path: &Path) -> &Path {
+    path.parent().filter(|parent| !parent.as_os_str().is_empty()).unwrap_or_else(|| Path::new("."))
+}
+
+fn write_atomic(path: &Path, body: &str) -> Result<()> {
+    let parent = output_parent(path);
+    fs::create_dir_all(parent)?;
+    let unique = format!(
+        "{}.{}.{}.tmp",
+        path.file_name().map_or_else(|| "inventory".into(), |name| name.to_string_lossy()),
+        std::process::id(),
+        STAGING_COUNTER.fetch_add(1, Ordering::Relaxed)
+    );
+    // Same directory, so the rename stays on one filesystem and is atomic.
+    let staging = path.with_file_name(unique);
+    if let Err(error) = write_and_sync(&staging, body) {
+        let _ = fs::remove_file(&staging);
+        return Err(error);
+    }
+    if let Err(error) = fs::rename(&staging, path) {
+        let _ = fs::remove_file(&staging);
+        return Err(error.into());
+    }
+    sync_directory(parent)?;
+    Ok(())
+}
+
+/// Flush a directory entry so a rename survives a crash.
+///
+/// Without this, `write_atomic` can report success before the new name is
+/// durable and a crash loses an inventory a downstream gate already believes
+/// exists. Failures propagate rather than being swallowed: a write reported as
+/// successful must actually be durable.
+#[cfg(unix)]
+fn sync_directory(parent: &Path) -> Result<()> {
+    fs::File::open(parent)?.sync_all()?;
+    Ok(())
+}
+
+/// Windows has no directory handle to fsync; `MoveFileEx` ordering is the
+/// platform's durability contract for the rename itself.
+#[cfg(not(unix))]
+fn sync_directory(_parent: &Path) -> Result<()> {
+    Ok(())
+}
+
+/// Write `body` to `path` and flush it to stable storage before returning.
+fn write_and_sync(path: &Path, body: &str) -> Result<()> {
+    let mut file = fs::File::create(path)?;
+    file.write_all(body.as_bytes())?;
+    file.sync_all()?;
+    Ok(())
+}
+
+/// Invalidate the canonical path before discovery starts.
+///
+/// The tombstone is the preferred outcome because it distinguishes "a refresh
+/// is running" from "nothing ever ran". When it cannot be written the previous
+/// document must still stop being consumable, so the stale file is removed as a
+/// last resort — `unlink` needs no free space, so this recovers the realistic
+/// disk-full case where the write failed but the old inventory is still sitting
+/// there looking current. That specific branch is not unit-tested: simulating a
+/// full filesystem is not available here, and running as root defeats
+/// permission-based simulation. The branch where removal also fails *is*
+/// covered, and both branches report which happened.
+///
+/// Note the boundary this does *not* cross: it protects against a refresh that
+/// started and failed, not against one that was never invoked. No file
+/// operation can express "the command never ran"; that is what the subject
+/// digest and repository SHA are for.
+///
+/// # Errors
+///
+/// Returns the tombstone-write failure, noting whether the stale document was
+/// removed or is still present.
+fn invalidate_before_discovery(out: &Path, tier: UxCiTier) -> Result<()> {
+    let Err(write_error) = write_tombstone(out, &UxCaseInventoryInvalid::in_progress(tier)) else {
+        return Ok(());
+    };
+    if !out.exists() {
+        return Err(eyre!(
+            "could not write the in-progress tombstone to `{}`: {write_error}",
+            out.display()
+        ));
+    }
+    match fs::remove_file(out) {
+        Ok(()) => Err(eyre!(
+            "could not write the in-progress tombstone to `{}` ({write_error}); the previous inventory was removed so it cannot be read as current",
+            out.display()
+        )),
+        Err(remove_error) => Err(eyre!(
+            "could not write the in-progress tombstone to `{}` ({write_error}) and the previous inventory could not be removed ({remove_error}); it may still be readable as current",
+            out.display()
+        )),
+    }
+}
+
+/// Retire the in-progress tombstone for a failed discovery, preserving the cause.
+///
+/// The tombstone write is best effort. If it fails, the discovery failure is
+/// still the error worth returning — it is the reason the run ended — and the
+/// write failure is attached as secondary context rather than replacing it.
+/// Returning the write error instead would hide the actual cause behind an I/O
+/// message and leave the caller unable to say why discovery stopped.
+fn retire_with(out: &Path, tier: UxCiTier, failure: &UxDiscoveryFailure) -> color_eyre::Report {
+    match write_tombstone(out, &UxCaseInventoryInvalid::failed(tier, failure)) {
+        Ok(()) => eyre!("{failure}"),
+        Err(write_error) => eyre!(
+            "{failure} (the failure tombstone could not be written, so `{}` may still hold an in-progress marker: {write_error})",
+            out.display()
+        ),
+    }
+}
+
+/// Publish `inventory` to `out`, retiring the in-progress tombstone on failure.
+///
+/// Split out so the publication path is directly testable: a rename or render
+/// failure here must leave a `discovery_failed` document rather than a stale
+/// `discovery_in_progress` one.
+///
+/// # Errors
+///
+/// Returns the rendering or publication failure. The original error is
+/// preserved even when the tombstone write also fails.
+fn publish_or_retire(out: &Path, tier: UxCiTier, inventory: &UxCaseInventory) -> Result<()> {
+    match render(inventory).and_then(|body| write_atomic(out, &body)) {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            let tombstone = UxCaseInventoryInvalid::failed(
+                tier,
+                &UxDiscoveryFailure::InstrumentFailure { reason: error.to_string() },
+            );
+            match write_tombstone(out, &tombstone) {
+                Ok(()) => Err(error),
+                Err(write_error) => Err(eyre!(
+                    "{error} (the failure tombstone could not be written, so `{}` may still hold an in-progress marker: {write_error})",
+                    out.display()
+                )),
+            }
+        }
+    }
+}
+
+fn write_tombstone(path: &Path, tombstone: &UxCaseInventoryInvalid) -> Result<()> {
+    write_atomic(path, &format!("{}\n", serde_json::to_string_pretty(tombstone)?))
+}
+
+/// Discover into `out`, invalidating the previous document first.
+///
+/// The canonical path is overwritten with a tombstone **before** the first
+/// fallible step, and replaced with a failure tombstone if discovery fails. A
+/// previous run's inventory can therefore never be read as this run's result
+/// after a failed refresh — a Cargo failure, a malformed listing, a
+/// wrong-profile artifact, a digest failure, or a rendering failure all leave a
+/// document whose `schema` is not `ux_case_inventory.v1`.
+///
+/// # Errors
+///
+/// Returns the discovery or rendering failure after the tombstone is in place.
+pub fn discover_to_path(
+    commands: &dyn UxDiscoveryCommands,
+    request: &UxDiscoveryRequest,
+    tier: UxCiTier,
+    out: &Path,
+) -> Result<UxCaseInventory> {
+    invalidate_before_discovery(out, tier)?;
+
+    let inventory = match case_inventory::discover_cases(commands, request)
+        .and_then(|inventory| inventory.verify_digest().map(|()| inventory))
+    {
+        Ok(inventory) => inventory,
+        Err(failure) => return Err(retire_with(out, tier, &failure)),
+    };
+
+    // Rendering and publication are both fallible, and a failure in either must
+    // retire the in-progress tombstone. Leaving it in place would tell a
+    // consumer a refresh is still running when it has already ended.
+    publish_or_retire(out, tier, &inventory)?;
+    Ok(inventory)
+}
+
+/// Run `ux cases discover`.
+///
+/// # Errors
+///
+/// Returns the discovery failure verbatim rather than emitting a smaller
+/// denominator: a missing binary, a malformed listing, a stale wrong-profile
+/// artifact, or a colliding identity is never rendered as a complete inventory.
+pub fn run_discover(
+    profile: &str,
+    out: Option<PathBuf>,
+    local_execution: bool,
+    stdout_json: bool,
+) -> Result<()> {
+    let tier = case_inventory::parse_profile(profile).map_err(|failure| eyre!("{failure}"))?;
+    let root = utils::project_root()?;
+
+    let commands = SystemDiscoveryCommands { workspace_root: root.clone() };
+    let request = build_request(&root, tier, local_execution);
+    let out = out.unwrap_or_else(|| root.join(DEFAULT_OUT));
+    let inventory = discover_to_path(&commands, &request, tier, &out)?;
+
+    if stdout_json {
+        print!("{}", render(&inventory)?);
+    } else {
+        println!(
+            "ux_case_inventory.v1 profile={} targets={} cases={} zero-case-targets={}",
+            inventory.subject.operational_profile,
+            inventory.totals.target_count,
+            inventory.totals.case_count,
+            inventory.totals.zero_case_target_count
+        );
+        println!("subject   {}", inventory.subject.subject_digest);
+        println!("inventory {}", inventory.inventory_digest);
+        println!("written   {}", out.display());
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use perl_lsp_ux_tests::case_inventory::{
+        UX_CASE_INVENTORY_INVALID_SCHEMA, UX_CASE_INVENTORY_SCHEMA, UxInventoryInvalidState,
+    };
+
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    /// A ceiling loose enough that only the behaviour under test can trip it.
+    fn generous_bound() -> RunBound {
+        RunBound {
+            wall: Duration::from_secs(30),
+            collect: Duration::from_secs(5),
+            stdout_limit: 8 * 1024 * 1024,
+            stderr_limit: 8 * 1024 * 1024,
+        }
+    }
+
+    #[test]
+    fn a_hung_child_is_terminated_rather_than_awaited_forever() {
+        // The wrong implementation is `Command::output`, which waits for EOF on
+        // both pipes with no deadline: this child never reaches one, so before
+        // the ceiling existed discovery hung here and the in-progress tombstone
+        // stayed in place with no typed outcome.
+        let bound = RunBound { wall: Duration::from_millis(300), ..generous_bound() };
+        let started = Instant::now();
+        let outcome = run_bounded(Command::new("sleep").arg("30"), bound);
+        let elapsed = started.elapsed();
+
+        match outcome {
+            Err(RunRefused::TimedOut { wall, termination }) => {
+                assert_eq!(wall, Duration::from_millis(300));
+                assert_eq!(
+                    termination,
+                    Termination::Reaped,
+                    "a child killed at its ceiling must be confirmed reaped"
+                );
+            }
+            Err(other) => {
+                panic!("expected a timeout, got: {}", other.reason("sleep 30"))
+            }
+            Ok(_) => panic!("`sleep 30` cannot complete inside a 300ms ceiling"),
+        }
+        assert!(
+            elapsed < Duration::from_secs(10),
+            "the ceiling must end the run promptly, took {elapsed:?}"
+        );
+    }
+
+    #[test]
+    fn a_runaway_stream_fails_closed_rather_than_yielding_a_truncated_listing() {
+        // Truncating would be the dangerous outcome: a short identity-bearing
+        // stream parses as a short case list, which is exactly the silently
+        // smaller denominator this module exists to prevent.
+        let bound = RunBound { stdout_limit: 4096, ..generous_bound() };
+        let outcome =
+            run_bounded(Command::new("sh").arg("-c").arg("while :; do echo runaway; done"), bound);
+
+        match outcome {
+            Err(RunRefused::Overflowed { stream, limit, termination }) => {
+                assert_eq!(stream, "stdout");
+                assert_eq!(limit, 4096);
+                assert_eq!(
+                    termination,
+                    Termination::Reaped,
+                    "a child killed at its ceiling must be confirmed reaped"
+                );
+            }
+            Err(other) => {
+                panic!("expected an overflow, got: {}", other.reason("runaway"))
+            }
+            Ok(output) => panic!(
+                "an unbounded writer must not report success; retained {} bytes",
+                output.stdout.len()
+            ),
+        }
+    }
+
+    #[test]
+    fn a_well_behaved_child_still_returns_its_whole_output_and_status() -> TestResult {
+        // Opposite direction: the ceiling must not change what a healthy run
+        // reports, including a non-zero exit and interleaved stderr.
+        let outcome = run_bounded(
+            Command::new("sh").arg("-c").arg("printf out; printf err >&2; exit 3"),
+            generous_bound(),
+        );
+        let output = match outcome {
+            Ok(output) => output,
+            Err(refused) => return Err(refused.reason("well-behaved child").into()),
+        };
+        assert!(!output.status.success());
+        assert_eq!(output.status.code(), Some(3));
+        assert_eq!(output.stdout, b"out");
+        assert_eq!(output.stderr, b"err");
+        Ok(())
+    }
+
+    #[test]
+    fn both_streams_drain_concurrently_so_neither_pipe_deadlocks_the_other() -> TestResult {
+        // Each stream gets well past a 64 KiB pipe buffer. A reader that drained
+        // only one would block forever once the other filled, so this would hang
+        // rather than fail — the reason both are drained on their own threads.
+        let script = "i=0; while [ $i -lt 4000 ]; do \
+                      echo stdout-padding-line-wide-enough-to-fill-the-pipe-buffer; \
+                      echo stderr-padding-line-wide-enough-to-fill-the-pipe-buffer >&2; \
+                      i=$((i+1)); done";
+        let outcome = run_bounded(Command::new("sh").arg("-c").arg(script), generous_bound());
+        let output = match outcome {
+            Ok(output) => output,
+            Err(refused) => return Err(refused.reason("both streams").into()),
+        };
+        assert!(output.status.success());
+        assert!(
+            output.stdout.len() > 64 * 1024,
+            "stdout must exceed one pipe buffer, got {}",
+            output.stdout.len()
+        );
+        assert!(
+            output.stderr.len() > 64 * 1024,
+            "stderr must exceed one pipe buffer, got {}",
+            output.stderr.len()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_finite_overflowing_child_is_refused_even_though_it_exits_cleanly() {
+        // The infinite-writer control never lets the child exit, so it only ever
+        // reaches the overflow branch through the polling loop. A *finite* writer
+        // that crosses the ceiling and then exits promptly takes the other path:
+        // `try_wait` observes the exit first. The retained buffer was cleared on
+        // overflow, so reporting success here hands the caller an empty listing —
+        // a silently smaller denominator, which is the outcome this module exists
+        // to make impossible.
+        let bound = RunBound { stdout_limit: 64, ..generous_bound() };
+        let outcome = run_bounded(
+            Command::new("sh")
+                .arg("-c")
+                .arg("i=0; while [ $i -lt 400 ]; do echo overflowing; i=$((i+1)); done"),
+            bound,
+        );
+
+        match outcome {
+            Err(RunRefused::Overflowed { stream, limit, .. }) => {
+                assert_eq!(stream, "stdout");
+                assert_eq!(limit, 64);
+            }
+            Err(other) => panic!("expected an overflow, got: {}", other.reason("finite writer")),
+            Ok(output) => panic!(
+                "a child that crossed its output ceiling must not report success; \
+                 status {:?}, retained {} bytes",
+                output.status.code(),
+                output.stdout.len()
+            ),
+        }
+    }
+
+    #[test]
+    fn a_descendant_holding_a_pipe_cannot_outlast_the_ceiling() {
+        // The direct child exits immediately but leaves a grandchild holding the
+        // write end of stdout, so the pipe never reaches EOF on the child's exit.
+        // This is the real shape of `cargo` spawning `rustc`, not a contrivance:
+        // waiting on the reader is therefore unbounded even though waiting on the
+        // child is bounded.
+        let bound = RunBound {
+            wall: Duration::from_millis(300),
+            collect: Duration::from_millis(400),
+            ..generous_bound()
+        };
+        let started = Instant::now();
+        let outcome = run_bounded(Command::new("sh").arg("-c").arg("sleep 30 & exit 0"), bound);
+        let elapsed = started.elapsed();
+
+        match outcome {
+            Err(RunRefused::CollectionTimedOut { stream, collect }) => {
+                assert_eq!(stream, "stdout");
+                assert_eq!(collect, Duration::from_millis(400));
+            }
+            Err(other) => {
+                panic!("expected a collection timeout, got: {}", other.reason("descendant"))
+            }
+            Ok(output) => panic!(
+                "an incomplete stream must not report success; status {:?}, {} bytes",
+                output.status.code(),
+                output.stdout.len()
+            ),
+        }
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "collection must be bounded by the ceiling, not by the descendant; took {elapsed:?}"
+        );
+    }
+
+    #[test]
+    fn every_child_this_module_spawns_goes_through_the_bounded_runner() {
+        // The `cargo metadata` spawn survived three rounds of bounding because
+        // each review looked at the path it was reading, not at the file. This
+        // reads the module's own source so a future unbounded spawn fails here
+        // rather than being found by a fourth reviewer.
+        let source = include_str!("ux_cases.rs");
+        let production = source.split("#[cfg(test)]").next().unwrap_or(source);
+
+        let unbounded: Vec<&str> = production
+            .lines()
+            .map(str::trim)
+            .filter(|line| line.starts_with(".output()") || line.ends_with(".output()"))
+            .collect();
+        assert!(
+            unbounded.is_empty(),
+            "every spawn in this module must go through `run_bounded`; found: {unbounded:?}"
+        );
+
+        // Opposite direction: the guard must be able to see a spawn at all, or it
+        // would pass vacuously once the spelling changed.
+        assert!(
+            production.contains("fn run_bounded("),
+            "the bounded runner must live in the production half of this module"
+        );
+        assert_eq!(
+            production.matches("run_bounded(").count(),
+            5,
+            "run_bounded should have its definition plus the four production call \
+             sites (compile, list, probe, metadata); a new spawn needs a bound and \
+             this count updated deliberately"
+        );
+    }
+
+    /// Fallible equality for the termination controls: reports both operands so
+    /// a regression names what it produced, not merely that it disagreed.
+    ///
+    /// These controls return `TestResult`, so a predicate failure belongs in the
+    /// error channel rather than in a panic (review 5260800437).
+    fn termination_is(observed: Termination, expected: Termination, because: &str) -> TestResult {
+        if observed == expected {
+            return Ok(());
+        }
+        Err(format!("{because}: expected {expected:?}, observed {observed:?}").into())
+    }
+
+    /// Fallible predicate for the wording controls, carrying the rendered text.
+    fn reason_withholds(rendered: &str, forbidden: &str, because: &str) -> TestResult {
+        if !rendered.contains(forbidden) {
+            return Ok(());
+        }
+        Err(format!("{because}: {rendered:?} must not contain {forbidden:?}").into())
+    }
+
+    #[test]
+    fn a_failed_kill_classifies_an_exited_child_without_claiming_a_termination() -> TestResult {
+        // Review found this branch returning `Reaped`, which `describe` renders
+        // as "was terminated and reaped" about a child the failed kill never
+        // touched. A live process cannot drive it — Unix `Child::kill` returns
+        // `Ok` on a cached exit status, so an already-reaped child accepts a
+        // kill — so the classification is its own seam and gets driven from the
+        // observed wait result instead. All three directions, so none can pass
+        // by always answering the same variant.
+        let exited = Command::new("true").spawn()?.wait()?;
+        termination_is(
+            classify_failed_kill(&Ok(Some(exited))),
+            Termination::ExitedOnItsOwn,
+            "a kill that failed terminated nothing, so an exit it then observes is the child's own",
+        )?;
+        termination_is(
+            classify_failed_kill(&Ok(None)),
+            Termination::NotSignalled,
+            "a child still running after a failed kill was never signalled",
+        )?;
+        termination_is(
+            classify_failed_kill(&Err(std::io::Error::other("wait failed"))),
+            Termination::NotSignalled,
+            "an unreadable wait cannot establish an exit, so it must not claim one",
+        )?;
+
+        // Reverting the mapping to `Reaped` fails the first check above, which is
+        // what this control exists to guarantee.
+        for outcome in [classify_failed_kill(&Ok(Some(exited))), classify_failed_kill(&Ok(None))] {
+            let rendered =
+                RunRefused::TimedOut { wall: Duration::from_secs(1), termination: outcome }
+                    .reason("cargo x");
+            reason_withholds(&rendered, "was terminated", "a failed kill is not a termination")?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn reap_bounded_reports_a_reap_only_for_a_child_it_actually_signalled() -> TestResult {
+        // The reachable direction, paired with the seam control above: a live
+        // child this operation really does signal and collect is the only case
+        // allowed to report `Reaped`.
+        let mut live = Command::new("sleep").arg("30").spawn()?;
+        termination_is(
+            reap_bounded(&mut live),
+            Termination::Reaped,
+            "a child this operation signalled and collected is genuinely reaped",
+        )?;
+
+        // Pins the platform premise that makes the failed-kill branch
+        // unreachable. If this ever fails, that branch has become reachable and
+        // deserves a live control of its own rather than the seam alone.
+        let mut gone = Command::new("true").spawn()?;
+        gone.wait()?;
+        if gone.kill().is_err() {
+            return Err("Unix `Child::kill` is expected to succeed on a cached exit status; \
+                        the failed-kill branch has become reachable and needs a live control"
+                .into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_ceiling_failure_names_the_command_and_the_limit_it_exceeded() {
+        let timed_out = RunRefused::TimedOut {
+            wall: Duration::from_secs(42),
+            termination: Termination::Reaped,
+        }
+        .reason("cargo x");
+        assert!(timed_out.contains("cargo x"), "{timed_out}");
+        assert!(timed_out.contains("42s"), "{timed_out}");
+        assert!(timed_out.contains("terminated and reaped"), "{timed_out}");
+
+        // A kill that failed must not be reported as a termination. The previous
+        // wording said "was terminated (child could not be reaped)", which
+        // asserted the one thing that had not been established.
+        let unsignalled = RunRefused::TimedOut {
+            wall: Duration::from_secs(1),
+            termination: Termination::NotSignalled,
+        }
+        .reason("cargo x");
+        assert!(unsignalled.contains("could not be signalled"), "{unsignalled}");
+        assert!(unsignalled.contains("may still be running"), "{unsignalled}");
+        assert!(
+            !unsignalled.contains("was terminated"),
+            "an unsignalled child must not be described as terminated: {unsignalled}"
+        );
+
+        // Signalled but unconfirmed is its own fact, not a reap and not a failure
+        // to signal.
+        let unconfirmed = RunRefused::TimedOut {
+            wall: Duration::from_secs(1),
+            termination: Termination::ReapUnconfirmed,
+        }
+        .reason("cargo x");
+        assert!(unconfirmed.contains("signalled"), "{unconfirmed}");
+        assert!(unconfirmed.contains("could not be confirmed"), "{unconfirmed}");
+        assert!(
+            !unconfirmed.contains("and reaped"),
+            "an unconfirmed reap must not claim a reap: {unconfirmed}"
+        );
+
+        // An exit this operation did not cause is not a termination either. This
+        // is the variant the failed-kill branch returns when the child turns out
+        // to have already gone. Only the wording is proven here: that branch is
+        // not portably reachable, as
+        // `reap_bounded_reports_a_reap_only_for_a_child_it_actually_signalled`
+        // records.
+        let already_gone = RunRefused::TimedOut {
+            wall: Duration::from_secs(1),
+            termination: Termination::ExitedOnItsOwn,
+        }
+        .reason("cargo x");
+        assert!(already_gone.contains("had already exited"), "{already_gone}");
+        assert!(
+            !already_gone.contains("was terminated"),
+            "a child that exited on its own must not be described as terminated: {already_gone}"
+        );
+        assert!(
+            !already_gone.contains("reaped"),
+            "a child this operation never signalled must not claim a reap: {already_gone}"
+        );
+
+        let overflowed =
+            RunRefused::Overflowed { stream: "stdout", limit: 7, termination: Termination::Reaped }
+                .reason("t --list");
+        assert!(overflowed.contains("t --list"), "{overflowed}");
+        assert!(overflowed.contains('7'), "{overflowed}");
+        assert!(overflowed.contains("stdout"), "{overflowed}");
+    }
+
+    /// Command source that always fails the Cargo step.
+    struct FailingCommands;
+
+    impl UxDiscoveryCommands for FailingCommands {
+        fn compile_test_targets(&self, argv: &[String]) -> Result<String, UxDiscoveryFailure> {
+            Err(UxDiscoveryFailure::CargoInvocationFailed {
+                argv: argv.to_vec(),
+                status: Some(101),
+                detail: "forced failure".to_string(),
+            })
+        }
+
+        fn list_cases(
+            &self,
+            _target: &str,
+            _executable: &Path,
+            _argv: &[String],
+        ) -> Result<String, UxDiscoveryFailure> {
+            unreachable!("compilation fails first")
+        }
+
+        fn executable_digest(
+            &self,
+            _target: &str,
+            _executable: &Path,
+        ) -> Result<String, UxDiscoveryFailure> {
+            unreachable!("compilation fails first")
+        }
+
+        fn executable_exists(&self, _executable: &Path) -> bool {
+            unreachable!("compilation fails first")
+        }
+    }
+
+    #[test]
+    fn a_failed_refresh_cannot_leave_a_stale_inventory_readable() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let out = dir.path().join("ux-case-inventory.json");
+
+        // Pre-seed the canonical path with a previous run's valid inventory.
+        let stale = format!(
+            r#"{{"schema":"{UX_CASE_INVENTORY_SCHEMA}","producer":"stale","totals":{{"case_count":349}}}}"#
+        );
+        fs::write(&out, &stale)?;
+        assert!(fs::read_to_string(&out)?.contains(UX_CASE_INVENTORY_SCHEMA));
+
+        let request = UxDiscoveryRequest::new(UxCiTier::Pr, dir.path().to_path_buf());
+        let error = discover_to_path(&FailingCommands, &request, UxCiTier::Pr, &out)
+            .expect_err("a forced Cargo failure must surface");
+        assert!(error.to_string().contains("cargo invocation failed"), "{error}");
+
+        // The stale inventory must no longer be consumable as this run's result.
+        let after = fs::read_to_string(&out)?;
+        let parsed: serde_json::Value = serde_json::from_str(&after)?;
+        assert_eq!(parsed["schema"], UX_CASE_INVENTORY_INVALID_SCHEMA);
+        assert_ne!(parsed["schema"], UX_CASE_INVENTORY_SCHEMA);
+        assert_eq!(parsed["failure_kind"], "cargo_invocation_failed");
+        assert!(!after.contains("349"), "no count from the stale document may survive");
+
+        let tombstone: UxCaseInventoryInvalid = serde_json::from_str(&after)?;
+        assert_eq!(tombstone.state, UxInventoryInvalidState::DiscoveryFailed);
+        assert_eq!(tombstone.operational_profile, "pr");
+        Ok(())
+    }
+
+    #[test]
+    fn no_staging_file_is_left_behind_after_a_failed_refresh() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let out = dir.path().join("ux-case-inventory.json");
+        let request = UxDiscoveryRequest::new(UxCiTier::Nightly, dir.path().to_path_buf());
+        discover_to_path(&FailingCommands, &request, UxCiTier::Nightly, &out)
+            .expect_err("a forced Cargo failure must surface");
+
+        let leftovers: Vec<String> = fs::read_dir(dir.path())?
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.ends_with(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "staging files left behind: {leftovers:?}");
+        Ok(())
+    }
+
+    #[test]
+    fn rustc_fields_parse_from_verbose_output() -> TestResult {
+        let verbose = "rustc 1.95.0 (59807616e 2026-04-14)\nbinary: rustc\nrelease: 1.95.0\nhost: x86_64-unknown-linux-gnu\n";
+        assert_eq!(rustc_field(verbose, "release").as_deref(), Some("1.95.0"));
+        assert_eq!(rustc_field(verbose, "host").as_deref(), Some("x86_64-unknown-linux-gnu"));
+        assert_eq!(rustc_field(verbose, "absent"), None);
+        Ok(())
+    }
+
+    #[test]
+    fn unknown_profiles_are_rejected_before_any_command_runs() {
+        let failure = run_discover("staging", None, false, false)
+            .expect_err("an unknown profile must be rejected");
+        assert!(failure.to_string().contains("unknown discovery profile"), "{failure}");
+    }
+
+    #[test]
+    fn detail_truncation_respects_character_boundaries() -> TestResult {
+        let long = "é".repeat(DETAIL_LIMIT);
+        let truncated = truncate(&long);
+        assert!(truncated.ends_with("… (truncated)"));
+        assert!(truncated.len() < long.len() + 20);
+        assert_eq!(truncate("short"), "short");
+        Ok(())
+    }
+
+    #[test]
+    fn a_failed_discovery_retires_the_in_progress_tombstone() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let out = dir.path().join("ux-case-inventory.json");
+        fs::write(&out, "seed")?;
+
+        let request = UxDiscoveryRequest::new(UxCiTier::Pr, dir.path().to_path_buf());
+        discover_to_path(&FailingCommands, &request, UxCiTier::Pr, &out)
+            .expect_err("the forced failure must surface");
+
+        let tombstone: UxCaseInventoryInvalid = serde_json::from_str(&fs::read_to_string(&out)?)?;
+        assert_eq!(
+            tombstone.state,
+            UxInventoryInvalidState::DiscoveryFailed,
+            "a finished run must never leave `discovery_in_progress` behind"
+        );
+        Ok(())
+    }
+
+    /// A minimal real inventory, produced through the ordinary discovery path.
+    fn sample_inventory() -> Result<UxCaseInventory> {
+        struct OneCase;
+        const EXE: &str = "/w/target/debug/deps/t-1";
+
+        impl UxDiscoveryCommands for OneCase {
+            fn compile_test_targets(&self, _argv: &[String]) -> Result<String, UxDiscoveryFailure> {
+                Ok(format!(
+                    r#"{{"reason":"compiler-artifact","package_id":"path+file:///w/crates/perl-lsp-ux-tests#0.1.0","target":{{"kind":["test"],"name":"t","src_path":"/w/tests/t.rs"}},"profile":{{"test":true}},"features":[],"executable":"{EXE}"}}"#
+                ))
+            }
+            fn list_cases(
+                &self,
+                _target: &str,
+                _executable: &Path,
+                _argv: &[String],
+            ) -> Result<String, UxDiscoveryFailure> {
+                Ok("a: test\n\n1 test, 0 benchmarks\n".to_string())
+            }
+            fn executable_digest(
+                &self,
+                _target: &str,
+                _executable: &Path,
+            ) -> Result<String, UxDiscoveryFailure> {
+                Ok(sha256_hex(b"stable"))
+            }
+            fn executable_exists(&self, _executable: &Path) -> bool {
+                true
+            }
+        }
+
+        let request = UxDiscoveryRequest::new(UxCiTier::Pr, PathBuf::from("/w"));
+        case_inventory::discover_cases(&OneCase, &request).map_err(|failure| eyre!("{failure}"))
+    }
+
+    #[test]
+    fn a_failed_publication_surfaces_rather_than_reporting_success() -> TestResult {
+        // Exercises the publication path itself, not the discovery path: a
+        // directory sitting at the output path makes the final rename fail
+        // after discovery has already succeeded.
+        let dir = tempfile::tempdir()?;
+        let out = dir.path().join("occupied");
+        fs::create_dir(&out)?;
+
+        let error = publish_or_retire(&out, UxCiTier::Pr, &sample_inventory()?)
+            .expect_err("renaming onto a directory must fail");
+        assert!(!out.is_file(), "a failed publication must not leave a document claiming success");
+        assert!(!error.to_string().is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn a_failed_tombstone_write_does_not_mask_the_discovery_failure() -> TestResult {
+        // Both the discovery failure and the tombstone write fail. The cause of
+        // the run ending is the discovery failure; returning the I/O error
+        // instead would leave the caller unable to say why discovery stopped.
+        let dir = tempfile::tempdir()?;
+        let out = dir.path().join("occupied");
+        fs::create_dir(&out)?;
+
+        let failure = UxDiscoveryFailure::NoTestArtifacts { package: "perl-lsp-ux-tests".into() };
+        let report = retire_with(&out, UxCiTier::Pr, &failure);
+        let rendered = report.to_string();
+
+        assert!(
+            rendered.contains("no test artifacts"),
+            "the discovery failure must survive as the primary cause: {rendered}"
+        );
+        assert!(
+            rendered.contains("in-progress marker"),
+            "the tombstone write failure must be attached as context: {rendered}"
+        );
+
+        // The happy path returns the discovery failure unadorned.
+        let writable = dir.path().join("ux-case-inventory.json");
+        let clean = retire_with(&writable, UxCiTier::Pr, &failure).to_string();
+        assert!(clean.contains("no test artifacts"));
+        assert!(!clean.contains("in-progress marker"));
+        Ok(())
+    }
+
+    #[test]
+    fn a_failed_initial_invalidation_reports_whether_the_stale_document_survived() -> TestResult {
+        // A directory sitting at the output path makes the tombstone rename fail
+        // and also makes the fallback removal fail, which is the branch where the
+        // previous document can still be read. The error must say so rather than
+        // implying a clean invalidation.
+        let dir = tempfile::tempdir()?;
+        let occupied = dir.path().join("ux-case-inventory.json");
+        fs::create_dir(&occupied)?;
+        fs::write(occupied.join("keep"), "non-empty")?;
+
+        let error = invalidate_before_discovery(&occupied, UxCiTier::Pr)
+            .expect_err("an unwritable destination must fail closed");
+        let rendered = error.to_string();
+        assert!(
+            rendered.contains("may still be readable as current"),
+            "the error must admit the stale document survived: {rendered}"
+        );
+
+        // The ordinary path leaves a tombstone, not the previous inventory.
+        let out = dir.path().join("fresh.json");
+        fs::write(&out, r#"{"schema":"ux_case_inventory.v1","totals":{"case_count":349}}"#)?;
+        invalidate_before_discovery(&out, UxCiTier::Pr)?;
+        let after: serde_json::Value = serde_json::from_str(&fs::read_to_string(&out)?)?;
+        assert_eq!(after["schema"], UX_CASE_INVENTORY_INVALID_SCHEMA);
+        assert!(!fs::read_to_string(&out)?.contains("349"));
+        Ok(())
+    }
+
+    #[test]
+    fn non_utf8_identity_output_fails_closed_rather_than_being_mangled() {
+        // Lossy decoding would turn the invalid byte into U+FFFD and hand back
+        // a plausible test name, producing a `UxCaseId` that disagrees with the
+        // one the executable holds. The listing summary cross-check cannot
+        // catch that: replacement leaves the case count unchanged.
+        let stdout = b"ux_scenario_01_simple_file::opens_a_\xffile: test\n";
+        let failure = decode_identity_bearing(stdout, "runner --list")
+            .expect_err("non-UTF-8 identity output must be rejected");
+        assert_eq!(failure.kind(), "instrument_failure");
+        let rendered = failure.to_string();
+        assert!(rendered.contains("not valid UTF-8"), "{rendered}");
+        assert!(rendered.contains("runner --list"), "the source must be named: {rendered}");
+
+        // Conforming output still decodes unchanged.
+        let good = b"ux_scenario_01_simple_file::opens_a_file: test\n";
+        assert_eq!(
+            decode_identity_bearing(good, "runner --list").ok().as_deref(),
+            Some("ux_scenario_01_simple_file::opens_a_file: test\n")
+        );
+    }
+
+    #[test]
+    fn a_bare_output_file_name_resolves_to_the_working_directory() {
+        // `Path::parent` of a bare name is `Some("")`; `create_dir_all("")`
+        // fails, so a bare `--out` used to write nothing at all.
+        //
+        // Proven through `output_parent` rather than by moving the process into
+        // a temporary directory: `std::env::set_current_dir` is process-wide, so
+        // such a test races every sibling test that reads the working directory
+        // and can fail this suite nondeterministically. A lock held by one test
+        // cannot fix that, because the racing readers do not take it.
+        assert_eq!(output_parent(Path::new("ux-case-inventory.json")), Path::new("."));
+        assert_eq!(output_parent(Path::new("receipts/ux.json")), Path::new("receipts"));
+        assert_eq!(output_parent(Path::new("/tmp/receipts/ux.json")), Path::new("/tmp/receipts"));
+    }
+
+    #[test]
+    fn concurrent_writers_do_not_share_a_staging_path() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let out = dir.path().join("ux-case-inventory.json");
+
+        std::thread::scope(|scope| {
+            for index in 0..8 {
+                let out = out.clone();
+                scope.spawn(move || {
+                    let _ = write_atomic(&out, &format!("{{\"writer\":{index}}}\n"));
+                });
+            }
+        });
+
+        // Whoever won, the published document is one complete write, and no
+        // staging file survives to be picked up by a later run.
+        let published = fs::read_to_string(&out)?;
+        let parsed: serde_json::Value = serde_json::from_str(published.trim())?;
+        assert!(parsed.get("writer").is_some(), "a torn document was published: {published}");
+
+        let leftovers: Vec<String> = fs::read_dir(dir.path())?
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.ends_with(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "staging files left behind: {leftovers:?}");
+        Ok(())
+    }
+
+    #[test]
+    fn the_toolchain_identity_keeps_every_rustc_field() -> TestResult {
+        let base = "rustc 1.95.0 (59807616e 2026-04-14)\nbinary: rustc\ncommit-hash: 59807616e\ncommit-date: 2026-04-14\nrelease: 1.95.0\nhost: x86_64-unknown-linux-gnu\nLLVM version: 21.1.0\n";
+        // Same release, different build: the identity must still differ.
+        let rebuilt = base.replace("59807616e", "abcdef123");
+
+        let left = normalize_rustc_identity(base);
+        let right = normalize_rustc_identity(&rebuilt);
+        assert_ne!(left, right, "commit metadata must reach the subject identity");
+        assert!(left.contains("LLVM version: 21.1.0"));
+
+        // Deterministic across line-ending and trailing-whitespace noise.
+        let noisy = base.replace('\n', "\r\n").replace("binary: rustc", "binary: rustc   ");
+        assert_eq!(normalize_rustc_identity(&noisy), left);
+        assert_eq!(normalize_rustc_identity(""), "unknown");
+        Ok(())
+    }
+
+    #[test]
+    fn a_failed_listing_records_the_executable_it_invoked() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let missing = dir.path().join("not-a-real-test-binary");
+        let commands = SystemDiscoveryCommands { workspace_root: dir.path().to_path_buf() };
+
+        let failure = commands
+            .list_cases("pkg::test::t", &missing, &["--list".to_string()])
+            .expect_err("spawning a missing executable must fail");
+        match failure {
+            UxDiscoveryFailure::ListCommandFailed { argv, .. } => {
+                assert_eq!(
+                    argv.first().map(String::as_str),
+                    Some(missing.to_string_lossy().as_ref()),
+                    "argv must be the exact invoked command, executable first"
+                );
+                assert_eq!(argv.get(1).map(String::as_str), Some("--list"));
+            }
+            other => return Err(format!("unexpected failure: {other}").into()),
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn the_default_output_path_is_under_the_ux_receipt_root() {
+        assert!(DEFAULT_OUT.starts_with("target/receipts/editor-ux/"));
+        assert!(DEFAULT_OUT.ends_with(".json"));
+    }
+}

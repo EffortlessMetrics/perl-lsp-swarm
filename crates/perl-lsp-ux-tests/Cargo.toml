@@ -25,6 +25,7 @@ path = "src/bin/ux_regression_receipt.rs"
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
 url.workspace = true
