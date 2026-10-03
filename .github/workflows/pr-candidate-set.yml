@@ -19,7 +19,6 @@ permissions:
 
 jobs:
   reconcile:
-    if: github.event_name != 'pull_request' || github.event.pull_request.draft != true
     name: Validate current PR candidate sets
     runs-on: ubuntu-24.04
     timeout-minutes: 10

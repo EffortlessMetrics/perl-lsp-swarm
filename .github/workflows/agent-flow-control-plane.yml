@@ -5,7 +5,6 @@ name: Agent Flow Control Plane
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
     branches: [main, master]
     paths:
       - 'AGENTS.md'
@@ -69,7 +68,6 @@ concurrency:
 
 jobs:
   check:
-    if: github.event_name != 'pull_request' || github.event.pull_request.draft != true
     name: Compile agent-flow control plane
     runs-on: ubuntu-24.04
     timeout-minutes: 15

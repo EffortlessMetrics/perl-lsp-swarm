@@ -71,7 +71,10 @@ jobs:
     name: Route ripr runner
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    if: ${{ (github.event_name != 'pull_request' || github.event.pull_request.draft != true) && ((github.event.pull_request.draft != true || github.event_name != 'pull_request') && github.event_name != 'schedule' && (github.event_name != 'workflow_dispatch' || inputs.seed_cache != true)) }}
+    if: >-
+      (github.event.pull_request.draft != true || github.event_name != 'pull_request') &&
+      github.event_name != 'schedule' &&
+      (github.event_name != 'workflow_dispatch' || inputs.seed_cache != true)
     permissions:
       contents: read
       # #16141: read this pull request's live head, so a run carrying an
@@ -300,7 +303,9 @@ jobs:
   ripr-selfhosted:
     name: ripr+ on Self-Hosted (rust-standard)
     needs: route-ripr
-    if: ${{ (github.event_name != 'pull_request' || github.event.pull_request.draft != true) && (needs.route-ripr.result == 'success' && needs.route-ripr.outputs.target == 'selfhosted') }}
+    if: >-
+      needs.route-ripr.result == 'success' &&
+      needs.route-ripr.outputs.target == 'selfhosted'
     runs-on:
       labels: [self-hosted, linux, x64, em-ci, rust-standard, trusted-pr]
     timeout-minutes: 60
@@ -611,7 +616,10 @@ jobs:
   ripr-github:
     name: ripr+ on GitHub Hosted
     needs: route-ripr
-    if: ${{ (github.event_name != 'pull_request' || github.event.pull_request.draft != true) && (needs.route-ripr.result == 'success' && needs.route-ripr.outputs.target == 'github' && needs.route-ripr.outputs.fallback_allowed == 'true') }}
+    if: >-
+      needs.route-ripr.result == 'success' &&
+      needs.route-ripr.outputs.target == 'github' &&
+      needs.route-ripr.outputs.fallback_allowed == 'true'
     runs-on: ubuntu-24.04
     # 135m (#15498 sequel): the guidance pass measured >30m on a 1600+-file
     # closure after the 40m analysis cap and the baseline receipt — the 75m
@@ -1034,7 +1042,13 @@ jobs:
     # Trigger ONLY when the primary self-hosted job failed AND the preflight step
     # explicitly recorded preflight_ok=false (written to GITHUB_OUTPUT before exit 1).
     # This prevents a real ripr quality-gate failure from masking under a GitHub-hosted run.
-    if: ${{ (github.event_name != 'pull_request' || github.event.pull_request.draft != true) && (always() && needs.route-ripr.result == 'success' && needs.route-ripr.outputs.target == 'selfhosted' && needs.ripr-selfhosted.result == 'failure' && needs.ripr-selfhosted.outputs.preflight_ok == 'false') }}
+    if: >-
+      always() &&
+      needs.route-ripr.result == 'success' &&
+      needs.route-ripr.outputs.target == 'selfhosted' &&
+      needs.ripr-selfhosted.result == 'failure' &&
+      needs.ripr-selfhosted.outputs.preflight_ok == 'false'
+
     runs-on: ubuntu-24.04
     # Same measured budget as the primary hosted lane (#15498 sequel).
     timeout-minutes: 135
@@ -1347,7 +1361,10 @@ jobs:
   # -------------------------------------------------------------------------
   seed-cache:
     name: Seed ripr rust cache
-    if: ${{ (github.event_name != 'pull_request' || github.event.pull_request.draft != true) && ((github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.seed_cache == true)) && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main')) }}
+    if: >-
+      (github.event_name == 'schedule' ||
+      (github.event_name == 'workflow_dispatch' && inputs.seed_cache == true)) &&
+      (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main')
     runs-on: ubuntu-24.04
     # 90m (#16126): was 45m for install + xtask build (~7m). This job now also
     # runs the repo-wide scan once, which is the ~31m the analysis lanes were
@@ -1446,7 +1463,7 @@ jobs:
       - ripr-selfhosted
       - ripr-github
       - ripr-fallback
-    if: ${{ (github.event_name != 'pull_request' || github.event.pull_request.draft != true) && (always()) }}
+    if: always()
     runs-on: ubuntu-latest
     # #16431: the retrieval budget is 660s minus the 60s finalization reserve
     # (~600s of bounded log/annotation retrieval). The previous 300s budget

@@ -2,7 +2,6 @@ name: Sublime real-host exact-source
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - "clients/sublime/**"
       - "scripts/sublime/**"
@@ -23,7 +22,6 @@ concurrency:
 
 jobs:
   host-journey:
-    if: github.event_name != 'pull_request' || github.event.pull_request.draft != true
     name: Sublime host / ${{ matrix.os }}
     strategy:
       fail-fast: false

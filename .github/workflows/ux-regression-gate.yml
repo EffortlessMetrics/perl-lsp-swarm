@@ -8,7 +8,7 @@ on:
   pull_request:
     branches: [main, master]
     # Label changes must not restart and cancel active candidate execution.
-    types: [opened, synchronize, reopened, ready_for_review]
+    types: [opened, synchronize, reopened]
     paths:
       - 'crates/perl-lsp*/**'
       - 'crates/perl-dap*/**'
@@ -43,7 +43,6 @@ env:
 
 jobs:
   ux-regression-gate:
-    if: github.event_name != 'pull_request' || github.event.pull_request.draft != true
     name: UX Regression Gate
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -361,7 +360,6 @@ jobs:
         run: exit 1
 
   extension-jest:
-    if: github.event_name != 'pull_request' || github.event.pull_request.draft != true
     name: Extension Jest
     runs-on: ubuntu-24.04
     timeout-minutes: 15

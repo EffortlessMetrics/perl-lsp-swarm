@@ -67,16 +67,6 @@ Return PR/candidate identity, claim and non-goals, current finding dispositions,
 current or stale, substantive review result, integration posture, exact remote wait and
 wake event, limitations/`NOT_PROVEN`, merge/closeout result, and next route.
 
-## Late qualification boundary
-
-Keep preparation, checkpoint pushes, repair, final challenge, and substantive review
-in draft. Draft state does not block those review steps. Once own-compute proof and
-`REVIEW_CURRENT` are current, invoke `publish-pr` to make the native ready-for-review
-transition, then `verify-live-ci`. That transition requests final merge qualification.
-Do not arm auto-merge just to wake CI. Return to draft before a material repair wave;
-refresh only affected proof/review, then request qualification again. Every required
-result must match the actual current head/base/integration subject it claims to prove.
-
 ## Procedure
 
 Enter at the earliest useful point:
@@ -85,8 +75,8 @@ Enter at the earliest useful point:
 no PR + publication-ready candidate
 → `$publish-pr`
 
-draft with development, evidence, or substantive review still open
-→ complete preparation and review while draft
+draft with a real remote-proof, collaboration, or protected-experiment purpose
+→ complete that purpose
 → `$publish-pr`
 
 substantive human/bot/CI findings or failed candidate proof
@@ -109,7 +99,6 @@ no candidate or claim change + no stale review dimension
 → continue at the earliest genuinely missing judgment
 
 `REVIEW_CURRENT`
-→ mark the prepared draft ready natively for final qualification
 → stabilize the reviewed candidate head for required CI
 → `$verify-live-ci`
 

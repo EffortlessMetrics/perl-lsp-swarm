@@ -215,18 +215,6 @@ stash is shared across worktrees. Use scoped restore or a branch-local WIP commi
 
 ### 6. Open the pull request
 
-Publish a draft for preparation and substantive review. Commit and push useful native
-checkpoints while draft; do formatting, focused tests, affected lint/build, and review
-on your own compute before final CI. Ordinary automatic PR jobs allocate no runner for
-a draft. Trusted metadata/security checks may still run.
-
-Once the candidate and evidence are ready, mark the PR ready for review. That native
-transition explicitly requests merge qualification, not a merge. Return to draft before
-iterating on material repairs; a push while ready requalifies the new head for safety.
-Keep head, base, and evaluated integration-subject evidence distinct. Never describe
-an old-head result or a skipped job as current proof. See the
-[late-CI contract](docs/agents/DEVELOPMENT_METHOD.md#late-ci-and-merge-qualification-intent).
-
 Use a conventional title with the controlling issue number:
 
 ```text

@@ -2,7 +2,6 @@ name: Zed Integration Candidate
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - '.ci/fixtures/zed-perl-upstream/**'
       - '.ci/schemas/zed-*.json'
@@ -33,7 +32,6 @@ concurrency:
 
 jobs:
   candidate:
-    if: github.event_name != 'pull_request' || github.event.pull_request.draft != true
     name: Format stacked Zed programme contracts
     runs-on: ubuntu-24.04
     timeout-minutes: 15

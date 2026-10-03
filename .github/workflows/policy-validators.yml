@@ -11,7 +11,6 @@ name: Policy Validators
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - 'policy/**'
       - '.ci/gate-policy.yaml'
@@ -120,7 +119,13 @@ jobs:
     # proven by the hosted lane alone. A queued-forever nano (outage) is
     # tolerated: the aggregate polls it with a deadline instead of
     # needs-gating on it.
-    if: ${{ (github.event_name != 'pull_request' || github.event.pull_request.draft != true) && (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.type != 'Bot' && !startsWith(github.event.pull_request.user.login, 'dependabot') && !startsWith(github.event.pull_request.user.login, 'app/') && !endsWith(github.event.pull_request.user.login, '[bot]'))) }}
+    if: >-
+      github.event_name != 'pull_request' ||
+      (github.event.pull_request.head.repo.full_name == github.repository &&
+        github.event.pull_request.user.type != 'Bot' &&
+        !startsWith(github.event.pull_request.user.login, 'dependabot') &&
+        !startsWith(github.event.pull_request.user.login, 'app/') &&
+        !endsWith(github.event.pull_request.user.login, '[bot]'))
     runs-on:
       group: em-ci-nano
       labels: [self-hosted, linux, x64, em-ci, trusted-pr, workflow-nano]
@@ -222,7 +227,6 @@ jobs:
           python3 scripts/ci/test_verify_homebrew_formula_digests.py
 
   validate-hosted:
-    if: github.event_name != 'pull_request' || github.event.pull_request.draft != true
     name: Validate CI policy ledgers (GitHub-hosted)
     # Always runs in parallel: the aggregate below decides between the
     # trusted verdict and the fallback, so a queued-forever trusted lane
@@ -337,7 +341,7 @@ jobs:
     # by polling the run's jobs below.
     needs:
       - validate-hosted
-    if: ${{ (github.event_name != 'pull_request' || github.event.pull_request.draft != true) && (always()) }}
+    if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:

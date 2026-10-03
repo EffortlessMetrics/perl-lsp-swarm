@@ -10,7 +10,6 @@ name: Worked Lane Corpus
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
     branches: [main]
     paths:
       - '.github/workflows/worked-lane-corpus.yml'
@@ -34,7 +33,6 @@ concurrency:
 
 jobs:
   check:
-    if: github.event_name != 'pull_request' || github.event.pull_request.draft != true
     name: Check worked-lane category ledger
     runs-on: ubuntu-24.04
     timeout-minutes: 5

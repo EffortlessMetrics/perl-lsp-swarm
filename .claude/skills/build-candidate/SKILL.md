@@ -106,15 +106,6 @@ The writer runs formatting, diff hygiene, focused proof, and affected package/se
 checks before publication. Broad workspace/platform/package/release proof remains
 hosted or risk-selected; do not pay repository-wide CI cost after every edit.
 
-## Own-compute development loop
-
-Keep the PR draft during development and material repair. Native commits and draft
-checkpoint pushes preserve work without requesting CI. Run formatting, focused tests,
-affected lint/build, and negative controls on own compute; complete challenge and
-substantive review before requesting final qualification with the ready flip. Record
-commands, exact subjects, results, and bounded remote-only limitations. Missing compute
-is `NOT_PROVEN`, not permission to use CI as the first debugging step.
-
 ## Flow
 
 1. Establish or reuse the current candidate and writer.

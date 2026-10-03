@@ -7,7 +7,7 @@ name: Post-Merge Corpus Ratchet
 on:
   pull_request:
     branches: [main, master]
-    types: [opened, synchronize, reopened, ready_for_review]
+    types: [opened, synchronize, reopened]
     paths:
       - '.ci/cpan-top-1000-distributions.txt'
       - '.ci/cpan-top-50-distributions.txt'
@@ -36,7 +36,10 @@ permissions:
 jobs:
   corpus-ratchet-bounded:
     name: CPAN corpus (bounded — top 50)
-    if: ${{ (github.event_name != 'pull_request' || github.event.pull_request.draft != true) && (github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && (github.event.inputs.mode == 'bounded' || github.event.inputs.mode == ''))) }}
+    if: |
+      github.event_name == 'pull_request' ||
+      (github.event_name == 'workflow_dispatch' &&
+       (github.event.inputs.mode == 'bounded' || github.event.inputs.mode == ''))
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
@@ -139,7 +142,12 @@ jobs:
   # advances the frontier monotonically until one pass fits whole.
   corpus-warm-full:
     name: CPAN corpus warm pass (full — 1000 distributions)
-    if: ${{ (github.event_name != 'pull_request' || github.event.pull_request.draft != true) && (false && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'full' && github.ref_name == github.event.repository.default_branch))) }}
+    if: |
+      false &&
+      (github.event_name == 'schedule' ||
+       (github.event_name == 'workflow_dispatch' &&
+        github.event.inputs.mode == 'full' &&
+        github.ref_name == github.event.repository.default_branch))
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
@@ -226,7 +234,13 @@ jobs:
     # The gate chain only enforces against a completed corpus (#12823): while
     # convergence is still advancing the frontier, this leg skips neutrally
     # instead of false-reding from partial state or platform kills.
-    if: ${{ (github.event_name != 'pull_request' || github.event.pull_request.draft != true) && (false && ((github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'full' && github.ref_name == github.event.repository.default_branch)) && needs.corpus-warm-full.outputs.complete == 'true')) }}
+    if: |
+      false &&
+      ((github.event_name == 'schedule' ||
+        (github.event_name == 'workflow_dispatch' &&
+         github.event.inputs.mode == 'full' &&
+         github.ref_name == github.event.repository.default_branch)) &&
+       needs.corpus-warm-full.outputs.complete == 'true')
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     permissions:
@@ -370,7 +384,10 @@ jobs:
     # inherited through `needs`. The only write surface in this workflow must
     # be statically unreachable from `pull_request` by reading this job alone,
     # without tracing the producer's guards.
-    if: ${{ (github.event_name != 'pull_request' || github.event.pull_request.draft != true) && (false && ((github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && needs.corpus-ratchet-full.outputs.changed == 'true')) }}
+    if: |
+      false &&
+      ((github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') &&
+       needs.corpus-ratchet-full.outputs.changed == 'true')
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:

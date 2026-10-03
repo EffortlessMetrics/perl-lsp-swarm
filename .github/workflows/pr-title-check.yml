@@ -2,7 +2,7 @@ name: PR Title Check
 
 on:
   pull_request_target:
-    types: [opened, edited, reopened, synchronize]
+    types: [opened, edited, reopened, synchronize, ready_for_review]
   workflow_dispatch: {}
 
 permissions:
@@ -11,10 +11,14 @@ permissions:
 
 jobs:
   validate-title:
+    # Draft metadata feedback remains useful, but it must not emit the
+    # ruleset-required `validate-title` context. The native Ready transition
+    # creates that protected context for the first time on the admitted PR.
+    name: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.draft == true && 'validate-title-draft-advisory' || 'validate-title' }}
     # This metadata-only pull_request_target check must remain available even
     # when the optional self-hosted nano pool is offline. It never checks out
     # or executes candidate contents, so a hosted runner preserves the trust
-    # boundary while making the required context live.
+    # boundary while making title feedback live.
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -110,7 +114,7 @@ jobs:
               );
 
               const commentBody = [
-                '## \u26a0\ufe0f PR Title Check Failed',
+                '## ⚠️ PR Title Check Failed',
                 '',
                 BOT_MARKER,
                 '',
@@ -131,7 +135,7 @@ jobs:
             // for "issue number not yet known" (issue #724). They are NON-BLOCKING:
             // the check passes, but the PR is flagged with `needs-issue-link` and a
             // real issue must be linked before merge (ops is the backstop). This
-            // removes any incentive to guess a real issue number \u2014 a wrong-but-real
+            // removes any incentive to guess a real issue number — a wrong-but-real
             // reference silently pollutes an unrelated issue's thread.
             const nonZeroMatch = issueMatches.find((match) => parseInt(match[1], 10) !== 0);
             const zeroIssueMatch = issueMatches.find((match) => parseInt(match[1], 10) === 0);
@@ -142,11 +146,11 @@ jobs:
                 `Flagging needs-issue-link.`
               );
               const commentBody = [
-                '## \u2139\ufe0f PR Title \u2014 placeholder issue reference',
+                '## ℹ️ PR Title — placeholder issue reference',
                 '',
                 BOT_MARKER,
                 '',
-                `This PR title uses the placeholder issue reference \`${zeroIssueMatch[0]}\`. The title check **passes** (non-blocking), but a **real issue must be linked before merge** \u2014 this PR is labeled \`needs-issue-link\`.`,
+                `This PR title uses the placeholder issue reference \`${zeroIssueMatch[0]}\`. The title check **passes** (non-blocking), but a **real issue must be linked before merge** — this PR is labeled \`needs-issue-link\`.`,
                 '',
                 'If you know the issue, update the title to reference it, e.g. `(#1234)`. Never guess a real issue number.',
                 '',

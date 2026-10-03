@@ -206,10 +206,8 @@ def validate_contract(workflow: dict[str, Any], policy: dict[str, object]) -> No
         raise AssertionError("formatter context name drifted")
     if job.get("continue-on-error") == "true":
         raise AssertionError("formatter job must fail on formatter or instrument failure")
-    if "needs" in job or job.get("if") != (
-        "github.event_name != 'pull_request' || github.event.pull_request.draft != true"
-    ):
-        raise AssertionError("formatter context must run terminally on every admitted non-draft subject")
+    if "needs" in job or "if" in job:
+        raise AssertionError("formatter context must run terminally on every triggered subject")
     if job.get("env", {}).get("SUBJECT_SHA") != "${{ " + SUBJECT_EXPRESSION + " }}":
         raise AssertionError("formatter subject must bind PR, merge-group, and push commits exactly")
 

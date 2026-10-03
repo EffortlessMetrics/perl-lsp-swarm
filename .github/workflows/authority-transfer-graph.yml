@@ -2,7 +2,6 @@ name: Authority Transfer Graph
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
     branches: [main, master]
     paths:
       - '.ci/authority-transfer-programme/**'
@@ -27,7 +26,6 @@ permissions:
 
 jobs:
   validate:
-    if: github.event_name != 'pull_request' || github.event.pull_request.draft != true
     name: Validate stable programme graph
     runs-on: ubuntu-24.04
     timeout-minutes: 15

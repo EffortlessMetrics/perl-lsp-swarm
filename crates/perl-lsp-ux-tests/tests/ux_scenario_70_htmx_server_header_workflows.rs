@@ -384,7 +384,10 @@ fn prove_stack(
     let name = stack.name;
 
     recorder.mark_request_start(&format!("{name} parse_error_channel"));
-    let parse_error_diags = harness.wait_for_diagnostics(PARSE_ERROR_PATH, DIAGNOSTIC_WAIT);
+    let parse_error_diags = perl_lsp_ux_tests::wait_with_subject(
+        &format!("diagnostics for {}", PARSE_ERROR_PATH),
+        harness.wait_for_diagnostics(PARSE_ERROR_PATH, DIAGNOSTIC_WAIT),
+    )?;
     recorder.check(
         &format!(
             "{name} diagnostic channel publishes a parser-family diagnostic for broken source"
@@ -393,7 +396,10 @@ fn prove_stack(
     )?;
 
     recorder.mark_request_start(&format!("{name} probe_diagnostics"));
-    let probe_diags = harness.wait_for_latest_diagnostics(path, DIAGNOSTIC_WAIT);
+    let probe_diags = perl_lsp_ux_tests::wait_with_subject(
+        &format!("diagnostics for {}", path),
+        harness.wait_for_latest_diagnostics(path, DIAGNOSTIC_WAIT),
+    )?;
     recorder.check(
         &format!("{name} probe opens without parse-error diagnostics (parser acceptance)"),
         !probe_diags.iter().any(is_parse_error_diagnostic),

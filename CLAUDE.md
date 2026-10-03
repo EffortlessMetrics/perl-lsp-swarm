@@ -244,15 +244,6 @@ review happened.
 Substantive review and integration posture remain separate. Pending remote checks leave
 review current and return `PR_IN_FLIGHT`.
 
-## Late CI
-
-Develop and review on your own compute while the PR stays draft. Preserve native
-commits and useful draft checkpoints without requesting CI. After applicable tests,
-formatting, lint/build, negative controls, and substantive `REVIEW_CURRENT`, the native
-ready-for-review flip requests final merge qualification. Return to draft for material
-repair; ready-head updates still refresh exact-subject checks as a safety net.
-Follow [the shared late-CI contract](docs/agents/DEVELOPMENT_METHOD.md#late-ci-and-merge-qualification-intent).
-
 ## Proof and currentness
 
 Keep candidate, integration, and landed evidence distinct.

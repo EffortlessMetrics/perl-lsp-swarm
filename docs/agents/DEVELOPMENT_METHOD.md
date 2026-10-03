@@ -302,56 +302,13 @@ A second writer does not gain permission to perform recovery mutation merely bec
 merge is safer than force-push. Writer ownership alone grants no rebase or force-push
 authorization.
 
-## Late CI and merge-qualification intent
-
-Do development proof on your own compute before requesting repository CI: formatting,
-focused tests, affected lint/build, negative controls, simplification, substantive
-review, and an evidence summary with commands, exact subject, results, and limitations.
-Keep native commits and push useful checkpoints to a draft PR; a push is not a request
-to spend CI. CI is final clean-environment qualification, not the development loop.
-
-Keep the PR draft while building, repairing, or obtaining substantive review. After
-applicable own-compute proof and `REVIEW_CURRENT`, mark it ready for review natively.
-The `ready_for_review` transition is the explicit request to qualify this candidate
-for merge. It is not permission to merge, a passing result, or an instruction to add
-an extra label. Auto-merge and merge queue remain downstream of their existing policy
-and authorization; do not wait for auto-merge to start the checks it depends on.
-
-If material repair is needed, return the PR to draft before publishing the repair wave,
-then refresh affected proof/review and request qualification with another ready flip.
-A push to a ready PR still refreshes checks for safety; do not use that as the routine
-edit/test loop. Never carry qualification from an older head to a newer one. Record
-head, base, and evaluated merge/queue subject separately. A different evaluated subject
-needs its own required proof; semantic review can remain current for unchanged seams.
-Unrelated base movement does not require chasing main or repeated CI. For base
-retargeting or a real integration change, return to draft, reassess the subject, and
-re-qualify explicitly; body/title edits alone are not a full-CI trigger.
-
-Ordinary automatic `pull_request` jobs, including routers and `always()` result jobs,
-are gated before runner allocation while draft. Skipped is not proven, and drafts
-cannot merge. After a ready flip, verify new native qualification runs actually
-evaluated the intended current head/base/integration subject; never merge on the
-draft's skipped-green statuses while that proof is pending. Trusted
-`pull_request_target` metadata/security workflows and explicitly
-requested manual operations keep their existing trust and event boundaries. Ready,
-merge-group, default-branch, scheduled, and manual routes retain their existing checks.
-
-Missing own-compute capability is a blocker/limitation to state, not a reason to use
-expensive CI for speculative iterations. Complete all feasible local proof and review,
-then request a bounded, explicitly identified remote-only qualification only when it
-is necessary. A hosted-only mark records missing proof; it cannot manufacture green.
-The desired self-hosted path uses zero GitHub-hosted execution, including control
-jobs; hosted execution is only an actual fallback. Existing routing that violates
-that target is a separate migration, not permission to weaken checks here.
-
 ## Proof ladder
 
 ```text
 edit
 → exact staged structural proof
 → affected committed proof
-→ candidate challenge/review while draft
-→ native ready-for-review qualification request
+→ candidate challenge/review
 → current-head clean-environment CI
 → integration/merge evidence
 ```

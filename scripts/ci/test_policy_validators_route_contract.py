@@ -204,11 +204,7 @@ class AggregateTest(unittest.TestCase):
 
     def test_aggregate_always_runs(self):
         result = job_block(read_workflow(), RESULT_JOB)
-        self.assertIn(
-            "if: ${{ (github.event_name != 'pull_request' || "
-            "github.event.pull_request.draft != true) && (always()) }}",
-            result,
-        )
+        self.assertRegex(result, r"if:\s*always\(\)")
 
     def test_aggregate_runs_contract(self):
         result = job_block(read_workflow(), RESULT_JOB)

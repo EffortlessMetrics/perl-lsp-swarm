@@ -119,26 +119,6 @@ A `$ci-failure-triage` field such as
 `status_production_gap=fresh_integration_subject` is not terminal `NOT_PROVEN`; it is an
 input to the ordered decision below.
 
-## Late-CI admission
-
-Before producing status, require applicable own-compute formatting, focused tests,
-affected lint/build, and substantive `REVIEW_CURRENT`, with honest limitations.
-The native ready-for-review transition requests final merge qualification. While draft,
-return to preparation/review through `finish-pr`; do not dispatch speculative CI or
-arm auto-merge as a trigger. Do not duplicate an already-running exact-subject run.
-A newer head, retargeted base, or changed evaluated merge/queue subject cannot inherit
-an older subject's proof. Preserve semantic review for unchanged dimensions and use
-the existing subject-aware production order below when qualification is actually needed.
-
-After a ready flip, read back the new native qualification runs and required contexts.
-Verify the PR is still ready, its current head and base are the intended subject, and
-each run/attempt actually evaluated that head and its recorded merge/queue tree.
-Require completed successful applicable proof under existing policy; a skipped draft
-job, an older head's success, or a ready UI state is not that proof. Do not permit a
-merge from the draft's skipped-green statuses while fresh qualification is pending.
-This check of native run identity is mandatory before integration, and is still
-`NOT_PROVEN` until the real ready transition has been observed.
-
 ## Required-status production order
 
 This skill is the single status-production action owner. It selects, performs, or routes

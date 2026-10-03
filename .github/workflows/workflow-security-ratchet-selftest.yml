@@ -34,7 +34,6 @@ permissions:
 
 jobs:
   candidate-selftest:
-    if: github.event_name != 'pull_request' || github.event.pull_request.draft != true
     name: Candidate scanner self-test (advisory)
     runs-on: ubuntu-24.04
     timeout-minutes: 10

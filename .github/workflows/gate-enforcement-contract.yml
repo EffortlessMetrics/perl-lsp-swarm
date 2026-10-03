@@ -18,7 +18,6 @@ permissions:
 
 jobs:
   contract:
-    if: github.event_name != 'pull_request' || github.event.pull_request.draft != true
     name: Gate Enforcement Contract
     runs-on: ubuntu-24.04
     timeout-minutes: 3

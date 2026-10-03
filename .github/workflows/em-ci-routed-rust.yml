@@ -47,7 +47,7 @@ jobs:
     name: Route Perl LSP Rust Small
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    if: ${{ (github.event_name != 'pull_request' || github.event.pull_request.draft != true) && (github.event.pull_request.draft != true || github.event_name != 'pull_request') }}
+    if: github.event.pull_request.draft != true || github.event_name != 'pull_request'
     outputs:
       target: ${{ steps.route.outputs.target }}
       reason: ${{ steps.route.outputs.reason }}
@@ -201,7 +201,9 @@ jobs:
   rust-small-cx53:
     name: Perl LSP Rust Small on CX53
     needs: route-rust-small
-    if: ${{ (github.event_name != 'pull_request' || github.event.pull_request.draft != true) && (needs.route-rust-small.result == 'success' && needs.route-rust-small.outputs.target == 'cx53') }}
+    if: >-
+      needs.route-rust-small.result == 'success' &&
+      needs.route-rust-small.outputs.target == 'cx53'
     runs-on:
       group: em-ci-small
       labels: [self-hosted, linux, x64, em-ci, cx53, rust-small, trusted-pr]
@@ -365,7 +367,9 @@ jobs:
   rust-small-cx43:
     name: Perl LSP Rust Small on CX43
     needs: route-rust-small
-    if: ${{ (github.event_name != 'pull_request' || github.event.pull_request.draft != true) && (needs.route-rust-small.result == 'success' && needs.route-rust-small.outputs.target == 'cx43') }}
+    if: >-
+      needs.route-rust-small.result == 'success' &&
+      needs.route-rust-small.outputs.target == 'cx43'
     runs-on:
       group: em-ci-small
       labels: [self-hosted, linux, x64, em-ci, cx43, rust-small, trusted-pr]
@@ -526,7 +530,10 @@ jobs:
   rust-small-github:
     name: Perl LSP Rust Small on GitHub Hosted
     needs: route-rust-small
-    if: ${{ (github.event_name != 'pull_request' || github.event.pull_request.draft != true) && (needs.route-rust-small.result == 'success' && needs.route-rust-small.outputs.target == 'github' && needs.route-rust-small.outputs.fallback_allowed == 'true') }}
+    if: >-
+      needs.route-rust-small.result == 'success' &&
+      needs.route-rust-small.outputs.target == 'github' &&
+      needs.route-rust-small.outputs.fallback_allowed == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
@@ -578,7 +585,13 @@ jobs:
     # This prevents a real test failure from masking under a GH-hosted run.
     # If preflight_ok is empty (job OOM-killed before the step could write output), we
     # do NOT trigger the fallback — that case needs ops investigation, not a workaround.
-    if: ${{ (github.event_name != 'pull_request' || github.event.pull_request.draft != true) && (always() && needs.route-rust-small.result == 'success' && ( (needs.route-rust-small.outputs.target == 'cx53' && needs.rust-small-cx53.result == 'failure' && needs.rust-small-cx53.outputs.preflight_ok == 'false') || (needs.route-rust-small.outputs.target == 'cx43' && needs.rust-small-cx43.result == 'failure' && needs.rust-small-cx43.outputs.preflight_ok == 'false') )) }}
+    if: >-
+      always() &&
+      needs.route-rust-small.result == 'success' &&
+      (
+        (needs.route-rust-small.outputs.target == 'cx53' && needs.rust-small-cx53.result == 'failure' && needs.rust-small-cx53.outputs.preflight_ok == 'false') ||
+        (needs.route-rust-small.outputs.target == 'cx43' && needs.rust-small-cx43.result == 'failure' && needs.rust-small-cx43.outputs.preflight_ok == 'false')
+      )
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
@@ -634,7 +647,7 @@ jobs:
       - rust-small-cx43
       - rust-small-github
       - rust-small-fallback
-    if: ${{ (github.event_name != 'pull_request' || github.event.pull_request.draft != true) && (always()) }}
+    if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 35
     steps:
@@ -652,10 +665,9 @@ jobs:
           # meta-fmt retirement: a silent revert of the #12320 cargo fmt
           # --all insertions, reintroduced changed-file narrowing, verbose-header
           # misclassification, or a second unowned hosted formatter producer
-          # must fail this required check. Draft admission is server-side;
-          # the evaluator retains its defensive no-proof classification.
+          # must fail this required check. Draft-skip stays in the evaluate
+          # step (#10006).
           python3 -m unittest \
-            scripts/ci/test_late_ci_contract.py \
             scripts/ci/test_rustfmt_check.py \
             scripts/ci/test_rustfmt_required_workflow.py \
             scripts/ci/test_rust_small_route_contract.py \

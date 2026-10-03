@@ -23,7 +23,6 @@ name: Workflow Contracts (Advisory)
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - ".github/workflows/**"
       - "scripts/ci/test_codecov_test_results_workflows.py"
@@ -64,7 +63,6 @@ env:
 
 jobs:
   workflow-contracts:
-    if: github.event_name != 'pull_request' || github.event.pull_request.draft != true
     name: Workflow Contracts (advisory)
     # Self-hosted Ubuntu runner only — never add a Windows/non-Ubuntu job
     # here (see CI runner economics: any non-Ubuntu job falls back to billed

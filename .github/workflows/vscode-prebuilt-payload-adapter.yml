@@ -2,7 +2,6 @@ name: VS Code Prebuilt Payload Adapter
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
     branches: [main, master]
     paths:
       - 'scripts/prepare_vsix_prebuilt_payload.py'
@@ -30,7 +29,6 @@ permissions:
 
 jobs:
   adapter:
-    if: github.event_name != 'pull_request' || github.event.pull_request.draft != true
     name: Prebuilt payload adapter tests
     runs-on: ubuntu-24.04
     timeout-minutes: 5

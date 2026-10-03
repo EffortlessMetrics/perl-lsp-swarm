@@ -2,7 +2,6 @@ name: Dependency Review
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
     branches: [main]
     paths:
       - 'Cargo.toml'
@@ -23,7 +22,6 @@ permissions:
 
 jobs:
   dependency-review:
-    if: github.event_name != 'pull_request' || github.event.pull_request.draft != true
     name: Dependency delta
     runs-on: ubuntu-24.04
     timeout-minutes: 10
