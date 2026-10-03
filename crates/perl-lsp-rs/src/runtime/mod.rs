@@ -489,26 +489,19 @@ pub struct LspServer {
     /// process-level `Once`) so that each `LspServer` instance tracks its own
     /// session independently.
     pub(crate) root_undetected_shown: Arc<AtomicBool>,
-    /// Whether the "this is a Perl core module, use hover instead" goto-definition
-    /// notice has already been written to the output channel this session.
-    ///
-    /// Same shape and same reason as `root_undetected_shown`: goto-definition is a
-    /// per-request action, so an unguarded notice repeats on every F12 over
-    /// `use strict` and trains the user to ignore the channel. Instance-level
-    /// rather than a process-level `Once`, so each `LspServer` session is its own
-    /// window (#16551).
-    pub(crate) core_module_notice_shown: Arc<AtomicBool>,
     /// Test-only subprocess runtime override for formatter construction.
     #[cfg(any(test, feature = "expose_lsp_test_api"))]
     pub(crate) formatter_runtime_override:
         Mutex<Option<std::sync::Arc<dyn perl_subprocess_runtime::SubprocessRuntime>>>,
     /// Typed, bounded dedup state for user-facing session warnings (#9769).
     ///
-    /// Governs whether a repeated Perl::Critic, invalid-client-setting, or AI
-    /// backend warning should be suppressed for the same reviewed subject.
-    /// Retains only fixed-size fingerprint identities under an explicit
-    /// per-family hard cap; it never holds semantic state and never
-    /// influences configuration, diagnostics, provider, or readiness truth.
+    /// Governs whether a repeated Perl::Critic, invalid-client-setting, AI
+    /// backend, `.perl-lsp.toml`, or core-module-notice emission should be
+    /// suppressed for the same
+    /// reviewed subject. Retains only fixed-size fingerprint identities under
+    /// an explicit per-family hard cap; it never holds semantic state and
+    /// never influences configuration, diagnostics, provider, or readiness
+    /// truth.
     pub(crate) session_warning_dedup: session_warning_dedup::SessionWarningDedupStore,
     /// Test-only hook invoked after push diagnostics capture their document
     /// snapshot and before the stale-generation guard decides whether to
