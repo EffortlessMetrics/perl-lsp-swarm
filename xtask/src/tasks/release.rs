@@ -99,8 +99,10 @@ pub fn run(version: String, yes: bool) -> Result<()> {
     println!("2. Create git tag: git tag -a v{} -m 'Release v{}'", version, version);
     println!("3. Push tag: git push origin v{}", version);
     println!("4. Create GitHub release and upload artifacts");
-    println!("5. Run: cargo xtask publish-crates");
-    println!("6. Run: cargo xtask publish-vscode");
+    println!("5. Dispatch the gated publish workflow: cargo xtask publish-release <version>");
+    println!(
+        "6. Publish the extension via the gated publish-extension.yml workflow (see docs/release/RUNBOOK.md)"
+    );
 
     Ok(())
 }
