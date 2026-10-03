@@ -146,11 +146,8 @@ impl LspServer {
         // and give the existing writer a bounded chance to flush frames that
         // were already accepted. A timeout remains unsettled and is reported
         // as such; it must never be treated as successful delivery.
-        let settlement = self.outbound.close_and_wait(OUTBOUND_SETTLEMENT_TIMEOUT);
-        match settlement.as_ref() {
-            Some(outcome) => outcome.report_settlement(),
-            None => tracing::error!("outbound writer did not settle before process exit"),
-        }
+        let settlement = self.outbound.settle_for_exit(OUTBOUND_SETTLEMENT_TIMEOUT);
+        settlement.report();
         // LSP exit status is defined by whether shutdown was received. Writer
         // settlement remains independent evidence and must not change that
         // protocol status when shutdown was accepted.

@@ -1,0 +1,9 @@
+project: product
+component: Performance and reliability
+kind: Fixed
+body: "After shutdown, a request that races exit is written to the wire, and exit settlement reports a refused required response instead of claiming a fully delivered normal close."
+time: 2026-09-28T00:00:00Z
+custom:
+  PR: "16678"
+  Slug: outbound-exit-drop-honesty
+  Breaking: "no"
