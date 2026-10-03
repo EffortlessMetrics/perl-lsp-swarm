@@ -84,10 +84,10 @@ family_registry = [
   "quickfix:hardcoded_shebang",
   "quickfix:pragma",
   "quickfix:utf8_pragma",
-  "refactor.extract:basic_fallback",
-  "refactor.extract:disabled_placeholder",
-  "refactor.extract:subroutine",
-  "refactor.extract:variable",
+  "refactor.extract.subroutine:subroutine",
+  "refactor.extract.variable:basic_fallback",
+  "refactor.extract.variable:disabled_placeholder",
+  "refactor.extract.variable:variable",
   "refactor.rewrite:enhanced_transforms",
   "refactor.rewrite:text_fallback",
   "source.fixAll:aggregate",
@@ -109,11 +109,12 @@ retirement_blocker_registry = [
 # generation ever constructs, so no family can exist for them. Recorded rather
 # than ignored: the drift check requires every kind literal in the handler to be
 # either a registered family's kind or listed here, so a NEW kind cannot appear
-# without being classified. Both entries map InternalCodeActionKind variants
-# (Refactor, RefactorInline) that no producer builds — #9190 can drop the
-# variants and their match arms together.
+# without being classified. Refactor, RefactorInline, and the legacy generic
+# RefactorExtract variants have no production constructors. The live extract
+# producers now emit the variable or subroutine subkind (#16577).
 unreachable_kinds = [
   "refactor",
+  "refactor.extract",
   "refactor.inline",
 ]
 
@@ -379,7 +380,7 @@ parity_fixtures = ["cac-parity-legitimate-empty-out-of-range-source-action"]
 
 [[route]]
 generation = "provider_enhanced"
-family = "refactor.extract:variable"
+family = "refactor.extract.variable:variable"
 disposition = "canonical_candidate"
 notes = "The implementation users actually receive."
 retirement_blockers = []
@@ -387,7 +388,7 @@ parity_fixtures = ["cac-parity-extract-variable-requires-selection"]
 
 [[route]]
 generation = "provider_original"
-family = "refactor.extract:variable"
+family = "refactor.extract.variable:variable"
 disposition = "redundant_behavior"
 notes = "provider_original does not implement extraction itself; refactors::get_refactoring_actions constructs EnhancedCodeActionsProvider and makes the identical call the orchestrator makes at stage 7, so the enhanced generation executes twice per request and dedupe_code_actions hides the duplicate."
 retirement_blockers = []
@@ -395,7 +396,7 @@ parity_fixtures = ["cac-parity-duplicate-authority-collapsed"]
 
 [[route]]
 generation = "provider_enhanced"
-family = "refactor.extract:subroutine"
+family = "refactor.extract.subroutine:subroutine"
 disposition = "canonical_candidate"
 notes = "Sole real implementation; reached twice for the same reason as extract:variable."
 retirement_blockers = []
@@ -404,7 +405,7 @@ proof_gap = "No corpus fixture reaches it. Six range shapes were tried against t
 
 [[route]]
 generation = "provider_original"
-family = "refactor.extract:subroutine"
+family = "refactor.extract.subroutine:subroutine"
 disposition = "redundant_behavior"
 notes = "refactors::get_refactoring_actions extends with the WHOLE enhanced result, not just extraction of variables, so this generation transitively republishes subroutine extraction exactly as it does extract:variable and the rewrite transforms. Recorded so #9189 does not treat the nested publisher as nonexistent."
 retirement_blockers = []
@@ -413,7 +414,7 @@ proof_gap = "Inherits the canonical row's gap: no corpus fixture reaches subrout
 
 [[route]]
 generation = "provider_original"
-family = "refactor.extract:basic_fallback"
+family = "refactor.extract.variable:basic_fallback"
 disposition = "shadow_only_candidate"
 notes = "The literal 'Extract to variable' arm in refactors.rs is guarded by `actions.is_empty()`, so it can only run when the nested enhanced generation returned nothing. Basic extract-function is withheld (#16779): it cannot carry surrounding lexical captures or prove brace-preserving replacement, so the proven enhanced extract-subroutine path or no-edit is used instead."
 retirement_blockers = []
@@ -422,7 +423,7 @@ proof_gap = "The generation-parity corpus still has no cac-parity fixture for th
 
 [[route]]
 generation = "disabled_extract_placeholder"
-family = "refactor.extract:disabled_placeholder"
+family = "refactor.extract.variable:disabled_placeholder"
 disposition = "unique_behavior"
 notes = "Only producer of a disabled action. Emitted for a zero-width selection and only when the client declared codeAction.disabledSupport; both refactor.extract generations are skipped in exactly that case."
 retirement_blockers = ["capability_gated_disabled_state_has_no_other_producer"]

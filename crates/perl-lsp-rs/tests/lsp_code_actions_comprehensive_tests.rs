@@ -306,7 +306,7 @@ fn test_extract_variable_refactoring() -> TestResult {
     // Verify action properties
     assert_eq!(
         action["kind"].as_str(),
-        Some("refactor.extract"),
+        Some("refactor.extract.variable"),
         "Should have correct action kind"
     );
     assert!(
@@ -355,7 +355,7 @@ fn test_extract_subroutine_refactoring() -> TestResult {
     if let Some(action) = extract_sub_action {
         assert_eq!(
             action["kind"].as_str(),
-            Some("refactor.extract"),
+            Some("refactor.extract.subroutine"),
             "Should have correct action kind"
         );
         assert!(

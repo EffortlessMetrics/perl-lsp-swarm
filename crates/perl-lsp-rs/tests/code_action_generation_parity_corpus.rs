@@ -628,7 +628,7 @@ fn zero_width_selection_publishes_a_disabled_extract_action() -> TestResult {
             format!("{DISABLED_EXTRACT}: no disabled action was published: {:?}", titles(&actions))
         })?;
 
-    assert_eq!(kind(disabled), "refactor.extract", "{DISABLED_EXTRACT}: wrong kind");
+    assert_eq!(kind(disabled), "refactor.extract.variable", "{DISABLED_EXTRACT}: wrong kind");
     let reason = disabled
         .pointer("/disabled/reason")
         .and_then(Value::as_str)
@@ -666,7 +666,7 @@ fn zero_width_selection_publishes_nothing_without_disabled_support() -> TestResu
     // assertion above alone would pass if the server started publishing one for
     // a zero-width selection. The refusal is that no extract action appears.
     assert!(
-        actions.iter().all(|action| kind(action) != "refactor.extract"),
+        actions.iter().all(|action| !kind(action).starts_with("refactor.extract")),
         "{REFUSED_NO_DISABLED_SUPPORT}: an extract action was published for a zero-width selection to a client without disabledSupport: {:?}",
         titles(&actions)
     );

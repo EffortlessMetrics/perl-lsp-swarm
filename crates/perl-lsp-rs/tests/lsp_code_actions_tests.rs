@@ -602,7 +602,8 @@ fn test_extract_subroutine() -> Result<(), Box<dyn std::error::Error>> {
                     "end": { "line": 8, "character": 5 }
                 },
                 "context": {
-                    "diagnostics": []
+                    "diagnostics": [],
+                    "only": ["refactor.extract.subroutine"]
                 }
             }
         }),
@@ -613,6 +614,7 @@ fn test_extract_subroutine() -> Result<(), Box<dyn std::error::Error>> {
         .iter()
         .find(|a| a["title"] == "Extract to subroutine")
         .ok_or("Expected extract subroutine action")?;
+    assert_eq!(action["kind"], "refactor.extract.subroutine");
     let (edited, changes) = apply_extract_workspace_edit(source, action, uri)?;
     assert_eq!(changes.len(), 2, "extraction must serialize insertion and replacement");
     let sub_start = source.find("sub worker").ok_or("Missing sub")?;

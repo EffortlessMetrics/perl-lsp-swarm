@@ -21,7 +21,7 @@ pub fn create_extract_variable_action(
 
     CodeAction {
         title: format!("Extract '{}' to variable", helpers.truncate_expr(expr_text, 30)),
-        kind: CodeActionKind::RefactorExtract,
+        kind: CodeActionKind::RefactorExtractVariable,
         diagnostics: Vec::new(),
         edit: CodeActionEdit {
             changes: vec![

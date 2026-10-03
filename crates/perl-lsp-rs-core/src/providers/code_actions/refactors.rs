@@ -27,7 +27,7 @@ pub fn get_refactoring_actions(source: &str, ast: &Node, range: (usize, usize)) 
     {
         actions.push(CodeAction {
             title: "Extract to variable".to_string(),
-            kind: CodeActionKind::RefactorExtract,
+            kind: CodeActionKind::RefactorExtractVariable,
             diagnostics: Vec::new(),
             edit: extract_variable(source, node, range),
             is_preferred: false,
@@ -67,8 +67,8 @@ mod tests {
     use std::process::{Command, Stdio};
 
     /// Reproduced from #16779: a selected `if` body inside a standalone outer
-    /// block. Enhanced extract-subroutine declines this control-flow body, so
-    /// current main's basic fallback is the only extract-function producer.
+    /// block. Enhanced extract-subroutine declines this control-flow body; before
+    /// #16779, the basic fallback was the only extract-function producer.
     const CAPTURE_FIXTURE: &str = "use strict;\nuse warnings;\n{\n    my $x = 1;\n    if (1) { warn $x; } else { warn 0; }\n}\n";
     const CAPTURE_BLOCK: &str = "{ warn $x; }";
 
@@ -261,7 +261,7 @@ mod tests {
         let actions = get_refactoring_actions(SAFE_EXTRACT_FIXTURE, &ast, range);
         let extract = actions.iter().find(|action| action.title == "Extract to subroutine");
         let extract = must_some_with(extract, "enhanced extract-subroutine must remain available");
-        assert_eq!(extract.kind, CodeActionKind::RefactorExtract);
+        assert_eq!(extract.kind, CodeActionKind::RefactorExtractSubroutine);
         assert!(
             extract.edit.changes.iter().any(|edit| edit.new_text.contains("my ($base) = @_;")),
             "enhanced path must still carry the captured lexical:\n{:?}",
