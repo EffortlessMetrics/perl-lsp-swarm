@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "total_files": 30,
-  "total_bytes": 1893550,
+  "total_bytes": 1906561,
   "files": {
     "readme.md": 27722,
     "package.nls.json": 2210,
@@ -17,7 +17,7 @@
     "syntaxes/gherkin.tmLanguage.json": 1875,
     "snippets/perl.json": 12172,
     "snippets/launch.json": 791,
-    "out/extension.js": 1708334,
+    "out/extension.js": 1721345,
     "media/walkthrough/welcome.svg": 756,
     "media/walkthrough/verify-perl.svg": 1189,
     "media/walkthrough/try-goto-definition.svg": 1857,

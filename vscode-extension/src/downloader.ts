@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
-import * as https from 'https';
-import * as http from 'http';
+import type * as https from 'https';
+import type * as http from 'http';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
@@ -9,6 +9,12 @@ import * as child_process from 'child_process';
 import { BoundedJsonStatusError, fetchBoundedJson } from './boundedHttpJson';
 import { downloadBoundedFile, unlinkPartialDownloadDest } from './boundedFileDownload';
 import { extractManagedArchive } from './managedArchiveExtract';
+import {
+  createManagedHttpRequest,
+  MANAGED_PROXY_ERROR_PREFIX,
+  redactCredentialUrl,
+  type ManagedProxySources,
+} from './managedHttpTransport';
 import {
   MANAGED_ARCHIVE_MAX_COMPRESSED_BYTES,
   MANAGED_CHECKSUM_FILE_MAX_BYTES,
@@ -763,7 +769,11 @@ export function isDownloadCancellationMessage(message: string): boolean {
  * failures (ENOTFOUND, EAI_AGAIN), unreachable networks and resets, and TLS
  * certificate failures — Node surfaces those with "cert"/"certificate" in the
  * message (or in codes like SELF_SIGNED_CERT_IN_CHAIN), so a lowercase
- * substring check covers both spellings.
+ * substring check covers both spellings. "ssl" covers TLS-protocol failures
+ * such as handshakes answered with non-TLS bytes. "managed download proxy" is
+ * the stable prefix of the proxy-aware transport's bounded dispositions
+ * (unsupported configuration, refused CONNECT, unreachable proxy) so proxy
+ * failures reach the same guidance (#7804).
  */
 const NETWORK_ERROR_PATTERNS = [
   'econnrefused',
@@ -774,6 +784,8 @@ const NETWORK_ERROR_PATTERNS = [
   'econnreset',
   'timeout',
   'cert',
+  'ssl',
+  MANAGED_PROXY_ERROR_PREFIX.toLowerCase(),
 ] as const;
 
 export function isNetworkErrorMessage(message: string): boolean {
@@ -1469,7 +1481,10 @@ export class BinaryDownloader {
     timeoutMs: number,
     cancellationToken?: vscode.CancellationToken,
   ): Promise<unknown> {
-    const isHttps = url.startsWith('https:');
+    // Case-insensitive: URL normalization lowercases the scheme, so the
+    // transport and the redirect-downgrade guard must classify `HTTPS://`
+    // identically instead of trusting the raw string's case.
+    const isHttps = /^https:/i.test(url);
     const httpConfig = vscode.workspace.getConfiguration('http');
     const proxyStrictSSL = httpConfig.get<boolean>('proxyStrictSSL', true);
     const authDisposition = resolveGitHubAuthDisposition({
@@ -1614,7 +1629,10 @@ export class BinaryDownloader {
       headers: { 'User-Agent': 'vscode-perl-lsp' },
       rejectUnauthorized: proxyStrictSSL,
     };
-    const isHttps = url.startsWith('https:');
+    // Case-insensitive: URL normalization lowercases the scheme, so the
+    // HTTPS→HTTP redirect-downgrade guard below must classify `HTTPS://`
+    // identically to the transport instead of trusting the raw string's case.
+    const isHttps = /^https:/i.test(url);
     const bounded: Parameters<typeof downloadBoundedFile>[0] = {
       requestFactory: (listener) => this.httpGet(isHttps, url, options, listener),
       dest,
@@ -1623,15 +1641,27 @@ export class BinaryDownloader {
       operationName: 'Archive download',
       maxRedirects,
       followRedirect: async (location, remainingRedirects) => {
-        if (
-          isHttps &&
-          location.toLowerCase().startsWith('http:') &&
-          !location.toLowerCase().startsWith('https:')
-        ) {
+        // Location may be relative (RFC 7231 §7.1.2): resolve it against the
+        // URL this hop was made for instead of feeding a baseless reference to
+        // the next downloadFile, which threw `Invalid URL format` (#7804).
+        let resolvedRedirect: URL;
+        try {
+          resolvedRedirect = new URL(location, url);
+        } catch {
+          throw new Error(
+            `Security violation: Redirect location is not a resolvable URL: ${redactCredentialUrl(location)}`,
+          );
+        }
+        if (resolvedRedirect.protocol !== 'http:' && resolvedRedirect.protocol !== 'https:') {
+          throw new Error(
+            `Security violation: Redirect to unsupported protocol: ${resolvedRedirect.protocol}`,
+          );
+        }
+        if (isHttps && resolvedRedirect.protocol === 'http:') {
           throw new Error('Security violation: Redirect from HTTPS to HTTP prevented');
         }
         await this.downloadFile(
-          location,
+          resolvedRedirect.toString(),
           dest,
           timeoutMs,
           remainingRedirects,
@@ -1649,10 +1679,11 @@ export class BinaryDownloader {
   }
 
   /**
-   * Transport seam: the actual network GET, extracted so tests can stub it
-   * without mocking Node's `http`/`https` core modules (whose `get` exports
-   * are non-configurable). Behaviour is identical to calling the module's
-   * `get` directly.
+   * Transport seam: the actual network GET. Routes every managed request
+   * through the proxy-aware transport (#7804/#7851) so release metadata and
+   * artifact fetches share one proxy resolution, TLS policy, and failure
+   * classification. Extracted so tests can stub it without mocking Node's
+   * `http`/`https` core modules (whose `get` exports are non-configurable).
    */
   private httpGet(
     isHttps: boolean,
@@ -1660,7 +1691,31 @@ export class BinaryDownloader {
     options: https.RequestOptions,
     callback: (response: http.IncomingMessage) => void,
   ): http.ClientRequest {
-    return isHttps ? https.get(url, options, callback) : http.get(url, options, callback);
+    return createManagedHttpRequest({
+      isHttps,
+      url,
+      options,
+      callback,
+      proxySources: this.managedProxySources(),
+    });
+  }
+
+  /**
+   * The supported VS Code proxy sources for the managed transport, read from
+   * the `http.*` settings once per request. The transport itself resolves the
+   * route with VS Code's documented precedence (`http.noProxy`/`NO_PROXY`,
+   * then `http.proxy`, then the proxy environment variables) so plain-Node
+   * contexts and the patched extension host agree on one authority.
+   */
+  private managedProxySources(): ManagedProxySources {
+    const httpConfig = vscode.workspace.getConfiguration('http');
+    const settingProxyUrl = httpConfig.get<string>('proxy', '').trim();
+    const settingNoProxy = httpConfig.get<string[]>('noProxy', []);
+    return {
+      settingProxyUrl: settingProxyUrl || undefined,
+      settingNoProxy: Array.isArray(settingNoProxy) ? settingNoProxy : undefined,
+      env: process.env,
+    };
   }
 
   private createWriteStream(dest: string): fs.WriteStream {
