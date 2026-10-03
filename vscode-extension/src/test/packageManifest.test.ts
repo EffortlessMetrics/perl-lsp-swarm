@@ -96,7 +96,7 @@ describe('first-run demo content (#16591)', () => {
   test('bundled demo has exactly the same files and bytes as the source demo', () => {
     const sourceFiles = filesUnder(sourceRoot).sort();
     expect(sourceFiles).toEqual(
-      ['README.md', 'lib/Database.pm', 'lib/Utils.pm', 'main.pl']
+      ['.perl-lsp.toml', 'README.md', 'lib/Database.pm', 'lib/Utils.pm', 'main.pl']
         .map((file) => path.normalize(file))
         .sort(),
     );
@@ -105,6 +105,36 @@ describe('first-run demo content (#16591)', () => {
       expect(fs.readFileSync(path.join(bundledRoot, file))).toEqual(
         fs.readFileSync(path.join(sourceRoot, file)),
       );
+    }
+  });
+
+  test('both demo copies pin include_paths to the directory the demo uses (#16592)', () => {
+    // A `.perl-lsp.toml` that merely exists would leave the demo exactly as
+    // unpinned as before, so assert the *content* names the real module dir.
+    for (const root of [sourceRoot, bundledRoot]) {
+      const config = fs.readFileSync(path.join(root, '.perl-lsp.toml'), 'utf8');
+      // Drop comment lines and scope the lookup to the `[perl]` table, so a
+      // commented-out example or a key misplaced under another table cannot
+      // satisfy this assertion.
+      const uncommented = config.split(/\r?\n/).filter((line) => !/^\s*#/.test(line));
+      const perlHeader = uncommented.findIndex((line) => line.trim() === '[perl]');
+      expect(perlHeader).toBeGreaterThanOrEqual(0);
+      const nextHeader = uncommented.findIndex(
+        (line, index) => index > perlHeader && /^\s*\[[^\]]*\]\s*$/.test(line),
+      );
+      const perlBody = uncommented
+        .slice(perlHeader + 1, nextHeader === -1 ? uncommented.length : nextHeader)
+        .join('\n');
+      const declared = /include_paths\s*=\s*\[([^\]]*)\]/.exec(perlBody);
+      expect(declared).not.toBeNull();
+      const body = declared?.[1] ?? '';
+      const entries = body
+        .split(',')
+        .map((entry) => entry.trim().replace(/^["']|["']$/g, ''))
+        .filter((entry) => entry.length > 0);
+      expect(entries).toContain('lib');
+      // And that directory is the one holding the demo's modules.
+      expect(fs.existsSync(path.join(root, 'lib', 'Utils.pm'))).toBe(true);
     }
   });
 
