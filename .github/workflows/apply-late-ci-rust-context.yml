@@ -1,0 +1,92 @@
+name: Apply late Rust context patch
+
+on:
+  push:
+    branches: [codex/late-ci-rust-context-20261003]
+    paths:
+      - .github/workflows/apply-late-ci-rust-context.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: apply-late-ci-rust-context-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    if: github.repository == 'EffortlessMetrics/perl-lsp-swarm'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout bounded branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: codex/late-ci-rust-context-20261003
+          fetch-depth: 0
+
+      - name: Apply exact workflow patch and run source contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('.github/workflows/em-ci-routed-rust.yml')
+          source = path.read_text(encoding='utf-8')
+          replacements = (
+              (
+                  '    types: [opened, synchronize, reopened, ready_for_review]',
+                  '    # Draft development does not create the required context.\n'
+                  '    # Draft -> Ready is the explicit PR qualification request.\n'
+                  '    types: [ready_for_review]',
+              ),
+              (
+                  "  group: em-ci-routed-rust-${{ github.repository }}-${{ github.event.pull_request.number || github.event_name == 'push' && github.sha || github.ref }}",
+                  "  group: em-ci-routed-rust-${{ github.repository }}-${{ github.event.pull_request.number || github.event_name == 'push' && github.sha || github.ref }}-${{ github.event_name }}",
+              ),
+              (
+                  "  cancel-in-progress: ${{ github.event_name == 'pull_request' && github.event.action == 'synchronize' }}",
+                  "  cancel-in-progress: ${{ github.event_name == 'pull_request' }}",
+              ),
+              (
+                  "    if: github.event.pull_request.draft != true || github.event_name != 'pull_request'\n",
+                  '',
+              ),
+              (
+                  '            scripts/ci/test_rust_small_route_contract.py \\\n'
+                  '            scripts/ci/test_hosted_formatter_producers.py \\\n',
+                  '            scripts/ci/test_rust_small_route_contract.py \\\n'
+                  '            scripts/ci/test_late_ci_required_context.py \\\n'
+                  '            scripts/ci/test_hosted_formatter_producers.py \\\n',
+              ),
+          )
+
+          for old, new in replacements:
+              count = source.count(old)
+              if count != 1:
+                  raise SystemExit(f'expected one exact replacement, found {count}: {old!r}')
+              source = source.replace(old, new, 1)
+
+          path.write_text(source, encoding='utf-8')
+          PY
+
+          python3 -m unittest \
+            scripts/ci/test_late_ci_required_context.py \
+            scripts/ci/test_rust_small_route_contract.py \
+            scripts/ci/test_rustfmt_required_workflow.py \
+            scripts/ci/test_hosted_formatter_producers.py \
+            scripts/ci/test_rust_small_probe_gate.py \
+            scripts/ci/test_main_red_refusal.py
+
+      - name: Commit exact candidate and remove writer
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name EffortlessSteven
+          git config user.email 15812269+EffortlessSteven@users.noreply.github.com
+          git rm .github/workflows/apply-late-ci-rust-context.yml
+          git add .github/workflows/em-ci-routed-rust.yml scripts/ci/test_late_ci_required_context.py
+          git diff --cached --check
+          git commit -m 'ci: withhold Rust Small context until Ready (#9603)'
+          git push origin HEAD:codex/late-ci-rust-context-20261003
