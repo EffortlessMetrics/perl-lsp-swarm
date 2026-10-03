@@ -164,6 +164,10 @@
         "numbers": {
             "patterns": [
                 {
+                    "name": "constant.numeric.version.perl",
+                    "match": "(?<!sub\\s+)\\bv\\d+(?:\\.\\d+)*\\b(?!\\.\\d)"
+                },
+                {
                     "name": "constant.numeric.hex.perl",
                     "match": "\\b0x[0-9a-fA-F_]+\\b"
                 },

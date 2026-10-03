@@ -1178,6 +1178,12 @@ pub fn collect_semantic_tokens_controlled(
 
             TokenType::Number(_) => "number",
 
+            // v-strings (`use v5.36;`, `v65.66.67`) are numeric literals with a
+            // `v` prefix. Without this arm the variant falls through to the
+            // `_ => continue` below and the literal is invisible to semantic
+            // tokens, unlike its TextMate counterpart (#16590).
+            TokenType::Version(_) => "number",
+
             TokenType::RegexMatch
             | TokenType::Substitution
             | TokenType::Transliteration
@@ -2734,6 +2740,85 @@ mod tests {
 
         assert!(labels.contains(&(0, 0, 5, 1)));
         assert!(labels.contains(&(1, 9, 5, 0)));
+        Ok(())
+    }
+
+    /// #16590: the lexer classifies `use v5.36;` and bare v-strings as
+    /// `TokenType::Version`. Without a collector arm the variant fell through
+    /// to `_ => continue` and the literal produced no token at all, so the
+    /// `use v5.36;` header of nearly every modern file was invisible to
+    /// semantic tokens. The whole literal is one token, matching the
+    /// TextMate `constant.numeric.version.perl` rule added alongside it.
+    #[test]
+    fn collect_semantic_tokens_emits_one_number_token_for_a_whole_vstring()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let source = "use v5.36;\nmy $v = v65.66.67;\n";
+        let mut parser = Parser::new(source);
+        let ast = parser.parse()?;
+        let tokens = collect_semantic_tokens(&ast, source, &|offset| pos16(source, offset));
+        let number_idx =
+            *legend().map.get("number").ok_or("number token type missing from legend")?;
+
+        let mut line = 0u32;
+        let mut col = 0u32;
+        let mut numbers = Vec::new();
+        for [delta_line, delta_start, length, token_type, _modifiers] in tokens {
+            if delta_line == 0 {
+                col = col.saturating_add(delta_start);
+            } else {
+                line = line.saturating_add(delta_line);
+                col = delta_start;
+            }
+            if token_type == number_idx {
+                numbers.push((line, col, length));
+            }
+        }
+
+        // `use v5.36;` -- the version literal is one token spanning the whole
+        // `v5.36` run, not `v5` unstyled with `36` split off as a separate
+        // integer. The list is exact: an extra or duplicate number token from
+        // a mapping regression must fail this test, not hide behind `contains`.
+        assert_eq!(
+            numbers,
+            vec![(0, 4, 5), (1, 8, 9)],
+            "expected exactly the use-version and standalone v-string number tokens, got {numbers:?}"
+        );
+        Ok(())
+    }
+
+    /// #16590 negative control: `package Foo 1.23;` is a decimal version with
+    /// no `v` prefix. It must stay a plain number, and must not be widened into
+    /// a v-string-shaped token. Guards the new arm against claim creep.
+    #[test]
+    fn a_package_decimal_version_is_not_widened_into_a_vstring()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let source = "package Foo 1.23;\n";
+        let mut parser = Parser::new(source);
+        let ast = parser.parse()?;
+        let tokens = collect_semantic_tokens(&ast, source, &|offset| pos16(source, offset));
+        let number_idx =
+            *legend().map.get("number").ok_or("number token type missing from legend")?;
+
+        let mut col = 0u32;
+        let mut numbers = Vec::new();
+        for [delta_line, delta_start, length, token_type, _modifiers] in tokens {
+            if delta_line == 0 {
+                col = col.saturating_add(delta_start);
+            } else {
+                col = delta_start;
+            }
+            if token_type == number_idx {
+                numbers.push((col, length));
+            }
+        }
+
+        // Exact list: `1.23` is the only number token, still plain 4-wide, and
+        // no token may absorb the `v` prefix shape.
+        assert_eq!(
+            numbers,
+            vec![(12, 4)],
+            "package decimal version 1.23 must be the only, plain 4-wide number, got {numbers:?}"
+        );
         Ok(())
     }
 
