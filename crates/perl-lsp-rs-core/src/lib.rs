@@ -55,3 +55,5 @@ pub mod tooling;
 pub mod transport;
 /// URI parsing and conversion helpers used by protocol-facing components.
 pub mod uri;
+/// Versioned transport-neutral `workspace_lifecycle_status.v1` contract (#16895).
+pub mod workspace_lifecycle_status;
