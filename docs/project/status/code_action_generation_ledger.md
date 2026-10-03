@@ -107,12 +107,12 @@ handler does not satisfy it.
 | native_critic | quickfix:critic_finding | canonical_candidate | — |
 | legacy_critic | none:unreachable_stub | retire_candidate | — |
 | provider_original | quickfix:hardcoded_shebang | canonical_candidate | — |
-| provider_enhanced | refactor.extract:variable | canonical_candidate | — |
-| provider_original | refactor.extract:variable | redundant_behavior | — |
-| provider_enhanced | refactor.extract:subroutine | canonical_candidate | — |
-| provider_original | refactor.extract:subroutine | redundant_behavior | — |
-| provider_original | refactor.extract:basic_fallback | shadow_only_candidate | — |
-| disabled_extract_placeholder | refactor.extract:disabled_placeholder | unique_behavior | capability_gated_disabled_state_has_no_other_producer |
+| provider_enhanced | refactor.extract.variable:variable | canonical_candidate | — |
+| provider_original | refactor.extract.variable:variable | redundant_behavior | — |
+| provider_enhanced | refactor.extract.subroutine:subroutine | canonical_candidate | — |
+| provider_original | refactor.extract.subroutine:subroutine | redundant_behavior | — |
+| provider_original | refactor.extract.variable:basic_fallback | shadow_only_candidate | — |
+| disabled_extract_placeholder | refactor.extract.variable:disabled_placeholder | unique_behavior | capability_gated_disabled_state_has_no_other_producer |
 | provider_enhanced | refactor.rewrite:enhanced_transforms | canonical_candidate | — |
 | provider_original | refactor.rewrite:enhanced_transforms | redundant_behavior | — |
 | text_fallback | refactor.rewrite:text_fallback | compatibility_only | canonical_route_has_no_degraded_path_equivalent |
@@ -228,12 +228,14 @@ rather than asserting the tidier claim that the family answers once. When #9189
 resolves the duplication that fixture must fail, forcing this ledger to be
 updated alongside the routing change.
 
-### Two CodeActionKinds are serializable but unreachable
+### Three CodeActionKinds are serializable but unreachable
 
-`handle_code_action` maps `InternalCodeActionKind::Refactor` to `"refactor"`
-and `RefactorInline` to `"refactor.inline"`, but no producer anywhere in the
-workspace constructs either variant. Both kinds are dead mappings: reachable in
-the serializer, unreachable in practice.
+`handle_code_action` maps `InternalCodeActionKind::Refactor` to `"refactor"`,
+`RefactorInline` to `"refactor.inline"`, and the legacy generic
+`RefactorExtract` variants to `"refactor.extract"`. No production producer
+constructs those variants. The live extract producers emit
+`"refactor.extract.variable"` or `"refactor.extract.subroutine"` instead;
+the generic mappings remain serializable but unreachable in practice.
 
 They are recorded in `unreachable_kinds` rather than left implicit, because the
 drift check requires every kind literal in the handler to be either a
@@ -290,7 +292,7 @@ The corpus covers the outcome classes #9188 requires:
 | malformed | `cac-parity-parse-error-recovery-keeps-ast-path` |
 | legitimate empty | `cac-parity-legitimate-empty-out-of-range-source-action`, `cac-parity-kind-filter-excludes-other-families`, `cac-parity-unknown-document-is-empty-not-error` |
 | identity without edit | `cac-parity-explain-diagnostic-command-only`, `cac-parity-test-generation-command-only`, `cac-parity-v2-attaches-originating-diagnostic` |
-| recorded gap (`NOT_PROVEN`) | `text_fallback` (both rows), `refactor.extract:subroutine` on both the enhanced and the original generation, and the remaining variable arm in `refactor.extract:basic_fallback` carry a `proof_gap` instead of a parity fixture — five rows |
+| recorded gap (`NOT_PROVEN`) | `text_fallback` (both rows), `refactor.extract.subroutine:subroutine` on both the enhanced and the original generation, and the remaining variable arm in `refactor.extract.variable:basic_fallback` carry a `proof_gap` instead of a parity fixture — five rows |
 
 Every `cac-parity-*` id named anywhere on this page is checked against the
 ledger's routes. This table previously named a fixture that had been renamed,

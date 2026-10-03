@@ -141,7 +141,7 @@ fn code_action_kind_matches_filter(kind: &str, requested_kind: &str) -> bool {
 fn disabled_extract_variable_placeholder() -> Value {
     json!({
         "title": "Extract variable",
-        "kind": "refactor.extract",
+        "kind": "refactor.extract.variable",
         "disabled": {
             "reason": "requires code selection"
         }
@@ -959,7 +959,12 @@ impl LspServer {
             for action in actions {
                 // LSP 3.16 §3.16.2: enabled refactor.extract requires a selection.
                 if start_offset == end_offset
-                    && action.kind == InternalCodeActionKind::RefactorExtract
+                    && matches!(
+                        action.kind,
+                        InternalCodeActionKind::RefactorExtract
+                            | InternalCodeActionKind::RefactorExtractVariable
+                            | InternalCodeActionKind::RefactorExtractSubroutine
+                    )
                 {
                     continue;
                 }
@@ -990,6 +995,8 @@ impl LspServer {
                         InternalCodeActionKind::QuickFix => "quickfix",
                         InternalCodeActionKind::Refactor => "refactor",
                         InternalCodeActionKind::RefactorExtract => "refactor.extract",
+                        InternalCodeActionKind::RefactorExtractVariable => "refactor.extract.variable",
+                        InternalCodeActionKind::RefactorExtractSubroutine => "refactor.extract.subroutine",
                         InternalCodeActionKind::RefactorInline => "refactor.inline",
                         InternalCodeActionKind::RefactorRewrite => "refactor.rewrite",
                         InternalCodeActionKind::Source => "source",
@@ -1021,7 +1028,12 @@ impl LspServer {
                 // skip the enabled action and emit a disabled placeholder
                 // afterward so editors can render the item as greyed-out.
                 if start_offset == end_offset
-                    && action.kind == InternalCodeActionKind::RefactorExtract
+                    && matches!(
+                        action.kind,
+                        InternalCodeActionKind::RefactorExtract
+                            | InternalCodeActionKind::RefactorExtractVariable
+                            | InternalCodeActionKind::RefactorExtractSubroutine
+                    )
                 {
                     continue;
                 }
@@ -1052,6 +1064,8 @@ impl LspServer {
                         InternalCodeActionKind::QuickFix => "quickfix",
                         InternalCodeActionKind::Refactor => "refactor",
                         InternalCodeActionKind::RefactorExtract => "refactor.extract",
+                        InternalCodeActionKind::RefactorExtractVariable => "refactor.extract.variable",
+                        InternalCodeActionKind::RefactorExtractSubroutine => "refactor.extract.subroutine",
                         InternalCodeActionKind::RefactorInline => "refactor.inline",
                         InternalCodeActionKind::RefactorRewrite => "refactor.rewrite",
                         InternalCodeActionKind::Source => "source",
@@ -3230,18 +3244,17 @@ print $result;
                 "start": { "line": 2, "character": 13 },
                 "end": { "line": 2, "character": 25 }
             },
-            "context": { "diagnostics": [] }
+            "context": { "diagnostics": [], "only": ["refactor.extract.variable"] }
         })));
 
         let actions =
             response.ok().flatten().and_then(|v| v.as_array().cloned()).unwrap_or_default();
 
         assert!(
-            actions.iter().any(|a| {
-                let title = a["title"].as_str().unwrap_or("");
-                title.contains("Extract") && title.contains("variable")
-            }),
-            "expected extract-variable action, got: {actions:?}"
+            actions
+                .iter()
+                .any(|a| { a["kind"] == "refactor.extract.variable" && a.get("edit").is_some() }),
+            "expected typed extract-variable wire action, got: {actions:?}"
         );
     }
 
@@ -3346,8 +3359,10 @@ print $result;
             .ok_or("code action response must be an array")?
             .clone();
 
-        let extract_actions: Vec<&Value> =
-            actions.iter().filter(|a| a["kind"].as_str() == Some("refactor.extract")).collect();
+        let extract_actions: Vec<&Value> = actions
+            .iter()
+            .filter(|a| a["kind"].as_str() == Some("refactor.extract.variable"))
+            .collect();
 
         assert!(
             !extract_actions.is_empty(),
@@ -3393,8 +3408,10 @@ print $result;
             .ok_or("code action response must be an array")?
             .clone();
 
-        let extract_actions: Vec<&Value> =
-            actions.iter().filter(|a| a["kind"].as_str() == Some("refactor.extract")).collect();
+        let extract_actions: Vec<&Value> = actions
+            .iter()
+            .filter(|a| a["kind"].as_str() == Some("refactor.extract.variable"))
+            .collect();
 
         let enabled: Vec<&Value> =
             extract_actions.iter().copied().filter(|a| a["disabled"].is_null()).collect();
@@ -3444,7 +3461,9 @@ my $x = 1 + 2;
 
         let disabled_extract: Vec<&Value> = actions
             .iter()
-            .filter(|a| a["kind"].as_str() == Some("refactor.extract") && !a["disabled"].is_null())
+            .filter(|a| {
+                a["kind"].as_str() == Some("refactor.extract.variable") && !a["disabled"].is_null()
+            })
             .collect();
 
         assert!(
@@ -3478,7 +3497,8 @@ my $x = 1 + 2;
 
         assert!(
             !actions.iter().any(|action| {
-                action["kind"].as_str() == Some("refactor.extract") && !action["disabled"].is_null()
+                action["kind"].as_str() == Some("refactor.extract.variable")
+                    && !action["disabled"].is_null()
             }),
             "clients without disabledSupport must not receive disabled placeholders: {actions:?}"
         );
@@ -3509,7 +3529,9 @@ my $x = 1 + 2;
 
         let disabled_extract: Vec<&Value> = actions
             .iter()
-            .filter(|a| a["kind"].as_str() == Some("refactor.extract") && !a["disabled"].is_null())
+            .filter(|a| {
+                a["kind"].as_str() == Some("refactor.extract.variable") && !a["disabled"].is_null()
+            })
             .collect();
         assert!(
             !disabled_extract.is_empty(),
