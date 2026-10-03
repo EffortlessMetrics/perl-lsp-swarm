@@ -61,4 +61,57 @@
 #         ^ source.perl
 #          ^^^^^^^^ source.perl constant.numeric.float.perl
 #                  ^^ source.perl
+>use v5.36;
+#^^^ source.perl keyword.other.perl
+#   ^ source.perl
+#    ^^^^^ source.perl constant.numeric.version.perl
+#         ^^ source.perl
+>my $vstring = v65.66.67;
+#^^ source.perl keyword.other.perl
+#  ^ source.perl
+#   ^^^^^^^^ source.perl variable.other.scalar.perl
+#           ^ source.perl
+#            ^ source.perl keyword.operator.assignment.perl
+#             ^ source.perl
+#              ^^^^^^^^^ source.perl constant.numeric.version.perl
+#                       ^^ source.perl
+>my $vshort = v5;
+#^^ source.perl keyword.other.perl
+#  ^ source.perl
+#   ^^^^^^^ source.perl variable.other.scalar.perl
+#          ^ source.perl
+#           ^ source.perl keyword.operator.assignment.perl
+#            ^ source.perl
+#             ^^ source.perl constant.numeric.version.perl
+#               ^^ source.perl
+>my $vdeep = v1.2.3.4;
+#^^ source.perl keyword.other.perl
+#  ^ source.perl
+#   ^^^^^^ source.perl variable.other.scalar.perl
+#         ^ source.perl
+#          ^ source.perl keyword.operator.assignment.perl
+#           ^ source.perl
+#            ^^^^^^^^ source.perl constant.numeric.version.perl
+#                    ^^ source.perl
+>package Modern::Tool 1.23;
+#^^^^^^^ source.perl keyword.other.perl
+#       ^^^^^^^^^^^^^^ source.perl
+#                     ^^^^ source.perl constant.numeric.float.perl
+#                         ^^ source.perl
+>sub v5 { return 42; }
+#^^^ source.perl keyword.other.perl
+#   ^^^^^^ source.perl
+#         ^^^^^^ source.perl support.function.builtin.perl
+#               ^ source.perl
+#                ^^ source.perl constant.numeric.integer.perl
+#                  ^^^^ source.perl
+>my $unfinished = v5.36foo;
+#^^ source.perl keyword.other.perl
+#  ^ source.perl
+#   ^^^^^^^^^^^ source.perl variable.other.scalar.perl
+#              ^ source.perl
+#               ^ source.perl keyword.operator.assignment.perl
+#                ^^^ source.perl
+#                   ^ source.perl keyword.operator.string.perl
+#                    ^^^^^^^ source.perl
 >
