@@ -2242,19 +2242,48 @@ mod tests {
     }
 
     #[test]
-    fn em_ci_routed_rust_ref_only_guard_is_trusted_guarded() {
-        let root = project_root();
-        let inventory = derive_families_in_dirs(&root.join(".github/workflows"), None)
-            .expect("derive inventory");
+    fn retired_em_ci_ref_only_guard_remains_trusted_guarded() {
+        // #17018 retires the consumer-owned caches. Keep their classification
+        // falsifier as a fixture rather than requiring retired production jobs.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let workflows = fixture_workflows_dir(
+            &tmp,
+            "em-ci-routed-rust.yml",
+            r#"on: [pull_request, push, workflow_dispatch]
+jobs:
+  rust-small-github:
+    steps:
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+  rust-small-fallback:
+    steps:
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+"#,
+        );
+        let inventory = derive_families_in_dirs(&workflows, None).expect("derive inventory");
         for job in ["rust-small-github", "rust-small-fallback"] {
             let row = find_row(&inventory.families, "em-ci-routed-rust.yml", job);
             assert_eq!(
                 row.writer_disposition,
                 WriterDisposition::TrustedGuarded,
-                "em-ci-routed-rust.yml `{job}` ref-only guard (no pull_request_target) must be trusted_guarded: {row:#?}"
+                "ref-only guard (no pull_request_target) must be trusted_guarded: {row:#?}"
             );
             assert_eq!(row.save_authority_source, SaveAuthoritySource::RefGuard);
         }
+    }
+
+    #[test]
+    fn governed_em_ci_consumer_has_no_local_cache_authority() {
+        let root = project_root();
+        let inventory = derive_families_in_dirs(&root.join(".github/workflows"), None)
+            .expect("derive inventory");
+        assert!(
+            inventory.families.iter().all(|row| row.workflow != "em-ci-routed-rust.yml"),
+            "the thin governed consumer must not retain a local cache producer"
+        );
     }
 
     #[test]

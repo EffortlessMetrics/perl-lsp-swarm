@@ -1,5 +1,11 @@
 # Merge-ready receipt protocol
 
+Candidate migration note (2026-10-02): the owned Rust context below is proposed
+by this source candidate. Live ruleset16664791 still requires `Perl LSP Rust Small Result`
+until exact native qualification and an explicitly approved settings transaction.
+The other four protected identities are unchanged; this document is not live
+settings evidence. See [the migration plan](../../.ci/rust-standard-result.md).
+
 `merge-ready` is bound to a receipt for an exact PR head, exact base lineage, and exact gate graph version.
 
 ## Receipt
@@ -30,7 +36,7 @@ current proof-floor contexts, by source mechanism, are:
 
 Ruleset `main` (id `16664791`, `GET /repos/{owner}/{repo}/rules/branches/main`):
 
-- `Perl LSP Rust Small Result`
+- `Perl LSP Rust Small governed proof / Rust CI / Required`
 - `ripr+ New Gap Gate`
 - `Compile All Targets (bit-rot guard)`
 - `Conflict marker check`
@@ -57,7 +63,7 @@ merge-queue flow.
 
 ### The main-red refusal makes advisory gate shards de-facto required (#16196)
 
-`Perl LSP Rust Small Result` does more than report a candidate's own
+`Perl LSP Rust Small governed proof / Rust CI / Required` does more than report a candidate's own
 aggregate. The `Probe main-red refusal` step of
 `.github/workflows/em-ci-routed-rust.yml` classifies exact-SHA check runs for
 the eight `CI Gate shard (...)` contexts — `meta`, `foundation`,

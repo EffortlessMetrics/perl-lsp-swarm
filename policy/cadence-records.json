@@ -78,32 +78,6 @@
     "reproduce": "cargo xtask workflow-policy-lint --check-lane-whitelist"
   },
   {
-    "record_id": "self_hosted_isolation:em-ci-routed-rust.yml:rust-small-cx53",
-    "source_kind": "self_hosted_runner_isolation",
-    "source_path": "policy/self-hosted-runner-isolation.toml",
-    "owner": "#7414",
-    "owner_issue": "#7414",
-    "review_after": "2027-03-07",
-    "expires": null,
-    "evidence_identity": "static declaration only: self_hosted_cx53 lifecycle and candidate-writable surfaces read from the job definition; no cross-run decontamination proof",
-    "expected_debt_class": "evidence_pending",
-    "required_decision": "re-establish runner isolation evidence for this job, then advance review_after in policy/self-hosted-runner-isolation.toml; a lapsed profile fails the Workflow Policy gate closed (SELF_HOSTED_ISOLATION_STALE)",
-    "reproduce": "cargo xtask workflow-policy-lint --check-lane-whitelist"
-  },
-  {
-    "record_id": "self_hosted_isolation:em-ci-routed-rust.yml:rust-small-cx43",
-    "source_kind": "self_hosted_runner_isolation",
-    "source_path": "policy/self-hosted-runner-isolation.toml",
-    "owner": "#7414",
-    "owner_issue": "#7414",
-    "review_after": "2027-03-07",
-    "expires": null,
-    "evidence_identity": "static declaration only: self_hosted_cx43 lifecycle and candidate-writable surfaces read from the job definition; no cross-run decontamination proof",
-    "expected_debt_class": "evidence_pending",
-    "required_decision": "re-establish runner isolation evidence for this job, then advance review_after in policy/self-hosted-runner-isolation.toml; a lapsed profile fails the Workflow Policy gate closed (SELF_HOSTED_ISOLATION_STALE)",
-    "reproduce": "cargo xtask workflow-policy-lint --check-lane-whitelist"
-  },
-  {
     "record_id": "self_hosted_isolation:policy-validators.yml:validate",
     "source_kind": "self_hosted_runner_isolation",
     "source_path": "policy/self-hosted-runner-isolation.toml",

@@ -714,5 +714,31 @@ class EnforcementSnapshotTests(unittest.TestCase):
         self.assertEqual("invalid_input", receipt["limitations"][0]["code"])
 
 
+class ReusableStaticReceiptTests(unittest.TestCase):
+    def candidate(self):
+        raw = static_receipt()
+        reference = "owner/repo/.github/workflows/proof.yml@" + SHA
+        row = raw["subjects"]["contexts"][1]
+        row.update(producer="reusable-workflow-job", callee_workflow=reference,
+                   callee_source=".ci/source.yml", callee_sha256=POLICY, callee_job="result")
+        raw["subjects"]["reusable_workflow_sources"] = [{"reference": reference, "path": ".ci/source.yml", "sha256": POLICY}]
+        return raw
+
+    def test_reusable_source_preserves_existing_enforcement_union(self):
+        raw = self.candidate()
+        self.assertEqual(model.validate_static(raw)["status"], "SUCCESS")
+        self.assertEqual(reconcile(snapshot(), raw)["status"], reconcile(snapshot(), static_receipt())["status"])
+
+    def test_missing_changed_or_unpinned_source_and_wrong_app_are_rejected(self):
+        for mutation in ("missing", "digest", "pin", "app"):
+            raw = self.candidate()
+            if mutation == "missing": raw["subjects"].pop("reusable_workflow_sources")
+            if mutation == "digest": raw["subjects"]["reusable_workflow_sources"][0]["sha256"] = "0"*64
+            if mutation == "pin": raw["subjects"]["reusable_workflow_sources"][0]["reference"] = "owner/repo/.github/workflows/proof.yml@main"
+            if mutation == "app": raw["subjects"]["contexts"][1]["ruleset_integration_id"] = 99
+            with self.subTest(mutation=mutation), self.assertRaises(model.ContractError):
+                model.validate_static(raw)
+
+
 if __name__ == "__main__":
     unittest.main()

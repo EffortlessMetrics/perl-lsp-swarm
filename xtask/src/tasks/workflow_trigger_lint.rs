@@ -46,7 +46,7 @@ struct PolicyCheck {
 #[derive(Debug, Clone, Deserialize)]
 struct InventoryCheck {
     name: String,
-    /// `repository-job` or `external`, as the inventory row declares it.
+    /// Direct/reusable repository job or external, as the inventory row declares it.
     ///
     /// This is read rather than inferred. An earlier revision treated a
     /// missing `workflow` as an external producer, which is fail-open: a
@@ -79,7 +79,7 @@ enum ProducerClass {
 impl InventoryCheck {
     fn producer_class(&self) -> ProducerClass {
         match self.producer.as_deref() {
-            Some("repository-job") => ProducerClass::RepositoryJob,
+            Some("repository-job" | "reusable-workflow-job") => ProducerClass::RepositoryJob,
             Some("external") => ProducerClass::External,
             _ => ProducerClass::Unstated,
         }
@@ -1141,5 +1141,17 @@ mod tests {
             eval.violations
         );
         Ok(())
+    }
+    #[test]
+    fn reusable_producer_remains_governed_by_the_caller_workflow() {
+        let declared = InventoryCheck {
+            name: "Caller / Result".into(),
+            producer: Some("reusable-workflow-job".into()),
+            workflow: Some(".github/workflows/ci.yml".into()),
+            required: true,
+        };
+        assert_eq!(declared.producer_class(), ProducerClass::RepositoryJob);
+        let unknown = InventoryCheck { producer: Some("invented".into()), ..declared };
+        assert_eq!(unknown.producer_class(), ProducerClass::Unstated);
     }
 }
