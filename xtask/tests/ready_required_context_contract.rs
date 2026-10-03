@@ -55,7 +55,7 @@ fn contract_rejects_mutation_triggers() {
     assert_ne!(changed, source, "trigger mutation must engage");
     assert!(
         findings(&changed).contains(&"missing exact Ready-only transition"),
-        "Draft or ordinary mutation events must be rejected"
+        "Draft or ordinary mutation events must be rejected",
     );
 }
 
@@ -69,6 +69,6 @@ fn contract_rejects_a_dynamic_or_renamed_required_context() {
     assert_ne!(changed, source, "context-name mutation must engage");
     assert!(
         findings(&changed).contains(&"missing static required producer"),
-        "required producer name must remain static and directly indexed"
+        "required producer name must remain static and directly indexed",
     );
 }
