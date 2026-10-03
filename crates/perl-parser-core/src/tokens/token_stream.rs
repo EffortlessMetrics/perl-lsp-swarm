@@ -58,6 +58,8 @@ use std::collections::VecDeque;
 /// reduced to lookahead-cache clearing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ContextualTokenOp {
+    /// Scan an angle body at the live boundary immediately after a consumed `<`.
+    ScanAngleBody,
     /// Reset lexer state to the start of a new statement (`ExpectTerm`) and
     /// drop the affected lookahead window.
     StatementBoundaryReset,
@@ -80,6 +82,7 @@ impl ContextualTokenOp {
     #[must_use]
     pub fn label(&self) -> &'static str {
         match self {
+            Self::ScanAngleBody => "scan_angle_body",
             Self::StatementBoundaryReset => "statement_boundary_reset",
             Self::ReclassifyFromBoundary { .. } => "reclassify_from_boundary",
             Self::EnterFormatBody => "enter_format_body",
@@ -102,8 +105,10 @@ pub enum ContextualFallbackReason {
 }
 
 /// Outcome of a [`ContextualTokenOp`] requested on a [`TokenStream`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ContextualOpResult {
+    /// Source-aware angle result; malformed/resource outcomes retain their typed cause.
+    AngleScanned(Result<perl_lexer::AngleSpan, perl_lexer::LexerError>),
     /// Applied through the live-lexer backing: real lexer state changed and the
     /// affected lookahead entries were re-derived.
     AppliedLive,
@@ -197,8 +202,13 @@ pub struct TokenStream<'a> {
 impl<'a> TokenStream<'a> {
     /// Create a new token stream from source code.
     pub fn new(input: &'a str) -> Self {
+        Self::with_lexer_config(input, perl_lexer::LexerConfig::default())
+    }
+
+    /// Construct a live stream with explicit lexer policy, including angle work limits.
+    pub fn with_lexer_config(input: &'a str, config: perl_lexer::LexerConfig) -> Self {
         TokenStream {
-            inner: TokenStreamInner::Lexer(Box::new(PerlLexer::new(input))),
+            inner: TokenStreamInner::Lexer(Box::new(PerlLexer::with_config(input, config))),
             buffered_eof_pos: input.len(),
             peeked: None,
             peeked_second: None,
@@ -451,6 +461,23 @@ impl<'a> TokenStream<'a> {
     ///   state, because it cannot change classification.
     pub fn apply_contextual(&mut self, operation: ContextualTokenOp) -> ContextualOpResult {
         match operation {
+            ContextualTokenOp::ScanAngleBody => {
+                if self.is_buffered() {
+                    return ContextualOpResult::FallbackRequired {
+                        reason: self.buffered_fallback_reason(),
+                    };
+                }
+                if let Err(reason) = self.restore_live_lookahead_boundary() {
+                    return ContextualOpResult::FallbackRequired { reason };
+                }
+                self.clear_lookahead();
+                match &mut self.inner {
+                    TokenStreamInner::Lexer(lexer) => {
+                        ContextualOpResult::AngleScanned(lexer.scan_angle_body())
+                    }
+                    TokenStreamInner::Buffered(_) => ContextualOpResult::Unsupported,
+                }
+            }
             ContextualTokenOp::InvalidateLookahead => {
                 let had_lookahead = self.lookahead_cached();
                 self.clear_lookahead();
