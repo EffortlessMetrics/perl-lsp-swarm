@@ -1875,7 +1875,7 @@ impl LspServer {
                         // empty rather than falling through to the workspace-index lookup —
                         // the index is @INC-unaware and would surface files that `no lib`
                         // has cancelled. Fixes #8537.
-                        if let Some(module_path) = self.resolve_module_to_path_with_doc_at_offset(
+                        if let Some(module_path) = self.resolve_module_for_definition(
                             &module_name,
                             Some(&doc_text),
                             Some(uri),
@@ -1918,7 +1918,7 @@ impl LspServer {
                         return Ok(Some(json!([])));
                     }
                     EarlyDefinitionTarget::Module(module_name) => {
-                        if let Some(module_path) = self.resolve_module_to_path_with_doc_at_offset(
+                        if let Some(module_path) = self.resolve_module_for_definition(
                             &module_name,
                             Some(&doc_text),
                             Some(uri),
