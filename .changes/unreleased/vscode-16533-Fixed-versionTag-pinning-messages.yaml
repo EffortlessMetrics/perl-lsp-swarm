@@ -1,0 +1,9 @@
+project: vscode
+component: Packaging and distribution
+kind: Fixed
+body: "perl-lsp.versionTag pinning failures are now attributable. A tag that GitHub has no release record for reports \"No release found for the configured tag \\\"<tag>\\\"; check the perl-lsp.versionTag setting.\" instead of \"No releases found\"; channel=\"tag\" with an empty versionTag names the empty setting and its remedy instead of the \"Invalid managed release policy\" wrapper; and a versionTag set while channel is still latest emits a one-time warning that it is ignored unless channel=\"tag\"."
+time: 2026-09-28T00:00:00Z
+custom:
+  PR: "16533"
+  Slug: vscode-versionTag-pinning-messages
+  Breaking: "no"
