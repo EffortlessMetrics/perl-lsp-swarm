@@ -9,7 +9,11 @@ use std::path::Path;
 
 const WORKFLOW: &str = ".github/workflows/pr-title-check.yml";
 const READY_TYPES: &str = "types: [ready_for_review]";
+const MUTATED_TYPES: &str = "types: [ready_for_review, synchronize]";
 const STATIC_CONTEXT: &str = "  validate-title:\n    name: validate-title";
+const DYNAMIC_CONTEXT: &str = "  validate-title:\n    name: dynamic-validate-title";
+const MISSING_READY: &str = "missing exact Ready-only transition";
+const MISSING_STATIC: &str = "missing static required producer";
 
 fn source() -> String {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
@@ -19,10 +23,10 @@ fn source() -> String {
 fn findings(source: &str) -> Vec<&'static str> {
     let mut result = Vec::new();
     if !source.contains(READY_TYPES) {
-        result.push("missing exact Ready-only transition");
+        result.push(MISSING_READY);
     }
     if !source.contains(STATIC_CONTEXT) {
-        result.push("missing static required producer");
+        result.push(MISSING_STATIC);
     }
     if !source.contains("  pull_request_target:\n") {
         result.push("metadata workflow lost pull_request_target");
@@ -40,35 +44,21 @@ fn findings(source: &str) -> Vec<&'static str> {
 
 #[test]
 fn draft_activity_cannot_create_the_required_title_context() {
-    let source = source();
-    let observed = findings(&source);
-    assert!(observed.is_empty(), "{observed:?}");
+    assert!(findings(&source()).is_empty());
 }
 
 #[test]
 fn contract_rejects_mutation_triggers() {
     let source = source();
-    let changed = source.replace(
-        READY_TYPES,
-        "types: [opened, edited, reopened, synchronize, ready_for_review]",
-    );
-    assert_ne!(changed, source, "trigger mutation must engage");
-    assert!(
-        findings(&changed).contains(&"missing exact Ready-only transition"),
-        "Draft or ordinary mutation events must be rejected",
-    );
+    let changed = source.replace(READY_TYPES, MUTATED_TYPES);
+    assert_ne!(changed, source);
+    assert!(findings(&changed).contains(&MISSING_READY));
 }
 
 #[test]
 fn contract_rejects_a_dynamic_or_renamed_required_context() {
     let source = source();
-    let changed = source.replace(
-        STATIC_CONTEXT,
-        "  validate-title:\n    name: ${{ github.event.pull_request.draft && 'advisory' || 'validate-title' }}",
-    );
-    assert_ne!(changed, source, "context-name mutation must engage");
-    assert!(
-        findings(&changed).contains(&"missing static required producer"),
-        "required producer name must remain static and directly indexed",
-    );
+    let changed = source.replace(STATIC_CONTEXT, DYNAMIC_CONTEXT);
+    assert_ne!(changed, source);
+    assert!(findings(&changed).contains(&MISSING_STATIC));
 }
