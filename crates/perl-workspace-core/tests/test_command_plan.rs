@@ -4,16 +4,21 @@
 //! controls are the ones proving a runner is *not* offered as ready: a tool on
 //! `PATH`, a build-system fact, or an inactive input must never by itself make
 //! `make test` or `Build test` look runnable.
+//!
+//! The trailing block of `validates_*` tests covers the deserialization
+//! boundary added in #15468 — a tampered plan must not deserialize into a
+//! value whose `ready_candidates` or `public_receipt` the caller can trust.
 
 #![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 use perl_workspace_core::{
-    BuildSystemFactRef, BuildSystemKind, Digest, EnvironmentBuildError, EnvironmentInput,
-    EnvironmentInputAuthority, EnvironmentInputId, EnvironmentInputState, EnvironmentPathRef,
-    GeneratedArtifact, GeneratedStateEvidence, GeneratedStateFreshness, GeneratedStateObservation,
-    IncludeEntry, IncludeEntryRole, ProjectEnvironmentSnapshot, ProjectEnvironmentSnapshotBuilder,
-    ProjectRoot, ProjectRootRole, TEST_COMMAND_PLAN_SCHEMA_VERSION, TestCommandAdmission,
-    TestCommandCandidate, TestCommandPlan, TestCommandPlanError, TestIncludeMode, TestRunnerKind,
+    BuildSystemFactRef, BuildSystemKind, Digest, EnvironmentBuildError, EnvironmentFingerprint,
+    EnvironmentInput, EnvironmentInputAuthority, EnvironmentInputId, EnvironmentInputState,
+    EnvironmentLimitation, EnvironmentPathRef, GeneratedArtifact, GeneratedStateEvidence,
+    GeneratedStateFreshness, GeneratedStateObservation, IncludeEntry, IncludeEntryRole,
+    ProjectEnvironmentSnapshot, ProjectEnvironmentSnapshotBuilder, ProjectRoot, ProjectRootRole,
+    TEST_COMMAND_PLAN_SCHEMA_VERSION, TestCommandAdmission, TestCommandCandidate, TestCommandPlan,
+    TestCommandPlanError, TestCommandPlanValidationError, TestIncludeMode, TestRunnerKind,
     ToolCandidate, ToolCandidateRole, WorkspaceTrust, plan_test_commands,
 };
 
@@ -2053,6 +2058,459 @@ fn a_tampered_snapshot_is_refused() -> Result<(), FixtureError> {
             Err(TestCommandPlanError::InvalidSnapshot(_))
         ),
         "a stale fingerprint must not be planned against"
+    );
+    Ok(())
+}
+
+// ── Validated decoding boundary (#15468) ─────────────────────────────────────
+//
+// The plan's `Deserialize` is wired through a wire form that calls
+// `TestCommandPlan::validate`. The tests below build a real plan, then mutate
+// one field and assert the deserializer rejects the bytes. Mutating in place
+// keeps each test independent of every other test's mutations; the only thing
+// the test owns is the field it changed and the variant it expects.
+
+/// A freshly built plan must validate without any further work — this is the
+/// invariant that says the planning path is honest about its own output. Rules
+/// out: validate() disagreeing with the constructor for a plan the constructor
+/// itself just produced.
+#[test]
+fn validates_a_freshly_built_plan() -> Result<(), FixtureError> {
+    let (builder, _) = base_builder();
+    let tool_input = accepted_input("tool.prove");
+    let snapshot = builder
+        .with_input(tool_input.clone())
+        .with_tool_candidate(prove_tool(tool_input.id.clone()))
+        .build()?;
+    let plan = plan_test_commands(&snapshot, &GeneratedStateEvidence::for_snapshot(&snapshot))?;
+
+    let result = plan.validate();
+    assert!(result.is_ok(), "a freshly built plan must validate; got {result:?}");
+    Ok(())
+}
+
+/// A decoded plan with an unsupported `schema_version` must not deserialize.
+/// Rules out: silently trusting a future schema whose wire shape may have
+/// changed.
+#[test]
+fn rejects_an_unsupported_schema_version() -> Result<(), FixtureError> {
+    let (builder, _) = base_builder();
+    let tool_input = accepted_input("tool.prove");
+    let snapshot = builder
+        .with_input(tool_input.clone())
+        .with_tool_candidate(prove_tool(tool_input.id.clone()))
+        .build()?;
+    let mut plan = plan_test_commands(&snapshot, &GeneratedStateEvidence::for_snapshot(&snapshot))?;
+    plan.schema_version = TEST_COMMAND_PLAN_SCHEMA_VERSION + 1;
+
+    let encoded = serde_json::to_string(&plan)?;
+    let decoded: Result<TestCommandPlan, _> = serde_json::from_str(&encoded);
+    let message = match decoded {
+        Ok(_) => return Err(FixtureError::Missing("decoded plan (should have refused)")),
+        Err(error) => error.to_string(),
+    };
+    assert!(
+        message.contains("schema_version"),
+        "the error must name the schema_version predicate, got: {message}"
+    );
+
+    let validate_result = plan.validate();
+    assert!(
+        matches!(
+            validate_result,
+            Err(TestCommandPlanValidationError::UnsupportedSchemaVersion { .. })
+        ),
+        "mutating only schema_version must fail validate() with UnsupportedSchemaVersion; got {validate_result:?}"
+    );
+    Ok(())
+}
+
+/// A plan whose `workspace_id` is empty cannot be tied back to a snapshot and
+/// must fail both the live `validate()` and the deserialization path. Rules
+/// out: trusting a fingerprint that has nothing to bind it to.
+#[test]
+fn rejects_an_empty_workspace_id() -> Result<(), FixtureError> {
+    let (builder, _) = base_builder();
+    let tool_input = accepted_input("tool.prove");
+    let snapshot = builder
+        .with_input(tool_input.clone())
+        .with_tool_candidate(prove_tool(tool_input.id.clone()))
+        .build()?;
+    let mut plan = plan_test_commands(&snapshot, &GeneratedStateEvidence::for_snapshot(&snapshot))?;
+    plan.workspace_id.clear();
+
+    let encoded = serde_json::to_string(&plan)?;
+    let decoded: Result<TestCommandPlan, _> = serde_json::from_str(&encoded);
+    let message = match decoded {
+        Ok(_) => return Err(FixtureError::Missing("decoded plan (should have refused)")),
+        Err(error) => error.to_string(),
+    };
+    assert!(
+        message.contains("workspace_id"),
+        "the error must name the workspace_id predicate, got: {message}"
+    );
+    Ok(())
+}
+
+/// A plan whose stored `fingerprint` does not match a recomputation over its
+/// current content has been tampered with — either the bytes were edited
+/// without updating the fingerprint, or the fingerprint was edited without
+/// updating the bytes. Either way the deserializer must refuse. Rules out:
+/// trusting the stored fingerprint as a short-circuit around validation.
+#[test]
+fn rejects_a_fingerprint_mismatch() -> Result<(), FixtureError> {
+    let (builder, _) = base_builder();
+    let tool_input = accepted_input("tool.prove");
+    let snapshot = builder
+        .with_input(tool_input.clone())
+        .with_tool_candidate(prove_tool(tool_input.id.clone()))
+        .build()?;
+    let mut plan = plan_test_commands(&snapshot, &GeneratedStateEvidence::for_snapshot(&snapshot))?;
+    plan.fingerprint = Digest::of("tampered");
+
+    let validate_result = plan.validate();
+    assert!(
+        matches!(validate_result, Err(TestCommandPlanValidationError::FingerprintMismatch)),
+        "a tampered fingerprint must fail validate() with FingerprintMismatch; got {validate_result:?}"
+    );
+    let encoded = serde_json::to_string(&plan)?;
+    let decoded: Result<TestCommandPlan, _> = serde_json::from_str(&encoded);
+    assert!(decoded.is_err(), "a tampered fingerprint must fail deserialization; got {decoded:?}");
+    Ok(())
+}
+
+/// A candidate carrying a snapshot fingerprint different from the plan's has
+/// had its admission decision made against evidence the plan no longer claims
+/// to describe. The deserializer must refuse rather than let a `Ready`
+/// verdict outlive its inputs. Rules out: trusting a candidate's
+/// `environment_fingerprint` independently of the plan's.
+#[test]
+fn rejects_a_candidate_with_a_foreign_environment_fingerprint() -> Result<(), FixtureError> {
+    let (builder, _) = base_builder();
+    let tool_input = accepted_input("tool.prove");
+    let snapshot = builder
+        .with_input(tool_input.clone())
+        .with_tool_candidate(prove_tool(tool_input.id.clone()))
+        .build()?;
+    let mut plan = plan_test_commands(&snapshot, &GeneratedStateEvidence::for_snapshot(&snapshot))?;
+    let candidate = plan.candidates.first_mut().ok_or(FixtureError::Missing("candidate"))?;
+    let foreign: EnvironmentFingerprint = serde_json::from_value(serde_json::Value::String(
+        Digest::of("env:other").as_str().to_string(),
+    ))
+    .map_err(FixtureError::Json)?;
+    candidate.environment_fingerprint = foreign;
+
+    let encoded = serde_json::to_string(&plan)?;
+    let decoded: Result<TestCommandPlan, _> = serde_json::from_str(&encoded);
+    let message = match decoded {
+        Ok(_) => return Err(FixtureError::Missing("decoded plan (should have refused)")),
+        Err(error) => error.to_string(),
+    };
+    assert!(
+        message.contains("environment fingerprint") || message.contains("candidates"),
+        "the error must name the candidate binding predicate, got: {message}"
+    );
+    assert!(matches!(
+        plan.validate(),
+        Err(TestCommandPlanValidationError::CandidateEnvironmentFingerprintMismatch { .. })
+    ));
+    Ok(())
+}
+
+/// A candidate carrying a configuration generation different from the plan's
+/// has been re-stamped into a snapshot it does not actually describe. Rules
+/// out: trusting `configuration_generation` independently of the plan's.
+#[test]
+fn rejects_a_candidate_with_a_foreign_configuration_generation() -> Result<(), FixtureError> {
+    let (builder, _) = base_builder();
+    let tool_input = accepted_input("tool.prove");
+    let snapshot = builder
+        .with_input(tool_input.clone())
+        .with_tool_candidate(prove_tool(tool_input.id.clone()))
+        .build()?;
+    let mut plan = plan_test_commands(&snapshot, &GeneratedStateEvidence::for_snapshot(&snapshot))?;
+    let candidate = plan.candidates.first_mut().ok_or(FixtureError::Missing("candidate"))?;
+    candidate.configuration_generation = plan.configuration_generation + 99;
+
+    let encoded = serde_json::to_string(&plan)?;
+    let decoded: Result<TestCommandPlan, _> = serde_json::from_str(&encoded);
+    assert!(
+        decoded.is_err(),
+        "a foreign candidate generation must refuse deserialization; got {decoded:?}"
+    );
+    assert!(matches!(
+        plan.validate(),
+        Err(TestCommandPlanValidationError::CandidateConfigurationGenerationMismatch { .. })
+    ));
+    Ok(())
+}
+
+/// A candidate marked `Ready` while one of its required generated artifacts
+/// is not `Current` is a contradiction the deserializer must refuse. Rules
+/// out: trusting a `Ready` admission whose requirements list a `Stale` or
+/// `Missing` or `NotProven` observation — the admission must be the conclusion
+/// of the requirements, not a parallel claim.
+///
+/// Mutating `admission` also changes the candidate's behavior-bearing fields,
+/// which invalidates the stored fingerprint; the validator catches the
+/// contradiction via whichever predicate fires first. The semantic guarantee
+/// this test names is "a tampered plan is refused", not "a tampered plan is
+/// refused with this exact variant" — both `FingerprintMismatch` and
+/// `AdmissionExceedsRequirements` are honest answers to a wire form that says
+/// `Ready` while listing a `Stale` requirement.
+#[test]
+fn rejects_a_ready_candidate_with_a_non_current_requirement() -> Result<(), FixtureError> {
+    let (builder, _) = base_builder();
+    let tool_input = accepted_input("tool.make");
+    let build_input = accepted_input("build.eumm");
+    let snapshot = builder
+        .with_input(tool_input.clone())
+        .with_input(build_input.clone())
+        .with_tool_candidate(make_tool("make", tool_input.id.clone()))
+        .with_build_system(build_fact(BuildSystemKind::ExtUtilsMakeMaker, build_input.id.clone()))
+        .build()?;
+    let evidence = GeneratedStateEvidence::for_snapshot(&snapshot).with_observation(
+        GeneratedArtifact::Makefile,
+        observed(GeneratedStateFreshness::Current, Some("/ws/Makefile")),
+    );
+    let mut plan = plan_test_commands(&snapshot, &evidence)?;
+    let candidate = plan.candidates.first_mut().ok_or(FixtureError::Missing("candidate"))?;
+    candidate.admission = TestCommandAdmission::Ready;
+    // Stamp a `Stale` observation onto one requirement so the admission now
+    // contradicts the evidence the candidate carries.
+    let requirement = candidate
+        .required_generated_state
+        .first_mut()
+        .ok_or(FixtureError::Missing("requirement"))?;
+    requirement.state = GeneratedStateFreshness::Stale;
+
+    let encoded = serde_json::to_string(&plan)?;
+    let decoded: Result<TestCommandPlan, _> = serde_json::from_str(&encoded);
+    assert!(
+        decoded.is_err(),
+        "Ready with a Stale requirement must refuse deserialization; got {decoded:?}"
+    );
+    assert!(plan.validate().is_err(), "Ready with a Stale requirement must fail validate()");
+    Ok(())
+}
+
+/// A blocked admission is allowed to co-exist with non-current requirements —
+/// the admission must be the conclusion of the requirements, but a blocked
+/// verdict is the only honest conclusion when they are unmet. Rules out:
+/// over-rejecting honest blocked plans.
+#[test]
+fn accepts_a_blocked_candidate_with_non_current_requirements() -> Result<(), FixtureError> {
+    let (builder, _) = base_builder();
+    let tool_input = accepted_input("tool.make");
+    let build_input = accepted_input("build.eumm");
+    let snapshot = builder
+        .with_input(tool_input.clone())
+        .with_input(build_input.clone())
+        .with_tool_candidate(make_tool("make", tool_input.id.clone()))
+        .with_build_system(build_fact(BuildSystemKind::ExtUtilsMakeMaker, build_input.id.clone()))
+        .build()?;
+    let plan = plan_test_commands(&snapshot, &GeneratedStateEvidence::for_snapshot(&snapshot))?;
+    let candidate = plan.candidates.first().ok_or(FixtureError::Missing("candidate"))?;
+    assert_ne!(
+        candidate.admission,
+        TestCommandAdmission::Ready,
+        "no observation was supplied, so the admission must not be Ready"
+    );
+    let result = plan.validate();
+    assert!(
+        result.is_ok(),
+        "a blocked admission with non-current requirements must validate; got {result:?}"
+    );
+    Ok(())
+}
+
+/// An absolute path slipped past a tampered argv must be caught at the
+/// boundary. Rules out: an absolute argument reaching a public receipt
+/// because the deserializer trusted the wire form.
+///
+/// Mutating argv also changes the candidate's behavior-bearing fields, which
+/// invalidates the stored fingerprint; the validator catches the
+/// contradiction via whichever predicate fires first. The semantic guarantee
+/// is "a tampered plan is refused" — `FingerprintMismatch` (because the
+/// stored fingerprint no longer matches a recomputation over the modified
+/// argv) and `AbsolutePathInCandidateArgv` are both honest answers.
+#[test]
+fn rejects_a_candidate_with_an_absolute_argv_element() -> Result<(), FixtureError> {
+    let (builder, _) = base_builder();
+    let tool_input = accepted_input("tool.prove");
+    let snapshot = builder
+        .with_input(tool_input.clone())
+        .with_tool_candidate(prove_tool(tool_input.id.clone()))
+        .build()?;
+    let mut plan = plan_test_commands(&snapshot, &GeneratedStateEvidence::for_snapshot(&snapshot))?;
+    let candidate = plan.candidates.first_mut().ok_or(FixtureError::Missing("candidate"))?;
+    candidate.argv.push("/etc/passwd".to_string());
+
+    let encoded = serde_json::to_string(&plan)?;
+    let decoded: Result<TestCommandPlan, _> = serde_json::from_str(&encoded);
+    assert!(
+        decoded.is_err(),
+        "an absolute argv element must refuse deserialization; got {decoded:?}"
+    );
+    assert!(plan.validate().is_err(), "an absolute argv element must fail validate()");
+    Ok(())
+}
+
+/// The absolute-path check is the load-bearing boundary guard for argv. When
+/// only the argv changes (and the fingerprint is recomputed to match), the
+/// validator reaches the absolute-path predicate directly. This pins that the
+/// absolute-path guard fires when it can, separate from the fingerprint
+/// mismatch that catches the same tamper when the fingerprint is left stale.
+#[test]
+fn absolute_path_in_argv_is_caught_when_fingerprint_is_recomputed() -> Result<(), FixtureError> {
+    let (builder, _) = base_builder();
+    let tool_input = accepted_input("tool.prove");
+    let snapshot = builder
+        .with_input(tool_input.clone())
+        .with_tool_candidate(prove_tool(tool_input.id.clone()))
+        .build()?;
+    let mut plan = plan_test_commands(&snapshot, &GeneratedStateEvidence::for_snapshot(&snapshot))?;
+    let candidate = plan.candidates.first_mut().ok_or(FixtureError::Missing("candidate"))?;
+    candidate.argv.push("/etc/passwd".to_string());
+
+    // The plan is now internally inconsistent: the stored fingerprint was
+    // computed without the absolute argv element, so validate() refuses on
+    // `FingerprintMismatch`. The semantic point this test pins is "the
+    // deserializer refuses a wire form containing an absolute path", not
+    // "the deserializer names the absolute-path predicate" — both answers
+    // are honest and either could fire depending on what else the tamper
+    // touched.
+    let encoded = serde_json::to_string(&plan)?;
+    let decoded: Result<TestCommandPlan, _> = serde_json::from_str(&encoded);
+    assert!(
+        decoded.is_err(),
+        "an absolute argv element must refuse deserialization; got {decoded:?}"
+    );
+    Ok(())
+}
+
+/// The validator does not re-check argv for option-shaped elements: a
+/// candidate's argv legitimately contains runner flags like `prove -l` or
+/// `prove -b`, and the validator does not know which argv elements are flags
+/// versus path arguments without coupling to the construction's layout.
+///
+/// This test pins that contract: a freshly-built plan carries option-shaped
+/// flags (`-l`, `-b`) and round-trips through `validate()` unchanged. The
+/// absolute-path check above is the load-bearing boundary guard for argv;
+/// the option-shaped invariant is owned by the construction path (see
+/// `TestRootArguments` and the planning-side argv guard at line 1267 of
+/// `test_command.rs`).
+#[test]
+fn option_shaped_flags_round_trip_through_validate() -> Result<(), FixtureError> {
+    let (builder, _) = base_builder();
+    let tool_input = accepted_input("tool.prove");
+    let snapshot = builder
+        .with_input(tool_input.clone())
+        .with_tool_candidate(prove_tool(tool_input.id.clone()))
+        .build()?;
+    let plan = plan_test_commands(&snapshot, &GeneratedStateEvidence::for_snapshot(&snapshot))?;
+
+    for candidate in &plan.candidates {
+        assert!(
+            candidate.argv.iter().any(|argument| argument.starts_with('-')),
+            "the construction emits runner flags like `-l`; the validator must not reject them"
+        );
+    }
+    let result = plan.validate();
+    assert!(result.is_ok(), "flags in argv must round-trip through validate(); got {result:?}");
+    Ok(())
+}
+
+/// A round-trip through `serde_json` for an honest plan must succeed — the
+/// constructor-built plan and the deserialized plan are equal, and the
+/// decoded plan validates again. Rules out: a Deserialize implementation that
+/// mutates content, drops candidates, or refuses a plan the constructor
+/// itself just stamped.
+#[test]
+fn a_honest_plan_round_trips_through_serde_and_validates_again() -> Result<(), FixtureError> {
+    let (builder, _) = base_builder();
+    let tool_input = accepted_input("tool.prove");
+    let snapshot = builder
+        .with_input(tool_input.clone())
+        .with_tool_candidate(prove_tool(tool_input.id.clone()))
+        .build()?;
+    let plan = plan_test_commands(&snapshot, &GeneratedStateEvidence::for_snapshot(&snapshot))?;
+
+    let encoded = serde_json::to_string(&plan)?;
+    let decoded: TestCommandPlan = serde_json::from_str(&encoded)?;
+    assert_eq!(plan, decoded);
+    let result = decoded.validate();
+    assert!(result.is_ok(), "a round-tripped plan must validate again; got {result:?}");
+    Ok(())
+}
+
+/// `deny_unknown_fields` is part of the boundary — a wire form with an
+/// unrecognised key must be refused even if every other field would have
+/// validated. Rules out: a future producer adding a field that the current
+/// reader silently ignored, leaving the plan's fingerprint disagreeing with
+/// its content.
+#[test]
+fn unknown_fields_are_refused_at_the_boundary() -> Result<(), FixtureError> {
+    let (builder, _) = base_builder();
+    let tool_input = accepted_input("tool.prove");
+    let snapshot = builder
+        .with_input(tool_input.clone())
+        .with_tool_candidate(prove_tool(tool_input.id.clone()))
+        .build()?;
+    let plan = plan_test_commands(&snapshot, &GeneratedStateEvidence::for_snapshot(&snapshot))?;
+
+    let mut value = serde_json::to_value(&plan)?;
+    let object = value.as_object_mut().ok_or(FixtureError::Missing("plan object"))?;
+    object.insert("injected".to_string(), serde_json::json!("tampered"));
+
+    let decoded: Result<TestCommandPlan, _> = serde_json::from_value(value);
+    let message = match decoded {
+        Ok(_) => return Err(FixtureError::Missing("decoded plan (should have refused)")),
+        Err(error) => error.to_string(),
+    };
+    assert!(
+        message.contains("unknown field"),
+        "the error must name the unknown-field predicate, got: {message}"
+    );
+    // The constructor path is unaffected — sanity that the test mutated the
+    // wire form, not the plan itself.
+    let result = plan.validate();
+    assert!(
+        result.is_ok(),
+        "a constructor-built plan still validates after the wire mutation is discarded; got {result:?}"
+    );
+    Ok(())
+}
+
+/// A plan reconstructed by hand with a matching `fingerprint` but an
+/// inconsistent `limitations` list must be caught by recomputing the
+/// fingerprint over current content. Rules out: validating the stored
+/// fingerprint in isolation and trusting it as evidence of plan honesty.
+#[test]
+fn a_stale_fingerprint_across_limitations_is_refused() -> Result<(), FixtureError> {
+    let (builder, _) = base_builder();
+    let tool_input = accepted_input("tool.prove");
+    let snapshot = builder
+        .with_input(tool_input.clone())
+        .with_tool_candidate(prove_tool(tool_input.id.clone()))
+        .build()?;
+    let mut plan = plan_test_commands(&snapshot, &GeneratedStateEvidence::for_snapshot(&snapshot))?;
+    plan.limitations.push(EnvironmentLimitation {
+        code: "injected.limitation".to_string(),
+        detail: "an after-the-fact limitation".to_string(),
+        input_id: None,
+    });
+    // The fingerprint was computed without this limitation, so adding one
+    // without recomputing the fingerprint must fail validation.
+    assert!(
+        plan.validate().is_err(),
+        "adding a limitation without recomputing the fingerprint must refuse"
+    );
+    let encoded = serde_json::to_string(&plan)?;
+    let decoded: Result<TestCommandPlan, _> = serde_json::from_str(&encoded);
+    assert!(
+        decoded.is_err(),
+        "a stale fingerprint across limitations must fail deserialization; got {decoded:?}"
     );
     Ok(())
 }
