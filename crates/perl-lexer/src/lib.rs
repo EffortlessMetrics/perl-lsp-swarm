@@ -841,28 +841,51 @@ impl<'a> PerlLexer<'a> {
                     || (self.position > 0
                         && matches!(self.input_bytes[self.position - 1], b'\n' | b'\r')) =>
                 {
-                    // Check if this starts a POD section (=pod, =head, =over, etc.)
-                    // Use byte-safe checks — avoid slicing &str at arbitrary byte positions
-                    let remaining = &self.input_bytes[self.position..];
-                    if remaining.starts_with(b"=pod")
-                        || remaining.starts_with(b"=head")
-                        || remaining.starts_with(b"=over")
-                        || remaining.starts_with(b"=item")
-                        || remaining.starts_with(b"=back")
-                        || remaining.starts_with(b"=begin")
-                        || remaining.starts_with(b"=end")
-                        || remaining.starts_with(b"=for")
-                        || remaining.starts_with(b"=encoding")
-                    {
-                        // Scan forward for \n=cut (end of POD block)
-                        let search_start = self.position;
-                        let mut found_cut = false;
+                    // perlpodspec: a line-initial `=` followed by an ASCII
+                    // alphabetic character opens a POD block that runs to the
+                    // next line-initial `=cut`, or to EOF when none follows.
+                    // This admits every POD command (`=pod`, `=head1`,
+                    // `=begin`, `=encoding`, single-letter commands, ...), and
+                    // a stray `=cut` with no block open opens POD exactly like
+                    // any other command (#16607). `=` followed by a digit,
+                    // underscore, or anything else stays an operator so that
+                    // `$x\n= 1;` and `my $x\n=1;` keep lexing as code (the
+                    // perl oracle accepts both as assignment continuations).
+                    let opens_pod = self
+                        .input_bytes
+                        .get(self.position + 1)
+                        .is_some_and(|byte| byte.is_ascii_alphabetic());
+                    if opens_pod {
                         let bytes = self.input_bytes;
-                        let mut i = search_start;
+                        let mut i = self.position;
+                        // Consume the opening directive line first: the block
+                        // ends at the NEXT line-initial `=cut`, so an opening
+                        // `=cut` must not match its own line (#16607).
+                        while i < bytes.len() && bytes[i] != b'\n' && bytes[i] != b'\r' {
+                            i += 1;
+                        }
+                        if i < bytes.len() {
+                            let line_end_byte = bytes[i];
+                            i += 1;
+                            if line_end_byte == b'\r' && i < bytes.len() && bytes[i] == b'\n' {
+                                i += 1;
+                            }
+                        }
+                        // Scan forward for =cut at the start of a line
+                        let mut found_cut = false;
                         while i < bytes.len() {
-                            // Look for =cut at the start of a line
+                            // Look for =cut at the start of a line. The command
+                            // name runs to the first non-word byte, so only a
+                            // word character after "=cut" makes it a different
+                            // command: perl 5.42 keeps POD open across
+                            // `=cutlery`, `=cut123`, and `=cut_foo`, while
+                            // `=cut.foo` and `=cut,` close it — matching the
+                            // `pod_command` word-run parse in symbol_table.
                             if (i == 0 || matches!(bytes[i - 1], b'\n' | b'\r'))
                                 && bytes[i..].starts_with(b"=cut")
+                                && !bytes.get(i + 4).is_some_and(|byte| {
+                                    byte.is_ascii_alphanumeric() || *byte == b'_'
+                                })
                             {
                                 i += 4; // Skip "=cut"
                                 // Skip rest of the =cut line
