@@ -175,6 +175,18 @@ class ReleaseBuildIdentityTests(unittest.TestCase):
                 with self.assertRaises(subject.BuildIdentityError):
                     subject.ReleaseBuildIdentity.from_mapping(candidate)
 
+    def test_topology_schema_diagnostic_names_the_selected_admission(self) -> None:
+        identity = valid_mapping()
+        for mapped, expected in [(False, "release topology schema must be 1 or 2"),
+                                 (True, "release topology schema must be 1 or 2 or 4")]:
+            with self.subTest(mapped=mapped):
+                with self.assertRaises(subject.BuildIdentityError) as raised:
+                    subject.validate_topology({"schema": 3},
+                        release_version=identity["release_version"],
+                        source_revision=identity["source_revision"],
+                        target=identity["target"], allow_mapped_rc=mapped)
+                self.assertEqual(str(raised.exception), expected)
+
     def test_topology_must_bind_exact_source_target_and_members(self) -> None:
         identity = valid_mapping()
         topology = {
