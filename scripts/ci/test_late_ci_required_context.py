@@ -188,12 +188,13 @@ class LateCiRequiredContextTests(unittest.TestCase):
             validate_late_ci_contract(broken)
 
     def test_contract_suite_removal_fails(self) -> None:
+        marker = f"            {CONTRACT_TEST_FILE}"
+        self.assertIn(marker, self.workflow_text)
         broken = self.workflow_text.replace(
-            f"            {CONTRACT_TEST_FILE} \\\n",
-            "",
+            marker,
+            "            scripts/ci/removed-late-ci-contract.py",
             1,
         )
-        self.assertNotEqual(broken, self.workflow_text)
         with self.assertRaisesRegex(AssertionError, "must execute the late-CI contract"):
             validate_late_ci_contract(broken)
 
