@@ -1620,6 +1620,39 @@ created = "2026-09-06"
 review_after = "2026-12-06"
 
 [[allow]]
+id = "non-rust-readiness-rehearsal-schema"
+path = "schemas/readiness_rehearsal.v1.schema.json"
+kind = "release_contract"
+language = "json"
+surface = "release"
+classification = "config"
+owner = "release/ci"
+reason = "Closed Draft 2020-12 schema for the no-publish readiness_rehearsal.v1 receipt (#16785); exact source, artifact, installed-subject, and instrument identities are bound without timestamps, temporary paths, or public-channel mutation."
+covered_by = [
+  "cargo xtask release check-readiness-rehearsal",
+  "cargo test -p xtask --locked --bin xtask readiness_rehearsal",
+]
+created = "2026-09-29"
+review_after = "2026-12-29"
+
+[[allow]]
+id = "non-rust-readiness-rehearsal-fixtures"
+glob = "fixtures/readiness_rehearsal/**/*.json"
+kind = "test_fixture"
+language = "json"
+surface = "fixtures"
+classification = "test"
+owner = "release/ci"
+reason = "Deterministic fake receipts and false-green controls for the #16785 no-publish rehearsal contract: wrong-binary, mixed SHA/version, malformed archive members, VSIX identity mismatch, missing instrument, non-terminal pass, cleanup, privacy, mutation, and compensating-stage vectors."
+covered_by = [
+  "cargo xtask release check-readiness-rehearsal",
+  "cargo test -p xtask --locked --bin xtask readiness_rehearsal",
+]
+broad_glob_reason = "The `**` spans the owned fixture directory for the rehearsal contract. Breadth is bounded by that directory."
+created = "2026-09-29"
+review_after = "2026-12-29"
+
+[[allow]]
 id = "non-rust-blocker-closeout-schema"
 path = "schemas/blocker_closeout.v1.schema.json"
 kind = "release_contract"

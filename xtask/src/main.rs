@@ -61,17 +61,17 @@ use tasks::{
     product_health_rail_contract, product_health_status, protocol_type_substrate_matrix,
     provider_confidence_matrix, provider_promotion_ledger, publication_facts, publish,
     publish_closure, publish_manifest_check, publish_receipts, quality_baseline, quality_gate,
-    queue_health, queue_snapshot, quickorm_api_matrix, receipts, release, release_artifact_check,
-    release_candidate_artifacts, release_evidence, release_notes, release_trust_invariants,
-    release_turnkey, repo_hygiene, repository_topology, ripr_evidence, rust_small_proof, seam_diff,
-    semantic_inline_next_edit, semantic_inline_receipts, semantic_scorecard,
-    semantic_shadow_compare, semantic_token_classes, session_receipt, shadow_parity,
-    srp_microcrates, standalone_diagnostics, standalone_vectors, supported_editor_inline_smoke,
-    swarm_agent_roster, swarm_summary, sync_release_docs, targeted_checks, test, test_lsp,
-    train_edge_contract, unwired_scan, update_homebrew, update_status, ux_regression_receipt,
-    ux_scorecard, validate_workspace_exclusions, workflow_authority_inventory,
-    workflow_policy_lint, workflow_trigger_lint, workspace_symbol_classes, worktree_allocator,
-    worktrees, writer_admission,
+    queue_health, queue_snapshot, quickorm_api_matrix, readiness_rehearsal, receipts, release,
+    release_artifact_check, release_candidate_artifacts, release_evidence, release_notes,
+    release_trust_invariants, release_turnkey, repo_hygiene, repository_topology, ripr_evidence,
+    rust_small_proof, seam_diff, semantic_inline_next_edit, semantic_inline_receipts,
+    semantic_scorecard, semantic_shadow_compare, semantic_token_classes, session_receipt,
+    shadow_parity, srp_microcrates, standalone_diagnostics, standalone_vectors,
+    supported_editor_inline_smoke, swarm_agent_roster, swarm_summary, sync_release_docs,
+    targeted_checks, test, test_lsp, train_edge_contract, unwired_scan, update_homebrew,
+    update_status, ux_regression_receipt, ux_scorecard, validate_workspace_exclusions,
+    workflow_authority_inventory, workflow_policy_lint, workflow_trigger_lint,
+    workspace_symbol_classes, worktree_allocator, worktrees, writer_admission,
 };
 #[cfg(feature = "parser-tasks")]
 use tasks::{bindings, compare_parsers, highlight};
@@ -4318,6 +4318,14 @@ enum ReleaseCommand {
     },
     /// Validate schema, freeze/verify happy path, and every #9092 negative control.
     CheckCandidateArtifacts,
+    /// Validate schema, projections, and every #16785 false-green fixture.
+    CheckReadinessRehearsal,
+    /// Validate one sealed `readiness_rehearsal.v1` receipt and print projections.
+    ValidateReadinessRehearsal {
+        /// Sealed rehearsal receipt.
+        #[arg(long)]
+        receipt: PathBuf,
+    },
 }
 
 #[derive(Subcommand)]
@@ -6367,6 +6375,10 @@ fn run_cli(cli: Cli) -> Result<()> {
                 topology,
             }),
             ReleaseCommand::CheckCandidateArtifacts => release_candidate_artifacts::check(),
+            ReleaseCommand::CheckReadinessRehearsal => readiness_rehearsal::check(),
+            ReleaseCommand::ValidateReadinessRehearsal { receipt } => {
+                readiness_rehearsal::validate_path(receipt)
+            }
         },
         Commands::ReleaseNotes { tag, output, root } => release_notes::run(tag, output, root),
         Commands::ReleaseTurnkey {
