@@ -945,6 +945,8 @@ jobs:
           ROUTER_FALLBACK_ALLOWED: ${{ needs.route-rust-small.outputs.fallback_allowed }}
           CX53_RESULT: ${{ needs.rust-small-cx53.result }}
           CX43_RESULT: ${{ needs.rust-small-cx43.result }}
+          CX53_PREFLIGHT_OK: ${{ needs.rust-small-cx53.outputs.preflight_ok }}
+          CX43_PREFLIGHT_OK: ${{ needs.rust-small-cx43.outputs.preflight_ok }}
           GITHUB_RESULT: ${{ needs.rust-small-github.result }}
           FALLBACK_RESULT: ${{ needs.rust-small-fallback.result }}
         run: |
@@ -957,6 +959,8 @@ jobs:
           echo "router_fallback_allowed=${ROUTER_FALLBACK_ALLOWED:-}"
           echo "cx53_result=${CX53_RESULT:-}"
           echo "cx43_result=${CX43_RESULT:-}"
+          echo "cx53_preflight_ok=${CX53_PREFLIGHT_OK:-}"
+          echo "cx43_preflight_ok=${CX43_PREFLIGHT_OK:-}"
           echo "github_result=${GITHUB_RESULT:-}"
           echo "fallback_result=${FALLBACK_RESULT:-}"
 
@@ -970,6 +974,8 @@ jobs:
             echo "- router_fallback_allowed: \`${ROUTER_FALLBACK_ALLOWED:-}\`"
             echo "- cx53_result: \`${CX53_RESULT:-}\`"
             echo "- cx43_result: \`${CX43_RESULT:-}\`"
+            echo "- cx53_preflight_ok: \`${CX53_PREFLIGHT_OK:-}\`"
+            echo "- cx43_preflight_ok: \`${CX43_PREFLIGHT_OK:-}\`"
             echo "- github_result: \`${GITHUB_RESULT:-}\`"
             echo "- fallback_result: \`${FALLBACK_RESULT:-}\`"
           } >> "$GITHUB_STEP_SUMMARY"
@@ -1177,31 +1183,40 @@ jobs:
           # unchanged, so no forgiven head can carry a green that a later
           # force-push could resurrect (the #16187 blocking precondition).
           #
-          # - A genuine failure next to a cancellation is a failure however far
-          #   the head has moved: a lane that reached a verdict and lost is
-          #   information about the code, and code survives a head move.
+          # - A failure next to a cancellation takes precedence unless the
+          #   selected primary explicitly failed preflight. That primary ran
+          #   no Rust proof; missing/malformed preflight evidence is unknown.
+          #   Other failures remain failures, without guessing their cause.
           # - `superseded` requires three facts together: this run's tested head
           #   and the live head are both well-formed 40-hex object names that
           #   differ, AND a replacement run id was bound. An unresolved or
           #   malformed value reads as unknown, never as "different, therefore
-          #   newer" — the direction of failure is deliberate: a missed
-          #   supersession costs one avoidable red, a wrongly claimed one
-          #   reports green over a candidate nothing proved.
+          #   newer". Both outcomes stay red; without all three facts, no
+          #   unsupported replacement claim is made.
           # - A cancellation with no such evidence is `cancelled-no-verdict` and
           #   names only what the inputs support: no newer run was identified.
           any_cancelled=false
           any_failure=false
-          for lane_result in "$CX53_RESULT" "$CX43_RESULT" "$GITHUB_RESULT" "$FALLBACK_RESULT"; do
+          for lane in CX53 CX43 GITHUB FALLBACK; do
+            result_var="${lane}_RESULT"
+            preflight_var="${lane}_PREFLIGHT_OK"
+            lane_result="${!result_var}"
             if [ "$lane_result" = "cancelled" ]; then
               any_cancelled=true
             elif [ "$lane_result" = "failure" ]; then
-              any_failure=true
+              if [[ "$lane" = CX53 || "$lane" = CX43 ]] \
+                && [ "${ROUTER_TARGET:-}" = "${lane,,}" ] \
+                && [ "${!preflight_var:-}" = "false" ]; then
+                echo "::notice::${lane} preflight failed; Rust proof did not run on that primary."
+              else
+                any_failure=true
+              fi
             fi
           done
 
           if [ "$any_cancelled" = "true" ]; then
             if [ "$any_failure" = "true" ]; then
-              echo "::error::Rust Small lane failed and another was cancelled — the failed lane is a real test failure of this head. Fix the failure; the cancelled lane produced no evidence either way."
+              echo "::error::Rust Small lane failed and another was cancelled. Inspect the failed lane's log for its cause; the cancelled lane produced no evidence either way."
               echo "Perl LSP Rust Small Result: failure (a lane failed alongside a cancelled lane)"
               exit 1
             fi

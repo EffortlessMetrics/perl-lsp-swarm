@@ -23,17 +23,22 @@ ported into `em-ci-routed-rust.yml`, and this file owns its contract for
   unchanged, so no forgiven head carries a green a later force-push could
   resurrect — the #16187 blocking precondition.
 
-Red-first contract: any single-clause mutation of the discriminator — dropping
-the head-inequality check, relaxing a 40-hex shape, dropping the replacement
-run's digits check, exporting an unvalidated value, keying the lookup on
-candidate-controlled data, duplicating the identity filter, or granting an
-`exit 0` anywhere in the partition — must fail this contract with the clause
-named.
+Workflow-text inspection detects the listed wiring and single-clause text
+mutations by name; it does not execute the resolve step or its API lookups.
+Separate shell controls execute the actual evaluate block with supplied lane
+and head evidence, covering mixed preflight/cancellation results and genuinely
+executable green/errexit mutants. These local controls cannot establish the
+remaining live hand-cancel acceptance observation.
 """
 
 from __future__ import annotations
 
+import os
 import re
+import shutil
+import subprocess
+import tempfile
+import textwrap
 import unittest
 from pathlib import Path
 from typing import Callable
@@ -87,8 +92,14 @@ def _partition_block(evaluate: str) -> str:
     return evaluate[start:end]
 
 
+def _evaluate_script(text: str) -> str:
+    """The actual production shell block, without YAML indentation."""
+    step = _step_body(_job_body(text, RESULT_JOB), EVALUATE_STEP)
+    return textwrap.dedent(step.split("        run: |\n", 1)[1])
+
+
 def discriminator_violations(text: str) -> list[str]:
-    """Every way the workflow departs from the #16187 discriminator contract."""
+    """Workflow-text wiring and wording violations of the discriminator contract."""
     violations: list[str] = []
     try:
         result_job = _job_body(text, RESULT_JOB)
@@ -203,12 +214,12 @@ def discriminator_violations(text: str) -> list[str]:
         )
 
     if "any_failure=true" not in partition:
-        violations.append("partition must detect a genuine failure lane")
+        violations.append("partition must detect failures not classified as primary preflight")
     failure_slice = partition.split('if [ "$any_failure" = "true" ]; then', 1)[1].split(
         "exit 1", 1
     )[0]
-    if "real test failure" not in failure_slice:
-        violations.append("failed-lane branch must read as a real test failure")
+    if "lane failed" not in failure_slice or "real test failure" in failure_slice:
+        violations.append("failed-lane branch must name the failure without guessing its cause")
     if "NOT a test failure" in failure_slice:
         violations.append(
             "failed-lane branch must not borrow the cancelled NOT-a-failure wording"
@@ -216,12 +227,28 @@ def discriminator_violations(text: str) -> list[str]:
 
     if "exit 0" in partition:
         violations.append("no proof never becomes green: the partition must not exit 0")
+    if "set -euo pipefail" not in evaluate:
+        violations.append("evaluate must retain errexit for failed route assertions")
+    for primary in ("cx53", "cx43"):
+        binding = f"{primary.upper()}_PREFLIGHT_OK: ${{{{ needs.rust-small-{primary}.outputs.preflight_ok }}}}"
+        if binding not in evaluate:
+            violations.append(f"evaluate must bind {primary} preflight output")
     if "if: cancelled()" in result_job:
         violations.append(
             "cancelled() is not the discriminator (#16187 correction): the "
             "aggregate must classify on evidence, not on run state"
         )
     return violations
+
+
+def _mutate_evaluate(text: str, old: str, new: str) -> str:
+    step = _step_body(_job_body(text, RESULT_JOB), EVALUATE_STEP)
+    return text.replace(step, step.replace(old, new, 1), 1)
+
+
+def _green_partition_mutation(text: str) -> str:
+    marker = 'echo "RUST_SMALL_GATE_VERDICT=superseded"'
+    return _mutate_evaluate(text, marker, marker + "\n          exit 0")
 
 
 MUTATIONS: tuple[tuple[str, str, Callable[[str], str], str], ...] = (
@@ -264,11 +291,14 @@ MUTATIONS: tuple[tuple[str, str, Callable[[str], str], str], ...] = (
     (
         "superseded branch grants green",
         "no proof becomes green",
-        lambda t: t.replace(
-            "RUST_SMALL_GATE_VERDICT=superseded",
-            "RUST_SMALL_GATE_VERDICT=superseded",
-        ).replace("Perl LSP Rust Small Result: cancelled (superseded", "exit 0  # (superseded", 1),
+        _green_partition_mutation,
         "must not exit 0",
+    ),
+    (
+        "evaluator errexit removed",
+        "failed route assertions fall through to success",
+        lambda t: _mutate_evaluate(t, "set -euo pipefail", "set -uo pipefail"),
+        "retain errexit",
     ),
     (
         "cancelled() taken as the discriminator",
@@ -286,7 +316,7 @@ class DiscriminatorHolds(unittest.TestCase):
         self.assertEqual(discriminator_violations(_workflow_text()), [])
 
 
-class RedFirstMutations(unittest.TestCase):
+class WorkflowTextMutations(unittest.TestCase):
     def test_each_single_clause_mutation_is_caught_by_name(self) -> None:
         text = _workflow_text()
         for name, why, mutate, expected_keyword in MUTATIONS:
@@ -301,7 +331,7 @@ class RedFirstMutations(unittest.TestCase):
                 )
 
 
-class SharedFilterFileIsExecuted(unittest.TestCase):
+class SharedFilterFileWiring(unittest.TestCase):
     def test_the_identity_filter_exists_and_both_aggregates_run_it(self) -> None:
         self.assertTrue((ROOT / IDENTITY_FILTER).is_file())
         routed = _step_body(_job_body(_workflow_text(), RESULT_JOB), RESOLVE_STEP)
@@ -311,6 +341,150 @@ class SharedFilterFileIsExecuted(unittest.TestCase):
             advisory = ci_yml.read_text(encoding="utf-8")
         self.assertIn(f"-f {IDENTITY_FILTER}", routed)
         self.assertIn(f"-f {IDENTITY_FILTER}", advisory)
+
+
+class ExecutableCancellationControls(unittest.TestCase):
+    """Execute the production evaluator; these controls make no API calls."""
+
+    def _run_evaluate(
+        self, values: dict[str, str], *, script: str | None = None
+    ) -> subprocess.CompletedProcess[str]:
+        bash = os.environ.get("RUST_SMALL_TEST_BASH") or shutil.which("bash")
+        self.assertIsNotNone(bash, "bash is required to execute the production evaluator")
+        # Do not inherit tokens or shell startup hooks. Stub gh as an additional
+        # guard: the routed controls must never enter the unrelated draft API path.
+        env = {key: os.environ[key] for key in ("PATH", "SystemRoot") if key in os.environ}
+        env.update(
+            ROUTE_RESULT="success",
+            ROUTER_TARGET="github",
+            CX53_RESULT="skipped",
+            CX43_RESULT="skipped",
+            GITHUB_RESULT="success",
+            FALLBACK_RESULT="skipped",
+        )
+        env.update(values)
+        with tempfile.TemporaryDirectory(prefix="rust-small-control-") as scratch:
+            env["GITHUB_STEP_SUMMARY"] = (Path(scratch) / "summary").as_posix()
+            result = subprocess.run(
+                [bash, "--noprofile", "--norc"],
+                input='gh() { echo "unexpected API call" >&2; return 97; };\n'
+                + (script if script is not None else _evaluate_script(_workflow_text())),
+                cwd=ROOT, env=env, capture_output=True, text=True, encoding="utf-8", timeout=10,
+            )
+        self.assertNotIn("unexpected API call", result.stderr)
+        self.assertIn("route_result=success\n", result.stdout, "production evaluator must execute")
+        return result
+
+    def _mixed(self, primary: str, preflight: str | None, moved: bool) -> dict[str, str]:
+        values = {
+            "ROUTER_TARGET": primary.lower(),
+            f"{primary}_RESULT": "failure",
+            "GITHUB_RESULT": "skipped",
+            "FALLBACK_RESULT": "cancelled",
+        }
+        if preflight is not None:
+            values[f"{primary}_PREFLIGHT_OK"] = preflight
+        if moved:
+            values.update(RUN_HEAD_SHA="a" * 40, LATEST_HEAD_SHA="b" * 40,
+                          REPLACEMENT_RUN_ID="123")
+        return values
+
+    def _assert_red(self, result: subprocess.CompletedProcess[str]) -> None:
+        self.assertEqual(result.returncode, 1, "no proof must stay red: " + result.stdout)
+        self.assertNotIn("Perl LSP Rust Small Result: success", result.stdout)
+
+    def test_selected_primary_preflight_failure_and_cancelled_fallback(self) -> None:
+        for primary in ("CX53", "CX43"):
+            for moved in (False, True):
+                with self.subTest(primary=primary, moved=moved):
+                    result = self._run_evaluate(self._mixed(primary, "false", moved))
+                    self._assert_red(result)
+                    self.assertIn(f"{primary} preflight failed", result.stdout)
+                    self.assertNotIn("real test failure", result.stdout)
+                    self.assertNotIn("a lane failed alongside", result.stdout)
+                    verdict = "superseded" if moved else "cancelled-no-verdict"
+                    self.assertIn(f"RUST_SMALL_GATE_VERDICT={verdict}\n", result.stdout)
+
+    def test_preflight_true_failure_keeps_failure_precedence(self) -> None:
+        for primary in ("CX53", "CX43"):
+            for moved in (False, True):
+                with self.subTest(primary=primary, moved=moved):
+                    result = self._run_evaluate(self._mixed(primary, "true", moved))
+                    self._assert_red(result)
+                    self.assertIn("a lane failed alongside a cancelled lane", result.stdout)
+                    self.assertNotIn("RUST_SMALL_GATE_VERDICT=superseded", result.stdout)
+                    self.assertNotIn("This is NOT a test failure", result.stdout)
+
+    def test_missing_or_malformed_preflight_is_unknown(self) -> None:
+        for primary in ("CX53", "CX43"):
+            for preflight in (None, "", "False", "0", "garbage", "false "):
+                with self.subTest(primary=primary, preflight=preflight):
+                    result = self._run_evaluate(self._mixed(primary, preflight, True))
+                    self._assert_red(result)
+                    self.assertIn("a lane failed alongside a cancelled lane", result.stdout)
+                    self.assertNotIn("preflight failed", result.stdout)
+                    self.assertNotIn("real test failure", result.stdout)
+                    self.assertNotIn("RUST_SMALL_GATE_VERDICT=superseded", result.stdout)
+
+    def test_false_preflight_on_unselected_primary_is_not_inferred(self) -> None:
+        for primary, other in (("CX53", "CX43"), ("CX43", "CX53")):
+            with self.subTest(primary=primary):
+                values = self._mixed(primary, "false", True)
+                values.update({f"{primary}_RESULT": "skipped", f"{other}_RESULT": "failure",
+                               f"{other}_PREFLIGHT_OK": "false"})
+                result = self._run_evaluate(values)
+                self._assert_red(result)
+                self.assertIn("a lane failed alongside a cancelled lane", result.stdout)
+                self.assertNotIn("preflight failed", result.stdout)
+                self.assertNotIn("RUST_SMALL_GATE_VERDICT=superseded", result.stdout)
+
+    def test_other_failed_lane_keeps_precedence_over_preflight_failure(self) -> None:
+        for primary in ("CX53", "CX43"):
+            for failed, cancelled in (("GITHUB", "FALLBACK"), ("FALLBACK", "GITHUB")):
+                with self.subTest(primary=primary, failed=failed):
+                    values = self._mixed(primary, "false", True)
+                    values.update({f"{failed}_RESULT": "failure", f"{cancelled}_RESULT": "cancelled"})
+                    result = self._run_evaluate(values)
+                    self._assert_red(result)
+                    self.assertIn("a lane failed alongside a cancelled lane", result.stdout)
+                    self.assertNotIn("RUST_SMALL_GATE_VERDICT=superseded", result.stdout)
+
+    def test_supersession_requires_well_formed_moved_heads_and_run(self) -> None:
+        for overrides in ({"RUN_HEAD_SHA": "bad"}, {"LATEST_HEAD_SHA": ""},
+                          {"LATEST_HEAD_SHA": "a" * 40}, {"REPLACEMENT_RUN_ID": "bad"},
+                          {"REPLACEMENT_RUN_ID": ""}):
+            with self.subTest(overrides=overrides):
+                values = self._mixed("CX53", "false", True)
+                values.update(overrides)
+                result = self._run_evaluate(values)
+                self._assert_red(result)
+                self.assertIn("RUST_SMALL_GATE_VERDICT=cancelled-no-verdict\n", result.stdout)
+
+    def test_cancelled_lanes_stay_red_and_success_control_passes(self) -> None:
+        for lane in ("CX53", "CX43", "GITHUB", "FALLBACK"):
+            with self.subTest(lane=lane):
+                self._assert_red(self._run_evaluate({f"{lane}_RESULT": "cancelled"}))
+        self.assertEqual(self._run_evaluate({}).returncode, 0)
+        for result in ("skipped", "failure"):
+            with self.subTest(result=result):
+                self._assert_red(self._run_evaluate({"GITHUB_RESULT": result}))
+
+    def test_executable_green_and_errexit_mutants_are_rejected(self) -> None:
+        script = _evaluate_script(_workflow_text())
+        green = _evaluate_script(_green_partition_mutation(_workflow_text()))
+        self.assertNotEqual(green, script)
+        with self.assertRaisesRegex(AssertionError, "no proof must stay red"):
+            self._assert_red(self._run_evaluate(self._mixed("CX53", None, True)
+                                               | {"CX53_RESULT": "skipped"}, script=green))
+        without_errexit = _evaluate_script(
+            _mutate_evaluate(_workflow_text(), "set -euo pipefail", "set -uo pipefail")
+        )
+        self.assertNotEqual(without_errexit, script)
+        for result in ("skipped", "failure"):
+            with self.subTest(result=result):
+                with self.assertRaisesRegex(AssertionError, "no proof must stay red"):
+                    self._assert_red(self._run_evaluate({"GITHUB_RESULT": result},
+                                                       script=without_errexit))
 
 
 if __name__ == "__main__":
