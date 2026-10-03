@@ -87,6 +87,68 @@ fn lexer_handles_malformed_heredoc_gracefully() {
 }
 
 #[test]
+fn print_list_nested_parens_do_not_disable_later_heredocs() {
+    // #16163 review: a nested `)` inside the print list pops only the paren
+    // it closes, so the second filehandle-slot heredoc still opens.
+    let source = "print($fh <<'A', (1), <<'B');\nA\nB\n";
+    let mut lx = PerlLexer::new(source);
+    let tokens = lx.collect_tokens();
+    let heredocs =
+        tokens.iter().filter(|t| matches!(t.token_type, TokenType::HeredocStart)).count();
+    assert_eq!(heredocs, 2, "both slot heredocs must open: {tokens:?}");
+}
+
+#[test]
+fn print_list_comma_ends_the_filehandle_slot() {
+    // #16163 review: after the top-level comma the filehandle slot is over,
+    // so `<<` following a completed term is a left shift, not a heredoc.
+    let source = "print($fh, $y << 2);\n";
+    let mut lx = PerlLexer::new(source);
+    let tokens = lx.collect_tokens();
+    assert!(
+        !tokens.iter().any(|t| matches!(t.token_type, TokenType::HeredocStart)),
+        "a post-comma shift must not open a heredoc: {tokens:?}"
+    );
+}
+
+#[test]
+fn peeking_the_print_paren_keeps_the_slot_live() {
+    // #16163 review: peek_token must restore the print-list fields, so a
+    // peek at the `(` after `print` cannot consume the pending marker.
+    let source = "print($fh <<'END');\nEND\n";
+    let mut lx = PerlLexer::new(source);
+    let first = lx.next_token();
+    assert!(first.as_ref().is_some_and(|t| t.text.as_ref() == "print"), "expected the print token");
+    let peeked = lx.peek_token();
+    assert!(peeked.as_ref().is_some_and(|t| t.text.as_ref() == "("), "expected ( after print");
+    let tokens = lx.collect_tokens();
+    assert!(
+        tokens.iter().any(|t| matches!(t.token_type, TokenType::HeredocStart)),
+        "peeking the print paren must not disable the slot heredoc"
+    );
+}
+
+#[test]
+fn reset_inside_print_call_clears_the_slot() {
+    // #16163 review: reset must clear the print-list opener stack, so a
+    // stale slot cannot turn later shifts into heredocs.
+    let mut lx = PerlLexer::new("print($fh ");
+    while let Some(token) = lx.next_token() {
+        if token.text.as_ref() == "(" {
+            break;
+        }
+    }
+    lx.reset();
+    let mut lx = lx;
+    lx = PerlLexer::new("my $x = (1 << 2);\n");
+    let tokens = lx.collect_tokens();
+    assert!(
+        !tokens.iter().any(|t| matches!(t.token_type, TokenType::HeredocStart)),
+        "a reset must not leak a print slot into later shifts: {tokens:?}"
+    );
+}
+
+#[test]
 fn lexer_rejects_unterminated_backtick_heredoc_label() {
     let input = "<<`EOF\rprint 1;\r";
     let mut lx = PerlLexer::new(input);

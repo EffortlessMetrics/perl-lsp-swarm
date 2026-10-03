@@ -671,6 +671,8 @@ impl<'a> PerlLexer<'a> {
         let saved_hash_brace_depth = self.hash_brace_depth;
         let saved_after_var_subscript = self.after_var_subscript;
         let saved_paren_depth = self.paren_depth;
+        let saved_print_list_parens = self.print_list_parens.clone();
+        let saved_pending_print_list_paren = self.pending_print_list_paren;
         let saved_current_pos = self.current_pos;
         let saved_after_newline = self.after_newline;
         let saved_pending_heredocs = self.pending_heredocs.clone();
@@ -690,6 +692,8 @@ impl<'a> PerlLexer<'a> {
         self.hash_brace_depth = saved_hash_brace_depth;
         self.after_var_subscript = saved_after_var_subscript;
         self.paren_depth = saved_paren_depth;
+        self.print_list_parens = saved_print_list_parens;
+        self.pending_print_list_paren = saved_pending_print_list_paren;
         self.current_pos = saved_current_pos;
         self.after_newline = saved_after_newline;
         self.pending_heredocs = saved_pending_heredocs;
@@ -730,6 +734,8 @@ impl<'a> PerlLexer<'a> {
         self.hash_brace_depth = 0;
         self.after_var_subscript = false;
         self.paren_depth = 0;
+        self.print_list_parens.clear();
+        self.pending_print_list_paren = false;
         self.current_pos = Position::start();
         self.after_newline = true;
         self.pending_heredocs.clear();
@@ -943,22 +949,34 @@ impl<'a> PerlLexer<'a> {
     }
 
     fn try_heredoc(&mut self) -> Option<Token> {
-        if self.mode == LexerMode::ExpectOperator {
-            // `<<` is the left-shift operator, not a heredoc, when we are
-            // inside a parenthesized expression and have just finished a term.
-            // E.g. `(1<<index(...))` — the `1` sets ExpectOperator and
-            // paren_depth > 0, so `<<index` must be the bitshift operator, not
-            // a heredoc start.
-            //
-            // The paren guard alone must not fire at statement level
-            // (paren_depth == 0) because `print $fh <<END` is valid Perl:
-            // `$fh` sets ExpectOperator but `<<END` is a heredoc. A nullary
-            // authority is different (#16165): `sub foo ()` and `time`
-            // complete a term, so `foo <<END` and `time <<END` shift even at
-            // statement level (local Perl oracle).
-            if self.paren_depth > 0 || self.preceding_word_is_nullary() {
-                return None;
-            }
+        // `<<` is the left-shift operator, not a heredoc, when we are inside
+        // a parenthesized expression and have just finished a term.
+        // E.g. `(1<<index(...))` — the `1` sets ExpectOperator and paren_depth > 0,
+        // so `<<index` must be the bitshift operator, not a heredoc start.
+        //
+        // We must NOT fire the paren guard at statement level (paren_depth == 0)
+        // because `print $fh <<END` is valid Perl: `$fh` sets ExpectOperator but
+        // `<<END` is a heredoc. The depth check distinguishes the two cases.
+        //
+        // Per #16163, the same exception applies inside the parens of a list-
+        // operator `print(...)` call: the filehandle-like preceding term is still
+        // a print argument, not a regular expression operand, so `<<'END'` after
+        // `$fh` is a heredoc opener, not a left shift. `print_list_paren_depth`
+        // is incremented when `print` is invoked as a list operator with parens
+        // (no preceding `->` or `&`) and decremented on the matching `)`.
+        //
+        // A nullary authority is different (#16165): `sub foo ()` and `time`
+        // complete a term, so `foo <<END` and `time <<END` shift even at
+        // statement level (local Perl oracle).
+        let print_filehandle_slot =
+            self.print_list_parens.last().is_some_and(|(enclosing_depth, seen_comma)| {
+                self.paren_depth == enclosing_depth + 1 && !seen_comma
+            });
+        if self.mode == LexerMode::ExpectOperator
+            && ((self.paren_depth > 0 && !print_filehandle_slot)
+                || self.preceding_word_is_nullary())
+        {
+            return None;
         }
 
         // Check for heredoc start
@@ -2314,10 +2332,30 @@ impl<'a> PerlLexer<'a> {
                 TokenType::Identifier(Arc::from(text))
             };
 
+            // Detect `print(` invoked as a list operator at term position
+            // (no preceding `->` or `&`) for #16163. When the immediately
+            // following non-whitespace byte is `(`, mark the next open paren
+            // as the list-operator opener so `<<` inside the parens is
+            // recognized as a heredoc. Method (`->print`) and function
+            // (`&print`) calls are excluded; the parser sees `<<` as a
+            // left-shift operator there.
+            //
+            // The check runs BEFORE `after_arrow` is cleared below so the
+            // operator state at the start of the identifier still reflects
+            // whether `->` immediately preceded `print`.
+            if text == "print"
+                && !self.after_arrow
+                && self.print_list_paren_follows(start)
+                && !self.preceded_by_ampersand(start)
+            {
+                self.pending_print_list_paren = true;
+            }
+
             self.after_arrow = false;
             // A keyword/identifier is not a variable; `{` after it is a block opener.
             self.after_var_subscript = false;
             // hash_brace_depth is managed by { and } handlers, not cleared per-token
+
             Some(Token { token_type, text: Arc::from(text), start, end: self.position })
         } else {
             None
@@ -2666,6 +2704,17 @@ impl<'a> PerlLexer<'a> {
                 } else if self.in_prototype {
                     self.prototype_depth += 1;
                 }
+                // Track `print(...)` list-operator parens for #16163. The flag
+                // is set by the identifier handler when `print` at term position
+                // is followed (after horizontal whitespace) by `(`. The flag is
+                // consumed here even when nested prototypes re-enter the path.
+                if self.pending_print_list_paren {
+                    self.pending_print_list_paren = false;
+                    // Record the enclosing depth so the matching `)` pops
+                    // exactly this opener, never a nested paren (#16163
+                    // review).
+                    self.print_list_parens.push((self.paren_depth, false));
+                }
                 self.paren_depth += 1;
                 self.after_var_subscript = false;
                 // `->(` is a coderef call, not `->{`. Consume arrow state so a
@@ -2690,6 +2739,16 @@ impl<'a> PerlLexer<'a> {
                 }
                 self.after_arrow = false;
                 self.paren_depth = self.paren_depth.saturating_sub(1);
+                // A closing paren pops the `print(...)` opener it actually
+                // matches: the enclosing depth recorded at the opener equals
+                // this paren's depth after the decrement. A nested `)` inside
+                // the print list leaves the opener on the stack (#16163
+                // review).
+                if let Some((enclosing_depth, _)) = self.print_list_parens.last()
+                    && self.paren_depth == *enclosing_depth
+                {
+                    self.print_list_parens.pop();
+                }
                 // A closing paren ends any var-subscript context: `if ($var)` should
                 // NOT leave after_var_subscript set, otherwise the following `{` would
                 // incorrectly increment hash_brace_depth and suppress regex operators
@@ -2720,6 +2779,14 @@ impl<'a> PerlLexer<'a> {
             }
             ',' => {
                 self.advance();
+                // A top-level comma inside a `print(...)` list ends the
+                // filehandle slot (#16163 review): later arguments are
+                // ordinary list terms, so a following `<<` is a shift.
+                if let Some((enclosing_depth, seen_comma)) = self.print_list_parens.last_mut()
+                    && self.paren_depth == *enclosing_depth + 1
+                {
+                    *seen_comma = true;
+                }
                 self.after_var_subscript = false;
                 self.mode = LexerMode::ExpectTerm;
                 Some(Token {
