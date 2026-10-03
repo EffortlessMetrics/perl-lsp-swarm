@@ -871,6 +871,7 @@ jobs:
           # as `pr_secret_reference`. The job's own `permissions:` block is
           # what bounds the authority, and it is read-only.
           GH_TOKEN: ${{ github.token }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           REPOSITORY: ${{ github.repository }}
           RUN_ID: ${{ github.run_id }}
@@ -892,9 +893,9 @@ jobs:
           # actually moved, so this run can never find itself. The endpoint
           # constrains workflow and head SHA; event, pull-request association
           # and chronology it does not. `scripts/ci/replacement_run_filter.jq`
-          # applies those three identities — the same file the advisory
-          # aggregate and its tests run, so the rule cannot drift between the
-          # two aggregates (#16186).
+          # applies those three identities. Read its immutable base revision,
+          # never the candidate checkout, so a PR cannot invent the evidence
+          # that gives its cancellation the narrower superseded diagnostic.
           replacement=""
           if [[ "${latest}" =~ ^[0-9a-f]{40}$ ]] \
             && [[ "${tested}" =~ ^[0-9a-f]{40}$ ]] \
@@ -902,13 +903,24 @@ jobs:
             && [[ "${workflow_id}" =~ ^[0-9]+$ ]] \
             && [[ "${PR_NUMBER}" =~ ^[0-9]+$ ]] \
             && [[ "${created}" =~ ^[0-9T:Z-]+$ ]]; then
-            # Arguments are passed as jq arguments, never interpolated into the
-            # program text, so neither value can alter what the filter does.
-            replacement="$(gh api \
-              "repos/${REPOSITORY}/actions/workflows/${workflow_id}/runs?head_sha=${latest}&event=pull_request&per_page=30" \
-              2>/dev/null \
-              | jq -r --argjson pr "${PR_NUMBER}" --arg since "${created}" \
-                  -f scripts/ci/replacement_run_filter.jq 2>/dev/null || true)"
+            trusted_filter=""
+            if [[ "${BASE_SHA:-}" =~ ^[0-9a-f]{40}$ ]] \
+              && trusted_filter="$(mktemp)" \
+              && gh api \
+                  "repos/${REPOSITORY}/contents/scripts/ci/replacement_run_filter.jq?ref=${BASE_SHA}" \
+                  --jq '.content // empty' 2>/dev/null \
+                  | tr -d '\n' | base64 --decode >"$trusted_filter" \
+              && [ -s "$trusted_filter" ]; then
+              # Arguments are data; only the trusted base supplies the program.
+              replacement="$(gh api \
+                "repos/${REPOSITORY}/actions/workflows/${workflow_id}/runs?head_sha=${latest}&event=pull_request&per_page=30" \
+                2>/dev/null \
+                | jq -r --argjson pr "${PR_NUMBER}" --arg since "${created}" \
+                    -f "$trusted_filter" 2>/dev/null || true)"
+            else
+              echo "::notice::Trusted base replacement filter unavailable; no replacement is proven."
+            fi
+            if [ -n "$trusted_filter" ]; then rm -f "$trusted_filter"; fi
           fi
 
           # Only well-formed values are exported. An unexported variable reads

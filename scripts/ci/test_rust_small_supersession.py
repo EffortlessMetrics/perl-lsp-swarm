@@ -24,17 +24,20 @@ ported into `em-ci-routed-rust.yml`, and this file owns its contract for
   resurrect — the #16187 blocking precondition.
 
 Workflow-text inspection detects the listed wiring and single-clause text
-mutations by name; it does not execute the resolve step or its API lookups.
-Separate shell controls execute the actual evaluate block with supplied lane
-and head evidence, covering mixed preflight/cancellation results and genuinely
-executable green/errexit mutants. These local controls cannot establish the
-remaining live hand-cancel acceptance observation.
+mutations by name. Separate shell controls execute the actual resolver with
+stubbed API responses and real jq, and the actual evaluator with supplied lane
+and head evidence. They cover trusted-base filter provenance, mixed
+preflight/cancellation results and executable candidate-filter/green/errexit
+mutants. They cannot establish live API or hand-cancel acceptance observations.
 """
 
 from __future__ import annotations
 
+import base64
+import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -98,6 +101,11 @@ def _evaluate_script(text: str) -> str:
     return textwrap.dedent(step.split("        run: |\n", 1)[1])
 
 
+def _resolve_script(text: str) -> str:
+    step = _step_body(_job_body(text, RESULT_JOB), RESOLVE_STEP)
+    return textwrap.dedent(step.split("        run: |\n", 1)[1])
+
+
 def discriminator_violations(text: str) -> list[str]:
     """Workflow-text wiring and wording violations of the discriminator contract."""
     violations: list[str] = []
@@ -155,11 +163,15 @@ def discriminator_violations(text: str) -> list[str]:
         violations.append("replacement lookup must query the live head")
     if "${workflow_id}" not in resolve:
         violations.append("replacement lookup must be bound to this workflow")
-    if f"-f {IDENTITY_FILTER}" not in resolve:
+    if (f"contents/{IDENTITY_FILTER}?ref=${{BASE_SHA}}" not in resolve
+            or '-f "$trusted_filter"' not in resolve
+            or f"-f {IDENTITY_FILTER}" in resolve):
         violations.append(
-            "replacement identity must come from the shared filter file, not "
-            "an inline copy that can drift from the advisory aggregate"
+            "replacement identity must come from the shared filter file at the "
+            "trusted base, never candidate content or an inline copy"
         )
+    if "BASE_SHA: ${{ github.event.pull_request.base.sha }}" not in resolve:
+        violations.append("resolve step must bind the immutable trusted base")
     for clause, label in (
         ('[[ "${latest}" =~ ^[0-9a-f]{40}$ ]]', "live head 40-hex shape"),
         ('[[ "${tested}" =~ ^[0-9a-f]{40}$ ]]', "tested head 40-hex shape"),
@@ -279,7 +291,7 @@ MUTATIONS: tuple[tuple[str, str, Callable[[str], str], str], ...] = (
     (
         "identity filter duplicated inline",
         "the shared rule can drift from the advisory aggregate",
-        lambda t: t.replace(f"-f {IDENTITY_FILTER}", "-f /dev/null"),
+        lambda t: t.replace('-f "$trusted_filter"', "-f /dev/null"),
         "shared filter file",
     ),
     (
@@ -339,8 +351,101 @@ class SharedFilterFileWiring(unittest.TestCase):
         ci_yml = ROOT / ".github" / "workflows" / "ci.yml"
         if ci_yml.is_file():
             advisory = ci_yml.read_text(encoding="utf-8")
-        self.assertIn(f"-f {IDENTITY_FILTER}", routed)
+        self.assertIn(f"contents/{IDENTITY_FILTER}?ref=${{BASE_SHA}}", routed)
+        self.assertIn('-f "$trusted_filter"', routed)
         self.assertIn(f"-f {IDENTITY_FILTER}", advisory)
+
+
+class ExecutableResolverControls(unittest.TestCase):
+    """Execute the resolver with real jq, isolated candidate files and stubbed API data."""
+
+    def _run_resolve(
+        self, *, content: str = "trusted", base: str = "c" * 40,
+        qualifying: bool = True, api_status: int = 0, script: str | None = None,
+    ) -> tuple[dict[str, str], list[str]]:
+        bash = os.environ.get("RUST_SMALL_TEST_BASH") or shutil.which("bash")
+        self.assertIsNotNone(bash, "bash is required to execute the production resolver")
+        self.assertIsNotNone(shutil.which("jq"), "jq is required to execute the production filter")
+        trusted = (ROOT / IDENTITY_FILTER).read_bytes()
+        if content == "trusted":
+            content = base64.b64encode(trusted).decode("ascii")
+        run = json.dumps({"head_sha": "a" * 40, "workflow_id": 7,
+                          "created_at": "2026-09-20T12:00:00Z"})
+        runs = [{"id": 666, "event": "push", "pull_requests": [{"number": 16239}],
+                 "created_at": "2026-09-20T12:02:00Z"},
+                {"id": 777, "event": "pull_request", "pull_requests": [{"number": 1}],
+                 "created_at": "2026-09-20T12:02:00Z"},
+                {"id": 555, "event": "pull_request", "pull_requests": [{"number": 16239}],
+                 "created_at": "2026-09-20T11:59:00Z"}]
+        if qualifying:
+            runs.append({"id": 888, "event": "pull_request", "pull_requests": [{"number": 16239}],
+                         "created_at": "2026-09-20T12:01:00Z"})
+        responses = {
+            "repos/owner/repo/actions/runs/11": (run, 0),
+            "repos/owner/repo/pulls/16239": ("b" * 40, 0),
+            f"repos/owner/repo/contents/{IDENTITY_FILTER}?ref={'c' * 40}": (content, api_status),
+            f"repos/owner/repo/actions/workflows/7/runs?head_sha={'b' * 40}&event=pull_request&per_page=30":
+                (json.dumps({"workflow_runs": runs}), 0),
+        }
+        cases = "\n".join(
+            f"{shlex.quote(endpoint)}) printf '%s' {shlex.quote(body)}; return {status} ;;"
+            for endpoint, (body, status) in responses.items()
+        )
+        stub = 'gh() { printf "%s\\n" "$2" >> "$API_CALLS"; case "$2" in\n' + cases
+        stub += '\n*) echo "unexpected API endpoint" >&2; return 97 ;; esac; };\n'
+        env = {key: os.environ[key] for key in ("PATH", "SystemRoot") if key in os.environ}
+        with tempfile.TemporaryDirectory(prefix="rust-small-resolver-") as scratch:
+            directory = Path(scratch)
+            candidate_filter = directory / IDENTITY_FILTER
+            candidate_filter.parent.mkdir(parents=True)
+            candidate_filter.write_text("999\n", encoding="utf-8")
+            env_file, calls_file = directory / "env", directory / "calls"
+            env_file.touch()
+            calls_file.touch()
+            env.update(BASE_SHA=base, RUN_ID="11", PR_NUMBER="16239", REPOSITORY="owner/repo",
+                       GITHUB_ENV=env_file.as_posix(), API_CALLS=calls_file.as_posix(),
+                       TMPDIR=directory.as_posix(), RUNNER_TEMP=directory.as_posix())
+            result = subprocess.run(
+                [bash, "--noprofile", "--norc"],
+                input=stub + (script if script is not None else _resolve_script(_workflow_text())),
+                cwd=directory, env=env, capture_output=True, text=True, encoding="utf-8", timeout=10,
+            )
+            exports = dict(line.split("=", 1) for line in env_file.read_text().splitlines())
+            calls = calls_file.read_text().splitlines()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotIn("unexpected API endpoint", result.stderr)
+        self.assertEqual(exports.get("RUN_HEAD_SHA"), "a" * 40)
+        self.assertEqual(exports.get("LATEST_HEAD_SHA"), "b" * 40)
+        return exports, calls
+
+    def test_candidate_filter_cannot_invent_a_replacement(self) -> None:
+        exports, calls = self._run_resolve(qualifying=False)
+        self.assertNotIn("REPLACEMENT_RUN_ID", exports)
+        self.assertIn(f"repos/owner/repo/contents/{IDENTITY_FILTER}?ref={'c' * 40}", calls)
+
+    def test_trusted_filter_retains_event_pr_and_chronology_guards(self) -> None:
+        exports, calls = self._run_resolve()
+        self.assertEqual(exports.get("REPLACEMENT_RUN_ID"), "888")
+        self.assertEqual(sum("/contents/" in call for call in calls), 1)
+
+    def test_unavailable_or_malformed_base_filter_stays_unbound(self) -> None:
+        for options in ({"base": "not-a-sha"}, {"content": ""}, {"content": "!invalid-base64!"},
+                        {"content": base64.b64encode(b"invalid jq syntax !").decode("ascii")},
+                        {"api_status": 1}):
+            with self.subTest(options=options):
+                exports, calls = self._run_resolve(**options)
+                self.assertNotIn("REPLACEMENT_RUN_ID", exports)
+                if "base" in options:
+                    self.assertFalse(any("/contents/" in call for call in calls))
+
+    def test_candidate_filter_fallback_mutant_is_rejected(self) -> None:
+        script = _resolve_script(_workflow_text())
+        mutant = script.replace('-f "$trusted_filter"', f"-f {IDENTITY_FILTER}")
+        self.assertNotEqual(mutant, script)
+        exports, _ = self._run_resolve(qualifying=False, script=mutant)
+        self.assertEqual(exports.get("REPLACEMENT_RUN_ID"), "999")
+        with self.assertRaises(AssertionError):
+            self.assertNotIn("REPLACEMENT_RUN_ID", exports)
 
 
 class ExecutableCancellationControls(unittest.TestCase):
