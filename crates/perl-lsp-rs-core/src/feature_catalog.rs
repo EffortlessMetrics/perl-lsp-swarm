@@ -7,14 +7,17 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
+use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-/// Default DAP feature identifiers emitted when catalog processing fails.
+use crate::hashing::sha256_hex;
+
+/// Default DAP feature identifiers retained for absorption-surface tests.
 ///
-/// `dap.inline_values` is deliberately absent (#9089): the custom inlineValues
-/// extension is fail-closed, so a fallback that re-advertised it on catalog
-/// failure would contradict the single negotiation authority.
+/// This is **not** a production package fallback. Package-isolated catalog
+/// resolution must fail closed on missing/stale/malformed/empty input (#9201)
+/// instead of emitting these rows.
 pub const DEFAULT_DAP_FEATURES: &[&str] = &["dap.breakpoints.basic", "dap.core"];
 
 /// Source metadata for the catalog file.
@@ -472,6 +475,49 @@ impl AreaStats {
     }
 }
 
+/// Landed #9198/#9199 projection class consumed by package fallbacks.
+pub const PROJECTION_CLASS_FULL_CATALOG: &str = "FullCatalog";
+
+/// Stable fail-closed resolver codes (#9201).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CatalogRejectCode {
+    /// Package-isolated resolution has no crate-local generated fallback.
+    MissingFallback,
+    /// Generated fallback digest does not match the explicit authority digest.
+    StaleDigest,
+    /// Generated fallback is not valid catalog TOML / fails schema validation.
+    MalformedFallback,
+    /// Generated fallback is not the declared FullCatalog projection.
+    WrongProjection,
+    /// Generated fallback has no advertised/current catalog rows.
+    EmptyFallback,
+    /// Cargo package identity does not match the requested consumer.
+    WrongPackage,
+    /// An explicit override was supplied on a package-isolated production path.
+    OverrideNotAllowed,
+}
+
+impl CatalogRejectCode {
+    /// Machine-stable code used by `feature-catalog check` and fixtures.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::MissingFallback => "MISSING_FALLBACK",
+            Self::StaleDigest => "STALE_DIGEST",
+            Self::MalformedFallback => "MALFORMED_FALLBACK",
+            Self::WrongProjection => "WRONG_PROJECTION",
+            Self::EmptyFallback => "EMPTY_FALLBACK",
+            Self::WrongPackage => "WRONG_PACKAGE",
+            Self::OverrideNotAllowed => "OVERRIDE_NOT_ALLOWED",
+        }
+    }
+}
+
+impl fmt::Display for CatalogRejectCode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// Error type used by catalog operations.
 #[derive(Debug, thiserror::Error)]
 pub enum CatalogError {
@@ -494,6 +540,15 @@ pub enum CatalogError {
     /// Validation failure after deserialization.
     #[error("invalid features catalog: {0}")]
     Validation(String),
+
+    /// Resolver rejected a source before it could drive build outputs (#9201).
+    #[error("{code}: {detail}")]
+    Rejected {
+        /// Stable reject code.
+        code: CatalogRejectCode,
+        /// Path and comparison detail.
+        detail: String,
+    },
 }
 
 impl perl_parser_core::ErrorClass for CatalogError {
@@ -503,6 +558,16 @@ impl perl_parser_core::ErrorClass for CatalogError {
             Self::MissingSource(_) | Self::MissingOverride(_) | Self::Io(_) => {
                 perl_parser_core::ErrorCategory::Infra
             }
+            Self::Rejected { code, .. } => match code {
+                CatalogRejectCode::MissingFallback | CatalogRejectCode::OverrideNotAllowed => {
+                    perl_parser_core::ErrorCategory::Infra
+                }
+                CatalogRejectCode::StaleDigest
+                | CatalogRejectCode::MalformedFallback
+                | CatalogRejectCode::WrongProjection
+                | CatalogRejectCode::EmptyFallback
+                | CatalogRejectCode::WrongPackage => perl_parser_core::ErrorCategory::Bug,
+            },
             // The catalog is our own build artifact — a parse or validation
             // failure means we shipped a broken catalog, which is our bug.
             Self::Parse(_) | Self::Validation(_) => perl_parser_core::ErrorCategory::Bug,
@@ -511,7 +576,7 @@ impl perl_parser_core::ErrorClass for CatalogError {
 }
 
 /// Source selection detail for generated outputs and traceability.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CatalogSource {
     /// Resolved source path.
     pub path: PathBuf,
@@ -528,10 +593,19 @@ impl CatalogSource {
             CatalogSourceKind::Vendored => "// source: features_sot.toml\n",
         }
     }
+
+    /// Kind label recorded in generated modules and `feature-catalog check`.
+    pub const fn kind_label(&self) -> &'static str {
+        match self.kind {
+            CatalogSourceKind::Override => "override",
+            CatalogSourceKind::Workspace => "workspace",
+            CatalogSourceKind::Vendored => "package-fallback",
+        }
+    }
 }
 
 /// Which catalog source path was selected.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CatalogSourceKind {
     /// Path came from `FEATURES_TOML_OVERRIDE`.
     Override,
@@ -539,6 +613,83 @@ pub enum CatalogSourceKind {
     Workspace,
     /// Path came from crate-local `features_sot.toml`.
     Vendored,
+}
+
+/// How the resolver chooses workspace authority vs generated package fallback.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CatalogResolveMode {
+    /// Workspace `features.toml` first; crate-local fallback only when absent.
+    Auto,
+    /// Require workspace authority; never consume a package fallback.
+    Workspace,
+    /// Never walk to a workspace checkout; require the crate-local fallback.
+    PackageIsolated,
+}
+
+/// Inputs for deterministic catalog source selection (#9201).
+#[derive(Debug, Clone)]
+pub struct CatalogResolveRequest<'a> {
+    /// Package manifest directory (`CARGO_MANIFEST_DIR`).
+    pub manifest_dir: &'a Path,
+    /// Selection mode.
+    pub mode: CatalogResolveMode,
+    /// Explicit test/tooling override. Missing is terminal; package-isolated
+    /// mode refuses this path so it cannot become a production fallback.
+    pub override_path: Option<PathBuf>,
+    /// Expected Cargo package name when validating a package fallback.
+    pub package: Option<&'a str>,
+    /// Explicit root authority used to detect stale/wrong-projection bytes.
+    /// Package-isolated resolution must not discover this by walking parents.
+    pub authority_path: Option<&'a Path>,
+}
+
+/// Observable source/projection identity recorded into build outputs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CatalogIdentity {
+    /// SHA-256 of the selected source bytes (`sha256:<hex>`).
+    pub source_digest: String,
+    /// Declared projection class (`FullCatalog` on current main).
+    pub projection_class: &'static str,
+    /// Consuming Cargo package, when known.
+    pub package: Option<String>,
+    /// Catalog `meta.version`.
+    pub schema_version: String,
+    /// Catalog `meta.lsp_version`.
+    pub schema_lsp_version: String,
+}
+
+/// Fully resolved catalog plus inspectable identity.
+#[derive(Debug, Clone)]
+pub struct CatalogResolution {
+    /// Selected source path and kind.
+    pub source: CatalogSource,
+    /// Source/projection/package identity.
+    pub identity: CatalogIdentity,
+    /// Parsed catalog that may drive build outputs.
+    pub catalog: Catalog,
+}
+
+impl CatalogResolution {
+    /// Header recorded into generated Rust modules.
+    pub fn generated_header(&self) -> String {
+        let mut header = self.source.comment().to_string();
+        header.push_str(&format!("// catalog-source-kind: {}\n", self.source.kind_label()));
+        header.push_str(&format!("// catalog-source-digest: {}\n", self.identity.source_digest));
+        header.push_str(&format!("// catalog-projection: {}\n", self.identity.projection_class));
+        if let Some(package) = &self.identity.package {
+            header.push_str(&format!("// catalog-package: {package}\n"));
+        }
+        header.push_str(&format!("// catalog-schema-version: {}\n", self.identity.schema_version));
+        header.push_str(&format!(
+            "// catalog-schema-lsp-version: {}\n",
+            self.identity.schema_lsp_version
+        ));
+        header
+    }
+}
+
+fn rejected(code: CatalogRejectCode, detail: impl Into<String>) -> CatalogError {
+    CatalogError::Rejected { code, detail: detail.into() }
 }
 
 /// Resolve catalog path using workspace-first lookup and override support.
@@ -553,35 +704,286 @@ fn resolve_catalog_source_with_override(
     manifest_dir: &Path,
     override_path: Option<PathBuf>,
 ) -> Result<CatalogSource, CatalogError> {
+    select_catalog_source(manifest_dir, CatalogResolveMode::Auto, override_path)
+}
+
+fn select_catalog_source(
+    manifest_dir: &Path,
+    mode: CatalogResolveMode,
+    override_path: Option<PathBuf>,
+) -> Result<CatalogSource, CatalogError> {
     if let Some(override_path) = override_path {
+        if mode == CatalogResolveMode::PackageIsolated {
+            return Err(rejected(
+                CatalogRejectCode::OverrideNotAllowed,
+                format!(
+                    "package-isolated resolution refuses FEATURES_TOML_OVERRIDE ({})",
+                    override_path.display()
+                ),
+            ));
+        }
         if !override_path.exists() {
             return Err(CatalogError::MissingOverride(override_path));
         }
         return Ok(CatalogSource { path: override_path, kind: CatalogSourceKind::Override });
     }
 
-    let local_workspace_candidate = manifest_dir.join("features.toml");
-    if local_workspace_candidate.exists() {
-        return Ok(CatalogSource {
-            path: local_workspace_candidate,
-            kind: CatalogSourceKind::Workspace,
+    match mode {
+        CatalogResolveMode::Auto => {
+            if let Some(path) = workspace_catalog_path(manifest_dir) {
+                return Ok(CatalogSource { path, kind: CatalogSourceKind::Workspace });
+            }
+            select_package_fallback(manifest_dir, CatalogResolveMode::Auto)
+        }
+        CatalogResolveMode::Workspace => {
+            let Some(path) = workspace_catalog_path(manifest_dir) else {
+                return Err(CatalogError::MissingSource(manifest_dir.to_path_buf()));
+            };
+            Ok(CatalogSource { path, kind: CatalogSourceKind::Workspace })
+        }
+        CatalogResolveMode::PackageIsolated => {
+            select_package_fallback(manifest_dir, CatalogResolveMode::PackageIsolated)
+        }
+    }
+}
+
+fn select_package_fallback(
+    manifest_dir: &Path,
+    mode: CatalogResolveMode,
+) -> Result<CatalogSource, CatalogError> {
+    let vendored = manifest_dir.join("features_sot.toml");
+    if !vendored.exists() {
+        return Err(if mode == CatalogResolveMode::PackageIsolated {
+            rejected(
+                CatalogRejectCode::MissingFallback,
+                format!(
+                    "package-isolated catalog requires {} (no workspace rediscovery)",
+                    vendored.display()
+                ),
+            )
+        } else {
+            CatalogError::MissingSource(manifest_dir.to_path_buf())
         });
     }
+    Ok(CatalogSource { path: vendored, kind: CatalogSourceKind::Vendored })
+}
 
-    let parent_workspace = manifest_dir.parent().and_then(Path::parent).and_then(|p| {
-        let path = p.join("features.toml");
+/// Resolve, validate, and identify a catalog source (#9201).
+pub fn resolve_catalog(
+    request: CatalogResolveRequest<'_>,
+) -> Result<CatalogResolution, CatalogError> {
+    let source =
+        select_catalog_source(request.manifest_dir, request.mode, request.override_path.clone())?;
+    finish_resolution(source, request.package, request.authority_path)
+}
+
+fn workspace_catalog_path(manifest_dir: &Path) -> Option<PathBuf> {
+    let local = manifest_dir.join("features.toml");
+    if local.exists() {
+        return Some(local);
+    }
+    manifest_dir.parent().and_then(Path::parent).and_then(|parent| {
+        let path = parent.join("features.toml");
         path.exists().then_some(path)
-    });
-    if let Some(path) = parent_workspace {
-        return Ok(CatalogSource { path, kind: CatalogSourceKind::Workspace });
+    })
+}
+
+fn finish_resolution(
+    source: CatalogSource,
+    expected_package: Option<&str>,
+    authority_path: Option<&Path>,
+) -> Result<CatalogResolution, CatalogError> {
+    let bytes = fs::read(&source.path)?;
+    let digest = sha256_hex(&bytes);
+    let catalog = parse_catalog_bytes(&source, &bytes)?;
+
+    if source.kind == CatalogSourceKind::Vendored {
+        validate_package_fallback(&source, &bytes, &catalog, expected_package, authority_path)?;
+    } else {
+        catalog.validate()?;
     }
 
-    let vendored = manifest_dir.join("features_sot.toml");
-    if vendored.exists() {
-        return Ok(CatalogSource { path: vendored, kind: CatalogSourceKind::Vendored });
+    let package = match source.kind {
+        CatalogSourceKind::Vendored => {
+            let Some(manifest_dir) = source.path.parent() else {
+                return Err(rejected(
+                    CatalogRejectCode::WrongPackage,
+                    format!("{} has no parent package directory", source.path.display()),
+                ));
+            };
+            Some(read_package_name(manifest_dir, expected_package)?)
+        }
+        CatalogSourceKind::Override | CatalogSourceKind::Workspace => {
+            expected_package.map(ToOwned::to_owned)
+        }
+    };
+
+    Ok(CatalogResolution {
+        source,
+        identity: CatalogIdentity {
+            source_digest: digest,
+            projection_class: PROJECTION_CLASS_FULL_CATALOG,
+            package,
+            schema_version: catalog.meta.version.clone(),
+            schema_lsp_version: catalog.meta.lsp_version.clone(),
+        },
+        catalog,
+    })
+}
+
+fn parse_catalog_bytes(source: &CatalogSource, bytes: &[u8]) -> Result<Catalog, CatalogError> {
+    let text = std::str::from_utf8(bytes).map_err(|error| {
+        if source.kind == CatalogSourceKind::Vendored {
+            rejected(
+                CatalogRejectCode::MalformedFallback,
+                format!("{}: {error}", source.path.display()),
+            )
+        } else {
+            CatalogError::Validation(format!("catalog is not valid UTF-8: {error}"))
+        }
+    })?;
+    let catalog: Catalog = match toml::from_str(text) {
+        Ok(catalog) => catalog,
+        Err(error) => {
+            return Err(if source.kind == CatalogSourceKind::Vendored {
+                rejected(
+                    CatalogRejectCode::MalformedFallback,
+                    format!("{}: {error}", source.path.display()),
+                )
+            } else {
+                CatalogError::Parse(error)
+            });
+        }
+    };
+    Ok(catalog)
+}
+
+fn validate_package_fallback(
+    source: &CatalogSource,
+    bytes: &[u8],
+    catalog: &Catalog,
+    expected_package: Option<&str>,
+    authority_path: Option<&Path>,
+) -> Result<(), CatalogError> {
+    catalog.validate().map_err(|error| {
+        rejected(
+            CatalogRejectCode::MalformedFallback,
+            format!("{}: {error}", source.path.display()),
+        )
+    })?;
+
+    if catalog.advertised_feature_ids().is_empty() {
+        return Err(rejected(
+            CatalogRejectCode::EmptyFallback,
+            format!(
+                "{} has no advertised/current catalog rows and cannot satisfy package proof",
+                source.path.display()
+            ),
+        ));
     }
 
-    Err(CatalogError::MissingSource(manifest_dir.to_path_buf()))
+    let Some(manifest_dir) = source.path.parent() else {
+        return Err(rejected(
+            CatalogRejectCode::WrongPackage,
+            format!("{} has no parent package directory", source.path.display()),
+        ));
+    };
+    let package_name = read_package_name(manifest_dir, expected_package)?;
+    if let Some(expected) = expected_package
+        && package_name != expected
+    {
+        return Err(rejected(
+            CatalogRejectCode::WrongPackage,
+            format!("{} is package {package_name}, expected {expected}", source.path.display()),
+        ));
+    }
+
+    if let Some(authority_path) = authority_path {
+        let authority = fs::read(authority_path)?;
+        let expected_digest = sha256_hex(&authority);
+        let actual_digest = sha256_hex(bytes);
+        if expected_digest != actual_digest {
+            if is_feature_id_subset(&authority, bytes) {
+                return Err(rejected(
+                    CatalogRejectCode::WrongProjection,
+                    format!(
+                        "{} is not FullCatalog versus {}: subset or other projection class",
+                        source.path.display(),
+                        authority_path.display()
+                    ),
+                ));
+            }
+            return Err(rejected(
+                CatalogRejectCode::StaleDigest,
+                format!(
+                    "{} digest {actual_digest} != authority {expected_digest}",
+                    source.path.display()
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn is_feature_id_subset(authority: &[u8], projection: &[u8]) -> bool {
+    let Ok(authority_text) = std::str::from_utf8(authority) else {
+        return false;
+    };
+    let Ok(projection_text) = std::str::from_utf8(projection) else {
+        return false;
+    };
+    let Ok(authority_catalog) = toml::from_str::<Catalog>(authority_text) else {
+        return false;
+    };
+    let Ok(projection_catalog) = toml::from_str::<Catalog>(projection_text) else {
+        return false;
+    };
+    let authority_ids: BTreeSet<&str> =
+        authority_catalog.feature.iter().map(|feature| feature.id.as_str()).collect();
+    let projection_ids: BTreeSet<&str> =
+        projection_catalog.feature.iter().map(|feature| feature.id.as_str()).collect();
+    !projection_ids.is_empty()
+        && projection_ids.len() < authority_ids.len()
+        && projection_ids.is_subset(&authority_ids)
+}
+
+#[derive(serde::Deserialize)]
+struct PackageManifestFile {
+    package: PackageManifestTable,
+}
+
+#[derive(serde::Deserialize)]
+struct PackageManifestTable {
+    name: String,
+}
+
+fn read_package_name(
+    manifest_dir: &Path,
+    expected_package: Option<&str>,
+) -> Result<String, CatalogError> {
+    let manifest_path = manifest_dir.join("Cargo.toml");
+    let text = fs::read_to_string(&manifest_path).map_err(|error| {
+        rejected(
+            CatalogRejectCode::WrongPackage,
+            format!("missing Cargo.toml at {}: {error}", manifest_path.display()),
+        )
+    })?;
+    let parsed: PackageManifestFile = toml::from_str(&text).map_err(|error| {
+        rejected(CatalogRejectCode::WrongPackage, format!("{}: {error}", manifest_path.display()))
+    })?;
+    if let Some(expected) = expected_package
+        && parsed.package.name != expected
+    {
+        return Err(rejected(
+            CatalogRejectCode::WrongPackage,
+            format!(
+                "{} package name is {}, expected {expected}",
+                manifest_path.display(),
+                parsed.package.name
+            ),
+        ));
+    }
+    Ok(parsed.package.name)
 }
 
 /// Load and validate catalog from an explicit path.
@@ -596,9 +998,14 @@ pub fn read_catalog(path: &Path) -> Result<Catalog, CatalogError> {
 pub fn load_catalog_for_build(
     manifest_dir: &Path,
 ) -> Result<(Catalog, CatalogSource), CatalogError> {
-    let source = resolve_catalog_source(manifest_dir)?;
-    let catalog = read_catalog(&source.path)?;
-    Ok((catalog, source))
+    let resolution = resolve_catalog(CatalogResolveRequest {
+        manifest_dir,
+        mode: CatalogResolveMode::Auto,
+        override_path: env::var_os("FEATURES_TOML_OVERRIDE").map(PathBuf::from),
+        package: None,
+        authority_path: None,
+    })?;
+    Ok((resolution.catalog, resolution.source))
 }
 
 /// Render `features.rs`-compatible LSP runtime module source.
@@ -735,7 +1142,10 @@ pub fn render_dap_feature_catalog_module(ids: &[&str]) -> String {
     code
 }
 
-/// Render fallback DAP catalog for offline or error cases.
+/// Render a DAP catalog module from explicit IDs.
+///
+/// This helper does not select a catalog source. Package-isolated builds must
+/// not call it to paper over a missing or empty fallback (#9201).
 pub fn render_dap_fallback_module(default_features: &[&str]) -> String {
     render_dap_feature_catalog_module(default_features)
 }
