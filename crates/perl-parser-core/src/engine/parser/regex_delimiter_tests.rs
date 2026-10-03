@@ -1,7 +1,42 @@
 #[cfg(test)]
 mod tests {
     use crate::engine::parser::Parser;
-    use perl_ast::ast::{Node, NodeKind, SourceLocation};
+    use perl_ast::ast::{Node, NodeKind, RegexSurfaceForm, SourceLocation};
+
+    #[test]
+    fn regex_source_operator_is_retained_independently_of_pattern() -> Result<(), String> {
+        // The same body and delimiters cannot be used to infer whether the
+        // source constructed a Regexp value or matched the default topic.
+        for (source, expected) in [
+            ("qr/foo/;", RegexSurfaceForm::Qr),
+            ("m/foo/;", RegexSurfaceForm::MatchOperator),
+            ("/foo/;", RegexSurfaceForm::BarePattern),
+        ] {
+            let mut parser = Parser::new(source);
+            let ast = parser.parse().map_err(|error| format!("{source}: {error}"))?;
+            let NodeKind::Program { statements } = &ast.kind else {
+                return Err(format!("{source}: expected program"));
+            };
+            let Some(statement) = statements.first() else {
+                return Err(format!("{source}: missing statement"));
+            };
+            let NodeKind::ExpressionStatement { expression } = &statement.kind else {
+                return Err(format!("{source}: expected expression statement"));
+            };
+            let NodeKind::Regex { form, .. } = &expression.kind else {
+                return Err(format!("{source}: expected regex, got {:?}", expression.kind));
+            };
+            assert_eq!(*form, expected, "{source}");
+            let atom = match expected {
+                RegexSurfaceForm::Qr => "qr",
+                RegexSurfaceForm::MatchOperator => "m",
+                RegexSurfaceForm::BarePattern => "bare",
+                _ => return Err(format!("{source}: unexpected regex surface form")),
+            };
+            assert!(expression.to_sexp().contains(&format!("(form {atom})")), "{source}");
+        }
+        Ok(())
+    }
 
     fn parse_code(input: &str) -> Option<perl_ast::ast::Node> {
         let mut parser = Parser::new(input);
