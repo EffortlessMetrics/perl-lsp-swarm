@@ -2,9 +2,7 @@ name: PR Title Check
 
 on:
   pull_request_target:
-    # The ruleset-required context is created only by the native Draft -> Ready
-    # transition. Draft metadata activity does not create a skipped success.
-    types: [ready_for_review]
+    types: [opened, edited, reopened, synchronize]
   workflow_dispatch: {}
 
 permissions:
@@ -13,11 +11,10 @@ permissions:
 
 jobs:
   validate-title:
-    name: validate-title
     # This metadata-only pull_request_target check must remain available even
     # when the optional self-hosted nano pool is offline. It never checks out
     # or executes candidate contents, so a hosted runner preserves the trust
-    # boundary while making title validation live at admission.
+    # boundary while making the required context live.
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -189,9 +186,13 @@ jobs:
               // Don't fail the check for this — it may be a private/internal reference
             }
 
-            // Self-clearing needs-issue-link: after admission, a title mutation
-            // must return the PR to Draft and request a fresh Ready transition.
-            // This run therefore clears the label only for the admitted title.
+            // Self-clearing needs-issue-link: this check re-runs on `edited` and
+            // `synchronize`, so once a PR's title carries a real (non-placeholder)
+            // issue reference, drop the label instead of leaving it for a manual
+            // clear at merge time. Per #3356: the title was fixed (a real issue
+            // ref added, this check went green) but `needs-issue-link` survived
+            // and blocked an ops merge under the "no needs-* label may merge"
+            // doctrine — the label-writer never reconciled its own label.
             if (labels.includes('needs-issue-link')) {
               try {
                 await github.rest.issues.removeLabel({
