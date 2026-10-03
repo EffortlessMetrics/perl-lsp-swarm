@@ -1,0 +1,325 @@
+{
+  "identities": [
+    {
+      "id": "connection_id",
+      "name": "ConnectionId",
+      "proposition": "Identifies one established physical or logical protocol connection occurrence.",
+      "scope": "One transport connection occurrence.",
+      "owner": "Connection authority.",
+      "equality": "Exact within the connection authority.",
+      "lifetime": "Never reused while any session or output obligation still names it.",
+      "variants": [],
+      "scoped_by": [],
+      "opaque": false,
+      "owner_validated": false,
+      "source": 9636
+    },
+    {
+      "id": "currentness_token",
+      "name": "CurrentnessToken",
+      "proposition": "Carries opaque evidence that a subject is current according to its owning authority.",
+      "scope": "One exact subject and authority generation.",
+      "owner": "Currentness authority.",
+      "equality": "Opaque equality through the owner; never structural or locally derived.",
+      "lifetime": "Valid only while the owner confirms the exact subject remains current.",
+      "variants": [],
+      "scoped_by": [],
+      "opaque": true,
+      "owner_validated": true,
+      "source": 9507
+    },
+    {
+      "id": "deadline_id",
+      "name": "DeadlineId",
+      "proposition": "Identifies one bounded time obligation.",
+      "scope": "One operation or work occurrence.",
+      "owner": "Deadline authority.",
+      "equality": "Exact per deadline obligation.",
+      "lifetime": "Settled once by completion, cancellation, or timeout.",
+      "variants": [],
+      "scoped_by": [],
+      "opaque": false,
+      "owner_validated": false,
+      "source": 7389
+    },
+    {
+      "id": "failure_id",
+      "name": "FailureId",
+      "proposition": "Identifies one bounded failure occurrence without redefining its semantic cause.",
+      "scope": "One failure observation.",
+      "owner": "Owning boundary that observed the failure.",
+      "equality": "Exact per observation.",
+      "lifetime": "Retained only as required for causal evidence and cleanup.",
+      "variants": [],
+      "scoped_by": [],
+      "opaque": false,
+      "owner_validated": false,
+      "source": 9506
+    },
+    {
+      "id": "ingress_sequence",
+      "name": "IngressSequence",
+      "proposition": "Orders observed message occurrences at one ingress authority.",
+      "scope": "One monotonically ordered ingress stream.",
+      "owner": "Ingress authority.",
+      "equality": "Integer order is meaningful only within its owning ingress stream.",
+      "lifetime": "Never moves backward or crosses connection scope.",
+      "variants": [],
+      "scoped_by": [
+        "connection_id"
+      ],
+      "opaque": false,
+      "owner_validated": false,
+      "source": 9636
+    },
+    {
+      "id": "lifecycle_transition_id",
+      "name": "LifecycleTransitionId",
+      "proposition": "Identifies one attempted or committed protocol lifecycle transition.",
+      "scope": "One session lifecycle.",
+      "owner": "Lifecycle authority.",
+      "equality": "Exact per transition occurrence.",
+      "lifetime": "Retained through the transition receipt and session cleanup.",
+      "variants": [],
+      "scoped_by": [
+        "session_id"
+      ],
+      "opaque": false,
+      "owner_validated": false,
+      "source": 9640
+    },
+    {
+      "id": "message_id",
+      "name": "MessageId",
+      "proposition": "Identifies one exact observed message occurrence.",
+      "scope": "One observed ingress occurrence.",
+      "owner": "Ingress authority.",
+      "equality": "Exact per occurrence; repeated equal bytes remain different messages.",
+      "lifetime": "Never reused within a session.",
+      "variants": [],
+      "scoped_by": [
+        "connection_id",
+        "session_id"
+      ],
+      "opaque": false,
+      "owner_validated": false,
+      "source": 9636
+    },
+    {
+      "id": "mutation_barrier_id",
+      "name": "MutationBarrierId",
+      "proposition": "Identifies one ordering barrier for state-changing work.",
+      "scope": "One ordered mutation relation.",
+      "owner": "Mutation authority.",
+      "equality": "Exact within the mutation stream.",
+      "lifetime": "Remains valid until all work ordered behind it observes settlement.",
+      "variants": [],
+      "scoped_by": [
+        "session_id"
+      ],
+      "opaque": false,
+      "owner_validated": false,
+      "source": 7389
+    },
+    {
+      "id": "operation_id",
+      "name": "OperationId",
+      "proposition": "Identifies one semantic application operation requested by a route.",
+      "scope": "One semantic operation.",
+      "owner": "Application boundary.",
+      "equality": "Exact within the application boundary.",
+      "lifetime": "May outlive one work occurrence but not its owning request cleanup.",
+      "variants": [],
+      "scoped_by": [
+        "request_key"
+      ],
+      "opaque": false,
+      "owner_validated": false,
+      "source": 10483
+    },
+    {
+      "id": "output_id",
+      "name": "OutputId",
+      "proposition": "Identifies one prepared or admitted writer obligation.",
+      "scope": "One outbound output obligation.",
+      "owner": "Output authority.",
+      "equality": "Exact per output obligation.",
+      "lifetime": "Lives until delivery fate and cleanup are known.",
+      "variants": [],
+      "scoped_by": [
+        "publication_id"
+      ],
+      "opaque": false,
+      "owner_validated": false,
+      "source": 9647
+    },
+    {
+      "id": "output_sequence",
+      "name": "OutputSequence",
+      "proposition": "Orders output obligations at one writer authority.",
+      "scope": "One writer stream.",
+      "owner": "Writer authority.",
+      "equality": "Integer order is meaningful only within its owning writer stream.",
+      "lifetime": "Never moves backward or crosses writer scope.",
+      "variants": [],
+      "scoped_by": [
+        "connection_id"
+      ],
+      "opaque": false,
+      "owner_validated": false,
+      "source": 9647
+    },
+    {
+      "id": "progress_key",
+      "name": "ProgressKey",
+      "proposition": "Identifies one progress stream independent from request identity.",
+      "scope": "One progress stream.",
+      "owner": "Progress authority.",
+      "equality": "Distinct from request and reverse-request domains even when raw values resemble.",
+      "lifetime": "Released only after progress completion or owning session cleanup.",
+      "variants": [],
+      "scoped_by": [
+        "session_id"
+      ],
+      "opaque": false,
+      "owner_validated": false,
+      "source": 9643
+    },
+    {
+      "id": "publication_id",
+      "name": "PublicationId",
+      "proposition": "Identifies one committed causal publication proposition.",
+      "scope": "One terminal publication commitment.",
+      "owner": "Publication authority.",
+      "equality": "Exact within the publication authority.",
+      "lifetime": "Never reused; rejection creates no committed publication identity.",
+      "variants": [],
+      "scoped_by": [
+        "request_key"
+      ],
+      "opaque": false,
+      "owner_validated": false,
+      "source": 9507
+    },
+    {
+      "id": "request_key",
+      "name": "RequestKey",
+      "proposition": "Identifies one JSON-RPC request obligation using an exact numeric or string variant.",
+      "scope": "One connection and session.",
+      "owner": "Request registration authority.",
+      "equality": "Numeric and string variants are distinct; equality is exact inside one scope.",
+      "lifetime": "The same raw variant may be reused only after exact cleanup; another connection or session is another key.",
+      "variants": [
+        "numeric",
+        "string"
+      ],
+      "scoped_by": [
+        "connection_id",
+        "session_id"
+      ],
+      "opaque": false,
+      "owner_validated": false,
+      "source": 11053
+    },
+    {
+      "id": "reservation_id",
+      "name": "ReservationId",
+      "proposition": "Identifies one capacity and accounting obligation.",
+      "scope": "One bounded resource reservation.",
+      "owner": "Admission authority.",
+      "equality": "Exact per reservation.",
+      "lifetime": "Released exactly once after every owner completes or transfers its obligation.",
+      "variants": [],
+      "scoped_by": [
+        "request_key"
+      ],
+      "opaque": false,
+      "owner_validated": false,
+      "source": 11051
+    },
+    {
+      "id": "reverse_request_key",
+      "name": "ReverseRequestKey",
+      "proposition": "Identifies one server-originated request awaiting a client response.",
+      "scope": "One connection and session.",
+      "owner": "Reverse-request authority.",
+      "equality": "Distinct from client request and progress identity domains.",
+      "lifetime": "Released only after response, cancellation, connection loss, or explicit timeout settlement.",
+      "variants": [
+        "numeric",
+        "string"
+      ],
+      "scoped_by": [
+        "connection_id",
+        "session_id"
+      ],
+      "opaque": false,
+      "owner_validated": false,
+      "source": 9644
+    },
+    {
+      "id": "route_id",
+      "name": "RouteId",
+      "proposition": "Identifies the selected protocol-to-application route.",
+      "scope": "One routing decision.",
+      "owner": "Routing authority.",
+      "equality": "Exact route identity, independent from operation and work occurrence.",
+      "lifetime": "Stable for the request after selection.",
+      "variants": [],
+      "scoped_by": [
+        "request_key"
+      ],
+      "opaque": false,
+      "owner_validated": false,
+      "source": 9636
+    },
+    {
+      "id": "session_id",
+      "name": "SessionId",
+      "proposition": "Identifies one lifecycle and runtime incarnation on a connection.",
+      "scope": "One runtime incarnation.",
+      "owner": "Lifecycle authority.",
+      "equality": "Exact within the lifecycle authority.",
+      "lifetime": "A new incarnation receives a new value even on the same connection.",
+      "variants": [],
+      "scoped_by": [
+        "connection_id"
+      ],
+      "opaque": false,
+      "owner_validated": false,
+      "source": 9640
+    },
+    {
+      "id": "task_id",
+      "name": "TaskId",
+      "proposition": "Identifies one runtime task occurrence.",
+      "scope": "One task-group occurrence.",
+      "owner": "Task-group authority.",
+      "equality": "Exact per task occurrence.",
+      "lifetime": "Lives through join, cancellation, or failure settlement.",
+      "variants": [],
+      "scoped_by": [
+        "session_id"
+      ],
+      "opaque": false,
+      "owner_validated": false,
+      "source": 9648
+    },
+    {
+      "id": "work_id",
+      "name": "WorkId",
+      "proposition": "Identifies one concrete queued or running work occurrence.",
+      "scope": "One scheduler work occurrence.",
+      "owner": "Scheduler authority.",
+      "equality": "Exact per work occurrence.",
+      "lifetime": "Never reused while the work or its cleanup remains unsettled.",
+      "variants": [],
+      "scoped_by": [
+        "operation_id"
+      ],
+      "opaque": false,
+      "owner_validated": false,
+      "source": 7389
+    }
+  ]
+}
