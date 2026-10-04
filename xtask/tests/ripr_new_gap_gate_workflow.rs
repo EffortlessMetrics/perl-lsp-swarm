@@ -2229,6 +2229,34 @@ fn ripr_infra_retry_is_bounded_and_gate_classified() -> Result<()> {
 }
 
 #[test]
+fn configured_timeout_pin_matches_hosted_job_budget() -> Result<()> {
+    // #16980: the classifier pins GitHub's exact 135-minute timeout
+    // annotation (`2h15m0s`). If ripr-github's budget changes, the pin
+    // silently stops matching and configured timeouts degrade to
+    // cancelled-no-verdict. Couple them so drift fails the suite.
+    let root = project_root()?;
+    let workflow = fs::read_to_string(root.join(".github/workflows/ripr.yml"))?;
+    let yaml: Value = serde_yaml_ng::from_str(&workflow)?;
+    let minutes = yaml
+        .get("jobs")
+        .and_then(|jobs| jobs.get("ripr-github"))
+        .and_then(|job| job.get("timeout-minutes"))
+        .and_then(Value::as_u64)
+        .ok_or_else(|| anyhow!("ripr-github timeout-minutes is missing"))?;
+    assert_eq!(
+        minutes, 135,
+        "ripr-github budget moved; update the classifier pin with it"
+    );
+    let classifier =
+        fs::read_to_string(root.join("scripts/ci/classify-ripr-lane-termination"))?;
+    assert!(
+        classifier.contains("The job has exceeded the maximum execution time of 2h15m0s"),
+        "classifier must pin the exact 135-minute timeout annotation"
+    );
+    Ok(())
+}
+
+#[test]
 fn ripr_cancelled_gate_requires_current_job_timeout_annotation() -> Result<()> {
     // The steps endpoint serves the raw jobs listing; the gate projects the
     // selected lane job through first(.jobs[] | select(.name == ...)) itself,
