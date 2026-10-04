@@ -333,8 +333,9 @@ impl SemanticAnalyzer {
     /// `class_models` therefore lets a later segment hide an earlier one's
     /// parents, roles, and methods. Perl has one package here, so the segments
     /// are combined before any resolution decision is made. Repeated methods
-    /// are replaced by their later declaration, and later explicit ancestry or
-    /// MRO declarations replace earlier package state.
+    /// are replaced by their later declaration, later explicit ancestry or
+    /// MRO declarations replace earlier package state, and roles accumulate
+    /// across segments.
     fn merged_class_models(&self) -> Vec<ClassModel> {
         merge_reopened_class_models(&self.class_models)
     }
@@ -2959,7 +2960,7 @@ my %config = (key => "value");
     }
 
     #[test]
-    fn test_reopened_package_later_ancestry_replaces_parents_and_roles()
+    fn test_reopened_package_later_ancestry_replaces_parents_but_adds_roles()
     -> Result<(), Box<dyn std::error::Error>> {
         let code = concat!(
             "package OldParent;\n",
@@ -2992,7 +2993,7 @@ my %config = (key => "value");
             .find(|model| model.name == "Child")
             .ok_or("Child model not found")?;
         assert_eq!(child.parents, vec!["NewParent"]);
-        assert_eq!(child.roles, vec!["NewRole"]);
+        assert_eq!(child.roles, vec!["OldRole", "NewRole"]);
 
         let offset = modifier_target_offset(code, "before 'save'", "save")
             .ok_or("modifier target not found")?;
