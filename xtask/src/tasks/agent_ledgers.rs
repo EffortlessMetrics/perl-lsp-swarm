@@ -336,7 +336,21 @@ pub struct ValidateOutput {
 // ---------------------------------------------------------------------------
 
 pub fn validate(config: ValidateConfig) -> Result<()> {
+    let explicit_dir = config.ledger_dir.is_some();
     let ledger_dir = resolve_ledger_dir(config.ledger_dir)?;
+
+    // An explicitly requested directory that does not exist is an operator
+    // mistake — most often a typo'd `--dir` override — and letting it
+    // validate as `OK 0 file(s), 0 line(s) valid` (exit 0, json `ok:true`)
+    // is a fail-open hole for agents scripting against this command
+    // (#17167). The implicit default (`docs/agents/ledgers/`) keeps its
+    // bootstrap leniency: a fresh clone legitimately has no ledgers yet.
+    if explicit_dir && !ledger_dir.exists() {
+        color_eyre::eyre::bail!(
+            "explicit ledger directory does not exist: {}",
+            ledger_dir.display()
+        );
+    }
 
     let expected_schema = match config.expected_schema.as_deref() {
         None => None,
@@ -378,17 +392,26 @@ pub fn validate(config: ValidateConfig) -> Result<()> {
             for e in &output.errors {
                 eprintln!("ERROR  {e}");
             }
+            if output.files_checked == 0 {
+                eprintln!(
+                    "WARN  no .jsonl ledger files found in {} — nothing was validated",
+                    ledger_dir.display()
+                );
+            }
             if output.ok {
                 println!(
-                    "OK  {} file(s), {} line(s) valid",
-                    output.files_checked, output.lines_checked
+                    "OK  {} file(s), {} line(s) valid in {}",
+                    output.files_checked,
+                    output.lines_checked,
+                    ledger_dir.display()
                 );
             } else {
                 println!(
-                    "FAIL  {} error(s) in {} file(s), {} line(s) checked",
+                    "FAIL  {} error(s) in {} file(s), {} line(s) checked in {}",
                     output.errors.len(),
                     output.files_checked,
-                    output.lines_checked
+                    output.lines_checked,
+                    ledger_dir.display()
                 );
             }
         }
@@ -1480,16 +1503,46 @@ mod tests {
     }
 
     #[test]
-    fn test_missing_ledger_directory_is_empty_success() -> Result<()> {
+    fn test_explicit_missing_ledger_directory_fails_closed() -> Result<()> {
         let temp = tempfile::tempdir()?;
         let missing_dir = temp.path().join("missing-ledgers");
 
+        // The collector itself stays lenient — the implicit default directory
+        // may legitimately not exist on a fresh bootstrap. `validate` is what
+        // refuses an explicit `--dir` that names nothing (#17167): a typo'd
+        // override must not validate as `OK 0 file(s), 0 line(s) valid`.
         ensure!(
             collect_jsonl_files(&missing_dir)?.is_empty(),
             "missing ledger directory should collect no files"
         );
+        let err = validate(ValidateConfig {
+            ledger_dir: Some(missing_dir.clone()),
+            format: ValidateFormat::Human,
+            expected_schema: None,
+        })
+        .err()
+        .ok_or_else(|| eyre!("nonexistent explicit --dir must not validate as OK"))?;
+
+        let missing_display = missing_dir.display().to_string();
+        ensure!(
+            err.to_string().contains(&missing_display),
+            "fail-closed error must name the resolved path {missing_display}, got: {err:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_existing_but_empty_explicit_directory_passes_with_zero_files() -> Result<()> {
+        // An explicit directory that exists but holds no .jsonl files is not
+        // the fail-open case (#17167) — the operator pointed at a real
+        // directory. It still passes, and human output carries the WARN line
+        // for zero files plus the directory in the summary.
+        let temp = tempfile::tempdir()?;
+        let empty_dir = temp.path().join("ledgers");
+        fs::create_dir_all(&empty_dir)?;
+
         validate(ValidateConfig {
-            ledger_dir: Some(missing_dir),
+            ledger_dir: Some(empty_dir),
             format: ValidateFormat::Human,
             expected_schema: None,
         })?;
