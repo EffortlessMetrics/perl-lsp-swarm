@@ -58,7 +58,9 @@ pub fn build_ripr_facts_packet(
     let wants_tests = normalized_classes.iter().any(|c| c == "tests");
     let wants_oracles = normalized_classes.iter().any(|c| c == "oracles");
     let wants_relations = normalized_classes.iter().any(|c| c == "relations");
-    let (tests, oracles, test_provenance, test_limitations) =
+    let wants_dynamic_boundaries = normalized_classes.iter().any(|c| c == "dynamic_boundaries");
+    let wants_verify_commands = normalized_classes.iter().any(|c| c == "verify_commands");
+    let (tests, oracles, mut test_provenance, mut test_limitations) =
         if wants_tests || wants_oracles || wants_relations {
             emit_tests_and_oracles(root)
         } else {
@@ -69,6 +71,26 @@ pub fn build_ripr_facts_packet(
         emit_relations_and_discriminators(root, &tests, &oracles);
     let has_relation_candidates = !relations.is_empty();
 
+    // Gate `dynamic_boundaries[]`/`verify_commands[]` on the requested classes
+    // (#17256): subset requests must not carry facts outside the advertised
+    // `requested_fact_classes`. The emitter runs when either class is wanted
+    // (one fused walk feeds both, mirroring the "computed for internal need"
+    // split), then each array is dropped unless explicitly requested. Boundary
+    // limitations describe boundary facts, so they flow only when boundaries
+    // are in the packet.
+    let (boundaries, boundary_limitations, verify_commands) =
+        if wants_dynamic_boundaries || wants_verify_commands {
+            emit_boundaries_and_commands(root)
+        } else {
+            (Vec::new(), Vec::new(), Vec::new())
+        };
+    let boundaries = if wants_dynamic_boundaries { boundaries } else { Vec::new() };
+    let boundary_limitations =
+        if wants_dynamic_boundaries { boundary_limitations } else { Vec::new() };
+    let verify_commands = if wants_verify_commands { verify_commands } else { Vec::new() };
+    let has_boundary_facts = !boundaries.is_empty();
+    let has_verify_facts = !verify_commands.is_empty();
+
     // Emit `tests[]`/`oracles[]` only for the specifically-requested classes; the
     // facts computed above may exist solely to feed `relations`. But referential
     // integrity trumps strict gating: an `oracle` carries a required `test_id` and
@@ -77,15 +99,32 @@ pub fn build_ripr_facts_packet(
     // request (nothing references an oracle — relations set `oracle_id: null` in
     // this slice), then keep `tests[]` whenever a relation OR an oracle references
     // one. This preserves the referential integrity origin/main had by always
-    // populating `tests[]`.
+    // populating `tests[]`. A `verify_commands[]` entry likewise carries a
+    // required `test_id`, so it forces `tests[]` too (#17256).
     let mut oracles = if wants_oracles { oracles } else { Vec::new() };
     let has_oracle_facts = !oracles.is_empty();
-    let tests =
-        if wants_tests || has_relation_candidates || has_oracle_facts { tests } else { Vec::new() };
+    let tests = if wants_tests || has_relation_candidates || has_oracle_facts || has_verify_facts {
+        // `#17256`: when neither tests, oracles, nor relations were requested,
+        // the tests parse above never ran — but a `verify_commands` request
+        // needs the referenced `test` facts. Re-run the parse for internal
+        // need (mirroring how PR 4 shared the gate for relations) and adopt
+        // its provenance + limitations: the forced tests reference their
+        // `test_discovery` provenance by id, and dropping it would dangle.
+        // Relations stay empty here — the relation pass above already ran on
+        // empty inputs — so no unrequested class leaks.
+        if !wants_tests && !wants_oracles && !wants_relations {
+            let (forced_tests, _, forced_provenance, forced_limitations) =
+                emit_tests_and_oracles(root);
+            test_provenance = forced_provenance;
+            test_limitations = forced_limitations;
+            forced_tests
+        } else {
+            tests
+        }
+    } else {
+        Vec::new()
+    };
     let has_test_facts = !tests.is_empty();
-
-    let (boundaries, boundary_limitations, verify_commands) = emit_boundaries_and_commands(root);
-    let has_boundary_facts = !boundaries.is_empty();
 
     // PR 3 (perl-lsp-swarm#3293): emit parser-backed files + owners facts (plus
     // per-file provenance and parse/read limitations) by parsing every Perl
@@ -240,7 +279,11 @@ pub fn build_ripr_facts_packet(
 
     // Upgrade status + merge limitations if we found any facts. Parse/read
     // limitations from the test and files passes are always surfaced (even with
-    // no facts).
+    // no facts). `verify_commands[]` is deliberately uncounted: a verify entry
+    // is a candidate command derived from a discovered `.t` file, not analyzed
+    // content, and since #17256 it can no longer leak into a subset packet —
+    // so a `verify_commands`-only request that forces `tests[]` still upgrades
+    // via the forced tests, never via the commands themselves.
     let has_facts = has_test_facts
         || has_oracle_facts
         || has_relation_facts
