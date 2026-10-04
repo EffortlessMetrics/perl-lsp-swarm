@@ -8,8 +8,8 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use crate::emitter::{
-    emit_boundaries_and_commands, emit_changes_from_diff, emit_files_and_owners,
-    emit_relations_and_discriminators, emit_tests_and_oracles,
+    diff_provenance_unverified_limitation, emit_boundaries_and_commands, emit_changes_from_diff,
+    emit_files_and_owners, emit_relations_and_discriminators, emit_tests_and_oracles,
 };
 use crate::request::{
     EXPECTED_RIPR_FACTS_SCHEMA, RiprFactsError, RiprFactsRequest, normalize_fact_classes,
@@ -40,14 +40,62 @@ pub fn build_ripr_facts_packet(
     // Validate root is repo-relative (forward-slash, no host/drive/temp).
     validate_ripr_facts_path(root, "root").map_err(RiprFactsError::InvalidRoot)?;
 
+    // Name the root condition (#17257): a missing root, or a root that is not a
+    // directory, would otherwise scan silently (the discovery walks return
+    // early on `read_dir` failure) and exit 0 with an undifferentiated
+    // `unavailable` packet. Surface it as a limitation, mirroring the packet's
+    // soft-failure posture, so a typo'd root cannot masquerade as an empty one.
+    let not_a_directory_limitation = || {
+        serde_json::json!({
+            "limitation_id": "root-not-a-directory",
+            "kind": "missing_input",
+            "message": format!("The requested root `{root}` cannot be scanned because a path component is not a directory, so no files were scanned."),
+            "evidence_refs": []
+        })
+    };
+    let root_limitations = match std::fs::metadata(root) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            if root_has_non_directory_ancestor(root) {
+                vec![not_a_directory_limitation()]
+            } else {
+                vec![serde_json::json!({
+                    "limitation_id": "root-missing",
+                    "kind": "missing_input",
+                    "message": format!("The requested root `{root}` does not exist under the current directory, so no files were scanned. An empty packet here means \"root not found\", not \"root is empty\"."),
+                    "evidence_refs": []
+                })]
+            }
+        }
+        Err(_) if root_has_non_directory_ancestor(root) => {
+            vec![not_a_directory_limitation()]
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotADirectory => {
+            vec![not_a_directory_limitation()]
+        }
+        Err(error) => vec![serde_json::json!({
+            "limitation_id": "root-inspection-failed",
+            "kind": "read_failure",
+            "message": format!("The requested root `{root}` could not be inspected ({error}), so no files were scanned."),
+            "evidence_refs": []
+        })],
+        Ok(metadata) if !metadata.is_dir() => vec![serde_json::json!({
+            "limitation_id": "root-not-a-directory",
+            "kind": "missing_input",
+            "message": format!("The requested root `{root}` exists but is not a directory, so no files were scanned."),
+            "evidence_refs": []
+        })],
+        Ok(_) => Vec::new(),
+    };
+
     // Validate + normalize fact classes.
     let normalized_classes =
         normalize_fact_classes(fact_classes).map_err(RiprFactsError::InvalidFactClasses)?;
 
     // Emit the packet. Parser-backed tests/oracles (#3293 PR 4), relations/
-    // discriminators (#2594), boundaries/commands (#2595), and parser-backed
-    // files/owners (#3293 PR 3) are populated; diff-derived changes still land in
-    // a later slice. When any facts are found, `packet_status` upgrades from
+    // discriminators (#2594, parser-backed `direct_owner_call` #3293 PR 6),
+    // boundaries/commands (#2595), parser-backed files/owners (#3293 PR 3),
+    // and diff-derived changes from caller-supplied diff text (#3293 PR 5)
+    // are populated. When any facts are found, `packet_status` upgrades from
     // `unavailable` to `partial`.
     //
     // PR 4: parse test files only when `tests`/`oracles` — or `relations`, a
@@ -86,6 +134,9 @@ pub fn build_ripr_facts_packet(
 
     let (boundaries, boundary_limitations, verify_commands) = emit_boundaries_and_commands(root);
     let has_boundary_facts = !boundaries.is_empty();
+    // Verify commands are facts too: a verify-only packet carries usable
+    // commands and must read `partial`, never `unavailable`-with-facts.
+    let has_verify_facts = !verify_commands.is_empty();
 
     // PR 3 (perl-lsp-swarm#3293): emit parser-backed files + owners facts (plus
     // per-file provenance and parse/read limitations) by parsing every Perl
@@ -118,24 +169,42 @@ pub fn build_ripr_facts_packet(
     // the diff is opaque text. `changes` requested without a diff yields an empty
     // array plus a `no-diff-supplied` limitation, so a downstream consumer can
     // distinguish "not analyzed" from "nothing changed".
-    let (changes, change_limitations) = if wants_changes {
+    let (changes, mut change_limitations) = if wants_changes {
         match diff {
             Some(diff_text) if !diff_text.trim().is_empty() => {
                 emit_changes_from_diff(diff_text, root, &files, &owners)
             }
-            _ => (
-                Vec::new(),
-                vec![serde_json::json!({
+            _ => {
+                let limitations = vec![serde_json::json!({
                     "limitation_id": "no-diff-supplied",
                     "kind": "missing_input",
-                    "message": "`changes` was requested but no diff was supplied on RiprFactsRequest.diff; the batch/CLI path does not yet produce one. An empty `changes[]` here means \"not analyzed\", not \"nothing changed\".",
+                    "message": "`changes` was requested but no diff text was supplied; no caller derives diff text from base/head yet. An empty `changes[]` here means \"not analyzed\", not \"nothing changed\".",
                     "evidence_refs": []
-                })],
-            ),
+                })];
+                (Vec::new(), limitations)
+            }
         }
     } else {
         (Vec::new(), Vec::new())
     };
+    // `#17258`: `input.base`/`input.head` echo caller strings verbatim —
+    // including garbage — whenever no diff was analyzed, not only when
+    // `changes` was requested. A caller supplying base/head with `files` or
+    // `tests,oracles,relations` (and no diff) previously got unverified refs
+    // echoed with no caveat. So derive the `diff-provenance-unverified`
+    // disclosure independently of `wants_changes`: refs present AND no diff
+    // analyzed (no/blank diff, or `changes` not requested). The diff-supplied
+    // path already carries exactly one via `emit_changes_from_diff`, so it is
+    // excluded here — one caveat per packet, never a duplicate. Packets
+    // without base/head gain no new noise. This rides `change_limitations`
+    // so both merge arms (has-facts + no-facts) surface it — provenance-
+    // about-absence must not depend on fact presence — while the no-diff
+    // golden keeps its exact limitation order.
+    let diff_analyzed =
+        wants_changes && matches!(diff, Some(diff_text) if !diff_text.trim().is_empty());
+    if (base.is_some() || head.is_some()) && !diff_analyzed {
+        change_limitations.push(diff_provenance_unverified_limitation());
+    }
     let has_change_facts = !changes.is_empty();
     let mut relations = bind_relations_to_changes(relations, &changes);
     annotate_oracles_for_bound_relations(&mut oracles, &mut relations, &changes);
@@ -245,6 +314,7 @@ pub fn build_ripr_facts_packet(
         || has_oracle_facts
         || has_relation_facts
         || has_boundary_facts
+        || has_verify_facts
         || has_change_facts
         || has_file_facts
         || has_owner_facts;
@@ -266,21 +336,28 @@ pub fn build_ripr_facts_packet(
         // because its package exposed no `owners[]` fact. Empty `evidence_refs`,
         // so no referential dependency — always safe to surface.
         all_limitations.extend(relation_limitations);
+        // `#17257`: a bad root can still coexist with diff-derived `changes[]`
+        // (the diff is opaque text, not a scan), so surface the root condition
+        // alongside facts too — never silently.
+        all_limitations.extend(root_limitations);
         packet["limitations"] = serde_json::Value::Array(all_limitations);
     } else if !test_limitations.is_empty()
         || !change_limitations.is_empty()
         || !file_limitations.is_empty()
         || !relation_limitations.is_empty()
+        || !root_limitations.is_empty()
     {
         // No facts, but a pass produced limitations (test/file parse failures, a
-        // `changes` request with no diff, or a relation omitted for an
-        // unresolvable owner) — surface them next to the base
-        // `emitter-not-yet-implemented` limitation so they are never dropped.
+        // `changes` request with no diff, a relation omitted for an
+        // unresolvable owner, or a missing/non-directory root) — surface them
+        // next to the base `emitter-not-yet-implemented` limitation so they are
+        // never dropped.
         if let Some(limitations) = packet["limitations"].as_array_mut() {
             limitations.extend(test_limitations);
             limitations.extend(change_limitations);
             limitations.extend(file_limitations);
             limitations.extend(relation_limitations);
+            limitations.extend(root_limitations);
         }
     }
 
@@ -291,6 +368,28 @@ pub fn build_ripr_facts_packet(
     packet["packet_fingerprint"] = serde_json::Value::String(fingerprint);
 
     Ok(packet)
+}
+
+/// `true` when an existing ancestor of `root` is provably not a directory.
+///
+/// Windows reports `<file>/child` metadata failure as `NotFound` rather than
+/// `NotADirectory`, so a bare `ErrorKind` match would misname that root as
+/// missing. Probing ancestors keeps the limitation honest on every platform:
+/// a positive hit means a path component is provably not a directory, while
+/// any inconclusive probe conservatively keeps the caller's `ErrorKind`
+/// reading.
+fn root_has_non_directory_ancestor(root: &str) -> bool {
+    for ancestor in std::path::Path::new(root).ancestors().skip(1) {
+        if ancestor.as_os_str().is_empty() {
+            continue;
+        }
+        match std::fs::metadata(ancestor) {
+            Ok(metadata) => return !metadata.is_dir(),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(_) => return false,
+        }
+    }
+    false
 }
 
 fn bind_relations_to_changes(relations: Vec<Value>, changes: &[Value]) -> Vec<Value> {
@@ -541,13 +640,22 @@ pub(crate) fn build_unavailable_packet(
     fact_classes: &[String],
 ) -> serde_json::Value {
     let capabilities = producer_capabilities(fact_classes);
+    // #17260 platform rule: on Windows backslash is a separator, so normalize
+    // to forward-slash under the `posix` claim; on Unix backslash is a literal
+    // filename char and the emitters scan `Path::new(root)` verbatim, so the
+    // echo must stay verbatim to name the scanned directory.
+    #[cfg(windows)]
+    let echo_root = normalize_repo_relative(root);
+    #[cfg(not(windows))]
+    let echo_root = root.to_owned();
     serde_json::json!({
         "schema_version": schema,
         // M1 contract convergence: deterministic packet ID (no timestamp).
-        // The ID is derived from the schema + root + fact_classes so the same
-        // input always produces the same packet ID.
+        // The ID is derived from the schema + normalized root + fact_classes
+        // so the same input always produces the same packet ID, and equivalent
+        // Windows spellings (`project/lib` vs `project\lib`) share one ID.
         "packet_id": format!(
-            "perl-lsp-ripr-facts-{schema}-{root}-{}",
+            "perl-lsp-ripr-facts-{schema}-{echo_root}-{}",
             fact_classes.join(",")
         ),
         "packet_status": "unavailable",
@@ -558,7 +666,10 @@ pub(crate) fn build_unavailable_packet(
             "capabilities": capabilities,
         },
         "root": {
-            "repo_relative": root,
+            // #17260: `echo_root` per the platform rule above — normalized on
+            // Windows, verbatim elsewhere (a verbatim backslash is valid
+            // posix). Forward-slash roots are byte-identical on both.
+            "repo_relative": echo_root,
             "vcs_head": head,
             "path_style": "posix",
         },
@@ -579,7 +690,7 @@ pub(crate) fn build_unavailable_packet(
         "limitations": [{
             "limitation_id": "emitter-not-yet-implemented",
             "kind": "missing_emitter",
-            "message": "The ripr-facts emitter body lands in PRs 5-8 (perl-lsp-swarm#2592-#2595). Today every call produces an unavailable packet.",
+            "message": "The ripr-facts emitter produced no facts for the requested classes under this root, so this call yields an unavailable packet.",
             "evidence_refs": []
         }],
         "provenance": [{
@@ -1572,6 +1683,36 @@ mod tests {
         let p = packet_for_diff("nodiff", "changes", None);
         assert!(changes_of(&p).is_empty(), "no diff → no changes");
         assert!(has_limitation(&p, "no-diff-supplied"), "must surface no-diff-supplied");
+    }
+
+    #[test]
+    fn build_packet_verify_only_request_reads_partial_not_unavailable() {
+        // A root with one pattern-free .t file, requesting only
+        // `verify_commands`: the packet carries a usable command, so it must
+        // read `partial` — never `unavailable` claiming no facts.
+        let root = "target/ripr-verify-only";
+        let _ = std::fs::remove_dir_all(root);
+        std::fs::create_dir_all(format!("{root}/t")).expect("create t/");
+        std::fs::write(format!("{root}/t/plain.t"), "use strict;\n1;\n").expect("write t");
+        let p = build_ripr_facts_packet(&RiprFactsRequest {
+            schema: "ripr-perl-facts-v1",
+            root,
+            base: None,
+            head: None,
+            fact_classes: "verify_commands",
+            diff: None,
+        })
+        .expect("valid request builds a packet");
+        let _ = std::fs::remove_dir_all(root);
+        assert!(
+            !p["verify_commands"].as_array().expect("verify_commands[]").is_empty(),
+            "one .t file → one verify command"
+        );
+        assert_eq!(p["packet_status"], "partial", "verify facts count toward status");
+        assert!(
+            !has_limitation(&p, "emitter-not-yet-implemented"),
+            "partial packet must not claim no facts were produced"
+        );
     }
 
     #[test]

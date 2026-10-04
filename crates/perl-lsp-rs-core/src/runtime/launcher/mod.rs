@@ -279,9 +279,35 @@ impl TransportArgs {
     }
 }
 
+/// Hand-written usage block for clap's error rendering (#17261).
+///
+/// This is the same 7-line block `help_text()` prints after `Usage: `, minus
+/// that prefix (clap's error template supplies `Usage: ` itself). It names the
+/// `--check` file operands explicitly, so conflict errors for `--check` keep
+/// their operands while conflicts for actions without positionals
+/// (`--ripr-facts`, `--doctor`, …) no longer inherit an invented `<FILES>...`.
+/// `override_usage` is the documented clap API for error usage; `hide` on
+/// `files` removes the positional from help, not from error usage, so it
+/// cannot carry this fix across clap versions.
+const CLI_OVERRIDE_USAGE: &str = concat!(
+    "perllsp [options]\n",
+    "       perllsp --check <file.pl> [file2.pm ...]\n",
+    "       perllsp --check-project [dir]\n",
+    "       perllsp --doctor [dir]\n",
+    "       perllsp --doctor --external-tools\n",
+    "       perllsp --doctor --critic-compatibility\n",
+    "       perllsp --doctor --dev-environment",
+);
+
 /// Command line arguments for the Perl LSP binary.
 #[derive(Parser, Debug, Clone)]
-#[command(name = "perl-lsp", version, about = "Perl Language Server", long_about = None)]
+#[command(
+    name = "perl-lsp",
+    version,
+    about = "Perl Language Server",
+    long_about = None,
+    override_usage = CLI_OVERRIDE_USAGE
+)]
 pub struct LspArgs {
     /// Transport configuration (stdio or socket).
     #[command(flatten)]
@@ -384,11 +410,11 @@ pub struct LspArgs {
     #[arg(long, value_name = "ROOT", default_value = ".")]
     pub ripr_root: String,
 
-    /// Base ref for the diff (e.g. `origin/main`).
+    /// Base ref recorded in the packet (e.g. `origin/main`); caller-asserted, never verified.
     #[arg(long, value_name = "BASE")]
     pub ripr_base: Option<String>,
 
-    /// Head ref for the diff (e.g. `HEAD`).
+    /// Head ref recorded in the packet (e.g. `HEAD`); caller-asserted, never verified.
     #[arg(long, value_name = "HEAD")]
     pub ripr_head: Option<String>,
 
@@ -429,7 +455,14 @@ pub struct LspArgs {
     pub file_watchers: Option<bool>,
 
     /// Files to check (used with --check)
-    #[arg(trailing_var_arg = true, requires = "check")]
+    ///
+    /// Hidden from clap's auto-help (#17261): `--help` renders the hand
+    /// `help_text()`, which already documents
+    /// `perllsp --check <file.pl> [file2.pm ...]`, so the auto-help entry is
+    /// redundant. Conflict-error usage is owned by `override_usage` on the
+    /// `Command`, not by this flag — `hide` removes the positional from help,
+    /// not from error usage — and parsing is unchanged.
+    #[arg(trailing_var_arg = true, requires = "check", hide = true)]
     pub files: Vec<String>,
 }
 
@@ -529,17 +562,20 @@ pub enum LaunchAction {
     },
     /// Export a `ripr-perl-facts-v1` fact packet for the ripr repair-routing
     /// lane (Campaign 31, ripr-swarm#1379). This is a batch handoff — it does
-    /// NOT start the LSP server or execute Perl. The emitter body lands across
-    /// PRs 5-8 (perl-lsp-swarm#2592-#2595); this variant is the command
-    /// surface + arg validation + the unavailable-packet fallback.
+    /// NOT start the LSP server or execute Perl. The emitter body landed
+    /// across perl-lsp-swarm#2592-#2595 and #3293 PRs 3-8; this variant is
+    /// the command surface + arg validation, and packets without facts fall
+    /// back to the `unavailable`/`partial` states.
     RiprFacts {
         /// Packet schema version (must be `ripr-perl-facts-v1`).
         schema: String,
         /// Repository root (repo-relative, forward-slash; defaults to `.`).
         root: String,
-        /// Base ref for the diff (e.g. `origin/main`); `None` = working tree.
+        /// Base ref recorded in the packet (e.g. `origin/main`); `None` =
+        /// unspecified (recorded as null). Caller-asserted, never verified.
         base: Option<String>,
-        /// Head ref for the diff (e.g. `HEAD`); `None` = working tree.
+        /// Head ref recorded in the packet (e.g. `HEAD`); `None` = unspecified
+        /// (recorded as null). Caller-asserted, never verified.
         head: Option<String>,
         /// Comma-separated fact-class subset to emit (e.g. `owners,changes,tests,oracles`).
         fact_classes: String,
@@ -1046,13 +1082,9 @@ pub fn help_text() -> String {
     let mut out = String::with_capacity(1024);
     out.push_str("Perl Language Server\n");
     out.push('\n');
-    out.push_str("Usage: perllsp [options]\n");
-    out.push_str("       perllsp --check <file.pl> [file2.pm ...]\n");
-    out.push_str("       perllsp --check-project [dir]\n");
-    out.push_str("       perllsp --doctor [dir]\n");
-    out.push_str("       perllsp --doctor --external-tools\n");
-    out.push_str("       perllsp --doctor --critic-compatibility\n");
-    out.push_str("       perllsp --doctor --dev-environment\n");
+    out.push_str("Usage: ");
+    out.push_str(CLI_OVERRIDE_USAGE);
+    out.push('\n');
     out.push('\n');
     out.push_str("Server options:\n");
     out.push_str("  --stdio              Use stdio for communication (default)\n");
@@ -1129,8 +1161,12 @@ pub fn help_text() -> String {
     out.push_str("  --ripr-facts         Export a ripr-perl-facts-v1 fact packet and exit\n");
     out.push_str("  --ripr-schema <ver>  Fact schema version (default: ripr-perl-facts-v1)\n");
     out.push_str("  --ripr-root <path>   Repository root (default: .)\n");
-    out.push_str("  --ripr-base <ref>    Base git ref for differential extraction\n");
-    out.push_str("  --ripr-head <ref>    Head git ref for differential extraction\n");
+    out.push_str(
+        "  --ripr-base <ref>    Base git ref recorded in the packet (opaque; no diff is derived)\n",
+    );
+    out.push_str(
+        "  --ripr-head <ref>    Head git ref recorded in the packet (opaque; no diff is derived)\n",
+    );
     out.push_str("  --ripr-fact-classes <list>\n");
     out.push_str("                       Comma-separated fact classes to emit (default: all)\n");
     out.push_str(
@@ -1348,8 +1384,8 @@ complete -c perl-lsp -l file-watchers -x -a 'true false' -d 'Set file-watcher tu
 complete -c perl-lsp -l ripr-facts -d 'Export a ripr-perl-facts-v1 fact packet'
 complete -c perl-lsp -l ripr-schema -x -d 'Fact schema version'
 complete -c perl-lsp -l ripr-root -r -F -d 'Repository root'
-complete -c perl-lsp -l ripr-base -x -d 'Base git ref for differential extraction'
-complete -c perl-lsp -l ripr-head -x -d 'Head git ref for differential extraction'
+complete -c perl-lsp -l ripr-base -x -d 'Base git ref recorded in the packet'
+complete -c perl-lsp -l ripr-head -x -d 'Head git ref recorded in the packet'
 complete -c perl-lsp -l ripr-fact-classes -x -d 'Fact classes filter'
 complete -c perl-lsp -l ripr-out -r -F -d 'Output path'
 complete -c perl-lsp -l help -d 'Show help message'
@@ -2356,6 +2392,23 @@ mod tests {
     }
 
     #[test]
+    fn conflict_usage_names_no_positional_files() {
+        // `--ripr-facts --check x` must still exit 1 with the conflict error,
+        // but the usage line must not invent `<FILES>...` syntax for
+        // `--ripr-facts` (#17261).
+        let error = must_err(parse_args(["perl-lsp", "--ripr-facts", "--check", "script.pl"]));
+        let rendered = error.to_string();
+        assert!(
+            rendered.contains("cannot be used with"),
+            "conflict error must survive; got:\n{rendered}"
+        );
+        assert!(
+            !rendered.contains("FILES"),
+            "conflict usage must name no positional FILES; got:\n{rendered}"
+        );
+    }
+
+    #[test]
     fn non_check_actions_reject_trailing_positionals() {
         // Bare and server-mode junk: bare EXTRA was already rejected by clap's
         // `requires`; --info/--health paths must fail closed too.
@@ -2397,6 +2450,32 @@ mod tests {
         // No files, no rejection: the flag combo keeps its historical dispatch.
         let plan = must(parse_args(["perl-lsp", "--health", "--check"]));
         assert_eq!(plan.action, LaunchAction::Health);
+    }
+
+    #[test]
+    fn check_still_accepts_trailing_files_when_hidden() {
+        // `hide` changes rendering only — the `--check` file flow is untouched.
+        let plan = must(parse_args(["perl-lsp", "--check", "script.pl", "other.pm"]));
+        assert_eq!(plan.files, vec!["script.pl".to_string(), "other.pm".to_string()]);
+    }
+
+    #[test]
+    fn check_conflict_usage_shows_file_operands() {
+        // `--check --doctor` is a genuine conflict, and its error usage must
+        // name the `--check` file operands (#17261): hiding the positional
+        // stripped them from legitimate `--check` errors too. `override_usage`
+        // restores them while keeping bogus `<FILES>...` out of actions that
+        // take no positionals.
+        let error = must_err(parse_args(["perl-lsp", "--check", "--doctor"]));
+        let rendered = error.to_string();
+        assert!(
+            rendered.contains("cannot be used with"),
+            "conflict error must survive; got:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("perllsp --check <file.pl> [file2.pm ...]"),
+            "check conflict usage must name the file operands; got:\n{rendered}"
+        );
     }
 
     #[test]
