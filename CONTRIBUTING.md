@@ -12,12 +12,14 @@ provider-native repository contracts without creating a second workflow.
 
 [`EffortlessMetrics/perl-lsp-swarm`](https://github.com/EffortlessMetrics/perl-lsp-swarm)
 on `main` is the active high-throughput product-development and product-proof
-authority. Maintainers and authorized swarm operators work there directly.
+authority. Development issues live there, including issues that an external contributor
+may choose to implement. Maintainers and authorized swarm operators also work there
+directly.
 
 [`EffortlessMetrics/perl-lsp`](https://github.com/EffortlessMetrics/perl-lsp)
-on `master` is the public contributor surface as well as the public release lineage.
-External contributors should clone or fork `perl-lsp`, open public issues there, and
-target pull requests there. Do not open an external pull request against
+on `master` is the public pull-request surface as well as the public release lineage.
+External contributors should clone or fork `perl-lsp` for their implementation branch
+and target pull requests there. Do not open an external pull request against
 `perl-lsp-swarm`.
 
 Before a shared-product external pull request is integrated, a maintainer first converges
@@ -35,8 +37,8 @@ their actual subject.
 The repository relationship is defined by
 [product identity](docs/reference/product-identity.md) and the
 [publication sync protocol](docs/swarm/sync-protocol.md). The contributor-topology
-projection derives the development/publication identities and the public issue/PR ingress
-from those authorities. The bare command intentionally leaves live stage and channel
+projection derives the development/publication identities, swarm issue authority, and
+public pull-request ingress from those authorities. The bare command intentionally leaves live stage and channel
 status `NOT_PROVEN`; a captured `--observation` is required to project observed status:
 
 ```bash
@@ -237,8 +239,18 @@ gh pr create --repo EffortlessMetrics/perl-lsp --base master
 ```
 
 Authorized swarm collaborators working on swarm-owned internal work may instead use the
-swarm repository directly. Do not redirect an external contributor into swarm merely
-because swarm owns product development.
+swarm repository directly. Do not redirect an external contributor's pull request into
+swarm merely because its controlling issue lives there.
+
+When the controlling issue is in swarm, preserve that identity in the public PR body with
+a fully qualified reference, for example:
+
+```text
+Refs EffortlessMetrics/perl-lsp-swarm#13253
+```
+
+Use `Refs`, not a guessed or duplicated public issue. The maintainer owns the cross-repo
+integration and issue closeout.
 
 Use a conventional title with the controlling issue number:
 
@@ -432,13 +444,13 @@ checks, issue, and landed commit are the durable record; runtime agent state is 
 
 ## Community and licensing
 
-External contributors should use [public issues](https://github.com/EffortlessMetrics/perl-lsp/issues)
-for confirmed defects and scoped contributions. Maintainers and authorized swarm
-operators may keep internal development planning in
-[`perl-lsp-swarm`](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues).
-Keep reports reproducible, redact private data, and link the smallest relevant evidence.
-A swarm development result is not public availability until it reaches the public
-repository and the applicable release or channel.
+Use [development issues](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues) for
+confirmed defects and scoped implementation work, including work an external contributor
+may pick up. Keep reports reproducible, redact private data, and link the smallest
+relevant evidence. The implementation pull request still targets `perl-lsp/master`;
+the swarm issue remains the controlling development record. A swarm development result is
+not public availability until it reaches the public repository and the applicable release
+or channel.
 
 Repository discussion/support surfaces may be enabled separately; do not use a feature
 proposal as a substitute for a verified bug report or accepted plan.
@@ -449,7 +461,7 @@ reports follow [SECURITY.md](SECURITY.md). Contributions are licensed under both
 
 ## Where to ask or start
 
-- [Open public contribution issues](https://github.com/EffortlessMetrics/perl-lsp/issues)
+- [Open development issues](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues)
 - [Project roadmap](docs/project/ROADMAP.md)
 - [Commands reference](docs/reference/COMMANDS_REFERENCE.md)
 - [Architecture reference](docs/reference/ARCHITECTURE.md)
