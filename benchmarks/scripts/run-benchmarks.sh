@@ -86,7 +86,7 @@ to_nanoseconds() {
 
     case $unit in
         ns) multiplier=1 ;;
-        us) multiplier=1000 ;;
+        us|µs) multiplier=1000 ;;
         ms) multiplier=1000000 ;;
         s)  multiplier=1000000000 ;;
         *)
@@ -112,17 +112,37 @@ run_criterion_bench() {
 
     # Run benchmark, capturing output
     if cargo bench -p "$crate" --bench "$bench" $CRITERION_ARGS 2>&1 | tee "$temp_output" > /dev/null; then
-        # Parse criterion output for timing
-        # Example: "parse_simple_script  time:   [45.123 us 45.234 us 45.345 us]"
+        # Parse criterion output for timing.
+        # Single-line layout: "parse_simple  time:   [45.123 us 45.234 us 45.345 us]"
+        # Long-name layout (#17219): the bench name stands alone on its own
+        # line and the time triple follows on the next line:
+        #   "packet_fingerprint/large"
+        #   "  time:   [206.67 µs 213.06 µs 218.91 µs]"
+        # Names are captured whole (spaces, parens, dots included): a pending
+        # bare name is consumed only by an immediately following unit triple,
+        # and any other line clears it, so diagnostic lines can never donate
+        # a stale name. Lines with colons (Benchmarking/time/thrpt/change)
+        # are never pending-name candidates.
+        local pending_name=""
         while IFS= read -r line; do
-            if [[ $line =~ ([A-Za-z0-9_/-]+)[[:space:]]+time:[[:space:]]+\[([0-9.]+)[[:space:]]+(ns|us|ms|s)[[:space:]]+([0-9.]+)[[:space:]]+(ns|us|ms|s)[[:space:]]+([0-9.]+)[[:space:]]+(ns|us|ms|s)\] ]]; then
-                local bench_name="${BASH_REMATCH[1]}"
-                local low="${BASH_REMATCH[2]}"
-                local low_unit="${BASH_REMATCH[3]}"
-                local mean="${BASH_REMATCH[4]}"
-                local mean_unit="${BASH_REMATCH[5]}"
-                local high="${BASH_REMATCH[6]}"
-                local high_unit="${BASH_REMATCH[7]}"
+            if [[ $line =~ time:[[:space:]]+\[([0-9.]+)[[:space:]]+(ns|us|µs|ms|s)[[:space:]]+([0-9.]+)[[:space:]]+(ns|us|µs|ms|s)[[:space:]]+([0-9.]+)[[:space:]]+(ns|us|µs|ms|s)\] ]]; then
+                # Capture the triple first: the inline-name test below
+                # overwrites BASH_REMATCH.
+                local low="${BASH_REMATCH[1]}"
+                local low_unit="${BASH_REMATCH[2]}"
+                local mean="${BASH_REMATCH[3]}"
+                local mean_unit="${BASH_REMATCH[4]}"
+                local high="${BASH_REMATCH[5]}"
+                local high_unit="${BASH_REMATCH[6]}"
+                local bench_name=""
+                if [[ $line =~ ^(.*[^[:space:]])[[:space:]]+time: ]]; then
+                    bench_name="${BASH_REMATCH[1]}"
+                elif [[ -n "$pending_name" ]]; then
+                    bench_name="$pending_name"
+                else
+                    continue
+                fi
+                pending_name=""
 
                 local mean_ns
                 mean_ns=$(to_nanoseconds "$mean" "$mean_unit") || continue
@@ -138,6 +158,10 @@ run_criterion_bench() {
                 echo "        \"unit\": \"$mean_unit\","
                 echo "        \"display\": \"$mean $mean_unit\""
                 echo "      },"
+            elif [[ $line =~ ^[^[:space:]:][^:]*$ ]]; then
+                pending_name="$line"
+            else
+                pending_name=""
             fi
         done < "$temp_output"
     fi

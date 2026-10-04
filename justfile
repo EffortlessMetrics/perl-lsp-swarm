@@ -1946,6 +1946,11 @@ bench-alert-test:
     @echo "🧪 Running benchmark alert regression tests..."
     @cargo xtask bench-alert-test
 
+# Run benchmark runner parsing fixture tests (#17219)
+bench-runner-test:
+    @echo "🧪 Running benchmark runner parsing tests..."
+    bash benchmarks/scripts/test_run_benchmarks_parse.sh
+
 
 # Run all performance benchmarks and save baseline for 0.12.0
 perf-baseline:
