@@ -125,19 +125,50 @@ fn source_receipt_cannot_overwrite_declared_inputs_or_rows() -> Result<()> {
     ))?;
     document["paths"] = release["paths"].clone();
     let manifest = root.path().join("source.json");
-    let raw = serde_json::to_vec(&document)?;
-    fs::write(&manifest, &raw)?;
-    for path in [document["inputs"][0]["path"].as_str(), document["paths"][0]["path"].as_str()] {
-        let destination = root.path().join(path.ok_or_else(|| eyre!("fixture path"))?);
-        fs::create_dir_all(destination.parent().ok_or_else(|| eyre!("parent"))?)?;
-        fs::write(&destination, b"must survive\n")?;
-        let config = PlanConfig {
-            manifest: manifest.clone(),
-            repo_root: root.path().to_path_buf(),
-            receipt: destination.clone(),
-        };
-        assert!(ensure_receipt_does_not_alias_inputs(&config, &raw).is_err());
-        assert_eq!(fs::read(&destination)?, b"must survive\n");
+    for extra in [
+        None,
+        Some(("release", json!("0.18.0"))),
+        Some(("product_proof", json!({"result":"pass"}))),
+    ] {
+        let mut candidate = document.clone();
+        if let Some((key, value)) = extra {
+            candidate[key] = value;
+            assert!(serde_json::from_value::<SourceManifest>(candidate.clone()).is_err());
+        }
+        let raw = serde_json::to_vec(&candidate)?;
+        fs::write(&manifest, &raw)?;
+        for path in [document["inputs"][0]["path"].as_str(), document["paths"][0]["path"].as_str()]
+        {
+            let destination = root.path().join(path.ok_or_else(|| eyre!("fixture path"))?);
+            fs::create_dir_all(destination.parent().ok_or_else(|| eyre!("parent"))?)?;
+            fs::write(&destination, b"must survive\n")?;
+            let config = PlanConfig {
+                manifest: manifest.clone(),
+                repo_root: root.path().to_path_buf(),
+                receipt: destination.clone(),
+            };
+            let error =
+                plan(config).expect_err("a receipt must never replace declared source bytes");
+            assert!(error.to_string().contains("which this plan reads"));
+            assert_eq!(fs::read(&destination)?, b"must survive\n");
+        }
     }
+    Ok(())
+}
+
+#[test]
+fn malformed_alias_slots_refuse_every_receipt_write() -> Result<()> {
+    let root = tempfile::tempdir()?;
+    let manifest = root.path().join("source.json");
+    let receipt = root.path().join("receipt.json");
+    let mut document = source_value()?;
+    document["inputs"][0].as_object_mut().ok_or_else(|| eyre!("input"))?.remove("path");
+    fs::write(&manifest, serde_json::to_vec(&document)?)?;
+    fs::write(&receipt, b"must survive\n")?;
+    let config =
+        PlanConfig { manifest, repo_root: root.path().to_path_buf(), receipt: receipt.clone() };
+    let error = plan(config).expect_err("ambiguous aliases must block receipt writes");
+    assert!(error.to_string().contains("declared alias paths cannot be established"));
+    assert_eq!(fs::read(&receipt)?, b"must survive\n");
     Ok(())
 }

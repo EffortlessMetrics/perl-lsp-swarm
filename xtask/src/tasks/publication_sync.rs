@@ -161,6 +161,25 @@ struct SourceInput {
     digest: String,
 }
 
+/// Alias guards must read only path-bearing fields before strict validation.
+/// Extra invalid claims cannot make declared input paths disappear from the guard.
+#[derive(Deserialize)]
+struct ProjectionAliasPaths {
+    inputs: Vec<ProjectionAliasInput>,
+    paths: Vec<ProjectionAliasRow>,
+}
+
+#[derive(Deserialize)]
+struct ProjectionAliasInput {
+    path: String,
+}
+
+#[derive(Deserialize)]
+struct ProjectionAliasRow {
+    path: String,
+    authority_ref: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
 enum Track {
@@ -1184,11 +1203,31 @@ fn ensure_receipt_does_not_alias_inputs(config: &PlanConfig, raw: &[u8]) -> Resu
         );
     }
 
-    if let Ok(source) = serde_json::from_slice::<SourceManifest>(raw) {
-        consumed.extend(source.inputs.iter().map(|input| config.repo_root.join(&input.path)));
-        let mut row_paths = BTreeSet::new();
-        insert_row_paths(&mut row_paths, &source.paths);
-        consumed.extend(row_paths.iter().map(|path| config.repo_root.join(path)));
+    if let Ok(document) = serde_json::from_slice::<Value>(raw) {
+        if document.get("inputs").is_some()
+            || document.get("paths").is_some()
+            || document.get("schema_version").and_then(Value::as_str)
+                == Some(SOURCE_MANIFEST_SCHEMA_VERSION)
+            || document.get("profile").is_some()
+        {
+            let aliases: ProjectionAliasPaths = serde_json::from_value(document)
+                .context("publication-sync: refusing receipt write; declared alias paths cannot be established")?;
+            let mut alias_paths: BTreeSet<String> =
+                aliases.inputs.into_iter().map(|input| input.path).collect();
+            for row in aliases.paths {
+                insert_row_path(&mut alias_paths, &row.path, &row.authority_ref);
+            }
+            for path in alias_paths {
+                let input = config.repo_root.join(path);
+                if canonical_target(&input).is_none() {
+                    bail!(
+                        "publication-sync: refusing receipt write; declared input identity cannot be established: {}",
+                        input.display()
+                    );
+                }
+                consumed.push(input);
+            }
+        }
     }
 
     for input in consumed {
@@ -1238,10 +1277,14 @@ fn consumed_repository_paths(manifest: &Manifest) -> BTreeSet<String> {
 /// One projection-row path superset for both closed profiles.
 fn insert_row_paths(consumed: &mut BTreeSet<String>, rows: &[PathRow]) {
     for row in rows {
-        consumed.insert(row.path.clone());
-        consumed.insert(format!("{}/Cargo.toml", row.path));
-        insert_reference_spellings(consumed, &row.authority_ref, looks_like_document);
+        insert_row_path(consumed, &row.path, &row.authority_ref);
     }
+}
+
+fn insert_row_path(consumed: &mut BTreeSet<String>, path: &str, authority_ref: &str) {
+    consumed.insert(path.to_string());
+    consumed.insert(format!("{path}/Cargo.toml"));
+    insert_reference_spellings(consumed, authority_ref, looks_like_document);
 }
 
 /// Record every spelling of `reference` a reader might resolve.
