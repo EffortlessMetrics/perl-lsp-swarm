@@ -35,13 +35,22 @@ fn workspace() -> Result<(tempfile::TempDir, PathBuf), Box<dyn std::error::Error
 /// (resolving 8.3 short names) and then strip the device prefix so
 /// boundary comparisons match by content.
 fn workspace_boundary(path: &Path) -> Result<PathBuf, Box<dyn std::error::Error>> {
-    let canonical = path.canonicalize()?.to_string_lossy().into_owned();
+    let canonical = path.canonicalize()?;
+    // Strip the verbatim device prefix only from spellings representable as
+    // UTF-8 text: a lossy conversion would rewrite invalid-byte path
+    // spellings instead of just removing the prefix (CodeRabbit follow-up
+    // on #17174B).
     #[cfg(windows)]
-    let canonical = match canonical.strip_prefix(r"\\?\UNC\") {
-        Some(unc) => format!(r"\\{unc}"),
-        None => canonical.strip_prefix(r"\\?\").map(str::to_string).unwrap_or(canonical),
-    };
-    Ok(PathBuf::from(canonical))
+    if let Some(text) = canonical.to_str() {
+        return Ok(PathBuf::from(match text.strip_prefix(r"\\?\UNC\") {
+            Some(unc) => format!(r"\\{unc}"),
+            None => match text.strip_prefix(r"\\?\") {
+                Some(plain) => plain.to_string(),
+                None => text.to_string(),
+            },
+        }));
+    }
+    Ok(canonical)
 }
 
 /// Assert that a validate_path result is a traversal or outside-workspace error.
