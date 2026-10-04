@@ -16,15 +16,17 @@ pub struct RiprFactsRequest<'a> {
     pub schema: &'a str,
     /// Repo-relative workspace root to scan (forward-slash, no `..`/drive/absolute).
     pub root: &'a str,
-    /// Optional base ref for diff-derived facts (managed-producer mode; not yet emitted).
+    /// Optional base ref for diff-derived facts (managed-producer mode).
+    /// Recorded opaquely in `input.base`; caller-asserted, never verified.
     pub base: Option<&'a str>,
     /// Optional head ref recorded in the packet.
     pub head: Option<&'a str>,
     /// Comma-separated fact classes to request; validated + normalized internally.
     pub fact_classes: &'a str,
     /// Pre-computed unified diff (base→head) text, supplied by a managed-producer
-    /// caller and consumed only when `changes` is requested. `None` in the batch
-    /// / CLI path (which does not yet produce one — see #3293 PR 5). The diff is
+    /// caller and consumed only when `changes` is requested. `None` on paths
+    /// with no managed-producer diff source (no caller derives diff text from
+    /// base/head yet; supplied bytes are consumed per #3293 PR 5). The diff is
     /// treated as opaque text: no git is run, no process is spawned, and its
     /// paths are expected in `git diff`'s default repo-root-relative `a/`/`b/`
     /// form. base/head/diff are caller-asserted, never verified here.

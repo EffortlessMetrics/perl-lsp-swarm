@@ -384,11 +384,11 @@ pub struct LspArgs {
     #[arg(long, value_name = "ROOT", default_value = ".")]
     pub ripr_root: String,
 
-    /// Base ref for the diff (e.g. `origin/main`).
+    /// Base ref recorded in the packet (e.g. `origin/main`); caller-asserted, never verified.
     #[arg(long, value_name = "BASE")]
     pub ripr_base: Option<String>,
 
-    /// Head ref for the diff (e.g. `HEAD`).
+    /// Head ref recorded in the packet (e.g. `HEAD`); caller-asserted, never verified.
     #[arg(long, value_name = "HEAD")]
     pub ripr_head: Option<String>,
 
@@ -529,17 +529,20 @@ pub enum LaunchAction {
     },
     /// Export a `ripr-perl-facts-v1` fact packet for the ripr repair-routing
     /// lane (Campaign 31, ripr-swarm#1379). This is a batch handoff — it does
-    /// NOT start the LSP server or execute Perl. The emitter body lands across
-    /// PRs 5-8 (perl-lsp-swarm#2592-#2595); this variant is the command
-    /// surface + arg validation + the unavailable-packet fallback.
+    /// NOT start the LSP server or execute Perl. The emitter body landed
+    /// across perl-lsp-swarm#2592-#2595 and #3293 PRs 3-8; this variant is
+    /// the command surface + arg validation, and packets without facts fall
+    /// back to the `unavailable`/`partial` states.
     RiprFacts {
         /// Packet schema version (must be `ripr-perl-facts-v1`).
         schema: String,
         /// Repository root (repo-relative, forward-slash; defaults to `.`).
         root: String,
-        /// Base ref for the diff (e.g. `origin/main`); `None` = working tree.
+        /// Base ref recorded in the packet (e.g. `origin/main`); `None` =
+        /// unspecified (recorded as null). Caller-asserted, never verified.
         base: Option<String>,
-        /// Head ref for the diff (e.g. `HEAD`); `None` = working tree.
+        /// Head ref recorded in the packet (e.g. `HEAD`); `None` = unspecified
+        /// (recorded as null). Caller-asserted, never verified.
         head: Option<String>,
         /// Comma-separated fact-class subset to emit (e.g. `owners,changes,tests,oracles`).
         fact_classes: String,
@@ -1100,8 +1103,12 @@ pub fn help_text() -> String {
     out.push_str("  --ripr-facts         Export a ripr-perl-facts-v1 fact packet and exit\n");
     out.push_str("  --ripr-schema <ver>  Fact schema version (default: ripr-perl-facts-v1)\n");
     out.push_str("  --ripr-root <path>   Repository root (default: .)\n");
-    out.push_str("  --ripr-base <ref>    Base git ref for differential extraction\n");
-    out.push_str("  --ripr-head <ref>    Head git ref for differential extraction\n");
+    out.push_str(
+        "  --ripr-base <ref>    Base git ref recorded in the packet (opaque; no diff is derived)\n",
+    );
+    out.push_str(
+        "  --ripr-head <ref>    Head git ref recorded in the packet (opaque; no diff is derived)\n",
+    );
     out.push_str("  --ripr-fact-classes <list>\n");
     out.push_str("                       Comma-separated fact classes to emit (default: all)\n");
     out.push_str(
@@ -1319,8 +1326,8 @@ complete -c perl-lsp -l file-watchers -x -a 'true false' -d 'Set file-watcher tu
 complete -c perl-lsp -l ripr-facts -d 'Export a ripr-perl-facts-v1 fact packet'
 complete -c perl-lsp -l ripr-schema -x -d 'Fact schema version'
 complete -c perl-lsp -l ripr-root -r -F -d 'Repository root'
-complete -c perl-lsp -l ripr-base -x -d 'Base git ref for differential extraction'
-complete -c perl-lsp -l ripr-head -x -d 'Head git ref for differential extraction'
+complete -c perl-lsp -l ripr-base -x -d 'Base git ref recorded in the packet'
+complete -c perl-lsp -l ripr-head -x -d 'Head git ref recorded in the packet'
 complete -c perl-lsp -l ripr-fact-classes -x -d 'Fact classes filter'
 complete -c perl-lsp -l ripr-out -r -F -d 'Output path'
 complete -c perl-lsp -l help -d 'Show help message'
