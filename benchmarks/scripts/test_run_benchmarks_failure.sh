@@ -63,6 +63,25 @@ grep -q "benchmark categories failed: ripr" "$ERR" \
     && ok "stderr names the failed category" \
     || bad "stderr does not name the failed category"
 
+# Case 1b: unfiltered all-fail run -> every category marked, process fails.
+if PATH="$STUB:$PATH" bash "$RUNNER" >"$OUT" 2>"$ERR"; then
+    bad "unfiltered all-fail run exited 0; expected nonzero"
+else
+    ok "unfiltered all-fail run exits nonzero"
+fi
+ALL_MARKED=1
+for cat in parser lexer lsp index ripr; do
+    if [[ "$(json_get "$OUT" "$cat" _status)" != "failed" ]]; then
+        ALL_MARKED=0
+    fi
+done
+[[ "$ALL_MARKED" -eq 1 ]] \
+    && ok "all five categories marked failed in unfiltered run" \
+    || bad "unfiltered run left a category unmarked"
+grep -q "benchmark categories failed: parser lexer lsp index ripr" "$ERR" \
+    && ok "stderr names all failed categories in order" \
+    || bad "stderr does not name all failed categories"
+
 # Case 2: selective failure -> partial data preserved, process still fails.
 export FAIL_BENCHES="ripr_facts_benchmark"
 if PATH="$STUB:$PATH" bash "$RUNNER" >"$OUT" 2>"$ERR"; then
