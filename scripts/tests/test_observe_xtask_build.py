@@ -253,6 +253,30 @@ printf '    \\033[32mCompiling\\033[0m colored-retention-control v1.0.0\\n' >&2
         for path in (self.work / "out").iterdir():
             self.assertNotIn(secret, path.read_text(), str(path))
 
+    def test_event_words_inside_error_payload_cannot_bypass_redaction(self):
+        secret = "CONTROL-SYNTHETIC-ERROR-PAYLOAD"
+        cargo = self.bin / "cargo"
+        payload = f"""cat >&2 <<'DIAGNOSTIC'
+0.01 INFO cargo::core::compiler::fingerprint: fingerprint error for serde v1.0.229
+0.01 INFO cargo::core::compiler::fingerprint: err: failed to read dirty: FsStatusOutdated
+Caused by:
+    {secret}
+DIAGNOSTIC
+"""
+        body = cargo.read_text().replace("case ${FAKE_CHANGE:-none} in",
+                                        payload + "case ${FAKE_CHANGE:-none} in")
+        cargo.write_text(body, encoding="utf-8", newline="\n")
+        result, record = self.observe()
+        self.assertFalse(secret in result.stdout + result.stderr, "error continuation escaped to console")
+        for path in (self.work / "out").iterdir():
+            self.assertFalse(secret in path.read_text(), "error continuation retained in artifact")
+        self.assertEqual(record["stderr"]["fingerprint_errors"], 1)
+        self.assertGreater(record["stderr"]["filtered_error_continuations"], 0)
+        self.assertFalse(record["selected_trace_complete"])
+        trace = next((self.work / "out").glob("*.trace.log")).read_text()
+        self.assertNotIn("FsStatusOutdated", trace)
+        self.assertIn("err: details omitted", trace)
+
     def test_missing_source_identity_is_not_accepted(self):
         _, record = self.observe(FAKE_CHANGE="missing-head")
         self.assertFalse(record["identity_stable"])

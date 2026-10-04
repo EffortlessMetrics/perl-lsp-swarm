@@ -2,7 +2,8 @@
 # Diagnose existing Cargo work (#16126/#9178); never reuse or adjudicate artifacts.
 # Usage: observe-xtask-build.sh PHASE OUTPUT_DIR -- COMMAND [ARG...]
 # GNU time measures the whole command (including analysis for cargo xtask), not
-# aggregate simultaneous RSS. Cargo's own Finished lines isolate build duration.
+# aggregate simultaneous RSS or the observer snapshot/collector CPU.
+# Cargo's own Finished lines isolate build duration.
 # cargo-toolchain-guard: exempt -- this diagnostic wrapper only probes metadata
 # and delegates the caller's exact command/verdict. Hosted callers establish the
 # pinned toolchain first; observation must not introduce a new build admission.
@@ -85,18 +86,22 @@ LC_ALL=C exec awk -v trace="$prefix.trace.log" -v reasons="$prefix.dirty.log" -v
     /cargo::core::compiler::fingerprint/ {
         error_chain=0
         traces++
+        marker="cargo::core::compiler::fingerprint:"
+        location=index($0,marker)
+        if (!location) { filtered++; next }
+        message=substr($0,location+length(marker)); sub(/^[[:space:]]*/,"",message)
         # Construct selected records from fixed event labels and known enum
         # variants, rather than retaining then trying to redact raw trace text.
         # PackageId/SourceId Display may contain credential-bearing Git URLs.
-        if ($0 ~ /dirty: /) {
-            reason=$0; sub(/^.*dirty: /,"",reason); sub(/[^[:alnum:]_].*$/,"",reason)
+        if (message ~ /^dirty: /) {
+            reason=message; sub(/^dirty: /,"",reason); sub(/[^[:alnum:]_].*$/,"",reason)
             if (!(reason in allowed_kind)) { unknown++; reason="UNKNOWN" }
             projected="dirty: " reason " (details omitted)"
-        } else if ($0 ~ /fingerprint error for/) { errors++; projected="fingerprint error for (context omitted)" }
-        else if ($0 ~ /err:/) { projected="err: details omitted"; error_chain=1 }
-        else if ($0 ~ /fingerprint dirty for/) { projected="fingerprint dirty for (context omitted)" }
-        else if ($0 ~ /fingerprint at:/) { projected="fingerprint at: (context omitted)" }
-        else if ($0 ~ /write fingerprint/) { projected="write fingerprint (context omitted)" }
+        } else if (message ~ /^fingerprint error for([[:space:]]|$)/) { errors++; projected="fingerprint error for (context omitted)" }
+        else if (message ~ /^err:/) { projected="err: details omitted"; error_chain=1 }
+        else if (message ~ /^fingerprint dirty for([[:space:]]|$)/) { projected="fingerprint dirty for (context omitted)" }
+        else if (message ~ /^fingerprint at:/) { projected="fingerprint at: (context omitted)" }
+        else if (message ~ /^write fingerprint([[:space:]:]|$)/) { projected="write fingerprint (context omitted)" }
         else { filtered++; next }
         $0="cargo::core::compiler::fingerprint: " projected
         n=length($0)+1
