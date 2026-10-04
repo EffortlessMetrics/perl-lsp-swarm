@@ -84,7 +84,18 @@ fn info_shows_version_and_features() -> Result<(), Box<dyn std::error::Error>> {
     let stdout = String::from_utf8(output.stdout)?;
 
     assert_eq!(output.status.code(), Some(0));
-    assert!(stdout.contains("perl-lsp"), "--info must identify the product: {stdout:?}");
+    // The identity line names the binary as it was invoked, exactly like
+    // `--version` does (#17163); compare against the binary actually spawned
+    // rather than a literal so a rename moves both sides together. The names
+    // are not substrings of one another, so a regression to the hard-coded
+    // crate name cannot satisfy this match. The match tolerates the ANSI
+    // bold wrapper the color variant puts around the name.
+    let expected_name = product_binary_name()?;
+    let identity_line = stdout.lines().next().ok_or("--info output is empty")?;
+    assert!(
+        identity_line.contains(&expected_name),
+        "--info should name the binary it was invoked as ({expected_name}): {stdout:?}"
+    );
     assert!(stdout.contains("Features:"), "--info must list features: {stdout:?}");
 
     let catalog_line = stdout
@@ -138,8 +149,16 @@ fn doctor_reports_workspace_setup() -> Result<(), Box<dyn std::error::Error>> {
 
     assert_eq!(output.status.code(), Some(0));
     assert_eq!(stderr, "");
-    assert_eq!(lines.first().copied(), Some("perl-lsp doctor"));
-    assert_eq!(lines.get(1).copied(), Some("==============="));
+    // The header names the binary as it was invoked (#17163), matching
+    // `--version`; derive the expectation from the spawned binary instead of
+    // a literal so a rename moves both sides together. The `=` underline must
+    // keep spanning the header, as before.
+    let expected_name = product_binary_name()?;
+    let expected_header = format!("{expected_name} doctor");
+    assert_eq!(lines.first().copied(), Some(expected_header.as_str()));
+    let underline = lines.get(1).copied().ok_or("doctor output has no underline")?;
+    assert!(!underline.is_empty() && underline.chars().all(|c| c == '='));
+    assert_eq!(underline.chars().count(), expected_header.chars().count());
     assert_eq!(
         line_with_prefix("Workspace: "),
         Some(format!("Workspace: {}", workspace.display()).as_str())
