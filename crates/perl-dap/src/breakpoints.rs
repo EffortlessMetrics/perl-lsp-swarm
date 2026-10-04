@@ -211,10 +211,34 @@ fn file_paths_match(stored: &str, observed: &str) -> bool {
     if stored == observed {
         return true;
     }
+    // Separator-spelling identity: `/` and `\` are the same separator on
+    // Windows, and DAP clients do not guarantee one spelling between
+    // `launch.program` and `setBreakpoints.source.path` (#17246).
+    if same_path_components(stored, observed) {
+        return true;
+    }
     // Allow suffix matching for relative-vs-absolute path pairs (e.g. "bar.pl" matches
     // "/abs/path/bar.pl"), but require a path-component boundary before the matched suffix
     // to prevent mid-component false matches (e.g. "bar.pl" must NOT match "foobar.pl").
     path_suffix_matches(stored, observed) || path_suffix_matches(observed, stored)
+}
+
+/// Compare two path spellings component-wise, treating `/` and `\` as
+/// equivalent separators and collapsing duplicate or trailing separators.
+/// Case is preserved deliberately: this is spelling identity for the same
+/// on-disk file, not case-insensitive filesystem identity (#17246).
+fn same_path_components(a: &str, b: &str) -> bool {
+    let mut left = a.split(['/', '\\']).filter(|component| !component.is_empty());
+    let mut right = b.split(['/', '\\']).filter(|component| !component.is_empty());
+    loop {
+        match (left.next(), right.next()) {
+            (None, None) => return true,
+            (Some(left_component), Some(right_component)) if left_component == right_component => {
+                continue;
+            }
+            _ => return false,
+        }
+    }
 }
 
 /// Interpolate logpoint message template with variable values.
@@ -1714,6 +1738,76 @@ EOF
         assert!(!file_paths_match("bar.pl", "foobar.pl"));
         assert!(!file_paths_match("/path/to/foobar.pl", "bar.pl"));
         assert!(!file_paths_match("bar.pl", "/path/to/foobar.pl"));
+    }
+
+    #[test]
+    fn test_file_paths_match_separator_spelling_identity() {
+        // The same file spelled with the other path separator must match:
+        // DAP clients do not guarantee one spelling between launch.program
+        // and setBreakpoints.source.path (#17246).
+        assert!(file_paths_match(
+            "F:\\w\\deep.pl",
+            "F:/w/deep.pl",
+        ));
+        assert!(file_paths_match("F:/w/deep.pl", "F:\\w\\deep.pl"));
+        // Duplicate and trailing separators collapse.
+        assert!(file_paths_match("F://w\\deep.pl\\", "F:/w/deep.pl"));
+        // Case is deliberately NOT unified: this is spelling identity for
+        // the same on-disk file, not case-insensitive filesystem identity.
+        assert!(!file_paths_match("F:\\w\\deep.pl", "f:/w/deep.pl"));
+        // Different files still never match.
+        assert!(!file_paths_match("F:\\w\\deep.pl", "F:/w/other.pl"));
+        // Relative-vs-absolute pairs keep falling through to the suffix rule.
+        assert!(file_paths_match("F:\\w\\deep.pl", "deep.pl"));
+    }
+
+    /// A runtime stop reported under the launch spelling must correlate with
+    /// an installation registered under the client's breakpoint spelling:
+    /// before #17246 the spelling mismatch swallowed the stop entirely (no
+    /// `stopped` event while the debuggee sat suspended at the line).
+    #[test]
+    fn engine_hit_correlates_across_separator_spellings()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (_file, stored_spelling) = create_test_perl_file();
+        let observed_spelling = stored_spelling.replace('\\', "/");
+        assert_ne!(
+            stored_spelling, observed_spelling,
+            "test fixture must actually exercise both separator spellings"
+        );
+        let store = BreakpointStore::new();
+        let args = SetBreakpointsArguments {
+            source: Source {
+                path: Some(stored_spelling.clone()),
+                name: Some("script.pl".to_string()),
+            },
+            breakpoints: Some(vec![SourceBreakpoint {
+                line: 5,
+                column: None,
+                condition: None,
+                hit_condition: None,
+                log_message: None,
+            }]),
+            source_modified: None,
+        };
+        let response = store.set_breakpoints(&args);
+        let id = response.first().ok_or("missing breakpoint response")?.id;
+        let digest =
+            perl_source_identity::ContentDigest::of_bytes(&std::fs::read(&stored_spelling)?)
+                .to_string();
+        if !store.mark_engine_installed(id, &stored_spelling, 5, 7, digest.clone()) {
+            return Err("engine installation was not committed".into());
+        }
+        if !store.has_engine_breakpoint_candidate(&observed_spelling, 5, 7) {
+            return Err("stop under the launch spelling was not admitted as a hit candidate".into());
+        }
+        let outcome = store.register_engine_breakpoint_hit(&observed_spelling, 5, 7, &digest);
+        if !outcome.should_stop || outcome.hit_breakpoint_ids != vec![id] {
+            return Err(format!(
+                "stop under the launch spelling did not correlate with the installation: {outcome:?}"
+            )
+            .into());
+        }
+        Ok(())
     }
 
     #[test]
