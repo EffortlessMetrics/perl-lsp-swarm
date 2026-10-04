@@ -915,13 +915,36 @@ enum EarlyDefinitionTarget {
     XsBootstrap(String),
 }
 
-/// Look up a symbol definition in the workspace index.
-///
-/// Tries two lookup strategies:
-/// 1. `find_def()` with a structured `SymbolKey`
-/// 2. `find_definition()` with a formatted `Package::name` string
-///
-/// Returns the LSP location if found, or `None` to fall through to same-file resolution.
+#[cfg(feature = "workspace")]
+fn workspace_symbol_is_callable(symbol: &crate::workspace_index::WorkspaceSymbol) -> bool {
+    matches!(
+        symbol.kind,
+        crate::workspace_index::SymbolKind::Subroutine
+            | crate::workspace_index::SymbolKind::Method
+            | crate::workspace_index::SymbolKind::Constant
+    )
+}
+
+#[cfg(feature = "workspace")]
+fn workspace_location_is_callable(
+    workspace_index: &crate::workspace_index::WorkspaceIndex,
+    location: &crate::workspace_index::Location,
+    pkg: &str,
+    name: &str,
+) -> bool {
+    let qualified_name = format!("{pkg}::{name}");
+    workspace_index.file_symbols(&location.uri).iter().any(|symbol| {
+        symbol.uri == location.uri
+            && symbol.range == location.range
+            && workspace_symbol_is_callable(symbol)
+            && (symbol.qualified_name.as_deref() == Some(qualified_name.as_str())
+                || (symbol.name == name && symbol.container_name.as_deref() == Some(pkg)))
+    })
+}
+
+/// Look up a callable definition in the workspace index. QName lookups erase
+/// the requested Sub kind, so revalidate each location against typed metadata.
+/// Return None to fall through to same-file resolution for an unproved target.
 #[cfg(feature = "workspace")]
 fn find_workspace_definition_location(
     workspace_index: &crate::workspace_index::WorkspaceIndex,
@@ -936,8 +959,14 @@ fn find_workspace_definition_location(
     };
 
     workspace_index
-        .find_def(&key)
-        .or_else(|| workspace_index.find_definition(&format!("{pkg}::{name}")))
+        .find_defs(&key)
+        .into_iter()
+        .find(|location| workspace_location_is_callable(workspace_index, location, pkg, name))
+        .or_else(|| {
+            workspace_index.find_definition(&format!("{pkg}::{name}")).filter(|location| {
+                workspace_location_is_callable(workspace_index, location, pkg, name)
+            })
+        })
 }
 
 #[cfg(feature = "workspace")]
@@ -1108,7 +1137,20 @@ fn find_symbol_key_definition_locations(
     if symbol_key.kind == crate::workspace_index::SymKind::Sub && symbol_key.sigil.is_none() {
         // For subroutines, try workspace definitions (may include multiple across packages),
         // then fall back to inherited method resolution (single location).
-        let direct = workspace_index.find_defs(symbol_key);
+        // The index's QName lookup erases SymbolKey.kind. Restore the Sub
+        // requirement before a Package/Format/container can escape this tier.
+        let direct: Vec<_> = workspace_index
+            .find_defs(symbol_key)
+            .into_iter()
+            .filter(|location| {
+                workspace_location_is_callable(
+                    workspace_index,
+                    location,
+                    &symbol_key.pkg,
+                    &symbol_key.name,
+                )
+            })
+            .collect();
         if !direct.is_empty() {
             return direct;
         }
@@ -1126,6 +1168,7 @@ fn lookup_workspace_definition(
     pkg: &str,
     name: &str,
     doc_uri: Option<&str>,
+    require_callable: bool,
 ) -> Option<Value> {
     let coord = coordinator?;
 
@@ -1159,6 +1202,13 @@ fn lookup_workspace_definition(
     let qualified_exact = format!("{pkg}::{name}");
     let package_prefix = format!("{pkg}::");
     for symbol in ranked_symbols {
+        if require_callable
+            && (!workspace_symbol_is_callable(&symbol)
+                || !(symbol.qualified_name.as_deref() == Some(qualified_exact.as_str())
+                    || (symbol.name == name && symbol.container_name.as_deref() == Some(pkg))))
+        {
+            continue;
+        }
         // Check if this symbol matches our package
         if (symbol.container_name.as_deref() == Some(pkg)
             || symbol
@@ -1356,6 +1406,69 @@ pub(super) fn cursor_is_off_named_symbol(
     }
 }
 
+#[derive(PartialEq, Eq)]
+enum QualifiedOccurrenceRole {
+    Call,
+    Variable,
+    Other,
+}
+
+fn qualified_occurrence_role(
+    text: &str,
+    offset: usize,
+    ast: Option<&crate::ast::Node>,
+    package: &str,
+    name: &str,
+) -> QualifiedOccurrenceRole {
+    use perl_semantic_analyzer::workspace_index::SymKind as CursorSymbolKind;
+
+    let symbol_key = ast.and_then(|ast| {
+        crate::declaration::symbol_at_cursor_with_source(
+            ast,
+            offset,
+            crate::declaration::current_package_at(ast, offset),
+            text,
+        )
+    });
+    let is_call_key = symbol_key.as_ref().is_some_and(|key| {
+        key.kind == CursorSymbolKind::Sub
+            && key.sigil.is_none()
+            && key.pkg.as_ref() == package
+            && key.name.as_ref() == name
+    });
+    let (line_start, line_text) = crate::util::line_window_around_offset(text, offset);
+    let qualified_name = format!("{package}::{name}");
+    let matched = get_fqn_regex().ok().and_then(|regex| {
+        regex.find_iter(line_text).find(|matched| {
+            matched.as_str() == qualified_name.as_str()
+                && offset >= line_start + matched.start()
+                && offset <= line_start + matched.end()
+        })
+    });
+    if symbol_key
+        .as_ref()
+        .is_some_and(|key| key.kind == CursorSymbolKind::Var && key.sigil.is_some())
+        || (!is_call_key
+            && matched.as_ref().is_some_and(|matched| {
+                // '*' and '%' also spell arithmetic. Only a canonical Var key
+                // justifies their variable role; '$' and '@' are unambiguous.
+                text[..line_start + matched.start()].ends_with(['$', '@'])
+            }))
+    {
+        QualifiedOccurrenceRole::Variable
+    } else if is_call_key
+        || matched.as_ref().is_some_and(|matched| {
+            // Opaque Use/Format expression bodies can lack a callable AST key.
+            text[..line_start + matched.start()].trim_end().ends_with('&')
+                || text[line_start + matched.end()..].trim_start().starts_with('(')
+        })
+    {
+        QualifiedOccurrenceRole::Call
+    } else {
+        QualifiedOccurrenceRole::Other
+    }
+}
+
 /// The terminal same-file model may resolve an absent package's callable by its
 /// bare name in the caller's scope, or return a containing declaration when
 /// lookup fails. Require a callable with the explicit identity at a qualified
@@ -1366,8 +1479,6 @@ fn same_file_definition_matches_qualification(
     definition: &crate::symbol::Symbol,
     ast: &crate::ast::Node,
 ) -> bool {
-    use perl_semantic_analyzer::workspace_index::SymKind as CursorSymbolKind;
-
     let is_callable = matches!(
         definition.kind,
         crate::symbol::SymbolKind::Subroutine | crate::symbol::SymbolKind::Method
@@ -1380,47 +1491,12 @@ fn same_file_definition_matches_qualification(
     match fqn_component_at_cursor(regex, line_text, offset.saturating_sub(line_start)) {
         Some(FqnCursorComponent::Final { package, name }) => {
             let qualified_name = format!("{package}::{name}");
-            let symbol_key = crate::declaration::symbol_at_cursor_with_source(
-                ast,
-                offset,
-                crate::declaration::current_package_at(ast, offset),
-                text,
-            );
-            let matched = regex.find_iter(line_text).find(|matched| {
-                matched.as_str() == qualified_name.as_str()
-                    && offset >= line_start + matched.start()
-                    && offset <= line_start + matched.end()
-            });
-            let before =
-                matched.as_ref().map(|matched| text[..line_start + matched.start()].trim_end());
-            let is_call_key = symbol_key.as_ref().is_some_and(|key| {
-                key.kind == CursorSymbolKind::Sub
-                    && key.sigil.is_none()
-                    && key.pkg.as_ref() == package.as_str()
-                    && key.name.as_ref() == name.as_str()
-            });
-            let is_variable_at_cursor = symbol_key
-                .as_ref()
-                .is_some_and(|key| key.kind == CursorSymbolKind::Var && key.sigil.is_some())
-                || (!is_call_key
-                    && matched.as_ref().is_some_and(|matched| {
-                        // '*' and '%' also spell binary operators. Their variable
-                        // role needs a canonical Var key; adjacency alone is not proof.
-                        text[..line_start + matched.start()].ends_with(['$', '@'])
-                    }));
-            // Some expression bodies (notably Use and Format) are raw tokens,
-            // without a callable AST key. Recognize their explicit call spelling
-            // too, while retaining canonical/sigiled variable occurrences.
-            let is_call_at_cursor = !is_variable_at_cursor
-                && (is_call_key
-                    || matched.as_ref().is_some_and(|matched| {
-                        before.is_some_and(|before| before.ends_with('&'))
-                            || text[line_start + matched.end()..].trim_start().starts_with('(')
-                    }));
+            let role = qualified_occurrence_role(text, offset, Some(ast), &package, &name);
+            let is_call_at_cursor = role == QualifiedOccurrenceRole::Call;
             if is_call_at_cursor && !is_callable {
                 return false;
             }
-            if is_variable_at_cursor {
+            if role == QualifiedOccurrenceRole::Variable {
                 return true;
             }
             // Even an opaque occurrence must agree with the complete identity;
@@ -2282,6 +2358,26 @@ impl LspServer {
                                         &package,
                                         &name,
                                         Some(uri),
+                                        parsed.as_ref().and_then(|p| p.ast()).map_or_else(
+                                            || {
+                                                qualified_occurrence_role(
+                                                    &doc.text,
+                                                    self.pos16_to_offset(doc, line, character),
+                                                    None,
+                                                    &package,
+                                                    &name,
+                                                )
+                                            },
+                                            |ast| {
+                                                qualified_occurrence_role(
+                                                    &doc.text,
+                                                    self.pos16_to_offset(doc, line, character),
+                                                    Some(ast),
+                                                    &package,
+                                                    &name,
+                                                )
+                                            },
+                                        ) == QualifiedOccurrenceRole::Call,
                                     )
                                     && workspace_index_is_fresh()
                                 {
@@ -2310,6 +2406,7 @@ impl LspServer {
                                 package_name,
                                 method_name,
                                 Some(uri),
+                                true,
                             ) && workspace_index_is_fresh()
                             {
                                 return Ok(Some(result));
@@ -2337,6 +2434,7 @@ impl LspServer {
                                     "UNIVERSAL",
                                     method_name,
                                     Some(uri),
+                                    true,
                                 )
                                 && workspace_index_is_fresh()
                             {
@@ -2371,6 +2469,7 @@ impl LspServer {
                                         current_package,
                                         method_name,
                                         Some(uri),
+                                        true,
                                     ) && workspace_index_is_fresh()
                                     {
                                         return Ok(Some(result));
@@ -2400,6 +2499,7 @@ impl LspServer {
                                     "UNIVERSAL",
                                     method_name,
                                     Some(uri),
+                                    true,
                                 )
                                 && workspace_index_is_fresh()
                             {
@@ -3468,6 +3568,18 @@ mod tests {
     }
 
     #[cfg(feature = "workspace")]
+    fn assert_qualified_fallback_start(result: &Option<Value>, starts: &[u64]) {
+        let start = result
+            .as_ref()
+            .and_then(|value| value.pointer("/0/range/start/character"))
+            .and_then(Value::as_u64);
+        assert!(
+            start.is_some_and(|start| starts.contains(&start)),
+            "wrong declaration token: {result:?}"
+        );
+    }
+
+    #[cfg(feature = "workspace")]
     #[test]
     fn qualified_definition_fallback_retains_exact_terminal_alias_while_index_is_stale()
     -> Result<(), Box<dyn std::error::Error>> {
@@ -3509,6 +3621,10 @@ mod tests {
             server.test_index_live_file(uri, text, generation).map_err(std::io::Error::other)?;
         }
         server.test_simulate_indexing_complete();
+        assert!(!server.workspace_index_stale_for_any_open_document());
+        let fresh_alias = qualified_fallback_request(&server, caller_uri, 2, 9)?;
+        assert_qualified_fallback_location(&fresh_alias, caller_uri, 1);
+        assert_qualified_fallback_start(&fresh_alias, &[0]);
         server
             .test_replace_document_without_index(
                 unrelated_uri,
@@ -3857,6 +3973,51 @@ mod tests {
             }
             server.test_simulate_indexing_complete();
             let coordinator = server.index_coordinator.as_ref().ok_or("workspace coordinator")?;
+            if case == "same-name-package" {
+                assert!(!server.workspace_index_stale_for_any_open_document());
+                let key = crate::workspace_index::SymbolKey {
+                    pkg: "Other".into(),
+                    name: "compute_0".into(),
+                    sigil: None,
+                    kind: crate::workspace_index::SymKind::Sub,
+                };
+                assert!(
+                    coordinator.index().find_def(&key).is_some(),
+                    "premise: QName lookup erases Sub kind"
+                );
+                assert!(
+                    find_workspace_definition_location(coordinator.index(), "Other", "compute_0")
+                        .is_none()
+                );
+                assert!(find_symbol_key_definition_locations(coordinator.index(), &key).is_empty());
+                assert!(
+                    lookup_workspace_definition(
+                        Some(coordinator),
+                        "Other",
+                        "compute_0",
+                        Some(&caller_uri),
+                        true
+                    )
+                    .is_none()
+                );
+                let call =
+                    qualified_fallback_request(&server, &caller_uri, call_line, call_character)?;
+                assert!(
+                    call.as_ref().is_some_and(
+                        |value| value.is_null() || value.as_array().is_some_and(Vec::is_empty)
+                    ),
+                    "fresh index must not return Package for callable: {call:?}"
+                );
+                let declaration =
+                    qualified_fallback_request(&server, &caller_uri, 0, declaration_character)?;
+                assert_qualified_fallback_location(&declaration, &caller_uri, 0);
+                assert_qualified_fallback_start(&declaration, &[0, 8]);
+            }
+            if case == "constant" {
+                let call = qualified_fallback_request(&server, &caller_uri, 2, 10)?;
+                assert_qualified_fallback_location(&call, &caller_uri, 1);
+                assert_qualified_fallback_start(&call, &[0, 13]);
+            }
             coordinator.transition_to_degraded(DegradationReason::ScanTimeout { elapsed_ms: 123 });
             for stale in [false, true] {
                 if stale {
@@ -3883,6 +4044,16 @@ mod tests {
                     declaration_line,
                     declaration_character,
                 )?;
+                assert_qualified_fallback_start(
+                    &declaration,
+                    match case {
+                        "constant" => &[0, 13],
+                        "same-name-package" => &[0, 8],
+                        "attribute" => &[4],
+                        _ if case.starts_with("format") => &[0, 7],
+                        _ => &[0],
+                    },
+                );
                 if case.starts_with("format") {
                     let locations = declaration
                         .as_ref()
@@ -3911,6 +4082,7 @@ mod tests {
                             + "REPORT".len();
                         let endpoint =
                             qualified_fallback_request(&server, &caller_uri, 1, name_end)?;
+                        assert_qualified_fallback_start(&endpoint, &[0, 7]);
                         let locations = endpoint
                             .as_ref()
                             .and_then(Value::as_array)
@@ -3939,25 +4111,23 @@ mod tests {
                 match case {
                     "constant" => {
                         for (line, character) in [(2, 10), (3, 2)] {
-                            assert_qualified_fallback_location(
-                                &qualified_fallback_request(&server, &caller_uri, line, character)?,
-                                &caller_uri,
-                                1,
-                            );
+                            let call =
+                                qualified_fallback_request(&server, &caller_uri, line, character)?;
+                            assert_qualified_fallback_start(&call, &[0, 13]);
+                            assert_qualified_fallback_location(&call, &caller_uri, 1);
                         }
                     }
-                    _ if case.starts_with("label") => assert_qualified_fallback_location(
-                        &qualified_fallback_request(&server, &caller_uri, 1, 7)?,
-                        &caller_uri,
-                        2,
-                    ),
+                    _ if case.starts_with("label") => {
+                        let label = qualified_fallback_request(&server, &caller_uri, 1, 7)?;
+                        assert_qualified_fallback_location(&label, &caller_uri, 2);
+                        assert_qualified_fallback_start(&label, &[0]);
+                    }
                     "attribute" => {
                         for (line, character) in [(4, 11), (5, 3)] {
-                            assert_qualified_fallback_location(
-                                &qualified_fallback_request(&server, &caller_uri, line, character)?,
-                                &caller_uri,
-                                3,
-                            );
+                            let variable =
+                                qualified_fallback_request(&server, &caller_uri, line, character)?;
+                            assert_qualified_fallback_start(&variable, &[4]);
+                            assert_qualified_fallback_location(&variable, &caller_uri, 3);
                         }
                     }
                     _ => {}

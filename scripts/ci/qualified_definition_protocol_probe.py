@@ -66,7 +66,8 @@ def stock_environment() -> dict[str, str]:
     return environment
 
 
-def at_declaration(locations: object, path: Path, line: int, end_line: int | None = None) -> bool:
+def at_declaration(locations: object, path: Path, line: int, end_line: int | None = None,
+                   start_characters: tuple[int, ...] | None = None) -> bool:
     if not isinstance(locations, list) or len(locations) != 1:
         return False
     location = locations[0]
@@ -75,6 +76,8 @@ def at_declaration(locations: object, path: Path, line: int, end_line: int | Non
         and unquote(location.get("uri", "")) == path.as_uri()
         and location.get("range", {}).get("start", {}).get("line") == line
         and location.get("range", {}).get("end", {}).get("line") == (line if end_line is None else end_line)
+        and (start_characters is None
+             or location.get("range", {}).get("start", {}).get("character") in start_characters)
     )
 
 
@@ -84,27 +87,27 @@ def assertions(report: dict, caller: Path, target: Path) -> dict[str, bool]:
     return {
         "missing_index_never_returns_wrong_package": (
             "qualified_before_target_open" in observations
-            and (before is None or before == [] or at_declaration(before, target, 3))
+            and (before is None or before == [] or at_declaration(before, target, 3, start_characters=(0, 4)))
         ),
-        "bare_local_declaration_retained": at_declaration(observations.get("bare_local_control"), caller, 5),
-        "target_didOpen_recovers_exact_declaration": at_declaration(observations.get("qualified_after_target_open"), target, 3),
+        "bare_local_declaration_retained": at_declaration(observations.get("bare_local_control"), caller, 5, start_characters=(0, 4)),
+        "target_didOpen_recovers_exact_declaration": at_declaration(observations.get("qualified_after_target_open"), target, 3, start_characters=(0, 4)),
         "unresolved_call_never_returns_enclosing_package": (
             "qualified_inside_package_block" in observations
             and observations["qualified_inside_package_block"] in (None, [])
         ),
-        "exact_qualified_alias_retained_after_edit": at_declaration(observations.get("qualified_alias_after_edit"), caller, 1),
+        "exact_qualified_alias_retained_after_edit": at_declaration(observations.get("qualified_alias_after_edit"), caller, 1, start_characters=(0,)),
         "constant_value_never_returns_containing_constant": (
             "qualified_inside_constant_value" in observations
             and observations["qualified_inside_constant_value"] in (None, [])
         ),
-        "qualified_constant_navigation_retained": at_declaration(observations.get("qualified_constant_control"), caller, 1),
-        "bare_constant_navigation_retained": at_declaration(observations.get("bare_constant_control"), caller, 1),
+        "qualified_constant_navigation_retained": at_declaration(observations.get("qualified_constant_control"), caller, 1, start_characters=(0, 13)),
+        "bare_constant_navigation_retained": at_declaration(observations.get("bare_constant_control"), caller, 1, start_characters=(0, 13)),
         "qualified_call_never_returns_containing_label": (
             "qualified_inside_labeled_statement" in observations
             and observations["qualified_inside_labeled_statement"] in (None, [])
         ),
-        "goto_label_navigation_retained": at_declaration(observations.get("goto_label_control"), caller, 2),
-        "label_declaration_navigation_retained": at_declaration(observations.get("label_declaration_control"), caller, 2),
+        "goto_label_navigation_retained": at_declaration(observations.get("goto_label_control"), caller, 2, start_characters=(0,)),
+        "label_declaration_navigation_retained": at_declaration(observations.get("label_declaration_control"), caller, 2, start_characters=(0,)),
         "format_value_never_returns_containing_format": (
             "qualified_inside_format_value" in observations
             and observations["qualified_inside_format_value"] in (None, [])
@@ -112,20 +115,20 @@ def assertions(report: dict, caller: Path, target: Path) -> dict[str, bool]:
         # Name/header selection and full-declaration spans are both valid
         # format targets. Always require this file and the declaration line.
         "format_declaration_navigation_retained": any(
-            at_declaration(observations.get("format_declaration_control"), caller, 1, end_line)
+            at_declaration(observations.get("format_declaration_control"), caller, 1, end_line, (0, 7))
             for end_line in (1, 4, 5)
         ),
         "attribute_default_never_returns_containing_scalar": (
             "qualified_inside_attribute_default" in observations
             and observations["qualified_inside_attribute_default"] in (None, [])
         ),
-        "qualified_variable_navigation_retained": at_declaration(observations.get("qualified_variable_control"), caller, 3),
-        "bare_variable_navigation_retained": at_declaration(observations.get("bare_variable_control"), caller, 3),
+        "qualified_variable_navigation_retained": at_declaration(observations.get("qualified_variable_control"), caller, 3, start_characters=(4,)),
+        "bare_variable_navigation_retained": at_declaration(observations.get("bare_variable_control"), caller, 3, start_characters=(4,)),
         "same_name_package_cannot_stand_in_for_callable": (
             "qualified_call_same_name_package" in observations
             and observations["qualified_call_same_name_package"] in (None, [])
         ),
-        "same_name_package_declaration_retained": at_declaration(observations.get("same_name_package_declaration_control"), caller, 0),
+        "same_name_package_declaration_retained": at_declaration(observations.get("same_name_package_declaration_control"), caller, 0, start_characters=(0, 8)),
         **{f"{case}_call_never_returns_containing_label": (
             f"qualified_{case}_call" in observations
             and observations[f"qualified_{case}_call"] in (None, [])
@@ -135,11 +138,11 @@ def assertions(report: dict, caller: Path, target: Path) -> dict[str, bool]:
             and observations["qualified_inside_qualified_format_value"] in (None, [])
         ),
         "qualified_format_declaration_navigation_retained": any(
-            at_declaration(observations.get("qualified_format_declaration_control"), caller, 1, end_line)
+            at_declaration(observations.get("qualified_format_declaration_control"), caller, 1, end_line, (0, 7))
             for end_line in (1, 4, 5)
         ),
         "qualified_format_name_end_navigation_retained": any(
-            at_declaration(observations.get("qualified_format_name_end_control"), caller, 1, end_line)
+            at_declaration(observations.get("qualified_format_name_end_control"), caller, 1, end_line, (0, 7))
             for end_line in (1, 4, 5)
         ),
         "utf16_negotiated": report.get("position_encoding") == "utf-16",

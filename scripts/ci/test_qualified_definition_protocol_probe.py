@@ -29,6 +29,12 @@ def format_location():
     return result
 
 
+def variable_location():
+    result = location(CALLER_PATH, 3)
+    result[0]["range"]["start"]["character"] = 4
+    return result
+
+
 def successful_report():
     return {"observations": {"qualified_before_target_open": [],
                              "bare_local_control": location(CALLER_PATH, 5),
@@ -44,8 +50,8 @@ def successful_report():
                              "qualified_inside_format_value": [],
                              "format_declaration_control": format_location(),
                              "qualified_inside_attribute_default": [],
-                             "qualified_variable_control": location(CALLER_PATH, 3),
-                             "bare_variable_control": location(CALLER_PATH, 3),
+                             "qualified_variable_control": variable_location(),
+                             "bare_variable_control": variable_location(),
                              "qualified_call_same_name_package": [],
                              "same_name_package_declaration_control": location(CALLER_PATH, 0),
                              **{f"qualified_{case}_call": [] for case in PROBE.ARITHMETIC_CASES},
@@ -132,6 +138,50 @@ class OracleTests(unittest.TestCase):
         self.assertTrue(all(outcomes.values()))
         del report["observations"]["qualified_call_same_name_package"]
         self.assertFalse(self.outcomes(report)["same_name_package_cannot_stand_in_for_callable"])
+
+    def test_same_line_call_tokens_are_not_declaration_targets(self):
+        for key, outcome, line, valid_starts, wrong_start in (
+            ("same_name_package_declaration_control", "same_name_package_declaration_retained", 0, (0, 8),
+             PROBE.SAME_NAME_PACKAGE.index("Other::compute_0", 9)),
+            ("qualified_constant_control", "qualified_constant_navigation_retained", 1, (0, 13),
+             PROBE.CONSTANT_VALUE.splitlines()[1].index("Other::compute_0")),
+            ("bare_constant_control", "bare_constant_navigation_retained", 1, (0, 13),
+             PROBE.CONSTANT_VALUE.splitlines()[1].index("Other::compute_0")),
+            ("goto_label_control", "goto_label_navigation_retained", 2, (0,),
+             PROBE.LABEL_CALL.splitlines()[2].index("Other::compute_0")),
+            ("label_declaration_control", "label_declaration_navigation_retained", 2, (0,),
+             PROBE.LABEL_CALL.splitlines()[2].index("Other::compute_0")),
+        ):
+            report = successful_report()
+            answer = location(CALLER_PATH, line)
+            for start in valid_starts:
+                answer[0]["range"]["start"]["character"] = start
+                report["observations"][key] = answer
+                self.assertTrue(self.outcomes(report)[outcome])
+            answer[0]["range"]["start"]["character"] = wrong_start
+            self.assertFalse(self.outcomes(report)[outcome])
+
+    def test_every_positive_requires_a_source_backed_declaration_start(self):
+        for key, outcome, line, starts in (
+            ("bare_local_control", "bare_local_declaration_retained", 5, (0, 4)),
+            ("qualified_after_target_open", "target_didOpen_recovers_exact_declaration", 3, (0, 4)),
+            ("qualified_alias_after_edit", "exact_qualified_alias_retained_after_edit", 1, (0,)),
+            ("format_declaration_control", "format_declaration_navigation_retained", 1, (0, 7)),
+            ("qualified_format_declaration_control", "qualified_format_declaration_navigation_retained", 1, (0, 7)),
+            ("qualified_format_name_end_control", "qualified_format_name_end_navigation_retained", 1, (0, 7)),
+            ("qualified_variable_control", "qualified_variable_navigation_retained", 3, (4,)),
+            ("bare_variable_control", "bare_variable_navigation_retained", 3, (4,)),
+        ):
+            with self.subTest(key=key):
+                report = successful_report()
+                path = TARGET_PATH if key == "qualified_after_target_open" else CALLER_PATH
+                answer = location(path, line)
+                report["observations"][key] = answer
+                for start in starts:
+                    answer[0]["range"]["start"]["character"] = start
+                    self.assertTrue(self.outcomes(report)[outcome])
+                answer[0]["range"]["start"]["character"] = 34
+                self.assertFalse(self.outcomes(report)[outcome])
 
     def test_format_name_header_and_full_declaration_spans_are_valid_but_other_lines_are_not(self):
         report = successful_report()
