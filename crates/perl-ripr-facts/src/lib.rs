@@ -12,11 +12,16 @@
 //! Three entry points:
 //!
 //! - [`build_ripr_facts_packet`] is the **structured batch API** (#3293 PR 2):
-//!   it validates a [`RiprFactsRequest`], runs the (currently conservative,
-//!   string-scan) emitter, and returns the assembled `ripr-perl-facts-v1` packet
-//!   as a [`serde_json::Value`] — no I/O.
+//!   it validates a [`RiprFactsRequest`], runs the emitter — parser-backed
+//!   for files/owners, tests/oracles, and `direct_owner_call` relations;
+//!   `changes` are built from supplied diff hunks and attributed with parsed
+//!   file/owner facts. String scans remain for package-name extraction,
+//!   boundary patterns, change behavior hints, and the basename fallback —
+//!   and returns the assembled `ripr-perl-facts-v1` packet as a
+//!   [`serde_json::Value`]. It reads workspace files but performs no output
+//!   writes, spawns no processes, and writes nothing to stderr.
 //! - [`run_ripr_facts`] is the thin CLI wrapper the `perl-lsp` / `perllsp`
-//!   `ripr-facts` subcommand calls: it forwards CLI-shaped args to the batch
+//!   `--ripr-facts` flag calls: it forwards CLI-shaped args to the batch
 //!   API, then validates the output path, writes the packet to disk, and maps
 //!   the outcome to a process exit code. The write **replaces** the
 //!   destination through a staged sibling and a rename, so a failed generation
