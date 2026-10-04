@@ -165,6 +165,10 @@ fn pl_and_psgi_skips_are_named_anywhere() {
         message.contains("appear in `files[]`"),
         "files-present packet must use the files-present wording; got {message:?}"
     );
+    assert!(
+        message.contains("excluded from the requested scoped facts or commands"),
+        "files-present wording must name the exclusion from requested facts/commands; got {message:?}"
+    );
     let refs: Vec<&str> = must_some(limitation["evidence_refs"].as_array())
         .iter()
         .filter_map(|r| r.as_str())
@@ -226,6 +230,26 @@ fn relations_request_reports_both_t_and_source_skips() {
         .collect();
     assert!(refs.contains(&"file:xt/extra.t"), "got {refs:?}");
     assert!(refs.contains(&"file:script/Helper.pm"), "got {refs:?}");
+}
+
+#[test]
+fn verify_only_request_names_excluded_commands() {
+    // A verify-only caller requests commands, not facts — the limitation
+    // must still name the out-of-scope .t as excluded from the requested
+    // scoped facts or commands (PRRT_kwDOSid81M6o2Z3P).
+    let root = fresh_root("verify-only");
+    stage_file(&root, "t/app.t", APP_T);
+    stage_file(&root, "xt/extra.t", EXTRA_T);
+    let packet = build_packet(&root, "verify_commands");
+    let _ = std::fs::remove_dir_all(&root);
+
+    let limitation = scope_limitation(&packet);
+    let message = must_some(limitation["message"].as_str());
+    assert!(message.contains("xt/extra.t"), "message must name the skip; got {message:?}");
+    assert!(
+        message.contains("excluded from the requested scoped facts or commands"),
+        "verify-only wording must name the exclusion from requested facts/commands; got {message:?}"
+    );
 }
 
 #[test]

@@ -274,12 +274,12 @@ pub fn build_ripr_facts_packet(
             scope_skips.iter().map(|rel| serde_json::json!(format!("file:{rel}"))).collect();
         let message = if has_file_facts {
             format!(
-                "test/source discovery is scoped to `<root>/t` + `<root>/lib` while `files[]` walks the whole root; these files appear in `files[]` but yield no test/boundary facts: {}.",
+                "test/source discovery is scoped to `<root>/t` + `<root>/lib` while `files[]` walks the whole root; these files appear in `files[]` but are excluded from the requested scoped facts or commands: {}.",
                 scope_skips.join(", ")
             )
         } else {
             format!(
-                "test/source discovery is scoped to `<root>/t` + `<root>/lib`; these files fall outside that scope and yield no test/boundary facts: {}. (`files[]` is not in this packet — the `file:` evidence refs are path-derived ids, not references to present facts.)",
+                "test/source discovery is scoped to `<root>/t` + `<root>/lib`; these files fall outside that scope and are excluded from the requested scoped facts or commands: {}. (`files[]` is not in this packet — the `file:` evidence refs are path-derived ids, not references to present facts.)",
                 scope_skips.join(", ")
             )
         };
