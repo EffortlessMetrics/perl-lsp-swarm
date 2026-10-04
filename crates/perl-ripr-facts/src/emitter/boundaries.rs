@@ -37,6 +37,70 @@ const DYNAMIC_BOUNDARY_PATTERNS: &[(&str, &str)] = &[
     ("require $", "module_resolution_unknown"),
 ];
 
+/// Byte offsets of statement-position `eval` keywords starting a spaced string
+/// form (`eval $code`, `eval "..."`) — the spaced forms the substring table
+/// cannot express (#17264).
+///
+/// Guards (the table's bare substrings already over-match e.g. `retrieval(`;
+/// this matcher must do better, not worse):
+/// - the byte before `eval` must be start-of-content or a statement char —
+///   never an identifier char, a `$@%` sigil, or `>`, `-`, `:` (which would
+///   make it a method call, `->eval`, `::eval`, `$eval`, or `--eval`);
+/// - the byte after `eval` must be whitespace (glued forms like `eval(` stay
+///   with the table, so no occurrence double-emits);
+/// - the next non-whitespace byte after `eval` must not be `{`: block `eval`
+///   belongs to the table's `"eval {"` entry — matching it here would emit
+///   every block-eval twice;
+/// - a `sub`/`method` keyword immediately before (over whitespace) makes it a
+///   definition named `eval`, not a call — skipped.
+///
+/// Known misses, documented: `LABEL: eval $x` (label colon) is excluded by
+/// the `:` rule, and `eval` newline `{` belongs to neither the table (which
+/// needs the literal `"eval {"`) nor this matcher. Both are vanishingly rare;
+/// the recall gain on the common string-eval shape dwarfs them.
+fn statement_eval_offsets(content: &str) -> Vec<usize> {
+    const EVAL_LEN: usize = 4;
+    let bytes = content.as_bytes();
+    let mut offsets = Vec::new();
+    for (offset, _) in content.match_indices("eval") {
+        let prev_ok = match offset.checked_sub(1).map(|i| bytes[i]) {
+            None => true,
+            // Statement chars: everything that can legally precede a keyword
+            // call, minus identifier chars, `$@%` sigils, and `>`, `-`, `:`
+            // (method/qualified/label forms).
+            Some(b) => b";{}()[]=,!&|+*/<? \t\r\n".contains(&b),
+        };
+        if !prev_ok {
+            continue;
+        }
+        let rest = bytes.get(offset + EVAL_LEN..).unwrap_or_default();
+        let Some(first) = rest.first().copied() else {
+            continue;
+        };
+        if !first.is_ascii_whitespace() {
+            continue;
+        }
+        let follower = rest.iter().find(|b| !b.is_ascii_whitespace()).copied();
+        if follower == Some(b'{') {
+            continue;
+        }
+        // `sub eval` / `method eval`: a definition, not a call.
+        let before = content[..offset].trim_end();
+        if before.ends_with("sub") || before.ends_with("method") {
+            let keyword_len = if before.ends_with("sub") { 3 } else { 6 };
+            let boundary_ok = before[..before.len() - keyword_len]
+                .chars()
+                .next_back()
+                .is_none_or(|c| !c.is_ascii_alphanumeric() && c != '_');
+            if boundary_ok {
+                continue;
+            }
+        }
+        offsets.push(offset);
+    }
+    offsets
+}
+
 #[derive(Debug)]
 struct BoundaryOwner {
     owner_id: String,
@@ -83,6 +147,52 @@ fn boundary_evidence_refs(owner_id: Option<&str>, file_id: &str) -> Vec<Value> {
     }
 }
 
+/// Emit one `dynamic_boundaries` fact + its limitation for a pattern hit at
+/// `offset`, attributing the enclosing owner. Shared by the substring table
+/// and the statement-`eval` matcher so the two cannot render divergent facts.
+#[allow(clippy::too_many_arguments)]
+fn push_boundary(
+    boundaries: &mut Vec<Value>,
+    limitations: &mut Vec<Value>,
+    boundary_counter: &mut usize,
+    file_path: &str,
+    file_id: &str,
+    owner_index: &[BoundaryOwner],
+    line_index: &LineIndex,
+    pattern: &str,
+    boundary_kind: &str,
+    offset: usize,
+    len: usize,
+) {
+    *boundary_counter += 1;
+    let boundary_id = format!("boundary:{file_path}:{boundary_kind}:{boundary_counter}");
+    let owner_id =
+        enclosing_boundary_owner(owner_index, offset).map(|owner| owner.owner_id.as_str());
+    let ((start_line, start_column), (end_line, end_column)) =
+        line_index.range(offset, offset + len);
+    let evidence_refs = boundary_evidence_refs(owner_id, file_id);
+    boundaries.push(json!({
+        "boundary_id": boundary_id,
+        "kind": boundary_kind,
+        "file_id": file_id,
+        "owner_id": owner_id,
+        "range": {
+            "start_line": start_line,
+            "start_column": start_column,
+            "end_line": end_line,
+            "end_column": end_column,
+        },
+        "confidence": "high",
+        "provenance_refs": []
+    }));
+    limitations.push(json!({
+        "limitation_id": format!("limitation:{boundary_id}"),
+        "kind": boundary_kind,
+        "message": format!("Dynamic boundary `{pattern}` detected in {file_path}; ripr fails closed on this boundary kind."),
+        "evidence_refs": evidence_refs
+    }));
+}
+
 pub(crate) fn dynamic_boundaries_in_lines(lines: &[String]) -> Vec<(&'static str, &'static str)> {
     let mut seen_kinds = std::collections::HashSet::new();
     let mut boundaries = Vec::new();
@@ -91,6 +201,11 @@ pub(crate) fn dynamic_boundaries_in_lines(lines: &[String]) -> Vec<(&'static str
             if line.contains(pattern) && seen_kinds.insert(boundary_kind) {
                 boundaries.push((pattern, boundary_kind));
             }
+        }
+        // `#17264`: same spaced-`eval` recall as the file emitter, so a hunk
+        // adding `eval $code` attributes the boundary its file scan would find.
+        if !statement_eval_offsets(line).is_empty() && seen_kinds.insert("eval_or_string_code") {
+            boundaries.push(("eval <whitespace>", "eval_or_string_code"));
         }
     }
     boundaries
@@ -138,35 +253,41 @@ pub(crate) fn emit_boundaries_and_commands(root: &str) -> (Vec<Value>, Vec<Value
         let line_index = LineIndex::new(content.clone());
         for (pattern, boundary_kind) in DYNAMIC_BOUNDARY_PATTERNS {
             for (offset, _) in content.match_indices(pattern) {
-                boundary_counter += 1;
-                let boundary_id =
-                    format!("boundary:{file_path}:{boundary_kind}:{boundary_counter}");
-                let owner_id = enclosing_boundary_owner(&owner_index, offset)
-                    .map(|owner| owner.owner_id.as_str());
-                let ((start_line, start_column), (end_line, end_column)) =
-                    line_index.range(offset, offset + pattern.len());
-                let evidence_refs = boundary_evidence_refs(owner_id, &file_id);
-                boundaries.push(json!({
-                    "boundary_id": boundary_id,
-                    "kind": boundary_kind,
-                    "file_id": file_id.clone(),
-                    "owner_id": owner_id,
-                    "range": {
-                        "start_line": start_line,
-                        "start_column": start_column,
-                        "end_line": end_line,
-                        "end_column": end_column,
-                    },
-                    "confidence": "high",
-                    "provenance_refs": []
-                }));
-                limitations.push(json!({
-                    "limitation_id": format!("limitation:{boundary_id}"),
-                    "kind": boundary_kind,
-                    "message": format!("Dynamic boundary `{pattern}` detected in {file_path}; ripr fails closed on this boundary kind."),
-                    "evidence_refs": evidence_refs
-                }));
+                push_boundary(
+                    &mut boundaries,
+                    &mut limitations,
+                    &mut boundary_counter,
+                    file_path,
+                    &file_id,
+                    &owner_index,
+                    &line_index,
+                    pattern,
+                    boundary_kind,
+                    offset,
+                    pattern.len(),
+                );
             }
+        }
+        // `#17264`: spaced string-`eval` forms (`eval $code`, `eval "..."`)
+        // the substring table cannot express. Runs after the table over the
+        // shared counter, so pre-existing boundary ids are stable; the
+        // follower rules (whitespace, never `{`) guarantee no occurrence
+        // double-emits with the table's `"eval {"`/`eval(`/`eval'`/`eval"`
+        // entries.
+        for offset in statement_eval_offsets(content) {
+            push_boundary(
+                &mut boundaries,
+                &mut limitations,
+                &mut boundary_counter,
+                file_path,
+                &file_id,
+                &owner_index,
+                &line_index,
+                "eval <whitespace>",
+                "eval_or_string_code",
+                offset,
+                "eval".len(),
+            );
         }
     }
 
@@ -216,6 +337,67 @@ mod tests {
             "must have an eval_or_string_code boundary"
         );
         assert!(!limitations.is_empty(), "each boundary must have a corresponding limitation");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn statement_eval_matches_spaced_forms() {
+        // `#17264`: the common string-eval shapes the table misses.
+        assert_eq!(statement_eval_offsets("my $r = eval $code;").len(), 1);
+        assert_eq!(statement_eval_offsets("my $r = eval \"$code\";").len(), 1);
+        assert_eq!(statement_eval_offsets("eval $code;").len(), 1, "statement start matches");
+        assert_eq!(
+            statement_eval_offsets("my $r = eval ($code);").len(),
+            1,
+            "spaced paren matches (the table only has the glued form)"
+        );
+        assert_eq!(
+            statement_eval_offsets("if ($x) {\n\teval\n$code;\n}").len(),
+            1,
+            "newline follower matches"
+        );
+    }
+
+    #[test]
+    fn statement_eval_rejects_glued_and_non_call_forms() {
+        // Glued forms stay with the substring table (no double-emit).
+        assert!(statement_eval_offsets("eval{}").is_empty());
+        assert!(statement_eval_offsets("eval($x)").is_empty());
+        assert!(statement_eval_offsets("eval\"$x\"").is_empty());
+        assert!(statement_eval_offsets("eval'$x'").is_empty());
+        // Spaced block form belongs to the table's `"eval {"` entry.
+        assert!(statement_eval_offsets("my $r = eval { };").is_empty());
+        assert!(statement_eval_offsets("eval\n{ };").is_empty(), "documented miss");
+        // Non-calls must not match (the issue's false-positive watch list).
+        assert!(statement_eval_offsets("my $eval = 1;").is_empty(), "$eval var");
+        assert!(statement_eval_offsets("$obj->eval $x;").is_empty(), "method call");
+        assert!(statement_eval_offsets("Foo::eval $x;").is_empty(), "qualified call");
+        assert!(statement_eval_offsets("sub eval { 1 }").is_empty(), "sub definition");
+        assert!(statement_eval_offsets("retrieval $x;").is_empty(), "eval inside a word");
+    }
+
+    #[test]
+    fn emit_boundaries_detects_spaced_eval_once() {
+        // End to end: one spaced `eval $code` yields exactly one boundary
+        // (matcher) with no table double-emit.
+        let root = std::env::temp_dir().join("perl-B8-eval-spaced-root");
+        let lib_dir = root.join("lib");
+        must(std::fs::create_dir_all(&lib_dir));
+        must(std::fs::write(
+            lib_dir.join("Spaced.pm"),
+            "package Spaced;\nsub run { my $c = shift; my $r = eval $c; return $r; }\n1;",
+        ));
+
+        let (boundaries, limitations, _cmds) =
+            emit_boundaries_and_commands(must_some(root.to_str()));
+        let evals: Vec<_> =
+            boundaries.iter().filter(|b| b["kind"] == "eval_or_string_code").collect();
+        assert_eq!(evals.len(), 1, "spaced eval must yield exactly one boundary");
+        assert!(
+            limitations.iter().any(|l| l["kind"] == "eval_or_string_code"),
+            "the boundary must have a matching limitation"
+        );
 
         let _ = std::fs::remove_dir_all(&root);
     }
