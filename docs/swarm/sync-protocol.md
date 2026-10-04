@@ -24,10 +24,17 @@ stable protocol.
 | Repository | Authority |
 | --- | --- |
 | `perl-lsp-swarm/main` | Active development; product implementation, tests, compiler/LSP/DAP work, proof, freeze, release preparation, and current sync protocol |
-| `perl-lsp/master` | Release lineage; publication-specific workflows/policy, public package lineage, and bounded emergency release fixes |
+| `perl-lsp/master` | Public contributor ingress and release lineage; publication-specific workflows/policy, public package lineage, and bounded emergency release fixes |
 
 Normal product work starts and converges in swarm. Do not maintain parallel
-implementation queues in both repositories.
+implementation queues in both repositories. That development authority does not make
+swarm the public PR ingress: external contributors target `perl-lsp/master`.
+
+Before integrating a shared-product external pull request, maintainers first converge the
+accepted swarm state into the public source repository and reconcile the pull request
+against that current base. After the public merge, its shared-product effect is
+reverse-converged into swarm before a later complete-tree projection can overwrite it.
+This contributor-integration boundary does not itself cut a release or publish a channel.
 
 An emergency product fix may begin in `perl-lsp` only when release safety
 requires it. Mirror or supersede the product/test effect in swarm immediately
