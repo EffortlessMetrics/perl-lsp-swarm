@@ -2243,12 +2243,8 @@ fn configured_timeout_pin_matches_hosted_job_budget() -> Result<()> {
         .and_then(|job| job.get("timeout-minutes"))
         .and_then(Value::as_u64)
         .ok_or_else(|| anyhow!("ripr-github timeout-minutes is missing"))?;
-    assert_eq!(
-        minutes, 135,
-        "ripr-github budget moved; update the classifier pin with it"
-    );
-    let classifier =
-        fs::read_to_string(root.join("scripts/ci/classify-ripr-lane-termination"))?;
+    assert_eq!(minutes, 135, "ripr-github budget moved; update the classifier pin with it");
+    let classifier = fs::read_to_string(root.join("scripts/ci/classify-ripr-lane-termination"))?;
     assert!(
         classifier.contains("The job has exceeded the maximum execution time of 2h15m0s"),
         "classifier must pin the exact 135-minute timeout annotation"
