@@ -91,23 +91,21 @@ fn scenario_07_definition_resolves_configured_module_target() -> Result<(), Stri
         .and_then(|root| root.join("lib/Counter.pm"))
         .map_err(|error| format!("invalid configured Counter URI: {error}"))?;
     let mut found_expected = false;
-    let valid_range = |value: &serde_json::Value| {
-        ["start", "end"].iter().all(|position| {
-            value.get(position).is_some_and(|point| {
-                ["line", "character"].iter().all(|coordinate| {
-                    point.get(coordinate).is_some_and(|number| number.as_u64().is_some())
-                })
-            })
-        })
+    let read_position = |value: &serde_json::Value| -> Option<(u32, u32)> {
+        Some((
+            u32::try_from(value.get("line")?.as_u64()?).ok()?,
+            u32::try_from(value.get("character")?.as_u64()?).ok()?,
+        ))
+    };
+    let read_range = |value: &serde_json::Value| {
+        let start = read_position(value.get("start")?)?;
+        let end = read_position(value.get("end")?)?;
+        (start <= end).then_some((start, end))
     };
     for definition in &definitions {
         let (uri, range) = if let Some(uri) = definition.get("uri") {
             (uri, definition.get("range"))
         } else {
-            assert!(
-                definition.get("targetSelectionRange").is_some_and(valid_range),
-                "LocationLink must include a target selection range"
-            );
             (
                 definition
                     .get("targetUri")
@@ -115,7 +113,17 @@ fn scenario_07_definition_resolves_configured_module_target() -> Result<(), Stri
                 definition.get("targetRange"),
             )
         };
-        assert!(range.is_some_and(valid_range), "definition must include a valid range");
+        let range = range.and_then(read_range).ok_or("definition must include a valid range")?;
+        if definition.get("uri").is_none() {
+            let selection = definition
+                .get("targetSelectionRange")
+                .and_then(read_range)
+                .ok_or("LocationLink must include a valid target selection range")?;
+            assert!(
+                range.0 <= selection.0 && selection.1 <= range.1,
+                "LocationLink selection must lie within its target range"
+            );
+        }
         let actual = url::Url::parse(uri.as_str().ok_or("definition URI is not a string")?)
             .map_err(|error| format!("invalid definition URI: {error}"))?;
         found_expected |= actual == expected;
