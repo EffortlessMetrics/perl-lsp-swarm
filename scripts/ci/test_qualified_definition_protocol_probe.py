@@ -23,12 +23,31 @@ def location(path: Path, line: int):
                                            "end": {"line": line, "character": 36}}}]
 
 
+def format_location():
+    result = location(CALLER_PATH, 1)
+    result[0]["range"]["end"]["line"] = 4
+    return result
+
+
 def successful_report():
     return {"observations": {"qualified_before_target_open": [],
                              "bare_local_control": location(CALLER_PATH, 5),
                              "qualified_after_target_open": location(TARGET_PATH, 3),
                              "qualified_inside_package_block": [],
-                             "qualified_alias_after_edit": location(CALLER_PATH, 1)},
+                             "qualified_alias_after_edit": location(CALLER_PATH, 1),
+                             "qualified_inside_constant_value": [],
+                             "qualified_constant_control": location(CALLER_PATH, 1),
+                             "bare_constant_control": location(CALLER_PATH, 1),
+                             "qualified_inside_labeled_statement": [],
+                             "goto_label_control": location(CALLER_PATH, 2),
+                             "label_declaration_control": location(CALLER_PATH, 2),
+                             "qualified_inside_format_value": [],
+                             "format_declaration_control": format_location(),
+                             "qualified_inside_attribute_default": [],
+                             "qualified_variable_control": location(CALLER_PATH, 3),
+                             "bare_variable_control": location(CALLER_PATH, 3),
+                             "qualified_call_same_name_package": [],
+                             "same_name_package_declaration_control": location(CALLER_PATH, 0)},
             "position_encoding": "utf-16", "exit": 0, "cleanup": "protocol_exit_reaped",
             "binary_sha256_before": "a" * 64, "binary_sha256_after": "a" * 64}
 
@@ -61,6 +80,64 @@ class OracleTests(unittest.TestCase):
         self.assertFalse(outcomes["bare_local_declaration_retained"])
         self.assertFalse(outcomes["target_didOpen_recovers_exact_declaration"])
         self.assertFalse(outcomes["exact_qualified_alias_retained_after_edit"])
+        self.assertFalse(outcomes["qualified_constant_navigation_retained"])
+        self.assertFalse(outcomes["bare_constant_navigation_retained"])
+        self.assertFalse(outcomes["goto_label_navigation_retained"])
+        self.assertFalse(outcomes["label_declaration_navigation_retained"])
+        self.assertFalse(outcomes["format_declaration_navigation_retained"])
+        self.assertFalse(outcomes["qualified_variable_navigation_retained"])
+        self.assertFalse(outcomes["bare_variable_navigation_retained"])
+        self.assertFalse(outcomes["same_name_package_declaration_retained"])
+
+    def test_same_name_package_refused_at_call_and_retained_at_declaration(self):
+        report = successful_report()
+        report["observations"]["qualified_call_same_name_package"] = location(CALLER_PATH, 0)
+        outcomes = self.outcomes(report)
+        self.assertFalse(outcomes.pop("same_name_package_cannot_stand_in_for_callable"))
+        self.assertTrue(all(outcomes.values()))
+        del report["observations"]["qualified_call_same_name_package"]
+        self.assertFalse(self.outcomes(report)["same_name_package_cannot_stand_in_for_callable"])
+
+    def test_format_name_header_and_full_declaration_spans_are_valid_but_other_lines_are_not(self):
+        report = successful_report()
+        for end_line in (1, 4, 5):
+            answer = format_location()
+            answer[0]["range"]["end"]["line"] = end_line
+            report["observations"]["format_declaration_control"] = answer
+            self.assertTrue(self.outcomes(report)["format_declaration_navigation_retained"])
+        report["observations"]["format_declaration_control"] = location(CALLER_PATH, 3)
+        self.assertFalse(self.outcomes(report)["format_declaration_navigation_retained"])
+
+    def test_format_and_attribute_containers_refused_with_declaration_variable_controls(self):
+        for key, outcome, wrong in (
+            ("qualified_inside_format_value", "format_value_never_returns_containing_format", format_location()),
+            ("qualified_inside_attribute_default", "attribute_default_never_returns_containing_scalar", location(CALLER_PATH, 2)),
+        ):
+            report = successful_report()
+            report["observations"][key] = wrong
+            outcomes = self.outcomes(report)
+            self.assertFalse(outcomes.pop(outcome))
+            self.assertTrue(all(outcomes.values()))
+            del report["observations"][key]
+            self.assertFalse(self.outcomes(report)[outcome])
+
+    def test_containing_label_refused_while_real_label_navigation_is_retained(self):
+        report = successful_report()
+        report["observations"]["qualified_inside_labeled_statement"] = location(CALLER_PATH, 2)
+        outcomes = self.outcomes(report)
+        self.assertFalse(outcomes.pop("qualified_call_never_returns_containing_label"))
+        self.assertTrue(all(outcomes.values()))
+        del report["observations"]["qualified_inside_labeled_statement"]
+        self.assertFalse(self.outcomes(report)["qualified_call_never_returns_containing_label"])
+
+    def test_containing_constant_refused_while_constant_navigation_is_retained(self):
+        report = successful_report()
+        report["observations"]["qualified_inside_constant_value"] = location(CALLER_PATH, 1)
+        outcomes = self.outcomes(report)
+        self.assertFalse(outcomes.pop("constant_value_never_returns_containing_constant"))
+        self.assertTrue(all(outcomes.values()))
+        del report["observations"]["qualified_inside_constant_value"]
+        self.assertFalse(self.outcomes(report)["constant_value_never_returns_containing_constant"])
 
     def test_enclosing_package_and_unobserved_block_call_are_rejected(self):
         report = successful_report()
@@ -136,6 +213,22 @@ class OracleTests(unittest.TestCase):
         self.assertTrue(PROBE.TARGET_TEXT.splitlines()[3].startswith("sub compute_0"))
         self.assertEqual(PROBE.PACKAGE_BLOCK[PROBE.PACKAGE_BLOCK.index("compute_0") + 2], "m")
         self.assertEqual(PROBE.QUALIFIED_ALIAS.splitlines()[2][15], "m")
+        constant_lines = PROBE.CONSTANT_VALUE.splitlines()
+        self.assertEqual(constant_lines[1][constant_lines[1].index("compute_0") + 2], "m")
+        self.assertEqual(constant_lines[2][constant_lines[2].index("VALUE") + 2], "L")
+        self.assertEqual(constant_lines[3][constant_lines[3].index("VALUE") + 2], "L")
+        label_lines = PROBE.LABEL_CALL.splitlines()
+        self.assertEqual(label_lines[2][label_lines[2].index("compute_0") + 2], "m")
+        self.assertEqual(label_lines[1][7], "R")
+        self.assertEqual(label_lines[2][2], "R")
+        self.assertEqual(PROBE.FORMAT_CALL.splitlines()[3][9], "m")
+        self.assertEqual(PROBE.FORMAT_CALL.splitlines()[1][9], "P")
+        moo_lines = PROBE.MOO_CALL.splitlines()
+        self.assertEqual(moo_lines[2][moo_lines[2].index("compute_0") + 2], "m")
+        self.assertEqual(moo_lines[4][11], "p")
+        self.assertEqual(moo_lines[5][3], "p")
+        self.assertEqual(PROBE.SAME_NAME_PACKAGE[PROBE.SAME_NAME_PACKAGE.rindex("compute_0") + 2], "m")
+        self.assertEqual(PROBE.SAME_NAME_PACKAGE[PROBE.SAME_NAME_PACKAGE.index("compute_0") + 2], "m")
 
 
 class WorkflowTests(unittest.TestCase):

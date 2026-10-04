@@ -1357,37 +1357,71 @@ pub(super) fn cursor_is_off_named_symbol(
 }
 
 /// The terminal same-file model may resolve an absent package's callable by its
-/// bare name in the caller's scope, or return an enclosing package when lookup
-/// fails. Neither is the definition of an explicit foreign call (#17252, #17245).
+/// bare name in the caller's scope, or return a containing declaration when
+/// lookup fails. Require a callable with the explicit identity at a qualified
+/// call; containing symbols are not its definition (#17252, #17245).
 fn same_file_definition_matches_qualification(
     text: &str,
     offset: usize,
     definition: &crate::symbol::Symbol,
+    ast: &crate::ast::Node,
 ) -> bool {
     let is_callable = matches!(
         definition.kind,
         crate::symbol::SymbolKind::Subroutine | crate::symbol::SymbolKind::Method
-    );
-    if !is_callable
-        && !matches!(
-            definition.kind,
-            crate::symbol::SymbolKind::Package
-                | crate::symbol::SymbolKind::Class
-                | crate::symbol::SymbolKind::Role
-        )
-    {
-        return true;
-    }
+    ) || (definition.kind == crate::symbol::SymbolKind::Constant
+        && definition.declaration.as_deref() == Some("constant"));
     let Ok(regex) = get_fqn_regex() else {
         return true;
     };
     let (line_start, line_text) = crate::util::line_window_around_offset(text, offset);
     match fqn_component_at_cursor(regex, line_text, offset.saturating_sub(line_start)) {
         Some(FqnCursorComponent::Final { package, name }) => {
+            let qualified_name = format!("{package}::{name}");
+            let is_call_at_cursor = crate::declaration::symbol_at_cursor_with_source(
+                ast,
+                offset,
+                crate::declaration::current_package_at(ast, offset),
+                text,
+            )
+            .is_some_and(|key| {
+                key.kind == crate::workspace_index::SymKind::Sub
+                    && key.sigil.is_none()
+                    && key.pkg.as_ref() == package.as_str()
+                    && key.name.as_ref() == name.as_str()
+            }) || regex.find_iter(line_text).any(|matched| {
+                if matched.as_str() != qualified_name.as_str()
+                    || offset < line_start + matched.start()
+                    || offset > line_start + matched.end()
+                {
+                    return false;
+                }
+                // Some expression bodies (notably Use and Format) are raw
+                // tokens, without a callable AST key. Recognize their explicit
+                // call spelling, while keeping sigiled variables as variables.
+                let before = text[..line_start + matched.start()].trim_end();
+                !before.ends_with(['$', '@', '%', '*'])
+                    && (before.ends_with('&')
+                        || text[line_start + matched.end()..].trim_start().starts_with('('))
+            });
+            if is_call_at_cursor && !is_callable {
+                return false;
+            }
+            if !is_call_at_cursor
+                && !is_callable
+                && !matches!(
+                    definition.kind,
+                    crate::symbol::SymbolKind::Package
+                        | crate::symbol::SymbolKind::Class
+                        | crate::symbol::SymbolKind::Role
+                )
+            {
+                return true;
+            }
             // SUPER names an inheritance lookup, not a literal package. Its
             // resolution belongs to the earlier parent-chain path.
             (is_callable && (package == "SUPER" || package.ends_with("::SUPER")))
-                || definition.qualified_name == format!("{package}::{name}")
+                || definition.qualified_name == qualified_name
         }
         _ => true,
     }
@@ -2531,7 +2565,7 @@ impl LspServer {
                     // Find definition at the position
                     if let Some(definition) = model.definition_at(offset) {
                         if !same_file_definition_matches_qualification(
-                            &doc.text, offset, definition,
+                            &doc.text, offset, definition, ast,
                         ) {
                             return Ok(Some(json!([])));
                         }
@@ -3371,16 +3405,16 @@ mod tests {
         assert!(matches!(candidate.kind, crate::symbol::SymbolKind::Subroutine));
         let foreign = text.find("Other::compute_0").ok_or("foreign call")? + 9;
         assert!(
-            !same_file_definition_matches_qualification(text, foreign, candidate),
+            !same_file_definition_matches_qualification(text, foreign, candidate, &ast),
             "an absent external package must not be silently replaced by Caller"
         );
         let exact = text.find("Caller::compute_0()").ok_or("exact call")? + 10;
-        assert!(same_file_definition_matches_qualification(text, exact, candidate));
+        assert!(same_file_definition_matches_qualification(text, exact, candidate, &ast));
         let bare = text.find("\ncompute_0()").ok_or("bare call")? + 3;
-        assert!(same_file_definition_matches_qualification(text, bare, candidate));
+        assert!(same_file_definition_matches_qualification(text, bare, candidate, &ast));
         let inherited = text.find("SUPER::compute_0").ok_or("SUPER call")? + 9;
         assert!(
-            same_file_definition_matches_qualification(text, inherited, candidate),
+            same_file_definition_matches_qualification(text, inherited, candidate, &ast),
             "SUPER is resolved by inheritance rather than literal package equality"
         );
         Ok(())
@@ -3441,7 +3475,7 @@ mod tests {
             caller.get(candidate.location.start..candidate.location.end),
             Some("*Other::compute_0 = sub { return 2; }")
         );
-        assert!(same_file_definition_matches_qualification(caller, offset, candidate));
+        assert!(same_file_definition_matches_qualification(caller, offset, candidate, &ast));
 
         let unrelated_uri = "file:///workspace/alias-unrelated.pl";
         let unrelated = "package Unrelated;\nsub helper {}\n";
@@ -3494,8 +3528,8 @@ mod tests {
         assert_eq!(candidate.kind, crate::symbol::SymbolKind::Package);
         assert_eq!(candidate.qualified_name, "Caller");
         assert!(candidate.location.start <= offset && candidate.location.end >= offset);
-        assert!(!same_file_definition_matches_qualification(caller, offset, candidate));
-        assert!(same_file_definition_matches_qualification(caller, 10, candidate));
+        assert!(!same_file_definition_matches_qualification(caller, offset, candidate, &ast));
+        assert!(same_file_definition_matches_qualification(caller, 10, candidate, &ast));
         let package = "package Caller::Inner { }\n";
         let package_ast = Parser::new(package).parse()?;
         let package_model = crate::semantic::SemanticModel::build(&package_ast, package);
@@ -3503,7 +3537,12 @@ mod tests {
         let exact_package =
             package_model.definition_at(package_offset).ok_or("package definition")?;
         assert_eq!(exact_package.qualified_name, "Caller::Inner");
-        assert!(same_file_definition_matches_qualification(package, package_offset, exact_package));
+        assert!(same_file_definition_matches_qualification(
+            package,
+            package_offset,
+            exact_package,
+            &package_ast
+        ));
 
         let server = LspServer::new();
         let unrelated_uri = "file:///workspace/package-unrelated.pl";
@@ -3535,6 +3574,259 @@ mod tests {
                 ),
                 "an unresolved qualified call must not return its enclosing package (stale={stale}): {result:?}"
             );
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn qualified_definition_fallback_refuses_containers_and_retains_noncallable_navigation()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crate::symbol::SymbolKind;
+        use perl_workspace::workspace_index::DegradationReason;
+        let cases = [
+            (
+                "constant",
+                "package Caller;\nuse constant VALUE => Other::compute_0();\nCaller::VALUE();\nVALUE();\n",
+                SymbolKind::Constant,
+                "Caller::VALUE",
+                1,
+                1,
+                "VALUE",
+            ),
+            (
+                "label",
+                "package Caller;\ngoto MARK;\nMARK: Other::compute_0();\n",
+                SymbolKind::Label,
+                "MARK",
+                2,
+                2,
+                "MARK",
+            ),
+            (
+                "format",
+                "package Caller;\nformat REPORT =\n@<<<<\nOther::compute_0()\n.\n",
+                SymbolKind::Format,
+                "Caller::REPORT",
+                3,
+                1,
+                "REPORT",
+            ),
+            (
+                "attribute",
+                "package Caller;\nuse Moo;\nhas 'value' => (is => 'ro', reader => undef, default => sub { Other::compute_0(); });\nour $kept = 7;\n$Caller::kept;\n$kept;\n",
+                SymbolKind::scalar(),
+                "Caller::value",
+                2,
+                3,
+                "$kept",
+            ),
+            (
+                "same-name-package",
+                "package Other::compute_0 { Other::compute_0(); }\n",
+                SymbolKind::Package,
+                "Other::compute_0",
+                0,
+                0,
+                "compute_0",
+            ),
+        ];
+        for (
+            case,
+            caller,
+            expected_kind,
+            expected_name,
+            call_line,
+            declaration_line,
+            declaration_name,
+        ) in cases
+        {
+            let caller_uri = format!("file:///workspace/qualified-container-{case}.pl");
+            let offset = caller.find("Other::compute_0()").ok_or("qualified call")? + 9;
+            let call_character = caller
+                .lines()
+                .nth(call_line)
+                .ok_or("call line")?
+                .rfind("compute_0")
+                .ok_or("call name")?
+                + 2;
+            let ast = Arc::new(Parser::new(caller).parse()?);
+            let mut parent_map = ParentMap::default();
+            crate::declaration::DeclarationProvider::build_parent_map(&ast, &mut parent_map, None);
+            let provider = crate::declaration::DeclarationProvider::new(
+                Arc::clone(&ast),
+                caller.to_string(),
+                caller_uri.clone(),
+            )
+            .with_parent_map(&parent_map)
+            .with_doc_version(1);
+            assert!(
+                provider.find_declaration(offset, 1).is_none_or(|locations| locations.is_empty()),
+                "{case}: negative must not resolve through an earlier declaration tier"
+            );
+            let model = crate::semantic::SemanticModel::build(&ast, caller);
+            let candidate = model
+                .symbol_table()
+                .symbols
+                .values()
+                .flatten()
+                .find(|symbol| {
+                    symbol.kind == expected_kind && symbol.qualified_name == expected_name
+                })
+                .ok_or("source-built container candidate")?;
+            // The retained historical server already refuses format value calls.
+            // Challenge its source-built Format metadata too, without assuming
+            // this container is reached in every parser/provider mode.
+            if case != "format" {
+                let actual = model.definition_at(offset).ok_or("terminal container at call")?;
+                assert_eq!(actual.kind, expected_kind, "{case}");
+                assert_eq!(actual.qualified_name, expected_name, "{case}");
+                assert!(actual.location.start <= offset && actual.location.end >= offset, "{case}");
+            }
+            assert!(
+                !same_file_definition_matches_qualification(caller, offset, candidate, &ast),
+                "{case}"
+            );
+
+            let declaration_character = caller
+                .lines()
+                .nth(declaration_line)
+                .ok_or("declaration line")?
+                .find(declaration_name)
+                .ok_or("declaration name")?
+                + 2;
+            let declaration_offset =
+                caller.lines().take(declaration_line).map(|line| line.len() + 1).sum::<usize>()
+                    + declaration_character;
+            let declared =
+                model.definition_at(declaration_offset).ok_or("noncallable declaration")?;
+            assert!(
+                same_file_definition_matches_qualification(
+                    caller,
+                    declaration_offset,
+                    declared,
+                    &ast
+                ),
+                "{case}"
+            );
+            if case != "attribute" {
+                assert!(
+                    provider
+                        .find_declaration(declaration_offset, 1)
+                        .is_none_or(|locations| locations.is_empty()),
+                    "{case}: declaration positive must admit terminal metadata"
+                );
+            }
+            if case == "constant" {
+                let qualified_offset =
+                    caller.find("Caller::VALUE()").ok_or("qualified constant call")? + 10;
+                assert!(same_file_definition_matches_qualification(
+                    caller,
+                    qualified_offset,
+                    candidate,
+                    &ast
+                ));
+            }
+            if case == "attribute" {
+                let qualified_offset =
+                    caller.find("$Caller::kept").ok_or("qualified variable")? + 10;
+                assert!(same_file_definition_matches_qualification(
+                    caller,
+                    qualified_offset,
+                    declared,
+                    &ast
+                ));
+            }
+            let server = LspServer::new();
+            let unrelated_uri = "file:///workspace/container-unrelated.pl";
+            let unrelated = "package Unrelated;\nsub helper {}\n";
+            for (uri, text) in [(caller_uri.as_str(), caller), (unrelated_uri, unrelated)] {
+                server.test_apply_did_open(uri, text, 1)?;
+                let generation = server.test_document_generation(uri).ok_or("open generation")?;
+                server
+                    .test_index_live_file(uri, text, generation)
+                    .map_err(std::io::Error::other)?;
+            }
+            server.test_simulate_indexing_complete();
+            let coordinator = server.index_coordinator.as_ref().ok_or("workspace coordinator")?;
+            coordinator.transition_to_degraded(DegradationReason::ScanTimeout { elapsed_ms: 123 });
+            for stale in [false, true] {
+                if stale {
+                    server
+                        .test_replace_document_without_index(
+                            unrelated_uri,
+                            "package Unrelated;\nsub renamed {}\n",
+                            2,
+                        )
+                        .map_err(std::io::Error::other)?;
+                }
+                assert_eq!(server.workspace_index_stale_for_any_open_document(), stale, "{case}");
+                let result =
+                    qualified_fallback_request(&server, &caller_uri, call_line, call_character)?;
+                assert!(
+                    result.as_ref().is_some_and(
+                        |value| value.is_null() || value.as_array().is_some_and(Vec::is_empty)
+                    ),
+                    "{case}: a qualified call cannot return a containing declaration (stale={stale}): {result:?}"
+                );
+                let declaration = qualified_fallback_request(
+                    &server,
+                    &caller_uri,
+                    declaration_line,
+                    declaration_character,
+                )?;
+                if case == "format" {
+                    let locations = declaration
+                        .as_ref()
+                        .and_then(Value::as_array)
+                        .ok_or("format location array")?;
+                    assert_eq!(locations.len(), 1);
+                    assert_eq!(
+                        locations[0].get("uri").and_then(Value::as_str),
+                        Some(caller_uri.as_str())
+                    );
+                    assert_eq!(
+                        locations[0].pointer("/range/start/line").and_then(Value::as_u64),
+                        Some(1)
+                    );
+                    assert!(matches!(
+                        locations[0].pointer("/range/end/line").and_then(Value::as_u64),
+                        Some(1 | 4 | 5)
+                    ));
+                } else {
+                    assert_qualified_fallback_location(
+                        &declaration,
+                        &caller_uri,
+                        declaration_line as u64,
+                    );
+                }
+                match case {
+                    "constant" => {
+                        for (line, character) in [(2, 10), (3, 2)] {
+                            assert_qualified_fallback_location(
+                                &qualified_fallback_request(&server, &caller_uri, line, character)?,
+                                &caller_uri,
+                                1,
+                            );
+                        }
+                    }
+                    "label" => assert_qualified_fallback_location(
+                        &qualified_fallback_request(&server, &caller_uri, 1, 7)?,
+                        &caller_uri,
+                        2,
+                    ),
+                    "attribute" => {
+                        for (line, character) in [(4, 11), (5, 3)] {
+                            assert_qualified_fallback_location(
+                                &qualified_fallback_request(&server, &caller_uri, line, character)?,
+                                &caller_uri,
+                                3,
+                            );
+                        }
+                    }
+                    _ => {}
+                }
+            }
         }
         Ok(())
     }

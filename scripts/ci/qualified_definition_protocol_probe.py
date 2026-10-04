@@ -35,6 +35,11 @@ sub compute_0 { return "target\\n"; }
 DECOY = "package Decoy;\nsub compute_0 { return 'decoy'; }\n1;\n"
 PACKAGE_BLOCK = "package Caller { Other::compute_0(); }\n"
 QUALIFIED_ALIAS = "package Caller;\n*Other::compute_0 = sub { return 2; };\nprint Other::compute_0();\n"
+CONSTANT_VALUE = "package Caller;\nuse constant VALUE => Other::compute_0();\nprint Caller::VALUE();\nprint VALUE();\n"
+LABEL_CALL = "package Caller;\ngoto MARK;\nMARK: print Other::compute_0();\n"
+FORMAT_CALL = "package Caller;\nformat REPORT =\n@<<<<\nOther::compute_0()\n.\n"
+MOO_CALL = "package Caller;\nuse Moo;\nhas 'value' => (is => 'ro', reader => undef, default => sub { Other::compute_0(); });\nour $kept = 7;\n$Caller::kept;\n$kept;\n"
+SAME_NAME_PACKAGE = "package Other::compute_0 { Other::compute_0(); }\n"
 REQUEST_SECONDS = 5
 SESSION_SECONDS = 30
 
@@ -53,7 +58,7 @@ def stock_environment() -> dict[str, str]:
     return environment
 
 
-def at_declaration(locations: object, path: Path, line: int) -> bool:
+def at_declaration(locations: object, path: Path, line: int, end_line: int | None = None) -> bool:
     if not isinstance(locations, list) or len(locations) != 1:
         return False
     location = locations[0]
@@ -61,7 +66,7 @@ def at_declaration(locations: object, path: Path, line: int) -> bool:
         isinstance(location, dict)
         and unquote(location.get("uri", "")) == path.as_uri()
         and location.get("range", {}).get("start", {}).get("line") == line
-        and location.get("range", {}).get("end", {}).get("line") == line
+        and location.get("range", {}).get("end", {}).get("line") == (line if end_line is None else end_line)
     )
 
 
@@ -80,6 +85,39 @@ def assertions(report: dict, caller: Path, target: Path) -> dict[str, bool]:
             and observations["qualified_inside_package_block"] in (None, [])
         ),
         "exact_qualified_alias_retained_after_edit": at_declaration(observations.get("qualified_alias_after_edit"), caller, 1),
+        "constant_value_never_returns_containing_constant": (
+            "qualified_inside_constant_value" in observations
+            and observations["qualified_inside_constant_value"] in (None, [])
+        ),
+        "qualified_constant_navigation_retained": at_declaration(observations.get("qualified_constant_control"), caller, 1),
+        "bare_constant_navigation_retained": at_declaration(observations.get("bare_constant_control"), caller, 1),
+        "qualified_call_never_returns_containing_label": (
+            "qualified_inside_labeled_statement" in observations
+            and observations["qualified_inside_labeled_statement"] in (None, [])
+        ),
+        "goto_label_navigation_retained": at_declaration(observations.get("goto_label_control"), caller, 2),
+        "label_declaration_navigation_retained": at_declaration(observations.get("label_declaration_control"), caller, 2),
+        "format_value_never_returns_containing_format": (
+            "qualified_inside_format_value" in observations
+            and observations["qualified_inside_format_value"] in (None, [])
+        ),
+        # Name/header selection and full-declaration spans are both valid
+        # format targets. Always require this file and the declaration line.
+        "format_declaration_navigation_retained": any(
+            at_declaration(observations.get("format_declaration_control"), caller, 1, end_line)
+            for end_line in (1, 4, 5)
+        ),
+        "attribute_default_never_returns_containing_scalar": (
+            "qualified_inside_attribute_default" in observations
+            and observations["qualified_inside_attribute_default"] in (None, [])
+        ),
+        "qualified_variable_navigation_retained": at_declaration(observations.get("qualified_variable_control"), caller, 3),
+        "bare_variable_navigation_retained": at_declaration(observations.get("bare_variable_control"), caller, 3),
+        "same_name_package_cannot_stand_in_for_callable": (
+            "qualified_call_same_name_package" in observations
+            and observations["qualified_call_same_name_package"] in (None, [])
+        ),
+        "same_name_package_declaration_retained": at_declaration(observations.get("same_name_package_declaration_control"), caller, 0),
         "utf16_negotiated": report.get("position_encoding") == "utf-16",
         "server_clean_exit": report.get("exit") == 0 and report.get("cleanup") == "protocol_exit_reaped",
         "binary_unchanged": (
@@ -307,7 +345,8 @@ def run_probe(binary: Path, fixture: Path, report: dict):
         # Use the same open buffer and process: these are edits, not extra files.
         report["fixture"]["open_buffer_variants"] = [
             {"version": version, "sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(), "text": text}
-            for version, text in ((2, PACKAGE_BLOCK), (3, QUALIFIED_ALIAS))
+            for version, text in ((2, PACKAGE_BLOCK), (3, QUALIFIED_ALIAS), (4, CONSTANT_VALUE),
+                                  (5, LABEL_CALL), (6, FORMAT_CALL), (7, MOO_CALL), (8, SAME_NAME_PACKAGE))
         ]
         one_shot([perl, "-c", "-e", PACKAGE_BLOCK], app, environment, report)
         session.notify("textDocument/didChange", {"textDocument": {"uri": caller.as_uri(), "version": 2},
@@ -322,6 +361,73 @@ def run_probe(binary: Path, fixture: Path, report: dict):
                        "contentChanges": [{"text": QUALIFIED_ALIAS}]})
         report["observations"]["qualified_alias_after_edit"] = session.request_after_edit("textDocument/definition", {
             "textDocument": {"uri": caller.as_uri()}, "position": {"line": 2, "character": 15}})
+        # Supply the compile-time callee only to Perl's independent oracle. It is
+        # deliberately unavailable in the LSP workspace/open buffers after this edit.
+        constant_oracle = one_shot([perl, "-I../lib", "-MScale24::Mod00", "-e",
+            "BEGIN { *Other::compute_0 = \\&Scale24::Mod00::compute_0; }\n" + CONSTANT_VALUE], app, environment, report)
+        if constant_oracle["stdout"].splitlines() != ["target", "target"]:
+            raise ValueError(f"independent constant binding failed: {constant_oracle}")
+        session.notify("textDocument/didChange", {"textDocument": {"uri": caller.as_uri(), "version": 4},
+                       "contentChanges": [{"text": CONSTANT_VALUE}]})
+        constant_lines = CONSTANT_VALUE.splitlines()
+        report["observations"]["qualified_inside_constant_value"] = session.request_after_edit("textDocument/definition", {
+            "textDocument": {"uri": caller.as_uri()},
+            "position": {"line": 1, "character": constant_lines[1].index("compute_0") + 2}})
+        report["observations"]["qualified_constant_control"] = session.request("textDocument/definition", {
+            "textDocument": {"uri": caller.as_uri()}, "position": {"line": 2, "character": constant_lines[2].index("VALUE") + 2}})
+        report["observations"]["bare_constant_control"] = session.request("textDocument/definition", {
+            "textDocument": {"uri": caller.as_uri()}, "position": {"line": 3, "character": constant_lines[3].index("VALUE") + 2}})
+        label_oracle = one_shot([perl, "-I../lib", "-MScale24::Mod00", "-e",
+            "BEGIN { *Other::compute_0 = \\&Scale24::Mod00::compute_0; }\n" + LABEL_CALL], app, environment, report)
+        if label_oracle["stdout"].splitlines() != ["target"]:
+            raise ValueError(f"independent label binding failed: {label_oracle}")
+        session.notify("textDocument/didChange", {"textDocument": {"uri": caller.as_uri(), "version": 5},
+                       "contentChanges": [{"text": LABEL_CALL}]})
+        label_lines = LABEL_CALL.splitlines()
+        report["observations"]["qualified_inside_labeled_statement"] = session.request_after_edit("textDocument/definition", {
+            "textDocument": {"uri": caller.as_uri()},
+            "position": {"line": 2, "character": label_lines[2].index("compute_0") + 2}})
+        report["observations"]["goto_label_control"] = session.request("textDocument/definition", {
+            "textDocument": {"uri": caller.as_uri()}, "position": {"line": 1, "character": 7}})
+        report["observations"]["label_declaration_control"] = session.request("textDocument/definition", {
+            "textDocument": {"uri": caller.as_uri()}, "position": {"line": 2, "character": 2}})
+        format_oracle = one_shot([perl, "-I../lib", "-MScale24::Mod00", "-e",
+            "BEGIN { *Other::compute_0 = \\&Scale24::Mod00::compute_0; }\n" + FORMAT_CALL
+            + "$~ = 'REPORT'; write;\n"], app, environment, report)
+        if format_oracle["stdout"].splitlines() != ["targe"]:
+            raise ValueError(f"independent format binding failed: {format_oracle}")
+        session.notify("textDocument/didChange", {"textDocument": {"uri": caller.as_uri(), "version": 6},
+                       "contentChanges": [{"text": FORMAT_CALL}]})
+        report["observations"]["qualified_inside_format_value"] = session.request_after_edit("textDocument/definition", {
+            "textDocument": {"uri": caller.as_uri()}, "position": {"line": 3, "character": 9}})
+        report["observations"]["format_declaration_control"] = session.request("textDocument/definition", {
+            "textDocument": {"uri": caller.as_uri()}, "position": {"line": 1, "character": 9}})
+        variable_oracle = one_shot([perl, "-e", "package Caller; our $kept = 7; print $Caller::kept;"], app, environment, report)
+        if variable_oracle["stdout"] != "7":
+            raise ValueError(f"independent qualified variable binding failed: {variable_oracle}")
+        report["language_oracle_limits"] = ["Moo runtime dependency/default execution not exercised; attribute case tests parser-produced metadata"]
+        session.notify("textDocument/didChange", {"textDocument": {"uri": caller.as_uri(), "version": 7},
+                       "contentChanges": [{"text": MOO_CALL}]})
+        report["observations"]["qualified_inside_attribute_default"] = session.request_after_edit("textDocument/definition", {
+            "textDocument": {"uri": caller.as_uri()},
+            "position": {"line": 2, "character": MOO_CALL.splitlines()[2].index("compute_0") + 2}})
+        report["observations"]["qualified_variable_control"] = session.request("textDocument/definition", {
+            "textDocument": {"uri": caller.as_uri()}, "position": {"line": 4, "character": 11}})
+        report["observations"]["bare_variable_control"] = session.request("textDocument/definition", {
+            "textDocument": {"uri": caller.as_uri()}, "position": {"line": 5, "character": 3}})
+        package_oracle = one_shot([perl, "-I../lib", "-MScale24::Mod00", "-e",
+            "BEGIN { *Other::compute_0 = \\&Scale24::Mod00::compute_0; }\n" + SAME_NAME_PACKAGE
+            + "print Other::compute_0();\n"], app, environment, report)
+        if package_oracle["stdout"].splitlines() != ["target"]:
+            raise ValueError(f"independent package/callable role binding failed: {package_oracle}")
+        session.notify("textDocument/didChange", {"textDocument": {"uri": caller.as_uri(), "version": 8},
+                       "contentChanges": [{"text": SAME_NAME_PACKAGE}]})
+        report["observations"]["qualified_call_same_name_package"] = session.request_after_edit("textDocument/definition", {
+            "textDocument": {"uri": caller.as_uri()},
+            "position": {"line": 0, "character": SAME_NAME_PACKAGE.rindex("compute_0") + 2}})
+        report["observations"]["same_name_package_declaration_control"] = session.request("textDocument/definition", {
+            "textDocument": {"uri": caller.as_uri()},
+            "position": {"line": 0, "character": SAME_NAME_PACKAGE.index("compute_0") + 2}})
     except Exception as error:
         report["instrument_failure"] = repr(error)
     finally:
