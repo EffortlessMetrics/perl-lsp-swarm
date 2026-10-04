@@ -68,6 +68,29 @@ FORBIDDEN_PASS_SOURCES = {
     "manual_copy",
     "exact_source_local",
 }
+# Mirrors the root `required` list of sublime-package-control-receipt.v1.schema.json
+# so every receipt result carries the declared sections before result-specific checks.
+REQUIRED_RECEIPT_SECTIONS = (
+    "schema_version",
+    "stage",
+    "result",
+    "recorded_at",
+    "listing",
+    "install_route",
+    "host",
+    "lsp_package",
+    "helper_package",
+    "binary",
+    "resolution_route",
+    "compatibility",
+    "fixtures",
+    "clean_profile",
+    "activation",
+    "journey",
+    "promotion",
+    "public_subject",
+)
+REQUIRED_RECEIPT_OBJECT_SECTIONS = ("host", "lsp_package", "binary", "compatibility", "fixtures", "clean_profile")
 
 
 def require(condition: bool, message: str) -> None:
@@ -163,6 +186,9 @@ def validate_subject(payload: dict[str, Any]) -> None:
         "unexpected public package repository",
     )
     promotion = _mapping(payload.get("promotion"), "promotion")
+    _mapping(payload.get("perllsp_asset"), "perllsp_asset")
+    _mapping(payload.get("compatibility"), "compatibility")
+    _mapping(payload.get("lsp_package"), "lsp_package")
     require(
         promotion.get("package_control_leading_setup") == "not_proven",
         "leading Package Control setup remains owned by a later docs stage",
@@ -187,9 +213,13 @@ def validate_subject(payload: dict[str, Any]) -> None:
 
 
 def validate_shape(payload: dict[str, Any]) -> None:
+    for section in REQUIRED_RECEIPT_SECTIONS:
+        require(section in payload, f"missing required receipt section {section}")
     require(payload.get("schema_version") == 1, "schema_version must be 1")
     require(payload.get("stage") == "package_control_public", "stage must be package_control_public")
     require(payload.get("result") in RECEIPT_RESULTS, "result is invalid")
+    for section in REQUIRED_RECEIPT_OBJECT_SECTIONS:
+        _mapping(payload.get(section), section)
     listing = _mapping(payload.get("listing"), "listing")
     require(listing.get("channel") == "package_control_default", "listing.channel must be the default")
     require(listing.get("package_name") == "LSP-perllsp", "listing.package_name must be LSP-perllsp")

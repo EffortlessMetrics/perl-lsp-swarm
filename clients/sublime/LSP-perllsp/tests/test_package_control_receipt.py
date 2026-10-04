@@ -362,6 +362,47 @@ class PackageControlReceiptTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "cannot be eligible without a pass"):
             validator.validate_shape(payload)
 
+    def test_subject_rejects_null_or_missing_bind_sections(self) -> None:
+        validator = load_validator()
+        base = json.loads(SUBJECT_PATH.read_text(encoding="utf-8"))
+        base["status"] = "listed"
+        base["channel"]["observable"] = True
+        base["channel"]["listing_url"] = "https://packagecontrol.io/packages/LSP-perllsp"
+        base["package"].update(
+            {
+                "version": "0.1.0",
+                "tag": "v0.1.0",
+                "tree_sha256": fill_digest("a"),
+                "installed_digest": fill_digest("b"),
+            }
+        )
+        for field in ("perllsp_asset", "compatibility", "lsp_package"):
+            nulled = copy.deepcopy(base)
+            nulled[field] = None
+            with self.assertRaisesRegex(ValueError, f"{field} must be an object"):
+                validator.validate_subject(nulled)
+            absent = copy.deepcopy(base)
+            del absent[field]
+            with self.assertRaisesRegex(ValueError, f"{field} must be an object"):
+                validator.validate_subject(absent)
+
+    def test_shape_requires_every_declared_receipt_section(self) -> None:
+        validator = load_validator()
+        schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+        self.assertEqual(set(validator.REQUIRED_RECEIPT_SECTIONS), set(schema["required"]))
+        for section in validator.REQUIRED_RECEIPT_SECTIONS:
+            payload = validator.not_run_template()
+            payload.pop(section)
+            with self.assertRaisesRegex(ValueError, f"missing required receipt section {section}"):
+                validator.validate_shape(payload)
+        with tempfile.TemporaryDirectory() as directory:
+            receipt_path = Path(directory) / "receipt.json"
+            payload = validator.not_run_template()
+            payload.pop("binary")
+            receipt_path.write_text(json.dumps(payload), encoding="utf-8")
+            with redirect_stderr(io.StringIO()):
+                self.assertEqual(validator.main(["validate", str(receipt_path)]), 1)
+
     def test_pass_may_mark_install_eligible_but_not_leading_setup(self) -> None:
         validator = load_validator()
         subject = listed_subject()
