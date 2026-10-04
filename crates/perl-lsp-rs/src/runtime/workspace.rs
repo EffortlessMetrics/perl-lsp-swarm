@@ -16,7 +16,8 @@ use super::{
 };
 #[cfg(feature = "workspace")]
 use crate::runtime::readiness::{
-    IndexReadinessOutcome, IndexReadinessPolicy, ReadinessMilestone, check_readiness,
+    IndexReadinessOutcome, IndexReadinessPolicy, ReadinessMilestone,
+    check_readiness_with_cancellation,
 };
 #[cfg(feature = "workspace")]
 use crate::runtime::routing::{IndexAccessMode, route_index_access};
@@ -846,7 +847,25 @@ impl LspServer {
         &self,
         policy: IndexReadinessPolicy,
     ) -> IndexReadinessOutcome {
-        let outcome = check_readiness(self.coordinator(), &self.indexing_in_progress, policy);
+        self.check_index_readiness_with_cancellation(policy, None)
+    }
+
+    /// Apply the shared provider-readiness policy, interrupting any bounded
+    /// wait as soon as `cancelled` reports the request was cancelled so a
+    /// cancelled cold references request releases its read worker promptly
+    /// (#16687 review).
+    #[cfg(feature = "workspace")]
+    pub(in crate::runtime) fn check_index_readiness_with_cancellation(
+        &self,
+        policy: IndexReadinessPolicy,
+        cancelled: Option<&dyn Fn() -> bool>,
+    ) -> IndexReadinessOutcome {
+        let outcome = check_readiness_with_cancellation(
+            self.coordinator(),
+            &self.indexing_in_progress,
+            policy,
+            cancelled,
+        );
         let index_readiness = outcome.reason();
         let index_ready = outcome.is_ready();
         let fallback_safe = outcome.is_fallback_safe();

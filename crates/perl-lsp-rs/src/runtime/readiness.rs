@@ -447,26 +447,32 @@ impl IndexReadinessOutcome {
     }
 }
 
-/// Apply the provider-specific index readiness policy.
-pub(crate) fn check_readiness(
+/// Apply the provider-specific index readiness policy, interrupting any bounded
+/// wait as soon as `cancelled` reports the request was cancelled. A request
+/// cancelled during reference-index warm-up must release its read worker
+/// instead of holding it for the remaining wait budget (#16687 review).
+pub(crate) fn check_readiness_with_cancellation(
     coordinator: Option<&Arc<IndexCoordinator>>,
     indexing_in_progress: &AtomicBool,
     policy: IndexReadinessPolicy,
+    cancelled: Option<&dyn Fn() -> bool>,
 ) -> IndexReadinessOutcome {
     debug_assert!(ALL_INDEX_READINESS_POLICIES.contains(&policy));
-    check_readiness_with_budget(
+    check_readiness_with_budget_and_cancellation(
         coordinator,
         indexing_in_progress,
         policy,
         index_readiness_wait_budget(policy),
+        cancelled,
     )
 }
 
-fn check_readiness_with_budget(
+fn check_readiness_with_budget_and_cancellation(
     coordinator: Option<&Arc<IndexCoordinator>>,
     indexing_in_progress: &AtomicBool,
     policy: IndexReadinessPolicy,
     wait_budget: Duration,
+    cancelled: Option<&dyn Fn() -> bool>,
 ) -> IndexReadinessOutcome {
     match policy {
         IndexReadinessPolicy::LocalOnly => IndexReadinessOutcome::LocalOnly("local-only provider"),
@@ -479,7 +485,12 @@ fn check_readiness_with_budget(
             IndexAccessMode::None => IndexReadinessOutcome::Stale("no workspace index"),
         },
         IndexReadinessPolicy::WaitBriefly | IndexReadinessPolicy::WaitUntilWarmed => {
-            check_wait_until_index_leaves_building(coordinator, indexing_in_progress, wait_budget)
+            check_wait_until_index_leaves_building(
+                coordinator,
+                indexing_in_progress,
+                wait_budget,
+                cancelled,
+            )
         }
     }
 }
@@ -488,6 +499,7 @@ fn check_wait_until_index_leaves_building(
     coordinator: Option<&Arc<IndexCoordinator>>,
     indexing_in_progress: &AtomicBool,
     wait_budget: Duration,
+    cancelled: Option<&dyn Fn() -> bool>,
 ) -> IndexReadinessOutcome {
     let Some(coord) = coordinator else {
         return IndexReadinessOutcome::Partial("no workspace index");
@@ -539,6 +551,17 @@ fn check_wait_until_index_leaves_building(
                         "check_readiness: deadline reached, serving partial index"
                     );
                     return IndexReadinessOutcome::TimedOut(reason);
+                }
+                // A cancelled request must not keep sleeping on a bounded read
+                // worker for the remaining budget (#16687 review).
+                if cancelled.is_some_and(|is_cancelled| is_cancelled()) {
+                    tracing::debug!(
+                        reason,
+                        "check_readiness: request cancelled during warm-up wait"
+                    );
+                    return IndexReadinessOutcome::Partial(
+                        "request cancelled during readiness wait",
+                    );
                 }
                 std::thread::sleep(Duration::from_millis(INDEX_READY_POLL_MS));
             }
@@ -730,9 +753,9 @@ fn notify_workspace_readiness_receipt(_receipt: Value, _observer_id: Option<u64>
 mod tests {
     use super::{
         IndexReadinessOutcome, IndexReadinessPolicy, ReadinessAnswerKind, ReadinessMilestone,
-        WorkspaceReadinessReceipt, check_readiness, check_readiness_with_budget,
-        index_readiness_wait_budget, references_index_readiness_policy,
-        set_index_ready_wait_entered_observer,
+        WorkspaceReadinessReceipt, check_readiness_with_budget_and_cancellation,
+        check_readiness_with_cancellation, index_readiness_wait_budget,
+        references_index_readiness_policy, set_index_ready_wait_entered_observer,
     };
     use anyhow::{Result, anyhow};
     use perl_workspace::workspace_index::{DegradationReason, IndexCoordinator};
@@ -880,8 +903,12 @@ mod tests {
         coordinator.transition_to_ready(1, 1);
         let indexing = AtomicBool::new(false);
 
-        let outcome =
-            check_readiness(Some(&coordinator), &indexing, IndexReadinessPolicy::WaitBriefly);
+        let outcome = check_readiness_with_cancellation(
+            Some(&coordinator),
+            &indexing,
+            IndexReadinessPolicy::WaitBriefly,
+            None,
+        );
 
         assert!(matches!(outcome, IndexReadinessOutcome::Ready));
         assert!(outcome.is_ready());
@@ -895,11 +922,60 @@ mod tests {
         let coordinator = Arc::new(IndexCoordinator::new());
         let indexing = AtomicBool::new(true);
 
-        let outcome = check_readiness_with_budget(
+        let outcome = check_readiness_with_budget_and_cancellation(
             Some(&coordinator),
             &indexing,
             IndexReadinessPolicy::WaitBriefly,
             Duration::from_millis(2),
+            None,
+        );
+
+        assert!(matches!(outcome, IndexReadinessOutcome::TimedOut(_)));
+        assert!(outcome.is_fallback_safe());
+        assert!(outcome.reason().starts_with("index building"));
+        Ok(())
+    }
+
+    #[test]
+    fn readiness_contract_wait_until_warmed_aborts_when_cancelled() -> Result<()> {
+        let _serial = super::readiness_wait_path_test_lock();
+        let coordinator = Arc::new(IndexCoordinator::new());
+        let indexing = AtomicBool::new(true);
+        let cancelled = || true;
+
+        let started = Instant::now();
+        let outcome = check_readiness_with_budget_and_cancellation(
+            Some(&coordinator),
+            &indexing,
+            IndexReadinessPolicy::WaitUntilWarmed,
+            index_readiness_wait_budget(IndexReadinessPolicy::WaitUntilWarmed),
+            Some(&cancelled),
+        );
+        let elapsed = started.elapsed();
+
+        assert!(matches!(outcome, IndexReadinessOutcome::Partial(_)));
+        assert!(outcome.is_fallback_safe());
+        assert_eq!(outcome.reason(), "request cancelled during readiness wait");
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "cancelled warm-up wait must release promptly, took {elapsed:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn readiness_contract_wait_until_warmed_uncancelled_predicate_keeps_timeout() -> Result<()> {
+        let _serial = super::readiness_wait_path_test_lock();
+        let coordinator = Arc::new(IndexCoordinator::new());
+        let indexing = AtomicBool::new(true);
+        let cancelled = || false;
+
+        let outcome = check_readiness_with_budget_and_cancellation(
+            Some(&coordinator),
+            &indexing,
+            IndexReadinessPolicy::WaitUntilWarmed,
+            Duration::from_millis(2),
+            Some(&cancelled),
         );
 
         assert!(matches!(outcome, IndexReadinessOutcome::TimedOut(_)));
@@ -922,11 +998,12 @@ mod tests {
             worker_indexing.store(false, Ordering::Release);
         });
 
-        let outcome = check_readiness_with_budget(
+        let outcome = check_readiness_with_budget_and_cancellation(
             Some(&coordinator),
             indexing.as_ref(),
             IndexReadinessPolicy::WaitBriefly,
             Duration::from_millis(500),
+            None,
         );
 
         worker.join().map_err(|_| anyhow::anyhow!("readiness transition thread panicked"))?;
@@ -939,8 +1016,12 @@ mod tests {
         let coordinator = Arc::new(IndexCoordinator::new());
         let indexing = AtomicBool::new(true);
 
-        let outcome =
-            check_readiness(Some(&coordinator), &indexing, IndexReadinessPolicy::FailClosed);
+        let outcome = check_readiness_with_cancellation(
+            Some(&coordinator),
+            &indexing,
+            IndexReadinessPolicy::FailClosed,
+            None,
+        );
 
         assert!(matches!(outcome, IndexReadinessOutcome::Stale(_)));
         assert!(outcome.is_unsafe_rejected());
@@ -952,8 +1033,12 @@ mod tests {
         let coordinator = Arc::new(IndexCoordinator::new());
         let indexing = AtomicBool::new(true);
 
-        let outcome =
-            check_readiness(Some(&coordinator), &indexing, IndexReadinessPolicy::SnapshotOnly);
+        let outcome = check_readiness_with_cancellation(
+            Some(&coordinator),
+            &indexing,
+            IndexReadinessPolicy::SnapshotOnly,
+            None,
+        );
 
         assert!(matches!(outcome, IndexReadinessOutcome::SnapshotOnly(_)));
         assert!(indexing.load(Ordering::Acquire));
@@ -965,7 +1050,12 @@ mod tests {
     fn readiness_contract_local_only_ignores_missing_coordinator() -> Result<()> {
         let indexing = AtomicBool::new(true);
 
-        let outcome = check_readiness(None, &indexing, IndexReadinessPolicy::LocalOnly);
+        let outcome = check_readiness_with_cancellation(
+            None,
+            &indexing,
+            IndexReadinessPolicy::LocalOnly,
+            None,
+        );
 
         assert!(matches!(outcome, IndexReadinessOutcome::LocalOnly(_)));
         assert!(outcome.is_fallback_safe());
@@ -998,8 +1088,12 @@ mod tests {
         coordinator.transition_to_ready(1, 1);
         let indexing = AtomicBool::new(false);
 
-        let outcome =
-            check_readiness(Some(&coordinator), &indexing, IndexReadinessPolicy::FailClosed);
+        let outcome = check_readiness_with_cancellation(
+            Some(&coordinator),
+            &indexing,
+            IndexReadinessPolicy::FailClosed,
+            None,
+        );
 
         assert!(outcome.is_ready());
         assert_eq!(outcome.reason(), "index ready");
@@ -1010,7 +1104,12 @@ mod tests {
     fn readiness_contract_failclosed_rejects_missing_index() -> Result<()> {
         let indexing = AtomicBool::new(false);
 
-        let outcome = check_readiness(None, &indexing, IndexReadinessPolicy::FailClosed);
+        let outcome = check_readiness_with_cancellation(
+            None,
+            &indexing,
+            IndexReadinessPolicy::FailClosed,
+            None,
+        );
 
         assert!(matches!(outcome, IndexReadinessOutcome::Stale(_)));
         assert!(outcome.is_unsafe_rejected());
@@ -1022,7 +1121,12 @@ mod tests {
     fn readiness_contract_waitbriefly_missing_index_is_partial() -> Result<()> {
         let indexing = AtomicBool::new(false);
 
-        let outcome = check_readiness(None, &indexing, IndexReadinessPolicy::WaitBriefly);
+        let outcome = check_readiness_with_cancellation(
+            None,
+            &indexing,
+            IndexReadinessPolicy::WaitBriefly,
+            None,
+        );
 
         assert!(matches!(outcome, IndexReadinessOutcome::Partial(_)));
         assert!(outcome.is_fallback_safe());
@@ -1036,11 +1140,12 @@ mod tests {
         coordinator.transition_to_degraded(DegradationReason::ScanTimeout { elapsed_ms: 123 });
         let indexing = AtomicBool::new(true);
 
-        let outcome = check_readiness_with_budget(
+        let outcome = check_readiness_with_budget_and_cancellation(
             Some(&coordinator),
             &indexing,
             IndexReadinessPolicy::WaitBriefly,
             Duration::from_millis(10),
+            None,
         );
 
         assert!(matches!(outcome, IndexReadinessOutcome::Partial(_)));
@@ -1073,11 +1178,12 @@ mod tests {
 
         let peer = Arc::new(IndexCoordinator::new());
         let peer_indexing = AtomicBool::new(true);
-        let peer_outcome = check_readiness_with_budget(
+        let peer_outcome = check_readiness_with_budget_and_cancellation(
             Some(&peer),
             &peer_indexing,
             IndexReadinessPolicy::WaitBriefly,
             Duration::from_millis(2),
+            None,
         );
         assert!(
             matches!(peer_outcome, IndexReadinessOutcome::TimedOut(_)),
@@ -1086,11 +1192,12 @@ mod tests {
 
         worker.join().map_err(|_| anyhow::anyhow!("readiness observer thread panicked"))??;
 
-        let outcome = check_readiness_with_budget(
+        let outcome = check_readiness_with_budget_and_cancellation(
             Some(&coordinator),
             &indexing,
             IndexReadinessPolicy::WaitBriefly,
             Duration::from_secs(30),
+            None,
         );
         assert!(
             matches!(outcome, IndexReadinessOutcome::Partial(_)),
@@ -1122,11 +1229,12 @@ mod tests {
             Ok(())
         });
 
-        let outcome = check_readiness_with_budget(
+        let outcome = check_readiness_with_budget_and_cancellation(
             Some(&coordinator),
             &indexing,
             IndexReadinessPolicy::WaitBriefly,
             Duration::from_secs(30),
+            None,
         );
 
         worker.join().map_err(|_| anyhow::anyhow!("readiness observer thread panicked"))??;
@@ -1162,11 +1270,12 @@ mod tests {
         let _serial = super::readiness_wait_path_test_lock();
         let coordinator = Arc::new(IndexCoordinator::new());
         let indexing = AtomicBool::new(true);
-        let expired = check_readiness_with_budget(
+        let expired = check_readiness_with_budget_and_cancellation(
             Some(&coordinator),
             &indexing,
             IndexReadinessPolicy::WaitBriefly,
             Duration::from_millis(2),
+            None,
         );
         if !matches!(expired, IndexReadinessOutcome::TimedOut(_)) {
             return Err(anyhow!(
@@ -1183,11 +1292,12 @@ mod tests {
             worker_coordinator.transition_to_ready(1, 1);
             worker_indexing.store(false, Ordering::Release);
         });
-        let warm = check_readiness_with_budget(
+        let warm = check_readiness_with_budget_and_cancellation(
             Some(&coordinator),
             indexing.as_ref(),
             IndexReadinessPolicy::WaitUntilWarmed,
             Duration::from_millis(200),
+            None,
         );
         worker.join().map_err(|_| anyhow::anyhow!("warm-up transition thread panicked"))?;
         if !matches!(warm, IndexReadinessOutcome::Ready) {
@@ -1203,11 +1313,12 @@ mod tests {
         let coordinator = Arc::new(IndexCoordinator::new());
         let indexing = AtomicBool::new(false);
         let started = Instant::now();
-        let outcome = check_readiness_with_budget(
+        let outcome = check_readiness_with_budget_and_cancellation(
             Some(&coordinator),
             &indexing,
             IndexReadinessPolicy::WaitUntilWarmed,
             Duration::from_secs(30),
+            None,
         );
         if started.elapsed() >= Duration::from_millis(200) {
             return Err(anyhow!(
@@ -1227,11 +1338,12 @@ mod tests {
         coordinator.transition_to_degraded(DegradationReason::ScanTimeout { elapsed_ms: 123 });
         let indexing = AtomicBool::new(true);
         let started = Instant::now();
-        let outcome = check_readiness_with_budget(
+        let outcome = check_readiness_with_budget_and_cancellation(
             Some(&coordinator),
             &indexing,
             IndexReadinessPolicy::WaitUntilWarmed,
             Duration::from_secs(30),
+            None,
         );
         if started.elapsed() >= Duration::from_millis(200) {
             return Err(anyhow!(
@@ -1253,11 +1365,12 @@ mod tests {
         let _serial = super::readiness_wait_path_test_lock();
         let coordinator = Arc::new(IndexCoordinator::new());
         let indexing = AtomicBool::new(true);
-        let outcome = check_readiness_with_budget(
+        let outcome = check_readiness_with_budget_and_cancellation(
             Some(&coordinator),
             &indexing,
             IndexReadinessPolicy::WaitUntilWarmed,
             Duration::from_millis(2),
+            None,
         );
         if !matches!(outcome, IndexReadinessOutcome::TimedOut(_)) {
             return Err(anyhow!("still-building warm-up must time out at the cap: {outcome:?}"));
@@ -1280,11 +1393,12 @@ mod tests {
         });
 
         let started = Instant::now();
-        let outcome = check_readiness_with_budget(
+        let outcome = check_readiness_with_budget_and_cancellation(
             Some(&coordinator),
             indexing.as_ref(),
             IndexReadinessPolicy::WaitUntilWarmed,
             Duration::from_secs(30),
+            None,
         );
         worker.join().map_err(|_| anyhow::anyhow!("flag-clear thread panicked"))??;
         if started.elapsed() >= Duration::from_secs(2) {

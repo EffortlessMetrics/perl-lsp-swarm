@@ -881,10 +881,23 @@ impl LspServer {
                     // `WaitBriefly` (2s) is too short for cold-start discovery, so the first
                     // ask used to return a silent empty list that a retry ~6s later answered
                     // correctly (#16650). Workspace/symbol keeps the 2s cap.
+                    // A cancelled request aborts the wait instead of holding its read
+                    // worker for the remaining budget (#16687 review).
                     #[cfg(feature = "workspace")]
-                    let _ = self.check_index_readiness(
-                        crate::runtime::readiness::references_index_readiness_policy(),
-                    );
+                    {
+                        let references_cancelled =
+                            || typed_request_id.as_ref().is_some_and(|id| self.is_cancelled(id));
+                        let _ = self.check_index_readiness_with_cancellation(
+                            crate::runtime::readiness::references_index_readiness_policy(),
+                            Some(&references_cancelled),
+                        );
+                        // Abort promptly when the client cancelled during the warm-up
+                        // wait; the receipt records the observed cancellation.
+                        self.check_references_cancellation(
+                            typed_request_id.as_ref(),
+                            &mut fallback_receipt,
+                        )?;
+                    }
                     // Warm-up has its own wait budget. Search/fallback time starts here
                     // so a >2s hold does not skip open-document text fallback (#16650).
                     fallback_budget.restart_search_window(search_window);
