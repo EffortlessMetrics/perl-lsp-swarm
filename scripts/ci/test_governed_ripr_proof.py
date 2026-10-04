@@ -416,6 +416,22 @@ class GovernedRiprProof(unittest.TestCase):
         call = self.calls()[0]
         self.assertEqual(call[call.index("--base") + 1], self.sha)
 
+    def test_push_base_ahead_of_checkout_declares_empty_range(self):
+        # Main-moved race: the default-branch ref resolves to a descendant
+        # of the evaluated checkout, so the three-dot base...HEAD scope is
+        # empty even though the revisions differ. Build the descendant on a
+        # side branch so HEAD stays at the evaluated SHA.
+        self.git("checkout", "-b", "ahead")
+        newer = self.commit("ahead.txt", "ahead")
+        self.git("update-ref", "refs/remotes/origin/main", newer)
+        self.git("checkout", "main")
+        result = self.run_proof(GITHUB_EVENT_NAME="push")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("base is ahead of the evaluated checkout", result.stderr)
+        self.assertIn("covers an empty range", result.stderr)
+        call = self.calls()[0]
+        self.assertEqual(call[call.index("--base") + 1], newer)
+
 
 if __name__ == "__main__":
     unittest.main()

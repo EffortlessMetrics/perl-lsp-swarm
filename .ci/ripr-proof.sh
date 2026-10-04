@@ -87,12 +87,18 @@ base=${subject[0]}
 pr_head=${subject[1]:-}
 labels=${subject[2]:-}
 
-# A non-PR run on the default-branch tip compares the checkout against
-# itself. That empty diff scope is the expected steady state, not a
-# failure — but it must be declared, never silent. The repo-wide proof
-# below still applies.
-if [[ $GITHUB_EVENT_NAME != pull_request && $GITHUB_EVENT_NAME != merge_group && $base == "$GITHUB_SHA" ]]; then
-  echo '::notice::RIPR base equals the evaluated checkout; diff-scoped proof covers an empty range' >&2
+# A non-PR run compares the evaluated checkout against the default-branch
+# ref through a three-dot base...HEAD scope, so the scope is empty whenever
+# the checkout is at or behind the ref: the steady-state tip run (equal) and
+# the main-moved race (checkout is a strict ancestor of the ref) alike. An
+# empty scope is expected, not a failure — but it must be declared, never
+# silent. The repo-wide proof below still applies.
+if [[ $GITHUB_EVENT_NAME != pull_request && $GITHUB_EVENT_NAME != merge_group ]]; then
+  if [[ $base == "$GITHUB_SHA" ]]; then
+    echo '::notice::RIPR base equals the evaluated checkout; diff-scoped proof covers an empty range' >&2
+  elif git merge-base --is-ancestor "$GITHUB_SHA" "$base"; then
+    echo '::notice::RIPR base is ahead of the evaluated checkout; diff-scoped proof covers an empty range' >&2
+  fi
 fi
 
 # The activated image owns RIPR. Qualification must exercise its real 0.10.1
