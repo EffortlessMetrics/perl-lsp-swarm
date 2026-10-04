@@ -65,20 +65,25 @@ The sections above describe the Rust-lane gate. The Perl facts the lane can
 consume are produced separately by the `perl-ripr-facts` crate as a
 `ripr-perl-facts-v1` packet:
 
-- `perllsp --ripr-facts [--ripr-schema --ripr-root --ripr-base --ripr-head
-  --ripr-fact-classes --ripr-out]` — batch export flag; records base/head
-  opaquely and exits without starting the LSP server. This path never derives
-  a diff, so `changes[]` is always empty with a `no-diff-supplied` limitation.
-- `perl-ripr-facts ripr-facts --schema --root [--base] [--head]
-  [--fact-classes] [--diff <cwd-relative-diff>] --out <out>` — standalone
-  binary; the only path that accepts caller-supplied diff text for
-  diff-owned `changes[]`.
-- `build_ripr_facts_packet(&RiprFactsRequest)` — structured batch API; no I/O.
+- `perllsp --ripr-facts [--ripr-schema <ver> --ripr-root <path> --ripr-base
+  <ref> --ripr-head <ref> --ripr-fact-classes <list> --ripr-out <path>]` —
+  batch export flag; records base/head opaquely and exits without starting
+  the LSP server. This path never derives a diff, so when `changes` is
+  requested `changes[]` is always empty with a `no-diff-supplied` limitation.
+- `perl-ripr-facts ripr-facts --schema <ver> --root <path> [--base <ref>]
+  [--head <ref>] [--fact-classes <list>] [--diff <cwd-relative-diff>] --out
+  <out>` — standalone binary; the only CLI path that accepts caller-supplied
+  diff text for diff-owned `changes[]`.
+- `build_ripr_facts_packet(&RiprFactsRequest)` — structured batch API; reads
+  workspace files but performs no output writes and spawns no processes.
+  Library and managed-producer callers can also supply diff text directly via
+  `RiprFactsRequest.diff` (or `run_ripr_facts_with_diff`) without staging a
+  file or spawning the binary.
 
 Contract: [`crates/perl-ripr-facts/README.md`](../../crates/perl-ripr-facts/README.md),
 schema [`schemas/ripr-perl-facts-v1.schema.json`](../../schemas/ripr-perl-facts-v1.schema.json).
-Exit `0` means "a packet was written" (even `unavailable`/`partial` with zero
-facts); consumers must read `packet_status` and `limitations[]` —
+Exit `0` means "a packet was written" (a zero-fact packet reads
+`unavailable`); consumers must read `packet_status` and `limitations[]` —
 never infer success from emptiness.
 
 ---

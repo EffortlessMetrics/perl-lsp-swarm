@@ -87,6 +87,9 @@ pub fn build_ripr_facts_packet(
 
     let (boundaries, boundary_limitations, verify_commands) = emit_boundaries_and_commands(root);
     let has_boundary_facts = !boundaries.is_empty();
+    // Verify commands are facts too: a verify-only packet carries usable
+    // commands and must read `partial`, never `unavailable`-with-facts.
+    let has_verify_facts = !verify_commands.is_empty();
 
     // PR 3 (perl-lsp-swarm#3293): emit parser-backed files + owners facts (plus
     // per-file provenance and parse/read limitations) by parsing every Perl
@@ -246,6 +249,7 @@ pub fn build_ripr_facts_packet(
         || has_oracle_facts
         || has_relation_facts
         || has_boundary_facts
+        || has_verify_facts
         || has_change_facts
         || has_file_facts
         || has_owner_facts;
@@ -1573,6 +1577,36 @@ mod tests {
         let p = packet_for_diff("nodiff", "changes", None);
         assert!(changes_of(&p).is_empty(), "no diff → no changes");
         assert!(has_limitation(&p, "no-diff-supplied"), "must surface no-diff-supplied");
+    }
+
+    #[test]
+    fn build_packet_verify_only_request_reads_partial_not_unavailable() {
+        // A root with one pattern-free .t file, requesting only
+        // `verify_commands`: the packet carries a usable command, so it must
+        // read `partial` — never `unavailable` claiming no facts.
+        let root = "target/ripr-verify-only";
+        let _ = std::fs::remove_dir_all(root);
+        std::fs::create_dir_all(format!("{root}/t")).expect("create t/");
+        std::fs::write(format!("{root}/t/plain.t"), "use strict;\n1;\n").expect("write t");
+        let p = build_ripr_facts_packet(&RiprFactsRequest {
+            schema: "ripr-perl-facts-v1",
+            root,
+            base: None,
+            head: None,
+            fact_classes: "verify_commands",
+            diff: None,
+        })
+        .expect("valid request builds a packet");
+        let _ = std::fs::remove_dir_all(root);
+        assert!(
+            !p["verify_commands"].as_array().expect("verify_commands[]").is_empty(),
+            "one .t file → one verify command"
+        );
+        assert_eq!(p["packet_status"], "partial", "verify facts count toward status");
+        assert!(
+            !has_limitation(&p, "emitter-not-yet-implemented"),
+            "partial packet must not claim no facts were produced"
+        );
     }
 
     #[test]
