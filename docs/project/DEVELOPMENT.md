@@ -12,15 +12,21 @@ specific to working inside the development repository itself.
 
 ## Which repository this is
 
-Development happens in
+Development authority lives in
 [`EffortlessMetrics/perl-lsp-swarm`](https://github.com/EffortlessMetrics/perl-lsp-swarm)
-on `main`. Clone this repository, open development issues here, and target pull requests
-here.
+on `main`. This page is for maintainers and authorized swarm operators working directly
+inside that development repository.
 
-[`EffortlessMetrics/perl-lsp`](https://github.com/EffortlessMetrics/perl-lsp) on `master`
-owns public release lineage and published artifacts. A merge to `perl-lsp-swarm/main` is
-development state; it does not establish that a change reached a release, package
-registry, editor marketplace, or any other public channel. The relationship is defined by
+External contributors use
+[`EffortlessMetrics/perl-lsp`](https://github.com/EffortlessMetrics/perl-lsp) on
+`master` for public issues and pull requests. Before integrating a shared-product public
+pull request, maintainers first converge accepted swarm state into `perl-lsp/master`;
+after the public merge, they reverse-converge the shared-product effect into swarm.
+External contributors do not need a duplicate swarm pull request.
+
+`perl-lsp` also owns public release lineage and published artifacts. A merge to either
+source repository does not by itself establish release, package-registry, editor-marketplace,
+or other channel availability. The relationship is defined by
 [product identity](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/reference/product-identity.md).
 
 Installing perl-lsp as a user is a different route from developing it. User installation
