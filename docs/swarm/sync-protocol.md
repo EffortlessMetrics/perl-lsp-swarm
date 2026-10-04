@@ -24,17 +24,22 @@ stable protocol.
 | Repository | Authority |
 | --- | --- |
 | `perl-lsp-swarm/main` | Active development; product implementation, tests, compiler/LSP/DAP work, proof, freeze, release preparation, and current sync protocol |
-| `perl-lsp/master` | Public contributor ingress and release lineage; publication-specific workflows/policy, public package lineage, and bounded emergency release fixes |
+| `perl-lsp/master` | Release lineage; public contributor ingress; publication-specific workflows/policy, public package lineage, and bounded emergency release fixes |
 
 Normal product work starts and converges in swarm. Do not maintain parallel
 implementation queues in both repositories. That development authority does not make
 swarm the public PR ingress: external contributors target `perl-lsp/master`.
 
-Before integrating a shared-product external pull request, maintainers first converge the
-accepted swarm state into the public source repository and reconcile the pull request
-against that current base. After the public merge, its shared-product effect is
-reverse-converged into swarm before a later complete-tree projection can overwrite it.
-This contributor-integration boundary does not itself cut a release or publish a channel.
+Before integrating a shared-product external pull request, maintainers first establish
+that the public source base contains the accepted swarm state and reconcile the pull
+request against that current base. After the public merge, its shared-product effect must
+be preserved back in swarm before a later complete-tree projection can overwrite it.
+
+This is currently a maintainer-owned integration policy, not an automated bridge contract.
+The frozen-release publication runbook below is not the operator procedure for ordinary
+external pull requests. Until a dedicated source-convergence procedure lands, the
+pre-integration and reverse-convergence steps are performed and reviewed explicitly. This
+boundary does not itself cut a release or publish a channel.
 
 Maintainer-originated product work begins in swarm by default. A maintainer may begin a
 direct product fix in `perl-lsp` only when release safety requires it. External
