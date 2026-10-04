@@ -93,10 +93,17 @@ describe('showIncPathsCommand output scope', () => {
 
   it('checks each invocation without carrying forward earlier output', async () => {
     const firstOutput = await invokeAndCapture('/only-first\n');
+    const channel = firstChannel(channelFactory());
+    const clearCallsAfterFirst = channel.clear.mock.calls.length;
     const output = await invokeAndCapture('/only-second\n');
 
     expect(firstOutput).toContain('/only-first');
     expect(output).toContain('/only-second');
     expect(output).not.toContain('/only-first');
+    // Slicing `appendLine.mock.calls` from `measuredFrom` cannot detect a
+    // dropped `clear()`: the mock keeps a flat call history, so the second
+    // invocation's slice never contains first-invocation lines anyway. Pin
+    // the clearing itself — the reused channel is cleared again each run.
+    expect(channel.clear).toHaveBeenCalledTimes(clearCallsAfterFirst + 1);
   });
 });
