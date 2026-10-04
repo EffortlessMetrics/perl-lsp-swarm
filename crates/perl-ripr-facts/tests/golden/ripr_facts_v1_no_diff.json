@@ -112,7 +112,7 @@
       "evidence_refs": [],
       "kind": "missing_input",
       "limitation_id": "no-diff-supplied",
-      "message": "`changes` was requested but no diff was supplied on RiprFactsRequest.diff; the batch/CLI path does not yet produce one. An empty `changes[]` here means \"not analyzed\", not \"nothing changed\"."
+      "message": "`changes` was requested but no diff text was supplied; no caller derives diff text from base/head yet. An empty `changes[]` here means \"not analyzed\", not \"nothing changed\"."
     }
   ],
   "oracles": [
