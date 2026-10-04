@@ -159,6 +159,7 @@ Stack backtrace:
     Compiling retention-control v1.0.0
 ordinary retained stderr
 DIAGNOSTIC
+printf '    \\033[32mCompiling\\033[0m colored-retention-control v1.0.0\\n' >&2
 """
         body = body.replace("case ${FAKE_CHANGE:-none} in", payload + "case ${FAKE_CHANGE:-none} in")
         cargo.write_text(body, encoding="utf-8", newline="\n")
@@ -167,7 +168,8 @@ DIAGNOSTIC
         self.assertNotIn("CONTROL-SENSITIVE-BACKTRACE", result.stdout + result.stderr)
         self.assertIn("    Compiling retention-control", result.stderr)
         self.assertIn("ordinary retained stderr", result.stderr)
-        self.assertEqual(record["stderr"]["compiling_messages"], 2)
+        self.assertIn("colored-retention-control", result.stderr)
+        self.assertEqual(record["stderr"]["compiling_messages"], 3)
         self.assertFalse(record["selected_trace_complete"])
         self.assertGreater(record["stderr"]["filtered_error_continuations"], 0)
         for path in (self.work / "out").iterdir():

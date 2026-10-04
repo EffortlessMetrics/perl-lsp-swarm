@@ -98,8 +98,8 @@ LC_ALL=C exec awk -v trace="$prefix.trace.log" -v reasons="$prefix.dirty.log" -v
         if (error_chain && plain !~ /^[[:space:]]*(Compiling |Checking |Finished |error(\[E[0-9]+\])?:|warning:)/ && (plain ~ /^[[:space:]]*$/ || plain ~ /^(Caused by:|Stack backtrace:|stack backtrace:)/ || plain ~ /^[[:space:]]/)) { continuations++; next }
         error_chain=0
     }
-    /Compiling / { compiling++ }
-    /Finished .*target\(s\) in / { print > finished }
+    plain ~ /^[[:space:]]*Compiling / { compiling++ }
+    plain ~ /^[[:space:]]*Finished .*target\(s\) in / { print > finished }
     { print > "/dev/stderr"; fflush("/dev/stderr") }
     END { printf "{\"fingerprint_lines\":%d,\"dirty_lines\":%d,\"compiling_messages\":%d,\"filtered_fingerprint_lines\":%d,\"fingerprint_errors\":%d,\"filtered_error_continuations\":%d,\"trace_clipped\":%s,\"dirty_clipped\":%s}\n", traces,dirty,compiling,filtered,errors,continuations,trace_clipped?"true":"false",reasons_clipped?"true":"false" > summary }
 '
