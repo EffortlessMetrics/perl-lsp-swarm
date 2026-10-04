@@ -429,7 +429,15 @@ pub struct LspArgs {
     pub file_watchers: Option<bool>,
 
     /// Files to check (used with --check)
-    #[arg(trailing_var_arg = true, requires = "check")]
+    ///
+    /// Hidden from clap's help/usage rendering (#17261): clap's auto-usage
+    /// pulled this trailing positional into conflict errors for actions that
+    /// never read it (`--ripr-facts --check x` printed
+    /// `Usage: perllsp.exe --ripr-facts <FILES>...`, inventing syntax
+    /// `--ripr-facts` does not take). Help is unaffected — `--help` renders
+    /// the hand `help_text()`, which already documents
+    /// `perllsp --check <file.pl> [file2.pm ...]` — and parsing is unchanged.
+    #[arg(trailing_var_arg = true, requires = "check", hide = true)]
     pub files: Vec<String>,
 }
 
@@ -2311,6 +2319,30 @@ mod tests {
     fn parse_doctor_conflicts_with_check() {
         let result = parse_args(["perl-lsp", "--doctor", "--check", "script.pl"]);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn conflict_usage_names_no_positional_files() {
+        // `--ripr-facts --check x` must still exit 1 with the conflict error,
+        // but the usage line must not invent `<FILES>...` syntax for
+        // `--ripr-facts` (#17261).
+        let error = must_err(parse_args(["perl-lsp", "--ripr-facts", "--check", "script.pl"]));
+        let rendered = error.to_string();
+        assert!(
+            rendered.contains("cannot be used with"),
+            "conflict error must survive; got:\n{rendered}"
+        );
+        assert!(
+            !rendered.contains("FILES"),
+            "conflict usage must name no positional FILES; got:\n{rendered}"
+        );
+    }
+
+    #[test]
+    fn check_still_accepts_trailing_files_when_hidden() {
+        // `hide` changes rendering only — the `--check` file flow is untouched.
+        let plan = must(parse_args(["perl-lsp", "--check", "script.pl", "other.pm"]));
+        assert_eq!(plan.files, vec!["script.pl".to_string(), "other.pm".to_string()]);
     }
 
     #[test]
