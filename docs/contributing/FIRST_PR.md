@@ -207,6 +207,7 @@ restarting every prior judgment merely because the commit SHA changed.
 | Agent-safe compile/test/lint | `just agent-check`, `just agent-test`, `just agent-clippy` |
 | Parser or generated status | `just status-update`, then `just status-check` |
 | Public API documentation | `just ci-docs-check`, then `just docs-verify` |
+| Contributor-topology projection | `cargo run --locked -p xtask --bin contributor-topology` |
 | All commands | [Commands reference](../reference/COMMANDS_REFERENCE.md) |
 | Full contributor guide | [CONTRIBUTING.md](../../CONTRIBUTING.md) |
 | Debug the LSP server | [DEBUGGING_LSP_SERVER.md](DEBUGGING_LSP_SERVER.md) |
