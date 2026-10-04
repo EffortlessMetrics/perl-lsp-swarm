@@ -4,27 +4,30 @@ Five minutes to read. Then clone and go.
 
 ## Repository context
 
-Ordinary development happens in
-[`EffortlessMetrics/perl-lsp-swarm`](https://github.com/EffortlessMetrics/perl-lsp-swarm)
-on `main`. Clone this repository, open development issues here, and target pull requests
-here.
-
 [`EffortlessMetrics/perl-lsp`](https://github.com/EffortlessMetrics/perl-lsp) on
-`master` owns public release lineage and published artifacts. A merge to
-`perl-lsp-swarm/main` is development state; it does not establish that a change is in a
-release, package registry, editor marketplace, or other public channel.
+`master` is the public contributor surface. External contributors open issues and pull
+requests there.
 
-The repository roles are defined by local product, sync, and release authorities and derived
-by the landed contributor-topology projection. Its bare command intentionally leaves live
-stage and channel status `NOT_PROVEN`; a captured `--observation` is required to project
-observed status. Public installation and release links may therefore point to `perl-lsp`
-intentionally; source-work instructions should point here.
+[`EffortlessMetrics/perl-lsp-swarm`](https://github.com/EffortlessMetrics/perl-lsp-swarm)
+on `main` remains the active high-throughput product-development and product-proof
+authority. That does not make swarm the public PR queue.
+
+Before a shared-product public pull request is integrated, a maintainer first converges
+accepted swarm state into `perl-lsp/master`, then reconciles and proves the contributor
+pull request against that current public-source base. After the public pull request
+merges, its shared-product effect is reverse-converged into swarm. You do not need to
+open a second pull request against swarm.
+
+Release and package-channel availability remain later states; neither a swarm merge nor a
+public-source merge proves publication.
 
 ## 1. Clone and branch
 
+Clone the public contribution repository and create your branch:
+
 ```bash
-git clone https://github.com/EffortlessMetrics/perl-lsp-swarm.git
-cd perl-lsp-swarm
+git clone https://github.com/EffortlessMetrics/perl-lsp.git
+cd perl-lsp
 git switch -c fix/short-description
 ```
 
@@ -73,7 +76,8 @@ bash scripts/install-githooks.sh
 
 ## 3. Choose one issue and one claim
 
-Start from an existing issue when one owns the work. Keep one pull request centered on:
+Start from an existing public issue when one owns the work. Keep one pull request centered
+on:
 
 - one problem or improvement;
 - one semantic owner;
@@ -81,22 +85,16 @@ Start from an existing issue when one owns the work. Keep one pull request cente
 - proof that can distinguish the intended change from a realistic wrong result;
 - explicit non-goals and a bounded rollback.
 
-Browse the development backlog explicitly in this repository:
+Browse the public contribution backlog:
 
 ```bash
-# A bounded view of the open backlog
-gh issue list --repo EffortlessMetrics/perl-lsp-swarm --state open --limit 10
-
-# Beginner-friendly slices; either list can legitimately be empty
-gh issue list --repo EffortlessMetrics/perl-lsp-swarm --state open --label "good first issue"
-gh issue list --repo EffortlessMetrics/perl-lsp-swarm --state open --label size/S
+gh issue list --repo EffortlessMetrics/perl-lsp --state open --limit 10
 ```
 
-The live label names are `good first issue`, `size/XS`, `size/S`, `size/M`, and `size/L`; the filtered
-lists are a convenience, not a queue guarantee. When both come back empty, read the bounded
-unfiltered list and pick one with a clear, reviewable acceptance section. Do not
-select release-operation or swarm-orchestration work for a first contribution merely
-because the file change looks small.
+Choose an issue with a clear, reviewable acceptance section. Swarm-only release,
+orchestration, and internal control-plane work is not a first-contribution queue; if work
+is only tracked internally, ask for a public contribution issue rather than targeting
+swarm directly.
 
 ## 4. Read the local owner guidance
 
@@ -153,38 +151,41 @@ stash state is shared across worktrees.
 
 ## 7. Commit, push, and open the pull request
 
+Fork the public repository, push your branch, and target `perl-lsp/master`:
+
 ```bash
 git add <files>
 git commit -m "fix(scope): describe the change (#NNNN)"
-git push -u origin HEAD
-gh pr create --repo EffortlessMetrics/perl-lsp-swarm
-```
-
-Contributors without write access to `perl-lsp-swarm` cannot push a branch to it. Fork
-first and push to the fork; the pull request still targets this repository:
-
-```bash
-gh repo fork EffortlessMetrics/perl-lsp-swarm --remote --remote-name fork
+gh repo fork EffortlessMetrics/perl-lsp --remote --remote-name fork
 git push -u fork HEAD
-gh pr create --repo EffortlessMetrics/perl-lsp-swarm
+gh pr create --repo EffortlessMetrics/perl-lsp --base master
 ```
 
-Use a conventional title with the controlling issue number:
+Use a conventional title with the controlling public issue number:
 
 ```text
 fix(perl-module): normalize path separators (#4154)
-docs(contributing): correct the current workflow (#9552)
-test(perl-parser): add a postfix-deref regression (#4167)
+docs(contributing): correct the current workflow (#4155)
+test(perl-parser): add a postfix-deref regression (#4156)
 ```
 
 The pull-request body should state the claim, controlling issue, changed seam, proof run,
 proof not run, risk and rollback, non-goals, and any `NOT_PROVEN` boundary.
+
+Do not open a duplicate pull request against `perl-lsp-swarm`. Repository convergence
+around a shared-product contribution is maintainer-owned.
 
 ## 8. Review and integration
 
 Review is semantic and cumulative, not a fixed two-pass conveyor. Reviewers challenge the
 claim, proof discrimination, production reachability, semantic ownership, risk, and
 rollback in proportion to the change.
+
+For a shared-product public pull request, maintainers first bring accepted
+`perl-lsp-swarm/main` state into `perl-lsp/master` before integration. If that changes
+the interaction surface, the pull request is reconciled and the affected proof is rerun;
+the contributor is not asked to retarget swarm. After merge, maintainers reverse-converge
+the shared-product effect into swarm.
 
 Labels can help navigation, but they are not proof or merge permission. Current submitted
 reviews, unresolved findings, required checks, mergeability, rulesets, and applicable
