@@ -916,13 +916,33 @@ enum EarlyDefinitionTarget {
 }
 
 #[cfg(feature = "workspace")]
-fn workspace_symbol_is_callable(symbol: &crate::workspace_index::WorkspaceSymbol) -> bool {
-    matches!(
+fn workspace_symbol_is_callable(
+    workspace_index: &crate::workspace_index::WorkspaceIndex,
+    symbol: &crate::workspace_index::WorkspaceSymbol,
+) -> bool {
+    if matches!(
         symbol.kind,
-        crate::workspace_index::SymbolKind::Subroutine
-            | crate::workspace_index::SymbolKind::Method
-            | crate::workspace_index::SymbolKind::Constant
-    )
+        crate::workspace_index::SymbolKind::Subroutine | crate::workspace_index::SymbolKind::Method
+    ) {
+        return true;
+    }
+    if symbol.kind != crate::workspace_index::SymbolKind::Constant {
+        return false;
+    }
+    // The projection also labels Readonly/Const::Fast variables as Constant.
+    // Only use constant declares functions. Inspect its exact indexed span's
+    // two leading tokens, without parsing/rebuilding the file or its value.
+    let Some(document) = workspace_index.document_store().get(&symbol.uri) else {
+        return false;
+    };
+    let Some(source) = document.text().get(symbol.range.start.byte..symbol.range.end.byte) else {
+        return false;
+    };
+    let mut lexer = perl_lexer::PerlLexer::new(source);
+    let mut tokens =
+        std::iter::from_fn(|| lexer.next_token()).filter(|token| !token.token_type.is_trivia());
+    tokens.next().is_some_and(|token| matches!(token.token_type, perl_lexer::TokenType::Keyword(word) if word.as_ref() == "use"))
+        && tokens.next().is_some_and(|token| matches!(token.token_type, perl_lexer::TokenType::Identifier(word) if word.as_ref() == "constant"))
 }
 
 #[cfg(feature = "workspace")]
@@ -936,7 +956,7 @@ fn workspace_location_is_callable(
     workspace_index.file_symbols(&location.uri).iter().any(|symbol| {
         symbol.uri == location.uri
             && symbol.range == location.range
-            && workspace_symbol_is_callable(symbol)
+            && workspace_symbol_is_callable(workspace_index, symbol)
             && (symbol.qualified_name.as_deref() == Some(qualified_name.as_str())
                 || (symbol.name == name && symbol.container_name.as_deref() == Some(pkg)))
     })
@@ -1203,7 +1223,7 @@ fn lookup_workspace_definition(
     let package_prefix = format!("{pkg}::");
     for symbol in ranked_symbols {
         if require_callable
-            && (!workspace_symbol_is_callable(&symbol)
+            && (!workspace_symbol_is_callable(workspace_index, &symbol)
                 || !(symbol.qualified_name.as_deref() == Some(qualified_exact.as_str())
                     || (symbol.name == name && symbol.container_name.as_deref() == Some(pkg))))
         {
@@ -2358,25 +2378,15 @@ impl LspServer {
                                         &package,
                                         &name,
                                         Some(uri),
-                                        parsed.as_ref().and_then(|p| p.ast()).map_or_else(
-                                            || {
-                                                qualified_occurrence_role(
-                                                    &doc.text,
-                                                    self.pos16_to_offset(doc, line, character),
-                                                    None,
-                                                    &package,
-                                                    &name,
-                                                )
-                                            },
-                                            |ast| {
-                                                qualified_occurrence_role(
-                                                    &doc.text,
-                                                    self.pos16_to_offset(doc, line, character),
-                                                    Some(ast),
-                                                    &package,
-                                                    &name,
-                                                )
-                                            },
+                                        qualified_occurrence_role(
+                                            &doc.text,
+                                            self.pos16_to_offset(doc, line, character),
+                                            parsed
+                                                .as_ref()
+                                                .and_then(|p| p.ast())
+                                                .map(|ast| ast.as_ref()),
+                                            &package,
+                                            &name,
                                         ) == QualifiedOccurrenceRole::Call,
                                     )
                                     && workspace_index_is_fresh()
@@ -3541,6 +3551,45 @@ mod tests {
             same_file_definition_matches_qualification(text, inherited, candidate, &ast),
             "SUPER is resolved by inheritance rather than literal package equality"
         );
+        #[cfg(feature = "workspace")]
+        for (case, source, callable) in [
+            ("function", "package Caller; use constant PI => 3;", true),
+            (
+                "commented-function",
+                "package Caller; use # retained trivia\n constant PI => 3;",
+                true,
+            ),
+            ("readonly-variable", "package Caller; use Readonly; Readonly my $PI => 3;", false),
+            ("const-fast-variable", "package Caller; use Const::Fast; const my $PI => 3;", false),
+        ] {
+            let index = crate::workspace_index::WorkspaceIndex::new();
+            let uri = format!("file:///workspace/constant-kind-{case}.pl");
+            index.index_file_str(&uri, source).map_err(std::io::Error::other)?;
+            let symbols = index.file_symbols(&uri);
+            let symbol = symbols
+                .iter()
+                .find(|symbol| symbol.qualified_name.as_deref() == Some("Caller::PI"))
+                .ok_or("source-built constant-role premise")?;
+            assert_eq!(symbol.kind, crate::workspace_index::SymbolKind::Constant, "{case}");
+            assert_eq!(workspace_symbol_is_callable(&index, symbol), callable, "{case}");
+            let key = crate::workspace_index::SymbolKey {
+                pkg: "Caller".into(),
+                name: "PI".into(),
+                sigil: None,
+                kind: crate::workspace_index::SymKind::Sub,
+            };
+            assert!(!index.find_defs(&key).is_empty(), "{case}: erased-kind lookup premise");
+            assert_eq!(
+                find_workspace_definition_location(&index, "Caller", "PI").is_some(),
+                callable,
+                "{case}"
+            );
+            assert_eq!(
+                !find_symbol_key_definition_locations(&index, &key).is_empty(),
+                callable,
+                "{case}"
+            );
+        }
         Ok(())
     }
 
