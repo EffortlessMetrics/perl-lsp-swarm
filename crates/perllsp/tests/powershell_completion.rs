@@ -53,8 +53,14 @@ fn generated_powershell_completion_works_without_profile_namespace_imports()
 
     let deadline = Instant::now() + Duration::from_secs(15);
     loop {
-        if child.try_wait()?.is_some() {
-            break;
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) => {}
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(error.into());
+            }
         }
         if Instant::now() >= deadline {
             let _ = child.kill();
