@@ -1433,7 +1433,7 @@ fn same_file_definition_matches_qualification(
                         &node.kind,
                         crate::ast::NodeKind::Format { name, name_span: Some(span), .. }
                             if name == &qualified_name
-                                && span.start <= offset && offset < span.end
+                                && span.start <= offset && offset <= span.end
                                 && node.location.start == definition.location.start
                                 && node.location.end == definition.location.end
                     )
@@ -3806,6 +3806,14 @@ mod tests {
                 ),
                 "{case}"
             );
+            if case == "format-qualified-declaration" {
+                let name_end = caller.find("Other::REPORT").ok_or("qualified format name")?
+                    + "Other::REPORT".len();
+                let endpoint = model.definition_at(name_end).ok_or("format name-end candidate")?;
+                assert!(same_file_definition_matches_qualification(
+                    caller, name_end, endpoint, &ast
+                ));
+            }
             if case != "attribute" {
                 assert!(
                     provider
@@ -3890,6 +3898,34 @@ mod tests {
                         locations[0].pointer("/range/end/line").and_then(Value::as_u64),
                         Some(1 | 4 | 5)
                     ));
+                    if case == "format-qualified-declaration" {
+                        let name_end = caller
+                            .lines()
+                            .nth(1)
+                            .ok_or("format line")?
+                            .find("REPORT")
+                            .ok_or("format name")?
+                            + "REPORT".len();
+                        let endpoint =
+                            qualified_fallback_request(&server, &caller_uri, 1, name_end)?;
+                        let locations = endpoint
+                            .as_ref()
+                            .and_then(Value::as_array)
+                            .ok_or("format endpoint location array")?;
+                        assert_eq!(locations.len(), 1);
+                        assert_eq!(
+                            locations[0].get("uri").and_then(Value::as_str),
+                            Some(caller_uri.as_str())
+                        );
+                        assert_eq!(
+                            locations[0].pointer("/range/start/line").and_then(Value::as_u64),
+                            Some(1)
+                        );
+                        assert!(matches!(
+                            locations[0].pointer("/range/end/line").and_then(Value::as_u64),
+                            Some(1 | 4 | 5)
+                        ));
+                    }
                 } else {
                     assert_qualified_fallback_location(
                         &declaration,

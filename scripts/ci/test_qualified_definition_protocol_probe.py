@@ -50,7 +50,8 @@ def successful_report():
                              "same_name_package_declaration_control": location(CALLER_PATH, 0),
                              **{f"qualified_{case}_call": [] for case in PROBE.ARITHMETIC_CASES},
                              "qualified_inside_qualified_format_value": [],
-                             "qualified_format_declaration_control": format_location()},
+                             "qualified_format_declaration_control": format_location(),
+                             "qualified_format_name_end_control": format_location()},
             "position_encoding": "utf-16", "exit": 0, "cleanup": "protocol_exit_reaped",
             "binary_sha256_before": "a" * 64, "binary_sha256_after": "a" * 64}
 
@@ -92,6 +93,7 @@ class OracleTests(unittest.TestCase):
         self.assertFalse(outcomes["bare_variable_navigation_retained"])
         self.assertFalse(outcomes["same_name_package_declaration_retained"])
         self.assertFalse(outcomes["qualified_format_declaration_navigation_retained"])
+        self.assertFalse(outcomes["qualified_format_name_end_navigation_retained"])
 
     def test_arithmetic_operators_cannot_be_variable_sigils_or_borrow_labels(self):
         for line, case in enumerate(PROBE.ARITHMETIC_CASES, 1):
@@ -116,6 +118,11 @@ class OracleTests(unittest.TestCase):
         report = successful_report()
         report["observations"]["qualified_format_declaration_control"] = []
         self.assertFalse(self.outcomes(report)["qualified_format_declaration_navigation_retained"])
+        for wrong in ([], location(CALLER_PATH, 3)):
+            report["observations"]["qualified_format_name_end_control"] = wrong
+            self.assertFalse(self.outcomes(report)["qualified_format_name_end_navigation_retained"])
+        del report["observations"]["qualified_format_name_end_control"]
+        self.assertFalse(self.outcomes(report)["qualified_format_name_end_navigation_retained"])
 
     def test_same_name_package_refused_at_call_and_retained_at_declaration(self):
         report = successful_report()
@@ -262,6 +269,7 @@ class OracleTests(unittest.TestCase):
         self.assertEqual(PROBE.QUALIFIED_FORMAT_CALL.splitlines()[3][9], "m")
         line = PROBE.QUALIFIED_FORMAT_CALL.splitlines()[1]
         self.assertEqual(line[line.index("REPORT") + 2], "P")
+        self.assertEqual(line[line.index("REPORT") + len("REPORT")], " ")
 
 
 class WorkflowTests(unittest.TestCase):

@@ -138,6 +138,10 @@ def assertions(report: dict, caller: Path, target: Path) -> dict[str, bool]:
             at_declaration(observations.get("qualified_format_declaration_control"), caller, 1, end_line)
             for end_line in (1, 4, 5)
         ),
+        "qualified_format_name_end_navigation_retained": any(
+            at_declaration(observations.get("qualified_format_name_end_control"), caller, 1, end_line)
+            for end_line in (1, 4, 5)
+        ),
         "utf16_negotiated": report.get("position_encoding") == "utf-16",
         "server_clean_exit": report.get("exit") == 0 and report.get("cleanup") == "protocol_exit_reaped",
         "binary_unchanged": (
@@ -472,6 +476,9 @@ def run_probe(binary: Path, fixture: Path, report: dict):
         report["observations"]["qualified_format_declaration_control"] = session.request("textDocument/definition", {
             "textDocument": {"uri": caller.as_uri()},
             "position": {"line": 1, "character": QUALIFIED_FORMAT_CALL.splitlines()[1].index("REPORT") + 2}})
+        report["observations"]["qualified_format_name_end_control"] = session.request("textDocument/definition", {
+            "textDocument": {"uri": caller.as_uri()},
+            "position": {"line": 1, "character": QUALIFIED_FORMAT_CALL.splitlines()[1].index("REPORT") + len("REPORT")}})
     except Exception as error:
         report["instrument_failure"] = repr(error)
     finally:
