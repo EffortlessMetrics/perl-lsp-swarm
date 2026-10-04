@@ -480,9 +480,15 @@ fn assert_retained_slice(
     if keys.location
         != (SourceLocation { start: expected_slice.end - 8, end: expected_slice.end - 1 })
         || source_text(source, keys)? != "'alpha'"
-        || !matches!(&keys.kind, NodeKind::String { value, interpolated: false } if value == "alpha")
     {
-        return Err("retained slice keys changed value or source geometry".to_string());
+        return Err(format!("retained slice keys changed source geometry: {source}\n{keys:?}"));
+    }
+    // Ordinary String values retain the quoted token spelling in this AST.
+    if !matches!(&keys.kind, NodeKind::String { value, interpolated: false } if value == "'alpha'")
+    {
+        return Err(format!(
+            "retained slice keys changed quoted String identity: {source}\n{keys:?}"
+        ));
     }
     Ok(())
 }
