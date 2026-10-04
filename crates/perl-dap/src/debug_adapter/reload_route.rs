@@ -622,6 +622,7 @@ mod tests {
             initial_stop_pending: false,
             entry_stop_pending: false,
             stopped_generation: 3,
+            pending_auto_continued_stop: false,
             module_generation: RuntimeModuleGenerationClock::new(),
         };
         session.variable_cache.upsert(9001, VariableCacheKind::EvaluateResult, Vec::new());
