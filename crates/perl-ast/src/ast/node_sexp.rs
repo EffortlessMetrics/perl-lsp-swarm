@@ -493,7 +493,7 @@ impl<W: fmt::Write> SexpSink for Renderer<'_, '_, W> {
             return self.emit(value);
         }
         self.scratch.clear();
-        write_atom(&mut self.scratch, value);
+        write_quoted_atom(&mut self.scratch, value);
         let encoded = std::mem::take(&mut self.scratch);
         let result = self.emit(&encoded);
         self.scratch = encoded;
@@ -777,16 +777,12 @@ fn write_found_token(out: &mut impl SexpSink, token: &Token) -> Result<(), Rende
     out.emit(")")
 }
 
-fn write_atom(out: &mut String, value: &str) {
-    if needs_quoting(value) {
-        out.push('"');
-        for ch in value.chars() {
-            write_escaped_char(out, ch);
-        }
-        out.push('"');
-    } else {
-        out.push_str(value);
+fn write_quoted_atom(out: &mut String, value: &str) {
+    out.push('"');
+    for ch in value.chars() {
+        write_escaped_char(out, ch);
     }
+    out.push('"');
 }
 
 fn write_escaped_char(out: &mut String, ch: char) {
@@ -822,7 +818,7 @@ fn needs_quoting(value: &str) -> bool {
 mod tests {
     use super::{
         NATIVE_DEBUG_SEXP_DEPTH_LIMIT_MARKER, NativeDebugSexpLimits, NativeDebugSexpResult,
-        needs_quoting, write_atom,
+        needs_quoting, write_quoted_atom,
     };
     use crate::ast::{Node, NodeKind, SourceLocation};
 
@@ -846,14 +842,14 @@ mod tests {
     #[test]
     fn quoted_atoms_preserve_printable_unicode() {
         let mut out = String::new();
-        write_atom(&mut out, "café\n");
+        write_quoted_atom(&mut out, "café\n");
         assert_eq!(out, "\"café\\n\"");
     }
 
     #[test]
     fn escape_policy_covers_quotes_backslash_newline_and_controls() {
         let mut out = String::new();
-        write_atom(&mut out, "say \"hi\"\\\n\t");
+        write_quoted_atom(&mut out, "say \"hi\"\\\n\t");
         assert_eq!(out, r#""say \"hi\"\\\n\t""#);
     }
 
