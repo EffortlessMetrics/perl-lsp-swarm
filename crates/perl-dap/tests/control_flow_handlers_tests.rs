@@ -575,6 +575,29 @@ fn test_unknown_command_includes_typo_suggestion() {
     }
 }
 
+#[test]
+fn test_unknown_command_without_suggestion_lists_supported_commands()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut adapter = DebugAdapter::new();
+    let response = adapter.handle_request(1, "frobnicateDebugger", None);
+    match response {
+        DapMessage::Response { success, command, body, message, .. } => {
+            assert!(!success, "unknown request must fail");
+            assert_eq!(command, "frobnicateDebugger");
+            assert!(body.is_none());
+            let message = message.ok_or("unknown command failure must include guidance")?;
+            assert!(message.starts_with("Unknown command: frobnicateDebugger."));
+            assert!(message.contains("Supported commands:"));
+            assert!(!message.contains("Did you mean"));
+            for expected in ["initialize", "launch", "setBreakpoints", "stackTrace", "evaluate"] {
+                assert!(message.contains(expected), "missing {expected}: {message}");
+            }
+        }
+        other => return Err(format!("expected failed Response, got {other:?}").into()),
+    }
+    Ok(())
+}
+
 // AC9.4: Test that handlers are thread-safe (can be called multiple times)
 #[test]
 fn test_control_flow_handlers_thread_safe() {

@@ -264,7 +264,11 @@ impl DebugAdapter {
                     success: false,
                     command: "scopes".to_string(),
                     body: None,
-                    message: Some("Missing frameId".to_string()),
+                    message: Some(
+                        "Missing frameId for scopes request. Request stackTrace first and pass one \
+                         of the returned stackFrames[].id values as frameId."
+                            .to_string(),
+                    ),
                 };
             }
         };
