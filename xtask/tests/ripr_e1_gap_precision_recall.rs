@@ -23,7 +23,7 @@
 //! mapped class plus evidence counters. Base inputs prove each mutant flips.
 //! The classifier is bash-only, so non-unix runs report SKIP (CI enforces).
 //!
-//! Mutants: 11 attempted. 8 kill (7 decision flips + 1 NOT_PROVEN reporting
+//! Mutants: 12 attempted. 9 kill (8 decision flips + 1 NOT_PROVEN reporting
 //! pin), 3 dropped-cannot-fail with written reasons in their `case.toml`
 //! (`suppressed-only`, `dropped-over-credit`, `dropped-nonprod-hiding`) — kept
 //! as deliberate-pass contract pins, counted as true negatives.
@@ -64,6 +64,7 @@ const EXPECTED_CASES: &[&str] = &[
     "invalid",
     "missing",
     "mutant-annotation-loss",
+    "mutant-gap-receipt-outranks",
     "mutant-genuine-with-teardown",
     "mutant-incomplete-static",
     "mutant-missing-comments",
@@ -229,10 +230,9 @@ impl HermeticStage {
             }
             fs::write(stage.join(input), staged)?;
         }
-        // A stale fixture must never accidentally match the runtime head.
-        if self.head == "e1-stale-head-sha-never-matches-runtime-head" {
-            bail!("hermetic head collided with the stale-sha sentinel");
-        }
+        // The stale sentinel is length-incompatible with a real head by
+        // construction (44 chars vs the 40-char hex asserted at stage
+        // creation), so a stale fixture can never match the runtime head.
         let policy = stage.join("quality-gate-exceptions.toml");
         fs::write(&policy, MINIMAL_EXCEPTION_POLICY)?;
         Ok(GatePaths {
@@ -735,12 +735,26 @@ fn run_classifier_case(
             }
         }
     } else {
-        // api-evidence: the mutant run points at an annotations path that was
-        // never staged (the loss itself); the base run uses the kept evidence.
+        // api-evidence: without an `annotations` field the mutant run points
+        // at an annotations path that was never staged (the loss itself); a
+        // case may instead name staged annotations plus a `gap_receipt` lane
+        // log, exercising ripr.yml's `--gap-receipt` invocation form. The base
+        // run always uses the kept evidence without the flag.
         let steps = stage.path().join(&inputs[0]).to_string_lossy().into_owned();
-        let missing = stage.path().join("annotations.json").to_string_lossy().into_owned();
-        let fields =
-            classify(&[String::from("--api-evidence"), missing, steps.clone()], None, name)?;
+        let annotations = match manifest_optional_str(manifest, "annotations") {
+            Some(file) => stage.path().join(&file).to_string_lossy().into_owned(),
+            None => stage.path().join("annotations.json").to_string_lossy().into_owned(),
+        };
+        let mut args = vec![String::from("--api-evidence"), annotations, steps.clone()];
+        if let Some(receipt) = manifest_optional_str(manifest, "gap_receipt") {
+            let staged = stage.path().join(&receipt);
+            if !staged.is_file() {
+                bail!("case `{name}` gap_receipt `{receipt}` was not staged");
+            }
+            args.push(String::from("--gap-receipt"));
+            args.push(staged.to_string_lossy().into_owned());
+        }
+        let fields = classify(&args, None, name)?;
         checks += 1;
         if assert_mapping(&fields, &expected_class, &also_expect, "mutant", name, report)? {
             matched += 1;

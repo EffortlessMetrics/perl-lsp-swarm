@@ -1,0 +1,12 @@
+# E1 case manifest: lane-termination classifier mapping oracle.
+kind = "classifier"
+description = "Fetched lane log holds a genuine gap receipt beside teardown annotations; receipt outranks (ripr.yml --gap-receipt form)."
+mode = "api-evidence"
+mutant_verdict = "kill"
+mutation = "lane log with the terminal gap-receipt line handed via --gap-receipt"
+base_input = "base-annotations.json"
+base_expected_class = "infra-no-proof"
+annotations = "base-annotations.json"
+gap_receipt = "lane.log"
+also_expect = { gap_receipt_matches = "1", receipt_scanned = "true" }
+inputs = ["steps.json", "lane.log"]
