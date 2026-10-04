@@ -4172,15 +4172,98 @@ mod tests {
                         assert_qualified_fallback_start(&label, &[0]);
                     }
                     "attribute" => {
-                        for (line, character) in [(4, 11), (5, 3)] {
-                            let variable =
-                                qualified_fallback_request(&server, &caller_uri, line, character)?;
-                            assert_qualified_fallback_start(&variable, &[4]);
-                            assert_qualified_fallback_location(&variable, &caller_uri, 3);
-                        }
+                        // Qualified variables in Moo's Class package have a
+                        // pre-existing same-file resolver gap: no candidate
+                        // reaches this guard. Keep its supported bare control;
+                        // prove qualified variable retention independently below.
+                        let bare_offset = caller.rfind("$kept;").ok_or("bare Moo variable")? + 3;
+                        let bare = model
+                            .definition_at(bare_offset)
+                            .ok_or("supported bare Moo variable premise")?;
+                        assert_eq!(bare.qualified_name, "Caller::kept");
+                        let variable = qualified_fallback_request(&server, &caller_uri, 5, 3)?;
+                        assert_qualified_fallback_start(&variable, &[4]);
+                        assert_qualified_fallback_location(&variable, &caller_uri, 3);
                     }
                     _ => {}
                 }
+            }
+        }
+        // Use an ordinary Package for the qualified-variable preservation
+        // contract. Moo upgrades its package to Class, which the unchanged
+        // same-file qualified resolver cannot search when the index is stale.
+        let variables = "package Caller;\nour $kept = 7;\n$Caller::kept;\n$kept;\n";
+        let uri = "file:///workspace/qualified-ordinary-variables.pl";
+        let ast = Arc::new(Parser::new(variables).parse()?);
+        let model = crate::semantic::SemanticModel::build(&ast, variables);
+        let mut parent_map = ParentMap::default();
+        crate::declaration::DeclarationProvider::build_parent_map(&ast, &mut parent_map, None);
+        let provider = crate::declaration::DeclarationProvider::new(
+            Arc::clone(&ast),
+            variables.to_string(),
+            uri.to_string(),
+        )
+        .with_parent_map(&parent_map)
+        .with_doc_version(1);
+        let qualified_offset = variables.find("$Caller::kept").ok_or("qualified variable")? + 11;
+        let bare_offset = variables.rfind("$kept;").ok_or("bare variable")? + 3;
+        assert!(
+            provider
+                .find_declaration(qualified_offset, 1)
+                .is_none_or(|locations| locations.is_empty()),
+            "qualified ordinary variable must reach the semantic fallback when indexing is unavailable"
+        );
+        assert!(
+            provider
+                .find_declaration(bare_offset, 1)
+                .is_some_and(|locations| !locations.is_empty()),
+            "source-built bare variable provider premise"
+        );
+        for offset in [qualified_offset, bare_offset] {
+            let definition =
+                model.definition_at(offset).ok_or("source-built ordinary variable definition")?;
+            assert_eq!(definition.kind, SymbolKind::scalar());
+            assert_eq!(definition.qualified_name, "Caller::kept");
+            assert_eq!(
+                variables.get(definition.location.start..definition.location.end),
+                Some("$kept")
+            );
+            assert!(same_file_definition_matches_qualification(
+                variables, offset, definition, &ast
+            ));
+        }
+        let server = LspServer::new();
+        let unrelated_uri = "file:///workspace/ordinary-variable-unrelated.pl";
+        for (file, text) in
+            [(uri, variables), (unrelated_uri, "package Unrelated;\nsub helper {}\n")]
+        {
+            server.test_apply_did_open(file, text, 1)?;
+            let generation =
+                server.test_document_generation(file).ok_or("variable open generation")?;
+            server.test_index_live_file(file, text, generation).map_err(std::io::Error::other)?;
+        }
+        server.test_simulate_indexing_complete();
+        for state in ["fresh", "degraded", "stale"] {
+            if state == "degraded" {
+                server
+                    .index_coordinator
+                    .as_ref()
+                    .ok_or("variable coordinator")?
+                    .transition_to_degraded(DegradationReason::ScanTimeout { elapsed_ms: 123 });
+            } else if state == "stale" {
+                server
+                    .test_replace_document_without_index(
+                        unrelated_uri,
+                        "package Unrelated;\nsub renamed {}\n",
+                        2,
+                    )
+                    .map_err(std::io::Error::other)?;
+            }
+            assert_eq!(server.workspace_index_stale_for_any_open_document(), state == "stale");
+            for (line, character) in [(2, 11), (3, 3)] {
+                let variable = qualified_fallback_request(&server, uri, line, character)?;
+                assert_qualified_fallback_location(&variable, uri, 1);
+                assert_qualified_fallback_start(&variable, &[4]);
             }
         }
         Ok(())
