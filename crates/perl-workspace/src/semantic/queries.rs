@@ -589,7 +589,12 @@ impl<'a> SemanticQueries for WorkspaceSemanticQueries<'a> {
     /// (or within) shards failing closed and degenerate spans resolving to
     /// `None`. This is the find-references hot path: one location is wired per
     /// occurrence, so a per-id scan is quadratic in the workspace (#17247).
+    /// An empty request returns an empty vector without walking the shards,
+    /// so a no-result find-references request pays no anchor scan.
     fn anchor_source_spans(&self, anchor_ids: &[AnchorId]) -> Vec<Option<AnchorSourceSpan>> {
+        if anchor_ids.is_empty() {
+            return Vec::new();
+        }
         let requested: std::collections::HashSet<AnchorId> = anchor_ids.iter().copied().collect();
         let mut resolved: std::collections::HashMap<AnchorId, Option<AnchorSourceSpan>> =
             anchor_ids.iter().map(|id| (*id, None)).collect();

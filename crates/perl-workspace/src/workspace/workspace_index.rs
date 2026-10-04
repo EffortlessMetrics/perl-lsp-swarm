@@ -3947,11 +3947,16 @@ impl WorkspaceIndex {
     /// This is the find-references hot path: one location is wired per
     /// occurrence, so the per-anchor scan is quadratic in the workspace
     /// (#17247). Callers resolving every occurrence of a request should use
-    /// this batch once instead of the single-anchor form per occurrence.
+    /// this batch once instead of the single-anchor form per occurrence. An
+    /// empty request returns an empty map without taking the shard lock, so a
+    /// no-result find-references request pays no anchor scan.
     pub fn semantic_anchor_wire_locations(
         &self,
         anchor_ids: &[AnchorId],
     ) -> std::collections::HashMap<AnchorId, Option<WireLocation>> {
+        if anchor_ids.is_empty() {
+            return std::collections::HashMap::new();
+        }
         let shards = self.fact_shards.read();
         let requested: std::collections::HashSet<AnchorId> = anchor_ids.iter().copied().collect();
         let mut resolved: std::collections::HashMap<AnchorId, Option<WireLocation>> =
