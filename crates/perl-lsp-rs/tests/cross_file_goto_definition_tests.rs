@@ -126,6 +126,116 @@ print "Result: $result\n";
 }
 
 // ---------------------------------------------------------------------------
+// Test 1b: a fully-qualified cross-package call must never resolve to the
+// caller's own same-named sub (#17252).
+//
+// The target package has no file on disk, so the workspace index can never
+// answer for `Scale03::Mod00::compute_0` — the exact state (index miss, and
+// after the target buffer opens, a deterministically stale index) where the
+// same-file fallbacks used to shadow the qualified call with the caller's own
+// `sub compute_0`. The honest answer is null (unresolved), never a
+// different package's sub.
+// ---------------------------------------------------------------------------
+
+fn no_caller_sub_target(
+    result: &Value,
+    caller_uri: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if result.is_null() {
+        return Ok(());
+    }
+    let locations = result
+        .as_array()
+        .ok_or_else(|| std::io::Error::other("expected null or array definition result"))?;
+    if locations.is_empty() {
+        return Ok(());
+    }
+    for location in locations {
+        let uri = location
+            .get("uri")
+            .and_then(Value::as_str)
+            .ok_or("definition location must carry a uri")?;
+        if uri == caller_uri {
+            return Err(format!(
+                "a fully-qualified cross-package call resolved into the caller's own buffer \
+                 ({caller_uri}); it must never answer with a different package's same-named \
+                 sub (#17252)"
+            )
+            .into());
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn qualified_cross_package_call_never_falls_back_to_callers_same_named_sub() -> TestResult {
+    let mut harness = LspHarness::new();
+    let workspace = TempWorkspace::new()?;
+
+    // Caller owns a same-named `sub compute_0` and calls a package that has
+    // NO file on disk anywhere in the workspace.
+    let caller_code = r#"package Scale00::Mod00;
+use strict;
+use warnings;
+
+sub compute_0 {
+    my ($n) = @_;
+    return $n + 1;
+}
+
+sub probe_def {
+    my $d = Scale03::Mod00::compute_0(3);
+    return $d;
+}
+
+1;
+"#;
+    workspace.write("lib/Scale00/Mod00.pm", caller_code)?;
+
+    // The target exists only as an open buffer, never on disk: while it is
+    // open the workspace index is deterministically stale for it (it was
+    // never indexed), which is exactly the flip state observed in #17252.
+    let target_text = r#"package Scale03::Mod00;
+sub compute_0 {
+    my ($n) = @_;
+    return $n * 2;
+}
+
+1;
+"#;
+
+    harness.initialize_with_root(&workspace.root_uri, None)?;
+    let caller_uri = workspace.uri("lib/Scale00/Mod00.pm");
+    harness.open(&caller_uri, caller_code)?;
+    harness.barrier();
+
+    // Cursor on the final component (`compute_0`) of the qualified call.
+    let call_line = caller_code
+        .lines()
+        .position(|line| line.contains("Scale03::Mod00::compute_0"))
+        .ok_or("caller fixture lost its qualified call")? as u32;
+    let (line, col) = find_pos(caller_code, "Mod00::compute_0(3)", call_line as usize)?;
+    let params = json!({
+        "textDocument": {"uri": caller_uri},
+        "position": {"line": line, "character": col + 7}
+    });
+
+    // Fresh index, genuine miss: the caller's own same-named sub must not
+    // answer for Scale03::Mod00::compute_0.
+    let before_open = harness.request("textDocument/definition", params.clone())?;
+    no_caller_sub_target(&before_open, &caller_uri)?;
+
+    // Open the target buffer: the index is now stale for an open document,
+    // and the resolution must still not fall back into the caller's buffer.
+    let target_uri = workspace.uri("lib/Scale03/Mod00.pm");
+    harness.open(&target_uri, target_text)?;
+    let after_open = harness.request("textDocument/definition", params)?;
+    no_caller_sub_target(&after_open, &caller_uri)?;
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Test 2: `use Module` navigates to Module.pm
 // ---------------------------------------------------------------------------
 
