@@ -1357,17 +1357,25 @@ pub(super) fn cursor_is_off_named_symbol(
 }
 
 /// The terminal same-file model may resolve an absent package's callable by its
-/// bare name in the caller's scope. Do not present that different package as the
-/// definition of an explicit qualified call (#17252, #17245).
+/// bare name in the caller's scope, or return an enclosing package when lookup
+/// fails. Neither is the definition of an explicit foreign call (#17252, #17245).
 fn same_file_definition_matches_qualification(
     text: &str,
     offset: usize,
     definition: &crate::symbol::Symbol,
 ) -> bool {
-    if !matches!(
+    let is_callable = matches!(
         definition.kind,
         crate::symbol::SymbolKind::Subroutine | crate::symbol::SymbolKind::Method
-    ) {
+    );
+    if !is_callable
+        && !matches!(
+            definition.kind,
+            crate::symbol::SymbolKind::Package
+                | crate::symbol::SymbolKind::Class
+                | crate::symbol::SymbolKind::Role
+        )
+    {
         return true;
     }
     let Ok(regex) = get_fqn_regex() else {
@@ -1378,8 +1386,7 @@ fn same_file_definition_matches_qualification(
         Some(FqnCursorComponent::Final { package, name }) => {
             // SUPER names an inheritance lookup, not a literal package. Its
             // resolution belongs to the earlier parent-chain path.
-            package == "SUPER"
-                || package.ends_with("::SUPER")
+            (is_callable && (package == "SUPER" || package.ends_with("::SUPER")))
                 || definition.qualified_name == format!("{package}::{name}")
         }
         _ => true,
@@ -3457,6 +3464,78 @@ mod tests {
             caller_uri,
             1,
         );
+        Ok(())
+    }
+
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn qualified_definition_fallback_refuses_enclosing_package_without_callable_target()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use perl_workspace::workspace_index::DegradationReason;
+        let caller = "package Caller { Other::compute_0(); }\n";
+        let caller_uri = "file:///workspace/qualified-package-block.pl";
+        let offset = caller.find("compute_0").ok_or("qualified call")? + 2;
+        let ast = Arc::new(Parser::new(caller).parse()?);
+        let mut parent_map = ParentMap::default();
+        crate::declaration::DeclarationProvider::build_parent_map(&ast, &mut parent_map, None);
+        let provider = crate::declaration::DeclarationProvider::new(
+            Arc::clone(&ast),
+            caller.to_string(),
+            caller_uri.to_string(),
+        )
+        .with_parent_map(&parent_map)
+        .with_doc_version(1);
+        assert!(
+            provider.find_declaration(offset, 1).is_none_or(|locations| locations.is_empty()),
+            "an unresolved call must reach the terminal model for this regression"
+        );
+        let model = crate::semantic::SemanticModel::build(&ast, caller);
+        let candidate = model.definition_at(offset).ok_or("enclosing package candidate")?;
+        assert_eq!(candidate.kind, crate::symbol::SymbolKind::Package);
+        assert_eq!(candidate.qualified_name, "Caller");
+        assert!(candidate.location.start <= offset && candidate.location.end >= offset);
+        assert!(!same_file_definition_matches_qualification(caller, offset, candidate));
+        assert!(same_file_definition_matches_qualification(caller, 10, candidate));
+        let package = "package Caller::Inner { }\n";
+        let package_ast = Parser::new(package).parse()?;
+        let package_model = crate::semantic::SemanticModel::build(&package_ast, package);
+        let package_offset = package.find("Inner").ok_or("qualified package name")? + 2;
+        let exact_package =
+            package_model.definition_at(package_offset).ok_or("package definition")?;
+        assert_eq!(exact_package.qualified_name, "Caller::Inner");
+        assert!(same_file_definition_matches_qualification(package, package_offset, exact_package));
+
+        let server = LspServer::new();
+        let unrelated_uri = "file:///workspace/package-unrelated.pl";
+        let unrelated = "package Unrelated;\nsub helper {}\n";
+        for (uri, text) in [(caller_uri, caller), (unrelated_uri, unrelated)] {
+            server.test_apply_did_open(uri, text, 1)?;
+            let generation = server.test_document_generation(uri).ok_or("open generation")?;
+            server.test_index_live_file(uri, text, generation).map_err(std::io::Error::other)?;
+        }
+        server.test_simulate_indexing_complete();
+        let coordinator = server.index_coordinator.as_ref().ok_or("workspace coordinator")?;
+        coordinator.transition_to_degraded(DegradationReason::ScanTimeout { elapsed_ms: 123 });
+        assert!(!server.workspace_index_stale_for_any_open_document());
+        for stale in [false, true] {
+            if stale {
+                server
+                    .test_replace_document_without_index(
+                        unrelated_uri,
+                        "package Unrelated;\nsub renamed {}\n",
+                        2,
+                    )
+                    .map_err(std::io::Error::other)?;
+                assert!(server.workspace_index_stale_for_any_open_document());
+            }
+            let result = qualified_fallback_request(&server, caller_uri, 0, offset)?;
+            assert!(
+                result.as_ref().is_some_and(
+                    |value| value.is_null() || value.as_array().is_some_and(Vec::is_empty)
+                ),
+                "an unresolved qualified call must not return its enclosing package (stale={stale}): {result:?}"
+            );
+        }
         Ok(())
     }
 
