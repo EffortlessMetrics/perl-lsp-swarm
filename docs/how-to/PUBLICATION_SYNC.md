@@ -583,8 +583,10 @@ destination base here. It does not claim that source S is release-prepared.
 Receipt alias and Git-metadata protections apply to the staged source shape too.
 Alias paths are collected before strict model/schema validation, so an extra
 rejected claim cannot make declared input/row paths disappear from the guard.
-If the path-bearing slots or their identities cannot be established, no receipt
-is written. The same path extraction protects known slots on an unknown profile.
+If raw JSON, path-bearing slots or their identities cannot be established, no
+receipt is written. The same path extraction protects known slots on an unknown
+profile. The evaluator still creates a diagnostic unevaluated receipt for an
+unparsable manifest; the CLI refuses to write it when aliases are ambiguous.
 
 Current ceiling: a valid source shape deterministically returns
 `source_profile_not_proven` / NOT_PROVEN. The source fixture contains shape-only
@@ -613,8 +615,8 @@ Focused command after the parent grants serial native allocation:
 cargo test -p xtask --bins publication_sync
 ```
 
-The seven new source controls include real Git B/R/S, cross-profile substitution,
+The eight new source controls include real Git B/R/S, cross-profile substitution,
 mandatory inputs, candidate proof claims, shared row shapes, receipt aliases on
-rejected documents, and refusal to write when alias slots are malformed.
+rejected documents, and refusal to write when JSON or alias slots are malformed.
 They supplement every existing #14570 test; they do not replace them. No Cargo
 execution is claimed by the preparation receipt.

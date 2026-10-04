@@ -172,3 +172,32 @@ fn malformed_alias_slots_refuse_every_receipt_write() -> Result<()> {
     assert_eq!(fs::read(&receipt)?, b"must survive\n");
     Ok(())
 }
+
+#[test]
+fn truncated_source_document_cannot_overwrite_input_or_row_bytes() -> Result<()> {
+    let root = tempfile::tempdir()?;
+    let manifest = root.path().join("source.json");
+    let mut document = source_value()?;
+    let release: Value = serde_json::from_str(include_str!(
+        "../../../../fixtures/publication_sync/clean_manifest.json"
+    ))?;
+    document["paths"] = release["paths"].clone();
+    let mut raw = serde_json::to_vec(&document)?;
+    raw.pop();
+    assert!(serde_json::from_slice::<Value>(&raw).is_err());
+    fs::write(&manifest, raw)?;
+    for path in [document["inputs"][0]["path"].as_str(), document["paths"][0]["path"].as_str()] {
+        let destination = root.path().join(path.ok_or_else(|| eyre!("fixture path"))?);
+        fs::create_dir_all(destination.parent().ok_or_else(|| eyre!("parent"))?)?;
+        fs::write(&destination, b"must survive\n")?;
+        let config = PlanConfig {
+            manifest: manifest.clone(),
+            repo_root: root.path().to_path_buf(),
+            receipt: destination.clone(),
+        };
+        let error = plan(config).expect_err("unparsable alias declarations must block every write");
+        assert!(error.to_string().contains("cannot be parsed for alias protection"));
+        assert_eq!(fs::read(&destination)?, b"must survive\n");
+    }
+    Ok(())
+}
