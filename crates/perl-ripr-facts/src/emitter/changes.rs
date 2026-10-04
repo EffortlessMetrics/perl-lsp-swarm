@@ -22,7 +22,7 @@ struct DiffHunkRun {
 /// `@@ -a,b +c,d @@` header. Removed (`-`) lines do not advance the head cursor;
 /// context lines do. Pure text parsing — no filesystem access, no subprocess.
 /// Parsed hunks plus whether the input carried recognizable unified-diff
-/// structure (a `diff --git ` header, any `+++ b/` file marker, or any `@@`
+/// structure (a `diff --git ` header, any `+++ b/` file marker, or any parseable `@@`
 /// hunk header). A valid deletion-only / rename-only / mode-only diff yields
 /// zero runs *with* recognized structure — that is analyzed-but-empty, not
 /// unparseable (#17266 review).
@@ -64,8 +64,9 @@ fn parse_diff_hunks(diff_text: &str) -> ParsedDiff {
         }
         if let Some(header_rest) = line.strip_prefix("@@") {
             flush(&mut run, &mut runs);
-            head_line = parse_hunk_new_start(header_rest).unwrap_or(0);
-            recognized_structure = true;
+            let new_start = parse_hunk_new_start(header_rest);
+            head_line = new_start.unwrap_or(0);
+            recognized_structure |= new_start.is_some();
             continue;
         }
         if line.starts_with('\\') {
@@ -627,6 +628,22 @@ mod tests {
         assert!(
             limitations.iter().any(|l| l["limitation_id"] == "diff-unparseable"),
             "must record a diff-unparseable limitation, got: {limitations:?}"
+        );
+    }
+
+    #[test]
+    fn emit_changes_from_diff_malformed_hunk_header_is_unparseable() {
+        // `@@ not a hunk` looks like a hunk header but its `+c` token does
+        // not parse: it must NOT count as recognized structure, so the
+        // input is still labeled `diff-unparseable` (#17266 review).
+        let files = vec![json!({ "file_id": "file:lib/My/App.pm" })];
+        let owners: Vec<Value> = Vec::new();
+        let (changes, limitations) =
+            emit_changes_from_diff("@@ not a hunk\n+    return 1;\n", ".", &files, &owners);
+        assert!(changes.is_empty(), "malformed hunk header yields no changes");
+        assert!(
+            limitations.iter().any(|l| l["limitation_id"] == "diff-unparseable"),
+            "malformed @@ header must still be labeled unparseable, got: {limitations:?}"
         );
     }
 
