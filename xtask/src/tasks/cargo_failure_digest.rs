@@ -132,11 +132,13 @@ pub fn run(config: GateFailureDigestConfig) -> Result<()> {
 /// - `xtask gates --receipt` writes a receipt whose rows carry `status`,
 ///   `command`, `log_path` and an already-extracted `first_failure`.
 ///
-/// A row counts as non-success unless it says `success`, `passed` or
-/// `skipped`. Anything else — `failure`, `timeout`, `instrument_failure`,
-/// `not_proven`, `cancelled` — is something a reader needs explained, and
-/// treating an unrecognised status as success would hide exactly the states
-/// that are hardest to diagnose.
+/// A row counts as non-success unless it says `success`, `passed` or `pass`
+/// (see `is_success`), or `skipped` or `skip` (see `is_not_proven`). Both
+/// spellings of each are load-bearing rather than defensive: `gates.rs`
+/// writes `pass` and `skip`, the shorter of each pair. Anything else —
+/// `failure`, `timeout`, `instrument_failure`, `not_proven`, `cancelled` — is
+/// something a reader needs explained, and treating an unrecognised status as
+/// success would hide exactly the states that are hardest to diagnose.
 fn collect_failures(summary: &Value, logs: &Path) -> Vec<GateFailure> {
     let Some(gates) = gate_rows(summary) else {
         return Vec::new();
