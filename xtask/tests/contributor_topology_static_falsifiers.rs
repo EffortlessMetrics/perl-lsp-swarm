@@ -121,7 +121,7 @@ fn missing_publication_role_sentence_is_rejected() {
 #[test]
 fn missing_public_contributor_ingress_role_is_rejected() {
     rejects_when(PROTOCOL, |text| {
-        text.replace("Release lineage", "Release authority")
+        text.replace("public contributor ingress", "public intake")
     });
 }
 
