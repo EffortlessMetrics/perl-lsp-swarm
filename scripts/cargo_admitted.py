@@ -109,22 +109,38 @@ def check_capacity(paths, env):
     return report
 
 
+def git_path(*args, env=None):
+    # Read bytes: text mode also translates CR/LF that may belong to a POSIX
+    # filename. Git emits one terminal LF; preserve every preceding path byte.
+    output = subprocess.check_output(["git", "rev-parse", *args], env=env)
+    if not output.endswith(b"\n"):
+        raise Denied("Git path output is missing its terminal newline")
+    return native_path(os.fsdecode(output[:-1]))
+
+
 def resource_plan(env):
-    worktree = native_path(subprocess.check_output(
-        ["git", "rev-parse", "--show-toplevel"], text=True
-    ).strip())
-    common = subprocess.check_output(
-        ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"], text=True
-    ).strip()
-    identity = str(native_path(common)).casefold() if os.name == "nt" else str(native_path(common))
-    key = hashlib.sha256(identity.encode()).hexdigest()[:16]
+    # Cargo uses the invocation directory, not Git's repository-location
+    # overrides. Refuse an ambiguous subject instead of silently retargeting it.
+    for name in ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR"):
+        if name in env:
+            raise Denied(name + " repository-location override is unsupported; unset it and invoke from the intended worktree")
+    worktree = git_path("--show-toplevel", env=env)
+    common = git_path("--path-format=absolute", "--git-common-dir", env=env)
+    identity = str(common).casefold() if os.name == "nt" else str(common)
+    key = hashlib.sha256(os.fsencode(identity)).hexdigest()[:16]
     base = native_path(env.get("DEVPLANE", str(Path.home() / ".cache" / "devplane")))
-    # One reusable slot per common repository and OS/host. No per-task growth.
+    # Keep one admission/lease domain per common repository and OS/host.
+    # Cargo fingerprints deliberately omit the workspace absolute path, so
+    # serializing divergent worktrees does not make their build state compatible.
     slot = base / (socket.gethostname() + "-" + sys.platform + "-" + key)
-    target, build = slot / "target", slot / "build"
+    # native_path already resolves the actual root; do not invent Unicode/case
+    # equivalence between distinct filesystem paths. fsencode is lossless on POSIX.
+    worktree_key = hashlib.sha256(os.fsencode(worktree)).hexdigest()
+    private = slot / "worktrees" / worktree_key
+    target, build = private / "target", private / "build"
     for name, expected in (("CARGO_TARGET_DIR", target), ("CARGO_BUILD_BUILD_DIR", build)):
         if env.get(name) and native_path(env[name]) != expected:
-            raise Denied(name + " override unsupported; use this repository's bounded slot")
+            raise Denied(name + " override unsupported; use this worktree's private target/build paths")
     paths = {"target": target, "build": build,
              "cargo_home": native_path(env.get("CARGO_HOME", str(Path.home() / ".cargo"))),
              "temp": native_path(env.get("TMPDIR", env.get("TEMP", str(slot / "tmp"))))}
