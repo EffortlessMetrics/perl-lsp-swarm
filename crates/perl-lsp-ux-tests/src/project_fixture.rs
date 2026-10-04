@@ -28,13 +28,30 @@ impl ProjectFixtureFile {
     }
 }
 
-/// Resolve the repository workspace root from this crate's manifest location.
+/// Resolve the repository workspace root for UX fixtures at runtime.
+///
+/// Prefers the runtime `CARGO_MANIFEST_DIR` — cargo sets it for the test
+/// process, so test binaries stay relocatable across worktrees that share one
+/// target directory; a library compiled in a since-deleted worktree must not
+/// redirect corpus reads at a dead path (#17176). Falls back to the
+/// compile-time path when the test binary runs outside cargo.
 pub fn workspace_root() -> Result<PathBuf> {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from(env!("CARGO_MANIFEST_DIR")));
+    workspace_root_from(&manifest_dir)
+}
+
+/// Pure workspace-root walk behind [`workspace_root`], factored out so the
+/// ancestor rules can be unit tested without mutating process-global
+/// environment state (this crate denies `unsafe_code`, which
+/// `std::env::set_var` requires in edition 2024).
+fn workspace_root_from(manifest_dir: &Path) -> Result<PathBuf> {
+    manifest_dir
+        .ancestors()
+        .find(|candidate| candidate.join("Cargo.lock").is_file())
         .map(Path::to_path_buf)
-        .context("CARGO_MANIFEST_DIR must be nested under the workspace root")
+        .context("no ancestor of CARGO_MANIFEST_DIR holds a Cargo.lock workspace root")
 }
 
 /// Load all Perl source files under the Mojolicious skeleton UX fixture.
@@ -118,4 +135,62 @@ fn is_perl_source(path: &Path) -> bool {
     path.extension()
         .and_then(|extension| extension.to_str())
         .is_some_and(|extension| matches!(extension, "pm" | "pl" | "t"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{workspace_root, workspace_root_from};
+    use anyhow::{Context, Result};
+    use std::fs;
+    use tempfile::TempDir;
+
+    #[test]
+    fn workspace_root_walks_to_nearest_cargo_lock_ancestor() -> Result<()> {
+        let temp = TempDir::new().context("failed to create fixture workspace")?;
+        let workspace = temp.path().join("workspace");
+        let crate_dir = workspace.join("crates").join("ux-fixture");
+        fs::create_dir_all(&crate_dir).context("failed to create nested crate dirs")?;
+        fs::write(workspace.join("Cargo.lock"), "version = 9")
+            .context("failed to write workspace Cargo.lock")?;
+
+        let resolved = workspace_root_from(&crate_dir)
+            .context("workspace-root walk failed for nested crate")?;
+        assert_eq!(resolved, workspace, "walk must stop at the Cargo.lock ancestor");
+        Ok(())
+    }
+
+    #[test]
+    fn workspace_root_walk_fails_without_cargo_lock() -> Result<()> {
+        let temp = TempDir::new().context("failed to create lockless tree")?;
+        let nested = temp.path().join("crates").join("ux-fixture");
+        fs::create_dir_all(&nested).context("failed to create nested crate dirs")?;
+
+        let error = workspace_root_from(&nested)
+            .err()
+            .context("walk must fail when no ancestor holds a Cargo.lock")?;
+        assert!(
+            error.to_string().contains("Cargo.lock"),
+            "failure must name the missing Cargo.lock workspace root: {error}"
+        );
+        Ok(())
+    }
+
+    /// Runtime contract for the shipped layout: the resolved root must be the
+    /// running workspace, not a path baked in by whatever worktree last
+    /// compiled this library into a shared target directory (#17176).
+    #[test]
+    fn workspace_root_resolves_the_running_workspace_at_runtime() -> Result<()> {
+        let root = workspace_root().context("runtime workspace-root resolution failed")?;
+        assert!(
+            root.join("Cargo.lock").is_file(),
+            "resolved workspace root lacks Cargo.lock: {}",
+            root.display()
+        );
+        assert!(
+            root.join("test_corpus").join("real_projects").is_dir(),
+            "resolved workspace root lacks the real-project corpus: {}",
+            root.display()
+        );
+        Ok(())
+    }
 }
