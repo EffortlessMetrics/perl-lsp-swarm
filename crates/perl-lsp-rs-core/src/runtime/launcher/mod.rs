@@ -659,6 +659,11 @@ pub enum LaunchParseError {
         /// Raw token from CLI.
         raw_mode: String,
     },
+    /// Trailing positionals reached an action that never reads them.
+    UnexpectedPositionals {
+        /// The junk tokens, verbatim.
+        tokens: Vec<String>,
+    },
 }
 
 impl fmt::Display for LaunchParseError {
@@ -700,6 +705,14 @@ impl fmt::Display for LaunchParseError {
             Self::InvalidDiagnosticMode { raw_mode } => {
                 write!(f, "Invalid diagnostic mode: {raw_mode}. Supported: normal, syntax-only")
             }
+            Self::UnexpectedPositionals { tokens } => {
+                let quoted =
+                    tokens.iter().map(|token| format!("'{token}'")).collect::<Vec<_>>().join(", ");
+                write!(
+                    f,
+                    "Unexpected positional arguments: {quoted}. Only --check accepts file paths."
+                )
+            }
         }
     }
 }
@@ -721,7 +734,8 @@ impl perl_parser_core::ErrorClass for LaunchParseError {
             | Self::InvalidShell { .. }
             | Self::InvalidDiagnosticDebounceMs { .. }
             | Self::InvalidRuntimeMode { .. }
-            | Self::InvalidDiagnosticMode { .. } => perl_parser_core::ErrorCategory::UserError,
+            | Self::InvalidDiagnosticMode { .. }
+            | Self::UnexpectedPositionals { .. } => perl_parser_core::ErrorCategory::UserError,
         }
     }
 }
@@ -737,6 +751,17 @@ where
 
     match LspArgs::try_parse_from(collected_args) {
         Ok(parsed_args) => {
+            // Fail closed on trailing positionals no action will read (#17262):
+            // only `--check` consumes `files`, and clap's `requires = "check"`
+            // does not reliably reject junk on conflicting actions
+            // (`--ripr-facts EXTRA` parsed Ok and the packet silently dropped
+            // the token). Mechanism-independent: reject here, whatever clap did.
+            if !parsed_args.check && !parsed_args.files.is_empty() {
+                return Err(LaunchParseError::UnexpectedPositionals {
+                    tokens: parsed_args.files.clone(),
+                });
+            }
+
             let mut config = LaunchConfig::new(FeatureProfile::current());
 
             config.transport = parsed_args.transport.mode();
@@ -2311,6 +2336,38 @@ mod tests {
     fn parse_doctor_conflicts_with_check() {
         let result = parse_args(["perl-lsp", "--doctor", "--check", "script.pl"]);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn ripr_facts_rejects_trailing_positionals() {
+        // `--ripr-facts EXTRA` used to exit 0 with a packet byte-identical to
+        // the no-junk run: clap's `requires = "check"` never fired and the
+        // dispatch arm never read the token (#17262).
+        let error = must_err(parse_args(["perl-lsp", "--ripr-facts", "EXTRA"]));
+        let rendered = error.to_string();
+        assert!(
+            rendered.contains("'EXTRA'") && rendered.contains("--check"),
+            "rejection must name the junk token and the only action taking files; got:\n{rendered}"
+        );
+    }
+
+    #[test]
+    fn non_check_actions_reject_trailing_positionals() {
+        // Bare and server-mode junk: bare EXTRA was already rejected by clap's
+        // `requires`; --info/--health paths must fail closed too.
+        assert!(parse_args(["perl-lsp", "EXTRA"]).is_err());
+        assert!(parse_args(["perl-lsp", "--info", "EXTRA"]).is_err());
+        assert!(parse_args(["perl-lsp", "--socket", "--port", "9999", "EXTRA"]).is_err());
+    }
+
+    #[test]
+    fn check_and_doctor_positional_flows_are_untouched() {
+        // --check consumes trailing files; --doctor takes its dir as an
+        // option value (files stays empty) — neither may trip the rejection.
+        let plan = must(parse_args(["perl-lsp", "--check", "script.pl"]));
+        assert_eq!(plan.files, vec!["script.pl".to_string()]);
+        let plan = must(parse_args(["perl-lsp", "--doctor", "app/"]));
+        assert_eq!(plan.action, LaunchAction::Doctor { dir: "app/".to_string(), json: false });
     }
 
     #[test]
