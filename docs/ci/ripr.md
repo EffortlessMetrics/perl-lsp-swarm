@@ -59,6 +59,30 @@ Do **not** translate these into `killed` / `survived`. They mean something diffe
 
 ---
 
+## Perl fact-packet surface
+
+The sections above describe the Rust-lane gate. The Perl facts the lane can
+consume are produced separately by the `perl-ripr-facts` crate as a
+`ripr-perl-facts-v1` packet:
+
+- `perllsp --ripr-facts [--ripr-schema --ripr-root --ripr-base --ripr-head
+  --ripr-fact-classes --ripr-out]` — batch export flag; records base/head
+  opaquely and exits without starting the LSP server. This path never derives
+  a diff, so `changes[]` is always empty with a `no-diff-supplied` limitation.
+- `perl-ripr-facts ripr-facts --schema --root [--base] [--head]
+  [--fact-classes] [--diff <cwd-relative-diff>] --out <out>` — standalone
+  binary; the only path that accepts caller-supplied diff text for
+  diff-owned `changes[]`.
+- `build_ripr_facts_packet(&RiprFactsRequest)` — structured batch API; no I/O.
+
+Contract: [`crates/perl-ripr-facts/README.md`](../../crates/perl-ripr-facts/README.md),
+schema [`schemas/ripr-perl-facts-v1.schema.json`](../../schemas/ripr-perl-facts-v1.schema.json).
+Exit `0` means "a packet was written" (even `unavailable`/`partial` with zero
+facts); consumers must read `packet_status` and `limitations[]` —
+never infer success from emptiness.
+
+---
+
 ## When it runs
 
 - Every PR targeting `master` or `main`.
