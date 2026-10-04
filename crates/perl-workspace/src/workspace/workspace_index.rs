@@ -1697,14 +1697,19 @@ impl WorkspaceIndex {
         let mut best_match: Option<(&String, usize)> = None;
         for folder_uri in folders.iter() {
             let normalized_folder = Self::normalize_uri(folder_uri);
-            // Check if the file URI starts with the folder URI
-            // We need to ensure proper URI matching (with or without trailing slash)
-            let folder_with_slash = if normalized_folder.ends_with('/') {
-                normalized_folder.clone()
+            // Check if the file URI starts with the folder URI.
+            // A bare prefix match would wrongly attribute siblings
+            // (`file:///root-ab/...` under `file:///root-a`), so require the
+            // `/` boundary (or exact equality) via slice matching instead of
+            // allocating a `folder + "/"` string per folder.
+            let folder = normalized_folder.as_str();
+            let in_folder = if folder.ends_with('/') {
+                file_uri.starts_with(folder)
             } else {
-                format!("{}/", normalized_folder)
+                file_uri.as_str() == folder
+                    || file_uri.strip_prefix(folder).is_some_and(|rest| rest.starts_with('/'))
             };
-            if file_uri.starts_with(&folder_with_slash) || file_uri == normalized_folder {
+            if in_folder {
                 match best_match {
                     Some((_, length)) if length >= normalized_folder.len() => {}
                     _ => best_match = Some((folder_uri, normalized_folder.len())),

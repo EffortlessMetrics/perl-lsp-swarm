@@ -4824,6 +4824,48 @@ fn unknown_receiver_fallback_completion_observes_auto_import_seam()
 }
 
 #[test]
+fn unknown_receiver_fallback_scopes_same_named_package_to_current_root()
+-> Result<(), Box<dyn std::error::Error>> {
+    // The unknown-receiver fallback must scope indexed members to the
+    // request's workspace root like the exact-receiver path does. `Foo`
+    // exists in both roots with distinct methods; the request originates
+    // in root A, so the root-B method must not leak into the fallback.
+    let index = Arc::new(WorkspaceIndex::new());
+    index.set_workspace_folders(vec!["file:///root-a".to_string(), "file:///root-b".to_string()]);
+    index.index_initial_file(
+        Url::parse("file:///root-a/Foo.pm")?,
+        "package Foo;\nsub local_method { 1 }\n1;\n".to_string(),
+    )?;
+    index.index_initial_file(
+        Url::parse("file:///root-b/Foo.pm")?,
+        "package Foo;\nsub foreign_method { 1 }\n1;\n".to_string(),
+    )?;
+    let current = "use Foo;\n1;\n$obj->";
+    let mut parser = Parser::new(current);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index(&ast, Some(index));
+    let items = provider.get_completions_with_path(
+        current,
+        current.len(),
+        Some("file:///root-a/Current.pl"),
+    );
+    let labels: Vec<_> = items.iter().map(|item| item.label.as_ref()).collect();
+    if !labels.contains(&"local_method") {
+        return Err(format!("same-root fallback method missing: {labels:?}").into());
+    }
+    if labels.contains(&"foreign_method") {
+        return Err(format!("cross-root fallback method leaked: {labels:?}").into());
+    }
+    let local = must_some(items.iter().find(|item| item.label == "local_method"));
+    assert!(
+        local.detail.as_deref().is_some_and(|detail| detail.contains("receiver: unknown")),
+        "same-root method should surface via the unknown-receiver fallback; got: {:?}",
+        local.detail
+    );
+    Ok(())
+}
+
+#[test]
 fn extract_fat_comma_keys_grips_quote_and_bareword_branches() {
     // Call-observation coverage for the single-quoted, double-quoted, and
     // bareword key branches in `CompletionProvider::extract_fat_comma_keys`.

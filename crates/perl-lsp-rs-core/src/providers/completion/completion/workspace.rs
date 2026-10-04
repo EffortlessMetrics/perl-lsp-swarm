@@ -1869,7 +1869,14 @@ pub fn add_workspace_method_completions(
         // fallback (#7929) only for `Unknown` evidence; `Dynamic` stays
         // fail-closed. An empty index must not open a workspace-wide scan.
         if evidence.is_unknown_fallback_eligible() && index.has_symbols() {
-            add_unknown_receiver_fallback(completions, context, source, index, used_modules);
+            add_unknown_receiver_fallback(
+                completions,
+                context,
+                source,
+                index,
+                used_modules,
+                current_uri,
+            );
         }
         return;
     };
@@ -2066,19 +2073,22 @@ fn add_union_receiver_method_completions(
 /// Sources are restricted to:
 /// - imported / visible packages from the current file's `import_map`
 /// - the current package and its `@ISA` chain (via
-///   [`collect_all_package_members`]) when `current_package` is set and
-///   not `main`
+///   [`collect_all_package_members_with_source`]) when `current_package`
+///   is set and not `main`
 ///
-/// All-workspace fallback is intentionally not used. Fallback candidates
-/// carry a `receiver: unknown, low confidence` detail suffix and use sort
-/// tier 6 so they always sort below exact-receiver completions (which
-/// use tiers 1–4).
+/// All-workspace fallback is intentionally not used. Indexed members stay
+/// scoped to the request's workspace root via `current_uri`, matching the
+/// exact-receiver path. Fallback candidates carry a
+/// `receiver: unknown, low confidence` detail suffix and use sort tier 6
+/// so they always sort below exact-receiver completions (which use tiers
+/// 1–4).
 fn add_unknown_receiver_fallback(
     completions: &mut Vec<CompletionItem>,
     context: &CompletionContext,
     source: &str,
     index: &WorkspaceIndex,
     used_modules: &HashSet<String>,
+    current_uri: Option<&str>,
 ) {
     let mut allowed_packages: HashSet<String> = used_modules.clone();
     if !context.current_package.is_empty() && context.current_package != "main" {
@@ -2095,7 +2105,7 @@ fn add_unknown_receiver_fallback(
     let mut pending = Vec::new();
 
     for package_name in &allowed_packages {
-        let members = collect_all_package_members(index, package_name);
+        let members = collect_all_package_members_with_source(index, package_name, "", current_uri);
         for symbol in members {
             if !matches!(symbol.kind, WsSymbolKind::Subroutine | WsSymbolKind::Method) {
                 continue;
@@ -2696,15 +2706,19 @@ impl IndexedSourceScope {
     }
 
     fn admits(&self, index: &WorkspaceIndex, indexed_uri: &str) -> bool {
-        if self.current_uri_key.as_deref() == Some(DocumentStore::uri_key(indexed_uri).as_str()) {
+        let Some(current_uri_key) = self.current_uri_key.as_deref() else {
+            return true;
+        };
+        if current_uri_key == DocumentStore::uri_key(indexed_uri).as_str() {
             return false;
         }
-        if self.current_uri_key.is_some() && self.roots_configured {
-            return self.current_root.as_ref()
-                == index.workspace_folder_for_uri(indexed_uri).as_ref()
-                && self.current_root.is_some();
+        if !self.roots_configured {
+            return true;
         }
-        true
+        let Some(current_root) = self.current_root.as_ref() else {
+            return false;
+        };
+        Some(current_root) == index.workspace_folder_for_uri(indexed_uri).as_ref()
     }
 }
 
@@ -2985,7 +2999,7 @@ fn load_source_package_facts(
 
 fn merge_named_edges(mut preferred: Vec<String>, extra: Vec<String>) -> Vec<String> {
     for name in extra {
-        if !preferred.iter().any(|existing| existing == &name) {
+        if !preferred.contains(&name) {
             preferred.push(name);
         }
     }
