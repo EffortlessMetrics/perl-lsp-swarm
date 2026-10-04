@@ -41,3 +41,5 @@ timestamps set after writing its child, then admission and narrowing refusal.
 New unsafe sites need a separate justified disposition; genuine reductions
 should tighten the ceiling. If a stable safe equivalent preserves full IDs,
 no-follow opening and fail-closed behavior, remove this FFI and its allowance.
+Do not weaken refusal or tests to meet the budget. This query establishes object
+identity at validation time, not freedom from a later swap before process spawn.
