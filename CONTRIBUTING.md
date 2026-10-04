@@ -34,10 +34,14 @@ their actual subject.
 
 The repository relationship is defined by
 [product identity](docs/reference/product-identity.md) and the
-[publication sync protocol](docs/swarm/sync-protocol.md). Those authorities distinguish
-development ownership, public contributor ingress, and publication state; this guide does
-not use the older contributor-topology projection as authority for the public issue/PR
-destination.
+[publication sync protocol](docs/swarm/sync-protocol.md). The contributor-topology
+projection derives the development/publication identities and the public issue/PR ingress
+from those authorities. The bare command intentionally leaves live stage and channel
+status `NOT_PROVEN`; a captured `--observation` is required to project observed status:
+
+```bash
+cargo run --locked -p xtask --bin contributor-topology
+```
 
 ## Quick start
 
