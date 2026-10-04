@@ -44,7 +44,7 @@ while [[ $# -gt 0 ]]; do
             echo "Options:"
             echo "  --output, -o FILE    Save results to JSON file"
             echo "  --quick, -q          Run quick smoke benchmarks"
-            echo "  --category, -c CAT   Run specific category (parser, lexer, completion, navigation, lsp, index)"
+            echo "  --category, -c CAT   Run specific category (parser, lexer, lsp, index, ripr)"
             echo "  --verbose, -v        Show detailed output"
             echo "  --help, -h           Show this help"
             exit 0
@@ -176,27 +176,10 @@ json_output() {
         echo "    },"
     fi
 
-
-    # Completion benchmarks
-    if [[ -z "$CATEGORY" || "$CATEGORY" == "completion" ]]; then
-        echo "    \"completion\": {"
-        run_criterion_bench "perl-lsp-completion" "completion_benchmark" "completion"
-        echo "      \"_category\": \"completion\""
-        echo "    },"
-    fi
-
-    # Navigation benchmarks
-    if [[ -z "$CATEGORY" || "$CATEGORY" == "navigation" ]]; then
-        echo "    \"navigation\": {"
-        run_criterion_bench "perl-lsp-navigation" "navigation_benchmark" "navigation"
-        echo "      \"_category\": \"navigation\""
-        echo "    },"
-    fi
-
     # LSP benchmarks
     if [[ -z "$CATEGORY" || "$CATEGORY" == "lsp" ]]; then
         echo "    \"lsp\": {"
-        run_criterion_bench "perl-lsp" "rope_performance_benchmark" "lsp"
+        run_criterion_bench "perl-lsp-rs" "rope_performance_benchmark" "lsp"
         echo "      \"_category\": \"lsp\""
         echo "    },"
     fi
@@ -204,11 +187,19 @@ json_output() {
     # Workspace index benchmarks
     if [[ -z "$CATEGORY" || "$CATEGORY" == "index" ]]; then
         echo "    \"index\": {"
-        run_criterion_bench "perl-workspace-index" "workspace_index_benchmark" "index"
+        run_criterion_bench "perl-workspace" "workspace_index_benchmark" "index"
         echo "      \"_category\": \"index\""
+        echo "    },"
+    fi
+
+    # RIPR facts benchmarks
+    if [[ -z "$CATEGORY" || "$CATEGORY" == "ripr" ]]; then
+        echo "    \"ripr\": {"
+        run_criterion_bench "perl-ripr-facts" "ripr_facts_benchmark" "ripr"
+        echo "      \"_category\": \"ripr\""
         echo "    }"
     else
-        # Remove trailing comma if index was skipped
+        # Remove trailing comma if ripr was skipped
         echo "    \"_done\": true"
     fi
 
