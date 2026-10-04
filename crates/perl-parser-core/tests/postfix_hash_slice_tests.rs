@@ -7,7 +7,7 @@
 mod cpan_test_helpers;
 
 use cpan_test_helpers::{assert_clean_parse, parse};
-use perl_parser_core::{Node, NodeKind, Parser};
+use perl_parser_core::{Node, NodeKind, Parser, SourceLocation};
 
 type TestResult = Result<(), String>;
 
@@ -77,6 +77,48 @@ fn one_hash_slice<'a>(source: &str, ast: &'a Node) -> Result<&'a Node, String> {
             slices.len()
         ))
     }
+}
+
+fn assert_after_declaration(
+    source: &str,
+    ast: &Node,
+    expected_location: SourceLocation,
+) -> TestResult {
+    let mut declarations = Vec::new();
+    find_all(
+        ast,
+        &|node| {
+            matches!(&node.kind, NodeKind::VariableDeclaration { variable, .. }
+                if matches!(&variable.kind, NodeKind::Variable { sigil, name }
+                    if sigil == "$" && name == "after"))
+        },
+        &mut declarations,
+    );
+    if declarations.len() != 1 {
+        return Err(format!(
+            "expected one reachable $after declaration, found {}\n{}",
+            declarations.len(),
+            ast.to_sexp()
+        ));
+    }
+    let declaration = declarations[0];
+    if declaration.location != expected_location
+        || source_text(source, declaration)? != "my $after = 1"
+    {
+        return Err(format!("following declaration has wrong source geometry: {declaration:?}"));
+    }
+    let NodeKind::VariableDeclaration { variable, initializer: Some(initializer), .. } =
+        &declaration.kind
+    else {
+        return Err("following declaration lost its initializer".to_string());
+    };
+    if source_text(source, variable)? != "$after"
+        || !matches!(&initializer.kind, NodeKind::Number { value } if value == "1")
+        || source_text(source, initializer)? != "1"
+    {
+        return Err(format!("following declaration lost its variable or value: {declaration:?}"));
+    }
+    Ok(())
 }
 
 /// Assert the slice's target is exactly the given variable spelling.
@@ -475,16 +517,55 @@ fn malformed_postfix_hash_slice_does_not_create_a_clean_hash_slice() -> TestResu
 
 #[test]
 fn truncated_postfix_hash_slice_keeps_following_statement_recoverable() -> TestResult {
-    let source = "$href->@{'alpha'; my $after = 1;";
-    let mut parser = Parser::new(source);
-    let output = parser.parse_with_recovery();
-    if output.diagnostics.is_empty() {
-        return Err("truncated postfix hash slice retained no recovery diagnostics".to_string());
-    }
-    if !source_text(source, &output.ast)?.contains("my $after = 1") {
-        return Err("postfix hash-slice recovery discarded the following statement".to_string());
+    // Repo-authored malformed editing states. Byte spans are literal expectations:
+    // CRLF adds one byte; the quoted Unicode prefix adds eleven UTF-8 bytes.
+    // A Program span containing these bytes does not prove the declaration survived.
+    let rows = [
+        ("$href->@{'alpha'; my $after = 1;", SourceLocation { start: 17, end: 30 }),
+        ("$href->@{'alpha';\nmy $after = 1;", SourceLocation { start: 17, end: 30 }),
+        ("$href->@{'alpha';\r\nmy $after = 1;", SourceLocation { start: 18, end: 31 }),
+        ("\"é🙂\";\r\n$href->@{'alpha';\r\nmy $after = 1;", SourceLocation { start: 29, end: 42 }),
+    ];
+    for (source, expected_location) in rows {
+        let mut parser = Parser::new(source);
+        let output = parser.parse_with_recovery();
+        if output.diagnostics.is_empty() {
+            return Err(format!(
+                "truncated postfix hash slice retained no diagnostics: {source:?}"
+            ));
+        }
+        assert_after_declaration(source, &output.ast, expected_location)?;
     }
     Ok(())
+}
+
+#[test]
+fn following_statement_proof_rejects_a_swallowed_declaration() -> TestResult {
+    let source = "$href->@{'alpha'; my $after = 1;";
+    let mut parser = Parser::new(source);
+    let mut output = parser.parse_with_recovery();
+    assert_after_declaration(source, &output.ast, SourceLocation { start: 17, end: 30 })?;
+    let NodeKind::Program { statements } = &mut output.ast.kind else {
+        return Err("recovery did not return a Program".to_string());
+    };
+    // Model recovery swallowing the later statement while retaining the root span.
+    let previous_count = statements.len();
+    statements.retain(|node| {
+        !matches!(&node.kind, NodeKind::VariableDeclaration { variable, .. }
+            if matches!(&variable.kind, NodeKind::Variable { sigil, name }
+                if sigil == "$" && name == "after"))
+    });
+    if statements.len() + 1 != previous_count {
+        return Err("the swallowed-statement mutation did not remove one declaration".to_string());
+    }
+    // The previous assertion still passes against this realistic wrong AST.
+    if !source_text(source, &output.ast)?.contains("my $after = 1") {
+        return Err("the mutation unexpectedly changed the Program source span".to_string());
+    }
+    match assert_after_declaration(source, &output.ast, SourceLocation { start: 17, end: 30 }) {
+        Err(message) if message.contains("found 0") => Ok(()),
+        result => Err(format!("swallowed declaration escaped the structural proof: {result:?}")),
+    }
 }
 
 #[test]
