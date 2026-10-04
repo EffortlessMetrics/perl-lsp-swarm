@@ -197,7 +197,7 @@ settings.
 | `perl-lsp.autoUpdate` | boolean | `false` | Automatically download and install a new `perllsp` binary when available. |
 | `perl-lsp.updateCheckInterval` | number | `24` | Hours between automatic update checks. |
 | `perl-lsp.trace.server` | string | `"off"` | LSP traffic logging: `off`, `messages`, `verbose`. |
-| `perl-lsp.channel` | string | `"latest"` | With GitHub-backed downloads (`downloadBaseUrl` empty), `latest` includes prereleases and `stable` filters them out. Both sort by strict semantic version and require proven compatibility and target availability; unproven metadata or no compatible release returns an error, with no first-entry fallback. `tag` selects the exact public tag only when compatible. A configured mirror bypasses this selector and uses `versionTag` or `latest`. |
+| `perl-lsp.channel` | string | `"latest"` | With GitHub-backed downloads (`downloadBaseUrl` empty), `latest` includes prereleases and `stable` filters them out. Both sort by strict semantic version and require proven compatibility and target availability. Unresolved metadata for a newer release can block selection; if no compatible release is available, selection returns an error. There is no first-entry fallback. `tag` selects the exact public tag only when compatible. A configured mirror bypasses this selector and uses `versionTag` or `latest`. |
 | `perl-lsp.versionTag` | string | `""` | Exact public release tag when `channel` is `tag`; with a mirror configured, selects the mirror artifact version regardless of channel. |
 | `perl-lsp.downloadBaseUrl` | string | `""` | Internal base URL for hosting `perllsp` archives and SHA256SUMS. |
 
