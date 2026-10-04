@@ -22,9 +22,10 @@ struct DiffHunkRun {
 /// `@@ -a,b +c,d @@` header. Removed (`-`) lines do not advance the head cursor;
 /// context lines do. Pure text parsing — no filesystem access, no subprocess.
 /// Parsed hunks plus whether the input carried recognizable unified-diff
-/// structure (any `+++ b/` file marker or `@@` hunk header). A valid
-/// deletion-only diff yields zero runs *with* recognized structure — that is
-/// analyzed-but-unattributable, not unparseable (#17266 review).
+/// structure (a `diff --git ` header, any `+++ b/` file marker, or any `@@`
+/// hunk header). A valid deletion-only / rename-only / mode-only diff yields
+/// zero runs *with* recognized structure — that is analyzed-but-empty, not
+/// unparseable (#17266 review).
 struct ParsedDiff {
     runs: Vec<DiffHunkRun>,
     recognized_structure: bool,
@@ -44,6 +45,13 @@ fn parse_diff_hunks(diff_text: &str) -> ParsedDiff {
     let mut recognized_structure = false;
 
     for line in diff_text.lines() {
+        if line.starts_with("diff --git ") {
+            // File-header preamble (incl. contentless rename/mode-only diffs):
+            // recognizable structure even with zero hunks.
+            flush(&mut run, &mut runs);
+            recognized_structure = true;
+            continue;
+        }
         if let Some(rest) = line.strip_prefix("+++ b/") {
             flush(&mut run, &mut runs);
             current_file = Some(rest.trim().to_string());
@@ -224,7 +232,7 @@ pub(crate) fn emit_changes_from_diff(
         limitations.push(json!({
             "limitation_id": "diff-unparseable",
             "kind": "unparseable_diff",
-            "message": "a diff was supplied but no unified-diff structure was recognized (expected `+++ b/<path>` file markers or `@@` hunk headers); `changes[]` means \"not analyzed\", not \"nothing changed\".",
+            "message": "a diff was supplied but no unified-diff structure was recognized (expected `diff --git` headers, `+++ b/<path>` file markers, or `@@` hunk headers); `changes[]` means \"not analyzed\", not \"nothing changed\".",
             "evidence_refs": [],
         }));
     }
@@ -636,6 +644,25 @@ mod tests {
             !limitations.iter().any(|l| l["limitation_id"] == "diff-unparseable"),
             "valid deletion-only diff must not be labeled unparseable"
         );
+    }
+
+    #[test]
+    fn emit_changes_from_diff_contentless_diffs_are_not_unparseable() {
+        // Rename-only / mode-only diffs carry `diff --git` structure with
+        // zero hunks: analyzed-but-empty, never `diff-unparseable`.
+        for diff in [
+            "diff --git a/old.pm b/new.pm\nsimilarity index 91%\nrename from old.pm\nrename to new.pm\n",
+            "diff --git a/f.pm b/f.pm\nold mode 100644\nnew mode 100755\n",
+        ] {
+            let files: Vec<Value> = Vec::new();
+            let owners: Vec<Value> = Vec::new();
+            let (changes, limitations) = emit_changes_from_diff(diff, ".", &files, &owners);
+            assert!(changes.is_empty(), "contentless diff → no change facts");
+            assert!(
+                !limitations.iter().any(|l| l["limitation_id"] == "diff-unparseable"),
+                "contentless diff must not be labeled unparseable: {diff:?}"
+            );
+        }
     }
 
     #[test]
