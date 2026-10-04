@@ -453,25 +453,25 @@ fn assert_retained_slice(
     {
         return Err("retained slice target has wrong source geometry".to_string());
     }
-    // Dynamic typeglobs reach this producer through a single-expression Block;
-    // retain that already-parsed operand without changing its existing AST shape.
-    let variable = if expected_target.starts_with('{') {
-        let NodeKind::Block { statements } = &target.kind else {
-            return Err("typeglob slice lost its braced operand".to_string());
+    // The fused typeglob Identifier builds its dereference shell before postfix
+    // parsing; retain that complete receiver and its inner variable.
+    let (variable, variable_offset) = if expected_target.starts_with("*{") {
+        let NodeKind::Unary { op, operand } = &target.kind else {
+            return Err("typeglob slice lost its dereference receiver".to_string());
         };
-        if statements.len() != 1 {
-            return Err("typeglob slice changed its braced operand count".to_string());
+        if op != "*{}" {
+            return Err("typeglob slice changed its dereference operator".to_string());
         }
-        &statements[0]
+        (operand.as_ref(), 2)
     } else {
-        target.as_ref()
+        (target.as_ref(), 0)
     };
     if !matches!(&variable.kind, NodeKind::Variable { sigil, name }
         if sigil == "$" && name == expected_name)
     {
         return Err("retained slice receiver changed variable identity".to_string());
     }
-    let variable_start = expected_slice.start + usize::from(expected_target.starts_with('{'));
+    let variable_start = expected_slice.start + variable_offset;
     if variable.location
         != (SourceLocation { start: variable_start, end: variable_start + expected_name.len() + 1 })
     {
@@ -511,8 +511,8 @@ fn ungrouped_postfix_hash_slice_subscripts_report_at_the_suffix_and_keep_the_nex
         ),
         (
             "my $value = *{$g}->@{'alpha'}[0]; my $after = 1;",
-            SourceLocation { start: 13, end: 29 },
-            "{$g}",
+            SourceLocation { start: 12, end: 29 },
+            "*{$g}",
             "g",
             32,
             SourceLocation { start: 34, end: 47 },
