@@ -2378,13 +2378,40 @@ impl LspServer {
                     // this file's `package Foo; sub bar`); an answer naming any
                     // other package is a wrong-package shadow of the call and
                     // must fall through to the honest empty result.
+                    //
+                    // A declaration may also name its package explicitly —
+                    // `sub Foo::bar` written inside `package Other` defines
+                    // `Foo::bar` without a `package Foo` statement — so an
+                    // explicitly qualified declaration name at the target range
+                    // wins over the ambient package there (review on PR
+                    // #17280). Non-char-boundary or missing text falls back to
+                    // the ambient-package check.
                     #[cfg(feature = "workspace")]
                     let same_file_answer_matches_requested_package = |target_start: usize| -> bool {
                         match &cross_package_qualified_sub {
                             None => true,
                             Some(requested_package) => {
-                                crate::declaration::current_package_at(ast, target_start)
-                                    == requested_package.as_str()
+                                let explicitly_qualified_package = doc
+                                    .text
+                                    .get(target_start.min(doc.text.len())..)
+                                    .and_then(|tail| {
+                                        let name_end = tail
+                                            .find(|c: char| {
+                                                !(c.is_alphanumeric() || c == '_' || c == ':')
+                                            })
+                                            .unwrap_or(tail.len());
+                                        let name = &tail[..name_end];
+                                        name.split_once("::").map(|(pkg, _)| pkg.to_string())
+                                    });
+                                match explicitly_qualified_package {
+                                    Some(declared_package) => {
+                                        declared_package == *requested_package
+                                    }
+                                    None => {
+                                        crate::declaration::current_package_at(ast, target_start)
+                                            == requested_package.as_str()
+                                    }
+                                }
                             }
                         }
                     };

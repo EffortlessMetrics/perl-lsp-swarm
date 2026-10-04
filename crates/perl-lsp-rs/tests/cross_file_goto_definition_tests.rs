@@ -137,6 +137,11 @@ print "Result: $result\n";
 // different package's sub.
 // ---------------------------------------------------------------------------
 
+/// The caller fixture declares only `package Scale00::Mod00` (plus one
+/// explicitly qualified `sub Scale03::Mod00::helper`), so a caller-file answer
+/// is wrong-package by construction for every position this helper guards —
+/// except `helper`, whose requested package genuinely lives in this file and
+/// is asserted separately via `explicitly_qualified_same_file_decl_resolves`.
 fn no_caller_sub_target(
     result: &Value,
     caller_uri: &str,
@@ -173,7 +178,10 @@ fn qualified_cross_package_call_never_falls_back_to_callers_same_named_sub() -> 
     let workspace = TempWorkspace::new()?;
 
     // Caller owns a same-named `sub compute_0` and calls a package that has
-    // NO file on disk anywhere in the workspace.
+    // NO file on disk anywhere in the workspace. It also carries an
+    // explicitly qualified `sub Scale03::Mod00::helper` — a declaration that
+    // names its package without a `package` statement — whose qualified call
+    // must still resolve into this very file (review on PR #17280).
     let caller_code = r#"package Scale00::Mod00;
 use strict;
 use warnings;
@@ -183,9 +191,15 @@ sub compute_0 {
     return $n + 1;
 }
 
+sub Scale03::Mod00::helper {
+    my ($n) = @_;
+    return $n * 3;
+}
+
 sub probe_def {
     my $d = Scale03::Mod00::compute_0(3);
-    return $d;
+    my $h = Scale03::Mod00::helper(1);
+    return $d + $h;
 }
 
 1;
@@ -232,6 +246,79 @@ sub compute_0 {
     let after_open = harness.request("textDocument/definition", params)?;
     no_caller_sub_target(&after_open, &caller_uri)?;
 
+    Ok(())
+}
+
+/// `sub Scale03::Mod00::helper` names its package explicitly without a
+/// `package` statement, so a `Scale03::Mod00::helper()` call in the same file
+/// (whose ambient package is `Scale00::Mod00`) must still resolve to that
+/// same-file declaration when the index cannot answer — the explicitly
+/// qualified declaration genuinely lives in the requested package (review on
+/// PR #17280).
+#[test]
+fn explicitly_qualified_same_file_decl_resolves() -> TestResult {
+    let mut harness = LspHarness::new();
+    let workspace = TempWorkspace::new()?;
+
+    let caller_code = r#"package Scale00::Mod00;
+use strict;
+use warnings;
+
+sub Scale03::Mod00::helper {
+    my ($n) = @_;
+    return $n * 3;
+}
+
+sub probe_def {
+    my $h = Scale03::Mod00::helper(1);
+    return $h;
+}
+
+1;
+"#;
+    workspace.write("lib/Scale00/Mod00.pm", caller_code)?;
+
+    // Nothing on disk defines Scale03::Mod00 beyond the explicitly qualified
+    // declaration in the caller itself, so once the caller buffer is open the
+    // workspace index deterministically cannot answer for it (never-indexed
+    // open document), and the same-file fallback is the only candidate.
+    harness.initialize_with_root(&workspace.root_uri, None)?;
+    let caller_uri = workspace.uri("lib/Scale00/Mod00.pm");
+    harness.open(&caller_uri, caller_code)?;
+    harness.barrier();
+
+    let call_line = caller_code
+        .lines()
+        .position(|line| line.contains("Scale03::Mod00::helper(1)"))
+        .ok_or("fixture lost its helper call")? as u32;
+    let (line, col) = find_pos(caller_code, "Mod00::helper(1)", call_line as usize)?;
+    let result = harness.request(
+        "textDocument/definition",
+        json!({
+            "textDocument": {"uri": caller_uri},
+            "position": {"line": line, "character": col + 7}
+        }),
+    )?;
+
+    let locations = result.as_array().ok_or_else(|| {
+        std::io::Error::other(format!(
+            "expected an array definition result for the explicitly qualified same-file \
+                 declaration, got: {result}"
+        ))
+    })?;
+    if locations.is_empty() {
+        return Err("the explicitly qualified same-file declaration must resolve when the index \
+                    cannot answer (review on PR #17280)"
+            .into());
+    }
+    let first = locations.first().ok_or("missing location")?;
+    let uri = first.get("uri").and_then(Value::as_str).ok_or("location must carry a uri")?;
+    if uri != caller_uri {
+        return Err(format!(
+            "the explicitly qualified declaration lives in the caller file; got {uri}"
+        )
+        .into());
+    }
     Ok(())
 }
 
