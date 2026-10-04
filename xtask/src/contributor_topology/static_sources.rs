@@ -75,8 +75,8 @@ pub(super) fn load_static_topology(
     if !publication_role.is_match(&protocol) {
         bail!("sync protocol is missing the publication repository role");
     }
-    if !protocol.contains("public contributor ingress") {
-        bail!("sync protocol is missing the public contributor ingress role");
+    if !protocol.contains("public pull-request ingress") {
+        bail!("sync protocol is missing the public pull-request ingress role");
     }
     for marker in [
         "#### Mechanics: history-preserving complete-tree merge".to_string(),
@@ -93,7 +93,7 @@ pub(super) fn load_static_topology(
         development_default_branch: development_branch,
         publication_repository: publication_repository.to_string(),
         publication_branch,
-        issue_repository: publication_repository.to_string(),
+        issue_repository: development_repository.to_string(),
         pull_request_repository: publication_repository.to_string(),
         promotion_protocol: PROMOTION_PROTOCOL.to_string(),
         primary_channels,
