@@ -1905,6 +1905,12 @@ bench-ripr-quality:
     @echo "📊 Running RIPR quality benches (E2/E3/D2/D3/A2)..."
     ./scripts/cargo-admitted test -p perl-ripr-facts --test boundary_recall --test limitation_honesty --test fingerprint_sensitivity --test order_invariance --test guidance_actionability --locked
 
+# RIPR E1 gap precision/recall bench (#17154): new-gap gate FP/FN over the
+# fixtures/ripr-gate matrix plus lane-termination classifier mapping.
+bench-ripr-e1:
+    @echo "📊 Running RIPR E1 gap precision/recall bench..."
+    ./scripts/cargo-admitted test -p xtask --test ripr_e1_gap_precision_recall --locked
+
 # Format benchmark results as receipt
 bench-receipt:
     @echo "📋 Generating benchmark receipt..."
@@ -1939,6 +1945,11 @@ bench-extract:
 bench-alert-test:
     @echo "🧪 Running benchmark alert regression tests..."
     @cargo xtask bench-alert-test
+
+# Run benchmark runner parsing fixture tests (#17219)
+bench-runner-test:
+    @echo "🧪 Running benchmark runner parsing tests..."
+    bash benchmarks/scripts/test_run_benchmarks_parse.sh
 
 
 # Run all performance benchmarks and save baseline for 0.12.0
