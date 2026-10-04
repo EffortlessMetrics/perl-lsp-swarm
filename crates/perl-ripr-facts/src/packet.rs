@@ -142,15 +142,22 @@ pub fn build_ripr_facts_packet(
         .any(|class| class == "files" || class == "owners" || class == "provenance");
     // `changes` needs the parsed owners to attribute diff hunks, and a
     // `relation` now carries a resolvable `owner_id` (#3342) — so its referenced
-    // `owners[]`/`files[]` facts must be present in the packet. Run the walk
+    // `owners[]`/`files[]` facts must be present in the packet. Likewise a kept
+    // `verify_commands[]` entry forces its referenced `tests[]` above, and each
+    // forced test carries a `file_id` — so the walk must run then too, or the
+    // forced tests dangle against an empty `files[]` (#17256). Run the walk
     // whenever files/owners/provenance or changes are requested, or a relation
-    // was emitted, mirroring how PR 4 kept `tests[]` for a relation's `test_id`.
-    let (files, owners, file_provenance, file_limitations) =
-        if wants_file_facts_explicit || wants_changes || has_relation_candidates {
-            emit_files_and_owners(root)
-        } else {
-            (Vec::new(), Vec::new(), Vec::new(), Vec::new())
-        };
+    // or verify command was emitted, mirroring how PR 4 kept `tests[]` for a
+    // relation's `test_id`.
+    let (files, owners, file_provenance, file_limitations) = if wants_file_facts_explicit
+        || wants_changes
+        || has_relation_candidates
+        || has_verify_facts
+    {
+        emit_files_and_owners(root)
+    } else {
+        (Vec::new(), Vec::new(), Vec::new(), Vec::new())
+    };
 
     // PR 5 (perl-lsp-swarm#3293): emit diff-owned `changes[]` from a caller-
     // supplied unified diff (`RiprFactsRequest.diff`). No git, no subprocess —
@@ -189,17 +196,25 @@ pub fn build_ripr_facts_packet(
     // referenced a `test_id`. `diff-file-not-found` references an UNparsed path
     // (genuinely absent), so it needs no force-include. A `relation`'s resolved
     // `owner_id` (#3342) likewise references an `owners[]` fact, so force
-    // files+owners in whenever a relation was emitted.
+    // files+owners in whenever a relation was emitted. A kept `verify_commands[]`
+    // entry forces `tests[]` whose `file_id`s reference `files[]` (#17256), so
+    // force files+owners in then too. Both force-includes mirror the relations
+    // precedent wholesale: keep ALL files+owners, not just the referenced
+    // subset — filtering to referenced ids would fork the full-class packet
+    // shape subset consumers diff against.
     let changes_reference_known_file = has_change_facts
         || change_limitations.iter().any(|l| {
             l["limitation_id"].as_str().is_some_and(|id| id.starts_with("unattributable-change:"))
         });
-    let (files, owners) =
-        if wants_file_facts_explicit || changes_reference_known_file || has_relation_candidates {
-            (files, owners)
-        } else {
-            (Vec::new(), Vec::new())
-        };
+    let (files, owners) = if wants_file_facts_explicit
+        || changes_reference_known_file
+        || has_relation_candidates
+        || has_verify_facts
+    {
+        (files, owners)
+    } else {
+        (Vec::new(), Vec::new())
+    };
     let has_file_facts = !files.is_empty();
     let has_owner_facts = !owners.is_empty();
 

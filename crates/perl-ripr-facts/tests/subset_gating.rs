@@ -44,8 +44,8 @@ fn fresh_root(name: &str) -> String {
     root
 }
 
-fn boundary_fixture() -> String {
-    let root = fresh_root("boundary");
+fn boundary_fixture(name: &str) -> String {
+    let root = fresh_root(name);
     stage_file(&root, "lib/Risky.pm", BOUNDARY_PM);
     stage_file(&root, "t/ev.t", EV_T);
     root
@@ -57,7 +57,7 @@ fn array_len(packet: &serde_json::Value, key: &str) -> usize {
 
 #[test]
 fn subset_request_carries_no_unrequested_facts() {
-    let root = boundary_fixture();
+    let root = boundary_fixture("subset-no-leak");
     let packet = build_packet_with_classes(&root, "files,owners");
     let _ = std::fs::remove_dir_all(&root);
 
@@ -78,7 +78,7 @@ fn subset_request_carries_no_unrequested_facts() {
 
 #[test]
 fn verify_only_request_forces_referenced_tests_without_dangling_refs() {
-    let root = boundary_fixture();
+    let root = boundary_fixture("verify-forces-tests");
     let packet = build_packet_with_classes(&root, "verify_commands");
     let _ = std::fs::remove_dir_all(&root);
 
@@ -110,6 +110,18 @@ fn verify_only_request_forces_referenced_tests_without_dangling_refs() {
             assert!(prov_ids.contains(id), "forced test provenance_ref `{id}` must resolve");
         }
     }
+    // Each forced test carries a `file_id` — `files[]` must be force-included
+    // (mirroring the relations precedent) so those refs resolve.
+    let files = must_some(packet["files"].as_array());
+    assert!(!files.is_empty(), "verify-forced tests force their files[] facts");
+    let file_ids: HashSet<&str> = files.iter().filter_map(|f| f["file_id"].as_str()).collect();
+    for test in tests {
+        let file_id = must_some_with(test["file_id"].as_str(), "forced test must carry a file_id");
+        assert!(
+            file_ids.contains(file_id),
+            "forced test file_id `{file_id}` must resolve to a file fact"
+        );
+    }
     assert_eq!(
         array_len(&packet, "dynamic_boundaries"),
         0,
@@ -119,5 +131,36 @@ fn verify_only_request_forces_referenced_tests_without_dangling_refs() {
         array_len(&packet, "relations"),
         0,
         "verify_commands subset must not leak relations"
+    );
+}
+
+#[test]
+fn boundaries_only_request_keeps_boundaries_and_their_limitations() {
+    let root = boundary_fixture("boundary-positive");
+    let packet = build_packet_with_classes(&root, "dynamic_boundaries");
+    let _ = std::fs::remove_dir_all(&root);
+
+    // Positive control: an explicitly requested class keeps its facts.
+    let boundaries = must_some(packet["dynamic_boundaries"].as_array());
+    assert!(!boundaries.is_empty(), "explicit dynamic_boundaries request must keep its facts");
+    // Each boundary's `limitation:{boundary_id}` limitation describes a kept
+    // fact, so it must flow with the packet.
+    let limitation_ids: HashSet<&str> = must_some(packet["limitations"].as_array())
+        .iter()
+        .filter_map(|l| l["limitation_id"].as_str())
+        .collect();
+    for boundary in boundaries {
+        let boundary_id =
+            must_some_with(boundary["boundary_id"].as_str(), "boundary must carry a boundary_id");
+        let expected = format!("limitation:{boundary_id}");
+        assert!(
+            limitation_ids.contains(expected.as_str()),
+            "boundary `{boundary_id}` must keep its limitation"
+        );
+    }
+    assert_eq!(
+        array_len(&packet, "verify_commands"),
+        0,
+        "dynamic_boundaries subset must not leak verify commands"
     );
 }
