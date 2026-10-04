@@ -521,10 +521,10 @@ fn truncated_postfix_hash_slice_keeps_following_statement_recoverable() -> TestR
     // CRLF adds one byte; the quoted Unicode prefix adds eleven UTF-8 bytes.
     // A Program span containing these bytes does not prove the declaration survived.
     let rows = [
-        ("$href->@{'alpha'; my $after = 1;", SourceLocation { start: 17, end: 30 }),
-        ("$href->@{'alpha';\nmy $after = 1;", SourceLocation { start: 17, end: 30 }),
-        ("$href->@{'alpha';\r\nmy $after = 1;", SourceLocation { start: 18, end: 31 }),
-        ("\"é🙂\";\r\n$href->@{'alpha';\r\nmy $after = 1;", SourceLocation { start: 29, end: 42 }),
+        ("$href->@{'alpha'; my $after = 1;", SourceLocation { start: 18, end: 31 }),
+        ("$href->@{'alpha';\nmy $after = 1;", SourceLocation { start: 18, end: 31 }),
+        ("$href->@{'alpha';\r\nmy $after = 1;", SourceLocation { start: 19, end: 32 }),
+        ("\"é🙂\";\r\n$href->@{'alpha';\r\nmy $after = 1;", SourceLocation { start: 30, end: 43 }),
     ];
     for (source, expected_location) in rows {
         let mut parser = Parser::new(source);
@@ -544,7 +544,7 @@ fn following_statement_proof_rejects_a_swallowed_declaration() -> TestResult {
     let source = "$href->@{'alpha'; my $after = 1;";
     let mut parser = Parser::new(source);
     let mut output = parser.parse_with_recovery();
-    assert_after_declaration(source, &output.ast, SourceLocation { start: 17, end: 30 })?;
+    assert_after_declaration(source, &output.ast, SourceLocation { start: 18, end: 31 })?;
     let NodeKind::Program { statements } = &mut output.ast.kind else {
         return Err("recovery did not return a Program".to_string());
     };
@@ -562,7 +562,7 @@ fn following_statement_proof_rejects_a_swallowed_declaration() -> TestResult {
     if !source_text(source, &output.ast)?.contains("my $after = 1") {
         return Err("the mutation unexpectedly changed the Program source span".to_string());
     }
-    match assert_after_declaration(source, &output.ast, SourceLocation { start: 17, end: 30 }) {
+    match assert_after_declaration(source, &output.ast, SourceLocation { start: 18, end: 31 }) {
         Err(message) if message.contains("found 0") => Ok(()),
         result => Err(format!("swallowed declaration escaped the structural proof: {result:?}")),
     }
