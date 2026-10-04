@@ -3,8 +3,8 @@
 `perl-lsp-swarm` is the active development source of truth.
 It owns active product implementation, proof, release preparation, and the
 current sync protocol.
-`perl-lsp` is the public contributor surface and the release, history, and
-canonical package-lineage repo. It is the publication repository and owns public release
+`perl-lsp` is the release, history, and canonical package-lineage repo. It is also the
+public contributor surface. It is the publication repository and owns public release
 lineage and publication-specific governance.
 
 This document is the canonical stable contract for history-preserving
