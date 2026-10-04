@@ -6,8 +6,16 @@ the source-profile/public-admission owners remain #17225 and public #10121.
 `scripts/source_reconciliation.py` independently inventories every public commit
 after B, including shared history and merge ancestry. It records each commit's
 complete changed-path set and exact current R/S entry modes and object IDs.
-For merges it compares first-parent effects with side work and the side-head
-entries. `git cherry S R B` contributes patch evidence but never determines the
+For each ordered two-parent merge it computes an automatic `merge-tree` baseline
+in a temporary bare repository that reads the existing object store through an
+alternate. It disables ambient configuration and replacement refs, writes no
+objects to the source repository, and refuses unavailable or malformed proof.
+Every path whose actual merge entry differs from that complete baseline, plus
+every conflicted baseline path, is a resolution obligation. This includes side
+work discarded back to the first parent even when the first-parent diff is empty;
+clean same-file composition alone creates no resolution obligation. The packet
+binds the Git version, ordered parents, baseline tree and exact current R/S entries.
+`git cherry S R B` contributes patch evidence but never determines the
 whole population or proves current survival. Lazy blob fetching is disabled.
 Replacement refs are disabled on each Git call; legacy graft files and graft
 environment overrides are rejected before deriving original ancestry.
@@ -23,6 +31,9 @@ objects cannot stand in for that tree identity.
 Only the four named public admission controls have an explicit control-test
 classification. There is no global product/test exemption. Mixed Rust/runtime
 units require a source repair or qualified semantic disposition.
+Lineage-only admission is limited to the explicitly reviewed historical document
+paths in `LINEAGE_ONLY_PATHS`; a filename extension or directory cannot exempt
+executable source, configuration, controls or active guidance.
 
 Use exact SHAs, a complete common graph and a fresh output path:
 
@@ -63,8 +74,8 @@ alone is not a port. Credited deletions require an existing first-parent entry.
 Source proof commits also require literal immutable commit SHAs.
 The scaffold uses `source_reconciliation_ledger.v2`. Every merge retains its
 `merge_ancestry` work unit and additionally requires one exact
-`merge_resolution_dispositions` entry for each additional resolution path or
-entry that differs from the side head. Omitting, duplicating or substituting an
+`merge_resolution_dispositions` entry for each baseline difference or conflicted
+path. Omitting, duplicating or substituting an
 effect cannot pass. Each effect uses the same current-source port/equivalence,
 product guard, architecture-successor and projection binding rules as ordinary
 work. A null effect disposition leaves that merge unresolved. This records
