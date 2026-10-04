@@ -1010,20 +1010,32 @@ fn plan_with(config: PlanConfig, checkout: CheckoutResolver, tree: TreeProbe) ->
     }
 }
 
-/// Refuse a receipt destination inside the repository's Git directory.
+/// Refuse a receipt destination inside any of the repository's Git metadata.
 ///
 /// `--receipt` is operator-chosen and `write_receipt` creates missing parents,
-/// so a mistyped path can land inside `.git` and be created there. Overwriting
-/// Git metadata does not spoil one file: it can destroy the repository the plan
-/// was asked to reason about. It is also self-defeating, because the plan's own
-/// checkout-identity and worktree-integrity answers are read from that
-/// metadata, so a receipt written there invalidates the evidence behind its own
-/// verdict.
+/// so a mistyped path can land inside Git's administrative state and be created
+/// there. Overwriting it does not spoil one file: it can destroy the repository
+/// the plan was asked to reason about. It is also self-defeating, because the
+/// plan's own checkout-identity and worktree-integrity answers are read from
+/// that metadata, so a receipt written there invalidates the evidence behind its
+/// own verdict.
 ///
-/// The directory is resolved with `rev-parse --absolute-git-dir` rather than by
-/// appending `.git` to the root: in a linked worktree `.git` is a *file*
-/// pointing elsewhere, and in that layout a name-based test would both miss the
-/// real directory and misjudge the file.
+/// A linked worktree has **three** distinct metadata locations, and an earlier
+/// version of this guard protected only the first (#14570 review, P1):
+///
+/// * `--absolute-git-dir` — the per-worktree *private* directory, which in a
+///   linked worktree is `<common>/.git/worktrees/<name>`;
+/// * `--git-common-dir` — the *shared* directory holding `refs`, `objects` and
+///   `config`. It is **not** under the private directory, so a prefix test
+///   against that alone leaves shared history writable. It can also answer
+///   *relatively* (a plain `.git` from a main checkout), so it is resolved
+///   against the root rather than the process working directory;
+/// * `<root>/.git` itself — a directory in an ordinary checkout, but a pointer
+///   *file* in a linked worktree, and that file is under neither of the above.
+///   Replacing it detaches the worktree from its repository.
+///
+/// All three are guarded by identity and by subtree, so neither a non-canonical
+/// spelling nor a symlink reaches them.
 ///
 /// A root that is not a repository has no metadata to protect, so the guard
 /// passes rather than failing closed — the checkout-identity validation is what
@@ -1037,22 +1049,47 @@ fn ensure_receipt_is_not_git_metadata(config: &PlanConfig) -> Result<()> {
         );
     };
 
-    let Some(raw) = git_output(&config.repo_root, &["rev-parse", "--absolute-git-dir"]) else {
-        return Ok(());
-    };
-    let git_dir = PathBuf::from(raw.trim());
-    let Some(git_dir) = canonical_target(&git_dir) else {
-        return Ok(());
-    };
-
-    if destination == git_dir || destination.starts_with(&git_dir) {
-        bail!(
-            "publication-sync: refusing to write the receipt to {}, which is inside the Git directory {}",
-            config.receipt.display(),
-            git_dir.display()
-        );
+    for root in git_metadata_roots(&config.repo_root) {
+        let Some(root) = canonical_target(&root) else {
+            continue;
+        };
+        if destination == root || destination.starts_with(&root) {
+            bail!(
+                "publication-sync: refusing to write the receipt to {}, which is Git metadata at {}",
+                config.receipt.display(),
+                root.display()
+            );
+        }
     }
     Ok(())
+}
+
+/// Every path that holds Git's administrative state for this root.
+///
+/// Deliberately a superset: the three locations overlap in an ordinary checkout
+/// and diverge in a linked worktree, and a guard that resolved only one of them
+/// would be correct in the common layout and wrong in the one the isolated
+/// worktree route actually uses.
+fn git_metadata_roots(repo_root: &Path) -> Vec<PathBuf> {
+    // The worktree's own `.git`, whether directory or pointer file. Listed
+    // unconditionally so a root whose Git queries fail still protects the name.
+    let mut roots = vec![repo_root.join(".git")];
+
+    for query in ["--absolute-git-dir", "--git-common-dir"] {
+        let Some(raw) = git_output(repo_root, &["rev-parse", query]) else {
+            continue;
+        };
+        let answer = raw.trim();
+        if answer.is_empty() {
+            continue;
+        }
+        let path = Path::new(answer);
+        // `--git-common-dir` answers `.git` from a main checkout, so a bare
+        // relative answer belongs to the root, not to wherever this process
+        // happens to be running.
+        roots.push(if path.is_absolute() { path.to_path_buf() } else { repo_root.join(path) });
+    }
+    roots
 }
 
 /// Refuse a receipt destination that is one of the files the plan reads.

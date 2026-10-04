@@ -2272,7 +2272,7 @@ fn the_receipt_cannot_be_written_into_the_git_directory() -> Result<()> {
     };
     // Pin *which* guard refused: the alias guard would not fire here, because
     // nothing under `.git` is a declared input.
-    if !format!("{error}").contains("inside the Git directory") {
+    if !format!("{error}").contains("which is Git metadata at") {
         bail!("a destination under .git was refused for the wrong reason: {error}");
     }
     if into_git.exists() {
@@ -2314,6 +2314,129 @@ fn the_receipt_cannot_be_written_into_the_git_directory() -> Result<()> {
     if !allowed.exists() {
         bail!("a destination outside the Git directory was refused");
     }
+    Ok(())
+}
+
+/// A linked worktree splits Git's metadata across three locations, and the
+/// first version of this guard protected only one of them (#14570 review, P1).
+/// Measured on a real `git worktree add` fixture:
+///
+/// ```text
+/// --absolute-git-dir  ->  <repo>/.git/worktrees/<name>   (private)
+/// --git-common-dir    ->  <repo>/.git                    (shared: refs/objects/config)
+/// <linked>/.git       ->  a pointer *file*
+/// ```
+///
+/// Neither the shared directory nor the pointer file is beneath the private
+/// directory, so an `--absolute-git-dir` prefix test alone leaves shared history
+/// and the worktree's own link writable.
+#[test]
+fn the_receipt_cannot_be_written_into_linked_worktree_git_metadata() -> Result<()> {
+    let document = clean_value()?;
+    let (root, manifest_path, _) = materialize_repo(&document)?;
+
+    let git = |cwd: &Path, args: &[&str]| -> Result<String> {
+        let output = std::process::Command::new("git").arg("-C").arg(cwd).args(args).output()?;
+        if !output.status.success() {
+            bail!("git {args:?} failed: {}", String::from_utf8_lossy(&output.stderr));
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    };
+
+    let main_checkout = root.path();
+    git(main_checkout, &["init", "-q", "."])?;
+    git(main_checkout, &["config", "user.email", "proof@example.invalid"])?;
+    git(main_checkout, &["config", "user.name", "proof"])?;
+    git(main_checkout, &["add", "-A"])?;
+    git(main_checkout, &["commit", "-qm", "base"])?;
+
+    // The linked worktree must live outside the main checkout, or a destination
+    // inside it would be caught by the main root's own `.git` prefix and the
+    // control would pass without exercising the linked layout at all.
+    let linked = root.path().parent().ok_or_else(|| eyre!("fixture root has no parent"))?.join(
+        root.path()
+            .file_name()
+            .map(|n| format!("{}-linked", n.to_string_lossy()))
+            .unwrap_or_else(|| "linked".to_string()),
+    );
+    git(
+        main_checkout,
+        &["worktree", "add", "-q", &linked.to_string_lossy(), "-b", "linked-probe"],
+    )?;
+
+    // Assert the premise this control depends on: the three locations really do
+    // diverge here, and the two the old guard missed are outside the private
+    // directory it checked.
+    let private = PathBuf::from(git(&linked, &["rev-parse", "--absolute-git-dir"])?);
+    let common = PathBuf::from(git(&linked, &["rev-parse", "--git-common-dir"])?);
+    let pointer = linked.join(".git");
+    if !pointer.is_file() {
+        bail!(
+            "the linked worktree's .git is not a pointer file, so this control cannot discriminate"
+        );
+    }
+    if common.starts_with(&private) {
+        bail!(
+            "the common dir {common:?} is inside the private dir {private:?}; pick a sharper fixture"
+        );
+    }
+    if pointer.starts_with(&private) {
+        bail!("the pointer file is inside the private dir; this control proves nothing");
+    }
+    let shared_ref = common.join("refs/heads/linked-probe");
+    if !shared_ref.is_file() {
+        bail!("the fixture has no loose ref at {shared_ref:?}; pick a sharper case");
+    }
+
+    // Each of the three must be refused, from the linked worktree as the root.
+    for (label, destination) in [
+        ("the linked worktree's .git pointer file", pointer.clone()),
+        ("a shared branch ref in the common directory", shared_ref.clone()),
+        ("the shared config in the common directory", common.join("config")),
+        ("the private per-worktree directory", private.join("publication-sync-plan.json")),
+    ] {
+        let refused = plan_with(
+            PlanConfig {
+                manifest: manifest_path.clone(),
+                repo_root: linked.clone(),
+                receipt: destination.clone(),
+            },
+            fixture_checkout,
+            fixture_tree,
+        );
+        let Err(error) = refused else {
+            bail!("the receipt was allowed to overwrite {label} at {destination:?}");
+        };
+        if !format!("{error}").contains("which is Git metadata at") {
+            bail!("{label} was refused for the wrong reason: {error}");
+        }
+    }
+
+    // The pointer file and the shared ref are still intact, so nothing was
+    // clobbered on the way to those refusals.
+    if !pointer.is_file() || !shared_ref.is_file() {
+        bail!("a refused destination was written anyway");
+    }
+
+    // An ordinary destination inside the linked worktree still works, so the
+    // guard did not simply refuse everything under it.
+    let allowed = linked.join("target/receipts/plan.json");
+    plan_with(
+        PlanConfig { manifest: manifest_path, repo_root: linked.clone(), receipt: allowed.clone() },
+        fixture_checkout,
+        fixture_tree,
+    )?;
+    if !allowed.exists() {
+        bail!("an ordinary destination inside the linked worktree was refused");
+    }
+
+    // The fixture owns the linked worktree, so remove it rather than leaving it
+    // registered against the temporary root.
+    let _ = std::process::Command::new("git")
+        .arg("-C")
+        .arg(main_checkout)
+        .args(["worktree", "remove", "--force", &linked.to_string_lossy()])
+        .output();
     Ok(())
 }
 
