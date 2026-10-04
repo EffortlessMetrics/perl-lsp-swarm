@@ -4,7 +4,7 @@
 It owns active product implementation, proof, release preparation, and the
 current sync protocol.
 `perl-lsp` is the release, history, and canonical package-lineage repo. It is also the
-public contributor surface. It is the publication repository and owns public release
+public pull-request surface. It is the publication repository and owns public release
 lineage and publication-specific governance.
 
 This document is the canonical stable contract for history-preserving
@@ -24,11 +24,13 @@ stable protocol.
 | Repository | Authority |
 | --- | --- |
 | `perl-lsp-swarm/main` | Active development; product implementation, tests, compiler/LSP/DAP work, proof, freeze, release preparation, and current sync protocol |
-| `perl-lsp/master` | Release lineage; public contributor ingress; publication-specific workflows/policy, public package lineage, and bounded emergency release fixes |
+| `perl-lsp/master` | Release lineage; public pull-request ingress; publication-specific workflows/policy, public package lineage, and bounded emergency release fixes |
 
-Normal product work starts and converges in swarm. Do not maintain parallel
-implementation queues in both repositories. That development authority does not make
-swarm the public PR ingress: external contributors target `perl-lsp/master`.
+Normal product work starts and converges in swarm. Development issues remain in swarm,
+including issues that an external contributor may choose to implement. Do not maintain
+parallel implementation queues in both repositories. That development authority does not
+make swarm the public PR ingress: external implementation pull requests target
+`perl-lsp/master`.
 
 Before integrating a shared-product external pull request, maintainers first establish
 that the public source base contains the accepted swarm state and reconcile the pull
