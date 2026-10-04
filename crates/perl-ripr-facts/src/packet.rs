@@ -558,7 +558,10 @@ pub(crate) fn build_unavailable_packet(
             "capabilities": capabilities,
         },
         "root": {
-            "repo_relative": root,
+            // `#17260`: normalize the root echo like every other path — a
+            // verbatim backslash root next to the `"posix"` claim below
+            // contradicts it. Forward-slash roots are byte-identical.
+            "repo_relative": normalize_repo_relative(root),
             "vcs_head": head,
             "path_style": "posix",
         },
