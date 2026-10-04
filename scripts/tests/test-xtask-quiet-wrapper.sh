@@ -71,6 +71,9 @@ if [[ -n "\${FAKE_CARGO_FAIL_PATTERN:-}" && "\${rendered}" == *"\${FAKE_CARGO_FA
   printf 'error[E0583]: fake build failure (stub)\n' >&2
   exit "\${FAKE_CARGO_EXIT:-37}"
 fi
+# A successful build still emits compiler noise on stderr; the wrapper must
+# discard it, so the success-path test asserts this marker is never replayed.
+printf 'warning: replayed-noise-marker (stub)\n' >&2
 exit 0
 FAKE
   chmod +x "${fake_bin}/cargo"
@@ -98,11 +101,17 @@ FAKE
 make_scenario_dir() {
   local dir
   dir="$(mktemp -d)"
-  TMPDIR_BASES+=("$dir")
   mkdir -p "${dir}/bin"
   write_fake_cargo "${dir}/bin" "${dir}/target" "${dir}/build.log"
   write_fake_xtask "${dir}/target" "${dir}/argv.log"
   printf '%s' "$dir"
+}
+
+# Register a scenario directory for cleanup in the PARENT shell. Appending to
+# TMPDIR_BASES inside make_scenario_dir would mutate a command-substitution
+# subshell's copy and leak every fixture directory.
+register_scenario_dir() {
+  TMPDIR_BASES+=("$1")
 }
 
 # Scenario 1 (success path): the build succeeds, the wrapper must not replay
@@ -111,6 +120,7 @@ make_scenario_dir() {
 scenario_success_path() {
   local dir out err status argv build_args
   dir="$(make_scenario_dir)"
+  register_scenario_dir "$dir"
   local fake_bin="${dir}/bin"
 
   status=0
@@ -124,7 +134,7 @@ scenario_success_path() {
   fi
   assert_contains "success: xtask stdout passes through" "$out" "xtask-stdout-marker"
   assert_contains "success: xtask stderr passes through" "$err" "xtask-stderr-marker"
-  assert_not_contains "success: build noise is not replayed" "$err${out}" "error[E0583]"
+  assert_not_contains "success: build noise is not replayed" "$err${out}" "replayed-noise-marker"
 
   argv="$(cat "${dir}/argv.log")"
   assert_contains "success: args forwarded verbatim" "$argv" "ci doctor --help"
@@ -140,6 +150,7 @@ scenario_success_path() {
 scenario_failure_path() {
   local dir out err status argv_log_size
   dir="$(make_scenario_dir)"
+  register_scenario_dir "$dir"
   local fake_bin="${dir}/bin"
 
   status=0
@@ -172,6 +183,7 @@ scenario_failure_path() {
 scenario_build_flags_passthrough() {
   local dir status build_args
   dir="$(make_scenario_dir)"
+  register_scenario_dir "$dir"
   local fake_bin="${dir}/bin"
 
   status=0
@@ -193,6 +205,7 @@ scenario_build_flags_passthrough() {
 scenario_xtask_exit_status() {
   local dir status
   dir="$(make_scenario_dir)"
+  register_scenario_dir "$dir"
   local fake_bin="${dir}/bin"
 
   status=0
