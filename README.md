@@ -242,6 +242,14 @@ pull request against swarm.
 Public install and release links above remain on `perl-lsp`; reaching the public source
 repository still does not by itself establish release or package-channel availability.
 
+The contributor-topology projection reports this repository split and routes public
+issues/PRs to `perl-lsp`. Live stage and channel state remains `NOT_PROVEN` without a
+captured observation:
+
+```bash
+cargo run --locked -p xtask --bin contributor-topology
+```
+
 Current routes:
 
 | Topic | Link |
