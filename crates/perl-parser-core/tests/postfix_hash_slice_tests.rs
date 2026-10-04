@@ -197,14 +197,14 @@ fn postfix_hash_slice_with_qw_keys() -> TestResult {
     if elements.len() != 2 {
         return Err(format!("expected two qw key operands, got {}", elements.len()));
     }
-    for (element, expected) in elements.iter().zip(["'alpha'", "'beta'"]) {
+    for (element, expected) in elements.iter().zip(["alpha", "beta"]) {
         if !matches!(&element.kind, NodeKind::String { value, interpolated: false }
             if value == expected)
         {
-            return Err(format!(
-                "expected single-quoted string key {expected:?}, got {}",
-                element.kind.kind_name()
-            ));
+            return Err(format!("expected qw word {expected:?}, got {}", element.kind.kind_name()));
+        }
+        if source_text(source, element)? != expected {
+            return Err(format!("unexpected qw word span: {:?}", source_text(source, element)?));
         }
     }
     Ok(())
@@ -469,7 +469,10 @@ fn neighboring_postfix_forms_keep_their_existing_nodes() -> TestResult {
     let NodeKind::ArrayLiteral { elements } = &right.kind else {
         return Err(format!("expected an ArrayLiteral key list, got {}", right.kind.kind_name()));
     };
-    for (element, expected) in elements.iter().zip(["'alpha'", "'beta'"]) {
+    if elements.len() != 2 {
+        return Err(format!("expected two qw key/value operands, got {}", elements.len()));
+    }
+    for (element, expected) in elements.iter().zip(["alpha", "beta"]) {
         if !matches!(&element.kind, NodeKind::String { value, interpolated: false }
             if value == expected)
         {
@@ -477,6 +480,9 @@ fn neighboring_postfix_forms_keep_their_existing_nodes() -> TestResult {
                 "expected key {expected:?} in the `->%{{}}` operand list, got {}",
                 element.kind.kind_name()
             ));
+        }
+        if source_text(source, element)? != expected {
+            return Err(format!("unexpected qw word span: {:?}", source_text(source, element)?));
         }
     }
     Ok(())
