@@ -714,16 +714,17 @@ mod tests {
     #[test]
     fn bash_program_prefers_a_real_shell() {
         let program = bash_program();
-        if cfg!(windows) {
-            match windows_bash() {
-                Some(_) => {
-                    assert!(program.is_file(), "bash program must exist: {}", program.display())
-                }
-                None => assert_eq!(program, PathBuf::from("bash")),
+        // Compile-time gates: `cfg!(windows)` would still compile the
+        // `windows_bash()` call on Linux, where the function does not exist.
+        #[cfg(windows)]
+        match windows_bash() {
+            Some(_) => {
+                assert!(program.is_file(), "bash program must exist: {}", program.display())
             }
-        } else {
-            assert_eq!(program, PathBuf::from("bash"));
+            None => assert_eq!(program, PathBuf::from("bash")),
         }
+        #[cfg(not(windows))]
+        assert_eq!(program, PathBuf::from("bash"));
     }
 
     #[test]
