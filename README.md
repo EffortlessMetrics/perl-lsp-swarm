@@ -229,8 +229,8 @@ public contributor ingress.
 
 | Context | Repository and branch | Use it for |
 | --- | --- | --- |
-| Development authority | `EffortlessMetrics/perl-lsp-swarm` / `main` | high-throughput product work, proof, internal/collaborator PRs, and release preparation |
-| Public contribution | `EffortlessMetrics/perl-lsp` / `master` | external issues and pull requests against the current public source projection |
+| Development authority | `EffortlessMetrics/perl-lsp-swarm` / `main` | product work, development issues, proof, internal/collaborator PRs, and release preparation |
+| Public PR ingress | `EffortlessMetrics/perl-lsp` / `master` | external implementation pull requests against the current public source projection |
 | Publication | `EffortlessMetrics/perl-lsp` / `master` | public release lineage, published artifacts, and release-facing support |
 
 A merge to `perl-lsp-swarm/main` is development state, not public availability. For a
@@ -242,9 +242,9 @@ pull request against swarm.
 Public install and release links above remain on `perl-lsp`; reaching the public source
 repository still does not by itself establish release or package-channel availability.
 
-The contributor-topology projection reports this repository split and routes public
-issues/PRs to `perl-lsp`. Live stage and channel state remains `NOT_PROVEN` without a
-captured observation:
+The contributor-topology projection reports this split explicitly: development issues remain
+in swarm while external pull requests target `perl-lsp`. Live stage and channel state remains
+`NOT_PROVEN` without a captured observation:
 
 ```bash
 cargo run --locked -p xtask --bin contributor-topology
@@ -263,8 +263,9 @@ Current routes:
 
 ## Contributing
 
-External contributors should clone or fork the public repository and open pull requests
-against `perl-lsp/master`:
+External contributors may choose work from the swarm development issue tracker, but they
+should clone or fork the public repository and open implementation pull requests against
+`perl-lsp/master`:
 
 ```bash
 git clone https://github.com/EffortlessMetrics/perl-lsp.git
