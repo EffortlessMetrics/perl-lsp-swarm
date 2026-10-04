@@ -298,14 +298,18 @@ impl<'a> Parser<'a> {
     fn parse_c_style_or_implicit_foreach(&mut self, start: usize) -> ParseResult<Node> {
         self.expect(TokenKind::LeftParen)?;
 
-        // Parse init (or check if it's a foreach)
-        let init = if self.peek_kind() == Some(TokenKind::Semicolon) {
+        // Parse the first clause before deciding between C-style and list iteration.
+        let mut init = if self.peek_kind() == Some(TokenKind::Semicolon) {
             None
         } else if self.peek_kind() == Some(TokenKind::My) {
             // Handle variable declaration in for loop init
             self.in_for_loop_init = true;
             let decl = self.parse_variable_declaration()?;
             self.in_for_loop_init = false;
+            // Uninitialized declarations can be operands, as in `my $x && $ready`
+            // or `my $x ? 1 : 2`. Finish them before the comma/word continuations
+            // and delimiter dispatch, just like condition declarations.
+            let decl = self.parse_below_assignment_with(decl)?;
             // `my` declares only the FIRST variable in an unparenthesized
             // list (perlsub), so `for (my $i, $j; ...)` parses as
             // `for ((my $i), $j; ...)` — absorb the trailing comma term(s)
@@ -328,32 +332,34 @@ impl<'a> Parser<'a> {
             self.mark_not_stmt_start();
             let expr = self.parse_expression()?;
 
-            // If followed by ), it's a foreach loop
-            if self.peek_kind() == Some(TokenKind::RightParen) {
-                self.advance_token()?; // consume )
-                let body = self.parse_block()?;
-
-                let end = self.previous_position();
-
-                // Create implicit $_ variable
-                let implicit_var = self.charge_node(
-                    NodeKind::Variable { sigil: "$".to_string(), name: "_".to_string() },
-                    SourceLocation { start, end: start },
-                )?;
-
-                return self.charge_node(
-                    NodeKind::Foreach {
-                        variable: Box::new(implicit_var),
-                        list: Box::new(expr),
-                        body: Box::new(body),
-                        continue_block: None, // No continue block for implicit foreach
-                    },
-                    SourceLocation { start, end },
-                );
-            }
-
             Some(Box::new(expr))
         };
+
+        // Both declarations and ordinary expressions can be the complete list.
+        // Only a semicolon selects the C-style path; `my` alone does not.
+        if self.peek_kind() == Some(TokenKind::RightParen)
+            && let Some(list) = init.take()
+        {
+            self.advance_token()?; // consume )
+            let body = self.parse_block()?;
+            let end = self.previous_position();
+
+            // Create implicit $_ variable, retaining the declaration in the list.
+            let implicit_var = self.charge_node(
+                NodeKind::Variable { sigil: "$".to_string(), name: "_".to_string() },
+                SourceLocation { start, end: start },
+            )?;
+
+            return self.charge_node(
+                NodeKind::Foreach {
+                    variable: Box::new(implicit_var),
+                    list,
+                    body: Box::new(body),
+                    continue_block: None, // No continue block for implicit foreach
+                },
+                SourceLocation { start, end },
+            );
+        }
         // First internal semicolon (after init) — recover inline instead of hard-failing.
         // A hard `?` here cascades into multiple spurious errors because the expression
         // parser has already consumed tokens; recovering inline keeps the For node intact.
