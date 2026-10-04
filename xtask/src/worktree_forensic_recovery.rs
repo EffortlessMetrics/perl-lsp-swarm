@@ -33,9 +33,9 @@
 use crate::worktree_cleanup::{Observation, ObservationState};
 use crate::worktree_forensic_fs::{
     DirectoryFingerprint, FilesystemReader, StableRead, directory_fingerprint,
-    has_link_or_reparse_component, is_link_or_reparse, is_source_like_path, lexical_is_within,
-    lexical_normalize, observe_existing_directory, os_str_order, path_component_key,
-    read_bounded_entries, read_stable_file, sha256,
+    has_link_or_reparse_component, is_link_or_reparse, is_source_like_path,
+    lexical_is_strictly_within, lexical_normalize, observe_existing_directory, os_str_order,
+    path_component_key, read_bounded_entries, read_stable_file, sha256,
 };
 use chrono::{SecondsFormat, Utc};
 use color_eyre::eyre::{Context, Result, bail, eyre};
@@ -1455,10 +1455,13 @@ fn resolve_relative(base: &Path, value: &Path) -> PathBuf {
     if value.is_absolute() { value.to_path_buf() } else { base.join(value) }
 }
 
+/// A pointer names one linked-worktree administration only when it lands
+/// strictly below a worktrees namespace root; a namespace root itself is not
+/// one worktree and must not admit its sibling administrations.
 pub(crate) fn is_in_admin_namespace(common_dir: &Path, administrative_path: &Path) -> bool {
     [common_dir.join("worktrees"), common_dir.join(".git").join("worktrees")]
         .iter()
-        .any(|root| lexical_is_within(root, administrative_path))
+        .any(|root| lexical_is_strictly_within(root, administrative_path))
 }
 
 fn resolve_git_path(root: &Path, text: &str) -> Result<PathBuf> {
@@ -2552,6 +2555,25 @@ mod tests {
         ensure!(
             is_in_admin_namespace(&extended_common, &administrative),
             "extended repository common dir was not matched with normal admin path"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn worktrees_namespace_root_is_not_a_single_worktree_administration() -> Result<()> {
+        let temporary = tempdir()?;
+        let common_dir = temporary.path().join("repository").join(".git");
+        ensure!(
+            !is_in_admin_namespace(&common_dir, &common_dir.join("worktrees")),
+            "the worktrees namespace root was admitted as a single-worktree administration"
+        );
+        ensure!(
+            !is_in_admin_namespace(&common_dir, &common_dir.join(".git").join("worktrees")),
+            "the .git worktrees namespace root was admitted as a single-worktree administration"
+        );
+        ensure!(
+            is_in_admin_namespace(&common_dir, &common_dir.join("worktrees").join("lost")),
+            "a genuine single-worktree administration path was rejected"
         );
         Ok(())
     }

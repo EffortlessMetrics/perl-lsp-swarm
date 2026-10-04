@@ -424,6 +424,33 @@ fn forged_pointer_outside_admin_namespace_does_not_copy_host_files() -> Result<(
     Ok(())
 }
 
+#[test]
+fn pointer_naming_the_worktrees_namespace_root_captures_no_sibling_administration() -> Result<()> {
+    let fixture = LinkedFixture::create()?;
+    let namespace_root = fixture.repository.join(".git").join("worktrees");
+    let candidate = fixture.repository.join("root-pointer-candidate");
+    fs::create_dir(&candidate)?;
+    fs::write(candidate.join(".git"), format!("gitdir: {}\n", path_text(&namespace_root)?))?;
+    let before = fixture.snapshot()?;
+    let destination = fixture.backup_dir("namespace-root-pointer");
+    let receipt = backup_result(create(&fixture.repository, &candidate, &destination))?;
+    ensure!(
+        receipt.missing.iter().any(|missing| missing.role == BackupRole::Admin
+            && missing.detail.contains("worktrees namespace")),
+        "namespace-root pointer was not recorded as missing admin administration: {receipt:?}"
+    );
+    ensure!(
+        receipt.entries.iter().all(|entry| entry.role != BackupRole::Admin),
+        "namespace-root sibling administration was captured: {receipt:?}"
+    );
+    ensure!(
+        receipt.entries.iter().any(|entry| entry.role == BackupRole::Pointer),
+        "the pointer bytes themselves were not captured: {receipt:?}"
+    );
+    ensure!(fixture.snapshot()? == before, "namespace-root backup mutated the subject");
+    Ok(())
+}
+
 // Process cwd is global; #1269 requires #[serial] rather than a registry row.
 #[test]
 #[serial]

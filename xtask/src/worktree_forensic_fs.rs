@@ -193,6 +193,20 @@ pub(crate) fn lexical_is_within(parent: &Path, child: &Path) -> bool {
         && child.iter().zip(parent.iter()).all(|(left, right)| left == right)
 }
 
+/// Like [`lexical_is_within`], but `child` must name a path strictly below
+/// `parent`: the parent itself does not count as within.
+pub(crate) fn lexical_is_strictly_within(parent: &Path, child: &Path) -> bool {
+    let parent = match lexical_normalize(&normalize_extended_prefix(parent)) {
+        Ok(path) => path_components_key(&path),
+        Err(_) => return false,
+    };
+    let child = match lexical_normalize(&normalize_extended_prefix(child)) {
+        Ok(path) => path_components_key(&path),
+        Err(_) => return false,
+    };
+    child.len() > parent.len() && child.iter().zip(parent.iter()).all(|(left, right)| left == right)
+}
+
 pub(crate) fn lexical_normalize(path: &Path) -> std::result::Result<PathBuf, String> {
     let mut normalized = PathBuf::new();
     for component in path.components() {
