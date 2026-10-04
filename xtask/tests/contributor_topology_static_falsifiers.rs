@@ -119,8 +119,8 @@ fn missing_publication_role_sentence_is_rejected() {
 }
 
 #[test]
-fn missing_public_contributor_ingress_role_is_rejected() {
-    rejects_when(PROTOCOL, |text| text.replace("public contributor ingress", "public intake"));
+fn missing_public_pull_request_ingress_role_is_rejected() {
+    rejects_when(PROTOCOL, |text| text.replace("public pull-request ingress", "public intake"));
 }
 
 #[test]
@@ -196,11 +196,11 @@ fn real_repository_authority_still_projects() {
     assert_eq!(static_topology.development_default_branch, "main");
     assert_eq!(static_topology.publication_repository, "EffortlessMetrics/perl-lsp");
     assert_eq!(static_topology.publication_branch, "master");
-    assert_eq!(static_topology.issue_repository, static_topology.publication_repository);
+    assert_eq!(static_topology.issue_repository, static_topology.development_repository);
     assert_eq!(static_topology.pull_request_repository, static_topology.publication_repository);
     assert_ne!(
-        static_topology.issue_repository, static_topology.development_repository,
-        "public contributor ingress must remain distinct from swarm development authority"
+        static_topology.pull_request_repository, static_topology.development_repository,
+        "public pull-request ingress must remain distinct from swarm development authority"
     );
     assert_eq!(
         static_topology.primary_channels,
