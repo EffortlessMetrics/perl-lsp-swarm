@@ -1,0 +1,390 @@
+#!/usr/bin/env python3
+"""Compose sync-divergence v2 with complete, current source reconciliation.
+
+This is a reconciliation preflight, not product qualification, authenticated
+producer evidence, source admission, or release authority. See the runbook.
+"""
+import argparse
+import hashlib
+import json
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+LEDGER = "source_reconciliation_ledger.v1"
+PACKET = "source_reconciliation.v1"
+TERMINAL = {
+    "port_to_swarm", "already_equivalent_in_swarm",
+    "superseded_by_swarm_architecture", "deliberately_abandoned",
+    "publication_lineage_only", "publication_context_translation",
+    "merge_ancestry",
+}
+PRIMITIVE_MAP = {
+    "port_to_swarm": "port_to_swarm",
+    "already_equivalent_in_swarm": "already_equivalent_in_swarm",
+    "superseded_by_swarm_architecture": "superseded_by_newer_architecture",
+    "deliberately_abandoned": "deliberately_abandoned",
+    "publication_lineage_only": "release_lineage_only",
+    "publication_context_translation": None,
+    "merge_ancestry": None,
+}
+# An explicit control-test exception, not a global exemption for tests/scripts.
+CONTROL_PATHS = {
+    "scripts/publication_sync_check.py",
+    "scripts/tests/test-publication-sync-contract.py",
+    "schemas/publication_sync.v2.schema.json",
+    ".github/workflows/publication-sync-contract.yml",
+}
+ROLES = {"source": "patch_equivalence_upstream", "boundary": "history_limit",
+         "target": "release_head"}
+PRIMITIVE_KEYS = {
+    "schema_version", "subjects", "ledger", "verdict", "population_digest",
+    "target_unique_commits", "excluded_merge_commits", "excluded_merge_ancestry",
+    "excluded_release_lineage_commits", "accepted_commits", "unresolved_commits", "errors",
+}
+
+
+def digest(value):
+    return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=True,
+                                    separators=(",", ":")).encode("ascii")).hexdigest()
+
+
+class Git:
+    def __init__(self, repo):
+        self.repo = Path(repo).resolve()
+        self.current_trees = {}
+
+    def run(self, *args):
+        env = os.environ.copy()
+        env["GIT_NO_LAZY_FETCH"] = "1"
+        proc = subprocess.run(["git", "--literal-pathspecs", "-C", str(self.repo), *args],
+                              env=env, capture_output=True)
+        if proc.returncode:
+            raise ValueError(proc.stderr.decode("utf-8", "replace").strip())
+        return proc.stdout
+
+    def text(self, *args):
+        return self.run(*args).decode("utf-8", "surrogateescape").strip()
+
+    def ancestor(self, older, newer):
+        try:
+            self.run("merge-base", "--is-ancestor", older, newer)
+            return True
+        except ValueError:
+            return False
+
+    def entry(self, commit, path):
+        if commit in self.current_trees:
+            return self.current_trees[commit].get(path)
+        raw = self.run("ls-tree", "-z", commit, "--", path)
+        if not raw:
+            return None
+        records = raw.rstrip(b"\0").split(b"\0")
+        if len(records) != 1:
+            raise ValueError("declared literal path resolved to multiple entries")
+        metadata, name = records[0].split(b"\t", 1)
+        if name.decode("utf-8", "surrogateescape") != path:
+            raise ValueError("declared path did not resolve literally")
+        mode, kind, sha = metadata.decode("ascii").split()
+        return {"mode": mode, "type": kind, "sha": sha}
+
+    def prime_current_tree(self, commit):
+        entries = {}
+        for record in self.run("ls-tree", "-r", "-t", "-z", commit).rstrip(b"\0").split(b"\0"):
+            if not record:
+                continue
+            metadata, path = record.split(b"\t", 1)
+            mode, kind, sha = metadata.decode("ascii").split()
+            entries[path.decode("utf-8", "surrogateescape")] = {"mode": mode, "type": kind, "sha": sha}
+        self.current_trees[commit] = entries
+
+    def paths(self, commit, parents):
+        args = ["diff-tree", "--no-renames", "--no-commit-id", "--name-only", "-r", "-z"]
+        args += [parents[0], commit] if parents else ["--root", commit]
+        return sorted(set(self.run(*args).decode("utf-8", "surrogateescape").rstrip("\0").split("\0")) - {""})
+
+    def population(self, subjects):
+        # Cache only the two current trees; do not retain every historical tree.
+        self.prime_current_tree(subjects["source"])
+        self.prime_current_tree(subjects["target"])
+        lines = self.text("rev-list", "--reverse", "--topo-order", "--parents",
+                          subjects["target"], "^" + subjects["boundary"]).splitlines()
+        rows = []
+        for line in lines:
+            commit, *parents = line.split()
+            paths = self.paths(commit, parents)
+            rows.append({"commit": commit, "parents": parents,
+                         "subject": self.text("show", "-s", "--format=%s", commit),
+                         "changed_paths": paths,
+                         "current_bindings": [{"path": p,
+                             "target": self.entry(subjects["target"], p),
+                             "source": self.entry(subjects["source"], p)} for p in paths]})
+        return rows
+
+
+def product_path(path):
+    return bool(set(path.replace("\\", "/").split("/")) & {
+        "src", "lib", "bin", "t", "test", "tests", "testing", "examples", "xt"
+    }) or Path(path).suffix.lower() in {".rs", ".c", ".h", ".hpp", ".cpp", ".pm", ".pl", ".t"}
+
+
+def context_path(path):
+    return path in CONTROL_PATHS or (not product_path(path) and (
+        path.startswith(".github/") or path == ".ci/policies/required-checks.toml"))
+
+
+def merge_effects(git, row):
+    if len(row["parents"]) != 2:
+        raise ValueError("merge ancestry inspection requires exactly two parents")
+    first, side = row["parents"]
+    side_work = git.text("rev-list", "--parents", side, "^" + first).splitlines()
+    side_paths = set()
+    for line in side_work:
+        commit, *parents = line.split()
+        side_paths.update(git.paths(commit, parents))
+    return {"side_work": sorted(line.split()[0] for line in side_work),
+            "additional_resolution_paths": sorted(set(row["changed_paths"]) - side_paths),
+            "entry_differences_from_side_head": [p for p in row["changed_paths"]
+                if git.entry(row["commit"], p) != git.entry(side, p)]}
+
+
+def cherry(git, subjects):
+    output = git.text("cherry", subjects["source"], subjects["target"], subjects["boundary"])
+    result = {}
+    for line in output.splitlines():
+        mark, sha = line.split()
+        if mark not in {"+", "-"} or not re.fullmatch("[0-9a-f]{40}", sha):
+            raise ValueError("malformed git cherry result")
+        result[sha] = mark
+    return result
+
+
+def primitive_check(receipt, subjects, rows, patches):
+    errors = []
+    if not isinstance(receipt, dict) or set(receipt) != PRIMITIVE_KEYS or receipt.get("schema_version") != 2:
+        return ["missing or foreign sync-divergence v2 receipt"]
+    if not isinstance(receipt["subjects"], dict):
+        return ["malformed primitive subjects"]
+    for name, role in ROLES.items():
+        item = receipt["subjects"].get(name, {})
+        if not isinstance(item, dict):
+            errors.append("malformed primitive subject: " + name)
+            continue
+        if item.get("commit") != subjects[name] or item.get("role") != role or not item.get("input"):
+            errors.append("primitive subject/role mismatch: " + name)
+    unique = {r["commit"]: r for r in rows if len(r["parents"]) <= 1 and patches.get(r["commit"]) == "+"}
+    native_rows = receipt["target_unique_commits"]
+    if not isinstance(native_rows, list) or any(not isinstance(r, dict) for r in native_rows):
+        return errors + ["malformed primitive population"]
+    ids = [r.get("commit") for r in native_rows]
+    if len(ids) != len(set(ids)) or set(ids) != set(unique):
+        errors.append("primitive population differs from independent git cherry")
+    for row in native_rows:
+        if row.get("classification") is not None and row.get("classification") not in set(PRIMITIVE_MAP.values()):
+            errors.append("foreign primitive classification")
+        if row.get("commit") in unique and " ".join(row.get("subject", "").split()) != " ".join(unique[row["commit"]]["subject"].split()):
+            errors.append("primitive subject text differs from Git")
+    classified = {r["commit"]: r.get("classification") for r in native_rows}
+    expected = {
+        "unresolved_commits": {c for c, kind in classified.items() if kind is None},
+        "excluded_release_lineage_commits": {c for c, kind in classified.items() if kind == "release_lineage_only"},
+        "accepted_commits": {c for c, kind in classified.items() if kind is not None and kind != "release_lineage_only"},
+    }
+    for field, values in expected.items():
+        if not isinstance(receipt[field], list) or len(receipt[field]) != len(values) or set(receipt[field]) != values:
+            errors.append("primitive derived-list mismatch: " + field)
+    derived_verdict = "blocked" if expected["unresolved_commits"] else "pass"
+    if receipt["verdict"] != derived_verdict:
+        errors.append("primitive verdict inconsistent with its classifications")
+    raw = "".join(sha + " " + " ".join(unique[sha]["subject"].split()) + "\n" for sha in sorted(unique))
+    if receipt["population_digest"] != hashlib.sha256(raw.encode("utf-8", "surrogateescape")).hexdigest():
+        errors.append("primitive population digest mismatch")
+    if receipt["errors"] or receipt["verdict"] not in {"pass", "blocked"}:
+        errors.append("primitive reports an error or NOT_PROVEN")
+    merges = {r["commit"]: r for r in rows if len(r["parents"]) > 1}
+    if set(receipt["excluded_merge_commits"]) != set(merges):
+        errors.append("primitive excluded merge denominator mismatch")
+    ancestry = receipt["excluded_merge_ancestry"]
+    if len(ancestry) != len(merges) or any(
+        r.get("commit") not in merges or r.get("parents") != merges[r["commit"]]["parents"] for r in ancestry
+    ):
+        errors.append("primitive merge ancestry mismatch")
+    return errors
+
+
+def reconcile(git, subjects, ledger=None, primitive=None, projection=None):
+    packet = {"schema_version": PACKET, "subjects": subjects,
+              "scope": "source_reconciliation_preflight",
+              "acceptance_ceiling": ["no_product_execution", "no_authenticated_producer_origin",
+                                     "no_source_admission", "no_release_authority"],
+              "verdict": "not_proven", "population": [], "errors": [],
+              "unresolved_commits": [], "primitive_receipt_sha256": None,
+              "projection_tree": projection}
+    errors = packet["errors"]
+    try:
+        if git.text("rev-parse", "--is-shallow-repository") != "false":
+            raise ValueError("shallow graph cannot establish complete reconciliation")
+        for name, sha in subjects.items():
+            if not re.fullmatch("[0-9a-f]{40}", sha) or git.text("rev-parse", sha + "^{commit}") != sha:
+                raise ValueError("unresolved exact subject: " + name)
+        if not git.ancestor(subjects["boundary"], subjects["target"]):
+            raise ValueError("boundary is not contained in target")
+        rows = git.population(subjects)
+        packet["population"] = rows
+        packet["population_digest"] = digest(rows)
+        for row in rows:
+            if len(row["parents"]) > 1:
+                row["merge_effects"] = merge_effects(git, row)
+        # Merge evidence participates in the full population digest.
+        packet["population_digest"] = digest(rows)
+        try:
+            patches = cherry(git, subjects)
+            packet["patch_equivalence"] = patches
+        except ValueError as error:
+            patches = {}
+            errors.append("patch equivalence NOT_PROVEN: " + str(error))
+        if primitive is None:
+            errors.append("sync-divergence v2 producer receipt not supplied")
+        elif patches or not any(len(r["parents"]) <= 1 for r in rows):
+            errors.extend(primitive_check(primitive, subjects, rows, patches))
+            packet["primitive_receipt_sha256"] = digest(primitive)
+        else:
+            # An empty cherry result is valid when all non-merge work is shared.
+            if "patch_equivalence" in packet:
+                errors.extend(primitive_check(primitive, subjects, rows, patches))
+                packet["primitive_receipt_sha256"] = digest(primitive)
+        if ledger is None:
+            packet["unresolved_commits"] = [r["commit"] for r in rows]
+        else:
+            if not isinstance(ledger, dict) or set(ledger) != {
+                "schema_version", "subjects", "population_digest", "entries"
+            } or ledger.get("schema_version") != LEDGER:
+                raise ValueError("foreign source reconciliation ledger")
+            if ledger["subjects"] != subjects or ledger["population_digest"] != packet["population_digest"]:
+                raise ValueError("stale source reconciliation ledger identity")
+            entries = ledger["entries"]
+            ids = [r["commit"] for r in entries]
+            if len(ids) != len(set(ids)) or set(ids) != {r["commit"] for r in rows}:
+                raise ValueError("omitted, duplicate or extra full-population work unit")
+            by_id = {r["commit"]: r for r in entries}
+            primitive_rows = {r["commit"]: r.get("classification")
+                              for r in primitive["target_unique_commits"]} if primitive else {}
+            for row in rows:
+                item = by_id[row["commit"]]
+                if set(item) != {"commit", "disposition", "current_bindings", "authority",
+                                 "source_commit", "projection_bindings", "blocking_decisions"}:
+                    raise ValueError("foreign source row shape")
+                if item["current_bindings"] != row["current_bindings"]:
+                    raise ValueError("changed-path omission or stale current behavior binding")
+                disposition = item["disposition"]
+                if disposition is None:
+                    packet["unresolved_commits"].append(row["commit"])
+                    continue
+                if disposition not in TERMINAL or item["blocking_decisions"] or not item["authority"]:
+                    raise ValueError("unsupported disposition or unresolved terminal row")
+                if row["commit"] in primitive_rows and primitive_rows[row["commit"]] != PRIMITIVE_MAP[disposition]:
+                    raise ValueError("source/native disposition mapping mismatch")
+                if (len(row["parents"]) > 1) != (disposition == "merge_ancestry"):
+                    raise ValueError("merge unit hidden as ordinary work")
+                if disposition == "merge_ancestry":
+                    effect = row["merge_effects"]
+                    if effect["additional_resolution_paths"] or effect["entry_differences_from_side_head"]:
+                        raise ValueError("merge has unresolved resolution effects")
+                elif disposition in {"port_to_swarm", "already_equivalent_in_swarm"}:
+                    proof = item["source_commit"]
+                    if not proof or not git.ancestor(proof, subjects["source"]):
+                        raise ValueError("required port/equivalent is not reachable from S")
+                    for binding in row["current_bindings"]:
+                        if binding["source"] != git.entry(proof, binding["path"]):
+                            raise ValueError("port/equivalent has been displaced in current S")
+                    if disposition == "already_equivalent_in_swarm" and any(
+                        b["source"] != git.entry(row["commit"], b["path"]) for b in row["current_bindings"]
+                    ):
+                        raise ValueError("equivalent patch does not survive in current S")
+                elif disposition == "publication_lineage_only":
+                    if any(product_path(p) for p in row["changed_paths"]):
+                        raise ValueError("runtime/test work cannot be lineage-only")
+                elif disposition == "superseded_by_swarm_architecture":
+                    if not item["source_commit"] or not git.ancestor(item["source_commit"], subjects["source"]):
+                        raise ValueError("architecture successor is not reachable from S")
+                elif disposition == "publication_context_translation":
+                    if not all(context_path(p) for p in row["changed_paths"]):
+                        raise ValueError("shared product disguised as public context")
+                    if not projection:
+                        raise ValueError("public-context row lacks an actual projection tree")
+                    bindings = item["projection_bindings"]
+                    if sorted(b["path"] for b in bindings) != row["changed_paths"]:
+                        raise ValueError("public context is not bound to every projection path")
+                    for binding in bindings:
+                        if set(binding) != {"path", "row_id", "row_digest", "entry"} or not binding["row_id"] or not re.fullmatch("[0-9a-f]{64}", binding["row_digest"]):
+                            raise ValueError("missing projection row identity/digest")
+                        if git.entry(projection, binding["path"]) != binding["entry"]:
+                            raise ValueError("projection entry/mode identity mismatch")
+            packet["ledger_sha256"] = digest(ledger)
+        packet["verdict"] = "not_proven" if errors else "blocked" if packet["unresolved_commits"] else "pass"
+    except (ValueError, KeyError, TypeError, AttributeError, IndexError) as error:
+        errors.append(str(error))
+        packet["verdict"] = "not_proven"
+    packet["packet_digest"] = digest(packet)
+    return packet
+
+
+def skeleton(packet):
+    return {"schema_version": LEDGER, "subjects": packet["subjects"],
+            "population_digest": packet.get("population_digest"),
+            "entries": [{"commit": row["commit"], "disposition": None,
+                "current_bindings": row["current_bindings"], "authority": [],
+                "source_commit": None, "projection_bindings": [],
+                "blocking_decisions": ["current semantic survival not yet reviewed"]}
+                for row in packet["population"]]}
+
+
+def write_new(git, path, value, inputs):
+    path = Path(path).resolve()
+    if path.exists() or path in {Path(p).resolve() for p in inputs if p}:
+        raise ValueError("refusing to overwrite a historical packet or input")
+    private = Path(git.text("rev-parse", "--absolute-git-dir")).resolve()
+    common = Path(git.text("rev-parse", "--path-format=absolute", "--git-common-dir")).resolve()
+    if path == git.repo / ".git" or any(path == p or path.is_relative_to(p) for p in (private, common)):
+        raise ValueError("receipt destination is Git metadata")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("x", encoding="ascii", newline="\n") as output:
+        json.dump(value, output, ensure_ascii=True, indent=2)
+        output.write("\n")
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    for name in ("repo", "source", "boundary", "target", "receipt"):
+        parser.add_argument("--" + name, required=True)
+    for name in ("ledger", "primitive-receipt", "projection-tree", "scaffold"):
+        parser.add_argument("--" + name)
+    args = parser.parse_args()
+    git = Git(args.repo)
+    subjects = {n: getattr(args, n) for n in ROLES}
+    try:
+        load = lambda p: json.loads(Path(p).read_text(encoding="utf-8")) if p else None
+        ledger, primitive = load(args.ledger), load(args.primitive_receipt)
+    except (ValueError, OSError) as error:
+        packet = reconcile(git, subjects)
+        packet["errors"].append("unreadable input evidence: " + str(error))
+        packet["verdict"] = "not_proven"
+        packet.pop("packet_digest", None)
+        packet["packet_digest"] = digest(packet)
+    else:
+        packet = reconcile(git, subjects, ledger, primitive, args.projection_tree)
+    try:
+        write_new(git, args.receipt, packet, [args.ledger, args.primitive_receipt])
+        if args.scaffold:
+            write_new(git, args.scaffold, skeleton(packet), [args.ledger, args.primitive_receipt, args.receipt])
+    except ValueError as error:
+        parser.error(str(error))
+    print(json.dumps({"verdict": packet["verdict"], "population": len(packet["population"]),
+                      "unresolved": len(packet["unresolved_commits"]), "errors": packet["errors"]}))
+    return {"pass": 0, "blocked": 3, "not_proven": 4}[packet["verdict"]]
+
+
+if __name__ == "__main__":
+    sys.exit(main())
