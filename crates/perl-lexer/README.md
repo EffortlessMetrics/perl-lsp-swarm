@@ -27,6 +27,9 @@ while let Some(token) = lexer.next_token() {
 
 ## Configuration contract
 
+Angle terms use source-aware scanning with cumulative work limits and checkpoint
+accounting; see the [angle scanning contract and migration notes](../../docs/reference/ANGLE_TERM_SCANNING.md).
+
 `LexerConfig` remains a public struct, but its fields do not all represent
 independent implementation modes. Two legacy no-op surfaces are explicitly
 deprecated as of 0.17.0 and are planned for removal at a future semver boundary
