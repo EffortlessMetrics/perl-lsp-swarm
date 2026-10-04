@@ -359,3 +359,29 @@ fn resolved_receiver_does_not_offer_non_receiver_package_members() {
         labels(&completions)
     );
 }
+
+/// #16983 review: a symbol-table entry groups same-name definitions across
+/// packages and kinds (variables are keyed without their sigil), so a callable
+/// in a foreign package must not license a non-callable same-named symbol in
+/// the receiver's package. `Other` cannot call `run`, so the admission
+/// predicate must require one symbol that is simultaneously callable and
+/// receiver-resident.
+const CROSS_PACKAGE_KIND_COLLISION_SOURCE: &str = r#"package User;
+sub run { 1 }
+
+package Other;
+our $run;
+
+package main;
+my $other = bless {}, 'Other';
+$other->"#;
+
+#[test]
+fn callable_definition_must_share_the_receiver_package() {
+    let completions = completions_for(CROSS_PACKAGE_KIND_COLLISION_SOURCE, empty_index());
+    assert!(
+        !completions.iter().any(|item| item.label == "run"),
+        "a callable run in User must not license Other's same-named non-callable $run for receiver Other; got {:?}",
+        labels(&completions)
+    );
+}

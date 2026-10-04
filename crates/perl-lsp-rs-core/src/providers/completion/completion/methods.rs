@@ -1169,6 +1169,11 @@ fn symbol_package(symbol: &Symbol) -> &str {
 /// receiver, so offering it is a visibility leak rather than a ranking choice
 /// (#16983).
 ///
+/// A symbol-table entry groups same-name definitions across packages and kinds
+/// (variables are keyed without their sigil), so one definition must be both
+/// callable and receiver-resident before the group is offered; admission and
+/// metadata selection read that same restricted set.
+///
 /// `Unknown` and `Dynamic` receivers keep the previous document-wide behavior:
 /// the receiver-aware workspace path owns their bounded fallback and their
 /// fail-closed cases, and guessing here would reintroduce the leak.
@@ -1185,39 +1190,42 @@ pub fn add_method_completions(
 
     // Prefer discovered in-file methods first (including synthesized framework accessors).
     let method_prefix = context.prefix.rsplit("->").next().unwrap_or(&context.prefix);
+    // A bare-name group spans packages and kinds (`add_symbol` keys variables
+    // by name without their sigil), so admission and metadata selection must
+    // read one combined predicate: a callable in a foreign package must not
+    // license a non-callable same-named symbol in the receiver's package.
+    // Receivers without resolved packages keep the document-wide behavior.
+    let scoped_callable = |symbol: &Symbol| {
+        if !matches!(symbol.kind, SymbolKind::Subroutine | SymbolKind::Method) {
+            return false;
+        }
+        match receiver_packages.as_deref() {
+            Some(packages) => packages.iter().any(|package| symbol_package(symbol) == package),
+            None => true,
+        }
+    };
     for (name, symbols) in &symbol_table.symbols {
-        let is_callable = symbols
-            .iter()
-            .any(|symbol| matches!(symbol.kind, SymbolKind::Subroutine | SymbolKind::Method));
-        if !is_callable {
+        let Some(callable_symbol) = symbols.iter().find(|symbol| scoped_callable(symbol)) else {
             continue;
-        }
-
-        if let Some(packages) = receiver_packages.as_deref()
-            && !symbols
-                .iter()
-                .any(|symbol| packages.iter().any(|package| symbol_package(symbol) == package))
-        {
-            continue;
-        }
+        };
 
         if !method_prefix.is_empty() && !name.starts_with(method_prefix) {
             continue;
         }
 
         // Check if this is a synthesized Moo/Moose accessor (declaration == "has")
-        let callable_symbol = symbols
-            .iter()
-            .find(|symbol| matches!(symbol.kind, SymbolKind::Subroutine | SymbolKind::Method));
-
-        let is_moo_accessor =
-            callable_symbol.and_then(|s| s.declaration.as_deref()).is_some_and(|d| d == "has");
+        let is_moo_accessor = callable_symbol.declaration.as_deref().is_some_and(|d| d == "has");
 
         let (detail, documentation) = if is_moo_accessor {
-            let attrs = callable_symbol.map(|s| s.attributes.as_slice()).unwrap_or(&[]);
-            ("Moo/Moose accessor".to_string(), Some(moo_accessor_documentation(name, attrs)))
+            (
+                "Moo/Moose accessor".to_string(),
+                Some(moo_accessor_documentation(name, callable_symbol.attributes.as_slice())),
+            )
         } else {
-            let doc = symbols.iter().find_map(|symbol| symbol.documentation.clone());
+            let doc = symbols
+                .iter()
+                .filter(|symbol| scoped_callable(symbol))
+                .find_map(|symbol| symbol.documentation.clone());
             ("method".to_string(), doc)
         };
 

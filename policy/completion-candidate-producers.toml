@@ -141,7 +141,13 @@ outcome_owner = "#10230"
 # call, type_engine added to the methods calls). No producer
 # add/remove/re-channel and no entry/finalizer change. Digest recomputed over
 # the merged tree.
-source_digest = "sha256:35551e20d68aa2710c8e1330c7bec4880cbb469500b8e775954f6e74b3d9c81d"
+# Re-anchor 2026-10-04 (review repair in #16988): add_method_completions
+# admission and metadata selection now read one combined callable+package
+# predicate; same function, same append channel, no producer
+# add/remove/re-channel, no entry/finalizer change. The methods row's
+# limitations text documents the combined predicate and the
+# receiver_packages=None fallback. Digest-only projection diff.
+source_digest = "sha256:0f65f540ded8386d00b6237c0c938db9ad99ca719e6bd0ccf6a66004d6d0c71d"
 
 [[delegations]]
 module = "dancer2"
@@ -481,7 +487,7 @@ finalizer_route = "compatibility_adapter_before_shared_finalizer"
 reach_evidence = "provider_seam"
 reached_by = ["handle_completion", "handle_completion_cancellable"]
 migration_owner = "#8958"
-limitations = "Identity is the label today, so a same-named binding in another scope, package, or document instance can merge with this one. A receiver resolving to exact evidence scopes candidates to its own package (#16983); Unknown and Dynamic receivers still prove nothing about visibility, and their bounded fallback is owned by add_workspace_method_completions."
+limitations = "Identity is the label today, so a same-named binding in another scope, package, or document instance can merge with this one. A receiver resolving to exact evidence scopes candidates to its own package (#16983): a group is admitted only when one definition is both callable and receiver-resident. When receiver_packages is None, this producer keeps document-wide callable-symbol behavior for Unknown and Dynamic receivers. add_workspace_method_completions separately admits bounded fallback only for eligible Unknown evidence; Dynamic receivers remain fail-closed."
 note = "Method candidates for an arrow receiver."
 
 [[producers]]
