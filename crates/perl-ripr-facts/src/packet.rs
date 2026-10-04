@@ -8,8 +8,9 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use crate::emitter::{
-    discovery_scope_skips, emit_boundaries_and_commands, emit_changes_from_diff,
-    emit_files_and_owners, emit_relations_and_discriminators, emit_tests_and_oracles,
+    diff_provenance_unverified_limitation, discovery_scope_skips, emit_boundaries_and_commands,
+    emit_changes_from_diff, emit_files_and_owners, emit_relations_and_discriminators,
+    emit_tests_and_oracles,
 };
 use crate::request::{
     EXPECTED_RIPR_FACTS_SCHEMA, RiprFactsError, RiprFactsRequest, normalize_fact_classes,
@@ -205,24 +206,42 @@ pub fn build_ripr_facts_packet(
     // the diff is opaque text. `changes` requested without a diff yields an empty
     // array plus a `no-diff-supplied` limitation, so a downstream consumer can
     // distinguish "not analyzed" from "nothing changed".
-    let (changes, change_limitations) = if wants_changes {
+    let (changes, mut change_limitations) = if wants_changes {
         match diff {
             Some(diff_text) if !diff_text.trim().is_empty() => {
                 emit_changes_from_diff(diff_text, root, &files, &owners)
             }
-            _ => (
-                Vec::new(),
-                vec![serde_json::json!({
+            _ => {
+                let limitations = vec![serde_json::json!({
                     "limitation_id": "no-diff-supplied",
                     "kind": "missing_input",
                     "message": "`changes` was requested but no diff text was supplied; no caller derives diff text from base/head yet. An empty `changes[]` here means \"not analyzed\", not \"nothing changed\".",
                     "evidence_refs": []
-                })],
-            ),
+                })];
+                (Vec::new(), limitations)
+            }
         }
     } else {
         (Vec::new(), Vec::new())
     };
+    // `#17258`: `input.base`/`input.head` echo caller strings verbatim —
+    // including garbage — whenever no diff was analyzed, not only when
+    // `changes` was requested. A caller supplying base/head with `files` or
+    // `tests,oracles,relations` (and no diff) previously got unverified refs
+    // echoed with no caveat. So derive the `diff-provenance-unverified`
+    // disclosure independently of `wants_changes`: refs present AND no diff
+    // analyzed (no/blank diff, or `changes` not requested). The diff-supplied
+    // path already carries exactly one via `emit_changes_from_diff`, so it is
+    // excluded here — one caveat per packet, never a duplicate. Packets
+    // without base/head gain no new noise. This rides `change_limitations`
+    // so both merge arms (has-facts + no-facts) surface it — provenance-
+    // about-absence must not depend on fact presence — while the no-diff
+    // golden keeps its exact limitation order.
+    let diff_analyzed =
+        wants_changes && matches!(diff, Some(diff_text) if !diff_text.trim().is_empty());
+    if (base.is_some() || head.is_some()) && !diff_analyzed {
+        change_limitations.push(diff_provenance_unverified_limitation());
+    }
     let has_change_facts = !changes.is_empty();
     let mut relations = bind_relations_to_changes(relations, &changes);
     annotate_oracles_for_bound_relations(&mut oracles, &mut relations, &changes);
