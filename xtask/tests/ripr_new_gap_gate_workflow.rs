@@ -2542,12 +2542,13 @@ fn ripr_gate_retrieval_reaches_classifier_and_failed_fetch_fails_closed() -> Res
     }
     let timeout_prefix = "timeout --signal=TERM --kill-after=5s";
     // #16980 still routes every production call through one deadline-bounded
-    // helper chain: three calls use the whole-gate-deadline `bounded_gh_api`
-    // wrapper, and the cancelled-lane log fetch uses the explicit
-    // `bounded_gh_api_until` cutoff (the wrapper's own delegation is the
-    // second `bounded_gh_api_until` reference).
-    if run.matches("bounded_gh_api ").count() != 3
-        || run.matches("bounded_gh_api_until ").count() != 2
+    // helper chain: the annotation and attempts lookups use the
+    // whole-gate-deadline `bounded_gh_api` wrapper, while the lane lookup and
+    // the cancelled-lane log fetch use the explicit `bounded_gh_api_until`
+    // cutoff (the wrapper's own delegation is the third
+    // `bounded_gh_api_until` reference).
+    if run.matches("bounded_gh_api ").count() != 2
+        || run.matches("bounded_gh_api_until ").count() != 3
         || run.matches(timeout_prefix).count() != 1
         || !run.contains("gate_deadline=\"${RIPR_GATE_DEADLINE_EPOCH:-}\"")
         || !run.contains("remaining_until_deadline")
@@ -2687,7 +2688,11 @@ fn ripr_gate_retrieval_reaches_classifier_and_failed_fetch_fails_closed() -> Res
     {
         bail!("an unretrievable log must fail closed without arming the retry:\n{never_output}");
     }
-    if !never_output.contains("lookup=Some(\"1\")\nfetch=Some(\"15\")")
+    // #16431 counts here too: the harness increments the lookup counter for
+    // every jobs-URL hit, so `lookup` is 1 lane lookup (resolved first try)
+    // plus 2 API-evidence-fallback steps-state reads spending the remaining
+    // ~13s of reserve after the fetch loop's fifteen attempts (227s).
+    if !never_output.contains("lookup=Some(\"3\")\nfetch=Some(\"15\")")
         || !never_output.contains("elapsed=Some(\"240\\n\")")
         || !never_output.contains("was not retrievable after 15 attempts")
         || !never_output
