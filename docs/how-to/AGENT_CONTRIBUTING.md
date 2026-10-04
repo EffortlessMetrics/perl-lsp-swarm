@@ -13,8 +13,11 @@ acceptance criteria, and proof commands against the code and current GitHub stat
 Historical comments and labels are useful receipts, but they do not override
 current source or live checks.
 
-External/public contribution pull requests belong in `perl-lsp/master`. Do not
-retarget them into swarm merely because swarm is the product-development authority.
+Development issues remain in `perl-lsp-swarm`, including controlling issues for
+external implementation work. External/public contribution pull requests belong in
+`perl-lsp/master`. Preserve a swarm issue with a fully qualified cross-repository
+reference such as `Refs EffortlessMetrics/perl-lsp-swarm#NNNN`; do not retarget the
+pull request into swarm merely because its issue lives there.
 
 Use the route map for your provider: [AGENTS.md](../../AGENTS.md) and
 `.agents/skills/` for Codex, or [CLAUDE.md](../../CLAUDE.md) and
