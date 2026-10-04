@@ -2953,6 +2953,17 @@ impl LspServer {
 
             let mut files: Vec<std::path::PathBuf> = Vec::new();
             let mut early_exit: Option<(EarlyExitReason, u64, usize, usize)> = None;
+            // #17245: the initial scan budget no longer stops the scan. When the
+            // budget trips, the scan reports degraded readiness once (the index
+            // IS partial at that moment) and keeps indexing the remaining files,
+            // so coverage completes instead of freezing at a permanent partial
+            // index. `initial_budget_reported` makes that degraded report and
+            // its early-exit instrumentation record fire exactly once;
+            // `discovery_budget_warned` only de-duplicates the discovery-phase
+            // warning and deliberately does not suppress the indexing loop's
+            // degraded report.
+            let mut initial_budget_reported = false;
+            let mut discovery_budget_warned = false;
             let mut indexing_receipt = WorkspaceIndexingReceipt::default();
             let discovery_started = Instant::now();
 
@@ -3012,10 +3023,21 @@ impl LspServer {
                         break 'scan;
                     }
 
-                    if elapsed_ms > caps.initial_scan_budget_ms {
-                        early_exit =
-                            Some((EarlyExitReason::InitialTimeBudget, elapsed_ms, 0, total_files));
-                        break 'scan;
+                    if elapsed_ms > caps.initial_scan_budget_ms && !discovery_budget_warned {
+                        // #17245: discovery past the budget no longer abandons
+                        // the scan. Nothing has been indexed yet, so the
+                        // degraded partial-index report is left to the indexing
+                        // loop's own budget check (elapsed time is already past
+                        // budget by then). Discovery continues toward the
+                        // max_files limit.
+                        discovery_budget_warned = true;
+                        tracing::warn!(
+                            elapsed_ms,
+                            discovered = total_files,
+                            budget_ms = caps.initial_scan_budget_ms,
+                            "Initial scan budget exhausted during discovery; \
+                             discovery continues (#17245)"
+                        );
                     }
                 }
             }
@@ -3040,14 +3062,33 @@ impl LspServer {
                     break;
                 }
                 let elapsed_ms = budget_start.elapsed().as_millis() as u64;
-                if elapsed_ms > caps.initial_scan_budget_ms {
-                    early_exit = Some((
+                if elapsed_ms > caps.initial_scan_budget_ms && !initial_budget_reported {
+                    // #17245: the initial scan budget degrades readiness
+                    // reporting, not coverage. The index IS partial at this
+                    // moment, so report degraded (ready_limited) once, right
+                    // away, and keep indexing the remaining files instead of
+                    // freezing the workspace at a permanent partial index that
+                    // no pass ever catches up. Completion below still runs the
+                    // post-scan reconciliation and transitions to Ready, so the
+                    // client sees ready_limited -> ready as coverage finishes.
+                    initial_budget_reported = true;
+                    coordinator.record_early_exit(
                         EarlyExitReason::InitialTimeBudget,
                         elapsed_ms,
                         indexed_files,
                         total_files,
-                    ));
-                    break;
+                    );
+                    coordinator
+                        .transition_to_degraded(DegradationReason::ScanTimeout { elapsed_ms });
+                    send_index_ready_notification(&outbound, &coordinator.state());
+                    tracing::warn!(
+                        elapsed_ms,
+                        indexed_files,
+                        total_files,
+                        budget_ms = caps.initial_scan_budget_ms,
+                        "Initial scan budget exhausted; indexing continues in the \
+                         background while readiness reports ready_limited (#17245)"
+                    );
                 }
 
                 let read_started = Instant::now();
@@ -3330,6 +3371,11 @@ impl LspServer {
                             kind: ResourceKind::MaxFiles,
                         });
                     }
+                    // #17245: InitialTimeBudget cannot currently reach
+                    // `early_exit` — a budget trip degrades readiness and
+                    // continues the scan instead of exiting. The arm stays as a
+                    // safety net so a future early exit on this reason still
+                    // lands in the honest degraded state.
                     EarlyExitReason::InitialTimeBudget | EarlyExitReason::IncrementalTimeBudget => {
                         coordinator
                             .transition_to_degraded(DegradationReason::ScanTimeout { elapsed_ms });
@@ -5614,6 +5660,98 @@ mod tests {
             return Err(
                 "cancelled indexing did not end progress with a cancellation message".into()
             );
+        }
+        Ok(())
+    }
+
+    /// #17245: a tripped initial scan budget must degrade readiness reporting,
+    /// not coverage. With a zero-length budget every scan trips immediately;
+    /// the scan must still index every discovered file, report ready_limited
+    /// once at the trip, and finish in the Ready state with a ready=true
+    /// index-ready notification.
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn budget_limited_initial_scan_reports_limited_then_completes_coverage()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        const FILE_COUNT: usize = 40;
+        for index in 0..FILE_COUNT {
+            std::fs::write(
+                dir.path().join(format!("budget-{index:03}.pm")),
+                format!("package Budget{index:03};\nsub symbol_{index:03} {{ {index} }}\n1;\n"),
+            )?;
+        }
+        let folder_uri = url::Url::from_directory_path(dir.path())
+            .map_err(|_| "invalid workspace folder path")?
+            .to_string();
+
+        let (mut server, output) = server_with_output_capture();
+        server.index_coordinator =
+            Some(std::sync::Arc::new(IndexCoordinator::with_limits_and_caps(
+                IndexResourceLimits::default(),
+                IndexPerformanceCaps { initial_scan_budget_ms: 0, ..Default::default() },
+            )));
+        server.workspace_folders.lock().push(
+            crate::runtime::workspace_folder::WorkspaceFolderState::new(folder_uri)
+                .with_path(dir.path().to_path_buf()),
+        );
+
+        let (receipt_tx, receipt_rx) = std::sync::mpsc::channel();
+        let _receipt_observer_guard =
+            crate::runtime::readiness::set_workspace_readiness_receipt_observer(receipt_tx);
+        server
+            .readiness_receipt_observer_id
+            .store(_receipt_observer_guard.id(), std::sync::atomic::Ordering::Relaxed);
+
+        server.start_workspace_indexing();
+        // The readiness receipt is the observable completion barrier; the
+        // timeout only prevents a broken indexing thread from hanging the test.
+        receipt_rx.recv_timeout(std::time::Duration::from_secs(30))?;
+
+        let coordinator = server.coordinator().ok_or("missing workspace coordinator")?;
+        if !matches!(coordinator.state(), IndexState::Ready { .. }) {
+            return Err(format!(
+                "a budget-limited scan that continued to completion must end Ready, got {:?}",
+                coordinator.state()
+            )
+            .into());
+        }
+        let indexed_files = coordinator.index().file_count();
+        if indexed_files != FILE_COUNT {
+            return Err(format!(
+                "budget-limited scan covered {indexed_files} of {FILE_COUNT} files; the \
+                 continuation must index every discovered file (#17245)"
+            )
+            .into());
+        }
+
+        drop(server);
+        let messages = output.messages()?;
+        let index_ready: Vec<&Value> = messages
+            .iter()
+            .filter(|message| {
+                message.get("method").and_then(Value::as_str) == Some("perl-lsp/index-ready")
+            })
+            .collect();
+        if !index_ready.iter().any(|message| {
+            message.pointer("/params/ready").and_then(Value::as_bool) == Some(false)
+                && message.pointer("/params/state").and_then(Value::as_str) == Some("ready_limited")
+        }) {
+            return Err(
+                "budget trip did not report ready_limited at the moment the index was partial \
+                 (#17245)"
+                    .into(),
+            );
+        }
+        let last_ready = index_ready.last().ok_or("no perl-lsp/index-ready notification")?;
+        if last_ready.pointer("/params/ready").and_then(Value::as_bool) != Some(true)
+            || last_ready.pointer("/params/state").and_then(Value::as_str) != Some("ready")
+        {
+            return Err(format!(
+                "the final index-ready after a completed continuation must be ready=true, got \
+                 {last_ready}"
+            )
+            .into());
         }
         Ok(())
     }
