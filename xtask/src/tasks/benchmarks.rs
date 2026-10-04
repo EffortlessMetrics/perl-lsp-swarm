@@ -593,9 +593,27 @@ fn windows_bash() -> Option<PathBuf> {
         return None;
     }
     let stdout = String::from_utf8(output.stdout).ok()?;
-    let git_exe = stdout.lines().find(|line| !line.trim().is_empty())?.trim();
-    let bash = PathBuf::from(git_exe).parent()?.parent()?.join("bin").join("bash.exe");
-    bash.is_file().then_some(bash)
+    // Check every hit: an early result may lack bash while a later one has
+    // it, and only fall back to PATH bash once all candidates fail.
+    for git_exe in stdout.lines().map(str::trim).filter(|line| !line.is_empty()) {
+        for root in git_install_roots(Path::new(git_exe)) {
+            let bash = root.join("bin").join("bash.exe");
+            if bash.is_file() {
+                return Some(bash);
+            }
+        }
+    }
+    None
+}
+
+/// Candidate install roots for a `git.exe` path: `cmd/git.exe` nests two
+/// levels below the root, `mingw64/bin/git.exe` three. Both layouts are
+/// probed so custom installs resolve instead of falling back to PATH bash.
+#[cfg(windows)]
+fn git_install_roots(git_exe: &Path) -> Vec<PathBuf> {
+    let cmd_root = git_exe.parent().and_then(Path::parent);
+    let mingw_root = cmd_root.and_then(Path::parent);
+    [cmd_root, mingw_root].into_iter().flatten().map(Path::to_path_buf).collect()
 }
 
 fn bash_program() -> PathBuf {
@@ -642,7 +660,6 @@ fn run_python_script(script: &Path, args: &[&str], label: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use color_eyre::eyre::ContextCompat;
     use std::fs;
     use tempfile::TempDir;
 
@@ -664,14 +681,33 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn windows_bash_resolves_beside_git() -> Result<()> {
-        let bash = windows_bash().context("Git Bash must resolve beside git.exe on Windows")?;
-        assert!(bash.is_file(), "resolved bash must exist: {}", bash.display());
+    fn git_install_roots_covers_cmd_and_mingw64_layouts() {
+        let roots = git_install_roots(Path::new("C:\\Tools\\Git\\cmd\\git.exe"));
+        assert_eq!(roots.first(), Some(&PathBuf::from("C:\\Tools\\Git")));
+        let roots = git_install_roots(Path::new("C:\\Tools\\Git\\mingw64\\bin\\git.exe"));
         assert!(
-            bash.ends_with(Path::new("bin").join("bash.exe")),
-            "resolved bash must be Git's bin\\bash.exe: {}",
-            bash.display()
+            roots.contains(&PathBuf::from("C:\\Tools\\Git")),
+            "mingw64 layout must probe the install root: {roots:?}"
         );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_bash_resolves_beside_git_or_falls_back() -> Result<()> {
+        match windows_bash() {
+            Some(bash) => {
+                assert!(bash.is_file(), "resolved bash must exist: {}", bash.display());
+                assert!(
+                    bash.ends_with(Path::new("bin").join("bash.exe")),
+                    "resolved bash must be Git's bin\\bash.exe: {}",
+                    bash.display()
+                );
+            }
+            None => {
+                // No Git Bash installed: the documented PATH fallback applies.
+                assert_eq!(bash_program(), PathBuf::from("bash"));
+            }
+        }
         Ok(())
     }
 
@@ -679,7 +715,12 @@ mod tests {
     fn bash_program_prefers_a_real_shell() {
         let program = bash_program();
         if cfg!(windows) {
-            assert!(program.is_file(), "bash program must exist: {}", program.display());
+            match windows_bash() {
+                Some(_) => {
+                    assert!(program.is_file(), "bash program must exist: {}", program.display())
+                }
+                None => assert_eq!(program, PathBuf::from("bash")),
+            }
         } else {
             assert_eq!(program, PathBuf::from("bash"));
         }
