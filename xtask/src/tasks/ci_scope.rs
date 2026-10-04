@@ -190,7 +190,8 @@ fn is_ci_config_file(file: &str) -> bool {
 pub fn requires_windows_runner(files: &[String]) -> bool {
     files.iter().any(|file| {
         let normalized = file.replace('\\', "/").to_ascii_lowercase();
-        normalized == "hooks/pre-push"
+        is_powershell_completion_path(&normalized)
+            || normalized == "hooks/pre-push"
             || normalized.starts_with("hooks/")
             || (normalized.starts_with("scripts/") && normalized.ends_with(".sh"))
             || normalized == "crates/perl-ci-hygiene/src/process.rs"
@@ -216,6 +217,17 @@ pub fn requires_windows_runner(files: &[String]) -> bool {
             // admission so the platform boundary cannot silently bit-rot.
             || normalized == "xtask/tests/release_artifact_size_smoke_script.rs"
     })
+}
+
+fn is_powershell_completion_path(file: &str) -> bool {
+    let normalized = file.replace('\\', "/").to_ascii_lowercase();
+    matches!(
+        normalized.as_str(),
+        "crates/perllsp/src/main.rs"
+            | "crates/perl-lsp-rs/src/cli.rs"
+            | "crates/perllsp/tests/powershell_completion.rs"
+            | "crates/perllsp/tests/fixtures/powershell_completion_probe.ps1"
+    ) || normalized.starts_with("crates/perl-lsp-rs-core/src/runtime/launcher/")
 }
 
 fn is_docs_as_code_file(file: &str) -> bool {
@@ -820,6 +832,11 @@ pub fn classify_files(
                 "perl-dap".to_string(),
             ]);
         }
+        // The public-binary completion probe lives in perllsp even when
+        // only its shared CLI/template changes in a different crate.
+        if files.iter().any(|file| is_powershell_completion_path(file)) {
+            crates.push("perllsp".to_string());
+        }
         crates.sort();
         crates.dedup();
         crates
@@ -1186,6 +1203,11 @@ mod tests {
             "crates/perl-workspace/src/workspace-index.rs",
             "crates/perl-workspace/src/platform/windows.rs",
             "xtask/tests/release_artifact_size_smoke_script.rs",
+            "crates/perllsp/src/main.rs",
+            "crates/perl-lsp-rs/src/cli.rs",
+            "crates/perl-lsp-rs-core/src/runtime/launcher/mod.rs",
+            "crates/perllsp/tests/powershell_completion.rs",
+            "crates/perllsp/tests/fixtures/powershell_completion_probe.ps1",
         ] {
             assert!(
                 requires_windows_runner(&[file.to_string()]),
@@ -1605,6 +1627,30 @@ mod tests {
         assert!(!output.platform_overrides.windows_runner);
         assert!(output.platform_overrides.windows_test_crates.is_empty());
         assert!(!output.explanations.contains_key("windows_runner"));
+        Ok(())
+    }
+
+    #[test]
+    fn classify_powershell_completion_paths_select_public_binary_on_windows() -> Result<()> {
+        let metadata = fake_metadata(&[
+            ("perllsp", "crates/perllsp"),
+            ("perl-lsp-rs", "crates/perl-lsp-rs"),
+            ("perl-lsp-rs-core", "crates/perl-lsp-rs-core"),
+        ]);
+        for (file, expected) in [
+            ("crates/perllsp/src/main.rs", vec!["perllsp"]),
+            ("crates/perl-lsp-rs/src/cli.rs", vec!["perl-lsp-rs", "perllsp"]),
+            (
+                "crates/perl-lsp-rs-core/src/runtime/launcher/mod.rs",
+                vec!["perl-lsp-rs-core", "perllsp"],
+            ),
+            ("crates/perllsp/tests/powershell_completion.rs", vec!["perllsp"]),
+            ("crates/perllsp/tests/fixtures/powershell_completion_probe.ps1", vec!["perllsp"]),
+        ] {
+            let output = classify_files(&[file.to_string()], &metadata, "/workspace")?;
+            assert!(output.platform_overrides.windows_runner, "{file} must execute on Windows");
+            assert_eq!(output.platform_overrides.windows_test_crates, expected, "{file}");
+        }
         Ok(())
     }
 

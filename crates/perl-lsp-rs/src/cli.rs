@@ -75,6 +75,7 @@ where
             print!(
                 "{}",
                 format_info_output(
+                    &command_name,
                     env!("CARGO_PKG_VERSION"),
                     revision_label,
                     revision,
@@ -87,18 +88,25 @@ where
         }
         LaunchAction::Check => run_check(&command_name, &launch_plan.files),
         LaunchAction::CheckProject { ref dir } => check_project::run_check_project(dir),
-        LaunchAction::Doctor { ref dir, json } => doctor::run_doctor(dir, json),
-        LaunchAction::DoctorExternalTools { json } => doctor::run_doctor_external_tools(json),
-        LaunchAction::DoctorCriticCompatibility { json } => {
-            doctor::run_doctor_critic_compatibility(json)
+        LaunchAction::Doctor { ref dir, json } => doctor::run_doctor(dir, json, &command_name),
+        LaunchAction::DoctorExternalTools { json } => {
+            doctor::run_doctor_external_tools(json, &command_name)
         }
-        LaunchAction::DoctorDevEnvironment { json } => doctor::run_doctor_dev_environment(json),
+        LaunchAction::DoctorCriticCompatibility { json } => {
+            doctor::run_doctor_critic_compatibility(json, &command_name)
+        }
+        LaunchAction::DoctorDevEnvironment { json } => {
+            doctor::run_doctor_dev_environment(json, &command_name)
+        }
         LaunchAction::Completion { ref shell } => {
             if let Some(script) = shell_completion(shell) {
                 print!("{}", render_shell_completion(script, &command_name));
                 0
             } else {
-                eprintln!("Unknown shell: {shell}. Supported: bash, zsh, fish, powershell");
+                // Single-sourced from the launcher's InvalidShell wording, so
+                // this fallback can never drift from the parse-time gate's
+                // supported list again (#16603).
+                eprintln!("{}", LaunchParseError::InvalidShell { raw_shell: shell.clone() });
                 1
             }
         }
@@ -380,7 +388,7 @@ fn run_server(command_name: &str, launch_config: LaunchConfig) {
         // not explicitly requested. This ensures warnings and errors are
         // captured to stderr for troubleshooting, instead of silently
         // discarded (#5013).
-        init_logging("warn,perl_lsp=info");
+        init_logging("warn");
     }
     startup_timer.checkpoint("logging_init");
 
@@ -759,6 +767,35 @@ mod tests {
 
         assert_eq!(exit_code, 1);
         Ok(())
+    }
+
+    #[test]
+    fn run_cli_completion_accepts_pwsh_alias() {
+        assert_eq!(run_cli(["perllsp", "--completion", "pwsh"]), 0);
+    }
+
+    #[test]
+    fn run_cli_rejects_unknown_shell_before_completion_dispatch() {
+        // Unknown shells must fail in parse_args (InvalidShell) before any
+        // completion dispatch; the completion arm's fallback only guards a
+        // shell name that slips past both lists.
+        assert_eq!(run_cli(["perllsp", "--completion", "nushell"]), 1);
+    }
+
+    #[test]
+    fn unknown_shell_fallback_names_every_supported_shell_including_pwsh() {
+        // #16603: the fallback text is single-sourced from the launcher's
+        // InvalidShell wording, so dropping pwsh from the supported list — the
+        // regression this text fix closed — now fails here instead of passing
+        // silently.
+        let message = perl_lsp_rs_core::runtime::launcher::LaunchParseError::InvalidShell {
+            raw_shell: "nushell".to_string(),
+        }
+        .to_string();
+        assert!(message.contains("nushell"), "the message names the rejected shell: {message}");
+        for shell in ["bash", "zsh", "fish", "powershell", "pwsh"] {
+            assert!(message.contains(shell), "supported list must name {shell}: {message}");
+        }
     }
 
     #[test]

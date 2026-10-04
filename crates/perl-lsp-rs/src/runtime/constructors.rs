@@ -61,6 +61,7 @@ impl LspServer {
             outbound,
             outbound_writer_handle: Some(outbound_writer_handle),
             client_capabilities: Mutex::new(ClientCapabilities::default()),
+            initial_root_input: Mutex::new(None),
             cancelled: Arc::new(Mutex::new(HashSet::new())),
             pending_request_ids: Arc::new(Mutex::new(HashSet::new())),
             workspace_folders: Arc::new(Mutex::new(Vec::new())),
@@ -130,6 +131,7 @@ impl LspServer {
             #[cfg(feature = "workspace")]
             permission_denied_shown: Arc::new(AtomicBool::new(false)),
             root_undetected_shown: Arc::new(AtomicBool::new(false)),
+        core_module_notice_shown: Arc::new(AtomicBool::new(false)),
 
             #[cfg(any(test, feature = "expose_lsp_test_api"))]
             formatter_runtime_override: Mutex::new(None),
@@ -258,6 +260,7 @@ impl LspServer {
             outbound,
             outbound_writer_handle: Some(outbound_writer_handle),
             client_capabilities: Mutex::new(ClientCapabilities::default()),
+            initial_root_input: Mutex::new(None),
             cancelled: Arc::new(Mutex::new(HashSet::new())),
             pending_request_ids: Arc::new(Mutex::new(HashSet::new())),
             workspace_folders: Arc::new(Mutex::new(Vec::new())),
@@ -327,6 +330,7 @@ impl LspServer {
             #[cfg(feature = "workspace")]
             permission_denied_shown: Arc::new(AtomicBool::new(false)),
             root_undetected_shown: Arc::new(AtomicBool::new(false)),
+        core_module_notice_shown: Arc::new(AtomicBool::new(false)),
 
             #[cfg(any(test, feature = "expose_lsp_test_api"))]
             formatter_runtime_override: Mutex::new(None),
@@ -396,6 +400,7 @@ impl LspServer {
             outbound,
             outbound_writer_handle: Some(outbound_writer_handle),
             client_capabilities: Mutex::new(ClientCapabilities::default()),
+            initial_root_input: Mutex::new(None),
             cancelled: Arc::new(Mutex::new(HashSet::new())),
             pending_request_ids: Arc::new(Mutex::new(HashSet::new())),
             workspace_folders: Arc::new(Mutex::new(Vec::new())),
@@ -465,6 +470,7 @@ impl LspServer {
             #[cfg(feature = "workspace")]
             permission_denied_shown: Arc::new(AtomicBool::new(false)),
             root_undetected_shown: Arc::new(AtomicBool::new(false)),
+        core_module_notice_shown: Arc::new(AtomicBool::new(false)),
 
             #[cfg(any(test, feature = "expose_lsp_test_api"))]
             formatter_runtime_override: Mutex::new(None),

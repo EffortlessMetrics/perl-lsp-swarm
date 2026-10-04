@@ -44,7 +44,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::allocation_tracker::{get_current_memory_usage, measure_allocations};
 use crate::tasks::metrics::parser_accuracy_metamorphic_registry;
-use crate::tasks::metrics::ratchet::MetricReceipt;
+use crate::tasks::metrics::ratchet::{MetricReceipt, SCHEMA_VERSION};
 use crate::utils::project_root;
 use xtask::parser_accuracy_legacy_population::{
     LEGACY_QUARANTINED_METRICS, LEGACY_WHITESPACE_AGGREGATE_METRIC, LegacyFixtureInput,
@@ -7058,6 +7058,7 @@ fn ratchet_receipt_for_artifact(artifact: &ParserAccuracyArtifact) -> MetricRece
         .collect();
 
     MetricReceipt {
+        schema_version: SCHEMA_VERSION,
         subsystem: artifact.subsystem.to_string(),
         generated_at: artifact.generated_at.clone(),
         commit: artifact.commit.clone(),

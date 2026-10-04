@@ -48,6 +48,13 @@ on:
       - 'scripts/ci/check-pr-review-convergence'
       - 'scripts/ci/fixtures/convergence/**'
       - 'scripts/tests/test-check-pr-review-convergence.sh'
+      # Paginator accumulator stdin portability regression (#15034): the test
+      # pins the jq stdin form inside check-pr-review-convergence-core, and
+      # the core is the implementation it gates, so both halves re-run this
+      # self-test gate; without the trigger, a silent revert to
+      # jq -n --argjson would pass all gated checks.
+      - 'scripts/ci/check-pr-review-convergence-core'
+      - 'scripts/tests/test-paginate-accumulator-argjson-portability.sh'
       - 'scripts/reviews/**'
       # Subject-bound semantic review currentness. The policy-surface suite
       # asserts against the skill trees, the shared contract, and pre-merge, so
@@ -72,11 +79,19 @@ on:
       - 'scripts/ci/test_pr_smoke_disk_guard.py'
       - 'scripts/ci/verify_gate_receipt_freshness.py'
       - 'scripts/ci/test_verify_gate_receipt_freshness.py'
+      # PR-fast failing-gate reporter (#15492): it decides which gates reach the
+      # check-runs annotations API and how a receipt's own text is escaped
+      # before it becomes a workflow command. Both halves gate each other.
+      - 'scripts/ci/summarize_pr_fast_gates.py'
+      - 'scripts/ci/test_summarize_pr_fast_gates.py'
       # ripr liveness classifier (#16098): it decides whether a ripr run with no
       # scheduled job is a designed wait or an absence of proof, and posts a
       # real check run on a real head. Both halves gate each other.
       - 'scripts/ci/ripr_liveness.py'
       - 'scripts/ci/test_ripr_liveness.py'
+      # The reporter's own workflow calls into that module for the one decision
+      # its inline snapshot step makes, so an edit here must re-prove it.
+      - '.github/workflows/ripr-liveness.yml'
       - '.cargo/config.toml'
       - 'scripts/tests/test-target-isolation.sh'
       # ripr lane termination classification + bounded same-head retry
@@ -89,6 +104,10 @@ on:
       - 'scripts/ci/classify-ripr-lane-termination'
       - 'scripts/ci/test_ripr_cache_authority_15055.py'
       - 'scripts/tests/test-classify-ripr-lane-termination.sh'
+      # Governed RIPR proof entry point (#13768): the adapter and its
+      # recording controls gate each other, so both halves re-run here.
+      - '.ci/ripr-proof.sh'
+      - 'scripts/ci/test_governed_ripr_proof.py'
       # Toolchain guard for bash entrypoints (issue #12593): the coverage
       # consistency test scans every cargo-invoking scripts/*.sh, so any
       # script change re-proves that none of them dodges the guard.
@@ -100,6 +119,9 @@ on:
       - 'scripts/tests/test-cargo-toolchain-guard.sh'
       - 'scripts/tests/test-cargo-safe-toolchain-guard.sh'
       - 'scripts/tests/test-fuzz-bounded.sh'
+      - 'scripts/lib/release-turnkey-handoff.sh'
+      - 'scripts/tests/test-release-turnkey-handoff.sh'
+      - 'xtask/src/tasks/release_turnkey.rs'
       - 'rust-toolchain.toml'
       - 'Cargo.toml'
       - '.github/workflows/publish-dry-run.yml'
@@ -129,7 +151,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (master)
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # stable (master)
         with:
           toolchain: stable
 
@@ -350,6 +372,11 @@ jobs:
       - name: Run review-convergence gate self-test
         run: bash scripts/tests/test-check-pr-review-convergence.sh
 
+      # (#15034) The paginator accumulator must stay on the jq stdin form; a
+      # silent revert to jq -n --argjson passes every other gated check.
+      - name: Run paginator accumulator argjson portability regression test
+        run: bash scripts/tests/test-paginate-accumulator-argjson-portability.sh
+
       # The convergence wrapper reports native GitHub facts and deliberately
       # refuses to classify them as substantive review. That split is only
       # honest if the verifier which does own the verdict is proved alongside
@@ -368,6 +395,9 @@ jobs:
 
       - name: Run gate receipt freshness oracle tests (#15400/A2)
         run: python3 -m unittest scripts.ci.test_verify_gate_receipt_freshness
+
+      - name: Run PR-fast gate reporter tests (#15492)
+        run: python3 -m unittest scripts.ci.test_summarize_pr_fast_gates
 
       - name: Run ripr liveness classifier tests (#16098)
         run: python3 -m unittest scripts.ci.test_ripr_liveness
@@ -472,7 +502,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (master)
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # stable (master)
         with:
           toolchain: stable
 
@@ -502,7 +532,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (master)
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # stable (master)
         with:
           toolchain: stable
 
@@ -525,6 +555,33 @@ jobs:
             echo "## Cargo toolchain guard self-test FAILED" >> "$GITHUB_STEP_SUMMARY"
             echo "" >> "$GITHUB_STEP_SUMMARY"
             echo "The guard contract regressed — a bash entrypoint could again hand builds to a cargo older than the workspace rust-version and surface it as a manifest parse error. Check the step output above." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  release-turnkey-handoff-self-test:
+    name: Release-turnkey manual-handoff self-test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Run release-turnkey handoff self-test
+        run: bash scripts/tests/test-release-turnkey-handoff.sh
+
+      - name: Summary
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          if [ "$JOB_STATUS" = "success" ]; then
+            echo "## Release-turnkey handoff self-test passed" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "\`--no-auto-merge\` and \`--no-wait-pr-merge\` stop at typed resumable handoffs and do not dispatch Release Orchestration unless exact landing is already proven in the same invocation (issue #16798)." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "## Release-turnkey handoff self-test FAILED" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "A manual/partial merge option can still continue into Release Orchestration without proven landing. Check the step output above." >> "$GITHUB_STEP_SUMMARY"
           fi
 
   fuzz-bounded-discovery-self-test:
@@ -571,6 +628,9 @@ jobs:
 
       - name: Run RIPR cache-writer authority self-test
         run: python3 -m unittest scripts/ci/test_ripr_cache_authority_15055.py
+
+      - name: Run governed RIPR proof self-test
+        run: python3 -m unittest scripts.ci.test_governed_ripr_proof
 
       - name: Summary
         if: always()

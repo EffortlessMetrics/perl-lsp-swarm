@@ -9,7 +9,7 @@ import json
 import sys
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
 
@@ -112,11 +112,13 @@ class PrPlanTests(unittest.TestCase):
             policy_root = Path(__file__).resolve().parents[2] / "policy"
 
             old_argv = sys.argv
-            old_changed_files = pr_plan.changed_files
+            old_discover = pr_plan.discover_changed_files
             try:
-                pr_plan.changed_files = lambda _base, _head: [
-                    "crates/perl-parser/src/parser.rs"
-                ]
+                pr_plan.discover_changed_files = lambda _base, _head: {
+                    "status": "known",
+                    "files": ["crates/perl-parser/src/parser.rs"],
+                    "digest": "test-digest-nonempty",
+                }
                 sys.argv = [
                     "pr_plan.py",
                     "--base",
@@ -143,7 +145,7 @@ class PrPlanTests(unittest.TestCase):
                     status = pr_plan.main()
             finally:
                 sys.argv = old_argv
-                pr_plan.changed_files = old_changed_files
+                pr_plan.discover_changed_files = old_discover
 
             plan = json.loads(output.read_text(encoding="utf-8"))
 
@@ -205,6 +207,235 @@ class PrPlanTests(unittest.TestCase):
         self.assertEqual("static_floor", lanes[1]["learned_source"])
         self.assertEqual(5, lanes[2]["base_lem"])
 
+    def _write_history(self, root: Path, payload: object, name: str = "ci-lane-history.json") -> Path:
+        path = root / name
+        if isinstance(payload, str):
+            path.write_text(payload, encoding="utf-8")
+        else:
+            path.write_text(json.dumps(payload), encoding="utf-8")
+        return path
+
+    def test_load_learned_history_accepts_a_v1_envelope(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write_history(
+                Path(tmp),
+                {
+                    "schema_version": 1,
+                    "lanes": {"rust_small": {"learned": True, "p50": 20.0}},
+                },
+            )
+            payload = pr_plan.load_learned_history(path)
+
+        self.assertEqual(1, payload["schema_version"])
+        self.assertIn("rust_small", payload["lanes"])
+
+    def test_load_learned_history_refuses_a_future_schema_even_when_lanes_survive(
+        self,
+    ) -> None:
+        """The check is the envelope version, not whether a `lanes` key remains.
+
+        A v2 producer that still used `lanes` but renamed per-record fields
+        would otherwise be consumed as v1 and rewrite `base_lem` (#15320).
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write_history(
+                Path(tmp),
+                {
+                    "schema_version": 2,
+                    "lanes": {
+                        "rust_small": {
+                            "learned": True,
+                            "p50": 1.0,
+                            "static_floor": 999.0,
+                        }
+                    },
+                },
+            )
+            with self.assertRaises(SystemExit) as raised:
+                pr_plan.load_learned_history(path)
+
+        self.assertIn("unsupported ci-lane-history schema", str(raised.exception))
+        self.assertIn("2", str(raised.exception))
+
+    def test_load_learned_history_refuses_non_integer_schema_versions(self) -> None:
+        """bool is an int subclass and 1.0 == 1, so bare `!= 1` would admit
+        JSON `true` / `1.0` and let their lane numbers rewrite `base_lem`.
+        """
+        for forged_version in (True, 1.0):
+            with self.subTest(forged_version=forged_version):
+                with tempfile.TemporaryDirectory() as tmp:
+                    path = self._write_history(
+                        Path(tmp),
+                        {
+                            "schema_version": forged_version,
+                            "lanes": {
+                                "rust_small": {
+                                    "learned": True,
+                                    "p50": 868.0,
+                                    "static_floor": 999.0,
+                                }
+                            },
+                        },
+                    )
+                    with self.assertRaises(SystemExit) as raised:
+                        pr_plan.load_learned_history(path)
+                self.assertIn("unsupported ci-lane-history schema", str(raised.exception))
+
+    def test_load_learned_history_refuses_a_payload_with_no_envelope(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write_history(
+                Path(tmp),
+                {"lanes": {"rust_small": {"learned": True, "p50": 20.0}}},
+            )
+            with self.assertRaises(SystemExit) as raised:
+                pr_plan.load_learned_history(path)
+
+        self.assertIn("unsupported ci-lane-history schema", str(raised.exception))
+
+    def test_load_learned_history_refuses_non_object_payloads(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write_history(Path(tmp), [{"lanes": {}}])
+            with self.assertRaises(SystemExit) as raised:
+                pr_plan.load_learned_history(path)
+
+        self.assertIn("unsupported ci-lane-history schema", str(raised.exception))
+        self.assertIn("list", str(raised.exception))
+
+    def test_load_learned_history_still_tolerates_absent_and_corrupt_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.assertEqual({}, pr_plan.load_learned_history(root / "absent.json"))
+
+            corrupt = self._write_history(root, "{not json", name="corrupt.json")
+            self.assertEqual({}, pr_plan.load_learned_history(corrupt))
+
+    def test_supported_history_version_is_pinned_here_not_by_the_producer(self) -> None:
+        self.assertEqual(1, pr_plan.HISTORY_SCHEMA_VERSION)
+        self.assertNotIn("SCHEMA_VERSION", vars(pr_plan))
+
+    def _invoke_main_with_history(self, root: Path, history_payload: object) -> Path:
+        """Drive `main()` the way `pr-plan.yml` does: policy files + `--history`.
+
+        Returns the `--json-out` path. Caller owns status / `SystemExit`.
+        `--history` is always explicit so the case does not depend on cwd
+        resolving the checked-in `.ci/metrics/ci-lane-history.json`.
+        """
+        budget = root / "ci-budget.toml"
+        budget.write_text(
+            """
+[budget]
+default_limit_lem = 35
+elevated_limit_lem = 75
+hard_limit_lem = 125
+linux_minute_rate_usd = 0.008
+""",
+            encoding="utf-8",
+        )
+        lanes = root / "ci-lanes.toml"
+        lanes.write_text(
+            """
+[lane.rust_small]
+default_pr = true
+base_lem = 10
+blocking = true
+""",
+            encoding="utf-8",
+        )
+        (root / "ci-risk-packs.toml").write_text("", encoding="utf-8")
+        (root / "trust-lanes.toml").write_text("", encoding="utf-8")
+        history = self._write_history(root, history_payload)
+        output = root / "ci-plan.json"
+        old_argv = sys.argv
+        old_discover = pr_plan.discover_changed_files
+        try:
+            pr_plan.discover_changed_files = lambda _base, _head: {
+                "status": "known",
+                "files": ["scripts/ci/pr_plan.py"],
+                "digest": "test-digest-history-envelope",
+            }
+            sys.argv = [
+                "pr_plan.py",
+                "--base",
+                "origin/main",
+                "--head",
+                "HEAD",
+                "--labels-json",
+                "[]",
+                "--budget",
+                str(budget),
+                "--lanes",
+                str(lanes),
+                "--risk-packs",
+                str(root / "ci-risk-packs.toml"),
+                "--trust-lanes",
+                str(root / "trust-lanes.toml"),
+                "--history",
+                str(history),
+                "--json-out",
+                str(output),
+            ]
+            with redirect_stdout(io.StringIO()):
+                pr_plan.main()
+        finally:
+            sys.argv = old_argv
+            pr_plan.discover_changed_files = old_discover
+        return output
+
+    def test_main_fail_closes_on_unsupported_history_schema_before_applying_estimates(
+        self,
+    ) -> None:
+        """Production path: pr-plan.yml feeds this file into pr_plan.py.
+
+        A v2 payload that still carries `lanes` must not write a plan that
+        substituted those numbers into `base_lem`.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with self.assertRaises(SystemExit) as raised:
+                self._invoke_main_with_history(
+                    root,
+                    {
+                        "schema_version": 2,
+                        "lanes": {
+                            "rust_small": {
+                                "learned": True,
+                                "p50": 20.0,
+                                "static_floor": 999.0,
+                            }
+                        },
+                    },
+                )
+
+            self.assertIn("unsupported ci-lane-history schema", str(raised.exception))
+            self.assertFalse(
+                (root / "ci-plan.json").exists(), "fail-closed must not emit a plan"
+            )
+
+    def test_main_applies_v1_history_estimates_to_the_emitted_plan(self) -> None:
+        """Opposite-direction control: a supported envelope still reaches the
+        plan. rust_small static 10 → p50 20 * 1.15 = 23, so the emitted
+        estimate moving is proof `main()` consumed the loader output.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            output = self._invoke_main_with_history(
+                Path(tmp),
+                {
+                    "schema_version": 1,
+                    "lanes": {
+                        "rust_small": {
+                            "learned": True,
+                            "p50": 20.0,
+                            "static_floor": 2.0,
+                        }
+                    },
+                },
+            )
+            plan = json.loads(output.read_text(encoding="utf-8"))
+
+        self.assertEqual(23.0, plan["budget"]["estimated_lem"])
+        self.assertEqual(1, plan["learned"]["lanes_using_learned"])
+        self.assertEqual(13.0, plan["learned"]["delta_lem_vs_static"])
+
     def test_main_writes_plan_summary_and_trust_lane_for_pr_plan_helper(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -258,9 +489,13 @@ required_checks = ["docs"]
             summary = root / "summary.md"
 
             old_argv = sys.argv
-            old_changed_files = pr_plan.changed_files
+            old_discover = pr_plan.discover_changed_files
             try:
-                pr_plan.changed_files = lambda _base, _head: ["scripts/ci/pr_plan.py"]
+                pr_plan.discover_changed_files = lambda _base, _head: {
+                    "status": "known",
+                    "files": ["scripts/ci/pr_plan.py"],
+                    "digest": "test-digest-pr-plan-helper",
+                }
                 sys.argv = [
                     "pr_plan.py",
                     "--base",
@@ -287,7 +522,7 @@ required_checks = ["docs"]
                     status = pr_plan.main()
             finally:
                 sys.argv = old_argv
-                pr_plan.changed_files = old_changed_files
+                pr_plan.discover_changed_files = old_discover
 
             plan = json.loads(output.read_text(encoding="utf-8"))
             printed = json.loads(stdout.getvalue())
@@ -302,6 +537,283 @@ required_checks = ["docs"]
         self.assertIn("## Trust lane (advisory)", summary_text)
         self.assertIn("`docs_status_only`", summary_text)
         self.assertIn("`ripr_advisory` | paths-filter-no-match", summary_text)
+
+    def test_discover_changed_files_keeps_failure_and_empty_opposite(self) -> None:
+        """A failed diff and a genuine empty diff are opposite facts (#15347)."""
+
+        class Failure:
+            returncode = 128
+            stdout = ""
+            stderr = "fatal: bad revision 'origin/main...HEAD'"
+
+        class OkFiles:
+            returncode = 0
+            stdout = "b.rs\na.rs\n"
+            stderr = ""
+
+        class OkEmpty:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        commands: list[list[str]] = []
+        outcomes = iter([Failure(), OkFiles(), OkEmpty()])
+
+        def fake_run(command, **_kwargs):
+            commands.append(command)
+            return next(outcomes)
+
+        old_run = pr_plan.subprocess.run
+        try:
+            pr_plan.subprocess.run = fake_run
+            failed = pr_plan.discover_changed_files("origin/main", "HEAD")
+            known = pr_plan.discover_changed_files("origin/main", "HEAD")
+            empty = pr_plan.discover_changed_files("origin/main", "HEAD")
+        finally:
+            pr_plan.subprocess.run = old_run
+
+        self.assertEqual("unavailable", failed["status"])
+        self.assertEqual("git-diff-exit-128", failed["code"])
+        self.assertIn("bad revision", failed["detail"])
+        self.assertEqual(
+            ["git", "diff", "--name-only", "origin/main...HEAD"], failed["command"]
+        )
+        self.assertNotIn("files", failed)
+
+        self.assertEqual("known", known["status"])
+        self.assertEqual(["b.rs", "a.rs"], known["files"])
+        self.assertEqual(64, len(known["digest"]))
+
+        self.assertEqual("known_empty", empty["status"])
+        self.assertEqual([], empty["files"])
+        self.assertEqual(64, len(empty["digest"]))
+        self.assertEqual(3, len(commands))
+        reproduce = ["git", "diff", "--name-only", "origin/main...HEAD"]
+        self.assertTrue(all(command == reproduce for command in commands))
+
+    def test_discover_changed_files_reports_unspawnable_git_as_unavailable(self) -> None:
+        def raising_run(_command, **_kwargs):
+            raise OSError("git: executable not found")
+
+        old_run = pr_plan.subprocess.run
+        try:
+            pr_plan.subprocess.run = raising_run
+            changeset = pr_plan.discover_changed_files("origin/main", "HEAD")
+        finally:
+            pr_plan.subprocess.run = old_run
+
+        self.assertEqual("unavailable", changeset["status"])
+        self.assertEqual("git-unspawnable", changeset["code"])
+        self.assertIn("not found", changeset["detail"])
+        self.assertEqual(["git", "diff", "--name-only", "origin/main...HEAD"], changeset["command"])
+
+    def test_discover_changed_files_timeout_refuses_without_planning_empty(self) -> None:
+        command = ["git", "diff", "--name-only", "origin/main...HEAD"]
+
+        def timed_out(actual_command, **kwargs):
+            self.assertEqual(command, actual_command)
+            self.assertEqual(pr_plan.GIT_DIFF_TIMEOUT_SECONDS, kwargs["timeout"])
+            self.assertTrue(kwargs["capture_output"])
+            raise pr_plan.subprocess.TimeoutExpired(actual_command, kwargs["timeout"])
+
+        old_run = pr_plan.subprocess.run
+        try:
+            pr_plan.subprocess.run = timed_out
+            changeset = pr_plan.discover_changed_files("origin/main", "HEAD")
+        finally:
+            pr_plan.subprocess.run = old_run
+
+        self.assertEqual("unavailable", changeset["status"])
+        self.assertEqual("git-diff-timeout", changeset["code"])
+        self.assertIn("30 seconds", changeset["detail"])
+        self.assertEqual(command, changeset["command"])
+        self.assertNotIn("files", changeset)
+
+    def test_discovery_annotation_escapes_git_stderr_but_keeps_receipt_detail(self) -> None:
+        detail = "fatal: bad revision 100%\rmore detail\n::warning::injected"
+        changeset = {
+            "status": "unavailable",
+            "code": "git-diff-exit-128",
+            "detail": detail,
+            "command": ["git", "diff", "--name-only", "origin/main...HEAD"],
+        }
+        plan = pr_plan.not_proven_plan(
+            base="origin/main", head="HEAD", labels=[], changeset=changeset
+        )
+
+        self.assertEqual(detail, plan["refusal"]["detail"])
+        self.assertEqual(detail, plan["changed_set"]["detail"])
+        self.assertIn(detail, pr_plan.render_not_proven_summary(plan))
+        annotation = plan["warnings"][0]
+        self.assertEqual(1, len(annotation.splitlines()))
+        self.assertIn("100%25%0Dmore detail%0A::warning::injected", annotation)
+        self.assertTrue(annotation.startswith("::error::"))
+
+    def test_main_writes_not_proven_receipt_and_fails_when_discovery_fails(self) -> None:
+        """Negative control: a Rust change behind a failed diff cannot route
+        as a zero-impact plan; the receipt must be refuseable without prose."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output = root / "ci-plan.json"
+            summary = root / "summary.md"
+            policy_root = Path(__file__).resolve().parents[2] / "policy"
+
+            old_argv = sys.argv
+            old_discover = pr_plan.discover_changed_files
+            try:
+                pr_plan.discover_changed_files = lambda _base, _head: {
+                    "status": "unavailable",
+                    "code": "git-diff-exit-128",
+                    "detail": "fatal: bad revision 'origin/main...HEAD'",
+                    "command": [
+                        "git",
+                        "diff",
+                        "--name-only",
+                        "origin/main...HEAD",
+                    ],
+                }
+                sys.argv = [
+                    "pr_plan.py",
+                    "--base",
+                    "origin/main",
+                    "--head",
+                    "HEAD",
+                    "--labels-json",
+                    "[]",
+                    "--budget",
+                    str(policy_root / "ci-budget.toml"),
+                    "--lanes",
+                    str(policy_root / "ci-lanes.toml"),
+                    "--risk-packs",
+                    str(policy_root / "ci-risk-packs.toml"),
+                    "--trust-lanes",
+                    str(policy_root / "trust-lanes.toml"),
+                    "--history",
+                    str(root / "missing-history.json"),
+                    "--json-out",
+                    str(output),
+                    "--summary",
+                    str(summary),
+                ]
+                stdout = io.StringIO()
+                stderr = io.StringIO()
+                with redirect_stdout(stdout), redirect_stderr(stderr):
+                    status = pr_plan.main()
+            finally:
+                sys.argv = old_argv
+                pr_plan.discover_changed_files = old_discover
+
+            plan = json.loads(output.read_text(encoding="utf-8"))
+            summary_text = summary.read_text(encoding="utf-8")
+
+        self.assertEqual(3, status)
+        self.assertEqual("NOT_PROVEN", plan["posture"])
+        self.assertNotIn("changed", plan)
+        self.assertEqual("unavailable", plan["changed_set"]["status"])
+        self.assertEqual(
+            "changed_file_discovery_unavailable", plan["refusal"]["reason"]
+        )
+        self.assertEqual("git-diff-exit-128", plan["refusal"]["code"])
+        self.assertIn("bad revision", plan["refusal"]["detail"])
+        self.assertEqual(
+            "git diff --name-only origin/main...HEAD", plan["refusal"]["reproduce"]
+        )
+        self.assertTrue(plan["selection"]["refused"])
+        self.assertEqual([], plan["selection"]["lanes"])
+        self.assertEqual([], plan["selection"]["risk_packs"])
+        self.assertEqual([], plan["selection"]["skipped_lanes"])
+        self.assertTrue(plan["guard"]["failed"])
+        self.assertIn("NOT_PROVEN", stdout.getvalue())
+        # The ::error:: annotation is printed to the workflow log, not only
+        # stored in the receipt (#15347).
+        self.assertIn("::error::Changed-file discovery failed", stderr.getvalue())
+        self.assertIn("git-diff-exit-128", summary_text)
+        self.assertIn("NOT_PROVEN", summary_text)
+
+    def test_main_keeps_genuinely_empty_diff_a_valid_plan(self) -> None:
+        """An exit-0 empty diff is a valid zero-change plan, not a failure."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            budget = root / "ci-budget.toml"
+            budget.write_text(
+                """
+[budget]
+default_limit_lem = 35
+elevated_limit_lem = 75
+hard_limit_lem = 125
+linux_minute_rate_usd = 0.008
+""",
+                encoding="utf-8",
+            )
+            lanes = root / "ci-lanes.toml"
+            lanes.write_text(
+                """
+[lane.rust_small]
+default_pr = true
+base_lem = 10
+blocking = true
+""",
+                encoding="utf-8",
+            )
+            risk_packs = root / "ci-risk-packs.toml"
+            risk_packs.write_text("", encoding="utf-8")
+            trust_lanes = root / "trust-lanes.toml"
+            trust_lanes.write_text(
+                """
+schema_version = 1
+policy = "trust-lanes"
+status = "advisory"
+""",
+                encoding="utf-8",
+            )
+            output = root / "ci-plan.json"
+
+            old_argv = sys.argv
+            old_discover = pr_plan.discover_changed_files
+            try:
+                pr_plan.discover_changed_files = lambda _base, _head: {
+                    "status": "known_empty",
+                    "files": [],
+                    "digest": "0" * 64,
+                }
+                sys.argv = [
+                    "pr_plan.py",
+                    "--base",
+                    "origin/main",
+                    "--head",
+                    "HEAD",
+                    "--labels-json",
+                    "[]",
+                    "--budget",
+                    str(budget),
+                    "--lanes",
+                    str(lanes),
+                    "--risk-packs",
+                    str(risk_packs),
+                    "--trust-lanes",
+                    str(trust_lanes),
+                    "--json-out",
+                    str(output),
+                ]
+                stdout = io.StringIO()
+                with redirect_stdout(stdout):
+                    status = pr_plan.main()
+            finally:
+                sys.argv = old_argv
+                pr_plan.discover_changed_files = old_discover
+
+            plan = json.loads(output.read_text(encoding="utf-8"))
+            printed = json.loads(stdout.getvalue())
+
+        self.assertEqual(0, status)
+        self.assertEqual("rust", plan["posture"])
+        self.assertEqual("known_empty", plan["changed_set"]["status"])
+        self.assertEqual([], plan["changed"]["files"])
+        self.assertEqual([], plan["selection"]["risk_packs"])
+        self.assertFalse(plan["guard"]["failed"])
+        self.assertEqual(
+            {"estimated_lem": 10.0, "band": "default", "lanes": 1}, printed
+        )
 
 
 if __name__ == "__main__":

@@ -59,6 +59,17 @@ class AuthorityTransferReviewTests(unittest.TestCase):
         target.write_text(json.dumps(body), encoding="utf-8", newline="\n")
         return target
 
+    def packet_for_other_surface(self) -> Path:
+        """Build a current packet whose authority claim targets `close.contract`
+        (a different surface than `authority_catalog`); this proves the row
+        under review has at least one packet supplied but none that actually
+        cover it, which is the FAIL_REVIEW_MISSING case after #16100."""
+        body = packet_body("semantic_close_authority", HEAD)
+        body["subject"]["changed"]["authorities"] = [
+            {"ref": "close.contract", "subject": "docs/agents/CLOSE_PROOF_POLICY.md"}
+        ]
+        return self.write_packet("off-surface.json", body)
+
     def evaluate(
         self,
         changed: list[str],
@@ -98,12 +109,64 @@ class AuthorityTransferReviewTests(unittest.TestCase):
         self.assertEqual("authority-transfer-review.v1", receipt["schema_version"])
         self.assertEqual(receipt["schema_version"], atr.SCHEMA)
 
-    def test_governed_change_without_packet_is_typed_missing_and_head_bound(self) -> None:
-        # Falsifier 1: candidate touches the configuration authority catalog with no packet.
+    def test_governed_change_without_packet_is_not_proven_and_head_bound(self) -> None:
+        # Falsifier 1: candidate touches the configuration authority catalog with no
+        # packet supplied. With zero packets the workflow has no packet source
+        # configured at this invocation, so the verdict is NOT_PROVEN_GITHUB —
+        # evidence could not be established. A red that says "review missing"
+        # would lie about the proposition it claims to have checked; see #16100.
         receipt = self.evaluate(GOVERNED_CHANGED, [])
-        self.assertEqual(atr.FAIL_REVIEW_MISSING, receipt["result"])
+        self.assertEqual(atr.NOT_PROVEN_GITHUB, receipt["result"])
         self.assertEqual(HEAD, receipt["evaluated_head_sha"])
         self.assertEqual(["authority_catalog"], [row["surface_id"] for row in receipt["governed_rows"]])
+        self.assertEqual(
+            atr.NOT_PROVEN_GITHUB, receipt["verdicts"][0]["result"]
+        )
+
+    def test_not_proven_github_exits_neutral_never_reds_the_advisory_job(self) -> None:
+        # #16150 Shape 3: until a packet channel exists, every governed change
+        # yields NOT_PROVEN_GITHUB. That evidence boundary must not exit
+        # non-zero — a red job every governed PR earns identically carries no
+        # information and trains readers to ignore red. The typed verdict
+        # stays in the summary; the instrument-failure and typed-failure
+        # classes stay loud.
+        buffer = io.StringIO()
+        with redirect_stdout(buffer):
+            code = atr.main(
+                [
+                    "--root",
+                    str(self.base),
+                    "--repository",
+                    REPOSITORY,
+                    "--pr-number",
+                    "1",
+                    "--base-sha",
+                    "c" * 40,
+                    "--head-sha",
+                    HEAD,
+                    "--changed-file",
+                    GOVERNED_CHANGED[0],
+                ]
+            )
+        self.assertEqual(atr.EXIT_PASS, code)
+        self.assertIn("Result: `NOT_PROVEN_GITHUB`", buffer.getvalue())
+        self.assertEqual(
+            atr.EXIT_PASS, atr.exit_code_for_result(atr.NOT_PROVEN_SUBJECT)
+        )
+        self.assertEqual(
+            atr.EXIT_NOT_PROVEN, atr.exit_code_for_result(atr.INSTRUMENT_FAILURE)
+        )
+        self.assertEqual(
+            atr.EXIT_TYPED_FAILURE, atr.exit_code_for_result(atr.FAIL_REVIEW_MISSING)
+        )
+
+    def test_governed_change_with_off_surface_packets_is_typed_missing(self) -> None:
+        # Regression coverage for #16100: packets supplied but none cover the
+        # governed row is a real review-absence (FAIL_REVIEW_MISSING), distinct
+        # from "no packets supplied" (NOT_PROVEN_GITHUB above). The verdict
+        # distinguishes the wiring gap from genuine missing review.
+        receipt = self.evaluate(GOVERNED_CHANGED, [self.packet_for_other_surface()])
+        self.assertEqual(atr.FAIL_REVIEW_MISSING, receipt["result"])
         self.assertEqual(
             atr.FAIL_REVIEW_MISSING, receipt["verdicts"][0]["result"]
         )
@@ -440,18 +503,23 @@ class AuthorityTransferReviewTests(unittest.TestCase):
             self.assertTrue(receipt["denominator"]["candidate_tree_checked"])
             self.assertFalse(receipt["denominator"]["candidate_tree_strict_pass"])
 
-    def test_bounded_changed_file_overflow_is_not_proven_github(self) -> None:
-        # Falsifier 10 guard rail: bounds exceeded can never look like a clean pass.
+    def test_bounded_changed_file_overflow_is_typed_input_failure(self) -> None:
+        # Falsifier 10 guard rail: bounds exceeded can never look like a clean
+        # pass. #16150 review: truncation means governed paths after the
+        # retained prefix were never evaluated, so it is a per-run input
+        # failure (exit 1), not the advisory NOT_PROVEN_GITHUB boundary.
         receipt = self.evaluate(
             GOVERNED_CHANGED + [f"filler/{i}.txt" for i in range(120)], []
         )
-        self.assertEqual(atr.NOT_PROVEN_GITHUB, receipt["result"])
+        self.assertEqual(atr.FAIL_CHANGED_INPUT, receipt["result"])
+        self.assertEqual(atr.EXIT_TYPED_FAILURE, atr.exit_code_for_result(receipt["result"]))
+        self.assertTrue(receipt["inputs"]["changed_files_truncated"])
 
     # ------------------------------------------------------------------
     # Determinism and CLI contract
     # ------------------------------------------------------------------
 
-    def test_non_utf8_changed_list_is_not_proven_never_ungoverned(self) -> None:
+    def test_non_utf8_changed_list_is_typed_input_failure_never_ungoverned(self) -> None:
         listed = self.base / "changed.txt"
         listed.write_bytes(b"src/authority/catalog\xff.rs\n")
         inputs = {
@@ -467,9 +535,30 @@ class AuthorityTransferReviewTests(unittest.TestCase):
             "max_changed_files": 100,
         }
         receipt = atr.evaluate(inputs)
-        self.assertEqual(atr.NOT_PROVEN_GITHUB, receipt["result"])
+        self.assertEqual(atr.FAIL_CHANGED_INPUT, receipt["result"])
+        self.assertEqual(atr.EXIT_TYPED_FAILURE, atr.exit_code_for_result(receipt["result"]))
         self.assertNotEqual(atr.PASS_NOT_APPLICABLE, receipt["result"])
         self.assertTrue(receipt["inputs"]["changed_list_error"].startswith("changed_list_not_utf8"))
+
+    def test_neutral_row_verdict_never_masks_typed_failure(self) -> None:
+        """#16150 review — a NOT_PROVEN_GITHUB boundary on one row must not
+        silence an independent FAIL_* on another: every FAIL_* ranks above the
+        neutral verdicts in SEVERITY_ORDER, so the mixed aggregate is the
+        typed failure and the CLI exits 1."""
+        for fail_result in atr.TYPED_FAILURE_RESULTS:
+            self.assertEqual(fail_result, atr.aggregate([atr.NOT_PROVEN_GITHUB, fail_result]))
+            self.assertEqual(fail_result, atr.aggregate([atr.NOT_PROVEN_SUBJECT, fail_result]))
+            self.assertEqual(
+                atr.EXIT_TYPED_FAILURE,
+                atr.exit_code_for_result(atr.aggregate([atr.NOT_PROVEN_GITHUB, fail_result])),
+            )
+        # Unmixed neutral evidence stays advisory-neutral (exit 0).
+        self.assertEqual(atr.NOT_PROVEN_GITHUB, atr.aggregate([atr.NOT_PROVEN_GITHUB]))
+        self.assertEqual(
+            atr.EXIT_PASS,
+            atr.exit_code_for_result(atr.aggregate([atr.NOT_PROVEN_GITHUB, atr.NOT_PROVEN_SUBJECT])),
+        )
+        self.assertEqual(atr.EXIT_PASS, atr.exit_code_for_result(atr.NOT_PROVEN_GITHUB))
 
     def test_consecutive_computations_over_unchanged_inputs_are_byte_identical(self) -> None:
         good = self.write_packet("good.json", packet_body("semantic_close_authority", HEAD))
@@ -508,18 +597,23 @@ class AuthorityTransferReviewTests(unittest.TestCase):
             "--summary",
             str(summary_path),
         ]
-        # Governed change without packet must exit typed-failure (1).
+        # Governed change with no packet supplied keeps its typed NOT_PROVEN_GITHUB
+        # verdict in the receipt and summary, but exits neutral (0) under #16150
+        # Shape 3: the advisory context must not red the job on a wiring/evidence
+        # boundary every governed PR earns identically. A typed-failure exit
+        # would lie about what was checked; a non-zero exit trains readers to
+        # ignore red.
         buffer = io.StringIO()
         with redirect_stdout(buffer):
             status = atr.main(argv)
-        self.assertEqual(atr.EXIT_TYPED_FAILURE, status)
+        self.assertEqual(atr.EXIT_PASS, status)
         written = json.loads(receipt_path.read_text(encoding="utf-8"))
-        self.assertEqual(atr.FAIL_REVIEW_MISSING, written["result"])
+        self.assertEqual(atr.NOT_PROVEN_GITHUB, written["result"])
         summary = summary_path.read_text(encoding="utf-8")
-        self.assertIn("FAIL_REVIEW_MISSING", summary)
+        self.assertIn("NOT_PROVEN_GITHUB", summary)
         self.assertIn(HEAD, summary)
 
-    def test_cli_not_proven_exit_code_is_distinct_from_typed_failure(self) -> None:
+    def test_cli_not_proven_verdict_is_advisory_neutral_distinct_from_typed_failure(self) -> None:
         receipt_path = self.base / "out" / "receipt.json"
         argv = [
             "--root",
@@ -540,7 +634,10 @@ class AuthorityTransferReviewTests(unittest.TestCase):
         buffer = io.StringIO()
         with redirect_stdout(buffer):
             status = atr.main(argv)
-        self.assertEqual(atr.EXIT_NOT_PROVEN, status)
+        # #16150 Shape 3: the trusted_workflow_run row's NOT_PROVEN_GITHUB
+        # verdict is advisory-neutral at the job surface; the typed verdict
+        # stays in the receipt.
+        self.assertEqual(atr.EXIT_PASS, status)
         written = json.loads(receipt_path.read_text(encoding="utf-8"))
         self.assertEqual(atr.NOT_PROVEN_GITHUB, written["result"])
 
@@ -590,7 +687,8 @@ class AuthorityTransferReviewTests(unittest.TestCase):
             "max_changed_files": 100,
         }
         receipt = atr.evaluate(inputs)
-        self.assertEqual(atr.NOT_PROVEN_GITHUB, receipt["result"])
+        self.assertEqual(atr.FAIL_CHANGED_INPUT, receipt["result"])
+        self.assertEqual(atr.EXIT_TYPED_FAILURE, atr.exit_code_for_result(receipt["result"]))
         self.assertIn("changed_list_not_utf8", receipt["inputs"]["changed_list_error"])
 
     # ------------------------------------------------------------------
@@ -850,9 +948,12 @@ paths = [
         # Base alone sees no governed row for this path.
         base_only = self.evaluate(changed, [])
         self.assertEqual(atr.PASS_NOT_APPLICABLE, base_only["result"])
-        # The union sees the candidate-added surface and fails typed-missing.
+        # The union sees the candidate-added surface. With no packets supplied,
+        # #16100 makes this NOT_PROVEN_GITHUB (wiring gap, not a typed
+        # missing-review), so the verdict distinguishes the candidate-extension
+        # case from a real review-absence.
         receipt = self.evaluate(changed, [], candidate_root=candidate_root)
-        self.assertEqual(atr.FAIL_REVIEW_MISSING, receipt["result"])
+        self.assertEqual(atr.NOT_PROVEN_GITHUB, receipt["result"])
         self.assertEqual(
             ["candidate_added"], [row["surface_id"] for row in receipt["governed_rows"]]
         )

@@ -2,14 +2,13 @@
 
 use super::logpoint::{DrainStep, LogpointDrain, LogpointStep, PendingLogpoint};
 use super::{
-    Arc, BufRead, BufReader, Child, DEBUG_SESSION_TERMINATE_WAIT_MS, DapEvent, DapMessage,
-    DebugAdapter, DebugSession, DebugState, DisconnectArguments, Duration,
-    EngineBreakpointHitOutcome, Instant, LAUNCH_REFUSED_NO_AUTHORITY_MESSAGE,
-    LAUNCH_REFUSED_NO_BOUNDARY_MESSAGE, Mutex, Read, RestartArguments, ResumeMode, Source,
-    StackFrame, Stdio, TcpAttachConfig, TcpAttachSession, TerminateArguments, TerminationState,
-    Value, Write, ansi_escape_re, catalog_has_feature, context_re, die_suffix_re, error_re,
-    exception_re, json, lock_or_recover, module_path_to_name, prompt_re, security, stack_frame_re,
-    thread, warning_re,
+    Arc, BufRead, BufReader, Child, DapEvent, DapMessage, DebugAdapter, DebugSession, DebugState,
+    DisconnectArguments, Duration, EngineBreakpointHitOutcome, Instant,
+    LAUNCH_REFUSED_NO_AUTHORITY_MESSAGE, LAUNCH_REFUSED_NO_BOUNDARY_MESSAGE, Mutex, Read,
+    RestartArguments, ResumeMode, Source, StackFrame, Stdio, TcpAttachConfig, TcpAttachSession,
+    TerminateArguments, TerminationState, Value, Write, ansi_escape_re, catalog_has_feature,
+    context_re, debug_session_terminate_wait_ms, die_suffix_re, error_re, exception_re, json,
+    lock_or_recover, module_path_to_name, prompt_re, security, stack_frame_re, thread, warning_re,
 };
 #[cfg(unix)]
 use nix::sys::signal::{self, Signal};
@@ -3200,10 +3199,18 @@ impl DebugAdapter {
             let pid = process.id();
             match signal::kill(Pid::from_raw(Self::u32_to_i32_saturating(pid)), Signal::SIGTERM) {
                 Ok(()) => {
+                    // The SIGTERM grace period keeps the production budget:
+                    // it precedes kill(), so a test child that ignores
+                    // SIGTERM would otherwise consume the elevated
+                    // confirmation budget here and push the whole cleanup
+                    // past the cleanup-driving tests' 2s response deadlines
+                    // (CodeRabbit follow-up on #17173). Only the final
+                    // kill-confirmation wait below is elevated in test
+                    // builds.
                     if let outcome @ ChildExitOutcome::Exited =
                         Self::wait_for_child_exit_with_outcome(
                             process,
-                            Duration::from_millis(DEBUG_SESSION_TERMINATE_WAIT_MS),
+                            Duration::from_millis(super::DEBUG_SESSION_TERMINATE_WAIT_MS),
                         )
                     {
                         // #15538: the direct child exited gracefully, but the
@@ -3228,7 +3235,7 @@ impl DebugAdapter {
         }
         Self::wait_for_child_exit_with_outcome(
             process,
-            Duration::from_millis(DEBUG_SESSION_TERMINATE_WAIT_MS),
+            Duration::from_millis(debug_session_terminate_wait_ms()),
         )
     }
 
@@ -7129,19 +7136,28 @@ mod tests {
                 .to_string());
         }
 
-        // Verify the process was actually killed by the watchdog.
-        std::thread::sleep(Duration::from_millis(200));
-        let process_exited = adapter
-            .session
-            .lock()
-            .map_err(|_| "session lock poisoned".to_string())?
-            .as_mut()
-            .and_then(|s| s.process.try_wait().ok().flatten())
-            .is_some();
-        if !process_exited {
-            return Err(
-                "debuggee process is still alive after watchdog should have killed it".to_string()
-            );
+        // Verify the process was actually killed by the watchdog. #17173:
+        // poll instead of a fixed 200ms sleep — TerminateProcess initiation
+        // and the terminated event are not the same moment as the OS-level
+        // exit becoming visible, and under suite load a single early check
+        // raced the kill it was meant to verify.
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let process_exited = adapter
+                .session
+                .lock()
+                .map_err(|_| "session lock poisoned".to_string())?
+                .as_mut()
+                .and_then(|s| s.process.try_wait().ok().flatten())
+                .is_some();
+            if process_exited {
+                break;
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err("debuggee process is still alive after watchdog should have killed it"
+                    .to_string());
+            }
+            std::thread::sleep(Duration::from_millis(50));
         }
 
         Ok(())
@@ -7326,6 +7342,25 @@ mod tests {
     fn framed_reader_exhaustion_clears_session_instead_of_interpreting_payload()
     -> Result<(), String> {
         let adapter = reader_stack_fixture("overflow")?;
+        // Serve the stack trace once to drive the exhausted reader through
+        // its reap path, then wait deterministically for the session to be
+        // cleared (#15749). Asserting on this first response raced the
+        // reader thread under load and misread the pre-reap sentinel frame
+        // as retained authority.
+        let _ = adapter.handle_stack_trace(1, 1, Some(json!({"threadId": 1})));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if lock_or_recover(&adapter.session, "test.reader_exhausted").is_none() {
+                break;
+            }
+            if Instant::now() >= deadline {
+                return Err("exhausted reader did not reap and clear the session".to_string());
+            }
+            thread::sleep(Duration::from_millis(2));
+        }
+        // Once the session is cleared, stack authority must be gone: the
+        // response serves empty frames instead of interpreting the exhausted
+        // payload.
         let response = adapter.handle_stack_trace(1, 1, Some(json!({"threadId": 1})));
         let DapMessage::Response { success: true, body: Some(body), .. } = response else {
             return Err(format!("unexpected exhausted-frame response: {response:?}"));
@@ -7336,16 +7371,7 @@ mod tests {
                 body.get("stackFrames").and_then(Value::as_array).map_or(0, Vec::len),
             ));
         }
-        let deadline = Instant::now() + Duration::from_secs(5);
-        loop {
-            if lock_or_recover(&adapter.session, "test.reader_exhausted").is_none() {
-                return Ok(());
-            }
-            if Instant::now() >= deadline {
-                return Err("exhausted reader did not reap and clear the session".to_string());
-            }
-            thread::sleep(Duration::from_millis(2));
-        }
+        Ok(())
     }
 
     #[test]

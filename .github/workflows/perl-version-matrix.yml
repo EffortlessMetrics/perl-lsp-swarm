@@ -8,7 +8,12 @@ on:
   schedule:
     # Weekly on Mondays at 04:30 UTC
     - cron: '30 4 * * 1'
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      signatures_only:
+        description: Run only the four signature oracle versions and native conformance report
+        type: boolean
+        default: false
 
 concurrency:
   group: perl-version-matrix-${{ github.event.pull_request.number || github.ref }}
@@ -18,7 +23,29 @@ permissions:
   contents: read
 
 jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    if: |
+      github.event_name != 'pull_request' ||
+      contains(github.event.pull_request.labels.*.name, 'ci:perl-matrix')
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    steps:
+      - id: matrix
+        env:
+          SIGNATURES_ONLY: ${{ inputs.signatures_only || false }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+          required = ['5.36', '5.38', '5.42', '5.44']
+          versions = required if os.environ['SIGNATURES_ONLY'] == 'true' else ['5.' + str(v) for v in range(8, 45, 2)]
+          rows = [{'perl': v, 'run_rust_smoke': os.environ['SIGNATURES_ONLY'] != 'true' and v in ['5.8', '5.40'], 'run_signatures': v in required} for v in versions]
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write('matrix=' + json.dumps({'include': rows}) + '\n')
+          PY
+
   perl-version-matrix:
+    needs: plan
     name: Perl compatibility (${{ matrix.perl }})
     if: |
       github.event_name != 'pull_request' ||
@@ -27,44 +54,7 @@ jobs:
     timeout-minutes: 25
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - perl: '5.8'
-            run_rust_smoke: true
-          - perl: '5.10'
-            run_rust_smoke: false
-          - perl: '5.12'
-            run_rust_smoke: false
-          - perl: '5.14'
-            run_rust_smoke: false
-          - perl: '5.16'
-            run_rust_smoke: false
-          - perl: '5.18'
-            run_rust_smoke: false
-          - perl: '5.20'
-            run_rust_smoke: false
-          - perl: '5.22'
-            run_rust_smoke: false
-          - perl: '5.24'
-            run_rust_smoke: false
-          - perl: '5.26'
-            run_rust_smoke: false
-          - perl: '5.28'
-            run_rust_smoke: false
-          - perl: '5.30'
-            run_rust_smoke: false
-          - perl: '5.32'
-            run_rust_smoke: false
-          - perl: '5.34'
-            run_rust_smoke: false
-          - perl: '5.36'
-            run_rust_smoke: false
-          - perl: '5.38'
-            run_rust_smoke: false
-          - perl: '5.40'
-            run_rust_smoke: true
-          - perl: '5.42'
-            run_rust_smoke: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -82,6 +72,7 @@ jobs:
           perl -e 'print "$^V\n"'
 
       - name: Version-gated Perl syntax probes
+        if: ${{ !inputs.signatures_only }}
         run: |
           perl -we '
             use strict;
@@ -179,11 +170,26 @@ jobs:
           '
 
       - name: Postfix statement-modifier conformance
+        if: ${{ !inputs.signatures_only }}
         run: bash scripts/ci/check-postfix-conformance.sh
+
+      - name: Signature conformance oracle
+        if: matrix.run_signatures
+        env:
+          EXPECTED_PERL: ${{ matrix.perl }}
+        run: python3 scripts/ci/signature_conformance.py --expected-version "$EXPECTED_PERL" --output target/signature-conformance/oracle.json
+
+      - name: Retain signature oracle receipt
+        if: ${{ always() && matrix.run_signatures }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: signature-oracle-${{ matrix.perl }}
+          path: target/signature-conformance/oracle.json
+          if-no-files-found: error
 
       - name: Install Rust toolchain (smoke lanes)
         if: matrix.run_rust_smoke
-        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # stable (master)
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # stable (master)
         with:
           toolchain: 1.95.0
 
@@ -202,3 +208,39 @@ jobs:
         if: matrix.run_rust_smoke
         run: |
           cargo test --locked -p perl-lsp-rs runtime::lifecycle::workspace::tests::check_perl_interpreter_does_not_panic --lib
+
+  signature-native:
+    if: ${{ inputs.signatures_only }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # stable (master)
+        with:
+          toolchain: 1.95.0
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: signature-conformance
+          save-if: ${{ (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main') }}
+      - name: Check conformance instruments
+        run: |
+          python3 scripts/ci/test_signature_conformance.py
+          cargo test --locked -p perl-parser-core --test signature_conformance
+      - name: Execute native signature conformance (known mismatches remain failures)
+        env:
+          SIGNATURE_NATIVE_REPORT: target/signature-conformance/native.json
+        run: |
+          set +e
+          cargo test --locked -p perl-parser-core --test signature_conformance native_signature_conformance_report -- --ignored --exact --nocapture
+          result=$?
+          set -e
+          python3 scripts/ci/signature_conformance.py --check-native-report "$SIGNATURE_NATIVE_REPORT" --native-exit-code "$result"
+      - name: Retain native conformance evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: signature-native
+          path: target/signature-conformance/native.json
+          if-no-files-found: error

@@ -15,6 +15,10 @@ on:
       # load-bearing on its own subject file (same rule as #5425).
       - 'scripts/ci/validate_helix_fixture_drift.py'
       - 'scripts/ci/test_validate_helix_fixture_drift.py'
+      # Same rule for the committed-copy freshness check (#16544).
+      - 'scripts/ci/validate_book_copy_freshness.sh'
+      - 'scripts/ci/rewrite_book_source_links.py'
+      - 'scripts/tests/test-validate-book-copy-freshness.sh'
       - '.github/workflows/docs-deploy.yml'
       - '.github/workflows/docs-pr-build.yml'
 
@@ -46,8 +50,18 @@ jobs:
           python3 scripts/ci/test_validate_helix_fixture_drift.py
           python3 scripts/ci/validate_helix_fixture_drift.py
 
+      # Also runs against the committed tree, before populate-book.sh writes
+      # its generated copies: committed generated copies silently drift when
+      # canonical docs move without a refresh (#16544, same class as #14220).
+      # The self-test proves both directions: clean tree passes, an
+      # artificially drifted copy fails.
+      - name: Validate committed book copy freshness
+        run: |
+          bash scripts/tests/test-validate-book-copy-freshness.sh
+          bash scripts/ci/validate_book_copy_freshness.sh
+
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (master)
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # stable (master)
         with:
           toolchain: stable
 

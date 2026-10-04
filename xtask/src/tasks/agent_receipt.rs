@@ -1,10 +1,13 @@
 use crate::tasks::agent_lease::{AgentLease, read_lease};
 use chrono::{DateTime, Utc};
-use color_eyre::eyre::{Context, Result, bail};
+use color_eyre::eyre::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
+
+/// Wire version this producer emits and every consumer pins (#15373).
+const SUPPORTED_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -23,6 +26,12 @@ pub struct AgentLeaseReceipt {
 
 pub fn validate(receipt_path: &Path) -> Result<()> {
     let receipt = read_receipt(receipt_path)?;
+    if receipt.schema_version != SUPPORTED_SCHEMA_VERSION {
+        bail!(
+            "unsupported agent receipt schema_version: {} (expected {SUPPORTED_SCHEMA_VERSION})",
+            receipt.schema_version
+        );
+    }
     validate_core_fields(&receipt)?;
 
     let lease = read_lease(Path::new(&receipt.lease_path))?;
@@ -53,6 +62,16 @@ fn validate_core_fields(receipt: &AgentLeaseReceipt) -> Result<()> {
 }
 
 fn validate_against_lease(receipt: &AgentLeaseReceipt, lease: &AgentLease) -> Result<()> {
+    // Pin the lease envelope first: a v1 receipt pointing at a structurally
+    // compatible future lease must not validate under unsupported lease
+    // semantics. `read_lease` itself stays version-agnostic; the pin lives on
+    // the validating paths (`verify` pins it separately).
+    if lease.schema_version != SUPPORTED_SCHEMA_VERSION {
+        bail!(
+            "unsupported agent lease schema_version: {} (expected {SUPPORTED_SCHEMA_VERSION})",
+            lease.schema_version
+        );
+    }
     if receipt.task_id != lease.task.task_id {
         bail!("task_id mismatch: receipt={}, lease={}", receipt.task_id, lease.task.task_id);
     }
@@ -261,6 +280,25 @@ mod tests {
     }
 
     #[test]
+    fn agent_receipt_rejects_future_lease_schema_version() -> Result<()> {
+        // A v1 receipt pointing at a structurally compatible future lease
+        // must not validate: authorizing it would run receipt semantics the
+        // v1 reader was never taught (#16012 review).
+        let receipt = valid_receipt("comment_upsert");
+        let mut lease = valid_lease(Utc::now() + Duration::days(1))?;
+        lease.schema_version = 2;
+        let err = validate_against_lease(&receipt, &lease).err().ok_or_else(|| {
+            color_eyre::eyre::eyre!("future lease schema_version should be rejected")
+        })?;
+        assert!(
+            err.to_string().contains("unsupported agent lease schema_version"),
+            "expected lease version rejection, got {err}"
+        );
+
+        Ok(())
+    }
+
+    #[test]
     fn agent_receipt_rejects_disallowed_forbidden_and_expired_mutations() -> Result<()> {
         let lease = valid_lease(Utc::now() + Duration::days(1))?;
 
@@ -310,6 +348,38 @@ mod tests {
             .ok_or_else(|| color_eyre::eyre::eyre!("unknown receipt field should be rejected"))?;
         let debug = format!("{err:?}");
         assert!(debug.contains("unexpected"), "expected unknown field error, got {err}");
+
+        Ok(())
+    }
+
+    #[test]
+    fn agent_receipt_validate_rejects_unsupported_and_missing_schema_version() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let path = temp.path().join("receipt.json");
+
+        let mut future = valid_receipt("comment_upsert");
+        future.schema_version = 2;
+        fs::write(&path, serde_json::to_string_pretty(&future)?)?;
+        let err = validate(&path)
+            .err()
+            .ok_or_else(|| color_eyre::eyre::eyre!("v2 receipt should fail validation"))?;
+        ensure!(
+            err.to_string().contains("unsupported agent receipt schema_version: 2 (expected 1)"),
+            "got error: {err}"
+        );
+
+        let mut value = serde_json::to_value(valid_receipt("comment_upsert"))?;
+        value
+            .as_object_mut()
+            .ok_or_else(|| {
+                color_eyre::eyre::eyre!("receipt fixture should serialize to an object")
+            })?
+            .remove("schema_version");
+        fs::write(&path, serde_json::to_string_pretty(&value)?)?;
+        let err = validate(&path)
+            .err()
+            .ok_or_else(|| color_eyre::eyre::eyre!("receipt without schema_version should fail"))?;
+        ensure!(format!("{err:?}").contains("schema_version"), "got error: {err:?}");
 
         Ok(())
     }

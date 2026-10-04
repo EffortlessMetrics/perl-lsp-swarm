@@ -1,0 +1,1217 @@
+{
+  "schema": "signature-conformance/v1",
+  "authority": [
+    "https://perldoc.perl.org/5.44.0/perlsub#Signatures",
+    "https://perldoc.perl.org/5.44.0/feature#The-signatures-feature"
+  ],
+  "required_versions": [
+    "5.36",
+    "5.38",
+    "5.42",
+    "5.44"
+  ],
+  "native_contract_version": "5.44",
+  "cases": [
+    {
+      "id": "empty_bundle",
+      "source": "use v5.36;\nsub f () { 1 }\nf(); eval { &f(1) }; print $@ =~ /Too many arguments/ ? \"zero-only\" : \"WRONG\";\n",
+      "external": {
+        "minimum": "5.36",
+        "accepted": true,
+        "named_warning": false,
+        "args_array_warning": false,
+        "runtime_stdout": "zero-only"
+      },
+      "native": {
+        "accepted": true,
+        "header_kind": "Signature",
+        "header_span": [
+          17,
+          19
+        ],
+        "parameters": []
+      }
+    },
+    {
+      "id": "anonymous_scalar_slurpy",
+      "source": "use v5.36;\nsub f ($, @) { 1 }\n\n",
+      "external": {
+        "minimum": "5.36",
+        "accepted": true,
+        "named_warning": false,
+        "args_array_warning": false,
+        "runtime_stdout": null
+      },
+      "native": {
+        "accepted": true,
+        "header_kind": "Signature",
+        "header_span": [
+          17,
+          23
+        ],
+        "parameters": [
+          {
+            "kind": "MandatoryParameter",
+            "span": [
+              18,
+              19
+            ],
+            "variable": {
+              "span": [
+                18,
+                19
+              ],
+              "text": "$"
+            }
+          },
+          {
+            "kind": "SlurpyParameter",
+            "span": [
+              21,
+              22
+            ],
+            "variable": {
+              "span": [
+                21,
+                22
+              ],
+              "text": "@"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "default_assign",
+      "source": "use warnings; use feature 'signatures';\nsub f ($x = 1) { defined $x ? $x : \"undef\" }\nprint join(\"|\", f(), f(undef), f(0), f(2));\n",
+      "external": {
+        "minimum": "5.20",
+        "accepted": true,
+        "named_warning": false,
+        "args_array_warning": false,
+        "runtime_stdout": "1|undef|0|2"
+      },
+      "native": {
+        "accepted": true,
+        "header_kind": "Signature",
+        "header_span": [
+          46,
+          54
+        ],
+        "parameters": [
+          {
+            "kind": "OptionalParameter",
+            "span": [
+              47,
+              53
+            ],
+            "variable": {
+              "span": [
+                47,
+                49
+              ],
+              "text": "$x"
+            },
+            "default": {
+              "span": [
+                52,
+                53
+              ],
+              "text": "1"
+            },
+            "operator": {
+              "span": [
+                50,
+                51
+              ],
+              "text": "="
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "default_defined",
+      "source": "use warnings; use feature 'signatures';\nsub f ($x //= 1) { defined $x ? $x : \"undef\" }\nprint join(\"|\", f(), f(undef), f(0), f(2));\n",
+      "external": {
+        "minimum": "5.38",
+        "accepted": true,
+        "named_warning": false,
+        "args_array_warning": false,
+        "runtime_stdout": "1|1|0|2"
+      },
+      "native": {
+        "accepted": true,
+        "header_kind": "Signature",
+        "header_span": [
+          46,
+          56
+        ],
+        "parameters": [
+          {
+            "kind": "OptionalParameter",
+            "span": [
+              47,
+              55
+            ],
+            "variable": {
+              "span": [
+                47,
+                49
+              ],
+              "text": "$x"
+            },
+            "default": {
+              "span": [
+                54,
+                55
+              ],
+              "text": "1"
+            },
+            "operator": {
+              "span": [
+                50,
+                53
+              ],
+              "text": "//="
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "default_false",
+      "source": "use warnings; use feature 'signatures';\nsub f ($x ||= 1) { defined $x ? $x : \"undef\" }\nprint join(\"|\", f(), f(undef), f(0), f(2));\n",
+      "external": {
+        "minimum": "5.38",
+        "accepted": true,
+        "named_warning": false,
+        "args_array_warning": false,
+        "runtime_stdout": "1|1|1|2"
+      },
+      "native": {
+        "accepted": true,
+        "header_kind": "Signature",
+        "header_span": [
+          46,
+          56
+        ],
+        "parameters": [
+          {
+            "kind": "OptionalParameter",
+            "span": [
+              47,
+              55
+            ],
+            "variable": {
+              "span": [
+                47,
+                49
+              ],
+              "text": "$x"
+            },
+            "default": {
+              "span": [
+                54,
+                55
+              ],
+              "text": "1"
+            },
+            "operator": {
+              "span": [
+                50,
+                53
+              ],
+              "text": "||="
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "anonymous_default",
+      "source": "use warnings; use feature 'signatures';\nsub f ($ = 1) { 1 }\n\n",
+      "external": {
+        "minimum": "5.20",
+        "accepted": true,
+        "named_warning": false,
+        "args_array_warning": false,
+        "runtime_stdout": null
+      },
+      "native": {
+        "accepted": true,
+        "header_kind": "Signature",
+        "header_span": [
+          46,
+          53
+        ],
+        "parameters": [
+          {
+            "kind": "OptionalParameter",
+            "span": [
+              47,
+              52
+            ],
+            "variable": {
+              "span": [
+                47,
+                48
+              ],
+              "text": "$"
+            },
+            "default": {
+              "span": [
+                51,
+                52
+              ],
+              "text": "1"
+            },
+            "operator": {
+              "span": [
+                49,
+                50
+              ],
+              "text": "="
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "named_pair",
+      "source": "use warnings; use feature 'signatures';\nsub f (:$x, :$y = 1) { \"$x:$y\" }\nprint f(y=>2,x=>3), \"|\", f(x=>4);\n",
+      "external": {
+        "minimum": "5.44",
+        "accepted": true,
+        "named_warning": true,
+        "args_array_warning": false,
+        "runtime_stdout": "3:2|4:1"
+      },
+      "native": {
+        "accepted": true,
+        "header_kind": "Signature",
+        "header_span": [
+          46,
+          60
+        ],
+        "parameters": [
+          {
+            "kind": "NamedParameter",
+            "span": [
+              47,
+              50
+            ],
+            "variable": {
+              "span": [
+                48,
+                50
+              ],
+              "text": "$x"
+            },
+            "external_name": "x",
+            "required": true
+          },
+          {
+            "kind": "NamedParameter",
+            "span": [
+              52,
+              59
+            ],
+            "variable": {
+              "span": [
+                53,
+                55
+              ],
+              "text": "$y"
+            },
+            "default": {
+              "span": [
+                58,
+                59
+              ],
+              "text": "1"
+            },
+            "operator": {
+              "span": [
+                56,
+                57
+              ],
+              "text": "="
+            },
+            "external_name": "y",
+            "required": false
+          }
+        ]
+      }
+    },
+    {
+      "id": "positional_named",
+      "source": "use warnings; use feature 'signatures';\nsub f ($p, :$x, :$y = 1) { 1 }\n\n",
+      "external": {
+        "minimum": "5.44",
+        "accepted": true,
+        "named_warning": true,
+        "args_array_warning": false,
+        "runtime_stdout": null
+      },
+      "native": {
+        "accepted": true,
+        "header_kind": "Signature",
+        "header_span": [
+          46,
+          64
+        ],
+        "parameters": [
+          {
+            "kind": "MandatoryParameter",
+            "span": [
+              47,
+              49
+            ],
+            "variable": {
+              "span": [
+                47,
+                49
+              ],
+              "text": "$p"
+            }
+          },
+          {
+            "kind": "NamedParameter",
+            "span": [
+              51,
+              54
+            ],
+            "variable": {
+              "span": [
+                52,
+                54
+              ],
+              "text": "$x"
+            },
+            "external_name": "x",
+            "required": true
+          },
+          {
+            "kind": "NamedParameter",
+            "span": [
+              56,
+              63
+            ],
+            "variable": {
+              "span": [
+                57,
+                59
+              ],
+              "text": "$y"
+            },
+            "default": {
+              "span": [
+                62,
+                63
+              ],
+              "text": "1"
+            },
+            "operator": {
+              "span": [
+                60,
+                61
+              ],
+              "text": "="
+            },
+            "external_name": "y",
+            "required": false
+          }
+        ]
+      }
+    },
+    {
+      "id": "optional_named",
+      "source": "use warnings; use feature 'signatures';\nsub f ($p = 1, :$x = 2) { 1 }\n\n",
+      "external": {
+        "minimum": "5.44",
+        "accepted": true,
+        "named_warning": true,
+        "args_array_warning": false,
+        "runtime_stdout": null
+      },
+      "native": {
+        "accepted": true,
+        "header_kind": "Signature",
+        "header_span": [
+          46,
+          63
+        ],
+        "parameters": [
+          {
+            "kind": "OptionalParameter",
+            "span": [
+              47,
+              53
+            ],
+            "variable": {
+              "span": [
+                47,
+                49
+              ],
+              "text": "$p"
+            },
+            "default": {
+              "span": [
+                52,
+                53
+              ],
+              "text": "1"
+            },
+            "operator": {
+              "span": [
+                50,
+                51
+              ],
+              "text": "="
+            }
+          },
+          {
+            "kind": "NamedParameter",
+            "span": [
+              55,
+              62
+            ],
+            "variable": {
+              "span": [
+                56,
+                58
+              ],
+              "text": "$x"
+            },
+            "default": {
+              "span": [
+                61,
+                62
+              ],
+              "text": "2"
+            },
+            "operator": {
+              "span": [
+                59,
+                60
+              ],
+              "text": "="
+            },
+            "external_name": "x",
+            "required": false
+          }
+        ]
+      }
+    },
+    {
+      "id": "positional_slurpy_array",
+      "source": "use warnings; use feature 'signatures';\nsub f ($p, @rest) { 1 }\n\n",
+      "external": {
+        "minimum": "5.20",
+        "accepted": true,
+        "named_warning": false,
+        "args_array_warning": false,
+        "runtime_stdout": null
+      },
+      "native": {
+        "accepted": true,
+        "header_kind": "Signature",
+        "header_span": [
+          46,
+          57
+        ],
+        "parameters": [
+          {
+            "kind": "MandatoryParameter",
+            "span": [
+              47,
+              49
+            ],
+            "variable": {
+              "span": [
+                47,
+                49
+              ],
+              "text": "$p"
+            }
+          },
+          {
+            "kind": "SlurpyParameter",
+            "span": [
+              51,
+              56
+            ],
+            "variable": {
+              "span": [
+                51,
+                56
+              ],
+              "text": "@rest"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "named_slurpy_array",
+      "source": "use warnings; use feature 'signatures';\nsub f (:$x, @rest) { 1 }\n\n",
+      "external": {
+        "minimum": "5.44",
+        "accepted": true,
+        "named_warning": true,
+        "args_array_warning": false,
+        "runtime_stdout": null
+      },
+      "native": {
+        "accepted": true,
+        "header_kind": "Signature",
+        "header_span": [
+          46,
+          58
+        ],
+        "parameters": [
+          {
+            "kind": "NamedParameter",
+            "span": [
+              47,
+              50
+            ],
+            "variable": {
+              "span": [
+                48,
+                50
+              ],
+              "text": "$x"
+            },
+            "external_name": "x",
+            "required": true
+          },
+          {
+            "kind": "SlurpyParameter",
+            "span": [
+              52,
+              57
+            ],
+            "variable": {
+              "span": [
+                52,
+                57
+              ],
+              "text": "@rest"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "anonymous_slurpy_array",
+      "source": "use warnings; use feature 'signatures';\nsub f ($p, @) { 1 }\n\n",
+      "external": {
+        "minimum": "5.20",
+        "accepted": true,
+        "named_warning": false,
+        "args_array_warning": false,
+        "runtime_stdout": null
+      },
+      "native": {
+        "accepted": true,
+        "header_kind": "Signature",
+        "header_span": [
+          46,
+          53
+        ],
+        "parameters": [
+          {
+            "kind": "MandatoryParameter",
+            "span": [
+              47,
+              49
+            ],
+            "variable": {
+              "span": [
+                47,
+                49
+              ],
+              "text": "$p"
+            }
+          },
+          {
+            "kind": "SlurpyParameter",
+            "span": [
+              51,
+              52
+            ],
+            "variable": {
+              "span": [
+                51,
+                52
+              ],
+              "text": "@"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "positional_slurpy_hash",
+      "source": "use warnings; use feature 'signatures';\nsub f ($p, %rest) { 1 }\n\n",
+      "external": {
+        "minimum": "5.20",
+        "accepted": true,
+        "named_warning": false,
+        "args_array_warning": false,
+        "runtime_stdout": null
+      },
+      "native": {
+        "accepted": true,
+        "header_kind": "Signature",
+        "header_span": [
+          46,
+          57
+        ],
+        "parameters": [
+          {
+            "kind": "MandatoryParameter",
+            "span": [
+              47,
+              49
+            ],
+            "variable": {
+              "span": [
+                47,
+                49
+              ],
+              "text": "$p"
+            }
+          },
+          {
+            "kind": "SlurpyParameter",
+            "span": [
+              51,
+              56
+            ],
+            "variable": {
+              "span": [
+                51,
+                56
+              ],
+              "text": "%rest"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "named_slurpy_hash",
+      "source": "use warnings; use feature 'signatures';\nsub f (:$x, %rest) { 1 }\n\n",
+      "external": {
+        "minimum": "5.44",
+        "accepted": true,
+        "named_warning": true,
+        "args_array_warning": false,
+        "runtime_stdout": null
+      },
+      "native": {
+        "accepted": true,
+        "header_kind": "Signature",
+        "header_span": [
+          46,
+          58
+        ],
+        "parameters": [
+          {
+            "kind": "NamedParameter",
+            "span": [
+              47,
+              50
+            ],
+            "variable": {
+              "span": [
+                48,
+                50
+              ],
+              "text": "$x"
+            },
+            "external_name": "x",
+            "required": true
+          },
+          {
+            "kind": "SlurpyParameter",
+            "span": [
+              52,
+              57
+            ],
+            "variable": {
+              "span": [
+                52,
+                57
+              ],
+              "text": "%rest"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "anonymous_slurpy_hash",
+      "source": "use warnings; use feature 'signatures';\nsub f ($p, %) { 1 }\n\n",
+      "external": {
+        "minimum": "5.20",
+        "accepted": true,
+        "named_warning": false,
+        "args_array_warning": false,
+        "runtime_stdout": null
+      },
+      "native": {
+        "accepted": true,
+        "header_kind": "Signature",
+        "header_span": [
+          46,
+          53
+        ],
+        "parameters": [
+          {
+            "kind": "MandatoryParameter",
+            "span": [
+              47,
+              49
+            ],
+            "variable": {
+              "span": [
+                47,
+                49
+              ],
+              "text": "$p"
+            }
+          },
+          {
+            "kind": "SlurpyParameter",
+            "span": [
+              51,
+              52
+            ],
+            "variable": {
+              "span": [
+                51,
+                52
+              ],
+              "text": "%"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "prototype_attribute",
+      "source": "use warnings; use feature 'signatures';\nsub f :prototype($$) ($left, $right) { $left+$right }\nprint prototype(\\&f), \"|\", &f(1,2);\n",
+      "external": {
+        "minimum": "5.20",
+        "accepted": true,
+        "named_warning": false,
+        "args_array_warning": false,
+        "runtime_stdout": "$$|3"
+      },
+      "native": {
+        "accepted": true,
+        "header_kind": "Signature",
+        "header_span": [
+          61,
+          76
+        ],
+        "parameters": [
+          {
+            "kind": "MandatoryParameter",
+            "span": [
+              62,
+              67
+            ],
+            "variable": {
+              "span": [
+                62,
+                67
+              ],
+              "text": "$left"
+            }
+          },
+          {
+            "kind": "MandatoryParameter",
+            "span": [
+              69,
+              75
+            ],
+            "variable": {
+              "span": [
+                69,
+                75
+              ],
+              "text": "$right"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "named_array",
+      "source": "use warnings; use feature 'signatures';\nsub f (:@rest) { 1 }\n\n",
+      "external": {
+        "minimum": "5.20",
+        "accepted": false,
+        "named_warning": false,
+        "args_array_warning": false,
+        "runtime_stdout": null
+      },
+      "native": {
+        "accepted": false,
+        "header_kind": "Signature",
+        "header_span": [
+          46,
+          54
+        ],
+        "parameters": []
+      }
+    },
+    {
+      "id": "named_hash",
+      "source": "use warnings; use feature 'signatures';\nsub f (:%rest) { 1 }\n\n",
+      "external": {
+        "minimum": "5.20",
+        "accepted": false,
+        "named_warning": false,
+        "args_array_warning": false,
+        "runtime_stdout": null
+      },
+      "native": {
+        "accepted": false,
+        "header_kind": "Signature",
+        "header_span": [
+          46,
+          54
+        ],
+        "parameters": []
+      }
+    },
+    {
+      "id": "array_default",
+      "source": "use warnings; use feature 'signatures';\nsub f (@rest = []) { 1 }\n\n",
+      "external": {
+        "minimum": "5.20",
+        "accepted": false,
+        "named_warning": false,
+        "args_array_warning": false,
+        "runtime_stdout": null
+      },
+      "native": {
+        "accepted": false,
+        "header_kind": "Signature",
+        "header_span": [
+          46,
+          58
+        ],
+        "parameters": []
+      }
+    },
+    {
+      "id": "hash_default",
+      "source": "use warnings; use feature 'signatures';\nsub f (%rest = {}) { 1 }\n\n",
+      "external": {
+        "minimum": "5.20",
+        "accepted": false,
+        "named_warning": false,
+        "args_array_warning": false,
+        "runtime_stdout": null
+      },
+      "native": {
+        "accepted": false,
+        "header_kind": "Signature",
+        "header_span": [
+          46,
+          58
+        ],
+        "parameters": []
+      }
+    },
+    {
+      "id": "slurpy_not_last",
+      "source": "use warnings; use feature 'signatures';\nsub f (@rest, $later) { 1 }\n\n",
+      "external": {
+        "minimum": "5.20",
+        "accepted": false,
+        "named_warning": false,
+        "args_array_warning": false,
+        "runtime_stdout": null
+      },
+      "native": {
+        "accepted": false,
+        "header_kind": "Signature",
+        "header_span": [
+          46,
+          61
+        ],
+        "parameters": []
+      }
+    },
+    {
+      "id": "optional_required_named",
+      "source": "use warnings; use feature 'signatures';\nsub f ($optional = 1, :$required) { 1 }\n\n",
+      "external": {
+        "minimum": "5.20",
+        "accepted": false,
+        "named_warning": false,
+        "args_array_warning": false,
+        "runtime_stdout": null
+      },
+      "native": {
+        "accepted": false,
+        "header_kind": "Signature",
+        "header_span": [
+          46,
+          73
+        ],
+        "parameters": []
+      }
+    },
+    {
+      "id": "named_then_positional",
+      "source": "use warnings; use feature 'signatures';\nsub f (:$named, $positional) { 1 }\n\n",
+      "external": {
+        "minimum": "5.20",
+        "accepted": false,
+        "named_warning": false,
+        "args_array_warning": false,
+        "runtime_stdout": null
+      },
+      "native": {
+        "accepted": false,
+        "header_kind": "Signature",
+        "header_span": [
+          46,
+          68
+        ],
+        "parameters": []
+      }
+    },
+    {
+      "id": "invocant_colon",
+      "source": "use warnings; use feature 'signatures';\nsub f ($self: $x) { 1 }\n\n",
+      "external": {
+        "minimum": "5.20",
+        "accepted": false,
+        "named_warning": false,
+        "args_array_warning": false,
+        "runtime_stdout": null
+      },
+      "native": {
+        "accepted": false,
+        "header_kind": "Signature",
+        "header_span": [
+          46,
+          57
+        ],
+        "parameters": []
+      }
+    },
+    {
+      "id": "semicolon_separator",
+      "source": "use warnings; use feature 'signatures';\nsub f ($x; $y) { 1 }\n\n",
+      "external": {
+        "minimum": "5.20",
+        "accepted": false,
+        "named_warning": false,
+        "args_array_warning": false,
+        "runtime_stdout": null
+      },
+      "native": {
+        "accepted": false,
+        "header_kind": "Signature",
+        "header_span": [
+          46,
+          54
+        ],
+        "parameters": []
+      }
+    },
+    {
+      "id": "args_array",
+      "source": "use warnings; use feature 'signatures';\nsub f ($x) { scalar @_ }\n\n",
+      "external": {
+        "minimum": "5.20",
+        "accepted": true,
+        "named_warning": false,
+        "args_array_warning": true,
+        "runtime_stdout": null
+      },
+      "native": {
+        "accepted": true,
+        "header_kind": "Signature",
+        "header_span": [
+          46,
+          50
+        ],
+        "parameters": [
+          {
+            "kind": "MandatoryParameter",
+            "span": [
+              47,
+              49
+            ],
+            "variable": {
+              "span": [
+                47,
+                49
+              ],
+              "text": "$x"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "prototype_disabled",
+      "source": "use warnings; no feature \"signatures\";\nsub f () { 1 }\nprint \"prototype=[\", prototype(\\&f), \"]\";\n",
+      "external": {
+        "minimum": "5.20",
+        "accepted": true,
+        "named_warning": false,
+        "args_array_warning": false,
+        "runtime_stdout": "prototype=[]"
+      },
+      "native": {
+        "accepted": true,
+        "header_kind": "Prototype",
+        "header_span": [
+          45,
+          47
+        ],
+        "parameters": []
+      }
+    },
+    {
+      "id": "duplicate_slurpy_array",
+      "source": "use warnings; use feature 'signatures';\nsub f (@a, @b) { 1 }\n\n",
+      "external": {
+        "minimum": "5.20",
+        "accepted": false,
+        "named_warning": false,
+        "args_array_warning": false,
+        "runtime_stdout": null
+      },
+      "native": {
+        "accepted": false,
+        "header_kind": "Signature",
+        "header_span": [
+          46,
+          54
+        ],
+        "parameters": []
+      }
+    },
+    {
+      "id": "duplicate_slurpy_hash",
+      "source": "use warnings; use feature 'signatures';\nsub f (%a, %b) { 1 }\n\n",
+      "external": {
+        "minimum": "5.20",
+        "accepted": false,
+        "named_warning": false,
+        "args_array_warning": false,
+        "runtime_stdout": null
+      },
+      "native": {
+        "accepted": false,
+        "header_kind": "Signature",
+        "header_span": [
+          46,
+          54
+        ],
+        "parameters": []
+      }
+    },
+    {
+      "id": "named_then_optional_positional",
+      "source": "use warnings; use feature 'signatures';\nsub f (:$x, $later = 2) { 1 }\n\n",
+      "external": {
+        "minimum": "5.44",
+        "accepted": false,
+        "named_warning": false,
+        "args_array_warning": false,
+        "runtime_stdout": null
+      },
+      "native": {
+        "accepted": false,
+        "header_kind": "Signature",
+        "header_span": [
+          46,
+          63
+        ],
+        "parameters": []
+      }
+    },
+    {
+      "id": "optional_named_then_required_named",
+      "source": "use warnings; use feature 'signatures';\nsub f (:$x = 1, :$required) { 1 }\n\n",
+      "external": {
+        "minimum": "5.44",
+        "accepted": true,
+        "named_warning": true,
+        "args_array_warning": false,
+        "runtime_stdout": null
+      },
+      "native": {
+        "accepted": true,
+        "header_kind": "Signature",
+        "header_span": [
+          46,
+          67
+        ],
+        "parameters": [
+          {
+            "kind": "NamedParameter",
+            "span": [
+              47,
+              54
+            ],
+            "variable": {
+              "span": [
+                48,
+                50
+              ],
+              "text": "$x"
+            },
+            "default": {
+              "span": [
+                53,
+                54
+              ],
+              "text": "1"
+            },
+            "operator": {
+              "span": [
+                51,
+                52
+              ],
+              "text": "="
+            },
+            "external_name": "x",
+            "required": false
+          },
+          {
+            "kind": "NamedParameter",
+            "span": [
+              56,
+              66
+            ],
+            "variable": {
+              "span": [
+                57,
+                66
+              ],
+              "text": "$required"
+            },
+            "external_name": "required",
+            "required": true
+          }
+        ]
+      }
+    }
+  ]
+}

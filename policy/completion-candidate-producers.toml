@@ -62,7 +62,72 @@ outcome_owner = "#10230"
 # surface to 6307e3bd... (one non-producer helper plus tests added under the
 # scan roots, zero removals or re-channeling); projection diff is digest-only,
 # `check` passes.
-source_digest = "sha256:24f17ee6964d14bfce7a0372c738686b2697fb46972027c822bdae0419116f9c"
+# Re-anchor 2026-09-26 (#16449): #16019 (lone-minus completion fix) drifted
+# the surface to ebfd9283... via exactly two files under the scan roots
+# (completion.rs production gating change plus one private predicate helper
+# `is_operand_shaped_bareword`, and completion/tests.rs regression tests).
+# No producer add/remove/re-channel: the only new function is a private
+# trigger predicate, not a candidate producer, and the dash branch now routes
+# through the existing receiver scan with the finalizer route untouched;
+# scanned set unchanged. Projection diff is digest-only, `check` passes.
+# Re-anchor 2026-09-28 (#16791): #16484 changed hash-key role detection and
+# suppressed generic workspace enrichment in method/hash-key roles. The only
+# scan-root changes are completion/completion.rs and runtime/language/completion.rs,
+# plus the excluded completion/completion/tests.rs; the 42 scanned product files,
+# producer identities, entry routes, and finalizer route are unchanged. The
+# existing workspace producer emits fewer candidates in those roles; this is
+# a source re-audit, not a claim that completion behavior is unchanged.
+# Re-audit 2026-09-29 (#16937): #16850 added a test-only completion module,
+# now excluded from the production scan, and changed workspace method
+# completion to admit exact current-document class and method facts while the
+# persisted index is empty. Unknown-receiver fallback still requires indexed
+# symbols. The 42 shipped-source files, entry routes, delegations, and
+# finalizer route are unchanged. A new candidate-channel helper removes
+# generic local rows before composed-role methods are appended, so it has
+# its own disposition below. The workspace method row now records mixed
+# current-document/index authority and its remaining stale-index risk.
+# Re-anchor 2026-09-29 (#16938): source-commit fixture repair changed only
+# test setup in scanned completion/workspace.rs, and a test-only module already
+# excluded above. The 42-file product scan, discovered producer population,
+# authored dispositions, entry routes, delegations, and finalizer are unchanged.
+# Re-anchor 2026-10-01 (#17045): the #16850/#16809 regression repair restored
+# persisted `use parent`/role inheritance edges and persisted explicit and
+# generated members for current-document packages whenever the open buffer is
+# silent on them; buffer-stated facts keep precedence. The only scan-root
+# change is completion/completion/workspace.rs; producer population,
+# identities, authored dispositions, entry routes, delegations, and finalizer
+# route are unchanged. Open-buffer method candidates may again include
+# inherited members from the persisted index — this is a source re-audit, not
+# a claim that completion behavior is unchanged.
+# Re-anchor 2026-10-01 (#17084): the same-document freshness seam filters
+# persisted explicit members and persisted inheritance edges sourced from the
+# edited document's own URI out of open-buffer composition. Scan-root changes
+# are completion/completion/workspace.rs plus its request/dispatch.rs caller
+# (main's #17079 merge window also touched lexical_visibility.rs,
+# scope_distance.rs, variables.rs, and tests.rs in the same scan set);
+# producer population, identities, authored dispositions, entry routes,
+# delegations, and finalizer route are unchanged. Open-buffer candidates may
+# drop stale same-document rows the previous digest could offer. A follow-up
+# hardening pass canonicalizes path-form document identity and selects
+# cross-file inheritance facts before the stale-document skip; scan-root file
+# set and producer population are unchanged by it.
+# Re-anchor 2026-10-01 (#17043): #16860 (merged via #16877) drifted the surface
+# to 7d3c0254... with sigil-visibility edge tests and a scope-walk refactor
+# confined to completion/lexical_visibility.rs, completion/scope_distance.rs,
+# and completion/variables.rs (plus the excluded completion/tests.rs). The only
+# new scan-visible functions are a callback-based ancestor walk returning
+# ControlFlow (no candidate channel), a Vec<&Symbol> admission filter, and a
+# single-CompletionItem construction helper reached through the existing
+# variable producer's push seam: no producer add/remove/re-channel, scanned
+# set unchanged, entry and finalizer routes untouched. Projection diff is
+# digest-only, `check` passes.
+# Post-conversion re-anchor (same PR): the freshness-seam test fixtures moved
+# from index_file to the canonical index_initial_file (behavior-identical
+# forward) plus rustfmt layout; producer rows unchanged.
+# Re-anchor (same PR, CodeRabbit thread): canonical_document_identity now
+# normalizes URI-form identities via perl_uri::normalize_uri, matching the
+# workspace index's identity comparison; producer rows unchanged.
+source_digest = "sha256:9ca083709376d6ecb4b43a737972835c1dbd7098514512b4592026aae5d0d77b"
 
 [[delegations]]
 module = "dancer2"
@@ -879,8 +944,25 @@ finalizer_route = "compatibility_adapter_before_shared_finalizer"
 reach_evidence = "provider_seam"
 reached_by = ["handle_completion", "handle_completion_cancellable"]
 migration_owner = "#8958"
-limitations = "Derived from the workspace index, whose freshness is not bound to this request's document generation. A candidate can therefore describe source the user has already changed."
-note = "Method candidates from the workspace index."
+limitations = "Current-document class and method facts are read from the request source, but indexed methods and generated members can still contribute without freshness bound to this document generation. A candidate from that persisted branch can describe source the user has changed."
+note = "Method candidates from current-document class facts and workspace index members; exact source facts can run with an empty index, while unknown-receiver fallback remains index-gated."
+
+[[producers]]
+id = "perl_lsp_rs_core::providers::completion::completion::workspace::drop_generic_local_methods_rebound_from_composition"
+package = "perl-lsp-rs-core"
+candidate_class = "method"
+tier = "core_provider"
+identity = "legacy_label_compatibility"
+insertion_plan = "legacy_compatibility"
+evidence = "bounded_fallback"
+rank = "compatibility_with_exit"
+source_completeness = "legacy_unreported"
+finalizer_route = "compatibility_adapter_before_shared_finalizer"
+reach_evidence = "provider_seam"
+reached_by = ["handle_completion", "handle_completion_cancellable"]
+migration_owner = "#8958"
+limitations = "This helper only removes generic local method items before workspace methods are appended; it creates no candidate. The removal matches a method label, generic detail, and sort tier rather than a carried semantic identity."
+note = "Filters generic local method rows when current-document or indexed role and ancestor members will rebind the same method name."
 
 [[producers]]
 id = "perl_lsp_rs_core::providers::completion::completion::workspace::add_workspace_symbol_completions"

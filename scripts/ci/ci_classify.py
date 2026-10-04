@@ -59,6 +59,14 @@ Output
 Human-readable table to stdout, one row per failing check.  Exits 0 always
 (report-only; never blocks the caller).
 
+The ``--json`` flag emits a versioned envelope instead:
+
+    {"schema_version": "ci_classify.v1", "classifications": [...]}
+
+The envelope lets consumers detect a shape bump (e.g. a new routing value
+or a per-classifier confidence field) instead of failing silently on an
+unexpected record key.
+
 Optional thin GitHub wrapper (--pr N) fetches live check-runs via the gh CLI
 but is not required — offline fixture testing is the primary path.
 """
@@ -70,6 +78,15 @@ import subprocess
 import sys
 from pathlib import Path
 from typing import Any
+
+# ---------------------------------------------------------------------------
+# Schema versioning
+# ---------------------------------------------------------------------------
+
+# Pin the JSON output contract so a future shape bump (e.g. adding a new
+# routing value or a per-classifier confidence field) is observable at the
+# consumer side rather than silent. See issue #15285.
+SCHEMA_VERSION = "ci_classify.v1"
 
 # ---------------------------------------------------------------------------
 # Class taxonomy
@@ -160,6 +177,18 @@ ROUTING: dict[str, str] = {
 # ---------------------------------------------------------------------------
 
 
+def _json_text(value: object) -> str:
+    """Coerce a check-run JSON field to text; missing/null become empty strings.
+
+    Shared by ``classify_one`` and ``classification_record`` so a JSON ``null``
+    name or conclusion cannot become ``"None"`` in the rationale while the
+    envelope record emits ``""``.
+    """
+    if value is None:
+        return ""
+    return str(value)
+
+
 def classify_one(check: dict[str, Any]) -> tuple[str, str]:
     """Classify a single check-run dict.
 
@@ -169,8 +198,8 @@ def classify_one(check: dict[str, Any]) -> tuple[str, str]:
     Missing optional fields are handled via .get() with safe defaults so the
     function never raises on partial input.
     """
-    name: str = str(check.get("name", ""))
-    conclusion: str = str(check.get("conclusion", ""))
+    name: str = _json_text(check.get("name"))
+    conclusion: str = _json_text(check.get("conclusion"))
     quarantine: bool = bool(check.get("quarantine", False))
     required: bool = bool(check.get("required", True))
     run_ci: bool = bool(check.get("run_ci", True))
@@ -379,7 +408,7 @@ def format_results(results: list[tuple[dict[str, Any], str, str]]) -> str:
     lines.append("-" * 160)
 
     for check, cls, rationale in results:
-        name = str(check.get("name", ""))
+        name = _json_text(check.get("name"))
         routing = ROUTING.get(cls, "")
         lines.append(f"{name:<50} {cls:<22} {routing:<42} {rationale}")
 
@@ -395,6 +424,37 @@ def format_results(results: list[tuple[dict[str, Any], str, str]]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def classification_record(
+    check: dict[str, Any], cls: str, rationale: str
+) -> dict[str, Any]:
+    """One ``--json`` classification record. Keys are the v1 wire shape."""
+    return {
+        "name": _json_text(check.get("name")),
+        "conclusion": _json_text(check.get("conclusion")),
+        "class": cls,
+        "rationale": rationale,
+        "routing": ROUTING.get(cls, ""),
+    }
+
+
+def json_envelope(
+    results: list[tuple[dict[str, Any], str, str]],
+) -> dict[str, Any]:
+    """Versioned ``--json`` stdout object.
+
+    Always an object with ``schema_version`` and ``classifications``. Empty
+    input still wraps an empty list so a consumer can check the version
+    before iterating records.
+    """
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "classifications": [
+            classification_record(check, cls, rationale)
+            for check, cls, rationale in results
+        ],
+    }
+
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
@@ -405,7 +465,10 @@ def run(args: argparse.Namespace) -> int:
     # Determine check-run source.
     if args.pr is not None:
         check_runs = fetch_check_runs_via_gh(args.pr)
-        if not check_runs:
+        # An empty fetch still honors the versioned ``--json`` contract: fall
+        # through to the shared serializer so stdout parses as the envelope.
+        # The prose summary is prose-mode only.
+        if not check_runs and not args.json:
             print("No check-runs retrieved for PR; nothing to classify.")
             return 0
     elif args.input:
@@ -421,20 +484,7 @@ def run(args: argparse.Namespace) -> int:
         results.append((check, cls, rationale))
 
     if args.json:
-        output = json.dumps(
-            [
-                {
-                    "name": c.get("name", ""),
-                    "conclusion": c.get("conclusion", ""),
-                    "class": cls,
-                    "rationale": rationale,
-                    "routing": ROUTING.get(cls, ""),
-                }
-                for c, cls, rationale in results
-            ],
-            indent=2,
-        )
-        print(output)
+        print(json.dumps(json_envelope(results), indent=2))
     else:
         print(format_results(results), end="")
 

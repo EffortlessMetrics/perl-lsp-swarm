@@ -124,6 +124,7 @@ const SCAN_ROOTS: &[&str] = &[
 const TEST_SURFACE_FILES: &[&str] = &[
     "crates/perl-lsp-rs-core/src/providers/completion/completion/tests.rs",
     "crates/perl-lsp-rs-core/src/providers/completion/completion/keyword_role_tests.rs",
+    "crates/perl-lsp-rs-core/src/providers/completion/completion/same_file_role_completion_tests.rs",
 ];
 
 /// The runtime file holding the LSP entry points. Reachability is reconciled
@@ -3158,16 +3159,60 @@ mod tests {
 
     use super::*;
 
-    /// The checked-in ledger reconciled against the real tree is the valid
-    /// fixture. Every negative test below corrupts that fixture in memory along
-    /// one intended falsifier axis and proves the validator refuses it for that
-    /// reason — so a passing `check` means the axis was actually exercised, not
-    /// that a synthetic fixture happened to be well formed.
-    fn fixture() -> (Ledger, Discovered) {
+    /// The checked-in ledger exactly as it sits on disk, reconciled against the
+    /// real tree. Only the two `checked_in_*` tests want this: they are the
+    /// controls that prove the committed digest and projection are current, so
+    /// for them the committed `source_digest` is the subject, not a
+    /// precondition.
+    fn checked_in_fixture() -> (Ledger, Discovered) {
         let root = project_root().expect("project root");
         let ledger = load(&root).expect("ledger parses");
         let discovered = discover(&root).expect("discovery runs");
         (ledger, discovered)
+    }
+
+    /// The valid fixture every other test builds on: the checked-in ledger with
+    /// `source_digest` rebound to current discovery. Each negative test below
+    /// corrupts it in memory along one intended falsifier axis and proves the
+    /// validator refuses it for that reason — so a passing `check` means the
+    /// axis was actually exercised, not that a synthetic fixture happened to be
+    /// well formed.
+    ///
+    /// The rebinding is what keeps that guarantee true. `validate` checks the
+    /// digest before any row-level rule, so a stale committed digest makes it
+    /// refuse for the digest reason first and every `refuses` assertion below
+    /// fails on the wrong error — 27 falsifiers reporting red while none of
+    /// them is exercised. That is strictly worse than a plain red, because the
+    /// suite looks like 27 defects and proves nothing. Observed on `main` at
+    /// `cc21e16` (#10949); the drift itself is still caught, once and by name,
+    /// by `checked_in_ledger_is_current`.
+    ///
+    /// This widens detection rather than narrowing it: the digest axis keeps
+    /// its own dedicated control in `refuses_a_source_change_without_a_re_audit`,
+    /// and the row axes become reachable instead of masked.
+    fn fixture() -> (Ledger, Discovered) {
+        let (mut ledger, discovered) = checked_in_fixture();
+        ledger.source_digest.clone_from(&discovered.source_digest);
+        (ledger, discovered)
+    }
+
+    /// Guards the rebinding above. If someone reverts `fixture` to hand back the
+    /// committed digest, this fails immediately and says why, instead of the
+    /// whole negative-control suite going quietly unexercised the next time the
+    /// completion surface moves.
+    #[test]
+    fn the_axis_fixture_does_not_depend_on_committed_digest_currency() -> Result<()> {
+        let (ledger, discovered) = fixture();
+        if ledger.source_digest != discovered.source_digest {
+            bail!(
+                "the shared fixture must rebind `source_digest` to current discovery; otherwise a \
+                 stale committed digest short-circuits `validate` and masks every row-level \
+                 falsifier below"
+            );
+        }
+        validate(&ledger, &discovered)
+            .context("the shared fixture is valid before any single axis is corrupted")?;
+        Ok(())
     }
 
     fn refuses(ledger: &Ledger, discovered: &Discovered, expected: &str) {
@@ -3186,7 +3231,7 @@ mod tests {
 
     #[test]
     fn checked_in_ledger_is_current() {
-        let (ledger, discovered) = fixture();
+        let (ledger, discovered) = checked_in_fixture();
         validate(&ledger, &discovered)
             .expect("checked-in ledger reconciles against current source");
     }
@@ -3194,7 +3239,7 @@ mod tests {
     #[test]
     fn checked_in_projection_is_current() {
         let root = project_root().expect("project root");
-        let (ledger, discovered) = fixture();
+        let (ledger, discovered) = checked_in_fixture();
         let generated = render_markdown(&ledger, &discovered);
         let existing = fs::read_to_string(root.join(PROJECTION_PATH)).expect("projection exists");
         assert_eq!(
@@ -3312,6 +3357,56 @@ mod tests {
                  the roots moved out from under it."
             );
         }
+    }
+
+    /// An external `#[cfg(test)] mod` is parsed as a separate file by the
+    /// source scan, which cannot see the gating attribute on its parent. Keep
+    /// those proof-only files out of the production producer denominator.
+    #[test]
+    fn completion_test_modules_are_excluded_from_product_scan() -> Result<()> {
+        let root = project_root()?;
+        let parent = "crates/perl-lsp-rs-core/src/providers/completion/completion.rs";
+        let source =
+            fs::read_to_string(root.join(parent)).context("read completion module source")?;
+        let parsed = syn::parse_file(&source).context("parse completion module source")?;
+        let tracked = tracked_files(&root).context("list tracked source files")?;
+        let scanned = scanned_files(&root).context("discover completion product source")?;
+        color_eyre::eyre::ensure!(
+            scanned.iter().any(|path| path == parent),
+            "product completion module `{parent}` must stay scanned"
+        );
+        let mut gated_modules = BTreeSet::new();
+
+        for item in parsed.items {
+            let syn::Item::Mod(module) = item else { continue };
+            if !has_cfg_test(&module.attrs) || module.content.is_some() {
+                continue;
+            }
+            let file = format!(
+                "crates/perl-lsp-rs-core/src/providers/completion/completion/{}.rs",
+                module.ident
+            );
+            gated_modules.insert(file.clone());
+            color_eyre::eyre::ensure!(
+                tracked.contains(&file),
+                "test module `{file}` must be tracked"
+            );
+            color_eyre::eyre::ensure!(
+                TEST_SURFACE_FILES.contains(&file.as_str()),
+                "test module `{file}` would be counted as product source"
+            );
+            color_eyre::eyre::ensure!(
+                !scanned.contains(&file),
+                "test module `{file}` entered the product source digest"
+            );
+        }
+        let excluded: BTreeSet<String> =
+            TEST_SURFACE_FILES.iter().map(|path| (*path).to_string()).collect();
+        color_eyre::eyre::ensure!(
+            excluded == gated_modules,
+            "every excluded source file must still be an external #[cfg(test)] completion module; excluded: {excluded:?}; gated: {gated_modules:?}"
+        );
+        Ok(())
     }
 
     /// Discovery is not vacuous. A denominator that quietly became empty would
@@ -4852,7 +4947,12 @@ mod tests {
         let root = project_root().expect("project root");
         let (_, discovered) = fixture();
         for field in ["identity", "insertion_plan", "evidence", "rank"] {
+            // Reloaded per iteration for a clean row set, so it needs the same
+            // digest rebinding `fixture` does — otherwise this control refuses
+            // for the digest reason whenever the committed audit is stale and
+            // the `not_applicable` axis goes unexercised.
             let mut ledger = load(&root).expect("ledger parses");
+            ledger.source_digest.clone_from(&discovered.source_digest);
             let row = ledger
                 .producers
                 .iter_mut()

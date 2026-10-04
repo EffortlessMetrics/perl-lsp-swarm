@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import re
 import unittest
 from pathlib import Path
@@ -184,6 +185,71 @@ class SemanticReviewCurrentnessPolicySurfaces(unittest.TestCase):
         assert "subject_sha256" in text
         assert "git" in text and "diff" in text and "--binary" in text
 
+    def test_subject_bound_checker_versions_stdout_json_payload(self) -> None:
+        """The stdout JSON payload must carry schema_version so a wire-shape
+        bump is observable at the consumer side rather than silent. See
+        #15284 — the marker envelope (`semantic-review:v1`) and the stdout
+        JSON payload are two distinct wire surfaces and must be version-skew
+        free at the producer side.
+
+        Counting string occurrences of the field is not enough: a fourth
+        `print(json.dumps(...))` or a `setdefault` that keeps a foreign
+        version would still satisfy a source-text count. Pin the helper.
+        """
+        source = (
+            ROOT / "scripts/ci/check-pr-semantic-review-currentness.py"
+        ).read_text(encoding="utf-8")
+        assert 'SCHEMA_VERSION = "semantic_review_currentness.v1"' in source
+        assert 'setdefault("schema_version"' not in source
+        assert "setdefault('schema_version'" not in source
+
+        tree = ast.parse(source)
+        helpers: set[str] = set()
+        dumps_in: list[str | None] = []
+        print_dumps_in: list[str | None] = []
+        emit_calls_in_main = 0
+        func_stack: list[str] = []
+
+        def is_json_dumps(node: ast.AST) -> bool:
+            return (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == "json"
+                and node.func.attr == "dumps"
+            )
+
+        class Visitor(ast.NodeVisitor):
+            def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+                func_stack.append(node.name)
+                if node.name in {"stdout_payload", "emit_stdout_json"}:
+                    helpers.add(node.name)
+                self.generic_visit(node)
+                func_stack.pop()
+
+            def visit_Call(self, node: ast.Call) -> None:
+                nonlocal emit_calls_in_main
+                if is_json_dumps(node):
+                    dumps_in.append(func_stack[-1] if func_stack else None)
+                if isinstance(node.func, ast.Name) and node.func.id == "print":
+                    for arg in node.args:
+                        if is_json_dumps(arg):
+                            print_dumps_in.append(func_stack[-1] if func_stack else None)
+                if (
+                    isinstance(node.func, ast.Name)
+                    and node.func.id == "emit_stdout_json"
+                    and func_stack
+                    and func_stack[-1] == "main"
+                ):
+                    emit_calls_in_main += 1
+                self.generic_visit(node)
+
+        Visitor().visit(tree)
+        assert helpers == {"stdout_payload", "emit_stdout_json"}
+        assert dumps_in == ["emit_marker", "emit_stdout_json"]
+        assert print_dumps_in == ["emit_stdout_json"]
+        assert emit_calls_in_main == 3
+
     def test_semantic_carry_forward_is_narrow_and_not_code_whitespace(self) -> None:
         text = (
             ROOT / "scripts/ci/check-pr-semantic-review-currentness.py"
@@ -204,7 +270,14 @@ class SemanticReviewCurrentnessPolicySurfaces(unittest.TestCase):
         )
         assert '[[ "$value" =~ ^[0-9]+$ ]]' in text
         assert 'not_proven "invalid_numeric_review_fact"' in text
-        assert "SUBMITTED_HUMAN_REVIEW_COUNT=$(" in text
+        # The count is derived by subtraction and then clamped, so a provider
+        # that reports more dismissals than human reviews cannot drive the
+        # published value negative. Pinned by the honest name since #15035;
+        # the clamp is asserted alongside it so renaming the variable cannot
+        # quietly drop the guard this test exists to hold.
+        assert "NON_DISMISSED_LATEST_NONBOT_REVIEW_COUNT=$(" in text
+        assert 'if [[ "$NON_DISMISSED_LATEST_NONBOT_REVIEW_COUNT" -lt 0 ]]' in text
+        assert "NON_DISMISSED_LATEST_NONBOT_REVIEW_COUNT=0" in text
 
     def test_state_projection_has_no_exact_head_lifecycle(self) -> None:
         text = (ROOT / "scripts/reviews/state").read_text(encoding="utf-8")

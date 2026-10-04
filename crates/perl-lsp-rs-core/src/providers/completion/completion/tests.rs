@@ -926,6 +926,137 @@ Point->new(
     assert_eq!(x_item.insert_text.as_deref(), Some("x => "));
 }
 
+/// A lone `-` that starts an operand must not be rewritten into an arrow
+/// prefix, while a `-` after a real (balanced-paren) receiver must keep
+/// routing to method completion.
+///
+/// Controlling issue: #15466.
+#[test]
+fn test_dash_trigger_ignores_lone_minus_but_keeps_call_chain_receiver()
+-> Result<(), Box<dyn std::error::Error>> {
+    // `Point->new(-` — the minus opens an operand, not an arrow, so the dash
+    // trigger must answer with no completions at all. The cursor sits right
+    // after the `-` so the lone-dash branch actually runs, and the context
+    // prefix assert distinguishes that reject path from an arrow rewrite.
+    let code = r#"
+use Object::Pad;
+
+class Point {
+field $x :param = 0;
+}
+
+Point->new(-
+"#;
+
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index_and_source(&ast, code, None);
+
+    let completions = provider.get_completions(code, code.len() - 1);
+
+    assert!(
+        completions.is_empty(),
+        "a lone minus inside constructor arguments must not be rewritten as an arrow; got: {:?}",
+        completions.iter().map(|item| &item.label).collect::<Vec<_>>()
+    );
+    let context = provider.analyze_context(code, code.len() - 1);
+    assert_eq!(
+        context.prefix, "",
+        "the operand minus must keep the ordinary empty prefix, not an arrow rewrite"
+    );
+
+    // `$factory->build()-` — the `-` follows a balanced-paren call receiver,
+    // so it is the first char of `->` and the rewrite must survive: the scan
+    // keeps the `)` neighbor, the prefix carries the whole chain, and method
+    // completion — not the generic prefix dump — answers the request.
+    let code = r#"
+package MyService;
+sub process { }
+sub validate { }
+package MyFactory;
+sub build { }
+my $factory = MyFactory->create;
+$factory->build()-
+"#;
+
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let index = Arc::new(WorkspaceIndex::new());
+    // Canonical initial-name fixture seeding (#16449 burndown): index_file is
+    // a one-line forward to index_initial_file; this seeds initial on-disk
+    // state, so call the canonical API directly.
+    index.index_initial_file(
+        Url::parse("file:///workspace/MyFactory.pm")?,
+        "package MyFactory;\nsub build { }\n1;\n".to_string(),
+    )?;
+    let provider = CompletionProvider::new_with_index(&ast, Some(index));
+
+    let completions = provider.get_completions(code, code.len() - 1);
+
+    let context = provider.analyze_context(code, code.len() - 1);
+    assert_eq!(
+        context.prefix, "$factory->build()->",
+        "a dash after a balanced-paren call receiver must keep the arrow rewrite"
+    );
+    assert!(
+        completions.iter().any(|item| item.label == "build"),
+        "a dash after a balanced-paren call receiver must still offer method completions; got: {:?}",
+        completions.iter().map(|item| &item.label).collect::<Vec<_>>()
+    );
+    assert!(
+        !completions.iter().any(|item| item.label == "arrayref" || item.label == "hashref"),
+        "the rewritten call-chain receiver must route to method completion, not the generic dump; got: {:?}",
+        completions.iter().map(|item| &item.label).collect::<Vec<_>>()
+    );
+
+    // `1 -` — binary subtraction with no receiver: no method completions.
+    let code = "1 -";
+
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new(&ast);
+
+    let completions = provider.get_completions(code, code.len());
+
+    assert!(
+        completions.is_empty(),
+        "a subtraction minus must not offer method completions; got: {:?}",
+        completions.iter().map(|item| &item.label).collect::<Vec<_>>()
+    );
+
+    // `Point->new(foo-` — `method_receiver_start` stops at the open paren and
+    // hands back the lowercase bareword `foo`, but a bareword that can only be
+    // an operand head must not become a `foo->` receiver mid-argument. The
+    // ordinary (empty) prefix keeps the dash trigger silent.
+    let code = r#"
+use Object::Pad;
+
+class Point {
+field $x :param = 0;
+}
+
+Point->new(foo-
+"#;
+
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index_and_source(&ast, code, None);
+
+    let completions = provider.get_completions(code, code.len() - 1);
+
+    assert!(
+        completions.is_empty(),
+        "a bareword operand inside constructor arguments must not be rewritten as an arrow; got: {:?}",
+        completions.iter().map(|item| &item.label).collect::<Vec<_>>()
+    );
+    let context = provider.analyze_context(code, code.len() - 1);
+    assert_eq!(
+        context.prefix, "",
+        "the bareword operand must keep the ordinary empty prefix, not `foo->`"
+    );
+    Ok(())
+}
+
 /// A named `:param(external_name)` is the keyword `new` actually accepts, so
 /// the completion must offer the explicit name instead of the field name.
 ///
@@ -1018,12 +1149,10 @@ fn test_object_pad_constructor_param_completion_quotes_literal_keys() {
 /// it. This pins the reachable window that the quoting work depends on.
 ///
 /// Boundary, deliberately not asserted here: once the caret follows the `-`
-/// itself, `analyze_context` rewrites the prefix to `foo->` and answers the
-/// position as a method call, so no key survives the `field_name`
-/// `starts_with` filter. That rule is in `analyze_context` and predates this
-/// change; #15466 owns it, with the measured evidence that widening
-/// `object_pad_constructor_package` instead removes the method and variable
-/// completions that currently answer those carets.
+/// itself, the caret is a bareword operand head, not an arrow, so
+/// `analyze_context` keeps the ordinary prefix and the dash trigger answers
+/// with no completions at all — no key survives that caret either. #15466
+/// owns that boundary (the operand-shaped-receiver rule in `analyze_context`).
 ///
 /// Controlling issue: #13449.
 #[test]
@@ -5553,19 +5682,60 @@ fn test_hash_key_completion_empty_prefix() {
 }
 
 #[test]
-fn test_hash_key_completion_does_not_fire_for_hashref_deref() {
-    // $ref->{ho<cursor> -- hashref deref, must NOT suggest hash keys
+fn test_hashref_key_role_does_not_fabricate_uncollectable_keys() {
+    // $ref->{ho<cursor> -- the hashref form is the same hash-key role (#5159),
+    // but `my $ref = {host => ...}` is not a shape collect_hash_keys_from_source
+    // can read (%var = (...) literals and $ref->{key} = assignments only), so
+    // no key may be fabricated for it.
     let code = "my $ref = {host => 'localhost'};\n$ref->{ho";
     let mut parser = Parser::new(code);
     let ast = must(parser.parse());
     let provider = CompletionProvider::new(&ast);
     let completions = provider.get_completions(code, code.len());
-    // Must not return a Property-kinded "host" completion (hash key detection
-    // must bail when `->` precedes the `{`)
     assert!(
         !completions.iter().any(|c| c.label == "host" && c.kind == CompletionItemKind::Property),
         "hashref deref `$ref->{{ho` must not produce Property-kinded 'host' completion; got: {:?}",
         completions.iter().map(|c| (&c.label, &c.kind)).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn hash_key_classifier_recognizes_the_hashref_form() {
+    // The variable scan must step over the `->` arrow; #5159 removed the
+    // bail-out, so `$ref->{` classifies exactly like `$ref{`.
+    assert_eq!(
+        CompletionProvider::detect_hash_key_context("$ref->{ho", 9),
+        Some(("ref".to_string(), "ho".to_string()))
+    );
+    assert_eq!(
+        CompletionProvider::detect_hash_key_context("$ref->{", 7),
+        Some(("ref".to_string(), String::new()))
+    );
+    // The direct form is unchanged.
+    assert_eq!(
+        CompletionProvider::detect_hash_key_context("$hash{ap", 8),
+        Some(("hash".to_string(), "ap".to_string()))
+    );
+    // Double-sigil derefs stay refused.
+    assert_eq!(CompletionProvider::detect_hash_key_context("$$ref{ap", 8), None);
+}
+
+#[test]
+fn hash_key_classifier_refuses_a_brace_inside_comment_string_or_regex() {
+    // The finding shape: the only `{` before the cursor sits in an earlier
+    // comment line. The later line is ordinary code and must keep enrichment.
+    let comment = "# $hash{\napi";
+    assert_eq!(CompletionProvider::detect_hash_key_context(comment, comment.len()), None);
+
+    // Same for a brace inside a string literal.
+    let string = "my $s = \"%hash{\";\napi";
+    assert_eq!(CompletionProvider::detect_hash_key_context(string, string.len()), None);
+
+    // Live syntax one line above still classifies.
+    let live = "my %hash = (api => 1);\n$hash{ap";
+    assert_eq!(
+        CompletionProvider::detect_hash_key_context(live, live.len()),
+        Some(("hash".to_string(), "ap".to_string()))
     );
 }
 
@@ -9419,12 +9589,15 @@ fn test_ancestor_file_lexical_visible_in_nested_block() {
     );
 }
 
-/// `our` package globals keep their bounded always-visible behavior
-/// (declaration role distinct from lexicals), including after the cursor.
+/// `our` aliases follow the same declaration-order gate as lexicals: visible
+/// after the declaring statement, rejected before it. A previous version of
+/// this test used `rfind("$pk")`, which landed inside `our $pkg_after` and
+/// could not falsify after-cursor admission.
 #[test]
 fn test_our_package_global_keeps_bounded_visibility() {
-    let code = concat!("our $pkg_before;\n", "$pk\n", "our $pkg_after;\n");
-    let trigger = code.rfind("$pk").unwrap_or(0) + 3;
+    let code = concat!("our $pkg_before = 1;\n", "# cursor\n", "$pk\n", "our $pkg_after = 2;\n",);
+    let needle = "# cursor\n$pk";
+    let trigger = must_some(code.find(needle)) + needle.len();
 
     let mut parser = Parser::new(code);
     let ast = must(parser.parse());
@@ -9437,8 +9610,8 @@ fn test_our_package_global_keeps_bounded_visibility() {
         "our declared before cursor must stay visible; got {labels:?}"
     );
     assert!(
-        labels.iter().any(|l| l.contains("pkg_after")),
-        "our declared after cursor keeps package-global visibility (bounded behavior); got {labels:?}"
+        !labels.iter().any(|l| l.contains("pkg_after")),
+        "our declared after cursor must not be admitted; got {labels:?}"
     );
 }
 
@@ -9602,5 +9775,205 @@ fn test_incomplete_block_keeps_ancestor_and_excludes_closed_sibling() {
     assert!(
         !labels.iter().any(|l| l.contains("closed_block_only")),
         "ended sibling block must not reactivate during recovery; got {labels:?}"
+    );
+}
+
+fn completions_after_needle(code: &str, needle: &str) -> Vec<CompletionItem> {
+    let trigger = must_some_with(code.find(needle), "fixture needle must exist") + needle.len();
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index_and_source(&ast, code, None);
+    provider.get_completions(code, trigger)
+}
+
+fn variable_labels_at(code: &str, needle: &str) -> Vec<String> {
+    variable_labels(&completions_after_needle(code, needle))
+        .into_iter()
+        .map(str::to_string)
+        .collect()
+}
+
+/// Bare `$` must project currently visible scalars rather than an empty set
+/// or a prefix-stripped fall-through into workspace package names (#16860).
+#[test]
+fn test_bare_sigil_offers_local_scalar_not_workspace_package()
+-> Result<(), Box<dyn std::error::Error>> {
+    let index = Arc::new(WorkspaceIndex::new());
+    // Canonical initial-name fixture seeding (#17043 burndown): index_file is
+    // a one-line forward to index_initial_file; this seeds initial on-disk
+    // state, so call the canonical API directly.
+    index.index_initial_file(
+        must(Url::parse("file:///lib/Animal.pm")),
+        "package Animal;\nsub speak { 1 }\n1;\n".to_string(),
+    )?;
+
+    let code = "my $count = 1;\n$";
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index_and_source(&ast, code, Some(index));
+    let completions = provider.get_completions(code, code.len());
+
+    let labels: Vec<&str> = completions.iter().map(|c| c.label.as_ref()).collect();
+    assert!(labels.contains(&"$count"), "bare `$` must offer the in-scope lexical; got {labels:?}");
+    assert!(
+        !labels.iter().any(|l| *l == "Animal" || l.ends_with("::Animal")),
+        "bare `$` must not fall through to workspace package names; got {labels:?}"
+    );
+    Ok(())
+}
+
+/// `$`, `@`, and `%` isolate exact sigil class even when the local names collide.
+#[test]
+fn test_sigil_class_isolates_colliding_local_names() {
+    let code = concat!("my $slot = 1;\n", "my @slot = (1);\n", "my %slot = (a => 1);\n", "$slot\n");
+
+    let scalar = variable_labels_at(code, "\n$slot");
+    assert!(
+        scalar.iter().any(|l| *l == "$slot"),
+        "`$` must offer the scalar binding; got {scalar:?}"
+    );
+    assert!(
+        !scalar.iter().any(|l| *l == "@slot" || *l == "%slot"),
+        "`$` must not emit array/hash homonyms; got {scalar:?}"
+    );
+
+    let array_code =
+        concat!("my $slot = 1;\n", "my @slot = (1);\n", "my %slot = (a => 1);\n", "@slot\n");
+    let array = variable_labels_at(array_code, "\n@slot");
+    assert!(array.iter().any(|l| *l == "@slot"), "`@` must offer the array binding; got {array:?}");
+    assert!(
+        !array.iter().any(|l| *l == "$slot" || *l == "%slot"),
+        "`@` must not emit scalar/hash homonyms; got {array:?}"
+    );
+
+    let hash_code =
+        concat!("my $slot = 1;\n", "my @slot = (1);\n", "my %slot = (a => 1);\n", "%slot\n");
+    let hash = variable_labels_at(hash_code, "\n%slot");
+    assert!(hash.iter().any(|l| *l == "%slot"), "`%` must offer the hash binding; got {hash:?}");
+    assert!(
+        !hash.iter().any(|l| *l == "$slot" || *l == "@slot"),
+        "`%` must not emit scalar/array homonyms; got {hash:?}"
+    );
+}
+
+/// `state` follows lexical admission on the production sigil path, including
+/// sibling-callable exclusion.
+#[test]
+fn test_state_binding_visible_in_own_sub_only() {
+    let body = concat!("sub once {\n", "    state $once_val = 1;\n", "    $once\n", "}\n");
+    let labels = variable_labels_at(body, "    $once");
+    assert!(
+        labels.iter().any(|l| l.contains("once_val")),
+        "state binding must be visible in its declaring sub; got {labels:?}"
+    );
+
+    let sibling = concat!(
+        "sub once {\n",
+        "    state $once_val = 1;\n",
+        "}\n",
+        "sub other {\n",
+        "    $once\n",
+        "}\n"
+    );
+    let sibling_labels = variable_labels_at(sibling, "    $once");
+    assert!(
+        !sibling_labels.iter().any(|l| l.contains("once_val")),
+        "state binding must not leak into a sibling sub; got {sibling_labels:?}"
+    );
+}
+
+/// Signature parameter + inner `my` of the same name: the inner binding wins
+/// and the outer parameter is not emitted as a second exact local candidate.
+#[test]
+fn test_signature_param_shadowed_by_inner_lexical() {
+    let code = concat!(
+        "sub sized ($shadowed) {\n",
+        "    # inner documentation marker\n",
+        "    my $shadowed = 2;\n",
+        "    $shad\n",
+        "}\n"
+    );
+    let completions = completions_after_needle(code, "    $shad");
+    let items: Vec<&CompletionItem> =
+        completions.iter().filter(|c| c.label == "$shadowed").collect();
+    assert_eq!(
+        items.len(),
+        1,
+        "inner lexical must shadow the signature parameter; got {} items {items:?}",
+        items.len()
+    );
+    let doc = items[0].documentation.as_deref().unwrap_or("");
+    assert!(
+        doc.contains("inner documentation marker"),
+        "surviving $shadowed must be the inner lexical, got doc: {doc:?}"
+    );
+}
+
+/// Two package blocks in one file are distinct extents: a lexical declared in
+/// one package must not appear as the other package's exact local candidate.
+#[test]
+fn test_package_block_lexical_does_not_leak_to_sibling_package() {
+    let code = concat!(
+        "package FirstPkg {\n",
+        "    my $first_only = 1;\n",
+        "}\n",
+        "package SecondPkg {\n",
+        "    my $second_only = 2;\n",
+        "    $fi\n",
+        "}\n"
+    );
+    let labels = variable_labels_at(code, "    $fi");
+    assert!(
+        !labels.iter().any(|l| l.contains("first_only")),
+        "FirstPkg lexical must not be offered inside SecondPkg; got {labels:?}"
+    );
+
+    let own = concat!(
+        "package FirstPkg {\n",
+        "    my $first_only = 1;\n",
+        "}\n",
+        "package SecondPkg {\n",
+        "    my $second_only = 2;\n",
+        "    $se\n",
+        "}\n"
+    );
+    let own_labels = variable_labels_at(own, "    $se");
+    assert!(
+        own_labels.iter().any(|l| l.contains("second_only")),
+        "SecondPkg must still offer its own lexical; got {own_labels:?}"
+    );
+
+    let first_code = concat!(
+        "package FirstPkg {\n",
+        "    my $first_only = 1;\n",
+        "    $se\n",
+        "}\n",
+        "package SecondPkg {\n",
+        "    my $second_only = 2;\n",
+        "}\n"
+    );
+    let first_labels = variable_labels_at(first_code, "    $se");
+    assert!(
+        !first_labels.iter().any(|l| l.contains("second_only")),
+        "SecondPkg lexical must not be offered inside FirstPkg; got {first_labels:?}"
+    );
+}
+
+/// A later snapshot that removes a declaration must not keep offering it.
+/// This is provider-generation requery, not document close/reopen lifecycle.
+#[test]
+fn test_removed_lexical_is_absent_on_requery() {
+    let before = "my $gone_now = 1;\n# cursor\n$go";
+    let before_labels = variable_labels_at(before, "# cursor\n$go");
+    assert!(
+        before_labels.iter().any(|l| l.contains("gone_now")),
+        "control: the lexical must be offered before the edit; got {before_labels:?}"
+    );
+
+    let after = "my $stays = 1;\n# cursor\n$go";
+    let after_labels = variable_labels_at(after, "# cursor\n$go");
+    assert!(
+        !after_labels.iter().any(|l| l.contains("gone_now")),
+        "requery after removing the declaration must drop it; got {after_labels:?}"
     );
 }

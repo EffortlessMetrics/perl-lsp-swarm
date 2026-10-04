@@ -747,7 +747,7 @@ impl<'a> DeclarationProvider<'a> {
     ///
     /// When the cursor is on the string `'save'` in `before 'save' => sub { }`,
     /// this walks up the parent map to confirm the string is the first argument
-    /// of a `before`/`after`/`around` function call, then returns the location of
+    /// of a method modifier call, then returns the location of
     /// `sub save { }`.
     fn find_modifier_target_declaration(
         &self,
@@ -774,7 +774,7 @@ impl<'a> DeclarationProvider<'a> {
         };
         let node_lookup = self.build_node_lookup_map();
 
-        // Walk up: String → FunctionCall { name: "before"/"after"/"around" }
+        // Walk up: String → method modifier FunctionCall.
         // The String node may be a direct child of the FunctionCall's args list,
         // so its immediate parent should be the FunctionCall node.
         let string_ptr: *const Node = string_node as *const _;
@@ -783,7 +783,7 @@ impl<'a> DeclarationProvider<'a> {
 
         // Check direct parent is a modifier FunctionCall where the string is first arg.
         if let NodeKind::FunctionCall { name, args } = &parent.kind
-            && matches!(name.as_str(), "before" | "after" | "around" | "override")
+            && matches!(name.as_str(), "before" | "after" | "around" | "override" | "augment")
             && args.first().map(|a| std::ptr::eq(a, string_node)).unwrap_or(false)
         {
             return self.find_subroutine_declaration(string_node, bare_name);
@@ -795,7 +795,7 @@ impl<'a> DeclarationProvider<'a> {
         let grandparent = node_lookup.get(&grandparent_ptr).copied()?;
 
         if let NodeKind::FunctionCall { name, args } = &grandparent.kind
-            && matches!(name.as_str(), "before" | "after" | "around" | "override")
+            && matches!(name.as_str(), "before" | "after" | "around" | "override" | "augment")
             && args.first().map(|a| std::ptr::eq(a, string_node)).unwrap_or(false)
         {
             return self.find_subroutine_declaration(string_node, bare_name);

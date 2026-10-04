@@ -345,12 +345,12 @@ removal_condition = "The consumer reference is corrected when the crate is delet
 note = "Same upstream-facing claim as the neighbouring CLAUDE.md."
 
 [[consumers]]
-path = "crates/tree-sitter-perl-rs/src/lib.rs"
+path = "crates/tree-sitter-perl-rs/src/node.rs"
 reference_kind = "documentation"
 disposition = "migration_only_entry_point"
 canonical_owner = "#8803"
 removal_condition = "The deferral comment is resolved when #8803 lands compatibility serialization on the canonical tree."
-note = "A doc comment on Node::to_sexp, not an import: it records that Node::to_sexp is a non-normative debug projection and defers compatibility serialization to this crate under issue 8047. This is the evidence that sexp::to_sexp is not already equivalent."
+note = "A doc comment on Node::to_sexp, not an import: it records that Node::to_sexp is a non-normative debug projection and defers compatibility serialization to this crate under issue 8047. This is the evidence that sexp::to_sexp is not already equivalent. Relocated from src/lib.rs by the facade split (#13175)."
 
 [[consumers]]
 path = "docs/adr/PLSP-ADR-0006-perl-workspace-core-facts-substrate.md"

@@ -61,6 +61,16 @@ just pr-fast
 The repository pins Rust channel `1.95.0` in `rust-toolchain.toml` and currently
 requires MSRV 1.95.
 
+### Windows shell for `just` recipes
+
+The `just` recipes are bash scripts. Run them from Git Bash (or another bash
+with `cygpath` on `PATH`). From PowerShell or `cmd.exe`, `just` fails with
+``Could not find `cygpath` `` when `cygpath` is not on `PATH`. Git Bash
+already puts `cygpath` and the other tools these recipes need on its own
+session `PATH`, so running them from Git Bash needs no extra `PATH` entries —
+avoid adding `Git\usr\bin` to the global Windows `PATH`, where its GNU
+utilities would shadow native `find` and `sort`.
+
 ### Windows symlink-privilege skips (#12567)
 
 Creating file symlinks on Windows requires `SeCreateSymbolicLinkPrivilege`,
@@ -181,7 +191,7 @@ Useful command choices:
 | Full local merge gate | `just ci-gate` |
 | Agent compile/test/lint | `just agent-check`, `just agent-test`, `just agent-clippy` |
 | Multi-worktree shared build cache | `just cached <cargo args>` — see [Multi-Worktree Build Caching](docs/how-to/MULTI_WORKTREE_BUILD_CACHING.md) |
-| Build disk grew / stale target trees | `just target-gc` (dry-run report), then `just target-gc --apply` |
+| Build disk grew / stale target trees | `just target-gc` (advisory report), then request an exact owner-verified cleanup proposal; `--apply` is retired |
 | Parser or generated status changed | `just status-update` then `just status-check` |
 | Public API documentation changed | `just ci-docs-check` and `just docs-verify` |
 | Release/version surfaces changed | `just version-check` then `just release-check` |
