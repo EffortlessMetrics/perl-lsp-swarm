@@ -1356,6 +1356,36 @@ pub(super) fn cursor_is_off_named_symbol(
     }
 }
 
+/// The terminal same-file model may resolve an absent package's callable by its
+/// bare name in the caller's scope. Do not present that different package as the
+/// definition of an explicit qualified call (#17252, #17245).
+fn same_file_definition_matches_qualification(
+    text: &str,
+    offset: usize,
+    definition: &crate::symbol::Symbol,
+) -> bool {
+    if !matches!(
+        definition.kind,
+        crate::symbol::SymbolKind::Subroutine | crate::symbol::SymbolKind::Method
+    ) {
+        return true;
+    }
+    let Ok(regex) = get_fqn_regex() else {
+        return true;
+    };
+    let (line_start, line_text) = crate::util::line_window_around_offset(text, offset);
+    match fqn_component_at_cursor(regex, line_text, offset.saturating_sub(line_start)) {
+        Some(FqnCursorComponent::Final { package, name }) => {
+            // SUPER names an inheritance lookup, not a literal package. Its
+            // resolution belongs to the earlier parent-chain path.
+            package == "SUPER"
+                || package.ends_with("::SUPER")
+                || definition.qualified_name == format!("{package}::{name}")
+        }
+        _ => true,
+    }
+}
+
 impl LspServer {
     fn navigation_decision_trace_context(
         params: Option<&Value>,
@@ -2493,6 +2523,11 @@ impl LspServer {
 
                     // Find definition at the position
                     if let Some(definition) = model.definition_at(offset) {
+                        if !same_file_definition_matches_qualification(
+                            &doc.text, offset, definition,
+                        ) {
+                            return Ok(Some(json!([])));
+                        }
                         // These built-in variables have no local declaration. The
                         // semantic analyzer can instead return the sub whose span
                         // contains them, which is not their definition.
@@ -3312,6 +3347,159 @@ impl LspServer {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn qualified_definition_fallback_retains_exact_and_bare_semantic_candidates()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let text = "package Caller;\nsub compute_0 { return 1; }\nOther::compute_0();\nCaller::compute_0();\ncompute_0();\nSUPER::compute_0();\n";
+        let ast = Parser::new(text).parse()?;
+        let model = crate::semantic::SemanticModel::build(&ast, text);
+        let candidate = model
+            .symbol_table()
+            .symbols
+            .values()
+            .flatten()
+            .find(|symbol| symbol.qualified_name == "Caller::compute_0")
+            .ok_or("missing source-built Caller::compute_0 candidate")?;
+        assert!(matches!(candidate.kind, crate::symbol::SymbolKind::Subroutine));
+        let foreign = text.find("Other::compute_0").ok_or("foreign call")? + 9;
+        assert!(
+            !same_file_definition_matches_qualification(text, foreign, candidate),
+            "an absent external package must not be silently replaced by Caller"
+        );
+        let exact = text.find("Caller::compute_0()").ok_or("exact call")? + 10;
+        assert!(same_file_definition_matches_qualification(text, exact, candidate));
+        let bare = text.find("\ncompute_0()").ok_or("bare call")? + 3;
+        assert!(same_file_definition_matches_qualification(text, bare, candidate));
+        let inherited = text.find("SUPER::compute_0").ok_or("SUPER call")? + 9;
+        assert!(
+            same_file_definition_matches_qualification(text, inherited, candidate),
+            "SUPER is resolved by inheritance rather than literal package equality"
+        );
+        Ok(())
+    }
+
+    #[cfg(feature = "workspace")]
+    fn qualified_fallback_request(
+        server: &LspServer,
+        uri: &str,
+        line: usize,
+        character: usize,
+    ) -> Result<Option<Value>, JsonRpcError> {
+        server.test_handle_definition(Some(json!({
+            "textDocument": { "uri": uri },
+            "position": { "line": line, "character": character }
+        })))
+    }
+
+    #[cfg(feature = "workspace")]
+    fn assert_qualified_fallback_location(result: &Option<Value>, uri: &str, line: u64) {
+        let locations = result.as_ref().and_then(Value::as_array);
+        assert!(locations.is_some_and(|items| items.len() == 1), "expected one target: {result:?}");
+        let location = &locations.map_or(&[][..], Vec::as_slice)[0];
+        assert_eq!(location.get("uri").and_then(Value::as_str), Some(uri), "{result:?}");
+        assert_eq!(location.pointer("/range/start/line").and_then(Value::as_u64), Some(line));
+        assert_eq!(location.pointer("/range/end/line").and_then(Value::as_u64), Some(line));
+    }
+
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn qualified_definition_fallback_refuses_wrong_package_after_scan_timeout()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use perl_workspace::workspace_index::{DegradationReason, IndexState};
+        let server = LspServer::new();
+        let caller_uri = "file:///workspace/Caller.pm";
+        let caller = "package Caller;\nsub compute_0 { return 1; }\nOther::compute_0();\ncompute_0();\nCaller::compute_0();\n";
+        server.test_apply_did_open(caller_uri, caller, 1)?;
+        let generation = server.test_document_generation(caller_uri).ok_or("caller generation")?;
+        server
+            .test_index_live_file(caller_uri, caller, generation)
+            .map_err(std::io::Error::other)?;
+        let coordinator = server.index_coordinator.as_ref().ok_or("workspace coordinator")?;
+        coordinator.transition_to_degraded(DegradationReason::ScanTimeout { elapsed_ms: 123 });
+        assert!(matches!(
+            coordinator.state(),
+            IndexState::Degraded { reason: DegradationReason::ScanTimeout { .. }, .. }
+        ));
+        assert!(!server.workspace_index_stale_for_any_open_document());
+        let missing = qualified_fallback_request(&server, caller_uri, 2, 9)?;
+        assert!(
+            missing.as_ref().is_some_and(|value| value.is_null() || value.as_array().is_some_and(Vec::is_empty)),
+            "missing Other must yield no guessed Caller location: {missing:?}"
+        );
+        assert_qualified_fallback_location(
+            &qualified_fallback_request(&server, caller_uri, 3, 2)?,
+            caller_uri,
+            1,
+        );
+        assert_qualified_fallback_location(
+            &qualified_fallback_request(&server, caller_uri, 4, 10)?,
+            caller_uri,
+            1,
+        );
+        Ok(())
+    }
+
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn qualified_definition_fallback_refuses_stale_target_and_recovers_exact_location()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        let caller_uri = "file:///workspace/Caller.pm";
+        let target_uri = "file:///workspace/Other.pm";
+        let unrelated_uri = "file:///workspace/Unrelated.pm";
+        let caller = "package Caller;\nsub compute_0 { return 1; }\nOther::compute_0();\ncompute_0();\nCaller::compute_0();\n";
+        let target = "package Other;\nsub compute_0 { return 2; }\n1;\n";
+        let unrelated = "package Unrelated;\nsub helper {}\n";
+        for (uri, text) in [(caller_uri, caller), (target_uri, target), (unrelated_uri, unrelated)]
+        {
+            server.test_apply_did_open(uri, text, 1)?;
+            let generation = server.test_document_generation(uri).ok_or("open generation")?;
+            server.test_index_live_file(uri, text, generation).map_err(std::io::Error::other)?;
+        }
+        server.test_simulate_indexing_complete();
+        assert!(!server.workspace_index_stale_for_any_open_document());
+        assert_qualified_fallback_location(
+            &qualified_fallback_request(&server, caller_uri, 2, 9)?,
+            target_uri,
+            1,
+        );
+        let updated = "package Unrelated;\nsub renamed {}\n";
+        server
+            .test_replace_document_without_index(unrelated_uri, updated, 2)
+            .map_err(std::io::Error::other)?;
+        assert!(
+            server.workspace_index_stale_for_any_open_document(),
+            "unrelated buffer must expose the stale fallback"
+        );
+        let stale = qualified_fallback_request(&server, caller_uri, 2, 9)?;
+        assert!(
+            stale.as_ref().is_some_and(|value| value.is_null() || value.as_array().is_some_and(Vec::is_empty)),
+            "an unavailable fresh target must not be replaced by Caller: {stale:?}"
+        );
+        assert_qualified_fallback_location(
+            &qualified_fallback_request(&server, caller_uri, 3, 2)?,
+            caller_uri,
+            1,
+        );
+        assert_qualified_fallback_location(
+            &qualified_fallback_request(&server, caller_uri, 4, 10)?,
+            caller_uri,
+            1,
+        );
+        let generation =
+            server.test_document_generation(unrelated_uri).ok_or("updated generation")?;
+        server
+            .test_index_live_file(unrelated_uri, updated, generation)
+            .map_err(std::io::Error::other)?;
+        assert!(!server.workspace_index_stale_for_any_open_document());
+        assert_qualified_fallback_location(
+            &qualified_fallback_request(&server, caller_uri, 2, 9)?,
+            target_uri,
+            1,
+        );
+        Ok(())
+    }
 
     fn serde_freshness_spelling(variant: ProviderDecisionFreshness) -> Option<String> {
         serde_json::to_value(variant).ok().and_then(|value| value.as_str().map(str::to_owned))
