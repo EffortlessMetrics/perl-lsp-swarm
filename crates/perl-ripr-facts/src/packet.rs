@@ -622,13 +622,22 @@ pub(crate) fn build_unavailable_packet(
     fact_classes: &[String],
 ) -> serde_json::Value {
     let capabilities = producer_capabilities(fact_classes);
+    // #17260 platform rule: on Windows backslash is a separator, so normalize
+    // to forward-slash under the `posix` claim; on Unix backslash is a literal
+    // filename char and the emitters scan `Path::new(root)` verbatim, so the
+    // echo must stay verbatim to name the scanned directory.
+    #[cfg(windows)]
+    let echo_root = normalize_repo_relative(root);
+    #[cfg(not(windows))]
+    let echo_root = root.to_owned();
     serde_json::json!({
         "schema_version": schema,
         // M1 contract convergence: deterministic packet ID (no timestamp).
-        // The ID is derived from the schema + root + fact_classes so the same
-        // input always produces the same packet ID.
+        // The ID is derived from the schema + normalized root + fact_classes
+        // so the same input always produces the same packet ID, and equivalent
+        // Windows spellings (`project/lib` vs `project\lib`) share one ID.
         "packet_id": format!(
-            "perl-lsp-ripr-facts-{schema}-{root}-{}",
+            "perl-lsp-ripr-facts-{schema}-{echo_root}-{}",
             fact_classes.join(",")
         ),
         "packet_status": "unavailable",
@@ -639,7 +648,10 @@ pub(crate) fn build_unavailable_packet(
             "capabilities": capabilities,
         },
         "root": {
-            "repo_relative": root,
+            // #17260: `echo_root` per the platform rule above — normalized on
+            // Windows, verbatim elsewhere (a verbatim backslash is valid
+            // posix). Forward-slash roots are byte-identical on both.
+            "repo_relative": echo_root,
             "vcs_head": head,
             "path_style": "posix",
         },
