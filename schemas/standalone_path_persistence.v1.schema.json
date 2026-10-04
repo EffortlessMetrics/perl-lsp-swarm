@@ -1,0 +1,429 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/EffortlessMetrics/perl-lsp-swarm/schemas/standalone_path_persistence.v1.schema.json",
+  "title": "standalone_path_persistence.v1",
+  "description": "What durable state one standalone_path_plan.v1 actually changed (#11521). This is not discoverability: a profile or registry write says nothing about whether a genuinely new process resolves the command, which is the separate standalone_fresh_process.v1 proposition. A current-process environment edit is never durable persistence.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "bound_plan_id",
+    "bound_plan_sha256",
+    "result",
+    "mutation_performed",
+    "entry_state",
+    "observed_scope",
+    "current_process_env_mutated",
+    "new_session_required",
+    "owned_entries_observed",
+    "instrument_complete",
+    "redaction_policy"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "standalone_path_persistence.v1"
+    },
+    "bound_plan_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$",
+      "description": "A bounded correlation token. Free text here would carry complete PATH, profile, or home values into a durable receipt, which bounded_typed_fields_only denies."
+    },
+    "bound_plan_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "Digest of the exact plan bytes this receipt was produced under; a changed plan invalidates the receipt."
+    },
+    "result": {
+      "enum": [
+        "already_visible_no_change",
+        "installer_persisted",
+        "package_manager_owned",
+        "manual_action_required",
+        "new_session_required",
+        "unsupported_scope",
+        "permission_or_lock_failure",
+        "conflict_or_wrong_existing_entry",
+        "cancelled",
+        "instrument_failure",
+        "not_proven"
+      ]
+    },
+    "mutation_performed": {
+      "type": "boolean",
+      "description": "Whether durable state outside this process was written."
+    },
+    "entry_state": {
+      "enum": [
+        "already_present",
+        "added",
+        "absent",
+        "conflicting",
+        "unknown"
+      ]
+    },
+    "observed_scope": {
+      "enum": [
+        "user",
+        "system_elevated",
+        "shell_specific",
+        "session_only"
+      ]
+    },
+    "current_process_env_mutated": {
+      "type": "boolean",
+      "description": "A current-process environment edit. Never persistence evidence."
+    },
+    "new_session_required": {
+      "type": "boolean"
+    },
+    "owned_entries_observed": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Installer-owned entries observed after the operation; anything but exactly one means the entry is not canonical."
+    },
+    "conflicting_entry": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "entry_kind",
+            "entry_location",
+            "reason"
+          ],
+          "properties": {
+            "entry_kind": {
+              "enum": [
+                "profile_line",
+                "path_d_fragment",
+                "registry_user_path",
+                "none"
+              ]
+            },
+            "entry_location": {
+              "type": "string",
+              "minLength": 1,
+              "allOf": [
+                {
+                  "$comment": "Expansion syntax never reaches a profile, a script, or the registry.",
+                  "not": {
+                    "pattern": "[$%`;&|<>\"'*?~]|[\\u0000-\\u001f\\u007f]"
+                  }
+                },
+                {
+                  "$comment": "A list separator is the signature of a complete PATH or profile set pasted into a durable receipt.",
+                  "not": {
+                    "pattern": "^.{2,}:"
+                  }
+                }
+              ],
+              "maxLength": 4096
+            },
+            "reason": {
+              "enum": [
+                "wrong_directory",
+                "duplicate_entry",
+                "user_edited_owned_entry",
+                "foreign_installer_entry",
+                "alias_or_case_variant",
+                "unreadable_prior_state"
+              ],
+              "description": "Typed, because free text in a durable receipt defeats bounded-field redaction."
+            }
+          }
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "instrument_complete": {
+      "type": "boolean"
+    },
+    "redaction_policy": {
+      "const": "bounded_typed_fields_only",
+      "description": "Complete PATH, profile, registry, and home values never enter a durable receipt; only bounded typed fields do."
+    }
+  },
+  "allOf": [
+    {
+      "$comment": "Outcomes that wrote nothing cannot have written anything.",
+      "if": {
+        "properties": {
+          "result": {
+            "enum": [
+              "already_visible_no_change",
+              "package_manager_owned",
+              "manual_action_required",
+              "unsupported_scope",
+              "permission_or_lock_failure",
+              "conflict_or_wrong_existing_entry",
+              "cancelled",
+              "instrument_failure",
+              "not_proven"
+            ]
+          }
+        },
+        "required": [
+          "result"
+        ]
+      },
+      "then": {
+        "properties": {
+          "mutation_performed": {
+            "const": false
+          },
+          "entry_state": {
+            "not": {
+              "const": "added"
+            }
+          }
+        }
+      }
+    },
+    {
+      "$comment": "installer_persisted asserts a durable write that added the owned entry.",
+      "if": {
+        "properties": {
+          "result": {
+            "const": "installer_persisted"
+          }
+        },
+        "required": [
+          "result"
+        ]
+      },
+      "then": {
+        "properties": {
+          "mutation_performed": {
+            "const": true
+          },
+          "entry_state": {
+            "const": "added"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "result": {
+            "const": "already_visible_no_change"
+          }
+        },
+        "required": [
+          "result"
+        ]
+      },
+      "then": {
+        "properties": {
+          "entry_state": {
+            "const": "already_present"
+          }
+        }
+      }
+    },
+    {
+      "$comment": "A conflict names the exact state it conflicts with, and only a conflict may report one.",
+      "if": {
+        "properties": {
+          "result": {
+            "const": "conflict_or_wrong_existing_entry"
+          }
+        },
+        "required": [
+          "result"
+        ]
+      },
+      "then": {
+        "required": [
+          "conflicting_entry"
+        ],
+        "properties": {
+          "conflicting_entry": {
+            "type": "object"
+          },
+          "entry_state": {
+            "const": "conflicting"
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "conflicting_entry": {
+            "type": "null"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "result": {
+            "const": "new_session_required"
+          }
+        },
+        "required": [
+          "result"
+        ]
+      },
+      "then": {
+        "properties": {
+          "new_session_required": {
+            "const": true
+          }
+        }
+      }
+    },
+    {
+      "$comment": "An incomplete instrument concludes nothing; a complete one never reports instrument_failure.",
+      "if": {
+        "properties": {
+          "instrument_complete": {
+            "const": false
+          }
+        },
+        "required": [
+          "instrument_complete"
+        ]
+      },
+      "then": {
+        "properties": {
+          "result": {
+            "enum": [
+              "instrument_failure",
+              "not_proven"
+            ]
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "result": {
+            "not": {
+              "const": "instrument_failure"
+            }
+          }
+        }
+      }
+    },
+    {
+      "$comment": "A session-only scope cannot leave an entry a later process would find.",
+      "if": {
+        "properties": {
+          "observed_scope": {
+            "const": "session_only"
+          }
+        },
+        "required": [
+          "observed_scope"
+        ]
+      },
+      "then": {
+        "properties": {
+          "result": {
+            "not": {
+              "enum": [
+                "already_visible_no_change",
+                "installer_persisted"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "$comment": "Exactly one canonical owned entry, or none; duplicate, case, and alias spellings are not idempotent.",
+      "if": {
+        "properties": {
+          "entry_state": {
+            "enum": [
+              "added",
+              "already_present"
+            ]
+          }
+        },
+        "required": [
+          "entry_state"
+        ]
+      },
+      "then": {
+        "properties": {
+          "owned_entries_observed": {
+            "const": 1
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "entry_state": {
+            "const": "absent"
+          }
+        },
+        "required": [
+          "entry_state"
+        ]
+      },
+      "then": {
+        "properties": {
+          "owned_entries_observed": {
+            "const": 0
+          }
+        }
+      }
+    },
+    {
+      "$comment": "An entry cannot appear without a durable write, under any outcome word.",
+      "if": {
+        "properties": {
+          "entry_state": {
+            "const": "added"
+          }
+        },
+        "required": [
+          "entry_state"
+        ]
+      },
+      "then": {
+        "properties": {
+          "mutation_performed": {
+            "const": true
+          }
+        }
+      }
+    },
+    {
+      "$comment": "A current-process environment edit with no durable write is not persistence evidence; schema-only consumers must refuse it exactly as the Rust validator does.",
+      "if": {
+        "properties": {
+          "current_process_env_mutated": {
+            "const": true
+          },
+          "mutation_performed": {
+            "const": false
+          }
+        },
+        "required": [
+          "current_process_env_mutated",
+          "mutation_performed"
+        ]
+      },
+      "then": {
+        "properties": {
+          "result": {
+            "not": {
+              "enum": [
+                "already_visible_no_change",
+                "installer_persisted"
+              ]
+            }
+          }
+        }
+      }
+    }
+  ]
+}
