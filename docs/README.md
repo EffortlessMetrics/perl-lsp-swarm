@@ -21,8 +21,13 @@ This docs tree is checked in with the active development repository,
 
 The current distinction is defined by
 [product identity](reference/product-identity.md) and the
-[publication sync protocol](swarm/sync-protocol.md). The older contributor-topology
-projection is not authority for the public issue/PR destination.
+[publication sync protocol](swarm/sync-protocol.md). The contributor-topology projection
+derives the same static routing, including public issue/PR ingress; live stage and channel
+status remains `NOT_PROVEN` without a captured observation:
+
+```bash
+cargo run --locked -p xtask --bin contributor-topology
+```
 
 ## Diataxis in This Repository
 
