@@ -87,6 +87,14 @@ base=${subject[0]}
 pr_head=${subject[1]:-}
 labels=${subject[2]:-}
 
+# A non-PR run on the default-branch tip compares the checkout against
+# itself. That empty diff scope is the expected steady state, not a
+# failure — but it must be declared, never silent. The repo-wide proof
+# below still applies.
+if [[ $GITHUB_EVENT_NAME != pull_request && $GITHUB_EVENT_NAME != merge_group && $base == "$GITHUB_SHA" ]]; then
+  echo '::notice::RIPR base equals the evaluated checkout; diff-scoped proof covers an empty range' >&2
+fi
+
 # The activated image owns RIPR. Qualification must exercise its real 0.10.1
 # identity and the existing receipt validators; never install a different tool.
 version=$(ripr --version)

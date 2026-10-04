@@ -404,6 +404,14 @@ class GovernedRiprProof(unittest.TestCase):
         self.assertNotIn("Traceback", result.stderr)
         self.assertFalse(self.commands.exists())
 
+    def test_push_base_equal_to_head_declares_empty_range(self):
+        self.git("update-ref", "refs/remotes/origin/main", self.sha)
+        result = self.run_proof(GITHUB_EVENT_NAME="push")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("covers an empty range", result.stderr)
+        call = self.calls()[0]
+        self.assertEqual(call[call.index("--base") + 1], self.sha)
+
 
 if __name__ == "__main__":
     unittest.main()
