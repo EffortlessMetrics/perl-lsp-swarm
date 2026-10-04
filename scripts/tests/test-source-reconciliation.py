@@ -284,7 +284,9 @@ class ReconciliationTests(unittest.TestCase):
         self.write("merge-only.txt", "resolution-only behavior\n")
         self.subjects["target"] = self.commit("merge with additional resolution work")
         ledger, primitive = self.evidence()
-        self.assertIn("resolution effects", " ".join(self.check(ledger, primitive)["errors"]))
+        packet = self.check(ledger, primitive)
+        self.assertEqual(packet["verdict"], "blocked", packet["errors"])
+        self.assertEqual(packet["unresolved_commits"], [self.subjects["target"]])
 
     def test_merge_entry_resolution_and_temporary_cache_are_preserved(self):
         self.git("checkout", "-q", "-b", "side")
@@ -299,8 +301,101 @@ class ReconciliationTests(unittest.TestCase):
         merge = next(r for r in packet["population"] if r["commit"] == self.subjects["target"])
         self.assertEqual(merge["merge_effects"]["additional_resolution_paths"], [])
         self.assertEqual(merge["merge_effects"]["entry_differences_from_side_head"], ["shared.txt"])
-        self.assertIn("resolution effects", " ".join(packet["errors"]))
+        self.assertEqual(packet["verdict"], "blocked", packet["errors"])
+        self.assertEqual(packet["unresolved_commits"], [self.subjects["target"]])
         self.assertEqual(set(self.api.current_trees), {self.subjects["source"], self.subjects["target"]})
+
+    def resolution_fixture(self, retain=False):
+        self.git("checkout", "-q", "-b", "side")
+        self.write("side.txt", "side work\n")
+        self.commit("side work")
+        self.git("checkout", "-q", "public")
+        self.git("merge", "--no-ff", "--no-commit", "side")
+        self.write("merge-only.rs", "fn resolved_behavior() {}\n")
+        merge = self.commit("merge with product resolution work")
+        self.subjects["target"] = merge
+        if retain:
+            self.git("checkout", "-q", "source")
+            self.git("merge", "--no-ff", "-m", "retain original public resolution", "public")
+            self.subjects["source"] = self.git("rev-parse", "HEAD")
+        ledger, primitive = self.evidence()
+        row = next(r for r in ledger["entries"] if r["commit"] == merge)
+        effect = row["merge_resolution_dispositions"][0]
+        effect.update(disposition="already_equivalent_in_swarm", source_commit=merge,
+                      authority=["synthetic reviewed original resolution survives in exact S"], blocking_decisions=[])
+        return ledger, primitive, row, effect
+
+    def test_retained_original_merge_resolution_is_accepted(self):
+        ledger, primitive, _, _ = self.resolution_fixture(retain=True)
+        packet = self.check(ledger, primitive)
+        self.assertEqual(packet["verdict"], "pass", packet["errors"])
+        self.assertIn("no_product_execution", packet["acceptance_ceiling"])
+
+    def test_reverted_original_merge_resolution_is_rejected(self):
+        self.resolution_fixture(retain=True)
+        self.write("merge-only.rs", "fn regressed_behavior() {}\n")
+        self.subjects["source"] = self.commit("displace original resolution")
+        ledger, primitive = self.evidence()
+        row = next(r for r in ledger["entries"] if r["commit"] == self.subjects["target"])
+        effect = row["merge_resolution_dispositions"][0]
+        effect.update(disposition="already_equivalent_in_swarm", source_commit=self.subjects["target"],
+                      authority=["synthetic stale survival claim"], blocking_decisions=[])
+        self.assertIn("displaced", " ".join(self.check(ledger, primitive)["errors"]))
+
+    def test_merge_resolution_requires_landed_actual_port(self):
+        self.resolution_fixture()
+        self.git("checkout", "-q", "source")
+        self.write("merge-only.rs", "fn adapted_behavior() {}\n")
+        port = self.commit("adapt resolution behavior")
+        self.subjects["source"] = port
+        ledger, primitive = self.evidence()
+        row = next(r for r in ledger["entries"] if r["commit"] == self.subjects["target"])
+        effect = row["merge_resolution_dispositions"][0]
+        effect.update(disposition="port_to_swarm", source_commit=port,
+                      authority=["synthetic reviewed adaptation"], blocking_decisions=[])
+        self.assertEqual(self.check(ledger, primitive)["verdict"], "pass")
+        effect["source_commit"] = self.source
+        self.assertIn("did not change", " ".join(self.check(ledger, primitive)["errors"]))
+        effect["source_commit"] = self.subjects["target"]
+        self.assertIn("not reachable", " ".join(self.check(ledger, primitive)["errors"]))
+
+    def test_merge_resolution_denominator_is_exact(self):
+        ledger, primitive, row, effect = self.resolution_fixture(retain=True)
+        for effects in ([], [effect, copy.deepcopy(effect)], [dict(effect, path="unrelated.rs")],
+                        [dict(effect, path=[])], [dict(effect, extra="foreign field")]):
+            with self.subTest(effects=effects):
+                altered = copy.deepcopy(ledger)
+                changed = next(r for r in altered["entries"] if r["commit"] == row["commit"])
+                changed["merge_resolution_dispositions"] = effects
+                self.assertEqual(self.check(altered, primitive)["verdict"], "not_proven")
+
+    def test_merge_resolution_cannot_hide_product_as_public_context(self):
+        ledger, primitive, _, effect = self.resolution_fixture(retain=True)
+        effect["disposition"] = "publication_lineage_only"
+        self.assertIn("lineage-only", " ".join(self.check(ledger, primitive)["errors"]))
+        effect["disposition"] = "publication_context_translation"
+        self.assertIn("disguised", " ".join(self.check(ledger, primitive)["errors"]))
+        effect["disposition"] = "merge_ancestry"
+        self.assertIn("unsupported", " ".join(self.check(ledger, primitive)["errors"]))
+
+    def test_legacy_ledger_keeps_closed_merge_resolution_refusal(self):
+        ledger, primitive, _, _ = self.resolution_fixture(retain=True)
+        ledger["schema_version"] = adapter.LEGACY_LEDGER
+        for row in ledger["entries"]:
+            del row["merge_resolution_dispositions"]
+        self.assertIn("legacy ledger cannot adjudicate", " ".join(self.check(ledger, primitive)["errors"]))
+
+    def test_legacy_ordinary_ledger_remains_readable(self):
+        ledger, primitive = self.evidence()
+        ledger["schema_version"] = adapter.LEGACY_LEDGER
+        for row in ledger["entries"]:
+            del row["merge_resolution_dispositions"]
+        self.assertEqual(self.check(ledger, primitive)["verdict"], "pass")
+
+    def test_nonmerge_cannot_carry_resolution_dispositions(self):
+        ledger, primitive = self.evidence()
+        ledger["entries"][0]["merge_resolution_dispositions"] = [{"path": "shared.txt"}]
+        self.assertIn("non-merge work", " ".join(self.check(ledger, primitive)["errors"]))
 
     def test_shallow_graph_cannot_pass(self):
         (self.repo / ".git/shallow").write_text(self.shared + "\n")

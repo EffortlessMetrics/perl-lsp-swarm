@@ -14,7 +14,8 @@ import sys
 from contextlib import contextmanager
 from pathlib import Path
 
-LEDGER = "source_reconciliation_ledger.v1"
+LEGACY_LEDGER = "source_reconciliation_ledger.v1"
+LEDGER = "source_reconciliation_ledger.v2"
 PACKET = "source_reconciliation.v1"
 TERMINAL = {
     "port_to_swarm", "already_equivalent_in_swarm",
@@ -250,6 +251,76 @@ def primitive_check(receipt, subjects, rows, patches):
     return errors
 
 
+def semantic_proof(git, subjects, original, bindings, item, projection):
+    """Apply the same source proof rules to a work unit or one merge effect."""
+    disposition = item["disposition"]
+    if disposition not in TERMINAL - {"merge_ancestry"} or item["blocking_decisions"] or not item["authority"]:
+        raise ValueError("unsupported disposition or unresolved semantic proof")
+    paths = [binding["path"] for binding in bindings]
+    if disposition in {"port_to_swarm", "already_equivalent_in_swarm"}:
+        proof = item["source_commit"]
+        if not git.exact_commit(proof) or not git.ancestor(proof, subjects["source"]):
+            raise ValueError("required port/equivalent is not reachable from S")
+        if disposition == "port_to_swarm":
+            parents = git.text("show", "-s", "--format=%P", proof).split()
+            if not set(paths).issubset(git.paths(proof, parents)):
+                raise ValueError("credited port did not change every required source path")
+            for path in paths:
+                if git.entry(proof, path) is None and (not parents or git.entry(parents[0], path) is None):
+                    raise ValueError("credited port absence is not an actual deletion")
+        for binding in bindings:
+            if binding["source"] != git.entry(proof, binding["path"]):
+                raise ValueError("port/equivalent has been displaced in current S")
+        if disposition == "already_equivalent_in_swarm" and any(
+            b["source"] != git.entry(original, b["path"]) for b in bindings
+        ):
+            raise ValueError("equivalent patch does not survive in current S")
+    elif disposition == "publication_lineage_only":
+        if any(product_path(path) for path in paths):
+            raise ValueError("runtime/test work cannot be lineage-only")
+    elif disposition == "superseded_by_swarm_architecture":
+        if not git.exact_commit(item["source_commit"]) or not git.ancestor(item["source_commit"], subjects["source"]):
+            raise ValueError("architecture successor is not reachable from S")
+    elif disposition == "publication_context_translation":
+        if not all(context_path(path) for path in paths):
+            raise ValueError("shared product disguised as public context")
+        if not projection:
+            raise ValueError("public-context row lacks an actual projection tree")
+        translated = item["projection_bindings"]
+        if sorted(b["path"] for b in translated) != sorted(paths):
+            raise ValueError("public context is not bound to every projection path")
+        for binding in translated:
+            if set(binding) != {"path", "row_id", "row_digest", "entry"} or not binding["row_id"] or not re.fullmatch("[0-9a-f]{64}", binding["row_digest"]):
+                raise ValueError("missing projection row identity/digest")
+            if git.entry(projection, binding["path"]) != binding["entry"]:
+                raise ValueError("projection entry/mode identity mismatch")
+
+
+def merge_resolution_proof(git, subjects, row, item, projection, legacy):
+    effect = row["merge_effects"]
+    paths = sorted(set(effect["additional_resolution_paths"]) | set(effect["entry_differences_from_side_head"]))
+    if legacy:
+        if paths:
+            raise ValueError("legacy ledger cannot adjudicate merge resolution effects")
+        return False
+    entries = item["merge_resolution_dispositions"]
+    if not isinstance(entries, list) or any(not isinstance(entry, dict) for entry in entries):
+        raise ValueError("malformed merge resolution effects")
+    names = [entry.get("path") for entry in entries]
+    if any(not isinstance(path, str) for path in names) or len(names) != len(set(names)) or set(names) != set(paths):
+        raise ValueError("omitted, duplicate or extra merge resolution effects")
+    current = {binding["path"]: binding for binding in row["current_bindings"]}
+    unresolved = False
+    for entry in entries:
+        if set(entry) != {"path", "disposition", "authority", "source_commit", "projection_bindings", "blocking_decisions"}:
+            raise ValueError("foreign merge resolution disposition shape")
+        if entry["disposition"] is None:
+            unresolved = True
+        else:
+            semantic_proof(git, subjects, row["commit"], [current[entry["path"]]], entry, projection)
+    return unresolved
+
+
 def reconcile(git, subjects, ledger=None, primitive=None, projection=None):
     packet = {"schema_version": PACKET, "subjects": subjects,
               "scope": "source_reconciliation_preflight",
@@ -295,7 +366,7 @@ def reconcile(git, subjects, ledger=None, primitive=None, projection=None):
         else:
             if not isinstance(ledger, dict) or set(ledger) != {
                 "schema_version", "subjects", "population_digest", "entries"
-            } or ledger.get("schema_version") != LEDGER:
+            } or ledger.get("schema_version") not in {LEDGER, LEGACY_LEDGER}:
                 raise ValueError("foreign source reconciliation ledger")
             if ledger["subjects"] != subjects or ledger["population_digest"] != packet["population_digest"]:
                 raise ValueError("stale source reconciliation ledger identity")
@@ -304,12 +375,16 @@ def reconcile(git, subjects, ledger=None, primitive=None, projection=None):
             if len(ids) != len(set(ids)) or set(ids) != {r["commit"] for r in rows}:
                 raise ValueError("omitted, duplicate or extra full-population work unit")
             by_id = {r["commit"]: r for r in entries}
+            legacy = ledger["schema_version"] == LEGACY_LEDGER
             primitive_rows = {r["commit"]: r.get("classification")
                               for r in primitive["target_unique_commits"]} if primitive else {}
             for row in rows:
                 item = by_id[row["commit"]]
-                if set(item) != {"commit", "disposition", "current_bindings", "authority",
-                                 "source_commit", "projection_bindings", "blocking_decisions"}:
+                expected = {"commit", "disposition", "current_bindings", "authority",
+                            "source_commit", "projection_bindings", "blocking_decisions"}
+                if not legacy:
+                    expected.add("merge_resolution_dispositions")
+                if set(item) != expected:
                     raise ValueError("foreign source row shape")
                 if item["current_bindings"] != row["current_bindings"]:
                     raise ValueError("changed-path omission or stale current behavior binding")
@@ -324,48 +399,12 @@ def reconcile(git, subjects, ledger=None, primitive=None, projection=None):
                 if (len(row["parents"]) > 1) != (disposition == "merge_ancestry"):
                     raise ValueError("merge unit hidden as ordinary work")
                 if disposition == "merge_ancestry":
-                    effect = row["merge_effects"]
-                    if effect["additional_resolution_paths"] or effect["entry_differences_from_side_head"]:
-                        raise ValueError("merge has unresolved resolution effects")
-                elif disposition in {"port_to_swarm", "already_equivalent_in_swarm"}:
-                    proof = item["source_commit"]
-                    if not git.exact_commit(proof) or not git.ancestor(proof, subjects["source"]):
-                        raise ValueError("required port/equivalent is not reachable from S")
-                    if disposition == "port_to_swarm":
-                        proof_parents = git.text("show", "-s", "--format=%P", proof).split()
-                        if not set(row["changed_paths"]).issubset(git.paths(proof, proof_parents)):
-                            raise ValueError("credited port did not change every required source path")
-                        for binding in row["current_bindings"]:
-                            if git.entry(proof, binding["path"]) is None and (
-                                not proof_parents or git.entry(proof_parents[0], binding["path"]) is None
-                            ):
-                                raise ValueError("credited port absence is not an actual deletion")
-                    for binding in row["current_bindings"]:
-                        if binding["source"] != git.entry(proof, binding["path"]):
-                            raise ValueError("port/equivalent has been displaced in current S")
-                    if disposition == "already_equivalent_in_swarm" and any(
-                        b["source"] != git.entry(row["commit"], b["path"]) for b in row["current_bindings"]
-                    ):
-                        raise ValueError("equivalent patch does not survive in current S")
-                elif disposition == "publication_lineage_only":
-                    if any(product_path(p) for p in row["changed_paths"]):
-                        raise ValueError("runtime/test work cannot be lineage-only")
-                elif disposition == "superseded_by_swarm_architecture":
-                    if not git.exact_commit(item["source_commit"]) or not git.ancestor(item["source_commit"], subjects["source"]):
-                        raise ValueError("architecture successor is not reachable from S")
-                elif disposition == "publication_context_translation":
-                    if not all(context_path(p) for p in row["changed_paths"]):
-                        raise ValueError("shared product disguised as public context")
-                    if not projection:
-                        raise ValueError("public-context row lacks an actual projection tree")
-                    bindings = item["projection_bindings"]
-                    if sorted(b["path"] for b in bindings) != row["changed_paths"]:
-                        raise ValueError("public context is not bound to every projection path")
-                    for binding in bindings:
-                        if set(binding) != {"path", "row_id", "row_digest", "entry"} or not binding["row_id"] or not re.fullmatch("[0-9a-f]{64}", binding["row_digest"]):
-                            raise ValueError("missing projection row identity/digest")
-                        if git.entry(projection, binding["path"]) != binding["entry"]:
-                            raise ValueError("projection entry/mode identity mismatch")
+                    if merge_resolution_proof(git, subjects, row, item, projection, legacy):
+                        packet["unresolved_commits"].append(row["commit"])
+                else:
+                    if not legacy and item["merge_resolution_dispositions"]:
+                        raise ValueError("non-merge work carries foreign merge resolution effects")
+                    semantic_proof(git, subjects, row["commit"], row["current_bindings"], item, projection)
             packet["ledger_sha256"] = digest(ledger)
         packet["verdict"] = "not_proven" if errors else "blocked" if packet["unresolved_commits"] else "pass"
     except (ValueError, KeyError, TypeError, AttributeError, IndexError) as error:
@@ -381,6 +420,11 @@ def skeleton(packet):
             "entries": [{"commit": row["commit"], "disposition": None,
                 "current_bindings": row["current_bindings"], "authority": [],
                 "source_commit": None, "projection_bindings": [],
+                "merge_resolution_dispositions": [{"path": path, "disposition": None,
+                    "authority": [], "source_commit": None, "projection_bindings": [],
+                    "blocking_decisions": ["merge resolution effect requires current semantic proof"]}
+                    for path in sorted(set(row.get("merge_effects", {}).get("additional_resolution_paths", [])) |
+                                       set(row.get("merge_effects", {}).get("entry_differences_from_side_head", [])))],
                 "blocking_decisions": ["current semantic survival not yet reviewed"]}
                 for row in packet["population"]]}
 

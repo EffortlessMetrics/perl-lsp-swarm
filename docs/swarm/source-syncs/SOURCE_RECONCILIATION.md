@@ -61,6 +61,16 @@ Ports must be reachable from the final exact S and their credited current bytes
 must survive. A port must actually change every credited original path; absence
 alone is not a port. Credited deletions require an existing first-parent entry.
 Source proof commits also require literal immutable commit SHAs.
+The scaffold uses `source_reconciliation_ledger.v2`. Every merge retains its
+`merge_ancestry` work unit and additionally requires one exact
+`merge_resolution_dispositions` entry for each additional resolution path or
+entry that differs from the side head. Omitting, duplicating or substituting an
+effect cannot pass. Each effect uses the same current-source port/equivalence,
+product guard, architecture-successor and projection binding rules as ordinary
+work. A null effect disposition leaves that merge unresolved. This records
+reviewed semantic decisions; it does not establish their authority independently.
+Historical v1 ledgers remain readable and still refuse all merge resolution
+effects. They are never silently upgraded or granted an ancestry-only exception.
 A new S/R/P changes the packet and requires fresh bindings. Preserve
 historical ledgers and original commits. Source sync uses ordered two-parent merges
 under existing protections; squash/rebase is not a valid substitute.

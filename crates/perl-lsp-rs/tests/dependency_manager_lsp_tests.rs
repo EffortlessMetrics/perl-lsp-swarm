@@ -31,9 +31,7 @@ fn module_definition(
     let source = format!("use {module};\n");
     harness.open(main_uri, &source)?;
     harness.barrier();
-    let position = source
-        .find(module)
-        .ok_or("module missing from test source")? as u32;
+    let position = source.find(module).ok_or("module missing from test source")? as u32;
     Ok(harness.request(
         "textDocument/definition",
         json!({
@@ -51,10 +49,7 @@ fn carton_root_reaches_module_completion() -> TestResult {
         &[
             ("cpanfile", "# Carton project marker\n"),
             ("carton.lock", "snapshot\n"),
-            (
-                "local/lib/perl5/Carton/Only.pm",
-                "package Carton::Only;\n1;\n",
-            ),
+            ("local/lib/perl5/Carton/Only.pm", "package Carton::Only;\n1;\n"),
         ],
     )?;
     let source = "use Carton::O";
@@ -66,9 +61,7 @@ fn carton_root_reaches_module_completion() -> TestResult {
         .or_else(|| result.get("items").and_then(Value::as_array))
         .ok_or_else(|| std::io::Error::other(format!("expected completion list, got {result}")))?;
     assert!(
-        items
-            .iter()
-            .any(|item| item.get("label").and_then(Value::as_str) == Some("Carton::Only")),
+        items.iter().any(|item| item.get("label").and_then(Value::as_str) == Some("Carton::Only")),
         "Carton-detected local module should reach completion, got {items:?}"
     );
     Ok(())
@@ -83,10 +76,7 @@ fn carmel_rollout_root_reaches_module_definition() -> TestResult {
             ("cpanfile", "requires 'Carmel::Only';\n"),
             // Upstream rollout touches this FILE. A directory is not a sentinel.
             ("local/.carmel", ""),
-            (
-                "local/lib/perl5/Carmel/Only.pm",
-                "package Carmel::Only;\n1;\n",
-            ),
+            ("local/lib/perl5/Carmel/Only.pm", "package Carmel::Only;\n1;\n"),
         ],
     )?;
     let result = module_definition(&mut harness, &main_uri, "Carmel::Only")?;
@@ -108,13 +98,7 @@ fn carmel_rollout_root_does_not_activate_without_cpanfile() -> TestResult {
     let workspace = TempWorkspace::new()?;
     let (mut harness, main_uri) = initialize_with_project_paths(
         &workspace,
-        &[
-            ("local/.carmel", ""),
-            (
-                "local/lib/perl5/Carmel/Only.pm",
-                "package Carmel::Only;\n1;\n",
-            ),
-        ],
+        &[("local/.carmel", ""), ("local/lib/perl5/Carmel/Only.pm", "package Carmel::Only;\n1;\n")],
     )?;
     let result = module_definition(&mut harness, &main_uri, "Carmel::Only")?;
     assert!(
@@ -131,10 +115,7 @@ fn vendor_path_is_not_inferred_as_carmel_rollout() -> TestResult {
         &workspace,
         &[
             ("cpanfile", "requires 'Carmel::Only';\n"),
-            (
-                "vendor/lib/perl5/Carmel/Only.pm",
-                "package Carmel::Only;\n1;\n",
-            ),
+            ("vendor/lib/perl5/Carmel/Only.pm", "package Carmel::Only;\n1;\n"),
         ],
     )?;
     let result = module_definition(&mut harness, &main_uri, "Carmel::Only")?;
