@@ -40,6 +40,7 @@ impl Default for RiprFactsCli {
     clippy::print_stderr,
     reason = "ripr-facts is a batch CLI unit — user-facing diagnostics intentionally use stderr"
 )]
+#[expect(clippy::print_stdout, reason = "explicit --help output goes to stdout by convention")]
 /// Entry point for the `perl-ripr-facts` binary. Parses argv, runs the requested
 /// packet generation, and returns a process exit code.
 pub fn run_cli<I, S>(args: I) -> i32
@@ -49,7 +50,11 @@ where
 {
     let args: Vec<String> = args.into_iter().map(Into::into).collect();
     let cli = match parse_ripr_facts_cli(&args) {
-        Ok(cli) => cli,
+        Ok(CliParse::Run(cli)) => cli,
+        Ok(CliParse::Help) => {
+            println!("{}", ripr_facts_usage());
+            return 0;
+        }
         Err(reason) => {
             eprintln!("ripr-facts: {reason}");
             eprintln!("{}", ripr_facts_usage());
@@ -79,12 +84,19 @@ where
     )
 }
 
-fn parse_ripr_facts_cli(args: &[String]) -> Result<RiprFactsCli, String> {
+/// Parse outcome: run the packet generation, or print usage (explicit
+/// `--help`/`-h` in flag position — never a value — exits 0, not 1).
+enum CliParse {
+    Run(RiprFactsCli),
+    Help,
+}
+
+fn parse_ripr_facts_cli(args: &[String]) -> Result<CliParse, String> {
     let mut iter = args.iter();
     let _program = iter.next();
     match iter.next().map(String::as_str) {
         Some("ripr-facts") => {}
-        Some("--help" | "-h") => return Err("missing subcommand `ripr-facts`".to_string()),
+        Some("--help" | "-h") => return Ok(CliParse::Help),
         Some(other) => return Err(format!("unexpected subcommand or option `{other}`")),
         None => return Err("missing subcommand `ripr-facts`".to_string()),
     }
@@ -94,6 +106,12 @@ fn parse_ripr_facts_cli(args: &[String]) -> Result<RiprFactsCli, String> {
     let mut index = 0usize;
     while index < rest.len() {
         let flag = rest[index];
+        // Help in flag position short-circuits before value consumption, so a
+        // trailing `--help` is help, not a "missing value" error. A `--help`
+        // in *value* position (e.g. `--out --help`) stays a value.
+        if matches!(flag, "--help" | "-h") {
+            return Ok(CliParse::Help);
+        }
         let value = rest.get(index + 1).ok_or_else(|| format!("missing value for `{flag}`"))?;
         match flag {
             "--schema" => cli.schema = (*value).to_string(),
@@ -108,7 +126,7 @@ fn parse_ripr_facts_cli(args: &[String]) -> Result<RiprFactsCli, String> {
         index += 2;
     }
 
-    Ok(cli)
+    Ok(CliParse::Run(cli))
 }
 
 fn ripr_facts_usage() -> &'static str {
@@ -465,6 +483,37 @@ mod tests {
             "target/ripr/test-wrong-schema.json",
         );
         assert_eq!(rc, 1, "wrong schema must exit 1");
+    }
+
+    #[test]
+    fn ripr_facts_help_exits_zero() {
+        for argv in [
+            vec!["perl-ripr-facts", "--help"],
+            vec!["perl-ripr-facts", "-h"],
+            vec!["perl-ripr-facts", "ripr-facts", "--help"],
+            vec!["perl-ripr-facts", "ripr-facts", "--schema", "ripr-perl-facts-v1", "--help"],
+        ] {
+            let owned: Vec<String> = argv.into_iter().map(str::to_string).collect();
+            assert_eq!(run_cli(owned), 0, "explicit --help must exit 0");
+        }
+    }
+
+    #[test]
+    fn ripr_facts_help_in_value_position_stays_a_value() {
+        let argv: Vec<String> = ["perl-ripr-facts", "ripr-facts", "--out", "--help"]
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+        assert!(
+            matches!(parse_ripr_facts_cli(&argv), Ok(CliParse::Run(_))),
+            "--help as a flag value must not trigger help"
+        );
+    }
+
+    #[test]
+    fn ripr_facts_missing_subcommand_still_exits_one() {
+        let rc = run_cli(vec!["perl-ripr-facts".to_string()]);
+        assert_eq!(rc, 1, "bare invocation must still exit 1");
     }
 
     #[test]
