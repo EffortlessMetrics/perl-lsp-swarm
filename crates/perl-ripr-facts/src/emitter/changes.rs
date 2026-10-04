@@ -203,7 +203,19 @@ pub(crate) fn emit_changes_from_diff(
     let known_files: std::collections::HashSet<&str> =
         files.iter().filter_map(|file| file["file_id"].as_str()).collect();
 
-    for hunk in parse_diff_hunks(diff_text) {
+    let hunks = parse_diff_hunks(diff_text);
+    if !diff_text.trim().is_empty() && hunks.is_empty() {
+        // Supplied-but-unparseable input: label it so no consumer reads the
+        // empty `changes[]` as "nothing changed" (#17248).
+        limitations.push(json!({
+            "limitation_id": "diff-unparseable",
+            "kind": "unparseable_diff",
+            "message": "a diff was supplied but yielded zero unified hunks (expected `+++ b/<path>` file markers); `changes[]` means \"not analyzed\", not \"nothing changed\".",
+            "evidence_refs": [],
+        }));
+    }
+
+    for hunk in &hunks {
         // git diff paths are repo-root-relative; file_ids are root-relative.
         let rel_path = strip_root_prefix(&hunk.file_path, root);
         let file_id = format!("file:{rel_path}");
@@ -574,6 +586,25 @@ mod tests {
                 .as_str()
                 .is_some_and(|s| s.starts_with("diff-file-not-found:"))),
             "must record a diff-file-not-found limitation"
+        );
+    }
+
+    #[test]
+    fn emit_changes_from_diff_garbage_diff_records_diff_unparseable() {
+        // Non-blank text with zero unified hunks: empty changes plus a
+        // `diff-unparseable` limitation — never a silent empty `changes[]`.
+        let files = vec![json!({ "file_id": "file:lib/My/App.pm" })];
+        let owners: Vec<Value> = Vec::new();
+        let (changes, limitations) = emit_changes_from_diff(
+            "this is not a diff\nno file markers here\n",
+            ".",
+            &files,
+            &owners,
+        );
+        assert!(changes.is_empty(), "garbage diff → no changes");
+        assert!(
+            limitations.iter().any(|l| l["limitation_id"] == "diff-unparseable"),
+            "must record a diff-unparseable limitation, got: {limitations:?}"
         );
     }
 
