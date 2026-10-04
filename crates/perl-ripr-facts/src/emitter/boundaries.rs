@@ -48,16 +48,17 @@ const DYNAMIC_BOUNDARY_PATTERNS: &[(&str, &str)] = &[
 ///   make it a method call, `->eval`, `::eval`, `$eval`, or `--eval`);
 /// - the byte after `eval` must be whitespace (glued forms like `eval(` stay
 ///   with the table, so no occurrence double-emits);
-/// - the next non-whitespace byte after `eval` must not be `{`: block `eval`
-///   belongs to the table's `"eval {"` entry — matching it here would emit
-///   every block-eval twice;
+/// - the bytes after `eval` must not be exactly the table's `"eval {"` or
+///   `"eval '"` prefixes (single space + `{`/`'`): those occurrences belong
+///   to the table, and matching them here would emit every one twice
+///   (#17283). Wider gaps (`eval  {`, tabs, newlines, `eval  '...'`) are the
+///   matcher's — the table's literals cannot express them;
 /// - a `sub`/`method` keyword immediately before (over whitespace) makes it a
 ///   definition named `eval`, not a call — skipped.
 ///
-/// Known misses, documented: `LABEL: eval $x` (label colon) is excluded by
-/// the `:` rule, and `eval` newline `{` belongs to neither the table (which
-/// needs the literal `"eval {"`) nor this matcher. Both are vanishingly rare;
-/// the recall gain on the common string-eval shape dwarfs them.
+/// Known miss, documented: `LABEL: eval $x` (label colon) is excluded by the
+/// `:` rule. Vanishingly rare; the recall gain on the string-eval shape
+/// dwarfs it.
 fn statement_eval_offsets(content: &str) -> Vec<usize> {
     const EVAL_LEN: usize = 4;
     let bytes = content.as_bytes();
@@ -80,8 +81,10 @@ fn statement_eval_offsets(content: &str) -> Vec<usize> {
         if !first.is_ascii_whitespace() {
             continue;
         }
-        let follower = rest.iter().find(|b| !b.is_ascii_whitespace()).copied();
-        if follower == Some(b'{') {
+        // Table overlap: `"eval {"` / `"eval '"` with a single-space gap are the
+        // table's entries — skip only those exact prefixes so one occurrence
+        // yields one boundary, while wider-gap forms stay ours (#17283).
+        if rest.starts_with(b" {") || rest.starts_with(b" '") {
             continue;
         }
         // `sub eval` / `method eval`: a definition, not a call.
@@ -202,11 +205,17 @@ pub(crate) fn dynamic_boundaries_in_lines(lines: &[String]) -> Vec<(&'static str
                 boundaries.push((pattern, boundary_kind));
             }
         }
-        // `#17264`: same spaced-`eval` recall as the file emitter, so a hunk
-        // adding `eval $code` attributes the boundary its file scan would find.
-        if !statement_eval_offsets(line).is_empty() && seen_kinds.insert("eval_or_string_code") {
-            boundaries.push(("eval <whitespace>", "eval_or_string_code"));
-        }
+    }
+    // `#17264` / `#17283`: same spaced-`eval` recall as the file emitter, so
+    // a hunk adding `eval $code` attributes the boundary its file scan would
+    // find. Runs over the joined hunk text — one contiguous added-line run,
+    // the same `join("\n")` reconstruction the change digest uses — so an
+    // `eval` + `$code` split across hunk lines is not missed, with the shared
+    // `seen_kinds` set keeping one entry per boundary kind.
+    if !statement_eval_offsets(&lines.join("\n")).is_empty()
+        && seen_kinds.insert("eval_or_string_code")
+    {
+        boundaries.push(("eval <whitespace>", "eval_or_string_code"));
     }
     boundaries
 }
@@ -268,12 +277,12 @@ pub(crate) fn emit_boundaries_and_commands(root: &str) -> (Vec<Value>, Vec<Value
                 );
             }
         }
-        // `#17264`: spaced string-`eval` forms (`eval $code`, `eval "..."`)
-        // the substring table cannot express. Runs after the table over the
-        // shared counter, so pre-existing boundary ids are stable; the
-        // follower rules (whitespace, never `{`) guarantee no occurrence
+        // `#17264`: spaced `eval` forms (`eval $code`, `eval "..."`,
+        // `eval  {`) the substring table cannot express. Runs after the table
+        // over the shared counter, so pre-existing boundary ids are stable;
+        // the exact-prefix skip (` {`, ` '`) guarantees no occurrence
         // double-emits with the table's `"eval {"`/`eval(`/`eval'`/`eval"`
-        // entries.
+        // entries (#17283).
         for offset in statement_eval_offsets(content) {
             push_boundary(
                 &mut boundaries,
@@ -357,6 +366,20 @@ mod tests {
             1,
             "newline follower matches"
         );
+        // `#17283`: wide-gap block forms escape the table's single-space
+        // `"eval {"` literal, so the matcher must catch them.
+        assert_eq!(
+            statement_eval_offsets("my $r = eval  { compute() };").len(),
+            1,
+            "double-space block matches"
+        );
+        assert_eq!(statement_eval_offsets("eval\t{ };").len(), 1, "tab gap matches");
+        assert_eq!(statement_eval_offsets("eval\n{ };").len(), 1, "newline gap matches");
+        assert_eq!(
+            statement_eval_offsets("my $r = eval  'die';").len(),
+            1,
+            "double-space quote matches (the table only has single-space)"
+        );
     }
 
     #[test]
@@ -366,9 +389,10 @@ mod tests {
         assert!(statement_eval_offsets("eval($x)").is_empty());
         assert!(statement_eval_offsets("eval\"$x\"").is_empty());
         assert!(statement_eval_offsets("eval'$x'").is_empty());
-        // Spaced block form belongs to the table's `"eval {"` entry.
+        // Single-space block/quote forms belong to the table's `"eval {"` /
+        // `"eval '"` entries — the matcher must not double-emit them (#17283).
         assert!(statement_eval_offsets("my $r = eval { };").is_empty());
-        assert!(statement_eval_offsets("eval\n{ };").is_empty(), "documented miss");
+        assert!(statement_eval_offsets("sub run { eval '1 + 1'; }").is_empty());
         // Non-calls must not match (the issue's false-positive watch list).
         assert!(statement_eval_offsets("my $eval = 1;").is_empty(), "$eval var");
         assert!(statement_eval_offsets("$obj->eval $x;").is_empty(), "method call");
@@ -400,6 +424,108 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn emit_boundaries_quoted_eval_emits_once() {
+        // `#17283`: `eval '...'` is covered by the table's `"eval '"` entry;
+        // the matcher must not add a second boundary for the same occurrence.
+        let root = std::env::temp_dir().join("perl-B8-eval-quoted-root");
+        let lib_dir = root.join("lib");
+        must(std::fs::create_dir_all(&lib_dir));
+        must(std::fs::write(
+            lib_dir.join("Quoted.pm"),
+            "package Quoted;\nsub run { eval '1 + 1'; }\n1;",
+        ));
+
+        let (boundaries, _limitations, _cmds) =
+            emit_boundaries_and_commands(must_some(root.to_str()));
+        let evals: Vec<_> =
+            boundaries.iter().filter(|b| b["kind"] == "eval_or_string_code").collect();
+        assert_eq!(evals.len(), 1, "quoted eval must yield exactly one boundary");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn emit_boundaries_single_space_block_eval_emits_once() {
+        // `#17283`: `eval { ... }` is the table's `"eval {"` entry; the
+        // matcher must not double-emit it.
+        let root = std::env::temp_dir().join("perl-B8-eval-block-root");
+        let lib_dir = root.join("lib");
+        must(std::fs::create_dir_all(&lib_dir));
+        must(std::fs::write(
+            lib_dir.join("Blocked.pm"),
+            "package Blocked;\nsub run { eval { die }; }\n1;",
+        ));
+
+        let (boundaries, _limitations, _cmds) =
+            emit_boundaries_and_commands(must_some(root.to_str()));
+        let evals: Vec<_> =
+            boundaries.iter().filter(|b| b["kind"] == "eval_or_string_code").collect();
+        assert_eq!(evals.len(), 1, "single-space block eval must yield exactly one boundary");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn emit_boundaries_wide_gap_block_eval_emits_once() {
+        // `#17283`: `eval  { ... }` escapes the table's single-space literal;
+        // the matcher must catch it exactly once.
+        let root = std::env::temp_dir().join("perl-B8-eval-widegap-root");
+        let lib_dir = root.join("lib");
+        must(std::fs::create_dir_all(&lib_dir));
+        must(std::fs::write(
+            lib_dir.join("Wide.pm"),
+            "package Wide;\nsub run { my $v = eval  { compute() }; }\n1;",
+        ));
+
+        let (boundaries, _limitations, _cmds) =
+            emit_boundaries_and_commands(must_some(root.to_str()));
+        let evals: Vec<_> =
+            boundaries.iter().filter(|b| b["kind"] == "eval_or_string_code").collect();
+        assert_eq!(evals.len(), 1, "wide-gap block eval must yield exactly one boundary");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn dynamic_boundaries_in_lines_matches_multiline_eval() {
+        // `#17283`: `eval` + `$code` split across hunk lines must attribute
+        // the boundary the file scan would find.
+        let lines = vec!["my $r = eval".to_string(), "$code;".to_string()];
+        let found = dynamic_boundaries_in_lines(&lines);
+        assert_eq!(
+            found.iter().filter(|(_, kind)| *kind == "eval_or_string_code").count(),
+            1,
+            "multiline eval across hunk lines must yield one boundary: {found:?}"
+        );
+    }
+
+    #[test]
+    fn dynamic_boundaries_in_lines_matches_spaced_and_wide_gap_eval() {
+        // Single-line spaced forms keep working after the joined-text change,
+        // and wide-gap blocks are caught in the diff scan too (#17283).
+        for line in ["my $r = eval $code;", "my $r = eval  { compute() };", "eval\t{ };"] {
+            let lines = vec![line.to_string()];
+            let found = dynamic_boundaries_in_lines(&lines);
+            assert!(
+                found.iter().any(|(_, kind)| *kind == "eval_or_string_code"),
+                "hunk line `{line}` must yield an eval boundary: {found:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn dynamic_boundaries_in_lines_dedups_table_and_matcher_eval() {
+        // A table hit plus a matcher hit in one hunk still yield one entry.
+        let lines = vec!["eval { die };".to_string(), "my $r = eval $c;".to_string()];
+        let found = dynamic_boundaries_in_lines(&lines);
+        assert_eq!(
+            found.iter().filter(|(_, kind)| *kind == "eval_or_string_code").count(),
+            1,
+            "one hunk must yield one eval entry: {found:?}"
+        );
     }
 
     #[test]
