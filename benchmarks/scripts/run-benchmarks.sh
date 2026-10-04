@@ -19,6 +19,10 @@ QUICK_MODE=false
 CATEGORY=""
 VERBOSE=false
 
+# Space-separated categories whose cargo run failed. A failed category is
+# marked explicitly in the JSON and fails the process at the end (#17218).
+FAILED_CATEGORIES=""
+
 # Parse arguments
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -164,6 +168,15 @@ run_criterion_bench() {
                 pending_name=""
             fi
         done < "$temp_output"
+    else
+        # Cargo failed (wrong toolchain, compile break, missing target):
+        # mark the category explicitly instead of rendering a silent empty
+        # stub. Downstream counters skip underscore keys (#17218).
+        local cargo_status=$?
+        echo "      \"_status\": \"failed\","
+        echo "      \"_error\": \"cargo bench -p $crate --bench $bench failed (exit $cargo_status)\","
+        FAILED_CATEGORIES="${FAILED_CATEGORIES:+$FAILED_CATEGORIES }$category"
+        log "FAILED $crate::$bench (exit $cargo_status)"
     fi
 
     rm -f "$temp_output"
@@ -238,4 +251,11 @@ if [[ -n "$OUTPUT_FILE" ]]; then
     echo "Results saved to $OUTPUT_FILE"
 else
     json_output
+fi
+
+# A failed category is recorded in the JSON above; also fail the process so
+# no caller mistakes a partial run for green (#17218).
+if [[ -n "$FAILED_CATEGORIES" ]]; then
+    echo "Error: benchmark categories failed: $FAILED_CATEGORIES" >&2
+    exit 1
 fi
