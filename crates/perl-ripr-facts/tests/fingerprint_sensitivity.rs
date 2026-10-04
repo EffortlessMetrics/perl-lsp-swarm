@@ -30,6 +30,13 @@ use perl_tdd_support::{must, must_some_with, must_with};
 
 const ALL_FACT_CLASSES: &str = "files,owners,changes,tests,oracles,relations,dynamic_boundaries,verify_commands,limitations,provenance";
 
+/// Owner-isolation slice: P3/P5 move relation owner tuples as well as owner
+/// ids, so the full-packet comparison would still pass if the fingerprint
+/// stopped hashing `owners[]`. Rebuilding with only `files,owners` keeps
+/// `relations[]` empty (asserted below), so a changed fingerprint proves the
+/// owner ids themselves are covered.
+const OWNER_ONLY_FACT_CLASSES: &str = "files,owners";
+
 /// D2 bar from #17154: 1-fact perturbations are detected 100% (5/5 here).
 const EXPECTED_DETECTED: usize = 5;
 
@@ -49,6 +56,14 @@ const APP_PM_RENAMED: &str = "package App;\nuse strict;\nuse warnings;\n\nsub di
 const APP_PM_NO_RISKY: &str = "package App;\nuse strict;\nuse warnings;\n\nsub discount {\n    my ($amount) = @_;\n    if ($amount > 100) {\n        return $amount * 0.9;\n    }\n    return $amount;\n}\n\n1;\n";
 
 fn build_packet(root: &str, files: &[(&str, &str)]) -> serde_json::Value {
+    build_packet_with_classes(root, files, ALL_FACT_CLASSES)
+}
+
+fn build_packet_with_classes(
+    root: &str,
+    files: &[(&str, &str)],
+    fact_classes: &str,
+) -> serde_json::Value {
     let _ = std::fs::remove_dir_all(root);
     for (rel, content) in files {
         let path = format!("{root}/{rel}");
@@ -62,11 +77,24 @@ fn build_packet(root: &str, files: &[(&str, &str)]) -> serde_json::Value {
         root,
         base: Some("origin/main"),
         head: Some("HEAD"),
-        fact_classes: ALL_FACT_CLASSES,
+        fact_classes,
         diff: None,
     }));
     let _ = std::fs::remove_dir_all(root);
     packet
+}
+
+/// A `files,owners` packet must carry no relations: any entry would hash into
+/// the fingerprint and void the owner-isolation argument below.
+fn assert_no_relations(packet: &serde_json::Value, what: &str) {
+    let relations = must_some_with(
+        packet["relations"].as_array(),
+        format!("{what} packet carries relations[]"),
+    );
+    assert!(
+        relations.is_empty(),
+        "{what} owners-only packet must have empty relations[], found {relations:?}"
+    );
 }
 
 fn fingerprint(packet: &serde_json::Value, what: &str) -> String {
@@ -83,6 +111,13 @@ fn one_fact_perturbations_always_change_the_fingerprint() {
         &[("lib/App.pm", APP_PM), ("lib/Other.pm", OTHER_PM), ("t/app.t", APP_T)];
     let baseline_fp =
         fingerprint(&build_packet("target/ripr-d2/baseline", baseline_files), "baseline");
+    let owners_baseline_packet = build_packet_with_classes(
+        "target/ripr-d2/owners-baseline",
+        baseline_files,
+        OWNER_ONLY_FACT_CLASSES,
+    );
+    assert_no_relations(&owners_baseline_packet, "owners-only baseline");
+    let baseline_owner_fp = fingerprint(&owners_baseline_packet, "owners-only baseline");
 
     // P1 appends at the end so no existing span-derived id shifts: exactly one
     // oracle (and any relation it induces) is added.
@@ -121,6 +156,19 @@ fn one_fact_perturbations_always_change_the_fingerprint() {
             detected += 1;
         }
         report.push_str(&format!("{label}: {fp} (changed: {changed})\n"));
+        if matches!(*label, "P3 alter-one-owner" | "P5 remove-one-owner") {
+            let owner_packet = build_packet_with_classes(
+                &format!("target/ripr-d2/owners-p{i}"),
+                files,
+                OWNER_ONLY_FACT_CLASSES,
+            );
+            assert_no_relations(&owner_packet, label);
+            let owner_fp = fingerprint(&owner_packet, label);
+            assert_ne!(
+                owner_fp, baseline_owner_fp,
+                "{label} must change the owners-only fingerprint"
+            );
+        }
     }
     assert_eq!(
         detected, EXPECTED_DETECTED,

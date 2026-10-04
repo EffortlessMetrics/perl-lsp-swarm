@@ -4341,6 +4341,22 @@ created = "2026-08-24"
 review_after = "2027-02-20"
 
 [[allow]]
+id = "non-rust-ripr-quality-bench-fixtures"
+glob = "benchmarks/ripr/**"
+kind = "test_fixture"
+language = "mixed"
+surface = "fixtures"
+classification = "test"
+owner = "ripr/facts-producer"
+reason = "Labeled Perl boundary/hostile fixtures (.pm/.t/.diff plus .expected.json) for the #17154 ripr quality benches (E2 boundary recall, E3 limitation honesty); consumed by perl-ripr-facts integration tests, never executed as build inputs."
+covered_by = [
+  "just bench-ripr-quality",
+]
+broad_glob_reason = "Bench fixtures span boundary shapes and hostile inputs per bench."
+created = "2026-10-04"
+review_after = "2027-04-04"
+
+[[allow]]
 id = "non-rust-distribution-kwalitee-catalog-v1"
 path = "crates/perl-release-readiness/distribution_kwalitee_catalog.v1.toml"
 kind = "config"
