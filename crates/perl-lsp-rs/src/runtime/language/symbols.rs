@@ -16,6 +16,59 @@ use crate::state::document_symbol_cap;
 use std::cell::Cell;
 use std::sync::OnceLock;
 
+#[derive(Default)]
+struct DocumentSymbolProbeCounts {
+    projection: Option<usize>,
+    fact_traces: Option<usize>,
+    pre_cap: usize,
+    result: usize,
+}
+
+/// Opt-in, source-private observation of the actual documentSymbol return branch.
+/// The disabled tracing target avoids snapshot/hash work on ordinary requests.
+fn emit_document_symbol_probe(
+    request_id: Option<&Value>,
+    branch: &str,
+    doc: Option<&crate::state::DocumentState>,
+    counts: DocumentSymbolProbeCounts,
+    cap: usize,
+) {
+    if !tracing::enabled!(target: "document_symbol_probe", tracing::Level::DEBUG) {
+        return;
+    }
+    let current = doc.and_then(|doc| doc.current_parsed());
+    let latest = doc.and_then(|doc| doc.latest_parsed());
+    let statements =
+        current.as_ref().and_then(|snapshot| snapshot.ast()).and_then(|ast| match &ast.kind {
+            perl_parser::ast::NodeKind::Program { statements } => Some(statements.len()),
+            _ => None,
+        });
+    let receipt = json!({
+        "kind": "document_symbol_branch_probe",
+        "request_id": request_id,
+        "branch": branch,
+        "document_present": doc.is_some(),
+        "full_sync_required": doc.map(|doc| doc.full_sync_required()),
+        "document_version": doc.map(|doc| doc.version),
+        "document_generation": doc.map(|doc| doc.current_generation()),
+        "snapshot_generation": current.as_ref().map(|snapshot| snapshot.generation()),
+        "latest_snapshot_generation": latest.as_ref().map(|snapshot| snapshot.generation()),
+        "text_bytes": doc.map(|doc| doc.text.len()),
+        "text_hash": doc.map(|doc| perl_lsp_rs_core::tooling::perl_critic::hash_content(&doc.text)),
+        "snapshot_content_hash": current.as_ref().map(|snapshot| snapshot.content_hash()),
+        "ast_present": current.as_ref().is_some_and(|snapshot| snapshot.ast().is_some()),
+        "root_statement_count": statements,
+        "parse_error_count": current.as_ref().map(|snapshot| snapshot.parse_errors().len()),
+        "degradation_tier": current.as_ref().map(|snapshot| format!("{:?}", snapshot.degradation_tier())),
+        "projection_count": counts.projection,
+        "fact_trace_count": counts.fact_traces,
+        "pre_cap_count": counts.pre_cap,
+        "result_count": counts.result,
+        "cap": cap,
+    });
+    tracing::debug!(target: "document_symbol_probe", "{receipt}");
+}
+
 #[cfg(test)]
 #[derive(Clone, Copy)]
 enum FoldingRangeTestFault {
@@ -203,13 +256,21 @@ impl LspServer {
             }
         }
 
-        self.handle_document_symbol(params)
+        self.handle_document_symbol_with_probe(params, request_id)
     }
 
     /// Handle textDocument/documentSymbol request
     pub(crate) fn handle_document_symbol(
         &self,
         params: Option<Value>,
+    ) -> Result<Option<Value>, JsonRpcError> {
+        self.handle_document_symbol_with_probe(params, None)
+    }
+
+    fn handle_document_symbol_with_probe(
+        &self,
+        params: Option<Value>,
+        request_id: Option<&Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
         // Gate unadvertised feature
         if !self.advertised_features.lock().document_symbol {
@@ -249,6 +310,13 @@ impl LspServer {
                 // for synchronized pending-parse gaps, and must not scan
                 // predecessor text while `full_sync_required` is set.
                 if doc.text_for_user_answers().is_none() {
+                    emit_document_symbol_probe(
+                        request_id,
+                        "full_sync_required",
+                        Some(doc),
+                        DocumentSymbolProbeCounts::default(),
+                        cap,
+                    );
                     return Ok(Some(json!([])));
                 }
                 let parsed = doc.current_parsed();
@@ -261,6 +329,8 @@ impl LspServer {
                             ast,
                             &doc.text,
                         );
+                    let projection_count = live_result.symbols.len();
+                    let fact_trace_count = live_result.fact_traces.len();
 
                     // Merge Test2/Test::More subtests into their lexically
                     // enclosing outline scopes (#1792): each subtest nests under
@@ -285,6 +355,7 @@ impl LspServer {
 
                     // Canonical Dancer2 route/hook entries (#8928).
                     document_symbols.extend(dancer2_symbols);
+                    let pre_cap_count = document_symbols.len();
 
                     // Apply cap to document symbols
                     if document_symbols.len() > cap {
@@ -296,6 +367,19 @@ impl LspServer {
                         document_symbols.truncate(cap);
                     }
 
+                    emit_document_symbol_probe(
+                        request_id,
+                        "ast",
+                        Some(doc),
+                        DocumentSymbolProbeCounts {
+                            projection: Some(projection_count),
+                            fact_traces: Some(fact_trace_count),
+                            pre_cap: pre_cap_count,
+                            result: document_symbols.len(),
+                        },
+                        cap,
+                    );
+
                     return Ok(Some(json!(document_symbols)));
                 } else {
                     // Fallback: Extract symbols via regex when parse fails
@@ -303,6 +387,7 @@ impl LspServer {
                     let mut symbols = self.extract_symbols_fallback(&doc.text);
                     // Append POD section symbols from a direct line scan
                     symbols.extend(pod_section_symbols(&doc.text));
+                    let pre_cap_count = symbols.len();
                     // Apply cap to fallback symbols
                     if symbols.len() > cap {
                         tracing::debug!(
@@ -313,11 +398,37 @@ impl LspServer {
                         symbols.truncate(cap);
                     }
                     tracing::debug!(count = symbols.len(), "Returning fallback symbols");
+                    emit_document_symbol_probe(
+                        request_id,
+                        "regex_fallback",
+                        Some(doc),
+                        DocumentSymbolProbeCounts {
+                            pre_cap: pre_cap_count,
+                            result: symbols.len(),
+                            ..DocumentSymbolProbeCounts::default()
+                        },
+                        cap,
+                    );
                     return Ok(Some(json!(symbols)));
                 }
             }
+            emit_document_symbol_probe(
+                request_id,
+                "not_open",
+                None,
+                DocumentSymbolProbeCounts::default(),
+                cap,
+            );
+            return Ok(Some(json!([])));
         }
 
+        emit_document_symbol_probe(
+            request_id,
+            "missing_params",
+            None,
+            DocumentSymbolProbeCounts::default(),
+            cap,
+        );
         Ok(Some(json!([])))
     }
 
@@ -1228,6 +1339,31 @@ mod tests {
         }
         walk(value, &mut names);
         Ok(names)
+    }
+
+    #[test]
+    fn document_symbol_pending_parse_uses_current_text_regex_control()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        let uri = "file:///17020-pending-parse-control.pl";
+        server.test_apply_did_open(uri, "sub predecessor {}\n", 1)?;
+        {
+            let mut documents = server.documents.lock();
+            let doc = server.get_document_mut(&mut documents, uri).ok_or("opened control")?;
+            doc.update_content("sub alpha {}\n", 2);
+            assert!(doc.current_parsed().is_none(), "control must enter the pending-parse path");
+            assert!(!doc.full_sync_required(), "control must retain synchronized current text");
+        }
+        let result = server
+            .handle_document_symbol(Some(json!({ "textDocument": { "uri": uri } })))?
+            .ok_or("pending-parse documentSymbol result")?;
+        let names = document_symbol_names(&result)?;
+        assert!(names.iter().any(|name| name == "alpha"), "current source must answer: {result}");
+        assert!(
+            !names.iter().any(|name| name == "predecessor"),
+            "stale AST symbols must not answer the current source: {result}"
+        );
+        Ok(())
     }
 
     #[test]

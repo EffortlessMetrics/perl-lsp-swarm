@@ -421,16 +421,161 @@ fn ux_latency_document_symbols_returns_real_process_shape() -> Result<()> {
         return Ok(());
     }
 
-    let harness = UxHarness::new(e2e_config(timeout()))?;
-    harness.open_file("lib/Latency/Symbols.pm", SYMBOL_SOURCE)?;
+    // Diagnostic carrier for #17020: four fresh children, stopping at the
+    // first empty immediate result. Readiness never replaces the immediate
+    // assertion; it supplies a second observation in that exact same child.
+    for session in 0..4 {
+        let mut config = e2e_config(timeout());
+        config.extra_env.extend([
+            ("PERL_LSP_LOG".to_string(), Some("warn,document_symbol_probe=debug".to_string())),
+            ("RUST_LOG".to_string(), None),
+            ("NO_COLOR".to_string(), Some("1".to_string())),
+        ]);
+        let harness = UxHarness::new(config)?;
+        let path = "lib/Latency/Symbols.pm";
+        harness.open_file(path, SYMBOL_SOURCE)?;
+        let uri = harness.workspace.uri(path);
+        let ready_before = harness.wait_for_active_document_ready(&uri, Duration::ZERO).is_ok();
+        let immediate = document_symbol_probe_request(&harness, path)?;
+        let ready_by_response =
+            harness.wait_for_active_document_ready(&uri, Duration::ZERO).is_ok();
+        let readiness = harness.wait_for_active_document_ready_result(&uri, ARRIVAL_BUDGET);
+        // Record even a readiness failure before deciding the original assertion.
+        let after_ready = if readiness.is_ok() {
+            Some(document_symbol_probe_request(&harness, path)?)
+        } else {
+            None
+        };
 
-    let symbols = harness.document_symbols("lib/Latency/Symbols.pm")?;
-    assert!(
-        symbol_tree_contains_name(&symbols, "alpha"),
-        "documentSymbol must expose the alpha subroutine over the e2e path; got {symbols:?}"
-    );
+        harness.open_file("empty-control.pl", "1;\n")?;
+        let empty = document_symbol_probe_request(&harness, "empty-control.pl")?;
+        let unopened = document_symbol_probe_request(&harness, "unopened-control.pl")?;
+        harness.open_file("desync-control.pl", "sub predecessor {}\n")?;
+        harness.client.notify(
+            "textDocument/didChange",
+            json!({
+                "textDocument": { "uri": harness.workspace.uri("desync-control.pl"), "version": 2 },
+                "contentChanges": null
+            }),
+        )?;
+        let desync = document_symbol_probe_request(&harness, "desync-control.pl")?;
+        let expected = [&immediate, &empty, &unopened, &desync];
+        let deadline = Instant::now() + Duration::from_secs(1);
+        let branches = loop {
+            let branches = document_symbol_branch_probes(&harness);
+            if expected.iter().all(|response| probe_branch(&branches, response).is_some())
+                && after_ready
+                    .as_ref()
+                    .is_none_or(|response| probe_branch(&branches, response).is_some())
+            {
+                break branches;
+            }
+            if Instant::now() >= deadline {
+                break branches;
+            }
+            // This observation wait happens after all behavioral requests.
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        emit_document_symbol_probe_receipt(&json!({
+            "kind": "document_symbol_same_child_probe",
+            "session": session,
+            "ready_before_query": ready_before,
+            "ready_by_response": ready_by_response,
+            "readiness": format!("{readiness:?}"),
+            "immediate_raw_envelope": immediate,
+            "after_ready_raw_envelope": after_ready,
+            "empty_raw_envelope": empty,
+            "unopened_raw_envelope": unopened,
+            "full_sync_raw_envelope": desync,
+            "handler_branches": branches,
+        }))?;
 
-    harness.assert_no_crash();
+        for response in expected {
+            assert!(
+                probe_branch(&branches, response).is_some(),
+                "missing request-correlated branch probe: {response}"
+            );
+        }
+        assert_eq!(
+            probe_branch(&branches, &empty),
+            Some("ast"),
+            "known-empty control must reach AST extraction"
+        );
+        assert!(
+            document_symbol_probe_result(&empty)?.is_empty(),
+            "known-empty control must return []"
+        );
+        assert_eq!(probe_branch(&branches, &unopened), Some("not_open"));
+        assert!(
+            document_symbol_probe_result(&unopened)?.is_empty(),
+            "unopened control must return []"
+        );
+        assert_eq!(probe_branch(&branches, &desync), Some("full_sync_required"));
+        assert!(
+            document_symbol_probe_result(&desync)?.is_empty(),
+            "full-sync control must return []"
+        );
+
+        let symbols = document_symbol_probe_result(&immediate)?;
+        assert!(
+            symbol_tree_contains_name(symbols, "alpha"),
+            "documentSymbol must expose the alpha subroutine over the e2e path; got {symbols:?}"
+        );
+        readiness.map_err(|end| anyhow::anyhow!("same-child readiness failed: {end:?}"))?;
+        let after_ready = after_ready.context("missing post-readiness observation")?;
+        assert!(
+            symbol_tree_contains_name(document_symbol_probe_result(&after_ready)?, "alpha"),
+            "post-readiness documentSymbol must expose alpha: {after_ready}"
+        );
+        harness.assert_no_crash();
+    }
+    Ok(())
+}
+
+fn document_symbol_probe_request(harness: &UxHarness, path: &str) -> Result<Value> {
+    harness.client.request(
+        "textDocument/documentSymbol",
+        json!({ "textDocument": { "uri": harness.workspace.uri(path) } }),
+        timeout(),
+    )
+}
+
+fn document_symbol_probe_result(response: &Value) -> Result<&[Value]> {
+    if let Some(error) = response.get("error") {
+        bail!("documentSymbol returned error: {error}; raw envelope: {response}");
+    }
+    response
+        .get("result")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .with_context(|| format!("documentSymbol must return an explicit result array: {response}"))
+}
+
+fn document_symbol_branch_probes(harness: &UxHarness) -> Vec<Value> {
+    harness
+        .client
+        .peek_stderr_lines()
+        .iter()
+        .filter_map(|line| {
+            let start = line.find('{')?;
+            let receipt: Value = serde_json::from_str(&line[start..]).ok()?;
+            (receipt["kind"] == "document_symbol_branch_probe").then_some(receipt)
+        })
+        .collect()
+}
+
+fn probe_branch<'a>(branches: &'a [Value], response: &Value) -> Option<&'a str> {
+    let id = response.get("id")?;
+    branches.iter().find(|branch| branch.get("request_id") == Some(id))?.get("branch")?.as_str()
+}
+
+fn emit_document_symbol_probe_receipt(receipt: &Value) -> Result<()> {
+    // Descriptor IO preserves one bounded measurement even when libtest captures
+    // passing output. No source text or host credentials enter the receipt.
+    let stderr = std::io::stderr();
+    let mut output = stderr.lock();
+    serde_json::to_writer(&mut output, receipt)?;
+    output.write_all(b"\n")?;
     Ok(())
 }
 
