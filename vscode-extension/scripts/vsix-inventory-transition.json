@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "owner_issue": 17043,
-  "reason": "brace-expansion override bump past CVE-2026-102276 grows packaged package.json and bundled out/extension.js; size-only dependency-driven transition",
+  "owner_issue": 16581,
+  "reason": "INC paths command now scopes its header to the PATH perl and adds guidance pointing at the authoritative lookup tools, growing the bundled extension entrypoint by 946 bytes",
   "base_baseline_file_sha256": "975f428f8ea36ca04de3ee3ae5093b961b9a0002dfd61a9fc3b25e8c9fdb42eb",
-  "candidate_baseline_file_sha256": "f42d54ac2f2ce85c81072a7a0c5ce428c0de3617a12207b2bd221717d7fedbae",
+  "candidate_baseline_file_sha256": "7175d1a23eb0a66a27ef87ce1ec50b01f0d25750b0b15f199176b095b0ea494e",
   "base_inventory_sha256": "02fe6fe2c7ab70962c657b90ca6b341bf245a1a1e7c6f1d637a3994500c4645e",
-  "candidate_inventory_sha256": "e8b7fa97e32fdf310caef5854764ec9599c3163da4379b4fa685d2cae4e035bd"
+  "candidate_inventory_sha256": "475c8e0ebae020886502179218fb90bd7fe9c6df776e99257b385c33af979ce5"
 }

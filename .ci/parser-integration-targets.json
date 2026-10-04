@@ -387,6 +387,36 @@
       "reason": "Keep adjacent uppercase and qualified output-call arguments distinct from spaced, scalar, and braced filehandles.",
       "disposition": "execute",
       "boundedness": "focused"
+    },
+    {
+      "id": "parser.loops.foreach_declaration_list",
+      "package": "perl-parser-core",
+      "target": "foreach_my_list_17082",
+      "features": [],
+      "no_default_features": false,
+      "cargo_args": [],
+      "test_args": [
+        "--test-threads=4"
+      ],
+      "owner": "#17082",
+      "reason": "Distinguish implicit-topic declaration lists from C-style for/foreach headers while preserving declarations, source geometry, and malformed-separator diagnostics.",
+      "disposition": "execute",
+      "boundedness": "focused"
+    },
+    {
+      "id": "parser.loops.c_style_separator_recovery",
+      "package": "perl-parser-core",
+      "target": "fix_expected_semicolon_for_loop",
+      "features": [],
+      "no_default_features": false,
+      "cargo_args": [],
+      "test_args": [
+        "--test-threads=4"
+      ],
+      "owner": "#17082",
+      "reason": "Retain malformed C-style separator recovery and following statements alongside the valid declaration-list distinction.",
+      "disposition": "execute",
+      "boundedness": "focused"
     }
   ]
 }

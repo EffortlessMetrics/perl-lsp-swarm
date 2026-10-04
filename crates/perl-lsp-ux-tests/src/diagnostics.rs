@@ -27,6 +27,16 @@ impl DiagnosticsTracker {
         })
     }
 
+    /// Wait for the most recent publication for `uri`, retaining a matching
+    /// empty payload as success and every unsuccessful terminal reason.
+    pub fn wait_for_latest_uri_event(
+        events: &impl EventSource,
+        uri: &str,
+        timeout: Duration,
+    ) -> Result<Vec<Value>, WaitEnd> {
+        events.wait_for_events(timeout, |observed| Self::latest_for_uri(observed, uri))
+    }
+
     /// Return the most recent diagnostics payload seen for `uri`.
     pub fn latest_for_uri(events: &[LspEvent], uri: &str) -> Option<Vec<Value>> {
         events.iter().rev().find_map(|event| match event {
@@ -68,10 +78,7 @@ impl DiagnosticsTracker {
     }
 
     /// Wait until diagnostics for `uri` satisfy `predicate`, returning the
-    /// matching payload. Returns `None` on timeout — and also when the
-    /// stream ends first: a closed transport and an expired bound are
-    /// indistinguishable here. Callers that must tell them apart should use
-    /// `wait_for_events` and keep the [`WaitEnd`](crate::observation::WaitEnd).
+    /// matching payload, or the typed reason the wait ended.
     ///
     /// `events` is the observation source to block on — normally the scenario's
     /// `UxClient`. Events are never consumed by the wait, so a later waiter
@@ -88,15 +95,13 @@ impl DiagnosticsTracker {
         uri: &str,
         timeout: Duration,
         mut predicate: F,
-    ) -> Option<Vec<Value>>
+    ) -> Result<Vec<Value>, WaitEnd>
     where
         F: FnMut(&[Value]) -> bool,
     {
-        events
-            .wait_for_events(timeout, |observed| {
-                Self::latest_for_uri(observed, uri).filter(|diagnostics| predicate(diagnostics))
-            })
-            .ok()
+        events.wait_for_events(timeout, |observed| {
+            Self::latest_for_uri(observed, uri).filter(|diagnostics| predicate(diagnostics))
+        })
     }
 
     /// Wait until at least one diagnostics payload newer than `already_seen`
@@ -106,12 +111,10 @@ impl DiagnosticsTracker {
         uri: &str,
         already_seen: usize,
         timeout: Duration,
-    ) -> Option<Vec<Value>> {
-        events
-            .wait_for_events(timeout, |observed| {
-                Self::latest_for_uri_after_count(observed, uri, already_seen)
-            })
-            .ok()
+    ) -> Result<Vec<Value>, WaitEnd> {
+        events.wait_for_events(timeout, |observed| {
+            Self::latest_for_uri_after_count(observed, uri, already_seen)
+        })
     }
 }
 
@@ -234,6 +237,44 @@ mod tests {
     }
 
     #[test]
+    fn latest_diagnostics_wait_distinguishes_empty_publication_from_absence() -> anyhow::Result<()>
+    {
+        let inbox = Inbox::new();
+        inbox.push_event(publish("file:///wanted.pl", vec![json!({"message": "old"})]));
+        inbox.push_event(publish("file:///wanted.pl", vec![]));
+        let published = DiagnosticsTracker::wait_for_latest_uri_event(
+            &inbox,
+            "file:///wanted.pl",
+            Duration::ZERO,
+        );
+        anyhow::ensure!(
+            published == Ok(vec![]),
+            "empty latest publication is observed: {published:?}"
+        );
+
+        let missing = Inbox::new();
+        missing.close(StreamEnd::ServerClosed);
+        let absent = DiagnosticsTracker::wait_for_latest_uri_event(
+            &missing,
+            "file:///wanted.pl",
+            Duration::from_secs(1),
+        );
+        anyhow::ensure!(
+            absent == Err(WaitEnd::Ended(StreamEnd::ServerClosed)),
+            "absence after orderly close differs from empty publication: {absent:?}"
+        );
+        let assertion = crate::wait_with_subject("diagnostics for file:///wanted.pl", absent)
+            .err()
+            .map(|error| error.to_string())
+            .ok_or_else(|| anyhow::anyhow!("expected a scenario assertion failure"))?;
+        anyhow::ensure!(
+            assertion.contains("file:///wanted.pl") && assertion.contains("server closed"),
+            "scenario assertion lost subject or typed terminal reason: {assertion}"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn count_for_uri_counts_only_matching_diagnostics() -> anyhow::Result<()> {
         let events = vec![
             LspEvent::Diagnostics {
@@ -314,7 +355,10 @@ mod tests {
                 diags.is_empty()
             });
 
-        anyhow::ensure!(result == Some(vec![]), "expected immediate match on empty diagnostics");
+        anyhow::ensure!(
+            result == Ok(vec![]),
+            "expected immediate match on empty diagnostics: {result:?}"
+        );
         anyhow::ensure!(
             started.elapsed() < Duration::from_secs(1),
             "a buffered match must not depend on the deadline, took {:?}",
@@ -325,20 +369,19 @@ mod tests {
 
     /// A live stream that never satisfies the predicate reports the bound.
     #[test]
-    fn wait_for_uri_matching_returns_none_on_timeout() -> anyhow::Result<()> {
+    fn wait_for_uri_matching_retains_deadline() -> anyhow::Result<()> {
         let inbox = Inbox::new();
         inbox.push_event(publish("file:///a.pl", vec![json!({"message": "err"})]));
 
-        let result = DiagnosticsTracker::wait_for_uri_matching(
-            &inbox,
-            "file:///a.pl",
-            Duration::from_millis(120),
-            |diags| diags.is_empty(),
-        );
+        let timeout = Duration::from_millis(120);
+        let result =
+            DiagnosticsTracker::wait_for_uri_matching(&inbox, "file:///a.pl", timeout, |diags| {
+                diags.is_empty()
+            });
 
         anyhow::ensure!(
-            result.is_none(),
-            "expected None when predicate never matches within timeout"
+            result == Err(WaitEnd::Deadline { timeout }),
+            "expected typed deadline when predicate never matches: {result:?}"
         );
         Ok(())
     }
@@ -364,7 +407,10 @@ mod tests {
             });
         let _ = clearing.join();
 
-        anyhow::ensure!(result == Some(vec![]), "expected empty payload when diagnostics clear");
+        anyhow::ensure!(
+            result == Ok(vec![]),
+            "expected empty payload when diagnostics clear: {result:?}"
+        );
         Ok(())
     }
 
@@ -381,7 +427,10 @@ mod tests {
             |diags| diags.is_empty(),
         );
 
-        anyhow::ensure!(result.is_none(), "should not match events for a different URI");
+        anyhow::ensure!(
+            matches!(result, Err(WaitEnd::Deadline { .. })),
+            "should retain deadline for a different URI: {result:?}"
+        );
         Ok(())
     }
 
@@ -401,7 +450,7 @@ mod tests {
         let _ = later.join();
 
         anyhow::ensure!(
-            result == Some(vec![json!({"message": "new"})]),
+            result == Ok(vec![json!({"message": "new"})]),
             "expected only the newer diagnostic payload, got {result:?}"
         );
         Ok(())
