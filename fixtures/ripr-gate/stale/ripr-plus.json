@@ -1,0 +1,7 @@
+{
+  "schema_version": 2,
+  "kind": "ripr_plus_baseline",
+  "head": "e1-stale-head-sha-never-matches-runtime-head",
+  "unresolved": 0,
+  "top_files": []
+}

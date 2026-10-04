@@ -4409,6 +4409,22 @@ created = "2026-10-04"
 review_after = "2027-04-04"
 
 [[allow]]
+id = "non-rust-ripr-e1-bench-fixtures"
+glob = "fixtures/ripr-gate/**"
+kind = "test_fixture"
+language = "mixed"
+surface = "fixtures"
+classification = "test"
+owner = "quality/ripr-gate"
+reason = "Labeled gate/classifier fixtures (receipt JSON, lane logs, expected decision/actions) for the #17154 E1 gap precision/recall bench; consumed by the xtask E1 integration test, never executed as build inputs."
+covered_by = [
+  "just bench-ripr-e1",
+]
+broad_glob_reason = "Bench fixtures span gate receipt shapes and lane-termination logs per case."
+created = "2026-10-04"
+review_after = "2027-04-04"
+
+[[allow]]
 id = "non-rust-distribution-kwalitee-catalog-v1"
 path = "crates/perl-release-readiness/distribution_kwalitee_catalog.v1.toml"
 kind = "config"
