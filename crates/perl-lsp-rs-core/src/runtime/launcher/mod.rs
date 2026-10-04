@@ -1330,40 +1330,40 @@ const POWERSHELL_COMPLETION: &str = r#"Register-ArgumentCompleter -Native -Comma
     param($wordToComplete, $commandAst, $cursorPosition)
 
     $options = @(
-        [CompletionResult]::new('--stdio', '--stdio', 'ParameterName', 'Use stdio for communication (default)')
-        [CompletionResult]::new('--socket', '--socket', 'ParameterName', 'Use TCP socket for communication')
-        [CompletionResult]::new('--port', '--port', 'ParameterName', 'Port to listen on')
-        [CompletionResult]::new('--log', '--log', 'ParameterName', 'Enable logging to stderr')
-        [CompletionResult]::new('--health', '--health', 'ParameterName', 'Quick health check')
-        [CompletionResult]::new('--info', '--info', 'ParameterName', 'Show server info')
-        [CompletionResult]::new('--check', '--check', 'ParameterName', 'Native in-process parser check of listed files')
-        [CompletionResult]::new('--check-project', '--check-project', 'ParameterName', 'Native parsability report (80% threshold; not a strict all-clean check)')
-        [CompletionResult]::new('--doctor', '--doctor', 'ParameterName', 'Explain Perl path, config, and effective @INC roots')
-        [CompletionResult]::new('--external-tools', '--external-tools', 'ParameterName', 'With --doctor: native-first external tooling report')
-        [CompletionResult]::new('--critic-compatibility', '--critic-compatibility', 'ParameterName', 'With --doctor: .perlcriticrc compatibility, process-free')
-        [CompletionResult]::new('--dev-environment', '--dev-environment', 'ParameterName', 'With --doctor: development-environment prerequisites')
-        [CompletionResult]::new('--version', '--version', 'ParameterName', 'Show version information')
-        [CompletionResult]::new('--features-json', '--features-json', 'ParameterName', 'Output features catalog as JSON')
-        [CompletionResult]::new('--json', '--json', 'ParameterName', 'With --info: same JSON identity packet (composed one-shot form)')
-        [CompletionResult]::new('--identity', '--identity', 'ParameterName', 'Print the installed-binary identity packet and exit (one-shot)')
-        [CompletionResult]::new('--identity-json', '--identity-json', 'ParameterName', 'Print that packet as perl_lsp.binary_identity.v1 JSON (one-shot)')
-        [CompletionResult]::new('--perltidy-compat-report', '--perltidy-compat-report', 'ParameterName', 'Report native formatter compatibility for .perltidyrc')
-        [CompletionResult]::new('--perlcritic-compat-report', '--perlcritic-compat-report', 'ParameterName', 'Report native critic compatibility for .perlcriticrc')
-        [CompletionResult]::new('--feature-profile', '--feature-profile', 'ParameterName', 'Set feature profile')
-        [CompletionResult]::new('--completion', '--completion', 'ParameterName', 'Generate shell completions')
-        [CompletionResult]::new('--runtime-mode', '--runtime-mode', 'ParameterName', 'Runtime workload tuning')
-        [CompletionResult]::new('--diagnostic-mode', '--diagnostic-mode', 'ParameterName', 'Diagnostic scope tuning')
-        [CompletionResult]::new('--diagnostic-debounce-ms', '--diagnostic-debounce-ms', 'ParameterName', 'Diagnostic publish debounce window')
-        [CompletionResult]::new('--eager-workspace-indexing', '--eager-workspace-indexing', 'ParameterName', 'Set eager-indexing tuning value')
-        [CompletionResult]::new('--file-watchers', '--file-watchers', 'ParameterName', 'Set file-watcher tuning value')
-        [CompletionResult]::new('--ripr-facts', '--ripr-facts', 'ParameterName', 'Export a ripr-perl-facts-v1 fact packet')
-        [CompletionResult]::new('--ripr-schema', '--ripr-schema', 'ParameterName', 'Fact schema version')
-        [CompletionResult]::new('--ripr-root', '--ripr-root', 'ParameterName', 'Repository root')
-        [CompletionResult]::new('--ripr-base', '--ripr-base', 'ParameterName', 'Base git ref')
-        [CompletionResult]::new('--ripr-head', '--ripr-head', 'ParameterName', 'Head git ref')
-        [CompletionResult]::new('--ripr-fact-classes', '--ripr-fact-classes', 'ParameterName', 'Fact classes filter')
-        [CompletionResult]::new('--ripr-out', '--ripr-out', 'ParameterName', 'Output path')
-        [CompletionResult]::new('--help', '--help', 'ParameterName', 'Show help message')
+        [System.Management.Automation.CompletionResult]::new('--stdio', '--stdio', 'ParameterName', 'Use stdio for communication (default)')
+        [System.Management.Automation.CompletionResult]::new('--socket', '--socket', 'ParameterName', 'Use TCP socket for communication')
+        [System.Management.Automation.CompletionResult]::new('--port', '--port', 'ParameterName', 'Port to listen on')
+        [System.Management.Automation.CompletionResult]::new('--log', '--log', 'ParameterName', 'Enable logging to stderr')
+        [System.Management.Automation.CompletionResult]::new('--health', '--health', 'ParameterName', 'Quick health check')
+        [System.Management.Automation.CompletionResult]::new('--info', '--info', 'ParameterName', 'Show server info')
+        [System.Management.Automation.CompletionResult]::new('--check', '--check', 'ParameterName', 'Native in-process parser check of listed files')
+        [System.Management.Automation.CompletionResult]::new('--check-project', '--check-project', 'ParameterName', 'Native parsability report (80% threshold; not a strict all-clean check)')
+        [System.Management.Automation.CompletionResult]::new('--doctor', '--doctor', 'ParameterName', 'Explain Perl path, config, and effective @INC roots')
+        [System.Management.Automation.CompletionResult]::new('--external-tools', '--external-tools', 'ParameterName', 'With --doctor: native-first external tooling report')
+        [System.Management.Automation.CompletionResult]::new('--critic-compatibility', '--critic-compatibility', 'ParameterName', 'With --doctor: .perlcriticrc compatibility, process-free')
+        [System.Management.Automation.CompletionResult]::new('--dev-environment', '--dev-environment', 'ParameterName', 'With --doctor: development-environment prerequisites')
+        [System.Management.Automation.CompletionResult]::new('--version', '--version', 'ParameterName', 'Show version information')
+        [System.Management.Automation.CompletionResult]::new('--features-json', '--features-json', 'ParameterName', 'Output features catalog as JSON')
+        [System.Management.Automation.CompletionResult]::new('--json', '--json', 'ParameterName', 'With --info: same JSON identity packet (composed one-shot form)')
+        [System.Management.Automation.CompletionResult]::new('--identity', '--identity', 'ParameterName', 'Print the installed-binary identity packet and exit (one-shot)')
+        [System.Management.Automation.CompletionResult]::new('--identity-json', '--identity-json', 'ParameterName', 'Print that packet as perl_lsp.binary_identity.v1 JSON (one-shot)')
+        [System.Management.Automation.CompletionResult]::new('--perltidy-compat-report', '--perltidy-compat-report', 'ParameterName', 'Report native formatter compatibility for .perltidyrc')
+        [System.Management.Automation.CompletionResult]::new('--perlcritic-compat-report', '--perlcritic-compat-report', 'ParameterName', 'Report native critic compatibility for .perlcriticrc')
+        [System.Management.Automation.CompletionResult]::new('--feature-profile', '--feature-profile', 'ParameterName', 'Set feature profile')
+        [System.Management.Automation.CompletionResult]::new('--completion', '--completion', 'ParameterName', 'Generate shell completions')
+        [System.Management.Automation.CompletionResult]::new('--runtime-mode', '--runtime-mode', 'ParameterName', 'Runtime workload tuning')
+        [System.Management.Automation.CompletionResult]::new('--diagnostic-mode', '--diagnostic-mode', 'ParameterName', 'Diagnostic scope tuning')
+        [System.Management.Automation.CompletionResult]::new('--diagnostic-debounce-ms', '--diagnostic-debounce-ms', 'ParameterName', 'Diagnostic publish debounce window')
+        [System.Management.Automation.CompletionResult]::new('--eager-workspace-indexing', '--eager-workspace-indexing', 'ParameterName', 'Set eager-indexing tuning value')
+        [System.Management.Automation.CompletionResult]::new('--file-watchers', '--file-watchers', 'ParameterName', 'Set file-watcher tuning value')
+        [System.Management.Automation.CompletionResult]::new('--ripr-facts', '--ripr-facts', 'ParameterName', 'Export a ripr-perl-facts-v1 fact packet')
+        [System.Management.Automation.CompletionResult]::new('--ripr-schema', '--ripr-schema', 'ParameterName', 'Fact schema version')
+        [System.Management.Automation.CompletionResult]::new('--ripr-root', '--ripr-root', 'ParameterName', 'Repository root')
+        [System.Management.Automation.CompletionResult]::new('--ripr-base', '--ripr-base', 'ParameterName', 'Base git ref')
+        [System.Management.Automation.CompletionResult]::new('--ripr-head', '--ripr-head', 'ParameterName', 'Head git ref')
+        [System.Management.Automation.CompletionResult]::new('--ripr-fact-classes', '--ripr-fact-classes', 'ParameterName', 'Fact classes filter')
+        [System.Management.Automation.CompletionResult]::new('--ripr-out', '--ripr-out', 'ParameterName', 'Output path')
+        [System.Management.Automation.CompletionResult]::new('--help', '--help', 'ParameterName', 'Show help message')
     )
 
     $elements = $commandAst.CommandElements
@@ -1372,32 +1372,32 @@ const POWERSHELL_COMPLETION: &str = r#"Register-ArgumentCompleter -Native -Comma
     switch ($prevWord) {
         '--completion' {
             @('bash', 'zsh', 'fish', 'powershell', 'pwsh') | Where-Object { $_ -like "$wordToComplete*" } |
-                ForEach-Object { [CompletionResult]::new($_, $_, 'ParameterValue', $_) }
+                ForEach-Object { [System.Management.Automation.CompletionResult]::new($_, $_, 'ParameterValue', $_) }
             return
         }
         '--feature-profile' {
             @('ga-lock', 'ga', 'prod', 'production', 'all', 'auto') | Where-Object { $_ -like "$wordToComplete*" } |
-                ForEach-Object { [CompletionResult]::new($_, $_, 'ParameterValue', $_) }
+                ForEach-Object { [System.Management.Automation.CompletionResult]::new($_, $_, 'ParameterValue', $_) }
             return
         }
         '--runtime-mode' {
             @('normal', 'e2e') | Where-Object { $_ -like "$wordToComplete*" } |
-                ForEach-Object { [CompletionResult]::new($_, $_, 'ParameterValue', $_) }
+                ForEach-Object { [System.Management.Automation.CompletionResult]::new($_, $_, 'ParameterValue', $_) }
             return
         }
         '--diagnostic-mode' {
             @('normal', 'syntax-only') | Where-Object { $_ -like "$wordToComplete*" } |
-                ForEach-Object { [CompletionResult]::new($_, $_, 'ParameterValue', $_) }
+                ForEach-Object { [System.Management.Automation.CompletionResult]::new($_, $_, 'ParameterValue', $_) }
             return
         }
         '--eager-workspace-indexing' {
             @('true', 'false') | Where-Object { $_ -like "$wordToComplete*" } |
-                ForEach-Object { [CompletionResult]::new($_, $_, 'ParameterValue', $_) }
+                ForEach-Object { [System.Management.Automation.CompletionResult]::new($_, $_, 'ParameterValue', $_) }
             return
         }
         '--file-watchers' {
             @('true', 'false') | Where-Object { $_ -like "$wordToComplete*" } |
-                ForEach-Object { [CompletionResult]::new($_, $_, 'ParameterValue', $_) }
+                ForEach-Object { [System.Management.Automation.CompletionResult]::new($_, $_, 'ParameterValue', $_) }
             return
         }
     }
