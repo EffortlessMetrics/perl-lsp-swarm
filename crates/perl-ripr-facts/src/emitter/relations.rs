@@ -41,11 +41,11 @@ fn resolve_package_owner_id(ast: &Node, pm_path: &str, package_name: &str) -> Op
 /// slice. This conservative first-pass emitter:
 ///
 /// - **Relations**: infers `file_proximity` relations between `.pm` source
-///   files and `.t` test files that share a package name. Relation kind is
-///   `file_proximity` (advisory-only per ripr's gating rules) with confidence
-///   `medium`. This is the simplest relation — `direct_owner_call` /
-///   `established-helper-call-chain` require AST-level call-graph analysis
-///   that lands in a later enrichment.
+///   files and `.t` test files that share a package name (advisory-only per
+///   ripr's gating rules), upgraded to parser-backed `direct_owner_call`
+///   with confidence `medium` when test-call AST facts tie a test file to a
+///   package owner (#3293 PR 6). `established-helper-call-chain` still
+///   requires call-graph analysis that lands in a later enrichment.
 ///
 /// - **Concrete discriminators**: derives from `is(...)` assertions — the
 ///   first argument is the observed value, the second is the expected value,

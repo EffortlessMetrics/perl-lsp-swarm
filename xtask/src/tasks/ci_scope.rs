@@ -205,6 +205,9 @@ pub fn requires_windows_runner(files: &[String]) -> bool {
             // exercise the bound and prove it terminates its probe child.
             || normalized.starts_with("crates/perl-dap/src/reload/")
             || normalized == "crates/perl-dap/src/reload.rs"
+            // Windows directory identity and its replacement witness live
+            // in this shared file; select the exact seam, not its module.
+            || normalized == "crates/perl-dap/src/security/launch_authority.rs"
             || normalized.starts_with("crates/perl-uri/")
             || normalized.contains("workspace-index")
             || normalized.contains("workspace_index")
@@ -1199,6 +1202,7 @@ mod tests {
             "crates/perl-dap/src/reload/mod.rs",
             "crates/perl-dap/src/reload/runtime.rs",
             "crates/perl-dap/src/reload/measurement.rs",
+            "crates/perl-dap/src/security/launch_authority.rs",
             "crates/perl-uri/src/fs.rs",
             "crates/perl-workspace/src/workspace-index.rs",
             "crates/perl-workspace/src/platform/windows.rs",
@@ -1222,11 +1226,11 @@ mod tests {
             "docs/windows.md".to_string(),
             "scripts/check-shell.py".to_string(),
             "crates/perl-parser/src/lib.rs".to_string(),
-            // perl-dap siblings outside the reload module should not
-            // select a Windows runner; the bounded-probe Windows
-            // coverage claim is scoped to the reload seam.
+            // Other perl-dap security siblings are outside the exact
+            // identity seam and should not select a Windows runner.
             "crates/perl-dap/src/lib.rs".to_string(),
             "crates/perl-dap/src/debug_adapter/protocol.rs".to_string(),
+            "crates/perl-dap/src/security/mod.rs".to_string(),
         ];
         assert!(!requires_windows_runner(&files));
     }
