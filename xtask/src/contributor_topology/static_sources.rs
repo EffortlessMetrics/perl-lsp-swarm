@@ -75,6 +75,9 @@ pub(super) fn load_static_topology(
     if !publication_role.is_match(&protocol) {
         bail!("sync protocol is missing the publication repository role");
     }
+    if !protocol.contains("public contributor ingress") {
+        bail!("sync protocol is missing the public contributor ingress role");
+    }
     for marker in [
         "#### Mechanics: history-preserving complete-tree merge".to_string(),
         format!("git merge -s ours --no-commit swarm/{development_branch}"),
