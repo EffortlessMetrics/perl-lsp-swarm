@@ -451,7 +451,7 @@ fn scan_code_line(
         {
             Some(offset)
         } else {
-            print_scalar_filehandle_heredoc_start(line, offset)
+            print_scalar_filehandle_heredoc_start(input, line_start, line, offset)
         };
         if let Some(start) = heredoc_start
             && let Some((pending, end)) = parse_heredoc_opener(line, start)
@@ -908,14 +908,35 @@ fn prefix_has_unmatched_open_paren(prefix: &str) -> bool {
 /// Start at `print` in code, rather than searching a prefix containing prose.
 /// Bareword handles are deliberately excluded: even STDERR can name a constant
 /// or imported callable, which requires semantic authority this scan lacks.
-fn print_scalar_filehandle_heredoc_start(line: &str, start: usize) -> Option<usize> {
+///
+/// The parenthesized `print($handle LIST)` form is recognized as the list-
+/// operator variant (#16163). When `print` is immediately followed by `(`, the
+/// scan advances past the open paren and looks for the same `$scalar` then
+/// `<<` opener shape inside the parens. Method (`->print(...)`) and function
+/// (`&print(...)`) calls remain excluded because the prefix guard below
+/// catches both `->` and `&` directly preceding the call.
+fn print_scalar_filehandle_heredoc_start(
+    input: &str,
+    line_start: usize,
+    line: &str,
+    start: usize,
+) -> Option<usize> {
     let after_print = line[start..].strip_prefix("print")?;
-    if !after_print.starts_with([' ', '\t']) {
+    let parenthesized = after_print.starts_with('(');
+    if !parenthesized && !after_print.starts_with([' ', '\t']) {
         return None;
     }
     let before = &line[..start];
-    if before.trim_end_matches([' ', '\t']).ends_with("->")
-        || before.chars().next_back().is_some_and(|ch| {
+    let before_trimmed = before.trim_end_matches([' ', '\t']);
+    // Exclude method calls (`$obj->print`) and function calls (`&print`,
+    // `& print`). The trimmed prefix must end with `->`, or its last
+    // significant byte must be `&` (or another callable-word character that
+    // would make `print` a method/function target rather than a list operator).
+    // `print` must also not be embedded inside a larger identifier or sigiled
+    // expression — `is_perl_identifier_continue` and the sigil set cover the
+    // remaining false positives.
+    if before_trimmed.ends_with("->")
+        || before_trimmed.chars().next_back().is_some_and(|ch| {
             is_perl_identifier_continue(ch)
                 || matches!(ch, '$' | '@' | '%' | '&' | '*' | ':' | '\'')
         })
@@ -923,11 +944,68 @@ fn print_scalar_filehandle_heredoc_start(line: &str, start: usize) -> Option<usi
         return None;
     }
 
-    let offset = skip_horizontal_whitespace(line, start + "print".len());
+    // `print` may also appear at the start of the current line because the
+    // `->` or `&` prefix lives on the previous line. Scan backward through
+    // the input to find the last non-whitespace byte before this line; if it
+    // is `>` (the tail of `->`) or `&`, treat `print` as a method/function
+    // call rather than a list operator (#16163 acceptance, opposite forms).
+    if start == 0 && line_start > 0 && previous_line_ends_with_arrow_or_ampersand(input, line_start)
+    {
+        return None;
+    }
+
+    let mut offset = skip_horizontal_whitespace(line, start + "print".len());
+    if parenthesized {
+        // Skip exactly one `(`; nested openers stay open across the heredoc
+        // body via the existing pending-heredocs machinery.
+        offset = line[offset..].strip_prefix('(').map(|_| offset + 1)?;
+        offset = skip_horizontal_whitespace(line, offset);
+    }
     line[offset..].strip_prefix('$')?;
     let (_, end) = parse_qualified_name(line, offset + 1)?;
     let opener = skip_horizontal_whitespace(line, end);
     line[opener..].starts_with("<<").then_some(opener)
+}
+
+/// Scan the input source to determine whether the meaningful tail of the
+/// previous line (excluding trailing whitespace, line terminators, and
+/// `#`-introduced comments) ends with `>` (as part of `->`) or `&`.
+/// Used by `print_scalar_filehandle_heredoc_start` to reject method/function
+/// calls whose prefix spans a line break (#16163).
+fn previous_line_ends_with_arrow_or_ampersand(input: &str, line_start: usize) -> bool {
+    if line_start == 0 || line_start > input.len() || !input.is_char_boundary(line_start) {
+        return false;
+    }
+    // Walk backwards over whole physical lines so CRLF terminators (a bare-CR
+    // stop must not end the backward search before the LF it pairs with),
+    // blank separator lines, and comment-only lines are all skipped: the call
+    // prefix lives on the nearest non-blank code line (#16163 review).
+    let mut end = line_start;
+    loop {
+        let before = &input[..end];
+        let trimmed_end = before.trim_end_matches(['\r', '\n']);
+        if trimmed_end.is_empty() {
+            return false;
+        }
+        let line_start_idx = match trimmed_end.rfind(['\r', '\n']) {
+            Some(idx) => idx + 1,
+            None => 0,
+        };
+        let line = &trimmed_end[line_start_idx..];
+        // Strip a trailing `#` comment conservatively, then trailing blanks.
+        let code_part = match line.find('#') {
+            Some(idx) => &line[..idx],
+            None => line,
+        };
+        let trimmed = code_part.trim_end_matches([' ', '\t']);
+        if trimmed.is_empty() {
+            end = line_start_idx;
+            continue;
+        }
+        // A method arrow or a sigil continues the call onto the next line; a
+        // bare `>` (comparison / open angle) does not (#16163 review).
+        return trimmed.ends_with("->") || trimmed.ends_with('&');
+    }
 }
 
 /// Return `true` when a `sub` declaration carries an empty prototype at `end`.
@@ -1016,6 +1094,58 @@ fn parse_quoted_heredoc_label(line: &str, start: usize, quote: char) -> Option<(
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    #[test]
+    fn prev_line_call_prefix_survives_crlf_blank_and_comment_lines() {
+        // #16163 review: CRLF terminators, blank separator lines, and
+        // comment-only lines must not hide the call prefix.
+        let crlf = "obj->\r\nprint($fh <<E);\n";
+        let Some(line_start) = crlf.find("print") else {
+            unreachable!("print fixture must contain print");
+        };
+        assert!(previous_line_ends_with_arrow_or_ampersand(&crlf, line_start));
+
+        let blank = "obj->
+
+print($fh <<E);
+";
+        let Some(line_start) = blank.find("print") else {
+            unreachable!("print fixture must contain print");
+        };
+        assert!(previous_line_ends_with_arrow_or_ampersand(&blank, line_start));
+
+        let commented = "obj-> # chain
+print($fh <<E);
+";
+        let Some(line_start) = commented.find("print") else {
+            unreachable!("print fixture must contain print");
+        };
+        assert!(previous_line_ends_with_arrow_or_ampersand(&commented, line_start));
+
+        let amp = "&
+print($fh <<E);
+";
+        let Some(line_start) = amp.find("print") else {
+            unreachable!("print fixture must contain print");
+        };
+        assert!(previous_line_ends_with_arrow_or_ampersand(&amp, line_start));
+    }
+
+    #[test]
+    fn prev_line_bare_gt_is_not_a_call_prefix() {
+        // #16163 review: a bare `>` (comparison / open angle) does not make
+        // the next line's `print` a method target; only `->` and `&` do.
+        let source = "if ($a >
+print($fh <<E);
+";
+        let Some(line_start) = source.find("print") else {
+            unreachable!("print fixture must contain print");
+        };
+        assert!(!previous_line_ends_with_arrow_or_ampersand(&source, line_start));
+        assert!(!previous_line_ends_with_arrow_or_ampersand("", 0));
+    }
+
     use super::LocalSymbolTable;
     use crate::{LexerConfig, PerlLexer, TokenType};
 
@@ -1830,6 +1960,27 @@ mod tests {
                 "my $x = {prefix}print($fh <<'END');\nsub real {{ }}\nEND\n; sub after {{ }}\n"
             );
             assert_membership_and_slash(&source, &["real", "after"], &[]);
+        }
+    }
+
+    // Issue #16163: parenthesized `print($fh <<'END')` is a heredoc opener.
+    // Subsequent declarations survive the body, intermediate `sub fake` lines
+    // are absorbed into the body, and the public slash path keeps both shapes
+    // aligned (subsequent sub gets the regex term, body names stay on the
+    // division side).
+    #[test]
+    fn parenthesized_print_scalar_filehandle_heredocs_exclude_prose() {
+        for head in [
+            "print($fh",
+            "print($Pkg::fh",
+            "use constant STDERR => 4;\nprint($fh",
+            "use Fcntl qw(O_RDONLY);\nprint($fh",
+        ] {
+            for prose in ["=head1 NAME", "format STDOUT =", "ordinary text"] {
+                let source =
+                    format!("{head} <<'END');\n{prose}\nsub fake {{ }}\nEND\nsub real {{ }}\n");
+                assert_membership_and_slash(&source, &["real"], &["fake"]);
+            }
         }
     }
 
