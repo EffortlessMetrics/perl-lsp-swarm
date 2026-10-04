@@ -257,20 +257,6 @@ impl<'a> Parser<'a> {
                                     },
                                     SourceLocation { start, end },
                                 )?;
-                                // A postfix slice does not admit an implicit
-                                // subscript. Grouping ends this inner chain,
-                                // and an explicit arrow remains valid. Return
-                                // an error rather than breaking: some primaries
-                                // re-enter postfix parsing after this call.
-                                if matches!(
-                                    self.peek_kind(),
-                                    Some(TokenKind::LeftBracket | TokenKind::LeftBrace)
-                                ) {
-                                    return Err(ParseError::syntax(
-                                        "A postfix hash slice needs parentheses or an explicit arrow before a subscript",
-                                        self.current_position(),
-                                    ));
-                                }
                             } else {
                                 expr = self.recover_truncated_arrow(expr);
                                 break;
