@@ -21,7 +21,16 @@ struct DiffHunkRun {
 /// block of `+` lines, tracking the head-file line cursor from each
 /// `@@ -a,b +c,d @@` header. Removed (`-`) lines do not advance the head cursor;
 /// context lines do. Pure text parsing — no filesystem access, no subprocess.
-fn parse_diff_hunks(diff_text: &str) -> Vec<DiffHunkRun> {
+/// Parsed hunks plus whether the input carried recognizable unified-diff
+/// structure (any `+++ b/` file marker or `@@` hunk header). A valid
+/// deletion-only diff yields zero runs *with* recognized structure — that is
+/// analyzed-but-unattributable, not unparseable (#17266 review).
+struct ParsedDiff {
+    runs: Vec<DiffHunkRun>,
+    recognized_structure: bool,
+}
+
+fn parse_diff_hunks(diff_text: &str) -> ParsedDiff {
     fn flush(run: &mut Option<DiffHunkRun>, runs: &mut Vec<DiffHunkRun>) {
         if let Some(finished) = run.take() {
             runs.push(finished);
@@ -32,11 +41,13 @@ fn parse_diff_hunks(diff_text: &str) -> Vec<DiffHunkRun> {
     let mut current_file: Option<String> = None;
     let mut head_line: u32 = 0;
     let mut run: Option<DiffHunkRun> = None;
+    let mut recognized_structure = false;
 
     for line in diff_text.lines() {
         if let Some(rest) = line.strip_prefix("+++ b/") {
             flush(&mut run, &mut runs);
             current_file = Some(rest.trim().to_string());
+            recognized_structure = true;
             continue;
         }
         if line.starts_with("+++") || line.starts_with("---") {
@@ -46,6 +57,7 @@ fn parse_diff_hunks(diff_text: &str) -> Vec<DiffHunkRun> {
         if let Some(header_rest) = line.strip_prefix("@@") {
             flush(&mut run, &mut runs);
             head_line = parse_hunk_new_start(header_rest).unwrap_or(0);
+            recognized_structure = true;
             continue;
         }
         if line.starts_with('\\') {
@@ -85,7 +97,7 @@ fn parse_diff_hunks(diff_text: &str) -> Vec<DiffHunkRun> {
         }
     }
     flush(&mut run, &mut runs);
-    runs
+    ParsedDiff { runs, recognized_structure }
 }
 
 /// From a hunk header body ` -a,b +c,d @@ ...`, return the new-file start line
@@ -203,19 +215,21 @@ pub(crate) fn emit_changes_from_diff(
     let known_files: std::collections::HashSet<&str> =
         files.iter().filter_map(|file| file["file_id"].as_str()).collect();
 
-    let hunks = parse_diff_hunks(diff_text);
-    if !diff_text.trim().is_empty() && hunks.is_empty() {
+    let parsed = parse_diff_hunks(diff_text);
+    if !diff_text.trim().is_empty() && !parsed.recognized_structure {
         // Supplied-but-unparseable input: label it so no consumer reads the
-        // empty `changes[]` as "nothing changed" (#17248).
+        // empty `changes[]` as "nothing changed" (#17248). A valid
+        // deletion-only diff has recognized structure with zero runs and
+        // must NOT land here.
         limitations.push(json!({
             "limitation_id": "diff-unparseable",
             "kind": "unparseable_diff",
-            "message": "a diff was supplied but yielded zero unified hunks (expected `+++ b/<path>` file markers); `changes[]` means \"not analyzed\", not \"nothing changed\".",
+            "message": "a diff was supplied but no unified-diff structure was recognized (expected `+++ b/<path>` file markers or `@@` hunk headers); `changes[]` means \"not analyzed\", not \"nothing changed\".",
             "evidence_refs": [],
         }));
     }
 
-    for hunk in &hunks {
+    for hunk in &parsed.runs {
         // git diff paths are repo-root-relative; file_ids are root-relative.
         let rel_path = strip_root_prefix(&hunk.file_path, root);
         let file_id = format!("file:{rel_path}");
@@ -609,6 +623,22 @@ mod tests {
     }
 
     #[test]
+    fn emit_changes_from_diff_deletion_only_diff_is_not_unparseable() {
+        // A valid deletion-only diff has recognized structure with zero
+        // added-line runs: analyzed (nothing attributable), never labeled
+        // `diff-unparseable` (#17266 review).
+        let files = vec![json!({ "file_id": "file:lib/My/App.pm" })];
+        let owners: Vec<Value> = Vec::new();
+        let diff = "+++ b/lib/My/App.pm\n@@ -5,2 +5,1 @@\n sub discount {\n-    return $x;\n";
+        let (changes, limitations) = emit_changes_from_diff(diff, ".", &files, &owners);
+        assert!(changes.is_empty(), "deletion-only → no change facts");
+        assert!(
+            !limitations.iter().any(|l| l["limitation_id"] == "diff-unparseable"),
+            "valid deletion-only diff must not be labeled unparseable"
+        );
+    }
+
+    #[test]
     fn emit_changes_from_diff_is_deterministic_and_stable_across_reordering() {
         let (files, owners) = app_files_and_owners();
         let hunk_a = "@@ -5,2 +5,3 @@\n sub discount {\n+    return 1;\n";
@@ -726,7 +756,7 @@ mod tests {
         // preceding line; it must not advance the head-file cursor.
         let with_marker =
             "+++ b/f.pm\n@@ -5,1 +5,2 @@\n-old\n\\ No newline at end of file\n+new1\n+new2\n";
-        let hunks = parse_diff_hunks(with_marker);
+        let hunks = parse_diff_hunks(with_marker).runs;
         assert_eq!(hunks.len(), 1, "one added-line run");
         // `+5` → 0-based 4; new1/new2 land at head lines 4 and 5, unshifted.
         assert_eq!(hunks[0].start_line, 4, "marker must not shift the head cursor");
