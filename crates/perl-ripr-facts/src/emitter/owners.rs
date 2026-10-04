@@ -93,16 +93,27 @@ pub(crate) fn emit_files_and_owners(
         match parsed {
             Ok(ast) => {
                 // Error recovery succeeded, so the owners below are real — but
-                // silent recovery contradicts `--check`, which FAILs these
-                // files. Name the condition (blocking vs advisory partition
-                // mirrors `cli.rs`). Hard `Err` keeps the `parse-failed`
+                // silent recovery contradicts `--check`, which FAILs files
+                // with blocking diagnostics. Advisory-only files PASS
+                // `--check` (`cli.rs`: `failed = fatal || !blocking.is_empty()`),
+                // so they get their own limitation that never claims failure
+                // or syntax recovery. Hard `Err` keeps the `parse-failed`
                 // path untouched below.
-                if blocking_errors + advisory_errors > 0 {
+                if blocking_errors > 0 {
                     limitations.push(json!({
                         "limitation_id": format!("parse-recovered:{file_id}"),
                         "kind": "recovered_parse_errors",
                         "message": format!(
                             "parsed `{relative_path}` with error recovery ({blocking_errors} blocking, {advisory_errors} advisory); owners below come from the recovered tree and `--check` FAILs this file"
+                        ),
+                        "evidence_refs": [file_id.clone()],
+                    }));
+                } else if advisory_errors > 0 {
+                    limitations.push(json!({
+                        "limitation_id": format!("parse-advisories:{file_id}"),
+                        "kind": "advisory_diagnostics",
+                        "message": format!(
+                            "parsed `{relative_path}` cleanly with {advisory_errors} advisory diagnostic(s); owners below come from the clean tree and `--check` passes this file with advisories"
                         ),
                         "evidence_refs": [file_id.clone()],
                     }));

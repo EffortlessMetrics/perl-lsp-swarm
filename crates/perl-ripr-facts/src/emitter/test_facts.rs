@@ -115,13 +115,24 @@ pub(crate) fn emit_tests_and_oracles(
 
         // The `Err` arm above `continue`s, so reaching here means recovery
         // succeeded — but silent recovery contradicts `--check`, which FAILs
-        // these files. Name the condition (partition mirrors `cli.rs`).
-        if blocking_errors + advisory_errors > 0 {
+        // files with blocking diagnostics. Advisory-only files PASS `--check`
+        // (`cli.rs`: `failed = fatal || !blocking.is_empty()`), so they get
+        // their own limitation that never claims failure or syntax recovery.
+        if blocking_errors > 0 {
             limitations.push(json!({
                 "limitation_id": format!("test-parse-recovered:{file_id}"),
                 "kind": "recovered_parse_errors",
                 "message": format!(
                     "parsed test file `{relative_path}` with error recovery ({blocking_errors} blocking, {advisory_errors} advisory); test/oracle facts below come from the recovered tree and `--check` FAILs this file"
+                ),
+                "evidence_refs": [file_id.clone()],
+            }));
+        } else if advisory_errors > 0 {
+            limitations.push(json!({
+                "limitation_id": format!("test-parse-advisories:{file_id}"),
+                "kind": "advisory_diagnostics",
+                "message": format!(
+                    "parsed test file `{relative_path}` cleanly with {advisory_errors} advisory diagnostic(s); test/oracle facts below come from the clean tree and `--check` passes this file with advisories"
                 ),
                 "evidence_refs": [file_id.clone()],
             }));

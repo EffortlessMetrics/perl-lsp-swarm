@@ -24,6 +24,15 @@ const BROKEN_T: &str =
 
 const CLEAN_PM: &str = "package Clean;\nsub greet { return 'hi'; }\n1;\n";
 
+/// Advisory-only fixtures: the nested-quantifier `qr/^(a+)+b$/` parses `Ok`
+/// with one `Advisory` diagnostic and zero blocking errors (verified by probe
+/// against `Parser::errors()` + `blocks_clean_parse`), so `--check` PASSES
+/// these files (`cli.rs`: `failed = fatal || !blocking.is_empty()`).
+const ADVISORY_PM: &str =
+    "package Advisory;\nmy $re = qr/^(a+)+b$/;\nsub check { return $_[0] =~ $re; }\n1;\n";
+const ADVISORY_T: &str =
+    "use Test::More;\nmy $re = qr/^(a+)+b$/;\nok('aab' =~ $re, 'matches');\ndone_testing();\n";
+
 fn build_packet(root: &str) -> serde_json::Value {
     must(build_ripr_facts_packet(&RiprFactsRequest {
         schema: "ripr-perl-facts-v1",
@@ -81,6 +90,40 @@ fn recovered_parse_errors_are_limited_not_silent() {
     assert!(
         !must_some(packet["tests"].as_array()).is_empty(),
         "recovered tree must still yield test facts"
+    );
+}
+
+#[test]
+fn advisory_only_files_carry_advisories_limitation_not_recovered() {
+    let root = fresh_root("advisory");
+    stage_file(&root, "lib/Advisory.pm", ADVISORY_PM);
+    stage_file(&root, "t/advisory.t", ADVISORY_T);
+    let packet = build_packet(&root);
+    let _ = std::fs::remove_dir_all(&root);
+
+    let ids = limitation_ids(&packet);
+    assert!(
+        ids.iter().any(|id| id == "parse-advisories:file:lib/Advisory.pm"),
+        "advisory-only .pm must surface parse-advisories; got {ids:?}"
+    );
+    assert!(
+        ids.iter().any(|id| id == "test-parse-advisories:file:t/advisory.t"),
+        "advisory-only .t must surface test-parse-advisories; got {ids:?}"
+    );
+    assert!(
+        ids.iter()
+            .all(|id| !id.starts_with("parse-recovered:")
+                && !id.starts_with("test-parse-recovered:")),
+        "advisory-only files PASS --check, so no recovered limitation may fire; got {ids:?}"
+    );
+    // No recovery happened: facts still emitted from the clean tree.
+    assert!(
+        !must_some(packet["owners"].as_array()).is_empty(),
+        "clean tree must still yield owner facts"
+    );
+    assert!(
+        !must_some(packet["tests"].as_array()).is_empty(),
+        "clean tree must still yield test facts"
     );
 }
 
