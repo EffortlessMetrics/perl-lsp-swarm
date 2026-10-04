@@ -37,7 +37,15 @@ PACKAGE_BLOCK = "package Caller { Other::compute_0(); }\n"
 QUALIFIED_ALIAS = "package Caller;\n*Other::compute_0 = sub { return 2; };\nprint Other::compute_0();\n"
 CONSTANT_VALUE = "package Caller;\nuse constant VALUE => Other::compute_0();\nprint Caller::VALUE();\nprint VALUE();\n"
 LABEL_CALL = "package Caller;\ngoto MARK;\nMARK: print Other::compute_0();\n"
+ARITHMETIC_CALLS = """package Caller;
+MULTIPLY: 2 * Other::compute_0();
+ADJACENT_MULTIPLY: 2*Other::compute_0();
+MODULO: 2 % Other::compute_0();
+ADJACENT_MODULO: 2%Other::compute_0();
+"""
+ARITHMETIC_CASES = ("multiply", "adjacent_multiply", "modulo", "adjacent_modulo")
 FORMAT_CALL = "package Caller;\nformat REPORT =\n@<<<<\nOther::compute_0()\n.\n"
+QUALIFIED_FORMAT_CALL = FORMAT_CALL.replace("format REPORT", "format Other::REPORT")
 MOO_CALL = "package Caller;\nuse Moo;\nhas 'value' => (is => 'ro', reader => undef, default => sub { Other::compute_0(); });\nour $kept = 7;\n$Caller::kept;\n$kept;\n"
 SAME_NAME_PACKAGE = "package Other::compute_0 { Other::compute_0(); }\n"
 REQUEST_SECONDS = 5
@@ -118,6 +126,18 @@ def assertions(report: dict, caller: Path, target: Path) -> dict[str, bool]:
             and observations["qualified_call_same_name_package"] in (None, [])
         ),
         "same_name_package_declaration_retained": at_declaration(observations.get("same_name_package_declaration_control"), caller, 0),
+        **{f"{case}_call_never_returns_containing_label": (
+            f"qualified_{case}_call" in observations
+            and observations[f"qualified_{case}_call"] in (None, [])
+        ) for case in ARITHMETIC_CASES},
+        "qualified_format_value_never_returns_containing_format": (
+            "qualified_inside_qualified_format_value" in observations
+            and observations["qualified_inside_qualified_format_value"] in (None, [])
+        ),
+        "qualified_format_declaration_navigation_retained": any(
+            at_declaration(observations.get("qualified_format_declaration_control"), caller, 1, end_line)
+            for end_line in (1, 4, 5)
+        ),
         "utf16_negotiated": report.get("position_encoding") == "utf-16",
         "server_clean_exit": report.get("exit") == 0 and report.get("cleanup") == "protocol_exit_reaped",
         "binary_unchanged": (
@@ -346,7 +366,8 @@ def run_probe(binary: Path, fixture: Path, report: dict):
         report["fixture"]["open_buffer_variants"] = [
             {"version": version, "sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(), "text": text}
             for version, text in ((2, PACKAGE_BLOCK), (3, QUALIFIED_ALIAS), (4, CONSTANT_VALUE),
-                                  (5, LABEL_CALL), (6, FORMAT_CALL), (7, MOO_CALL), (8, SAME_NAME_PACKAGE))
+                                  (5, LABEL_CALL), (6, FORMAT_CALL), (7, MOO_CALL), (8, SAME_NAME_PACKAGE),
+                                  (9, ARITHMETIC_CALLS), (10, QUALIFIED_FORMAT_CALL))
         ]
         one_shot([perl, "-c", "-e", PACKAGE_BLOCK], app, environment, report)
         session.notify("textDocument/didChange", {"textDocument": {"uri": caller.as_uri(), "version": 2},
@@ -428,6 +449,29 @@ def run_probe(binary: Path, fixture: Path, report: dict):
         report["observations"]["same_name_package_declaration_control"] = session.request("textDocument/definition", {
             "textDocument": {"uri": caller.as_uri()},
             "position": {"line": 0, "character": SAME_NAME_PACKAGE.index("compute_0") + 2}})
+        arithmetic_oracle = one_shot([perl, "-e",
+            "BEGIN { *Other::compute_0 = sub { 3 }; }\n" + ARITHMETIC_CALLS
+            + "print qq{operator-ok\\n};\n"], app, environment, report)
+        if arithmetic_oracle["stdout"].splitlines() != ["operator-ok"]:
+            raise ValueError(f"independent arithmetic/call role binding failed: {arithmetic_oracle}")
+        session.notify("textDocument/didChange", {"textDocument": {"uri": caller.as_uri(), "version": 9},
+                       "contentChanges": [{"text": ARITHMETIC_CALLS}]})
+        for line, case in enumerate(ARITHMETIC_CASES, 1):
+            report["observations"][f"qualified_{case}_call"] = session.request_after_edit("textDocument/definition", {
+                "textDocument": {"uri": caller.as_uri()},
+                "position": {"line": line, "character": ARITHMETIC_CALLS.splitlines()[line].index("compute_0") + 2}})
+        qualified_format_oracle = one_shot([perl, "-I../lib", "-MScale24::Mod00", "-e",
+            "BEGIN { *Other::compute_0 = \\&Scale24::Mod00::compute_0; }\n" + QUALIFIED_FORMAT_CALL
+            + "$~ = 'Other::REPORT'; write;\n"], app, environment, report)
+        if qualified_format_oracle["stdout"].splitlines() != ["targe"]:
+            raise ValueError(f"independent qualified format binding failed: {qualified_format_oracle}")
+        session.notify("textDocument/didChange", {"textDocument": {"uri": caller.as_uri(), "version": 10},
+                       "contentChanges": [{"text": QUALIFIED_FORMAT_CALL}]})
+        report["observations"]["qualified_inside_qualified_format_value"] = session.request_after_edit("textDocument/definition", {
+            "textDocument": {"uri": caller.as_uri()}, "position": {"line": 3, "character": 9}})
+        report["observations"]["qualified_format_declaration_control"] = session.request("textDocument/definition", {
+            "textDocument": {"uri": caller.as_uri()},
+            "position": {"line": 1, "character": QUALIFIED_FORMAT_CALL.splitlines()[1].index("REPORT") + 2}})
     except Exception as error:
         report["instrument_failure"] = repr(error)
     finally:

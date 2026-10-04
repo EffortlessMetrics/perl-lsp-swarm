@@ -47,7 +47,10 @@ def successful_report():
                              "qualified_variable_control": location(CALLER_PATH, 3),
                              "bare_variable_control": location(CALLER_PATH, 3),
                              "qualified_call_same_name_package": [],
-                             "same_name_package_declaration_control": location(CALLER_PATH, 0)},
+                             "same_name_package_declaration_control": location(CALLER_PATH, 0),
+                             **{f"qualified_{case}_call": [] for case in PROBE.ARITHMETIC_CASES},
+                             "qualified_inside_qualified_format_value": [],
+                             "qualified_format_declaration_control": format_location()},
             "position_encoding": "utf-16", "exit": 0, "cleanup": "protocol_exit_reaped",
             "binary_sha256_before": "a" * 64, "binary_sha256_after": "a" * 64}
 
@@ -88,6 +91,31 @@ class OracleTests(unittest.TestCase):
         self.assertFalse(outcomes["qualified_variable_navigation_retained"])
         self.assertFalse(outcomes["bare_variable_navigation_retained"])
         self.assertFalse(outcomes["same_name_package_declaration_retained"])
+        self.assertFalse(outcomes["qualified_format_declaration_navigation_retained"])
+
+    def test_arithmetic_operators_cannot_be_variable_sigils_or_borrow_labels(self):
+        for line, case in enumerate(PROBE.ARITHMETIC_CASES, 1):
+            report = successful_report()
+            key = f"qualified_{case}_call"
+            outcome = f"{case}_call_never_returns_containing_label"
+            report["observations"][key] = location(CALLER_PATH, line)
+            outcomes = self.outcomes(report)
+            self.assertFalse(outcomes.pop(outcome))
+            self.assertTrue(all(outcomes.values()))
+            del report["observations"][key]
+            self.assertFalse(self.outcomes(report)[outcome])
+
+    def test_qualified_format_declaration_retained_without_borrowing_value_body(self):
+        report = successful_report()
+        report["observations"]["qualified_inside_qualified_format_value"] = format_location()
+        outcomes = self.outcomes(report)
+        self.assertFalse(outcomes.pop("qualified_format_value_never_returns_containing_format"))
+        self.assertTrue(all(outcomes.values()))
+        del report["observations"]["qualified_inside_qualified_format_value"]
+        self.assertFalse(self.outcomes(report)["qualified_format_value_never_returns_containing_format"])
+        report = successful_report()
+        report["observations"]["qualified_format_declaration_control"] = []
+        self.assertFalse(self.outcomes(report)["qualified_format_declaration_navigation_retained"])
 
     def test_same_name_package_refused_at_call_and_retained_at_declaration(self):
         report = successful_report()
@@ -229,6 +257,11 @@ class OracleTests(unittest.TestCase):
         self.assertEqual(moo_lines[5][3], "p")
         self.assertEqual(PROBE.SAME_NAME_PACKAGE[PROBE.SAME_NAME_PACKAGE.rindex("compute_0") + 2], "m")
         self.assertEqual(PROBE.SAME_NAME_PACKAGE[PROBE.SAME_NAME_PACKAGE.index("compute_0") + 2], "m")
+        for line in PROBE.ARITHMETIC_CALLS.splitlines()[1:]:
+            self.assertEqual(line[line.index("compute_0") + 2], "m")
+        self.assertEqual(PROBE.QUALIFIED_FORMAT_CALL.splitlines()[3][9], "m")
+        line = PROBE.QUALIFIED_FORMAT_CALL.splitlines()[1]
+        self.assertEqual(line[line.index("REPORT") + 2], "P")
 
 
 class WorkflowTests(unittest.TestCase):

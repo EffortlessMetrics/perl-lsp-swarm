@@ -1391,23 +1391,29 @@ fn same_file_definition_matches_qualification(
             });
             let before =
                 matched.as_ref().map(|matched| text[..line_start + matched.start()].trim_end());
+            let is_call_key = symbol_key.as_ref().is_some_and(|key| {
+                key.kind == crate::workspace_index::SymKind::Sub
+                    && key.sigil.is_none()
+                    && key.pkg.as_ref() == package.as_str()
+                    && key.name.as_ref() == name.as_str()
+            });
             let is_variable_at_cursor = symbol_key.as_ref().is_some_and(|key| {
                 key.kind == crate::workspace_index::SymKind::Var && key.sigil.is_some()
-            }) || before
-                .is_some_and(|before| before.ends_with(['$', '@', '%', '*']));
+            }) || (!is_call_key
+                && matched.as_ref().is_some_and(|matched| {
+                    // '*' and '%' also spell binary operators. Their variable
+                    // role needs a canonical Var key; adjacency alone is not proof.
+                    text[..line_start + matched.start()].ends_with(['$', '@'])
+                }));
             // Some expression bodies (notably Use and Format) are raw tokens,
             // without a callable AST key. Recognize their explicit call spelling
             // too, while retaining canonical/sigiled variable occurrences.
             let is_call_at_cursor = !is_variable_at_cursor
-                && (symbol_key.as_ref().is_some_and(|key| {
-                    key.kind == crate::workspace_index::SymKind::Sub
-                        && key.sigil.is_none()
-                        && key.pkg.as_ref() == package.as_str()
-                        && key.name.as_ref() == name.as_str()
-                }) || matched.as_ref().is_some_and(|matched| {
-                    before.is_some_and(|before| before.ends_with('&'))
-                        || text[line_start + matched.end()..].trim_start().starts_with('(')
-                }));
+                && (is_call_key
+                    || matched.as_ref().is_some_and(|matched| {
+                        before.is_some_and(|before| before.ends_with('&'))
+                            || text[line_start + matched.end()..].trim_start().starts_with('(')
+                    }));
             if is_call_at_cursor && !is_callable {
                 return false;
             }
@@ -1416,10 +1422,27 @@ fn same_file_definition_matches_qualification(
             }
             // Even an opaque occurrence must agree with the complete identity;
             // lack of a callable AST key does not authorize another container.
+            // Format metadata currently prefixes even an already-qualified
+            // declaration name. Its actual AST name span still owns navigation
+            // at that declaration; the surrounding value body does not.
+            let is_format_declaration = !is_call_at_cursor
+                && definition.kind == crate::symbol::SymbolKind::Format
+                && definition.name == qualified_name
+                && crate::declaration::find_node_at_offset(ast, offset).is_some_and(|node| {
+                    matches!(
+                        &node.kind,
+                        crate::ast::NodeKind::Format { name, name_span: Some(span), .. }
+                            if name == &qualified_name
+                                && span.start <= offset && offset < span.end
+                                && node.location.start == definition.location.start
+                                && node.location.end == definition.location.end
+                    )
+                });
             // SUPER names an inheritance lookup, not a literal package. Its
             // resolution belongs to the earlier parent-chain path.
             (is_callable && (package == "SUPER" || package.ends_with("::SUPER")))
                 || definition.qualified_name == qualified_name
+                || is_format_declaration
         }
         _ => true,
     }
@@ -3602,10 +3625,55 @@ mod tests {
                 "MARK",
             ),
             (
+                "label-multiply",
+                "package Caller;\ngoto MARK;\nMARK: 2 * Other::compute_0();\n",
+                SymbolKind::Label,
+                "MARK",
+                2,
+                2,
+                "MARK",
+            ),
+            (
+                "label-adjacent-multiply",
+                "package Caller;\ngoto MARK;\nMARK: 2*Other::compute_0();\n",
+                SymbolKind::Label,
+                "MARK",
+                2,
+                2,
+                "MARK",
+            ),
+            (
+                "label-modulo",
+                "package Caller;\ngoto MARK;\nMARK: 2 % Other::compute_0();\n",
+                SymbolKind::Label,
+                "MARK",
+                2,
+                2,
+                "MARK",
+            ),
+            (
+                "label-adjacent-modulo",
+                "package Caller;\ngoto MARK;\nMARK: 2%Other::compute_0();\n",
+                SymbolKind::Label,
+                "MARK",
+                2,
+                2,
+                "MARK",
+            ),
+            (
                 "format",
                 "package Caller;\nformat REPORT =\n@<<<<\nOther::compute_0()\n.\n",
                 SymbolKind::Format,
                 "Caller::REPORT",
+                3,
+                1,
+                "REPORT",
+            ),
+            (
+                "format-qualified-declaration",
+                "package Caller;\nformat Other::REPORT =\n@<<<<\nOther::compute_0()\n.\n",
+                SymbolKind::Format,
+                "Caller::Other::REPORT",
                 3,
                 1,
                 "REPORT",
@@ -3675,7 +3743,7 @@ mod tests {
             // The retained historical server already refuses format value calls.
             // Challenge its source-built Format metadata too, without assuming
             // this container is reached in every parser/provider mode.
-            if case != "format" {
+            if !case.starts_with("format") {
                 let actual = model.definition_at(offset).ok_or("terminal container at call")?;
                 assert_eq!(actual.kind, expected_kind, "{case}");
                 assert_eq!(actual.qualified_name, expected_name, "{case}");
@@ -3685,18 +3753,36 @@ mod tests {
                 !same_file_definition_matches_qualification(caller, offset, candidate, &ast),
                 "{case}"
             );
-            if case == "format" {
-                let parenless = caller.replace("Other::compute_0()", "Other::compute_0");
-                let parenless_ast = Parser::new(&parenless).parse()?;
-                assert!(
-                    !same_file_definition_matches_qualification(
-                        &parenless,
-                        offset,
-                        candidate,
-                        &parenless_ast
-                    ),
-                    "opaque parenthesis-free values cannot borrow a containing Format either"
-                );
+            if case.starts_with("format") {
+                for expression in [
+                    "Other::compute_0",
+                    "2 * Other::compute_0()",
+                    "2*Other::compute_0()",
+                    "2 % Other::compute_0()",
+                    "2%Other::compute_0()",
+                ] {
+                    let variant = caller.replace("Other::compute_0()", expression);
+                    let variant_ast = Parser::new(&variant).parse()?;
+                    let variant_model =
+                        crate::semantic::SemanticModel::build(&variant_ast, &variant);
+                    let variant_candidate = variant_model
+                        .symbol_table()
+                        .symbols
+                        .values()
+                        .flatten()
+                        .find(|symbol| symbol.kind == SymbolKind::Format)
+                        .ok_or("source-built variant Format")?;
+                    let variant_offset = variant.find("Other::compute_0").ok_or("format call")? + 9;
+                    assert!(
+                        !same_file_definition_matches_qualification(
+                            &variant,
+                            variant_offset,
+                            variant_candidate,
+                            &variant_ast
+                        ),
+                        "opaque format values cannot borrow a containing Format: {expression}"
+                    );
+                }
             }
 
             let declaration_character = caller
@@ -3786,7 +3872,7 @@ mod tests {
                     declaration_line,
                     declaration_character,
                 )?;
-                if case == "format" {
+                if case.starts_with("format") {
                     let locations = declaration
                         .as_ref()
                         .and_then(Value::as_array)
@@ -3821,7 +3907,7 @@ mod tests {
                             );
                         }
                     }
-                    "label" => assert_qualified_fallback_location(
+                    _ if case.starts_with("label") => assert_qualified_fallback_location(
                         &qualified_fallback_request(&server, &caller_uri, 1, 7)?,
                         &caller_uri,
                         2,
