@@ -116,10 +116,20 @@ jobs:
           fi
           gate_head=$(grep -oE '^head_sha=[0-9a-f]{40}$' "${classification_file}" | cut -d= -f2 || true)
           gate_run_id=$(grep -oE '^run_id=[0-9]+$' "${classification_file}" | cut -d= -f2 || true)
+          gate_attempt=$(grep -oE '^run_attempt=[0-9]+$' "${classification_file}" | cut -d= -f2 || true)
           lane_name=$(grep -oE '^lane_name=.+$' "${classification_file}" | cut -d= -f2- || true)
           lane_job_id=$(grep -oE '^lane_job_id=[0-9]+$' "${classification_file}" | cut -d= -f2 || true)
 
-          # Sanity: the artifact must describe THIS run. Compare the recorded
+          # Sanity: the artifact must describe THIS run. The evaluated SHA
+          # must be present as an exact 40-hex value, but the API's run/job
+          # head_sha is the PR branch tip, not the evaluated PR merge ref.
+          # Never treat those distinct SHA domains as interchangeable.
+          if [ -z "${gate_head}" ]; then
+            echo "::notice::classification lacks a valid evaluated SHA — no automatic retry."
+            summary "decision: \`skip (missing evaluated SHA)\`"
+            exit 0
+          fi
+          # Compare the recorded
           # run id — not the head SHA: for pull_request runs the gate's
           # GITHUB_SHA is the evaluated refs/pull/<n>/merge commit while
           # workflow_run.head_sha is the PR branch tip, so a head comparison
@@ -130,6 +140,38 @@ jobs:
           if [ -z "${gate_run_id}" ] || [ "${gate_run_id}" != "${RUN_ID}" ]; then
             echo "::notice::classification run id (${gate_run_id:-invalid}) does not match event run ${RUN_ID} — no automatic retry."
             summary "decision: \`skip (run-id mismatch between classification and event)\`"
+            exit 0
+          fi
+          # Artifacts are listed for the whole run, across all attempts. A
+          # prior attempt's otherwise valid infra verdict cannot authorize a
+          # retry of the current attempt (#16980).
+          if [ -z "${gate_attempt}" ] || [ "${gate_attempt}" != "${RUN_ATTEMPT}" ]; then
+            echo "::notice::classification attempt (${gate_attempt:-invalid}) does not match event attempt ${RUN_ATTEMPT} — no automatic retry."
+            summary "decision: \`skip (classification attempt mismatch)\`"
+            exit 0
+          fi
+          if [ -z "${lane_job_id}" ]; then
+            echo "::notice::classification lacks a numeric lane job id — no automatic retry."
+            summary "decision: \`skip (missing lane job identity)\`"
+            exit 0
+          fi
+          # One listing call projects both identity fields: jq emits the id and
+          # name on a single tab-separated line, and the id is digits-only so
+          # the first tab is always the separator. A second identical request
+          # for the same payload would double the API surface for no evidence
+          # gain.
+          current_lane_job=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}/attempts/${RUN_ATTEMPT}/jobs?per_page=100" \
+            --jq ".jobs[] | select(.id == ${lane_job_id}) | \"\(.id)\t\(.name)\"" | head -1)
+          current_lane_job_id="${current_lane_job%%$'\t'*}"
+          current_lane_job_name="${current_lane_job#*$'\t'}"
+          if [ "${current_lane_job_id}" != "${lane_job_id}" ]; then
+            echo "::notice::classification lane job ${lane_job_id} is not in current run attempt ${RUN_ATTEMPT} — no automatic retry."
+            summary "decision: \`skip (lane job attempt mismatch)\`"
+            exit 0
+          fi
+          if [ "${current_lane_job_name}" != "${lane_name}" ]; then
+            echo "::notice::classification lane name does not match current run attempt ${RUN_ATTEMPT} — no automatic retry."
+            summary "decision: \`skip (lane job name mismatch)\`"
             exit 0
           fi
 

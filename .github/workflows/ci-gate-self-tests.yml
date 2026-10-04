@@ -104,6 +104,10 @@ on:
       - 'scripts/ci/classify-ripr-lane-termination'
       - 'scripts/ci/test_ripr_cache_authority_15055.py'
       - 'scripts/tests/test-classify-ripr-lane-termination.sh'
+      # Governed RIPR proof entry point (#13768): the adapter and its
+      # recording controls gate each other, so both halves re-run here.
+      - '.ci/ripr-proof.sh'
+      - 'scripts/ci/test_governed_ripr_proof.py'
       # Toolchain guard for bash entrypoints (issue #12593): the coverage
       # consistency test scans every cargo-invoking scripts/*.sh, so any
       # script change re-proves that none of them dodges the guard.
@@ -624,6 +628,9 @@ jobs:
 
       - name: Run RIPR cache-writer authority self-test
         run: python3 -m unittest scripts/ci/test_ripr_cache_authority_15055.py
+
+      - name: Run governed RIPR proof self-test
+        run: python3 -m unittest scripts.ci.test_governed_ripr_proof
 
       - name: Summary
         if: always()

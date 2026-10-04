@@ -1,0 +1,18 @@
+{
+  "schema_version": "0.1",
+  "tool": "ripr",
+  "status": "advisory",
+  "base": "origin/main",
+  "base_sha": "e1-base-sha-0000000000000000000000000000000000000001",
+  "head": "HEAD",
+  "head_sha": "E1_HEAD_SHA",
+  "summary": {
+    "comments": 0,
+    "summary_only": 0,
+    "suppressed": 0
+  },
+  "comments": [],
+  "summary_only": [],
+  "suppressed": [],
+  "warnings": []
+}

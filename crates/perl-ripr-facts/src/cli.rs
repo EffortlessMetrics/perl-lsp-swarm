@@ -1,6 +1,6 @@
 //! The `perl-ripr-facts` standalone binary's `ripr-facts` subcommand
 //! ([`run_cli`]) and the thin `run_ripr_facts`/`run_ripr_facts_with_diff`
-//! wrapper the `perl-lsp` / `perllsp` `ripr-facts` subcommand calls: argv
+//! wrapper the `perl-lsp` / `perllsp` `--ripr-facts` flag calls: argv
 //! parsing, output-path validation, writing the packet to disk, and mapping
 //! to a process exit code. All the actual fact production happens in
 //! [`crate::packet::build_ripr_facts_packet`].

@@ -1934,6 +1934,7 @@ dependencies = [
  "perl-tdd-support",
  "perl-test-facts",
  "perl-test-must",
+ "perl-uri",
  "perl-workspace",
  "proptest",
  "regex",
@@ -1959,6 +1960,7 @@ version = "0.17.0"
 dependencies = [
  "anyhow",
  "chrono",
+ "perl-test-must",
  "regex",
  "serde",
  "serde_json",
@@ -2151,6 +2153,8 @@ dependencies = [
 name = "perl-ripr-facts"
 version = "0.17.0"
 dependencies = [
+ "criterion",
+ "jsonschema",
  "perl-parser-core",
  "perl-symbol",
  "perl-tdd-support",
