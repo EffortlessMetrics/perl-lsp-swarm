@@ -1421,11 +1421,14 @@ pub fn format_health_output(version: &str, use_color: bool) -> String {
 
 /// Format the `--info` output block.
 ///
-/// `version`, `exe_path` are supplied by the binary crate, as is the source
-/// revision — split into `revision_label` and `revision` because only the
-/// binary crate's build script knows whether the value is a tag, a commit, or
-/// neither. Passing the label in keeps this function from having to guess.
+/// `product_name`, `version`, `exe_path` are supplied by the binary crate, as
+/// is the source revision — split into `revision_label` and `revision` because
+/// only the binary crate's build script knows whether the value is a tag, a
+/// commit, or neither. Passing the label in keeps this function from having to
+/// guess. `product_name` is the invocation name the binary was run under, so
+/// `--info` self-identifies exactly like `--version` and `--help` do (#17163).
 pub fn format_info_output(
+    product_name: &str,
     version: &str,
     revision_label: &str,
     revision: &str,
@@ -1442,9 +1445,9 @@ pub fn format_info_output(
     let mut out = String::with_capacity(256);
 
     if use_color {
-        out.push_str(&format!("\x1b[1mperl-lsp\x1b[0m {version}\n"));
+        out.push_str(&format!("\x1b[1m{product_name}\x1b[0m {version}\n"));
     } else {
-        out.push_str(&format!("perl-lsp {version}\n"));
+        out.push_str(&format!("{product_name} {version}\n"));
     }
     out.push_str(&format!("{revision_label:<18}{revision}\n"));
     out.push_str("Parser:           perl-parser v3 (recursive descent)\n");
@@ -2064,6 +2067,7 @@ mod tests {
     #[test]
     fn info_output_contains_essential_fields() {
         let out = super::format_info_output(
+            "perl-lsp",
             "0.10.0",
             "Git tag:",
             "v0.10.0",
@@ -2084,6 +2088,7 @@ mod tests {
         // render whatever label the binary crate determined rather than
         // hard-coding "Git tag:" over a value that is not one.
         let out = super::format_info_output(
+            "perl-lsp",
             "0.17.0",
             "Git commit:",
             "ba92efb",
@@ -2103,6 +2108,7 @@ mod tests {
         // must not carry a percentage or a coverage/compliance claim.
         let profile = super::FeatureProfile::current();
         let out = super::format_info_output(
+            "perl-lsp",
             "0.17.0",
             "Git commit:",
             "9dfdd0b",
@@ -2153,6 +2159,7 @@ mod tests {
         // `Features: N/N active (100%)` compared one binding to itself, so it
         // could only ever print 100% regardless of what was advertised.
         let out = super::format_info_output(
+            "perl-lsp",
             "0.17.0",
             "Git commit:",
             "9dfdd0b",
@@ -2170,6 +2177,45 @@ mod tests {
         );
         assert!(line.contains("advertised"), "features line should say what it counts: {line:?}");
         Ok(())
+    }
+
+    #[test]
+    fn info_output_leads_with_the_caller_supplied_product_name() {
+        // #17163: the first line used to hard-code the crate name, so the same
+        // binary printed `perl-lsp 0.17.0` from `--info` while `--version`
+        // printed `perllsp 0.17.0`. The name must come from the invocation,
+        // like the version line already does.
+        let out = super::format_info_output(
+            "perllsp",
+            "0.17.0",
+            "Git commit:",
+            "9dfdd0b",
+            "/usr/bin/perllsp",
+            super::FeatureProfile::current(),
+            false,
+        );
+        assert!(out.starts_with("perllsp 0.17.0\n"), "got:\n{out}");
+        assert!(
+            !out.contains("perl-lsp"),
+            "supplied product name must reach the identity line; got:\n{out}"
+        );
+    }
+
+    #[test]
+    fn info_output_colors_wrap_the_supplied_product_name() {
+        let out = super::format_info_output(
+            "perllsp",
+            "0.17.0",
+            "Git commit:",
+            "9dfdd0b",
+            "/usr/bin/perllsp",
+            super::FeatureProfile::current(),
+            true,
+        );
+        assert!(
+            out.starts_with("\x1b[1mperllsp\x1b[0m 0.17.0\n"),
+            "color variant must bold the invocation name, not a hard-coded one; got:\n{out}"
+        );
     }
 
     // ── port_in_use_message ───────────────────────────────────────
