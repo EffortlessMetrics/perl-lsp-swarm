@@ -375,6 +375,12 @@ ANN_TIMEOUT_OTHER_LIMIT="${WORK}/ann-timeout-other-limit.json"
 cat >"${ANN_TIMEOUT_OTHER_LIMIT}" <<'EOF'
 [{"annotation_level":"failure","message":"The job has exceeded the maximum execution time of 3h0m0s"}]
 EOF
+# Multiline control: the exact timeout line embedded in a longer annotation
+# must not count — whole-message equality only (PR 16989 review).
+ANN_TIMEOUT_MULTILINE="${WORK}/ann-timeout-multiline.json"
+cat >"${ANN_TIMEOUT_MULTILINE}" <<'EOF'
+[{"annotation_level":"failure","message":"prefix line\nThe job has exceeded the maximum execution time of 2h15m0s\nsuffix line"}]
+EOF
 
 # Fixture: the lane job missing from the jobs listing (the API answers null
 # for an unmatched first() projection).
@@ -422,6 +428,10 @@ expect_eq "API configured timeout evidence counter is exact" \
   "1" "$(classify_api_field "${ANN_CONFIGURED_TIMEOUT}" "${STEPS_CANCELLED}" "" configured_timeout_matches)"
 expect_eq "API near-miss timeout duration does not infer the configured timeout" \
   "ripr-failure" "$(classify_api_field "${ANN_TIMEOUT_NEAR_MISS}" "${STEPS_CANCELLED}" "" classification)"
+expect_eq "API multiline annotation embedding the timeout line does not infer the configured timeout" \
+  "ripr-failure" "$(classify_api_field "${ANN_TIMEOUT_MULTILINE}" "${STEPS_CANCELLED}" "" classification)"
+expect_eq "API multiline timeout embedding keeps the exact counter at zero" \
+  "0" "$(classify_api_field "${ANN_TIMEOUT_MULTILINE}" "${STEPS_CANCELLED}" "" configured_timeout_matches)"
 expect_eq "API drift to a different configured limit degrades fail-closed, not to a timeout verdict" \
   "ripr-failure" "$(classify_api_field "${ANN_TIMEOUT_OTHER_LIMIT}" "${STEPS_CANCELLED}" "" classification)"
 expect_eq "API genuine gap receipt outranks configured timeout annotation" \

@@ -184,7 +184,11 @@ emit_api_verdict() {
         lost_hits=$(printf '%s\n' "$msgs" | grep -cE 'lost communication with the server' || true)
         # #16980: only the configured hosted job's exact platform annotation
         # distinguishes its 135-minute timeout from an unknown cancellation.
-        timeout_hits=$(printf '%s\n' "$msgs" | grep -cFx 'The job has exceeded the maximum execution time of 2h15m0s' || true)
+        # Whole-message equality in jq: the flattened $msgs text splits
+        # multiline annotations into lines, so grep -cFx would match one line
+        # inside a longer message instead of the whole .message string.
+        timeout_hits="$(jq -r '[.[]?.message // empty | select(. == "The job has exceeded the maximum execution time of 2h15m0s")] | length' "$ann_file" 2>/dev/null || true)"
+        case "$timeout_hits" in ''|*[!0-9]*) timeout_hits=0 ;; esac
       fi
     fi
     if [ -s "$steps_file" ] && jq -e 'type == "object"' "$steps_file" >/dev/null 2>&1; then
