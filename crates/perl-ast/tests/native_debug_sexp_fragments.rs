@@ -109,3 +109,51 @@ fn depth_rejection_preserves_node_limit_precedence_and_payload_work() {
         );
     }
 }
+
+#[test]
+fn depth_zero_leaf_completes_or_rejects_close_at_the_work_limit() {
+    let subject = node(NodeKind::Number { value: "42".into() });
+    for max_work in [None, Some(3), Some(2)] {
+        let mut out = FragmentWriter::default();
+        let result = subject.render_debug_sexp(
+            &mut out,
+            NativeDebugSexpLimits {
+                max_nodes: Some(1),
+                max_depth: Some(0),
+                max_work,
+                ..Default::default()
+            },
+        );
+        if max_work == Some(2) {
+            assert_eq!(out.0, ["(", "number", " ", "(", "value", " ", "42", ")"]);
+            assert_eq!(
+                result,
+                NativeDebugSexpResult::Truncated {
+                    reason: NativeDebugSexpTruncation::WorkLimit { limit: 2 },
+                    work: NativeDebugSexpWork {
+                        nodes_visited: 1,
+                        child_edges_visited: 0,
+                        max_depth: 0,
+                        bytes_written: "(number (value 42)".len(),
+                        work_units: 2,
+                    },
+                    omitted: NativeDebugSexpOmitted::Unknown,
+                }
+            );
+        } else {
+            assert_eq!(out.0, ["(", "number", " ", "(", "value", " ", "42", ")", ")"]);
+            assert_eq!(
+                result,
+                NativeDebugSexpResult::Complete {
+                    work: NativeDebugSexpWork {
+                        nodes_visited: 1,
+                        child_edges_visited: 0,
+                        max_depth: 0,
+                        bytes_written: "(number (value 42))".len(),
+                        work_units: 3,
+                    },
+                }
+            );
+        }
+    }
+}
