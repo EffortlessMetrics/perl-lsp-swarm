@@ -318,6 +318,22 @@ class ReconciliationTests(unittest.TestCase):
             adapter.write_new(self.api, path, {}, [])
         self.assertEqual(path.read_text(), "historical")
 
+    def test_failed_stream_construction_releases_transferred_descriptor(self):
+        destination = self.root / "failed-stream.json"
+        descriptors = []
+        def fail_stream(descriptor, *args, **kwargs):
+            descriptors.append(descriptor)
+            raise OSError("injected stream construction failure")
+        with patch.object(adapter.os, "fdopen", fail_stream), self.assertRaises(OSError):
+            adapter.write_new(self.api, destination, {}, [])
+        self.assertEqual(len(descriptors), 1)
+        with self.assertRaises(OSError):
+            os.fstat(descriptors[0])
+        # On Windows a leaked handle would also prevent this owned rename.
+        moved = self.root / "closed-stream.json"
+        destination.rename(moved)
+        moved.unlink()
+
     @unittest.skipUnless(os.name == "nt", "Windows junction discriminator")
     def test_junction_inserted_after_validation_cannot_redirect_creation(self):
         parent = self.root / "raced-output"

@@ -442,7 +442,12 @@ def exclusive_output(path):
             except BaseException:
                 close(handle)
                 raise
-            with os.fdopen(descriptor, "w", encoding="ascii", newline="\n") as output:
+            try:
+                output = os.fdopen(descriptor, "w", encoding="ascii", newline="\n")
+            except BaseException:
+                os.close(descriptor)
+                raise
+            with output:
                 yield output
         finally:
             close(parent)
@@ -459,7 +464,12 @@ def exclusive_output(path):
                 descriptors.append(parent)
             descriptor = os.open(path.name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
                                  0o600, dir_fd=parent)
-            with os.fdopen(descriptor, "w", encoding="ascii", newline="\n") as output:
+            try:
+                output = os.fdopen(descriptor, "w", encoding="ascii", newline="\n")
+            except BaseException:
+                os.close(descriptor)
+                raise
+            with output:
                 yield output
         finally:
             for descriptor in reversed(descriptors):
