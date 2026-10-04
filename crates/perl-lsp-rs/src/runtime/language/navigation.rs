@@ -1378,46 +1378,44 @@ fn same_file_definition_matches_qualification(
     match fqn_component_at_cursor(regex, line_text, offset.saturating_sub(line_start)) {
         Some(FqnCursorComponent::Final { package, name }) => {
             let qualified_name = format!("{package}::{name}");
-            let is_call_at_cursor = crate::declaration::symbol_at_cursor_with_source(
+            let symbol_key = crate::declaration::symbol_at_cursor_with_source(
                 ast,
                 offset,
                 crate::declaration::current_package_at(ast, offset),
                 text,
-            )
-            .is_some_and(|key| {
-                key.kind == crate::workspace_index::SymKind::Sub
-                    && key.sigil.is_none()
-                    && key.pkg.as_ref() == package.as_str()
-                    && key.name.as_ref() == name.as_str()
-            }) || regex.find_iter(line_text).any(|matched| {
-                if matched.as_str() != qualified_name.as_str()
-                    || offset < line_start + matched.start()
-                    || offset > line_start + matched.end()
-                {
-                    return false;
-                }
-                // Some expression bodies (notably Use and Format) are raw
-                // tokens, without a callable AST key. Recognize their explicit
-                // call spelling, while keeping sigiled variables as variables.
-                let before = text[..line_start + matched.start()].trim_end();
-                !before.ends_with(['$', '@', '%', '*'])
-                    && (before.ends_with('&')
-                        || text[line_start + matched.end()..].trim_start().starts_with('('))
+            );
+            let matched = regex.find_iter(line_text).find(|matched| {
+                matched.as_str() == qualified_name.as_str()
+                    && offset >= line_start + matched.start()
+                    && offset <= line_start + matched.end()
             });
+            let before =
+                matched.as_ref().map(|matched| text[..line_start + matched.start()].trim_end());
+            let is_variable_at_cursor = symbol_key.as_ref().is_some_and(|key| {
+                key.kind == crate::workspace_index::SymKind::Var && key.sigil.is_some()
+            }) || before
+                .is_some_and(|before| before.ends_with(['$', '@', '%', '*']));
+            // Some expression bodies (notably Use and Format) are raw tokens,
+            // without a callable AST key. Recognize their explicit call spelling
+            // too, while retaining canonical/sigiled variable occurrences.
+            let is_call_at_cursor = !is_variable_at_cursor
+                && (symbol_key.as_ref().is_some_and(|key| {
+                    key.kind == crate::workspace_index::SymKind::Sub
+                        && key.sigil.is_none()
+                        && key.pkg.as_ref() == package.as_str()
+                        && key.name.as_ref() == name.as_str()
+                }) || matched.as_ref().is_some_and(|matched| {
+                    before.is_some_and(|before| before.ends_with('&'))
+                        || text[line_start + matched.end()..].trim_start().starts_with('(')
+                }));
             if is_call_at_cursor && !is_callable {
                 return false;
             }
-            if !is_call_at_cursor
-                && !is_callable
-                && !matches!(
-                    definition.kind,
-                    crate::symbol::SymbolKind::Package
-                        | crate::symbol::SymbolKind::Class
-                        | crate::symbol::SymbolKind::Role
-                )
-            {
+            if is_variable_at_cursor {
                 return true;
             }
+            // Even an opaque occurrence must agree with the complete identity;
+            // lack of a callable AST key does not authorize another container.
             // SUPER names an inheritance lookup, not a literal package. Its
             // resolution belongs to the earlier parent-chain path.
             (is_callable && (package == "SUPER" || package.ends_with("::SUPER")))
@@ -3687,6 +3685,19 @@ mod tests {
                 !same_file_definition_matches_qualification(caller, offset, candidate, &ast),
                 "{case}"
             );
+            if case == "format" {
+                let parenless = caller.replace("Other::compute_0()", "Other::compute_0");
+                let parenless_ast = Parser::new(&parenless).parse()?;
+                assert!(
+                    !same_file_definition_matches_qualification(
+                        &parenless,
+                        offset,
+                        candidate,
+                        &parenless_ast
+                    ),
+                    "opaque parenthesis-free values cannot borrow a containing Format either"
+                );
+            }
 
             let declaration_character = caller
                 .lines()
