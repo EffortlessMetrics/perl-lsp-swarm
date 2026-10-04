@@ -242,15 +242,6 @@ pull request against swarm.
 Public install and release links above remain on `perl-lsp`; reaching the public source
 repository still does not by itself establish release or package-channel availability.
 
-The landed contributor-topology projection derives the development/publication identities
-from local product, sync, and release authorities. The bare command intentionally leaves
-live stage and channel status `NOT_PROVEN`; a captured `--observation` is required to
-project observed status:
-
-```bash
-cargo run --locked -p xtask --bin contributor-topology
-```
-
 Current routes:
 
 | Topic | Link |
