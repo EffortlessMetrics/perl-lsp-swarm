@@ -118,7 +118,7 @@ path = "scripts/ci/check-pr-review-convergence-core"
 status = "transitional"
 successor = "scripts/ci/check-pr-review-convergence"
 stale_marker = "CANONICAL review-convergence authority"
-notes = "Compatibility collector that still calls itself the canonical authority and still carries exact-head receipt terminology; consume only through the public semantic wrapper. Containment is not finished: scripts/pre-merge-check.sh still invokes the core directly, bypassing the wrapper. Issue #5778 closed as completed on 2026-08-14 without landing that containment, so this row names the wrapper rather than a closed issue, and the remaining work is residual #4555 work."
+notes = "Compatibility collector that still calls itself the canonical authority in its line-2 header; consume only through the public semantic wrapper. Containment is complete: scripts/pre-merge-check.sh sets NATIVE_CONVERGENCE to the wrapper (landed in 883bf27a21, 2026-08-16, after issue #5778 closed on 2026-08-14). The only remaining stale text is that header marker, captured by stale_marker above; no code repair is pending on this row."
 
 [[documents]]
 path = "docs/reference/ORCHESTRATION_DOCTRINE.md"

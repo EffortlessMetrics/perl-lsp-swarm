@@ -72,11 +72,13 @@ classified `transitional`, not silently treated as current:
 | --- | --- | --- |
 | `scripts/ci/check-pr-review-convergence-core` | `scripts/ci/check-pr-review-convergence` — consume the collector only through the public semantic wrapper | “CANONICAL review-convergence authority” |
 
-Containment there is genuinely unfinished: `scripts/pre-merge-check.sh` still invokes the
-core directly, bypassing the wrapper, and the core still carries exact-head receipt
-terminology. Issue #5778 closed as completed on 2026-08-14 without landing that
-containment, so this row names the wrapper rather than a closed issue, and the remaining
-work is residual #4555 work.
+Containment has landed: `scripts/pre-merge-check.sh` sets `NATIVE_CONVERGENCE` to the
+wrapper (`scripts/pre-merge-check.sh:19`) and the script contains no `core` reference;
+that landed in `883bf27a21` (2026-08-16), after issue #5778 closed as completed on
+2026-08-14. The only retired text left is the core's own line-2 header, which still
+declares it the “CANONICAL review-convergence authority” — exactly the `stale_marker`
+captured above. No code repair is pending on this row; only that header marker rewrite
+remains.
 
 Seven rows left this table because their replacements landed on `main` while this
 candidate was open. They are reclassified rather than kept pending:
