@@ -40,12 +40,32 @@ elif kind == 'merge_group':
     if event['merge_group']['head_sha'] != os.environ['GITHUB_SHA']:
         raise SystemExit('RIPR merge-group head differs from the evaluated checkout')
 elif kind in {'push', 'workflow_dispatch', 'schedule'}:
-    ref = event['repository']['default_branch']
-    if not re.fullmatch(r'[A-Za-z0-9._/-]+', ref) or '..' in ref:
+    repo = event.get('repository')
+    if not isinstance(repo, dict):
+        repo = {}
+    ref = repo.get('default_branch')
+    if not isinstance(ref, str) or subprocess.run(
+        ['git', 'check-ref-format', '--branch', ref],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    ).returncode != 0:
         raise SystemExit('invalid repository default branch')
-    base = subprocess.check_output(
-        ['git', 'rev-parse', '--verify', 'origin/' + ref + '^{commit}'], text=True
-    ).strip()
+    remote = 'refs/remotes/origin/' + ref
+    if subprocess.run(
+        ['git', 'show-ref', '--verify', '--quiet', remote],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    ).returncode != 0:
+        raise SystemExit(
+            'repository default branch ref is not reachable: origin/' + ref
+        )
+    try:
+        base = subprocess.check_output(
+            ['git', 'rev-parse', '--verify', remote + '^{commit}'], text=True,
+            stderr=subprocess.DEVNULL,
+        ).strip()
+    except subprocess.CalledProcessError:
+        raise SystemExit(
+            'repository default branch ref is not reachable: origin/' + ref
+        )
 else:
     raise SystemExit('unsupported RIPR proof event')
 for revision in (base, head):

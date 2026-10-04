@@ -14,6 +14,10 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 PROOF = ROOT / ".ci/ripr-proof.sh"
+GIT_LOCAL_ENV = subprocess.check_output(
+    ["git", "rev-parse", "--local-env-vars"], text=True).split()
+BASE_ENV = {k: v for k, v in os.environ.items() if k not in GIT_LOCAL_ENV}
+BASE_ENV.update(GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1")
 TOOL = r'''#!/usr/bin/env python3
 import json, os, pathlib, signal, sys
 args = sys.argv[1:]
@@ -103,7 +107,7 @@ class GovernedRiprProof(unittest.TestCase):
             "base": {"sha": self.base, "repo": {"full_name": "EffortlessMetrics/perl-lsp-swarm"}}, "head": {"sha": self.head, "repo": {
                 "full_name": "EffortlessMetrics/perl-lsp-swarm"}},
             "labels": [{"name": "needs review $(false)"}]}}
-        self.env = dict(os.environ, PATH=str(self.bin) + os.pathsep + os.environ["PATH"],
+        self.env = dict(BASE_ENV, PATH=str(self.bin) + os.pathsep + os.environ["PATH"],
                         GITHUB_WORKSPACE=str(self.repo), GITHUB_SHA=self.sha,
                         GITHUB_REPOSITORY="EffortlessMetrics/perl-lsp-swarm",
                         GITHUB_EVENT_NAME="pull_request", GITHUB_EVENT_PATH=str(self.event),
@@ -112,7 +116,8 @@ class GovernedRiprProof(unittest.TestCase):
 
     def git(self, *args):
         return subprocess.check_output(["git", "-C", str(self.repo), *args],
-                                       text=True, stderr=subprocess.DEVNULL).strip()
+                                       text=True, stderr=subprocess.DEVNULL,
+                                       env=BASE_ENV).strip()
 
     def commit(self, path, text):
         (self.repo / path).write_text(text)
@@ -354,6 +359,49 @@ class GovernedRiprProof(unittest.TestCase):
         self.payload['merge_group'] = {'base_sha': self.base, 'head_sha': self.head}
         result = self.run_proof(GITHUB_EVENT_NAME='merge_group')
         self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(self.commands.exists())
+
+    def test_non_pr_events_resolve_base_from_default_branch(self):
+        for event in ("push", "workflow_dispatch", "schedule"):
+            with self.subTest(event=event):
+                result = self.run_proof(GITHUB_EVENT_NAME=event)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                call = self.calls()[0]
+                self.assertEqual(call[call.index("--base") + 1], self.base)
+                self.assertEqual(call[call.index("--pr-head") + 1], "")
+                self.commands.unlink()
+                shutil.rmtree(self.artifact())
+                shutil.rmtree(self.repo / "target", ignore_errors=True)
+
+    def test_push_punctuation_branch_name_resolves(self):
+        branch = "release+hotfix"
+        self.git("update-ref", "refs/remotes/origin/" + branch, self.base)
+        self.payload["repository"]["default_branch"] = branch
+        result = self.run_proof(GITHUB_EVENT_NAME="push")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        call = self.calls()[0]
+        self.assertEqual(call[call.index("--base") + 1], self.base)
+
+    def test_push_invalid_default_branch_is_refused(self):
+        self.payload["repository"]["default_branch"] = "main..x"
+        result = self.run_proof(GITHUB_EVENT_NAME="push")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("invalid repository default branch", result.stderr)
+        self.assertFalse(self.commands.exists())
+
+    def test_push_missing_default_branch_is_refused(self):
+        del self.payload["repository"]["default_branch"]
+        result = self.run_proof(GITHUB_EVENT_NAME="push")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("invalid repository default branch", result.stderr)
+        self.assertFalse(self.commands.exists())
+
+    def test_push_unreachable_default_ref_is_refused_without_traceback(self):
+        self.git("update-ref", "-d", "refs/remotes/origin/main")
+        result = self.run_proof(GITHUB_EVENT_NAME="push")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("not reachable", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
         self.assertFalse(self.commands.exists())
 
 
