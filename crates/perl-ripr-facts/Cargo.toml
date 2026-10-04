@@ -45,7 +45,7 @@ criterion.workspace = true
 # Schema-conformance tests validate emitted packets against
 # schemas/ripr-perl-facts-v1.schema.json; same pinned helper shape as
 # perl-core-harness-types (jsonschema 0.55, no default features).
-jsonschema = { version = "0.55", default-features = false }
+jsonschema = { version = "0.56", default-features = false }
 
 # `harness = false` is REQUIRED: the nightly "Performance Benchmarks" job
 # invokes every bench target with `-- --noplot` (a Criterion-only flag), and
