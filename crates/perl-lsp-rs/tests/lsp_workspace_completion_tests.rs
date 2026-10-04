@@ -11,6 +11,63 @@ use std::time::Duration;
 mod common;
 use common::{completion_items, send_notification, send_request, start_lsp_server};
 
+/// The retained module-name fallback has a prefix contract independent of
+/// workspace/symbol's loose search contract. An uncapped settled request must
+/// retain the ordinary CompletionList completeness flag.
+#[test]
+fn workspace_module_completion_filters_substrings_without_changing_symbol_search()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = start_lsp_server();
+    initialize_isolated(&server);
+    for (uri, text) in [
+        ("file:///workspace/BarTools.pm", "package BarTools;\n1;\n"),
+        ("file:///workspace/FooBarTools.pm", "package FooBarTools;\n1;\n"),
+        ("file:///workspace/prefix-consumer.pl", "bar"),
+    ] {
+        send_notification(
+            &server,
+            json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didOpen",
+                "params": { "textDocument": {
+                    "uri": uri, "languageId": "perl", "version": 1, "text": text
+                } }
+            }),
+        );
+        await_document_indexed(&server, uri);
+    }
+
+    let search = send_request(
+        &server,
+        json!({ "jsonrpc": "2.0", "method": "workspace/symbol", "params": { "query": "bar" } }),
+    );
+    let symbols = search["result"].as_array().ok_or("missing workspace symbol result")?;
+    assert!(symbols.iter().any(|symbol| symbol["name"].as_str() == Some("BarTools")));
+    assert!(
+        symbols.iter().any(|symbol| symbol["name"].as_str() == Some("FooBarTools")),
+        "symbol search must retain a real substring match: {search}"
+    );
+
+    let completion = send_request(
+        &server,
+        json!({
+            "jsonrpc": "2.0", "method": "textDocument/completion",
+            "params": {
+                "textDocument": { "uri": "file:///workspace/prefix-consumer.pl" },
+                "position": { "line": 0, "character": 3 }
+            }
+        }),
+    );
+    let items = completion_items(&completion);
+    assert!(items.iter().any(|item| item["label"].as_str() == Some("BarTools")));
+    assert!(
+        !items.iter().any(|item| item["label"].as_str() == Some("FooBarTools")),
+        "completion must exclude the same substring-only module found by search: {completion}"
+    );
+    assert_eq!(completion["result"]["isIncomplete"].as_bool(), Some(false));
+    Ok(())
+}
+
 fn completion_snapshot(items: &[serde_json::Value], prefix: &str) -> Vec<serde_json::Value> {
     let mut snapshot_items: Vec<serde_json::Value> = items
         .iter()
