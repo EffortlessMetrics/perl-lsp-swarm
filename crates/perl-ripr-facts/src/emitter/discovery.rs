@@ -91,6 +91,25 @@ fn collect_pm_files_recursive(
     }
 }
 
+/// Repo-relative paths of test/source files the scoped collectors will never
+/// see (#17259): `.t` files outside `<root>/t` (invisible to `collect_t_files`,
+/// hence to tests/oracles/verify) and `.pm` files outside `<root>/lib`
+/// (invisible to `collect_pm_files`, hence to boundaries/relations) — even
+/// though the whole-root `collect_perl_files` walk lists them in `files[]`.
+///
+/// Sorted (inherited from `collect_perl_files`) for deterministic packets.
+/// Coverage is byte-prefix matching on `t/`/`lib/`, mirroring how the scoped
+/// collectors join those literal segments.
+pub(crate) fn discovery_scope_skips(root: &str) -> Vec<String> {
+    collect_perl_files(root)
+        .into_iter()
+        .filter(|relative| {
+            (relative.ends_with(".t") && !relative.starts_with("t/"))
+                || (relative.ends_with(".pm") && !relative.starts_with("lib/"))
+        })
+        .collect()
+}
+
 /// Recursively collect the repo-relative forward-slash paths of Perl
 /// source/test files under `root`, in deterministic (sorted) order.
 ///

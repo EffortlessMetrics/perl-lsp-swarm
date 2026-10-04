@@ -8,8 +8,8 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use crate::emitter::{
-    emit_boundaries_and_commands, emit_changes_from_diff, emit_files_and_owners,
-    emit_relations_and_discriminators, emit_tests_and_oracles,
+    discovery_scope_skips, emit_boundaries_and_commands, emit_changes_from_diff,
+    emit_files_and_owners, emit_relations_and_discriminators, emit_tests_and_oracles,
 };
 use crate::request::{
     EXPECTED_RIPR_FACTS_SCHEMA, RiprFactsError, RiprFactsRequest, normalize_fact_classes,
@@ -58,6 +58,41 @@ pub fn build_ripr_facts_packet(
     let wants_tests = normalized_classes.iter().any(|c| c == "tests");
     let wants_oracles = normalized_classes.iter().any(|c| c == "oracles");
     let wants_relations = normalized_classes.iter().any(|c| c == "relations");
+    // `#17259`: `files[]` walks the whole root, but tests/oracles/verify scan
+    // only `<root>/t` and boundaries/relations only `<root>/lib`. When a
+    // scope-sensitive class is requested and files exist outside those dirs,
+    // name the skips — a `.t` outside `t/` would otherwise sit in `files[]`
+    // (role `test`) with silently zero test facts. `evidence_refs` name the
+    // skipped files' ids even when `files[]` is not in this packet — the same
+    // about-absence reference class as `diff-file-not-found`, which points at
+    // genuinely unparsed paths by design.
+    let wants_scoped_facts = normalized_classes.iter().any(|c| {
+        c == "tests"
+            || c == "oracles"
+            || c == "relations"
+            || c == "dynamic_boundaries"
+            || c == "verify_commands"
+    });
+    let scope_limitations = if wants_scoped_facts {
+        let skips = discovery_scope_skips(root);
+        if skips.is_empty() {
+            Vec::new()
+        } else {
+            let evidence_refs: Vec<serde_json::Value> =
+                skips.iter().map(|rel| serde_json::json!(format!("file:{rel}"))).collect();
+            vec![serde_json::json!({
+                "limitation_id": "discovery-scope-split",
+                "kind": "discovery_scope",
+                "message": format!(
+                    "test/source discovery is scoped to `<root>/t` + `<root>/lib` while `files[]` walks the whole root; these files appear in `files[]` but yield no test/boundary facts: {}.",
+                    skips.join(", ")
+                ),
+                "evidence_refs": evidence_refs
+            })]
+        }
+    } else {
+        Vec::new()
+    };
     let (tests, oracles, test_provenance, test_limitations) =
         if wants_tests || wants_oracles || wants_relations {
             emit_tests_and_oracles(root)
@@ -266,21 +301,27 @@ pub fn build_ripr_facts_packet(
         // because its package exposed no `owners[]` fact. Empty `evidence_refs`,
         // so no referential dependency — always safe to surface.
         all_limitations.extend(relation_limitations);
+        // `#17259`: discovery-scope skips are about absence (like
+        // `diff-file-not-found`), so they surface alongside facts too.
+        all_limitations.extend(scope_limitations);
         packet["limitations"] = serde_json::Value::Array(all_limitations);
     } else if !test_limitations.is_empty()
         || !change_limitations.is_empty()
         || !file_limitations.is_empty()
         || !relation_limitations.is_empty()
+        || !scope_limitations.is_empty()
     {
         // No facts, but a pass produced limitations (test/file parse failures, a
-        // `changes` request with no diff, or a relation omitted for an
-        // unresolvable owner) — surface them next to the base
-        // `emitter-not-yet-implemented` limitation so they are never dropped.
+        // `changes` request with no diff, a relation omitted for an
+        // unresolvable owner, or test/source files outside the discovery scope)
+        // — surface them next to the base `emitter-not-yet-implemented`
+        // limitation so they are never dropped.
         if let Some(limitations) = packet["limitations"].as_array_mut() {
             limitations.extend(test_limitations);
             limitations.extend(change_limitations);
             limitations.extend(file_limitations);
             limitations.extend(relation_limitations);
+            limitations.extend(scope_limitations);
         }
     }
 
