@@ -11,6 +11,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -39,6 +40,21 @@ CONTROL_PATHS = {
     "schemas/publication_sync.v2.schema.json",
     ".github/workflows/publication-sync-contract.yml",
 }
+# These are the reviewed, dated/publication documents in the fixed source
+# cut. A new path needs its own semantic or projection decision; extension or
+# directory alone never makes executable work or active guidance lineage-only.
+LINEAGE_ONLY_PATHS = {
+    "CHANGELOG.md", "RELEASE_HISTORY.md", "docs/project/RELEASE_CHECKLIST.md",
+    "docs/releases/0.15.2-closeout-audit.md", "docs/releases/README.md",
+    "docs/releases/v0.13.0-rc1.md", "docs/releases/v0.13.1.md",
+    "docs/releases/v0.13.4.md", "docs/releases/v0.14.0.md",
+    "docs/releases/v0.15.1.md", "docs/releases/v0.15.2.md",
+    "docs/releases/v0.16.0.md", "docs/releases/v0.17.0.md",
+    "docs/swarm/source-syncs/2026-07-15-final-closeout-bdfde90d7.md",
+    "docs/swarm/source-syncs/2026-07-15-modernization-b4b55aa3e.md",
+    "docs/swarm/source-syncs/2026-07-15-workspace-capabilities-bd3eb11b2.md",
+}
+MAX_MERGE_SCRATCH_BYTES = 64 * 1024 * 1024
 ROLES = {"source": "patch_equivalence_upstream", "boundary": "history_limit",
          "target": "release_head"}
 PRIMITIVE_KEYS = {
@@ -58,6 +74,16 @@ def git_environment():
     env = {key: value for key, value in os.environ.items() if key not in GIT_LOCATION_ENV}
     env["GIT_NO_LAZY_FETCH"] = "1"
     env["GIT_NO_REPLACE_OBJECTS"] = "1"
+    return env
+
+
+def isolated_merge_environment():
+    """Exclude ambient configuration and object redirection from merge-tree."""
+    env = {key: value for key, value in git_environment().items()
+           if not key.startswith("GIT_CONFIG") and key != "GIT_TEMPLATE_DIR"}
+    env["GIT_CONFIG_NOSYSTEM"] = "1"
+    env["GIT_CONFIG_GLOBAL"] = os.devnull
+    env["GIT_ATTR_NOSYSTEM"] = "1"
     return env
 
 
@@ -131,6 +157,70 @@ class Git:
         args += [parents[0], commit] if parents else ["--root", commit]
         return sorted(set(self.run(*args).decode("utf-8", "surrogateescape").rstrip("\0").split("\0")) - {""})
 
+    @contextmanager
+    def isolated_merge_store(self):
+        """Use original objects read-only, writing automatic trees only to scratch."""
+        source_objects = Path(self.text("rev-parse", "--path-format=absolute", "--git-path", "objects"))
+        if not source_objects.is_dir():
+            raise ValueError("source object directory is unavailable for isolated merge proof")
+        with tempfile.TemporaryDirectory(prefix="source-merge-baseline-") as root:
+            bare = Path(root) / "proof.git"
+            proc = subprocess.run(["git", "init", "--bare", "--quiet", str(bare)],
+                                  env=isolated_merge_environment(), capture_output=True)
+            if proc.returncode:
+                raise ValueError("cannot initialize isolated merge proof: " + proc.stderr.decode("utf-8", "replace"))
+            alternate = bare / "objects" / "info" / "alternates"
+            alternate.write_bytes((source_objects.as_posix() + "\n").encode("utf-8"))
+            self.merge_store = bare
+            try:
+                yield
+            finally:
+                del self.merge_store
+
+    def merge_run(self, *args):
+        if not hasattr(self, "merge_store"):
+            raise ValueError("isolated merge proof store is absent")
+        return subprocess.run(["git", "--literal-pathspecs", "-C", str(self.merge_store), *args],
+                              env=isolated_merge_environment(), capture_output=True)
+
+    def merge_baseline(self, first, side, actual):
+        proc = self.merge_run("merge-tree", "--write-tree", "--name-only", "-z",
+                              "--no-messages", first, side)
+        if proc.returncode not in (0, 1):
+            raise ValueError("automatic merge baseline unavailable: " + proc.stderr.decode("utf-8", "replace"))
+        fields = proc.stdout.split(b"\0")
+        if len(fields) < 2 or fields[-1] != b"" or not re.fullmatch(rb"[0-9a-f]{40}", fields[0]):
+            detail = proc.stderr.decode("utf-8", "replace").strip()[:240]
+            raise ValueError(f"malformed automatic merge baseline output (status {proc.returncode}): {detail}")
+        conflicts = fields[1:-1]
+        if (proc.returncode == 0 and conflicts) or (proc.returncode == 1 and not conflicts):
+            raise ValueError("automatic merge baseline status/path mismatch")
+        if any(not path for path in conflicts) or len(conflicts) != len(set(conflicts)):
+            raise ValueError("malformed automatic merge conflict paths")
+        tree = fields[0].decode("ascii")
+        kind = self.merge_run("cat-file", "-t", tree)
+        if kind.returncode or kind.stdout.strip() != b"tree":
+            raise ValueError("automatic merge baseline is not a tree")
+        diff = self.merge_run("diff-tree", "--no-renames", "--no-commit-id", "--name-only",
+                              "-r", "-z", tree, actual)
+        if diff.returncode:
+            raise ValueError("cannot compare automatic and actual merge trees")
+        differences = set(diff.stdout.rstrip(b"\0").split(b"\0")) - {b""}
+        paths = sorted((differences | set(conflicts)))
+        scratch_bytes = sum(path.stat().st_size for path in (self.merge_store / "objects").rglob("*")
+                            if path.is_file())
+        if scratch_bytes > MAX_MERGE_SCRATCH_BYTES:
+            raise ValueError("isolated merge proof exceeds bounded scratch budget")
+        version = self.merge_run("version")
+        if version.returncode or not version.stdout.startswith(b"git version "):
+            raise ValueError("unbound automatic merge Git version")
+        return {"tool": version.stdout.decode("ascii", "replace").strip(),
+                "policy": "isolated-bare-alternate; merge-tree --write-tree --name-only -z --no-messages; diff-tree --no-renames",
+                "ordered_parents": [first, side], "tree": tree,
+                "status": "clean" if proc.returncode == 0 else "conflicted",
+                "conflict_paths": [p.decode("utf-8", "surrogateescape") for p in sorted(conflicts)],
+                "resolution_paths": [p.decode("utf-8", "surrogateescape") for p in paths]}
+
     def population(self, subjects):
         # Cache only the two current trees; do not retain every historical tree.
         self.prime_current_tree(subjects["source"])
@@ -161,7 +251,7 @@ def context_path(path):
         path.startswith(".github/") or path == ".ci/policies/required-checks.toml"))
 
 
-def merge_effects(git, row):
+def merge_effects(git, subjects, row):
     if len(row["parents"]) != 2:
         raise ValueError("merge ancestry inspection requires exactly two parents")
     first, side = row["parents"]
@@ -170,21 +260,14 @@ def merge_effects(git, row):
     for line in side_work:
         commit, *parents = line.split()
         side_paths.update(git.paths(commit, parents))
-    prior_trees = git.current_trees
-    git.current_trees = dict(prior_trees)
-    try:
-        # Compare each merge pair from two bounded metadata reads, instead of
-        # spawning two Git processes for every changed path. Retain no history
-        # tree cache after this merge; the current S/R cache stays unchanged.
-        for commit in (row["commit"], side):
-            if commit not in git.current_trees:
-                git.prime_current_tree(commit)
-        return {"side_work": sorted(line.split()[0] for line in side_work),
-                "additional_resolution_paths": sorted(set(row["changed_paths"]) - side_paths),
-                "entry_differences_from_side_head": [p for p in row["changed_paths"]
-                    if git.entry(row["commit"], p) != git.entry(side, p)]}
-    finally:
-        git.current_trees = prior_trees
+    baseline = git.merge_baseline(first, side, row["commit"])
+    paths = baseline["resolution_paths"]
+    return {"side_work": sorted(line.split()[0] for line in side_work),
+            "side_work_paths": sorted(side_paths), "baseline": baseline,
+            "resolution_paths": paths,
+            "resolution_current_bindings": [{"path": path,
+                "target": git.entry(subjects["target"], path),
+                "source": git.entry(subjects["source"], path)} for path in paths]}
 
 
 def cherry(git, subjects):
@@ -276,8 +359,8 @@ def semantic_proof(git, subjects, original, bindings, item, projection):
         ):
             raise ValueError("equivalent patch does not survive in current S")
     elif disposition == "publication_lineage_only":
-        if any(product_path(path) for path in paths):
-            raise ValueError("runtime/test work cannot be lineage-only")
+        if not all(path in LINEAGE_ONLY_PATHS for path in paths):
+            raise ValueError("unreviewed executable, control or product path cannot be lineage-only")
     elif disposition == "superseded_by_swarm_architecture":
         if not git.exact_commit(item["source_commit"]) or not git.ancestor(item["source_commit"], subjects["source"]):
             raise ValueError("architecture successor is not reachable from S")
@@ -298,7 +381,7 @@ def semantic_proof(git, subjects, original, bindings, item, projection):
 
 def merge_resolution_proof(git, subjects, row, item, projection, legacy):
     effect = row["merge_effects"]
-    paths = sorted(set(effect["additional_resolution_paths"]) | set(effect["entry_differences_from_side_head"]))
+    paths = effect["resolution_paths"]
     if legacy:
         if paths:
             raise ValueError("legacy ledger cannot adjudicate merge resolution effects")
@@ -309,7 +392,7 @@ def merge_resolution_proof(git, subjects, row, item, projection, legacy):
     names = [entry.get("path") for entry in entries]
     if any(not isinstance(path, str) for path in names) or len(names) != len(set(names)) or set(names) != set(paths):
         raise ValueError("omitted, duplicate or extra merge resolution effects")
-    current = {binding["path"]: binding for binding in row["current_bindings"]}
+    current = {binding["path"]: binding for binding in effect["resolution_current_bindings"]}
     unresolved = False
     for entry in entries:
         if set(entry) != {"path", "disposition", "authority", "source_commit", "projection_bindings", "blocking_decisions"}:
@@ -345,9 +428,11 @@ def reconcile(git, subjects, ledger=None, primitive=None, projection=None):
         rows = git.population(subjects)
         packet["population"] = rows
         packet["population_digest"] = digest(rows)
-        for row in rows:
-            if len(row["parents"]) > 1:
-                row["merge_effects"] = merge_effects(git, row)
+        merges = [row for row in rows if len(row["parents"]) > 1]
+        if merges:
+            with git.isolated_merge_store():
+                for row in merges:
+                    row["merge_effects"] = merge_effects(git, subjects, row)
         # Merge evidence participates in the full population digest.
         packet["population_digest"] = digest(rows)
         try:
@@ -423,8 +508,7 @@ def skeleton(packet):
                 "merge_resolution_dispositions": [{"path": path, "disposition": None,
                     "authority": [], "source_commit": None, "projection_bindings": [],
                     "blocking_decisions": ["merge resolution effect requires current semantic proof"]}
-                    for path in sorted(set(row.get("merge_effects", {}).get("additional_resolution_paths", [])) |
-                                       set(row.get("merge_effects", {}).get("entry_differences_from_side_head", [])))],
+                    for path in row.get("merge_effects", {}).get("resolution_paths", [])],
                 "blocking_decisions": ["current semantic survival not yet reviewed"]}
                 for row in packet["population"]]}
 

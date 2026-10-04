@@ -299,11 +299,95 @@ class ReconciliationTests(unittest.TestCase):
         ledger, primitive = self.evidence()
         packet = self.check(ledger, primitive)
         merge = next(r for r in packet["population"] if r["commit"] == self.subjects["target"])
-        self.assertEqual(merge["merge_effects"]["additional_resolution_paths"], [])
-        self.assertEqual(merge["merge_effects"]["entry_differences_from_side_head"], ["shared.txt"])
+        self.assertEqual(merge["merge_effects"]["baseline"]["status"], "clean")
+        self.assertEqual(merge["merge_effects"]["resolution_paths"], ["shared.txt"])
         self.assertEqual(packet["verdict"], "blocked", packet["errors"])
         self.assertEqual(packet["unresolved_commits"], [self.subjects["target"]])
         self.assertEqual(set(self.api.current_trees), {self.subjects["source"], self.subjects["target"]})
+
+    def test_side_work_discarded_to_first_parent_is_not_pure_ancestry(self):
+        self.git("checkout", "-q", "-b", "side")
+        self.write("product.rs", "fn side_behavior() {}\n")
+        self.commit("side product work")
+        self.git("checkout", "-q", "public")
+        self.git("merge", "--no-ff", "--no-commit", "side")
+        (self.repo / "product.rs").unlink()
+        self.subjects["target"] = self.commit("explicitly discard side product work")
+        ledger, primitive = self.evidence()
+        packet = self.check(ledger, primitive)
+        row = next(r for r in packet["population"] if r["commit"] == self.subjects["target"])
+        self.assertEqual(row["changed_paths"], [])
+        self.assertIn("merge_effects", row, packet["errors"])
+        self.assertEqual(row["merge_effects"]["baseline"]["status"], "clean")
+        self.assertEqual(row["merge_effects"]["resolution_paths"], ["product.rs"])
+        self.assertEqual(row["merge_effects"]["resolution_current_bindings"],
+                         [{"path": "product.rs", "source": None, "target": None}])
+        self.assertEqual(packet["verdict"], "blocked", packet["errors"])
+        self.assertEqual(ledger["entries"][-1]["merge_resolution_dispositions"][0]["path"], "product.rs")
+
+    def test_clean_same_file_composition_is_pure_ancestry(self):
+        self.write("shared.txt", "base one\nbase two\nbase three\n")
+        self.commit("multiline merge base")
+        self.git("checkout", "-q", "-b", "side")
+        self.write("shared.txt", "base one\nbase two\nside three\n")
+        self.commit("side changes last line")
+        self.git("checkout", "-q", "public")
+        self.write("shared.txt", "first one\nbase two\nbase three\n")
+        self.commit("first changes first line")
+        self.git("merge", "--no-ff", "-m", "clean same-file composition", "side")
+        self.subjects["target"] = self.git("rev-parse", "HEAD")
+        ledger, primitive = self.evidence()
+        packet = self.check(ledger, primitive)
+        row = next(r for r in packet["population"] if r["commit"] == self.subjects["target"])
+        self.assertEqual(row["merge_effects"]["baseline"]["status"], "clean")
+        self.assertEqual(row["merge_effects"]["resolution_paths"], [])
+        self.assertEqual(packet["verdict"], "pass", packet["errors"])
+
+    def test_conflicted_merge_keeps_obligation_even_if_marker_tree_committed(self):
+        self.git("checkout", "-q", "-b", "side")
+        self.write("shared.txt", "side behavior\n")
+        self.commit("side conflict")
+        self.git("checkout", "-q", "public")
+        self.write("shared.txt", "first behavior\n")
+        self.commit("first conflict")
+        merge = subprocess.run(["git", "-C", str(self.repo), "merge", "--no-ff", "--no-commit", "side"],
+                               env=adapter.git_environment(), capture_output=True)
+        self.assertEqual(merge.returncode, 1)
+        baseline = subprocess.run(["git", "-C", str(self.repo), "merge-tree", "--write-tree",
+                                   "--name-only", "-z", "--no-messages", "HEAD", "side"],
+                                  env=adapter.git_environment(), capture_output=True)
+        self.assertEqual(baseline.returncode, 1)
+        tree = baseline.stdout.split(b"\0", 1)[0].decode("ascii")
+        marker = subprocess.check_output(["git", "-C", str(self.repo), "show", tree + ":shared.txt"],
+                                         env=adapter.git_environment())
+        (self.repo / "shared.txt").write_bytes(marker)
+        self.subjects["target"] = self.commit("commit marker-tree conflict unchanged")
+        ledger, primitive = self.evidence()
+        packet = self.check(ledger, primitive)
+        row = next(r for r in packet["population"] if r["commit"] == self.subjects["target"])
+        self.assertEqual(row["merge_effects"]["baseline"]["status"], "conflicted")
+        self.assertEqual(row["merge_effects"]["resolution_paths"], ["shared.txt"])
+        self.assertEqual(packet["verdict"], "blocked", packet["errors"])
+
+    def test_unavailable_or_malformed_automatic_merge_fails_closed(self):
+        self.git("checkout", "-q", "-b", "side")
+        self.write("side.txt", "side behavior\n")
+        self.commit("side work")
+        self.git("checkout", "-q", "public")
+        self.git("merge", "--no-ff", "-m", "join side", "side")
+        self.subjects["target"] = self.git("rev-parse", "HEAD")
+        real_merge_run = self.api.merge_run
+        for status, stdout, stderr in ((129, b"", b"unsupported option"),
+                                       (1, b"", b"invalid alternate object directory"),
+                                       (0, b"", b"")):
+            def altered(*args):
+                if args[0] == "merge-tree":
+                    return subprocess.CompletedProcess(args, status, stdout, stderr)
+                return real_merge_run(*args)
+            with self.subTest(status=status, stderr=stderr), patch.object(self.api, "merge_run", altered):
+                packet = adapter.reconcile(self.api, self.subjects)
+                self.assertEqual(packet["verdict"], "not_proven")
+                self.assertTrue(any("automatic merge baseline" in error for error in packet["errors"]))
 
     def resolution_fixture(self, retain=False):
         self.git("checkout", "-q", "-b", "side")
@@ -405,6 +489,31 @@ class ReconciliationTests(unittest.TestCase):
         self.assertTrue(adapter.context_path("scripts/tests/test-publication-sync-contract.py"))
         self.assertFalse(adapter.context_path("scripts/tests/test-runtime.py"))
         self.assertFalse(adapter.context_path("xtask/src/tasks/workflow_trigger_lint.rs"))
+
+    def test_lineage_only_is_limited_to_reviewed_historical_documents(self):
+        rejected = ["scripts/install-release.sh", "scripts/maintenance.py", "Cargo.toml",
+                    "Cargo.lock", ".github/workflows/release.yml", "bin/tool",
+                    "docs/EDITORS/ACTIVE_SETUP.md", *sorted(adapter.CONTROL_PATHS)]
+        item = {"disposition": "publication_lineage_only", "authority": ["synthetic claim"],
+                "blocking_decisions": []}
+        for path in rejected:
+            with self.subTest(path=path), self.assertRaisesRegex(ValueError, "lineage-only"):
+                adapter.semantic_proof(self.api, self.subjects, self.target,
+                                       [{"path": path, "source": None, "target": None}], item, None)
+        for path in sorted(adapter.LINEAGE_ONLY_PATHS):
+            with self.subTest(path=path):
+                adapter.semantic_proof(self.api, self.subjects, self.target,
+                                       [{"path": path, "source": None, "target": None}], item, None)
+
+    def test_ambient_git_config_cannot_enter_isolated_merge_baseline(self):
+        with patch.dict(os.environ, {"GIT_CONFIG_COUNT": "1",
+                                     "GIT_CONFIG_KEY_0": "merge.unsafe.driver",
+                                     "GIT_CONFIG_VALUE_0": "unexpected-command"}):
+            env = adapter.isolated_merge_environment()
+        self.assertNotIn("GIT_CONFIG_COUNT", env)
+        self.assertNotIn("GIT_CONFIG_KEY_0", env)
+        self.assertNotIn("GIT_CONFIG_VALUE_0", env)
+        self.assertEqual(env["GIT_CONFIG_NOSYSTEM"], "1")
 
     def test_historical_packet_is_never_overwritten(self):
         path = self.root / "historical.json"
