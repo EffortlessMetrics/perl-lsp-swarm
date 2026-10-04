@@ -1142,6 +1142,44 @@ gates:
     planning:
       role: rust_scoped
 
+  # #14458 pr_fast leg for the four perl-dap test-helper targets. #14334
+  # closed the merge-gate leg via the second leg of `unit_dap_support_full`;
+  # `unit_routed_full` (the only pr_fast gate that runs `tests/`) cannot add
+  # the same leg without a per-crate conditional, because `cargo test --tests`
+  # silently skips any target that declares `required-features = ["test-helpers"]`
+  # when the feature is off. A focused `rust_package_scoped` sibling gate runs
+  # the four targets with `--features test-helpers` whenever the diff touches
+  # `perl-dap`, mirroring the merge-gate leg's exact selector set so the
+  # existing `dap_helper_command_error` contract governs both gates.
+  - name: unit_routed_full_dap_test_helpers
+    tier: pr_fast
+    description: "perl-dap `--features test-helpers` integration targets on the pr_fast lane when the diff touches perl-dap (closes #14334's pr_fast residual, closes #14458)"
+    required: true
+    # Hardcoded `--features test-helpers -p perl-dap` plus the four healthy
+    # `required-features = ["test-helpers"]` test targets, identical to the
+    # second leg of `unit_dap_support_full` (see #14334). Single `--test-threads=4`
+    # harness thread group, matching the merge-gate leg.
+    command: >-
+      cargo test --locked --features test-helpers -p perl-dap
+      --test eval_ref_cache_miss_resume_tests
+      --test dap_evaluate_comprehensive_tests
+      --test dap_variable_reference_hardening_tests
+      --test pause_signal_delivery_tests
+      -- --test-threads=4
+    timeout_seconds: 450
+    retry_count: 1
+    budgets:
+      max_duration_ms: 360000
+    quarantine: false
+    tags:
+      - test
+      - integration
+      - routed
+    planning:
+      role: rust_package_scoped
+      packages:
+        - perl-dap
+
   # ===========================================================================
   # Tier: merge_gate
   # ===========================================================================
@@ -1491,9 +1529,12 @@ gates:
     # `cargo test --tests` otherwise skips them silently when the feature is off
     # (#14333). Recorded per #11694; flipping the broad support-crate portion to
     # --tests is blocked on the red suites in #11708.
-    # pr_fast residual: unit_routed_full still runs the perl-dap leg without
-    # `--features test-helpers`, so these four targets stay absent from the
-    # pr_fast lane; closing that leg is tracked in #14458.
+    # pr_fast residual (#14458): closed by `unit_routed_full_dap_test_helpers`
+    # in pr_fast, which mirrors this second leg. The pr_fast sibling runs the
+    # same four healthy targets whenever ci-scope touches `perl-dap`, so this
+    # gate no longer carries the only on-ramp for those targets; it does keep
+    # the broader crate cohort's `--lib` and the four targets together as one
+    # required surface at the merge gate.
     #   perl-ci-hygiene               6
     #   perl-dap                    115
     #   perl-tdd-support              4
