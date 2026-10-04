@@ -1366,6 +1366,8 @@ fn same_file_definition_matches_qualification(
     definition: &crate::symbol::Symbol,
     ast: &crate::ast::Node,
 ) -> bool {
+    use perl_semantic_analyzer::workspace_index::SymKind as CursorSymbolKind;
+
     let is_callable = matches!(
         definition.kind,
         crate::symbol::SymbolKind::Subroutine | crate::symbol::SymbolKind::Method
@@ -1392,19 +1394,20 @@ fn same_file_definition_matches_qualification(
             let before =
                 matched.as_ref().map(|matched| text[..line_start + matched.start()].trim_end());
             let is_call_key = symbol_key.as_ref().is_some_and(|key| {
-                key.kind == crate::workspace_index::SymKind::Sub
+                key.kind == CursorSymbolKind::Sub
                     && key.sigil.is_none()
                     && key.pkg.as_ref() == package.as_str()
                     && key.name.as_ref() == name.as_str()
             });
-            let is_variable_at_cursor = symbol_key.as_ref().is_some_and(|key| {
-                key.kind == crate::workspace_index::SymKind::Var && key.sigil.is_some()
-            }) || (!is_call_key
-                && matched.as_ref().is_some_and(|matched| {
-                    // '*' and '%' also spell binary operators. Their variable
-                    // role needs a canonical Var key; adjacency alone is not proof.
-                    text[..line_start + matched.start()].ends_with(['$', '@'])
-                }));
+            let is_variable_at_cursor = symbol_key
+                .as_ref()
+                .is_some_and(|key| key.kind == CursorSymbolKind::Var && key.sigil.is_some())
+                || (!is_call_key
+                    && matched.as_ref().is_some_and(|matched| {
+                        // '*' and '%' also spell binary operators. Their variable
+                        // role needs a canonical Var key; adjacency alone is not proof.
+                        text[..line_start + matched.start()].ends_with(['$', '@'])
+                    }));
             // Some expression bodies (notably Use and Format) are raw tokens,
             // without a callable AST key. Recognize their explicit call spelling
             // too, while retaining canonical/sigiled variable occurrences.
