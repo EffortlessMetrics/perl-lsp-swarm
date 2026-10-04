@@ -115,6 +115,20 @@ pub struct TrustedRoot {
 /// Identity of the directory object captured at startup.  Pathnames are not
 /// sufficient authority: a root can be renamed and replaced while the adapter
 /// is alive.  Rechecking this identity makes such retargeting fail closed.
+///
+/// On Windows the identity is the directory's `(volume serial number, file
+/// index)` pair read through `GetFileInformationByHandle` — the analog of the
+/// unix device+inode pair. Creation time cannot serve as the identity there:
+/// NTFS creation-time tunneling gives a directory recreated at the same path
+/// the displaced directory's creation time (#17172), which admitted
+/// rename-and-replace replacements whenever the tunnel cache hit (~33% of
+/// recreations in a 30-trial probe on this repository's development host).
+///
+/// Failure is fail-closed on Windows: when the handle identity cannot be
+/// read at startup, root resolution is refused rather than pinning a weaker
+/// identity, and when it cannot be read at recheck time the root is treated
+/// as no longer current (CodeRabbit follow-up on #17172). There is no
+/// creation-time fallback once a real identity has been pinned.
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct FilesystemIdentity {
     #[cfg(unix)]
@@ -122,28 +136,84 @@ struct FilesystemIdentity {
     #[cfg(unix)]
     inode: u64,
     #[cfg(windows)]
-    created: u64,
+    volume_serial: u32,
+    #[cfg(windows)]
+    file_index: u64,
     #[cfg(not(any(unix, windows)))]
     canonical: PathBuf,
 }
 
 impl FilesystemIdentity {
-    fn from_metadata(metadata: &Metadata) -> Self {
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::MetadataExt;
-            Self { device: metadata.dev(), inode: metadata.ino() }
-        }
-        #[cfg(windows)]
-        {
-            use std::os::windows::fs::MetadataExt;
-            Self { created: metadata.creation_time() }
-        }
-        #[cfg(not(any(unix, windows)))]
-        {
-            Self { canonical: PathBuf::new() }
-        }
+    #[cfg(unix)]
+    fn capture(_path: &Path, metadata: &Metadata) -> Option<Self> {
+        use std::os::unix::fs::MetadataExt;
+        Some(Self { device: metadata.dev(), inode: metadata.ino() })
     }
+
+    /// Capture the identity of the directory at `path`.
+    ///
+    /// `None` on Windows means the handle identity is unavailable; callers
+    /// must treat that as fail-closed (refuse at startup, not-current at
+    /// recheck). Unix always succeeds while the metadata lives.
+    #[cfg(windows)]
+    fn capture(path: &Path, _metadata: &Metadata) -> Option<Self> {
+        let (volume_serial, file_index) = windows_directory_identity(path)?;
+        Some(Self { volume_serial, file_index })
+    }
+
+    #[cfg(not(any(unix, windows)))]
+    fn capture(_path: &Path, _metadata: &Metadata) -> Option<Self> {
+        Some(Self { canonical: PathBuf::new() })
+    }
+}
+
+/// Read the `(volume serial number, file index)` of `path`'s directory
+/// object through a handle — the Windows analog of unix device+inode, stable
+/// across creation-time tunneling because the displaced directory still owns
+/// its file index while it exists (#17172).
+///
+/// Returns `None` when the handle cannot be opened or queried; callers fail
+/// closed rather than falling back to creation time.
+#[cfg(windows)]
+fn windows_directory_identity(path: &Path) -> Option<(u32, u64)> {
+    use std::os::windows::ffi::OsStrExt;
+    use winapi::um::fileapi::{
+        BY_HANDLE_FILE_INFORMATION, CreateFileW, GetFileInformationByHandle, OPEN_EXISTING,
+    };
+    use winapi::um::handleapi::{CloseHandle, INVALID_HANDLE_VALUE};
+    use winapi::um::winbase::FILE_FLAG_BACKUP_SEMANTICS;
+    use winapi::um::winnt::{
+        FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    };
+
+    let wide: Vec<u16> = path.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+    // SAFETY: `wide` is a NUL-terminated UTF-16 path that outlives the call;
+    // the returned handle is closed on every path below.
+    let handle = unsafe {
+        CreateFileW(
+            wide.as_ptr(),
+            FILE_READ_ATTRIBUTES,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            std::ptr::null_mut(),
+            OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS,
+            std::ptr::null_mut(),
+        )
+    };
+    if handle == INVALID_HANDLE_VALUE {
+        return None;
+    }
+    let mut information: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+    let queried = unsafe { GetFileInformationByHandle(handle, &mut information) };
+    // SAFETY: `handle` is a valid open handle from the call above.
+    let closed = unsafe { CloseHandle(handle) };
+    if queried == 0 || closed == 0 {
+        return None;
+    }
+    Some((
+        information.dwVolumeSerialNumber,
+        (u64::from(information.nFileIndexHigh) << 32) | u64::from(information.nFileIndexLow),
+    ))
 }
 
 impl TrustedRoot {
@@ -200,6 +270,16 @@ pub enum LaunchAuthorityError {
     #[error("trusted root {path:?} is duplicated")]
     DuplicateTrustedRoot {
         /// The duplicated raw path.
+        path: PathBuf,
+    },
+    /// The trusted root's filesystem identity could not be read through a
+    /// handle (Windows). Startup refuses the root instead of pinning a
+    /// weaker identity it could not reverify later (#17172).
+    #[error(
+        "trusted root {path:?} filesystem identity is unavailable; it cannot be reverified for rename-and-replace detection"
+    )]
+    TrustedRootIdentityUnavailable {
+        /// The offending raw path.
         path: PathBuf,
     },
     /// Two different trusted-root inputs canonicalize to the same directory.
@@ -270,9 +350,15 @@ fn trusted_root_is_current(root: &TrustedRoot) -> bool {
     let Ok(metadata) = std::fs::symlink_metadata(&root.canonical) else {
         return false;
     };
-    metadata.is_dir()
-        && !metadata.file_type().is_symlink()
-        && FilesystemIdentity::from_metadata(&metadata) == root.filesystem_identity
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        return false;
+    }
+    // Fail closed: an unreadable identity at recheck time is treated as a
+    // root that is no longer current (#17172, CodeRabbit follow-up).
+    match FilesystemIdentity::capture(&root.canonical, &metadata) {
+        Some(identity) => identity == root.filesystem_identity,
+        None => false,
+    }
 }
 
 /// Return the first recorded raw input whose canonical directory matches
@@ -334,10 +420,17 @@ impl LaunchAuthority {
                 });
             }
             seen_canonical.push((raw.clone(), canonical.clone()));
-            let filesystem_identity = FilesystemIdentity::from_metadata(
+            // Fail closed at startup: a root whose filesystem identity cannot
+            // be pinned is refused instead of falling back to a weaker
+            // identity (CodeRabbit follow-up on #17172).
+            let filesystem_identity = FilesystemIdentity::capture(
+                &canonical,
                 &std::fs::symlink_metadata(&canonical)
                     .map_err(|_| LaunchAuthorityError::TrustedRootNotFound { path: raw.clone() })?,
-            );
+            )
+            .ok_or_else(|| LaunchAuthorityError::TrustedRootIdentityUnavailable {
+                path: raw.clone(),
+            })?;
             roots.push(TrustedRoot {
                 identity: short_identity(&canonical.to_string_lossy()),
                 canonical,
