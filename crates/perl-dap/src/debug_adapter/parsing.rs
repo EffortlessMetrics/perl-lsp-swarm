@@ -139,16 +139,28 @@ impl DebugAdapter {
     /// report carries only its *caller's* position (`called from`), so
     /// without this authority the topmost user frame would report the call
     /// site instead of the suspension line (#17171). `None` when the report
-    /// does not open with an internal debugger frame (e.g. a top-level stop).
+    /// does not open with the debugger frame (e.g. a top-level stop).
+    ///
+    /// The capture is deliberately narrower than
+    /// [`Self::filter_user_visible_frames`]'s internal predicate: it requires
+    /// the leading frame to be named exactly `DB::DB` **and** its `called
+    /// from` source to be non-debugger plumbing. A shim-internal leading
+    /// frame (`Devel::TSPerlDAP::…`, or a `DB::*` frame inside `perl5db.pl`)
+    /// carries shim positions, not the user's suspension line, and must
+    /// never be projected onto a user frame (CodeRabbit follow-up on
+    /// #17171).
     pub(super) fn suspension_position_from_internal_frames(
         frames: &[StackFrame],
     ) -> Option<StackFrame> {
         let first = frames.first()?;
-        if is_internal_frame_name_and_path(&first.name, Some(first.source.path.as_str())) {
-            Some(first.clone())
-        } else {
-            None
+        if first.name != "DB::DB" {
+            return None;
         }
+        let path = first.source.path.as_str();
+        if path.contains("perl5db.pl") || path.contains("Devel::TSPerlDAP") {
+            return None;
+        }
+        Some(first.clone())
     }
 
     /// Reattach the suspension position to the topmost user-visible frame.
@@ -902,6 +914,45 @@ mod tests {
         assert_eq!(
             arguments.get(&1),
             Some(&vec!["$value".to_string(), "[1, 2]".to_string(), "\"a,b\"".to_string()])
+        );
+    }
+
+    /// Only a leading `DB::DB` frame pointing at non-debugger source carries
+    /// the suspension position. Shim-internal leading frames
+    /// (`Devel::TSPerlDAP::…`, or anything inside `perl5db.pl`) must not be
+    /// projected onto the user frame (CodeRabbit follow-up on #17171).
+    #[test]
+    pub(super) fn test_suspension_position_requires_leading_db_db_frame() {
+        fn frame(id: i32, name: &str, path: &str) -> StackFrame {
+            StackFrame {
+                id,
+                name: name.to_string(),
+                source: Source { name: None, path: path.to_string(), source_reference: None },
+                line: 9,
+                column: 1,
+                end_line: None,
+                end_column: None,
+            }
+        }
+        let db_frame = [frame(1, "DB::DB", "F:/dbg/hello.pl")];
+        assert!(
+            DebugAdapter::suspension_position_from_internal_frames(&db_frame).is_some(),
+            "the debugger's own frame over user code is the suspension authority"
+        );
+        let shim_frame = [frame(1, "Devel::TSPerlDAP::handle_break", "F:/dbg/hello.pl")];
+        assert!(
+            DebugAdapter::suspension_position_from_internal_frames(&shim_frame).is_none(),
+            "a shim frame must not become the suspension position"
+        );
+        let perl5db_frame = [frame(1, "DB::DB", "/usr/lib/perl5/perl5db.pl")];
+        assert!(
+            DebugAdapter::suspension_position_from_internal_frames(&perl5db_frame).is_none(),
+            "a DB::DB frame pointing inside perl5db.pl is shim plumbing, not user suspension"
+        );
+        let user_frame = [frame(1, "main::add", "F:/dbg/hello.pl")];
+        assert!(
+            DebugAdapter::suspension_position_from_internal_frames(&user_frame).is_none(),
+            "a report without a leading debugger frame carries no suspension authority"
         );
     }
 
