@@ -3404,6 +3404,64 @@ mod tests {
 
     #[cfg(feature = "workspace")]
     #[test]
+    fn qualified_definition_fallback_retains_exact_terminal_alias_while_index_is_stale()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        let caller_uri = "file:///workspace/qualified-alias.pl";
+        let caller =
+            "package Caller;\n*Other::compute_0 = sub { return 2; };\nOther::compute_0();\n";
+        let offset = caller.rfind("Other::compute_0()").ok_or("qualified alias call")? + 9;
+        let ast = Arc::new(Parser::new(caller).parse()?);
+        let mut parent_map = ParentMap::default();
+        crate::declaration::DeclarationProvider::build_parent_map(&ast, &mut parent_map, None);
+        let provider = crate::declaration::DeclarationProvider::new(
+            Arc::clone(&ast),
+            caller.to_string(),
+            caller_uri.to_string(),
+        )
+        .with_parent_map(&parent_map)
+        .with_doc_version(1);
+        assert!(
+            provider.find_declaration(offset, 1).is_none_or(|locations| locations.is_empty()),
+            "this positive must reach the terminal model, not the earlier declaration tier"
+        );
+        let model = crate::semantic::SemanticModel::build(&ast, caller);
+        let candidate = model.definition_at(offset).ok_or("terminal qualified alias candidate")?;
+        assert_eq!(candidate.qualified_name, "Other::compute_0");
+        let assignment_start = caller.find("*Other::").ok_or("alias assignment")?;
+        assert_eq!(candidate.location.start, assignment_start);
+        assert_eq!(
+            caller.get(candidate.location.start..candidate.location.end),
+            Some("*Other::compute_0 = sub { return 2; }")
+        );
+        assert!(same_file_definition_matches_qualification(caller, offset, candidate));
+
+        let unrelated_uri = "file:///workspace/alias-unrelated.pl";
+        let unrelated = "package Unrelated;\nsub helper {}\n";
+        for (uri, text) in [(caller_uri, caller), (unrelated_uri, unrelated)] {
+            server.test_apply_did_open(uri, text, 1)?;
+            let generation = server.test_document_generation(uri).ok_or("open generation")?;
+            server.test_index_live_file(uri, text, generation).map_err(std::io::Error::other)?;
+        }
+        server.test_simulate_indexing_complete();
+        server
+            .test_replace_document_without_index(
+                unrelated_uri,
+                "package Unrelated;\nsub renamed {}\n",
+                2,
+            )
+            .map_err(std::io::Error::other)?;
+        assert!(server.workspace_index_stale_for_any_open_document());
+        assert_qualified_fallback_location(
+            &qualified_fallback_request(&server, caller_uri, 2, 9)?,
+            caller_uri,
+            1,
+        );
+        Ok(())
+    }
+
+    #[cfg(feature = "workspace")]
+    #[test]
     fn qualified_definition_fallback_refuses_wrong_package_after_scan_timeout()
     -> Result<(), Box<dyn std::error::Error>> {
         use perl_workspace::workspace_index::{DegradationReason, IndexState};
