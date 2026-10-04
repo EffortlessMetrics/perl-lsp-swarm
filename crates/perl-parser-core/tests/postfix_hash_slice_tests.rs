@@ -103,6 +103,16 @@ fn assert_after_declaration(
         ));
     }
     let declaration = declarations[0];
+    let NodeKind::Program { statements } = &ast.kind else {
+        return Err("following declaration has no top-level Program".to_string());
+    };
+    let statement_index = statements
+        .iter()
+        .position(|statement| std::ptr::eq(statement, declaration))
+        .ok_or_else(|| "following declaration is not a top-level Program statement".to_string())?;
+    if statement_index == 0 || statement_index + 1 != statements.len() {
+        return Err("following declaration is not the final statement after the prefix".to_string());
+    }
     if declaration.location != expected_location
         || source_text(source, declaration)? != "my $after = 1"
     {
@@ -693,6 +703,54 @@ fn following_statement_proof_rejects_a_swallowed_declaration() -> TestResult {
     match assert_after_declaration(source, &output.ast, SourceLocation { start: 18, end: 31 }) {
         Err(message) if message.contains("found 0") => Ok(()),
         result => Err(format!("swallowed declaration escaped the structural proof: {result:?}")),
+    }
+}
+
+#[test]
+fn following_statement_proof_rejects_misattached_or_reordered_declarations() -> TestResult {
+    let source = "$href->@{'alpha'; my $after = 1;";
+    let expected_location = SourceLocation { start: 18, end: 31 };
+    let mut parser = Parser::new(source);
+    let output = parser.parse_with_recovery();
+    assert_after_declaration(source, &output.ast, expected_location)?;
+
+    let mut misattached = output.ast.clone();
+    let NodeKind::Program { statements } = &mut misattached.kind else {
+        return Err("recovery did not return a Program".to_string());
+    };
+    let declaration = statements
+        .pop()
+        .ok_or_else(|| "misattachment control had no following statement".to_string())?;
+    let prefix = statements
+        .first_mut()
+        .ok_or_else(|| "misattachment control had no preceding statement".to_string())?;
+    // Model recovery extending the malformed statement to own the declaration.
+    // Its source geometry and fields remain intact, with a containing parent.
+    prefix.location.end = declaration.location.end;
+    prefix.kind = NodeKind::Error {
+        message: "misattached following declaration".to_string(),
+        expected: vec![],
+        found: None,
+        partial: Some(Box::new(declaration)),
+    };
+    if !source_text(source, &misattached)?.contains("my $after = 1") {
+        return Err("misattachment changed the Program source span".to_string());
+    }
+    match assert_after_declaration(source, &misattached, expected_location) {
+        Err(message) if message.contains("not a top-level") => {}
+        result => return Err(format!("misattached declaration escaped the proof: {result:?}")),
+    }
+
+    let mut reordered = output.ast.clone();
+    let NodeKind::Program { statements } = &mut reordered.kind else {
+        return Err("recovery did not return a Program".to_string());
+    };
+    let declaration =
+        statements.pop().ok_or_else(|| "order control had no following statement".to_string())?;
+    statements.insert(0, declaration);
+    match assert_after_declaration(source, &reordered, expected_location) {
+        Err(message) if message.contains("not the final statement") => Ok(()),
+        result => Err(format!("reordered declaration escaped the proof: {result:?}")),
     }
 }
 
