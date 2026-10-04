@@ -93,19 +93,27 @@ fn collect_pm_files_recursive(
 
 /// Repo-relative paths of test/source files the scoped collectors will never
 /// see (#17259): `.t` files outside `<root>/t` (invisible to `collect_t_files`,
-/// hence to tests/oracles/verify) and `.pm` files outside `<root>/lib`
-/// (invisible to `collect_pm_files`, hence to boundaries/relations) — even
-/// though the whole-root `collect_perl_files` walk lists them in `files[]`.
+/// hence to tests/oracles/verify/relations/boundaries), `.pm` files outside
+/// `<root>/lib` (invisible to `collect_pm_files`, hence to
+/// relations/boundaries), and `.pl`/`.psgi` files anywhere — no scoped
+/// collector scans those extensions at all (`collect_t_files` takes `.t` only,
+/// `collect_pm_files` `.pm` only), so a `script/run.pl` with `eval` yields
+/// neither a boundary nor, before this detector, a skip notice — even though
+/// the whole-root `collect_perl_files` walk lists them in `files[]`.
 ///
 /// Sorted (inherited from `collect_perl_files`) for deterministic packets.
-/// Coverage is byte-prefix matching on `t/`/`lib/`, mirroring how the scoped
-/// collectors join those literal segments.
+/// Coverage is byte-prefix matching on `t/`/`lib/` for `.t`/`.pm`, mirroring
+/// how the scoped collectors join those literal segments; `.pl`/`.psgi` cover
+/// precisely the remaining `is_perl_source_file` extensions (nothing
+/// positional — they sit outside every scoped scan wherever they live).
 pub(crate) fn discovery_scope_skips(root: &str) -> Vec<String> {
     collect_perl_files(root)
         .into_iter()
         .filter(|relative| {
             (relative.ends_with(".t") && !relative.starts_with("t/"))
                 || (relative.ends_with(".pm") && !relative.starts_with("lib/"))
+                || relative.ends_with(".pl")
+                || relative.ends_with(".psgi")
         })
         .collect()
 }

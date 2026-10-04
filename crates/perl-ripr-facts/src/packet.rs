@@ -62,10 +62,21 @@ pub fn build_ripr_facts_packet(
     // only `<root>/t` and boundaries/relations only `<root>/lib`. When a
     // scope-sensitive class is requested and files exist outside those dirs,
     // name the skips — a `.t` outside `t/` would otherwise sit in `files[]`
-    // (role `test`) with silently zero test facts. `evidence_refs` name the
-    // skipped files' ids even when `files[]` is not in this packet — the same
-    // about-absence reference class as `diff-file-not-found`, which points at
-    // genuinely unparsed paths by design.
+    // (role `test`) with silently zero test facts.
+    //
+    // Split gating (verified against each emitter's actual consumption):
+    // `.t` feeds every scoped class — tests/oracles via `test_facts`,
+    // relations via the test side, dynamic_boundaries via the boundary scan,
+    // verify_commands one-per-`.t` — so `.t` skips apply to any
+    // scope-sensitive request; `.pm`/`.pl`/`.psgi` feed only relations +
+    // dynamic_boundaries, so a tests-only request must not report unrelated
+    // source skips. The limitation describes REQUESTED facts (post-#17256
+    // subset semantics), not leaked ones.
+    //
+    // The skip *list* is computed here (the gating decision needs it before
+    // emission), but the limitation JSON is built after the files
+    // force-include decision below is known — see the `scope_limitations`
+    // site for why the message must be conditional on `files[]` presence.
     let wants_scoped_facts = normalized_classes.iter().any(|c| {
         c == "tests"
             || c == "oracles"
@@ -73,23 +84,13 @@ pub fn build_ripr_facts_packet(
             || c == "dynamic_boundaries"
             || c == "verify_commands"
     });
-    let scope_limitations = if wants_scoped_facts {
-        let skips = discovery_scope_skips(root);
-        if skips.is_empty() {
-            Vec::new()
-        } else {
-            let evidence_refs: Vec<serde_json::Value> =
-                skips.iter().map(|rel| serde_json::json!(format!("file:{rel}"))).collect();
-            vec![serde_json::json!({
-                "limitation_id": "discovery-scope-split",
-                "kind": "discovery_scope",
-                "message": format!(
-                    "test/source discovery is scoped to `<root>/t` + `<root>/lib` while `files[]` walks the whole root; these files appear in `files[]` but yield no test/boundary facts: {}.",
-                    skips.join(", ")
-                ),
-                "evidence_refs": evidence_refs
-            })]
-        }
+    let wants_pm_scope =
+        normalized_classes.iter().any(|c| c == "relations" || c == "dynamic_boundaries");
+    let scope_skips: Vec<String> = if wants_scoped_facts {
+        discovery_scope_skips(root)
+            .into_iter()
+            .filter(|rel| wants_pm_scope || rel.ends_with(".t"))
+            .collect()
     } else {
         Vec::new()
     };
@@ -206,6 +207,38 @@ pub fn build_ripr_facts_packet(
     // class as `oracle-representation`.
     let file_limitations =
         if wants_file_facts_explicit || has_file_facts { file_limitations } else { Vec::new() };
+
+    // `#17259`: the scope limitation JSON is built HERE — after the files
+    // force-include decision above is known — because subset packets
+    // (tests-only, verify-only) carry empty `files[]`: claiming the skips
+    // "appear in `files[]`" there would be a self-contradiction with dangling
+    // evidence. The files-present wording names `files[]` + `file:` refs; the
+    // files-absent wording describes the path-derived `file:` ids without
+    // claiming presence (the same about-absence reference class as
+    // `diff-file-not-found`, which points at genuinely unparsed paths).
+    let scope_limitations = if scope_skips.is_empty() {
+        Vec::new()
+    } else {
+        let evidence_refs: Vec<serde_json::Value> =
+            scope_skips.iter().map(|rel| serde_json::json!(format!("file:{rel}"))).collect();
+        let message = if has_file_facts {
+            format!(
+                "test/source discovery is scoped to `<root>/t` + `<root>/lib` while `files[]` walks the whole root; these files appear in `files[]` but yield no test/boundary facts: {}.",
+                scope_skips.join(", ")
+            )
+        } else {
+            format!(
+                "test/source discovery is scoped to `<root>/t` + `<root>/lib`; these files fall outside that scope and yield no test/boundary facts: {}. (`files[]` is not in this packet — the `file:` evidence refs are path-derived ids, not references to present facts.)",
+                scope_skips.join(", ")
+            )
+        };
+        vec![serde_json::json!({
+            "limitation_id": "discovery-scope-split",
+            "kind": "discovery_scope",
+            "message": message,
+            "evidence_refs": evidence_refs
+        })]
+    };
 
     let mut packet = build_unavailable_packet(schema, root, base, head, &normalized_classes);
 

@@ -15,6 +15,9 @@ const APP_PM: &str = "package App;\nsub run { 1 }\n1;\n";
 const APP_T: &str = "use Test::More;\nok(1, 'smoke');\ndone_testing();\n";
 const EXTRA_T: &str = "use Test::More;\nok(1, 'extra');\ndone_testing();\n";
 const HELPER_PM: &str = "package Helper;\nsub help { 1 }\n1;\n";
+const RUN_PL: &str = "use strict;\nsub run { eval { die }; }\nrun();\n";
+const EXTRA_PL: &str = "use strict;\nprint 'extra';\n";
+const APP_PSGI: &str = "use strict;\nmy $app = sub { [200, [], ['ok']] };\n";
 
 fn build_packet(root: &str, fact_classes: &str) -> serde_json::Value {
     must(build_ripr_facts_packet(&RiprFactsRequest {
@@ -127,4 +130,133 @@ fn files_only_request_carries_no_scope_limitation() {
         "files-only request must gain no scope limitation; got {:?}",
         limitation_ids(&packet)
     );
+}
+
+#[test]
+fn pl_and_psgi_skips_are_named_anywhere() {
+    // No scoped collector scans `.pl`/`.psgi` at all, so they are skips
+    // wherever they live — even directly under `lib/`.
+    let root = fresh_root("pl-psgi");
+    stage_file(&root, "lib/App.pm", APP_PM);
+    stage_file(&root, "lib/extra.pl", EXTRA_PL);
+    stage_file(&root, "t/app.t", APP_T);
+    stage_file(&root, "script/run.pl", RUN_PL);
+    stage_file(&root, "app.psgi", APP_PSGI);
+    let packet = build_packet(
+        &root,
+        "files,owners,tests,oracles,relations,dynamic_boundaries,verify_commands",
+    );
+    let _ = std::fs::remove_dir_all(&root);
+
+    // The `eval` in script/run.pl yields no boundary (scope unchanged —
+    // Option 2) — but it must no longer be a silent skip either.
+    assert!(
+        must_some(packet["dynamic_boundaries"].as_array())
+            .iter()
+            .all(|b| b["file_id"].as_str() != Some("file:script/run.pl")),
+        "unscanned .pl must yield no boundary fact"
+    );
+    let limitation = scope_limitation(&packet);
+    let message = must_some(limitation["message"].as_str());
+    for skipped in ["script/run.pl", "lib/extra.pl", "app.psgi"] {
+        assert!(message.contains(skipped), "message must name {skipped}; got {message:?}");
+    }
+    assert!(
+        message.contains("appear in `files[]`"),
+        "files-present packet must use the files-present wording; got {message:?}"
+    );
+    let refs: Vec<&str> = must_some(limitation["evidence_refs"].as_array())
+        .iter()
+        .filter_map(|r| r.as_str())
+        .collect();
+    for skipped in ["file:script/run.pl", "file:lib/extra.pl", "file:app.psgi"] {
+        assert!(refs.contains(&skipped), "evidence must name skipped ids; got {refs:?}");
+    }
+}
+
+#[test]
+fn tests_only_request_reports_t_skips_not_pm_skips() {
+    // Split gating: `.t` feeds tests, but `.pm` does not — a tests-only
+    // request must not report unrelated source skips.
+    let root = fresh_root("tests-only-gating");
+    stage_file(&root, "lib/App.pm", APP_PM);
+    stage_file(&root, "t/app.t", APP_T);
+    stage_file(&root, "xt/extra.t", EXTRA_T);
+    stage_file(&root, "script/Helper.pm", HELPER_PM);
+    let packet = build_packet(&root, "tests");
+    let _ = std::fs::remove_dir_all(&root);
+
+    let limitation = scope_limitation(&packet);
+    let message = must_some(limitation["message"].as_str());
+    assert!(message.contains("xt/extra.t"), "tests-only must name the .t skip; got {message:?}");
+    assert!(
+        !message.contains("script/Helper.pm"),
+        "tests-only must not report the unrelated .pm skip; got {message:?}"
+    );
+    let refs: Vec<&str> = must_some(limitation["evidence_refs"].as_array())
+        .iter()
+        .filter_map(|r| r.as_str())
+        .collect();
+    assert!(refs.contains(&"file:xt/extra.t"), "got {refs:?}");
+    assert!(!refs.contains(&"file:script/Helper.pm"), "got {refs:?}");
+}
+
+#[test]
+fn relations_request_reports_both_t_and_source_skips() {
+    // Relations consume both sides (test files + source files), so a
+    // relations/dynamic_boundaries request reports both skip classes.
+    let root = fresh_root("relations-gating");
+    stage_file(&root, "lib/App.pm", APP_PM);
+    stage_file(&root, "t/app.t", APP_T);
+    stage_file(&root, "xt/extra.t", EXTRA_T);
+    stage_file(&root, "script/Helper.pm", HELPER_PM);
+    let packet = build_packet(&root, "relations,dynamic_boundaries");
+    let _ = std::fs::remove_dir_all(&root);
+
+    let limitation = scope_limitation(&packet);
+    let message = must_some(limitation["message"].as_str());
+    assert!(message.contains("xt/extra.t"), "relations must name the .t skip; got {message:?}");
+    assert!(
+        message.contains("script/Helper.pm"),
+        "relations must name the .pm skip; got {message:?}"
+    );
+    let refs: Vec<&str> = must_some(limitation["evidence_refs"].as_array())
+        .iter()
+        .filter_map(|r| r.as_str())
+        .collect();
+    assert!(refs.contains(&"file:xt/extra.t"), "got {refs:?}");
+    assert!(refs.contains(&"file:script/Helper.pm"), "got {refs:?}");
+}
+
+#[test]
+fn subset_packet_uses_files_absent_wording() {
+    // A tests-only packet carries empty `files[]` — the message must not
+    // claim the skips "appear in `files[]`"; the `file:` evidence refs are
+    // path-derived ids, stated as such.
+    let root = fresh_root("files-absent");
+    stage_file(&root, "t/app.t", APP_T);
+    stage_file(&root, "xt/extra.t", EXTRA_T);
+    let packet = build_packet(&root, "tests");
+    let _ = std::fs::remove_dir_all(&root);
+
+    assert!(
+        must_some(packet["files"].as_array()).is_empty(),
+        "tests-only packet must carry empty files[]"
+    );
+    let limitation = scope_limitation(&packet);
+    let message = must_some(limitation["message"].as_str());
+    assert!(message.contains("xt/extra.t"), "message must name the skip; got {message:?}");
+    assert!(
+        !message.contains("appear in `files[]`"),
+        "files-absent packet must not claim files[] presence; got {message:?}"
+    );
+    assert!(
+        message.contains("not in this packet") && message.contains("path-derived"),
+        "files-absent wording must state the ids are path-derived; got {message:?}"
+    );
+    let refs: Vec<&str> = must_some(limitation["evidence_refs"].as_array())
+        .iter()
+        .filter_map(|r| r.as_str())
+        .collect();
+    assert!(refs.contains(&"file:xt/extra.t"), "got {refs:?}");
 }
