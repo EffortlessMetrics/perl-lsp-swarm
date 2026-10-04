@@ -75,6 +75,7 @@ where
             print!(
                 "{}",
                 format_info_output(
+                    &command_name,
                     env!("CARGO_PKG_VERSION"),
                     revision_label,
                     revision,
@@ -87,12 +88,16 @@ where
         }
         LaunchAction::Check => run_check(&command_name, &launch_plan.files),
         LaunchAction::CheckProject { ref dir } => check_project::run_check_project(dir),
-        LaunchAction::Doctor { ref dir, json } => doctor::run_doctor(dir, json),
-        LaunchAction::DoctorExternalTools { json } => doctor::run_doctor_external_tools(json),
-        LaunchAction::DoctorCriticCompatibility { json } => {
-            doctor::run_doctor_critic_compatibility(json)
+        LaunchAction::Doctor { ref dir, json } => doctor::run_doctor(dir, json, &command_name),
+        LaunchAction::DoctorExternalTools { json } => {
+            doctor::run_doctor_external_tools(json, &command_name)
         }
-        LaunchAction::DoctorDevEnvironment { json } => doctor::run_doctor_dev_environment(json),
+        LaunchAction::DoctorCriticCompatibility { json } => {
+            doctor::run_doctor_critic_compatibility(json, &command_name)
+        }
+        LaunchAction::DoctorDevEnvironment { json } => {
+            doctor::run_doctor_dev_environment(json, &command_name)
+        }
         LaunchAction::Completion { ref shell } => {
             if let Some(script) = shell_completion(shell) {
                 print!("{}", render_shell_completion(script, &command_name));
