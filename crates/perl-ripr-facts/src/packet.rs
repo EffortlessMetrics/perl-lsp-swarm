@@ -8,8 +8,8 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use crate::emitter::{
-    emit_boundaries_and_commands, emit_changes_from_diff, emit_files_and_owners,
-    emit_relations_and_discriminators, emit_tests_and_oracles,
+    diff_provenance_unverified_limitation, emit_boundaries_and_commands, emit_changes_from_diff,
+    emit_files_and_owners, emit_relations_and_discriminators, emit_tests_and_oracles,
 };
 use crate::request::{
     EXPECTED_RIPR_FACTS_SCHEMA, RiprFactsError, RiprFactsRequest, normalize_fact_classes,
@@ -123,15 +123,24 @@ pub fn build_ripr_facts_packet(
             Some(diff_text) if !diff_text.trim().is_empty() => {
                 emit_changes_from_diff(diff_text, root, &files, &owners)
             }
-            _ => (
-                Vec::new(),
-                vec![serde_json::json!({
+            _ => {
+                let mut limitations = vec![serde_json::json!({
                     "limitation_id": "no-diff-supplied",
                     "kind": "missing_input",
                     "message": "`changes` was requested but no diff was supplied on RiprFactsRequest.diff; the batch/CLI path does not yet produce one. An empty `changes[]` here means \"not analyzed\", not \"nothing changed\".",
                     "evidence_refs": []
-                })],
-            ),
+                })];
+                // `#17258`: `input.base`/`input.head` echo caller strings
+                // verbatim — including garbage — with no provenance caveat on
+                // this path. The `diff-provenance-unverified` disclosure
+                // existed only inside `emit_changes_from_diff`, unreachable
+                // from the no-diff CLI. Caveat caller-asserted refs here too;
+                // packets without base/head gain no new noise.
+                if base.is_some() || head.is_some() {
+                    limitations.push(diff_provenance_unverified_limitation());
+                }
+                (Vec::new(), limitations)
+            }
         }
     } else {
         (Vec::new(), Vec::new())
