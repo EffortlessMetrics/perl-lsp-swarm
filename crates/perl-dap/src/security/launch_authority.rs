@@ -145,9 +145,9 @@ struct FilesystemIdentity {
 
 impl FilesystemIdentity {
     #[cfg(unix)]
-    fn capture(_path: &Path, metadata: &Metadata) -> Self {
+    fn capture(_path: &Path, metadata: &Metadata) -> Option<Self> {
         use std::os::unix::fs::MetadataExt;
-        Self { device: metadata.dev(), inode: metadata.ino() }
+        Some(Self { device: metadata.dev(), inode: metadata.ino() })
     }
 
     /// Capture the identity of the directory at `path`.
