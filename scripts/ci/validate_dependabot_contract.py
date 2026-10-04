@@ -915,13 +915,20 @@ def _inspect_master_mentions(path: str, text: str) -> list[Finding]:
     findings: list[Finding] = []
     for match in re.finditer(r"`master`|\bmaster\b", text):
         window = text[max(0, match.start() - 180) : match.end() + 80]
+        # `master` is wrong when it is presented as this swarm repository's
+        # default branch, but it is the real public-contribution/publication
+        # branch for perl-lsp. Accept either a directly qualified
+        # `perl-lsp/master` mention or a nearby explicit public repository
+        # selector such as `--repo EffortlessMetrics/perl-lsp --base master`.
+        if re.search(r"(?:EffortlessMetrics/)?perl-lsp/master", window):
+            continue
         if re.search(r"EffortlessMetrics/perl-lsp(?!-swarm)", window):
             continue
         findings.append(
             Finding(
                 "master-as-default-branch",
                 path,
-                "master is rejected where the instruction means this repository's default branch",
+                "unqualified master is rejected where the instruction means the swarm repository's default branch",
             )
         )
         break
