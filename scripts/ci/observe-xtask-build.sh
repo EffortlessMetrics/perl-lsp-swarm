@@ -74,6 +74,7 @@ snapshot > "$prefix.before.json" || printf '{"instrument_error":"before snapshot
 collect_stderr() {
 LC_ALL=C exec awk -v trace="$prefix.trace.log" -v reasons="$prefix.dirty.log" -v finished="$prefix.finished.log" -v summary="$prefix.stderr.json" '
     /cargo::core::compiler::fingerprint/ {
+        error_chain=0
         traces++
         # Cargo Debug dirty reasons can contain old/new environment or flags.
         # Keep the native reason kind and package context, omit reason values.
@@ -81,7 +82,7 @@ LC_ALL=C exec awk -v trace="$prefix.trace.log" -v reasons="$prefix.dirty.log" -v
             reason=$0; sub(/^.*dirty: /,"",reason); sub(/[^[:alnum:]_].*$/,"",reason)
             sub(/dirty: .*/,"dirty: " reason " (details omitted)")
         } else if ($0 ~ /fingerprint error for/) { errors++ }
-        else if ($0 ~ /err:/) { sub(/err: .*/,"err: details omitted") }
+        else if ($0 ~ /err:/) { sub(/err: .*/,"err: details omitted"); error_chain=1 }
         else if ($0 !~ /fingerprint at:|write fingerprint|fingerprint dirty for/) { filtered++; next }
         n=length($0)+1
         if (trace_bytes+n <= 1048576) { print > trace; trace_bytes+=n } else trace_clipped=1
@@ -90,10 +91,17 @@ LC_ALL=C exec awk -v trace="$prefix.trace.log" -v reasons="$prefix.dirty.log" -v
         }
         next
     }
+    {
+        # anyhow Debug emits untagged LF continuations. Omit this added Cargo
+        # diagnostic payload, while retaining ordinary Cargo status/diagnostics.
+        plain=$0; gsub(/\033\[[0-9;]*[[:alpha:]]/,"",plain)
+        if (error_chain && plain !~ /^[[:space:]]*(Compiling |Checking |Finished |error(\[E[0-9]+\])?:|warning:)/ && (plain ~ /^[[:space:]]*$/ || plain ~ /^(Caused by:|Stack backtrace:|stack backtrace:)/ || plain ~ /^[[:space:]]/)) { continuations++; next }
+        error_chain=0
+    }
     /Compiling / { compiling++ }
     /Finished .*target\(s\) in / { print > finished }
     { print > "/dev/stderr"; fflush("/dev/stderr") }
-    END { printf "{\"fingerprint_lines\":%d,\"dirty_lines\":%d,\"compiling_messages\":%d,\"filtered_fingerprint_lines\":%d,\"fingerprint_errors\":%d,\"trace_clipped\":%s,\"dirty_clipped\":%s}\n", traces,dirty,compiling,filtered,errors,trace_clipped?"true":"false",reasons_clipped?"true":"false" > summary }
+    END { printf "{\"fingerprint_lines\":%d,\"dirty_lines\":%d,\"compiling_messages\":%d,\"filtered_fingerprint_lines\":%d,\"fingerprint_errors\":%d,\"filtered_error_continuations\":%d,\"trace_clipped\":%s,\"dirty_clipped\":%s}\n", traces,dirty,compiling,filtered,errors,continuations,trace_clipped?"true":"false",reasons_clipped?"true":"false" > summary }
 '
 }
 exec {stderr_fd}> >(collect_stderr)

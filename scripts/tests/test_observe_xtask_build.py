@@ -144,6 +144,36 @@ exit "${FAKE_EXIT:-0}"
         self.assertEqual(after["hashes"]["path"], "18446744073709551614")
         self.assertNotEqual(before["sha256"], after["sha256"])
 
+    def test_multiline_fingerprint_errors_are_redacted_and_cargo_status_retained(self):
+        cargo = self.bin / "cargo"
+        body = cargo.read_text()
+        payload = """cat >&2 <<'DIAGNOSTIC'
+0.01 INFO cargo::core::compiler::fingerprint: fingerprint error for serde
+0.01 INFO cargo::core::compiler::fingerprint: err: failed to read fingerprint
+
+Caused by:
+    0: CONTROL-SENSITIVE-CONTINUATION
+    1: secondary cause
+Stack backtrace:
+    0: CONTROL-SENSITIVE-BACKTRACE
+    Compiling retention-control v1.0.0
+ordinary retained stderr
+DIAGNOSTIC
+"""
+        body = body.replace("case ${FAKE_CHANGE:-none} in", payload + "case ${FAKE_CHANGE:-none} in")
+        cargo.write_text(body, encoding="utf-8", newline="\n")
+        result, record = self.observe()
+        self.assertNotIn("CONTROL-SENSITIVE-CONTINUATION", result.stdout + result.stderr)
+        self.assertNotIn("CONTROL-SENSITIVE-BACKTRACE", result.stdout + result.stderr)
+        self.assertIn("    Compiling retention-control", result.stderr)
+        self.assertIn("ordinary retained stderr", result.stderr)
+        self.assertEqual(record["stderr"]["compiling_messages"], 2)
+        self.assertFalse(record["selected_trace_complete"])
+        self.assertGreater(record["stderr"]["filtered_error_continuations"], 0)
+        for path in (self.work / "out").iterdir():
+            self.assertNotIn("CONTROL-SENSITIVE-CONTINUATION", path.read_text(), str(path))
+            self.assertNotIn("CONTROL-SENSITIVE-BACKTRACE", path.read_text(), str(path))
+
     def test_environment_and_flags_values_are_not_retained(self):
         unit = self.work / "target/debug/.fingerprint/serde-test/run-build-script.json"
         unit.parent.mkdir(parents=True)
