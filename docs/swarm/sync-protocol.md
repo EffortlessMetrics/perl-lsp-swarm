@@ -24,7 +24,7 @@ stable protocol.
 | Repository | Authority |
 | --- | --- |
 | `perl-lsp-swarm/main` | Active development; product implementation, tests, compiler/LSP/DAP work, proof, freeze, release preparation, and current sync protocol |
-| `perl-lsp/master` | Release lineage; publication-specific workflows/policy, public package lineage, and bounded emergency release fixes |
+| `perl-lsp/master` | Release lineage; public contribution ingress; publication-specific workflows/policy, public package lineage, and bounded emergency release fixes |
 
 Normal maintainer and agent product work starts and converges in swarm. Do not
 maintain parallel implementation queues in both repositories.
