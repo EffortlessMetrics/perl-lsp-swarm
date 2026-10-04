@@ -751,17 +751,6 @@ where
 
     match LspArgs::try_parse_from(collected_args) {
         Ok(parsed_args) => {
-            // Fail closed on trailing positionals no action will read (#17262):
-            // only `--check` consumes `files`, and clap's `requires = "check"`
-            // does not reliably reject junk on conflicting actions
-            // (`--ripr-facts EXTRA` parsed Ok and the packet silently dropped
-            // the token). Mechanism-independent: reject here, whatever clap did.
-            if !parsed_args.check && !parsed_args.files.is_empty() {
-                return Err(LaunchParseError::UnexpectedPositionals {
-                    tokens: parsed_args.files.clone(),
-                });
-            }
-
             let mut config = LaunchConfig::new(FeatureProfile::current());
 
             config.transport = parsed_args.transport.mode();
@@ -838,6 +827,21 @@ where
             } else {
                 LaunchAction::Run
             };
+
+            // Fail closed on trailing positionals no action will read (#17262):
+            // only `Check` consumes `files`, and clap's `requires = "check"`
+            // does not reliably reject junk on conflicting actions
+            // (`--ripr-facts EXTRA` parsed Ok and the packet silently dropped
+            // the token). Key on the RESOLVED action, not the parsed --check
+            // flag: health/info win over --check in dispatch yet neither
+            // conflicts with it, so `--health --check file.pl` resolves Health
+            // and would silently drop the file. This also covers any future
+            // flag/action skew, not just health/info.
+            if action != LaunchAction::Check && !parsed_args.files.is_empty() {
+                return Err(LaunchParseError::UnexpectedPositionals {
+                    tokens: parsed_args.files.clone(),
+                });
+            }
 
             Ok(LaunchPlan { action, config, files: parsed_args.files })
         }
@@ -2368,6 +2372,31 @@ mod tests {
         assert_eq!(plan.files, vec!["script.pl".to_string()]);
         let plan = must(parse_args(["perl-lsp", "--doctor", "app/"]));
         assert_eq!(plan.action, LaunchAction::Doctor { dir: "app/".to_string(), json: false });
+    }
+
+    #[test]
+    fn health_check_combo_rejects_ignored_files() {
+        // Health/info win dispatch over --check yet neither conflicts with it,
+        // so `--health --check file.pl` resolves Health — keying the rejection
+        // on the parsed --check flag would silently drop the file (#17262).
+        for combo in [
+            ["perl-lsp", "--health", "--check", "file.pl"].as_slice(),
+            ["perl-lsp", "--info", "--check", "file.pl"].as_slice(),
+        ] {
+            let error = must_err(parse_args(combo));
+            let rendered = error.to_string();
+            assert!(
+                rendered.contains("'file.pl'"),
+                "rejection must name the ignored file; got:\n{rendered}"
+            );
+        }
+    }
+
+    #[test]
+    fn health_check_combo_without_files_still_dispatches_health() {
+        // No files, no rejection: the flag combo keeps its historical dispatch.
+        let plan = must(parse_args(["perl-lsp", "--health", "--check"]));
+        assert_eq!(plan.action, LaunchAction::Health);
     }
 
     #[test]
