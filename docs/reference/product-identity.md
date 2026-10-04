@@ -49,15 +49,16 @@ its own final file hash.
 
 ## Repository context
 
-- Public product, external contributor ingress, and release lineage:
+- Public product, external pull-request ingress, and release lineage:
   `EffortlessMetrics/perl-lsp` on `master`.
-- Active high-throughput development and product proof:
+- Active high-throughput development, development issues, and product proof:
   `EffortlessMetrics/perl-lsp-swarm` on `main`.
 
-External issues and pull requests target `perl-lsp/master`; this does not create a
-second independent product-development trunk. Before integrating a shared-product public
-pull request, maintainers first converge accepted swarm state into the public repository.
-After the public merge, the shared-product effect is reverse-converged into swarm.
+Development issues remain in swarm. External implementation pull requests target
+`perl-lsp/master`; this does not create a second independent product-development trunk.
+Before integrating a shared-product public pull request, maintainers first converge
+accepted swarm state into the public repository. After the public merge, the
+shared-product effect is reverse-converged into swarm.
 
 Development evidence may link to the swarm repository when it is actually the subject.
 Public installation and support paths point to the public product repository after the
