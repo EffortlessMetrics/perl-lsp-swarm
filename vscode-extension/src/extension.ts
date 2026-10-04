@@ -3474,7 +3474,7 @@ function recordUnexpectedFailure(): string {
     kind: StartupErrorKind.Unknown,
     hint,
     remediation:
-      'Try restarting the server (Command Palette: "Perl: Restart Server") or run the Health Check.',
+      'Try restarting the server (Command Palette: "Perl: Restart Server") or run "Perl: Run Health Check".',
   };
   serverDemand?.noteStopped();
   healthWidget?.setWorkspaceLifecycleState('failed', {

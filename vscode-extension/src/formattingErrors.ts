@@ -38,8 +38,8 @@ export function handleFormattingError(message: string, outputCh: vscode.OutputCh
   const isNotFound = message.includes('perltidy not found');
   const label = isNotFound ? 'Run Health Check' : 'Show Output';
   const msg = isNotFound
-    ? `Perl formatting requires perltidy, which was not found on PATH. ` +
-      `Install it via: cpan Perl::Tidy  (or set perl-lsp.perltidyConfig to your config path)`
+    ? `Explicit external perltidy compatibility formatting requires perltidy, which was not found on PATH. ` +
+      `Native formatting is built in. For explicit external compatibility mode, install it via: cpanm Perl::Tidy. Run "Perl: Run Health Check" if compatibility formatting is still unavailable.`
     : `Perl formatting failed: ${truncated}`;
 
   vscode.window.showErrorMessage(msg, label).then((sel) => {
