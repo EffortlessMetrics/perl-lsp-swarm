@@ -411,6 +411,82 @@ fn postfix_hash_slice_keeps_postfix_precedence() -> TestResult {
     Ok(())
 }
 
+fn assert_retained_slice(
+    source: &str,
+    ast: &Node,
+    expected_slice: SourceLocation,
+    expected_target: &str,
+    expected_name: &str,
+    suffix_end: usize,
+) -> TestResult {
+    let mut errors = Vec::new();
+    find_all(
+        ast,
+        &|node| {
+            matches!(&node.kind, NodeKind::Error { partial: Some(partial), .. }
+            if matches!(&partial.kind, NodeKind::HashSlice { .. })
+                && partial.location == expected_slice)
+        },
+        &mut errors,
+    );
+    if errors.len() != 1 {
+        return Err(format!(
+            "expected one Error.partial HashSlice at {expected_slice:?}, found {}",
+            errors.len()
+        ));
+    }
+    let error = errors[0];
+    let NodeKind::Error { partial: Some(slice), found: Some(found), .. } = &error.kind else {
+        return Err("retained slice error lost its partial node or suffix token".to_string());
+    };
+    if error.location != (SourceLocation { start: expected_slice.start, end: suffix_end })
+        || found.start() != expected_slice.end
+    {
+        return Err("retained slice error has wrong suffix geometry".to_string());
+    }
+    let NodeKind::HashSlice { target, keys } = &slice.kind else {
+        return Err("retained partial changed kind".to_string());
+    };
+    let target_end = expected_slice.start + expected_target.len();
+    if target.location != (SourceLocation { start: expected_slice.start, end: target_end })
+        || source_text(source, target)? != expected_target
+    {
+        return Err("retained slice target has wrong source geometry".to_string());
+    }
+    // Dynamic typeglobs reach this producer through a single-expression Block;
+    // retain that already-parsed operand without changing its existing AST shape.
+    let variable = if expected_target.starts_with('{') {
+        let NodeKind::Block { statements } = &target.kind else {
+            return Err("typeglob slice lost its braced operand".to_string());
+        };
+        if statements.len() != 1 {
+            return Err("typeglob slice changed its braced operand count".to_string());
+        }
+        &statements[0]
+    } else {
+        target.as_ref()
+    };
+    if !matches!(&variable.kind, NodeKind::Variable { sigil, name }
+        if sigil == "$" && name == expected_name)
+    {
+        return Err("retained slice receiver changed variable identity".to_string());
+    }
+    let variable_start = expected_slice.start + usize::from(expected_target.starts_with('{'));
+    if variable.location
+        != (SourceLocation { start: variable_start, end: variable_start + expected_name.len() + 1 })
+    {
+        return Err("retained slice receiver changed variable span".to_string());
+    }
+    if keys.location
+        != (SourceLocation { start: expected_slice.end - 8, end: expected_slice.end - 1 })
+        || source_text(source, keys)? != "'alpha'"
+        || !matches!(&keys.kind, NodeKind::String { value, interpolated: false } if value == "alpha")
+    {
+        return Err("retained slice keys changed value or source geometry".to_string());
+    }
+    Ok(())
+}
+
 #[test]
 fn ungrouped_postfix_hash_slice_subscripts_report_at_the_suffix_and_keep_the_next_declaration()
 -> TestResult {
@@ -421,31 +497,47 @@ fn ungrouped_postfix_hash_slice_subscripts_report_at_the_suffix_and_keep_the_nex
     let cases = [
         (
             "my $value = $href->@{'alpha'}[0]; my $after = 1;",
-            29,
+            SourceLocation { start: 12, end: 29 },
+            "$href",
+            "href",
+            32,
             SourceLocation { start: 34, end: 47 },
         ),
         (
             "my $value = *{$g}->@{'alpha'}[0]; my $after = 1;",
-            29,
+            SourceLocation { start: 13, end: 29 },
+            "{$g}",
+            "g",
+            32,
             SourceLocation { start: 34, end: 47 },
         ),
         (
             "\"é🙂\";\r\nmy $value = $href->@{'alpha'}[0];\r\nmy $after = 1;",
-            40,
+            SourceLocation { start: 23, end: 40 },
+            "$href",
+            "href",
+            43,
             SourceLocation { start: 46, end: 59 },
         ),
         (
             "\"é🙂\";\r\nmy $value = $href->@{'alpha'}{'beta'};\r\nmy $after = 1;",
-            40,
+            SourceLocation { start: 23, end: 40 },
+            "$href",
+            "href",
+            48,
             SourceLocation { start: 51, end: 64 },
         ),
         (
             "$href->@{$inner->@{'alpha'}[0]}; my $after = 1;",
-            27,
+            SourceLocation { start: 9, end: 27 },
+            "$inner",
+            "inner",
+            30,
             SourceLocation { start: 33, end: 46 },
         ),
     ];
-    for (source, suffix_start, after_location) in cases {
+    for (source, slice_location, target, name, suffix_end, after_location) in cases {
+        let suffix_start = slice_location.end;
         let mut parser = Parser::new(source);
         let output = parser.parse_with_recovery();
         if !output.diagnostics.iter().any(|error| {
@@ -458,6 +550,7 @@ fn ungrouped_postfix_hash_slice_subscripts_report_at_the_suffix_and_keep_the_nex
                 output.diagnostics
             ));
         }
+        assert_retained_slice(source, &output.ast, slice_location, target, name, suffix_end)?;
         assert_after_declaration(source, &output.ast, after_location)?;
     }
     Ok(())

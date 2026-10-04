@@ -258,18 +258,13 @@ impl<'a> Parser<'a> {
                                     SourceLocation { start, end },
                                 )?;
                                 // A postfix slice does not admit an implicit
-                                // subscript. Grouping ends this inner chain,
-                                // and an explicit arrow remains valid. Return
-                                // an error rather than breaking: some primaries
-                                // re-enter postfix parsing after this call.
+                                // subscript. Recover here so re-entering primaries
+                                // cannot accept it, and retain the complete slice.
                                 if matches!(
                                     self.peek_kind(),
                                     Some(TokenKind::LeftBracket | TokenKind::LeftBrace)
                                 ) {
-                                    return Err(ParseError::syntax(
-                                        "A postfix hash slice needs parentheses or an explicit arrow before a subscript",
-                                        self.current_position(),
-                                    ));
+                                    return Ok(self.recover_invalid_hash_slice_subscript(expr));
                                 }
                             } else {
                                 expr = self.recover_truncated_arrow(expr);
@@ -1699,6 +1694,25 @@ impl<'a> Parser<'a> {
             NodeKind::Identifier { name: token.text.to_string() },
             SourceLocation { start: token.start(), end: token.end() },
         )
+    }
+
+    fn recover_invalid_hash_slice_subscript(&mut self, expr: Node) -> Node {
+        let start = expr.location.start;
+        let prefix_end = expr.location.end;
+        let message =
+            "A postfix hash slice needs parentheses or an explicit arrow before a subscript";
+        let location = self.current_position();
+        self.record_error(ParseError::syntax(message, location));
+        // Reuse the annotated synthetic recovery-node constructor and retain
+        // the completed slice for downstream analysis.
+        let mut error = self.create_error_node(message.to_string(), vec![]);
+        if let NodeKind::Error { partial, .. } = &mut error.kind {
+            *partial = Some(Box::new(expr));
+        }
+        // Use the existing bounded recovery path to consume the invalid suffix.
+        self.synchronize();
+        error.location = SourceLocation { start, end: self.previous_position().max(prefix_end) };
+        error
     }
 
     fn recover_truncated_arrow(&mut self, expr: Node) -> Node {
