@@ -529,9 +529,10 @@ pub enum LaunchAction {
     },
     /// Export a `ripr-perl-facts-v1` fact packet for the ripr repair-routing
     /// lane (Campaign 31, ripr-swarm#1379). This is a batch handoff — it does
-    /// NOT start the LSP server or execute Perl. The emitter body lands across
-    /// PRs 5-8 (perl-lsp-swarm#2592-#2595); this variant is the command
-    /// surface + arg validation + the unavailable-packet fallback.
+    /// NOT start the LSP server or execute Perl. The emitter body landed
+    /// across perl-lsp-swarm#2592-#2595 and #3293 PRs 3-8; this variant is
+    /// the command surface + arg validation, and packets without facts fall
+    /// back to the `unavailable`/`partial` states.
     RiprFacts {
         /// Packet schema version (must be `ripr-perl-facts-v1`).
         schema: String,

@@ -45,9 +45,10 @@ pub fn build_ripr_facts_packet(
         normalize_fact_classes(fact_classes).map_err(RiprFactsError::InvalidFactClasses)?;
 
     // Emit the packet. Parser-backed tests/oracles (#3293 PR 4), relations/
-    // discriminators (#2594), boundaries/commands (#2595), and parser-backed
-    // files/owners (#3293 PR 3) are populated; diff-derived changes still land in
-    // a later slice. When any facts are found, `packet_status` upgrades from
+    // discriminators (#2594, parser-backed `direct_owner_call` #3293 PR 6),
+    // boundaries/commands (#2595), parser-backed files/owners (#3293 PR 3),
+    // and diff-derived changes from caller-supplied diff text (#3293 PR 5)
+    // are populated. When any facts are found, `packet_status` upgrades from
     // `unavailable` to `partial`.
     //
     // PR 4: parse test files only when `tests`/`oracles` — or `relations`, a
@@ -86,6 +87,9 @@ pub fn build_ripr_facts_packet(
 
     let (boundaries, boundary_limitations, verify_commands) = emit_boundaries_and_commands(root);
     let has_boundary_facts = !boundaries.is_empty();
+    // Verify commands are facts too: a verify-only packet carries usable
+    // commands and must read `partial`, never `unavailable`-with-facts.
+    let has_verify_facts = !verify_commands.is_empty();
 
     // PR 3 (perl-lsp-swarm#3293): emit parser-backed files + owners facts (plus
     // per-file provenance and parse/read limitations) by parsing every Perl
@@ -127,7 +131,7 @@ pub fn build_ripr_facts_packet(
                 let limitations = vec![serde_json::json!({
                     "limitation_id": "no-diff-supplied",
                     "kind": "missing_input",
-                    "message": "`changes` was requested but no diff was supplied on RiprFactsRequest.diff; the batch/CLI path does not yet produce one. An empty `changes[]` here means \"not analyzed\", not \"nothing changed\".",
+                    "message": "`changes` was requested but no diff text was supplied; no caller derives diff text from base/head yet. An empty `changes[]` here means \"not analyzed\", not \"nothing changed\".",
                     "evidence_refs": []
                 })];
                 (Vec::new(), limitations)
@@ -263,6 +267,7 @@ pub fn build_ripr_facts_packet(
         || has_oracle_facts
         || has_relation_facts
         || has_boundary_facts
+        || has_verify_facts
         || has_change_facts
         || has_file_facts
         || has_owner_facts;
@@ -597,7 +602,7 @@ pub(crate) fn build_unavailable_packet(
         "limitations": [{
             "limitation_id": "emitter-not-yet-implemented",
             "kind": "missing_emitter",
-            "message": "The ripr-facts emitter body lands in PRs 5-8 (perl-lsp-swarm#2592-#2595). Today every call produces an unavailable packet.",
+            "message": "The ripr-facts emitter produced no facts for the requested classes under this root, so this call yields an unavailable packet.",
             "evidence_refs": []
         }],
         "provenance": [{
@@ -1590,6 +1595,36 @@ mod tests {
         let p = packet_for_diff("nodiff", "changes", None);
         assert!(changes_of(&p).is_empty(), "no diff → no changes");
         assert!(has_limitation(&p, "no-diff-supplied"), "must surface no-diff-supplied");
+    }
+
+    #[test]
+    fn build_packet_verify_only_request_reads_partial_not_unavailable() {
+        // A root with one pattern-free .t file, requesting only
+        // `verify_commands`: the packet carries a usable command, so it must
+        // read `partial` — never `unavailable` claiming no facts.
+        let root = "target/ripr-verify-only";
+        let _ = std::fs::remove_dir_all(root);
+        std::fs::create_dir_all(format!("{root}/t")).expect("create t/");
+        std::fs::write(format!("{root}/t/plain.t"), "use strict;\n1;\n").expect("write t");
+        let p = build_ripr_facts_packet(&RiprFactsRequest {
+            schema: "ripr-perl-facts-v1",
+            root,
+            base: None,
+            head: None,
+            fact_classes: "verify_commands",
+            diff: None,
+        })
+        .expect("valid request builds a packet");
+        let _ = std::fs::remove_dir_all(root);
+        assert!(
+            !p["verify_commands"].as_array().expect("verify_commands[]").is_empty(),
+            "one .t file → one verify command"
+        );
+        assert_eq!(p["packet_status"], "partial", "verify facts count toward status");
+        assert!(
+            !has_limitation(&p, "emitter-not-yet-implemented"),
+            "partial packet must not claim no facts were produced"
+        );
     }
 
     #[test]

@@ -1946,10 +1946,12 @@ bench-alert-test:
     @echo "🧪 Running benchmark alert regression tests..."
     @cargo xtask bench-alert-test
 
-# Run benchmark runner parsing fixture tests (#17219)
+# Run benchmark runner harness tests (#17218 failure surfacing, #17219 parsing)
 bench-runner-test:
-    @echo "🧪 Running benchmark runner parsing tests..."
+    @echo "🧪 Running benchmark runner harness tests..."
+    @bash -n benchmarks/scripts/run-benchmarks.sh
     bash benchmarks/scripts/test_run_benchmarks_parse.sh
+    bash benchmarks/scripts/test_run_benchmarks_failure.sh
 
 
 # Run all performance benchmarks and save baseline for 0.12.0
