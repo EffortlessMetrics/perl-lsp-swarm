@@ -65,11 +65,7 @@ impl<'a> Parser<'a> {
         self.parse_postfix_chain_with(expr, true)
     }
 
-    fn parse_postfix_chain_with(
-        &mut self,
-        mut expr: Node,
-        arrow_only: bool,
-    ) -> ParseResult<Node> {
+    fn parse_postfix_chain_with(&mut self, mut expr: Node, arrow_only: bool) -> ParseResult<Node> {
         let mut postfix_chain_depth = 0usize;
 
         // Closure to track nesting depth and prevent stack overflow on deeply
@@ -261,6 +257,20 @@ impl<'a> Parser<'a> {
                                     },
                                     SourceLocation { start, end },
                                 )?;
+                                // A postfix slice does not admit an implicit
+                                // subscript. Grouping ends this inner chain,
+                                // and an explicit arrow remains valid. Return
+                                // an error rather than breaking: some primaries
+                                // re-enter postfix parsing after this call.
+                                if matches!(
+                                    self.peek_kind(),
+                                    Some(TokenKind::LeftBracket | TokenKind::LeftBrace)
+                                ) {
+                                    return Err(ParseError::syntax(
+                                        "A postfix hash slice needs parentheses or an explicit arrow before a subscript",
+                                        self.current_position(),
+                                    ));
+                                }
                             } else {
                                 expr = self.recover_truncated_arrow(expr);
                                 break;
@@ -981,10 +991,9 @@ impl<'a> Parser<'a> {
                             // Also applies to optional-arg builtins (defined, length, ord, etc.)
                             // that implicitly use $_ when no explicit argument is given, so that
                             // `defined && ...`, `length > 0`, `ord >= 32` parse correctly.
-                            let next_is_binary_operator = self
-                                .peek_kind()
-                                .is_some_and(Self::is_binary_operator)
-                                && !self.peek_is_autoquoted_word_operator();
+                            let next_is_binary_operator =
+                                self.peek_kind().is_some_and(Self::is_binary_operator)
+                                    && !self.peek_is_autoquoted_word_operator();
                             let optional_arg_has_explicit_sub_arg =
                                 Self::is_optional_arg_builtin(bare_name)
                                     && self.is_explicit_sub_sigil_argument_start();
