@@ -14,15 +14,17 @@ specific to working inside the development repository itself.
 
 Development authority lives in
 [`EffortlessMetrics/perl-lsp-swarm`](https://github.com/EffortlessMetrics/perl-lsp-swarm)
-on `main`. This page is for maintainers and authorized swarm operators working directly
-inside that development repository.
+on `main`. Development issues also live here, including issues that external
+contributors may choose to implement. This page is for maintainers and authorized swarm
+operators working directly inside that development repository.
 
-External contributors use
+External implementation pull requests use
 [`EffortlessMetrics/perl-lsp`](https://github.com/EffortlessMetrics/perl-lsp) on
-`master` for public issues and pull requests. Before integrating a shared-product public
-pull request, maintainers first converge accepted swarm state into `perl-lsp/master`;
-after the public merge, they reverse-converge the shared-product effect into swarm.
-External contributors do not need a duplicate swarm pull request.
+`master`. Before integrating a shared-product public pull request, maintainers first
+converge accepted swarm state into `perl-lsp/master`; after the public merge, they
+reverse-converge the shared-product effect into swarm. External contributors keep the
+swarm issue as the controlling development record and do not need a duplicate swarm pull
+request.
 
 `perl-lsp` also owns public release lineage and published artifacts. A merge to either
 source repository does not by itself establish release, package-registry, editor-marketplace,
