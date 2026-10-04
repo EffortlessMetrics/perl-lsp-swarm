@@ -3199,10 +3199,18 @@ impl DebugAdapter {
             let pid = process.id();
             match signal::kill(Pid::from_raw(Self::u32_to_i32_saturating(pid)), Signal::SIGTERM) {
                 Ok(()) => {
+                    // The SIGTERM grace period keeps the production budget:
+                    // it precedes kill(), so a test child that ignores
+                    // SIGTERM would otherwise consume the elevated
+                    // confirmation budget here and push the whole cleanup
+                    // past the cleanup-driving tests' 2s response deadlines
+                    // (CodeRabbit follow-up on #17173). Only the final
+                    // kill-confirmation wait below is elevated in test
+                    // builds.
                     if let outcome @ ChildExitOutcome::Exited =
                         Self::wait_for_child_exit_with_outcome(
                             process,
-                            Duration::from_millis(debug_session_terminate_wait_ms()),
+                            Duration::from_millis(super::DEBUG_SESSION_TERMINATE_WAIT_MS),
                         )
                     {
                         // #15538: the direct child exited gracefully, but the

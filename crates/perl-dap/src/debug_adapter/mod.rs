@@ -86,6 +86,11 @@ use crate::debug_adapter::variable_cache::{VariableCacheKind, slice_variables};
 use crate::reload::RuntimeModuleGenerationClock;
 use crate::security;
 use crate::security::launch_authority::LaunchAuthority;
+// The production SIGTERM grace budget is referenced only by the unix branch
+// of `terminate_child_process_with_outcome`; the test-build budget helper
+// replaces it everywhere else (#17173).
+#[cfg(unix)]
+use patterns::DEBUG_SESSION_TERMINATE_WAIT_MS;
 use patterns::{
     DEBUGGER_QUERY_WAIT_MS, EVENT_QUEUE_CAPACITY, RECENT_OUTPUT_MAX_LINES, RecentOutputBuffer,
     RecentOutputLine, ansi_escape_re, assignment_ops_re, context_re, dangerous_ops_re,
