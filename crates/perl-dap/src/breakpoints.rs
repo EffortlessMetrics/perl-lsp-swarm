@@ -1766,7 +1766,14 @@ EOF
     fn engine_hit_correlates_across_separator_spellings() -> Result<(), Box<dyn std::error::Error>>
     {
         let (_file, stored_spelling) = create_test_perl_file();
-        let observed_spelling = stored_spelling.replace('\\', "/");
+        // Derive the other spelling from whichever separator the fixture path
+        // actually uses: Windows temp paths carry `\`, POSIX paths carry `/`,
+        // so the pair stays a genuine spelling mismatch on every platform.
+        let observed_spelling = if stored_spelling.contains('/') {
+            stored_spelling.replace('/', "\\")
+        } else {
+            stored_spelling.replace('\\', "/")
+        };
         assert_ne!(
             stored_spelling, observed_spelling,
             "test fixture must actually exercise both separator spellings"
