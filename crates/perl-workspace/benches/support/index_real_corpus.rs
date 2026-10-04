@@ -264,7 +264,11 @@ pub fn cold_scan_index(root: &Path) -> Result<ColdScanIndexSample, String> {
         let text = String::from_utf8_lossy(&bytes).into_owned();
         let url = Url::from_file_path(path)
             .map_err(|()| format!("discovered path is not absolute: {}", path.display()))?;
-        if index.index_file(url, text).is_ok() {
+        // Canonical initial-index API (workspace_index.rs:2168). The matrix
+        // names its deprecated alias `index_file` (:2162), which delegates to
+        // this exact call; the canonical form is used so this new caller does
+        // not grow the #11301 compatibility-call baseline.
+        if index.index_initial_file(url, text).is_ok() {
             files_indexed += 1;
         } else {
             index_errors += 1;
