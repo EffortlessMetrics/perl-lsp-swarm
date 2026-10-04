@@ -130,6 +130,7 @@ struct RecordedExemption {
 const CLAUSE_IDS: &[&str] = &[
     "workflow-exists",
     "pull-request-trigger",
+    "pull-request-default-branch",
     "merge-group-trigger",
     "push-targets-master",
     "no-path-filters",
@@ -396,6 +397,11 @@ fn evaluate_required_entry(
         if let Some(yaml) = workflow_yaml {
             if !has_trigger(yaml, "pull_request") {
                 findings.push(("pull-request-trigger", "missing pull_request trigger".to_string()));
+            } else if !pull_request_targets_default_branch(yaml, SOURCE_DEFAULT_BRANCH) {
+                findings.push((
+                    "pull-request-default-branch",
+                    format!("pull_request branch filters must admit {SOURCE_DEFAULT_BRANCH}"),
+                ));
             }
             if !has_trigger(yaml, "merge_group") {
                 findings.push(("merge-group-trigger", "missing merge_group trigger".to_string()));
@@ -553,6 +559,111 @@ fn has_trigger(workflow: &Value, trigger_name: &str) -> bool {
         }
         _ => false,
     }
+}
+
+// Source profile identity. Actual public P uses master and must bind its own
+// profile; it must not inherit this source-context literal merely by projection.
+const SOURCE_DEFAULT_BRANCH: &str = "main";
+
+/// Admit the actual source default branch, rather than just the event name.
+/// Only the literal, `*`, `**`, and `?` pattern subset is interpreted here.
+/// Other syntax and malformed filter values fail closed pending a qualified
+/// matcher; this helper does not claim complete GitHub filter-language coverage.
+fn pull_request_targets_default_branch(workflow: &Value, default_branch: &str) -> bool {
+    let Some(Value::Mapping(on)) = get_on(workflow) else {
+        return has_trigger(workflow, "pull_request");
+    };
+    let Some(event) = on.get(Value::String("pull_request".to_string())) else {
+        return false;
+    };
+    let Value::Mapping(event) = event else {
+        return event.is_null();
+    };
+    let branches = event.get(Value::String("branches".to_string()));
+    let ignored = event.get(Value::String("branches-ignore".to_string()));
+    if branches.is_some() && ignored.is_some() {
+        return false;
+    }
+    if let Some(ignored) = ignored {
+        let Some(patterns) = branch_filter_patterns(ignored) else {
+            return false;
+        };
+        for pattern in patterns {
+            if pattern.starts_with('!') {
+                return false;
+            }
+            match source_branch_pattern_matches(pattern, default_branch) {
+                Some(true) | None => return false,
+                Some(false) => {}
+            }
+        }
+        return true;
+    }
+    let Some(branches) = branches else {
+        return true;
+    };
+    let Some(patterns) = branch_filter_patterns(branches) else {
+        return false;
+    };
+    let mut included = false;
+    for pattern in patterns {
+        let (pattern, negated) =
+            pattern.strip_prefix('!').map_or((pattern, false), |rest| (rest, true));
+        match source_branch_pattern_matches(pattern, default_branch) {
+            Some(true) => included = !negated,
+            Some(false) => {}
+            None => return false,
+        }
+    }
+    included
+}
+
+fn branch_filter_patterns(value: &Value) -> Option<Vec<&str>> {
+    match value {
+        Value::String(pattern) if !pattern.is_empty() => Some(vec![pattern.as_str()]),
+        Value::Sequence(values) if !values.is_empty() => values
+            .iter()
+            .map(|value| value.as_str().filter(|pattern| !pattern.is_empty()))
+            .collect(),
+        _ => None,
+    }
+}
+
+/// Bounded dynamic-programming match for the admitted subset. Literal
+/// refs/heads/main is not silently rewritten to main: PR filters match base
+/// branch names. The historical push-targets-master rule remains separate.
+fn source_branch_pattern_matches(pattern: &str, branch: &str) -> Option<bool> {
+    if pattern.is_empty()
+        || pattern.len() > 4096
+        || pattern.bytes().any(|byte| matches!(byte, b'[' | b']' | b'+' | b'\\' | b'!'))
+    {
+        return None;
+    }
+    let bytes = pattern.as_bytes();
+    let target = branch.as_bytes();
+    let mut prior = vec![false; target.len() + 1];
+    prior[0] = true;
+    let mut index = 0;
+    while index < bytes.len() {
+        let token = bytes[index];
+        let double_star = token == b'*' && bytes.get(index + 1) == Some(&b'*');
+        let mut next = vec![false; target.len() + 1];
+        if token == b'*' {
+            next[0] = prior[0];
+            for end in 1..=target.len() {
+                next[end] =
+                    prior[end] || (next[end - 1] && (double_star || target[end - 1] != b'/'));
+            }
+        } else {
+            for end in 1..=target.len() {
+                next[end] = prior[end - 1]
+                    && ((token == b'?' && target[end - 1] != b'/') || token == target[end - 1]);
+            }
+        }
+        prior = next;
+        index += if double_star { 2 } else { 1 };
+    }
+    Some(prior[target.len()])
 }
 
 fn push_targets_master(workflow: &Value) -> bool {
@@ -1140,6 +1251,93 @@ mod tests {
             "{:?}",
             eval.violations
         );
+        Ok(())
+    }
+    #[test]
+    fn source_pr_branch_filter_boundaries() -> Result<()> {
+        let cases = [
+            ("on: [pull_request]", true),
+            ("on:\n  pull_request:", true),
+            ("on:\n  pull_request:\n    branches: [main]", true),
+            ("on:\n  pull_request:\n    branches: [master]", false),
+            ("on:\n  pull_request:\n    branches: ['*', '!main']", false),
+            ("on:\n  pull_request:\n    branches: ['!main', '*']", true),
+            ("on:\n  pull_request:\n    branches-ignore: [main]", false),
+            ("on:\n  pull_request:\n    branches-ignore: [master]", true),
+            ("on:\n  pull_request:\n    branches: ['ma?n']", true),
+            ("on:\n  pull_request:\n    branches: ['m*']", true),
+            ("on:\n  pull_request:\n    branches: ['releases/*']", false),
+            ("on:\n  pull_request:\n    branches: ['refs/heads/main']", false),
+            ("on:\n  pull_request:\n    branches: [false]", false),
+            ("on:\n  pull_request:\n    branches: []", false),
+            ("on:\n  pull_request:\n    branches: [main]\n    branches-ignore: [master]", false),
+            ("on:\n  pull_request:\n    branches-ignore: ['[a-z]*']", false),
+            ("on:\n  pull_request: true", false),
+        ];
+        for (raw, expected) in cases {
+            let parsed: Value = serde_yaml_ng::from_str(raw)?;
+            assert_eq!(pull_request_targets_default_branch(&parsed, "main"), expected, "{raw}");
+        }
+        assert_eq!(source_branch_pattern_matches("releases/*", "releases/v1/hotfix"), Some(false));
+        assert_eq!(source_branch_pattern_matches("releases/**", "releases/v1/hotfix"), Some(true));
+        Ok(())
+    }
+
+    #[test]
+    fn wrong_pr_base_fails_with_current_governance_and_existing_exemptions() -> Result<()> {
+        let original = load_fixture("valid-required.yml")?;
+        let mut wrong = original.clone();
+        let Value::Mapping(on) =
+            wrong.get_mut("on").ok_or_else(|| color_eyre::eyre::eyre!("on missing"))?
+        else {
+            bail!("fixture on must be a mapping");
+        };
+        let event = on
+            .get_mut(Value::String("pull_request".to_string()))
+            .ok_or_else(|| color_eyre::eyre::eyre!("pull_request missing"))?;
+        let Value::Mapping(event) = event else {
+            bail!("fixture pull_request must be a mapping");
+        };
+        event.insert(Value::String("branches".to_string()), serde_yaml_ng::from_str("[master]")?);
+        let rejected = evaluate_required_entry(
+            "fixture",
+            "fixture.yml".to_string(),
+            true,
+            true,
+            Some(&wrong),
+            &[],
+        );
+        assert!(!rejected.ok);
+        assert_eq!(rejected.violations, vec!["pull_request branch filters must admit main"]);
+        let tracked = PolicyExemption {
+            clause: "pull-request-default-branch".to_string(),
+            status: ExemptionStatus::Remainder,
+            reason: "synthetic missing route".to_string(),
+            tracking: Some("#10113".to_string()),
+        };
+        let recorded = evaluate_required_entry(
+            "fixture",
+            "fixture.yml".to_string(),
+            true,
+            true,
+            Some(&wrong),
+            &[tracked.clone()],
+        );
+        assert_eq!(recorded.exemptions.len(), 1);
+        assert_eq!(
+            recorded.exemptions[0].suppressed,
+            "pull_request branch filters must admit main"
+        );
+        let stale = evaluate_required_entry(
+            "fixture",
+            "fixture.yml".to_string(),
+            true,
+            true,
+            Some(&original),
+            &[tracked],
+        );
+        assert!(!stale.ok);
+        assert!(stale.violations.iter().any(|item| item.contains("stale exemption")));
         Ok(())
     }
 }
