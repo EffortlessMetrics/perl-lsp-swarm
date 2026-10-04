@@ -375,12 +375,16 @@ class GovernedRiprProof(unittest.TestCase):
 
     def test_push_punctuation_branch_name_resolves(self):
         branch = "release+hotfix"
-        self.git("update-ref", "refs/remotes/origin/" + branch, self.base)
+        # Point the punctuation ref at the feature commit, NOT at self.base:
+        # origin/main already resolves to self.base, so aliasing the two would
+        # let a validate-then-hardcode-origin/main mutant pass this test.
+        self.assertNotEqual(self.head, self.base)
+        self.git("update-ref", "refs/remotes/origin/" + branch, self.head)
         self.payload["repository"]["default_branch"] = branch
         result = self.run_proof(GITHUB_EVENT_NAME="push")
         self.assertEqual(result.returncode, 0, result.stderr)
         call = self.calls()[0]
-        self.assertEqual(call[call.index("--base") + 1], self.base)
+        self.assertEqual(call[call.index("--base") + 1], self.head)
 
     def test_push_invalid_default_branch_is_refused(self):
         self.payload["repository"]["default_branch"] = "main..x"
