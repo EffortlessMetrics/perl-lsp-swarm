@@ -3,6 +3,9 @@
 # Usage: observe-xtask-build.sh PHASE OUTPUT_DIR -- COMMAND [ARG...]
 # GNU time measures the whole command (including analysis for cargo xtask), not
 # aggregate simultaneous RSS. Cargo's own Finished lines isolate build duration.
+# cargo-toolchain-guard: exempt -- this diagnostic wrapper only probes metadata
+# and delegates the caller's exact command/verdict. Hosted callers establish the
+# pinned toolchain first; observation must not introduce a new build admission.
 set -uo pipefail
 
 phase=${1:-}; output=${2:-}
