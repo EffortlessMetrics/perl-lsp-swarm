@@ -279,9 +279,35 @@ impl TransportArgs {
     }
 }
 
+/// Hand-written usage block for clap's error rendering (#17261).
+///
+/// This is the same 7-line block `help_text()` prints after `Usage: `, minus
+/// that prefix (clap's error template supplies `Usage: ` itself). It names the
+/// `--check` file operands explicitly, so conflict errors for `--check` keep
+/// their operands while conflicts for actions without positionals
+/// (`--ripr-facts`, `--doctor`, …) no longer inherit an invented `<FILES>...`.
+/// `override_usage` is the documented clap API for error usage; `hide` on
+/// `files` removes the positional from help, not from error usage, so it
+/// cannot carry this fix across clap versions.
+const CLI_OVERRIDE_USAGE: &str = concat!(
+    "perllsp [options]\n",
+    "       perllsp --check <file.pl> [file2.pm ...]\n",
+    "       perllsp --check-project [dir]\n",
+    "       perllsp --doctor [dir]\n",
+    "       perllsp --doctor --external-tools\n",
+    "       perllsp --doctor --critic-compatibility\n",
+    "       perllsp --doctor --dev-environment",
+);
+
 /// Command line arguments for the Perl LSP binary.
 #[derive(Parser, Debug, Clone)]
-#[command(name = "perl-lsp", version, about = "Perl Language Server", long_about = None)]
+#[command(
+    name = "perl-lsp",
+    version,
+    about = "Perl Language Server",
+    long_about = None,
+    override_usage = CLI_OVERRIDE_USAGE
+)]
 pub struct LspArgs {
     /// Transport configuration (stdio or socket).
     #[command(flatten)]
@@ -430,13 +456,12 @@ pub struct LspArgs {
 
     /// Files to check (used with --check)
     ///
-    /// Hidden from clap's help/usage rendering (#17261): clap's auto-usage
-    /// pulled this trailing positional into conflict errors for actions that
-    /// never read it (`--ripr-facts --check x` printed
-    /// `Usage: perllsp.exe --ripr-facts <FILES>...`, inventing syntax
-    /// `--ripr-facts` does not take). Help is unaffected — `--help` renders
-    /// the hand `help_text()`, which already documents
-    /// `perllsp --check <file.pl> [file2.pm ...]` — and parsing is unchanged.
+    /// Hidden from clap's auto-help (#17261): `--help` renders the hand
+    /// `help_text()`, which already documents
+    /// `perllsp --check <file.pl> [file2.pm ...]`, so the auto-help entry is
+    /// redundant. Conflict-error usage is owned by `override_usage` on the
+    /// `Command`, not by this flag — `hide` removes the positional from help,
+    /// not from error usage — and parsing is unchanged.
     #[arg(trailing_var_arg = true, requires = "check", hide = true)]
     pub files: Vec<String>,
 }
@@ -1025,13 +1050,9 @@ pub fn help_text() -> String {
     let mut out = String::with_capacity(1024);
     out.push_str("Perl Language Server\n");
     out.push('\n');
-    out.push_str("Usage: perllsp [options]\n");
-    out.push_str("       perllsp --check <file.pl> [file2.pm ...]\n");
-    out.push_str("       perllsp --check-project [dir]\n");
-    out.push_str("       perllsp --doctor [dir]\n");
-    out.push_str("       perllsp --doctor --external-tools\n");
-    out.push_str("       perllsp --doctor --critic-compatibility\n");
-    out.push_str("       perllsp --doctor --dev-environment\n");
+    out.push_str("Usage: ");
+    out.push_str(CLI_OVERRIDE_USAGE);
+    out.push('\n');
     out.push('\n');
     out.push_str("Server options:\n");
     out.push_str("  --stdio              Use stdio for communication (default)\n");
@@ -2343,6 +2364,25 @@ mod tests {
         // `hide` changes rendering only — the `--check` file flow is untouched.
         let plan = must(parse_args(["perl-lsp", "--check", "script.pl", "other.pm"]));
         assert_eq!(plan.files, vec!["script.pl".to_string(), "other.pm".to_string()]);
+    }
+
+    #[test]
+    fn check_conflict_usage_shows_file_operands() {
+        // `--check --doctor` is a genuine conflict, and its error usage must
+        // name the `--check` file operands (#17261): hiding the positional
+        // stripped them from legitimate `--check` errors too. `override_usage`
+        // restores them while keeping bogus `<FILES>...` out of actions that
+        // take no positionals.
+        let error = must_err(parse_args(["perl-lsp", "--check", "--doctor"]));
+        let rendered = error.to_string();
+        assert!(
+            rendered.contains("cannot be used with"),
+            "conflict error must survive; got:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("perllsp --check <file.pl> [file2.pm ...]"),
+            "check conflict usage must name the file operands; got:\n{rendered}"
+        );
     }
 
     #[test]
