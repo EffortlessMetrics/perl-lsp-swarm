@@ -58,7 +58,9 @@ fn scenario_18_diagnostics_republish_after_full_document_edit() -> Result<(), St
 
     // Wait for and then drain the initial diagnostics so the post-edit wait
     // sees only new events, not the pre-edit ones still in the peek queue.
-    let initial = harness.wait_for_diagnostics("edit_diag.pl", Duration::from_secs(5));
+    let initial = harness
+        .wait_for_diagnostics("edit_diag.pl", Duration::from_secs(5))
+        .map_err(|end| format!("diagnostics for edit_diag.pl: {end}"))?;
     assert!(
         !initial.is_empty(),
         "Expected at least one diagnostic for BROKEN_SOURCE (unterminated expression); \

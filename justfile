@@ -1894,6 +1894,17 @@ bench-index:
     @echo "📊 Running workspace index benchmarks..."
     @cargo xtask bench-run --category index --output benchmarks/results/latest.json
 
+# Run ripr-facts benchmarks only
+bench-ripr:
+    @echo "📊 Running ripr-facts benchmarks..."
+    @cargo xtask bench-run --category ripr --output benchmarks/results/latest.json
+
+# RIPR E-slate quality benches (#17154): boundary recall, limitation honesty,
+# fingerprint sensitivity, order invariance, guidance actionability.
+bench-ripr-quality:
+    @echo "📊 Running RIPR quality benches (E2/E3/D2/D3/A2)..."
+    ./scripts/cargo-admitted test -p perl-ripr-facts --test boundary_recall --test limitation_honesty --test fingerprint_sensitivity --test order_invariance --test guidance_actionability --locked
+
 # Format benchmark results as receipt
 bench-receipt:
     @echo "📋 Generating benchmark receipt..."
@@ -2400,6 +2411,12 @@ _api-ratchet-crates:
 # still diffs; a `Self`-looking substring inside a longer identifier (e.g.
 # `Selfish`) keeps its spelling via the boundary check.
 #
+# Fold the standard-library Arc re-export moved by nightly rustdoc (#17024).
+# Committed baselines keep alloc::sync::Arc; the canonical-form guard stays.
+# Exact type boundaries leave user-owned paths and different types visible.
+# Revisit the Arc rule because a matched delimiter may begin a nested Arc;
+# every replacement removes one relocated path, so the loop terminates.
+#
 # Usage: just _public-api-filter <raw-file> <filtered-file>
 [private]
 _public-api-filter raw out:
@@ -2421,6 +2438,9 @@ _public-api-filter raw out:
         | sed -E \
             -e 's#(^|[ <([&,=?])core::io::(write::|error::)?#\1std::io::#g' \
             -e 's#(^|[ <([&,=?])alloc::io::(buf_read::|read::)?#\1std::io::#g' \
+            -e ':arc_alias' \
+            -e 's#(^|[ <([&,=?])alloc::rcs::arc::Arc(<|::|[][ >(),&;=?]|$)#\1alloc::sync::Arc\2#g' \
+            -e 't arc_alias' \
         | awk -f scripts/ci/public_api_filter.awk \
         > "{{out}}" || true
 

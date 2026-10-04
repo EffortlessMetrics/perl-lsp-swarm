@@ -73,7 +73,9 @@ const EXPECTED_CLASS_COUNTS: &[(&str, usize)] = &[
     ("test_api", 27),
     ("lab", 21),
     ("oracle", 1),
-    ("benchmark", 15),
+    // 15 -> 16: `perl-ripr-facts/ripr_facts_benchmark` [[bench]] target
+    // added by the #17154 ripr packet benchmark suite (#17170).
+    ("benchmark", 16),
     // 94 -> 95: `unsafe_prod_check` entered .ci/gate-policy.yaml with #16215;
     // the committed inventory and these constants predate the merge that
     // carried it, so both fell one gate behind the authority.
@@ -95,7 +97,9 @@ const EXPECTED_DERIVATION: &[(&str, usize, usize)] = &[
     // 94/94 -> 95/95: unsafe_prod_check (#16215) entered .ci/gate-policy.yaml and
     // the merge carrying it onto this branch predates the last inventory write.
     ("gate-policy-gates", 95, 95),
-    ("cargo-bench-targets", 15, 15),
+    // 15/15 -> 16/16: `perl-ripr-facts/ripr_facts_benchmark` [[bench]]
+    // target added by the #17154 ripr packet benchmark suite (#17170).
+    ("cargo-bench-targets", 16, 16),
     // 79/26 -> 80/27: `perl-lsp-rs-core/test-instrumentation`, declared in
     // crates/perl-lsp-rs-core/Cargo.toml by 234574a74 (#14272).
     ("cargo-test-features", 80, 27),
