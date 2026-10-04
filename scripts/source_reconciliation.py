@@ -11,6 +11,7 @@ import os
 import re
 import subprocess
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 
 LEDGER = "source_reconciliation_ledger.v1"
@@ -44,6 +45,19 @@ PRIMITIVE_KEYS = {
     "target_unique_commits", "excluded_merge_commits", "excluded_merge_ancestry",
     "excluded_release_lineage_commits", "accepted_commits", "unresolved_commits", "errors",
 }
+GIT_LOCATION_ENV = {
+    "GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_PREFIX",
+    "GIT_NAMESPACE", "GIT_CEILING_DIRECTORIES", "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+    "GIT_SHALLOW_FILE", "GIT_CONFIG",
+}
+
+
+def git_environment():
+    env = {key: value for key, value in os.environ.items() if key not in GIT_LOCATION_ENV}
+    env["GIT_NO_LAZY_FETCH"] = "1"
+    env["GIT_NO_REPLACE_OBJECTS"] = "1"
+    return env
 
 
 def digest(value):
@@ -57,11 +71,8 @@ class Git:
         self.current_trees = {}
 
     def run(self, *args):
-        env = os.environ.copy()
-        env["GIT_NO_LAZY_FETCH"] = "1"
-        env["GIT_NO_REPLACE_OBJECTS"] = "1"
         proc = subprocess.run(["git", "--literal-pathspecs", "-C", str(self.repo), *args],
-                              env=env, capture_output=True)
+                              env=git_environment(), capture_output=True)
         if proc.returncode:
             raise ValueError(proc.stderr.decode("utf-8", "replace").strip())
         return proc.stdout
@@ -276,14 +287,9 @@ def reconcile(git, subjects, ledger=None, primitive=None, projection=None):
             errors.append("patch equivalence NOT_PROVEN: " + str(error))
         if primitive is None:
             errors.append("sync-divergence v2 producer receipt not supplied")
-        elif patches or not any(len(r["parents"]) <= 1 for r in rows):
+        elif "patch_equivalence" in packet:
             errors.extend(primitive_check(primitive, subjects, rows, patches))
             packet["primitive_receipt_sha256"] = digest(primitive)
-        else:
-            # An empty cherry result is valid when all non-merge work is shared.
-            if "patch_equivalence" in packet:
-                errors.extend(primitive_check(primitive, subjects, rows, patches))
-                packet["primitive_receipt_sha256"] = digest(primitive)
         if ledger is None:
             packet["unresolved_commits"] = [r["commit"] for r in rows]
         else:
@@ -379,16 +385,102 @@ def skeleton(packet):
                 for row in packet["population"]]}
 
 
+@contextmanager
+def exclusive_output(path):
+    """Create through no-follow parents, keeping traversal bound until close."""
+    if os.name == "nt":
+        import ctypes
+        import msvcrt
+        from ctypes import wintypes
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        native = ctypes.WinDLL("ntdll")
+        class UnicodeString(ctypes.Structure):
+            _fields_ = [("length", wintypes.USHORT), ("maximum", wintypes.USHORT),
+                        ("buffer", wintypes.LPWSTR)]
+        class ObjectAttributes(ctypes.Structure):
+            _fields_ = [("length", wintypes.ULONG), ("root", wintypes.HANDLE),
+                        ("name", ctypes.POINTER(UnicodeString)), ("attributes", wintypes.ULONG),
+                        ("security", ctypes.c_void_p), ("quality", ctypes.c_void_p)]
+        class IoStatus(ctypes.Structure):
+            _fields_ = [("status", ctypes.c_void_p), ("information", ctypes.c_size_t)]
+        create = native.NtCreateFile
+        create.argtypes = [ctypes.POINTER(wintypes.HANDLE), wintypes.ULONG,
+                           ctypes.POINTER(ObjectAttributes), ctypes.POINTER(IoStatus),
+                           ctypes.c_void_p, wintypes.ULONG, wintypes.ULONG, wintypes.ULONG,
+                           wintypes.ULONG, ctypes.c_void_p, wintypes.ULONG]
+        create.restype = wintypes.LONG
+        error_code = native.RtlNtStatusToDosError
+        error_code.argtypes = [wintypes.LONG]
+        error_code.restype = wintypes.ULONG
+        close = kernel.CloseHandle
+        close.argtypes = [wintypes.HANDLE]
+        close.restype = wintypes.BOOL
+        def open_native(name, root, access, disposition, options):
+            buffer = ctypes.create_unicode_buffer(name)
+            size = len(name.encode("utf-16-le"))
+            if size > 65532:
+                raise ValueError("receipt native path is too long")
+            string = UnicodeString(size, size + 2, ctypes.cast(buffer, wintypes.LPWSTR))
+            # CASE_INSENSITIVE | DONT_REPARSE applies to the entire name parse.
+            attributes = ObjectAttributes(ctypes.sizeof(ObjectAttributes), root,
+                                          ctypes.pointer(string), 0x1040, None, None)
+            handle, status = wintypes.HANDLE(), IoStatus()
+            result = create(ctypes.byref(handle), access, ctypes.byref(attributes),
+                            ctypes.byref(status), None, 0x80, 1, disposition,
+                            options, None, 0)
+            if result < 0:
+                raise ctypes.WinError(error_code(result))
+            return handle
+        # Open the existing parent without following any reparse component.
+        # Final FILE_CREATE is relative to this handle, never an absolute path
+        # re-lookup after validation. Parent sharing denies its rename/delete.
+        parent = open_native("\\??\\" + str(path.parent), None, 0x1000A0, 1, 0x200021)
+        try:
+            handle = open_native(path.name, parent, 0x40100000, 2, 0x200060)
+            try:
+                descriptor = msvcrt.open_osfhandle(handle.value, os.O_WRONLY)
+            except BaseException:
+                close(handle)
+                raise
+            with os.fdopen(descriptor, "w", encoding="ascii", newline="\n") as output:
+                yield output
+        finally:
+            close(parent)
+    else:
+        if not hasattr(os, "O_NOFOLLOW") or os.open not in os.supports_dir_fd:
+            raise ValueError("platform lacks no-follow receipt creation")
+        descriptors = []
+        try:
+            flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+            parent = os.open(path.anchor, flags)
+            descriptors.append(parent)
+            for part in path.parent.parts[1:]:
+                parent = os.open(part, flags, dir_fd=parent)
+                descriptors.append(parent)
+            descriptor = os.open(path.name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                                 0o600, dir_fd=parent)
+            with os.fdopen(descriptor, "w", encoding="ascii", newline="\n") as output:
+                yield output
+        finally:
+            for descriptor in reversed(descriptors):
+                os.close(descriptor)
+
+
 def write_new(git, path, value, inputs):
     path = Path(path).resolve()
+    if os.name == "nt" and (not re.fullmatch(r"[A-Za-z]:\\", path.anchor) or any(
+        ":" in part or part.endswith((".", " ")) or re.fullmatch(
+            r"(?i)(CON|PRN|AUX|NUL|COM[1-9¹²³]|LPT[1-9¹²³])(?:\..*)?", part)
+        for part in path.parts[1:]
+    )):
+        raise ValueError("receipt path uses a Windows stream, device, or ambiguous component")
     if path.exists() or path in {Path(p).resolve() for p in inputs if p}:
         raise ValueError("refusing to overwrite a historical packet or input")
     private = Path(git.text("rev-parse", "--absolute-git-dir")).resolve()
     common = Path(git.text("rev-parse", "--path-format=absolute", "--git-common-dir")).resolve()
     if path == git.repo / ".git" or any(path == p or path.is_relative_to(p) for p in (private, common)):
         raise ValueError("receipt destination is Git metadata")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("x", encoding="ascii", newline="\n") as output:
+    with exclusive_output(path) as output:
         json.dump(value, output, ensure_ascii=True, indent=2)
         output.write("\n")
 
@@ -417,7 +509,7 @@ def main():
         write_new(git, args.receipt, packet, [args.ledger, args.primitive_receipt])
         if args.scaffold:
             write_new(git, args.scaffold, skeleton(packet), [args.ledger, args.primitive_receipt, args.receipt])
-    except ValueError as error:
+    except (ValueError, OSError) as error:
         parser.error(str(error))
     print(json.dumps({"verdict": packet["verdict"], "population": len(packet["population"]),
                       "unresolved": len(packet["unresolved_commits"]), "errors": packet["errors"]}))

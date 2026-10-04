@@ -11,6 +11,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+from contextlib import contextmanager
 
 spec = importlib.util.spec_from_file_location("source_reconciliation",
     Path(__file__).resolve().parents[1] / "source_reconciliation.py")
@@ -46,7 +47,8 @@ class ReconciliationTests(unittest.TestCase):
         self.temp.cleanup()
 
     def git(self, *args):
-        proc = subprocess.run(["git", "-C", str(self.repo), *args], capture_output=True, check=True)
+        proc = subprocess.run(["git", "-C", str(self.repo), *args], env=adapter.git_environment(),
+                              capture_output=True, check=True)
         return proc.stdout.decode().strip()
 
     def write(self, path, content):
@@ -208,13 +210,33 @@ class ReconciliationTests(unittest.TestCase):
         self.assertIn("entry/mode identity", " ".join(third["errors"]))
 
     def test_replace_overlay_cannot_truncate_original_population(self):
+        original_flag = os.environ.get("GIT_NO_REPLACE_OBJECTS")
         ledger, primitive = self.evidence()
         self.git("replace", "--graft", self.target, self.boundary)
         packet = self.check(ledger, primitive)
         self.assertEqual(packet["verdict"], "pass", packet["errors"])
         self.assertEqual(len(packet["population"]), 2)
-        original_flag = os.environ.get("GIT_NO_REPLACE_OBJECTS")
         self.assertEqual(os.environ.get("GIT_NO_REPLACE_OBJECTS"), original_flag)
+
+    def test_inherited_repository_overrides_cannot_redirect_git(self):
+        ledger, primitive = self.evidence()
+        foreign = str(self.root / "unrelated-missing-repository")
+        overrides = {key: foreign for key in adapter.GIT_LOCATION_ENV}
+        with patch.dict(os.environ, overrides):
+            self.assertEqual(self.git("rev-parse", "--show-toplevel"), self.repo.as_posix())
+            packet = self.check(ledger, primitive)
+            self.assertEqual(packet["verdict"], "pass", packet["errors"])
+            self.assertEqual({key: os.environ[key] for key in overrides}, overrides)
+
+    def test_empty_cherry_still_validates_native_receipt(self):
+        self.subjects["target"] = self.shared
+        ledger, primitive = self.evidence()
+        self.assertEqual(adapter.cherry(self.api, self.subjects), {})
+        self.assertEqual(self.check(ledger, primitive)["verdict"], "pass")
+        primitive["schema_version"] = 99
+        packet = self.check(ledger, primitive)
+        self.assertIn("foreign sync-divergence", " ".join(packet["errors"]))
+        self.assertEqual(packet["verdict"], "not_proven")
 
     def test_legacy_graft_file_and_environment_fail_closed(self):
         ledger, primitive = self.evidence()
@@ -296,6 +318,39 @@ class ReconciliationTests(unittest.TestCase):
             adapter.write_new(self.api, path, {}, [])
         self.assertEqual(path.read_text(), "historical")
 
+    @unittest.skipUnless(os.name == "nt", "Windows junction discriminator")
+    def test_junction_inserted_after_validation_cannot_redirect_creation(self):
+        parent = self.root / "raced-output"
+        parent.mkdir()
+        destination = parent / "receipt.json"
+        original_output = adapter.exclusive_output
+        inserted = False
+        @contextmanager
+        def race_output(current):
+            nonlocal inserted
+            os.rmdir(parent)
+            proc = subprocess.run(["cmd", "/c", "mklink", "/J", str(parent), str(self.repo / ".git")],
+                                  capture_output=True, check=True)
+            inserted = True
+            self.assertEqual(proc.returncode, 0)
+            with original_output(current) as output:
+                yield output
+        try:
+            with patch.object(adapter, "exclusive_output", race_output), self.assertRaises((ValueError, OSError)):
+                adapter.write_new(self.api, destination, {}, [])
+            self.assertTrue(inserted)
+            self.assertFalse((self.repo / ".git/receipt.json").exists())
+        finally:
+            # Remove only this owned junction, never recurse into its target.
+            if parent.is_junction():
+                os.rmdir(parent)
+
+    @unittest.skipUnless(os.name == "nt", "Windows path aliases")
+    def test_windows_stream_device_and_ambiguous_paths_are_refused(self):
+        for name in (".git:receipt", "NUL.json", "COM1", "receipt. ", "receipt."):
+            with self.subTest(name=name), self.assertRaises(ValueError):
+                adapter.write_new(self.api, self.repo / name, {}, [])
+
     def test_linked_pointer_and_common_git_metadata_are_refused(self):
         linked = self.root / "linked"
         self.git("worktree", "add", "-q", "-b", "linked", str(linked))
@@ -304,6 +359,7 @@ class ReconciliationTests(unittest.TestCase):
         for path in (linked / ".git", common / "refs/heads/new-receipt", common / "objects/new-receipt"):
             with self.subTest(path=path), self.assertRaises(ValueError):
                 adapter.write_new(api, path, {}, [])
+        (linked / "receipts").mkdir()
         adapter.write_new(api, linked / "receipts/ordinary.json", {}, [])
 
 

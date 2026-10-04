@@ -39,6 +39,15 @@ inventory. Omit unavailable producer evidence rather than creating dummy pass
 fields. Output is still emitted with its independently derived population and
 errors. Existing packets and input files are never overwritten, and Git metadata
 in ordinary or linked worktrees is not an output destination.
+The output parent must already exist and belong to the sole filesystem writer.
+Creation uses no-follow directory descriptors on POSIX and a handle-relative
+`NtCreateFile` on Windows; it does not create parent directories. Windows stream,
+device and ambiguous filename aliases are rejected. These checks prevent link
+substitution; they do not authenticate filesystem ownership or protect against
+an actor relocating directories with permission to modify Git metadata.
+Windows name parsing follows the
+[documented no-reparse object attributes](https://learn.microsoft.com/en-us/windows/win32/api/ntdef/ns-ntdef-_object_attributes)
+and [handle-relative file creation](https://learn.microsoft.com/en-us/windows/win32/api/winternl/nf-winternl-ntcreatefile).
 
 The packet's `pass` means this structural reconciliation preflight passed. Its
 explicit acceptance ceiling does **not** establish authenticated producer origin,
