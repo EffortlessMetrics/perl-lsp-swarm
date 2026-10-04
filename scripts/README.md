@@ -16,6 +16,7 @@ Run these locally during normal contribution work.
 | `pre-merge-check.sh` | Verify the working tree is ready to merge |
 | `forbid-fatal-constructs.sh` | Grep for banned patterns (`unwrap`, `panic!`, etc.) |
 | `dead-code-check.sh` | Report dead code across the workspace |
+| `xtask-quiet.sh` | Quiet xtask dispatch (#17240): builds `xtask` with stderr captured, then execs the binary directly, skipping cargo's ~200KB cached-warning replay. Build failures surface verbatim; on success the command's own stdout/stderr pass through untouched |
 
 ## Worktree & Workspace Management
 
