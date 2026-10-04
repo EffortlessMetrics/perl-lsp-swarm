@@ -63,7 +63,8 @@
     },
     "observed_state": {
       "type": "object",
-      "description": "The state that was actually seen. Free-form by control, but required to be present: a receipt that records no state is not an observation."
+      "minProperties": 1,
+      "description": "The state that was actually seen. Free-form by control, but required to be non-empty: a receipt that records no state is not an observation. `minProperties` carries that rule, because `type: object` alone admits `{}` and schema-only validation would then accept a document the planner rejects."
     }
   }
 }

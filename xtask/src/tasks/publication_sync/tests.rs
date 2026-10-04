@@ -1581,6 +1581,40 @@ fn an_empty_invariant_list_is_rejected_by_the_schema() -> Result<()> {
     assert_finding(&receipt, "manifest_schema_violation")
 }
 
+/// `items` plus `minItems` cannot express "exactly once". Five entries that
+/// repeat one id and omit another satisfy both keywords, and every id still
+/// matches the enum, so without the per-id `contains` bounds the published
+/// schema accepts a manifest its own description prohibits — and schema-only
+/// validation, which is the published admission boundary for anyone who is not
+/// running this planner, would pass it.
+#[test]
+fn a_duplicated_invariant_id_is_rejected_by_the_schema() -> Result<()> {
+    let mut document = clean_value()?;
+    let invariants = document["invariants"]
+        .as_array()
+        .cloned()
+        .ok_or_else(|| eyre!("the clean fixture's invariants are not an array"))?;
+    if invariants.len() < 2 {
+        bail!("the clean fixture carries too few invariants for this control");
+    }
+
+    // Repeat the first id over the second entry: still five items, every id
+    // still in the enum, so only the exactly-once rule can reject it.
+    let mut duplicated = invariants.clone();
+    duplicated[1]["id"] = invariants[0]["id"].clone();
+    document["invariants"] = Value::Array(duplicated);
+
+    if serde_json::from_value::<Manifest>(document.clone()).is_err() {
+        bail!("serde rejected the duplicate, so this control proves nothing about the schema");
+    }
+
+    let raw = serde_json::to_vec(&document)?;
+    let receipt = build_receipt(&raw, Path::new("."), fixture_checkout, fixture_tree)
+        .unwrap_or_else(|failure| Receipt::unevaluated(failure.manifest_digest, failure.finding));
+    assert_verdict(&receipt, Verdict::NotProven)?;
+    assert_finding(&receipt, "manifest_schema_violation")
+}
+
 #[test]
 fn an_unparsable_manifest_still_produces_a_receipt() -> Result<()> {
     let receipt = build_receipt(b"{ not json", Path::new("."), fixture_checkout, fixture_tree)
@@ -1951,6 +1985,40 @@ fn the_live_control_receipt_fixture_conforms_to_its_schema() -> Result<()> {
         .collect();
     if !errors.is_empty() {
         bail!("the live-control receipt fixture violates its schema: {errors:?}");
+    }
+    Ok(())
+}
+
+/// `"type": "object"` admits `{}`, so without `minProperties` the published
+/// receipt schema accepts a receipt that records no observation at all. The
+/// planner's `live_receipt_observation_empty` finding would be the only thing
+/// catching it, which leaves schema-only validation — the contract anyone not
+/// running this planner validates against — accepting a document the planner
+/// rejects.
+#[test]
+fn an_empty_observed_state_is_rejected_by_the_live_receipt_schema() -> Result<()> {
+    let schema: Value = serde_json::from_str(LIVE_RECEIPT_SCHEMA)?;
+    let validator =
+        jsonschema::validator_for(&schema).map_err(|error| eyre!("compiling schema: {error}"))?;
+
+    let mut document: Value = serde_json::from_slice(LIVE_RECEIPT_FIXTURE)?;
+    document["observed_state"] = json!({});
+    if validator.iter_errors(&document).next().is_none() {
+        bail!("the published receipt schema accepted an empty observed_state");
+    }
+
+    // The mutation is the only reason it was rejected: restoring one key makes
+    // the same document valid again, so this control is not passing on
+    // collateral damage from the edit.
+    document["observed_state"] = json!({ "default_branch": "main" });
+    let residual: Vec<String> = validator
+        .iter_errors(&document)
+        .map(|error| format!("{}: {error}", error.instance_path()))
+        .collect();
+    if !residual.is_empty() {
+        bail!(
+            "a non-empty observed_state left the document invalid, so this control cannot discriminate: {residual:?}"
+        );
     }
     Ok(())
 }

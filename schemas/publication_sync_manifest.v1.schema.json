@@ -68,10 +68,83 @@
     "invariants": {
       "type": "array",
       "minItems": 5,
+      "maxItems": 5,
       "items": {
         "$ref": "#/$defs/invariant"
       },
-      "description": "Every invariant in the closed vocabulary must appear exactly once."
+      "allOf": [
+        {
+          "contains": {
+            "properties": {
+              "id": {
+                "const": "artifact_reachability"
+              }
+            },
+            "required": [
+              "id"
+            ]
+          },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "properties": {
+              "id": {
+                "const": "effective_version_identity"
+              }
+            },
+            "required": [
+              "id"
+            ]
+          },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "properties": {
+              "id": {
+                "const": "public_claim_strength"
+              }
+            },
+            "required": [
+              "id"
+            ]
+          },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "properties": {
+              "id": {
+                "const": "governance_time_state"
+              }
+            },
+            "required": [
+              "id"
+            ]
+          },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "properties": {
+              "id": {
+                "const": "release_lineage_completeness"
+              }
+            },
+            "required": [
+              "id"
+            ]
+          },
+          "minContains": 1,
+          "maxContains": 1
+        }
+      ],
+      "description": "Every invariant in the closed vocabulary must appear exactly once. `minItems`/`maxItems` plus one exactly-once `contains` per id carry that rule in the schema itself: `items` alone admits five copies of one id, so schema-only validation would accept a manifest the planner rejects."
     },
     "live_controls": {
       "type": "object",
