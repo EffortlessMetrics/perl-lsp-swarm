@@ -22,11 +22,19 @@ fn missing_observation_is_not_proven() {
         projection.static_topology.development_repository,
         "EffortlessMetrics/perl-lsp-swarm"
     );
-    assert_eq!(projection.static_topology.issue_repository, "EffortlessMetrics/perl-lsp");
+    assert_eq!(
+        projection.static_topology.issue_repository,
+        "EffortlessMetrics/perl-lsp-swarm"
+    );
     assert_eq!(projection.static_topology.pull_request_repository, "EffortlessMetrics/perl-lsp");
+    let human = render_human(&projection);
     assert!(
-        render_human(&projection).contains("issues/prs: EffortlessMetrics/perl-lsp"),
-        "human projection must route public contributors to the public repository"
+        human.contains("issues: EffortlessMetrics/perl-lsp-swarm"),
+        "human projection must keep development issues in swarm"
+    );
+    assert!(
+        human.contains("prs: EffortlessMetrics/perl-lsp"),
+        "human projection must route external pull requests to the public repository"
     );
     assert_eq!(projection.observation.channels.len(), 4);
     validate_projection(temp.path(), &projection).expect("validate projection");
