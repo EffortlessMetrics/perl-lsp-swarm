@@ -5836,14 +5836,14 @@ our $single_root_var;
             .push(WorkspaceFolderState::new("file:///project".to_string()));
         let coordinator = Arc::new(IndexCoordinator::new());
         perl_tdd_support::must_with(
-            coordinator.index().index_file_str(
+            coordinator.index().index_initial_file_str(
                 "file:///project/lib/BarTools.pm",
                 "package BarTools;\nour $bar_value = 1;\nour $foobar_value = 2;\nsub bar_callable { 1 }\n1;\n",
             ),
             "prefix-positive module must be indexed",
         );
         perl_tdd_support::must_with(
-            coordinator.index().index_file_str(
+            coordinator.index().index_initial_file_str(
                 "file:///project/lib/FooBarTools.pm",
                 "package FooBarTools;\nour $bar_other = 3;\n1;\n",
             ),

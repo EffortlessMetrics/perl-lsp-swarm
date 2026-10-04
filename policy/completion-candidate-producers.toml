@@ -127,7 +127,13 @@ outcome_owner = "#10230"
 # Re-anchor (same PR, CodeRabbit thread): canonical_document_identity now
 # normalizes URI-form identities via perl_uri::normalize_uri, matching the
 # workspace index's identity comparison; producer rows unchanged.
-source_digest = "sha256:9ca083709376d6ecb4b43a737972835c1dbd7098514512b4592026aae5d0d77b"
+# Re-anchor 2026-10-04 (#17226): the runtime workspace enrichment producer
+# now requires a case-insensitive typed prefix of the symbol name or qualified
+# name. The same append-channel function, entry routes, candidate class,
+# index-freshness limitation, and finalizer route remain. Two new test fixtures
+# use the canonical initial-index API. No other scanned file changed from the
+# previous ledger binding, and the 42-file producer population is unchanged.
+source_digest = "sha256:a1e362c0c67b2fe8327dc54ed4e1867e3be2b24a632a3fd63417a9e7589a1874"
 
 [[delegations]]
 module = "dancer2"
