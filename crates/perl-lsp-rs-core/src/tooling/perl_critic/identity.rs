@@ -831,6 +831,75 @@ impl CriticIdentityRegistry {
         Self::by_canonical_id(canonical_id).map(|entry| entry.aliases)
     }
 
+    /// Every canonical entry that owns `code` as a native-critic spelling.
+    ///
+    /// A combined native rule can own several reviewed shapes, so one code may
+    /// appear under more than one canonical entry (`native.security.qx_readpipe`
+    /// covers both the `qx` and the `readpipe` shape). Enrichment seams that
+    /// see only the code string must consume such results through
+    /// [`Self::category_for_native_code`] and
+    /// [`Self::unambiguous_builtin_alias_code`], which agree to a single value
+    /// or report none; call [`Self::resolve_parts`] when the producer's
+    /// reviewed shape is known.
+    #[must_use]
+    pub fn entries_for_native_code(code: &str) -> Vec<&'static CriticIdentityEntry> {
+        IDENTITIES
+            .iter()
+            .filter(|entry| {
+                entry.aliases.iter().any(|alias| {
+                    alias.origin == CriticFindingOrigin::NativeCritic && alias.code == code
+                })
+            })
+            .collect()
+    }
+
+    /// The canonical category of a native-critic wire code, when every
+    /// canonical entry that owns the code agrees on it.
+    ///
+    /// This is the code-only enrichment lookup for transports that carry the
+    /// native spelling without the producer's reviewed shape; it must return
+    /// the same category the shape-aware critic seam reports for the same row
+    /// (#17241). Returns `None` when no entry owns the code or when the
+    /// owning entries disagree.
+    #[must_use]
+    pub fn category_for_native_code(code: &str) -> Option<CriticIdentityCategory> {
+        let mut agreed = None;
+        for entry in Self::entries_for_native_code(code) {
+            match agreed {
+                None => agreed = Some(entry.category),
+                Some(category) if category == entry.category => {}
+                Some(_) => return None,
+            }
+        }
+        agreed
+    }
+
+    /// The built-in diagnostic alias code of a native-critic wire code, when
+    /// exactly one reviewed built-in alias exists across every canonical entry
+    /// that owns the code.
+    ///
+    /// Equivalent-alias entries let a native spelling resolve the logical
+    /// finding's built-in documentation identity; shape-split codes whose
+    /// shapes alias different built-ins (for example `qx_readpipe` →
+    /// `PL601`/`PL606`) are intentionally unresolved here rather than guessed.
+    #[must_use]
+    pub fn unambiguous_builtin_alias_code(native_code: &str) -> Option<&'static str> {
+        let mut agreed = None;
+        for entry in Self::entries_for_native_code(native_code) {
+            for alias in entry.aliases {
+                if alias.origin != CriticFindingOrigin::BuiltInDiagnostic {
+                    continue;
+                }
+                match agreed {
+                    None => agreed = Some(alias.code),
+                    Some(code) if code == alias.code => {}
+                    Some(_) => return None,
+                }
+            }
+        }
+        agreed
+    }
+
     fn requires_reviewed_shape(origin: CriticFindingOrigin, code: &str) -> bool {
         IDENTITIES.iter().flat_map(|entry| entry.aliases).any(|alias| {
             alias.origin == origin
@@ -897,8 +966,8 @@ mod tests {
 
     use super::{
         BUILTIN, CRITIC_IDENTITY_SCHEMA_VERSION, CriticFindingOrigin, CriticFindingShape,
-        CriticIdentityDisposition, CriticIdentityRegistry, CriticObservedIdentity, EXTERNAL,
-        NATIVE,
+        CriticIdentityCategory, CriticIdentityDisposition, CriticIdentityRegistry,
+        CriticObservedIdentity, EXTERNAL, NATIVE,
     };
     use crate::tooling::perl_critic::{NativeCriticProfile, NativeCriticRegistry};
 
@@ -930,6 +999,50 @@ mod tests {
     #[test]
     fn registry_validates() {
         assert!(CriticIdentityRegistry::validate().is_ok());
+    }
+
+    #[test]
+    fn native_code_lookup_resolves_category_for_wire_enrichment() {
+        // #17241: enrichment seams that see only the native code string must
+        // resolve the same reviewed category the shape-aware critic seam
+        // reports for the row.
+        assert_eq!(
+            CriticIdentityRegistry::category_for_native_code("native.common.unreachable_code"),
+            Some(CriticIdentityCategory::Maintainability),
+        );
+        assert_eq!(
+            CriticIdentityRegistry::category_for_native_code("native.testing.require_use_strict"),
+            Some(CriticIdentityCategory::Syntax),
+        );
+        assert_eq!(
+            CriticIdentityRegistry::category_for_native_code("critic.io.unchecked_open_close"),
+            None,
+            "canonical critic.* spellings are not native wire codes",
+        );
+        assert_eq!(CriticIdentityRegistry::category_for_native_code("not.a.code"), None,);
+    }
+
+    #[test]
+    fn builtin_alias_lookup_resolves_one_alias_and_refuses_shape_splits() {
+        assert_eq!(
+            CriticIdentityRegistry::unambiguous_builtin_alias_code(
+                "native.common.printf_format_arity",
+            ),
+            Some("PL405"),
+        );
+        // The qx/readpipe shapes alias different built-ins (PL601/PL606); a
+        // code-only lookup must not guess a shape the wire code does not carry.
+        assert_eq!(
+            CriticIdentityRegistry::unambiguous_builtin_alias_code("native.security.qx_readpipe"),
+            None,
+        );
+        // Distinct identities have no built-in alias at all.
+        assert_eq!(
+            CriticIdentityRegistry::unambiguous_builtin_alias_code(
+                "native.io.unchecked_open_close",
+            ),
+            None,
+        );
     }
 
     #[test]

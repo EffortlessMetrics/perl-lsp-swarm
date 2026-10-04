@@ -169,6 +169,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 #### LSP integration
 
+- **Wire diagnostics resolve their published identity on every transport
+  (#17241).** Native-critic (`native.*`) and dead-code (`dead-code-*`) codes were
+  emitted on the wire but unknown to every metadata registry the server consults,
+  so push enrichment downgraded them to `data.category: "Other"` with no
+  `codeDescription`. Enrichment now resolves each code through its owning
+  registry — the catalog for built-in `PL*` codes, the shared critic identity
+  registry for native codes (the reviewed built-in alias's documentation page
+  when exactly one exists; shape-split codes such as `native.security.qx_readpipe`
+  resolve no page rather than guess), and the dead-code provider's own identity
+  table — so push, pull, and code-action rows report the same category and
+  documentation link for the same fact.
+- **Pull no longer double-reports facts push collapsed (#17241, #5088).**
+  `textDocument/diagnostic` appended native critic rows beside their built-in
+  twins (`PL100` next to `native.testing.require_use_strict`, `PL405` next to
+  `native.common.printf_format_arity`, …) with no overlap collapse. Pull now
+  applies the same severity-exact, built-in-preferring collapse as push, and the
+  code-action transport embeds the published twin's identity so clients can
+  still associate a quick fix with its published row.
+- **Critic-seam pull rows carry `codeDescription`** (`PL601`/`PL603`/`PL606`
+  rows previously rendered without the documentation link the same fact has on
+  push).
 - **"Find All References" no longer silently degrades for its default request
   shape.** VS Code's default `includeDeclaration: true` request bailed out of
   the high-fidelity source-backed references tier entirely, falling through to

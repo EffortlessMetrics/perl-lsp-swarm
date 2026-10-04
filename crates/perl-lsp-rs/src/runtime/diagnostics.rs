@@ -16,9 +16,11 @@ use super::{
     json, source_path_from_uri,
     types::best_workspace_folder_for_doc,
 };
+use crate::features::diagnostics::overlap::{codes_collapse_pair, is_native_critic_code};
 use crate::features::diagnostics::report_identity::{
     DiagnosticProjectionFragment, PullPositionEncoding, PullReportResultId, compose_report_identity,
 };
+use crate::features::diagnostics::wire_code::{wire_code_category, wire_code_documentation_url};
 use perl_lsp_rs_core::config::AcceptedCriticSnapshot;
 
 use crate::features::diagnostics::{
@@ -785,12 +787,13 @@ impl LspServer {
                     }
 
                     // Enrichment fields for push/pull parity (#1773):
-                    // codeDescription, relatedInformation, and data.
+                    // codeDescription, relatedInformation, and data. The
+                    // resolution consults every owning registry so native
+                    // critic and dead-code identities enrich exactly like
+                    // built-in PL* codes (#17241).
                     if let Some(ref code_str) = d.code {
                         // codeDescription: link to documentation URL
-                        if let Some(url) = DiagnosticCode::parse_code(code_str)
-                            .and_then(|dc| dc.documentation_url())
-                        {
+                        if let Some(url) = wire_code_documentation_url(code_str) {
                             diag["codeDescription"] = json!({ "href": url });
                         }
                     }
@@ -820,9 +823,7 @@ impl LspServer {
 
                     // data: structured metadata (category, fixability, tags)
                     if let Some(ref code_str) = d.code {
-                        let category = DiagnosticCode::parse_code(code_str)
-                            .map(|dc| format!("{:?}", dc.category()))
-                            .unwrap_or_else(|| "Other".to_string());
+                        let category = wire_code_category(code_str);
                         let fixable = d.fixable;
                         let tag_strings: Vec<String> = d
                             .tags
@@ -1010,18 +1011,17 @@ impl LspServer {
                 "perl-lsp",
                 msg_val,
             );
-            // Enrichment parity (#1773). These are catalog-backed codes, so the
-            // catalog can answer both fields here exactly as it does on the full
-            // path; a `PL1000` should not lose its documentation link merely
-            // because the server is running in syntax-only mode.
+            // Enrichment parity (#1773, #17241). Resolution goes through the
+            // shared wire-code authority, so these rows answer both fields
+            // exactly as the full path does — a `PL1000` should not lose its
+            // documentation link merely because the server is running in
+            // syntax-only mode, and any provider identity this route can
+            // carry enriches identically.
             if let Some(code_str) = d.code.as_deref() {
-                if let Some(url) =
-                    DiagnosticCode::parse_code(code_str).and_then(|dc| dc.documentation_url())
-                {
+                if let Some(url) = wire_code_documentation_url(code_str) {
                     diag["codeDescription"] = json!({ "href": url });
                 }
-                let category = DiagnosticCode::parse_code(code_str)
-                    .map_or_else(|| "Other".to_string(), |dc| format!("{:?}", dc.category()));
+                let category = wire_code_category(code_str);
                 diag["data"] = diagnostic_data(code_str, &category, d.fixable, &[]);
             }
             diag
@@ -2481,50 +2481,8 @@ fn dedup_overlapping_diagnostics(diagnostics: &mut Vec<perl_lsp_rs_core::provide
     diagnostics.dedup_by(|a, b| {
         a.range == b.range
             && a.severity == b.severity
-            && (is_native_critic_code(a.code.as_deref()) ^ is_native_critic_code(b.code.as_deref()))
-            && !is_upstream_merged_alias_pair(a.code.as_deref(), b.code.as_deref())
+            && codes_collapse_pair(a.code.as_deref(), b.code.as_deref())
     });
-}
-
-/// Whether one `(PL* code, native rule id)` pair is a reviewed alias whose
-/// duplicate prevention moved upstream into the normalized critic seam
-/// (#11918).
-///
-/// The table lists exactly the reviewed alias pairs of the migrated producer
-/// cohort, in both orders: PL404 (literal shape) with the undef-comparison
-/// alias; PL601 with the backtick alias and, for the qx shape, the
-/// qx/readpipe alias; PL606 (readpipe shape) with the qx/readpipe alias; and
-/// PL603/PL604 with the system/exec rule that owns both shapes. Every other
-/// overlap pair keeps the transport-level coincidence dedup until its own
-/// producers migrate, so unrelated rows never lose their existing collapse
-/// behavior to this exemption.
-fn is_upstream_merged_alias_pair(a_code: Option<&str>, b_code: Option<&str>) -> bool {
-    let forward = matches!(
-        (a_code, b_code),
-        (Some("PL404"), Some("native.common.undef_comparison"))
-            | (
-                Some("PL601"),
-                Some("native.security.backtick_exec" | "native.security.qx_readpipe")
-            )
-            | (Some("PL606"), Some("native.security.qx_readpipe"))
-            | (Some("PL603" | "PL604"), Some("native.security.system_exec"))
-    );
-    let reverse = matches!(
-        (b_code, a_code),
-        (Some("PL404"), Some("native.common.undef_comparison"))
-            | (
-                Some("PL601"),
-                Some("native.security.backtick_exec" | "native.security.qx_readpipe")
-            )
-            | (Some("PL606"), Some("native.security.qx_readpipe"))
-            | (Some("PL603" | "PL604"), Some("native.security.system_exec"))
-    );
-    forward || reverse
-}
-
-/// Returns `true` if the code string looks like a native-critic code (not a PL* code).
-fn is_native_critic_code(code: Option<&str>) -> bool {
-    !code.is_some_and(|c| c.starts_with("PL"))
 }
 
 /// Determine the diagnostic source based on the code.
@@ -6281,11 +6239,14 @@ system($path);
     #[test]
     fn native_critic_code_actions_use_native_source_not_perl_critic() {
         // On the default native engine, critic quick-fixes must carry the
-        // native diagnostic identity (`source: perl-lsp`, `native.*`
-        // code) that the publish path emits — never the external tool's
-        // `Perl::Critic` brand. This is the #3276 native-product-surface leak:
-        // the code-action handler previously ran the legacy analyzer
-        // unconditionally and hardcoded `source: "Perl::Critic"`.
+        // diagnostic identity the publish path emits — `source: perl-lsp`,
+        // never the external tool's `Perl::Critic` brand. This is the #3276
+        // native-product-surface leak: the code-action handler previously ran
+        // the legacy analyzer unconditionally and hardcoded
+        // `source: "Perl::Critic"`. Since the #5088 transport collapse now
+        // retires twin-covered native spellings on push and pull alike
+        // (#17241), the publish identity for require-use-strict is the
+        // built-in PL100 row, and the action embeds that same identity.
         let (server, _buf) = make_server_with_capture();
         server.test_configure_critic_engine(perl_lsp_rs_core::config::CriticEngine::Native);
         server.test_configure_native_critic_profile("strict");
@@ -6312,25 +6273,28 @@ system($path);
             !text.contains("Perl::Critic"),
             "native engine code actions must NOT leak the Perl::Critic brand; got: {text}"
         );
+        assert!(
+            !text.contains("TestingAndDebugging::RequireUseStrict"),
+            "native engine code actions must NOT leak the legacy policy spelling; got: {text}"
+        );
 
         // Structural check: SOME code action must carry an embedded diagnostic
-        // whose `code` and `source` are BOTH native on the same object — a loose
-        // whole-response substring match would pass even if the native code and
-        // native source landed on two different actions. This is the exact
-        // guarantee the PR makes (code + source line up with the published
-        // native diagnostic, so the client associates the fix).
+        // whose `code` and `source` line up on the same object with the
+        // identity the publish path emits for the strict fact — the built-in
+        // PL100 row after the transport collapse. A loose whole-response
+        // substring match would pass even if the code and source landed on two
+        // different actions.
         let actions = result.as_array().cloned().unwrap_or_default();
-        let has_native_diag = actions.iter().any(|a| {
+        let has_published_identity = actions.iter().any(|a| {
             a["diagnostics"].as_array().is_some_and(|diags| {
                 diags.iter().any(|d| {
-                    d["code"].as_str() == Some("native.testing.require_use_strict")
-                        && d["source"].as_str() == Some("perl-lsp")
+                    d["code"].as_str() == Some("PL100") && d["source"].as_str() == Some("perl-lsp")
                 })
             })
         });
         assert!(
-            has_native_diag,
-            "a native code action must carry code `native.testing.require_use_strict` AND source `perl-lsp` on the SAME diagnostic; got: {text}"
+            has_published_identity,
+            "a code action must carry the published strict identity (PL100) AND source `perl-lsp` on the SAME diagnostic; got: {text}"
         );
     }
 
@@ -6380,19 +6344,19 @@ system($path);
             .or_else(|| report["diagnostics"].as_array().cloned())
             .unwrap_or_default();
 
-        // Every native row an action embeds must exist, identically, in the
-        // published set.
+        // Every diagnostic row an action embeds must exist, identically, in
+        // the published set. The comparison is not limited to `native.*`
+        // spellings: a transport-coincidence native fact that push and pull
+        // collapse into its built-in twin (#5088, #17241) embeds the twin's
+        // published identity, so client association holds for every row.
         let mut compared = 0usize;
         for action in actions.as_array().cloned().unwrap_or_default() {
             for embedded in action["diagnostics"].as_array().cloned().unwrap_or_default() {
                 let Some(code) = embedded["code"].as_str() else { continue };
-                if !code.starts_with("native.") {
-                    continue;
-                }
                 let found = published.iter().find(|row| row["code"].as_str() == Some(code));
                 assert!(
                     found.is_some(),
-                    "action embedded native row `{code}` has no published counterpart;                      published: {published:?}"
+                    "action embedded row `{code}` has no published counterpart;                      published: {published:?}"
                 );
                 let Some(matching) = found else { continue };
                 assert_eq!(
@@ -6412,7 +6376,7 @@ system($path);
         }
         assert!(
             compared > 0,
-            "the fixture must produce at least one native action row to compare;              actions: {actions}"
+            "the fixture must produce at least one action row to compare;              actions: {actions}"
         );
     }
 
@@ -6432,12 +6396,14 @@ system($path);
                     "uri": uri,
                     "languageId": "perl",
                     "version": 1,
-                    "text": "my $x = 1;
-print $x;
-"
+                    "text": "my $x = 1;\nprint $x;\nsub f { return 1; print 2; }\n"
                 }
             })))
             .expect("did_open must succeed");
+        // The liveness probe is a twin-less-on-this-severity native fact
+        // (#17241): `native.common.unreachable_code` survives the transport
+        // collapse beside its Hint-severity PL406 twin and carries a Safe fix,
+        // so the native service's own action row stays observable on the wire.
 
         let result = server
             .test_handle_code_action(Some(code_action_params(uri)))
@@ -6548,8 +6514,14 @@ print $x;
             .expect("code_action must succeed")
             .unwrap_or_default();
         let actions = result.as_array().cloned().unwrap_or_default();
-        let quickfixes =
-            native_critic_quickfixes_for_code(&actions, "native.testing.require_use_strict");
+        // The safe fix keeps its one-click surface; since the transport
+        // collapse (#5088, #17241) retires the twin-covered native spelling on
+        // every surface, the quickfix embeds the published built-in twin
+        // resolved through the owning identity registry.
+        let published_code = perl_lsp_rs_core::tooling::perl_critic::CriticIdentityRegistry::
+unambiguous_builtin_alias_code("native.testing.require_use_strict")
+            .expect("require_use_strict has one reviewed built-in alias");
+        let quickfixes = native_critic_quickfixes_for_code(&actions, published_code);
 
         assert_eq!(
             quickfixes.len(),
@@ -6813,41 +6785,6 @@ print $x;
         );
 
         Ok(())
-    }
-
-    #[test]
-    fn upstream_merged_alias_exemption_covers_exactly_the_reviewed_pairs() {
-        // #11918: the transport XOR retirement is keyed to the exact reviewed
-        // alias pairs, not a cross-product of cohort codes, so unrelated
-        // overlap pairs keep their pre-existing coincidence dedup.
-        let pl = |code: &'static str| Some(code);
-        for (a, b) in [
-            (pl("PL404"), pl("native.common.undef_comparison")),
-            (pl("PL601"), pl("native.security.backtick_exec")),
-            (pl("PL601"), pl("native.security.qx_readpipe")),
-            (pl("PL606"), pl("native.security.qx_readpipe")),
-            (pl("PL603"), pl("native.security.system_exec")),
-            (pl("PL604"), pl("native.security.system_exec")),
-        ] {
-            assert!(
-                is_upstream_merged_alias_pair(a, b) && is_upstream_merged_alias_pair(b, a),
-                "reviewed alias pair {a:?}/{b:?} must be exempt in both orders"
-            );
-        }
-        for (a, b) in [
-            (pl("PL404"), pl("native.security.system_exec")),
-            (pl("PL603"), pl("native.security.qx_readpipe")),
-            (pl("PL606"), pl("native.security.backtick_exec")),
-            (pl("PL100"), pl("native.security.system_exec")),
-            (pl("PL404"), pl("PL603")),
-            (pl("native.common.undef_comparison"), pl("native.security.system_exec")),
-            (pl("PL603"), None),
-        ] {
-            assert!(
-                !is_upstream_merged_alias_pair(a, b) && !is_upstream_merged_alias_pair(b, a),
-                "unrelated pair {a:?}/{b:?} must keep the transport coincidence dedup"
-            );
-        }
     }
 
     // ------------------------------------------------------------------
