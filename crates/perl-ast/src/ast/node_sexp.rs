@@ -28,6 +28,7 @@
 
 use super::{FieldId, GotoTargetForm, Node, NodeKind, Token, TokenKind};
 use std::fmt::{self, Write as _};
+use std::ops::ControlFlow;
 
 /// Grammar identity for this native debug projection.
 pub const NATIVE_DEBUG_SEXP_GRAMMAR: &str = "perl-ast-native-debug-sexp/v1";
@@ -342,8 +343,10 @@ impl<'tree, 'write, W: fmt::Write> Renderer<'tree, 'write, W> {
     }
 
     fn open_top(&mut self) -> Result<(), RenderStop> {
-        let (is_child, field, binder, node) = match self.stack.last() {
-            Some(frame) => (frame.is_child, frame.field, frame.catch_binder, frame.node),
+        let (is_child, field, binder, node, depth) = match self.stack.last() {
+            Some(frame) => {
+                (frame.is_child, frame.field, frame.catch_binder, frame.node, frame.depth)
+            }
             None => {
                 return Err(RenderStop::Instrument(
                     NativeDebugSexpInstrumentCause::InternalFrameState,
@@ -364,10 +367,21 @@ impl<'tree, 'write, W: fmt::Write> Renderer<'tree, 'write, W> {
             self.emit(" ")?;
         }
         self.emit("(")?;
-        let kind = node.kind.grammar_kind_name();
-        self.emit_atom(&kind)?;
+        if let Some(kind) = node.kind.grammar_kind_name_static() {
+            self.emit_atom(kind)?;
+        } else {
+            self.emit_atom(&node.kind.grammar_kind_name())?;
+        }
         self.charge_work(1)?;
         write_payloads(&node.kind, self)?;
+        if self.limits.max_depth.is_some_and(|limit| depth >= limit)
+            && node.try_for_each_child_with_field(|_, _| ControlFlow::Break(())).is_break()
+        {
+            // Preserve the rejected-edge check order without collecting children
+            // that this render cannot enter. Leaves still complete normally.
+            self.check_node_limit()?;
+            self.descend(depth)?;
+        }
         let children = load_children(node);
         match self.stack.last_mut() {
             Some(frame) => {
@@ -475,6 +489,9 @@ impl<W: fmt::Write> SexpSink for Renderer<'_, '_, W> {
     }
 
     fn emit_atom(&mut self, value: &str) -> Result<(), RenderStop> {
+        if !needs_quoting(value) {
+            return self.emit(value);
+        }
         self.scratch.clear();
         write_atom(&mut self.scratch, value);
         let encoded = std::mem::take(&mut self.scratch);
