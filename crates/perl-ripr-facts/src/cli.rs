@@ -130,9 +130,11 @@ fn parse_ripr_facts_cli(args: &[String]) -> Result<CliParse, String> {
 }
 
 fn ripr_facts_usage() -> &'static str {
-    "usage: perl-ripr-facts ripr-facts --schema ripr-perl-facts-v1 --root <root> \
+    "usage: perl-ripr-facts ripr-facts [--schema ripr-perl-facts-v1] [--root <root>] \
      [--base <base>] [--head <head>] [--fact-classes <classes>] \
-     [--diff <cwd-relative-diff>] --out <out>"
+     [--diff <cwd-relative-diff>] [--out <out>]\n\
+     defaults: --schema ripr-perl-facts-v1, --root ., --fact-classes <all classes>, \
+     --out target/ripr/reports/perl-facts.json"
 }
 
 fn read_diff_text(root: &str, diff_path: &str) -> Result<String, String> {
@@ -508,6 +510,19 @@ mod tests {
             matches!(parse_ripr_facts_cli(&argv), Ok(CliParse::Run(_))),
             "--help as a flag value must not trigger help"
         );
+    }
+
+    #[test]
+    fn ripr_facts_bare_subcommand_uses_defaults() {
+        let argv: Vec<String> =
+            ["perl-ripr-facts", "ripr-facts"].into_iter().map(str::to_string).collect();
+        let parsed = parse_ripr_facts_cli(&argv).expect("bare subcommand parses");
+        assert!(matches!(parsed, CliParse::Run(_)), "bare subcommand must run, not help");
+        if let CliParse::Run(cli) = parsed {
+            assert_eq!(cli.schema, "ripr-perl-facts-v1");
+            assert_eq!(cli.root, ".");
+            assert_eq!(cli.out, "target/ripr/reports/perl-facts.json");
+        }
     }
 
     #[test]
