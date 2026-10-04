@@ -241,6 +241,7 @@ impl LspServer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use perl_tdd_support::must_err_with;
     use proptest::prelude::*;
 
     type TestResult = Result<(), String>;
@@ -347,7 +348,10 @@ mod tests {
         // on the accepted-session authority, so a consumed-but-unaccepted
         // connection is refused outright (ServerNotInitialized), matching the
         // routing-layer expectation for a rejected first initialize.
-        let err = server.handle_initialized_dispatch().map_err(|e| e.code).unwrap_err();
+        let err = must_err_with(
+            server.handle_initialized_dispatch().map(|_| ()).map_err(|e| e.code),
+            "initialized without an accepted contract must be refused",
+        );
         assert_eq!(err, -32002, "initialized without an accepted contract is ServerNotInitialized");
 
         // Then

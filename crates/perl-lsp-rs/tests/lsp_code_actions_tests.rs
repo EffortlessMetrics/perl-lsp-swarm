@@ -509,11 +509,14 @@ print $undefined_var;
     Ok(())
 }
 
+/// Extracted code-action edits as `(line, character, replacement_text)` tuples.
+type ExtractedWorkspaceEdits = Vec<(usize, usize, String)>;
+
 fn apply_extract_workspace_edit(
     source: &str,
     action: &serde_json::Value,
     uri: &str,
-) -> Result<(String, Vec<(usize, usize, String)>), Box<dyn std::error::Error>> {
+) -> Result<(String, ExtractedWorkspaceEdits), Box<dyn std::error::Error>> {
     let edits =
         action["edit"]["changes"][uri].as_array().ok_or("Expected WorkspaceEdit changes")?;
     let offset = |point: &serde_json::Value| -> Result<usize, Box<dyn std::error::Error>> {
