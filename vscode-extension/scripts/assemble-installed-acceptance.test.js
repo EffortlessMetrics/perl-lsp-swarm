@@ -141,10 +141,12 @@ function withBoundReceipts(run) {
       vsix_sha256: 'b'.repeat(64),
       bundled_server_sha256: 'c'.repeat(64),
     };
-    const sourceBytes = Buffer.from(JSON.stringify({
-      repository_sha: candidate.frozen_product_sha,
-      artifact_hashes: artifactHashes,
-    }));
+    const sourceBytes = Buffer.from(
+      JSON.stringify({
+        repository_sha: candidate.frozen_product_sha,
+        artifact_hashes: artifactHashes,
+      }),
+    );
     const sourceDigest = crypto.createHash('sha256').update(sourceBytes).digest('hex');
     const verified = {
       ...candidate,
@@ -156,19 +158,29 @@ function withBoundReceipts(run) {
       artifact_hashes: artifactHashes,
     };
     const verifiedBytes = Buffer.from(JSON.stringify(verified));
-    fs.writeFileSync(parentReceiptPath, JSON.stringify({
-      candidate, child_receipts: { installed_acceptance: {} },
-    }));
+    fs.writeFileSync(
+      parentReceiptPath,
+      JSON.stringify({
+        candidate,
+        child_receipts: { installed_acceptance: {} },
+      }),
+    );
     fs.writeFileSync(sourceReceiptPath, sourceBytes);
     fs.writeFileSync(verifiedArtifactPath, verifiedBytes);
     run({
       options: {
-        parentReceiptPath, sourceReceiptPath, verifiedArtifactPath, outputPath,
+        parentReceiptPath,
+        sourceReceiptPath,
+        verifiedArtifactPath,
+        outputPath,
         candidateId: candidate.candidate_id,
         frozenProductSha: candidate.frozen_product_sha,
         artifactSetId: candidate.artifact_set_id,
       },
-      sourceBytes, sourceDigest, verified, verifiedBytes,
+      sourceBytes,
+      sourceDigest,
+      verified,
+      verifiedBytes,
     });
   } finally {
     fs.rmSync(directory, { recursive: true, force: true });
@@ -180,9 +192,13 @@ void test('rejects missing, malformed, or stale verified source binding without 
     const previousOutput = 'previous valid handoff\n';
     fs.writeFileSync(options.outputPath, previousOutput);
     for (const digest of [undefined, 'not-a-digest', 'd'.repeat(64), sourceDigest.toUpperCase()]) {
-      fs.writeFileSync(options.verifiedArtifactPath, JSON.stringify({
-        ...verified, source_receipt_sha256: digest,
-      }));
+      fs.writeFileSync(
+        options.verifiedArtifactPath,
+        JSON.stringify({
+          ...verified,
+          source_receipt_sha256: digest,
+        }),
+      );
       assert.throws(() => assembleInstalledAcceptance(options), /source_receipt_sha256/);
       assert.equal(fs.readFileSync(options.outputPath, 'utf8'), previousOutput);
     }
@@ -193,19 +209,34 @@ void test('CLI rejects a stale source envelope and leaves the prior output intac
   withBoundReceipts(({ options, verified }) => {
     const previousOutput = 'previous valid handoff\n';
     fs.writeFileSync(options.outputPath, previousOutput);
-    fs.writeFileSync(options.verifiedArtifactPath, JSON.stringify({
-      ...verified, source_receipt_sha256: 'd'.repeat(64),
-    }));
-    const cli = childProcess.spawnSync(process.execPath, [
-      path.join(__dirname, 'assemble-installed-acceptance.js'),
-      '--parent', options.parentReceiptPath,
-      '--source', options.sourceReceiptPath,
-      '--verified', options.verifiedArtifactPath,
-      '--output', options.outputPath,
-      '--candidate-id', options.candidateId,
-      '--frozen-product-sha', options.frozenProductSha,
-      '--artifact-set-id', options.artifactSetId,
-    ], { encoding: 'utf8' });
+    fs.writeFileSync(
+      options.verifiedArtifactPath,
+      JSON.stringify({
+        ...verified,
+        source_receipt_sha256: 'd'.repeat(64),
+      }),
+    );
+    const cli = childProcess.spawnSync(
+      process.execPath,
+      [
+        path.join(__dirname, 'assemble-installed-acceptance.js'),
+        '--parent',
+        options.parentReceiptPath,
+        '--source',
+        options.sourceReceiptPath,
+        '--verified',
+        options.verifiedArtifactPath,
+        '--output',
+        options.outputPath,
+        '--candidate-id',
+        options.candidateId,
+        '--frozen-product-sha',
+        options.frozenProductSha,
+        '--artifact-set-id',
+        options.artifactSetId,
+      ],
+      { encoding: 'utf8' },
+    );
     assert.equal(cli.status, 1, cli.stderr);
     assert.match(cli.stderr, /source_receipt_sha256 differs/);
     assert.equal(fs.readFileSync(options.outputPath, 'utf8'), previousOutput);

@@ -103,7 +103,9 @@ function assembleInstalledAcceptance({
   const sourceSha256 = sha256(sourceBytes);
   requireArtifactHash(verified.source_receipt_sha256, 'verified artifact source_receipt_sha256');
   if (verified.source_receipt_sha256 !== sourceSha256) {
-    throw new Error('verified artifact source_receipt_sha256 differs from the source receipt bytes');
+    throw new Error(
+      'verified artifact source_receipt_sha256 differs from the source receipt bytes',
+    );
   }
   const installed = parent.child_receipts?.installed_acceptance;
   if (!installed) {
