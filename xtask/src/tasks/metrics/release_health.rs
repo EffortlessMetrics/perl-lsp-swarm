@@ -64,6 +64,15 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::Path;
 
+/// The `ci_baseline.json` envelope version this consumer supports (#15367).
+///
+/// Deliberately a local constant, not an import of the producer's
+/// `ci_metrics::SCHEMA_VERSION_BASELINE`: if the producer bumps its stamp
+/// without migrating this consumer, the producer-conformance round-trip test
+/// fails here and forces a deliberate migration instead of this module's
+/// acceptance silently widening to whatever the producer now writes.
+const CI_BASELINE_SUPPORTED_SCHEMA_VERSION: &str = "ci-baseline.v1";
+
 // ---------------------------------------------------------------------------
 // Serde helpers
 // ---------------------------------------------------------------------------
@@ -178,6 +187,11 @@ struct BuildTimingMeasurement {
 
 #[derive(Debug, Deserialize)]
 struct CiBaselineFile {
+    /// No serde default: a baseline without the envelope field fails to
+    /// parse, which [`read_ci_baseline`] turns into an error (fail-closed,
+    /// #15367). The artifact is a runtime output of `cargo xtask
+    /// ci-baseline`; there are no committed fixtures needing legacy shims.
+    schema_version: String,
     #[serde(default)]
     summary: Option<CiBaselineSummary>,
     /// Completeness flag written by `cargo xtask ci-baseline` (#15377):
@@ -231,7 +245,7 @@ fn collect_release_health(root: &Path, days: u64) -> Result<ReleaseHealthMetrics
     // (#15377): publishing its pass rate as release health would present a
     // slice of the window as the window. Degrade to null exactly like an
     // absent file so the scorecard shows unknown instead of wrong.
-    let baseline = read_ci_baseline(root)
+    let baseline = read_ci_baseline(root)?
         .filter(|file| file.sample_completeness.as_deref() != Some("partial_sample"));
     let version = read_workspace_version(root);
     let dev_loop_durations = read_dev_loop_durations(root)?;
@@ -289,12 +303,34 @@ fn read_debt_ledger(root: &Path) -> Result<DebtLedger> {
 }
 
 /// Read the optional CI baseline JSON written by `cargo xtask ci-baseline`.
-/// Returns `None` if the file is absent or fails to parse — the scorecard
-/// degrades gracefully and reports `null` for the merge-gate metrics.
-fn read_ci_baseline(root: &Path) -> Option<CiBaselineFile> {
+/// Returns `Ok(None)` when the file is wholly absent — a fresh-clone
+/// condition, not schema drift.  A file that is present but unreadable,
+/// unparseable, or whose `schema_version` differs from
+/// [`CI_BASELINE_SUPPORTED_SCHEMA_VERSION`] is an error: rendering a broken
+/// or drifted artifact as "no baseline available" would fail open and hide
+/// it (#15367).
+fn read_ci_baseline(root: &Path) -> Result<Option<CiBaselineFile>> {
     let path = root.join(CI_BASELINE_OUTPUT_DIR).join("ci_baseline.json");
-    let raw = fs::read_to_string(&path).ok()?;
-    serde_json::from_str(&raw).ok()
+    let raw = match fs::read_to_string(&path) {
+        Ok(raw) => raw,
+        // Absent baseline is a fresh-clone condition, not schema drift. Any
+        // other read failure (permissions, is-a-directory, invalid UTF-8,
+        // transient I/O) must propagate with path context: degrading it to
+        // "no baseline" would fail open on a present-but-unreadable artifact.
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error).with_context(|| format!("reading {}", path.display())),
+    };
+    let file: CiBaselineFile =
+        serde_json::from_str(&raw).with_context(|| format!("parsing {}", path.display()))?;
+    if file.schema_version != CI_BASELINE_SUPPORTED_SCHEMA_VERSION {
+        let found = file.schema_version;
+        return Err(eyre!(
+            "ci baseline schema version mismatch at {}: expected \
+             {CI_BASELINE_SUPPORTED_SCHEMA_VERSION}, got {found}",
+            path.display()
+        ));
+    }
+    Ok(Some(file))
 }
 
 /// Extract `[workspace.package].version` from the root `Cargo.toml`.
@@ -508,7 +544,20 @@ mod tests {
     fn write_ci_baseline(root: &Path, summary_json: &str) -> Result<()> {
         let dir = root.join(super::CI_BASELINE_OUTPUT_DIR);
         fs::create_dir_all(&dir)?;
-        fs::write(dir.join("ci_baseline.json"), format!("{{\"summary\": {summary_json}}}"))?;
+        fs::write(
+            dir.join("ci_baseline.json"),
+            format!(
+                "{{\"schema_version\": \"{}\", \"summary\": {summary_json}}}",
+                super::CI_BASELINE_SUPPORTED_SCHEMA_VERSION
+            ),
+        )?;
+        Ok(())
+    }
+
+    fn write_raw_ci_baseline(root: &Path, contents: &str) -> Result<()> {
+        let dir = root.join(super::CI_BASELINE_OUTPUT_DIR);
+        fs::create_dir_all(&dir)?;
+        fs::write(dir.join("ci_baseline.json"), contents)?;
         Ok(())
     }
 
@@ -682,16 +731,105 @@ technical_debt:
         Ok(())
     }
 
+    /// #15367: a present-but-unparseable baseline must fail closed — mapping
+    /// it to "no baseline available" hides a broken producer behind a clean
+    /// scorecard.
     #[test]
-    fn collect_tolerates_malformed_ci_baseline() -> Result<()> {
+    fn collect_rejects_malformed_ci_baseline() -> Result<()> {
         let tmp = TempDir::new()?;
         let dir = tmp.path().join(super::CI_BASELINE_OUTPUT_DIR);
         fs::create_dir_all(&dir)?;
         fs::write(dir.join("ci_baseline.json"), "{ this is not json")?;
-        let m = collect_release_health(tmp.path(), 30)?;
-        assert_eq!(m.merge_gate_pass_rate, None);
-        assert_eq!(m.merge_gate_runs_analyzed, None);
-        assert_eq!(m.merge_gate_billable_minutes, None);
+        let err = collect_release_health(tmp.path(), 30)
+            .err()
+            .ok_or_else(|| eyre!("expected malformed baseline to fail closed"))?;
+        ensure!(
+            err.to_string().contains("ci_baseline.json"),
+            "error should name the failing artifact: {err}"
+        );
+        Ok(())
+    }
+
+    /// #15367: a baseline whose envelope version differs from the version
+    /// this consumer supports is refused instead of being silently presented
+    /// as the current merge-gate signal.
+    #[test]
+    fn read_ci_baseline_refuses_wrong_schema_version() -> Result<()> {
+        let tmp = TempDir::new()?;
+        write_raw_ci_baseline(
+            tmp.path(),
+            r#"{"schema_version": "ci-baseline.v2", "summary": {"total_runs": 1, "total_billable_minutes": 2, "overall_success_rate_percent": 100.0}}"#,
+        )?;
+        let err = read_ci_baseline(tmp.path())
+            .err()
+            .ok_or_else(|| eyre!("expected schema version rejection"))?;
+        ensure!(
+            err.to_string().contains("schema version mismatch"),
+            "error should name the version drift: {err}"
+        );
+        Ok(())
+    }
+
+    /// #15367: baselines written before the envelope fail closed; only a
+    /// wholly absent file degrades to "no baseline".
+    #[test]
+    fn read_ci_baseline_refuses_missing_schema_version() -> Result<()> {
+        let tmp = TempDir::new()?;
+        write_raw_ci_baseline(tmp.path(), r#"{"summary": null}"#)?;
+        ensure!(
+            read_ci_baseline(tmp.path()).is_err(),
+            "baseline without schema_version must fail closed"
+        );
+        Ok(())
+    }
+
+    /// #15370: a wholly absent `ci_baseline.json` is the one condition that
+    /// still degrades to "no baseline" — a fresh clone, not schema drift.
+    /// Pinning it alongside the fail-closed rejection tests keeps the repair
+    /// from over-tightening: `Ok(None)` here is the contract, and every
+    /// present-but-broken shape must stay an error.
+    #[test]
+    fn read_ci_baseline_absent_file_is_none() -> Result<()> {
+        let tmp = TempDir::new()?;
+        let baseline = read_ci_baseline(tmp.path())?;
+        ensure!(baseline.is_none(), "absent baseline file must degrade to None, got {baseline:?}");
+        Ok(())
+    }
+
+    /// #15369: producer-conformance. The artifact this consumer reads is
+    /// written by `ci_metrics::run_ci_baseline`; serialize the producer's
+    /// real `BaselineReport` — every envelope field populated — and prove
+    /// this consumer accepts it. A producer field rename or removal fails
+    /// here instead of drifting away from the consumer undetected.
+    #[test]
+    fn ci_baseline_consumer_accepts_full_producer_envelope() -> Result<()> {
+        let report = crate::tasks::ci_metrics::baseline_report_fixture();
+        let json = serde_json::to_string(&report).context("serialize producer baseline")?;
+        let parsed: serde_json::Value = serde_json::from_str(&json)?;
+        for key in
+            ["schema_version", "generated_at", "branch", "days_analyzed", "workflows", "summary"]
+        {
+            ensure!(
+                parsed.get(key).is_some(),
+                "producer envelope lost `{key}` — envelope fields move in lockstep with consumers (#15369)"
+            );
+        }
+
+        let tmp = TempDir::new()?;
+        write_raw_ci_baseline(tmp.path(), &json)?;
+        let file = read_ci_baseline(tmp.path())?
+            .ok_or_else(|| eyre!("producer report must be accepted, not treated as absent"))?;
+        let summary =
+            file.summary.ok_or_else(|| eyre!("producer summary must survive the round-trip"))?;
+        ensure!(summary.total_runs == 42, "total_runs must round-trip as 42");
+        ensure!(
+            summary.total_billable_minutes == 137,
+            "total_billable_minutes must round-trip as 137"
+        );
+        ensure!(
+            file.sample_completeness.as_deref() == Some("complete"),
+            "completeness flag must round-trip through the consumer's envelope"
+        );
         Ok(())
     }
 
@@ -706,7 +844,7 @@ technical_debt:
         fs::create_dir_all(&dir)?;
         fs::write(
             dir.join("ci_baseline.json"),
-            r#"{"sample_completeness": "partial_sample", "fetched_runs": 200, "summary": {"total_runs": 200, "total_billable_minutes": 137, "overall_success_rate_percent": 95.5}}"#,
+            r#"{"schema_version": "ci-baseline.v1", "sample_completeness": "partial_sample", "fetched_runs": 200, "summary": {"total_runs": 200, "total_billable_minutes": 137, "overall_success_rate_percent": 95.5}}"#,
         )?;
         let m = collect_release_health(tmp.path(), 30)?;
         assert_eq!(m.merge_gate_pass_rate, None);
@@ -733,9 +871,9 @@ technical_debt:
             tmp.path(),
             r#"{"total_runs": 7, "total_billable_minutes": 11, "overall_success_rate_percent": 88.5}"#,
         )?;
-        let parsed = read_ci_baseline(tmp.path())
-            .expect("consumer must read the file at the canonical contract path");
-        let summary = parsed.summary.expect("summary must round-trip");
+        let parsed = read_ci_baseline(tmp.path())?
+            .ok_or_else(|| eyre!("consumer must read the file at the canonical contract path"))?;
+        let summary = parsed.summary.ok_or_else(|| eyre!("summary must round-trip"))?;
         assert_eq!(summary.total_runs, 7);
         assert_eq!(summary.total_billable_minutes, 11);
         Ok(())
