@@ -2956,12 +2956,13 @@ impl LspServer {
             let mut early_exit: Option<(EarlyExitReason, u64, usize, usize)> = None;
             // #17245: the initial scan budget no longer stops the scan. When the
             // budget trips, the scan reports the partial-index window once
-            // (ready_limited) and keeps indexing the remaining files, so
-            // coverage completes instead of freezing at a permanent partial
-            // index. `initial_budget_reported` makes that report fire exactly
-            // once; `discovery_budget_warned` only de-duplicates the
-            // discovery-phase warning and deliberately does not suppress the
-            // indexing loop's report.
+            // (ready_limited) — during discovery if discovery alone overruns
+            // the budget, otherwise at the indexing loop's first check — and
+            // keeps indexing the remaining files, so coverage completes instead
+            // of freezing at a permanent partial index.
+            // `initial_budget_reported` makes that report fire exactly once;
+            // `discovery_budget_warned` de-duplicates the discovery-phase warn
+            // log.
             let mut initial_budget_reported = false;
             let mut discovery_budget_warned = false;
             let mut indexing_receipt = WorkspaceIndexingReceipt::default();
@@ -3025,12 +3026,19 @@ impl LspServer {
 
                     if elapsed_ms > caps.initial_scan_budget_ms && !discovery_budget_warned {
                         // #17245: discovery past the budget no longer abandons
-                        // the scan. Nothing has been indexed yet, so the
-                        // degraded partial-index report is left to the indexing
-                        // loop's own budget check (elapsed time is already past
-                        // budget by then). Discovery continues toward the
-                        // max_files limit.
+                        // the scan, and the partial-index window is reported
+                        // HERE rather than waiting for the indexing loop: on a
+                        // workspace whose discovery alone outlasts the budget,
+                        // the client would otherwise stay on an unqualified
+                        // building report well past the configured budget
+                        // (review on PR #17274). The index is empty-but-partial
+                        // at this moment, so the ready_limited payload is
+                        // honest. Setting `initial_budget_reported` keeps the
+                        // indexing loop from reporting a second time; discovery
+                        // continues toward the max_files limit.
                         discovery_budget_warned = true;
+                        initial_budget_reported = true;
+                        send_index_budget_exceeded_notification(&outbound, elapsed_ms);
                         tracing::warn!(
                             elapsed_ms,
                             discovered = total_files,
