@@ -52,6 +52,7 @@
 mod calls_and_exprs;
 mod declarations;
 mod interpolation;
+mod require_operand;
 mod scope_constructs;
 mod uses;
 

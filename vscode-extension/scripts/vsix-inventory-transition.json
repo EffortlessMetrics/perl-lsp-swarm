@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
   "owner_issue": 7804,
-  "reason": "Managed networking transport slice (#7851/#7804): the new managedHttpTransport module adds ~13KB to the rolldown bundle out/extension.js; size-only growth, no structural packaging change.",
-  "base_baseline_file_sha256": "975f428f8ea36ca04de3ee3ae5093b961b9a0002dfd61a9fc3b25e8c9fdb42eb",
-  "candidate_baseline_file_sha256": "f19c4ccf972e7308b5b93b9d5b5a301f38be9ee1b54ebbd819bc5d1a91ab688a",
-  "base_inventory_sha256": "02fe6fe2c7ab70962c657b90ca6b341bf245a1a1e7c6f1d637a3994500c4645e",
-  "candidate_inventory_sha256": "8e8041a6f0c401a7a94769d31239b26a72fc823662c985cc8aee7e72c4b9d8ce"
+  "reason": "Merge reconciliation after main moved (freshness-seam window #17045/#17084 plus #16819): the @INC-paths guidance growth and this PR's managedHttpTransport module both enlarge the rolldown bundle out/extension.js; size-only growth, no structural packaging change.",
+  "base_baseline_file_sha256": "7175d1a23eb0a66a27ef87ce1ec50b01f0d25750b0b15f199176b095b0ea494e",
+  "candidate_baseline_file_sha256": "0df10e9b2d9bcabf5efb3b5b7421e652fc90c3e335e50a99b56fa8a58fede47c",
+  "base_inventory_sha256": "475c8e0ebae020886502179218fb90bd7fe9c6df776e99257b385c33af979ce5",
+  "candidate_inventory_sha256": "1e797ec59f85e428665f73302eff47e8ae007208f7785e5d6196562d9fbfa89b"
 }

@@ -9799,7 +9799,10 @@ fn variable_labels_at(code: &str, needle: &str) -> Vec<String> {
 fn test_bare_sigil_offers_local_scalar_not_workspace_package()
 -> Result<(), Box<dyn std::error::Error>> {
     let index = Arc::new(WorkspaceIndex::new());
-    index.index_file(
+    // Canonical initial-name fixture seeding (#17043 burndown): index_file is
+    // a one-line forward to index_initial_file; this seeds initial on-disk
+    // state, so call the canonical API directly.
+    index.index_initial_file(
         must(Url::parse("file:///lib/Animal.pm")),
         "package Animal;\nsub speak { 1 }\n1;\n".to_string(),
     )?;
