@@ -80,7 +80,7 @@ def git_environment():
 def isolated_merge_environment():
     """Exclude ambient configuration and object redirection from merge-tree."""
     env = {key: value for key, value in git_environment().items()
-           if not key.startswith("GIT_CONFIG") and key != "GIT_TEMPLATE_DIR"}
+           if not key.startswith("GIT_CONFIG") and key not in {"GIT_TEMPLATE_DIR", "GIT_ATTR_SOURCE"}}
     env["GIT_CONFIG_NOSYSTEM"] = "1"
     env["GIT_CONFIG_GLOBAL"] = os.devnull
     env["GIT_ATTR_NOSYSTEM"] = "1"
@@ -361,6 +361,15 @@ def semantic_proof(git, subjects, original, bindings, item, projection):
     elif disposition == "publication_lineage_only":
         if not all(path in LINEAGE_ONLY_PATHS for path in paths):
             raise ValueError("unreviewed executable, control or product path cannot be lineage-only")
+        parents = git.text("show", "-s", "--format=%P", original).split()
+        for binding in bindings:
+            historical = [git.entry(commit, binding["path"]) for commit in [original, *parents]]
+            if not any(entry is not None for entry in historical):
+                raise ValueError("lineage-only path lacks an original or parent entry")
+            entries = [*historical, binding["source"], binding["target"]]
+            if any(entry is not None and (entry["mode"] != "100644" or entry["type"] != "blob")
+                   for entry in entries):
+                raise ValueError("lineage-only metadata must remain a regular non-executable blob")
     elif disposition == "superseded_by_swarm_architecture":
         if not git.exact_commit(item["source_commit"]) or not git.ancestor(item["source_commit"], subjects["source"]):
             raise ValueError("architecture successor is not reachable from S")

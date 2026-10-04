@@ -34,6 +34,8 @@ units require a source repair or qualified semantic disposition.
 Lineage-only admission is limited to the explicitly reviewed historical document
 paths in `LINEAGE_ONLY_PATHS`; a filename extension or directory cannot exempt
 executable source, configuration, controls or active guidance.
+Every present original, parent and current R/S entry must also be a regular
+non-executable `100644` blob; deletion cannot hide a parent's functional mode.
 
 Use exact SHAs, a complete common graph and a fresh output path:
 

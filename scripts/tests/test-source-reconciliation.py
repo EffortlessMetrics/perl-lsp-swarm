@@ -501,19 +501,82 @@ class ReconciliationTests(unittest.TestCase):
                 adapter.semantic_proof(self.api, self.subjects, self.target,
                                        [{"path": path, "source": None, "target": None}], item, None)
         for path in sorted(adapter.LINEAGE_ONLY_PATHS):
+            self.write(path, "reviewed historical publication metadata\n")
+        original = self.commit("historical publication documents")
+        for path in sorted(adapter.LINEAGE_ONLY_PATHS):
             with self.subTest(path=path):
-                adapter.semantic_proof(self.api, self.subjects, self.target,
-                                       [{"path": path, "source": None, "target": None}], item, None)
+                adapter.semantic_proof(self.api, self.subjects, original,
+                                       [{"path": path, "source": None,
+                                         "target": self.api.entry(original, path)}], item, None)
+        self.git("rm", "CHANGELOG.md")
+        deleted = self.commit("delete historical regular metadata")
+        adapter.semantic_proof(self.api, self.subjects, deleted,
+                               [{"path": "CHANGELOG.md", "source": None, "target": None}], item, None)
+
+    def test_lineage_only_refuses_functional_modes_in_original_parents_and_current_entries(self):
+        self.write("CHANGELOG.md", "reviewed historical publication metadata\n")
+        regular = self.commit("regular metadata")
+        blob = self.git("rev-parse", regular + ":CHANGELOG.md")
+        item = {"disposition": "publication_lineage_only", "authority": ["synthetic claim"],
+                "blocking_decisions": []}
+        for mode in ("100755", "120000", "160000"):
+            self.git("checkout", "-q", "-b", "functional-mode-" + mode, regular)
+            self.git("update-index", "--cacheinfo", mode, regular if mode == "160000" else blob,
+                     "CHANGELOG.md")
+            self.git("commit", "-q", "-m", "functional metadata mode " + mode)
+            functional = self.git("rev-parse", "HEAD")
+            entry = self.api.entry(functional, "CHANGELOG.md")
+            self.assertEqual(entry["mode"], mode)
+            for original, source, target in ((functional, entry, entry), (regular, entry, None)):
+                with self.subTest(mode=mode, original=original), self.assertRaisesRegex(ValueError, "lineage-only"):
+                    adapter.semantic_proof(self.api, self.subjects, original,
+                                           [{"path": "CHANGELOG.md", "source": source, "target": target}], item, None)
+            self.git("update-index", "--force-remove", "CHANGELOG.md")
+            (self.repo / "CHANGELOG.md").unlink()
+            self.git("commit", "-q", "-m", "delete functional metadata mode " + mode)
+            deleted = self.git("rev-parse", "HEAD")
+            self.assertIsNone(self.api.entry(deleted, "CHANGELOG.md"))
+            with self.subTest(mode=mode, deletion=True), self.assertRaisesRegex(ValueError, "lineage-only"):
+                adapter.semantic_proof(self.api, self.subjects, deleted,
+                                       [{"path": "CHANGELOG.md", "source": None, "target": None}], item, None)
 
     def test_ambient_git_config_cannot_enter_isolated_merge_baseline(self):
         with patch.dict(os.environ, {"GIT_CONFIG_COUNT": "1",
                                      "GIT_CONFIG_KEY_0": "merge.unsafe.driver",
-                                     "GIT_CONFIG_VALUE_0": "unexpected-command"}):
+                                     "GIT_CONFIG_VALUE_0": "unexpected-command",
+                                     "GIT_ATTR_SOURCE": "unrelated-object"}):
             env = adapter.isolated_merge_environment()
         self.assertNotIn("GIT_CONFIG_COUNT", env)
         self.assertNotIn("GIT_CONFIG_KEY_0", env)
         self.assertNotIn("GIT_CONFIG_VALUE_0", env)
+        self.assertNotIn("GIT_ATTR_SOURCE", env)
         self.assertEqual(env["GIT_CONFIG_NOSYSTEM"], "1")
+
+    def test_ambient_attribute_source_cannot_change_isolated_merge_obligations(self):
+        self.git("checkout", "-q", "-b", "attributes", self.shared)
+        self.write(".gitattributes", "shared.txt merge=union\n")
+        attributes = self.commit("unrelated union attributes")
+        self.git("checkout", "-q", "-b", "side", self.shared)
+        self.write("shared.txt", "side behavior\n")
+        side = self.commit("side conflict")
+        self.git("checkout", "-q", "public")
+        self.write("shared.txt", "first behavior\n")
+        first = self.commit("first conflict")
+        merge = subprocess.run(["git", "-C", str(self.repo), "merge", "--no-ff", "--no-commit", "side"],
+                               env=adapter.git_environment(), capture_output=True)
+        self.assertEqual(merge.returncode, 1)
+        self.write("shared.txt", "explicitly resolved behavior\n")
+        self.subjects["target"] = self.commit("resolve conflict")
+        with patch.dict(os.environ, {"GIT_ATTR_SOURCE": attributes}):
+            contaminated = subprocess.run(["git", "-C", str(self.repo), "merge-tree", "--write-tree",
+                                            "--name-only", "-z", "--no-messages", first, side],
+                                           env=adapter.git_environment(), capture_output=True)
+            self.assertEqual(contaminated.returncode, 0, contaminated.stderr)
+            packet = adapter.reconcile(self.api, self.subjects)
+        row = next(r for r in packet["population"] if r["commit"] == self.subjects["target"])
+        self.assertEqual(row["merge_effects"]["baseline"]["status"], "conflicted")
+        self.assertEqual(row["merge_effects"]["baseline"]["conflict_paths"], ["shared.txt"])
+        self.assertEqual(row["merge_effects"]["resolution_paths"], ["shared.txt"])
 
     def test_historical_packet_is_never_overwritten(self):
         path = self.root / "historical.json"
