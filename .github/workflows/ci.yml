@@ -429,6 +429,11 @@ jobs:
         # silently bit-rot. Unix remains the execution authority for the
         # Bash/chmod smoke.
         run: |
+          # Execute the public completion target before library smoke so a
+          # separate library failure cannot suppress this Windows regression.
+          if [[ " $WINDOWS_TEST_CRATES " == *" -p perllsp "* ]]; then
+            cargo test -p perllsp --test powershell_completion --locked -- --exact generated_powershell_completion_works_without_profile_namespace_imports --test-threads=1
+          fi
           cargo test $WINDOWS_TEST_CRATES --locked --lib
           cargo test -p xtask --test release_artifact_size_smoke_script --locked --no-run
           if [[ " $WINDOWS_TEST_CRATES " == *" -p perl-ci-hygiene "* ]]; then
@@ -1821,7 +1826,7 @@ jobs:
         env:
           TESTED_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
         run: |
-          cargo xtask ux-regression-receipt \
+          cargo run -p perl-lsp-ux-tests --bin ux-regression-receipt --locked -- \
             --input target/receipts/ux-regression.log \
             --receipt target/receipts/ux-regression.json \
             --exit-status-file target/receipts/ux-regression.exit \

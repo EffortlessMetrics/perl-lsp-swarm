@@ -11,7 +11,7 @@ schema_version = 1
 policy = "ripr-suppressions"
 owner = "EffortlessMetrics"
 status = "advisory"
-updated = "2026-09-17"
+updated = "2026-09-28"
 
 # -----------------------------------------------------------------------------
 # Generated status docs: validated through status-generation checks, not
@@ -4985,3 +4985,64 @@ created = "2026-09-17"
 review_after = "2026-10-17"
 expires = "2026-12-31"
 removal_criteria = "Remove when EffortlessMetrics/ripr#1429 traces declaration-line probes to the tests that construct or exercise their owners, or at expiry. Narrow immediately if a receipt reports an executable no_static_path seam in semantic/mod.rs or semantic/quickorm.rs outside the five identities listed in gap_ids. Do not keep this entry if those probe ids rotate and the receipt names a different executable owner."
+
+# -----------------------------------------------------------------------------
+# #16670 require-module PL109 skip: hosted RIPR 0.10 call_presence on
+# args.first() / std::ptr::eq / require_call_parenthesizes_operand.
+#
+# Review guidance on run 36462311778 (head 2c6f00a78, merge tree d7dd4f10c)
+# still names three weakly_gripped call_presence comments in this file
+# (lines 34/37/44). Those comments are not the blocking new-gap count:
+# genuine_new_ripr_gap_count reads reachable_unrevealed + no_static_path,
+# and this file contributed reachable_unrevealed: 0. Keep the path-scoped
+# entry so those comments remain policy-suppressed if the review pass
+# classifies them. The counted no_static_path: 3 live in uses.rs
+# (ripr-suppress-16670-handle-identifier-no-static-path).
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-16670-require-operand-call-presence"
+kind = "predicate_infection_untraceable"
+paths = ["crates/perl-semantic-analyzer/src/analysis/scope_analyzer/require_operand.rs"]
+classification = ["weakly_gripped", "reachable_unrevealed", "no_static_path"]
+owner = "proof-lane"
+issue = "#16670"
+reason = "PR #16681 (#16670): hosted RIPR review guidance on run 36462311778 names three weakly_gripped call_presence comments on require_operand.rs:34 (require_first_arg_is), :37 (paren helper), and :44 (source.get). --lib tests already observe both sides of each branch, including parenthesized require(DBI)/require (DBI), pointer inequality, empty ancestors, computed first-arg Foo, empty args, and first-arg identity. RIPR still cannot connect those oracles to a side_effect sink (why_not_actionable: Static propagation to side_effect sink is unknown). Same ripr#1428/1429 class as CI_GATE_PLAYBOOK Option 3. Path-scoped to this extracted module. These comments do not increment genuine_new_ripr_gap_count (reachable_unrevealed stays 0). Remove when RIPR traces call_presence through let-else and pointer identity, or at expiry."
+created = "2026-09-28"
+review_after = "2026-10-28"
+expires = "2026-12-28"
+removal_criteria = "Remove when EffortlessMetrics/ripr#1428 or #1429 connects args.first()/ptr::eq/paren-helper call_presence in require_operand.rs to the named --lib and integration tests, or at expiry. Narrow immediately if a receipt reports a seam in this file whose owner is not is_require_module_operand / require_first_arg_is / require_call_parenthesizes_operand."
+
+# -----------------------------------------------------------------------------
+# #16670 handle_identifier: the three findings that actually increment
+# genuine_new_ripr_gap_count on run 36462311778 (merge tree d7dd4f10c,
+# PR receipt no_static_path: 3, suppressed_by_policy: 0).
+#
+# They are executable body lines of handle_identifier in uses.rs, not the
+# require_operand.rs comments the quality-gate next-action list displayed:
+#   probe …uses.rs:predicate:7860b5b8     uses.rs:277  `if !strict_subs_mode {`
+#   probe …uses.rs:call_deletion:84cb92f0 uses.rs:299  `});` (issues.push close)
+#   probe …uses.rs:side_effect:f117ba02   uses.rs:299  `});` (issues.push close)
+# RIPR reported related_tests_total: 0 / "No static test path found for the
+# changed owner" even though analyze() integration tests and now --lib tests
+# in this file invoke the handler. Selector is the three gap_ids from that
+# receipt; classification-qualified to no_static_path so a future executable
+# seam in uses.rs with a different probe id stays visible.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-16670-handle-identifier-no-static-path"
+kind = "predicate_infection_untraceable"
+paths = ["crates/perl-semantic-analyzer/src/analysis/scope_analyzer/uses.rs"]
+classification = ["no_static_path"]
+gap_ids = [
+  "probe:crates_perl-semantic-analyzer_src_analysis_scope_analyzer_uses.rs:predicate:7860b5b8",
+  "probe:crates_perl-semantic-analyzer_src_analysis_scope_analyzer_uses.rs:call_deletion:84cb92f0",
+  "probe:crates_perl-semantic-analyzer_src_analysis_scope_analyzer_uses.rs:side_effect:f117ba02",
+]
+owner = "proof-lane"
+issue = "#16670"
+reason = "PR #16681 (#16670): hosted RIPR run 36462311778 (head 2c6f00a78, merge tree d7dd4f10c) counts three no_static_path findings on handle_identifier in uses.rs — the strict_subs_mode early return (line 277, family predicate) and the UnquotedBareword issues.push close (line 299, families call_deletion and side_effect). The require-operand extract plus require_operand.rs suppression did not decrement this count because the findings are not in that file. --lib tests now call handle_identifier directly for strict_subs_mode=false (no issue), unparenthesized require DBI (skip), expression DBI (push), and parenthesized require(DBI) (push). RIPR still reports no static path to a side_effect sink for the changed owner (ripr#1428/1429). Selector is the three probe identities from that receipt, not the path. A future no_static_path seam in uses.rs with a different probe id stays visible."
+created = "2026-09-29"
+review_after = "2026-10-29"
+expires = "2026-12-28"
+removal_criteria = "Remove when EffortlessMetrics/ripr#1428 or #1429 connects handle_identifier's strict_subs_mode early return and UnquotedBareword push to the named --lib tests (strict_subs_off_does_not_emit_unquoted_bareword, unparenthesized_require_dbi_does_not_emit_unquoted_bareword, expression_dbi_emits_unquoted_bareword, parenthesized_require_dbi_emits_unquoted_bareword), or at expiry. Narrow immediately if a receipt reports a no_static_path seam in uses.rs outside the three identities listed in gap_ids. Do not keep this entry if those probe ids rotate and the receipt names a different executable owner."
+

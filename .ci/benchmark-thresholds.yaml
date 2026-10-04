@@ -46,6 +46,11 @@ categories:
     regression_threshold_pct: 25
     critical_threshold_pct: 60
 
+  ripr:
+    warn_threshold_pct: 10
+    regression_threshold_pct: 20
+    critical_threshold_pct: 50
+
 # Critical path benchmarks (stricter thresholds)
 critical_path:
   # Rope insertion latency (must stay under 1ms for editor responsiveness)
@@ -98,6 +103,12 @@ targets:
     initial_index_medium_workspace: 200ms
     incremental_update_single_file: 10ms
     symbol_lookup_by_name: 1us
+
+  ripr:
+    packet_build_small: 100ms
+    packet_build_medium: 1000ms
+    packet_build_large: 10000ms
+    packet_fingerprint_large: 100ms
 
 # Alerting configuration
 alerting:

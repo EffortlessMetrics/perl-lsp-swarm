@@ -384,11 +384,11 @@ pub struct LspArgs {
     #[arg(long, value_name = "ROOT", default_value = ".")]
     pub ripr_root: String,
 
-    /// Base ref for the diff (e.g. `origin/main`).
+    /// Base ref recorded in the packet (e.g. `origin/main`); caller-asserted, never verified.
     #[arg(long, value_name = "BASE")]
     pub ripr_base: Option<String>,
 
-    /// Head ref for the diff (e.g. `HEAD`).
+    /// Head ref recorded in the packet (e.g. `HEAD`); caller-asserted, never verified.
     #[arg(long, value_name = "HEAD")]
     pub ripr_head: Option<String>,
 
@@ -529,17 +529,20 @@ pub enum LaunchAction {
     },
     /// Export a `ripr-perl-facts-v1` fact packet for the ripr repair-routing
     /// lane (Campaign 31, ripr-swarm#1379). This is a batch handoff — it does
-    /// NOT start the LSP server or execute Perl. The emitter body lands across
-    /// PRs 5-8 (perl-lsp-swarm#2592-#2595); this variant is the command
-    /// surface + arg validation + the unavailable-packet fallback.
+    /// NOT start the LSP server or execute Perl. The emitter body landed
+    /// across perl-lsp-swarm#2592-#2595 and #3293 PRs 3-8; this variant is
+    /// the command surface + arg validation, and packets without facts fall
+    /// back to the `unavailable`/`partial` states.
     RiprFacts {
         /// Packet schema version (must be `ripr-perl-facts-v1`).
         schema: String,
         /// Repository root (repo-relative, forward-slash; defaults to `.`).
         root: String,
-        /// Base ref for the diff (e.g. `origin/main`); `None` = working tree.
+        /// Base ref recorded in the packet (e.g. `origin/main`); `None` =
+        /// unspecified (recorded as null). Caller-asserted, never verified.
         base: Option<String>,
-        /// Head ref for the diff (e.g. `HEAD`); `None` = working tree.
+        /// Head ref recorded in the packet (e.g. `HEAD`); `None` = unspecified
+        /// (recorded as null). Caller-asserted, never verified.
         head: Option<String>,
         /// Comma-separated fact-class subset to emit (e.g. `owners,changes,tests,oracles`).
         fact_classes: String,
@@ -1100,8 +1103,12 @@ pub fn help_text() -> String {
     out.push_str("  --ripr-facts         Export a ripr-perl-facts-v1 fact packet and exit\n");
     out.push_str("  --ripr-schema <ver>  Fact schema version (default: ripr-perl-facts-v1)\n");
     out.push_str("  --ripr-root <path>   Repository root (default: .)\n");
-    out.push_str("  --ripr-base <ref>    Base git ref for differential extraction\n");
-    out.push_str("  --ripr-head <ref>    Head git ref for differential extraction\n");
+    out.push_str(
+        "  --ripr-base <ref>    Base git ref recorded in the packet (opaque; no diff is derived)\n",
+    );
+    out.push_str(
+        "  --ripr-head <ref>    Head git ref recorded in the packet (opaque; no diff is derived)\n",
+    );
     out.push_str("  --ripr-fact-classes <list>\n");
     out.push_str("                       Comma-separated fact classes to emit (default: all)\n");
     out.push_str(
@@ -1319,8 +1326,8 @@ complete -c perl-lsp -l file-watchers -x -a 'true false' -d 'Set file-watcher tu
 complete -c perl-lsp -l ripr-facts -d 'Export a ripr-perl-facts-v1 fact packet'
 complete -c perl-lsp -l ripr-schema -x -d 'Fact schema version'
 complete -c perl-lsp -l ripr-root -r -F -d 'Repository root'
-complete -c perl-lsp -l ripr-base -x -d 'Base git ref for differential extraction'
-complete -c perl-lsp -l ripr-head -x -d 'Head git ref for differential extraction'
+complete -c perl-lsp -l ripr-base -x -d 'Base git ref recorded in the packet'
+complete -c perl-lsp -l ripr-head -x -d 'Head git ref recorded in the packet'
 complete -c perl-lsp -l ripr-fact-classes -x -d 'Fact classes filter'
 complete -c perl-lsp -l ripr-out -r -F -d 'Output path'
 complete -c perl-lsp -l help -d 'Show help message'
@@ -1330,40 +1337,40 @@ const POWERSHELL_COMPLETION: &str = r#"Register-ArgumentCompleter -Native -Comma
     param($wordToComplete, $commandAst, $cursorPosition)
 
     $options = @(
-        [CompletionResult]::new('--stdio', '--stdio', 'ParameterName', 'Use stdio for communication (default)')
-        [CompletionResult]::new('--socket', '--socket', 'ParameterName', 'Use TCP socket for communication')
-        [CompletionResult]::new('--port', '--port', 'ParameterName', 'Port to listen on')
-        [CompletionResult]::new('--log', '--log', 'ParameterName', 'Enable logging to stderr')
-        [CompletionResult]::new('--health', '--health', 'ParameterName', 'Quick health check')
-        [CompletionResult]::new('--info', '--info', 'ParameterName', 'Show server info')
-        [CompletionResult]::new('--check', '--check', 'ParameterName', 'Native in-process parser check of listed files')
-        [CompletionResult]::new('--check-project', '--check-project', 'ParameterName', 'Native parsability report (80% threshold; not a strict all-clean check)')
-        [CompletionResult]::new('--doctor', '--doctor', 'ParameterName', 'Explain Perl path, config, and effective @INC roots')
-        [CompletionResult]::new('--external-tools', '--external-tools', 'ParameterName', 'With --doctor: native-first external tooling report')
-        [CompletionResult]::new('--critic-compatibility', '--critic-compatibility', 'ParameterName', 'With --doctor: .perlcriticrc compatibility, process-free')
-        [CompletionResult]::new('--dev-environment', '--dev-environment', 'ParameterName', 'With --doctor: development-environment prerequisites')
-        [CompletionResult]::new('--version', '--version', 'ParameterName', 'Show version information')
-        [CompletionResult]::new('--features-json', '--features-json', 'ParameterName', 'Output features catalog as JSON')
-        [CompletionResult]::new('--json', '--json', 'ParameterName', 'With --info: same JSON identity packet (composed one-shot form)')
-        [CompletionResult]::new('--identity', '--identity', 'ParameterName', 'Print the installed-binary identity packet and exit (one-shot)')
-        [CompletionResult]::new('--identity-json', '--identity-json', 'ParameterName', 'Print that packet as perl_lsp.binary_identity.v1 JSON (one-shot)')
-        [CompletionResult]::new('--perltidy-compat-report', '--perltidy-compat-report', 'ParameterName', 'Report native formatter compatibility for .perltidyrc')
-        [CompletionResult]::new('--perlcritic-compat-report', '--perlcritic-compat-report', 'ParameterName', 'Report native critic compatibility for .perlcriticrc')
-        [CompletionResult]::new('--feature-profile', '--feature-profile', 'ParameterName', 'Set feature profile')
-        [CompletionResult]::new('--completion', '--completion', 'ParameterName', 'Generate shell completions')
-        [CompletionResult]::new('--runtime-mode', '--runtime-mode', 'ParameterName', 'Runtime workload tuning')
-        [CompletionResult]::new('--diagnostic-mode', '--diagnostic-mode', 'ParameterName', 'Diagnostic scope tuning')
-        [CompletionResult]::new('--diagnostic-debounce-ms', '--diagnostic-debounce-ms', 'ParameterName', 'Diagnostic publish debounce window')
-        [CompletionResult]::new('--eager-workspace-indexing', '--eager-workspace-indexing', 'ParameterName', 'Set eager-indexing tuning value')
-        [CompletionResult]::new('--file-watchers', '--file-watchers', 'ParameterName', 'Set file-watcher tuning value')
-        [CompletionResult]::new('--ripr-facts', '--ripr-facts', 'ParameterName', 'Export a ripr-perl-facts-v1 fact packet')
-        [CompletionResult]::new('--ripr-schema', '--ripr-schema', 'ParameterName', 'Fact schema version')
-        [CompletionResult]::new('--ripr-root', '--ripr-root', 'ParameterName', 'Repository root')
-        [CompletionResult]::new('--ripr-base', '--ripr-base', 'ParameterName', 'Base git ref')
-        [CompletionResult]::new('--ripr-head', '--ripr-head', 'ParameterName', 'Head git ref')
-        [CompletionResult]::new('--ripr-fact-classes', '--ripr-fact-classes', 'ParameterName', 'Fact classes filter')
-        [CompletionResult]::new('--ripr-out', '--ripr-out', 'ParameterName', 'Output path')
-        [CompletionResult]::new('--help', '--help', 'ParameterName', 'Show help message')
+        [System.Management.Automation.CompletionResult]::new('--stdio', '--stdio', 'ParameterName', 'Use stdio for communication (default)')
+        [System.Management.Automation.CompletionResult]::new('--socket', '--socket', 'ParameterName', 'Use TCP socket for communication')
+        [System.Management.Automation.CompletionResult]::new('--port', '--port', 'ParameterName', 'Port to listen on')
+        [System.Management.Automation.CompletionResult]::new('--log', '--log', 'ParameterName', 'Enable logging to stderr')
+        [System.Management.Automation.CompletionResult]::new('--health', '--health', 'ParameterName', 'Quick health check')
+        [System.Management.Automation.CompletionResult]::new('--info', '--info', 'ParameterName', 'Show server info')
+        [System.Management.Automation.CompletionResult]::new('--check', '--check', 'ParameterName', 'Native in-process parser check of listed files')
+        [System.Management.Automation.CompletionResult]::new('--check-project', '--check-project', 'ParameterName', 'Native parsability report (80% threshold; not a strict all-clean check)')
+        [System.Management.Automation.CompletionResult]::new('--doctor', '--doctor', 'ParameterName', 'Explain Perl path, config, and effective @INC roots')
+        [System.Management.Automation.CompletionResult]::new('--external-tools', '--external-tools', 'ParameterName', 'With --doctor: native-first external tooling report')
+        [System.Management.Automation.CompletionResult]::new('--critic-compatibility', '--critic-compatibility', 'ParameterName', 'With --doctor: .perlcriticrc compatibility, process-free')
+        [System.Management.Automation.CompletionResult]::new('--dev-environment', '--dev-environment', 'ParameterName', 'With --doctor: development-environment prerequisites')
+        [System.Management.Automation.CompletionResult]::new('--version', '--version', 'ParameterName', 'Show version information')
+        [System.Management.Automation.CompletionResult]::new('--features-json', '--features-json', 'ParameterName', 'Output features catalog as JSON')
+        [System.Management.Automation.CompletionResult]::new('--json', '--json', 'ParameterName', 'With --info: same JSON identity packet (composed one-shot form)')
+        [System.Management.Automation.CompletionResult]::new('--identity', '--identity', 'ParameterName', 'Print the installed-binary identity packet and exit (one-shot)')
+        [System.Management.Automation.CompletionResult]::new('--identity-json', '--identity-json', 'ParameterName', 'Print that packet as perl_lsp.binary_identity.v1 JSON (one-shot)')
+        [System.Management.Automation.CompletionResult]::new('--perltidy-compat-report', '--perltidy-compat-report', 'ParameterName', 'Report native formatter compatibility for .perltidyrc')
+        [System.Management.Automation.CompletionResult]::new('--perlcritic-compat-report', '--perlcritic-compat-report', 'ParameterName', 'Report native critic compatibility for .perlcriticrc')
+        [System.Management.Automation.CompletionResult]::new('--feature-profile', '--feature-profile', 'ParameterName', 'Set feature profile')
+        [System.Management.Automation.CompletionResult]::new('--completion', '--completion', 'ParameterName', 'Generate shell completions')
+        [System.Management.Automation.CompletionResult]::new('--runtime-mode', '--runtime-mode', 'ParameterName', 'Runtime workload tuning')
+        [System.Management.Automation.CompletionResult]::new('--diagnostic-mode', '--diagnostic-mode', 'ParameterName', 'Diagnostic scope tuning')
+        [System.Management.Automation.CompletionResult]::new('--diagnostic-debounce-ms', '--diagnostic-debounce-ms', 'ParameterName', 'Diagnostic publish debounce window')
+        [System.Management.Automation.CompletionResult]::new('--eager-workspace-indexing', '--eager-workspace-indexing', 'ParameterName', 'Set eager-indexing tuning value')
+        [System.Management.Automation.CompletionResult]::new('--file-watchers', '--file-watchers', 'ParameterName', 'Set file-watcher tuning value')
+        [System.Management.Automation.CompletionResult]::new('--ripr-facts', '--ripr-facts', 'ParameterName', 'Export a ripr-perl-facts-v1 fact packet')
+        [System.Management.Automation.CompletionResult]::new('--ripr-schema', '--ripr-schema', 'ParameterName', 'Fact schema version')
+        [System.Management.Automation.CompletionResult]::new('--ripr-root', '--ripr-root', 'ParameterName', 'Repository root')
+        [System.Management.Automation.CompletionResult]::new('--ripr-base', '--ripr-base', 'ParameterName', 'Base git ref')
+        [System.Management.Automation.CompletionResult]::new('--ripr-head', '--ripr-head', 'ParameterName', 'Head git ref')
+        [System.Management.Automation.CompletionResult]::new('--ripr-fact-classes', '--ripr-fact-classes', 'ParameterName', 'Fact classes filter')
+        [System.Management.Automation.CompletionResult]::new('--ripr-out', '--ripr-out', 'ParameterName', 'Output path')
+        [System.Management.Automation.CompletionResult]::new('--help', '--help', 'ParameterName', 'Show help message')
     )
 
     $elements = $commandAst.CommandElements
@@ -1372,32 +1379,32 @@ const POWERSHELL_COMPLETION: &str = r#"Register-ArgumentCompleter -Native -Comma
     switch ($prevWord) {
         '--completion' {
             @('bash', 'zsh', 'fish', 'powershell', 'pwsh') | Where-Object { $_ -like "$wordToComplete*" } |
-                ForEach-Object { [CompletionResult]::new($_, $_, 'ParameterValue', $_) }
+                ForEach-Object { [System.Management.Automation.CompletionResult]::new($_, $_, 'ParameterValue', $_) }
             return
         }
         '--feature-profile' {
             @('ga-lock', 'ga', 'prod', 'production', 'all', 'auto') | Where-Object { $_ -like "$wordToComplete*" } |
-                ForEach-Object { [CompletionResult]::new($_, $_, 'ParameterValue', $_) }
+                ForEach-Object { [System.Management.Automation.CompletionResult]::new($_, $_, 'ParameterValue', $_) }
             return
         }
         '--runtime-mode' {
             @('normal', 'e2e') | Where-Object { $_ -like "$wordToComplete*" } |
-                ForEach-Object { [CompletionResult]::new($_, $_, 'ParameterValue', $_) }
+                ForEach-Object { [System.Management.Automation.CompletionResult]::new($_, $_, 'ParameterValue', $_) }
             return
         }
         '--diagnostic-mode' {
             @('normal', 'syntax-only') | Where-Object { $_ -like "$wordToComplete*" } |
-                ForEach-Object { [CompletionResult]::new($_, $_, 'ParameterValue', $_) }
+                ForEach-Object { [System.Management.Automation.CompletionResult]::new($_, $_, 'ParameterValue', $_) }
             return
         }
         '--eager-workspace-indexing' {
             @('true', 'false') | Where-Object { $_ -like "$wordToComplete*" } |
-                ForEach-Object { [CompletionResult]::new($_, $_, 'ParameterValue', $_) }
+                ForEach-Object { [System.Management.Automation.CompletionResult]::new($_, $_, 'ParameterValue', $_) }
             return
         }
         '--file-watchers' {
             @('true', 'false') | Where-Object { $_ -like "$wordToComplete*" } |
-                ForEach-Object { [CompletionResult]::new($_, $_, 'ParameterValue', $_) }
+                ForEach-Object { [System.Management.Automation.CompletionResult]::new($_, $_, 'ParameterValue', $_) }
             return
         }
     }
@@ -1421,11 +1428,14 @@ pub fn format_health_output(version: &str, use_color: bool) -> String {
 
 /// Format the `--info` output block.
 ///
-/// `version`, `exe_path` are supplied by the binary crate, as is the source
-/// revision — split into `revision_label` and `revision` because only the
-/// binary crate's build script knows whether the value is a tag, a commit, or
-/// neither. Passing the label in keeps this function from having to guess.
+/// `product_name`, `version`, `exe_path` are supplied by the binary crate, as
+/// is the source revision — split into `revision_label` and `revision` because
+/// only the binary crate's build script knows whether the value is a tag, a
+/// commit, or neither. Passing the label in keeps this function from having to
+/// guess. `product_name` is the invocation name the binary was run under, so
+/// `--info` self-identifies exactly like `--version` and `--help` do (#17163).
 pub fn format_info_output(
+    product_name: &str,
     version: &str,
     revision_label: &str,
     revision: &str,
@@ -1442,9 +1452,9 @@ pub fn format_info_output(
     let mut out = String::with_capacity(256);
 
     if use_color {
-        out.push_str(&format!("\x1b[1mperl-lsp\x1b[0m {version}\n"));
+        out.push_str(&format!("\x1b[1m{product_name}\x1b[0m {version}\n"));
     } else {
-        out.push_str(&format!("perl-lsp {version}\n"));
+        out.push_str(&format!("{product_name} {version}\n"));
     }
     out.push_str(&format!("{revision_label:<18}{revision}\n"));
     out.push_str("Parser:           perl-parser v3 (recursive descent)\n");
@@ -2064,6 +2074,7 @@ mod tests {
     #[test]
     fn info_output_contains_essential_fields() {
         let out = super::format_info_output(
+            "perl-lsp",
             "0.10.0",
             "Git tag:",
             "v0.10.0",
@@ -2084,6 +2095,7 @@ mod tests {
         // render whatever label the binary crate determined rather than
         // hard-coding "Git tag:" over a value that is not one.
         let out = super::format_info_output(
+            "perl-lsp",
             "0.17.0",
             "Git commit:",
             "ba92efb",
@@ -2103,6 +2115,7 @@ mod tests {
         // must not carry a percentage or a coverage/compliance claim.
         let profile = super::FeatureProfile::current();
         let out = super::format_info_output(
+            "perl-lsp",
             "0.17.0",
             "Git commit:",
             "9dfdd0b",
@@ -2153,6 +2166,7 @@ mod tests {
         // `Features: N/N active (100%)` compared one binding to itself, so it
         // could only ever print 100% regardless of what was advertised.
         let out = super::format_info_output(
+            "perl-lsp",
             "0.17.0",
             "Git commit:",
             "9dfdd0b",
@@ -2170,6 +2184,45 @@ mod tests {
         );
         assert!(line.contains("advertised"), "features line should say what it counts: {line:?}");
         Ok(())
+    }
+
+    #[test]
+    fn info_output_leads_with_the_caller_supplied_product_name() {
+        // #17163: the first line used to hard-code the crate name, so the same
+        // binary printed `perl-lsp 0.17.0` from `--info` while `--version`
+        // printed `perllsp 0.17.0`. The name must come from the invocation,
+        // like the version line already does.
+        let out = super::format_info_output(
+            "perllsp",
+            "0.17.0",
+            "Git commit:",
+            "9dfdd0b",
+            "/usr/bin/perllsp",
+            super::FeatureProfile::current(),
+            false,
+        );
+        assert!(out.starts_with("perllsp 0.17.0\n"), "got:\n{out}");
+        assert!(
+            !out.contains("perl-lsp"),
+            "supplied product name must reach the identity line; got:\n{out}"
+        );
+    }
+
+    #[test]
+    fn info_output_colors_wrap_the_supplied_product_name() {
+        let out = super::format_info_output(
+            "perllsp",
+            "0.17.0",
+            "Git commit:",
+            "9dfdd0b",
+            "/usr/bin/perllsp",
+            super::FeatureProfile::current(),
+            true,
+        );
+        assert!(
+            out.starts_with("\x1b[1mperllsp\x1b[0m 0.17.0\n"),
+            "color variant must bold the invocation name, not a hard-coded one; got:\n{out}"
+        );
     }
 
     // ── port_in_use_message ───────────────────────────────────────
