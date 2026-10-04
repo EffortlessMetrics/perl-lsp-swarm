@@ -30,6 +30,18 @@ packet_fingerprint/large
                  change:
                         time:   [+2.9840% +6.1621% +9.6521%] (p = 0.00 < 0.05)
                         Performance has regressed.
+Benchmarking state transitions
+Benchmarking state transitions: Warming up for 3.0000 s
+Benchmarking state transitions: Collecting 100 samples in estimated 5.0000 s
+Benchmarking state transitions: Analyzing
+state transitions  time:   [1.0000 ms 1.1000 ms 1.2000 ms]
+Gnuplot not found, using plotters backend
+Benchmarking initial index small workspace (5 files)
+Benchmarking initial index small workspace (5 files): Warming up for 3.0000 s
+Benchmarking initial index small workspace (5 files): Collecting 100 samples in estimated 5.0000 s
+Benchmarking initial index small workspace (5 files): Analyzing
+initial index small workspace (5 files)
+                        time:   [10.500 ms 10.700 ms 10.900 ms]
 TRANSCRIPT
 
 mkdir -p "$TMP/bin"
@@ -60,8 +72,18 @@ fp = ripr["packet_fingerprint/large"]
 assert fp["mean_ns"] == 213060, fp
 assert fp["low_ns"] == 206670, fp
 assert fp["high_ns"] == 218910, fp
+
+spaced = ripr["state transitions"]
+assert spaced["mean_ns"] == 1100000, spaced
+assert spaced["low_ns"] == 1000000, spaced
+assert spaced["high_ns"] == 1200000, spaced
+
+paren = ripr["initial index small workspace (5 files)"]
+assert paren["mean_ns"] == 10700000, paren
+assert paren["low_ns"] == 10500000, paren
+assert paren["high_ns"] == 10900000, paren
 assert fp["unit"] == "\u00b5s", fp
 
-assert sorted(ripr.keys()) == ["_category", "packet_build/small", "packet_fingerprint/large"], sorted(ripr.keys())
+assert sorted(ripr.keys()) == ["_category", "initial index small workspace (5 files)", "packet_build/small", "packet_fingerprint/large", "state transitions"], sorted(ripr.keys())
 print("run-benchmarks parse fixtures: OK (single-line, throughput two-line, µs, noise ignored)")
 PYEOF

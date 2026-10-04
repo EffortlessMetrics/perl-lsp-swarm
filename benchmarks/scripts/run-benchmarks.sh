@@ -114,16 +114,17 @@ run_criterion_bench() {
     if cargo bench -p "$crate" --bench "$bench" $CRITERION_ARGS 2>&1 | tee "$temp_output" > /dev/null; then
         # Parse criterion output for timing.
         # Single-line layout: "parse_simple  time:   [45.123 us 45.234 us 45.345 us]"
-        # Throughput layout (#17219): the bench name stands alone on its own
+        # Long-name layout (#17219): the bench name stands alone on its own
         # line and the time triple follows on the next line:
         #   "packet_fingerprint/large"
         #   "  time:   [206.67 µs 213.06 µs 218.91 µs]"
+        # Names are captured whole (spaces, parens, dots included): a pending
+        # bare name is consumed only by an immediately following unit triple,
+        # and any other line clears it, so diagnostic lines can never donate
+        # a stale name. Lines with colons (Benchmarking/time/thrpt/change)
+        # are never pending-name candidates.
         local pending_name=""
         while IFS= read -r line; do
-            if [[ $line =~ ^([A-Za-z0-9_/-]+)$ ]]; then
-                pending_name="${BASH_REMATCH[1]}"
-                continue
-            fi
             if [[ $line =~ time:[[:space:]]+\[([0-9.]+)[[:space:]]+(ns|us|µs|ms|s)[[:space:]]+([0-9.]+)[[:space:]]+(ns|us|µs|ms|s)[[:space:]]+([0-9.]+)[[:space:]]+(ns|us|µs|ms|s)\] ]]; then
                 # Capture the triple first: the inline-name test below
                 # overwrites BASH_REMATCH.
@@ -134,7 +135,7 @@ run_criterion_bench() {
                 local high="${BASH_REMATCH[5]}"
                 local high_unit="${BASH_REMATCH[6]}"
                 local bench_name=""
-                if [[ $line =~ ^([A-Za-z0-9_/-]+)[[:space:]]+time: ]]; then
+                if [[ $line =~ ^(.*[^[:space:]])[[:space:]]+time: ]]; then
                     bench_name="${BASH_REMATCH[1]}"
                 elif [[ -n "$pending_name" ]]; then
                     bench_name="$pending_name"
@@ -157,6 +158,8 @@ run_criterion_bench() {
                 echo "        \"unit\": \"$mean_unit\","
                 echo "        \"display\": \"$mean $mean_unit\""
                 echo "      },"
+            elif [[ $line =~ ^[^[:space:]:][^:]*$ ]]; then
+                pending_name="$line"
             else
                 pending_name=""
             fi
