@@ -4,19 +4,20 @@ Five minutes to read. Then clone and go.
 
 ## Repository context
 
-[`EffortlessMetrics/perl-lsp`](https://github.com/EffortlessMetrics/perl-lsp) on
-`master` is the public contributor surface. External contributors open issues and pull
-requests there.
-
 [`EffortlessMetrics/perl-lsp-swarm`](https://github.com/EffortlessMetrics/perl-lsp-swarm)
-on `main` remains the active high-throughput product-development and product-proof
-authority. That does not make swarm the public PR queue.
+on `main` remains the active high-throughput product-development, development-issue,
+and product-proof authority. Start from or open the controlling development issue there.
+
+[`EffortlessMetrics/perl-lsp`](https://github.com/EffortlessMetrics/perl-lsp) on
+`master` is the public pull-request surface. External contributors clone or fork that
+repository for their implementation branch and target the pull request there. The fact
+that the controlling issue lives in swarm does not make swarm the external PR queue.
 
 Before a shared-product public pull request is integrated, a maintainer first converges
 accepted swarm state into `perl-lsp/master`, then reconciles and proves the contributor
 pull request against that current public-source base. After the public pull request
 merges, its shared-product effect is reverse-converged into swarm. You do not need to
-open a second pull request against swarm.
+open a duplicate swarm pull request.
 
 Release and package-channel availability remain later states; neither a swarm merge nor a
 public-source merge proves publication.
@@ -76,8 +77,8 @@ bash scripts/install-githooks.sh
 
 ## 3. Choose one issue and one claim
 
-Start from an existing public issue when one owns the work. Keep one pull request centered
-on:
+Start from an existing development issue in swarm when one owns the work. Keep one pull
+request centered on:
 
 - one problem or improvement;
 - one semantic owner;
@@ -85,16 +86,17 @@ on:
 - proof that can distinguish the intended change from a realistic wrong result;
 - explicit non-goals and a bounded rollback.
 
-Browse the public contribution backlog:
+Browse the development backlog explicitly in swarm:
 
 ```bash
-gh issue list --repo EffortlessMetrics/perl-lsp --state open --limit 10
+gh issue list --repo EffortlessMetrics/perl-lsp-swarm --state open --limit 10
+gh issue list --repo EffortlessMetrics/perl-lsp-swarm --state open --label "good first issue"
+gh issue list --repo EffortlessMetrics/perl-lsp-swarm --state open --label size/S
 ```
 
-Choose an issue with a clear, reviewable acceptance section. Swarm-only release,
-orchestration, and internal control-plane work is not a first-contribution queue; if work
-is only tracked internally, ask for a public contribution issue rather than targeting
-swarm directly.
+The filtered lists can legitimately be empty. Choose a bounded issue with a clear,
+reviewable acceptance section. Do not select release-operation or swarm-orchestration
+work for a first contribution merely because its file diff looks small.
 
 ## 4. Read the local owner guidance
 
@@ -161,7 +163,7 @@ git push -u fork HEAD
 gh pr create --repo EffortlessMetrics/perl-lsp --base master
 ```
 
-Use a conventional title with the controlling public issue number:
+Use a conventional title with the controlling development issue number:
 
 ```text
 fix(perl-module): normalize path separators (#4154)
@@ -169,8 +171,16 @@ docs(contributing): correct the current workflow (#4155)
 test(perl-parser): add a postfix-deref regression (#4156)
 ```
 
-The pull-request body should state the claim, controlling issue, changed seam, proof run,
-proof not run, risk and rollback, non-goals, and any `NOT_PROVEN` boundary.
+Because the pull request is in a different repository from the controlling issue, preserve
+the issue identity explicitly in the body:
+
+```text
+Refs EffortlessMetrics/perl-lsp-swarm#NNNN
+```
+
+Use `Refs` rather than inventing a duplicate public issue. The pull-request body should
+also state the claim, changed seam, proof run and not run, risk and rollback, non-goals,
+and any `NOT_PROVEN` boundary.
 
 Do not open a duplicate pull request against `perl-lsp-swarm`. Repository convergence
 around a shared-product contribution is maintainer-owned.
