@@ -3,9 +3,9 @@
 `perl-lsp-swarm` is the active development source of truth.
 It owns active product implementation, proof, release preparation, and the
 current sync protocol.
-`perl-lsp` is the release, history, and canonical package-lineage repo.
-It is the publication repository and owns public release lineage and
-publication-specific governance.
+`perl-lsp` is the public contributor surface and the release, history, and
+canonical package-lineage repo. It is the publication repository and owns public release
+lineage and publication-specific governance.
 
 This document is the canonical stable contract for history-preserving
 `perl-lsp-swarm` → `perl-lsp` release syncs. The copy of this document present
@@ -36,11 +36,16 @@ against that current base. After the public merge, its shared-product effect is
 reverse-converged into swarm before a later complete-tree projection can overwrite it.
 This contributor-integration boundary does not itself cut a release or publish a channel.
 
-An emergency product fix may begin in `perl-lsp` only when release safety
-requires it. Mirror or supersede the product/test effect in swarm immediately
-and invalidate any affected prepared-release evidence. Publication-repository
-history may legitimately contain release-lineage-only changes that do not
-belong in swarm.
+Maintainer-originated product work begins in swarm by default. A maintainer may begin a
+direct product fix in `perl-lsp` only when release safety requires it. External
+contributor pull requests are a separate ingress route: they are reconciled against
+current swarm state before integration and their shared-product effect is
+reverse-converged after merge.
+
+Any direct public-repository product/test effect that belongs to the shared product must
+be mirrored, reverse-converged, or superseded in swarm immediately, and any affected
+prepared-release evidence must be invalidated. Publication-repository history may
+legitimately contain release-lineage-only changes that do not belong in swarm.
 
 ## Sync-boundary invariant
 
