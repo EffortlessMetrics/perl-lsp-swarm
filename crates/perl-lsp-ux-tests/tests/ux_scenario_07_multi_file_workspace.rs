@@ -6,11 +6,11 @@
 //! Scenario 07 — Multi-file workspace / cross-file navigation.
 //!
 //! Sets up a small Perl project (cpanfile, library modules, script).
-//! Verifies multi-file open and go-to-definition work or degrade gracefully.
+//! Verifies multi-file open and a configured static module definition target.
 //!
 //! Acceptance criteria:
 //! - All files open without crashing.
-//! - `textDocument/definition` MUST NOT crash (empty result is acceptable).
+//! - `textDocument/definition` resolves the configured `lib/Counter.pm` target.
 //! - Server remains responsive after workspace indexing.
 
 use perl_lsp_ux_tests::binary_available;
@@ -56,7 +56,7 @@ fn scenario_07_multi_file_workspace_opens_without_crash() -> Result<(), String> 
 }
 
 #[test]
-fn scenario_07_definition_request_does_not_crash() -> Result<(), String> {
+fn scenario_07_definition_resolves_configured_module_target() -> Result<(), String> {
     if !binary_available() {
         eprintln!("SKIP scenario_07: perl-lsp binary not found");
         return Ok(());
@@ -83,12 +83,47 @@ fn scenario_07_definition_request_does_not_crash() -> Result<(), String> {
         .open_file("main.pl", script)
         .map_err(|error| format!("main.pl should open: {error}"))?;
 
-    // Allow workspace index to build.
-    std::thread::sleep(Duration::from_secs(2));
-
-    harness
-        .definition("main.pl", 3, 4)
+    let definitions = harness
+        .definition_with_retry("main.pl", 3, 4, 5, Duration::from_millis(250))
         .map_err(|error| format!("definition request crashed server — UX regression: {error}"))?;
+    assert!(!definitions.is_empty(), "configured Counter module must have a definition target");
+    let expected = url::Url::parse(harness.root_uri())
+        .and_then(|root| root.join("lib/Counter.pm"))
+        .map_err(|error| format!("invalid configured Counter URI: {error}"))?;
+    let mut found_expected = false;
+    let valid_range = |value: &serde_json::Value| {
+        ["start", "end"].iter().all(|position| {
+            value.get(position).is_some_and(|point| {
+                ["line", "character"].iter().all(|coordinate| {
+                    point.get(coordinate).is_some_and(|number| number.as_u64().is_some())
+                })
+            })
+        })
+    };
+    for definition in &definitions {
+        let (uri, range) = if let Some(uri) = definition.get("uri") {
+            (uri, definition.get("range"))
+        } else {
+            assert!(
+                definition.get("targetSelectionRange").is_some_and(valid_range),
+                "LocationLink must include a target selection range"
+            );
+            (
+                definition
+                    .get("targetUri")
+                    .ok_or("definition is not a Location or LocationLink")?,
+                definition.get("targetRange"),
+            )
+        };
+        assert!(range.is_some_and(valid_range), "definition must include a valid range");
+        let actual = url::Url::parse(uri.as_str().ok_or("definition URI is not a string")?)
+            .map_err(|error| format!("invalid definition URI: {error}"))?;
+        found_expected |= actual == expected;
+    }
+    assert!(
+        found_expected,
+        "definition must resolve exact configured URI {expected}; got {definitions:?}"
+    );
 
     harness.assert_no_crash();
     Ok(())
