@@ -50,7 +50,7 @@ if [[ ${FAKE_TRACE:-yes} == yes ]]; then
     echo '0.01 TRACE cargo::core::compiler::fingerprint: fingerprint at: target/debug/.fingerprint/serde' >&2
   else
     echo '0.01 INFO cargo::core::compiler::fingerprint: fingerprint dirty for serde v1.0.229' >&2
-    echo '0.01 INFO cargo::core::compiler::fingerprint: dirty: PathChanged { old: 1, new: 2 }' >&2
+    echo '0.01 INFO cargo::core::compiler::fingerprint: dirty: PathToSourceChanged { old: 1, new: 2 }' >&2
   fi
 fi
 if [[ ${FAKE_FINGERPRINT_ERROR:-no} == yes ]]; then
@@ -59,7 +59,7 @@ if [[ ${FAKE_FINGERPRINT_ERROR:-no} == yes ]]; then
 fi
 if [[ ${FAKE_DETACHED_STDERR:-no} == yes ]]; then sleep 8 >/dev/null & fi
 if [[ ${FAKE_LARGE_TRACE:-no} == yes ]]; then
-  for ((i=0;i<12000;i++)); do printf '0.01 TRACE cargo::core::compiler::fingerprint: fingerprint at: %090d\\n' "$i" >&2; done
+  for ((i=0;i<30000;i++)); do printf '0.01 TRACE cargo::core::compiler::fingerprint: fingerprint at: %090d\\n' "$i" >&2; done
 fi
 if [[ ${FAKE_WARM:-no} != yes ]]; then echo 'Compiling xtask v0.17.0' >&2; fi
 echo 'Finished `dev` profile target(s) in 1.00s' >&2
@@ -198,6 +198,61 @@ printf '    \\033[32mCompiling\\033[0m colored-retention-control v1.0.0\\n' >&2
         self.assertIn("EnvVarChanged (details omitted)", reasons)
         self.assertGreater(record["stderr"]["filtered_fingerprint_lines"], 0)
 
+    def test_fingerprint_context_urls_and_flags_are_not_retained(self):
+        # Cargo PackageId/SourceId Display can include a non-crates.io URL.
+        # Exercise every retained event, including prefix and path payloads.
+        markers = ["CONTROL-SYNTHETIC-CREDENTIAL", "CONTROL-SYNTHETIC-FLAG",
+                   "CONTROL-SYNTHETIC-PREFIX"]
+        url = f"git+https://fixture-user:{markers[0]}@invalid.example/repo?token={markers[0]}"
+        payloads = [
+            f"fingerprint dirty for serde v1.0.229 ({url}) --cfg {markers[1]}",
+            f"fingerprint error for serde v1.0.229 ({url}) --cfg {markers[1]}",
+            f"fingerprint at: /target/{url} --cfg {markers[1]}",
+            f"write fingerprint: /target/{url} metadata=[--cfg {markers[1]}]",
+            f'dirty: RustflagsChanged {{ old: ["--cfg {markers[1]}"], new: ["{url}"] }}',
+            f"dirty: FsStatusOutdated {{ source: {url} }}",
+            f"dirty: UnitDependencyInfoChanged {{ detail: {markers[1]} }}",
+            f"err: failed to read fingerprint at {url} --cfg {markers[1]}",
+        ]
+        lines = "\n".join(f"0.01 {markers[2]} INFO cargo::core::compiler::fingerprint: {p}"
+                          for p in payloads)
+        cargo = self.bin / "cargo"
+        body = cargo.read_text().replace("case ${FAKE_CHANGE:-none} in",
+                                        "cat >&2 <<'DIAGNOSTIC'\n" + lines +
+                                        "\nDIAGNOSTIC\ncase ${FAKE_CHANGE:-none} in")
+        cargo.write_text(body, encoding="utf-8", newline="\n")
+        result, record = self.observe(FAKE_EXIT="37")
+        self.assertEqual(result.returncode, 37)
+        self.assertEqual(record["stderr"]["compiling_messages"], 1)
+        self.assertEqual(record["stderr"]["fingerprint_errors"], 1)
+        self.assertFalse(record["selected_trace_complete"])
+        outputs = result.stdout + result.stderr
+        for path in (self.work / "out").iterdir():
+            outputs += path.read_text()
+        for marker in markers:
+            self.assertFalse(marker in outputs, f"synthetic payload retained: {marker}")
+        trace = next((self.work / "out").glob("*.trace.log")).read_text()
+        for kind in ["PathToSourceChanged", "RustflagsChanged", "FsStatusOutdated",
+                     "UnitDependencyInfoChanged"]:
+            self.assertIn(f"dirty: {kind} (details omitted)", trace)
+        for event in ["fingerprint dirty for", "fingerprint error for", "fingerprint at:",
+                      "write fingerprint", "err: details omitted"]:
+            self.assertIn(event, trace)
+
+    def test_unknown_dirty_kind_is_omitted_and_incomplete(self):
+        secret = "CONTROL-SYNTHETIC-UNKNOWN-KIND"
+        cargo = self.bin / "cargo"
+        body = cargo.read_text().replace("case ${FAKE_CHANGE:-none} in",
+                                        f"echo '0.01 INFO cargo::core::compiler::fingerprint: dirty: {secret} {{ payload: 1 }}' >&2\n"
+                                        "case ${FAKE_CHANGE:-none} in")
+        cargo.write_text(body, encoding="utf-8", newline="\n")
+        result, record = self.observe()
+        self.assertFalse(record["selected_trace_complete"])
+        self.assertEqual(record["stderr"]["unknown_dirty_reasons"], 1)
+        self.assertNotIn(secret, result.stdout + result.stderr)
+        for path in (self.work / "out").iterdir():
+            self.assertNotIn(secret, path.read_text(), str(path))
+
     def test_missing_source_identity_is_not_accepted(self):
         _, record = self.observe(FAKE_CHANGE="missing-head")
         self.assertFalse(record["identity_stable"])
@@ -211,7 +266,7 @@ printf '    \\033[32mCompiling\\033[0m colored-retention-control v1.0.0\\n' >&2
         self.assertFalse(record["selected_trace_complete"])
         self.assertEqual(record["stderr"]["fingerprint_errors"], 1)
         reasons = next((self.work / "out").glob("*.dirty.log")).read_text()
-        self.assertIn("fingerprint error for serde", reasons)
+        self.assertIn("fingerprint error for (context omitted)", reasons)
         self.assertIn("err: details omitted", reasons)
 
     def test_detached_stderr_cannot_hold_the_native_verdict_indefinitely(self):

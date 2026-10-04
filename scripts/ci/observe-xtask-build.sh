@@ -76,17 +76,29 @@ snapshot > "$prefix.before.json" || printf '{"instrument_error":"before snapshot
 # verbose trace lines from the job console; preserve all ordinary Cargo stderr.
 collect_stderr() {
 LC_ALL=C exec awk -v trace="$prefix.trace.log" -v reasons="$prefix.dirty.log" -v finished="$prefix.finished.log" -v summary="$prefix.stderr.json" '
+    BEGIN {
+        # Cargo 0.96.0 DirtyReason variants (the pinned 1.95 toolchain).
+        # No arbitrary token, package SourceId, path, flag or log prefix survives.
+        kinds="RustcChanged FeaturesChanged DeclaredFeaturesChanged TargetConfigurationChanged PathToSourceChanged ProfileConfigurationChanged RustflagsChanged ConfigSettingsChanged CompileKindChanged LocalLengthsChanged PrecalculatedComponentsChanged ChecksumUseChanged DepInfoOutputChanged RerunIfChangedOutputFileChanged RerunIfChangedOutputPathsChanged EnvVarsChanged EnvVarChanged LocalFingerprintTypeChanged NumberOfDependenciesChanged UnitDependencyNameChanged UnitDependencyInfoChanged FsStatusOutdated NothingObvious Forced FreshBuild"
+        split(kinds, names, " "); for (i in names) allowed_kind[names[i]]=1
+    }
     /cargo::core::compiler::fingerprint/ {
         error_chain=0
         traces++
-        # Cargo Debug dirty reasons can contain old/new environment or flags.
-        # Keep the native reason kind and package context, omit reason values.
+        # Construct selected records from fixed event labels and known enum
+        # variants, rather than retaining then trying to redact raw trace text.
+        # PackageId/SourceId Display may contain credential-bearing Git URLs.
         if ($0 ~ /dirty: /) {
             reason=$0; sub(/^.*dirty: /,"",reason); sub(/[^[:alnum:]_].*$/,"",reason)
-            sub(/dirty: .*/,"dirty: " reason " (details omitted)")
-        } else if ($0 ~ /fingerprint error for/) { errors++ }
-        else if ($0 ~ /err:/) { sub(/err: .*/,"err: details omitted"); error_chain=1 }
-        else if ($0 !~ /fingerprint at:|write fingerprint|fingerprint dirty for/) { filtered++; next }
+            if (!(reason in allowed_kind)) { unknown++; reason="UNKNOWN" }
+            projected="dirty: " reason " (details omitted)"
+        } else if ($0 ~ /fingerprint error for/) { errors++; projected="fingerprint error for (context omitted)" }
+        else if ($0 ~ /err:/) { projected="err: details omitted"; error_chain=1 }
+        else if ($0 ~ /fingerprint dirty for/) { projected="fingerprint dirty for (context omitted)" }
+        else if ($0 ~ /fingerprint at:/) { projected="fingerprint at: (context omitted)" }
+        else if ($0 ~ /write fingerprint/) { projected="write fingerprint (context omitted)" }
+        else { filtered++; next }
+        $0="cargo::core::compiler::fingerprint: " projected
         n=length($0)+1
         if (trace_bytes+n <= 1048576) { print > trace; trace_bytes+=n } else trace_clipped=1
         if ($0 ~ /fingerprint dirty for|dirty:|fingerprint error for|err:/) {
@@ -104,7 +116,7 @@ LC_ALL=C exec awk -v trace="$prefix.trace.log" -v reasons="$prefix.dirty.log" -v
     plain ~ /^[[:space:]]*Compiling / { compiling++ }
     plain ~ /^[[:space:]]*Finished .*target\(s\) in / { print > finished }
     { print > "/dev/stderr"; fflush("/dev/stderr") }
-    END { printf "{\"fingerprint_lines\":%d,\"dirty_lines\":%d,\"compiling_messages\":%d,\"filtered_fingerprint_lines\":%d,\"fingerprint_errors\":%d,\"filtered_error_continuations\":%d,\"trace_clipped\":%s,\"dirty_clipped\":%s}\n", traces,dirty,compiling,filtered,errors,continuations,trace_clipped?"true":"false",reasons_clipped?"true":"false" > summary }
+    END { printf "{\"fingerprint_lines\":%d,\"dirty_lines\":%d,\"compiling_messages\":%d,\"filtered_fingerprint_lines\":%d,\"fingerprint_errors\":%d,\"unknown_dirty_reasons\":%d,\"filtered_error_continuations\":%d,\"trace_clipped\":%s,\"dirty_clipped\":%s}\n", traces,dirty,compiling,filtered,errors,unknown,continuations,trace_clipped?"true":"false",reasons_clipped?"true":"false" > summary }
 '
 }
 exec {stderr_fd}> >(collect_stderr)
@@ -142,7 +154,7 @@ jq -n --arg schema_version xtask_build_observation.v1 --arg phase "$phase" \
     --argjson command "$command_json" --argjson exit_code "$status" --argjson reader_exit "$reader_status" --argjson reader_timed_out "$reader_timed_out" \
     --argjson wall_seconds "$((stop-start))" \
     --slurpfile before "$prefix.before.json" --slurpfile after "$prefix.after.json" --slurpfile stderr "$prefix.stderr.json" \
-    '{schema_version:$schema_version,phase:$phase,run_id:$run_id,run_attempt:$run_attempt,image_id:$image_id,image_digest:$image_digest,command:$command,exit_code:$exit_code,wall_seconds:$wall_seconds,reader_exit:$reader_exit,reader_timed_out:$reader_timed_out,resource_scope:"whole command; GNU time maximum RSS is not concurrent aggregate",before:$before[0],after:$after[0],stderr:$stderr[0],identity_stable:((($before[0]|del(.fingerprints,.fingerprints_clipped)) == ($after[0]|del(.fingerprints,.fingerprints_clipped))) and (($before[0].head//"")|test("^[0-9a-f]{40}$")) and (($before[0].tree//"")|test("^[0-9a-f]{40}$")) and (($before[0].rustc//"")|length>0) and (($before[0].cargo//"")|length>0) and ($before[0].lock_sha256!="missing") and ($before[0]|has("instrument_error")|not)),selected_trace_complete:($reader_exit==0 and ($reader_timed_out|not) and ($stderr[0].fingerprint_errors//0)==0 and ($stderr[0].fingerprint_lines//0)>0 and ($stderr[0].trace_clipped|not) and ($stderr[0].dirty_clipped|not))}' > "$prefix.observation.json" \
+    '{schema_version:$schema_version,phase:$phase,run_id:$run_id,run_attempt:$run_attempt,image_id:$image_id,image_digest:$image_digest,command:$command,exit_code:$exit_code,wall_seconds:$wall_seconds,reader_exit:$reader_exit,reader_timed_out:$reader_timed_out,resource_scope:"whole command; GNU time maximum RSS is not concurrent aggregate",before:$before[0],after:$after[0],stderr:$stderr[0],identity_stable:((($before[0]|del(.fingerprints,.fingerprints_clipped)) == ($after[0]|del(.fingerprints,.fingerprints_clipped))) and (($before[0].head//"")|test("^[0-9a-f]{40}$")) and (($before[0].tree//"")|test("^[0-9a-f]{40}$")) and (($before[0].rustc//"")|length>0) and (($before[0].cargo//"")|length>0) and ($before[0].lock_sha256!="missing") and ($before[0]|has("instrument_error")|not)),selected_trace_complete:($reader_exit==0 and ($reader_timed_out|not) and ($stderr[0].fingerprint_errors//0)==0 and ($stderr[0].unknown_dirty_reasons//0)==0 and ($stderr[0].fingerprint_lines//0)>0 and ($stderr[0].trace_clipped|not) and ($stderr[0].dirty_clipped|not))}' > "$prefix.observation.json" \
     || echo '::warning::xtask build observation NOT_PROVEN: summary failed' >&2
 echo "xtask build observation: phase=$phase cargo_exit=$status record=$prefix.observation.json" >&2
 # Instrument failures cannot hide or replace the existing Cargo/proof verdict.
