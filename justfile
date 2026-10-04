@@ -1899,6 +1899,12 @@ bench-ripr:
     @echo "📊 Running ripr-facts benchmarks..."
     @cargo xtask bench-run --category ripr --output benchmarks/results/latest.json
 
+# RIPR E-slate quality benches (#17154): boundary recall, limitation honesty,
+# fingerprint sensitivity, order invariance, guidance actionability.
+bench-ripr-quality:
+    @echo "📊 Running RIPR quality benches (E2/E3/D2/D3/A2)..."
+    ./scripts/cargo-admitted test -p perl-ripr-facts --test boundary_recall --test limitation_honesty --test fingerprint_sensitivity --test order_invariance --test guidance_actionability --locked
+
 # Format benchmark results as receipt
 bench-receipt:
     @echo "📋 Generating benchmark receipt..."

@@ -2895,6 +2895,58 @@ created = "2026-08-18"
 review_after = "2026-09-18"
 
 [[allow]]
+id = "non-rust-sublime-package-control-receipt-schema"
+path = "clients/sublime/sublime-package-control-receipt.v1.schema.json"
+kind = "release_metadata"
+language = "json"
+surface = "editor"
+classification = "documentation"
+owner = "editor/sublime"
+reason = "JSON Schema for the fail-closed Package Control public-install receipt (#8003)."
+covered_by = ["Sublime package contract", "python3 -m unittest discover -s clients/sublime/LSP-perllsp/tests -p test_*.py", "cargo xtask check-file-policy"]
+created = "2026-09-29"
+review_after = "2027-03-29"
+
+[[allow]]
+id = "non-rust-sublime-package-control-receipt-validator"
+path = "clients/sublime/validate_sublime_package_control_receipt.py"
+kind = "test"
+language = "python"
+surface = "editor"
+classification = "test"
+owner = "editor/sublime"
+reason = "Validates Package Control public-install receipts and rejects exact-source, custom-channel, listing-only, and blocked-subject overclaims (#8003)."
+covered_by = ["Sublime package contract", "python3 -m unittest discover -s clients/sublime/LSP-perllsp/tests -p test_*.py", "cargo xtask check-file-policy"]
+created = "2026-09-29"
+review_after = "2027-03-29"
+
+[[allow]]
+id = "non-rust-sublime-package-control-subject"
+path = "clients/sublime/package-control-subject.v1.json"
+kind = "release_metadata"
+language = "json"
+surface = "editor"
+classification = "documentation"
+owner = "editor/sublime"
+reason = "Current Package Control listing subject; remains blocked_pending_listing until the default channel is directly observable (#8003)."
+covered_by = ["Sublime package contract", "python3 -m unittest discover -s clients/sublime/LSP-perllsp/tests -p test_*.py", "cargo xtask check-file-policy"]
+created = "2026-09-29"
+review_after = "2027-03-29"
+
+[[allow]]
+id = "non-rust-sublime-package-control-receipt-test"
+path = "clients/sublime/LSP-perllsp/tests/test_package_control_receipt.py"
+kind = "test"
+language = "python"
+surface = "editor"
+classification = "test"
+owner = "editor/sublime"
+reason = "Discriminating contract tests for the Package Control public-install receipt law (#8003)."
+covered_by = ["Sublime package contract", "python3 -m unittest discover -s clients/sublime/LSP-perllsp/tests -p test_*.py", "cargo xtask check-file-policy"]
+created = "2026-09-29"
+review_after = "2027-03-29"
+
+[[allow]]
 id = "non-rust-sublime-dap-fixture"
 path = "clients/sublime/dap-fixture/debug_current.pl"
 kind = "test"
@@ -4339,6 +4391,22 @@ covered_by = [
 broad_glob_reason = "Benchmark results accumulate per run."
 created = "2026-08-24"
 review_after = "2027-02-20"
+
+[[allow]]
+id = "non-rust-ripr-quality-bench-fixtures"
+glob = "benchmarks/ripr/**"
+kind = "test_fixture"
+language = "mixed"
+surface = "fixtures"
+classification = "test"
+owner = "ripr/facts-producer"
+reason = "Labeled Perl boundary/hostile fixtures (.pm/.t/.diff plus .expected.json) for the #17154 ripr quality benches (E2 boundary recall, E3 limitation honesty); consumed by perl-ripr-facts integration tests, never executed as build inputs."
+covered_by = [
+  "just bench-ripr-quality",
+]
+broad_glob_reason = "Bench fixtures span boundary shapes and hostile inputs per bench."
+created = "2026-10-04"
+review_after = "2027-04-04"
 
 [[allow]]
 id = "non-rust-distribution-kwalitee-catalog-v1"
