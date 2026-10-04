@@ -68,10 +68,16 @@ pub(crate) fn emit_tests_and_oracles(
         let import_prov_id = format!("prov:test_discovery:{file_id}");
 
         // Parse first (borrowing `content`), so `content` can then move into
-        // `LineIndex` without a per-file clone.
-        let parsed = {
+        // `LineIndex` without a per-file clone. `parse()` returns `Ok`
+        // whenever the parser *recovered*, so read `errors()` too — the
+        // `--check` path warns that reading only the `Result` silently passes
+        // files `perl -c` rejects (#17255).
+        let (parsed, blocking_errors, advisory_errors) = {
             let mut parser = Parser::new(&content);
-            parser.parse()
+            let result = parser.parse();
+            let (blocking, advisory): (Vec<_>, Vec<_>) =
+                parser.errors().iter().partition(|err| err.blocks_clean_parse());
+            (result, blocking.len(), advisory.len())
         };
         let ast = match parsed {
             Ok(ast) => ast,
@@ -106,6 +112,20 @@ pub(crate) fn emit_tests_and_oracles(
                 continue;
             }
         };
+
+        // The `Err` arm above `continue`s, so reaching here means recovery
+        // succeeded — but silent recovery contradicts `--check`, which FAILs
+        // these files. Name the condition (partition mirrors `cli.rs`).
+        if blocking_errors + advisory_errors > 0 {
+            limitations.push(json!({
+                "limitation_id": format!("test-parse-recovered:{file_id}"),
+                "kind": "recovered_parse_errors",
+                "message": format!(
+                    "parsed test file `{relative_path}` with error recovery ({blocking_errors} blocking, {advisory_errors} advisory); test/oracle facts below come from the recovered tree and `--check` FAILs this file"
+                ),
+                "evidence_refs": [file_id.clone()],
+            }));
+        }
 
         // Detect the framework and collect each oracle's span + source-text
         // `expression` while `content` is still borrowed — then `content` can

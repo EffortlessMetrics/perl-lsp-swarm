@@ -79,13 +79,34 @@ pub(crate) fn emit_files_and_owners(
 
         // Parse and project declarations into owner facts. Scope the parser's
         // borrow of `content` to the parse so `content` can move into
-        // `LineIndex` afterwards (no per-file clone).
-        let parsed = {
+        // `LineIndex` afterwards (no per-file clone). `parse()` returns `Ok`
+        // whenever the parser *recovered*, so read `errors()` too — the
+        // `--check` path warns that reading only the `Result` silently passes
+        // files `perl -c` rejects (#17255).
+        let (parsed, blocking_errors, advisory_errors) = {
             let mut parser = Parser::new(&content);
-            parser.parse()
+            let result = parser.parse();
+            let (blocking, advisory): (Vec<_>, Vec<_>) =
+                parser.errors().iter().partition(|err| err.blocks_clean_parse());
+            (result, blocking.len(), advisory.len())
         };
         match parsed {
             Ok(ast) => {
+                // Error recovery succeeded, so the owners below are real — but
+                // silent recovery contradicts `--check`, which FAILs these
+                // files. Name the condition (blocking vs advisory partition
+                // mirrors `cli.rs`). Hard `Err` keeps the `parse-failed`
+                // path untouched below.
+                if blocking_errors + advisory_errors > 0 {
+                    limitations.push(json!({
+                        "limitation_id": format!("parse-recovered:{file_id}"),
+                        "kind": "recovered_parse_errors",
+                        "message": format!(
+                            "parsed `{relative_path}` with error recovery ({blocking_errors} blocking, {advisory_errors} advisory); owners below come from the recovered tree and `--check` FAILs this file"
+                        ),
+                        "evidence_refs": [file_id.clone()],
+                    }));
+                }
                 let line_index = LineIndex::new(content);
                 for decl in extract_symbol_decls(&ast, Some("main")) {
                     let Some(kind) = owner_kind(&decl.kind) else {
