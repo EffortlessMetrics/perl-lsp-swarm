@@ -16,6 +16,13 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# The suite is hermetic: an inherited GIT_DIR, GIT_WORK_TREE, or GIT_INDEX_FILE
+# would point every real-git fixture command — and the script under test — at a
+# caller's repository instead of the disposable fixture. Drop them up front so
+# fixture creation, the negative-control prune, and both sweep invocations
+# select repositories by path alone.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
+
 pass() {
   printf 'PASS %s\n' "$1"
   PASS=$((PASS + 1))
@@ -760,7 +767,9 @@ test_real_repository_dry_run_writes_nothing() {
     mkdir -p sub
     printf 'content\n' > sub/file.txt
     git add .
-    git commit -qm init
+    # Disposable commit: host hooks and signing configuration must not be able
+    # to fail fixture setup.
+    git -c commit.gpgsign=false commit --no-verify -qm init
     git worktree add -q ../wt-live -b live
     # A past mtime, not `touch`: a just-touched file is "racily clean" and git
     # deliberately declines to cache its stat data, so the write never fires and
@@ -815,9 +824,12 @@ new_unreachable_real_worktree() {
   fi
   printf 'preserved\n' > "${root}/repo/file.txt" || return 1
   git -C "${root}/repo" add file.txt || return 1
-  git -C "${root}/repo" commit -qm init || return 1
+  # Disposable commit and push: host hooks and signing configuration (e.g.
+  # commit.gpgSign=true with no noninteractive signer) must not be able to fail
+  # fixture setup.
+  git -C "${root}/repo" -c commit.gpgsign=false commit --no-verify -qm init || return 1
   git -C "${root}/repo" remote add origin "${root}/origin.git" || return 1
-  git -C "${root}/repo" push -q -u origin main || return 1
+  git -C "${root}/repo" push -q --no-verify -u origin main || return 1
   git -C "${root}/repo" worktree add -q "${root}/wt-live" -b fixture || return 1
   mv "${root}/wt-live" "${root}/wt-preserved" || return 1
 }
@@ -828,9 +840,12 @@ real_worktree_registered() {
     grep -qF 'branch refs/heads/fixture'
 }
 
+# Match the literal porcelain attribute, not its explanation: Git marks the
+# explanation for translation (worktree.c), so matching the English text would
+# fail the fixture check on a translated locale.
 real_worktree_prunable() {
   git --no-optional-locks -C "$1" worktree list --porcelain |
-    grep -qF 'prunable gitdir file points to non-existent location'
+    grep -qE '^prunable([[:space:]]|$)'
 }
 
 real_worktree_admin_snapshot() {
