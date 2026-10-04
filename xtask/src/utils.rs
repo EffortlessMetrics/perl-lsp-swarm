@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use color_eyre::eyre::{Result, bail, eyre};
+use color_eyre::eyre::{Context, Result, bail, eyre};
 
 /// Get the project root directory using CARGO_MANIFEST_DIR.
 /// This is more robust than current_dir() in CI environments.
@@ -41,7 +41,11 @@ fn run_cargo_metadata_with(manifest_path: Option<&Path>, no_deps: bool) -> Resul
     if let Some(path) = manifest_path {
         cmd.arg("--manifest-path").arg(path);
     }
-    let output = cmd.output()?;
+    // Without this context a missing `cargo` surfaces as a bare "program not
+    // found" pointing at this line — naming neither the program nor the
+    // operation (#17168). Agents and release harnesses invoke the built
+    // binary directly, where cargo is not guaranteed to be on PATH.
+    let output = cmd.output().with_context(|| "spawning `cargo metadata` (is `cargo` on PATH?)")?;
     if !output.status.success() {
         bail!("cargo metadata failed:\n{}", String::from_utf8_lossy(&output.stderr));
     }
