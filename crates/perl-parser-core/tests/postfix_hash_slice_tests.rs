@@ -6,8 +6,8 @@
 
 mod cpan_test_helpers;
 
-use cpan_test_helpers::{assert_clean_parse, parse};
-use perl_parser_core::{Node, NodeKind, Parser, SourceLocation};
+use cpan_test_helpers::{assert_clean_parse, assert_no_blocking_diagnostics, parse};
+use perl_parser_core::{Node, NodeKind, ParseError, Parser, SourceLocation};
 
 type TestResult = Result<(), String>;
 
@@ -15,6 +15,7 @@ type TestResult = Result<(), String>;
 /// parser-specific structural assertions.
 fn clean_ast(source: &str) -> Node {
     assert_clean_parse(source);
+    assert_no_blocking_diagnostics(source);
     parse(source)
 }
 
@@ -366,7 +367,7 @@ fn postfix_hash_slice_preserves_utf8_key_spans() -> TestResult {
 
 #[test]
 fn postfix_hash_slice_keeps_postfix_precedence() -> TestResult {
-    let source = "my $value = $href->@{'alpha'}[0];";
+    let source = "my $value = ($href->@{'alpha'})[0];";
     let ast = clean_ast(source);
     let slice = one_hash_slice(source, &ast)?;
     let mut parents = Vec::new();
@@ -398,8 +399,129 @@ fn postfix_hash_slice_keeps_postfix_precedence() -> TestResult {
             source_text(source, right)?
         ));
     }
-    if source_text(source, parent)? != "$href->@{'alpha'}[0]" {
+    if slice.location != (SourceLocation { start: 13, end: 30 })
+        || right.location != (SourceLocation { start: 32, end: 33 })
+        || parent.location != (SourceLocation { start: 13, end: 34 })
+    {
+        return Err("grouped slice/index changed existing byte geometry".to_string());
+    }
+    if source_text(source, parent)? != "$href->@{'alpha'})[0]" {
         return Err(format!("unexpected postfix parent span: {:?}", source_text(source, parent)?));
+    }
+    Ok(())
+}
+
+#[test]
+fn ungrouped_postfix_hash_slice_subscripts_report_at_the_suffix_and_keep_the_next_declaration()
+-> TestResult {
+    // Syntax expectations independently checked with pinned Perl 5.32.1 -c.
+    // The dynamic typeglob receiver also reaches an inner postfix chain before
+    // the primary returns: merely breaking that chain must not admit the suffix
+    // when the outer chain resumes.
+    let cases = [
+        (
+            "my $value = $href->@{'alpha'}[0]; my $after = 1;",
+            29,
+            SourceLocation { start: 34, end: 47 },
+        ),
+        (
+            "my $value = *{$g}->@{'alpha'}[0]; my $after = 1;",
+            29,
+            SourceLocation { start: 34, end: 47 },
+        ),
+        (
+            "\"é🙂\";\r\nmy $value = $href->@{'alpha'}[0];\r\nmy $after = 1;",
+            40,
+            SourceLocation { start: 46, end: 59 },
+        ),
+        (
+            "\"é🙂\";\r\nmy $value = $href->@{'alpha'}{'beta'};\r\nmy $after = 1;",
+            40,
+            SourceLocation { start: 51, end: 64 },
+        ),
+        (
+            "$href->@{$inner->@{'alpha'}[0]}; my $after = 1;",
+            27,
+            SourceLocation { start: 33, end: 46 },
+        ),
+    ];
+    for (source, suffix_start, after_location) in cases {
+        let mut parser = Parser::new(source);
+        let output = parser.parse_with_recovery();
+        if !output.diagnostics.iter().any(|error| {
+            error.blocks_clean_parse()
+                && matches!(error, ParseError::SyntaxError { location, .. }
+                    if *location == suffix_start)
+        }) {
+            return Err(format!(
+                "ungrouped subscript had no blocking syntax diagnostic at byte {suffix_start}:\n{source}\n{:?}",
+                output.diagnostics
+            ));
+        }
+        assert_after_declaration(source, &output.ast, after_location)?;
+    }
+    Ok(())
+}
+
+#[test]
+fn postfix_hash_slice_explicit_arrows_remain_clean() -> TestResult {
+    for (source, expected_op) in [
+        ("my $value = $href->@{'alpha'}->[0];", "->[]"),
+        ("my $value = $href->@{'alpha'}->{'beta'};", "->{}"),
+        ("my $value = *{$g}->@{'alpha'}->[0];", "->[]"),
+    ] {
+        let ast = clean_ast(source);
+        let slice = one_hash_slice(source, &ast)?;
+        let mut parents = Vec::new();
+        find_all(
+            &ast,
+            &|node| {
+                matches!(&node.kind, NodeKind::Binary { op, left, .. }
+                    if op == expected_op && std::ptr::eq(left.as_ref(), slice))
+            },
+            &mut parents,
+        );
+        if parents.len() != 1 {
+            return Err(format!("explicit {expected_op} lost its HashSlice receiver: {source}"));
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn grouped_typeglob_and_nested_postfix_hash_slices_remain_clean() -> TestResult {
+    for source in ["my $value = (*{$g}->@{'alpha'})[0];", "my $value = (($href->@{'alpha'}))[0];"] {
+        let ast = clean_ast(source);
+        let mut parents = Vec::new();
+        hash_slice_index_parents(&ast, &mut parents);
+        if parents.len() != 1 {
+            return Err(format!("grouped slice lost its single index parent: {source}"));
+        }
+    }
+
+    let source = "$href->@{($inner->@{'alpha'})[0]};";
+    let ast = clean_ast(source);
+    let mut slices = Vec::new();
+    hash_slices(&ast, &mut slices);
+    let mut parents = Vec::new();
+    hash_slice_index_parents(&ast, &mut parents);
+    if slices.len() != 2 || parents.len() != 1 {
+        return Err(format!("nested grouped selector changed shape: {}", ast.to_sexp()));
+    }
+
+    let source = "my $value = $href->{'alpha'}[0];";
+    let ast = clean_ast(source);
+    let mut ordinary = Vec::new();
+    find_all(
+        &ast,
+        &|node| {
+            matches!(&node.kind, NodeKind::Binary { op, left, .. }
+                if op == "[]" && matches!(&left.kind, NodeKind::Binary { op, .. } if op == "->{}"))
+        },
+        &mut ordinary,
+    );
+    if ordinary.len() != 1 {
+        return Err("ordinary scalar arrow/index chain changed shape".to_string());
     }
     Ok(())
 }
