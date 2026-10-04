@@ -187,6 +187,8 @@ fn windows_directory_identity(path: &Path) -> Option<(u64, [u8; 16])> {
 
     // A zero-access, no-follow directory handle supports identity queries
     // without requesting read/write authority. File owns and closes the handle.
+    // Keep this admission primitive local: xtask's file-identity helper follows
+    // reparse points for packaging targets; trusted roots identify the entry.
     let file = std::fs::OpenOptions::new()
         .access_mode(0)
         .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
@@ -601,7 +603,7 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     #[cfg(windows)]
-    fn set_creation_time(path: &Path, time: u64) -> std::io::Result<()> {
+    fn set_directory_times(path: &Path, created: u64, written: u64) -> std::io::Result<()> {
         use std::os::windows::fs::OpenOptionsExt;
         use std::os::windows::io::AsRawHandle;
         use winapi::shared::minwindef::FILETIME;
@@ -613,11 +615,15 @@ mod tests {
             .access_mode(FILE_WRITE_ATTRIBUTES)
             .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
             .open(path)?;
-        let created = FILETIME { dwLowDateTime: time as u32, dwHighDateTime: (time >> 32) as u32 };
-        // SAFETY: file owns a live directory handle and created points to a
-        // fully initialized FILETIME for the duration of the call.
+        let created =
+            FILETIME { dwLowDateTime: created as u32, dwHighDateTime: (created >> 32) as u32 };
+        let written =
+            FILETIME { dwLowDateTime: written as u32, dwHighDateTime: (written >> 32) as u32 };
+        // SAFETY: file owns a live directory handle; created and written point
+        // to initialized FILETIME values that outlive the call. The API keeps
+        // neither pointer; the null access-time pointer leaves it unchanged.
         let changed = unsafe {
-            SetFileTime(file.as_raw_handle().cast(), &created, std::ptr::null(), std::ptr::null())
+            SetFileTime(file.as_raw_handle().cast(), &created, std::ptr::null(), &written)
         };
         if changed == 0 { Err(std::io::Error::last_os_error()) } else { Ok(()) }
     }
@@ -859,23 +865,40 @@ mod tests {
             LaunchAuthorityStartup { trusted_roots: vec![root.clone()], allow_unbounded: None };
         let authority = LaunchAuthority::resolve(&startup).expect("resolution");
         #[cfg(windows)]
-        let original_created = {
+        let (original_created, original_written) = {
             use std::os::windows::fs::MetadataExt;
-            std::fs::symlink_metadata(&root)?.creation_time()
+            let metadata = std::fs::symlink_metadata(&root)?;
+            (metadata.creation_time(), metadata.last_write_time())
         };
         let displaced = tempfile_name("retarget-displaced");
         let _ = std::fs::remove_dir_all(&displaced);
         std::fs::rename(&root, &displaced).expect("displace startup root");
+        #[cfg(windows)]
+        {
+            use super::FilesystemIdentity;
+            let displaced_metadata = std::fs::symlink_metadata(&displaced)?;
+            let displaced_identity =
+                FilesystemIdentity::capture(&displaced, &displaced_metadata)
+                    .ok_or_else(|| std::io::Error::other("displaced identity unavailable"))?;
+            assert_eq!(
+                displaced_identity, authority.roots[0].filesystem_identity,
+                "renaming the same directory must preserve its pinned identity"
+            );
+        }
         std::fs::create_dir_all(&root).expect("replacement root");
+        let replacement_program = root.join("replacement.pl");
+        std::fs::write(&replacement_program, b"print 1;").expect("replacement script");
         #[cfg(windows)]
         {
             use super::FilesystemIdentity;
             use std::os::windows::fs::MetadataExt;
-            // Make the historical creation-time comparison admit this
-            // replacement, independent of filesystem timestamp tunneling.
-            set_creation_time(&root, original_created)?;
+            // Set these after writing the child, which changes directory mtime.
+            // Creation-time and mtime comparisons must both admit this replacement;
+            // object identity must still reject it, independent of tunneling.
+            set_directory_times(&root, original_created, original_written)?;
             let replacement_metadata = std::fs::symlink_metadata(&root)?;
             assert_eq!(replacement_metadata.creation_time(), original_created);
+            assert_eq!(replacement_metadata.last_write_time(), original_written);
             let replacement_identity = FilesystemIdentity::capture(&root, &replacement_metadata)
                 .ok_or_else(|| std::io::Error::other("replacement identity unavailable"))?;
             assert_ne!(
@@ -883,9 +906,6 @@ mod tests {
                 "replacement must be a different directory object"
             );
         }
-        let replacement_program = root.join("replacement.pl");
-        std::fs::write(&replacement_program, b"print 1;").expect("replacement script");
-
         assert!(authority.admits_launch_path(&replacement_program).is_err());
         assert!(authority.narrow_launch_root(&root).is_err());
 
