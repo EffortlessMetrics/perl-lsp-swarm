@@ -1413,7 +1413,9 @@ pub struct RejectedClientIncludePath {
 /// Why a client-settings `includePaths` / `externalIncludePaths` entry was rejected.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RejectedClientIncludePathReason {
-    /// Absolute paths must use `externalIncludePaths` (machine scope) instead.
+    /// Absolute paths are not allowed in workspace-supplied `includePaths`;
+    /// only workspace-relative roots are supported there. External roots
+    /// still await a trusted transport (#4998/#10817).
     Absolute,
     /// Relative entry failed workspace containment validation.
     EscapesWorkspace(String),
@@ -1426,6 +1428,24 @@ pub enum RejectedClientIncludePathReason {
     ExternalUnauthorized(UnauthorizedExternalIncludePathSource),
 }
 
+impl RejectedClientIncludePathReason {
+    /// Stable bounded key naming the reason kind, for use as part of a
+    /// session-warning suppression identity (#17164). Detail payloads (such
+    /// as the workspace-escape detail or the unauthorized source label) are
+    /// deliberately excluded: for the same entry they are one user-facing
+    /// condition, so they must not split suppression identities.
+    #[must_use]
+    pub fn dedup_key(&self) -> &'static str {
+        match self {
+            Self::Absolute => "absolute",
+            Self::EscapesWorkspace(_) => "escapes-workspace",
+            Self::ExternalRelative => "external-relative",
+            Self::ExternalInvalidCharacters => "external-invalid-characters",
+            Self::ExternalUnauthorized(_) => "external-unauthorized",
+        }
+    }
+}
+
 impl RejectedClientIncludePath {
     /// Render a single human-readable line for logs and editor notifications.
     #[must_use]
@@ -1433,8 +1453,9 @@ impl RejectedClientIncludePath {
         match &self.reason {
             RejectedClientIncludePathReason::Absolute => format!(
                 "'{}': absolute paths are not allowed in `perl.workspace.includePaths` \
-                 (workspace-supplied). Move this entry to `perl-lsp.externalIncludePaths` \
-                 in your user settings instead.",
+                 (workspace-supplied). The entry was dropped; external include roots \
+                 are not applied yet, so use workspace-relative paths in \
+                 `includePaths` instead.",
                 self.entry
             ),
             RejectedClientIncludePathReason::EscapesWorkspace(detail) => {
@@ -5276,12 +5297,51 @@ profile = "recommended"
         assert_eq!(rejected.len(), 1);
         assert_eq!(rejected[0].entry, absolute);
         assert_eq!(rejected[0].reason, RejectedClientIncludePathReason::Absolute);
+        let render = rejected[0].render();
         assert!(
-            rejected[0].render().contains("externalIncludePaths"),
-            "rejection message should name externalIncludePaths: {}",
-            rejected[0].render()
+            !render.contains("externalIncludePaths"),
+            "rejection must not advise the inert `externalIncludePaths` setting (#17164): {render}"
+        );
+        assert!(
+            render.contains("dropped") && render.contains("workspace-relative"),
+            "rejection must say the entry was dropped and name the supported form: {render}"
         );
         Ok(())
+    }
+
+    #[test]
+    fn rejected_include_path_reason_dedup_keys_are_distinct_and_payload_free() {
+        // Distinct reason kinds must not collide in a suppression identity, or
+        // fixing one rejection class would keep the next class silent (#17164).
+        let reasons = [
+            RejectedClientIncludePathReason::Absolute,
+            RejectedClientIncludePathReason::EscapesWorkspace("detail".to_string()),
+            RejectedClientIncludePathReason::ExternalRelative,
+            RejectedClientIncludePathReason::ExternalInvalidCharacters,
+            RejectedClientIncludePathReason::ExternalUnauthorized(
+                UnauthorizedExternalIncludePathSource::Unknown,
+            ),
+        ];
+        let keys: std::collections::BTreeSet<&str> =
+            reasons.iter().map(RejectedClientIncludePathReason::dedup_key).collect();
+        assert_eq!(keys.len(), reasons.len(), "each reason kind needs its own dedup key: {keys:?}");
+
+        // Detail payloads and source labels must not leak into the key.
+        assert_eq!(
+            RejectedClientIncludePathReason::EscapesWorkspace("other detail".to_string())
+                .dedup_key(),
+            RejectedClientIncludePathReason::EscapesWorkspace("detail".to_string()).dedup_key()
+        );
+        assert_eq!(
+            RejectedClientIncludePathReason::ExternalUnauthorized(
+                UnauthorizedExternalIncludePathSource::DidChangeConfiguration
+            )
+            .dedup_key(),
+            RejectedClientIncludePathReason::ExternalUnauthorized(
+                UnauthorizedExternalIncludePathSource::Unknown
+            )
+            .dedup_key()
+        );
     }
 
     #[test]
