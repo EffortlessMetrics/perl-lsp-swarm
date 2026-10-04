@@ -22,8 +22,9 @@ use crate::runtime::readiness::{
 use crate::runtime::routing::{IndexAccessMode, route_index_access};
 use crate::runtime::window::RequestProgressGuard;
 use crate::runtime::workspace_progress::{
-    WORKSPACE_INDEX_PROGRESS_TOKEN, send_index_ready_notification, send_progress_begin,
-    send_progress_create, send_progress_end, send_progress_report,
+    WORKSPACE_INDEX_PROGRESS_TOKEN, send_index_budget_exceeded_notification,
+    send_index_ready_notification, send_progress_begin, send_progress_create, send_progress_end,
+    send_progress_report,
 };
 use crate::state::workspace_symbol_cap;
 use perl_lsp_rs_core::config::{
@@ -2954,14 +2955,13 @@ impl LspServer {
             let mut files: Vec<std::path::PathBuf> = Vec::new();
             let mut early_exit: Option<(EarlyExitReason, u64, usize, usize)> = None;
             // #17245: the initial scan budget no longer stops the scan. When the
-            // budget trips, the scan reports degraded readiness once (the index
-            // IS partial at that moment) and keeps indexing the remaining files,
-            // so coverage completes instead of freezing at a permanent partial
-            // index. `initial_budget_reported` makes that degraded report and
-            // its early-exit instrumentation record fire exactly once;
-            // `discovery_budget_warned` only de-duplicates the discovery-phase
-            // warning and deliberately does not suppress the indexing loop's
-            // degraded report.
+            // budget trips, the scan reports the partial-index window once
+            // (ready_limited) and keeps indexing the remaining files, so
+            // coverage completes instead of freezing at a permanent partial
+            // index. `initial_budget_reported` makes that report fire exactly
+            // once; `discovery_budget_warned` only de-duplicates the
+            // discovery-phase warning and deliberately does not suppress the
+            // indexing loop's report.
             let mut initial_budget_reported = false;
             let mut discovery_budget_warned = false;
             let mut indexing_receipt = WorkspaceIndexingReceipt::default();
@@ -3065,22 +3065,24 @@ impl LspServer {
                 if elapsed_ms > caps.initial_scan_budget_ms && !initial_budget_reported {
                     // #17245: the initial scan budget degrades readiness
                     // reporting, not coverage. The index IS partial at this
-                    // moment, so report degraded (ready_limited) once, right
+                    // moment, so report the ready_limited window once, right
                     // away, and keep indexing the remaining files instead of
                     // freezing the workspace at a permanent partial index that
                     // no pass ever catches up. Completion below still runs the
-                    // post-scan reconciliation and transitions to Ready, so the
-                    // client sees ready_limited -> ready as coverage finishes.
+                    // post-scan reconciliation and transitions to Ready, so
+                    // the client sees ready_limited -> ready as coverage
+                    // finishes.
+                    //
+                    // The coordinator deliberately stays in its live Building
+                    // state: the scan is still running, `record_early_exit`
+                    // must not count a scan that will complete as an early
+                    // exit, and a mid-scan Degraded state would let generic
+                    // parse-storm recovery mark the workspace Ready while
+                    // unindexed files remain (review on PR #17274). The
+                    // notification payload is exactly what a
+                    // Degraded(ScanTimeout) state produces.
                     initial_budget_reported = true;
-                    coordinator.record_early_exit(
-                        EarlyExitReason::InitialTimeBudget,
-                        elapsed_ms,
-                        indexed_files,
-                        total_files,
-                    );
-                    coordinator
-                        .transition_to_degraded(DegradationReason::ScanTimeout { elapsed_ms });
-                    send_index_ready_notification(&outbound, &coordinator.state());
+                    send_index_budget_exceeded_notification(&outbound, elapsed_ms);
                     tracing::warn!(
                         elapsed_ms,
                         indexed_files,
