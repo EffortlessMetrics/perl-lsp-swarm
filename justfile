@@ -1894,6 +1894,11 @@ bench-index:
     @echo "📊 Running workspace index benchmarks..."
     @cargo xtask bench-run --category index --output benchmarks/results/latest.json
 
+# Run ripr-facts benchmarks only
+bench-ripr:
+    @echo "📊 Running ripr-facts benchmarks..."
+    @cargo xtask bench-run --category ripr --output benchmarks/results/latest.json
+
 # Format benchmark results as receipt
 bench-receipt:
     @echo "📋 Generating benchmark receipt..."

@@ -214,7 +214,7 @@ jobs:
         # | select(.kind == ["bench"])`) -- since this REPLACES the blanket
         # `cargo bench --workspace`, an omitted target here is silent
         # coverage loss the old command wouldn't have had. Verified against
-        # the current metadata (15 bench targets, all 15 listed below); if a
+        # the current metadata (16 bench targets, all 16 listed below); if a
         # new bench target is added to the workspace, add it here too.
         export NATIVE_PIPELINE_RUN_ID="${GITHUB_RUN_ID}-${GITHUB_SHA}"
         RUSTC_VV="$(rustc -vV)"
@@ -240,6 +240,7 @@ jobs:
           "perl-lexer:lexer_benchmarks:"
           "perl-dap:dap_benchmarks:"
           "perl-incremental-parsing:incremental_parsing_benchmarks:"
+          "perl-ripr-facts:ripr_facts_benchmark:"
         )
 
         for entry in "${BENCH_TARGETS[@]}"; do
@@ -284,7 +285,8 @@ jobs:
           --expect-id "configuration_validation/launch_config_validation" \
           --expect-id "offset_to_pos16_cached" \
           --expect-id "parse_basic_substitution" \
-          --expect-id "undo_redo/edit_undo_redo"
+          --expect-id "undo_redo/edit_undo_redo" \
+          --expect-id "packet_build/small"
 
         expected_ids=()
         for family in delimited statement opaque refusal no-change; do
