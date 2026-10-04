@@ -3934,6 +3934,57 @@ impl WorkspaceIndex {
         location
     }
 
+    /// Resolve many anchors to source-backed LSP-wire locations in one pass
+    /// over the shards, in the same order as `anchor_ids`.
+    ///
+    /// Each entry answers exactly what [`Self::semantic_anchor_wire_location`]
+    /// answers for the same id: `None` for missing anchors, zero-width
+    /// fallback anchors, unavailable source text, or an `anchor_id` claimed by
+    /// more than one shard or more than once per shard. Duplicates fail closed
+    /// instead of choosing an arbitrary hash-map iteration result, matching
+    /// the single-anchor form.
+    ///
+    /// This is the find-references hot path: one location is wired per
+    /// occurrence, so the per-anchor scan is quadratic in the workspace
+    /// (#17247). Callers resolving every occurrence of a request should use
+    /// this batch once instead of the single-anchor form per occurrence.
+    pub fn semantic_anchor_wire_locations(
+        &self,
+        anchor_ids: &[AnchorId],
+    ) -> std::collections::HashMap<AnchorId, Option<WireLocation>> {
+        let shards = self.fact_shards.read();
+        let requested: std::collections::HashSet<AnchorId> = anchor_ids.iter().copied().collect();
+        let mut resolved: std::collections::HashMap<AnchorId, Option<WireLocation>> =
+            anchor_ids.iter().map(|id| (*id, None)).collect();
+        let mut claimed: std::collections::HashMap<AnchorId, usize> = HashMap::new();
+
+        for shard in shards.values() {
+            for anchor in shard.anchors.iter().filter(|a| requested.contains(&a.id)) {
+                let claimed = claimed.entry(anchor.id).or_default();
+                *claimed += 1;
+                if *claimed > 1 {
+                    resolved.insert(anchor.id, None);
+                    continue;
+                }
+                if anchor.span_end_byte <= anchor.span_start_byte {
+                    resolved.insert(anchor.id, None);
+                    continue;
+                }
+                let next_location = self.document_store.get(&shard.source_uri).and_then(|doc| {
+                    let start = usize::try_from(anchor.span_start_byte).ok()?;
+                    let end = usize::try_from(anchor.span_end_byte).ok()?;
+                    Some(WireLocation::new(
+                        shard.source_uri.clone(),
+                        WireRange::from_byte_offsets(doc.text(), start, end),
+                    ))
+                });
+                resolved.insert(anchor.id, next_location);
+            }
+        }
+
+        resolved
+    }
+
     /// Resolve a semantic anchor to a source-backed LSP-wire location in a
     /// specific indexed file.
     ///
@@ -12721,6 +12772,59 @@ mod semantic_query_callback_tests {
             called = true;
         });
         assert!(!called, "callback must not be invoked for unindexed URI");
+        Ok(())
+    }
+
+    /// #17247: the batched anchor resolution must answer exactly what the
+    /// single-anchor form answers for every anchor in a multi-file index.
+    /// The fixture spans several files whose import placeholder anchors are
+    /// intentionally degenerate and claim the same synthetic id across files,
+    /// so the equivalence also pins the duplicate/degenerate fail-closed
+    /// behavior the find-references batch relies on.
+    #[test]
+    fn semantic_anchor_wire_locations_matches_single_anchor_resolution()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let index = WorkspaceIndex::new();
+        let sources = [
+            (
+                "file:///lib/BatchA.pm",
+                "package BatchA;\nuse strict;\nuse warnings;\nsub alpha { 1 }\nsub beta { alpha() }\n1;\n",
+            ),
+            ("file:///lib/BatchB.pm", "package BatchB;\nuse POSIX;\nsub gamma { 2 }\n1;\n"),
+            (
+                "file:///lib/BatchC.pm",
+                "package BatchC;\nuse strict;\nsub delta { 3 }\nBatchB::gamma();\n1;\n",
+            ),
+        ];
+        for (uri, code) in sources {
+            must(index.index_file(must(url::Url::parse(uri)), code.to_string()));
+        }
+
+        let mut all_anchor_ids: Vec<AnchorId> = Vec::new();
+        let mut shards_with_anchors = 0;
+        for (uri, _) in sources {
+            if let Some(shard) = index.file_fact_shard(uri) {
+                if !shard.anchors.is_empty() {
+                    shards_with_anchors += 1;
+                }
+                all_anchor_ids.extend(shard.anchors.iter().map(|anchor| anchor.id));
+            }
+        }
+        assert!(
+            shards_with_anchors >= 3 && all_anchor_ids.len() >= 6,
+            "fixture must produce anchors in every file, got {shards_with_anchors} files / \
+             {} ids",
+            all_anchor_ids.len()
+        );
+
+        let batched = index.semantic_anchor_wire_locations(&all_anchor_ids);
+        for anchor_id in &all_anchor_ids {
+            assert_eq!(
+                batched.get(anchor_id).cloned().flatten(),
+                index.semantic_anchor_wire_location(*anchor_id),
+                "batch and single anchor resolution must agree for {anchor_id:?}"
+            );
+        }
         Ok(())
     }
 
