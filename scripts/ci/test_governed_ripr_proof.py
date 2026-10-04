@@ -412,7 +412,10 @@ class GovernedRiprProof(unittest.TestCase):
         self.git("update-ref", "refs/remotes/origin/main", self.sha)
         result = self.run_proof(GITHUB_EVENT_NAME="push")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("covers an empty range", result.stderr)
+        # Pin the specific message, not just the shared suffix: --is-ancestor
+        # is reflexive, so collapsing the equality branch into the ancestor
+        # check would print the false ahead-message here yet pass the suite.
+        self.assertIn("base equals the evaluated checkout", result.stderr)
         call = self.calls()[0]
         self.assertEqual(call[call.index("--base") + 1], self.sha)
 
