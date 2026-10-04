@@ -115,6 +115,18 @@ pub struct TrustedRoot {
 /// Identity of the directory object captured at startup.  Pathnames are not
 /// sufficient authority: a root can be renamed and replaced while the adapter
 /// is alive.  Rechecking this identity makes such retargeting fail closed.
+///
+/// On Windows the identity is the directory's `(volume serial number, file
+/// index)` pair read through `GetFileInformationByHandle` — the analog of the
+/// unix device+inode pair. Creation time cannot serve as the identity there:
+/// NTFS creation-time tunneling gives a directory recreated at the same path
+/// the displaced directory's creation time (#17172), which admitted
+/// rename-and-replace replacements whenever the tunnel cache hit (~33% of
+/// recreations in a 30-trial probe on this repository's development host).
+/// When the handle identity is unavailable (filesystems without file
+/// indexes), the field degrades to `None` on both captures and the
+/// comparison falls back to creation time — no worse than the pre-#17172
+/// behavior, and only off-NTFS.
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct FilesystemIdentity {
     #[cfg(unix)]
@@ -122,28 +134,83 @@ struct FilesystemIdentity {
     #[cfg(unix)]
     inode: u64,
     #[cfg(windows)]
+    volume_serial: Option<u32>,
+    #[cfg(windows)]
+    file_index: Option<u64>,
+    #[cfg(windows)]
     created: u64,
     #[cfg(not(any(unix, windows)))]
     canonical: PathBuf,
 }
 
 impl FilesystemIdentity {
-    fn from_metadata(metadata: &Metadata) -> Self {
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::MetadataExt;
-            Self { device: metadata.dev(), inode: metadata.ino() }
-        }
-        #[cfg(windows)]
-        {
-            use std::os::windows::fs::MetadataExt;
-            Self { created: metadata.creation_time() }
-        }
-        #[cfg(not(any(unix, windows)))]
-        {
-            Self { canonical: PathBuf::new() }
-        }
+    #[cfg(unix)]
+    fn capture(_path: &Path, metadata: &Metadata) -> Self {
+        use std::os::unix::fs::MetadataExt;
+        Self { device: metadata.dev(), inode: metadata.ino() }
     }
+
+    #[cfg(windows)]
+    fn capture(path: &Path, metadata: &Metadata) -> Self {
+        use std::os::windows::fs::MetadataExt;
+        let (volume_serial, file_index) = windows_directory_identity(path)
+            .map_or((None, None), |(volume, index)| (Some(volume), Some(index)));
+        Self { volume_serial, file_index, created: metadata.creation_time() }
+    }
+
+    #[cfg(not(any(unix, windows)))]
+    fn capture(_path: &Path, _metadata: &Metadata) -> Self {
+        Self { canonical: PathBuf::new() }
+    }
+}
+
+/// Read the `(volume serial number, file index)` of `path`'s directory
+/// object through a handle — the Windows analog of unix device+inode, stable
+/// across creation-time tunneling because the displaced directory still owns
+/// its file index while it exists (#17172).
+///
+/// Returns `None` when the handle cannot be opened or queried (the identity
+/// then degrades to creation-time comparison).
+#[cfg(windows)]
+fn windows_directory_identity(path: &Path) -> Option<(u32, u64)> {
+    use std::os::windows::ffi::OsStrExt;
+    use winapi::um::fileapi::{
+        BY_HANDLE_FILE_INFORMATION, CreateFileW, GetFileInformationByHandle, OPEN_EXISTING,
+    };
+    use winapi::um::handleapi::{CloseHandle, INVALID_HANDLE_VALUE};
+    use winapi::um::winbase::FILE_FLAG_BACKUP_SEMANTICS;
+    use winapi::um::winnt::{
+        FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    };
+
+    let wide: Vec<u16> = path.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+    // SAFETY: `wide` is a NUL-terminated UTF-16 path that outlives the call;
+    // the returned handle is closed on every path below.
+    let handle = unsafe {
+        CreateFileW(
+            wide.as_ptr(),
+            FILE_READ_ATTRIBUTES,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            std::ptr::null_mut(),
+            OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS,
+            std::ptr::null_mut(),
+        )
+    };
+    if handle == INVALID_HANDLE_VALUE {
+        return None;
+    }
+    let mut information: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+    let queried = unsafe { GetFileInformationByHandle(handle, &mut information) };
+    // SAFETY: `handle` is a valid open handle from the call above.
+    let closed = unsafe { CloseHandle(handle) };
+    if queried == 0 || closed == 0 {
+        return None;
+    }
+    Some((
+        information.dwVolumeSerialNumber,
+        (u64::from(information.nFileIndexHigh) << 32) | u64::from(information.nFileIndexLow),
+    ))
 }
 
 impl TrustedRoot {
@@ -272,7 +339,7 @@ fn trusted_root_is_current(root: &TrustedRoot) -> bool {
     };
     metadata.is_dir()
         && !metadata.file_type().is_symlink()
-        && FilesystemIdentity::from_metadata(&metadata) == root.filesystem_identity
+        && FilesystemIdentity::capture(&root.canonical, &metadata) == root.filesystem_identity
 }
 
 /// Return the first recorded raw input whose canonical directory matches
@@ -334,7 +401,8 @@ impl LaunchAuthority {
                 });
             }
             seen_canonical.push((raw.clone(), canonical.clone()));
-            let filesystem_identity = FilesystemIdentity::from_metadata(
+            let filesystem_identity = FilesystemIdentity::capture(
+                &canonical,
                 &std::fs::symlink_metadata(&canonical)
                     .map_err(|_| LaunchAuthorityError::TrustedRootNotFound { path: raw.clone() })?,
             );
