@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
   "owner_issue": 7807,
-  "reason": "Compose issue 7807 POD preview webview accessibility (+780 bundled entrypoint bytes) with main's brace-expansion CVE-2026-102276 override bump (+657 bundled entrypoint bytes, +1 package.json byte) after merging origin/main; measured from a rolldown build of the merged sources at 7e5cf0cbf0",
-  "base_baseline_file_sha256": "8c5ba0a97559679ec4f2e33d6f5978dcf3c41c828b0afdd521e700997cbb0857",
-  "candidate_baseline_file_sha256": "2a8b13ead113fd9cea9010b4d48ee5e4864de723b1b9be92d44da942c6f86187",
-  "base_inventory_sha256": "85107aba396d47f6dadc11056330aa8f45e1e59452e32a1fd8dad533283540c2",
-  "candidate_inventory_sha256": "35eaba52102f49c2f2a69c2da3b80a7cc6b752a08199163185d8ad02273240b8"
+  "reason": "Compose issue 7807 POD preview webview accessibility (+780 bundled entrypoint bytes, measured from a rolldown build of the merged sources at 7e5cf0cbf0 and unchanged by this merge, which brings no src/ changes) with main's installed receipt assembler controls from #17200/#17203 (+46 packaged package.json bytes) after merging origin/main at 04baae9ae8",
+  "base_baseline_file_sha256": "ed73e4ac567f36d73e987ffda907a272e2e35afcef0cb1640eabb636300b6291",
+  "candidate_baseline_file_sha256": "f584595f80553d207f0f18349633d6065e944f94ad5ef392af3dc0b1696d8e2d",
+  "base_inventory_sha256": "eca87de013c378aed31924190eaf783fb691e3b850fa8eb99c1eeb93efef4f6f",
+  "candidate_inventory_sha256": "9e3c05aa3171d1d171f31b63223026a0252ffd7a381c8121040674d4dbf84b3d"
 }
