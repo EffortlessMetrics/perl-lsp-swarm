@@ -546,3 +546,70 @@ later `master` by accident.
 - Do not squash or rebase the publication-sync PR.
 - Do not use exact-head review receipts or status comments as review evidence.
 - Do not tag or publish from this runbook.
+## Staged engineering source profile (#17225)
+
+This extension is prepared against #14570 at
+`b10269ee297ecb295b4d4fd185868a344765ec5a`. It must consume that carrier's landed
+authority and pass the focused tests before ordinary integration. This section
+does not claim the prerequisite is merged or enable a source admission pass.
+
+`source_sync_manifest.v1` is the closed non-release shape in the existing
+`publication_sync` model. Its `profile` is `source`; its direction is swarm main
+to public master. It binds semantic boundary B, destination base R and exact
+engineering subject S, four digest-bound producer inputs, the complete-tree
+`take_swarm` basis, the existing projection rows and expected projection P.
+
+Required inputs, each exactly once:
+
+- `reconciliation`: the complete public-work receipt/ledger for exact B/R/S;
+  #17226/#17238 retain native reconciliation and adapter semantics;
+- `product_proof`: applicable product/build/test evidence for exact covered bytes;
+- `projection_policy`: ownership/context policy used by #7973/#7976;
+- `protected_source_controls`: authentic/current applicable source enforcement.
+
+There is no release identity, track, prepared/frozen S, release notes, API
+publication audit, release environment or chosen invariant set in this shape.
+`published_channels` is empty and `release_cut` is false. A candidate cannot add
+pass summaries or change only a legacy profile string to escape release proof.
+The historical `publication_sync_manifest.v1` schema and its evaluator retain
+their requirements.
+
+Both profiles use the same Rust `PathRow`, `DefaultAction` and `Blocker`. The
+source schema references the existing release schema's row and primitive
+definitions; the planner resolves only those fixed compiled-in definitions,
+without fetching a schema or accepting a candidate-selected policy. The row's
+legacy `release_base_digest` name still denotes bytes in R, which is the public
+destination base here. It does not claim that source S is release-prepared.
+Receipt alias and Git-metadata protections apply to the staged source shape too.
+
+Current ceiling: a valid source shape deterministically returns
+`source_profile_not_proven` / NOT_PROVEN. The source fixture contains shape-only
+digest placeholders; it is not evidence, a product qualification or a live
+observation. Digests alone never authenticate their producer. Self-declared
+control/result strings have no authority. Missing, stale, cross-subject,
+inaccessible or unauthenticated required evidence must remain blocked.
+
+Enabling source success requires landed producer validation and reviewed
+trusted-base policy, complete reconciliation/required-port survival, independent
+complete-tree changed-path enumeration, exact Git modes and object identities,
+literal path queries and worktree integrity, public context/governance and
+truthful claims, and applicable source enforcement. Product proof may be reused
+only for identical covered bytes; a shared-product transformation requires fresh
+qualification. Release-only observer qualification is a separate release claim.
+
+Public #10126/#10121 consumes the `source_sync.v1` packet envelope and remains
+NOT_PROVEN until this one model and the actual producers are ready. The prepared
+extension implements no projection engine, ledger interpreter, join, wrapper,
+merge, release, publication or live-settings change. Actual history-preserving
+joins remain #17227/coordinator-owned.
+
+Focused command after the parent grants serial native allocation:
+
+```sh
+cargo test -p xtask --bins publication_sync
+```
+
+The six new source controls include real Git B/R/S, cross-profile substitution,
+mandatory inputs, candidate proof claims, shared row shapes and receipt aliases.
+They supplement every existing #14570 test; they do not replace them. No Cargo
+execution is claimed by the preparation receipt.
