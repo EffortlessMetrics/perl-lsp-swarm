@@ -2162,6 +2162,93 @@ fn the_receipt_cannot_be_written_over_a_planning_input() -> Result<()> {
     Ok(())
 }
 
+/// The alias guard only knows the files this plan *reads*, so it says nothing
+/// about Git's own metadata — `.git/HEAD` is not a declared input. But
+/// `write_receipt` creates missing parents, so `--receipt .git/…` would be
+/// created inside the repository's administrative directory, and the plan reads
+/// its checkout identity and worktree integrity from exactly there.
+#[test]
+fn the_receipt_cannot_be_written_into_the_git_directory() -> Result<()> {
+    let document = clean_value()?;
+    let (root, manifest_path, _) = materialize_repo(&document)?;
+
+    // A real repository, so `rev-parse --absolute-git-dir` has something to
+    // answer. Without this the guard passes by design and the controls below
+    // would prove nothing.
+    let run = |args: &[&str]| -> Result<()> {
+        let output =
+            std::process::Command::new("git").arg("-C").arg(root.path()).args(args).output()?;
+        if !output.status.success() {
+            bail!("git {args:?} failed: {}", String::from_utf8_lossy(&output.stderr));
+        }
+        Ok(())
+    };
+    run(&["init", "-q", "."])?;
+    if !root.path().join(".git/HEAD").is_file() {
+        bail!("the fixture repository has no .git/HEAD, so this control cannot discriminate");
+    }
+
+    // A path that does not exist yet, inside the Git directory.
+    let into_git = root.path().join(".git/publication-sync-plan.json");
+    let refused = plan_with(
+        PlanConfig {
+            manifest: manifest_path.clone(),
+            repo_root: root.path().to_path_buf(),
+            receipt: into_git.clone(),
+        },
+        fixture_checkout,
+        fixture_tree,
+    );
+    let Err(error) = refused else {
+        bail!("the receipt was allowed into the Git directory");
+    };
+    // Pin *which* guard refused: the alias guard would not fire here, because
+    // nothing under `.git` is a declared input.
+    if !format!("{error}").contains("inside the Git directory") {
+        bail!("a destination under .git was refused for the wrong reason: {error}");
+    }
+    if into_git.exists() {
+        bail!("the refused receipt was created anyway");
+    }
+
+    // An existing metadata file, reached through a non-canonical path, so the
+    // guard cannot be evaded by spelling.
+    let over_head = root.path().join(".git/refs/../HEAD");
+    let refused_head = plan_with(
+        PlanConfig {
+            manifest: manifest_path.clone(),
+            repo_root: root.path().to_path_buf(),
+            receipt: over_head,
+        },
+        fixture_checkout,
+        fixture_tree,
+    );
+    if refused_head.is_ok() {
+        bail!("the receipt was allowed over .git/HEAD through a non-canonical path");
+    }
+    let head = fs::read_to_string(root.path().join(".git/HEAD"))?;
+    if !head.starts_with("ref:") {
+        bail!("`.git/HEAD` no longer holds a ref: {head:?}");
+    }
+
+    // The guard is about Git metadata, not about writing inside the repository
+    // at all: an ordinary destination under the root still works.
+    let allowed = root.path().join("target/receipts/plan.json");
+    plan_with(
+        PlanConfig {
+            manifest: manifest_path,
+            repo_root: root.path().to_path_buf(),
+            receipt: allowed.clone(),
+        },
+        fixture_checkout,
+        fixture_tree,
+    )?;
+    if !allowed.exists() {
+        bail!("a destination outside the Git directory was refused");
+    }
+    Ok(())
+}
+
 #[test]
 fn an_expired_descendant_classification_is_not_proven() -> Result<()> {
     // The subtree check must age its evidence exactly as the exact-match check

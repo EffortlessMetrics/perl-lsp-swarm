@@ -978,6 +978,7 @@ fn plan_with(config: PlanConfig, checkout: CheckoutResolver, tree: TreeProbe) ->
     let raw = fs::read(&config.manifest)
         .with_context(|| format!("reading manifest {}", config.manifest.display()))?;
 
+    ensure_receipt_is_not_git_metadata(&config)?;
     ensure_receipt_does_not_alias_inputs(&config, &raw)?;
 
     let receipt = match build_receipt(&raw, &config.repo_root, checkout, tree) {
@@ -1007,6 +1008,51 @@ fn plan_with(config: PlanConfig, checkout: CheckoutResolver, tree: TreeProbe) ->
             display_findings(&receipt, &config.receipt)
         ),
     }
+}
+
+/// Refuse a receipt destination inside the repository's Git directory.
+///
+/// `--receipt` is operator-chosen and `write_receipt` creates missing parents,
+/// so a mistyped path can land inside `.git` and be created there. Overwriting
+/// Git metadata does not spoil one file: it can destroy the repository the plan
+/// was asked to reason about. It is also self-defeating, because the plan's own
+/// checkout-identity and worktree-integrity answers are read from that
+/// metadata, so a receipt written there invalidates the evidence behind its own
+/// verdict.
+///
+/// The directory is resolved with `rev-parse --absolute-git-dir` rather than by
+/// appending `.git` to the root: in a linked worktree `.git` is a *file*
+/// pointing elsewhere, and in that layout a name-based test would both miss the
+/// real directory and misjudge the file.
+///
+/// A root that is not a repository has no metadata to protect, so the guard
+/// passes rather than failing closed — the checkout-identity validation is what
+/// answers "is this a checkout at all", and it already reports `not_proven`
+/// there.
+fn ensure_receipt_is_not_git_metadata(config: &PlanConfig) -> Result<()> {
+    let Some(destination) = canonical_target(&config.receipt) else {
+        bail!(
+            "publication-sync: refusing to write the receipt to {}, whose identity cannot be established",
+            config.receipt.display()
+        );
+    };
+
+    let Some(raw) = git_output(&config.repo_root, &["rev-parse", "--absolute-git-dir"]) else {
+        return Ok(());
+    };
+    let git_dir = PathBuf::from(raw.trim());
+    let Some(git_dir) = canonical_target(&git_dir) else {
+        return Ok(());
+    };
+
+    if destination == git_dir || destination.starts_with(&git_dir) {
+        bail!(
+            "publication-sync: refusing to write the receipt to {}, which is inside the Git directory {}",
+            config.receipt.display(),
+            git_dir.display()
+        );
+    }
+    Ok(())
 }
 
 /// Refuse a receipt destination that is one of the files the plan reads.
