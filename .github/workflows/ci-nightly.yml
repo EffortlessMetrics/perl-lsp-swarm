@@ -286,7 +286,8 @@ jobs:
           --expect-id "offset_to_pos16_cached" \
           --expect-id "parse_basic_substitution" \
           --expect-id "undo_redo/edit_undo_redo" \
-          --expect-id "packet_build/small"
+          --expect-id "packet_build/small" \
+          --expect-id "packet_fingerprint/large"
 
         expected_ids=()
         for family in delimited statement opaque refusal no-change; do
