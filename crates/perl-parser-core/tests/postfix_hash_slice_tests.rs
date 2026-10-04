@@ -431,7 +431,7 @@ fn assert_retained_slice(
     );
     if errors.len() != 1 {
         return Err(format!(
-            "expected one Error.partial HashSlice at {expected_slice:?}, found {}",
+            "expected one Error.partial HashSlice at {expected_slice:?}, found {}:\n{source}\n{ast:#?}",
             errors.len()
         ));
     }
