@@ -1,6 +1,7 @@
 # E1 case manifest: lane-termination classifier mapping oracle.
 kind = "classifier"
-description = "Fetched lane log holds a genuine gap receipt beside teardown annotations; receipt outranks (ripr.yml --gap-receipt form)."
+description = "Fetched lane log holds a genuine gap receipt beside teardown annotations; receipt outranks (ripr.yml --gap-receipt form). Models a retried lane: the API reflects the torn-down attempt (gate skipped) while the fetched log carries the earlier attempt's receipt."
+scenario = "retry-mixed-evidence"
 mode = "api-evidence"
 mutant_verdict = "kill"
 mutation = "lane log with the terminal gap-receipt line handed via --gap-receipt"
