@@ -439,6 +439,21 @@ fn ux_latency_document_symbols_returns_real_process_shape() -> Result<()> {
         let immediate = document_symbol_probe_request(&harness, path)?;
         let ready_by_response =
             harness.wait_for_active_document_ready(&uri, Duration::ZERO).is_ok();
+        // Persist the primary observation before any later readiness/control
+        // request can fail. Waiting for stderr cannot change this response.
+        let primary_branches = wait_for_document_symbol_branch_probes(&harness, &[&immediate]);
+        emit_document_symbol_probe_receipt(&json!({
+            "kind": "document_symbol_primary_probe",
+            "session": session,
+            "ready_before_query": ready_before,
+            "ready_by_response": ready_by_response,
+            "immediate_raw_envelope": immediate,
+            "handler_branches": primary_branches,
+        }))?;
+        assert!(
+            probe_branch(&primary_branches, &immediate).is_some(),
+            "missing primary request-correlated branch probe: {immediate}"
+        );
         let readiness = harness.wait_for_active_document_ready_result(&uri, ARRIVAL_BUDGET);
         // Record even a readiness failure before deciding the original assertion.
         let after_ready = if readiness.is_ok() {
@@ -460,22 +475,9 @@ fn ux_latency_document_symbols_returns_real_process_shape() -> Result<()> {
         )?;
         let desync = document_symbol_probe_request(&harness, "desync-control.pl")?;
         let expected = [&immediate, &empty, &unopened, &desync];
-        let deadline = Instant::now() + Duration::from_secs(1);
-        let branches = loop {
-            let branches = document_symbol_branch_probes(&harness);
-            if expected.iter().all(|response| probe_branch(&branches, response).is_some())
-                && after_ready
-                    .as_ref()
-                    .is_none_or(|response| probe_branch(&branches, response).is_some())
-            {
-                break branches;
-            }
-            if Instant::now() >= deadline {
-                break branches;
-            }
-            // This observation wait happens after all behavioral requests.
-            std::thread::sleep(Duration::from_millis(10));
-        };
+        let mut observed_responses = expected.to_vec();
+        observed_responses.extend(after_ready.as_ref());
+        let branches = wait_for_document_symbol_branch_probes(&harness, &observed_responses);
         emit_document_symbol_probe_receipt(&json!({
             "kind": "document_symbol_same_child_probe",
             "session": session,
@@ -562,6 +564,20 @@ fn document_symbol_branch_probes(harness: &UxHarness) -> Vec<Value> {
             (receipt["kind"] == "document_symbol_branch_probe").then_some(receipt)
         })
         .collect()
+}
+
+fn wait_for_document_symbol_branch_probes(harness: &UxHarness, responses: &[&Value]) -> Vec<Value> {
+    let deadline = Instant::now() + Duration::from_secs(1);
+    loop {
+        let branches = document_symbol_branch_probes(harness);
+        if responses.iter().all(|response| probe_branch(&branches, response).is_some())
+            || Instant::now() >= deadline
+        {
+            return branches;
+        }
+        // Observe stderr after a response; never retry a behavioral request.
+        std::thread::sleep(Duration::from_millis(10));
+    }
 }
 
 fn probe_branch<'a>(branches: &'a [Value], response: &Value) -> Option<&'a str> {

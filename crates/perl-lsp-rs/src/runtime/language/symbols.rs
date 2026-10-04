@@ -260,6 +260,7 @@ impl LspServer {
     }
 
     /// Handle textDocument/documentSymbol request
+    #[cfg(any(test, feature = "expose_lsp_test_api"))]
     pub(crate) fn handle_document_symbol(
         &self,
         params: Option<Value>,
