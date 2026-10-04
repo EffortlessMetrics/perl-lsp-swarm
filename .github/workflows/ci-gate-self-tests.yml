@@ -92,6 +92,7 @@ on:
       # The reporter's own workflow calls into that module for the one decision
       # its inline snapshot step makes, so an edit here must re-prove it.
       - '.github/workflows/ripr-liveness.yml'
+      - 'scripts/ci/test_ripr_liveness_pagination_16153.py'
       - '.cargo/config.toml'
       - 'scripts/tests/test-target-isolation.sh'
       # ripr lane termination classification + bounded same-head retry
@@ -401,6 +402,9 @@ jobs:
 
       - name: Run ripr liveness classifier tests (#16098)
         run: python3 -m unittest scripts.ci.test_ripr_liveness
+
+      - name: Run ripr liveness pagination contract tests (#16153)
+        run: python3 -m unittest scripts.ci.test_ripr_liveness_pagination_16153
 
       - name: Summary
         if: always()
