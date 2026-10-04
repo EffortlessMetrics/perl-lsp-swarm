@@ -1745,10 +1745,7 @@ EOF
         // The same file spelled with the other path separator must match:
         // DAP clients do not guarantee one spelling between launch.program
         // and setBreakpoints.source.path (#17246).
-        assert!(file_paths_match(
-            "F:\\w\\deep.pl",
-            "F:/w/deep.pl",
-        ));
+        assert!(file_paths_match("F:\\w\\deep.pl", "F:/w/deep.pl",));
         assert!(file_paths_match("F:/w/deep.pl", "F:\\w\\deep.pl"));
         // Duplicate and trailing separators collapse.
         assert!(file_paths_match("F://w\\deep.pl\\", "F:/w/deep.pl"));
@@ -1766,8 +1763,8 @@ EOF
     /// before #17246 the spelling mismatch swallowed the stop entirely (no
     /// `stopped` event while the debuggee sat suspended at the line).
     #[test]
-    fn engine_hit_correlates_across_separator_spellings()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn engine_hit_correlates_across_separator_spellings() -> Result<(), Box<dyn std::error::Error>>
+    {
         let (_file, stored_spelling) = create_test_perl_file();
         let observed_spelling = stored_spelling.replace('\\', "/");
         assert_ne!(

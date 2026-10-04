@@ -1413,11 +1413,16 @@ mod tests {
         let source_path = "F:\\w\\deep.pl";
         let command = DebugAdapter::engine_breakpoint_probe_command(source_path, 6);
 
-        let expected_hex: String =
-            source_path.bytes().map(|byte| format!("{byte:02x}")).collect();
-        assert!(command.contains(&format!("pack(\"H*\", \"{expected_hex}\")")), "client path must arrive hex-encoded: {command}");
+        let expected_hex: String = source_path.bytes().map(|byte| format!("{byte:02x}")).collect();
+        assert!(
+            command.contains(&format!("pack(\"H*\", \"{expected_hex}\")")),
+            "client path must arrive hex-encoded: {command}"
+        );
         // Object-identity resolution of the engine's own key spelling.
-        assert!(command.contains("Cwd::realpath($f)"), "probe must resolve the requested file: {command}");
+        assert!(
+            command.contains("Cwd::realpath($f)"),
+            "probe must resolve the requested file: {command}"
+        );
         assert!(
             command.contains("Cwd::realpath($c)") && command.contains("$key = $c"),
             "probe must scan the engine's _< globs for the same file: {command}"
@@ -1426,7 +1431,10 @@ mod tests {
         assert!(command.contains("DB::break_on_filename_line($key, 6, 1)"), "{command}");
         assert!(command.contains("$main::{\"_<$key\"}"), "{command}");
         assert!(command.contains("\"DAP_BP:\""), "{command}");
-        assert!(command.contains("\"absent\""), "unresolvable paths must stay honestly absent: {command}");
+        assert!(
+            command.contains("\"absent\""),
+            "unresolvable paths must stay honestly absent: {command}"
+        );
     }
 
     #[test]

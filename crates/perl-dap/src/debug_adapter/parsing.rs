@@ -815,26 +815,17 @@ mod tests {
     #[test]
     pub(super) fn x_dump_declines_nested_referent_contents() {
         // Framed shape: indentation already trimmed upstream.
-        let arrayref = vec![
-            "0  ARRAY(0x2035db81a48)".to_string(),
-            "0  1".to_string(),
-            "1  2".to_string(),
-        ];
+        let arrayref =
+            vec!["0  ARRAY(0x2035db81a48)".to_string(), "0  1".to_string(), "1  2".to_string()];
         assert_eq!(DebugAdapter::parse_evaluate_result_from_x_dump(&arrayref), None);
 
         // Nested hash entries ('key' => payload) are referent contents too.
-        let hashref = vec![
-            "0  HASH(0x1b7481614e8)".to_string(),
-            "'a' => 1".to_string(),
-        ];
+        let hashref = vec!["0  HASH(0x1b7481614e8)".to_string(), "'a' => 1".to_string()];
         assert_eq!(DebugAdapter::parse_evaluate_result_from_x_dump(&hashref), None);
 
         // Raw shape with indent preserved: nested lines decline as well.
-        let indented = vec![
-            "0  ARRAY(0x557f8a9c)".to_string(),
-            "   0  1".to_string(),
-            "   1  2".to_string(),
-        ];
+        let indented =
+            vec!["0  ARRAY(0x557f8a9c)".to_string(), "   0  1".to_string(), "   1  2".to_string()];
         assert_eq!(DebugAdapter::parse_evaluate_result_from_x_dump(&indented), None);
     }
 
