@@ -40,6 +40,27 @@ pub fn build_ripr_facts_packet(
     // Validate root is repo-relative (forward-slash, no host/drive/temp).
     validate_ripr_facts_path(root, "root").map_err(RiprFactsError::InvalidRoot)?;
 
+    // Name the root condition (#17257): a missing root, or a root that is not a
+    // directory, would otherwise scan silently (the discovery walks return
+    // early on `read_dir` failure) and exit 0 with an undifferentiated
+    // `unavailable` packet. Surface it as a limitation, mirroring the packet's
+    // soft-failure posture, so a typo'd root cannot masquerade as an empty one.
+    let root_limitations = match std::fs::metadata(root) {
+        Err(_) => vec![serde_json::json!({
+            "limitation_id": "root-missing",
+            "kind": "missing_input",
+            "message": format!("The requested root `{root}` does not exist under the current directory, so no files were scanned. An empty packet here means \"root not found\", not \"root is empty\"."),
+            "evidence_refs": []
+        })],
+        Ok(metadata) if !metadata.is_dir() => vec![serde_json::json!({
+            "limitation_id": "root-not-a-directory",
+            "kind": "missing_input",
+            "message": format!("The requested root `{root}` exists but is not a directory, so no files were scanned."),
+            "evidence_refs": []
+        })],
+        Ok(_) => Vec::new(),
+    };
+
     // Validate + normalize fact classes.
     let normalized_classes =
         normalize_fact_classes(fact_classes).map_err(RiprFactsError::InvalidFactClasses)?;
@@ -266,21 +287,28 @@ pub fn build_ripr_facts_packet(
         // because its package exposed no `owners[]` fact. Empty `evidence_refs`,
         // so no referential dependency — always safe to surface.
         all_limitations.extend(relation_limitations);
+        // `#17257`: a bad root can still coexist with diff-derived `changes[]`
+        // (the diff is opaque text, not a scan), so surface the root condition
+        // alongside facts too — never silently.
+        all_limitations.extend(root_limitations);
         packet["limitations"] = serde_json::Value::Array(all_limitations);
     } else if !test_limitations.is_empty()
         || !change_limitations.is_empty()
         || !file_limitations.is_empty()
         || !relation_limitations.is_empty()
+        || !root_limitations.is_empty()
     {
         // No facts, but a pass produced limitations (test/file parse failures, a
-        // `changes` request with no diff, or a relation omitted for an
-        // unresolvable owner) — surface them next to the base
-        // `emitter-not-yet-implemented` limitation so they are never dropped.
+        // `changes` request with no diff, a relation omitted for an
+        // unresolvable owner, or a missing/non-directory root) — surface them
+        // next to the base `emitter-not-yet-implemented` limitation so they are
+        // never dropped.
         if let Some(limitations) = packet["limitations"].as_array_mut() {
             limitations.extend(test_limitations);
             limitations.extend(change_limitations);
             limitations.extend(file_limitations);
             limitations.extend(relation_limitations);
+            limitations.extend(root_limitations);
         }
     }
 
