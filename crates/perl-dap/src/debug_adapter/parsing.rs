@@ -131,6 +131,42 @@ impl DebugAdapter {
             .collect()
     }
 
+    /// Capture the suspension-position authority from a framed `T` parse.
+    ///
+    /// perl5db's `T` report opens with the debugger's own `DB::DB` frame when
+    /// execution is suspended inside called code; that frame's position is
+    /// the line the debuggee will execute next. Every user frame in the same
+    /// report carries only its *caller's* position (`called from`), so
+    /// without this authority the topmost user frame would report the call
+    /// site instead of the suspension line (#17171). `None` when the report
+    /// does not open with an internal debugger frame (e.g. a top-level stop).
+    pub(super) fn suspension_position_from_internal_frames(
+        frames: &[StackFrame],
+    ) -> Option<StackFrame> {
+        let first = frames.first()?;
+        if is_internal_frame_name_and_path(&first.name, Some(first.source.path.as_str())) {
+            Some(first.clone())
+        } else {
+            None
+        }
+    }
+
+    /// Reattach the suspension position to the topmost user-visible frame.
+    ///
+    /// The T-derived frame keeps its identity, arguments, and caller chain;
+    /// only its current source position is reconciled to the position the
+    /// debugger's own frame reported for this suspension (#17171).
+    pub(super) fn reconcile_top_frame_with_suspension_position(
+        mut frames: Vec<StackFrame>,
+        suspension: Option<&StackFrame>,
+    ) -> Vec<StackFrame> {
+        if let (Some(suspended), Some(top)) = (suspension, frames.first_mut()) {
+            top.line = suspended.line;
+            top.source = suspended.source.clone();
+        }
+        frames
+    }
+
     /// Parse variables from debugger output lines using microcrate parser/renderer.
     ///
     /// Rows retain the typed value captured at parse time (see
