@@ -440,6 +440,8 @@ expect_eq "API configured timeout annotation without readable job state fails cl
   "ripr-failure" "$(classify_api_field "${ANN_CONFIGURED_TIMEOUT}" "${STEPS_MISSING}" "" classification)"
 expect_eq "API configured timeout never hides a failed receipt-capable step without a receipt" \
   "ripr-failure" "$(classify_api_field "${ANN_CONFIGURED_TIMEOUT}" "${STEPS_CANCELLED_GATE_FAILED}" "" classification)"
+expect_eq "API configured timeout annotation on a non-cancelled job does not infer the configured timeout" \
+  "ripr-failure" "$(classify_api_field "${ANN_CONFIGURED_TIMEOUT}" "${STEPS_CONCLUDED}" "" classification)"
 
 expect_eq "API PIN: lane job missing from the listing fails closed" \
   "ripr-failure" "$(classify_api_field "${ANN_EMPTY}" "${STEPS_MISSING}" "" classification)"
