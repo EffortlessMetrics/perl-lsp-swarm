@@ -10,6 +10,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location("source_reconciliation",
     Path(__file__).resolve().parents[1] / "source_reconciliation.py")
@@ -130,6 +131,99 @@ class ReconciliationTests(unittest.TestCase):
         row["disposition"], row["source_commit"] = "port_to_swarm", self.target
         primitive["target_unique_commits"][0]["classification"] = "port_to_swarm"
         self.assertIn("not reachable", " ".join(self.check(ledger, primitive)["errors"]))
+
+    def test_absence_at_reachable_source_tip_is_not_a_port(self):
+        ledger, primitive = self.evidence()
+        row = next(r for r in ledger["entries"] if r["commit"] == self.target)
+        row["disposition"], row["source_commit"] = "port_to_swarm", self.source
+        primitive["target_unique_commits"][0]["classification"] = "port_to_swarm"
+        self.assertIn("did not change", " ".join(self.check(ledger, primitive)["errors"]))
+
+    def test_actual_landed_port_and_deletion_are_accepted(self):
+        self.git("checkout", "-q", "source")
+        self.write("public.txt", "adapted behavior\n")
+        port = self.commit("port public behavior")
+        self.subjects["source"] = port
+        ledger, primitive = self.evidence()
+        row = next(r for r in ledger["entries"] if r["commit"] == self.target)
+        row["disposition"], row["source_commit"] = "port_to_swarm", port
+        primitive["target_unique_commits"][0]["classification"] = "port_to_swarm"
+        self.assertEqual(self.check(ledger, primitive)["verdict"], "pass")
+
+        self.git("checkout", "-q", "public")
+        self.git("rm", "-q", "shared.txt")
+        deletion = self.commit("remove shared behavior in public")
+        self.subjects["target"] = deletion
+        self.git("checkout", "-q", "source")
+        self.git("rm", "-q", "shared.txt")
+        self.subjects["source"] = self.commit("port deletion with independent history")
+        ledger, primitive = self.evidence()
+        # The original shared addition is explicitly superseded by this removal.
+        shared = next(r for r in ledger["entries"] if r["commit"] == self.shared)
+        shared["disposition"] = "superseded_by_swarm_architecture"
+        shared["source_commit"] = self.subjects["source"]
+        row = next(r for r in ledger["entries"] if r["commit"] == deletion)
+        row["disposition"], row["source_commit"] = "port_to_swarm", self.subjects["source"]
+        for item in primitive["target_unique_commits"]:
+            if item["commit"] == deletion:
+                item["classification"] = "port_to_swarm"
+        self.assertEqual(self.check(ledger, primitive)["verdict"], "pass")
+
+    def test_mutable_source_proof_is_rejected(self):
+        ledger, primitive = self.evidence()
+        ledger["entries"][0]["source_commit"] = "source"
+        self.assertEqual(self.check(ledger, primitive)["verdict"], "not_proven")
+
+    def context_evidence(self):
+        self.git("checkout", "-q", "-b", "context", self.shared)
+        self.write(".github/source.yml", "public context\n")
+        self.subjects["target"] = self.commit("public context")
+        ledger, primitive = self.evidence()
+        row = next(r for r in ledger["entries"] if r["commit"] == self.subjects["target"])
+        row["disposition"] = "publication_context_translation"
+        row["projection_bindings"] = [{"path": ".github/source.yml", "row_id": "synthetic-context",
+            "row_digest": "a" * 64, "entry": self.api.entry(self.subjects["target"], ".github/source.yml")}]
+        primitive["target_unique_commits"][0]["classification"] = None
+        primitive["accepted_commits"] = []
+        primitive["unresolved_commits"] = [self.subjects["target"]]
+        primitive["verdict"] = "blocked"
+        return ledger, primitive
+
+    def test_projection_requires_an_immutable_tree_and_binds_its_identity(self):
+        ledger, primitive = self.context_evidence()
+        tree = self.git("rev-parse", "HEAD^{tree}")
+        first = adapter.reconcile(self.api, self.subjects, ledger, primitive, tree)
+        self.assertEqual(first["verdict"], "pass", first["errors"])
+        for mutable in ("HEAD", "context", self.subjects["target"]):
+            packet = adapter.reconcile(self.api, self.subjects, ledger, primitive, mutable)
+            self.assertIn("immutable exact tree", " ".join(packet["errors"]))
+        self.write("unrelated.txt", "different projection tree\n")
+        self.commit("different tree with same context path")
+        second = adapter.reconcile(self.api, self.subjects, ledger, primitive, self.git("rev-parse", "HEAD^{tree}"))
+        self.assertEqual(second["verdict"], "pass", second["errors"])
+        self.assertNotEqual(first["packet_digest"], second["packet_digest"])
+        self.write(".github/source.yml", "displaced context\n")
+        self.commit("changed context entry")
+        third = adapter.reconcile(self.api, self.subjects, ledger, primitive, self.git("rev-parse", "HEAD^{tree}"))
+        self.assertIn("entry/mode identity", " ".join(third["errors"]))
+
+    def test_replace_overlay_cannot_truncate_original_population(self):
+        ledger, primitive = self.evidence()
+        self.git("replace", "--graft", self.target, self.boundary)
+        packet = self.check(ledger, primitive)
+        self.assertEqual(packet["verdict"], "pass", packet["errors"])
+        self.assertEqual(len(packet["population"]), 2)
+        original_flag = os.environ.get("GIT_NO_REPLACE_OBJECTS")
+        self.assertEqual(os.environ.get("GIT_NO_REPLACE_OBJECTS"), original_flag)
+
+    def test_legacy_graft_file_and_environment_fail_closed(self):
+        ledger, primitive = self.evidence()
+        grafts = self.repo / ".git/info/grafts"
+        grafts.write_text(self.target + " " + self.boundary + "\n", encoding="ascii")
+        self.assertIn("legacy graft file", " ".join(self.check(ledger, primitive)["errors"]))
+        grafts.unlink()
+        with patch.dict(os.environ, {"GIT_GRAFT_FILE": str(self.root / "external-grafts")}):
+            self.assertIn("legacy graft environment", " ".join(self.check(ledger, primitive)["errors"]))
 
     def test_current_path_omission_is_rejected(self):
         ledger, primitive = self.evidence()

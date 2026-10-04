@@ -9,6 +9,8 @@ complete changed-path set and exact current R/S entry modes and object IDs.
 For merges it compares first-parent effects with side work and the side-head
 entries. `git cherry S R B` contributes patch evidence but never determines the
 whole population or proves current survival. Lazy blob fetching is disabled.
+Replacement refs are disabled on each Git call; legacy graft files and graft
+environment overrides are rejected before deriving original ancestry.
 Missing historical blobs, a shallow graph, a foreign/stale native receipt, an
 omitted work unit, or a displaced port produces `not_proven`, never empty success.
 
@@ -16,6 +18,8 @@ The explicit source vocabulary maps to the native five tokens through
 `PRIMITIVE_MAP`. Public-context translation remains outside the native vocabulary;
 it is never relabelled lineage-only to pass its product guard. It requires an
 actual projection tree plus exact per-path row IDs, row digests and Git entries.
+P must be a literal immutable tree object SHA; branch names, HEAD and commit
+objects cannot stand in for that tree identity.
 Only the four named public admission controls have an explicit control-test
 classification. There is no global product/test exemption. Mixed Rust/runtime
 units require a source repair or qualified semantic disposition.
@@ -45,6 +49,9 @@ consume the exact packet digest and establish those additional applicable source
 obligations independently; they must not admit a join from a verdict string alone.
 
 Ports must be reachable from the final exact S and their credited current bytes
-must survive. A new S/R/P changes the packet and requires fresh bindings. Preserve
+must survive. A port must actually change every credited original path; absence
+alone is not a port. Credited deletions require an existing first-parent entry.
+Source proof commits also require literal immutable commit SHAs.
+A new S/R/P changes the packet and requires fresh bindings. Preserve
 historical ledgers and original commits. Source sync uses ordered two-parent merges
 under existing protections; squash/rebase is not a valid substitute.

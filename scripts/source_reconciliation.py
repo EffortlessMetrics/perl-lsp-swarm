@@ -59,6 +59,7 @@ class Git:
     def run(self, *args):
         env = os.environ.copy()
         env["GIT_NO_LAZY_FETCH"] = "1"
+        env["GIT_NO_REPLACE_OBJECTS"] = "1"
         proc = subprocess.run(["git", "--literal-pathspecs", "-C", str(self.repo), *args],
                               env=env, capture_output=True)
         if proc.returncode:
@@ -74,6 +75,19 @@ class Git:
             return True
         except ValueError:
             return False
+
+    def original_graph(self):
+        # Replacement refs are disabled on every call. Legacy graft files are
+        # separate overlays, so reject their presence rather than trusting them.
+        if "GIT_GRAFT_FILE" in os.environ:
+            raise ValueError("legacy graft environment cannot establish original ancestry")
+        grafts = Path(self.text("rev-parse", "--path-format=absolute", "--git-path", "info/grafts"))
+        if grafts.exists():
+            raise ValueError("legacy graft file cannot establish original ancestry")
+
+    def exact_commit(self, value):
+        return isinstance(value, str) and bool(re.fullmatch("[0-9a-f]{40}", value)) and self.text(
+            "rev-parse", value + "^{commit}") == value
 
     def entry(self, commit, path):
         if commit in self.current_trees:
@@ -224,11 +238,15 @@ def reconcile(git, subjects, ledger=None, primitive=None, projection=None):
               "projection_tree": projection}
     errors = packet["errors"]
     try:
+        git.original_graph()
         if git.text("rev-parse", "--is-shallow-repository") != "false":
             raise ValueError("shallow graph cannot establish complete reconciliation")
         for name, sha in subjects.items():
-            if not re.fullmatch("[0-9a-f]{40}", sha) or git.text("rev-parse", sha + "^{commit}") != sha:
+            if not git.exact_commit(sha):
                 raise ValueError("unresolved exact subject: " + name)
+        if projection is not None and (not isinstance(projection, str) or not re.fullmatch(
+            "[0-9a-f]{40}", projection) or git.text("cat-file", "-t", projection) != "tree"):
+            raise ValueError("projection must be an immutable exact tree object")
         if not git.ancestor(subjects["boundary"], subjects["target"]):
             raise ValueError("boundary is not contained in target")
         rows = git.population(subjects)
@@ -294,8 +312,17 @@ def reconcile(git, subjects, ledger=None, primitive=None, projection=None):
                         raise ValueError("merge has unresolved resolution effects")
                 elif disposition in {"port_to_swarm", "already_equivalent_in_swarm"}:
                     proof = item["source_commit"]
-                    if not proof or not git.ancestor(proof, subjects["source"]):
+                    if not git.exact_commit(proof) or not git.ancestor(proof, subjects["source"]):
                         raise ValueError("required port/equivalent is not reachable from S")
+                    if disposition == "port_to_swarm":
+                        proof_parents = git.text("show", "-s", "--format=%P", proof).split()
+                        if not set(row["changed_paths"]).issubset(git.paths(proof, proof_parents)):
+                            raise ValueError("credited port did not change every required source path")
+                        for binding in row["current_bindings"]:
+                            if git.entry(proof, binding["path"]) is None and (
+                                not proof_parents or git.entry(proof_parents[0], binding["path"]) is None
+                            ):
+                                raise ValueError("credited port absence is not an actual deletion")
                     for binding in row["current_bindings"]:
                         if binding["source"] != git.entry(proof, binding["path"]):
                             raise ValueError("port/equivalent has been displaced in current S")
@@ -307,7 +334,7 @@ def reconcile(git, subjects, ledger=None, primitive=None, projection=None):
                     if any(product_path(p) for p in row["changed_paths"]):
                         raise ValueError("runtime/test work cannot be lineage-only")
                 elif disposition == "superseded_by_swarm_architecture":
-                    if not item["source_commit"] or not git.ancestor(item["source_commit"], subjects["source"]):
+                    if not git.exact_commit(item["source_commit"]) or not git.ancestor(item["source_commit"], subjects["source"]):
                         raise ValueError("architecture successor is not reachable from S")
                 elif disposition == "publication_context_translation":
                     if not all(context_path(p) for p in row["changed_paths"]):
