@@ -264,6 +264,22 @@ class ReconciliationTests(unittest.TestCase):
         ledger, primitive = self.evidence()
         self.assertIn("resolution effects", " ".join(self.check(ledger, primitive)["errors"]))
 
+    def test_merge_entry_resolution_and_temporary_cache_are_preserved(self):
+        self.git("checkout", "-q", "-b", "side")
+        self.write("shared.txt", "side behavior\n")
+        self.commit("side changes an existing path")
+        self.git("checkout", "-q", "public")
+        self.git("merge", "--no-ff", "--no-commit", "side")
+        self.write("shared.txt", "additional resolution on the same path\n")
+        self.subjects["target"] = self.commit("merge with altered entry")
+        ledger, primitive = self.evidence()
+        packet = self.check(ledger, primitive)
+        merge = next(r for r in packet["population"] if r["commit"] == self.subjects["target"])
+        self.assertEqual(merge["merge_effects"]["additional_resolution_paths"], [])
+        self.assertEqual(merge["merge_effects"]["entry_differences_from_side_head"], ["shared.txt"])
+        self.assertIn("resolution effects", " ".join(packet["errors"]))
+        self.assertEqual(set(self.api.current_trees), {self.subjects["source"], self.subjects["target"]})
+
     def test_shallow_graph_cannot_pass(self):
         (self.repo / ".git/shallow").write_text(self.shared + "\n")
         self.assertEqual(adapter.reconcile(self.api, self.subjects)["verdict"], "not_proven")

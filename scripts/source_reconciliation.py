@@ -158,10 +158,21 @@ def merge_effects(git, row):
     for line in side_work:
         commit, *parents = line.split()
         side_paths.update(git.paths(commit, parents))
-    return {"side_work": sorted(line.split()[0] for line in side_work),
-            "additional_resolution_paths": sorted(set(row["changed_paths"]) - side_paths),
-            "entry_differences_from_side_head": [p for p in row["changed_paths"]
-                if git.entry(row["commit"], p) != git.entry(side, p)]}
+    prior_trees = git.current_trees
+    git.current_trees = dict(prior_trees)
+    try:
+        # Compare each merge pair from two bounded metadata reads, instead of
+        # spawning two Git processes for every changed path. Retain no history
+        # tree cache after this merge; the current S/R cache stays unchanged.
+        for commit in (row["commit"], side):
+            if commit not in git.current_trees:
+                git.prime_current_tree(commit)
+        return {"side_work": sorted(line.split()[0] for line in side_work),
+                "additional_resolution_paths": sorted(set(row["changed_paths"]) - side_paths),
+                "entry_differences_from_side_head": [p for p in row["changed_paths"]
+                    if git.entry(row["commit"], p) != git.entry(side, p)]}
+    finally:
+        git.current_trees = prior_trees
 
 
 def cherry(git, subjects):
