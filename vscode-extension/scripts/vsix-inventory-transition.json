@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
   "owner_issue": 7804,
-  "reason": "Merge reconciliation after main moved (brace-expansion CVE-2026-102276 override bump #17043 on top of the freshness-seam window #17045/#17084 and #16819): the @INC-paths guidance growth, the dependency bump, and this PR managedHttpTransport module all enlarge the rolldown bundle out/extension.js; size-only growth, no structural packaging change.",
-  "base_baseline_file_sha256": "8c5ba0a97559679ec4f2e33d6f5978dcf3c41c828b0afdd521e700997cbb0857",
-  "candidate_baseline_file_sha256": "84dd6ca87792db70b01c88882f23cd3b5800e75db368458db46a537baf96fbfc",
-  "base_inventory_sha256": "85107aba396d47f6dadc11056330aa8f45e1e59452e32a1fd8dad533283540c2",
-  "candidate_inventory_sha256": "2097d8c4801a0ef41777a7301cb3b953a4e69ca6f1d25e6dccc95180547d94db"
+  "reason": "Merge reconciliation after main moved (#17200/#17203 installed receipt assembler wiring): against the accepted main baseline, this candidate changes only out/extension.js (+14451 bytes) for the managedHttpTransport module and the proxy-aware downloader routing; package.json carries main accepted +46 bytes unchanged, all 30 package members and every other byte limit remain as declared; size-only growth, no structural packaging change.",
+  "base_baseline_file_sha256": "ed73e4ac567f36d73e987ffda907a272e2e35afcef0cb1640eabb636300b6291",
+  "candidate_baseline_file_sha256": "61f5d55f5ef47d5bddebb42fcf80a5ed220a19c40fa1945b387a1a5c591b9410",
+  "base_inventory_sha256": "eca87de013c378aed31924190eaf783fb691e3b850fa8eb99c1eeb93efef4f6f",
+  "candidate_inventory_sha256": "7df38db309ec045317b2f0ef8eefe069c46299434416063663b5a4156458084e"
 }

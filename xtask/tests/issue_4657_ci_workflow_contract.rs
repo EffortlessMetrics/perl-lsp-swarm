@@ -545,6 +545,45 @@ fn windows_platform_smoke_compiles_integration_targets_without_running_them()
 mod draft_routed_result;
 
 #[test]
+fn windows_platform_smoke_executes_public_powershell_completion_before_library_smoke()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = project_root()?;
+    let ci = fs::read_to_string(root.join(".github/workflows/ci.yml"))?;
+    let workflow: Value = serde_yaml_ng::from_str(&ci)?;
+    let run = workflow
+        .get("jobs")
+        .and_then(|jobs| jobs.get("windows-platform-smoke"))
+        .and_then(|job| job.get("steps"))
+        .and_then(Value::as_sequence)
+        .and_then(|steps| {
+            steps.iter().find_map(|step| {
+                (step.get("name")?.as_str()? == "Run Windows portability smoke")
+                    .then(|| step.get("run")?.as_str())
+                    .flatten()
+            })
+        })
+        .ok_or("windows platform smoke has no named run command")?;
+    let lines: Vec<_> = run.lines().map(str::trim).collect();
+    let completion = lines
+        .iter()
+        .position(|line| {
+            *line == "cargo test -p perllsp --test powershell_completion --locked -- --exact generated_powershell_completion_works_without_profile_namespace_imports --test-threads=1"
+        })
+        .ok_or("Windows smoke must execute the public completion regression, not compile or echo it")?;
+    let library = lines
+        .iter()
+        .position(|line| *line == "cargo test $WINDOWS_TEST_CRATES --locked --lib")
+        .ok_or("Windows smoke must retain its library execution")?;
+    assert!(completion < library, "unrelated library failures must not suppress the regression");
+    assert_eq!(
+        lines[completion - 1],
+        "if [[ \" $WINDOWS_TEST_CRATES \" == *\" -p perllsp \"* ]]; then"
+    );
+    assert_eq!(lines[completion + 1], "fi");
+    Ok(())
+}
+
+#[test]
 fn rust_small_draft_result_is_not_proof() -> Result<(), Box<dyn std::error::Error>> {
     draft_routed_result::check_contract(
         &project_root()?.join(".github/workflows/em-ci-routed-rust.yml"),
