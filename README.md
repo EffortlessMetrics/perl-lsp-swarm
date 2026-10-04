@@ -224,26 +224,34 @@ Start with the [short documentation route map](docs/README.md). Use the
 
 ## Development and publication
 
-This checkout is the active development repository.
+This checkout is the active high-throughput development repository, but it is not the
+public contributor ingress.
 
 | Context | Repository and branch | Use it for |
 | --- | --- | --- |
-| Development | `EffortlessMetrics/perl-lsp-swarm` / `main` | ordinary source work, issues, pull requests, tests, and development evidence |
+| Development authority | `EffortlessMetrics/perl-lsp-swarm` / `main` | high-throughput product work, proof, internal/collaborator PRs, and release preparation |
+| Public contribution | `EffortlessMetrics/perl-lsp` / `master` | external issues and pull requests against the current public source projection |
 | Publication | `EffortlessMetrics/perl-lsp` / `master` | public release lineage, published artifacts, and release-facing support |
 
-A merge to `perl-lsp-swarm/main` is development state, not public availability. Public
-install and release links above remain on `perl-lsp`; swarm changes reach those surfaces
-only through the reviewed publication transaction.
+A merge to `perl-lsp-swarm/main` is development state, not public availability. For a
+shared-product external pull request, maintainers first converge accepted swarm state into
+`perl-lsp/master`, integrate the contributor change there, then reverse-converge the
+merged shared-product effect back into swarm. External contributors do not need a second
+pull request against swarm.
 
-The landed contributor-topology projection derives this relationship from local product,
-sync, and release authorities. The bare command intentionally leaves live stage and channel
-status `NOT_PROVEN`; a captured `--observation` is required to project observed status:
+Public install and release links above remain on `perl-lsp`; reaching the public source
+repository still does not by itself establish release or package-channel availability.
+
+The landed contributor-topology projection derives the development/publication identities
+from local product, sync, and release authorities. The bare command intentionally leaves
+live stage and channel status `NOT_PROVEN`; a captured `--observation` is required to
+project observed status:
 
 ```bash
 cargo run --locked -p xtask --bin contributor-topology
 ```
 
-Current development routes:
+Current routes:
 
 | Topic | Link |
 | --- | --- |
@@ -256,15 +264,17 @@ Current development routes:
 
 ## Contributing
 
-Clone `perl-lsp-swarm` and open ordinary development issues and pull requests here:
+External contributors should clone or fork the public repository and open pull requests
+against `perl-lsp/master`:
 
 ```bash
-git clone https://github.com/EffortlessMetrics/perl-lsp-swarm.git
-cd perl-lsp-swarm
+git clone https://github.com/EffortlessMetrics/perl-lsp.git
+cd perl-lsp
 ```
 
-See [CONTRIBUTING.md](CONTRIBUTING.md). AI implementation agents should read
-[AGENTS.md](AGENTS.md) first.
+Authorized swarm operators working on internal development should use this checkout and
+follow [AGENTS.md](AGENTS.md). See [CONTRIBUTING.md](CONTRIBUTING.md) for the complete
+routing and integration boundary.
 
 ## Security
 
