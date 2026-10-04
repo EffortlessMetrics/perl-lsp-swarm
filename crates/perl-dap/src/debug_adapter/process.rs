@@ -2,14 +2,13 @@
 
 use super::logpoint::{DrainStep, LogpointDrain, LogpointStep, PendingLogpoint};
 use super::{
-    Arc, BufRead, BufReader, Child, DEBUG_SESSION_TERMINATE_WAIT_MS, DapEvent, DapMessage,
-    DebugAdapter, DebugSession, DebugState, DisconnectArguments, Duration,
-    EngineBreakpointHitOutcome, Instant, LAUNCH_REFUSED_NO_AUTHORITY_MESSAGE,
-    LAUNCH_REFUSED_NO_BOUNDARY_MESSAGE, Mutex, Read, RestartArguments, ResumeMode, Source,
-    StackFrame, Stdio, TcpAttachConfig, TcpAttachSession, TerminateArguments, TerminationState,
-    Value, Write, ansi_escape_re, catalog_has_feature, context_re, die_suffix_re, error_re,
-    exception_re, json, lock_or_recover, module_path_to_name, prompt_re, security, stack_frame_re,
-    thread, warning_re,
+    Arc, BufRead, BufReader, Child, DapEvent, DapMessage, DebugAdapter, DebugSession, DebugState,
+    DisconnectArguments, Duration, EngineBreakpointHitOutcome, Instant,
+    LAUNCH_REFUSED_NO_AUTHORITY_MESSAGE, LAUNCH_REFUSED_NO_BOUNDARY_MESSAGE, Mutex, Read,
+    RestartArguments, ResumeMode, Source, StackFrame, Stdio, TcpAttachConfig, TcpAttachSession,
+    TerminateArguments, TerminationState, Value, Write, ansi_escape_re, catalog_has_feature,
+    context_re, debug_session_terminate_wait_ms, die_suffix_re, error_re, exception_re, json,
+    lock_or_recover, module_path_to_name, prompt_re, security, stack_frame_re, thread, warning_re,
 };
 #[cfg(unix)]
 use nix::sys::signal::{self, Signal};
@@ -3203,7 +3202,7 @@ impl DebugAdapter {
                     if let outcome @ ChildExitOutcome::Exited =
                         Self::wait_for_child_exit_with_outcome(
                             process,
-                            Duration::from_millis(DEBUG_SESSION_TERMINATE_WAIT_MS),
+                            Duration::from_millis(debug_session_terminate_wait_ms()),
                         )
                     {
                         // #15538: the direct child exited gracefully, but the
@@ -3228,7 +3227,7 @@ impl DebugAdapter {
         }
         Self::wait_for_child_exit_with_outcome(
             process,
-            Duration::from_millis(DEBUG_SESSION_TERMINATE_WAIT_MS),
+            Duration::from_millis(debug_session_terminate_wait_ms()),
         )
     }
 
@@ -7129,19 +7128,28 @@ mod tests {
                 .to_string());
         }
 
-        // Verify the process was actually killed by the watchdog.
-        std::thread::sleep(Duration::from_millis(200));
-        let process_exited = adapter
-            .session
-            .lock()
-            .map_err(|_| "session lock poisoned".to_string())?
-            .as_mut()
-            .and_then(|s| s.process.try_wait().ok().flatten())
-            .is_some();
-        if !process_exited {
-            return Err(
-                "debuggee process is still alive after watchdog should have killed it".to_string()
-            );
+        // Verify the process was actually killed by the watchdog. #17173:
+        // poll instead of a fixed 200ms sleep — TerminateProcess initiation
+        // and the terminated event are not the same moment as the OS-level
+        // exit becoming visible, and under suite load a single early check
+        // raced the kill it was meant to verify.
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let process_exited = adapter
+                .session
+                .lock()
+                .map_err(|_| "session lock poisoned".to_string())?
+                .as_mut()
+                .and_then(|s| s.process.try_wait().ok().flatten())
+                .is_some();
+            if process_exited {
+                break;
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err("debuggee process is still alive after watchdog should have killed it"
+                    .to_string());
+            }
+            std::thread::sleep(Duration::from_millis(50));
         }
 
         Ok(())

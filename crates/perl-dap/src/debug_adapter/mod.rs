@@ -87,11 +87,11 @@ use crate::reload::RuntimeModuleGenerationClock;
 use crate::security;
 use crate::security::launch_authority::LaunchAuthority;
 use patterns::{
-    DEBUG_SESSION_TERMINATE_WAIT_MS, DEBUGGER_QUERY_WAIT_MS, EVENT_QUEUE_CAPACITY,
-    RECENT_OUTPUT_MAX_LINES, RecentOutputBuffer, RecentOutputLine, ansi_escape_re,
-    assignment_ops_re, context_re, dangerous_ops_re, deref_re, die_suffix_re, error_re,
-    exception_re, glob_re, inc_re, is_valid_function_breakpoint_name, is_valid_set_variable_name,
-    prompt_re, regex_mutation_re, stack_frame_re, warning_re,
+    DEBUGGER_QUERY_WAIT_MS, EVENT_QUEUE_CAPACITY, RECENT_OUTPUT_MAX_LINES, RecentOutputBuffer,
+    RecentOutputLine, ansi_escape_re, assignment_ops_re, context_re, dangerous_ops_re,
+    debug_session_terminate_wait_ms, deref_re, die_suffix_re, error_re, exception_re, glob_re,
+    inc_re, is_valid_function_breakpoint_name, is_valid_set_variable_name, prompt_re,
+    regex_mutation_re, stack_frame_re, warning_re,
 };
 use safe_eval::validate_safe_expression;
 pub use sync_utils::{DapMessageWithEpoch, DrainEpoch};
@@ -1167,13 +1167,9 @@ impl DebugAdapter {
     pub fn seed_running_session_for_test_required(&self) -> Result<(), String> {
         use crate::debug_adapter::session::{DebugSession, DebugState, ResumeMode};
         use crate::debug_adapter::variable_cache::VariableCache;
-        let child = std::process::Command::new("perl")
-            .arg("-e")
-            .arg("1")
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn()
+        // #17173: use the cheapest platform no-op child rather than resolving
+        // a `perl` interpreter from PATH for every seeded session.
+        let child = Self::spawn_noop_child_for_test()
             .map_err(|error| format!("could not seed perl session: {error}"))?;
         let mut guard =
             self.session.lock().map_err(|_| "could not lock session while seeding".to_string())?;
@@ -1231,37 +1227,43 @@ impl DebugAdapter {
     }
 
     /// Spawn the cheapest available no-op child process for use in unit tests.
-    /// Tries perl first, then a platform-native no-op. Returns an error if no
-    /// subprocess can be spawned at all — that indicates a broken CI environment.
-    #[cfg(test)]
+    /// Returns an error if no subprocess can be spawned at all — that indicates
+    /// a broken CI environment.
+    ///
+    /// #17173: on Windows the `perl` on `PATH` may resolve to a heavy
+    /// interpreter (MSYS and Strawberry builds differ ~2x in spawn+exit cost),
+    /// so the native `cmd /c exit 0` no-op is preferred there. Unix keeps the
+    /// perl-first order with the platform-native `true` fallback.
+    #[cfg(any(test, feature = "test-helpers"))]
     fn spawn_noop_child_for_test() -> io::Result<Child> {
         use std::process::{Command, Stdio};
-        // perl -e 1 exits immediately with no output.
-        if let Ok(c) = Command::new("perl")
-            .arg("-e")
-            .arg("1")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-        {
-            return Ok(c);
+        fn try_spawn(prog: &str, args: &[&str]) -> io::Result<Child> {
+            // Candidates exit immediately with no output.
+            Command::new(prog)
+                .args(args)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
         }
-        // Platform-native fallback when perl is not on PATH.
-        #[cfg(windows)]
-        let (prog, args): (&str, &[&str]) = ("cmd", &["/c", "exit", "0"]);
-        #[cfg(not(windows))]
-        let (prog, args): (&str, &[&str]) = ("true", &[]);
-        // SAFETY NOTE: no unsafe — uses only std::process::Command.
-        Command::new(prog)
-            .args(args)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|e| {
-                io::Error::new(e.kind(), format!("cannot spawn noop subprocess ({prog}): {e}"))
-            })
+        let candidates: &[(&str, &[&str])] = if cfg!(windows) {
+            &[("cmd", &["/c", "exit", "0"]), ("perl", &["-e", "1"])]
+        } else {
+            &[("perl", &["-e", "1"]), ("true", &[])]
+        };
+        let mut last_error: Option<io::Error> = None;
+        for (prog, args) in candidates {
+            match try_spawn(prog, args) {
+                Ok(child) => return Ok(child),
+                Err(error) => last_error = Some(error),
+            }
+        }
+        let last_error =
+            last_error.unwrap_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no candidates"));
+        Err(io::Error::new(
+            last_error.kind(),
+            format!("cannot spawn noop subprocess: {last_error}"),
+        ))
     }
 
     #[cfg(test)]
