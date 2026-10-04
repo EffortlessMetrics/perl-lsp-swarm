@@ -26,8 +26,15 @@ stable protocol.
 | `perl-lsp-swarm/main` | Active development; product implementation, tests, compiler/LSP/DAP work, proof, freeze, release preparation, and current sync protocol |
 | `perl-lsp/master` | Release lineage; publication-specific workflows/policy, public package lineage, and bounded emergency release fixes |
 
-Normal product work starts and converges in swarm. Do not maintain parallel
-implementation queues in both repositories.
+Normal maintainer and agent product work starts and converges in swarm. Do not
+maintain parallel implementation queues in both repositories.
+
+External contribution ingress is different from product-development authority. Public
+contributors open issues and pull requests against `perl-lsp/master`. Before integrating
+a shared-product public PR, maintainers first reconcile accepted swarm state into the public
+repository so the contribution is evaluated against the current public projection. After the
+public PR merges, its shared-product effect is reverse-converged into swarm. The contributor
+keeps one public PR; maintainers own both synchronization boundaries.
 
 An emergency product fix may begin in `perl-lsp` only when release safety
 requires it. Mirror or supersede the product/test effect in swarm immediately
