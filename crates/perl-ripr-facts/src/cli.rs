@@ -57,6 +57,15 @@ where
         }
     };
 
+    // Fail fast on an invalid write destination before any diff I/O: an
+    // unreadable `--diff` must not mask a directory-valued `--out`, and a
+    // readable diff must not be read only to reject the destination afterwards
+    // (#17263 review). Same shared check the wrapper runs before the scan.
+    if let Err(line) = validate_out_destination(&cli.out) {
+        eprintln!("{line}");
+        return 1;
+    }
+
     let diff_text = match cli.diff_path.as_deref() {
         Some(path) => match read_diff_text(&cli.root, path) {
             Ok(text) => Some(text),
@@ -125,6 +134,26 @@ fn read_diff_text(root: &str, diff_path: &str) -> Result<String, String> {
         .map_err(|error| format!("failed to read diff `{}`: {error}", path.display()))
 }
 
+/// Validate the `out` write destination: repo-relative shape plus target kind.
+///
+/// Shape validation alone says nothing about target kind, so `out` naming an
+/// existing directory used to scan the whole workspace and then die with a raw
+/// OS error that never said "is a directory" (#17263). This fails fast
+/// instead, naming the condition. (`is_dir` follows symlinks, matching what
+/// the write path would hit; a TOCTOU dir still fails closed below, just less
+/// prettily.)
+///
+/// Shared by both entry points — [`run_cli`] (before diff I/O) and
+/// [`run_ripr_facts_with_diff`] (before the workspace scan) — so the two
+/// cannot drift. The `Err` is the complete stderr line, ready to print.
+fn validate_out_destination(out: &str) -> Result<(), String> {
+    validate_ripr_facts_path(out, "out").map_err(|reason| format!("ripr-facts: {reason}"))?;
+    if std::path::Path::new(out).is_dir() {
+        return Err(out_names_directory_message(out));
+    }
+    Ok(())
+}
+
 /// Run the `ripr-facts` exporter (Campaign 31, ripr-swarm#1379).
 ///
 /// The thin CLI wrapper over [`build_ripr_facts_packet`]: it forwards the
@@ -166,17 +195,8 @@ pub fn run_ripr_facts_with_diff(
 ) -> i32 {
     // Validate the output path first — the cheapest check — so an invalid write
     // destination fails fast, before the emitter scans the workspace.
-    if let Err(reason) = validate_ripr_facts_path(out, "out") {
-        eprintln!("ripr-facts: {reason}");
-        return 1;
-    }
-    // `#17263`: shape validation says nothing about target kind, so `out`
-    // naming a directory used to scan the whole workspace and then die with a
-    // raw OS error that never said "is a directory". Fail fast instead, naming
-    // the condition. (`is_dir` follows symlinks, matching what the write path
-    // would hit; a TOCTOU dir still fails closed below, just less prettily.)
-    if std::path::Path::new(out).is_dir() {
-        eprintln!("{}", out_names_directory_message(out));
+    if let Err(line) = validate_out_destination(out) {
+        eprintln!("{line}");
         return 1;
     }
 
