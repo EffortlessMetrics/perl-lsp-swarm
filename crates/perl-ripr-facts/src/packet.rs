@@ -40,6 +40,53 @@ pub fn build_ripr_facts_packet(
     // Validate root is repo-relative (forward-slash, no host/drive/temp).
     validate_ripr_facts_path(root, "root").map_err(RiprFactsError::InvalidRoot)?;
 
+    // Name the root condition (#17257): a missing root, or a root that is not a
+    // directory, would otherwise scan silently (the discovery walks return
+    // early on `read_dir` failure) and exit 0 with an undifferentiated
+    // `unavailable` packet. Surface it as a limitation, mirroring the packet's
+    // soft-failure posture, so a typo'd root cannot masquerade as an empty one.
+    let not_a_directory_limitation = || {
+        serde_json::json!({
+            "limitation_id": "root-not-a-directory",
+            "kind": "missing_input",
+            "message": format!("The requested root `{root}` cannot be scanned because a path component is not a directory, so no files were scanned."),
+            "evidence_refs": []
+        })
+    };
+    let root_limitations = match std::fs::metadata(root) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            if root_has_non_directory_ancestor(root) {
+                vec![not_a_directory_limitation()]
+            } else {
+                vec![serde_json::json!({
+                    "limitation_id": "root-missing",
+                    "kind": "missing_input",
+                    "message": format!("The requested root `{root}` does not exist under the current directory, so no files were scanned. An empty packet here means \"root not found\", not \"root is empty\"."),
+                    "evidence_refs": []
+                })]
+            }
+        }
+        Err(_) if root_has_non_directory_ancestor(root) => {
+            vec![not_a_directory_limitation()]
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotADirectory => {
+            vec![not_a_directory_limitation()]
+        }
+        Err(error) => vec![serde_json::json!({
+            "limitation_id": "root-inspection-failed",
+            "kind": "read_failure",
+            "message": format!("The requested root `{root}` could not be inspected ({error}), so no files were scanned."),
+            "evidence_refs": []
+        })],
+        Ok(metadata) if !metadata.is_dir() => vec![serde_json::json!({
+            "limitation_id": "root-not-a-directory",
+            "kind": "missing_input",
+            "message": format!("The requested root `{root}` exists but is not a directory, so no files were scanned."),
+            "evidence_refs": []
+        })],
+        Ok(_) => Vec::new(),
+    };
+
     // Validate + normalize fact classes.
     let normalized_classes =
         normalize_fact_classes(fact_classes).map_err(RiprFactsError::InvalidFactClasses)?;
@@ -271,21 +318,28 @@ pub fn build_ripr_facts_packet(
         // because its package exposed no `owners[]` fact. Empty `evidence_refs`,
         // so no referential dependency — always safe to surface.
         all_limitations.extend(relation_limitations);
+        // `#17257`: a bad root can still coexist with diff-derived `changes[]`
+        // (the diff is opaque text, not a scan), so surface the root condition
+        // alongside facts too — never silently.
+        all_limitations.extend(root_limitations);
         packet["limitations"] = serde_json::Value::Array(all_limitations);
     } else if !test_limitations.is_empty()
         || !change_limitations.is_empty()
         || !file_limitations.is_empty()
         || !relation_limitations.is_empty()
+        || !root_limitations.is_empty()
     {
         // No facts, but a pass produced limitations (test/file parse failures, a
-        // `changes` request with no diff, or a relation omitted for an
-        // unresolvable owner) — surface them next to the base
-        // `emitter-not-yet-implemented` limitation so they are never dropped.
+        // `changes` request with no diff, a relation omitted for an
+        // unresolvable owner, or a missing/non-directory root) — surface them
+        // next to the base `emitter-not-yet-implemented` limitation so they are
+        // never dropped.
         if let Some(limitations) = packet["limitations"].as_array_mut() {
             limitations.extend(test_limitations);
             limitations.extend(change_limitations);
             limitations.extend(file_limitations);
             limitations.extend(relation_limitations);
+            limitations.extend(root_limitations);
         }
     }
 
@@ -296,6 +350,28 @@ pub fn build_ripr_facts_packet(
     packet["packet_fingerprint"] = serde_json::Value::String(fingerprint);
 
     Ok(packet)
+}
+
+/// `true` when an existing ancestor of `root` is provably not a directory.
+///
+/// Windows reports `<file>/child` metadata failure as `NotFound` rather than
+/// `NotADirectory`, so a bare `ErrorKind` match would misname that root as
+/// missing. Probing ancestors keeps the limitation honest on every platform:
+/// a positive hit means a path component is provably not a directory, while
+/// any inconclusive probe conservatively keeps the caller's `ErrorKind`
+/// reading.
+fn root_has_non_directory_ancestor(root: &str) -> bool {
+    for ancestor in std::path::Path::new(root).ancestors().skip(1) {
+        if ancestor.as_os_str().is_empty() {
+            continue;
+        }
+        match std::fs::metadata(ancestor) {
+            Ok(metadata) => return !metadata.is_dir(),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(_) => return false,
+        }
+    }
+    false
 }
 
 fn bind_relations_to_changes(relations: Vec<Value>, changes: &[Value]) -> Vec<Value> {
