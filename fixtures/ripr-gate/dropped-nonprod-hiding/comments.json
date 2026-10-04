@@ -1,0 +1,28 @@
+{
+  "schema_version": "0.1",
+  "tool": "ripr",
+  "status": "advisory",
+  "base": "origin/main",
+  "base_sha": "e1-base-sha-0000000000000000000000000000000000000001",
+  "head": "HEAD",
+  "head_sha": "E1_HEAD_SHA",
+  "analysis_scope": {
+    "scope": "diff_scoped_changed_files",
+    "run_status": "limited_diff_scope",
+    "production_files_considered": 9,
+    "changed_production_files": [
+      "crates/perl-parser/src/lib.rs"
+    ],
+    "scoped_production_files": [],
+    "limitation": "review_comments_diff_scope_only"
+  },
+  "summary": {
+    "comments": 0,
+    "summary_only": 0,
+    "suppressed": 0
+  },
+  "comments": [],
+  "summary_only": [],
+  "suppressed": [],
+  "warnings": []
+}
