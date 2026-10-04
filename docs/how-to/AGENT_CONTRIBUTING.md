@@ -6,10 +6,15 @@ points to the durable repository contracts; it is not a second workflow engine.
 ## Start from live truth
 
 Begin with the current GitHub issue or pull request, the checked-out repository,
-and `origin/main`. Read the issue body as the current claim, then verify its
-paths, ownership, acceptance criteria, and proof commands against the code and
-current GitHub state. Historical comments and labels are useful receipts, but
-they do not override current source or live checks.
+and the repository-qualified default branch: `perl-lsp-swarm/main` for an
+authorized swarm-development lane, or `perl-lsp/master` for a public contribution
+lane. Read the issue body as the current claim, then verify its paths, ownership,
+acceptance criteria, and proof commands against the code and current GitHub state.
+Historical comments and labels are useful receipts, but they do not override
+current source or live checks.
+
+External/public contribution pull requests belong in `perl-lsp/master`. Do not
+retarget them into swarm merely because swarm is the product-development authority.
 
 Use the route map for your provider: [AGENTS.md](../../AGENTS.md) and
 `.agents/skills/` for Codex, or [CLAUDE.md](../../CLAUDE.md) and
@@ -95,6 +100,11 @@ Before publication, inspect the diff and run the scoped proof. After publication
 address actionable review findings, check the current candidate state, and merge
 only when the repository's live rules permit it. A clean review is a valid result
 when the applicable review contract is satisfied.
+
+For a shared-product public pull request, repository convergence is maintainer-owned:
+bring accepted swarm state into `perl-lsp/master` before integration, then
+reverse-converge the merged shared-product effect into `perl-lsp-swarm/main`.
+The contributor does not need a duplicate swarm pull request.
 
 After a squash merge, sync the relevant view, remove worktrees and branches
 created by the lane when safe, remove scratch artifacts, and update the owning
