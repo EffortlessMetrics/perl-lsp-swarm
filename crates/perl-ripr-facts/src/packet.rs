@@ -150,13 +150,16 @@ pub fn build_ripr_facts_packet(
     // `owners[]`/`files[]` facts must be present in the packet. Likewise a kept
     // `verify_commands[]` entry forces its referenced `tests[]` above, and each
     // forced test carries a `file_id` — so the walk must run then too, or the
-    // forced tests dangle against an empty `files[]` (#17256). Run the walk
-    // whenever files/owners/provenance or changes are requested, or a relation
-    // or verify command was emitted, mirroring how PR 4 kept `tests[]` for a
-    // relation's `test_id`.
+    // forced tests dangle against an empty `files[]` (#17256). A kept
+    // `dynamic_boundaries[]` entry carries a required `file_id` (plus a resolved
+    // `owner_id`), so the walk must run then too (#17270 review). Run the walk
+    // whenever files/owners/provenance or changes are requested, or a relation,
+    // boundary, or verify command was emitted, mirroring how PR 4 kept `tests[]`
+    // for a relation's `test_id`.
     let (files, owners, file_provenance, file_limitations) = if wants_file_facts_explicit
         || wants_changes
         || has_relation_candidates
+        || has_boundary_facts
         || has_verify_facts
     {
         emit_files_and_owners(root)
@@ -203,10 +206,12 @@ pub fn build_ripr_facts_packet(
     // `owner_id` (#3342) likewise references an `owners[]` fact, so force
     // files+owners in whenever a relation was emitted. A kept `verify_commands[]`
     // entry forces `tests[]` whose `file_id`s reference `files[]` (#17256), so
-    // force files+owners in then too. Both force-includes mirror the relations
-    // precedent wholesale: keep ALL files+owners, not just the referenced
-    // subset — filtering to referenced ids would fork the full-class packet
-    // shape subset consumers diff against.
+    // force files+owners in then too. A kept `dynamic_boundaries[]` entry
+    // carries a required `file_id` (+ resolved `owner_id`), so force
+    // files+owners in then too (#17270 review). All force-includes mirror the
+    // relations precedent wholesale: keep ALL files+owners, not just the
+    // referenced subset — filtering to referenced ids would fork the full-class
+    // packet shape subset consumers diff against.
     let changes_reference_known_file = has_change_facts
         || change_limitations.iter().any(|l| {
             l["limitation_id"].as_str().is_some_and(|id| id.starts_with("unattributable-change:"))
@@ -214,6 +219,7 @@ pub fn build_ripr_facts_packet(
     let (files, owners) = if wants_file_facts_explicit
         || changes_reference_known_file
         || has_relation_candidates
+        || has_boundary_facts
         || has_verify_facts
     {
         (files, owners)

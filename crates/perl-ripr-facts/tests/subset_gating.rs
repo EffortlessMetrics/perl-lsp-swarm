@@ -164,3 +164,36 @@ fn boundaries_only_request_keeps_boundaries_and_their_limitations() {
         "dynamic_boundaries subset must not leak verify commands"
     );
 }
+
+#[test]
+fn boundaries_only_request_forces_referenced_files_without_dangling_refs() {
+    let root = boundary_fixture("boundary-forces-files");
+    let packet = build_packet_with_classes(&root, "dynamic_boundaries");
+    let _ = std::fs::remove_dir_all(&root);
+
+    let boundaries = must_some(packet["dynamic_boundaries"].as_array());
+    assert!(!boundaries.is_empty(), "explicit dynamic_boundaries request must keep its facts");
+    // Each boundary carries a required `file_id` (and usually a resolved
+    // `owner_id`), so `files[]`/`owners[]` must be force-included — mirroring
+    // the relations precedent — or the refs dangle and the packet anchor
+    // check fails (#17270 review).
+    let files = must_some(packet["files"].as_array());
+    assert!(!files.is_empty(), "boundary file_ids force their files[] facts");
+    let owners = must_some(packet["owners"].as_array());
+    assert!(!owners.is_empty(), "boundary owner_ids force their owners[] facts");
+    let file_ids: HashSet<&str> = files.iter().filter_map(|f| f["file_id"].as_str()).collect();
+    let owner_ids: HashSet<&str> = owners.iter().filter_map(|o| o["owner_id"].as_str()).collect();
+    for boundary in boundaries {
+        let file_id = must_some_with(boundary["file_id"].as_str(), "boundary must carry a file_id");
+        assert!(
+            file_ids.contains(file_id),
+            "boundary file_id `{file_id}` must resolve to a file fact"
+        );
+        if let Some(owner_id) = boundary["owner_id"].as_str() {
+            assert!(
+                owner_ids.contains(owner_id),
+                "boundary owner_id `{owner_id}` must resolve to an owner fact"
+            );
+        }
+    }
+}
