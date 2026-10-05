@@ -993,13 +993,51 @@ jobs:
           cargo test -p perl-lsp-rs-core --locked --lib inline_completion --no-run
 
       - name: Run PR-fast via shared xtask gate runner
+        env:
+          PR_SMOKE_NAVIGATION_PROOF: ${{ steps.inline-completion-scope.outputs.warm_inline_completion }}
         run: |
           set +e
           # Gate commands reuse the shared CARGO_TARGET_DIR=target build warmed
           # by "Warm xtask" and the cache restore above (#15528).
           # Gate receipts intentionally stay at target/receipts for upload steps.
           echo "PR-fast timeout policy: GitHub job 75m, outer runner watchdog 60m, per-gate timeouts recorded in target/receipts/receipt.json"
-          timeout --signal=TERM --kill-after=60s 3600s "$CARGO_TARGET_DIR/debug/xtask" gates --tier pr-fast --subject target/receipts/ci-subject.json --receipt
+          # Share the existing 60m watchdog: run two in-process server targets
+          # that unit_routed_full otherwise reaches after DAP.
+          # Both targets and the broader tier retain their independent failures.
+          timeout --signal=TERM --kill-after=60s 3600s bash <<'PR_FAST'
+          set -uo pipefail
+          navigation_status=0
+          if [ "$PR_SMOKE_NAVIGATION_PROOF" = 'true' ]; then
+            source_sha="$(git rev-parse --verify HEAD)"
+            source_status=$?
+            echo "NAVIGATION_PROOF source=$source_sha"
+            for target in cross_file_goto_definition_tests navigation_regression_tests; do
+              log="target/receipts/logs/navigation-${target}.log"
+              target_status=1
+              if ! printf 'NAVIGATION_PROOF source=%s target=%s\n' "$source_sha" "$target" | tee "$log"; then
+                navigation_status=1
+              fi
+              if [ "$source_status" -eq 0 ]; then
+                cargo test -p perl-lsp-rs --locked --test "$target" -- --test-threads=1 --color never 2>&1 | tee -a "$log"
+                result=("${PIPESTATUS[@]}")
+                target_status="${result[0]}"
+                if [ "${result[1]}" -ne 0 ] || ! grep -Eq 'test result: ok\. [1-9][0-9]* passed; 0 failed;' "$log"; then
+                  target_status=1
+                fi
+              else
+                echo 'NOT_PROVEN: current source identity prerequisite failed' | tee -a "$log"
+              fi
+              if ! printf 'NAVIGATION_PROOF source=%s target=%s exit=%s\n' "$source_sha" "$target" "$target_status" | tee -a "$log"; then
+                navigation_status=1
+              fi
+              if [ "$target_status" -ne 0 ]; then navigation_status=1; fi
+            done
+          fi
+          "$CARGO_TARGET_DIR/debug/xtask" gates --tier pr-fast --subject target/receipts/ci-subject.json --receipt
+          full_status=$?
+          if [ "$full_status" -ne 0 ]; then exit "$full_status"; fi
+          exit "$navigation_status"
+          PR_FAST
           status=$?
           case "$status" in
             124)
