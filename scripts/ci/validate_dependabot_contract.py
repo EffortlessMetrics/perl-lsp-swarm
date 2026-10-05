@@ -913,15 +913,21 @@ def _inspect_patch_query(path: str, text: str) -> list[Finding]:
 
 def _inspect_master_mentions(path: str, text: str) -> list[Finding]:
     findings: list[Finding] = []
-    for match in re.finditer(r"`master`|\bmaster\b", text):
+    for match in re.finditer(
+        r"(?:(?:EffortlessMetrics/)?perl-lsp/)?(`master`|\bmaster\b)", text
+    ):
+        if "perl-lsp/" in match.group(0):
+            # The matched occurrence is itself the qualified public branch
+            # `perl-lsp/master`. The exception binds to the match, not to
+            # whatever else happens to sit in the surrounding text, so a
+            # nearby unqualified swarm instruction is still rejected.
+            continue
         window = text[max(0, match.start() - 180) : match.end() + 80]
         # `master` is wrong when it is presented as this swarm repository's
         # default branch, but it is the real public-contribution/publication
-        # branch for perl-lsp. Accept either a directly qualified
-        # `perl-lsp/master` mention or a nearby explicit public repository
-        # selector such as `--repo EffortlessMetrics/perl-lsp --base master`.
-        if re.search(r"(?:EffortlessMetrics/)?perl-lsp/master", window):
-            continue
+        # branch for perl-lsp. Accept a nearby explicit public repository
+        # selector such as `--repo EffortlessMetrics/perl-lsp --base master`,
+        # whose bare `master` is qualified by the selector on the same line.
         if re.search(r"EffortlessMetrics/perl-lsp(?!-swarm)", window):
             continue
         findings.append(
