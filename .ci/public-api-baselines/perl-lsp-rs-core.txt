@@ -590,8 +590,8 @@ pub const perl_lsp_rs_core::external_tool_doctor::STATUS_OPTIONAL_TESTING_INSTRU
 pub const perl_lsp_rs_core::external_tool_doctor::STATUS_UNKNOWN: &str
 pub fn perl_lsp_rs_core::external_tool_doctor::critic_compatibility_entry(registry: &[perl_lsp_rs_core::external_tools::ExternalToolPolicy]) -> core::option::Option<perl_lsp_rs_core::external_tool_doctor::ExternalToolDoctorEntry>
 pub fn perl_lsp_rs_core::external_tool_doctor::external_tool_doctor_entries(registry: &[perl_lsp_rs_core::external_tools::ExternalToolPolicy]) -> alloc::vec::Vec<perl_lsp_rs_core::external_tool_doctor::ExternalToolDoctorEntry>
-pub fn perl_lsp_rs_core::external_tool_doctor::render_critic_compatibility_text(entry: &perl_lsp_rs_core::external_tool_doctor::ExternalToolDoctorEntry) -> alloc::string::String
-pub fn perl_lsp_rs_core::external_tool_doctor::render_external_tool_doctor_text(entries: &[perl_lsp_rs_core::external_tool_doctor::ExternalToolDoctorEntry]) -> alloc::string::String
+pub fn perl_lsp_rs_core::external_tool_doctor::render_critic_compatibility_text(entry: &perl_lsp_rs_core::external_tool_doctor::ExternalToolDoctorEntry, command_name: &str) -> alloc::string::String
+pub fn perl_lsp_rs_core::external_tool_doctor::render_external_tool_doctor_text(entries: &[perl_lsp_rs_core::external_tool_doctor::ExternalToolDoctorEntry], command_name: &str) -> alloc::string::String
 pub mod perl_lsp_rs_core::external_tools
 pub enum perl_lsp_rs_core::external_tools::ConfigReaderSupport
 pub perl_lsp_rs_core::external_tools::ConfigReaderSupport::None
@@ -3713,6 +3713,12 @@ pub mod perl_lsp_rs_core::providers::diagnostics::version_compat
 pub fn perl_lsp_rs_core::providers::diagnostics::version_compat::check_version_compat(node: &perl_ast::ast::Node, source: &str, diagnostics: &mut alloc::vec::Vec<perl_lsp_rs_core::providers::Diagnostic>)
 pub fn perl_lsp_rs_core::providers::diagnostics::version_compat::check_version_compat_with_project_version(node: &perl_ast::ast::Node, source: &str, diagnostics: &mut alloc::vec::Vec<perl_lsp_rs_core::providers::Diagnostic>, project_version: core::option::Option<&str>)
 pub fn perl_lsp_rs_core::providers::diagnostics::version_compat::parse_configured_project_version(value: &str) -> core::option::Option<perl_pragma::version::PerlVersion>
+pub struct perl_lsp_rs_core::providers::diagnostics::DeadCodeIdentity
+pub perl_lsp_rs_core::providers::diagnostics::DeadCodeIdentity::code: &'static str
+pub perl_lsp_rs_core::providers::diagnostics::DeadCodeIdentity::subject: &'static str
+pub fn perl_lsp_rs_core::providers::DeadCodeIdentity::clone(&self) -> perl_lsp_rs_core::providers::DeadCodeIdentity
+pub fn perl_lsp_rs_core::providers::DeadCodeIdentity::eq(&self, other: &perl_lsp_rs_core::providers::DeadCodeIdentity) -> bool
+pub fn perl_lsp_rs_core::providers::DeadCodeIdentity::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_lsp_rs_core::providers::diagnostics::Diagnostic
 pub perl_lsp_rs_core::providers::diagnostics::Diagnostic::code: core::option::Option<alloc::string::String>
 pub perl_lsp_rs_core::providers::diagnostics::Diagnostic::critic_observation: core::option::Option<perl_lsp_rs_core::tooling::perl_critic::BuiltInCriticObservation>
@@ -3766,10 +3772,13 @@ pub fn perl_lsp_rs_core::providers::RelatedInformation::new(location: (usize, us
 pub fn perl_lsp_rs_core::providers::RelatedInformation::clone(&self) -> perl_lsp_rs_core::providers::RelatedInformation
 pub fn perl_lsp_rs_core::providers::RelatedInformation::eq(&self, other: &perl_lsp_rs_core::providers::RelatedInformation) -> bool
 pub fn perl_lsp_rs_core::providers::RelatedInformation::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub const perl_lsp_rs_core::providers::diagnostics::DEAD_CODE_CATEGORY: &str
+pub static perl_lsp_rs_core::providers::diagnostics::DEAD_CODE_IDENTITIES: &[perl_lsp_rs_core::providers::DeadCodeIdentity]
 pub fn perl_lsp_rs_core::providers::diagnostics::build_parse_error_hint(error: &perl_parser_core::syntax::error::ParseError, base_message: &str) -> core::option::Option<alloc::string::String>
 pub fn perl_lsp_rs_core::providers::diagnostics::critic_overlap_observations(diagnostics: &[perl_lsp_rs_core::providers::Diagnostic]) -> alloc::vec::Vec<perl_lsp_rs_core::tooling::perl_critic::BuiltInCriticObservation>
 pub fn perl_lsp_rs_core::providers::diagnostics::detect_dead_code(workspace_index: &perl_workspace::workspace::workspace_index::WorkspaceIndex, document_uri: &str, source_text: &str, line_index: &perl_position_tracking::line_index::LineStartsCache) -> alloc::vec::Vec<perl_lsp_rs_core::providers::Diagnostic>
 pub fn perl_lsp_rs_core::providers::diagnostics::detect_heredoc_antipatterns(source: &str) -> alloc::vec::Vec<perl_lsp_rs_core::providers::Diagnostic>
+pub fn perl_lsp_rs_core::providers::diagnostics::identity_for_code(code: &str) -> core::option::Option<&'static perl_lsp_rs_core::providers::DeadCodeIdentity>
 pub fn perl_lsp_rs_core::providers::diagnostics::parse_error_code(error: &perl_parser_core::syntax::error::ParseError) -> perl_diagnostics::codes::DiagnosticCode
 pub fn perl_lsp_rs_core::providers::diagnostics::parse_error_severity(error: &perl_parser_core::syntax::error::ParseError) -> perl_diagnostics::codes::severity::DiagnosticSeverity
 pub fn perl_lsp_rs_core::providers::diagnostics::take_critic_overlap_observations(diagnostics: &mut alloc::vec::Vec<perl_lsp_rs_core::providers::Diagnostic>) -> alloc::vec::Vec<perl_lsp_rs_core::tooling::perl_critic::BuiltInCriticObservation>
@@ -8580,6 +8589,12 @@ pub fn perl_lsp_rs_core::providers::prepared_context::ContextSectionStats::defau
 pub fn perl_lsp_rs_core::providers::prepared_context::ContextSectionStats::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_lsp_rs_core::providers::prepared_context::ContextSectionStats::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 pub fn perl_lsp_rs_core::providers::prepared_context::ContextSectionStats::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_lsp_rs_core::providers::prepared_context::ContextSectionStats, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_lsp_rs_core::providers::DeadCodeIdentity
+pub perl_lsp_rs_core::providers::DeadCodeIdentity::code: &'static str
+pub perl_lsp_rs_core::providers::DeadCodeIdentity::subject: &'static str
+pub fn perl_lsp_rs_core::providers::DeadCodeIdentity::clone(&self) -> perl_lsp_rs_core::providers::DeadCodeIdentity
+pub fn perl_lsp_rs_core::providers::DeadCodeIdentity::eq(&self, other: &perl_lsp_rs_core::providers::DeadCodeIdentity) -> bool
+pub fn perl_lsp_rs_core::providers::DeadCodeIdentity::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_lsp_rs_core::providers::Diagnostic
 pub perl_lsp_rs_core::providers::Diagnostic::code: core::option::Option<alloc::string::String>
 pub perl_lsp_rs_core::providers::Diagnostic::critic_observation: core::option::Option<perl_lsp_rs_core::tooling::perl_critic::BuiltInCriticObservation>
@@ -9694,6 +9709,7 @@ pub fn perl_lsp_rs_core::providers::WorkspaceSymbolsProvider::search_with_candid
 pub fn perl_lsp_rs_core::providers::WorkspaceSymbolsProvider::search_with_candidates(&self, query: &str, source_map: &std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>, candidates: &[alloc::string::String]) -> alloc::vec::Vec<perl_lsp_rs_core::providers::WorkspaceSymbol>
 pub fn perl_lsp_rs_core::providers::WorkspaceSymbolsProvider::default() -> perl_lsp_rs_core::providers::WorkspaceSymbolsProvider
 pub fn perl_lsp_rs_core::providers::WorkspaceSymbolsProvider::default() -> perl_lsp_rs_core::providers::WorkspaceSymbolsProvider
+pub const perl_lsp_rs_core::providers::DEAD_CODE_CATEGORY: &str
 pub const perl_lsp_rs_core::providers::DEFAULT_PROMOTION_MODE: perl_lsp_rs_core::providers::references_pir_shadow::PromotionMode
 pub const perl_lsp_rs_core::providers::FUNDAMENTAL_CONSTRUCT_LABELS: &[&str]
 pub const perl_lsp_rs_core::providers::HTMX_ATTRIBUTES: &[perl_lsp_rs_core::providers::HtmxAttributeSpec]
@@ -9702,6 +9718,7 @@ pub const perl_lsp_rs_core::providers::HTMX_HEADERS: &[perl_lsp_rs_core::provide
 pub const perl_lsp_rs_core::providers::MAX_MARKUP_SCAN_BYTES: usize
 pub const perl_lsp_rs_core::providers::PROVIDER_DECISION_COPYABLE_PAYLOAD_VERSION: &str
 pub const perl_lsp_rs_core::providers::PROVIDER_DECISION_SCHEMA_VERSION: &str
+pub static perl_lsp_rs_core::providers::DEAD_CODE_IDENTITIES: &[perl_lsp_rs_core::providers::DeadCodeIdentity]
 pub trait perl_lsp_rs_core::providers::InlineCompletionBackend: core::marker::Send + core::marker::Sync
 pub fn perl_lsp_rs_core::providers::InlineCompletionBackend::complete(&self, req: &perl_lsp_rs_core::providers::BackendRequest) -> core::result::Result<alloc::vec::Vec<alloc::string::String>, perl_lsp_rs_core::providers::BackendError>
 pub fn perl_lsp_rs_core::providers::InlineCompletionBackend::stream(&self, req: &perl_lsp_rs_core::providers::BackendRequest, sink: &mut dyn core::ops::function::FnMut(perl_lsp_rs_core::providers::StreamChunk) -> perl_lsp_rs_core::providers::StreamControl) -> core::result::Result<(), perl_lsp_rs_core::providers::BackendError>
@@ -9762,6 +9779,7 @@ pub fn perl_lsp_rs_core::providers::get_symbol_range_at_position(position: usize
 pub fn perl_lsp_rs_core::providers::get_test_more_documentation(name: &str) -> core::option::Option<(&'static str, &'static str)>
 pub fn perl_lsp_rs_core::providers::get_xs_api_documentation(name: &str) -> core::option::Option<(&'static str, &'static str)>
 pub fn perl_lsp_rs_core::providers::htmx_attribute_name_context(source: &str, position: usize) -> core::option::Option<perl_lsp_rs_core::providers::HtmxAttributeNameContext<'_>>
+pub fn perl_lsp_rs_core::providers::identity_for_code(code: &str) -> core::option::Option<&'static perl_lsp_rs_core::providers::DeadCodeIdentity>
 pub fn perl_lsp_rs_core::providers::inlay_hint_label_str(hint: &serde_json::value::Value) -> core::option::Option<&str>
 pub fn perl_lsp_rs_core::providers::is_test_file(path: &str) -> bool
 pub fn perl_lsp_rs_core::providers::is_xs_source(source: &str, filepath: core::option::Option<&str>) -> bool
@@ -10068,7 +10086,7 @@ pub const perl_lsp_rs_core::runtime::launcher::DEFAULT_LSP_PORT: u16
 pub fn perl_lsp_rs_core::runtime::launcher::catalog_advertised_feature_ids(profile: perl_lsp_rs_core::features::policy::FeatureProfile) -> alloc::vec::Vec<&'static str>
 pub fn perl_lsp_rs_core::runtime::launcher::compliance_counts_for_profile(profile: perl_lsp_rs_core::features::policy::FeatureProfile) -> (usize, usize)
 pub fn perl_lsp_rs_core::runtime::launcher::format_health_output(version: &str, use_color: bool) -> alloc::string::String
-pub fn perl_lsp_rs_core::runtime::launcher::format_info_output(version: &str, revision_label: &str, revision: &str, exe_path: &str, profile: perl_lsp_rs_core::features::policy::FeatureProfile, use_color: bool) -> alloc::string::String
+pub fn perl_lsp_rs_core::runtime::launcher::format_info_output(product_name: &str, version: &str, revision_label: &str, revision: &str, exe_path: &str, profile: perl_lsp_rs_core::features::policy::FeatureProfile, use_color: bool) -> alloc::string::String
 pub fn perl_lsp_rs_core::runtime::launcher::format_startup_banner(version: &str, profile: perl_lsp_rs_core::features::policy::FeatureProfile, is_socket: bool) -> alloc::string::String
 pub fn perl_lsp_rs_core::runtime::launcher::help_text() -> alloc::string::String
 pub fn perl_lsp_rs_core::runtime::launcher::init_logging(default_filter: &str)
@@ -10568,7 +10586,7 @@ pub fn perl_lsp_rs_core::runtime::compliance_counts_for_profile(profile: perl_ls
 pub fn perl_lsp_rs_core::runtime::diagnostics_per_file_cap() -> usize
 pub fn perl_lsp_rs_core::runtime::document_symbol_cap() -> usize
 pub fn perl_lsp_rs_core::runtime::format_health_output(version: &str, use_color: bool) -> alloc::string::String
-pub fn perl_lsp_rs_core::runtime::format_info_output(version: &str, revision_label: &str, revision: &str, exe_path: &str, profile: perl_lsp_rs_core::features::policy::FeatureProfile, use_color: bool) -> alloc::string::String
+pub fn perl_lsp_rs_core::runtime::format_info_output(product_name: &str, version: &str, revision_label: &str, revision: &str, exe_path: &str, profile: perl_lsp_rs_core::features::policy::FeatureProfile, use_color: bool) -> alloc::string::String
 pub fn perl_lsp_rs_core::runtime::format_startup_banner(version: &str, profile: perl_lsp_rs_core::features::policy::FeatureProfile, is_socket: bool) -> alloc::string::String
 pub fn perl_lsp_rs_core::runtime::help_text() -> alloc::string::String
 pub fn perl_lsp_rs_core::runtime::init_logging(default_filter: &str)
@@ -11788,9 +11806,12 @@ pub fn perl_lsp_rs_core::tooling::perl_critic::CriticIdentityEntry::serialize<__
 pub struct perl_lsp_rs_core::tooling::perl_critic::CriticIdentityRegistry
 pub fn perl_lsp_rs_core::tooling::perl_critic::CriticIdentityRegistry::aliases_for(canonical_id: &str) -> core::option::Option<&'static [perl_lsp_rs_core::tooling::perl_critic::CriticAlias]>
 pub fn perl_lsp_rs_core::tooling::perl_critic::CriticIdentityRegistry::by_canonical_id(canonical_id: &str) -> core::option::Option<&'static perl_lsp_rs_core::tooling::perl_critic::CriticIdentityEntry>
+pub fn perl_lsp_rs_core::tooling::perl_critic::CriticIdentityRegistry::category_for_native_code(code: &str) -> core::option::Option<perl_lsp_rs_core::tooling::perl_critic::CriticIdentityCategory>
 pub const fn perl_lsp_rs_core::tooling::perl_critic::CriticIdentityRegistry::entries() -> &'static [perl_lsp_rs_core::tooling::perl_critic::CriticIdentityEntry]
+pub fn perl_lsp_rs_core::tooling::perl_critic::CriticIdentityRegistry::entries_for_native_code(code: &str) -> alloc::vec::Vec<&'static perl_lsp_rs_core::tooling::perl_critic::CriticIdentityEntry>
 pub fn perl_lsp_rs_core::tooling::perl_critic::CriticIdentityRegistry::resolve(observed: &perl_lsp_rs_core::tooling::perl_critic::CriticObservedIdentity<'_>) -> core::option::Option<&'static perl_lsp_rs_core::tooling::perl_critic::CriticIdentityEntry>
 pub fn perl_lsp_rs_core::tooling::perl_critic::CriticIdentityRegistry::resolve_parts(origin: perl_lsp_rs_core::tooling::perl_critic::CriticFindingOrigin, code: &str, shape: perl_lsp_rs_core::tooling::perl_critic::CriticFindingShape) -> core::option::Option<&'static perl_lsp_rs_core::tooling::perl_critic::CriticIdentityEntry>
+pub fn perl_lsp_rs_core::tooling::perl_critic::CriticIdentityRegistry::unambiguous_builtin_alias_code(native_code: &str) -> core::option::Option<&'static str>
 pub fn perl_lsp_rs_core::tooling::perl_critic::CriticIdentityRegistry::validate() -> core::result::Result<(), perl_lsp_rs_core::tooling::perl_critic::CriticIdentityRegistryError>
 pub struct perl_lsp_rs_core::tooling::perl_critic::CriticObservedIdentity<'a>
 pub const fn perl_lsp_rs_core::tooling::perl_critic::CriticObservedIdentity<'static>::built_in_backtick_exec() -> perl_lsp_rs_core::tooling::perl_critic::CriticObservedIdentity<'static>
