@@ -14,10 +14,7 @@ impl ClosePacket {
     /// Parse a close packet document. Structural validation is separate so
     /// mis-typed documents and semantically invalid ones stay distinguishable.
     pub fn from_json_str(json: &str) -> Result<Self, CloseProofError> {
-        serde_json::from_str(json).map_err(|error| CloseProofError::Schema {
-            field: "close_packet".to_string(),
-            message: error.to_string(),
-        })
+        super::wire::from_json_str(json, "close_packet")
     }
 
     /// Deterministic serialization; a second generation produces no diff.

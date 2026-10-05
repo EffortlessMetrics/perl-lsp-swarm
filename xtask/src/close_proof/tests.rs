@@ -18,6 +18,630 @@ use super::{
 
 const CORPUS_FIXTURE_COUNT: usize = 15;
 
+// Adversarial qualification under #10414/#10415. These tests exercise the
+// existing Rust intake, never a second decoder or a semantic evaluator.
+// The red_* names retain the sealed pre-fix falsifiers, now required GREEN.
+// Diagnostics preserve representation-only boundaries, never an evaluator.
+#[cfg(test)]
+mod qualification {
+    use super::*;
+
+    fn replace_once(raw: &str, from: &str, to: &str) -> String {
+        assert_eq!(raw.matches(from).count(), 1, "mutation anchor must be unique: {from}");
+        raw.replacen(from, to, 1)
+    }
+
+    fn rich_subject() -> Result<(IssueContract, ClosePacket), CloseProofError> {
+        let mut contract = leaf_contract()?;
+        contract.denominator.push(DenominatorRow {
+            row_id: "neighbor.parses".to_string(),
+            statement: "The neighboring valid form still parses.".to_string(),
+            required_proof_level: ProofLevel::Mechanism,
+        });
+        contract.identity.denominator_digest =
+            super::super::compute_denominator_digest(&contract.denominator)?;
+        contract.negative_controls.push(super::super::NegativeControlRow {
+            control_id: "nc.repair".to_string(),
+            guards_row_id: "single-row.defect.fixed".to_string(),
+            description: "The malformed delimiter is rejected.".to_string(),
+        });
+        contract.mandatory_children.push(super::super::IssueRef {
+            repository: contract.repository.clone(),
+            number: 9000500,
+        });
+        let mut packet = passing_packet(&contract)?;
+        packet.row_dispositions.insert(
+            "neighbor.parses".to_string(),
+            RowDispositionValue::NotProven { reason: "Neighbor remains untested.".to_string() },
+        );
+        packet
+            .negative_control_dispositions
+            .insert("nc.repair".to_string(), ControlOutcome::Verified);
+        packet.child_dispositions.push(ChildDispositionRecord {
+            child: contract.mandatory_children[0].clone(),
+            state: ChildState::ClosedByPacket { packet_subject: "child-packet".to_string() },
+        });
+        validate_packet_against_contract(&packet, &contract)?;
+        Ok((contract, packet))
+    }
+
+    fn duplicate_map_entry(
+        packet: &ClosePacket,
+        field: &str,
+        key: &str,
+        value: &str,
+    ) -> Result<String, CloseProofError> {
+        let raw = packet.to_canonical_json()?;
+        let anchor = format!("\"{field}\": {{");
+        Ok(replace_once(&raw, &anchor, &format!("{anchor}\n    \"{key}\": {value},")))
+    }
+
+    fn require_schema_rejections(cases: Vec<(&str, String)>) {
+        let mut accepted = Vec::new();
+        for (name, raw) in cases {
+            match ClosePacket::from_json_str(&raw) {
+                Err(CloseProofError::Schema { field, message }) => {
+                    assert!(message.contains("duplicate"), "wrong refusal for {name}: {message}");
+                    eprintln!("QUALIFICATION reject {name}: {field}: {message}");
+                }
+                other => {
+                    eprintln!("QUALIFICATION expected Schema, observed {name}: {other:?}");
+                    accepted.push(name);
+                }
+            }
+        }
+        assert!(accepted.is_empty(), "authoritative intake accepted ambiguous cases: {accepted:?}");
+    }
+
+    fn is_unknown_field_refusal<T>(result: &Result<T, serde_json::Error>) -> bool {
+        match result {
+            Ok(_) => false,
+            Err(error) => {
+                let message = error.to_string();
+                assert!(
+                    error.is_data()
+                        && message.contains("unknown field")
+                        && message.contains("injected"),
+                    "wrong payload refusal: {message}"
+                );
+                true
+            }
+        }
+    }
+
+    fn require_clean_wire_round_trip<T>(raw: &str)
+    where
+        T: serde::de::DeserializeOwned + serde::Serialize,
+    {
+        let parsed = serde_json::from_str::<T>(raw);
+        assert!(parsed.is_ok(), "clean variant must parse: {raw}");
+        let encoded = parsed.and_then(serde_json::to_value);
+        assert!(encoded.is_ok(), "clean variant must serialize: {raw}");
+        assert_eq!(encoded.ok(), serde_json::from_str::<serde_json::Value>(raw).ok());
+    }
+
+    fn fixture_subject() -> Result<FixtureDocument, CloseProofError> {
+        let (contract, packet) = rich_subject()?;
+        Ok(FixtureDocument {
+            schema_version: super::super::FIXTURE_SCHEMA_V1.to_string(),
+            provenance: super::super::FixtureProvenance {
+                captured_at: "2026-10-05T00:00:00Z".to_string(),
+                sources: Vec::new(),
+                subject_shas: Vec::new(),
+                boundary: "Synthetic representation-only falsifier; no admitted semantic evidence."
+                    .to_string(),
+            },
+            contract,
+            cases: vec![super::super::FixtureCase {
+                case_id: "self-asserted.verdict".to_string(),
+                description: "Unproven neighbor row remains.".to_string(),
+                expected_pr_scope: packet.verdict.pr_scope,
+                expected_issue_close: packet.verdict.issue_close,
+                packet,
+            }],
+        })
+    }
+
+    #[test]
+    fn red_raw_map_duplicates_must_be_rejected_before_value_conversion()
+    -> Result<(), CloseProofError> {
+        let (_, mut packet) = rich_subject()?;
+        let proven =
+            super::super::canonical_json(&packet.row_dispositions["single-row.defect.fixed"])?;
+        let not_proven = r#"{"disposition":"not_proven","reason":"earlier unproven result"}"#;
+        let forward = duplicate_map_entry(
+            &packet,
+            "row_dispositions",
+            "single-row.defect.fixed",
+            not_proven,
+        )?;
+        let escaped = duplicate_map_entry(
+            &packet,
+            "row_dispositions",
+            r"single-row.defect.\u0066ixed",
+            not_proven,
+        )?;
+        packet.row_dispositions.insert(
+            "single-row.defect.fixed".to_string(),
+            RowDispositionValue::NotProven { reason: "later unproven result".to_string() },
+        );
+        let reverse =
+            duplicate_map_entry(&packet, "row_dispositions", "single-row.defect.fixed", &proven)?;
+        let control_forward = duplicate_map_entry(
+            &packet,
+            "negative_control_dispositions",
+            "nc.repair",
+            r#"{"state":"failed","reason":"hidden failure"}"#,
+        )?;
+        packet.negative_control_dispositions.insert(
+            "nc.repair".to_string(),
+            ControlOutcome::Failed { reason: "later failure".to_string() },
+        );
+        let control_reverse = duplicate_map_entry(
+            &packet,
+            "negative_control_dispositions",
+            "nc.repair",
+            r#"{"state":"verified"}"#,
+        )?;
+        let same_value = duplicate_map_entry(
+            &packet,
+            "row_dispositions",
+            "single-row.defect.fixed",
+            &super::super::canonical_json(&packet.row_dispositions["single-row.defect.fixed"])?,
+        )?;
+        require_schema_rejections(vec![
+            ("row-unproven-then-proven", forward),
+            ("row-proven-then-unproven", reverse),
+            ("escaped-equivalent-row-key", escaped),
+            ("control-failed-then-verified", control_forward),
+            ("control-verified-then-failed", control_reverse),
+            ("repeated-row-key", same_value),
+        ]);
+        Ok(())
+    }
+
+    #[test]
+    fn control_raw_maps_refuse_hidden_contradictions_before_normalization()
+    -> Result<(), CloseProofError> {
+        let (_, packet) = rich_subject()?;
+        let raw = duplicate_map_entry(
+            &packet,
+            "row_dispositions",
+            "single-row.defect.fixed",
+            r#"{"disposition":"contradicted","reason":"discarded contradiction"}"#,
+        )?;
+        assert!(matches!(
+            ClosePacket::from_json_str(&raw),
+            Err(CloseProofError::Schema { message, .. }) if message.contains("duplicate field")
+        ));
+        let raw = duplicate_map_entry(
+            &packet,
+            "negative_control_dispositions",
+            "nc.repair",
+            r#"{"state":"failed","reason":"discarded control"}"#,
+        )?;
+        assert!(matches!(
+            ClosePacket::from_json_str(&raw),
+            Err(CloseProofError::Schema { message, .. }) if message.contains("duplicate field")
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn control_all_public_document_intakes_refuse_raw_duplicates() -> Result<(), CloseProofError> {
+        let fixture = fixture_subject()?;
+        let contract_raw = fixture.contract.to_canonical_json()?;
+        IssueContract::from_json_str(&contract_raw)?.validate()?;
+        let packet_raw = fixture.cases[0].packet.to_canonical_json()?;
+        let packet = ClosePacket::from_json_str(&packet_raw)?;
+        validate_packet_against_contract(&packet, &fixture.contract)?;
+        let fixture_raw = fixture.to_canonical_json()?;
+        FixtureDocument::from_json_str(&fixture_raw)?.verify()?;
+        let manifest_raw = super::super::canonical_json(&load_corpus_manifest()?)?;
+        super::super::CorpusManifest::from_json_str(&manifest_raw)?;
+
+        let contract_raw = replace_once(
+            &contract_raw,
+            "\"issue_number\": 9000300",
+            "\"issue_number\": 9000300, \"issue_number\": 9000300",
+        );
+        let packet_raw = duplicate_map_entry(
+            &packet,
+            "row_dispositions",
+            "single-row.defect.fixed",
+            r#"{"disposition":"not_proven","reason":"hidden result"}"#,
+        )?;
+        // Reach a free-key map nested inside a fixture, not merely a duplicate
+        // typed field that serde would already refuse without the wire pass.
+        let fixture_raw = replace_once(
+            &fixture_raw,
+            "\"row_dispositions\": {",
+            "\"row_dispositions\": {\"single-row.defect.fixed\": {\"disposition\":\"not_proven\",\"reason\":\"hidden result\"},",
+        );
+        // Executable wrong-route control: direct typed serde intake still
+        // loses a repeated free-map key. The public fixture parser must refuse
+        // the original raw bytes before that loss can occur.
+        assert!(serde_json::from_str::<FixtureDocument>(&fixture_raw).is_ok());
+        let manifest_raw = replace_once(
+            &manifest_raw,
+            "\"corpus_id\":",
+            "\"corpus_id\": \"hidden-corpus\", \"corpus_id\":",
+        );
+        for (field, result) in [
+            ("issue_contract", IssueContract::from_json_str(&contract_raw).map(|_| ())),
+            ("close_packet", ClosePacket::from_json_str(&packet_raw).map(|_| ())),
+            (
+                "close_proof_contract_fixture",
+                FixtureDocument::from_json_str(&fixture_raw).map(|_| ()),
+            ),
+            (
+                "corpus_manifest",
+                super::super::CorpusManifest::from_json_str(&manifest_raw).map(|_| ()),
+            ),
+        ] {
+            assert!(
+                matches!(result, Err(CloseProofError::Schema { field: actual, message })
+                    if actual == field && message.contains("duplicate field")),
+                "expected duplicate-key Schema at {field}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn control_wire_keys_cover_nested_arrays_escapes_and_valid_json_values()
+    -> Result<(), CloseProofError> {
+        let raw = r#"{"a":1,"nested":[{"a":2},{"a":3}],"text":"{\"a\":1,\"a\":2}","values":[null,true,false,-1,18446744073709551615,1.25],"escaped":{"\u0062":false}}"#;
+        let parsed = super::super::wire::from_json_str::<serde_json::Value>(raw, "wire-control")?;
+        assert_eq!(Some(parsed), serde_json::from_str::<serde_json::Value>(raw).ok());
+        for raw in [
+            r#"{"array":[{"key":1,"key":2}]}"#,
+            r#"{"unused":{"a\"b":true,"a\u0022b":false}}"#,
+            r#"{"parent":{"child":{"\u0061":null,"a":null}}}"#,
+        ] {
+            assert!(matches!(
+                super::super::wire::from_json_str::<serde_json::Value>(raw, "wire-control"),
+                Err(CloseProofError::Schema { message, .. }) if message.contains("duplicate field")
+            ));
+            // A Value-first implementation would accept and normalize each
+            // witness. This independent wrong route must stay distinguishable.
+            assert!(serde_json::from_str::<serde_json::Value>(raw).is_ok());
+        }
+        for raw in ["{} {}", "[", r#"{"key":}"#] {
+            assert!(matches!(
+                super::super::wire::from_json_str::<serde_json::Value>(raw, "wire-control"),
+                Err(CloseProofError::Schema { .. })
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn red_unknown_payload_fields_must_be_rejected_for_every_variant() -> Result<(), CloseProofError>
+    {
+        let (_, packet) = rich_subject()?;
+        let row_variants = [
+            r#"{"disposition":"proven_current_main","evidence":{"producer":"x","subject":"s","content_digest":"d","reference":"r","schema_version":"x.v1"},"injected":true}"#,
+            r#"{"disposition":"not_applicable_by_reviewed_ruling","ruling_ref":"r","injected":true}"#,
+            r#"{"disposition":"transferred_to_open_owner","proposition":"p","destination_repository":"o/r","destination_issue":1,"destination_contract_identity":"d","rationale":"r","injected":true}"#,
+            r#"{"disposition":"removed_surface_with_proof","proof":{"producer":"x","subject":"s","content_digest":"d","reference":"r","schema_version":"x.v1"},"injected":true}"#,
+            r#"{"disposition":"not_proven","reason":"r","injected":true}"#,
+            r#"{"disposition":"contradicted","reason":"r","injected":true}"#,
+            r#"{"disposition":"stale","reason":"r","injected":true}"#,
+        ];
+        // Parsing is deliberately separated from shape validation: placeholder
+        // digests cannot turn an unknown-field test into a digest test.
+        let mut missed = Vec::new();
+        for raw in row_variants {
+            let clean = replace_once(raw, ",\"injected\":true", "");
+            require_clean_wire_round_trip::<RowDispositionValue>(&clean);
+            let result = serde_json::from_str::<RowDispositionValue>(raw);
+            if !is_unknown_field_refusal(&result) {
+                missed.push(raw);
+            }
+            eprintln!("QUALIFICATION row payload {raw}: {result:?}");
+        }
+        for raw in [
+            r#"{"state":"verified","injected":true}"#,
+            r#"{"state":"failed","reason":"r","injected":true}"#,
+            r#"{"state":"not_proven","reason":"r","injected":true}"#,
+        ] {
+            let clean = replace_once(raw, ",\"injected\":true", "");
+            require_clean_wire_round_trip::<ControlOutcome>(&clean);
+            let result = serde_json::from_str::<ControlOutcome>(raw);
+            if !is_unknown_field_refusal(&result) {
+                missed.push(raw);
+            }
+            eprintln!("QUALIFICATION control payload {raw}: {result:?}");
+        }
+        for raw in [
+            r#"{"state":"still_open","injected":true}"#,
+            r#"{"state":"closed_by_packet","packet_subject":"p","injected":true}"#,
+            r#"{"state":"transferred_to_open_owner","proposition":"p","destination_repository":"o/r","destination_issue":1,"destination_contract_identity":"d","rationale":"r","injected":true}"#,
+        ] {
+            let clean = replace_once(raw, ",\"injected\":true", "");
+            require_clean_wire_round_trip::<ChildState>(&clean);
+            let result = serde_json::from_str::<ChildState>(raw);
+            if !is_unknown_field_refusal(&result) {
+                missed.push(raw);
+            }
+            eprintln!("QUALIFICATION child payload {raw}: {result:?}");
+        }
+        // Also reach the public packet parser with a valid otherwise-complete
+        // subject rather than only deserializing enum components.
+        let raw = packet.to_canonical_json()?;
+        let poisoned = replace_once(
+            &raw,
+            "\"state\": \"verified\"",
+            "\"state\": \"verified\", \"injected\": true",
+        );
+        if ClosePacket::from_json_str(&poisoned).is_ok() {
+            missed.push("public packet control payload");
+        }
+        assert!(missed.is_empty(), "unknown variant fields were silently ignored: {missed:?}");
+        Ok(())
+    }
+
+    #[test]
+    fn control_unknown_tags_and_typed_struct_fields_are_schema_errors()
+    -> Result<(), CloseProofError> {
+        let (_, packet) = rich_subject()?;
+        let raw = packet.to_canonical_json()?;
+        for (from, to) in [
+            ("\"disposition\": \"proven_current_main\"", "\"disposition\": \"future_success\""),
+            ("\"state\": \"verified\"", "\"state\": \"future_success\""),
+            ("\"state\": \"closed_by_packet\"", "\"state\": \"future_success\""),
+            ("\"issue_number\": 9000300", "\"issue_number\": 9000300, \"issue_number\": 9000300"),
+            (
+                "\"producer\": \"xtask-landing-proof\"",
+                "\"producer\": \"xtask-landing-proof\", \"producer\": \"xtask-landing-proof\"",
+            ),
+            (
+                "\"producer\": \"xtask-landing-proof\"",
+                "\"producer\": \"xtask-landing-proof\", \"injected\": true",
+            ),
+        ] {
+            let poisoned = replace_once(&raw, from, to);
+            assert!(
+                matches!(
+                    ClosePacket::from_json_str(&poisoned),
+                    Err(CloseProofError::Schema { .. })
+                ),
+                "expected schema refusal: {to}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn control_contract_and_packet_parsers_reject_ambiguous_typed_fields()
+    -> Result<(), CloseProofError> {
+        let (contract, packet) = rich_subject()?;
+        let raw = contract.to_canonical_json()?;
+        for (from, to) in [
+            ("\"kind\": \"leaf\"", "\"kind\": \"future_kind\""),
+            (
+                "\"required_proof_level\": \"mechanism\",\n  \"allowed_close_modes\"",
+                "\"required_proof_level\": \"unknown_level\",\n  \"allowed_close_modes\"",
+            ),
+            ("\"permitted\": false", "\"permitted\": false, \"permitted\": true"),
+            ("\"permitted\": false", "\"permitted\": false, \"injected\": true"),
+        ] {
+            assert!(
+                matches!(
+                    IssueContract::from_json_str(&replace_once(&raw, from, to)),
+                    Err(CloseProofError::Schema { .. })
+                ),
+                "expected contract Schema: {to}"
+            );
+        }
+        let raw = packet.to_canonical_json()?;
+        for (from, to) in [
+            (
+                "\"disposition\": \"proven_current_main\"",
+                "\"disposition\": \"proven_current_main\", \"disposition\": \"proven_current_main\"",
+            ),
+            ("\"state\": \"verified\"", "\"state\": \"verified\", \"state\": \"verified\""),
+        ] {
+            assert!(
+                matches!(
+                    ClosePacket::from_json_str(&replace_once(&raw, from, to)),
+                    Err(CloseProofError::Schema { message, .. }) if message.contains("duplicate field")
+                ),
+                "expected tag duplicate-field Schema: {to}"
+            );
+        }
+        assert!(matches!(
+            ClosePacket::from_json_str(&(raw + " {}")),
+            Err(CloseProofError::Schema { .. })
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn diagnostic_nonrow_contract_movement_is_not_bound_by_v1() -> Result<(), CloseProofError> {
+        let (contract, packet) = rich_subject()?;
+        let mut movements = Vec::new();
+        let mut moved = contract.clone();
+        moved.required_proof_level = ProofLevel::Public;
+        movements.push(("top-level-proof", moved));
+        let mut moved = contract.clone();
+        moved.kind = IssueKind::Installed;
+        movements.push(("issue-kind", moved));
+        let mut moved = contract.clone();
+        moved.allowed_close_modes.retain(|m| *m != CloseMode::NotPlanned);
+        movements.push(("allowed-mode-set", moved));
+        let mut moved = contract.clone();
+        moved.transfer_policy.permitted = true;
+        moved.transfer_policy.conditions.push("Only to an adopted exact owner.".to_string());
+        movements.push(("transfer-policy", moved));
+        let mut moved = contract.clone();
+        moved.negative_controls[0].description =
+            "Reject the malformed form at the external parser boundary.".to_string();
+        movements.push(("control-meaning", moved));
+        let mut moved = contract.clone();
+        moved.negative_controls[0].guards_row_id = "neighbor.parses".to_string();
+        movements.push(("control-row-association", moved));
+        let mut moved = contract.clone();
+        moved.domain_evidence_refs.push("adopted-domain-contract.v2".to_string());
+        movements.push(("linked-domain-contract", moved));
+        for (name, moved) in movements {
+            moved.validate()?;
+            assert_eq!(
+                moved.identity, contract.identity,
+                "demonstrate omitted input, not a forged row digest"
+            );
+            validate_packet_against_contract(&packet, &moved)?;
+            eprintln!("QUALIFICATION v1 accepts nonrow contract movement: {name}");
+        }
+        // A future full-policy compiler must reseal moved contracts before
+        // testing stale packet rejection. No such seam exists in v1: do not
+        // fabricate its runtime result or treat a hand-edited digest failure
+        // as authoritative contract-movement proof.
+        Ok(())
+    }
+
+    #[test]
+    fn control_body_rows_and_rulings_stale_packets_while_membership_has_coverage()
+    -> Result<(), CloseProofError> {
+        let (contract, packet) = rich_subject()?;
+        let mut moved = contract.clone();
+        moved.identity.issue_body_digest = leaf_digest(44);
+        assert!(matches!(
+            validate_packet_against_contract(&packet, &moved),
+            Err(CloseProofError::Identity { .. })
+        ));
+        let mut moved = contract.clone();
+        moved.denominator[0].row_id = "same-count.replacement".to_string();
+        moved.negative_controls[0].guards_row_id = "same-count.replacement".to_string();
+        moved.identity.denominator_digest =
+            super::super::compute_denominator_digest(&moved.denominator)?;
+        assert_eq!(moved.denominator.len(), contract.denominator.len());
+        assert!(matches!(
+            validate_packet_against_contract(&packet, &moved),
+            Err(CloseProofError::Identity { .. })
+        ));
+        let mut moved = contract.clone();
+        moved.identity.accepted_ruling = Some(super::super::RulingIdentity {
+            identity: "accepted-comment-44".to_string(),
+            digest: leaf_digest(44),
+        });
+        assert!(matches!(
+            validate_packet_against_contract(&packet, &moved),
+            Err(CloseProofError::Identity { .. })
+        ));
+        let mut moved = contract.clone();
+        moved.mandatory_children[0].number += 1;
+        assert_eq!(moved.identity, contract.identity);
+        assert!(matches!(
+            validate_packet_against_contract(&packet, &moved),
+            Err(CloseProofError::Coverage { .. })
+        ));
+        let mut moved = contract.clone();
+        moved.negative_controls[0].control_id = "nc.replacement".to_string();
+        assert_eq!(moved.identity, contract.identity);
+        assert!(matches!(
+            validate_packet_against_contract(&packet, &moved),
+            Err(CloseProofError::Coverage { .. })
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn diagnostic_verdict_evidence_rank_and_phase_are_representation_only()
+    -> Result<(), CloseProofError> {
+        let (contract, mut packet) = rich_subject()?;
+        // A claimed Valid verdict coexists with an unproven row. This layer
+        // checks shape and coverage; it does not independently decide closure.
+        assert_eq!(packet.verdict.issue_close, IssueCloseOutcome::Valid);
+        assert!(matches!(
+            packet.row_dispositions["neighbor.parses"],
+            RowDispositionValue::NotProven { .. }
+        ));
+        validate_packet_against_contract(&packet, &contract)?;
+        for verdict in
+            [IssueCloseOutcome::Valid, IssueCloseOutcome::Invalid, IssueCloseOutcome::NotProven]
+        {
+            packet.verdict.issue_close = verdict;
+            validate_packet_against_contract(&packet, &contract)?;
+        }
+        if let Some(RowDispositionValue::ProvenCurrentMain { evidence }) =
+            packet.row_dispositions.get_mut("single-row.defect.fixed")
+        {
+            evidence.producer = "unregistered-wrong-property-producer".to_string();
+            evidence.subject = "different-candidate-root-and-generation".to_string();
+            evidence.schema_version = Some("unregistered.v99".to_string());
+        }
+        validate_packet_against_contract(&packet, &contract)?;
+        assert!(ProofLevel::Public.satisfies(ProofLevel::Mechanism));
+        // The ranked primitive has no row/domain capability argument. Its
+        // true result cannot admit a producer for a different property.
+        packet.requested_close_mode = CloseMode::PhaseCompleteIssueRemainsOpen;
+        packet.verdict.issue_close = IssueCloseOutcome::Valid;
+        packet.landed_subjects.clear();
+        packet.landing_content_proof.clear();
+        validate_packet_against_contract(&packet, &contract)?;
+        assert_eq!(packet.requested_close_mode, CloseMode::PhaseCompleteIssueRemainsOpen);
+        Ok(())
+    }
+
+    #[test]
+    fn diagnostic_fixture_expectations_can_be_resealed_without_independent_evaluation()
+    -> Result<(), CloseProofError> {
+        let mut fixture = fixture_subject()?;
+        fixture.cases[0].packet.verdict.issue_close = IssueCloseOutcome::Invalid;
+        fixture.cases[0].expected_issue_close = IssueCloseOutcome::Invalid;
+        fixture.verify()?;
+        fixture.cases[0].packet.verdict.issue_close = IssueCloseOutcome::Valid;
+        assert!(matches!(fixture.verify(), Err(CloseProofError::Corpus { .. })));
+        fixture.cases[0].expected_issue_close = IssueCloseOutcome::Valid;
+        fixture.verify()?;
+        // Do not edit the historical corpus or promote its expectations into
+        // an oracle: this disposable fixture establishes only the boundary.
+        Ok(())
+    }
+
+    #[test]
+    fn diagnostic_corpus_inventory_is_schema_only_not_semantic_gold() -> Result<(), CloseProofError>
+    {
+        let manifest = load_corpus_manifest()?;
+        assert_eq!(manifest.fixtures.len(), 15);
+        let mut case_count = 0;
+        let mut landing_row_refs = 0;
+        let mut valid_phase_cases = 0;
+        for entry in manifest.fixtures {
+            let raw = super::super::corpus::read_file(&corpus_root().join(entry.file))?;
+            let fixture = FixtureDocument::from_json_str(&raw)?;
+            fixture.verify()?;
+            assert!(fixture.provenance.boundary.contains("schema-level dispositions only"));
+            for case in fixture.cases {
+                case_count += 1;
+                for disposition in case.packet.row_dispositions.values() {
+                    if let RowDispositionValue::ProvenCurrentMain { evidence }
+                    | RowDispositionValue::RemovedSurfaceWithProof { proof: evidence } =
+                        disposition
+                    {
+                        assert_eq!(evidence.schema_version.as_deref(), Some("landing_proof.v1"));
+                        landing_row_refs += 1;
+                    }
+                }
+                if case.packet.requested_close_mode == CloseMode::PhaseCompleteIssueRemainsOpen
+                    && case.expected_issue_close == IssueCloseOutcome::Valid
+                {
+                    valid_phase_cases += 1;
+                }
+            }
+        }
+        assert_eq!(case_count, 18);
+        assert_eq!(landing_row_refs, 25);
+        assert_eq!(valid_phase_cases, 2);
+        eprintln!(
+            "QUALIFICATION corpus: 15 structural fixtures, 18 cases, 25 landing row references, 2 valid nonterminal phase relations; no semantic gold admission"
+        );
+        Ok(())
+    }
+}
+
 fn leaf_digest(seed: u64) -> String {
     format!("{seed:064x}")
 }

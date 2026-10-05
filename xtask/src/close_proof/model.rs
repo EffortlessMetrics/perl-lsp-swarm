@@ -165,7 +165,7 @@ pub struct EvidenceRef {
 
 /// Transfer of one denominator row to another open owner.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "disposition", rename_all = "snake_case")]
+#[serde(tag = "disposition", rename_all = "snake_case", deny_unknown_fields)]
 pub enum RowDispositionValue {
     ProvenCurrentMain {
         evidence: EvidenceRef,
@@ -221,7 +221,7 @@ impl RowDispositionValue {
 }
 
 /// Disposition of one negative control at packet generation time.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum ControlOutcome {
     Verified,
@@ -229,8 +229,27 @@ pub enum ControlOutcome {
     NotProven { reason: String },
 }
 
+impl<'de> Deserialize<'de> for ControlOutcome {
+    fn deserialize<D: serde::Deserializer<'de>>(decoder: D) -> Result<Self, D::Error> {
+        // Empty struct payloads honor deny_unknown_fields where serde's
+        // internally tagged unit visitor would discard arbitrary fields.
+        #[derive(Deserialize)]
+        #[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
+        enum Wire {
+            Verified {},
+            Failed { reason: String },
+            NotProven { reason: String },
+        }
+        Ok(match Wire::deserialize(decoder)? {
+            Wire::Verified {} => Self::Verified,
+            Wire::Failed { reason } => Self::Failed { reason },
+            Wire::NotProven { reason } => Self::NotProven { reason },
+        })
+    }
+}
+
 /// Disposition of one mandatory child issue.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum ChildState {
     ClosedByPacket {
@@ -244,6 +263,43 @@ pub enum ChildState {
         destination_contract_identity: String,
         rationale: String,
     },
+}
+
+impl<'de> Deserialize<'de> for ChildState {
+    fn deserialize<D: serde::Deserializer<'de>>(decoder: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
+        enum Wire {
+            ClosedByPacket {
+                packet_subject: String,
+            },
+            StillOpen {},
+            TransferredToOpenOwner {
+                proposition: String,
+                destination_repository: String,
+                destination_issue: u64,
+                destination_contract_identity: String,
+                rationale: String,
+            },
+        }
+        Ok(match Wire::deserialize(decoder)? {
+            Wire::ClosedByPacket { packet_subject } => Self::ClosedByPacket { packet_subject },
+            Wire::StillOpen {} => Self::StillOpen,
+            Wire::TransferredToOpenOwner {
+                proposition,
+                destination_repository,
+                destination_issue,
+                destination_contract_identity,
+                rationale,
+            } => Self::TransferredToOpenOwner {
+                proposition,
+                destination_repository,
+                destination_issue,
+                destination_contract_identity,
+                rationale,
+            },
+        })
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
