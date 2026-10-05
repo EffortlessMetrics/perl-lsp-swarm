@@ -204,12 +204,15 @@ export async function showParserAstCommand(
     return;
   }
 
+  const uri = editor.document.uri.toString();
   try {
     const result = await dependencies.activeClient.sendRequest<string | null>('perl/showAst', {
-      uri: editor.document.uri.toString(),
+      uri,
     });
     if (!result) {
-      vscode.window.showInformationMessage('No AST available for this file');
+      vscode.window.showInformationMessage(
+        'No current AST is available for this file. Try again after parsing completes; check Problems if this persists.',
+      );
       return;
     }
 
@@ -222,9 +225,27 @@ export async function showParserAstCommand(
     parserAstChannel.appendLine('');
     parserAstChannel.appendLine(result);
     parserAstChannel.show();
-  } catch {
+  } catch (error) {
+    if (typeof error === 'object' && error !== null && 'code' in error) {
+      if (error.code === -32601) {
+        vscode.window.showWarningMessage(
+          'Show Parser AST is not supported by the current perllsp version',
+        );
+        return;
+      }
+      if (
+        error.code === -32602 &&
+        'message' in error &&
+        error.message === `Document not found: ${uri}`
+      ) {
+        vscode.window.showWarningMessage(
+          'The language server has not opened this file yet. Try again shortly, or reload the window if this persists.',
+        );
+        return;
+      }
+    }
     vscode.window.showWarningMessage(
-      'Show Parser AST is not supported by the current perllsp version',
+      'Could not show Parser AST. Try again or check the Perl Language Server output.',
     );
   }
 }
