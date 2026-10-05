@@ -433,12 +433,20 @@ impl ContractIdentityEnvelope {
     }
 
     /// Compute declared identity; the result grants no authority.
+    ///
+    /// `issue_contract_identity.v1` hashes the canonical envelope with an empty
+    /// digest slot, prefixed by its schema identity and a NUL separator. The
+    /// legacy row denominator digest retains its existing meaning.
     pub fn compute_full_contract_digest(&self) -> Result<String, CloseProofError> {
         self.validate_material()?;
-        // Tests-first compatibility scaffold reproducing the current row-only
-        // omission. Intentionally RED and unsuitable for merge until replaced
-        // by complete canonical material hashing (#10414).
-        Ok(self.contract.identity.denominator_digest.clone())
+        let mut material = self.canonicalized();
+        material.full_contract_digest.clear();
+        let encoded = canonical_json(&material)?;
+        let mut hasher = Sha256::new();
+        hasher.update(super::model::CONTRACT_IDENTITY_SCHEMA_V1.as_bytes());
+        hasher.update([0]);
+        hasher.update(encoded.as_bytes());
+        Ok(hex_digest(&hasher.finalize()))
     }
 
     fn validate_material(&self) -> Result<(), CloseProofError> {
