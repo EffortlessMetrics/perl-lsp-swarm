@@ -2587,4 +2587,191 @@ perlcritic_severity = 2
         );
         Ok(())
     }
+
+    /// Shared-buffer writer for capturing outbound LSP notifications in tests
+    /// (same fixture pattern as the diagnostics tests).
+    struct SharedNotificationWriter {
+        inner: std::sync::Arc<parking_lot::Mutex<Vec<u8>>>,
+    }
+    impl std::io::Write for SharedNotificationWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.inner.lock().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn server_with_captured_notifications()
+    -> (LspServer, std::sync::Arc<parking_lot::Mutex<Vec<u8>>>) {
+        let buffer = std::sync::Arc::new(parking_lot::Mutex::new(Vec::<u8>::new()));
+        let writer = SharedNotificationWriter { inner: std::sync::Arc::clone(&buffer) };
+        let server =
+            LspServer::with_io(Box::new(std::io::Cursor::new(Vec::<u8>::new())), Box::new(writer));
+        (server, buffer)
+    }
+
+    /// Poll the captured output until `needle` appears or the deadline passes.
+    ///
+    /// Outbound notifications are queued through the bounded outbound channel
+    /// and flushed by the dedicated writer thread, so arrival is asynchronous;
+    /// same fixture pattern as the diagnostics tests' `capture_until`.
+    fn wait_for_output(
+        buffer: &std::sync::Arc<parking_lot::Mutex<Vec<u8>>>,
+        needle: &str,
+    ) -> String {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            let output = String::from_utf8_lossy(&buffer.lock()).into_owned();
+            if output.contains(needle) || std::time::Instant::now() >= deadline {
+                // Final drain window: an erroneous duplicate emission queued
+                // right behind the first frame must be counted by the caller's
+                // exact-count assertion, not still sitting in the channel.
+                std::thread::sleep(std::time::Duration::from_millis(250));
+                return String::from_utf8_lossy(&buffer.lock()).into_owned();
+            }
+            std::thread::yield_now();
+        }
+    }
+
+    fn single_file_project_uri(dir: &std::path::Path) -> anyhow::Result<String> {
+        Ok(url::Url::from_file_path(dir.join("main.pl"))
+            .map_err(|()| anyhow::anyhow!("failed to create file URI"))?
+            .to_string())
+    }
+
+    /// #16548: single-file mode re-runs project discovery on every didOpen,
+    /// so an unchanged broken `.perl-lsp.toml` must produce exactly one
+    /// `window/showMessage` per session — not one per open.
+    #[test]
+    fn single_file_broken_config_warning_emits_once_across_two_refreshes() -> anyhow::Result<()> {
+        let (server, buffer) = server_with_captured_notifications();
+        let temp = tempfile::tempdir()?;
+        std::fs::write(temp.path().join(".perl-lsp.toml"), "this is not [valid toml")?;
+        let uri = single_file_project_uri(temp.path())?;
+
+        server.test_handle_did_open(Some(serde_json::json!({
+            "textDocument": {"uri": uri, "languageId": "perl", "version": 1, "text": "print 1;\n"}
+        })))?;
+        server.refresh_single_file_project_config_if_unowned();
+        server.refresh_single_file_project_config_if_unowned();
+
+        let output =
+            wait_for_output(&buffer, "Fix the error in .perl-lsp.toml and reload the window.");
+        assert_eq!(
+            output.matches("Fix the error in .perl-lsp.toml and reload the window.").count(),
+            1,
+            "the identical broken-config warning must emit once per session: {output}"
+        );
+        // The didOpen pipeline itself refreshes once before the two explicit
+        // refreshes, so more than one repeat may already be suppressed here;
+        // the load-bearing pins are: retained once, wire output once, and no
+        // saturation escape. The identity is the config file discovery
+        // selected (fingerprinted), so re-reading the same file cannot
+        // re-retain a second identity.
+        let counters = server.session_warning_dedup_snapshot().project_config;
+        assert_eq!(counters.inserted, 1, "the broken-config identity must be retained once");
+        assert!(counters.suppressed >= 1, "the repeated refresh must be suppressed");
+        assert_eq!(counters.emitted_without_retaining, 0);
+        Ok(())
+    }
+
+    /// #16548 review: the warning identity is the config file discovery
+    /// actually selected, so two single-file projects whose TOML files carry
+    /// the same error must each keep their first warning — the second
+    /// project's first broken-config warning must not be suppressed by the
+    /// first's.
+    #[test]
+    fn single_file_broken_config_warning_is_per_project_not_per_error_text() -> anyhow::Result<()> {
+        let (server, buffer) = server_with_captured_notifications();
+        let project_a = tempfile::tempdir()?;
+        let project_b = tempfile::tempdir()?;
+        // Identical broken TOML in both projects: the loader error text is the
+        // same string, so only the selected-config-path identity distinguishes
+        // them.
+        std::fs::write(project_a.path().join(".perl-lsp.toml"), "this is not [valid toml")?;
+        std::fs::write(project_b.path().join(".perl-lsp.toml"), "this is not [valid toml")?;
+        let uri_a = single_file_project_uri(project_a.path())?;
+        let uri_b = single_file_project_uri(project_b.path())?;
+
+        server.test_handle_did_open(Some(serde_json::json!({
+            "textDocument": {"uri": uri_a, "languageId": "perl", "version": 1, "text": "print 1;\n"}
+        })))?;
+        server.test_apply_did_close(&uri_a)?;
+        server.test_handle_did_open(Some(serde_json::json!({
+            "textDocument": {"uri": uri_b, "languageId": "perl", "version": 1, "text": "print 2;\n"}
+        })))?;
+
+        let output =
+            wait_for_output(&buffer, "Fix the error in .perl-lsp.toml and reload the window.");
+        assert_eq!(
+            output.matches("Fix the error in .perl-lsp.toml and reload the window.").count(),
+            2,
+            "each single-file project must keep its own broken-config warning: {output}"
+        );
+        let counters = server.session_warning_dedup_snapshot().project_config;
+        assert_eq!(counters.inserted, 2, "the two projects must retain distinct identities");
+        Ok(())
+    }
+
+    /// #16548: same once-per-session guarantee for the invalid `[perl].version`
+    /// warning on the single-file path.
+    #[test]
+    fn single_file_invalid_version_warning_emits_once_across_two_refreshes() -> anyhow::Result<()> {
+        let (server, buffer) = server_with_captured_notifications();
+        let temp = tempfile::tempdir()?;
+        std::fs::write(temp.path().join(".perl-lsp.toml"), "[perl]\nversion = \"5.20.1\"\n")?;
+        let uri = single_file_project_uri(temp.path())?;
+
+        server.test_handle_did_open(Some(serde_json::json!({
+            "textDocument": {"uri": uri, "languageId": "perl", "version": 1, "text": "print 1;\n"}
+        })))?;
+        server.refresh_single_file_project_config_if_unowned();
+        server.refresh_single_file_project_config_if_unowned();
+
+        let output = wait_for_output(&buffer, "invalid [perl].version");
+        assert_eq!(
+            output.matches("invalid [perl].version").count(),
+            1,
+            "the identical invalid-version warning must emit once per session: {output}"
+        );
+        // As above: didOpen refreshes once before the two explicit refreshes.
+        let counters = server.session_warning_dedup_snapshot().project_config;
+        assert_eq!(counters.inserted, 1, "the invalid-version identity must be retained once");
+        assert!(counters.suppressed >= 1, "the repeated refresh must be suppressed");
+        assert_eq!(counters.emitted_without_retaining, 0);
+        Ok(())
+    }
+
+    /// #16551: the multi-root conflict warning describes the resolution itself
+    /// and must not point at `docs/reference/CONFIG.md`, a repo-relative path
+    /// an installed binary's user does not have. The conflict computation
+    /// itself is covered by the `perl-lsp-rs-core` merge tests; this pins the
+    /// user-facing wording at the emitter.
+    #[test]
+    fn multi_root_conflict_warning_does_not_point_into_the_source_checkout() {
+        let (server, buffer) = server_with_captured_notifications();
+        let conflicts = [perl_lsp_rs_core::config::MultiRootConfigConflict {
+            key: "formatting.enabled",
+            folders: vec!["folder1".to_string(), "folder2".to_string()],
+            values: vec!["Some(true)".to_string(), "Some(false)".to_string()],
+        }];
+        server.emit_multi_root_config_conflict_warning(&conflicts);
+
+        let output =
+            wait_for_output(&buffer, "multi-root workspace has conflicting .perl-lsp.toml");
+        assert!(
+            output.contains("multi-root workspace has conflicting .perl-lsp.toml settings"),
+            "the conflict warning must still name the conflicting settings: {output}"
+        );
+        assert!(
+            output.contains("formatting.enabled (folder1=Some(true), folder2=Some(false))"),
+            "the conflict warning must name the folders and values: {output}"
+        );
+        assert!(
+            !output.contains("docs/reference/CONFIG.md"),
+            "the user-facing warning must not point into the source checkout: {output}"
+        );
+    }
 }

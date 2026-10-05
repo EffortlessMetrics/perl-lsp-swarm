@@ -79,6 +79,13 @@ pub(crate) enum SessionWarningFamily {
     /// that matters (#16548).
     #[cfg(not(target_arch = "wasm32"))]
     ProjectConfig,
+    /// Core-module goto-definition notices (#16551).
+    ///
+    /// The notice names the requested module, so the identity is per module:
+    /// two distinct core modules each keep their first notice, while a repeat
+    /// of the same module stays suppressed. A notice whose enqueue failed
+    /// rolls the retention back, so the next request can retry (#16666).
+    CoreModuleNotice,
 }
 
 /// Stable internal reason/category for a session warning.
@@ -111,6 +118,9 @@ pub(crate) enum SessionWarningCode {
     /// each names a different remedy (PR #16566 review).
     #[cfg(not(target_arch = "wasm32"))]
     ProjectConfigVersionInvalid,
+    /// A core-module goto-definition notice was emitted
+    /// (subject: the requested module name, #16551).
+    CoreModuleGotoDefNotice,
 }
 
 /// Closed set of static dimensions that distinguish identities inside one
@@ -127,6 +137,10 @@ pub(crate) enum SessionWarningSubjectTag {
     ClientCriticProfile,
     /// `formatting.engine` client setting.
     ClientFormattingEngine,
+    /// The module a core-module goto-definition notice names (#16551).
+    /// The notice text embeds the module, so per-module identities keep two
+    /// distinct core modules from suppressing each other.
+    CoreModuleName,
 }
 
 impl SessionWarningSubjectTag {
@@ -272,6 +286,7 @@ pub(crate) struct SessionWarningDedupStore {
     ai_backend: FamilyStore,
     #[cfg(not(target_arch = "wasm32"))]
     project_config: FamilyStore,
+    core_module_notice: FamilyStore,
 }
 
 impl SessionWarningDedupStore {
@@ -283,6 +298,7 @@ impl SessionWarningDedupStore {
             SessionWarningFamily::AiBackend => &self.ai_backend,
             #[cfg(not(target_arch = "wasm32"))]
             SessionWarningFamily::ProjectConfig => &self.project_config,
+            SessionWarningFamily::CoreModuleNotice => &self.core_module_notice,
         }
     }
 
@@ -441,6 +457,8 @@ pub struct SessionWarningDedupSnapshot {
     /// project-config loaders do not exist).
     #[cfg(not(target_arch = "wasm32"))]
     pub project_config: SessionWarningFamilyCounters,
+    /// Core-module notice family counters (#16551).
+    pub core_module_notice: SessionWarningFamilyCounters,
 }
 
 #[cfg(any(test, feature = "expose_lsp_test_api"))]
@@ -454,6 +472,7 @@ impl SessionWarningDedupStore {
             ai_backend: self.ai_backend.counters(),
             #[cfg(not(target_arch = "wasm32"))]
             project_config: self.project_config.counters(),
+            core_module_notice: self.core_module_notice.counters(),
         }
     }
 }

@@ -1622,26 +1622,49 @@ impl LspServer {
     }
 
     /// Emit the core-module goto-definition notice at most once per server
-    /// session. Returns whether *this* call emitted (#16551).
+    /// session **per module**. Returns whether *this* call emitted (#16551).
     ///
     /// Extracted from [`Self::handle_definition_inner`] so the once-per-session
-    /// contract is enforced in one place. A test that pokes
-    /// `core_module_notice_shown` directly would stay green if the `swap` guard
-    /// were deleted — it would be testing `AtomicBool` semantics rather than
-    /// the once-per-session behavior, which is the hole this extraction closes.
+    /// contract is enforced in one place.
+    ///
+    /// The identity is the requested module name fingerprinted in the bounded
+    /// [`crate::runtime::session_warning_dedup::SessionWarningDedupStore`]
+    /// `CoreModuleNotice` family, not a session-wide flag: the notice text
+    /// embeds the module, so F12 on `use strict` and F12 on `use warnings`
+    /// produce genuinely different messages and each keeps its first notice,
+    /// while a repeat of the same module stays suppressed (#16666).
+    ///
+    /// Emission goes through `emit_once_with`, which retains the identity only
+    /// when the enqueue succeeds and rolls it back on a failed enqueue: a
+    /// `window/logMessage` the bounded outbound queue rejected must stay
+    /// eligible to fire on the next request instead of being suppressed for
+    /// the rest of the session (#16666 review). Saturation emits without
+    /// retaining, so the bounded cap can never silently drop a first notice.
     fn emit_core_module_notice_once(&self, module_name: &str) -> bool {
-        if self.core_module_notice_shown.swap(true, std::sync::atomic::Ordering::Relaxed) {
-            return false;
-        }
-        let _ = self.log_message(
-            crate::runtime::window::MessageType::Info,
-            &format!(
-                "'{module_name}' is a Perl core module. \
-                 No source file is available for goto-definition. \
-                 Use hover (K) to view documentation."
-            ),
+        use crate::runtime::session_warning_dedup::{
+            SessionWarningCode, SessionWarningFamily, SessionWarningIdentity,
+            SessionWarningSubjectTag,
+        };
+        let notice = format!(
+            "'{module_name}' is a Perl core module. \
+             No source file is available for goto-definition. \
+             Use hover (K) to view documentation."
         );
-        true
+        matches!(
+            self.session_warning_dedup.emit_once_with(
+                SessionWarningFamily::CoreModuleNotice,
+                SessionWarningIdentity::fingerprinted(
+                    SessionWarningCode::CoreModuleGotoDefNotice,
+                    SessionWarningSubjectTag::CoreModuleName,
+                    module_name,
+                ),
+                || {
+                    self.log_message(crate::runtime::window::MessageType::Info, &notice).is_ok()
+                },
+            ),
+            crate::runtime::session_warning_dedup::SessionWarningDecision::EmitFirst
+                | crate::runtime::session_warning_dedup::SessionWarningDecision::EmitWithoutRetaining
+        )
     }
 
     /// Handle textDocument/definition request
@@ -1930,13 +1953,12 @@ impl LspServer {
                             // (visible in the VSCode Output panel) so users can discover that
                             // hover (K) shows documentation for core modules.
                             //
-                            // Once per session: goto-definition is a per-request action, so an
-                            // unguarded notice repeats every time the user presses F12 on
-                            // `use strict`, filling the Output panel with a line they have
-                            // already read. The fact - "this module has no source" - does not
-                            // change between invocations, so neither does the need to say so
-                            // (#16551). The per-module detail stays in the debug log, which is
-                            // not user-facing, so nothing is actually lost.
+                            // Once per session per module: goto-definition is a per-request
+                            // action, so an unguarded notice repeats every time the user
+                            // presses F12 on `use strict`, filling the Output panel with a
+                            // line they have already read (#16551). The notice text names the
+                            // requested module, so the dedup identity is per module: a
+                            // different core module still gets its own first notice (#16666).
                             self.emit_core_module_notice_once(&module_name);
                             tracing::debug!(
                                 module = %module_name,
@@ -4310,17 +4332,17 @@ mod tests {
     }
 
     /// The core-module goto-definition notice must reach the output channel
-    /// once per server session, not once per F12 (#16551).
+    /// once per server session per module, not once per F12 (#16551), and a
+    /// different core module must keep its own notice (#16666).
     ///
     /// `window/logMessage` is a per-request action path, so an unguarded notice
     /// repeats on every jump to `use strict` and trains the user to ignore the
     /// channel that carries it.
     ///
     /// Drives [`LspServer::emit_core_module_notice_once`] — the unit that
-    /// actually enforces the guard — rather than the flag behind it, so deleting
-    /// the guard fails this test.
+    /// actually enforces the dedup — so deleting the guard fails this test.
     #[test]
-    fn the_core_module_notice_is_emitted_once_per_server_session() {
+    fn the_core_module_notice_emits_once_per_module_per_session() {
         let first = crate::runtime::LspServer::new();
         assert!(
             first.emit_core_module_notice_once("strict"),
@@ -4331,14 +4353,137 @@ mod tests {
             "a second F12 on the same module must stay silent, not repeat the notice"
         );
         assert!(
+            first.emit_core_module_notice_once("warnings"),
+            "the identity is per module: the notice names the requested module, so a \
+             different core module keeps its own first notice (#16666)"
+        );
+        assert!(
             !first.emit_core_module_notice_once("warnings"),
-            "the guard is per session, not per module: a different core module is also silent"
+            "a repeat of the second module must also stay silent"
         );
 
         let second = crate::runtime::LspServer::new();
         assert!(
             second.emit_core_module_notice_once("strict"),
-            "the guard is instance-level: a second server session must still emit"
+            "the dedup state is instance-level: a second server session must still emit"
         );
+    }
+
+    /// Shared-buffer writer for capturing outbound LSP notifications in tests
+    /// (same fixture pattern as the diagnostics tests).
+    struct CoreModuleNoticeWriter {
+        inner: std::sync::Arc<parking_lot::Mutex<Vec<u8>>>,
+    }
+    impl std::io::Write for CoreModuleNoticeWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.inner.lock().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// #16551: the core-module goto-definition notice must be emitted at most
+    /// once per server session per module. Repeated F12 on `use strict` used to
+    /// append an identical `window/logMessage` line to the client output panel
+    /// on every request.
+    #[test]
+    fn core_module_goto_def_notice_emits_once_across_two_requests()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let buffer = std::sync::Arc::new(parking_lot::Mutex::new(Vec::<u8>::new()));
+        let server = LspServer::with_io(
+            Box::new(std::io::Cursor::new(Vec::<u8>::new())),
+            Box::new(CoreModuleNoticeWriter { inner: std::sync::Arc::clone(&buffer) }),
+        );
+        server.publish_position_encoding_session_context();
+
+        let uri = "file:///core_module_notice.pl";
+        server.test_handle_did_open(Some(json!({
+            "textDocument": {"uri": uri, "languageId": "perl", "version": 1, "text": "use strict;\n"}
+        })))?;
+
+        for _ in 0..2 {
+            server.test_handle_definition(Some(json!({
+                "textDocument": { "uri": uri },
+                "position": { "line": 0, "character": 5 }
+            })))?;
+        }
+
+        // Outbound notifications are flushed by the dedicated writer thread,
+        // so poll for arrival instead of reading the buffer once (same fixture
+        // pattern as the diagnostics tests' `capture_until`).
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let output = loop {
+            let current = String::from_utf8_lossy(&buffer.lock()).into_owned();
+            if current.contains("is a Perl core module") || std::time::Instant::now() >= deadline {
+                // Final drain window: a duplicate queued behind the first
+                // frame must be counted by the exact-count assertion below.
+                std::thread::sleep(std::time::Duration::from_millis(250));
+                break String::from_utf8_lossy(&buffer.lock()).into_owned();
+            }
+            std::thread::yield_now();
+        };
+        assert_eq!(
+            output.matches("is a Perl core module").count(),
+            1,
+            "the core-module notice must be emitted once per session: {output}"
+        );
+        Ok(())
+    }
+
+    /// #16551 review: the notice names the requested module, so the once-per-
+    /// session dedup must be per module. F12 on `use strict` then F12 on
+    /// `use warnings` are different output-panel lines; the second must not be
+    /// suppressed by the first, while a repeat of either stays suppressed.
+    #[test]
+    fn core_module_notice_is_per_module_not_session_wide() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let buffer = std::sync::Arc::new(parking_lot::Mutex::new(Vec::<u8>::new()));
+        let server = LspServer::with_io(
+            Box::new(std::io::Cursor::new(Vec::<u8>::new())),
+            Box::new(CoreModuleNoticeWriter { inner: std::sync::Arc::clone(&buffer) }),
+        );
+        server.publish_position_encoding_session_context();
+
+        let uri = "file:///core_module_notice_per_module.pl";
+        server.test_handle_did_open(Some(json!({
+            "textDocument": {"uri": uri, "languageId": "perl", "version": 1, "text": "use strict;\nuse warnings;\n"}
+        })))?;
+
+        let f12 = |line: u32| {
+            server.test_handle_definition(Some(json!({
+                "textDocument": { "uri": uri },
+                "position": { "line": line, "character": 5 }
+            })))
+        };
+        f12(0)?;
+        f12(1)?;
+        // Repeats of either module stay suppressed.
+        f12(0)?;
+        f12(1)?;
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let output = loop {
+            let current = String::from_utf8_lossy(&buffer.lock()).into_owned();
+            if current.matches("is a Perl core module").count() >= 2
+                || std::time::Instant::now() >= deadline
+            {
+                std::thread::sleep(std::time::Duration::from_millis(250));
+                break String::from_utf8_lossy(&buffer.lock()).into_owned();
+            }
+            std::thread::yield_now();
+        };
+        assert_eq!(
+            output.matches("'strict' is a Perl core module").count(),
+            1,
+            "the strict notice must emit exactly once: {output}"
+        );
+        assert_eq!(
+            output.matches("'warnings' is a Perl core module").count(),
+            1,
+            "the warnings notice must not be suppressed by the strict notice: {output}"
+        );
+        Ok(())
     }
 }
