@@ -12,7 +12,7 @@
 //! - Core navigation in normal Perl files in the same workspace MUST still work.
 
 use anyhow::Result;
-use perl_lsp_ux_tests::{ScenarioConfig, UxHarness};
+use perl_lsp_ux_tests::{ScenarioConfig, UxHarness, binary_available};
 use std::time::Duration;
 
 const APP_SOURCE: &str = r#"use strict;
