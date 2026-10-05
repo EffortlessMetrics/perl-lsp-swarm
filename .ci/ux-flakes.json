@@ -175,14 +175,14 @@
         "command": "PERL_LSP_UX_REQUIRE_BINARY=1 just ux-tests",
         "verification_state": "verified",
         "verification_pr": 17042,
-        "verified_sha": "ac54b5f5d62f25a27070ab580b6de92d7fddf82b",
-        "verified_artifact_blob": "5c81bf0fec3edac3492d82c00a6d694380504133",
+        "verified_sha": "42cd94189150bfe082b692627bb19232a38d31db",
+        "verified_artifact_blob": "4f649b13c13af7b594eaf337cc86b3d4d2881f1f",
         "unverified_reason": null,
         "replacement_tests": [
           "scenario_14_findbin_relative"
         ]
       },
-      "notes": "Discharged the #10015 proof debt: after the replacement was made discriminating (#14152 hard-fails consumer divergence and consistent refusal) and the strict child-environment isolation landed (#14308), the exact-subject five-run protocol passed terminally (sha ac54b5f5d62f25a27070ab580b6de92d7fddf82b, artifact blob 5c81bf0f, perllsp sha256 71926b820eff5b3d1927387d1a0329851a73e1ce21915d251370d5f96d1ba46b, --test-threads=1, PERL_LSP_UX_REQUIRE_BINARY=1, explicit PERL_LSP_BIN; 14 passed / 0 failed / 0 skipped in each of 5 sequential runs, Windows x64, Perl 5.42.2). Evidence strength: bounded repetition, not an exhaustion proof; the canonical ubuntu lane re-executes the same target on this PR."
+      "notes": "Discharged the #10015 proof debt: after the replacement was made discriminating (#14152 hard-fails consumer divergence and consistent refusal) and the strict child-environment isolation landed (#14308), the exact-subject five-run protocol passed terminally (sha ac54b5f5d62f25a27070ab580b6de92d7fddf82b, artifact blob 5c81bf0f, perllsp sha256 71926b820eff5b3d1927387d1a0329851a73e1ce21915d251370d5f96d1ba46b, --test-threads=1, PERL_LSP_UX_REQUIRE_BINARY=1, explicit PERL_LSP_BIN; 14 passed / 0 failed / 0 skipped in each of 5 sequential runs, Windows x64, Perl 5.42.2). Evidence strength: bounded repetition, not an exhaustion proof; the canonical ubuntu lane re-executes the same target on this PR. Re-verified after main #16952 (49ba302ace) drifted the quarantined artifact during the #17042 merge: the evidence lane re-run at merge head 42cd941891 (artifact blob 4f649b13c13af7b594eaf337cc86b3d4d2881f1f) gave ux_scenario_14_inc_conformance 14 passed / 0 failed / 0 skipped, --test-threads=1, PERL_LSP_UX_REQUIRE_BINARY=1, explicit PERL_LSP_BIN; Windows x64, Perl 5.42.2. Single-run strength here is the drift repair, not the discharge protocol; the five-run protocol above remains the original discharge evidence."
     },
     {
       "test": "ux_scenario_14_inc_conformance::scenario_14_system_inc",
