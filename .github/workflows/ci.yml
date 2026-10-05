@@ -2042,6 +2042,22 @@ jobs:
       - name: Direct command guidance contract (required merge surface)
         run: cargo test -p xtask --test direct_command_guidance --locked -- --nocapture
 
+      # #17233: the routed xtask library suite can fail before main-binary
+      # tests run. Execute the four retained formatter callers directly on
+      # this existing required surface, using its already compiled binary.
+      - name: Package formatter caller contracts (required merge surface)
+        run: |
+          set -o pipefail
+          cargo test -p xtask --bin xtask --locked -- --exact \
+            tasks::check::tests::check_task_run_routes_fmt_through_package_formatter \
+            tasks::check::tests::check_task_run_preserves_all_check_order \
+            tasks::ci::runner::tests::ci_runner_fmt_check_routes_to_package_formatter \
+            tasks::ci_doctor::tests::ci_doctor_fmt_drift_routes_to_package_formatter \
+            --nocapture | tee "$RUNNER_TEMP/package-formatter-callers.log"
+          # libtest succeeds with zero matches; require all four contracts to run.
+          grep -Eq '^test result: ok\. 4 passed; 0 failed; 0 ignored; 0 measured;' \
+            "$RUNNER_TEMP/package-formatter-callers.log"
+
       # The active cache denominator (#9177) is derived from workflow source, so it
       # silently rots whenever a cache step, trigger, or save guard moves. This
       # contract lives as the xtask binary's own unit tests (tasks::ci_cache_inventory),
