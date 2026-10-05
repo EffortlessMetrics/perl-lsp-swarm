@@ -160,7 +160,9 @@ def validate_report(raw: bytes, root: Path, policy: Path, as_of: str) -> None:
     identifiers: set[str] = set()
     for row in report["rows"]:
         for key in ("allow_id", "owner", "classification", "selector_summary", "required_disposition"):
-            if not isinstance(row.get(key), str) or not row[key]:
+            if not isinstance(row.get(key), str):
+                raise CaptureError(f"upstream cadence row {key} must be a string")
+            if key in ("allow_id", "required_disposition") and not row[key]:
                 raise CaptureError(f"upstream cadence row {key} must be a nonempty string")
         if row["allow_id"] in identifiers:
             raise CaptureError("upstream cadence allow_id must be unique")
@@ -168,13 +170,15 @@ def validate_report(raw: bytes, root: Path, policy: Path, as_of: str) -> None:
         if not isinstance(row.get("class"), str) or row["class"] not in counts:
             raise CaptureError("upstream cadence row class is invalid")
         counts[row["class"]] += 1
-        for key in ("source_path", "source_glob", "review_after", "expires", "driving_date"):
+        for key in ("source_path", "source_glob", "review_after", "expires"):
             if key not in row or (row[key] is not None and not isinstance(row[key], str)):
                 raise CaptureError(f"upstream cadence row {key} must be a string or null")
+        if row.get("driving_date") not in ("expires", "review_after", "none"):
+            raise CaptureError("upstream cadence row driving_date must be expires, review_after or none")
         if "days_remaining" not in row or (row["days_remaining"] is not None and type(row["days_remaining"]) is not int):
             raise CaptureError("upstream cadence row days_remaining must be an integer or null")
-        if not isinstance(row.get("evidence_refs"), list) or not all(isinstance(item, str) for item in row["evidence_refs"]):
-            raise CaptureError("upstream cadence row evidence_refs must be strings")
+        if not isinstance(row.get("evidence_refs"), list) or not all(isinstance(item, str) and item for item in row["evidence_refs"]):
+            raise CaptureError("upstream cadence row evidence_refs must be nonempty strings")
     expected_summary = {"total_entries": len(report["rows"]), **counts}
     for key, expected in expected_summary.items():
         if type(report["summary"].get(key)) is not int or report["summary"][key] != expected:

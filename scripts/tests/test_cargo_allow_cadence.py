@@ -6,9 +6,11 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import signal
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -50,6 +52,13 @@ if mode == "wrong-horizons": report["horizons"]["expiring_soon_days"] = 7
 if mode == "partial-row": report["rows"] = [{}]
 if mode == "wrong-summary": report["summary"]["total_entries"] = 0
 if mode == "malformed-class": report["rows"][0]["class"] = []
+if mode == "empty-metadata":
+ for field in ("owner", "classification", "selector_summary"): report["rows"][0][field] = ""
+if mode == "null-driving-date": report["rows"][0]["driving_date"] = None
+if mode == "empty-driving-date": report["rows"][0]["driving_date"] = ""
+if mode == "arbitrary-driving-date": report["rows"][0]["driving_date"] = "arbitrary"
+if mode == "empty-evidence-ref": report["rows"][0]["evidence_refs"] = [""]
+if mode == "empty-evidence-array": report["rows"][0]["evidence_refs"] = []
 if mode == "warning": sys.stderr.buffer.write(b"upstream warning\xff\n")
 if mode == "malformed": print("{"); sys.exit(0)
 if mode == "duplicate": print('{"schema_id":"cargo-allow.cadence.v1","schema_id":"cargo-allow.cadence.v1"}'); sys.exit(0)
@@ -59,7 +68,10 @@ if mode == "fail": print("partial"); print("failed", file=sys.stderr); sys.exit(
 if mode == "timeout": print("partial", flush=True); time.sleep(10)
 if mode == "descendant":
  child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(10)"])
- (root / "descendant-pid").write_text(str(child.pid))
+ identity = {"pid": child.pid}
+ if sys.platform.startswith("linux"):
+  identity["start_time"] = Path(f"/proc/{child.pid}/stat").read_text().rsplit(")", 1)[1].split()[19]
+ (root / "descendant-pid").write_text(json.dumps(identity))
  sys.exit(0)
 if mode == "change-policy": Path(a.config).write_text("changed policy")
 if mode == "change-executable":
@@ -71,6 +83,79 @@ sys.stdout.buffer.write(raw.encode())
 
 
 class AdmissionTests(unittest.TestCase):
+    def report(self):
+        root = SCRIPT.parent.resolve()
+        policy = (root / "policy" / "allow.toml").resolve()
+        report = {
+            "schema_id": "cargo-allow.cadence.v1", "schema_version": 1,
+            "tool": "cargo-allow", "command": "cadence", "as_of": "2026-10-20",
+            "as_of_source": "explicit", "policy_path": str(policy),
+            "horizons": {"review_due_soon_days": 14, "expiring_soon_days": 14},
+            "inventory": {"root": str(root), "scope": "source_tree", "scanner": "source_syntax", "source": "git_tracked", "files_scanned": 1, "empty_git_tracked": False, "completeness": "scoped"},
+            "rows": [{"allow_id": "v1-row", "class": "expiring", "owner": "unowned",
+                      "classification": "baseline_debt", "selector_summary": "panic",
+                      "required_disposition": "renew, narrow, or plan removal",
+                      "source_path": None, "source_glob": "src/**", "review_after": None,
+                      "expires": "2026-10-20", "days_remaining": 0, "driving_date": "expires",
+                      "evidence_refs": ["fixture"]}],
+            "summary": {"total_entries": 1, "current": 0, "review_due_soon": 0,
+                        "review_overdue": 0, "expiring": 1, "expired": 0, "invalid": 0},
+            "claim_boundary": ["source_tree_inventory"], "scanner_limitations": [],
+        }
+        return report, root, policy
+
+    def validate(self, report, root, policy):
+        capture.validate_report(json.dumps(report).encode(), root, policy, "2026-10-20")
+
+    def test_v1_string_metadata_accepts_empty_strings(self):
+        for field in ("owner", "classification", "selector_summary"):
+            with self.subTest(field=field):
+                report, root, policy = self.report()
+                self.validate(report, root, policy)
+                report["rows"][0][field] = ""
+                self.validate(report, root, policy)
+
+    def test_v1_driving_date_accepts_only_enum_strings(self):
+        for value in ("expires", "review_after", "none"):
+            with self.subTest(valid=value):
+                report, root, policy = self.report()
+                report["rows"][0]["driving_date"] = value
+                self.validate(report, root, policy)
+        for value in (None, "", "arbitrary", 0, [], {}):
+            with self.subTest(invalid=value):
+                report, root, policy = self.report()
+                report["rows"][0]["driving_date"] = value
+                with self.assertRaises(capture.CaptureError):
+                    self.validate(report, root, policy)
+
+    def test_v1_string_type_and_required_min_length_are_retained(self):
+        for field in ("owner", "classification", "selector_summary", "allow_id", "required_disposition"):
+            for value in (None, 0, [], {}):
+                with self.subTest(field=field, value=value):
+                    report, root, policy = self.report()
+                    report["rows"][0][field] = value
+                    with self.assertRaises(capture.CaptureError):
+                        self.validate(report, root, policy)
+        for field in ("allow_id", "required_disposition"):
+            with self.subTest(empty=field):
+                report, root, policy = self.report()
+                report["rows"][0][field] = ""
+                with self.assertRaises(capture.CaptureError):
+                    self.validate(report, root, policy)
+
+    def test_v1_evidence_refs_allow_empty_array_but_require_nonempty_items(self):
+        for refs in ([], ["fixture"], ["first", "second"]):
+            with self.subTest(valid=refs):
+                report, root, policy = self.report()
+                report["rows"][0]["evidence_refs"] = refs
+                self.validate(report, root, policy)
+        for refs in ([""], ["fixture", ""], ["", "fixture"], [None], [0]):
+            with self.subTest(invalid=refs):
+                report, root, policy = self.report()
+                report["rows"][0]["evidence_refs"] = refs
+                with self.assertRaises(capture.CaptureError):
+                    self.validate(report, root, policy)
+
     def test_explicit_date_and_absolute_paths(self):
         for date in ("today", "2026-2-03", "2026-02-30"):
             with self.assertRaises(capture.CaptureError):
@@ -148,6 +233,24 @@ class CaptureTests(unittest.TestCase):
         self.assertEqual(receipt["policy_sha256"], {"before": capture.sha256_file(self.policy), "after": capture.sha256_file(self.policy)})
         self.assertIn("no_whole_worktree_snapshot", receipt["claim_boundary"])
 
+    def test_cli_preserves_valid_empty_string_metadata_bytes(self):
+        self.mode("empty-metadata")
+        result = self.cli()
+        self.assertEqual(result.returncode, 0, result.stderr.decode())
+        raw = (self.output / capture.REPORT_NAME).read_bytes()
+        self.assertEqual(raw, (self.root / "expected-stdout").read_bytes())
+        row = json.loads(raw)["rows"][0]
+        for field in ("owner", "classification", "selector_summary"):
+            self.assertEqual(row[field], "")
+
+    def test_cli_preserves_valid_empty_evidence_array_bytes(self):
+        self.mode("empty-evidence-array")
+        result = self.cli()
+        self.assertEqual(result.returncode, 0, result.stderr.decode())
+        raw = (self.output / capture.REPORT_NAME).read_bytes()
+        self.assertEqual(raw, (self.root / "expected-stdout").read_bytes())
+        self.assertEqual(json.loads(raw)["rows"][0]["evidence_refs"], [])
+
     def test_identical_repeat_keeps_bytes_and_mtimes(self):
         self.assertEqual(self.cli().returncode, 0)
         before = {path.name: (path.read_bytes(), path.stat().st_mtime_ns) for path in self.output.iterdir()}
@@ -158,7 +261,7 @@ class CaptureTests(unittest.TestCase):
 
     def test_bad_reports_and_child_failure_preserve_existing_outputs(self):
         self.sentinels()
-        cases = {"wrong-date": b"as_of", "ambient-date": b"as_of_source", "wrong-policy": b"policy_path", "wrong-root": b"inventory.root", "wrong-schema": b"schema_id", "boolean-version": b"schema_version", "wrong-horizons": b"horizons", "malformed": b"complete UTF-8 JSON", "duplicate": b"duplicate upstream JSON key", "partial-row": b"row allow_id", "wrong-summary": b"summary does not match", "malformed-class": b"row class is invalid", "fail": b"exited 7"}
+        cases = {"wrong-date": b"as_of", "ambient-date": b"as_of_source", "wrong-policy": b"policy_path", "wrong-root": b"inventory.root", "wrong-schema": b"schema_id", "boolean-version": b"schema_version", "wrong-horizons": b"horizons", "malformed": b"complete UTF-8 JSON", "duplicate": b"duplicate upstream JSON key", "partial-row": b"row allow_id", "wrong-summary": b"summary does not match", "malformed-class": b"row class is invalid", "null-driving-date": b"row driving_date must be", "empty-driving-date": b"row driving_date must be", "arbitrary-driving-date": b"row driving_date must be", "empty-evidence-ref": b"evidence_refs must be nonempty strings", "fail": b"exited 7"}
         for mode, diagnostic in cases.items():
             with self.subTest(mode=mode):
                 self.mode(mode)
@@ -197,15 +300,63 @@ class CaptureTests(unittest.TestCase):
                 self.assertIn(b"byte bound", result.stderr)
                 self.assert_sentinels()
 
-    def test_timeout_and_descendant_pipe_are_bounded(self):
+    def test_timeout_is_bounded(self):
         self.sentinels()
-        for mode in ("timeout", "descendant"):
-            with self.subTest(mode=mode):
-                self.mode(mode)
-                with patch.object(capture, "TIMEOUT_SECONDS", 0.2):
-                    with self.assertRaisesRegex(capture.CaptureError, "time bound"):
-                        capture.capture(self.args())
-                self.assert_sentinels()
+        self.mode("timeout")
+        with patch.object(capture, "TIMEOUT_SECONDS", 0.2):
+            with self.assertRaisesRegex(capture.CaptureError, "time bound"):
+                capture.capture(self.args())
+        self.assert_sentinels()
+
+    def test_descendant_pipe_timeout_stops_owned_child(self):
+        self.sentinels()
+        self.mode("descendant")
+        try:
+            with patch.object(capture, "TIMEOUT_SECONDS", 0.2):
+                with self.assertRaisesRegex(capture.CaptureError, "time bound"):
+                    capture.capture(self.args())
+            self.assert_sentinels()
+            if sys.platform.startswith("linux"):
+                self.assert_owned_descendant_stopped()
+        finally:
+            if sys.platform.startswith("linux"):
+                self.cleanup_owned_descendant()
+
+    def owned_descendant_state(self, identity):
+        try:
+            fields = Path(f'/proc/{identity["pid"]}/stat').read_text().rsplit(")", 1)[1].split()
+        except FileNotFoundError:
+            return None
+        # A recycled PID is not this fixture's child and must never be signalled.
+        if fields[19] != identity["start_time"]:
+            return None
+        return fields[0]
+
+    def assert_owned_descendant_stopped(self):
+        identity = json.loads((self.root / "descendant-pid").read_text())
+        self.assertGreater(identity["pid"], 0)
+        self.assertTrue(identity["start_time"].isdigit())
+        deadline = time.monotonic() + 1
+        while self.owned_descendant_state(identity) not in (None, "Z", "X"):
+            if time.monotonic() >= deadline:
+                self.fail("owned descendant still running after timeout")
+            time.sleep(0.01)
+
+    def cleanup_owned_descendant(self):
+        identity_path = self.root / "descendant-pid"
+        if not identity_path.exists():
+            return
+        identity = json.loads(identity_path.read_text())
+        if self.owned_descendant_state(identity) not in (None, "Z", "X"):
+            try:
+                os.kill(identity["pid"], signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            deadline = time.monotonic() + 1
+            while self.owned_descendant_state(identity) not in (None, "Z", "X"):
+                if time.monotonic() >= deadline:
+                    self.fail("owned descendant did not stop after test cleanup")
+                time.sleep(0.01)
 
     def test_output_symlink_and_hardlink_aliases_refuse_before_child(self):
         self.output.mkdir()
