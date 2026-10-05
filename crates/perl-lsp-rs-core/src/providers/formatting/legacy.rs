@@ -140,12 +140,46 @@ impl<R: SubprocessRuntime> FormattingProvider<R> {
             )
             .map_err(|error| FormattingError::PerltidyNotFound(error.message))?;
         if !output.success() {
-            return Err(FormattingError::PerltidyError(
-                String::from_utf8_lossy(&output.stderr).to_string(),
-            ));
+            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+            return Err(if command_launch_failed(output.status_code, &stderr) {
+                // The command resolved but the OS could not start it (a
+                // cmd.exe wrapper reporting an unresolvable or unstartable
+                // target). That is an install/repair problem, not a Perl
+                // syntax problem, so it must keep the not-found remediation
+                // advice (#17301).
+                FormattingError::PerltidyNotFound(stderr)
+            } else {
+                FormattingError::PerltidyError(stderr)
+            });
         }
         String::from_utf8(output.stdout).map_err(|_| FormattingError::InvalidOutputEncoding)
     }
+}
+
+/// Exit status `cmd.exe` is documented to report for an unresolvable command.
+/// Windows builds differ on whether the process exit code carries it, so this
+/// is a secondary signal beside the message text.
+const CMD_UNRESOLVED_COMMAND_STATUS: i32 = 9009;
+
+/// Decide whether a non-success subprocess exit means the command could not be
+/// started at all, rather than perltidy running and rejecting its input.
+///
+/// `run_command` reports process-start failures as errors, but on Windows a
+/// `.bat`/`.cmd` program runs through `cmd.exe /C`, so an unresolvable or
+/// unstartable target still yields a *completed* cmd.exe process: a non-zero
+/// status plus the OS-level complaint on stderr. Those texts are launch
+/// failures; perltidy's own failure output is about the Perl source and never
+/// contains them.
+fn command_launch_failed(status_code: i32, stderr: &str) -> bool {
+    if status_code == CMD_UNRESOLVED_COMMAND_STATUS {
+        return true;
+    }
+    const LAUNCH_FAILURE_TEXTS: [&str; 3] = [
+        "is not recognized as an internal or external command",
+        "The filename, directory name, or volume label syntax is incorrect",
+        "Access is denied",
+    ];
+    LAUNCH_FAILURE_TEXTS.iter().any(|text| stderr.contains(text))
 }
 
 #[cfg(test)]
@@ -219,6 +253,87 @@ mod tests {
             .err()
             .ok_or_else(|| anyhow::anyhow!("invalid output must fail closed"))?;
         assert_eq!(error.error_kind(), "invalid_output_encoding");
+        Ok(())
+    }
+
+    /// A runtime that completes the subprocess with a non-success status and
+    /// canned stderr, standing in for either a failed perltidy run or a
+    /// cmd.exe wrapper that could not start its target.
+    struct FailingRuntime {
+        stderr: &'static str,
+        status_code: i32,
+    }
+
+    impl SubprocessRuntime for FailingRuntime {
+        fn run_command(
+            &self,
+            _program: &str,
+            _args: &[&str],
+            _stdin: Option<&[u8]>,
+        ) -> std::result::Result<SubprocessOutput, SubprocessError> {
+            Ok(SubprocessOutput {
+                stdout: Vec::new(),
+                stderr: self.stderr.as_bytes().to_vec(),
+                status_code: self.status_code,
+            })
+        }
+    }
+
+    /// Regression control for #17301: a resolved-but-unstartable perltidy (the
+    /// OS wrapper reports it "is not recognized") is an install/repair
+    /// problem, so it must carry `perltidy_not_found` and the Infra class, not
+    /// send the user auditing their Perl syntax.
+    #[test]
+    fn unstartable_perltidy_classifies_as_not_found() -> Result<()> {
+        for (stderr, status_code) in [
+            (
+                "'\"C:\\Strawberry\\perl\\bin\\perltidy.BAT\"' is not recognized as an internal \
+                 or external command,\r\noperable program or batch file.\r\n",
+                1,
+            ),
+            ("'perltidy' is not recognized as an internal or external command.\r\n", 9009),
+            ("The filename, directory name, or volume label syntax is incorrect.\r\n", 1),
+            ("Access is denied.\r\n", 1),
+        ] {
+            let provider = FormattingProvider::new(FailingRuntime { stderr, status_code });
+            let error = provider
+                .format_document("my $x = 1;\n", &options())
+                .err()
+                .ok_or_else(|| anyhow::anyhow!("launch failure must fail closed"))?;
+            assert_eq!(error.error_kind(), "perltidy_not_found", "stderr was: {stderr:?}");
+            assert!(
+                error.to_string().starts_with("perltidy not found:"),
+                "launch failure must keep the install remediation text: {error}"
+            );
+            assert_eq!(
+                perl_parser_core::ErrorClass::error_class(&error),
+                perl_parser_core::ErrorCategory::Infra
+            );
+        }
+        Ok(())
+    }
+
+    /// Perltidy that starts and rejects the input keeps the syntax-advice
+    /// classification, so the not-found reclassification cannot swallow it.
+    #[test]
+    fn perltidy_rejection_still_classifies_as_perltidy_error() -> Result<()> {
+        let provider = FormattingProvider::new(FailingRuntime {
+            stderr: "syntax error at \"(stdin)\" line 2\n",
+            status_code: 1,
+        });
+        let error = provider
+            .format_document("my $x = ;\n", &options())
+            .err()
+            .ok_or_else(|| anyhow::anyhow!("perltidy rejection must fail closed"))?;
+        assert_eq!(error.error_kind(), "perltidy_error");
+        assert!(
+            error.to_string().starts_with("perltidy error (check Perl syntax):"),
+            "genuine perltidy failure must keep the syntax remediation text: {error}"
+        );
+        assert_eq!(
+            perl_parser_core::ErrorClass::error_class(&error),
+            perl_parser_core::ErrorCategory::UserError
+        );
         Ok(())
     }
 }

@@ -4,7 +4,7 @@ use super::implementation::counters::{self, NativePipelineCounters, PipelineColl
 use super::implementation::{
     BracePlacement, ElsePlacement, FinalNewline, FormatConfig, FormatDiagnosticSeverity,
     FormatResult, FormatterMode, KeywordSpacing, NativeFormatter, PerlFormatter, TextEdit,
-    TextRange, TrailingComma, format_simple_line, range_includes_line,
+    TextRange, TrailingComma,
 };
 use serde::{Deserialize, Serialize};
 
@@ -343,7 +343,7 @@ fn classify_native_result(
         result.edits.clear();
         result.changed = false;
     }
-    let classification = classify(source, config, target, &result);
+    let classification = classify(config, &result);
     let actual_engine = if matches!(config.mode, FormatterMode::Off) {
         FormatEngine::Disabled
     } else {
@@ -376,12 +376,7 @@ struct Classification {
     reason: FormatReasonCode,
 }
 
-fn classify(
-    source: &str,
-    config: &FormatConfig,
-    target: FormatRequestTarget,
-    result: &FormatResult,
-) -> Classification {
+fn classify(config: &FormatConfig, result: &FormatResult) -> Classification {
     if matches!(config.mode, FormatterMode::Off) {
         return Classification {
             disposition: FormatDisposition::Refused,
@@ -397,16 +392,15 @@ fn classify(
     }
 
     let Some(diagnostic) = result.diagnostics.first() else {
-        return if target_has_only_supported_lines(source, config, target) {
-            Classification {
-                disposition: FormatDisposition::NoChange,
-                reason: FormatReasonCode::AlreadyFormatted,
-            }
-        } else {
-            Classification {
-                disposition: FormatDisposition::Refused,
-                reason: FormatReasonCode::UnsupportedSyntax,
-            }
+        // No diagnostics means both parse gates admitted the source, so the
+        // syntax is inside what the engine safely handles; the line matchers
+        // describe what the engine rewrites, not what it refuses. A clean
+        // render that reproduces the source is therefore a successful no-op
+        // and must classify as already formatted, not as a safe-subset
+        // refusal (#17300).
+        return Classification {
+            disposition: FormatDisposition::NoChange,
+            reason: FormatReasonCode::AlreadyFormatted,
         };
     };
 
@@ -520,23 +514,6 @@ mod line_geometry_tests {
 
 fn utf16_len(source: &str) -> u32 {
     source.encode_utf16().count() as u32
-}
-
-fn target_has_only_supported_lines(
-    source: &str,
-    config: &FormatConfig,
-    target: FormatRequestTarget,
-) -> bool {
-    source.split('\n').enumerate().all(|(line, text)| {
-        let included = match target {
-            FormatRequestTarget::Document => true,
-            FormatRequestTarget::Range { range } => range_includes_line(range, line as u32),
-        };
-        !included
-            || text.trim().is_empty()
-            || text.trim_start().starts_with('#')
-            || format_simple_line(text, config).is_some()
-    })
 }
 
 fn safety_evidence(
@@ -864,17 +841,43 @@ mod tests {
         assert!(typed.outcome.change.rendered_bytes_changed > 0);
     }
 
+    /// Regression control for #17300: a parse-clean document the engine leaves
+    /// unchanged is already formatted, not refused. The former safe-subset line
+    /// gate relabeled exactly this outcome `Refused/UnsupportedSyntax`, which
+    /// made every no-op format of a document containing e.g. a bare `print`
+    /// statement emit a false "outside the safe subset" warning.
     #[test]
-    fn unsupported_unchanged_source_is_refused() {
-        let result = NativeFormatter::new().format_document_typed(
-            "print 1;;;\n",
+    fn parse_clean_unchanged_source_is_already_formatted() {
+        for source in ["print $x + $y;\n", "print 1;;;\n"] {
+            let result = NativeFormatter::new().format_document_typed(
+                source,
+                &FormatConfig::default(),
+                &FormatContext::default(),
+            );
+            assert_eq!(result.outcome.disposition, FormatDisposition::NoChange);
+            assert_eq!(result.outcome.reason, FormatReasonCode::AlreadyFormatted);
+            assert!(result.result.edits.is_empty());
+            assert!(!result.result.changed);
+        }
+    }
+
+    /// A parse-clean range that needs no edits is likewise a successful no-op:
+    /// lines the engine has no rewrite rule for are inside its no-edit policy,
+    /// not outside its safe subset.
+    #[test]
+    fn parse_clean_unchanged_range_is_already_formatted() {
+        let source = "my $value = 1;\nprint $x + $y;\n";
+        let range = TextRange::new(TextPosition::new(1, 0), TextPosition::new(2, 0));
+        let result = NativeFormatter::new().format_range_typed(
+            source,
+            range,
             &FormatConfig::default(),
             &FormatContext::default(),
         );
-        assert_eq!(result.outcome.disposition, FormatDisposition::Refused);
-        assert_eq!(result.outcome.reason, FormatReasonCode::UnsupportedSyntax);
+        assert_eq!(result.outcome.disposition, FormatDisposition::NoChange);
+        assert_eq!(result.outcome.reason, FormatReasonCode::AlreadyFormatted);
+        assert!(result.result.edits.is_empty());
     }
-
     #[test]
     fn malformed_ranges_are_refused_before_legacy_formatting() {
         let source = "my $value = 1;\n";
@@ -902,8 +905,7 @@ mod tests {
             PARSE_INCOMPLETE_CODE,
             "parsing terminated early",
         );
-        let classification =
-            classify("fixture", &FormatConfig::default(), FormatRequestTarget::Document, &result);
+        let classification = classify(&FormatConfig::default(), &result);
         assert_eq!(classification.disposition, FormatDisposition::FailedOrNotProven);
         assert_eq!(classification.reason, FormatReasonCode::InstrumentFailure);
     }

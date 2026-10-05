@@ -698,28 +698,34 @@ fn mutate_block_tail(line: &mut String) {
 }
 
 /// Generate one deterministic deliberately-invalid case from `(seed, index)`.
-/// Such cases must map only to typed refusals or not-proven outcomes
-/// (FPH-005); they never feed the idempotence or application invariants.
+/// Subjects that are unparseable by construction must map only to typed
+/// refusals or not-proven outcomes (FPH-005); they never feed the idempotence
+/// or application invariants. The one parse-clean mutation (the appended
+/// empty statement, kind 1) is valid Perl, so under #17300 it must produce a
+/// proven no-op rather than a safe-subset refusal, and it therefore feeds the
+/// full invariant battery like any other valid subject.
 pub fn generate_invalidation_case(seed: u64, index: usize) -> GeneratedCase {
     let mut rng = SplitMix64::new(seed ^ ((index as u64).rotate_left(17) ^ 0x5A5A_5A5A_5A5A_5A5A));
     let base = FAMILY_TABLE[rng.pick(4)].compact[rng.pick(3)];
     let base = base.to_string();
     let kind = index % 5;
 
-    let (text, family, target, disposition, clean_parse) = match kind {
+    let (text, family, target, disposition, clean_parse, expects_refusal) = match kind {
         0 => (
             "my $x = ;\n".to_string(),
             Family::LexicalDeclaration,
             TargetRequest::Document,
             "mutator.invalidation.truncated_initializer",
             false,
+            true,
         ),
         1 => (
             format!("{base};;\n"),
             Family::LexicalDeclaration,
             TargetRequest::Document,
-            "mutator.invalidation.empty_statement",
+            "mutator.proven.empty_statement",
             true,
+            false,
         ),
         2 => (
             format!("{base}\nmy$re=qr{{x}};\n"),
@@ -727,6 +733,7 @@ pub fn generate_invalidation_case(seed: u64, index: usize) -> GeneratedCase {
             TargetRequest::Document,
             "mutator.invalidation.regex_injection",
             false,
+            true,
         ),
         3 => (
             format!("{base}\n__END__\n"),
@@ -734,6 +741,7 @@ pub fn generate_invalidation_case(seed: u64, index: usize) -> GeneratedCase {
             TargetRequest::Document,
             "mutator.invalidation.data_marker",
             false,
+            true,
         ),
         _ => {
             let text =
@@ -744,7 +752,14 @@ pub fn generate_invalidation_case(seed: u64, index: usize) -> GeneratedCase {
                     perl_lsp_perltidy::native::TextPosition::new(0, 0),
                 ),
             };
-            (text, Family::PlainAssignment, target, "mutator.invalidation.inverted_range", true)
+            (
+                text,
+                Family::PlainAssignment,
+                target,
+                "mutator.invalidation.inverted_range",
+                true,
+                true,
+            )
         }
     };
 
@@ -761,7 +776,7 @@ pub fn generate_invalidation_case(seed: u64, index: usize) -> GeneratedCase {
             final_newline: FinalNewline::Preserve,
             line_ending: LineEndingKind::Lf,
         },
-        expects_refusal: true,
+        expects_refusal,
     }
 }
 
