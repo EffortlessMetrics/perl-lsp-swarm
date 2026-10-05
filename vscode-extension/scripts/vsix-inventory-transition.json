@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "owner_issue": 17200,
-  "reason": "adding the installed receipt assembler controls to test:receipt-summary grows packaged package.json by exactly 46 bytes; all 30 package members and every other byte limit remain unchanged",
-  "base_baseline_file_sha256": "8c5ba0a97559679ec4f2e33d6f5978dcf3c41c828b0afdd521e700997cbb0857",
-  "candidate_baseline_file_sha256": "ed73e4ac567f36d73e987ffda907a272e2e35afcef0cb1640eabb636300b6291",
-  "base_inventory_sha256": "85107aba396d47f6dadc11056330aa8f45e1e59452e32a1fd8dad533283540c2",
-  "candidate_inventory_sha256": "eca87de013c378aed31924190eaf783fb691e3b850fa8eb99c1eeb93efef4f6f"
+  "owner_issue": 16592,
+  "reason": "pinning both demo roots adds assets/demo-project/.perl-lsp.toml (733 bytes) to the packaged inventory; no removals or other byte changes",
+  "base_baseline_file_sha256": "ed73e4ac567f36d73e987ffda907a272e2e35afcef0cb1640eabb636300b6291",
+  "candidate_baseline_file_sha256": "8af99f1e64c5dc95e912928003419fca45395ab2079d980b02234502419824a7",
+  "base_inventory_sha256": "eca87de013c378aed31924190eaf783fb691e3b850fa8eb99c1eeb93efef4f6f",
+  "candidate_inventory_sha256": "e9429124aea4611b5133ead704a22615f39bd5f34994fa92bcfeaacf31a99ee8"
 }
