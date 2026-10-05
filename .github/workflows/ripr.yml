@@ -708,8 +708,11 @@ jobs:
       - name: Install ripr
         run: cargo install ripr --version "$RIPR_VERSION" --locked
 
+      - name: Check xtask build observer controls
+        run: python3 scripts/tests/test_observe_xtask_build.py
+
       - name: Build xtask
-        run: cargo build -p xtask --locked
+        run: bash scripts/ci/observe-xtask-build.sh host-initial "$RIPR_FRESHNESS_HANDOFF/xtask-builds" -- cargo build -p xtask --locked
 
       - name: Run ripr doctor
         run: ripr doctor
@@ -775,6 +778,7 @@ jobs:
             -e RIPR_VERSION -e BASE_REF -e PR_HEAD_SHA \
             -e RIPR_MAX_DIFF_INDEX_FILES=2560 \
             -e RIPR_FRESHNESS_HANDOFF=/freshness -e RIPR_FRESHNESS_TOKEN \
+            -e GITHUB_RUN_ID -e GITHUB_RUN_ATTEMPT \
             -e MEASUREMENT_IMAGE_ID="$image_id" -e MEASUREMENT_IMAGE_DIGEST="$image_digest" \
             -v "$GITHUB_WORKSPACE:/workspace" -v "$RIPR_FRESHNESS_HANDOFF:/freshness" \
             -w /workspace "$image_id" bash -euo pipefail -c '
@@ -793,7 +797,7 @@ jobs:
                 printf "head=%s\nbase=%s\nripr_version=%s\nripr_sha256=%s\nindex_limit=%s\n" "$(git rev-parse HEAD)" "$base_arg" "$ripr_version" "$ripr_sha256" "$RIPR_MAX_DIFF_INDEX_FILES"
                 printf "%s\n%s\n" "$rustc_version" "$cargo_version"
               } >> target/ripr/pr/ripr-measurement-config.txt
-              cargo build -p xtask --locked
+              bash scripts/ci/observe-xtask-build.sh container "$RIPR_FRESHNESS_HANDOFF/xtask-builds" -- cargo build -p xtask --locked
               ripr doctor
               set +e
               timeout --signal=TERM --kill-after=30s 25m /usr/bin/time -v -o target/ripr/pr/ripr-measurement-time.txt cargo xtask ripr-pr --base "$base_arg" --head HEAD --pr-head "$PR_HEAD_SHA"
@@ -868,7 +872,7 @@ jobs:
             echo "head-memoized receipt restored; validating"
             rm -f target/receipts/quality/.ripr-plus-fresh
           else
-            cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json
+            bash scripts/ci/observe-xtask-build.sh host-baseline "$RIPR_FRESHNESS_HANDOFF/xtask-builds" -- cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json
             mkdir -p target/receipts/quality
             printf 'produced-fresh head=%s\n' "$(git rev-parse HEAD)" > target/receipts/quality/.ripr-plus-fresh
           fi
@@ -891,7 +895,7 @@ jobs:
         # child at the bound, exit 143), so the bound is raised together with
         # the 135m job envelope — analysis 40m + receipt + guidance 60m fits,
         # and an incomplete receipt keeps failing closed, just later.
-        run: cargo xtask ripr-review-comments --base "origin/$BASE_REF" --head HEAD --pr-head "$PR_HEAD_SHA" --timeout-seconds 3600
+        run: bash scripts/ci/observe-xtask-build.sh host-guidance "$RIPR_FRESHNESS_HANDOFF/xtask-builds" -- cargo xtask ripr-review-comments --base "origin/$BASE_REF" --head HEAD --pr-head "$PR_HEAD_SHA" --timeout-seconds 3600
 
       - name: Generate impacted evidence
         if: always()
@@ -1011,6 +1015,18 @@ jobs:
             target/receipts/quality/quality-gate-ripr.md
           retention-days: 14
           if-no-files-found: error
+
+      # Diagnostic data has no receipt/gate authority. Keep its artifact separate
+      # so the trusted freshness handshake and proof archive layout stay intact.
+      - name: Upload xtask build observations
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: ripr-xtask-build-observations
+          path: ${{ env.RIPR_FRESHNESS_HANDOFF }}/xtask-builds/**
+          retention-days: 7
+          if-no-files-found: warn
 
       # #16431: publish the freshly produced receipt under its exact head key
       # so a re-run of the same head restores it (~44m -> ~33s warm). The
