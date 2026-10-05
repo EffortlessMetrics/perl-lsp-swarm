@@ -12802,7 +12802,10 @@ mod semantic_query_callback_tests {
             ),
         ];
         for (uri, code) in sources {
-            must(index.index_file(must(url::Url::parse(uri)), code.to_string()));
+            // The ungenerationed `index_file` surface is a compatibility API
+            // with a caller-count ledger (#11301); tests index through the
+            // typed initial-generation form.
+            must(index.index_initial_file(must(url::Url::parse(uri)), code.to_string()));
         }
 
         let mut all_anchor_ids: Vec<AnchorId> = Vec::new();
