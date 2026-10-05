@@ -278,8 +278,17 @@ impl LspServer {
                         selected_config_path.as_deref(),
                     );
                 }
-                let mut server_config = self.config.lock();
-                config.apply_to_server_config(&mut server_config);
+                let rejected_project_values = {
+                    let mut server_config = self.config.lock();
+                    config.apply_to_server_config(&mut server_config)
+                };
+                // Single-file discovery re-runs on every didOpen, so the
+                // visible rejection is deduped per session by the emitter
+                // (#16598, same rationale as #16548).
+                self.emit_rejected_project_config_values(
+                    ".perl-lsp.toml",
+                    &rejected_project_values,
+                );
             }
             // Replay cached tier-3 (client) settings on top so the
             // documented layering (init-options < TOML < client responses)
@@ -367,9 +376,17 @@ impl LspServer {
                             &folder_path,
                         );
                         if !rejected_include_paths.is_empty() {
+                            // An explicitly emptied prior list (client-settings
+                            // `includePaths: []`) is retained as empty, so no
+                            // roots remain in effect and the consequence must
+                            // not be claimed.
+                            let defaults_retained = project_config
+                                .include_paths_defaults_retained(&rejected_include_paths)
+                                && !folder.effective_workspace_config.include_paths.is_empty();
                             self.emit_rejected_include_paths_warning(
                                 folder.display_name(),
                                 &rejected_include_paths,
+                                defaults_retained,
                             );
                         }
 
@@ -448,10 +465,11 @@ impl LspServer {
             let (merged, conflicts) =
                 perl_lsp_rs_core::config::merge_project_configs_for_server(&merge_inputs);
 
-            {
+            let rejected_project_values = {
                 let mut config = self.config.lock();
-                merged.apply_to_server_config(&mut config);
-            }
+                merged.apply_to_server_config(&mut config)
+            };
+            self.emit_rejected_project_config_values(".perl-lsp.toml", &rejected_project_values);
 
             if !conflicts.is_empty() {
                 self.emit_multi_root_config_conflict_warning(&conflicts);
@@ -612,6 +630,12 @@ impl LspServer {
     /// entries that escape the workspace root (see the `# Security` doc
     /// comment on [`perl_lsp_rs_core::config::ProjectConfig::apply_to_workspace_config`]).
     ///
+    /// When `defaults_retained` is set (every configured entry was rejected,
+    /// #16596), the warning also states the consequence — the previously
+    /// effective roots, the built-in defaults when nothing else sets them,
+    /// remain in effect — and the fix, instead of leaving the user to infer
+    /// from `(none)`-style output that module resolution lost its roots.
+    ///
     /// Only called from the initial-load path (this function) — reconfiguration
     /// re-application call sites re-apply an already-loaded, already-warned-about
     /// `project_config` and intentionally do not re-warn, to avoid spamming the
@@ -620,19 +644,76 @@ impl LspServer {
         &self,
         folder_name: &str,
         rejected: &[perl_lsp_rs_core::config::RejectedIncludePath],
+        defaults_retained: bool,
     ) {
         let rendered = rejected
             .iter()
             .map(perl_lsp_rs_core::config::RejectedIncludePath::render)
             .collect::<Vec<_>>()
             .join("; ");
+        let consequence = if defaults_retained {
+            ". Every configured entry was rejected, so the previously effective module \
+             roots (the built-in defaults unless configured elsewhere) remain in effect. \
+             Add at least one valid relative entry, or remove the key to restore defaults"
+        } else {
+            ""
+        };
         let user_msg = format!(
             "Perl LSP: {folder_name}'s .perl-lsp.toml has include_paths entries that were \
-             ignored: {rendered}"
+             ignored: {rendered}{consequence}"
         );
         tracing::warn!(folder = %folder_name, rejected = %rendered, "Rejected include_paths entries");
         if let Err(e) = self.show_message(MessageType::Warning, &user_msg) {
             tracing::warn!(error = %e, "Failed to send showMessage for rejected include_paths");
+        }
+    }
+
+    /// Emit a `window/showMessage` Warning for every `.perl-lsp.toml`
+    /// `[critic]`/`[formatting]` value the server rejected while applying the
+    /// project config (#16598) — the editor-visible sibling of the
+    /// tracing-only disposition the config layer keeps for logs.
+    ///
+    /// Suppression identity lives in the bounded session-warning dedup store
+    /// (#9769): setting tag + value fingerprint, so the raw value is never
+    /// retained and the same setting+value warns at most once per session.
+    /// Single-file discovery re-runs on every didOpen, so this dedup is what
+    /// keeps a persistently invalid value from popping a window per open.
+    fn emit_rejected_project_config_values(
+        &self,
+        authority: &str,
+        rejected: &[perl_lsp_rs_core::config::RejectedProjectConfigValue],
+    ) {
+        for entry in rejected {
+            let normalized_value = if entry.setting == "formatting.engine" {
+                perl_lsp_rs_core::config::normalize_formatter_mode_value(&entry.value)
+            } else {
+                entry.value.trim().to_ascii_lowercase()
+            };
+            let consequence = if entry.setting.starts_with("critic.") {
+                "The entire [critic] selection stays at its previous accepted values"
+            } else {
+                "The previous value is still in effect"
+            };
+            let user_msg = format!(
+                "Perl LSP: {authority} sets {} to {:?}, which is not recognized; \
+                 {consequence}. Valid values: {}.",
+                entry.setting, entry.value, entry.valid_options,
+            );
+            self.session_warning_dedup.emit_project_setting_with(
+                entry.setting,
+                &normalized_value,
+                || match self.show_message(MessageType::Warning, &user_msg) {
+                    Ok(()) => true,
+                    Err(error) => {
+                        tracing::warn!(
+                            setting = entry.setting,
+                            error = %error,
+                            "Failed to send showMessage for rejected project config value"
+                        );
+                        false
+                    }
+                },
+            );
         }
     }
 }
@@ -2584,6 +2665,207 @@ perlcritic_severity = 2
             state.effective_workspace_config.discovery_extra_extensions,
             vec!["tmpl".to_string()],
             "the valid sibling field of the malformed batch still applies over the project layer"
+        );
+        Ok(())
+    }
+
+    /// Shared-buffer writer for capturing outbound LSP notifications in tests
+    /// (same fixture pattern as the diagnostics tests).
+    struct PopupCaptureWriter {
+        inner: std::sync::Arc<parking_lot::Mutex<Vec<u8>>>,
+    }
+    impl std::io::Write for PopupCaptureWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.inner.lock().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn make_capture_server() -> (LspServer, std::sync::Arc<parking_lot::Mutex<Vec<u8>>>) {
+        let buffer = std::sync::Arc::new(parking_lot::Mutex::new(Vec::<u8>::new()));
+        let server = LspServer::with_io(
+            Box::new(std::io::Cursor::new(Vec::<u8>::new())),
+            Box::new(PopupCaptureWriter { inner: std::sync::Arc::clone(&buffer) }),
+        );
+        (server, buffer)
+    }
+
+    /// Poll for the outbound notification containing `needle`, then drain a
+    /// final window so a duplicate queued behind the first frame is still
+    /// counted by exact-count assertions.
+    fn capture_until_after(
+        buffer: &std::sync::Arc<parking_lot::Mutex<Vec<u8>>>,
+        needle: &str,
+    ) -> String {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            let current = String::from_utf8_lossy(&buffer.lock()).into_owned();
+            if current.contains(needle) || std::time::Instant::now() >= deadline {
+                std::thread::sleep(std::time::Duration::from_millis(250));
+                return String::from_utf8_lossy(&buffer.lock()).into_owned();
+            }
+            std::thread::yield_now();
+        }
+    }
+
+    /// #16598: a `.perl-lsp.toml` `[critic]` value rejection must reach the
+    /// editor as a `window/showMessage` Warning naming the setting, the
+    /// rejected value, and the accepted values — and single-file mode (which
+    /// re-runs discovery on every didOpen) must emit it at most once per
+    /// session: two loads of the same broken value produce exactly one popup.
+    #[test]
+    fn single_file_critic_engine_rejection_warns_once_per_session()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        std::fs::write(
+            temp.path().join(".perl-lsp.toml"),
+            "[critic]\nengine = \"turbo\"\nprofile = \"strict\"\n",
+        )?;
+        let file = temp.path().join("main.pl");
+        std::fs::write(&file, "use strict;\n")?;
+        let uri = url::Url::from_file_path(&file)
+            .map_err(|()| "failed to build single-file URI".to_string())?
+            .to_string();
+
+        let (server, buffer) = make_capture_server();
+
+        // Load #1: single-file didOpen triggers the cold discovery refresh.
+        server.test_handle_did_open(Some(serde_json::json!({
+            "textDocument": {"uri": uri, "languageId": "perl", "version": 1, "text": "use strict;\n"}
+        })))?;
+        // Load #2: an explicit re-run of the same discovery path.
+        server.load_and_apply_project_config();
+
+        let output = capture_until_after(&buffer, "critic.engine");
+        assert!(
+            output.contains("\"critic.engine\"") || output.contains("critic.engine to"),
+            "the critic.engine rejection must reach window/showMessage; got: {output}"
+        );
+        assert_eq!(
+            output.matches("critic.engine").count(),
+            1,
+            "the same invalid value must warn exactly once per session: {output}"
+        );
+        assert!(
+            output.contains("turbo") && output.contains("native, legacy"),
+            "the popup must name the rejected value and the accepted values; got: {output}"
+        );
+        assert!(
+            output.contains("entire [critic] selection stays at its previous accepted values"),
+            "a valid sibling is also discarded when the critic candidate fails: {output}"
+        );
+        Ok(())
+    }
+
+    /// #16598 sibling: the `[formatting]` engine rejection rides the same
+    /// visible path (it is a separate rejection from the critic candidate).
+    #[test]
+    fn single_file_formatting_engine_rejection_reaches_show_message()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        std::fs::write(temp.path().join(".perl-lsp.toml"), "[formatting]\nengine = \"compat\"\n")?;
+        let file = temp.path().join("main.pl");
+        std::fs::write(&file, "use strict;\n")?;
+        let uri = url::Url::from_file_path(&file)
+            .map_err(|()| "failed to build single-file URI".to_string())?
+            .to_string();
+
+        let (server, buffer) = make_capture_server();
+        server.test_handle_did_open(Some(serde_json::json!({
+            "textDocument": {"uri": uri, "languageId": "perl", "version": 1, "text": "use strict;\n"}
+        })))?;
+
+        let output = capture_until_after(&buffer, "formatting.engine");
+        assert!(
+            output.contains("compat") && output.contains("external-legacy"),
+            "the formatting.engine popup must name the rejected value and the accepted \
+             values; got: {output}"
+        );
+        Ok(())
+    }
+
+    /// #16596: when EVERY `.perl-lsp.toml` `include_paths` entry is rejected,
+    /// the folder-mode popup must state the consequence (the previously
+    /// effective roots, the built-in defaults when nothing else sets them,
+    /// remain in effect) and the fix, not just list the rejected entries.
+    #[test]
+    fn folder_all_rejected_include_paths_warning_states_retained_defaults()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let folder = temp.path().join("project");
+        std::fs::create_dir_all(&folder)?;
+        let absolute = if cfg!(windows) { r"C:\Windows" } else { "/etc" };
+        std::fs::write(
+            folder.join(".perl-lsp.toml"),
+            format!("[perl]\ninclude_paths = [\"{}\"]\n", absolute.escape_default()),
+        )?;
+
+        let (server, buffer) = make_capture_server();
+        let folder_uri = url::Url::from_directory_path(&folder)
+            .map_err(|()| "failed to build folder URI".to_string())?
+            .to_string();
+        server.workspace_folders.lock().push(
+            crate::runtime::workspace_folder::WorkspaceFolderState::new(folder_uri)
+                .with_path(folder),
+        );
+
+        server.load_and_apply_project_config();
+
+        let output = capture_until_after(&buffer, "include_paths entries that were ignored");
+        assert!(
+            output.contains("remain in effect"),
+            "an all-rejected list must state that the defaults remain in effect; got: {output}"
+        );
+        assert!(
+            output.contains(
+                "Add at least one valid relative entry, or remove the key to restore defaults"
+            ),
+            "the popup must carry the documented fix; got: {output}"
+        );
+        // The #16596 retention itself (defaults kept in WorkspaceConfig) is
+        // pinned at the config layer; this test pins the editor-visible
+        // consequence. A partial-rejection popup must NOT claim retention.
+        Ok(())
+    }
+
+    /// #16596 sibling: the "remain in effect" consequence is only true when
+    /// the retained list is non-empty. An explicit client-settings
+    /// `includePaths: []` wipes the built-in defaults before `.perl-lsp.toml`
+    /// is layered, so an all-rejected project list retains an empty list and
+    /// the popup must NOT claim roots remain in effect.
+    #[test]
+    fn folder_all_rejected_include_paths_warning_silent_when_retained_list_empty()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let folder = temp.path().join("project");
+        std::fs::create_dir_all(&folder)?;
+        let absolute = if cfg!(windows) { r"C:\Windows" } else { "/etc" };
+        std::fs::write(
+            folder.join(".perl-lsp.toml"),
+            format!("[perl]\ninclude_paths = [\"{}\"]\n", absolute.escape_default()),
+        )?;
+
+        let (server, buffer) = make_capture_server();
+        *server.initialization_options_perl_settings.lock() =
+            Some(serde_json::json!({ "workspace": { "includePaths": [] } }));
+        let folder_uri = url::Url::from_directory_path(&folder)
+            .map_err(|()| "failed to build folder URI".to_string())?
+            .to_string();
+        server.workspace_folders.lock().push(
+            crate::runtime::workspace_folder::WorkspaceFolderState::new(folder_uri)
+                .with_path(folder),
+        );
+
+        server.load_and_apply_project_config();
+
+        let output = capture_until_after(&buffer, "include_paths entries that were ignored");
+        assert!(
+            !output.contains("remain in effect"),
+            "an all-rejected list over an explicitly emptied client list retains an \
+             empty list, so the popup must not claim roots remain in effect; got: {output}"
         );
         Ok(())
     }
