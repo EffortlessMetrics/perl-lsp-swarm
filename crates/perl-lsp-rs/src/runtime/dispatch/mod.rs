@@ -576,3 +576,59 @@ mod tests {
         assert!(resolved.is_some_and(|response| response.error.is_none()));
     }
 }
+
+#[cfg(test)]
+mod merge_sync_dispatch_guidance_tests {
+    use crate::protocol::{JsonRpcId, JsonRpcRequest};
+    use crate::runtime::LspServer;
+    use serde_json::json;
+
+    fn request(id: i64, method: &str) -> JsonRpcRequest {
+        JsonRpcRequest {
+            _jsonrpc: "2.0".into(),
+            id: Some(JsonRpcId::Integer(id)),
+            method: method.into(),
+            params: None,
+        }
+    }
+
+    #[test]
+    fn unknown_method_guidance_preserves_initialization_and_notification_rules()
+    -> Result<(), String> {
+        let server = LspServer::new();
+        let before = server
+            .handle_request(request(1, "custom/unknown"))
+            .and_then(|response| response.error)
+            .ok_or("pre-initialize error required")?;
+        assert_eq!(before.code, -32002);
+        let mut initialize = request(2, "initialize");
+        initialize.params = Some(json!({"capabilities": {}}));
+        let initialized =
+            server.handle_request(initialize).ok_or("initialize response required")?;
+        assert!(initialized.error.is_none());
+        for (id, method) in [
+            (3, "custom/unknown"),
+            (4, "textDocument/unknown"),
+            (5, "workspace/unknown"),
+            (6, "$/unknown"),
+        ] {
+            let error = server
+                .handle_request(request(id, method))
+                .and_then(|response| response.error)
+                .ok_or("unknown method error required")?;
+            assert_eq!(error.code, -32601);
+            for expected in [method, "method spelling", "capabilities returned by initialize"] {
+                assert!(error.message.contains(expected), "missing {expected}: {}", error.message);
+            }
+        }
+        for method in ["custom/unknown", "$/unknown"] {
+            let mut notification = request(7, method);
+            notification.id = None;
+            assert!(server.handle_request(notification).is_none());
+        }
+        let shutdown =
+            server.handle_request(request(8, "shutdown")).ok_or("shutdown response required")?;
+        assert!(shutdown.error.is_none(), "a supported lifecycle request must remain routable");
+        Ok(())
+    }
+}

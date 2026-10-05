@@ -68,8 +68,7 @@ const EMPTY_FIXTURE: &str = "";
 
 const SINGLE_LINE_FIXTURE: &str = "my $x = 42;\n";
 
-#[test]
-fn scenario_27_folding_range_does_not_error() -> Result<()> {
+fn source_reconciliation_scenario_27_folding_range_does_not_error() -> Result<()> {
     if !binary_available() {
         eprintln!("SKIP scenario_27: perl-lsp binary not found");
         return Ok(());
@@ -96,7 +95,33 @@ fn scenario_27_folding_range_does_not_error() -> Result<()> {
 }
 
 #[test]
-fn scenario_27_folding_range_result_is_array() -> Result<()> {
+fn scenario_27_folding_range_does_not_error() {
+    use perl_lsp_ux_tests::{
+        UxCiTier, UxComponent, UxEvidenceClass, missing_binary_skip,
+        run_ux_scenario_with_evidence_class,
+    };
+    run_ux_scenario_with_evidence_class(
+        "folding_range_core",
+        "ux_scenario_27_folding_range.rs",
+        "scenario_27_folding_range_does_not_error",
+        UxCiTier::Pr,
+        Some(UxComponent::FoldingRange),
+        UxEvidenceClass::TransportCharacterization,
+        |recorder| {
+            if !binary_available() {
+                return Err(missing_binary_skip().into());
+            }
+            // Preserve source assertions; their helper does not expose an exact timing boundary.
+            source_reconciliation_scenario_27_folding_range_does_not_error()
+                .map_err(|error| anyhow::anyhow!("{error}"))?;
+            recorder.check("current source assertions for scenario_27_folding_range_does_not_error completed successfully", true)?;
+            // Aggregate completion records no request/first-useful timing boundary.
+            Ok(())
+        },
+    );
+}
+
+fn source_reconciliation_scenario_27_folding_range_result_is_array() -> Result<()> {
     if !binary_available() {
         eprintln!("SKIP scenario_27: perl-lsp binary not found");
         return Ok(());
@@ -125,7 +150,33 @@ fn scenario_27_folding_range_result_is_array() -> Result<()> {
 }
 
 #[test]
-fn scenario_27_folding_ranges_have_valid_line_fields() -> Result<()> {
+fn scenario_27_folding_range_result_is_array() {
+    use perl_lsp_ux_tests::{
+        UxCiTier, UxComponent, UxEvidenceClass, missing_binary_skip,
+        run_ux_scenario_with_evidence_class,
+    };
+    run_ux_scenario_with_evidence_class(
+        "folding_range_core",
+        "ux_scenario_27_folding_range.rs",
+        "scenario_27_folding_range_result_is_array",
+        UxCiTier::Pr,
+        Some(UxComponent::FoldingRange),
+        UxEvidenceClass::TransportCharacterization,
+        |recorder| {
+            if !binary_available() {
+                return Err(missing_binary_skip().into());
+            }
+            // Preserve source assertions; their helper does not expose an exact timing boundary.
+            source_reconciliation_scenario_27_folding_range_result_is_array()
+                .map_err(|error| anyhow::anyhow!("{error}"))?;
+            recorder.check("current source assertions for scenario_27_folding_range_result_is_array completed successfully", true)?;
+            // Aggregate completion records no request/first-useful timing boundary.
+            Ok(())
+        },
+    );
+}
+
+fn source_reconciliation_scenario_27_folding_ranges_have_valid_line_fields() -> Result<()> {
     if !binary_available() {
         eprintln!("SKIP scenario_27: perl-lsp binary not found");
         return Ok(());
@@ -164,7 +215,33 @@ fn scenario_27_folding_ranges_have_valid_line_fields() -> Result<()> {
 }
 
 #[test]
-fn scenario_27_multi_block_file_produces_at_least_one_fold() -> Result<()> {
+fn scenario_27_folding_ranges_have_valid_line_fields() {
+    use perl_lsp_ux_tests::{
+        UxCiTier, UxComponent, UxEvidenceClass, missing_binary_skip,
+        run_ux_scenario_with_evidence_class,
+    };
+    run_ux_scenario_with_evidence_class(
+        "folding_range_core",
+        "ux_scenario_27_folding_range.rs",
+        "scenario_27_folding_ranges_have_valid_line_fields",
+        UxCiTier::Pr,
+        Some(UxComponent::FoldingRange),
+        UxEvidenceClass::TransportCharacterization,
+        |recorder| {
+            if !binary_available() {
+                return Err(missing_binary_skip().into());
+            }
+            // Preserve source assertions; their helper does not expose an exact timing boundary.
+            source_reconciliation_scenario_27_folding_ranges_have_valid_line_fields()
+                .map_err(|error| anyhow::anyhow!("{error}"))?;
+            recorder.check("current source assertions for scenario_27_folding_ranges_have_valid_line_fields completed successfully", true)?;
+            // Aggregate completion records no request/first-useful timing boundary.
+            Ok(())
+        },
+    );
+}
+
+fn source_reconciliation_scenario_27_multi_block_file_produces_at_least_one_fold() -> Result<()> {
     if !binary_available() {
         eprintln!("SKIP scenario_27: perl-lsp binary not found");
         return Ok(());
@@ -194,7 +271,33 @@ fn scenario_27_multi_block_file_produces_at_least_one_fold() -> Result<()> {
 }
 
 #[test]
-fn scenario_27_empty_file_does_not_error() -> Result<()> {
+fn scenario_27_multi_block_file_produces_at_least_one_fold() {
+    use perl_lsp_ux_tests::{
+        UxCiTier, UxComponent, UxEvidenceClass, missing_binary_skip,
+        run_ux_scenario_with_evidence_class,
+    };
+    run_ux_scenario_with_evidence_class(
+        "folding_range_core",
+        "ux_scenario_27_folding_range.rs",
+        "scenario_27_multi_block_file_produces_at_least_one_fold",
+        UxCiTier::Pr,
+        Some(UxComponent::FoldingRange),
+        UxEvidenceClass::SemanticProof,
+        |recorder| {
+            if !binary_available() {
+                return Err(missing_binary_skip().into());
+            }
+            // Preserve source assertions; their helper does not expose an exact timing boundary.
+            source_reconciliation_scenario_27_multi_block_file_produces_at_least_one_fold()
+                .map_err(|error| anyhow::anyhow!("{error}"))?;
+            recorder.check("current source assertions for scenario_27_multi_block_file_produces_at_least_one_fold completed successfully", true)?;
+            // Aggregate completion records no request/first-useful timing boundary.
+            Ok(())
+        },
+    );
+}
+
+fn source_reconciliation_scenario_27_empty_file_does_not_error() -> Result<()> {
     if !binary_available() {
         eprintln!("SKIP scenario_27: perl-lsp binary not found");
         return Ok(());
@@ -220,7 +323,33 @@ fn scenario_27_empty_file_does_not_error() -> Result<()> {
 }
 
 #[test]
-fn scenario_27_single_line_file_does_not_error() -> Result<()> {
+fn scenario_27_empty_file_does_not_error() {
+    use perl_lsp_ux_tests::{
+        UxCiTier, UxComponent, UxEvidenceClass, missing_binary_skip,
+        run_ux_scenario_with_evidence_class,
+    };
+    run_ux_scenario_with_evidence_class(
+        "folding_range_core",
+        "ux_scenario_27_folding_range.rs",
+        "scenario_27_empty_file_does_not_error",
+        UxCiTier::Pr,
+        Some(UxComponent::FoldingRange),
+        UxEvidenceClass::TransportCharacterization,
+        |recorder| {
+            if !binary_available() {
+                return Err(missing_binary_skip().into());
+            }
+            // Preserve source assertions; their helper does not expose an exact timing boundary.
+            source_reconciliation_scenario_27_empty_file_does_not_error()
+                .map_err(|error| anyhow::anyhow!("{error}"))?;
+            recorder.check("current source assertions for scenario_27_empty_file_does_not_error completed successfully", true)?;
+            // Aggregate completion records no request/first-useful timing boundary.
+            Ok(())
+        },
+    );
+}
+
+fn source_reconciliation_scenario_27_single_line_file_does_not_error() -> Result<()> {
     if !binary_available() {
         eprintln!("SKIP scenario_27: perl-lsp binary not found");
         return Ok(());
@@ -247,7 +376,33 @@ fn scenario_27_single_line_file_does_not_error() -> Result<()> {
 }
 
 #[test]
-fn scenario_27_folding_range_is_idempotent() -> Result<()> {
+fn scenario_27_single_line_file_does_not_error() {
+    use perl_lsp_ux_tests::{
+        UxCiTier, UxComponent, UxEvidenceClass, missing_binary_skip,
+        run_ux_scenario_with_evidence_class,
+    };
+    run_ux_scenario_with_evidence_class(
+        "folding_range_core",
+        "ux_scenario_27_folding_range.rs",
+        "scenario_27_single_line_file_does_not_error",
+        UxCiTier::Pr,
+        Some(UxComponent::FoldingRange),
+        UxEvidenceClass::TransportCharacterization,
+        |recorder| {
+            if !binary_available() {
+                return Err(missing_binary_skip().into());
+            }
+            // Preserve source assertions; their helper does not expose an exact timing boundary.
+            source_reconciliation_scenario_27_single_line_file_does_not_error()
+                .map_err(|error| anyhow::anyhow!("{error}"))?;
+            recorder.check("current source assertions for scenario_27_single_line_file_does_not_error completed successfully", true)?;
+            // Aggregate completion records no request/first-useful timing boundary.
+            Ok(())
+        },
+    );
+}
+
+fn source_reconciliation_scenario_27_folding_range_is_idempotent() -> Result<()> {
     if !binary_available() {
         eprintln!("SKIP scenario_27: perl-lsp binary not found");
         return Ok(());
@@ -282,4 +437,31 @@ fn scenario_27_folding_range_is_idempotent() -> Result<()> {
 
     harness.assert_no_crash();
     Ok(())
+}
+
+#[test]
+fn scenario_27_folding_range_is_idempotent() {
+    use perl_lsp_ux_tests::{
+        UxCiTier, UxComponent, UxEvidenceClass, missing_binary_skip,
+        run_ux_scenario_with_evidence_class,
+    };
+    run_ux_scenario_with_evidence_class(
+        "folding_range_core",
+        "ux_scenario_27_folding_range.rs",
+        "scenario_27_folding_range_is_idempotent",
+        UxCiTier::Pr,
+        Some(UxComponent::FoldingRange),
+        UxEvidenceClass::TransportCharacterization,
+        |recorder| {
+            if !binary_available() {
+                return Err(missing_binary_skip().into());
+            }
+            // Preserve source assertions; their helper does not expose an exact timing boundary.
+            source_reconciliation_scenario_27_folding_range_is_idempotent()
+                .map_err(|error| anyhow::anyhow!("{error}"))?;
+            recorder.check("current source assertions for scenario_27_folding_range_is_idempotent completed successfully", true)?;
+            // Aggregate completion records no request/first-useful timing boundary.
+            Ok(())
+        },
+    );
 }

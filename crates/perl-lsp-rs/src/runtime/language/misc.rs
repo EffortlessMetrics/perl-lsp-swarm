@@ -2045,20 +2045,18 @@ impl LspServer {
         use crate::execute_command::ExecuteCommandProvider;
 
         if let Some(params) = params {
-            let command = params
-                .get("command")
-                .and_then(Value::as_str)
-                .ok_or_else(|| invalid_params("Missing required parameter: command"))?;
+            let command = params.get("command").and_then(Value::as_str).ok_or_else(|| {
+                invalid_execute_command_shape("Missing required parameter: command")
+            })?;
 
             // LSP ExecuteCommandParams.arguments is optional. Normalize an omitted
             // field to an empty list and reject malformed present values before
             // command-specific validation runs.
             let mut arguments = match params.get("arguments") {
                 None => Vec::new(),
-                Some(value) => value
-                    .as_array()
-                    .cloned()
-                    .ok_or_else(|| invalid_params("'arguments' must be an array when present"))?,
+                Some(value) => value.as_array().cloned().ok_or_else(|| {
+                    invalid_execute_command_shape("'arguments' must be an array when present")
+                })?,
             };
             if command == "perl.explainProviderDecision" {
                 self.attach_provider_decision_trace(&mut arguments);
@@ -2334,7 +2332,10 @@ impl LspServer {
         // Missing params entirely
         Err(JsonRpcError {
             code: INVALID_PARAMS,
-            message: "workspace/executeCommand: missing required parameter 'params'".to_string(),
+            message: invalid_execute_command_shape(
+                "workspace/executeCommand: missing required parameter 'params'",
+            )
+            .message,
             data: Some(json!({
                 "errorType": "executeCommand",
                 "originalError": "workspace/executeCommand: missing required parameter 'params'"
@@ -2499,7 +2500,16 @@ mod tests {
             .expect_err("missing execute command params must be rejected");
 
         assert_eq!(err.code, crate::protocol::INVALID_PARAMS);
-        assert_eq!(err.message, "workspace/executeCommand: missing required parameter 'params'");
+        assert_eq!(
+            err.message,
+            concat!(
+                "workspace/executeCommand: missing required parameter 'params': ",
+                "workspace/executeCommand expects params.command as a string; ",
+                "params.arguments is optional and must be an array when present. ",
+                "For example {\"command\":\"perl.runFile\",\"arguments\":[\"file:///path/to/script.pl\"]}; ",
+                "omit arguments or send [] for a command with no arguments."
+            )
+        );
         assert_eq!(
             err.data,
             Some(json!({
@@ -3015,4 +3025,51 @@ mod tests {
             .map(str::to_string)
             .ok_or_else(|| "expected resolved command title".into())
     }
+}
+
+#[cfg(test)]
+mod source_reconciliation_execute_command_shape_controls {
+    use super::*;
+    #[test]
+    fn malformed_shape_has_guidance_and_optional_arguments_are_admitted()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        for params in
+            [None, Some(json!({})), Some(json!({"command":"shape-control","arguments":false}))]
+        {
+            let error = match server.handle_execute_command(params) {
+                Ok(_) => return Err("malformed executeCommand succeeded".into()),
+                Err(error) => error,
+            };
+            assert_eq!(error.code, crate::protocol::INVALID_PARAMS);
+            for expected in [
+                "workspace/executeCommand",
+                "params.command",
+                "params.arguments",
+                "optional",
+                "file:///path/to/script.pl",
+            ] {
+                assert!(error.message.contains(expected), "missing {expected}: {}", error.message);
+            }
+        }
+        for params in [
+            json!({"command":"source-reconciliation-unknown"}),
+            json!({"command":"source-reconciliation-unknown","arguments":[]}),
+        ] {
+            let error = match server.handle_execute_command(Some(params)) {
+                Ok(_) => return Err("unknown control command unexpectedly succeeded".into()),
+                Err(error) => error,
+            };
+            assert_eq!(error.code, crate::protocol::METHOD_NOT_FOUND);
+            assert!(error.message.contains("Unknown command"));
+        }
+        Ok(())
+    }
+}
+
+fn invalid_execute_command_shape(summary: &str) -> JsonRpcError {
+    invalid_params(&format!(
+        "{summary}: {}",
+        "workspace/executeCommand expects params.command as a string; params.arguments is optional and must be an array when present. For example {\"command\":\"perl.runFile\",\"arguments\":[\"file:///path/to/script.pl\"]}; omit arguments or send [] for a command with no arguments."
+    ))
 }

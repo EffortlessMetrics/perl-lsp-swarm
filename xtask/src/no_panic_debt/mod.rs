@@ -5,6 +5,7 @@
 
 mod check;
 mod discover;
+mod doc_fences;
 mod join;
 mod model;
 mod projection;

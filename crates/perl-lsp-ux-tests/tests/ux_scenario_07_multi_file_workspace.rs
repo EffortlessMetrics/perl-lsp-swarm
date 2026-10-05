@@ -6,11 +6,11 @@
 //! Scenario 07 — Multi-file workspace / cross-file navigation.
 //!
 //! Sets up a small Perl project (cpanfile, library modules, script).
-//! Verifies multi-file open and go-to-definition work or degrade gracefully.
+//! Verifies multi-file open and a configured static module definition target.
 //!
 //! Acceptance criteria:
 //! - All files open without crashing.
-//! - `textDocument/definition` MUST NOT crash (empty result is acceptable).
+//! - `textDocument/definition` resolves the configured `lib/Counter.pm` target.
 //! - Server remains responsive after workspace indexing.
 
 use perl_lsp_ux_tests::binary_available;
@@ -56,7 +56,7 @@ fn scenario_07_multi_file_workspace_opens_without_crash() -> Result<(), String> 
 }
 
 #[test]
-fn scenario_07_definition_request_does_not_crash() -> Result<(), String> {
+fn scenario_07_definition_resolves_configured_module_target() -> Result<(), String> {
     if !binary_available() {
         eprintln!("SKIP scenario_07: perl-lsp binary not found");
         return Ok(());
@@ -83,12 +83,55 @@ fn scenario_07_definition_request_does_not_crash() -> Result<(), String> {
         .open_file("main.pl", script)
         .map_err(|error| format!("main.pl should open: {error}"))?;
 
-    // Allow workspace index to build.
-    std::thread::sleep(Duration::from_secs(2));
-
-    harness
-        .definition("main.pl", 3, 4)
+    let definitions = harness
+        .definition_with_retry("main.pl", 3, 4, 5, Duration::from_millis(250))
         .map_err(|error| format!("definition request crashed server — UX regression: {error}"))?;
+    assert!(!definitions.is_empty(), "configured Counter module must have a definition target");
+    let expected = url::Url::parse(harness.root_uri())
+        .and_then(|root| root.join("lib/Counter.pm"))
+        .map_err(|error| format!("invalid configured Counter URI: {error}"))?;
+    let mut found_expected = false;
+    let read_position = |value: &serde_json::Value| -> Option<(u32, u32)> {
+        Some((
+            u32::try_from(value.get("line")?.as_u64()?).ok()?,
+            u32::try_from(value.get("character")?.as_u64()?).ok()?,
+        ))
+    };
+    let read_range = |value: &serde_json::Value| {
+        let start = read_position(value.get("start")?)?;
+        let end = read_position(value.get("end")?)?;
+        (start <= end).then_some((start, end))
+    };
+    for definition in &definitions {
+        let (uri, range) = if let Some(uri) = definition.get("uri") {
+            (uri, definition.get("range"))
+        } else {
+            (
+                definition
+                    .get("targetUri")
+                    .ok_or("definition is not a Location or LocationLink")?,
+                definition.get("targetRange"),
+            )
+        };
+        let range = range.and_then(read_range).ok_or("definition must include a valid range")?;
+        if definition.get("uri").is_none() {
+            let selection = definition
+                .get("targetSelectionRange")
+                .and_then(read_range)
+                .ok_or("LocationLink must include a valid target selection range")?;
+            assert!(
+                range.0 <= selection.0 && selection.1 <= range.1,
+                "LocationLink selection must lie within its target range"
+            );
+        }
+        let actual = url::Url::parse(uri.as_str().ok_or("definition URI is not a string")?)
+            .map_err(|error| format!("invalid definition URI: {error}"))?;
+        found_expected |= actual == expected;
+    }
+    assert!(
+        found_expected,
+        "definition must resolve exact configured URI {expected}; got {definitions:?}"
+    );
 
     harness.assert_no_crash();
     Ok(())

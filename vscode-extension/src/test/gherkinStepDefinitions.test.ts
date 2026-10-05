@@ -1,3 +1,4 @@
+import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import {
@@ -23,6 +24,35 @@ describe('gherkin step definition support', () => {
     expect((vscode.languages.registerCodeActionsProvider as jest.Mock).mock.calls[0][0]).toEqual([
       { language: 'gherkin' },
     ]);
+  });
+
+  test('explains recovery when the step command has no workspace folder', async () => {
+    const openFile = jest
+      .spyOn(fs.promises, 'open')
+      .mockRejectedValue(new Error('Unexpected filesystem write in missing-workspace control'));
+    const registration = registerGherkinStepDefinitionSupport();
+    (vscode.workspace.openTextDocument as jest.Mock).mockResolvedValueOnce({
+      lineAt: jest.fn(() => ({ text: 'Given a user exists' })),
+    });
+    (vscode.workspace.getWorkspaceFolder as jest.Mock).mockReturnValueOnce(undefined);
+
+    try {
+      await vscode.commands.executeCommand('perl-lsp.createGherkinStepDefinition', {
+        featureUri: 'file:///tmp/checkout.feature',
+        line: 0,
+      });
+
+      expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(
+        expect.stringContaining('Open this .feature file from a folder or workspace'),
+      );
+      expect(vscode.workspace.findFiles).not.toHaveBeenCalled();
+      expect(openFile).not.toHaveBeenCalled();
+    } finally {
+      openFile.mockRestore();
+      for (const disposable of registration) {
+        disposable.dispose();
+      }
+    }
   });
 
   test('parses Given/When/Then step lines and skips non-step lines', () => {

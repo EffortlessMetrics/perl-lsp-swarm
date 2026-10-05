@@ -59,6 +59,7 @@ struct WorkspaceSymbolProbeReport {
     invalid_shape_count: usize,
     useful_hits: Vec<String>,
     useful_hit_count: usize,
+    missing_required_source_targets: Vec<String>,
     top_n_noise_count: usize,
     unrelated_hit_count: usize,
     generated_candidate_count: usize,
@@ -352,6 +353,11 @@ fn run_probe(
         valid_shape_count,
         invalid_shape_count,
         useful_hit_count: useful_hits.len(),
+        missing_required_source_targets: missing_required_source_targets(
+            &first.symbols,
+            probe.name,
+            |path| harness.workspace.uri(path),
+        ),
         useful_hits,
         top_n_noise_count: count_top_n_noise(&first.symbols, probe.useful_substrings),
         unrelated_hit_count: count_unrelated_hits(
@@ -517,6 +523,9 @@ fn scenario_43_modern_oo_workspace_symbol_noise_receipt() {
             for probe in &probes {
                 recorder.mark_request_start(probe.name);
                 let report = run_probe(&harness, probe)?;
+                if !required_static_source_targets(probe.name).is_empty() {
+                    recorder.check("required static query returns every declared source name at its exact fixture URI", report.missing_required_source_targets.is_empty())?;
+                }
                 if report.first_count > 0 {
                     recorder.mark_first_useful_result(probe.name);
                 }
@@ -728,4 +737,80 @@ fn scenario_43_modern_oo_workspace_symbol_noise_receipt() {
             Ok(())
         },
     );
+}
+
+fn required_static_source_targets(probe_name: &str) -> &'static [(&'static str, &'static str)] {
+    match probe_name {
+        "package_prefix_modern_oo" => &[("MooseExample::User", "modern_oo_frameworks.pl")],
+        "delegated_handles_quality" => {
+            &[("MooseExample::User::has_admin_role", "modern_oo_frameworks.pl")]
+        }
+        "moo_product_quality" => &[
+            ("MooExample::Product::set_price", "modern_oo_frameworks.pl"),
+            ("MooExample::Product::calculate_discount_price", "modern_oo_frameworks.pl"),
+        ],
+        // Generated keyword and dynamic-boundary queries do not have a
+        // declared source target and cannot claim a static known answer.
+        _ => &[],
+    }
+}
+
+fn missing_required_source_targets(
+    symbols: &[Value],
+    probe_name: &str,
+    uri_for: impl Fn(&str) -> String,
+) -> Vec<String> {
+    required_static_source_targets(probe_name)
+        .iter()
+        .filter_map(|(name, path)| {
+            let expected_uri = uri_for(path);
+            let found = symbols.iter().any(|symbol| {
+                let actual_name = symbol.get("name").and_then(Value::as_str);
+                let bare_name = name.rsplit("::").next();
+                let actual_container = symbol.get("containerName").and_then(Value::as_str);
+                let name_matches = actual_name == Some(*name)
+                    || (actual_name == bare_name
+                        && actual_container.is_none_or(|container| {
+                            name.rsplit_once("::").is_some_and(|(package, _)| package == container)
+                        }));
+                name_matches
+                    && is_valid_workspace_symbol_shape(symbol)
+                    && symbol.pointer("/location/uri").and_then(Value::as_str)
+                        == Some(expected_uri.as_str())
+            });
+            (!found).then(|| format!("{name} at {expected_uri}"))
+        })
+        .collect()
+}
+
+#[test]
+fn static_source_target_controls_reject_drop_one_unrelated_and_wrong_workspace() {
+    use serde_json::json;
+    for probe in workspace_symbol_probes() {
+        let required = required_static_source_targets(probe.name);
+        if required.is_empty() {
+            continue;
+        }
+        let uri_for = |path: &str| format!("file:///expected/{path}");
+        let complete = required.iter().map(|(name,path)| json!({"name":name,"kind":12,"location":{"uri":uri_for(path),"range":{"start":{"line":0,"character":0},"end":{"line":0,"character":1}}}})).collect::<Vec<_>>();
+        assert!(missing_required_source_targets(&complete, probe.name, uri_for).is_empty());
+        for drop in 0..complete.len() {
+            let remaining = complete
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| *index != drop)
+                .map(|(_, symbol)| symbol.clone())
+                .collect::<Vec<_>>();
+            assert!(!missing_required_source_targets(&remaining, probe.name, uri_for).is_empty());
+        }
+        let mut wrong_root = complete.clone();
+        for symbol in &mut wrong_root {
+            symbol["location"]["uri"] = json!("file:///other/root.pl");
+        }
+        assert!(!missing_required_source_targets(&wrong_root, probe.name, uri_for).is_empty());
+        let unrelated = vec![
+            json!({"name":"MojoliciousGarbage","kind":12,"location":{"uri":"file:///expected/unrelated.pm","range":{"start":{"line":0,"character":0},"end":{"line":0,"character":1}}}}),
+        ];
+        assert!(!missing_required_source_targets(&unrelated, probe.name, uri_for).is_empty());
+    }
 }

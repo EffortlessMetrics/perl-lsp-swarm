@@ -201,3 +201,14 @@ describe('countable status-bar labels', () => {
     expect(presentation.text).toBe('$(sync~spin) perl-lsp: Indexing… (1 file)');
   });
 });
+
+test('ready detail/action and telemetry counts coexist in the canonical tooltip', () => {
+  const presentation = presentWorkspaceExperience(
+    { lifecycle: 'ready', detail: 'Current provider detail', action: 'Review setup hints' },
+    { fileCount: 2, errorCount: 1 },
+  );
+  expect(presentation.tooltip).toContain('Current provider detail');
+  expect(presentation.tooltip).toContain('Review setup hints');
+  expect(presentation.tooltip).toContain('2 files');
+  expect(presentation.tooltip).toContain('1 error');
+});

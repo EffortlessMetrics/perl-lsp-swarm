@@ -1415,16 +1415,16 @@ impl LspServer {
         // silent empty response.  Return InvalidParams so the client can distinguish
         // "no diagnostics for this file" from "I didn't understand your request".
         let params =
-            params.ok_or_else(|| invalid_params("textDocument/diagnostic requires params"))?;
+            params.ok_or_else(|| invalid_params("textDocument/diagnostic requires params. textDocument/diagnostic expects params.textDocument.uri identifying the document, for example {\"textDocument\":{\"uri\":\"file:///workspace/main.pl\"}}"))?;
         let uri_str = params["textDocument"]["uri"]
             .as_str()
             .filter(|s| !s.is_empty())
-            .ok_or_else(|| invalid_params("Missing required parameter: textDocument.uri"))?;
+            .ok_or_else(|| invalid_params("Missing required parameter: textDocument.uri. textDocument/diagnostic expects params.textDocument.uri identifying the document, for example {\"textDocument\":{\"uri\":\"file:///workspace/main.pl\"}}"))?;
         let previous_result_id = params["previousResultId"].as_str().map(|s| s.to_string());
 
         // Parse URI — an unparseable URI is a client-side protocol error (LSP 3.17)
         let uri: Uri =
-            uri_str.parse().map_err(|_| invalid_params("Invalid URI in textDocument.uri"))?;
+            uri_str.parse().map_err(|_| invalid_params("Invalid URI in textDocument.uri. textDocument/diagnostic expects params.textDocument.uri identifying the document, for example {\"textDocument\":{\"uri\":\"file:///workspace/main.pl\"}}"))?;
 
         // Syntax-only short-circuit for pull diagnostics. Mirrors the
         // push-path gate in `publish_diagnostics`.
@@ -7166,5 +7166,40 @@ print $x;
         assert_eq!(markup_diag["source"], string_diag["source"]);
         assert_eq!(markup_diag["range"], string_diag["range"]);
         assert_eq!(markup_diag["code"], "native.testing.require_use_strict");
+    }
+}
+
+#[cfg(test)]
+mod merge_sync_diagnostic_guidance_tests {
+    use crate::runtime::LspServer;
+    use serde_json::json;
+
+    #[test]
+    fn malformed_pull_diagnostic_requests_retain_document_shape_guidance() -> Result<(), String> {
+        let server = LspServer::new();
+        for params in [
+            None,
+            Some(json!({"textDocument": {}})),
+            Some(json!({"textDocument": {"uri": ""}})),
+            Some(json!({"textDocument": {"uri": ":::not a uri:::"}})),
+        ] {
+            let error = server
+                .handle_document_diagnostic(params)
+                .err()
+                .ok_or("malformed pull diagnostic must fail")?;
+            assert_eq!(error.code, crate::protocol::INVALID_PARAMS);
+            for expected in
+                ["textDocument/diagnostic", "params.textDocument.uri", "file:///workspace/main.pl"]
+            {
+                assert!(error.message.contains(expected), "missing {expected}: {}", error.message);
+            }
+        }
+        let report = server
+            .handle_document_diagnostic(Some(
+                json!({"textDocument": {"uri": "file:///workspace/no_open_document.pl"}}),
+            ))
+            .map_err(|error| error.to_string())?;
+        assert!(report.is_some(), "a valid URI must retain the current empty/full report contract");
+        Ok(())
     }
 }

@@ -321,6 +321,27 @@ pub struct BreakpointStore {
     source_read_attempts: Arc<std::sync::atomic::AtomicUsize>,
 }
 
+fn format_source_read_error(source_path: &str, error: &std::io::Error) -> String {
+    let mut message = format!("Unable to read source file '{source_path}': {error}");
+    let guidance = match error.kind() {
+        std::io::ErrorKind::NotFound => {
+            Some("Check that the file still exists, then set the breakpoint again.")
+        }
+        std::io::ErrorKind::PermissionDenied => {
+            Some("Check file permissions before setting breakpoints.")
+        }
+        std::io::ErrorKind::IsADirectory => {
+            Some("Breakpoints can only be set in Perl script files.")
+        }
+        _ => None,
+    };
+    if let Some(guidance) = guidance {
+        message.push_str(". ");
+        message.push_str(guidance);
+    }
+    message
+}
+
 impl BreakpointStore {
     /// Create a new empty breakpoint store
     ///
@@ -445,9 +466,14 @@ impl BreakpointStore {
         // Read source file and parse once for AST validation (AC7).
         #[cfg(test)]
         self.source_read_attempts.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let source_content = std::fs::read_to_string(&source_path).ok();
+        let source_content = std::fs::read_to_string(&source_path);
+        let source_read_error = source_content
+            .as_ref()
+            .err()
+            .map(|error| format_source_read_error(&source_path, error));
         let validator = source_content
             .as_ref()
+            .ok()
             .map(|content| AstBreakpointValidator::new(content).map_err(|e| e.to_string()));
         let mut validation_cache: HashMap<(i64, Option<i64>), (bool, i64, Option<String>)> =
             HashMap::new();
@@ -560,7 +586,7 @@ impl BreakpointStore {
                         Some(Err(error)) => (false, bp.line, Some(error.clone())),
                         None => {
                             // Can't read file - mark as unverified but still create breakpoint.
-                            (false, bp.line, Some("Unable to read source file".to_string()))
+                            (false, bp.line, source_read_error.clone())
                         }
                     };
                     validation_cache.insert((bp.line, bp.column), computed.clone());
@@ -981,6 +1007,59 @@ print "result: $final\n";
         must(file.flush());
         let path = file.path().to_string_lossy().to_string();
         (file, path)
+    }
+
+    #[test]
+    fn unreadable_source_keeps_request_records_and_reports_path_error_and_recovery()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let source_path = directory.path().join("missing.pl").to_string_lossy().into_owned();
+        let Err(expected_error) = std::fs::read_to_string(&source_path) else {
+            return Err("fixture source must be absent".into());
+        };
+        let store = BreakpointStore::new();
+        let arguments = SetBreakpointsArguments {
+            source: Source {
+                path: Some(source_path.clone()),
+                name: Some("missing.pl".to_string()),
+            },
+            breakpoints: Some(
+                [1, 2]
+                    .into_iter()
+                    .map(|line| SourceBreakpoint {
+                        line,
+                        column: None,
+                        condition: None,
+                        hit_condition: None,
+                        log_message: None,
+                    })
+                    .collect(),
+            ),
+            source_modified: None,
+        };
+        let records = store.set_breakpoints(&arguments);
+        assert_eq!(records.len(), 2, "unreadable source keeps one record per requested line");
+        assert_eq!(store.source_read_attempts(), 1, "validation reads source once");
+        for (record, expected_line) in records.iter().zip([1, 2]) {
+            assert!(!record.verified);
+            assert_eq!(record.line, expected_line);
+            let message =
+                record.message.as_deref().ok_or("unverified record needs read guidance")?;
+            assert!(message.contains(&source_path), "source identity missing: {message}");
+            assert!(message.contains(&expected_error.to_string()), "OS error missing: {message}");
+            assert!(message.contains("file still exists"), "recovery missing: {message}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn unrelated_source_read_error_does_not_invent_recovery_guidance() {
+        let error = std::io::Error::from(std::io::ErrorKind::Interrupted);
+        let message = format_source_read_error("script.pl", &error);
+        assert!(message.contains("script.pl"));
+        assert!(message.contains(&error.to_string()));
+        assert!(!message.contains("file still exists"));
+        assert!(!message.contains("file permissions"));
     }
 
     #[test]

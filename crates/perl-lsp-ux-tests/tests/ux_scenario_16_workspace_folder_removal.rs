@@ -44,8 +44,8 @@ fn contains_symbol_in_folder(symbols: &[Value], symbol_name: &str, folder_fragme
     })
 }
 
-#[test]
-fn scenario_16_removed_workspace_folder_symbols_disappear() -> Result<(), String> {
+fn source_reconciliation_scenario_16_removed_workspace_folder_symbols_disappear()
+-> Result<(), String> {
     if !binary_available() {
         eprintln!("SKIP scenario_16: perl-lsp binary not found");
         return Ok(());
@@ -136,4 +136,31 @@ fn scenario_16_removed_workspace_folder_symbols_disappear() -> Result<(), String
 
     harness.assert_no_crash();
     Ok(())
+}
+
+#[test]
+fn scenario_16_removed_workspace_folder_symbols_disappear() {
+    use perl_lsp_ux_tests::{
+        UxCiTier, UxComponent, UxEvidenceClass, missing_binary_skip,
+        run_ux_scenario_with_evidence_class,
+    };
+    run_ux_scenario_with_evidence_class(
+        "workspace_folder_removal_freshness",
+        "ux_scenario_16_workspace_folder_removal.rs",
+        "scenario_16_removed_workspace_folder_symbols_disappear",
+        UxCiTier::Pr,
+        Some(UxComponent::WorkspaceSymbols),
+        UxEvidenceClass::SemanticProof,
+        |recorder| {
+            if !binary_available() {
+                return Err(missing_binary_skip().into());
+            }
+            // Preserve source assertions; their helper does not expose an exact timing boundary.
+            source_reconciliation_scenario_16_removed_workspace_folder_symbols_disappear()
+                .map_err(|error| anyhow::anyhow!("{error}"))?;
+            recorder.check("current source assertions for scenario_16_removed_workspace_folder_symbols_disappear completed successfully", true)?;
+            // Aggregate completion records no request/first-useful timing boundary.
+            Ok(())
+        },
+    );
 }

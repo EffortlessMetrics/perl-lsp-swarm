@@ -6,11 +6,14 @@ test('module declaration follows the owning lib tree', () => {
   expect(content).toContain('package Foo::Bar;');
   expect(content).toContain('use strict;');
   expect(content?.trimEnd()).toMatch(/1;$/);
+  expect(content).not.toContain("use lib 'lib';");
 });
 
 test('a test scaffold has no package declaration', () => {
   const content = scaffoldContent(FileKind.Test, '/project', '/project/t/example.t');
-  expect(content).toContain('use Test::More;');
+  expect(content).toBe(
+    "use strict;\nuse warnings;\nuse lib 'lib';\nuse Test::More;\n\n\n\ndone_testing;\n",
+  );
   expect(content).not.toContain('package ');
   expect(content?.trimEnd()).toMatch(/done_testing;$/);
 });

@@ -3251,10 +3251,9 @@ describe('ensureBinary error classification', () => {
 
     await downloader.ensureBinary();
 
-    expect(vscode.window.showErrorMessage).toHaveBeenCalledWith(
-      expect.stringMatching(/proxy|VPN|network/i),
-      expect.anything(),
-      expect.anything(),
+    expect(vscode.window.showErrorMessage.mock.calls[0][0]).toMatch(/proxy|VPN|network/i);
+    expect(vscode.window.showErrorMessage.mock.calls[0].slice(1)).toEqual(
+      expect.arrayContaining(['Open Proxy Settings', 'Install Manually']),
     );
     // Must mention the manual install setting
     const call = vscode.window.showErrorMessage.mock.calls[0];
@@ -3778,6 +3777,45 @@ describe('ensureBinary error classification', () => {
     const call = vscode.window.showErrorMessage.mock.calls[0];
     const buttons: string[] = call.slice(1);
     expect(buttons).toContain('Install Manually');
+  });
+
+  test.each([
+    'Windows ARM64 x64 emulation is unavailable',
+    'connect ETIMEDOUT 140.82.121.3:443',
+    'No binary found for platform: x86_64-unsupported-os',
+    'HTTP 403',
+    'HTTP 404',
+    'No SHA256SUMS file found',
+    'Conflicting checksum entries',
+    'Checksum verification failed',
+    'Failed to extract archive',
+    'some unexpected error occurred',
+  ])('download failure "%s" offers the serverPath settings action', async (errorMessage) => {
+    setupDownloadError(errorMessage);
+    const vscode = require('vscode');
+    vscode.window.showErrorMessage.mockResolvedValue(undefined);
+
+    expect(await downloader.ensureBinary()).toBeNull();
+
+    expect(vscode.window.showErrorMessage.mock.calls[0].slice(1)).toContain('Configure serverPath');
+    expect(vscode.commands.executeCommand).not.toHaveBeenCalled();
+  });
+
+  test('serverPath action opens only its setting and does not reinstall', async () => {
+    const downloadSpy = setupDownloadError('some unexpected error occurred');
+    const vscode = require('vscode');
+    vscode.window.showErrorMessage.mockResolvedValue('Configure serverPath');
+
+    expect(await downloader.ensureBinary()).toBeNull();
+    await Promise.resolve();
+
+    expect(vscode.commands.executeCommand).toHaveBeenCalledTimes(1);
+    expect(vscode.commands.executeCommand).toHaveBeenCalledWith(
+      'workbench.action.openSettings',
+      'perl-lsp.serverPath',
+    );
+    expect(vscode.env.openExternal).not.toHaveBeenCalled();
+    expect(downloadSpy).toHaveBeenCalledTimes(1);
   });
 
   test('"Install Manually" button opens the manual install URL', async () => {

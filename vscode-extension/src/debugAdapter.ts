@@ -859,7 +859,7 @@ export class PerlDebugAdapterDescriptorFactory implements vscode.DebugAdapterDes
       vscode.window
         .showErrorMessage(
           'Perl Debug Adapter (perl-dap) not found. Debugging requires perl-dap. ' +
-            'Use "Perl LSP: Reinstall" from the Command Palette to re-download it, ' +
+            'Use "Perl: Reinstall Server Binary" from the Command Palette to retry the managed download, ' +
             'or install it manually with: cargo install perl-dap.',
           'Reinstall',
           'Open Debugging Guide',

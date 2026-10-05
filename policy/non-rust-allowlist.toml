@@ -5816,3 +5816,29 @@ reason = "Disposable real Git negative-control fixture proves fetch maintenance 
 covered_by = ["python scripts/tests/test_cleanup_fetch_maintenance.py"]
 created = "2026-10-01"
 review_after = "2027-01-01"
+
+[[allow]]
+id = "non-rust-source-reconciliation-preflight"
+path = "scripts/source_reconciliation.py"
+kind = "ci_tooling"
+language = "python"
+surface = "tooling"
+classification = "tooling"
+owner = "release/ci"
+reason = "Standard-library complete-history composition around sync-divergence v2, independently binding Git populations and current entries without a native build."
+covered_by = ["python scripts/tests/test-source-reconciliation.py"]
+created = "2026-10-04"
+review_after = "2026-11-03"
+
+[[allow]]
+id = "non-rust-source-reconciliation-tests"
+path = "scripts/tests/test-source-reconciliation.py"
+kind = "ci_tooling"
+language = "python"
+surface = "tooling"
+classification = "test"
+owner = "release/ci"
+reason = "Real-Git standard-library falsifiers for complete denominator, current survival, merge effects, source/native mapping and linked-worktree receipt destinations."
+covered_by = ["python scripts/tests/test-source-reconciliation.py"]
+created = "2026-10-04"
+review_after = "2026-11-03"

@@ -69,6 +69,7 @@ struct DiagnosticProbeReport {
     notification_count: usize,
     invalid_shape_count: usize,
     pl701_count: usize,
+    actionable_pl701_count: usize,
     false_positive_pl701_modules: Vec<String>,
     required_code_hits: Vec<String>,
     missing_required_codes: Vec<String>,
@@ -148,6 +149,24 @@ fn diagnostic_code(diagnostic: &Value) -> Option<String> {
 
 fn diagnostic_message(diagnostic: &Value) -> &str {
     diagnostic.get("message").and_then(Value::as_str).unwrap_or_default()
+}
+
+fn actionable_pl701(diagnostic: &Value) -> bool {
+    has_diagnostic_code(diagnostic, "PL701")
+        && diagnostic_message(diagnostic).contains("Searched @INC")
+        && diagnostic_message(diagnostic).contains("workspace includePaths")
+}
+
+#[test]
+fn actionable_pl701_control_rejects_bare_or_unrelated_messages() {
+    use serde_json::json;
+    assert!(!actionable_pl701(&json!({"code":"PL701", "message":"Missing module"})));
+    assert!(!actionable_pl701(
+        &json!({"code":"OTHER", "message":"Searched @INC; workspace includePaths"})
+    ));
+    assert!(actionable_pl701(
+        &json!({"code":"PL701", "message":"Missing module; Searched @INC; workspace includePaths"})
+    ));
 }
 
 fn has_diagnostic_code(diagnostic: &Value, code: &str) -> bool {
@@ -311,6 +330,10 @@ fn run_probe(harness: &UxHarness, probe: &DiagnosticProbe) -> Result<DiagnosticP
         notification_count,
         invalid_shape_count,
         pl701_count,
+        actionable_pl701_count: diagnostics
+            .iter()
+            .filter(|diagnostic| actionable_pl701(diagnostic))
+            .count(),
         false_positive_pl701_modules,
         required_code_hits: required_hits,
         missing_required_codes: missing_codes,
@@ -352,6 +375,9 @@ fn scenario_31_mojolicious_diagnostics_quality_receipt() {
             for probe in &probes {
                 recorder.mark_request_start(probe.name);
                 let report = run_probe(&harness, probe)?;
+                if probe.required_codes.contains(&"PL701") {
+                    recorder.check("every required missing-module PL701 retains actionable searched @INC and includePaths context", report.pl701_count > 0 && report.actionable_pl701_count == report.pl701_count)?;
+                }
                 if report.notification_count > 0 {
                     recorder.mark_first_useful_result(probe.name);
                 }

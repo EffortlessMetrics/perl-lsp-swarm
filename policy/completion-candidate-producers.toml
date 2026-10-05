@@ -135,6 +135,12 @@ outcome_owner = "#10230"
 # Re-anchor (same PR, CodeRabbit thread): canonical_document_identity now
 # normalizes URI-form identities via perl_uri::normalize_uri, matching the
 # workspace index's identity comparison; producer rows unchanged.
+# Re-anchor 2026-10-04 (#17226): the runtime workspace enrichment producer
+# now requires a case-insensitive typed prefix of the symbol name or qualified
+# name. The same append-channel function, entry routes, candidate class,
+# index-freshness limitation, and finalizer route remain. Two new test fixtures
+# use the canonical initial-index API. No other scanned file changed from the
+# previous ledger binding, and the 42-file producer population is unchanged.
 # Re-anchor 2026-10-02 (merge of #17045/#17043 into #16983): the freshness-seam
 # rewrite touched request/dispatch.rs beside this branch's type_engine threading
 # of the same call sites; both compose (URI argument retained on the workspace
@@ -147,7 +153,10 @@ outcome_owner = "#10230"
 # add/remove/re-channel, no entry/finalizer change. The methods row's
 # limitations text documents the combined predicate and the
 # receiver_packages=None fallback. Digest-only projection diff.
-source_digest = "sha256:0f65f540ded8386d00b6237c0c938db9ad99ca719e6bd0ccf6a66004d6d0c71d"
+# Re-anchor 2026-10-05 (#17226): compose retained strict workspace-prefix
+# admission/recovery controls with current-main receiver-scoped method producers.
+# Both append channels, the 42-file population and finalizer routes remain.
+source_digest = "sha256:b836c310aa91e69c233b05c38f830dbccf32789ee1b46f5cf89586b82d0c2c39"
 
 [[delegations]]
 module = "dancer2"

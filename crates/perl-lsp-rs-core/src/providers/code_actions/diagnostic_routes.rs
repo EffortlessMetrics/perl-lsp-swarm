@@ -36,7 +36,12 @@ pub(super) fn quick_fixes_for_diagnostics(
     let printf_metadata = ast.map(quick_fixes::printf_format_arity_metadata_by_range);
 
     for diagnostic in diagnostics {
-        actions.extend(quick_fixes_for_diagnostic(source, printf_metadata.as_ref(), diagnostic));
+        actions.extend(quick_fixes_for_diagnostic(
+            source,
+            ast,
+            printf_metadata.as_ref(),
+            diagnostic,
+        ));
     }
 
     actions
@@ -44,6 +49,7 @@ pub(super) fn quick_fixes_for_diagnostics(
 
 fn quick_fixes_for_diagnostic(
     source: &str,
+    ast: Option<&Node>,
     printf_metadata: Option<&quick_fixes::PrintfFormatArityMetadata>,
     diagnostic: &Diagnostic,
 ) -> Vec<CodeAction> {
@@ -234,6 +240,18 @@ fn quick_fixes_for_diagnostic(
         {
             actions.extend(quick_fixes::fix_printf_format_arity(source, &qf_diag));
         }
+        // PL304: exported subroutine lacks POD documentation.
+        c if c == DiagnosticCode::MissingPodCoverage.as_str() => {
+            if let Some(ast) = ast {
+                actions.extend(quick_fixes::fix_missing_pod_coverage(source, ast, &qf_diag));
+            }
+        }
+        // PL409: goto statement targets an undefined label.
+        c if c == DiagnosticCode::GotoUndefinedLabel.as_str() => {
+            if let Some(ast) = ast {
+                actions.extend(quick_fixes::fix_goto_undefined_label(source, ast, &qf_diag));
+            }
+        }
         // PL410: loop-control statement targets an undefined label
         c if c == DiagnosticCode::LoopControlUndefinedLabel.as_str() => {
             actions.extend(quick_fixes::fix_loop_control_undefined_label(source, &qf_diag));
@@ -312,8 +330,17 @@ mod tests {
             "`next MISSING` references a label that is not defined in this file",
         );
 
-        let actions = quick_fixes_for_diagnostic(source, None, &diagnostic);
+        let actions = quick_fixes_for_diagnostic(source, None, None, &diagnostic);
 
         assert_eq!(actions.len(), 0);
+    }
+
+    #[test]
+    fn pod_and_goto_edits_require_current_ast_authority() {
+        for code in ["PL304", "PL409"] {
+            let source = "sub run { 42 }\ngoto MISSING;\n";
+            let diag = diagnostic(code, (0, source.len()), "Presentation alone grants no edit");
+            assert!(quick_fixes_for_diagnostics(source, None, &[diag]).is_empty());
+        }
     }
 }

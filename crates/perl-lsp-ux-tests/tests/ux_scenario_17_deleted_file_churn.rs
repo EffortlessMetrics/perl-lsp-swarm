@@ -38,8 +38,8 @@ fn symbol_names(symbols: &[Value]) -> Vec<&str> {
     symbols.iter().filter_map(|symbol| symbol["name"].as_str()).collect()
 }
 
-#[test]
-fn scenario_17_deleted_module_evicted_from_symbols_and_definition() -> Result<(), String> {
+fn source_reconciliation_scenario_17_deleted_module_evicted_from_symbols_and_definition()
+-> Result<(), String> {
     if !binary_available() {
         eprintln!("SKIP scenario_17: perl-lsp binary not found");
         return Ok(());
@@ -136,4 +136,31 @@ fn scenario_17_deleted_module_evicted_from_symbols_and_definition() -> Result<()
 
     harness.assert_no_crash();
     Ok(())
+}
+
+#[test]
+fn scenario_17_deleted_module_evicted_from_symbols_and_definition() {
+    use perl_lsp_ux_tests::{
+        UxCiTier, UxComponent, UxEvidenceClass, missing_binary_skip,
+        run_ux_scenario_with_evidence_class,
+    };
+    run_ux_scenario_with_evidence_class(
+        "deleted_file_churn_freshness",
+        "ux_scenario_17_deleted_file_churn.rs",
+        "scenario_17_deleted_module_evicted_from_symbols_and_definition",
+        UxCiTier::Pr,
+        Some(UxComponent::WorkspaceSymbols),
+        UxEvidenceClass::SemanticProof,
+        |recorder| {
+            if !binary_available() {
+                return Err(missing_binary_skip().into());
+            }
+            // Preserve source assertions; their helper does not expose an exact timing boundary.
+            source_reconciliation_scenario_17_deleted_module_evicted_from_symbols_and_definition()
+                .map_err(|error| anyhow::anyhow!("{error}"))?;
+            recorder.check("current source assertions for scenario_17_deleted_module_evicted_from_symbols_and_definition completed successfully", true)?;
+            // Aggregate completion records no request/first-useful timing boundary.
+            Ok(())
+        },
+    );
 }

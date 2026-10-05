@@ -1864,9 +1864,15 @@ impl LspServer {
         &self,
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
+        if params.is_none() {
+            return Err(crate::protocol::invalid_params(
+                "textDocument/definition expects params.textDocument.uri plus params.position.line and params.position.character. Send the URI of an open Perl document and a UTF-16 line/character position; retry with that request shape.",
+            ));
+        }
+
         if let Some(params) = params {
-            let uri = req_uri(&params)?;
-            let (line, character) = req_position(&params)?;
+            let uri = req_uri(&params).map_err(|error| crate::protocol::invalid_params(&format!("{}; textDocument/definition expects params.textDocument.uri plus params.position.line and params.position.character. Send the URI of an open Perl document and a UTF-16 line/character position; retry with that request shape.", error.message)))?;
+            let (line, character) = req_position(&params).map_err(|error| crate::protocol::invalid_params(&format!("{}; textDocument/definition expects params.textDocument.uri plus params.position.line and params.position.character. Send the URI of an open Perl document and a UTF-16 line/character position; retry with that request shape.", error.message)))?;
 
             // Reject stale requests (parity with hover.rs:51-53 and completion.rs:312)
             let req_version =
@@ -3068,7 +3074,20 @@ impl LspServer {
         &self,
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
-        let live_provider_result = self.handle_definition(params.clone())?;
+        let live_provider_result = match self.handle_definition(params.clone()) {
+            Err(error) if params.is_none() => {
+                return Ok(Some(json!({
+                    "provider": "definition",
+                    "live_provider_result": null,
+                    "live_provider_count": 0,
+                    "live_provider_error": error,
+                    "source_backed_receipt": null,
+                    "no_live_behavior_change": true,
+                    "note": "definition runtime proof missing request params"
+                })));
+            }
+            result => result?,
+        };
         let live_provider_count = lsp_location_count(live_provider_result.as_ref());
 
         #[cfg(not(all(feature = "workspace", not(target_arch = "wasm32"))))]
@@ -5695,5 +5714,43 @@ mod tests {
             second.emit_core_module_notice_once("strict"),
             "the guard is instance-level: a second server session must still emit"
         );
+    }
+}
+
+#[cfg(test)]
+mod source_reconciliation_request_shape_controls {
+    use super::*;
+    #[test]
+    fn missing_or_malformed_request_has_recovery_and_valid_shape_is_admitted()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        for params in [
+            None,
+            Some(serde_json::json!(false)),
+            Some(serde_json::json!({"textDocument":{"uri":"file:///shape-control.pl"}})),
+        ] {
+            let error = match server.handle_definition_inner(params) {
+                Ok(_) => return Err("malformed request unexpectedly succeeded".into()),
+                Err(error) => error,
+            };
+            assert_eq!(error.code, crate::protocol::INVALID_PARAMS);
+            for expected in [
+                "textDocument/definition",
+                "params.textDocument.uri",
+                "params.position.line",
+                "params.position.character",
+                "retry",
+            ] {
+                assert!(error.message.contains(expected), "missing {expected}: {}", error.message);
+            }
+        }
+        let params = Some(
+            serde_json::json!({"textDocument":{"uri":"file:///shape-control.pl"},"position":{"line":0,"character":0},"context":{"includeDeclaration":true}}),
+        );
+        assert!(
+            server.handle_definition_inner(params).is_ok(),
+            "valid unopened-document shape must retain the current successful empty response"
+        );
+        Ok(())
     }
 }

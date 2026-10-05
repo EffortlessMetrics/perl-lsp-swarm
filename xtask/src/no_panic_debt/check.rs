@@ -139,6 +139,18 @@ pub fn integrity_findings(root: &Path, inventory: &Inventory) -> Vec<String> {
             .push("test topology is not_proven; the denominator is not a clean zero".to_string());
     }
 
+    if inventory.instruments.iter().any(|instrument| {
+        matches!(
+            instrument.kind.as_str(),
+            "doc_fence" | "doc_topology" | "doc_include" | "doc_include_binding"
+        ) && instrument.status == InstrumentStatus::NotProven
+    }) {
+        findings.push(
+            "doc-fence observation is not_proven; the denominator is not a complete zero"
+                .to_string(),
+        );
+    }
+
     for row in &inventory.rows {
         if row.status == DebtStatus::ConvertedAbsent && row.kind != "registry" {
             findings.push(format!(
@@ -155,7 +167,9 @@ pub fn integrity_findings(root: &Path, inventory: &Inventory) -> Vec<String> {
             ));
         }
         let parse_failed = inventory.instruments.iter().any(|instrument| {
-            instrument.kind == "source_parse"
+            (instrument.kind == "source_parse"
+                || (matches!(instrument.kind.as_str(), "doc_fence" | "doc_source_parse")
+                    && row.entrypoint.starts_with("rustdoc-fence-")))
                 && instrument.status == InstrumentStatus::NotProven
                 && instrument.subject == row.path
         });

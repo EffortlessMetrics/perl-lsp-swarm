@@ -1460,14 +1460,14 @@ impl LspServer {
     ) -> Result<Option<Value>, JsonRpcError> {
         let params = params.ok_or_else(|| {
             crate::protocol::invalid_params(
-                "workspace/symbol/resolve: missing required parameter 'params'",
+                "workspaceSymbol/resolve expects the WorkspaceSymbol object returned by workspace/symbol. Pass that returned object's name and location fields unchanged; request fresh workspace symbols if its data is missing.",
             )
         })?;
 
         // Extract the symbol to resolve
         let symbol = params.as_object().ok_or_else(|| {
             crate::protocol::invalid_params(
-                "workspace/symbol/resolve: parameter 'params' must be an object",
+                "workspaceSymbol/resolve expects the WorkspaceSymbol object returned by workspace/symbol. Pass that returned object's name and location fields unchanged; request fresh workspace symbols if its data is missing.",
             )
         })?;
 
@@ -3790,7 +3790,9 @@ mod tests {
             .expect_err("missing workspace symbol params must be rejected");
 
         assert_eq!(err.code, crate::protocol::INVALID_PARAMS);
-        assert_eq!(err.message, "workspace/symbol/resolve: missing required parameter 'params'");
+        assert!(err.message.contains("workspaceSymbol/resolve"));
+        assert!(err.message.contains("WorkspaceSymbol object"));
+        assert!(err.message.contains("request fresh workspace symbols"));
     }
 
     #[cfg(feature = "workspace")]
@@ -7350,5 +7352,30 @@ mod tests {
             json!({ "critic": { "severity": 4 }, "diagnostics": { "limit": 10 } }),
             "second patch must accumulate, not overwrite: {cached:?}",
         );
+    }
+}
+
+#[cfg(test)]
+mod source_reconciliation_workspace_symbol_resolve_controls {
+    use super::*;
+    #[test]
+    fn nonobject_is_rejected_and_returned_symbol_is_preserved()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        for params in [None, Some(serde_json::json!(false)), Some(serde_json::json!([]))] {
+            let error = match server.handle_workspace_symbol_resolve(params) {
+                Ok(_) => {
+                    return Err("malformed workspace symbol resolve unexpectedly succeeded".into());
+                }
+                Err(error) => error,
+            };
+            assert_eq!(error.code, crate::protocol::INVALID_PARAMS);
+            assert!(error.message.contains("workspaceSymbol/resolve"));
+            assert!(error.message.contains("WorkspaceSymbol object"));
+            assert!(error.message.contains("request fresh workspace symbols"));
+        }
+        let symbol = serde_json::json!({"name":"shape_control","kind":12,"location":{"uri":"file:///shape-control.pl"},"data":{"retained":"source"}});
+        assert_eq!(server.handle_workspace_symbol_resolve(Some(symbol.clone()))?, Some(symbol));
+        Ok(())
     }
 }

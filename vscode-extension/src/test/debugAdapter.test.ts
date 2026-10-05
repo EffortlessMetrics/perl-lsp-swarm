@@ -460,6 +460,10 @@ describe('PerlDebugAdapterDescriptorFactory', () => {
         'Reinstall',
         'Open Debugging Guide',
       );
+      const message = vscode.window.showErrorMessage.mock.calls[0][0] as string;
+      expect(message).toContain('Perl: Reinstall Server Binary');
+      expect(message).toContain('cargo install perl-dap');
+      expect(message).not.toContain('Perl LSP: Reinstall');
     } finally {
       process.env.PATH = origPath;
       process.env.HOME = origHome;

@@ -30,7 +30,7 @@ impl LspServer {
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
         let params =
-            params.ok_or_else(|| invalid_params("Missing missing-module lookup argument"))?;
+            params.ok_or_else(|| invalid_lookup_shape("Missing missing-module lookup argument"))?;
         let request = MissingModuleLookupRequest::from_value(&params)?;
 
         let (doc_text, doc_offset, document_open) =
@@ -187,15 +187,15 @@ impl MissingModuleLookupRequest {
     fn from_value(value: &Value) -> Result<Self, JsonRpcError> {
         if let Some(module) = value.as_str() {
             if !is_lookup_safe_module_name(module) {
-                return Err(invalid_params("Invalid module name for missing-module lookup"));
+                return Err(invalid_lookup_shape("Invalid module name for missing-module lookup"));
             }
             return Ok(Self { module: module.to_string(), doc_uri: None, position: None });
         }
 
         let module = request_module(value)
-            .ok_or_else(|| invalid_params("Missing module for missing-module lookup"))?;
+            .ok_or_else(|| invalid_lookup_shape("Missing module for missing-module lookup"))?;
         if !is_lookup_safe_module_name(&module) {
-            return Err(invalid_params("Invalid module name for missing-module lookup"));
+            return Err(invalid_lookup_shape("Invalid module name for missing-module lookup"));
         }
         let doc_uri = request_doc_uri(value);
         let position = request_position(value);
@@ -1156,4 +1156,53 @@ mod tests {
         assert_eq!(startup_after.pointer("/use_perl5lib"), Some(&json!(true)));
         Ok(())
     }
+}
+
+#[cfg(test)]
+mod source_reconciliation_lookup_shape_controls {
+    use super::*;
+    #[test]
+    fn argument_guidance_preserves_all_accepted_forms_and_rejects_missing_or_unsafe_names()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let absent = match LspServer::new().explain_missing_module_lookup(None) {
+            Ok(_) => return Err("missing argument succeeded".into()),
+            Err(error) => error,
+        };
+        assert_eq!(absent.code, crate::protocol::INVALID_PARAMS);
+        assert!(absent.message.contains("perl.explainMissingModuleLookup"));
+        for value in [json!({}), json!("../unsafe.pm"), json!({"module":"../unsafe.pm"})] {
+            let error = match MissingModuleLookupRequest::from_value(&value) {
+                Ok(_) => return Err("invalid lookup shape succeeded".into()),
+                Err(error) => error,
+            };
+            assert_eq!(error.code, crate::protocol::INVALID_PARAMS);
+            for expected in [
+                "perl.explainMissingModuleLookup",
+                "moduleName",
+                "diagnostic.data.module",
+                "textDocument.uri",
+                "position",
+                "PL701",
+                "never launches or retries Perl",
+            ] {
+                assert!(error.message.contains(expected), "missing {expected}: {}", error.message);
+            }
+        }
+        for value in [
+            json!("Missing::Module"),
+            json!({"module":"Missing::Module"}),
+            json!({"moduleName":"Missing::Module"}),
+            json!({"diagnostic":{"code":"PL701","data":{"module":"Missing::Module"}}}),
+        ] {
+            assert_eq!(MissingModuleLookupRequest::from_value(&value)?.module, "Missing::Module");
+        }
+        Ok(())
+    }
+}
+
+fn invalid_lookup_shape(summary: &str) -> JsonRpcError {
+    invalid_params(&format!(
+        "{summary}: {}",
+        "perl.explainMissingModuleLookup expects a module string such as \"Missing::Module\" or an object with module, moduleName, or diagnostic.data.module. Optionally include textDocument.uri and position, or pass a PL701 diagnostic, to explain lookup from a document. Names must use Perl module segments rather than paths; this read-only explanation never launches or retries Perl."
+    ))
 }

@@ -1112,8 +1112,23 @@ impl LspServer {
                     Self::qualified_variable_workspace_symbols(index, &prefix);
                 let replace_prefix_range = (offset.saturating_sub(prefix.len()), offset);
                 let qualified_variable_context = qualified_variable_symbols.is_some();
-                let workspace_symbols =
-                    qualified_variable_symbols.unwrap_or_else(|| index.find_symbols(&prefix));
+                let prefix_lower = prefix.to_lowercase();
+                let workspace_symbols = qualified_variable_symbols.unwrap_or_else(|| {
+                    // Workspace symbol search intentionally admits loose matches.
+                    // Completion's retained name fallback must instead start with
+                    // the typed prefix. This does not restore withdrawn callable
+                    // kinds or change the qualified-variable member route.
+                    index
+                        .find_symbols(&prefix)
+                        .into_iter()
+                        .filter(|symbol| {
+                            symbol.name.to_lowercase().starts_with(&prefix_lower)
+                                || symbol.qualified_name.as_ref().is_some_and(|name| {
+                                    name.to_lowercase().starts_with(&prefix_lower)
+                                })
+                        })
+                        .collect()
+                });
                 use std::collections::HashSet;
                 let mut seen: HashSet<String> =
                     completions.iter().map(|completion| completion.label.to_string()).collect();
@@ -2410,7 +2425,9 @@ impl LspServer {
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
         let Some(mut item) = params else {
-            return Err(crate::protocol::invalid_params("Missing completion item parameters"));
+            return Err(crate::protocol::invalid_params(
+                "Missing completion item parameters: completionItem/resolve expects the CompletionItem object returned by textDocument/completion; retain its label and any data when retrying",
+            ));
         };
 
         // Extract the label and kind upfront (clone to avoid borrow issues)
@@ -2418,7 +2435,7 @@ impl LspServer {
             .get("label")
             .and_then(Value::as_str)
             .ok_or_else(|| {
-                crate::protocol::invalid_params("Missing or invalid completion item label")
+                crate::protocol::invalid_params("Missing or invalid completion item label: completionItem/resolve expects the CompletionItem object returned by textDocument/completion; retain its label and any data when retrying")
             })?
             .to_string();
         let kind = item.get("kind").and_then(|v| v.as_u64()).unwrap_or(0);
@@ -5591,15 +5608,20 @@ our $single_root_var;
         );
     }
 
-    /// The same escape on a non-sigil prefix: `token` matches both variables by
-    /// name, and neither may come back as a bare cross-file insertion.
+    /// A non-sigil package prefix matches the retained qualified names, and
+    /// package variables may still never return as bare cross-file insertions.
     #[cfg(feature = "workspace")]
     #[test]
     fn cross_file_variable_on_a_bare_word_prefix_is_never_inserted_bare() {
         let items = run_workspace_pass_over_secrets_module(
             "file:///project/bin/app.pl",
-            "use strict;\ntoken",
+            "use strict;\nSecrets",
             None,
+        );
+
+        assert!(
+            items.iter().any(|(label, _, _)| label == "$api_token"),
+            "the qualified-name prefix must still find the package variable: {items:?}"
         );
 
         for (label, insert_text, _) in &items {
@@ -5625,7 +5647,7 @@ our $single_root_var;
     fn cross_file_lexical_variable_is_withdrawn_entirely() {
         let items = run_workspace_pass_over_secrets_module(
             "file:///project/bin/app.pl",
-            "use strict;\ntoken",
+            "use strict;\n$",
             None,
         );
         let labels: Vec<&str> = items.iter().map(|(label, _, _)| label.as_str()).collect();
@@ -5795,5 +5817,116 @@ our $single_root_var;
 
         assert_eq!(insert_text.as_deref(), Some("$Secrets::api_token"));
         assert!(text_edit_range.is_some());
+    }
+
+    /// Exercise the production runtime enrichment pass against a real index.
+    /// Search must still find the loose match, so absence from completion is a
+    /// prefix decision rather than an empty/broken index. Callable withdrawal
+    /// and the qualified variable member route retain their own authorities.
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn runtime_workspace_completion_requires_a_prefix_without_narrowing_symbol_search() {
+        use crate::runtime::routing::IndexAccessMode;
+        use crate::runtime::workspace_folder::WorkspaceFolderState;
+        use perl_workspace::workspace_index::IndexCoordinator;
+        use std::sync::Arc;
+
+        let server = LspServer::default();
+        server
+            .workspace_folders
+            .lock()
+            .push(WorkspaceFolderState::new("file:///project".to_string()));
+        let coordinator = Arc::new(IndexCoordinator::new());
+        perl_tdd_support::must_with(
+            coordinator.index().index_initial_file_str(
+                "file:///project/lib/BarTools.pm",
+                "package BarTools;\nour $bar_value = 1;\nour $foobar_value = 2;\nsub bar_callable { 1 }\n1;\n",
+            ),
+            "prefix-positive module must be indexed",
+        );
+        perl_tdd_support::must_with(
+            coordinator.index().index_initial_file_str(
+                "file:///project/lib/FooBarTools.pm",
+                "package FooBarTools;\nour $bar_other = 3;\n1;\n",
+            ),
+            "substring-negative module must be indexed",
+        );
+        coordinator.transition_to_ready(2, 2);
+
+        let loose = coordinator.index().find_symbols("bar");
+        assert!(loose.iter().any(|symbol| symbol.name == "BarTools"));
+        assert!(
+            loose.iter().any(|symbol| symbol.name == "FooBarTools"),
+            "the unchanged workspace symbol search must retain a substring match"
+        );
+
+        let run = |text: &str| {
+            let context =
+                RequestIncContext::new(&server, "file:///project/bin/app.pl", text, text.len());
+            let mut items = Vec::new();
+            server.add_runtime_workspace_completions(
+                &mut items,
+                &context,
+                &IndexAccessMode::Full(&coordinator),
+                None,
+            );
+            items
+        };
+
+        for prefix in ["bar", "BAR"] {
+            let items = run(prefix);
+            assert!(items.iter().any(|item| item.label.as_ref() == "BarTools"));
+            assert!(
+                !items.iter().any(|item| item.label.as_ref() == "FooBarTools"),
+                "substring-only package must not be a completion for {prefix:?}"
+            );
+            assert!(
+                !items.iter().any(|item| item.label.as_ref() == "bar_callable"),
+                "prefix matching grants no new bare callable authority"
+            );
+        }
+
+        let qualified = run("$BarTools::bar");
+        let variable = perl_tdd_support::must_some_with(
+            qualified.iter().find(|item| item.label.as_ref() == "$bar_value"),
+            "the existing qualified member prefix must still return its matching variable",
+        );
+        assert_eq!(
+            variable.insert_text.as_ref().map(|text| text.as_ref()),
+            Some("$BarTools::bar_value")
+        );
+        assert!(variable.text_edit_range.is_some());
+        assert!(!qualified.iter().any(|item| item.label.as_ref() == "$foobar_value"));
+    }
+}
+
+#[cfg(test)]
+mod merge_sync_resolve_guidance_tests {
+    use crate::runtime::LspServer;
+    use serde_json::json;
+
+    #[test]
+    fn resolve_rejects_missing_shape_and_preserves_valid_returned_objects() -> Result<(), String> {
+        let server = LspServer::new();
+        for params in [None, Some(json!({})), Some(json!([]))] {
+            let error = server
+                .handle_completion_resolve(params)
+                .err()
+                .ok_or("malformed resolve must fail")?;
+            assert_eq!(error.code, crate::protocol::INVALID_PARAMS);
+            for expected in
+                ["CompletionItem object", "textDocument/completion", "label", "any data"]
+            {
+                assert!(error.message.contains(expected), "missing {expected}: {}", error.message);
+            }
+        }
+        let object = json!({"label": "project_custom_symbol", "data": {"opaque": true}});
+        let resolved = server
+            .handle_completion_resolve(Some(object.clone()))
+            .map_err(|error| error.to_string())?
+            .ok_or("resolved object required")?;
+        assert_eq!(resolved["label"], object["label"]);
+        assert_eq!(resolved["data"], object["data"]);
+        Ok(())
     }
 }

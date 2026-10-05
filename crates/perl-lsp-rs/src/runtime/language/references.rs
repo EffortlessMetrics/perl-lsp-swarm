@@ -778,9 +778,15 @@ impl LspServer {
         let typed_request_id = request_id.and_then(JsonRpcId::try_from_value);
         self.check_references_cancellation(typed_request_id.as_ref(), &mut fallback_receipt)?;
 
+        if params.is_none() {
+            return Err(crate::protocol::invalid_params(
+                "textDocument/references expects params.textDocument.uri plus params.position.line and params.position.character. Send the URI of an open Perl document and a UTF-16 line/character position; retry with that request shape.",
+            ));
+        }
+
         if let Some(params) = params {
-            let uri = req_uri(&params)?;
-            let (line, character) = req_position(&params)?;
+            let uri = req_uri(&params).map_err(|error| crate::protocol::invalid_params(&format!("{}; textDocument/references expects params.textDocument.uri plus params.position.line and params.position.character. Send the URI of an open Perl document and a UTF-16 line/character position; retry with that request shape.", error.message)))?;
+            let (line, character) = req_position(&params).map_err(|error| crate::protocol::invalid_params(&format!("{}; textDocument/references expects params.textDocument.uri plus params.position.line and params.position.character. Send the URI of an open Perl document and a UTF-16 line/character position; retry with that request shape.", error.message)))?;
             let req_version =
                 params["textDocument"]["version"].as_i64().and_then(|n| i32::try_from(n).ok());
             self.ensure_latest(uri, req_version)?;
@@ -1982,7 +1988,20 @@ impl LspServer {
         &self,
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
-        let live_provider_result = self.handle_references(params.clone())?;
+        let live_provider_result = match self.handle_references(params.clone()) {
+            Err(error) if params.is_none() => {
+                return Ok(Some(json!({
+                    "provider": "references",
+                    "live_provider_result": null,
+                    "live_provider_count": 0,
+                    "live_provider_error": error,
+                    "source_backed_receipt": null,
+                    "no_live_behavior_change": true,
+                    "note": "references runtime proof missing request params"
+                })));
+            }
+            result => result?,
+        };
         let live_provider_count = lsp_location_count(live_provider_result.as_ref());
 
         #[cfg(not(all(feature = "workspace", not(target_arch = "wasm32"))))]
@@ -4259,6 +4278,45 @@ mod tests {
         // `live_source_backed_reference_locations`.
         let _result = server.test_handle_references(Some(params))?;
 
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod source_reconciliation_request_shape_controls {
+    use super::*;
+    #[test]
+    fn missing_or_malformed_request_has_recovery_and_valid_shape_is_admitted()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        for params in [
+            None,
+            Some(serde_json::json!(false)),
+            Some(serde_json::json!({"textDocument":{"uri":"file:///shape-control.pl"}})),
+        ] {
+            let error =
+                match server.handle_references_inner(params, None, reference_search_deadline()) {
+                    Ok(_) => return Err("malformed request unexpectedly succeeded".into()),
+                    Err(error) => error,
+                };
+            assert_eq!(error.code, crate::protocol::INVALID_PARAMS);
+            for expected in [
+                "textDocument/references",
+                "params.textDocument.uri",
+                "params.position.line",
+                "params.position.character",
+                "retry",
+            ] {
+                assert!(error.message.contains(expected), "missing {expected}: {}", error.message);
+            }
+        }
+        let params = Some(
+            serde_json::json!({"textDocument":{"uri":"file:///shape-control.pl"},"position":{"line":0,"character":0},"context":{"includeDeclaration":true}}),
+        );
+        assert!(
+            server.handle_references_inner(params, None, reference_search_deadline()).is_ok(),
+            "valid unopened-document shape must retain the current successful empty response"
+        );
         Ok(())
     }
 }

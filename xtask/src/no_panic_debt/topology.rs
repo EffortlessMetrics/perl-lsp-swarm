@@ -72,7 +72,10 @@ pub(crate) fn cargo_test_src_paths(root: &Path) -> Result<BTreeSet<String>> {
 
 pub(crate) fn is_complete_test_file(kind: TargetKind, path: &str) -> bool {
     match kind {
-        TargetKind::IntegrationTest | TargetKind::Example | TargetKind::Bench => true,
+        TargetKind::IntegrationTest
+        | TargetKind::Doctest
+        | TargetKind::Example
+        | TargetKind::Bench => true,
         TargetKind::UnitTest => {
             path.ends_with("/tests.rs") || path.ends_with("_test.rs") || path.ends_with("_tests.rs")
         }
