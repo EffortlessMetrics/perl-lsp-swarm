@@ -265,3 +265,79 @@ fn hostile_inputs_are_all_surfaced_and_none_dropped() {
         "E3 bar: 100% of hostile inputs surfaced ({EXPECTED_SURFACED}/{EXPECTED_SURFACED}), 0 drops\n{report}"
     );
 }
+
+/// A missing root must be *named*, not silently scanned: `unavailable` plus a
+/// `root-missing` limitation naming the root (#17257).
+#[test]
+fn missing_root_is_limited_not_silent() {
+    let packet = build_packet("target/ripr-e3/no-such-dir-17257", None);
+    assert_eq!(packet["packet_status"], "unavailable");
+    let ids = limitation_ids(&packet);
+    assert!(
+        ids.contains(&"root-missing".to_string()),
+        "missing root must surface a root-missing limitation; got {ids:?}"
+    );
+    let message = must_some(packet["limitations"].as_array())
+        .iter()
+        .find(|l| l["limitation_id"].as_str() == Some("root-missing"))
+        .and_then(|l| l["message"].as_str())
+        .unwrap_or_default();
+    assert!(
+        message.contains("target/ripr-e3/no-such-dir-17257"),
+        "root-missing message must name the root; got {message:?}"
+    );
+}
+
+/// A file passed as root must yield `root-not-a-directory`, not an
+/// undifferentiated `unavailable` (#17257).
+#[test]
+fn file_as_root_is_limited_not_silent() {
+    let root = fresh_root("file-as-root");
+    stage_file(&root, "Greeter.pm", "package Greeter;\n1;\n");
+    let packet = build_packet(&format!("{root}/Greeter.pm"), None);
+    let _ = std::fs::remove_dir_all(&root);
+    assert_eq!(packet["packet_status"], "unavailable");
+    assert!(
+        limitation_ids(&packet).contains(&"root-not-a-directory".to_string()),
+        "file-as-root must surface root-not-a-directory; got {:?}",
+        limitation_ids(&packet)
+    );
+}
+
+/// A root under a file component (`<file>/child`) fails `metadata` with
+/// `NotADirectory`: it must yield `root-not-a-directory`, never
+/// `root-missing` (the input is not missing — a component is not a dir).
+#[test]
+fn root_not_a_directory_component_is_named() {
+    let root = fresh_root("not-a-dir-component");
+    stage_file(&root, "Greeter.pm", "package Greeter;\n1;\n");
+    let packet = build_packet(&format!("{root}/Greeter.pm/child"), None);
+    let _ = std::fs::remove_dir_all(&root);
+    assert_eq!(packet["packet_status"], "unavailable");
+    let ids = limitation_ids(&packet);
+    assert!(
+        ids.contains(&"root-not-a-directory".to_string()),
+        "file-component root must surface root-not-a-directory; got {ids:?}"
+    );
+    assert!(
+        !ids.contains(&"root-missing".to_string()),
+        "file-component root must not claim root-missing; got {ids:?}"
+    );
+}
+
+/// An empty *valid* directory keeps today's shape: no new root-* noise (#17257).
+#[test]
+fn empty_valid_dir_carries_no_root_limitation() {
+    let root = fresh_root("empty-valid");
+    must_with(std::fs::create_dir_all(&root), "mkdir empty valid root");
+    let packet = build_packet(&root, None);
+    let _ = std::fs::remove_dir_all(&root);
+    assert_eq!(packet["packet_status"], "unavailable");
+    assert!(
+        limitation_ids(&packet)
+            .iter()
+            .all(|id| id != "root-missing" && id != "root-not-a-directory"),
+        "empty valid dir must not gain a root limitation; got {:?}",
+        limitation_ids(&packet)
+    );
+}
