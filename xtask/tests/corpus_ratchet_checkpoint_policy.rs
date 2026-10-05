@@ -11,7 +11,7 @@
 //! workflow refs are outside this policy claim. Mutation controls are named per
 //! `.spec/12823-corpus-cache-cycle/acceptance.md`.
 
-use std::{collections::BTreeSet, fs, path::PathBuf};
+use std::{collections::BTreeSet, fs, path::PathBuf, process::Command};
 
 use anyhow::{Result, anyhow, ensure};
 use serde_yaml_ng::Value;
@@ -62,33 +62,28 @@ const FULL_JOB_GUARDS: &[(&str, &str)] = &[
     ),
 ];
 
+// Coordinates and critical inputs belong to this semantic contract. Immutable
+// SHA/release validity belongs to action-pin-provenance and its reviewed ledger
+// (#13946); the paired tests below execute that authority on these same steps.
 const BOUNDED_ACTION_STEPS: &[(&str, &str, &str)] = &[
     (
         "Checkout bounded analysis tree",
-        "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+        "actions/checkout",
         r#"fetch-depth: 1
 persist-credentials: false"#,
     ),
-    (
-        "Install Rust toolchain",
-        "dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de",
-        "toolchain: 1.95.0",
-    ),
+    ("Install Rust toolchain", "dtolnay/rust-toolchain", "toolchain: 1.95.0"),
     (
         BOUNDED_RUST_CACHE_STEP,
-        "Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6",
+        "Swatinem/rust-cache",
         r#"cache-on-failure: true
 shared-key: post-merge-corpus-ratchet-${{ hashFiles('Cargo.lock') }}
 save-if: false"#,
     ),
-    (
-        "Install just",
-        "taiki-e/install-action@5bf6ce016fd2e72eefc647cbca1e4213f65955b8",
-        "tool: just",
-    ),
+    ("Install just", "taiki-e/install-action", "tool: just"),
     (
         "Restore CPAN corpus cache (bounded)",
-        "actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9",
+        "actions/cache/restore",
         r#"path: target/cpan-corpus-bounded
 key: cpan-corpus-bounded-${{ runner.os }}-${{ hashFiles('.ci/cpan-top-50-distributions.txt') }}
 restore-keys: |
@@ -97,7 +92,7 @@ restore-keys: |
     ),
     (
         "Upload bounded corpus receipt",
-        "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+        "actions/upload-artifact",
         r#"name: cpan-corpus-bounded-receipt-${{ github.sha }}
 path: target/corpus-receipts/bounded-sweep.json
 retention-days: 14
@@ -331,7 +326,8 @@ fn ensure_bounded_top_50_is_safe_and_reachable(workflow: &Value) -> Result<()> {
         );
         let actual = step.get("uses").and_then(Value::as_str);
         ensure!(
-            actual == Some(*expected_action),
+            actual.and_then(|action| action.split_once('@').map(|(coordinate, _)| coordinate))
+                == Some(*expected_action),
             "bounded action step `{name}` execution identity drifted: expected `{expected_action}`, found {actual:?}"
         );
         let expected_inputs = serde_yaml_ng::from_str::<Value>(expected_inputs)?;
@@ -372,6 +368,189 @@ fn ensure_bounded_top_50_is_safe_and_reachable(workflow: &Value) -> Result<()> {
         !rendered.contains("create-pull-request@"),
         "bounded proof must not acquire repository-writer behavior"
     );
+    Ok(())
+}
+
+/// Execute the existing provenance authority on the bounded job's original text,
+/// retaining the reviewed release comments that a YAML Value roundtrip discards.
+fn bounded_action_provenance(raw: &str) -> Result<(bool, serde_json::Value)> {
+    let (bounded_raw, _) = raw
+        .split_once("\n  corpus-warm-full:\n")
+        .ok_or_else(|| anyhow!("workflow must retain the governed warm job boundary"))?;
+    let projected: Value = serde_yaml_ng::from_str(bounded_raw)?;
+    let original: Value = serde_yaml_ng::from_str(raw)?;
+    let jobs = projected
+        .get("jobs")
+        .and_then(Value::as_mapping)
+        .ok_or_else(|| anyhow!("bounded provenance projection must declare jobs"))?;
+    ensure!(jobs.len() == 1, "bounded provenance projection must contain exactly one job");
+    ensure!(
+        job(&projected, BOUNDED_JOB)? == job(&original, BOUNDED_JOB)?,
+        "bounded provenance projection must preserve the actual bounded job"
+    );
+
+    let directory = tempfile::tempdir()?;
+    let workflows = directory.path().join(".github/workflows");
+    fs::create_dir_all(&workflows)?;
+    fs::write(workflows.join(WORKFLOW_FILE), bounded_raw)?;
+    let receipt_path = directory.path().join("receipt.json");
+    let output = Command::new(env!("CARGO_BIN_EXE_action-pin-provenance"))
+        .arg("--root")
+        .arg(directory.path())
+        .arg("--ledger")
+        .arg(project_root().join(".ci/policies/action-pin-provenance.toml"))
+        .arg("--strict-all")
+        .arg("--receipt")
+        .arg(&receipt_path)
+        .output()?;
+    let receipt: serde_json::Value = serde_json::from_str(&fs::read_to_string(&receipt_path)?)?;
+    ensure!(
+        receipt["schema_version"] == "action_pin_provenance.v2"
+            && receipt["strict_all"] == true
+            && receipt["occurrence_count"] == BOUNDED_ACTION_STEPS.len(),
+        "provenance instrument must scan all six actual bounded actions: {receipt}"
+    );
+    ensure!(
+        receipt["passed"] == output.status.success(),
+        "provenance status and receipt disagree: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    Ok((output.status.success(), receipt))
+}
+
+fn bounded_install_reference(raw: &str) -> Result<(&str, &str)> {
+    let source = raw
+        .split_once("\n  corpus-warm-full:\n")
+        .ok_or_else(|| anyhow!("workflow must retain the warm job boundary"))?
+        .0;
+    let install_line = source
+        .lines()
+        .find(|line| line.trim_start().starts_with("uses: taiki-e/install-action@"))
+        .ok_or_else(|| anyhow!("bounded install-action line must exist"))?;
+    let (reference, projection) = install_line
+        .trim()
+        .strip_prefix("uses: ")
+        .and_then(|line| line.split_once('#'))
+        .ok_or_else(|| anyhow!("install-action must carry its reviewed release projection"))?;
+    Ok((reference.trim(), projection.trim()))
+}
+
+fn replace_bounded_install_pin(raw: &str, reference: &str, projection: &str) -> Result<String> {
+    let (current_reference, current_projection) = bounded_install_reference(raw)?;
+    let needle = format!("{current_reference}  # {current_projection}");
+    ensure!(raw.contains(&needle), "bounded install pin must preserve the workflow line shape");
+    Ok(raw.replacen(&needle, &format!("{reference}  # {projection}"), 1))
+}
+
+fn reviewed_install_reference(release: &str) -> Result<String> {
+    let ledger: toml::Value = toml::from_str(&fs::read_to_string(
+        project_root().join(".ci/policies/action-pin-provenance.toml"),
+    )?)?;
+    let pin = ledger
+        .get("pin")
+        .and_then(toml::Value::as_array)
+        .ok_or_else(|| anyhow!("reviewed provenance ledger must declare pins"))?
+        .iter()
+        .find(|pin| {
+            pin.get("action").and_then(toml::Value::as_str) == Some("taiki-e/install-action")
+                && pin.get("kind").and_then(toml::Value::as_str) == Some("release_tag")
+                && pin.get("value").and_then(toml::Value::as_str) == Some(release)
+        })
+        .ok_or_else(|| anyhow!("independently reviewed install-action {release} must exist"))?;
+    let sha = pin
+        .get("sha")
+        .and_then(toml::Value::as_str)
+        .ok_or_else(|| anyhow!("reviewed release must carry its immutable SHA"))?;
+    Ok(format!("taiki-e/install-action@{sha}"))
+}
+
+#[test]
+fn bounded_action_coordinates_have_strict_reviewed_provenance() -> Result<()> {
+    let raw = workflow_raw()?;
+    ensure_bounded_top_50_is_safe_and_reachable(&serde_yaml_ng::from_str(&raw)?)?;
+    let (passed, receipt) = bounded_action_provenance(&raw)?;
+    ensure!(passed, "actual bounded action provenance must pass: {receipt}");
+    ensure!(receipt["error_count"] == 0 && receipt["warning_count"] == 0);
+    Ok(())
+}
+
+#[test]
+fn bounded_contract_accepts_reviewed_pin_rotation_without_exact_literals() -> Result<()> {
+    let raw = workflow_raw()?;
+    // This already-reviewed historical release is a distinct competent fixture,
+    // not a new admission: upstream v2.87.5 and the checked-in ledger agree.
+    let alternate = reviewed_install_reference("v2.87.5")?;
+    ensure!(
+        bounded_install_reference(&raw)?.0 != alternate,
+        "rotation control must change the pin"
+    );
+    let rotated = replace_bounded_install_pin(&raw, &alternate, "v2.87.5")?;
+    let candidate: Value = serde_yaml_ng::from_str(&rotated)?;
+    ensure_bounded_top_50_is_safe_and_reachable(&candidate)?;
+    ensure_full_chain_is_fail_closed(&candidate)?;
+    let (passed, receipt) = bounded_action_provenance(&rotated)?;
+    ensure!(passed, "reviewed coordinate-preserving rotation must pass: {receipt}");
+    Ok(())
+}
+
+#[test]
+fn bounded_pin_controls_refuse_unknown_mutable_and_stale_projections() -> Result<()> {
+    let raw = workflow_raw()?;
+    let (current_reference, current_projection) = bounded_install_reference(&raw)?;
+    let alternate = reviewed_install_reference("v2.87.5")?;
+    ensure!(current_projection != "v2.87.5", "stale projection control must differ");
+    for (reference, projection, expected_code) in [
+        (
+            "taiki-e/install-action@0000000000000000000000000000000000000000",
+            current_projection,
+            "ACTION_PROVENANCE_NOT_PROVEN",
+        ),
+        ("taiki-e/install-action@main", current_projection, "MUTABLE_OR_UNSUPPORTED_ACTION_REF"),
+        (current_reference, "v0.0.0", "ACTION_PROVENANCE_NOT_PROVEN"),
+        (alternate.as_str(), current_projection, "ACTION_PROVENANCE_NOT_PROVEN"),
+    ] {
+        let poisoned = replace_bounded_install_pin(&raw, reference, projection)?;
+        // Coordinate-only checks intentionally allow pin rotation. The paired
+        // existing authority must still reject exactly these unqualified pins.
+        ensure_bounded_top_50_is_safe_and_reachable(&serde_yaml_ng::from_str(&poisoned)?)?;
+        let (passed, receipt) = bounded_action_provenance(&poisoned)?;
+        ensure!(!passed, "unqualified pin must fail: {reference} # {projection}");
+        let issues = receipt["issues"]
+            .as_array()
+            .ok_or_else(|| anyhow!("provenance receipt must declare issues"))?;
+        ensure!(
+            issues.iter().any(|issue| {
+                issue["code"] == expected_code
+                    && issue["path"] == format!(".github/workflows/{WORKFLOW_FILE}")
+                    && issue["message"]
+                        .as_str()
+                        .is_some_and(|message| message.contains("taiki-e/install-action"))
+            }),
+            "pin must fail for the intended provenance reason: {receipt}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn bounded_action_coordinate_controls_refuse_wrong_repository_and_subpath() -> Result<()> {
+    let raw = workflow_raw()?;
+    let (current_reference, projection) = bounded_install_reference(&raw)?;
+    let (_, sha) = current_reference
+        .split_once('@')
+        .ok_or_else(|| anyhow!("install-action must have an immutable reference"))?;
+    for coordinate in ["example/install-action", "taiki-e/install-action/other"] {
+        let poisoned =
+            replace_bounded_install_pin(&raw, &format!("{coordinate}@{sha}"), projection)?;
+        let error =
+            ensure_bounded_top_50_is_safe_and_reachable(&serde_yaml_ng::from_str(&poisoned)?)
+                .err()
+                .ok_or_else(|| anyhow!("wrong action coordinate must fail"))?;
+        ensure!(
+            error.to_string().contains("execution identity drifted"),
+            "unexpected refusal: {error}"
+        );
+    }
     Ok(())
 }
 
