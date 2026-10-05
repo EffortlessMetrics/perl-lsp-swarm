@@ -378,6 +378,37 @@ class LaneHistoryVersionTests(unittest.TestCase):
         self.assertIn("schema_version", emitted["reason"])
         self.assertIn("2", emitted["reason"])
 
+    def test_non_integer_versions_are_refused_even_when_they_compare_equal_to_one(self) -> None:
+        # Python compares across types: `True == 1` and `1.0 == 1` are both
+        # true, so a bare `!=` gate admits JSON `true` and `1.0` as v1. Read
+        # by v1 names, such an envelope is the same under-price as the v2
+        # case above -- a renamed `floor` of 45.0 is dropped and a bare
+        # `p50 * 1.15` of 4.6 is reported as learned. The gate must require
+        # an exact int, as `pr_plan.load_learned_history` already does.
+        for bogus in (True, 1.0):
+            with self.subTest(bogus=bogus):
+                emitted = self._run_main(
+                    {
+                        "schema_version": bogus,
+                        "min_samples_for_learned": 5,
+                        "lane_count": 1,
+                        "lanes": {
+                            self.LANE: {
+                                "samples": 40,
+                                "floor": 45.0,
+                                "learned": True,
+                                "p50": 4.0,
+                                "p90": 6.0,
+                                "p95": 7.0,
+                            }
+                        },
+                    }
+                )
+
+                self.assertFalse(emitted["learned"])
+                self.assertIsNone(emitted["estimate"])
+                self.assertIn("schema_version", emitted["reason"])
+
     def test_the_supported_version_is_pinned_here_not_by_the_producer(self) -> None:
         # The refusal must key on the version this parser reads. Binding the
         # producer's `aggregate_lane_history.SCHEMA_VERSION` would advance the

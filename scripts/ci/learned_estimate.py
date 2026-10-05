@@ -67,7 +67,10 @@ def history_version_refusal(history: Any) -> str | None:
     if not isinstance(history, dict):
         return f"lane history payload is not a JSON object, got {type(history).__name__}"
     found = history.get("schema_version")
-    if found != SUPPORTED_SCHEMA_VERSION:
+    # bool is an int subclass and 1.0 == 1: bare `!=` would admit JSON `true`
+    # and `1.0` as v1 (same pitfall `pr_plan.load_learned_history` guards).
+    # An exact int is required; anything else is an unfamiliar shape.
+    if type(found) is not int or found != SUPPORTED_SCHEMA_VERSION:
         return (
             f"lane history schema_version must be {SUPPORTED_SCHEMA_VERSION}, "
             f"got {found!r}; refusing to read an unfamiliar shape"
