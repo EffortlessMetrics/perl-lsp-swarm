@@ -610,6 +610,7 @@ pub fn perl_lexer::PerlLexer<'a>::next_token(&mut self) -> core::option::Option<
 pub fn perl_lexer::PerlLexer<'a>::peek_token(&mut self) -> core::option::Option<perl_lexer::token::Token>
 pub fn perl_lexer::PerlLexer<'a>::reset(&mut self)
 pub fn perl_lexer::PerlLexer<'a>::set_mode(&mut self, mode: perl_lexer::mode::LexerMode)
+pub fn perl_lexer::PerlLexer<'a>::take_trivia_tokens(&mut self) -> alloc::vec::Vec<perl_lexer::token::Token>
 pub fn perl_lexer::PerlLexer<'a>::with_body_tokens(input: &'a str) -> perl_lexer::PerlLexer<'a>
 pub fn perl_lexer::PerlLexer<'a>::with_config_and_body_tokens(input: &'a str, config: perl_lexer::config::LexerConfig) -> perl_lexer::PerlLexer<'a>
 pub fn perl_lexer::PerlLexer<'a>::new(input: &'a str) -> perl_lexer::PerlLexer<'a>
