@@ -2565,6 +2565,119 @@ my %config = (key => "value");
     }
 
     // -----------------------------------------------------------------------
+    // POD block selection for hover docs (issue #17298)
+    // -----------------------------------------------------------------------
+
+    /// Hover documentation for a sub is the POD block immediately preceding
+    /// it — not every block from the first `=head1` onward, and not the
+    /// source of intermediate subs (#17298). Block directives are rendered
+    /// or dropped rather than passed through raw.
+    #[test]
+    fn test_sub_docs_attach_only_the_preceding_pod_block() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let code = r#"=head1 NAME
+
+Widget::Fixture - a small fixture package for hover testing.
+
+=head1 DESCRIPTION
+
+This module exists to exercise POD selection.
+
+=cut
+
+=head2 new
+
+Constructor. Takes a name.
+
+=cut
+
+sub new {
+    my ($class, %opts) = @_;
+    return bless {}, $class;
+}
+
+=head2 add_widgets
+
+Adds a number of widgets to the garden.
+
+=cut
+
+sub add_widgets {
+    return 1;
+}
+"#;
+        let mut parser = Parser::new(code);
+        let ast = parser.parse()?;
+        let analyzer = SemanticAnalyzer::analyze_with_source(&ast, code);
+
+        let sub_symbols =
+            analyzer.symbol_table().find_symbol("add_widgets", 0, SymbolKind::Subroutine);
+        assert!(!sub_symbols.is_empty(), "sub add_widgets not found");
+        let hover = analyzer.hover_at(sub_symbols[0].location).ok_or("hover not found")?;
+        let doc = hover.documentation.as_deref().ok_or("documentation not attached")?;
+
+        // The immediately-preceding block's text is attached.
+        assert!(
+            doc.contains("Adds a number of widgets"),
+            "the preceding =head2 block must be attached, got: {doc}"
+        );
+        // Nothing from earlier blocks or intermediate subs.
+        assert!(
+            !doc.contains("a small fixture package"),
+            "the NAME section leaked into the sub's docs, got: {doc}"
+        );
+        assert!(
+            !doc.contains("exercise POD selection"),
+            "the DESCRIPTION section leaked into the sub's docs, got: {doc}"
+        );
+        assert!(
+            !doc.contains("Constructor"),
+            "the `new` section leaked into the sub's docs, got: {doc}"
+        );
+        assert!(
+            !doc.contains("bless"),
+            "the `sub new` source leaked into the sub's docs, got: {doc}"
+        );
+        // No raw block directives.
+        assert!(!doc.contains("=head"), "raw =head directive leaked, got: {doc}");
+        assert!(!doc.contains("=cut"), "raw =cut directive leaked, got: {doc}");
+        Ok(())
+    }
+
+    /// A POD block with code between it and the sub does not attach: only
+    /// the block *immediately* preceding the declaration is documentation.
+    #[test]
+    fn test_pod_block_with_code_after_does_not_attach() -> Result<(), Box<dyn std::error::Error>> {
+        let code = r#"=head1 STALE
+
+Old documentation for something else.
+
+=cut
+
+my $setup = 1;
+
+sub later_sub {
+    return 2;
+}
+"#;
+        let mut parser = Parser::new(code);
+        let ast = parser.parse()?;
+        let analyzer = SemanticAnalyzer::analyze_with_source(&ast, code);
+
+        let sub_symbols =
+            analyzer.symbol_table().find_symbol("later_sub", 0, SymbolKind::Subroutine);
+        assert!(!sub_symbols.is_empty(), "sub later_sub not found");
+        let hover = analyzer.hover_at(sub_symbols[0].location).ok_or("hover not found")?;
+        if let Some(doc) = hover.documentation.as_deref() {
+            assert!(
+                !doc.contains("Old documentation"),
+                "stale POD block with code after it must not attach, got: {doc}"
+            );
+        }
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------------
     // Subroutine signature hover tests (issue #2353)
     // -----------------------------------------------------------------------
 
