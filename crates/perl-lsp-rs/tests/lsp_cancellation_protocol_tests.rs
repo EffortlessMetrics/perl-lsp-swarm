@@ -157,10 +157,10 @@ fn test_enhanced_cancel_request_with_provider_context_ac1() -> Result<(), Box<dy
     let mut seen_timeouts = 0;
     let response = loop {
         if Instant::now() >= deadline {
-            eprintln!(
+            return Err(format!(
                 "AC1 attempts exhausted: {attempt} attempts, {seen_results} settled non-error, {seen_timeouts} timed out"
-            );
-            break None;
+            )
+            .into());
         }
         let completion_id = fixture.track_request_id(1001 + attempt * 100);
         attempt += 1;
