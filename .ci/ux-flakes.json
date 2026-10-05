@@ -22,15 +22,15 @@
       "evidence": {
         "command": "PERL_LSP_UX_REQUIRE_BINARY=1 just ux-tests",
         "verification_state": "verified",
-        "verification_pr": 16952,
-        "verified_sha": "35148aedd111bda2d918f91c637fb24353ff541a",
-        "verified_artifact_blob": "4f649b13c13af7b594eaf337cc86b3d4d2881f1f",
+        "verification_pr": 17238,
+        "verified_sha": "e9cd1efa945e6968369919c6f0f43f83421d4e99",
+        "verified_artifact_blob": "6f30b3dc2f5e2db8e92b9dd0d55635901ffe93ad",
         "unverified_reason": null,
         "replacement_tests": [
           "scenario_14_relative_include_path"
         ]
       },
-      "notes": "The maintained test now hard-fails on PL701, completion, goto-definition, and hover consistency for a workspace-relative include path."
+      "notes": "The maintained test now hard-fails on PL701, completion, goto-definition, and hover consistency for a workspace-relative include path. Reverified after current artifact drift on #17238 at e9cd1efa945e6968369919c6f0f43f83421d4e99 (artifact 6f30b3dc2f5e2db8e92b9dd0d55635901ffe93ad): hosted exact-subject run37284894403, attempt1/job111681348307, used one locked serial dev server and one retained UX14 test executable with explicit PERL_LSP_BIN and PERL_LSP_UX_REQUIRE_BINARY=1; five sequential --test-threads=1 --show-output --color=never observations each passed14 tests with0 failed/ignored/filtered/skipped and all13 replacement cases present. Source and executable digests stayed stable; aggregate533.56008s<900s. Exact raw receipt and independently reviewed qualification are retained under docs/swarm/source-syncs/2026-10-05-ux14-e9cd1efa. Bounded repetition of implemented assertions, not exhaustion, every printed diagnostic cell, or full UX gate acceptance."
     },
     {
       "test": "ux_scenario_14_inc_conformance::scenario_14_include_path_completion_external_module",
@@ -52,16 +52,16 @@
       "evidence": {
         "command": "PERL_LSP_UX_REQUIRE_BINARY=1 just ux-tests",
         "verification_state": "verified",
-        "verification_pr": 16952,
-        "verified_sha": "35148aedd111bda2d918f91c637fb24353ff541a",
-        "verified_artifact_blob": "4f649b13c13af7b594eaf337cc86b3d4d2881f1f",
+        "verification_pr": 17238,
+        "verified_sha": "e9cd1efa945e6968369919c6f0f43f83421d4e99",
+        "verified_artifact_blob": "6f30b3dc2f5e2db8e92b9dd0d55635901ffe93ad",
         "unverified_reason": null,
         "replacement_tests": [
           "scenario_14_relative_include_path",
           "scenario_14_perl5lib_completion_gating_matrix"
         ]
       },
-      "notes": "The obsolete test mixed prefix completion with exact-symbol goto-definition. The current harness separates those fixtures and preserves the intended parity checks in the listed replacements."
+      "notes": "The obsolete test mixed prefix completion with exact-symbol goto-definition. The current harness separates those fixtures and preserves the intended parity checks in the listed replacements. Reverified after current artifact drift on #17238 at e9cd1efa945e6968369919c6f0f43f83421d4e99 (artifact 6f30b3dc2f5e2db8e92b9dd0d55635901ffe93ad): hosted exact-subject run37284894403, attempt1/job111681348307, used one locked serial dev server and one retained UX14 test executable with explicit PERL_LSP_BIN and PERL_LSP_UX_REQUIRE_BINARY=1; five sequential --test-threads=1 --show-output --color=never observations each passed14 tests with0 failed/ignored/filtered/skipped and all13 replacement cases present. Source and executable digests stayed stable; aggregate533.56008s<900s. Exact raw receipt and independently reviewed qualification are retained under docs/swarm/source-syncs/2026-10-05-ux14-e9cd1efa. Bounded repetition of implemented assertions, not exhaustion, every printed diagnostic cell, or full UX gate acceptance."
     },
     {
       "test": "ux_scenario_14_inc_conformance::scenario_14_use_lib_lexical",
@@ -83,15 +83,15 @@
       "evidence": {
         "command": "PERL_LSP_UX_REQUIRE_BINARY=1 just ux-tests",
         "verification_state": "verified",
-        "verification_pr": 16952,
-        "verified_sha": "35148aedd111bda2d918f91c637fb24353ff541a",
-        "verified_artifact_blob": "4f649b13c13af7b594eaf337cc86b3d4d2881f1f",
+        "verification_pr": 17238,
+        "verified_sha": "e9cd1efa945e6968369919c6f0f43f83421d4e99",
+        "verified_artifact_blob": "6f30b3dc2f5e2db8e92b9dd0d55635901ffe93ad",
         "unverified_reason": null,
         "replacement_tests": [
           "scenario_14_use_lib_lexical"
         ]
       },
-      "notes": "The maintained test hard-fails unless an in-source 'use lib' path is honored consistently by diagnostics, completion, goto-definition, and hover."
+      "notes": "The maintained test hard-fails unless an in-source 'use lib' path is honored consistently by diagnostics, completion, goto-definition, and hover. Reverified after current artifact drift on #17238 at e9cd1efa945e6968369919c6f0f43f83421d4e99 (artifact 6f30b3dc2f5e2db8e92b9dd0d55635901ffe93ad): hosted exact-subject run37284894403, attempt1/job111681348307, used one locked serial dev server and one retained UX14 test executable with explicit PERL_LSP_BIN and PERL_LSP_UX_REQUIRE_BINARY=1; five sequential --test-threads=1 --show-output --color=never observations each passed14 tests with0 failed/ignored/filtered/skipped and all13 replacement cases present. Source and executable digests stayed stable; aggregate533.56008s<900s. Exact raw receipt and independently reviewed qualification are retained under docs/swarm/source-syncs/2026-10-05-ux14-e9cd1efa. Bounded repetition of implemented assertions, not exhaustion, every printed diagnostic cell, or full UX gate acceptance."
     },
     {
       "test": "ux_scenario_14_inc_conformance::scenario_14_absolute_include_path",
@@ -113,15 +113,15 @@
       "evidence": {
         "command": "PERL_LSP_UX_REQUIRE_BINARY=1 just ux-tests",
         "verification_state": "verified",
-        "verification_pr": 16952,
-        "verified_sha": "35148aedd111bda2d918f91c637fb24353ff541a",
-        "verified_artifact_blob": "4f649b13c13af7b594eaf337cc86b3d4d2881f1f",
+        "verification_pr": 17238,
+        "verified_sha": "e9cd1efa945e6968369919c6f0f43f83421d4e99",
+        "verified_artifact_blob": "6f30b3dc2f5e2db8e92b9dd0d55635901ffe93ad",
         "unverified_reason": null,
         "replacement_tests": [
           "scenario_14_external_include_paths_unauthorized_zero_visibility"
         ]
       },
-      "notes": "Ordinary LSP configuration is not an authorized machine-scoped channel for external roots. The replacement fails closed and proves zero diagnostics, navigation, completion, or hover visibility through that channel."
+      "notes": "Ordinary LSP configuration is not an authorized machine-scoped channel for external roots. The replacement fails closed and proves zero diagnostics, navigation, completion, or hover visibility through that channel. Reverified after current artifact drift on #17238 at e9cd1efa945e6968369919c6f0f43f83421d4e99 (artifact 6f30b3dc2f5e2db8e92b9dd0d55635901ffe93ad): hosted exact-subject run37284894403, attempt1/job111681348307, used one locked serial dev server and one retained UX14 test executable with explicit PERL_LSP_BIN and PERL_LSP_UX_REQUIRE_BINARY=1; five sequential --test-threads=1 --show-output --color=never observations each passed14 tests with0 failed/ignored/filtered/skipped and all13 replacement cases present. Source and executable digests stayed stable; aggregate533.56008s<900s. Exact raw receipt and independently reviewed qualification are retained under docs/swarm/source-syncs/2026-10-05-ux14-e9cd1efa. Bounded repetition of implemented assertions, not exhaustion, every printed diagnostic cell, or full UX gate acceptance."
     },
     {
       "test": "ux_scenario_14_inc_conformance::scenario_14_no_lib_cancellation",
@@ -143,16 +143,16 @@
       "evidence": {
         "command": "PERL_LSP_UX_REQUIRE_BINARY=1 just ux-tests",
         "verification_state": "verified",
-        "verification_pr": 16952,
-        "verified_sha": "35148aedd111bda2d918f91c637fb24353ff541a",
-        "verified_artifact_blob": "4f649b13c13af7b594eaf337cc86b3d4d2881f1f",
+        "verification_pr": 17238,
+        "verified_sha": "e9cd1efa945e6968369919c6f0f43f83421d4e99",
+        "verified_artifact_blob": "6f30b3dc2f5e2db8e92b9dd0d55635901ffe93ad",
         "unverified_reason": null,
         "replacement_tests": [
           "scenario_14_no_lib_cancellation",
           "scenario_14_no_lib_cancellation_workspace_index"
         ]
       },
-      "notes": "The maintained negative tests hard-fail unless 'no lib' cancellation suppresses diagnostics resolution, completion, goto-definition, and workspace-index leakage."
+      "notes": "The maintained negative tests hard-fail unless 'no lib' cancellation suppresses diagnostics resolution, completion, goto-definition, and workspace-index leakage. Reverified after current artifact drift on #17238 at e9cd1efa945e6968369919c6f0f43f83421d4e99 (artifact 6f30b3dc2f5e2db8e92b9dd0d55635901ffe93ad): hosted exact-subject run37284894403, attempt1/job111681348307, used one locked serial dev server and one retained UX14 test executable with explicit PERL_LSP_BIN and PERL_LSP_UX_REQUIRE_BINARY=1; five sequential --test-threads=1 --show-output --color=never observations each passed14 tests with0 failed/ignored/filtered/skipped and all13 replacement cases present. Source and executable digests stayed stable; aggregate533.56008s<900s. Exact raw receipt and independently reviewed qualification are retained under docs/swarm/source-syncs/2026-10-05-ux14-e9cd1efa. Bounded repetition of implemented assertions, not exhaustion, every printed diagnostic cell, or full UX gate acceptance."
     },
     {
       "test": "ux_scenario_14_inc_conformance::scenario_14_findbin_relative",
@@ -174,15 +174,15 @@
       "evidence": {
         "command": "PERL_LSP_UX_REQUIRE_BINARY=1 just ux-tests",
         "verification_state": "verified",
-        "verification_pr": 17042,
-        "verified_sha": "42cd94189150bfe082b692627bb19232a38d31db",
-        "verified_artifact_blob": "4f649b13c13af7b594eaf337cc86b3d4d2881f1f",
+        "verification_pr": 17238,
+        "verified_sha": "e9cd1efa945e6968369919c6f0f43f83421d4e99",
+        "verified_artifact_blob": "6f30b3dc2f5e2db8e92b9dd0d55635901ffe93ad",
         "unverified_reason": null,
         "replacement_tests": [
           "scenario_14_findbin_relative"
         ]
       },
-      "notes": "Discharged the #10015 proof debt: after the replacement was made discriminating (#14152 hard-fails consumer divergence and consistent refusal) and the strict child-environment isolation landed (#14308), the exact-subject five-run protocol passed terminally (sha ac54b5f5d62f25a27070ab580b6de92d7fddf82b, artifact blob 5c81bf0f, perllsp sha256 71926b820eff5b3d1927387d1a0329851a73e1ce21915d251370d5f96d1ba46b, --test-threads=1, PERL_LSP_UX_REQUIRE_BINARY=1, explicit PERL_LSP_BIN; 14 passed / 0 failed / 0 skipped in each of 5 sequential runs, Windows x64, Perl 5.42.2). Evidence strength: bounded repetition, not an exhaustion proof; the canonical ubuntu lane re-executes the same target on this PR. Re-verified after main #16952 (49ba302ace) drifted the quarantined artifact during the #17042 merge: the evidence lane re-run at merge head 42cd941891 (artifact blob 4f649b13c13af7b594eaf337cc86b3d4d2881f1f) gave ux_scenario_14_inc_conformance 14 passed / 0 failed / 0 skipped, --test-threads=1, PERL_LSP_UX_REQUIRE_BINARY=1, explicit PERL_LSP_BIN; Windows x64, Perl 5.42.2. Single-run strength here is the drift repair, not the discharge protocol; the five-run protocol above remains the original discharge evidence."
+      "notes": "Discharged the #10015 proof debt: after the replacement was made discriminating (#14152 hard-fails consumer divergence and consistent refusal) and the strict child-environment isolation landed (#14308), the exact-subject five-run protocol passed terminally (sha ac54b5f5d62f25a27070ab580b6de92d7fddf82b, artifact blob 5c81bf0f, perllsp sha256 71926b820eff5b3d1927387d1a0329851a73e1ce21915d251370d5f96d1ba46b, --test-threads=1, PERL_LSP_UX_REQUIRE_BINARY=1, explicit PERL_LSP_BIN; 14 passed / 0 failed / 0 skipped in each of 5 sequential runs, Windows x64, Perl 5.42.2). Evidence strength: bounded repetition, not an exhaustion proof; the canonical ubuntu lane re-executes the same target on this PR. Re-verified after main #16952 (49ba302ace) drifted the quarantined artifact during the #17042 merge: the evidence lane re-run at merge head 42cd941891 (artifact blob 4f649b13c13af7b594eaf337cc86b3d4d2881f1f) gave ux_scenario_14_inc_conformance 14 passed / 0 failed / 0 skipped, --test-threads=1, PERL_LSP_UX_REQUIRE_BINARY=1, explicit PERL_LSP_BIN; Windows x64, Perl 5.42.2. Single-run strength here is the drift repair, not the discharge protocol; the five-run protocol above remains the original discharge evidence. Reverified after current artifact drift on #17238 at e9cd1efa945e6968369919c6f0f43f83421d4e99 (artifact 6f30b3dc2f5e2db8e92b9dd0d55635901ffe93ad): hosted exact-subject run37284894403, attempt1/job111681348307, used one locked serial dev server and one retained UX14 test executable with explicit PERL_LSP_BIN and PERL_LSP_UX_REQUIRE_BINARY=1; five sequential --test-threads=1 --show-output --color=never observations each passed14 tests with0 failed/ignored/filtered/skipped and all13 replacement cases present. Source and executable digests stayed stable; aggregate533.56008s<900s. Exact raw receipt and independently reviewed qualification are retained under docs/swarm/source-syncs/2026-10-05-ux14-e9cd1efa. Bounded repetition of implemented assertions, not exhaustion, every printed diagnostic cell, or full UX gate acceptance."
     },
     {
       "test": "ux_scenario_14_inc_conformance::scenario_14_system_inc",
@@ -204,15 +204,15 @@
       "evidence": {
         "command": "PERL_LSP_UX_REQUIRE_BINARY=1 just ux-tests",
         "verification_state": "verified",
-        "verification_pr": 16952,
-        "verified_sha": "35148aedd111bda2d918f91c637fb24353ff541a",
-        "verified_artifact_blob": "4f649b13c13af7b594eaf337cc86b3d4d2881f1f",
+        "verification_pr": 17238,
+        "verified_sha": "e9cd1efa945e6968369919c6f0f43f83421d4e99",
+        "verified_artifact_blob": "6f30b3dc2f5e2db8e92b9dd0d55635901ffe93ad",
         "unverified_reason": null,
         "replacement_tests": [
           "scenario_14_perl5lib_env"
         ]
       },
-      "notes": "The old name misstated the fixture: it exercised PERL5LIB, not interpreter startup @INC. The renamed test preserves the behavior with usePerl5lib enabled independently of useSystemInc."
+      "notes": "The old name misstated the fixture: it exercised PERL5LIB, not interpreter startup @INC. The renamed test preserves the behavior with usePerl5lib enabled independently of useSystemInc. Reverified after current artifact drift on #17238 at e9cd1efa945e6968369919c6f0f43f83421d4e99 (artifact 6f30b3dc2f5e2db8e92b9dd0d55635901ffe93ad): hosted exact-subject run37284894403, attempt1/job111681348307, used one locked serial dev server and one retained UX14 test executable with explicit PERL_LSP_BIN and PERL_LSP_UX_REQUIRE_BINARY=1; five sequential --test-threads=1 --show-output --color=never observations each passed14 tests with0 failed/ignored/filtered/skipped and all13 replacement cases present. Source and executable digests stayed stable; aggregate533.56008s<900s. Exact raw receipt and independently reviewed qualification are retained under docs/swarm/source-syncs/2026-10-05-ux14-e9cd1efa. Bounded repetition of implemented assertions, not exhaustion, every printed diagnostic cell, or full UX gate acceptance."
     },
     {
       "test": "ux_scenario_14_inc_conformance::scenario_14_nested_module_relative_include_path",
@@ -234,15 +234,15 @@
       "evidence": {
         "command": "PERL_LSP_UX_REQUIRE_BINARY=1 just ux-tests",
         "verification_state": "verified",
-        "verification_pr": 16952,
-        "verified_sha": "35148aedd111bda2d918f91c637fb24353ff541a",
-        "verified_artifact_blob": "4f649b13c13af7b594eaf337cc86b3d4d2881f1f",
+        "verification_pr": 17238,
+        "verified_sha": "e9cd1efa945e6968369919c6f0f43f83421d4e99",
+        "verified_artifact_blob": "6f30b3dc2f5e2db8e92b9dd0d55635901ffe93ad",
         "unverified_reason": null,
         "replacement_tests": [
           "scenario_14_nested_module_relative_include_path"
         ]
       },
-      "notes": "The maintained test hard-fails unless Nested::Deep resolves consistently through the configured relative include path."
+      "notes": "The maintained test hard-fails unless Nested::Deep resolves consistently through the configured relative include path. Reverified after current artifact drift on #17238 at e9cd1efa945e6968369919c6f0f43f83421d4e99 (artifact 6f30b3dc2f5e2db8e92b9dd0d55635901ffe93ad): hosted exact-subject run37284894403, attempt1/job111681348307, used one locked serial dev server and one retained UX14 test executable with explicit PERL_LSP_BIN and PERL_LSP_UX_REQUIRE_BINARY=1; five sequential --test-threads=1 --show-output --color=never observations each passed14 tests with0 failed/ignored/filtered/skipped and all13 replacement cases present. Source and executable digests stayed stable; aggregate533.56008s<900s. Exact raw receipt and independently reviewed qualification are retained under docs/swarm/source-syncs/2026-10-05-ux14-e9cd1efa. Bounded repetition of implemented assertions, not exhaustion, every printed diagnostic cell, or full UX gate acceptance."
     },
     {
       "test": "ux_scenario_14_inc_conformance::scenario_14_include_path_missing_module_consistency",
@@ -264,15 +264,15 @@
       "evidence": {
         "command": "PERL_LSP_UX_REQUIRE_BINARY=1 just ux-tests",
         "verification_state": "verified",
-        "verification_pr": 16952,
-        "verified_sha": "35148aedd111bda2d918f91c637fb24353ff541a",
-        "verified_artifact_blob": "4f649b13c13af7b594eaf337cc86b3d4d2881f1f",
+        "verification_pr": 17238,
+        "verified_sha": "e9cd1efa945e6968369919c6f0f43f83421d4e99",
+        "verified_artifact_blob": "6f30b3dc2f5e2db8e92b9dd0d55635901ffe93ad",
         "unverified_reason": null,
         "replacement_tests": [
           "scenario_14_include_path_missing_module_consistency"
         ]
       },
-      "notes": "The maintained negative test hard-fails unless a missing include-path module stays unresolved across PL701, completion, goto-definition, and hover."
+      "notes": "The maintained negative test hard-fails if goto-definition resolves MissingFromInclude, PL701 is absent, or the server crashes. Completion and hover are printed as diagnostics; parity for those consumers is not established by this test. Reverified after current artifact drift on #17238 at e9cd1efa945e6968369919c6f0f43f83421d4e99 (artifact 6f30b3dc2f5e2db8e92b9dd0d55635901ffe93ad): hosted exact-subject run37284894403, attempt1/job111681348307, used one locked serial dev server and one retained UX14 test executable with explicit PERL_LSP_BIN and PERL_LSP_UX_REQUIRE_BINARY=1; five sequential --test-threads=1 --show-output --color=never observations each passed14 tests with0 failed/ignored/filtered/skipped and all13 replacement cases present. Source and executable digests stayed stable; aggregate533.56008s<900s. Exact raw receipt and independently reviewed qualification are retained under docs/swarm/source-syncs/2026-10-05-ux14-e9cd1efa. Bounded repetition of implemented assertions, not exhaustion, every printed diagnostic cell, or full UX gate acceptance."
     },
     {
       "test": "ux_scenario_14_inc_conformance::scenario_14_include_path_missing_module_completion_consistency",
@@ -294,15 +294,15 @@
       "evidence": {
         "command": "PERL_LSP_UX_REQUIRE_BINARY=1 just ux-tests",
         "verification_state": "verified",
-        "verification_pr": 16952,
-        "verified_sha": "35148aedd111bda2d918f91c637fb24353ff541a",
-        "verified_artifact_blob": "4f649b13c13af7b594eaf337cc86b3d4d2881f1f",
+        "verification_pr": 17238,
+        "verified_sha": "e9cd1efa945e6968369919c6f0f43f83421d4e99",
+        "verified_artifact_blob": "6f30b3dc2f5e2db8e92b9dd0d55635901ffe93ad",
         "unverified_reason": null,
         "replacement_tests": [
           "scenario_14_include_path_missing_module_completion_consistency"
         ]
       },
-      "notes": "The maintained negative test hard-fails if completion and goto-definition disagree for a module absent from the configured include path."
+      "notes": "The maintained negative test hard-fails if completion and goto-definition disagree for a module absent from the configured include path. Reverified after current artifact drift on #17238 at e9cd1efa945e6968369919c6f0f43f83421d4e99 (artifact 6f30b3dc2f5e2db8e92b9dd0d55635901ffe93ad): hosted exact-subject run37284894403, attempt1/job111681348307, used one locked serial dev server and one retained UX14 test executable with explicit PERL_LSP_BIN and PERL_LSP_UX_REQUIRE_BINARY=1; five sequential --test-threads=1 --show-output --color=never observations each passed14 tests with0 failed/ignored/filtered/skipped and all13 replacement cases present. Source and executable digests stayed stable; aggregate533.56008s<900s. Exact raw receipt and independently reviewed qualification are retained under docs/swarm/source-syncs/2026-10-05-ux14-e9cd1efa. Bounded repetition of implemented assertions, not exhaustion, every printed diagnostic cell, or full UX gate acceptance."
     },
     {
       "test": "ux_scenario_14_inc_conformance::scenario_14_system_inc_completion_opt_in_enabled",
@@ -324,9 +324,9 @@
       "evidence": {
         "command": "PERL_LSP_UX_REQUIRE_BINARY=1 just ux-tests",
         "verification_state": "verified",
-        "verification_pr": 16952,
-        "verified_sha": "35148aedd111bda2d918f91c637fb24353ff541a",
-        "verified_artifact_blob": "4f649b13c13af7b594eaf337cc86b3d4d2881f1f",
+        "verification_pr": 17238,
+        "verified_sha": "e9cd1efa945e6968369919c6f0f43f83421d4e99",
+        "verified_artifact_blob": "6f30b3dc2f5e2db8e92b9dd0d55635901ffe93ad",
         "unverified_reason": null,
         "replacement_tests": [
           "scenario_14_perl5lib_completion_gating_matrix",
@@ -334,7 +334,7 @@
           "scenario_14_perl5lib_disabled_ignores_env_even_when_system_inc_enabled"
         ]
       },
-      "notes": "The old assertion incorrectly coupled PERL5LIB visibility to useSystemInc. The replacement matrix proves the two authorities are independent and guards against PERL5LIB leaking through startup @INC."
+      "notes": "The old assertion incorrectly coupled PERL5LIB visibility to useSystemInc. The replacement matrix proves the two authorities are independent and guards against PERL5LIB leaking through startup @INC. Reverified after current artifact drift on #17238 at e9cd1efa945e6968369919c6f0f43f83421d4e99 (artifact 6f30b3dc2f5e2db8e92b9dd0d55635901ffe93ad): hosted exact-subject run37284894403, attempt1/job111681348307, used one locked serial dev server and one retained UX14 test executable with explicit PERL_LSP_BIN and PERL_LSP_UX_REQUIRE_BINARY=1; five sequential --test-threads=1 --show-output --color=never observations each passed14 tests with0 failed/ignored/filtered/skipped and all13 replacement cases present. Source and executable digests stayed stable; aggregate533.56008s<900s. Exact raw receipt and independently reviewed qualification are retained under docs/swarm/source-syncs/2026-10-05-ux14-e9cd1efa. Bounded repetition of implemented assertions, not exhaustion, every printed diagnostic cell, or full UX gate acceptance."
     }
   ],
   "summary": {
