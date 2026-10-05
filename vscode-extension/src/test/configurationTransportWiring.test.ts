@@ -158,8 +158,11 @@ describe('configuration transport wiring (#14447)', () => {
       { scopeUri: FOLDER_A, section: 'perl' },
       { scopeUri: FOLDER_B, section: 'perl' },
     ];
+    // The unscoped slot is answered from user/global state only (#17334): the
+    // workspace-level `''` value must not ride the session-global layer over
+    // both folders; each folder slot carries its own value.
     expect(await handler!({ items }, undefined, jest.fn())).toEqual([
-      { workspace: { includePaths: ['a/lib'] } },
+      {},
       { workspace: { includePaths: ['a/lib'] } },
       { workspace: { includePaths: ['b/lib'] } },
     ]);
@@ -177,7 +180,7 @@ describe('configuration transport wiring (#14447)', () => {
       settings: null,
     });
     expect(await handler!({ items }, undefined, jest.fn())).toEqual([
-      { workspace: { includePaths: ['a/lib'] } },
+      {},
       { workspace: { includePaths: ['a/new-lib'] } },
       { workspace: { includePaths: ['b/lib'] } },
     ]);
