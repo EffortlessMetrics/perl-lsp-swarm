@@ -14,6 +14,8 @@ on:
   pull_request:
     branches: [main, master]
     paths:
+      - 'scripts/cargo_allow_cadence.py'
+      - 'scripts/tests/test_cargo_allow_cadence.py'
       - 'scripts/cargo-package-workspace-dry-run.sh'
       - 'install.sh'
       - 'scripts/install.sh'
@@ -401,6 +403,9 @@ jobs:
 
       - name: Run ripr liveness classifier tests (#16098)
         run: python3 -m unittest scripts.ci.test_ripr_liveness
+
+      - name: Run optional cargo-allow cadence capture tests (#15304)
+        run: python3 -m unittest scripts.tests.test_cargo_allow_cadence
 
       - name: Summary
         if: always()
