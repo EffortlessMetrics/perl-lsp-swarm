@@ -101,6 +101,7 @@ on:
       # reaching the single-retry path.
       - '.github/workflows/ripr.yml'
       - '.github/workflows/ripr-infra-retry.yml'
+      - 'scripts/tests/test_ripr_infra_retry.py'
       - 'scripts/ci/classify-ripr-lane-termination'
       - 'scripts/ci/test_ripr_cache_authority_15055.py'
       - 'scripts/tests/test-classify-ripr-lane-termination.sh'
@@ -625,6 +626,9 @@ jobs:
 
       - name: Run ripr termination classifier + bounded-retry self-test
         run: bash scripts/tests/test-classify-ripr-lane-termination.sh
+
+      - name: Run exact RIPR automatic-retry workflow controls
+        run: python3 scripts/tests/test_ripr_infra_retry.py
 
       - name: Run RIPR cache-writer authority self-test
         run: python3 -m unittest scripts/ci/test_ripr_cache_authority_15055.py
