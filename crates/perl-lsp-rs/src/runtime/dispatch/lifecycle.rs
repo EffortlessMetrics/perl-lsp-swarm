@@ -141,6 +141,13 @@ impl LspServer {
     }
 
     /// Handle exit request
+    // The abnormal-exit branch below writes its reason to stderr directly:
+    // under the default `warn` tracing filter an info record is dropped, and
+    // with no subscriber at all every record is dropped (#17337).
+    #[expect(
+        clippy::print_stderr,
+        reason = "abnormal protocol exit must leave its reason on stderr where the default warn filter drops the info-level trace (#17337)"
+    )]
     pub(super) fn handle_exit_dispatch(&self) -> Result<Option<Value>, JsonRpcError> {
         // `process::exit` skips destructors. Close all outbound admission gates
         // and give the existing writer a bounded chance to flush frames that
@@ -155,7 +162,30 @@ impl LspServer {
         // settlement remains independent evidence and must not change that
         // protocol status when shutdown was accepted.
         let exit_code = protocol_exit_code(self.shutdown_received.load(Ordering::Acquire));
-        tracing::info!(exit_code, "LSP server exiting");
+        if exit_code == 0 {
+            tracing::info!(exit_code, "LSP server exiting");
+        } else {
+            // #17337: this `process::exit` is the only mid-session exit path in
+            // the binary, and its sole trace used to be an info-level record —
+            // dropped by the default `warn` filter that `run_server` installs
+            // when logging was not requested. A death here left only the
+            // startup banner on stderr with no attributable cause. An exit
+            // carrying a failure code is abnormal teardown, so it must stay
+            // visible under that filter and survive even a missing subscriber.
+            tracing::warn!(
+                exit_code,
+                "LSP server exiting: `exit` notification received without a prior `shutdown`"
+            );
+            let settlement_note = match settlement.as_ref() {
+                Some(outcome) if !outcome.is_io_failure() => "outbound settled",
+                Some(_) => "outbound settled with I/O failure",
+                None => "outbound did not settle",
+            };
+            eprintln!(
+                "perl-lsp: exiting with code {exit_code}: `exit` notification received \
+                 without a prior `shutdown` request ({settlement_note})"
+            );
+        }
         // `process::exit` skips Rust destructors, including the non-blocking
         // file writer guard. Drain it explicitly so the final lifecycle log
         // record is durable before the process terminates.

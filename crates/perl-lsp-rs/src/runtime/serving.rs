@@ -13,6 +13,21 @@ use crate::protocol::JsonRpcId;
 
 const CANCELLED_SET_CAP: usize = 256;
 
+/// Record why the ingress loop tore down on a failed request hand-off (#17337).
+///
+/// `scheduler_rejected` is `true` when the scheduler queue refused the send;
+/// `false` means the outbound response-failure wake fired, which already logs
+/// at the top-of-loop arm. `serve_async` returns right after this — over stdio
+/// that ends the process — so every involuntary teardown must leave a `warn`
+/// record that survives the default `warn` filter.
+fn log_ingress_teardown(method: &str, scheduler_rejected: bool) {
+    if scheduler_rejected {
+        tracing::warn!(method, "scheduler ingress send failed; closing LSP ingress");
+    } else {
+        tracing::warn!(method, "outbound response delivery failed; closing LSP ingress");
+    }
+}
+
 #[allow(dead_code)]
 impl LspServer {
     /// Run the LSP server using stdio
@@ -109,6 +124,13 @@ impl LspServer {
                         result = sched.send_mutation(request) => Some(result),
                     };
                     if send_result.is_none_or(|result| result.is_err()) {
+                        // #17337: this break ends the serving loop and, over
+                        // stdio, the process. The response-failure wake already
+                        // logs at the top-of-loop arm; the scheduler-rejection
+                        // arm used to tear down with no record at all. Every
+                        // involuntary exit from this loop must leave a
+                        // stderr-visible reason under the default `warn` filter.
+                        log_ingress_teardown(&method, send_result.is_some());
                         response_delivery_failed = true;
                         break;
                     }
@@ -119,6 +141,7 @@ impl LspServer {
                         result = sched.send_read(request) => Some(result),
                     };
                     if send_result.is_none_or(|result| result.is_err()) {
+                        log_ingress_teardown(&method, send_result.is_some());
                         response_delivery_failed = true;
                         break;
                     }
