@@ -18,10 +18,16 @@ on:
       - '.github/workflows/ux-regression-gate.yml'
       - 'xtask/src/main.rs'
       - 'xtask/src/tasks/mod.rs'
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      ux14_five_run:
+        description: Run five exact-subject UX14 observations
+        required: false
+        default: false
+        type: boolean
 
 concurrency:
-  group: ux-regression-gate-${{ github.event.pull_request.number || github.ref }}
+  group: ux-regression-gate-${{ github.event.pull_request.number || github.ref }}${{ github.event_name == 'workflow_dispatch' && inputs.ux14_five_run == true && '-ux14-five-run' || '' }}
   cancel-in-progress: true
 
 permissions:
@@ -43,7 +49,7 @@ env:
 
 jobs:
   ux-regression-gate:
-    name: UX Regression Gate
+    name: ${{ github.event_name == 'workflow_dispatch' && inputs.ux14_five_run == true && 'UX14 Exact-Subject Qualification' || 'UX Regression Gate' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
@@ -100,6 +106,7 @@ jobs:
 
       - name: Check UX test harness availability
         id: harness_check
+        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.ux14_five_run == true) }}
         run: |
           set -euo pipefail
           has_crate=false
@@ -128,7 +135,7 @@ jobs:
       - name: Run UX regression tests
         id: ux_tests
         continue-on-error: true
-        if: steps.harness_check.outputs.harness_available == 'true'
+        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.ux14_five_run == true) && steps.harness_check.outputs.harness_available == 'true' }}
         run: |
           set -o pipefail
           mkdir -p target/receipts
@@ -148,7 +155,7 @@ jobs:
           exit "$test_status"
 
       - name: Emit structured UX regression receipt
-        if: always() && steps.harness_check.outputs.harness_available == 'true'
+        if: ${{ always() && !(github.event_name == 'workflow_dispatch' && inputs.ux14_five_run == true) && steps.harness_check.outputs.harness_available == 'true' }}
         env:
           TESTED_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
         run: |
@@ -160,7 +167,7 @@ jobs:
 
       - name: Verify receipt subject identity
         id: verify_receipt
-        if: always() && steps.harness_check.outputs.harness_available == 'true'
+        if: ${{ always() && !(github.event_name == 'workflow_dispatch' && inputs.ux14_five_run == true) && steps.harness_check.outputs.harness_available == 'true' }}
         env:
           TESTED_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
         run: |
@@ -190,7 +197,7 @@ jobs:
       # rejected, under an artifact name asserting the exact candidate SHA — the
       # artifact would carry more authority than the check that produced it.
       - name: Upload UX regression evidence
-        if: always() && steps.harness_check.outputs.harness_available == 'true' && steps.verify_receipt.outcome == 'success'
+        if: ${{ always() && !(github.event_name == 'workflow_dispatch' && inputs.ux14_five_run == true) && steps.harness_check.outputs.harness_available == 'true' && steps.verify_receipt.outcome == 'success' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.0
         with:
           name: ux-regression-gate-receipt-${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
@@ -206,7 +213,7 @@ jobs:
       # Unverified output is still worth keeping for triage, but under a name
       # that does not claim to be evidence about a specific candidate.
       - name: Upload unverified UX diagnostics
-        if: always() && steps.harness_check.outputs.harness_available == 'true' && steps.verify_receipt.outcome != 'success'
+        if: ${{ always() && !(github.event_name == 'workflow_dispatch' && inputs.ux14_five_run == true) && steps.harness_check.outputs.harness_available == 'true' && steps.verify_receipt.outcome != 'success' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.0
         with:
           name: ux-regression-gate-unverified-${{ github.run_id }}-${{ github.run_attempt }}
@@ -219,7 +226,7 @@ jobs:
           retention-days: 7
 
       - name: Convert UX regression receipt to JUnit
-        if: always() && steps.harness_check.outputs.harness_available == 'true'
+        if: ${{ always() && !(github.event_name == 'workflow_dispatch' && inputs.ux14_five_run == true) && steps.harness_check.outputs.harness_available == 'true' }}
         run: |
           python3 scripts/ci/receipts-to-junit.py \
             --input target/receipts/ux-regression.json \
@@ -227,7 +234,7 @@ jobs:
             --suite-name ux-regression-gate
 
       - name: Upload test results to Codecov without a repository secret
-        if: always() && steps.harness_check.outputs.harness_available == 'true'
+        if: ${{ always() && !(github.event_name == 'workflow_dispatch' && inputs.ux14_five_run == true) && steps.harness_check.outputs.harness_available == 'true' }}
         continue-on-error: true
         uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
         with:
@@ -236,7 +243,7 @@ jobs:
           fail_ci_if_error: false
 
       - name: Summarize UX evidence
-        if: always()
+        if: ${{ always() && !(github.event_name == 'workflow_dispatch' && inputs.ux14_five_run == true) }}
         env:
           TESTED_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
           HARNESS_AVAILABLE: ${{ steps.harness_check.outputs.harness_available }}
@@ -352,12 +359,405 @@ jobs:
           PY
 
       - name: Fail UX regression gate on test failures
-        if: steps.harness_check.outputs.harness_available == 'true' && steps.ux_tests.outcome == 'failure'
+        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.ux14_five_run == true) && steps.harness_check.outputs.harness_available == 'true' && steps.ux_tests.outcome == 'failure' }}
         run: exit 1
 
       - name: Fail UX regression gate when harness is unavailable
-        if: always() && steps.harness_check.outputs.harness_available != 'true'
+        if: ${{ always() && !(github.event_name == 'workflow_dispatch' && inputs.ux14_five_run == true) && steps.harness_check.outputs.harness_available != 'true' }}
         run: exit 1
+
+      # This manual qualification has a separate check name and concurrency
+      # group. It never supplies the normal full-suite required check.
+      - name: Run five exact-subject UX14 observations
+        id: ux14_observe
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.ux14_five_run == true }}
+        continue-on-error: true
+        env:
+          TESTED_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          mkdir -p target/receipts
+          cat > target/receipts/ux14-observer.py <<'PY'
+          import datetime
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import platform
+          import re
+          import signal
+          import subprocess
+          import time
+
+          ARTIFACT = 'crates/perl-lsp-ux-tests/tests/ux_scenario_14_inc_conformance.rs'
+          REGISTRY = '.ci/ux-flakes.json'
+          TEST_PREPARE = ['cargo', 'test', '-p', 'perl-lsp-ux-tests', '--test',
+                          'ux_scenario_14_inc_conformance', '--locked', '--no-run',
+                          '--message-format=json']
+
+          def utc():
+              return datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+          def digest(path):
+              with Path(path).open('rb') as stream:
+                  return hashlib.file_digest(stream, 'sha256').hexdigest()
+
+          def source_identity(expected):
+              def git(*args):
+                  return subprocess.check_output(['git', *args], text=True).strip()
+              if git('rev-parse', 'HEAD') != expected:
+                  raise ValueError('Checked-out HEAD drifted from immutable TESTED_SHA')
+              subprocess.run(['git', 'diff', '--quiet', 'HEAD', '--'], check=True)
+              return {'source': expected, 'tree': git('rev-parse', 'HEAD^{tree}'),
+                      'artifactPath': ARTIFACT, 'artifactBlob': git('rev-parse', f'HEAD:{ARTIFACT}'),
+                      'artifactSHA256': digest(ARTIFACT),
+                      'registryBlob': git('rev-parse', f'HEAD:{REGISTRY}'),
+                      'registrySHA256': digest(REGISTRY)}
+
+          def decode(log, expected):
+              # Captured, serial libtest output has unambiguous complete terminal rows.
+              rows = re.findall(r'^test (\S+) \.\.\. (ok|FAILED|ignored)\s*$', log, re.M)
+              summaries = re.findall(r'^test result: (ok|FAILED)\. (\d+) passed; (\d+) failed; '
+                                     r'(\d+) ignored; (\d+) measured; (\d+) filtered out;', log, re.M)
+              passed = [name for name, state in rows if state == 'ok']
+              failed = [name for name, state in rows if state == 'FAILED']
+              ignored = [name for name, state in rows if state == 'ignored']
+              missing = sorted(set(expected) - set(passed))
+              banners = re.findall(r'^running (\d+) tests?\s*$', log, re.M)
+              counts_match = (len(banners) == 1 and int(banners[0]) == len(rows)
+                              and len(summaries) == 1 and summaries[0][0] == 'ok'
+                              and int(summaries[0][1]) == len(passed) > 0
+                              and all(int(value) == 0 for value in summaries[0][2:])
+                              and len(set(name for name, _ in rows)) == len(rows))
+              return {'passed': passed, 'failed': failed, 'ignored': ignored,
+                      'missingReplacementCases': missing, 'summaries': summaries,
+                      'skipLines': sum('SKIP' in line for line in log.splitlines()),
+                      'terminalGreen': bool(expected) and counts_match and not missing
+                                       and not failed and not ignored and 'SKIP' not in log}
+
+          def command(args, log_path, env, deadline, cap):
+              row = {'command': args, 'startedUTC': utc(), 'exit': None, 'status': 'not_run'}
+              remaining = deadline - time.monotonic()
+              if remaining <= 0:
+                  row['reason'] = 'aggregate_budget_exhausted'
+                  return row
+              timeout = min(cap, remaining)
+              row['timeoutSeconds'] = timeout
+              with Path(log_path).open('wb') as log:
+                  process = subprocess.Popen(args, env=env, stdout=log, stderr=subprocess.STDOUT,
+                                             start_new_session=True)
+                  try:
+                      row['exit'] = process.wait(timeout=timeout)
+                      row['status'] = 'completed'
+                  except subprocess.TimeoutExpired:
+                      row['status'] = 'timeout'
+                      row['reason'] = 'command_budget_exhausted'
+                  finally:
+                      # Terminate the whole native group, including descendants that may
+                      # outlive Cargo, before a subsequent observation can start.
+                      try:
+                          os.killpg(process.pid, signal.SIGKILL)
+                      except ProcessLookupError:
+                          pass
+                      process.wait()
+              row.update(endedUTC=utc(), log=Path(log_path).name, logSHA256=digest(log_path))
+              return row
+
+          def observe():
+              output = Path('target/receipts/ux14-five-run')
+              output.mkdir(parents=True, exist_ok=False)
+              expected_sha = os.environ['TESTED_SHA']
+              env = dict(os.environ, CARGO_BUILD_JOBS='1', RUST_TEST_THREADS='1',
+                         PERL_LSP_UX_REQUIRE_BINARY='1', CARGO_TERM_COLOR='never')
+              env.pop('RUSTC_WRAPPER', None)
+              deadline = time.monotonic() + 900
+              receipt = {'schemaVersion': 1, 'source': expected_sha, 'startedUTC': utc(),
+                         'profile': 'dev binary; default Cargo features; locked serial UX14 target',
+                         'platform': platform.platform(), 'architecture': platform.machine(),
+                         'aggregateBudgetSeconds': 900, 'identityVerified': False,
+                         'allFiveObservedGreen': False, 'registryChanged': False,
+                         'qualificationLimit': 'Five bounded observations, not exhaustion or full UX gate',
+                         'preparation': [], 'runs': [dict(run=i, status='not_run', observedGreen=False)
+                                                   for i in range(1, 6)]}
+              def save():
+                  (output/'receipt.json').write_text(json.dumps(receipt, indent=2)+'\n', encoding='utf8')
+              def prep(args, name, cap):
+                  result = command(args, output/name, env, deadline, cap)
+                  receipt['preparation'].append(result)
+                  save()
+                  if result['status'] != 'completed' or result['exit'] != 0:
+                      raise ValueError(f'Preparation failed: {name} ({result["status"]})')
+                  return (output/name).read_text(encoding='utf8', errors='replace').strip()
+              save()
+              try:
+                  identity = source_identity(expected_sha)
+                  receipt['identity'] = identity
+                  registry = json.loads(Path(REGISTRY).read_text(encoding='utf8'))
+                  expected = sorted({case for entry in registry['entries']
+                                     if entry['crate'] == 'perl-lsp-ux-tests'
+                                     and entry['test'].startswith('ux_scenario_14_inc_conformance::')
+                                     for case in entry['evidence']['replacement_tests']})
+                  source = Path(ARTIFACT).read_text(encoding='utf8')
+                  if not expected or any(not re.search(r'\bfn\s+'+re.escape(case)+r'\s*\(', source)
+                                         for case in expected):
+                      raise ValueError('Registry replacement denominator is absent from current artifact')
+                  receipt['expectedReplacementCases'] = expected
+                  receipt['rustc'] = prep(['rustc', '-vV'], 'rustc.log', 15)
+                  receipt['cargo'] = prep(['cargo', '-vV'], 'cargo.log', 15)
+                  metadata_log = prep(['cargo', 'metadata', '--no-deps', '--format-version', '1',
+                                       '--locked', '--quiet'], 'metadata.log', 30)
+                  metadata = json.loads(next(line for line in metadata_log.splitlines()
+                                             if line.startswith('{')))
+                  prep(['cargo', 'build', '-p', 'perllsp', '--bin', 'perllsp', '--locked'],
+                       'build.log', 480)
+                  binary_dir = Path(metadata['target_directory'])
+                  if env.get('CARGO_BUILD_TARGET'):
+                      binary_dir /= env['CARGO_BUILD_TARGET']
+                  binary_path = binary_dir/'debug/perllsp'
+                  if not binary_path.is_file() or binary_path.is_symlink():
+                      raise ValueError('Native binary is not a regular file')
+                  binary = binary_path.resolve(strict=True)
+                  binary_hash = digest(binary)
+                  env['PERL_LSP_BIN'] = str(binary)
+                  receipt.update(binaryPath=str(binary), binarySHA256=binary_hash,
+                                 cargoTargetDirectory=metadata['target_directory'],
+                                 cargoBuildTarget=env.get('CARGO_BUILD_TARGET'),
+                                 rustFlags=env.get('RUSTFLAGS'), rustupToolchain=env.get('RUSTUP_TOOLCHAIN'))
+                  receipt['binaryVersion'] = prep([str(binary), '--version'], 'binary-version.log', 15)
+                  # Compile once, retain the exact test executable, then execute it five
+                  # times without another Cargo build that could replace either binary.
+                  prep(TEST_PREPARE, 'test-prepare.log', 180)
+                  artifacts = [json.loads(line) for line in (output/'test-prepare.log').read_text(
+                      encoding='utf8').splitlines() if line.startswith('{')]
+                  executables = [Path(item['executable']) for item in artifacts
+                                 if item.get('reason') == 'compiler-artifact'
+                                 and item.get('target', {}).get('name') == 'ux_scenario_14_inc_conformance'
+                                 and 'test' in item.get('target', {}).get('kind', [])
+                                 and item.get('executable')]
+                  if len(executables) != 1 or not executables[0].is_file() or executables[0].is_symlink():
+                      raise ValueError('Cannot bind exactly one UX14 test executable')
+                  test_executable = executables[0].resolve(strict=True)
+                  test_hash = digest(test_executable)
+                  receipt.update(testExecutablePath=str(test_executable), testExecutableSHA256=test_hash)
+                  if (source_identity(expected_sha) != identity or digest(binary) != binary_hash
+                          or digest(test_executable) != test_hash):
+                      raise ValueError('Source/artifact/binaries changed during preparation')
+                  receipt['identityVerified'] = True
+                  save()
+                  for row in receipt['runs']:
+                      try:
+                          row['before'] = source_identity(expected_sha)
+                          row['binaryBefore'] = digest(binary)
+                          row['testExecutableBefore'] = digest(test_executable)
+                          if (row['before'] != identity or row['binaryBefore'] != binary_hash
+                                  or row['testExecutableBefore'] != test_hash):
+                              raise ValueError('Subject changed before observation')
+                          log_path = output/f'run-{row["run"]}.log'
+                          row.update(command([str(test_executable), '--test-threads=1',
+                                              '--show-output', '--color=never'],
+                                             log_path, env, deadline, 90))
+                          if log_path.is_file():
+                              row.update(decode(log_path.read_text(encoding='utf8', errors='replace'), expected))
+                          row['after'] = source_identity(expected_sha)
+                          row['binaryAfter'] = digest(binary)
+                          row['testExecutableAfter'] = digest(test_executable)
+                          row['observedGreen'] = (row['status'] == 'completed' and row['exit'] == 0
+                                                  and row.get('terminalGreen', False)
+                                                  and row['after'] == identity
+                                                  and row['binaryAfter'] == binary_hash
+                                                  and row['testExecutableAfter'] == test_hash)
+                      except Exception as error:
+                          row.update(status='identity_or_instrumentation_failure', error=str(error),
+                                     observedGreen=False)
+                      save()
+                  receipt['identityVerified'] = (source_identity(expected_sha) == identity
+                                                 and digest(binary) == binary_hash
+                                                 and digest(test_executable) == test_hash
+                                                 and all(row.get('before') == identity
+                                                         and row.get('after') == identity
+                                                         and row.get('binaryBefore') == binary_hash
+                                                         and row.get('binaryAfter') == binary_hash
+                                                         and row.get('testExecutableBefore') == test_hash
+                                                         and row.get('testExecutableAfter') == test_hash
+                                                         for row in receipt['runs']))
+                  receipt['allFiveObservedGreen'] = (receipt['identityVerified']
+                                                    and all(row['observedGreen'] for row in receipt['runs']))
+              except Exception as error:
+                  receipt.update(error=str(error), identityVerified=False, allFiveObservedGreen=False)
+              finally:
+                  receipt['endedUTC'] = utc()
+                  save()
+                  print(json.dumps(receipt, indent=2))
+              return 0 if receipt['allFiveObservedGreen'] else 1
+
+          if __name__ == '__main__':
+              raise SystemExit(observe())
+          PY
+          python3 target/receipts/ux14-observer.py
+
+      - name: Verify five exact-subject UX14 observations
+        id: ux14_verify
+        if: ${{ always() && (github.event_name == 'workflow_dispatch' && inputs.ux14_five_run == true) }}
+        continue-on-error: true
+        env:
+          TESTED_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+        run: |
+          python3 - <<'PY'
+          """Independent receipt verifier embedded in the hosted workflow."""
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import re
+          import subprocess
+
+          def digest(path):
+              with Path(path).open('rb') as stream:
+                  return hashlib.file_digest(stream, 'sha256').hexdigest()
+
+          root = Path('target/receipts/ux14-five-run')
+          receipt = json.loads((root/'receipt.json').read_text(encoding='utf8'))
+          subject = os.environ['TESTED_SHA']
+          if receipt['source'] != subject or subprocess.check_output(
+                  ['git', 'rev-parse', 'HEAD'], text=True).strip() != subject:
+              raise SystemExit('Qualification subject does not match immutable event SHA')
+          subprocess.run(['git', 'diff', '--quiet', 'HEAD', '--'], check=True)
+          if receipt.get('identityVerified') is not True or receipt.get('allFiveObservedGreen') is not True:
+              raise SystemExit('Producer did not earn five complete observations')
+          identity = receipt['identity']
+          if (identity['source'] != subject
+                  or identity['tree'] != subprocess.check_output(
+                      ['git', 'rev-parse', 'HEAD^{tree}'], text=True).strip()
+                  or identity['artifactPath'] != 'crates/perl-lsp-ux-tests/tests/ux_scenario_14_inc_conformance.rs'):
+              raise SystemExit('Identity subject mismatch')
+          for label, key in [('artifactPath', 'artifactBlob'), ('registryPath', 'registryBlob')]:
+              path = identity.get(label, '.ci/ux-flakes.json' if label == 'registryPath' else '')
+              actual = subprocess.check_output(['git', 'rev-parse', f'HEAD:{path}'], text=True).strip()
+              if identity[key] != actual:
+                  raise SystemExit(f'{label} source blob mismatch')
+          for path_key, digest_key in [('artifactPath', 'artifactSHA256')]:
+              if hashlib.sha256(Path(identity[path_key]).read_bytes()).hexdigest() != identity[digest_key]:
+                  raise SystemExit(f'{path_key} contents changed')
+          if hashlib.sha256(Path('.ci/ux-flakes.json').read_bytes()).hexdigest() != identity['registrySHA256']:
+              raise SystemExit('Registry contents changed')
+          binary = Path(receipt['binaryPath'])
+          test_executable = Path(receipt['testExecutablePath'])
+          if binary.is_symlink() or test_executable.is_symlink():
+              raise SystemExit('Qualification binary became a symlink')
+          server_hash = digest(binary)
+          test_hash = digest(test_executable)
+          if (server_hash != receipt['binarySHA256']
+                  or test_hash != receipt['testExecutableSHA256']):
+              raise SystemExit('Qualification binary changed')
+          preparation = receipt['preparation']
+          if [row.get('log') for row in preparation] != [
+                  'rustc.log', 'cargo.log', 'metadata.log', 'build.log', 'binary-version.log', 'test-prepare.log']:
+              raise SystemExit('Qualification preparation denominator changed')
+          commands = [
+              ['rustc', '-vV'], ['cargo', '-vV'],
+              ['cargo', 'metadata', '--no-deps', '--format-version', '1', '--locked', '--quiet'],
+              ['cargo', 'build', '-p', 'perllsp', '--bin', 'perllsp', '--locked'],
+              [str(binary), '--version'],
+              ['cargo', 'test', '-p', 'perl-lsp-ux-tests', '--test',
+               'ux_scenario_14_inc_conformance', '--locked', '--no-run', '--message-format=json'],
+          ]
+          for row, expected_command in zip(preparation, commands):
+              if (row['command'] != expected_command or row['status'] != 'completed'
+                      or type(row['exit']) is not int or row['exit'] != 0
+                      or digest(root/row['log']) != row['logSHA256']):
+                  raise SystemExit('Qualification preparation failed or its log changed')
+          metadata = json.loads(next(line for line in (root/'metadata.log').read_text(
+              encoding='utf8').splitlines() if line.startswith('{')))
+          binary_dir = Path(metadata['target_directory'])
+          if receipt.get('cargoBuildTarget'):
+              binary_dir /= receipt['cargoBuildTarget']
+          binary_path = binary_dir/'debug/perllsp'
+          if not binary_path.is_file() or binary_path.is_symlink() or binary != binary_path.resolve():
+              raise SystemExit('Server binary does not match the Cargo target directory')
+          artifacts = [json.loads(line) for line in (root/'test-prepare.log').read_text(
+              encoding='utf8').splitlines() if line.startswith('{')]
+          executables = [Path(item['executable']) for item in artifacts
+                         if item.get('reason') == 'compiler-artifact'
+                         and item.get('target', {}).get('name') == 'ux_scenario_14_inc_conformance'
+                         and 'test' in item.get('target', {}).get('kind', []) and item.get('executable')]
+          if (len(executables) != 1 or not executables[0].is_file() or executables[0].is_symlink()
+                  or executables[0].resolve() != test_executable):
+              raise SystemExit('Test executable does not match the compiled UX14 target')
+          expected = sorted({case for entry in json.loads(Path('.ci/ux-flakes.json').read_text(
+              encoding='utf8'))['entries'] if entry['crate'] == 'perl-lsp-ux-tests'
+              and entry['test'].startswith('ux_scenario_14_inc_conformance::')
+              for case in entry['evidence']['replacement_tests']})
+          if not expected or expected != receipt['expectedReplacementCases']:
+              raise SystemExit('Current registry denominator changed')
+          rows = receipt['runs']
+          if (len(rows) != 5 or any(type(row['run']) is not int for row in rows)
+                  or [row['run'] for row in rows] != [1, 2, 3, 4, 5]):
+              raise SystemExit('Five ordered observations required')
+          for row in rows:
+              if (row['status'] != 'completed' or type(row['exit']) is not int or row['exit'] != 0
+                      or row['observedGreen'] is not True
+                      or row['before'] != identity or row['after'] != identity
+                      or row['binaryBefore'] != server_hash or row['binaryAfter'] != server_hash
+                      or row['testExecutableBefore'] != test_hash
+                      or row['testExecutableAfter'] != test_hash
+                      or row['command'] != [str(test_executable), '--test-threads=1',
+                                            '--show-output', '--color=never']):
+                  raise SystemExit(f'Observation {row["run"]} failed or changed identity')
+              log_path = root/f'run-{row["run"]}.log'
+              raw = log_path.read_bytes()
+              if hashlib.sha256(raw).hexdigest() != row['logSHA256']:
+                  raise SystemExit(f'Observation {row["run"]} log changed')
+              log = raw.decode('utf8', errors='replace')
+              terminals = re.findall(r'^test (\S+) \.\.\. (ok|FAILED|ignored)\s*$', log, re.M)
+              summaries = re.findall(r'^test result: (ok|FAILED)\. (\d+) passed; (\d+) failed; '
+                                     r'(\d+) ignored; (\d+) measured; (\d+) filtered out;', log, re.M)
+              passed = [name for name, result in terminals if result == 'ok']
+              banners = re.findall(r'^running (\d+) tests?\s*$', log, re.M)
+              if (len(banners) != 1 or int(banners[0]) != len(terminals)
+                      or len(summaries) != 1 or summaries[0][0] != 'ok'
+                      or int(summaries[0][1]) != len(passed) or len(passed) == 0
+                      or any(int(value) != 0 for value in summaries[0][2:])
+                      or len(terminals) != len(set(name for name, _ in terminals))
+                      or len(terminals) != len(passed) or not set(expected).issubset(passed)
+                      or 'SKIP' in log or row['passed'] != passed
+                      or row['missingReplacementCases'] or row['ignored'] or row['failed']):
+                  raise SystemExit(f'Observation {row["run"]} is vacuous or incomplete')
+          print('Verified five sequential UX14 observations for', subject,
+                'server SHA256', server_hash, 'test SHA256', test_hash)
+          PY
+
+      - name: Upload verified UX14 qualification
+        if: ${{ always() && (github.event_name == 'workflow_dispatch' && inputs.ux14_five_run == true) && steps.ux14_verify.outcome == 'success' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.0
+        with:
+          name: ux14-five-run-verified-${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          path: |
+            target/receipts/ux14-observer.py
+            target/receipts/ux14-five-run/
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload unverified UX14 diagnostics
+        if: ${{ always() && (github.event_name == 'workflow_dispatch' && inputs.ux14_five_run == true) && steps.ux14_verify.outcome != 'success' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.0
+        with:
+          name: ux14-five-run-unverified-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            target/receipts/ux14-observer.py
+            target/receipts/ux14-five-run/
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Enforce focused UX14 qualification
+        if: ${{ always() && (github.event_name == 'workflow_dispatch' && inputs.ux14_five_run == true) }}
+        env:
+          OBSERVATION: ${{ steps.ux14_observe.outcome }}
+          VERIFICATION: ${{ steps.ux14_verify.outcome }}
+        run: |
+          if [ "$OBSERVATION" != success ] || [ "$VERIFICATION" != success ]; then
+            echo "::error::Five complete exact-subject UX14 observations are not verified."
+            exit 1
+          fi
 
   extension-jest:
     name: Extension Jest
