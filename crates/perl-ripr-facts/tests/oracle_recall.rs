@@ -185,31 +185,42 @@ fn oracle_recall_meets_c1_threshold() {
             "C1 fixture `{stem}`: runner_hints must be {expected_hint_strs:?}"
         );
 
-        let actual: Vec<OracleTriple> = must_some_with(
+        let oracles = must_some_with(
             packet["oracles"].as_array(),
             format!("C1 fixture `{stem}`: packet carries oracles[]"),
-        )
-        .iter()
-        .filter(|oracle| oracle["test_id"].as_str() == Some(test_id.as_str()))
-        .enumerate()
-        .map(|(index, oracle)| {
-            let oracle_id = must_some_with(
-                oracle["oracle_id"].as_str(),
-                format!("C1 fixture `{stem}`: oracle {index} carries an oracle_id"),
+        );
+        // No-orphan guard: the staged root holds exactly one fixture, so
+        // every emitted oracle must belong to its test. A missing or foreign
+        // test_id must fail here rather than be silently filtered out of the
+        // exact-count check below.
+        for (index, oracle) in oracles.iter().enumerate() {
+            assert_eq!(
+                oracle["test_id"].as_str(),
+                Some(test_id.as_str()),
+                "C1 fixture `{stem}`: oracle {index} must belong to {test_id}"
             );
-            let kind = must_some_with(
-                oracle["kind"].as_str(),
-                format!("C1 fixture `{stem}`: oracle {index} carries a kind"),
-            )
-            .to_owned();
-            let strength = must_some_with(
-                oracle["strength"].as_str(),
-                format!("C1 fixture `{stem}`: oracle {index} carries a strength"),
-            )
-            .to_owned();
-            (call_name_from_oracle_id(oracle_id, stem), kind, strength)
-        })
-        .collect();
+        }
+        let actual: Vec<OracleTriple> = oracles
+            .iter()
+            .enumerate()
+            .map(|(index, oracle)| {
+                let oracle_id = must_some_with(
+                    oracle["oracle_id"].as_str(),
+                    format!("C1 fixture `{stem}`: oracle {index} carries an oracle_id"),
+                );
+                let kind = must_some_with(
+                    oracle["kind"].as_str(),
+                    format!("C1 fixture `{stem}`: oracle {index} carries a kind"),
+                )
+                .to_owned();
+                let strength = must_some_with(
+                    oracle["strength"].as_str(),
+                    format!("C1 fixture `{stem}`: oracle {index} carries a strength"),
+                )
+                .to_owned();
+                (call_name_from_oracle_id(oracle_id, stem), kind, strength)
+            })
+            .collect();
 
         // Exact-count precision: diagnostics (`diag`/`note`) and structure
         // (`done_testing`) must never emit oracles, so extras fail as loudly
