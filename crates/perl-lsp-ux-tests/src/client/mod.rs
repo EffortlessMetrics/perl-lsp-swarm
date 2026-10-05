@@ -23,7 +23,7 @@ use std::time::{Duration, Instant};
 
 mod document_symbol_write_probe;
 pub mod server_request_script;
-use document_symbol_write_probe::{Frame as WriteProbeFrame, ObservedWriter, WriteProbe};
+use document_symbol_write_probe::{ObservedWriter, WriteProbe};
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(100);
 const SHUTDOWN_RUNNING: u8 = 0;
@@ -284,12 +284,8 @@ impl UxClient {
                 let observer: Option<ServerRequestObserver> = observer;
                 // The answering loop writes through the shared optional stdin
                 // handle, failing closed once that handle has been taken over.
-                let stdin_writer = Mutex::new(SharedStdinWriter {
-                    stdin: stdin_for_reader,
-                    probe: write_probe_for_reader,
-                    frame: None,
-                    header_remaining: 0,
-                });
+                let stdin_writer =
+                    SharedStdinWriter { stdin: stdin_for_reader, probe: write_probe_for_reader };
                 loop {
                     match read_and_route(
                         &mut reader,
@@ -926,6 +922,8 @@ fn write_framed_to_with_probe<W: Write>(
     let mut writer =
         ObservedWriter { writer: stdin, probe, frame: frame.as_ref(), phase: "header" };
     writer.write_all(header.as_bytes()).context("Failed to write LSP header to stdin")?;
+    #[cfg(test)]
+    document_symbol_write_controls::after_frame_header()?;
     writer.phase = "body";
     writer.write_all(body.as_bytes()).context("Failed to write LSP body to stdin")?;
     writer.flush().context("Failed to flush LSP stdin")
@@ -1038,7 +1036,7 @@ fn read_one_frame(reader: &mut impl BufRead) -> FrameRead {
 /// failure that the caller must record as a transport failure.
 fn read_and_route<R, W>(
     reader: &mut R,
-    stdin: &Mutex<W>,
+    stdin: &W,
     inbox: &Inbox,
     server_requests: &Mutex<Vec<Value>>,
     capability_violations: &Mutex<Vec<CapabilityViolation>>,
@@ -1047,7 +1045,7 @@ fn read_and_route<R, W>(
 ) -> Result<bool, String>
 where
     R: BufRead,
-    W: Write,
+    W: FrameWriter,
 {
     let message = match read_one_frame(reader) {
         FrameRead::Message(message) => message,
@@ -1071,7 +1069,7 @@ where
 /// everything else is buffered as an observable event.
 fn route_message<W>(
     message: &Value,
-    stdin: &Mutex<W>,
+    stdin: &W,
     inbox: &Inbox,
     server_requests: &Mutex<Vec<Value>>,
     capability_violations: &Mutex<Vec<CapabilityViolation>>,
@@ -1079,7 +1077,7 @@ fn route_message<W>(
     observer: Option<&ServerRequestObserver>,
 ) -> Result<(), String>
 where
-    W: Write,
+    W: FrameWriter,
 {
     if let Some(observer) = observer {
         observer.observe(message);
@@ -1107,8 +1105,7 @@ where
             let method =
                 message.get("method").and_then(Value::as_str).unwrap_or("<missing>").to_owned();
             let id = message.get("id").cloned().unwrap_or(Value::Null);
-            let mut stdin = stdin.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            write_framed_to(&mut *stdin, &decision.response).map_err(|error| {
+            stdin.write_frame(&decision.response).map_err(|error| {
                 format!("failed to answer server request method={method} id={id}: {error:#}")
             })?;
         }
@@ -1118,70 +1115,208 @@ where
     Ok(())
 }
 
-/// A `Write` adapter over the shared optional stdin handle.
-///
-/// Each write re-locks and fails closed if the handle was already taken over,
-/// so a scripted or finished client can never hand the answering loop a stale
-/// writer.
+/// A frame is the unit of synchronization with every other stdin writer.
+trait FrameWriter {
+    fn write_frame(&self, message: &Value) -> Result<()>;
+}
+
+/// Default replies hold the same lock as foreground requests through flush.
 struct SharedStdinWriter<W = ChildStdin> {
     stdin: Arc<Mutex<Option<W>>>,
     probe: Option<Arc<WriteProbe>>,
-    frame: Option<WriteProbeFrame>,
-    header_remaining: usize,
 }
 
-impl<W: Write> Write for SharedStdinWriter<W> {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+impl<W: Write> FrameWriter for SharedStdinWriter<W> {
+    fn write_frame(&self, message: &Value) -> Result<()> {
         let mut guard = self.stdin.lock().unwrap_or_else(|error| error.into_inner());
-        if self.frame.is_none()
-            && let Some(probe) = &self.probe
-        {
-            // Generated headers are observed without retaining their text.
-            let body_bytes = std::str::from_utf8(buf)
-                .ok()
-                .and_then(|header| header.strip_prefix("Content-Length: "))
-                .and_then(|length| length.trim().parse::<usize>().ok());
-            self.frame = Some(probe.frame("auto_answer", None, body_bytes));
-            self.header_remaining = buf.len();
-        }
-        let result = match guard.as_mut() {
-            Some(stdin) => stdin.write(buf),
-            None => Err(std::io::Error::other("LSP client stdin is already closed")),
-        };
-        if let (Some(probe), Some(frame)) = (&self.probe, &self.frame) {
-            probe.record(frame, if self.header_remaining > 0 { "header" } else { "body" }, &result);
-            if let Ok(accepted) = &result {
-                self.header_remaining = self.header_remaining.saturating_sub(*accepted);
-            }
-        }
-        result
+        write_framed_to_with_probe(
+            &mut LockedStdin(&mut guard),
+            message,
+            self.probe.as_deref(),
+            "auto_answer",
+        )
+    }
+}
+
+/// Preserve the original closed-handle error and physical-write observation.
+struct LockedStdin<'a, W>(&'a mut Option<W>);
+
+impl<W: Write> Write for LockedStdin<'_, W> {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0
+            .as_mut()
+            .ok_or_else(|| std::io::Error::other("LSP client stdin is already closed"))?
+            .write(bytes)
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
-        let mut guard = self.stdin.lock().unwrap_or_else(|error| error.into_inner());
-        let result = match guard.as_mut() {
-            Some(stdin) => stdin.flush(),
-            None => Err(std::io::Error::other("LSP client stdin is already closed")),
-        };
-        if let (Some(probe), Some(frame)) = (&self.probe, &self.frame) {
-            probe.record(
-                frame,
-                "flush",
-                &result.as_ref().map(|_| 0).map_err(|error| std::io::Error::from(error.kind())),
-            );
-        }
-        self.frame = None;
-        self.header_remaining = 0;
-        result
+        self.0
+            .as_mut()
+            .ok_or_else(|| std::io::Error::other("LSP client stdin is already closed"))?
+            .flush()
+    }
+}
+
+#[cfg(test)]
+impl<W: Write> FrameWriter for Mutex<W> {
+    fn write_frame(&self, message: &Value) -> Result<()> {
+        write_framed_to(&mut *self.lock().unwrap_or_else(|error| error.into_inner()), message)
     }
 }
 
 #[cfg(test)]
 mod document_symbol_write_controls {
     use super::*;
+    use document_symbol_write_probe::Frame as WriteProbeFrame;
+
+    thread_local! {
+        // A one-shot boundary on the routing thread, compiled out of the client.
+        static HEADER_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce() -> Result<()>>>> =
+            std::cell::RefCell::new(None);
+    }
+
+    pub(super) fn after_frame_header() -> Result<()> {
+        let hook = HEADER_HOOK.with(|slot| slot.borrow_mut().take());
+        if let Some(hook) = hook {
+            hook()?;
+        }
+        Ok(())
+    }
+
+    /// Force a real competing writer to try the shared lock after the reply
+    /// header. The predecessor admits its frame there; the atomic path blocks
+    /// it until the entire reply and flush have finished. No scheduling sleeps.
+    fn compete_after_header<W: Write + Send + 'static>(
+        stdin: Arc<Mutex<Option<W>>>,
+        probe: Option<Arc<WriteProbe>>,
+        message: Value,
+        reply: impl FnOnce() -> Result<()>,
+    ) -> (Result<()>, Result<bool>) {
+        use std::sync::{TryLockError, mpsc};
+        let (header_tx, header_rx) = mpsc::channel();
+        let (attempt_tx, attempt_rx) = mpsc::channel();
+        let (complete_tx, complete_rx) = mpsc::channel();
+        let worker = std::thread::spawn(move || -> Result<bool> {
+            header_rx.recv_timeout(Duration::from_secs(5)).context("missing reply header")?;
+            let attempt = stdin.try_lock();
+            match attempt {
+                Ok(mut guard) => {
+                    write_framed_to_with_probe(
+                        &mut LockedStdin(&mut guard),
+                        &message,
+                        probe.as_deref(),
+                        "foreground",
+                    )?;
+                    attempt_tx.send(false).context("reply boundary no longer listening")?;
+                    Ok(false)
+                }
+                Err(TryLockError::WouldBlock) => {
+                    attempt_tx.send(true).context("reply boundary no longer listening")?;
+                    complete_rx
+                        .recv_timeout(Duration::from_secs(5))
+                        .context("reply did not complete")?;
+                    let mut guard = stdin.lock().unwrap_or_else(|error| error.into_inner());
+                    write_framed_to_with_probe(
+                        &mut LockedStdin(&mut guard),
+                        &message,
+                        probe.as_deref(),
+                        "foreground",
+                    )?;
+                    Ok(true)
+                }
+                Err(TryLockError::Poisoned(_)) => Err(anyhow!("competing stdin lock poisoned")),
+            }
+        });
+        struct BoundaryGuard(std::sync::mpsc::Sender<()>);
+        impl Drop for BoundaryGuard {
+            fn drop(&mut self) {
+                HEADER_HOOK.with(|slot| {
+                    slot.borrow_mut().take();
+                });
+                let _ = self.0.send(());
+            }
+        }
+        HEADER_HOOK.with(|slot| {
+            assert!(slot.borrow().is_none(), "nested reply boundary control");
+            *slot.borrow_mut() = Some(Box::new(move || {
+                header_tx.send(()).context("competing writer disappeared")?;
+                attempt_rx
+                    .recv_timeout(Duration::from_secs(5))
+                    .context("no competing lock attempt")?;
+                Ok(())
+            }));
+        });
+        let guard = BoundaryGuard(complete_tx);
+        let outcome = reply();
+        drop(guard);
+        let competing = worker
+            .join()
+            .map_err(|_| anyhow!("competing writer panicked"))
+            .and_then(|result| result);
+        (outcome, competing)
+    }
+
+    // Frozen predecessor: retain the actual RED mechanism without putting its
+    // per-write locking back into the default client.
+    struct SplitLockStdinWriter<W> {
+        stdin: Arc<Mutex<Option<W>>>,
+        probe: Option<Arc<WriteProbe>>,
+        frame: Option<WriteProbeFrame>,
+        header_remaining: usize,
+    }
+
+    impl<W: Write> Write for SplitLockStdinWriter<W> {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            let mut guard = self.stdin.lock().unwrap_or_else(|error| error.into_inner());
+            if self.frame.is_none()
+                && let Some(probe) = &self.probe
+            {
+                // Generated headers are observed without retaining their text.
+                let body_bytes = std::str::from_utf8(buf)
+                    .ok()
+                    .and_then(|header| header.strip_prefix("Content-Length: "))
+                    .and_then(|length| length.trim().parse::<usize>().ok());
+                self.frame = Some(probe.frame("auto_answer", None, body_bytes));
+                self.header_remaining = buf.len();
+            }
+            let result = match guard.as_mut() {
+                Some(stdin) => stdin.write(buf),
+                None => Err(std::io::Error::other("LSP client stdin is already closed")),
+            };
+            if let (Some(probe), Some(frame)) = (&self.probe, &self.frame) {
+                probe.record(
+                    frame,
+                    if self.header_remaining > 0 { "header" } else { "body" },
+                    &result,
+                );
+                if let Ok(accepted) = &result {
+                    self.header_remaining = self.header_remaining.saturating_sub(*accepted);
+                }
+            }
+            result
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            let mut guard = self.stdin.lock().unwrap_or_else(|error| error.into_inner());
+            let result = match guard.as_mut() {
+                Some(stdin) => stdin.flush(),
+                None => Err(std::io::Error::other("LSP client stdin is already closed")),
+            };
+            if let (Some(probe), Some(frame)) = (&self.probe, &self.frame) {
+                probe.record(
+                    frame,
+                    "flush",
+                    &result.as_ref().map(|_| 0).map_err(|error| std::io::Error::from(error.kind())),
+                );
+            }
+            self.frame = None;
+            self.header_remaining = 0;
+            result
+        }
+    }
 
     struct InsertAtBoundary<W> {
-        adapter: SharedStdinWriter<W>,
+        adapter: SplitLockStdinWriter<W>,
         insert: Option<Value>,
         after_flush: bool,
     }
@@ -1222,6 +1357,119 @@ mod document_symbol_write_controls {
     }
 
     #[test]
+    fn competing_frame_is_admitted_by_predecessor_but_blocked_by_atomic_reply() -> Result<()> {
+        let reply = json!({ "jsonrpc": "2.0", "id": "synthetic-server-id", "result": [] });
+        let open = json!({ "jsonrpc": "2.0", "method": "textDocument/didOpen", "params": {
+            "textDocument": { "uri": "file:///fixture.pm", "version": 1, "text": "sub alpha {}\n" }
+        }});
+        for atomic in [false, true] {
+            let probe = Arc::new(WriteProbe::new(55));
+            let stdin = Arc::new(Mutex::new(Some(Vec::new())));
+            let (outcome, competing) = compete_after_header(
+                Arc::clone(&stdin),
+                Some(Arc::clone(&probe)),
+                open.clone(),
+                || {
+                    if atomic {
+                        SharedStdinWriter {
+                            stdin: Arc::clone(&stdin),
+                            probe: Some(Arc::clone(&probe)),
+                        }
+                        .write_frame(&reply)
+                    } else {
+                        Mutex::new(SplitLockStdinWriter {
+                            stdin: Arc::clone(&stdin),
+                            probe: Some(Arc::clone(&probe)),
+                            frame: None,
+                            header_remaining: 0,
+                        })
+                        .write_frame(&reply)
+                    }
+                },
+            );
+            outcome?;
+            assert_eq!(competing?, atomic, "the competing lock attempt must discriminate the fix");
+            let mut expected =
+                format!("Content-Length: {}\r\n\r\n", reply.to_string().len()).into_bytes();
+            if atomic {
+                expected.extend(reply.to_string().as_bytes());
+            }
+            write_framed_to(&mut expected, &open)?;
+            if !atomic {
+                expected.extend(reply.to_string().as_bytes());
+            }
+            let bytes = stdin
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone()
+                .context("closed fixture")?;
+            assert_eq!(bytes, expected);
+            let mut reader = std::io::Cursor::new(&bytes);
+            if atomic {
+                assert!(
+                    matches!(read_one_frame(&mut reader), FrameRead::Message(value) if value == reply)
+                );
+                assert!(
+                    matches!(read_one_frame(&mut reader), FrameRead::Message(value) if value == open)
+                );
+                assert!(matches!(read_one_frame(&mut reader), FrameRead::EndOfStream));
+            } else {
+                assert!(
+                    matches!(read_one_frame(&mut reader), FrameRead::Failed(_)),
+                    "mixed JSON must fail"
+                );
+            }
+            let capture = probe.snapshot();
+            assert_eq!(capture["complete"], true);
+            assert_eq!(capture["omitted_records"], 0);
+            let records = capture["records"].as_array().context("missing physical writes")?;
+            assert_eq!(records.len(), 6);
+            let phases = if atomic {
+                ["header", "body", "flush", "header", "body", "flush"]
+            } else {
+                ["header", "header", "body", "flush", "body", "flush"]
+            };
+            let tokens = if atomic { [1, 1, 1, 2, 2, 2] } else { [1, 2, 2, 2, 1, 1] };
+            let mut offset = 0;
+            for (index, record) in records.iter().enumerate() {
+                assert_eq!(record["write_sequence"], index + 1);
+                assert_eq!(record["phase"], phases[index]);
+                assert_eq!(record["frame_token"], tokens[index]);
+                assert_eq!(record["stream_start"], offset);
+                offset += number(record, "accepted_bytes")?;
+                assert_eq!(record["stream_end"], offset);
+                assert_eq!(record["outcome"], "ok");
+            }
+            assert_eq!(offset, expected.len() as u64);
+            assert!(!capture.to_string().contains("synthetic-server-id"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn atomic_reply_preserves_closed_handle_error_and_capture() -> Result<()> {
+        let probe = Arc::new(WriteProbe::new(55));
+        let writer = SharedStdinWriter::<Vec<u8>> {
+            stdin: Arc::new(Mutex::new(None)),
+            probe: Some(Arc::clone(&probe)),
+        };
+        let error = writer
+            .write_frame(&json!({ "id": 9, "result": [] }))
+            .err()
+            .context("closed stdin must fail")?;
+        assert_eq!(error.to_string(), "Failed to write LSP header to stdin");
+        assert!(format!("{error:#}").contains("LSP client stdin is already closed"));
+        let capture = probe.snapshot();
+        assert_eq!(capture["records"].as_array().map(Vec::len), Some(1));
+        assert_eq!(capture["records"][0]["phase"], "header");
+        assert_eq!(capture["records"][0]["outcome"], "io_error");
+        assert_eq!(capture["records"][0]["io_error_kind"], "Other");
+        assert_eq!(capture["records"][0]["accepted_bytes"], 0);
+        assert_eq!(capture["records"][0]["frame"]["numeric_id"], 9);
+        Ok(())
+    }
+
+    #[test]
     fn split_lock_adapter_records_a_frame_inserted_after_reply_header() -> Result<()> {
         let reply = json!({ "jsonrpc": "2.0", "id": "synthetic-server-id", "result": [] });
         let open = json!({ "jsonrpc": "2.0", "method": "textDocument/didOpen", "params": {
@@ -1230,7 +1478,7 @@ mod document_symbol_write_controls {
         let probe = Arc::new(WriteProbe::new(55));
         let stdin = Arc::new(Mutex::new(Some(Vec::new())));
         let mut writer = InsertAtBoundary {
-            adapter: SharedStdinWriter {
+            adapter: SplitLockStdinWriter {
                 stdin: Arc::clone(&stdin),
                 probe: Some(Arc::clone(&probe)),
                 frame: None,
@@ -1455,7 +1703,8 @@ mod document_symbol_write_controls {
     }
 
     #[test]
-    fn forced_reply_boundary_loses_open_in_real_child_then_intact_frames_recover() -> Result<()> {
+    fn retained_split_lock_loses_open_then_atomic_default_preserves_it_in_real_child() -> Result<()>
+    {
         if !crate::binary_available() {
             return Ok(());
         }
@@ -1501,7 +1750,7 @@ mod document_symbol_write_controls {
                 "textDocument": { "uri": uri, "languageId": "perl", "version": 1, "text": SOURCE }
             }});
             let writer = Mutex::new(InsertAtBoundary {
-                adapter: SharedStdinWriter {
+                adapter: SplitLockStdinWriter {
                     stdin: Arc::clone(&harness.client.stdin),
                     probe: harness.client.write_probe.clone(),
                     frame: None,
@@ -1518,6 +1767,7 @@ mod document_symbol_write_controls {
             let server = server_probes(&harness.client, outcome.as_ref().ok());
             let writes = harness.client.document_symbol_client_write_probes();
             let receipt = json!({ "kind": "document_symbol_forced_boundary_control", "synthetic_schedule": true,
+                "writer_path": "retained_split_lock_predecessor",
                 "phase": if after_flush { "after_complete_flush" } else { "after_complete_header" },
                 "server_pid": pid, "response_received": outcome.is_ok(), "response": outcome.as_ref().ok(),
                 "failure_class": outcome.as_ref().err().map(|_| "control_io_or_rpc_failure"),
@@ -1566,6 +1816,105 @@ mod document_symbol_write_controls {
                 );
             }
         }
+        // A fresh buffer keeps the fixed default's GREEN independent of the
+        // predecessor's successful flush control in the same real process.
+        let uri = harness.workspace.uri("AtomicSymbols.pm");
+        let params = json!({ "textDocument": { "uri": uri } });
+        let baseline = harness.client.request(
+            "textDocument/documentSymbol",
+            params.clone(),
+            Duration::from_secs(60),
+        )?;
+        assert_eq!(baseline.get("result"), Some(&json!([])));
+        let before = harness.client.document_symbol_client_write_probes()["records"]
+            .as_array()
+            .context("missing enabled write probe")?
+            .len();
+        let open = json!({ "jsonrpc": "2.0", "method": "textDocument/didOpen", "params": {
+            "textDocument": { "uri": uri, "languageId": "perl", "version": 1, "text": SOURCE }
+        }});
+        let writer = SharedStdinWriter {
+            stdin: Arc::clone(&harness.client.stdin),
+            probe: harness.client.write_probe.clone(),
+        };
+        let (reply, competing) = compete_after_header(
+            Arc::clone(&harness.client.stdin),
+            harness.client.write_probe.clone(),
+            open,
+            || {
+                route_message(
+                    &json!({ "jsonrpc": "2.0", "id": "synthetic-atomic-17020", "method": "workspace/configuration", "params": { "items": [] } }),
+                    &writer, &harness.client.inbox, &harness.client.server_requests,
+                    &harness.client.capability_violations, Some(&capabilities), None,
+                ).map_err(anyhow::Error::msg)
+            },
+        );
+        let competitor_blocked = competing.as_ref().ok().copied();
+        let outcome = reply.and_then(|()| competing.map(|_| ())).and_then(|()| {
+            harness.client.request("textDocument/documentSymbol", params, Duration::from_secs(60))
+        });
+        let server = server_probes(&harness.client, outcome.as_ref().ok());
+        let writes = harness.client.document_symbol_client_write_probes();
+        // Publish evidence before assertions, including a missing/failed attempt.
+        let receipt = json!({ "kind": "document_symbol_atomic_reply_control", "synthetic_schedule": true,
+            "writer_path": "current_default", "phase": "competing_write_after_complete_header",
+            "competing_lock_blocked": competitor_blocked,
+            "server_pid": pid, "response_received": outcome.is_ok(), "response": outcome.as_ref().ok(),
+            "failure_class": outcome.as_ref().err().map(|_| "control_io_or_rpc_failure"),
+            "client_write_probes": writes, "server_probes": server });
+        let mut output = std::io::stderr().lock();
+        serde_json::to_writer(&mut output, &receipt)?;
+        output.write_all(b"\n")?;
+        drop(output);
+        let response = outcome?;
+        assert_eq!(
+            competitor_blocked,
+            Some(true),
+            "foreground frame must be blocked at the reply header"
+        );
+        assert!(
+            response.get("error").is_none(),
+            "fixed control must return a successful actual response"
+        );
+        assert_scheduled_capture(&writes, before, &server, &response, true, pid)?;
+        let branch = server
+            .iter()
+            .find(|record| {
+                record["kind"] == "document_symbol_branch_probe"
+                    && record["request_id"] == response["id"]
+            })
+            .context("missing correlated fixed actual branch")?;
+        assert_eq!(branch["branch"], "ast");
+        assert_eq!(branch["document_present"], true);
+        assert_eq!(branch["text_bytes"], 119);
+        let query = server
+            .iter()
+            .find(|record| {
+                record["kind"] == "document_symbol_lifecycle_probe"
+                    && record["stage"] == "read_admitted"
+                    && record["method"] == "textDocument/documentSymbol"
+                    && record["request_id"] == response["id"]
+                    && record["server_pid"] == pid
+            })
+            .context("missing fixed query admission")?;
+        let query_hash = query["uri_hash"].as_str().context("missing fixed query URI hash")?;
+        let digest = query_hash.strip_prefix("sha256:").context("untyped fixed query URI hash")?;
+        assert_eq!(digest.len(), 64);
+        assert!(digest.bytes().all(|byte| byte.is_ascii_hexdigit()));
+        assert!(
+            server.iter().any(|record| record["stage"] == "did_open_inserted_parsed"
+                && record["incoming_text_bytes"] == 119
+                && record["document_present"] == true
+                && record["server_pid"] == pid
+                && record["uri_bytes"] == uri.len()
+                && record["uri_hash"].as_str() == Some(query_hash)),
+            "missing actual accepted fixed fixture insertion"
+        );
+        let symbols = response
+            .get("result")
+            .and_then(Value::as_array)
+            .context("missing fixed symbol result")?;
+        assert!(crate::document_symbol_names(symbols).contains(&"alpha"));
         Ok(())
     }
 }
@@ -2391,7 +2740,7 @@ mod server_request_tests {
             let message = first_frame(&mut reader)?;
             route_message(
                 &message,
-                &stdin,
+                stdin.as_ref(),
                 &inbox,
                 &server_requests,
                 &violations,
@@ -2451,7 +2800,7 @@ mod server_request_tests {
 
         let failure = route_message(
             &request,
-            &stdin,
+            stdin.as_ref(),
             &inbox,
             &server_requests,
             &violations,
