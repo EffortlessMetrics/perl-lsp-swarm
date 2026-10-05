@@ -1,8 +1,9 @@
 diff --git a/lib/Loose.pm b/lib/Loose.pm
 --- a/lib/Loose.pm
 +++ b/lib/Loose.pm
-@@ -2,3 +2,4 @@
+@@ -2,4 +2,5 @@
  use strict;
 
 +our $DEFAULT_TIMEOUT = 30;
 
+ sub ping { return 1; }
