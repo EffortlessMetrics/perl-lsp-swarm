@@ -1121,6 +1121,36 @@ fn find_symbol_key_definition_locations(
 }
 
 #[cfg(feature = "workspace")]
+/// Decide whether a same-file answer whose declaration name starts at
+/// `declaration_text` may answer a qualified call requesting
+/// `requested_package`.
+///
+/// A declaration may name its package explicitly — `sub Foo::bar` written
+/// inside `package Other` defines `Foo::bar` without a `package Foo`
+/// statement — so an explicit `::` qualifier in the declaration name wins over
+/// `ambient_package_at_target`. The qualifier is the text BEFORE the FINAL
+/// `::`: `sub Scale03::Mod00::helper` declares `Scale03::Mod00` (review on PR
+/// #17280). Missing, unreadable, or unqualified declaration text falls back to
+/// the ambient-package comparison.
+#[cfg(feature = "workspace")]
+fn same_file_answer_package_matches(
+    declaration_text: Option<&str>,
+    ambient_package_at_target: &str,
+    requested_package: &str,
+) -> bool {
+    let explicitly_qualified_package = declaration_text.and_then(|tail| {
+        let name_end = tail
+            .find(|c: char| !(c.is_alphanumeric() || c == '_' || c == ':'))
+            .unwrap_or(tail.len());
+        let name = &tail[..name_end];
+        name.rsplit_once("::").map(|(pkg, _)| pkg.to_string())
+    });
+    match explicitly_qualified_package {
+        Some(declared_package) => declared_package == requested_package,
+        None => ambient_package_at_target == requested_package,
+    }
+}
+
 fn lookup_workspace_definition(
     coordinator: Option<&std::sync::Arc<crate::workspace_index::IndexCoordinator>>,
     pkg: &str,
@@ -2378,40 +2408,20 @@ impl LspServer {
                     // this file's `package Foo; sub bar`); an answer naming any
                     // other package is a wrong-package shadow of the call and
                     // must fall through to the honest empty result.
-                    //
-                    // A declaration may also name its package explicitly —
-                    // `sub Foo::bar` written inside `package Other` defines
-                    // `Foo::bar` without a `package Foo` statement — so an
-                    // explicitly qualified declaration name at the target range
-                    // wins over the ambient package there (review on PR
-                    // #17280). Non-char-boundary or missing text falls back to
-                    // the ambient-package check.
                     #[cfg(feature = "workspace")]
                     let same_file_answer_matches_requested_package = |target_start: usize| -> bool {
                         match &cross_package_qualified_sub {
                             None => true,
                             Some(requested_package) => {
-                                let explicitly_qualified_package = doc
-                                    .text
-                                    .get(target_start.min(doc.text.len())..)
-                                    .and_then(|tail| {
-                                        let name_end = tail
-                                            .find(|c: char| {
-                                                !(c.is_alphanumeric() || c == '_' || c == ':')
-                                            })
-                                            .unwrap_or(tail.len());
-                                        let name = &tail[..name_end];
-                                        name.split_once("::").map(|(pkg, _)| pkg.to_string())
-                                    });
-                                match explicitly_qualified_package {
-                                    Some(declared_package) => {
-                                        declared_package == *requested_package
-                                    }
-                                    None => {
-                                        crate::declaration::current_package_at(ast, target_start)
-                                            == requested_package.as_str()
-                                    }
-                                }
+                                let declaration_text =
+                                    doc.text.get(target_start.min(doc.text.len())..);
+                                let ambient_package =
+                                    crate::declaration::current_package_at(ast, target_start);
+                                same_file_answer_package_matches(
+                                    declaration_text,
+                                    ambient_package,
+                                    requested_package.as_str(),
+                                )
                             }
                         }
                     };
@@ -3444,6 +3454,46 @@ impl LspServer {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// #17252 review (PR #17280): the same-file validator must read an
+    /// explicitly qualified declaration name with the FINAL `::` as the
+    /// package boundary — `sub Scale03::Mod00::helper` declares
+    /// `Scale03::Mod00`, not `Scale03`.
+    #[test]
+    fn same_file_answer_package_matches_reads_final_qualifier() {
+        // Explicitly qualified declaration, requested package matches.
+        assert!(same_file_answer_package_matches(
+            Some("Scale03::Mod00::helper {\n    9;\n}"),
+            "Scale00::Mod00",
+            "Scale03::Mod00",
+        ));
+        // A first-`::` split would yield "Scale03" and wrongly reject.
+        assert!(same_file_answer_package_matches(
+            Some("Scale03::Mod00::helper { 9 }"),
+            "Scale00::Mod00",
+            "Scale03::Mod00",
+        ));
+        // Explicitly qualified declaration for a different package: rejected.
+        assert!(!same_file_answer_package_matches(
+            Some("Other::helper { 1 }"),
+            "Scale00::Mod00",
+            "Scale03::Mod00",
+        ));
+        // Bare declaration resolves against the ambient package.
+        assert!(same_file_answer_package_matches(
+            Some("helper { 1 }"),
+            "Scale03::Mod00",
+            "Scale03::Mod00"
+        ));
+        assert!(!same_file_answer_package_matches(
+            Some("helper { 1 }"),
+            "Scale00::Mod00",
+            "Scale03::Mod00"
+        ));
+        // Unreadable text falls back to the ambient comparison.
+        assert!(same_file_answer_package_matches(None, "Scale03::Mod00", "Scale03::Mod00"));
+        assert!(!same_file_answer_package_matches(None, "Scale00::Mod00", "Scale03::Mod00"));
+    }
 
     fn serde_freshness_spelling(variant: ProviderDecisionFreshness) -> Option<String> {
         serde_json::to_value(variant).ok().and_then(|value| value.as_str().map(str::to_owned))

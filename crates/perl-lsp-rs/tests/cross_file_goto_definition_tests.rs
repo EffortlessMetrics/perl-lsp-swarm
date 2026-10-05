@@ -251,10 +251,13 @@ sub compute_0 {
 
 /// `sub Scale03::Mod00::helper` names its package explicitly without a
 /// `package` statement, so a `Scale03::Mod00::helper()` call in the same file
-/// (whose ambient package is `Scale00::Mod00`) must still resolve to that
-/// same-file declaration when the index cannot answer — the explicitly
-/// qualified declaration genuinely lives in the requested package (review on
-/// PR #17280).
+/// (whose ambient package is `Scale00::Mod00`) must resolve to that same-file
+/// declaration — whichever tier answers (the didOpen commit feeds the buffer
+/// into the index, so the qualified index lookup may answer directly; the
+/// same-file fallback decision itself is pinned deterministically by
+/// `same_file_answer_package_matches_reads_final_qualifier` in
+/// navigation.rs). The range assertion proves the answer lands on the
+/// declaration, not just anywhere in the caller file (review on PR #17280).
 #[test]
 fn explicitly_qualified_same_file_decl_resolves() -> TestResult {
     let mut harness = LspHarness::new();
@@ -276,12 +279,20 @@ sub probe_def {
 
 1;
 "#;
-    workspace.write("lib/Scale00/Mod00.pm", caller_code)?;
+    // Disk version without the helper: the startup index cannot answer for
+    // Scale03::Mod00::helper, whatever the staleness window does.
+    workspace.write(
+        "lib/Scale00/Mod00.pm",
+        r#"package Scale00::Mod00;
+use strict;
+use warnings;
 
-    // Nothing on disk defines Scale03::Mod00 beyond the explicitly qualified
-    // declaration in the caller itself, so once the caller buffer is open the
-    // workspace index deterministically cannot answer for it (never-indexed
-    // open document), and the same-file fallback is the only candidate.
+sub probe_def_shim { 0 }
+
+1;
+"#,
+    )?;
+
     harness.initialize_with_root(&workspace.root_uri, None)?;
     let caller_uri = workspace.uri("lib/Scale00/Mod00.pm");
     harness.open(&caller_uri, caller_code)?;
@@ -291,6 +302,10 @@ sub probe_def {
         .lines()
         .position(|line| line.contains("Scale03::Mod00::helper(1)"))
         .ok_or("fixture lost its helper call")? as u32;
+    let decl_line = caller_code
+        .lines()
+        .position(|line| line.contains("sub Scale03::Mod00::helper"))
+        .ok_or("fixture lost its helper declaration")? as u32;
     let (line, col) = find_pos(caller_code, "Mod00::helper(1)", call_line as usize)?;
     let result = harness.request(
         "textDocument/definition",
@@ -316,6 +331,19 @@ sub probe_def {
     if uri != caller_uri {
         return Err(format!(
             "the explicitly qualified declaration lives in the caller file; got {uri}"
+        )
+        .into());
+    }
+    // Prove the answer lands on the declaration itself, not just anywhere in
+    // the caller file (review on PR #17280).
+    let start_line = first
+        .pointer("/range/start/line")
+        .and_then(Value::as_u64)
+        .ok_or("location must carry a start line")?;
+    if start_line != decl_line as u64 {
+        return Err(format!(
+            "definition must land on 'sub Scale03::Mod00::helper' (line {decl_line}), got line \
+             {start_line}"
         )
         .into());
     }
