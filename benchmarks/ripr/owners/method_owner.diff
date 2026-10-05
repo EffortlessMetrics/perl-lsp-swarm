@@ -1,0 +1,8 @@
+diff --git a/lib/Widget.pm b/lib/Widget.pm
+--- a/lib/Widget.pm
++++ b/lib/Widget.pm
+@@ -3,3 +3,4 @@
+     method render {
+         my $self = shift;
++        return $self->{html};
+     }

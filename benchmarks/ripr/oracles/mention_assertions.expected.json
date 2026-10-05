@@ -1,0 +1,1 @@
+{"framework": "Test::More", "runner_hints": ["prove"], "expected_oracles": [{"call": "use_ok", "kind": "mention_only", "strength": "mention_only"}, {"call": "require_ok", "kind": "mention_only", "strength": "mention_only"}]}

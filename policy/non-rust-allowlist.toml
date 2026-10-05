@@ -25,6 +25,34 @@ new_non_rust_requires_review = true
 broad_globs_require_reason = true
 coverage_required_for_production_surfaces = true
 
+# Optional upstream-equivalent advisory capture admitted under #15304. Native cadence
+# and policy/allow.toml classification/promotion remain outside this adapter.
+[[allow]]
+id = "non-rust-cargo-allow-cadence-capture"
+path = "scripts/cargo_allow_cadence.py"
+kind = "ci_tooling"
+language = "python"
+surface = "tooling"
+classification = "tooling"
+owner = "release/ci"
+reason = "Standard-library advisory capture can execute an already qualified upstream producer without requiring a Rust build or changing native cadence authority."
+covered_by = ["python3 -m unittest scripts.tests.test_cargo_allow_cadence", "cargo xtask check-file-policy"]
+created = "2026-10-05"
+review_after = "2026-11-04"
+
+[[allow]]
+id = "non-rust-cargo-allow-cadence-capture-tests"
+path = "scripts/tests/test_cargo_allow_cadence.py"
+kind = "ci_tooling"
+language = "python"
+surface = "tooling"
+classification = "test"
+owner = "release/ci"
+reason = "Python CLI oracles verify byte-preserving bounded capture, wrong-producer refusal and no-op output preservation through the production entrypoint."
+covered_by = ["python3 -m unittest scripts.tests.test_cargo_allow_cadence", "cargo xtask check-file-policy"]
+created = "2026-10-05"
+review_after = "2026-11-04"
+
 # =============================================================================
 # Documentation
 # =============================================================================

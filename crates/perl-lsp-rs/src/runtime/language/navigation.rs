@@ -262,7 +262,7 @@ fn definition_resolve_at_trace(
     })
 }
 #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
-use perl_workspace::semantic::queries::QueryContext;
+use perl_workspace::semantic::queries::{QueryContext, SemanticQueries};
 
 #[cfg(feature = "workspace")]
 use crate::runtime::readiness::IndexReadinessPolicy;
@@ -915,13 +915,56 @@ enum EarlyDefinitionTarget {
     XsBootstrap(String),
 }
 
-/// Look up a symbol definition in the workspace index.
-///
-/// Tries two lookup strategies:
-/// 1. `find_def()` with a structured `SymbolKey`
-/// 2. `find_definition()` with a formatted `Package::name` string
-///
-/// Returns the LSP location if found, or `None` to fall through to same-file resolution.
+#[cfg(feature = "workspace")]
+fn workspace_symbol_is_callable(
+    workspace_index: &crate::workspace_index::WorkspaceIndex,
+    symbol: &crate::workspace_index::WorkspaceSymbol,
+) -> bool {
+    if matches!(
+        symbol.kind,
+        crate::workspace_index::SymbolKind::Subroutine | crate::workspace_index::SymbolKind::Method
+    ) {
+        return true;
+    }
+    if symbol.kind != crate::workspace_index::SymbolKind::Constant {
+        return false;
+    }
+    // The projection also labels Readonly/Const::Fast variables as Constant.
+    // Only use constant declares functions. Inspect its exact indexed span's
+    // two leading tokens, without parsing/rebuilding the file or its value.
+    let Some(document) = workspace_index.document_store().get(&symbol.uri) else {
+        return false;
+    };
+    let Some(source) = document.text().get(symbol.range.start.byte..symbol.range.end.byte) else {
+        return false;
+    };
+    let mut lexer = perl_lexer::PerlLexer::new(source);
+    let mut tokens =
+        std::iter::from_fn(|| lexer.next_token()).filter(|token| !token.token_type.is_trivia());
+    tokens.next().is_some_and(|token| matches!(token.token_type, perl_lexer::TokenType::Keyword(word) if word.as_ref() == "use"))
+        && tokens.next().is_some_and(|token| matches!(token.token_type, perl_lexer::TokenType::Identifier(word) if word.as_ref() == "constant"))
+}
+
+#[cfg(feature = "workspace")]
+fn workspace_location_is_callable(
+    workspace_index: &crate::workspace_index::WorkspaceIndex,
+    location: &crate::workspace_index::Location,
+    pkg: &str,
+    name: &str,
+) -> bool {
+    let qualified_name = format!("{pkg}::{name}");
+    workspace_index.file_symbols(&location.uri).iter().any(|symbol| {
+        symbol.uri == location.uri
+            && symbol.range == location.range
+            && workspace_symbol_is_callable(workspace_index, symbol)
+            && (symbol.qualified_name.as_deref() == Some(qualified_name.as_str())
+                || (symbol.name == name && symbol.container_name.as_deref() == Some(pkg)))
+    })
+}
+
+/// Look up a callable definition in the workspace index. QName lookups erase
+/// the requested Sub kind, so revalidate each location against typed metadata.
+/// Return None to fall through to same-file resolution for an unproved target.
 #[cfg(feature = "workspace")]
 fn find_workspace_definition_location(
     workspace_index: &crate::workspace_index::WorkspaceIndex,
@@ -936,8 +979,14 @@ fn find_workspace_definition_location(
     };
 
     workspace_index
-        .find_def(&key)
-        .or_else(|| workspace_index.find_definition(&format!("{pkg}::{name}")))
+        .find_defs(&key)
+        .into_iter()
+        .find(|location| workspace_location_is_callable(workspace_index, location, pkg, name))
+        .or_else(|| {
+            workspace_index.find_definition(&format!("{pkg}::{name}")).filter(|location| {
+                workspace_location_is_callable(workspace_index, location, pkg, name)
+            })
+        })
 }
 
 #[cfg(feature = "workspace")]
@@ -1108,7 +1157,20 @@ fn find_symbol_key_definition_locations(
     if symbol_key.kind == crate::workspace_index::SymKind::Sub && symbol_key.sigil.is_none() {
         // For subroutines, try workspace definitions (may include multiple across packages),
         // then fall back to inherited method resolution (single location).
-        let direct = workspace_index.find_defs(symbol_key);
+        // The index's QName lookup erases SymbolKey.kind. Restore the Sub
+        // requirement before a Package/Format/container can escape this tier.
+        let direct: Vec<_> = workspace_index
+            .find_defs(symbol_key)
+            .into_iter()
+            .filter(|location| {
+                workspace_location_is_callable(
+                    workspace_index,
+                    location,
+                    &symbol_key.pkg,
+                    &symbol_key.name,
+                )
+            })
+            .collect();
         if !direct.is_empty() {
             return direct;
         }
@@ -1121,11 +1183,42 @@ fn find_symbol_key_definition_locations(
 }
 
 #[cfg(feature = "workspace")]
+/// Decide whether a same-file answer whose declaration name starts at
+/// `declaration_text` may answer a qualified call requesting
+/// `requested_package`.
+///
+/// A declaration may name its package explicitly — `sub Foo::bar` written
+/// inside `package Other` defines `Foo::bar` without a `package Foo`
+/// statement — so an explicit `::` qualifier in the declaration name wins over
+/// `ambient_package_at_target`. The qualifier is the text BEFORE the FINAL
+/// `::`: `sub Scale03::Mod00::helper` declares `Scale03::Mod00` (review on PR
+/// #17280). Missing, unreadable, or unqualified declaration text falls back to
+/// the ambient-package comparison.
+#[cfg(feature = "workspace")]
+fn same_file_answer_package_matches(
+    declaration_text: Option<&str>,
+    ambient_package_at_target: &str,
+    requested_package: &str,
+) -> bool {
+    let explicitly_qualified_package = declaration_text.and_then(|tail| {
+        let name_end = tail
+            .find(|c: char| !(c.is_alphanumeric() || c == '_' || c == ':'))
+            .unwrap_or(tail.len());
+        let name = &tail[..name_end];
+        name.rsplit_once("::").map(|(pkg, _)| pkg.to_string())
+    });
+    match explicitly_qualified_package {
+        Some(declared_package) => declared_package == requested_package,
+        None => ambient_package_at_target == requested_package,
+    }
+}
+
 fn lookup_workspace_definition(
     coordinator: Option<&std::sync::Arc<crate::workspace_index::IndexCoordinator>>,
     pkg: &str,
     name: &str,
     doc_uri: Option<&str>,
+    require_callable: bool,
 ) -> Option<Value> {
     let coord = coordinator?;
 
@@ -1159,6 +1252,13 @@ fn lookup_workspace_definition(
     let qualified_exact = format!("{pkg}::{name}");
     let package_prefix = format!("{pkg}::");
     for symbol in ranked_symbols {
+        if require_callable
+            && (!workspace_symbol_is_callable(workspace_index, &symbol)
+                || !(symbol.qualified_name.as_deref() == Some(qualified_exact.as_str())
+                    || (symbol.name == name && symbol.container_name.as_deref() == Some(pkg))))
+        {
+            continue;
+        }
         // Check if this symbol matches our package
         if (symbol.container_name.as_deref() == Some(pkg)
             || symbol
@@ -1353,6 +1453,126 @@ pub(super) fn cursor_is_off_named_symbol(
             symbol_name.is_some_and(|symbol_name| name.as_str() != symbol_name)
         }
         None => false,
+    }
+}
+
+#[derive(PartialEq, Eq)]
+enum QualifiedOccurrenceRole {
+    Call,
+    Variable,
+    Other,
+}
+
+fn qualified_occurrence_role(
+    text: &str,
+    offset: usize,
+    ast: Option<&crate::ast::Node>,
+    package: &str,
+    name: &str,
+) -> QualifiedOccurrenceRole {
+    use perl_semantic_analyzer::workspace_index::SymKind as CursorSymbolKind;
+
+    let symbol_key = ast.and_then(|ast| {
+        crate::declaration::symbol_at_cursor_with_source(
+            ast,
+            offset,
+            crate::declaration::current_package_at(ast, offset),
+            text,
+        )
+    });
+    let is_call_key = symbol_key.as_ref().is_some_and(|key| {
+        key.kind == CursorSymbolKind::Sub
+            && key.sigil.is_none()
+            && key.pkg.as_ref() == package
+            && key.name.as_ref() == name
+    });
+    let (line_start, line_text) = crate::util::line_window_around_offset(text, offset);
+    let qualified_name = format!("{package}::{name}");
+    let matched = get_fqn_regex().ok().and_then(|regex| {
+        regex.find_iter(line_text).find(|matched| {
+            matched.as_str() == qualified_name.as_str()
+                && offset >= line_start + matched.start()
+                && offset <= line_start + matched.end()
+        })
+    });
+    if symbol_key
+        .as_ref()
+        .is_some_and(|key| key.kind == CursorSymbolKind::Var && key.sigil.is_some())
+        || (!is_call_key
+            && matched.as_ref().is_some_and(|matched| {
+                // '*' and '%' also spell arithmetic. Only a canonical Var key
+                // justifies their variable role; '$' and '@' are unambiguous.
+                text[..line_start + matched.start()].ends_with(['$', '@'])
+            }))
+    {
+        QualifiedOccurrenceRole::Variable
+    } else if is_call_key
+        || matched.as_ref().is_some_and(|matched| {
+            // Opaque Use/Format expression bodies can lack a callable AST key.
+            text[..line_start + matched.start()].trim_end().ends_with('&')
+                || text[line_start + matched.end()..].trim_start().starts_with('(')
+        })
+    {
+        QualifiedOccurrenceRole::Call
+    } else {
+        QualifiedOccurrenceRole::Other
+    }
+}
+
+/// The terminal same-file model may resolve an absent package's callable by its
+/// bare name in the caller's scope, or return a containing declaration when
+/// lookup fails. Require a callable with the explicit identity at a qualified
+/// call; containing symbols are not its definition (#17252, #17245).
+fn same_file_definition_matches_qualification(
+    text: &str,
+    offset: usize,
+    definition: &crate::symbol::Symbol,
+    ast: &crate::ast::Node,
+) -> bool {
+    let is_callable = matches!(
+        definition.kind,
+        crate::symbol::SymbolKind::Subroutine | crate::symbol::SymbolKind::Method
+    ) || (definition.kind == crate::symbol::SymbolKind::Constant
+        && definition.declaration.as_deref() == Some("constant"));
+    let Ok(regex) = get_fqn_regex() else {
+        return true;
+    };
+    let (line_start, line_text) = crate::util::line_window_around_offset(text, offset);
+    match fqn_component_at_cursor(regex, line_text, offset.saturating_sub(line_start)) {
+        Some(FqnCursorComponent::Final { package, name }) => {
+            let qualified_name = format!("{package}::{name}");
+            let role = qualified_occurrence_role(text, offset, Some(ast), &package, &name);
+            let is_call_at_cursor = role == QualifiedOccurrenceRole::Call;
+            if is_call_at_cursor && !is_callable {
+                return false;
+            }
+            if role == QualifiedOccurrenceRole::Variable {
+                return true;
+            }
+            // Even an opaque occurrence must agree with the complete identity;
+            // lack of a callable AST key does not authorize another container.
+            // Format metadata currently prefixes even an already-qualified
+            // declaration name. Its actual AST name span still owns navigation
+            // at that declaration; the surrounding value body does not.
+            let is_format_declaration = !is_call_at_cursor
+                && definition.kind == crate::symbol::SymbolKind::Format
+                && definition.name == qualified_name
+                && crate::declaration::find_node_at_offset(ast, offset).is_some_and(|node| {
+                    matches!(
+                        &node.kind,
+                        crate::ast::NodeKind::Format { name, name_span: Some(span), .. }
+                            if name == &qualified_name
+                                && span.start <= offset && offset <= span.end
+                                && node.location.start == definition.location.start
+                                && node.location.end == definition.location.end
+                    )
+                });
+            // Ancestor-backed SUPER results return from the earlier parent-chain
+            // path. A generic terminal symbol has no such ancestry proof: SUPER
+            // must not exempt an unrelated callable from the identity check.
+            definition.qualified_name == qualified_name || is_format_declaration
+        }
+        _ => true,
     }
 }
 
@@ -2152,6 +2372,15 @@ impl LspServer {
                 // freshness would let a stale index re-enable the very wrong jump
                 // this arm was written to prevent. Only the `Final` arm — which
                 // consults the workspace index — stays gated.
+                // #17252: set when the cursor sits on the final component of a
+                // fully-qualified bare-sub call whose package the workspace
+                // index could not resolve (stale index or genuine miss). The
+                // same-file fallbacks below must not answer such a position:
+                // they match by bare name and would return a different
+                // package's same-named sub. `None` elsewhere, so every other
+                // cursor position keeps its existing resolution behavior.
+                #[cfg(feature = "workspace")]
+                let mut cross_package_qualified_sub: Option<String> = None;
                 #[cfg(feature = "workspace")]
                 {
                     let fqn_regex = get_fqn_regex()?;
@@ -2187,10 +2416,54 @@ impl LspServer {
                                         &package,
                                         &name,
                                         Some(uri),
+                                        qualified_occurrence_role(
+                                            &doc.text,
+                                            self.pos16_to_offset(doc, line, character),
+                                            parsed
+                                                .as_ref()
+                                                .and_then(|p| p.ast())
+                                                .map(|ast| ast.as_ref()),
+                                            &package,
+                                            &name,
+                                        ) == QualifiedOccurrenceRole::Call,
                                     )
                                     && workspace_index_is_fresh()
                                 {
                                     return Ok(Some(result));
+                                }
+                                // #17252: the workspace index could not answer
+                                // this fully-qualified sub call right now — the
+                                // index is stale (for example right after the
+                                // target buffer opened, or while a never-indexed
+                                // buffer holds the target), or the sub is a
+                                // genuine miss. Everything below resolves by
+                                // bare name against the CALLER's own packages,
+                                // so for a bare `sub` key this position must
+                                // never reach those fallbacks: they would answer
+                                // with a different package's same-named sub.
+                                // Restricted to bare subs on purpose: qualified
+                                // package variables (`$Foo::bar`) legitimately
+                                // resolve through the same-file variable path.
+                                let unresolved_bare_sub =
+                                    parsed
+                                        .as_ref()
+                                        .and_then(|snapshot| snapshot.ast())
+                                        .is_some_and(|ast| {
+                                            crate::declaration::symbol_at_cursor_with_source(
+                                                ast,
+                                                offset,
+                                                crate::declaration::current_package_at(ast, offset),
+                                                &doc.text,
+                                            )
+                                            .is_some_and(|key| {
+                                                let key = super::to_workspace_symbol_key(&key);
+                                                key.sigil.is_none()
+                                                    && key.kind
+                                                        == crate::workspace_index::SymKind::Sub
+                                            })
+                                        });
+                                if unresolved_bare_sub {
+                                    cross_package_qualified_sub = Some(package);
                                 }
                             }
                             FqnCursorComponent::Prefix => return Ok(Some(Value::Null)),
@@ -2215,6 +2488,7 @@ impl LspServer {
                                 package_name,
                                 method_name,
                                 Some(uri),
+                                true,
                             ) && workspace_index_is_fresh()
                             {
                                 return Ok(Some(result));
@@ -2242,6 +2516,7 @@ impl LspServer {
                                     "UNIVERSAL",
                                     method_name,
                                     Some(uri),
+                                    true,
                                 )
                                 && workspace_index_is_fresh()
                             {
@@ -2276,6 +2551,7 @@ impl LspServer {
                                         current_package,
                                         method_name,
                                         Some(uri),
+                                        true,
                                     ) && workspace_index_is_fresh()
                                     {
                                         return Ok(Some(result));
@@ -2305,6 +2581,7 @@ impl LspServer {
                                     "UNIVERSAL",
                                     method_name,
                                     Some(uri),
+                                    true,
                                 )
                                 && workspace_index_is_fresh()
                             {
@@ -2327,8 +2604,52 @@ impl LspServer {
                             quoted_import_list_symbol(ast, snapshot, &doc.text, offset)
                         });
 
+                    // #17252: the caller-local resolvers below key off the
+                    // CALLER's own package or bare names. For a cross-package
+                    // qualified call they may only answer with a same-file sub
+                    // that genuinely lives in the REQUESTED package (e.g.
+                    // `Foo::bar()` called from another package must still reach
+                    // this file's `package Foo; sub bar`); an answer naming any
+                    // other package is a wrong-package shadow of the call and
+                    // must fall through to the honest empty result.
+                    #[cfg(feature = "workspace")]
+                    let same_file_answer_matches_requested_package = |target_start: usize| -> bool {
+                        match &cross_package_qualified_sub {
+                            None => true,
+                            Some(requested_package) => {
+                                let declaration_text =
+                                    doc.text.get(target_start.min(doc.text.len())..);
+                                let ambient_package =
+                                    crate::declaration::current_package_at(ast, target_start);
+                                same_file_answer_package_matches(
+                                    declaration_text,
+                                    ambient_package,
+                                    requested_package.as_str(),
+                                )
+                            }
+                        }
+                    };
+
+                    // #17252: a qualified call that names a package OTHER than
+                    // the caller's own must not reach the caller-package-keyed
+                    // lookups below — those key the symbol with the CALLER's
+                    // package and can only produce a wrong-package answer; the
+                    // FQN block above already searched the requested package
+                    // directly. A same-package qualified call keeps them: its
+                    // caller-package key IS the requested package, so their
+                    // answers stay correctly qualified.
+                    #[cfg(feature = "workspace")]
+                    let foreign_package_qualified_call =
+                        cross_package_qualified_sub.as_ref().is_some_and(|requested_package| {
+                            crate::declaration::current_package_at(ast, offset)
+                                != requested_package.as_str()
+                        });
+
                     #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
-                    if !cursor_in_single_quoted_literal && workspace_index_is_fresh() {
+                    if !cursor_in_single_quoted_literal
+                        && workspace_index_is_fresh()
+                        && !foreign_package_qualified_call
+                    {
                         let cursor_on_arrow_method = cursor_in_regex_capture(
                             get_arrow_method_regex()?,
                             &text_around,
@@ -2364,6 +2685,9 @@ impl LspServer {
                                     uri,
                                     &semantic_symbol,
                                     offset,
+                                    workspace_symbol_key.kind
+                                        == crate::workspace_index::SymKind::Sub
+                                        && workspace_symbol_key.sigil.is_none(),
                                 ) {
                                     return Ok(Some(json!([lsp_location])));
                                 }
@@ -2410,7 +2734,17 @@ impl LspServer {
                             })
                             .collect();
 
-                        if !result.is_empty() {
+                        if !result.is_empty()
+                            // #17252: a cross-package qualified call may only be
+                            // answered by a same-file sub in the requested
+                            // package; the links target the current document, so
+                            // the package at the target range decides.
+                            && location_links.first().is_some_and(|link| {
+                                same_file_answer_matches_requested_package(
+                                    link.target_selection_range.0,
+                                )
+                            })
+                        {
                             return Ok(Some(json!(result)));
                         }
                     }
@@ -2422,6 +2756,10 @@ impl LspServer {
                     // Try workspace index for cross-file definitions using routing policy
                     #[cfg(feature = "workspace")]
                     if workspace_index_is_fresh()
+                        // #17252: caller-package-keyed lookup — foreign-package
+                        // qualified calls must not reach it (see the
+                        // `foreign_package_qualified_call` rationale above).
+                        && !foreign_package_qualified_call
                         && let Some(coordinator) = self.coordinator()
                     {
                         let workspace_index = coordinator.index();
@@ -2493,6 +2831,11 @@ impl LspServer {
 
                     // Find definition at the position
                     if let Some(definition) = model.definition_at(offset) {
+                        if !same_file_definition_matches_qualification(
+                            &doc.text, offset, definition, ast,
+                        ) {
+                            return Ok(Some(json!([])));
+                        }
                         // These built-in variables have no local declaration. The
                         // semantic analyzer can instead return the sub whose span
                         // contains them, which is not their definition.
@@ -2518,24 +2861,43 @@ impl LspServer {
                         {
                             return Ok(Some(json!([])));
                         }
-                        let (def_line, def_char) =
-                            self.offset_to_pos16(doc, definition.location.start);
-                        let (def_end_line, def_end_char) =
-                            self.offset_to_pos16(doc, definition.location.end);
+                        // #17252: use the typed semantic identity at this tier.
+                        // An alias span starts at its assignment, not a declaration
+                        // name; inspecting that text would lose its explicit package.
+                        let semantic_answer_matches_requested_package =
+                            cross_package_qualified_sub.as_ref().is_none_or(|requested_package| {
+                                definition.qualified_name.rsplit_once("::").is_some_and(
+                                    |(declared_package, _)| {
+                                        declared_package == requested_package.as_str()
+                                    },
+                                )
+                            });
+                        if !semantic_answer_matches_requested_package {
+                            tracing::debug!(
+                                offset,
+                                "Suppressing same-file definition that names a different \
+                                 package than the qualified call at the cursor (#17252)"
+                            );
+                        } else {
+                            let (def_line, def_char) =
+                                self.offset_to_pos16(doc, definition.location.start);
+                            let (def_end_line, def_end_char) =
+                                self.offset_to_pos16(doc, definition.location.end);
 
-                        return Ok(Some(json!([{
-                            "uri": uri,
-                            "range": {
-                                "start": {
-                                    "line": def_line,
-                                    "character": def_char,
+                            return Ok(Some(json!([{
+                                "uri": uri,
+                                "range": {
+                                    "start": {
+                                        "line": def_line,
+                                        "character": def_char,
+                                    },
+                                    "end": {
+                                        "line": def_end_line,
+                                        "character": def_end_char,
+                                    },
                                 },
-                                "end": {
-                                    "line": def_end_line,
-                                    "character": def_end_char,
-                                },
-                            },
-                        }])));
+                            }])));
+                        }
                     }
                 }
             }
@@ -2860,6 +3222,7 @@ impl LspServer {
         uri: &str,
         symbol: &str,
         byte_offset: usize,
+        require_callable: bool,
     ) -> Option<Value> {
         let byte_offset = u32::try_from(byte_offset).ok()?;
         if self.workspace_index_stale_for_any_open_document() {
@@ -2870,10 +3233,22 @@ impl LspServer {
         // path must not re-enter `WorkspaceIndex` while
         // `with_semantic_queries_for_uri` holds its read guards (#15644).
         let legacy_location = workspace_index.find_definition(symbol);
-        let outcome = workspace_index.with_semantic_queries_for_uri(uri, |file_id, queries| {
-            let ctx = QueryContext::new(file_id, None, Some(byte_offset));
-            goto_definition_live_exact_or_imported(legacy_location, &queries, symbol, &ctx)
-        })?;
+        let (outcome, constant_anchor) =
+            workspace_index.with_semantic_queries_for_uri(uri, |file_id, queries| {
+                let ctx = QueryContext::new(file_id, None, Some(byte_offset));
+                let outcome =
+                    goto_definition_live_exact_or_imported(legacy_location, &queries, symbol, &ctx);
+                let constant_anchor = match &outcome.result {
+                    DefinitionCutoverResult::Exact(candidate)
+                        if require_callable
+                            && candidate.kind == perl_semantic_facts::EntityKind::Constant =>
+                    {
+                        queries.anchor_source_span(candidate.anchor_id)
+                    }
+                    _ => None,
+                };
+                (outcome, constant_anchor)
+            })?;
 
         if self.workspace_index_stale_for_any_open_document() {
             return None;
@@ -2882,6 +3257,32 @@ impl LspServer {
         let DefinitionCutoverResult::Exact(candidate) = outcome.result else {
             return None;
         };
+        if require_callable {
+            match candidate.kind {
+                perl_semantic_facts::EntityKind::Subroutine
+                | perl_semantic_facts::EntityKind::Method => {}
+                perl_semantic_facts::EntityKind::Constant => {
+                    let anchor = constant_anchor?;
+                    let start = usize::try_from(anchor.start_byte).ok()?;
+                    let end = usize::try_from(anchor.end_byte).ok()?;
+                    // Semantic anchors can cover only the name. Match their
+                    // owning declaration by identity and byte containment,
+                    // then distinguish constant functions from readonly vars.
+                    // Do this after the semantic callback releases its guards.
+                    if !workspace_index.file_symbols(&anchor.source_uri).iter().any(|symbol| {
+                        symbol.uri == anchor.source_uri
+                            && symbol.qualified_name.as_deref()
+                                == Some(candidate.canonical_name.as_str())
+                            && symbol.range.start.byte <= start
+                            && end <= symbol.range.end.byte
+                            && workspace_symbol_is_callable(&workspace_index, symbol)
+                    }) {
+                        return None;
+                    }
+                }
+                _ => return None,
+            }
+        }
         let def_location = workspace_index.semantic_anchor_wire_location(candidate.anchor_id)?;
         // An unconvertible URI yields no definition rather than a fabricated one:
         // this exact path claims source-backed exactness, which a substituted
@@ -3312,6 +3713,1142 @@ impl LspServer {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn qualified_definition_fallback_retains_exact_and_bare_semantic_candidates()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let text = "package Caller;\nsub compute_0 { return 1; }\nOther::compute_0();\nCaller::compute_0();\ncompute_0();\nSUPER::compute_0();\n";
+        let ast = Parser::new(text).parse()?;
+        let model = crate::semantic::SemanticModel::build(&ast, text);
+        let candidate = model
+            .symbol_table()
+            .symbols
+            .values()
+            .flatten()
+            .find(|symbol| symbol.qualified_name == "Caller::compute_0")
+            .ok_or("missing source-built Caller::compute_0 candidate")?;
+        assert!(matches!(candidate.kind, crate::symbol::SymbolKind::Subroutine));
+        let foreign = text.find("Other::compute_0").ok_or("foreign call")? + 9;
+        assert!(
+            !same_file_definition_matches_qualification(text, foreign, candidate, &ast),
+            "an absent external package must not be silently replaced by Caller"
+        );
+        let exact = text.find("Caller::compute_0()").ok_or("exact call")? + 10;
+        assert!(same_file_definition_matches_qualification(text, exact, candidate, &ast));
+        let bare = text.find("\ncompute_0()").ok_or("bare call")? + 3;
+        assert!(same_file_definition_matches_qualification(text, bare, candidate, &ast));
+        let unproved_super = text.find("SUPER::compute_0").ok_or("SUPER call")? + 9;
+        assert!(
+            !same_file_definition_matches_qualification(text, unproved_super, candidate, &ast),
+            "a same-named Caller callable is not a proven ancestor target"
+        );
+        // A plain subroutine call to a real package named SUPER still has a
+        // literal identity; removing the ancestry exemption is not blanket refusal.
+        let literal = "package SUPER;\nsub compute_0 {}\npackage Caller;\nSUPER::compute_0();\n";
+        let literal_ast = Parser::new(literal).parse()?;
+        let literal_model = crate::semantic::SemanticModel::build(&literal_ast, literal);
+        let literal_offset = literal.rfind("compute_0()").ok_or("literal SUPER call")? + 2;
+        let literal_candidate =
+            literal_model.definition_at(literal_offset).ok_or("literal SUPER declaration")?;
+        assert_eq!(literal_candidate.qualified_name, "SUPER::compute_0");
+        assert!(same_file_definition_matches_qualification(
+            literal,
+            literal_offset,
+            literal_candidate,
+            &literal_ast
+        ));
+        #[cfg(feature = "workspace")]
+        for (case, source, callable) in [
+            ("function", "package Caller; use constant PI => 3;", true),
+            (
+                "commented-function",
+                "package Caller; use # retained trivia\n constant PI => 3;",
+                true,
+            ),
+            ("readonly-variable", "package Caller; use Readonly; Readonly my $PI => 3;", false),
+            ("const-fast-variable", "package Caller; use Const::Fast; const my $PI => 3;", false),
+        ] {
+            let index = crate::workspace_index::WorkspaceIndex::new();
+            let uri = format!("file:///workspace/constant-kind-{case}.pl");
+            index.index_initial_file_str(&uri, source).map_err(std::io::Error::other)?;
+            let symbols = index.file_symbols(&uri);
+            let symbol = symbols
+                .iter()
+                .find(|symbol| symbol.qualified_name.as_deref() == Some("Caller::PI"))
+                .ok_or("source-built constant-role premise")?;
+            assert_eq!(symbol.kind, crate::workspace_index::SymbolKind::Constant, "{case}");
+            assert_eq!(workspace_symbol_is_callable(&index, symbol), callable, "{case}");
+            let key = crate::workspace_index::SymbolKey {
+                pkg: "Caller".into(),
+                name: "PI".into(),
+                sigil: None,
+                kind: crate::workspace_index::SymKind::Sub,
+            };
+            assert!(!index.find_defs(&key).is_empty(), "{case}: erased-kind lookup premise");
+            assert_eq!(
+                find_workspace_definition_location(&index, "Caller", "PI").is_some(),
+                callable,
+                "{case}"
+            );
+            assert_eq!(
+                !find_symbol_key_definition_locations(&index, &key).is_empty(),
+                callable,
+                "{case}"
+            );
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "workspace")]
+    fn qualified_fallback_request(
+        server: &LspServer,
+        uri: &str,
+        line: usize,
+        character: usize,
+    ) -> Result<Option<Value>, JsonRpcError> {
+        server.test_handle_definition(Some(json!({
+            "textDocument": { "uri": uri },
+            "position": { "line": line, "character": character }
+        })))
+    }
+
+    #[cfg(feature = "workspace")]
+    fn assert_qualified_fallback_location(result: &Option<Value>, uri: &str, line: u64) {
+        let locations = result.as_ref().and_then(Value::as_array);
+        assert!(locations.is_some_and(|items| items.len() == 1), "expected one target: {result:?}");
+        let location = &locations.map_or(&[][..], Vec::as_slice)[0];
+        assert_eq!(location.get("uri").and_then(Value::as_str), Some(uri), "{result:?}");
+        assert_eq!(location.pointer("/range/start/line").and_then(Value::as_u64), Some(line));
+        assert_eq!(location.pointer("/range/end/line").and_then(Value::as_u64), Some(line));
+    }
+
+    #[cfg(feature = "workspace")]
+    fn assert_qualified_fallback_start(result: &Option<Value>, starts: &[u64]) {
+        let start = result
+            .as_ref()
+            .and_then(|value| value.pointer("/0/range/start/character"))
+            .and_then(Value::as_u64);
+        assert!(
+            start.is_some_and(|start| starts.contains(&start)),
+            "wrong declaration token: {result:?}"
+        );
+    }
+
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn qualified_definition_fallback_super_requires_proved_parent_target()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use perl_workspace::workspace_index::{DegradationReason, IndexState};
+
+        for (case, statement, name) in [
+            ("missing", "SUPER::missing();", "missing"),
+            ("same-name", "SUPER::helper();", "helper"),
+            ("qualified-missing", "Caller::SUPER::missing();", "missing"),
+            ("method-missing", "my $self = shift; $self->SUPER::missing();", "missing"),
+            (
+                "qualified-method-missing",
+                "my $self = shift; $self->Caller::SUPER::missing();",
+                "missing",
+            ),
+        ] {
+            let source = format!("package Caller;\nsub helper {{ {statement} }}\n");
+            let offset = source.rfind(name).ok_or("SUPER call name")? + 2;
+            let ast = Arc::new(Parser::new(&source).parse()?);
+            let mut parent_map = ParentMap::default();
+            crate::declaration::DeclarationProvider::build_parent_map(&ast, &mut parent_map, None);
+            let uri = format!("file:///workspace/super-{case}.pl");
+            let provider = crate::declaration::DeclarationProvider::new(
+                Arc::clone(&ast),
+                source.clone(),
+                uri.clone(),
+            )
+            .with_parent_map(&parent_map)
+            .with_doc_version(1);
+            assert!(
+                provider.find_declaration(offset, 1).is_none_or(|locations| locations.is_empty()),
+                "{case}: declaration tier must decline this unresolved SUPER call"
+            );
+            let analyzer = crate::semantic::SemanticAnalyzer::analyze_with_source(&ast, &source);
+            assert!(analyzer.resolve_inherited_method_location("Caller", name).is_none());
+            let model = crate::semantic::SemanticModel::build(&ast, &source);
+            let candidate = model.definition_at(offset).ok_or("unproved terminal callable")?;
+            assert_eq!(candidate.kind, crate::symbol::SymbolKind::Subroutine, "{case}");
+            assert_eq!(candidate.qualified_name, "Caller::helper", "{case}");
+            assert!(
+                !same_file_definition_matches_qualification(&source, offset, candidate, &ast),
+                "{case}: no name or ancestor proof permits the Caller fallback"
+            );
+
+            let server = LspServer::new();
+            let unrelated_uri = "file:///workspace/super-unrelated.pl";
+            for (file, text) in [
+                (uri.as_str(), source.as_str()),
+                (unrelated_uri, "package Unrelated;\nsub helper {}\n"),
+            ] {
+                server.test_apply_did_open(file, text, 1)?;
+                let generation = server.test_document_generation(file).ok_or("open generation")?;
+                server
+                    .test_index_live_file(file, text, generation)
+                    .map_err(std::io::Error::other)?;
+            }
+            server.test_simulate_indexing_complete();
+            for state in ["fresh", "degraded", "stale"] {
+                if state == "degraded" {
+                    server
+                        .index_coordinator
+                        .as_ref()
+                        .ok_or("SUPER coordinator")?
+                        .transition_to_degraded(DegradationReason::ScanTimeout { elapsed_ms: 123 });
+                } else if state == "stale" {
+                    // Isolate generation staleness from the preceding degraded
+                    // mode: the coordinator is Ready while this buffer is stale.
+                    server.test_simulate_indexing_complete();
+                    server
+                        .test_replace_document_without_index(
+                            unrelated_uri,
+                            "package Unrelated;\nsub renamed {}\n",
+                            2,
+                        )
+                        .map_err(std::io::Error::other)?;
+                }
+                if state != "degraded" {
+                    assert!(matches!(
+                        server.index_coordinator.as_ref().ok_or("SUPER coordinator")?.state(),
+                        IndexState::Ready { .. }
+                    ));
+                }
+                assert_eq!(server.workspace_index_stale_for_any_open_document(), state == "stale");
+                let line_start = source.find('\n').ok_or("call line")? + 1;
+                let result = qualified_fallback_request(&server, &uri, 1, offset - line_start)?;
+                assert!(
+                    result.as_ref().is_some_and(|value| {
+                        value.is_null() || value.as_array().is_some_and(Vec::is_empty)
+                    }),
+                    "{case}/{state}: missing SUPER target cannot select Caller: {result:?}"
+                );
+            }
+        }
+
+        // This is an actual inherited method, with a same-named Caller override
+        // that would expose bypassed inheritance lookup or a guessed local target.
+        // A plain Base package need not have a ClassModel: prove Caller ancestry
+        // and the production workspace target before the whole-handler request.
+        let parent_source = "package Base;\nsub override { 'base' }\npackage Caller;\nour @ISA = ('Base');\nsub override { 'caller' }\nsub invoke { shift->SUPER::override() }\nprint Caller->invoke();\n";
+        let ast = Parser::new(parent_source).parse()?;
+        let analyzer = crate::semantic::SemanticAnalyzer::analyze_with_source(&ast, parent_source);
+        assert_eq!(analyzer.resolve_parent_chain("Caller"), Some(vec!["Base".to_string()]));
+        let server = LspServer::new();
+        let uri = "file:///workspace/super-proved-parent.pl";
+        server.test_apply_did_open(uri, parent_source, 1)?;
+        let generation = server.test_document_generation(uri).ok_or("parent generation")?;
+        server
+            .test_index_live_file(uri, parent_source, generation)
+            .map_err(std::io::Error::other)?;
+        server.test_simulate_indexing_complete();
+        assert!(!server.workspace_index_stale_for_any_open_document());
+        let parent = inherited_method_definition_location(
+            server.index_coordinator.as_ref().ok_or("parent coordinator")?.index(),
+            "Caller",
+            "override",
+        )
+        .and_then(|location| crate::workspace_index::lsp_adapter::to_lsp_location(&location))
+        .ok_or("workspace-index Base ancestor target")?;
+        let parent_result = Some(json!([parent]));
+        assert_qualified_fallback_location(&parent_result, uri, 1);
+        assert_qualified_fallback_start(&parent_result, &[0, 4]);
+        let call = parent_source.lines().nth(5).ok_or("inherited call line")?;
+        let result =
+            qualified_fallback_request(&server, uri, 5, call.find("override").ok_or("call")? + 2)?;
+        assert_qualified_fallback_location(&result, uri, 1);
+        assert_qualified_fallback_start(&result, &[0, 4]);
+        Ok(())
+    }
+
+    #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
+    #[test]
+    fn qualified_definition_fallback_live_cutover_retains_callable_anchors()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use perl_semantic_facts::EntityKind;
+
+        for (case, source, query, kind, callable) in [
+            (
+                "subroutine",
+                "package Caller;\nsub compute_0 { return 1; }\nCaller::compute_0();\n",
+                "Caller::compute_0",
+                EntityKind::Subroutine,
+                true,
+            ),
+            (
+                "method",
+                "class Caller { method compute_0 { return 1; } }\nCaller->compute_0();\n",
+                "Caller::compute_0",
+                EntityKind::Method,
+                true,
+            ),
+            (
+                "constant-function",
+                "package Caller;\nuse constant PI => 3;\nCaller::PI();\n",
+                "Caller::PI",
+                EntityKind::Constant,
+                true,
+            ),
+            (
+                "commented-constant-function",
+                "package Caller;\nuse # retained trivia\n constant PI => 3;\nCaller::PI();\n",
+                "Caller::PI",
+                EntityKind::Constant,
+                true,
+            ),
+            (
+                "readonly-variable",
+                "package Caller;\nuse Readonly; Readonly my $PI => 3;\nCaller::PI();\n",
+                "Caller::PI",
+                EntityKind::Constant,
+                false,
+            ),
+            (
+                "const-fast-variable",
+                "package Caller;\nuse Const::Fast; const my $PI => 3;\nCaller::PI();\n",
+                "Caller::PI",
+                EntityKind::Constant,
+                false,
+            ),
+            (
+                "same-name-package",
+                "package Other::compute_0 { Other::compute_0(); }\n",
+                "Other::compute_0",
+                EntityKind::Package,
+                false,
+            ),
+        ] {
+            let server = LspServer::new();
+            let uri = format!("file:///workspace/live-cutover-{case}.pl");
+            server.test_apply_did_open(&uri, source, 1)?;
+            let generation = server.test_document_generation(&uri).ok_or("open generation")?;
+            server.test_index_live_file(&uri, source, generation).map_err(std::io::Error::other)?;
+            server.test_simulate_indexing_complete();
+            assert!(!server.workspace_index_stale_for_any_open_document(), "{case}");
+            let index = server.workspace_index().ok_or("fresh workspace index")?;
+            let offset = source.rfind("();").ok_or("call site")?;
+            let candidate = index
+                .with_semantic_queries_for_uri(&uri, |file_id, queries| {
+                    let context = QueryContext::new(file_id, None, Some(offset as u32));
+                    goto_definition_live_exact_or_imported(None, &queries, query, &context)
+                })
+                .ok_or("semantic query snapshot")?;
+            let DefinitionCutoverResult::Exact(candidate) = candidate.result else {
+                return Err(format!("{case}: direct cutover must have an exact candidate").into());
+            };
+            assert_eq!(candidate.kind, kind, "{case}: source-built candidate kind");
+            assert_eq!(candidate.canonical_name, query, "{case}: source-built candidate identity");
+            let anchor = index
+                .semantic_anchor_wire_location(candidate.anchor_id)
+                .ok_or("source-backed anchor")?;
+            let expected = serde_json::to_value(lsp_types::Location::try_from(anchor)?)?;
+            assert_eq!(
+                server.live_exact_definition_location(&uri, query, offset, true),
+                callable.then_some(expected.clone()),
+                "{case}: direct consumer must retain callable anchors and refuse containers"
+            );
+            assert_eq!(
+                server.live_exact_definition_location(&uri, query, offset, false),
+                Some(expected.clone()),
+                "{case}: declaration navigation retains the same source anchor"
+            );
+            if case == "subroutine" {
+                assert_eq!(expected.pointer("/range/start/line").and_then(Value::as_u64), Some(1));
+                assert_eq!(
+                    expected.pointer("/range/start/character").and_then(Value::as_u64),
+                    Some(4)
+                );
+                assert_eq!(
+                    expected.pointer("/range/end/character").and_then(Value::as_u64),
+                    Some(13)
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn qualified_definition_fallback_retains_exact_terminal_alias_while_index_is_stale()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        let caller_uri = "file:///workspace/qualified-alias.pl";
+        let caller =
+            "package Caller;\n*Other::compute_0 = sub { return 2; };\nOther::compute_0();\n";
+        let offset = caller.rfind("Other::compute_0()").ok_or("qualified alias call")? + 9;
+        let ast = Arc::new(Parser::new(caller).parse()?);
+        let mut parent_map = ParentMap::default();
+        crate::declaration::DeclarationProvider::build_parent_map(&ast, &mut parent_map, None);
+        let provider = crate::declaration::DeclarationProvider::new(
+            Arc::clone(&ast),
+            caller.to_string(),
+            caller_uri.to_string(),
+        )
+        .with_parent_map(&parent_map)
+        .with_doc_version(1);
+        assert!(
+            provider.find_declaration(offset, 1).is_none_or(|locations| locations.is_empty()),
+            "this positive must reach the terminal model, not the earlier declaration tier"
+        );
+        let model = crate::semantic::SemanticModel::build(&ast, caller);
+        let candidate = model.definition_at(offset).ok_or("terminal qualified alias candidate")?;
+        assert_eq!(candidate.qualified_name, "Other::compute_0");
+        let assignment_start = caller.find("*Other::").ok_or("alias assignment")?;
+        assert_eq!(candidate.location.start, assignment_start);
+        assert_eq!(
+            caller.get(candidate.location.start..candidate.location.end),
+            Some("*Other::compute_0 = sub { return 2; }")
+        );
+        assert!(same_file_definition_matches_qualification(caller, offset, candidate, &ast));
+
+        let unrelated_uri = "file:///workspace/alias-unrelated.pl";
+        let unrelated = "package Unrelated;\nsub helper {}\n";
+        for (uri, text) in [(caller_uri, caller), (unrelated_uri, unrelated)] {
+            server.test_apply_did_open(uri, text, 1)?;
+            let generation = server.test_document_generation(uri).ok_or("open generation")?;
+            server.test_index_live_file(uri, text, generation).map_err(std::io::Error::other)?;
+        }
+        server.test_simulate_indexing_complete();
+        assert!(!server.workspace_index_stale_for_any_open_document());
+        let fresh_alias = qualified_fallback_request(&server, caller_uri, 2, 9)?;
+        assert_qualified_fallback_location(&fresh_alias, caller_uri, 1);
+        assert_qualified_fallback_start(&fresh_alias, &[0]);
+        server
+            .test_replace_document_without_index(
+                unrelated_uri,
+                "package Unrelated;\nsub renamed {}\n",
+                2,
+            )
+            .map_err(std::io::Error::other)?;
+        assert!(server.workspace_index_stale_for_any_open_document());
+        assert_qualified_fallback_location(
+            &qualified_fallback_request(&server, caller_uri, 2, 9)?,
+            caller_uri,
+            1,
+        );
+        Ok(())
+    }
+
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn qualified_definition_fallback_refuses_enclosing_package_without_callable_target()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use perl_workspace::workspace_index::DegradationReason;
+        let caller = "package Caller { Other::compute_0(); }\n";
+        let caller_uri = "file:///workspace/qualified-package-block.pl";
+        let offset = caller.find("compute_0").ok_or("qualified call")? + 2;
+        let ast = Arc::new(Parser::new(caller).parse()?);
+        let mut parent_map = ParentMap::default();
+        crate::declaration::DeclarationProvider::build_parent_map(&ast, &mut parent_map, None);
+        let provider = crate::declaration::DeclarationProvider::new(
+            Arc::clone(&ast),
+            caller.to_string(),
+            caller_uri.to_string(),
+        )
+        .with_parent_map(&parent_map)
+        .with_doc_version(1);
+        assert!(
+            provider.find_declaration(offset, 1).is_none_or(|locations| locations.is_empty()),
+            "an unresolved call must reach the terminal model for this regression"
+        );
+        let model = crate::semantic::SemanticModel::build(&ast, caller);
+        let candidate = model.definition_at(offset).ok_or("enclosing package candidate")?;
+        assert_eq!(candidate.kind, crate::symbol::SymbolKind::Package);
+        assert_eq!(candidate.qualified_name, "Caller");
+        assert!(candidate.location.start <= offset && candidate.location.end >= offset);
+        assert!(!same_file_definition_matches_qualification(caller, offset, candidate, &ast));
+        assert!(same_file_definition_matches_qualification(caller, 10, candidate, &ast));
+        let package = "package Caller::Inner { }\n";
+        let package_ast = Parser::new(package).parse()?;
+        let package_model = crate::semantic::SemanticModel::build(&package_ast, package);
+        let package_offset = package.find("Inner").ok_or("qualified package name")? + 2;
+        let exact_package =
+            package_model.definition_at(package_offset).ok_or("package definition")?;
+        assert_eq!(exact_package.qualified_name, "Caller::Inner");
+        assert!(same_file_definition_matches_qualification(
+            package,
+            package_offset,
+            exact_package,
+            &package_ast
+        ));
+
+        let server = LspServer::new();
+        let unrelated_uri = "file:///workspace/package-unrelated.pl";
+        let unrelated = "package Unrelated;\nsub helper {}\n";
+        for (uri, text) in [(caller_uri, caller), (unrelated_uri, unrelated)] {
+            server.test_apply_did_open(uri, text, 1)?;
+            let generation = server.test_document_generation(uri).ok_or("open generation")?;
+            server.test_index_live_file(uri, text, generation).map_err(std::io::Error::other)?;
+        }
+        server.test_simulate_indexing_complete();
+        let coordinator = server.index_coordinator.as_ref().ok_or("workspace coordinator")?;
+        coordinator.transition_to_degraded(DegradationReason::ScanTimeout { elapsed_ms: 123 });
+        assert!(!server.workspace_index_stale_for_any_open_document());
+        for stale in [false, true] {
+            if stale {
+                server
+                    .test_replace_document_without_index(
+                        unrelated_uri,
+                        "package Unrelated;\nsub renamed {}\n",
+                        2,
+                    )
+                    .map_err(std::io::Error::other)?;
+                assert!(server.workspace_index_stale_for_any_open_document());
+            }
+            let result = qualified_fallback_request(&server, caller_uri, 0, offset)?;
+            assert!(
+                result.as_ref().is_some_and(
+                    |value| value.is_null() || value.as_array().is_some_and(Vec::is_empty)
+                ),
+                "an unresolved qualified call must not return its enclosing package (stale={stale}): {result:?}"
+            );
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn qualified_definition_fallback_refuses_containers_and_retains_noncallable_navigation()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crate::symbol::SymbolKind;
+        use perl_workspace::workspace_index::DegradationReason;
+        let cases = [
+            (
+                "constant",
+                "package Caller;\nuse constant VALUE => Other::compute_0();\nCaller::VALUE();\nVALUE();\n",
+                SymbolKind::Constant,
+                "Caller::VALUE",
+                1,
+                1,
+                "VALUE",
+            ),
+            (
+                "label",
+                "package Caller;\ngoto MARK;\nMARK: Other::compute_0();\n",
+                SymbolKind::Label,
+                "MARK",
+                2,
+                2,
+                "MARK",
+            ),
+            (
+                "label-multiply",
+                "package Caller;\ngoto MARK;\nMARK: 2 * Other::compute_0();\n",
+                SymbolKind::Label,
+                "MARK",
+                2,
+                2,
+                "MARK",
+            ),
+            (
+                "label-adjacent-multiply",
+                "package Caller;\ngoto MARK;\nMARK: 2*Other::compute_0();\n",
+                SymbolKind::Label,
+                "MARK",
+                2,
+                2,
+                "MARK",
+            ),
+            (
+                "label-modulo",
+                "package Caller;\ngoto MARK;\nMARK: 2 % Other::compute_0();\n",
+                SymbolKind::Label,
+                "MARK",
+                2,
+                2,
+                "MARK",
+            ),
+            (
+                "label-adjacent-modulo",
+                "package Caller;\ngoto MARK;\nMARK: 2%Other::compute_0();\n",
+                SymbolKind::Label,
+                "MARK",
+                2,
+                2,
+                "MARK",
+            ),
+            (
+                "format",
+                "package Caller;\nformat REPORT =\n@<<<<\nOther::compute_0()\n.\n",
+                SymbolKind::Format,
+                "Caller::REPORT",
+                3,
+                1,
+                "REPORT",
+            ),
+            (
+                "format-qualified-declaration",
+                "package Caller;\nformat Other::REPORT =\n@<<<<\nOther::compute_0()\n.\n",
+                SymbolKind::Format,
+                "Caller::Other::REPORT",
+                3,
+                1,
+                "REPORT",
+            ),
+            (
+                "attribute",
+                "package Caller;\nuse Moo;\nhas 'value' => (is => 'ro', reader => undef, default => sub { Other::compute_0(); });\nour $kept = 7;\n$Caller::kept;\n$kept;\n",
+                SymbolKind::scalar(),
+                "Caller::value",
+                2,
+                3,
+                "$kept",
+            ),
+            (
+                "same-name-package",
+                "package Other::compute_0 { Other::compute_0(); }\n",
+                SymbolKind::Package,
+                "Other::compute_0",
+                0,
+                0,
+                "compute_0",
+            ),
+        ];
+        for (
+            case,
+            caller,
+            expected_kind,
+            expected_name,
+            call_line,
+            declaration_line,
+            declaration_name,
+        ) in cases
+        {
+            let caller_uri = format!("file:///workspace/qualified-container-{case}.pl");
+            let offset = caller.find("Other::compute_0()").ok_or("qualified call")? + 9;
+            let call_character = caller
+                .lines()
+                .nth(call_line)
+                .ok_or("call line")?
+                .rfind("compute_0")
+                .ok_or("call name")?
+                + 2;
+            let ast = Arc::new(Parser::new(caller).parse()?);
+            let mut parent_map = ParentMap::default();
+            crate::declaration::DeclarationProvider::build_parent_map(&ast, &mut parent_map, None);
+            let provider = crate::declaration::DeclarationProvider::new(
+                Arc::clone(&ast),
+                caller.to_string(),
+                caller_uri.clone(),
+            )
+            .with_parent_map(&parent_map)
+            .with_doc_version(1);
+            assert!(
+                provider.find_declaration(offset, 1).is_none_or(|locations| locations.is_empty()),
+                "{case}: negative must not resolve through an earlier declaration tier"
+            );
+            let model = crate::semantic::SemanticModel::build(&ast, caller);
+            let candidate = model
+                .symbol_table()
+                .symbols
+                .values()
+                .flatten()
+                .find(|symbol| {
+                    symbol.kind == expected_kind && symbol.qualified_name == expected_name
+                })
+                .ok_or("source-built container candidate")?;
+            // The retained historical server already refuses format value calls.
+            // Challenge its source-built Format metadata too, without assuming
+            // this container is reached in every parser/provider mode.
+            if !case.starts_with("format") {
+                let actual = model.definition_at(offset).ok_or("terminal container at call")?;
+                assert_eq!(actual.kind, expected_kind, "{case}");
+                assert_eq!(actual.qualified_name, expected_name, "{case}");
+                assert!(actual.location.start <= offset && actual.location.end >= offset, "{case}");
+            }
+            assert!(
+                !same_file_definition_matches_qualification(caller, offset, candidate, &ast),
+                "{case}"
+            );
+            if case.starts_with("format") {
+                for expression in [
+                    "Other::compute_0",
+                    "2 * Other::compute_0()",
+                    "2*Other::compute_0()",
+                    "2 % Other::compute_0()",
+                    "2%Other::compute_0()",
+                ] {
+                    let variant = caller.replace("Other::compute_0()", expression);
+                    let variant_ast = Parser::new(&variant).parse()?;
+                    let variant_model =
+                        crate::semantic::SemanticModel::build(&variant_ast, &variant);
+                    let variant_candidate = variant_model
+                        .symbol_table()
+                        .symbols
+                        .values()
+                        .flatten()
+                        .find(|symbol| symbol.kind == SymbolKind::Format)
+                        .ok_or("source-built variant Format")?;
+                    let variant_offset = variant.find("Other::compute_0").ok_or("format call")? + 9;
+                    assert!(
+                        !same_file_definition_matches_qualification(
+                            &variant,
+                            variant_offset,
+                            variant_candidate,
+                            &variant_ast
+                        ),
+                        "opaque format values cannot borrow a containing Format: {expression}"
+                    );
+                }
+            }
+
+            let declaration_character = caller
+                .lines()
+                .nth(declaration_line)
+                .ok_or("declaration line")?
+                .find(declaration_name)
+                .ok_or("declaration name")?
+                + 2;
+            let declaration_offset =
+                caller.lines().take(declaration_line).map(|line| line.len() + 1).sum::<usize>()
+                    + declaration_character;
+            let declared =
+                model.definition_at(declaration_offset).ok_or("noncallable declaration")?;
+            assert!(
+                same_file_definition_matches_qualification(
+                    caller,
+                    declaration_offset,
+                    declared,
+                    &ast
+                ),
+                "{case}"
+            );
+            if case == "format-qualified-declaration" {
+                let name_end = caller.find("Other::REPORT").ok_or("qualified format name")?
+                    + "Other::REPORT".len();
+                let endpoint = model.definition_at(name_end).ok_or("format name-end candidate")?;
+                assert!(same_file_definition_matches_qualification(
+                    caller, name_end, endpoint, &ast
+                ));
+            }
+            if case != "attribute" {
+                assert!(
+                    provider
+                        .find_declaration(declaration_offset, 1)
+                        .is_none_or(|locations| locations.is_empty()),
+                    "{case}: declaration positive must admit terminal metadata"
+                );
+            }
+            if case == "constant" {
+                let qualified_offset =
+                    caller.find("Caller::VALUE()").ok_or("qualified constant call")? + 10;
+                assert!(same_file_definition_matches_qualification(
+                    caller,
+                    qualified_offset,
+                    candidate,
+                    &ast
+                ));
+            }
+            if case == "attribute" {
+                let qualified_offset =
+                    caller.find("$Caller::kept").ok_or("qualified variable")? + 10;
+                assert!(same_file_definition_matches_qualification(
+                    caller,
+                    qualified_offset,
+                    declared,
+                    &ast
+                ));
+            }
+            let server = LspServer::new();
+            let unrelated_uri = "file:///workspace/container-unrelated.pl";
+            let unrelated = "package Unrelated;\nsub helper {}\n";
+            for (uri, text) in [(caller_uri.as_str(), caller), (unrelated_uri, unrelated)] {
+                server.test_apply_did_open(uri, text, 1)?;
+                let generation = server.test_document_generation(uri).ok_or("open generation")?;
+                server
+                    .test_index_live_file(uri, text, generation)
+                    .map_err(std::io::Error::other)?;
+            }
+            server.test_simulate_indexing_complete();
+            let coordinator = server.index_coordinator.as_ref().ok_or("workspace coordinator")?;
+            if case == "same-name-package" {
+                assert!(!server.workspace_index_stale_for_any_open_document());
+                let key = crate::workspace_index::SymbolKey {
+                    pkg: "Other".into(),
+                    name: "compute_0".into(),
+                    sigil: None,
+                    kind: crate::workspace_index::SymKind::Sub,
+                };
+                assert!(
+                    coordinator.index().find_def(&key).is_some(),
+                    "premise: QName lookup erases Sub kind"
+                );
+                assert!(
+                    find_workspace_definition_location(coordinator.index(), "Other", "compute_0")
+                        .is_none()
+                );
+                assert!(find_symbol_key_definition_locations(coordinator.index(), &key).is_empty());
+                assert!(
+                    lookup_workspace_definition(
+                        Some(coordinator),
+                        "Other",
+                        "compute_0",
+                        Some(&caller_uri),
+                        true
+                    )
+                    .is_none()
+                );
+                let call =
+                    qualified_fallback_request(&server, &caller_uri, call_line, call_character)?;
+                assert!(
+                    call.as_ref().is_some_and(
+                        |value| value.is_null() || value.as_array().is_some_and(Vec::is_empty)
+                    ),
+                    "fresh index must not return Package for callable: {call:?}"
+                );
+                let declaration =
+                    qualified_fallback_request(&server, &caller_uri, 0, declaration_character)?;
+                assert_qualified_fallback_location(&declaration, &caller_uri, 0);
+                assert_qualified_fallback_start(&declaration, &[0, 8]);
+            }
+            if case == "constant" {
+                let call = qualified_fallback_request(&server, &caller_uri, 2, 10)?;
+                assert_qualified_fallback_location(&call, &caller_uri, 1);
+                assert_qualified_fallback_start(&call, &[0, 13]);
+            }
+            coordinator.transition_to_degraded(DegradationReason::ScanTimeout { elapsed_ms: 123 });
+            for stale in [false, true] {
+                if stale {
+                    server
+                        .test_replace_document_without_index(
+                            unrelated_uri,
+                            "package Unrelated;\nsub renamed {}\n",
+                            2,
+                        )
+                        .map_err(std::io::Error::other)?;
+                }
+                assert_eq!(server.workspace_index_stale_for_any_open_document(), stale, "{case}");
+                let result =
+                    qualified_fallback_request(&server, &caller_uri, call_line, call_character)?;
+                assert!(
+                    result.as_ref().is_some_and(
+                        |value| value.is_null() || value.as_array().is_some_and(Vec::is_empty)
+                    ),
+                    "{case}: a qualified call cannot return a containing declaration (stale={stale}): {result:?}"
+                );
+                let declaration = qualified_fallback_request(
+                    &server,
+                    &caller_uri,
+                    declaration_line,
+                    declaration_character,
+                )?;
+                assert_qualified_fallback_start(
+                    &declaration,
+                    match case {
+                        "constant" => &[0, 13],
+                        "same-name-package" => &[0, 8],
+                        "attribute" => &[4],
+                        _ if case.starts_with("format") => &[0, 7],
+                        _ => &[0],
+                    },
+                );
+                if case.starts_with("format") {
+                    let locations = declaration
+                        .as_ref()
+                        .and_then(Value::as_array)
+                        .ok_or("format location array")?;
+                    assert_eq!(locations.len(), 1);
+                    assert_eq!(
+                        locations[0].get("uri").and_then(Value::as_str),
+                        Some(caller_uri.as_str())
+                    );
+                    assert_eq!(
+                        locations[0].pointer("/range/start/line").and_then(Value::as_u64),
+                        Some(1)
+                    );
+                    assert!(matches!(
+                        locations[0].pointer("/range/end/line").and_then(Value::as_u64),
+                        Some(1 | 4 | 5)
+                    ));
+                    if case == "format-qualified-declaration" {
+                        let name_end = caller
+                            .lines()
+                            .nth(1)
+                            .ok_or("format line")?
+                            .find("REPORT")
+                            .ok_or("format name")?
+                            + "REPORT".len();
+                        let endpoint =
+                            qualified_fallback_request(&server, &caller_uri, 1, name_end)?;
+                        assert_qualified_fallback_start(&endpoint, &[0, 7]);
+                        let locations = endpoint
+                            .as_ref()
+                            .and_then(Value::as_array)
+                            .ok_or("format endpoint location array")?;
+                        assert_eq!(locations.len(), 1);
+                        assert_eq!(
+                            locations[0].get("uri").and_then(Value::as_str),
+                            Some(caller_uri.as_str())
+                        );
+                        assert_eq!(
+                            locations[0].pointer("/range/start/line").and_then(Value::as_u64),
+                            Some(1)
+                        );
+                        assert!(matches!(
+                            locations[0].pointer("/range/end/line").and_then(Value::as_u64),
+                            Some(1 | 4 | 5)
+                        ));
+                    }
+                } else {
+                    assert_qualified_fallback_location(
+                        &declaration,
+                        &caller_uri,
+                        declaration_line as u64,
+                    );
+                }
+                match case {
+                    "constant" => {
+                        for (line, character) in [(2, 10), (3, 2)] {
+                            let call =
+                                qualified_fallback_request(&server, &caller_uri, line, character)?;
+                            assert_qualified_fallback_start(&call, &[0, 13]);
+                            assert_qualified_fallback_location(&call, &caller_uri, 1);
+                        }
+                    }
+                    _ if case.starts_with("label") => {
+                        let label = qualified_fallback_request(&server, &caller_uri, 1, 7)?;
+                        assert_qualified_fallback_location(&label, &caller_uri, 2);
+                        assert_qualified_fallback_start(&label, &[0]);
+                    }
+                    "attribute" => {
+                        // Qualified variables in Moo's Class package have a
+                        // pre-existing same-file resolver gap: no candidate
+                        // reaches this guard. Keep its supported bare control;
+                        // prove qualified variable retention independently below.
+                        let bare_offset = caller.rfind("$kept;").ok_or("bare Moo variable")? + 3;
+                        let bare = model
+                            .definition_at(bare_offset)
+                            .ok_or("supported bare Moo variable premise")?;
+                        assert_eq!(bare.qualified_name, "Caller::kept");
+                        let variable = qualified_fallback_request(&server, &caller_uri, 5, 3)?;
+                        assert_qualified_fallback_start(&variable, &[4]);
+                        assert_qualified_fallback_location(&variable, &caller_uri, 3);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        // Use an ordinary Package for the qualified-variable preservation
+        // contract. Moo upgrades its package to Class, which the unchanged
+        // same-file qualified resolver cannot search when the index is stale.
+        let variables = "package Caller;\nour $kept = 7;\n$Caller::kept;\n$kept;\n";
+        let uri = "file:///workspace/qualified-ordinary-variables.pl";
+        let ast = Arc::new(Parser::new(variables).parse()?);
+        let model = crate::semantic::SemanticModel::build(&ast, variables);
+        let mut parent_map = ParentMap::default();
+        crate::declaration::DeclarationProvider::build_parent_map(&ast, &mut parent_map, None);
+        let provider = crate::declaration::DeclarationProvider::new(
+            Arc::clone(&ast),
+            variables.to_string(),
+            uri.to_string(),
+        )
+        .with_parent_map(&parent_map)
+        .with_doc_version(1);
+        let qualified_offset = variables.find("$Caller::kept").ok_or("qualified variable")? + 11;
+        let bare_offset = variables.rfind("$kept;").ok_or("bare variable")? + 3;
+        assert!(
+            provider
+                .find_declaration(qualified_offset, 1)
+                .is_none_or(|locations| locations.is_empty()),
+            "qualified ordinary variable must reach the semantic fallback when indexing is unavailable"
+        );
+        assert!(
+            provider
+                .find_declaration(bare_offset, 1)
+                .is_some_and(|locations| !locations.is_empty()),
+            "source-built bare variable provider premise"
+        );
+        for offset in [qualified_offset, bare_offset] {
+            let definition =
+                model.definition_at(offset).ok_or("source-built ordinary variable definition")?;
+            assert_eq!(definition.kind, SymbolKind::scalar());
+            assert_eq!(definition.qualified_name, "Caller::kept");
+            assert_eq!(
+                variables.get(definition.location.start..definition.location.end),
+                Some("$kept")
+            );
+            assert!(same_file_definition_matches_qualification(
+                variables, offset, definition, &ast
+            ));
+        }
+        let server = LspServer::new();
+        let unrelated_uri = "file:///workspace/ordinary-variable-unrelated.pl";
+        for (file, text) in
+            [(uri, variables), (unrelated_uri, "package Unrelated;\nsub helper {}\n")]
+        {
+            server.test_apply_did_open(file, text, 1)?;
+            let generation =
+                server.test_document_generation(file).ok_or("variable open generation")?;
+            server.test_index_live_file(file, text, generation).map_err(std::io::Error::other)?;
+        }
+        server.test_simulate_indexing_complete();
+        for state in ["fresh", "degraded", "stale"] {
+            if state == "degraded" {
+                server
+                    .index_coordinator
+                    .as_ref()
+                    .ok_or("variable coordinator")?
+                    .transition_to_degraded(DegradationReason::ScanTimeout { elapsed_ms: 123 });
+            } else if state == "stale" {
+                server
+                    .test_replace_document_without_index(
+                        unrelated_uri,
+                        "package Unrelated;\nsub renamed {}\n",
+                        2,
+                    )
+                    .map_err(std::io::Error::other)?;
+            }
+            assert_eq!(server.workspace_index_stale_for_any_open_document(), state == "stale");
+            for (line, character) in [(2, 11), (3, 3)] {
+                let variable = qualified_fallback_request(&server, uri, line, character)?;
+                assert_qualified_fallback_location(&variable, uri, 1);
+                assert_qualified_fallback_start(&variable, &[4]);
+            }
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn qualified_definition_fallback_refuses_wrong_package_after_scan_timeout()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use perl_workspace::workspace_index::{DegradationReason, IndexState};
+        let server = LspServer::new();
+        let caller_uri = "file:///workspace/Caller.pm";
+        let caller = "package Caller;\nsub compute_0 { return 1; }\nOther::compute_0();\ncompute_0();\nCaller::compute_0();\n";
+        server.test_apply_did_open(caller_uri, caller, 1)?;
+        let generation = server.test_document_generation(caller_uri).ok_or("caller generation")?;
+        server
+            .test_index_live_file(caller_uri, caller, generation)
+            .map_err(std::io::Error::other)?;
+        let coordinator = server.index_coordinator.as_ref().ok_or("workspace coordinator")?;
+        coordinator.transition_to_degraded(DegradationReason::ScanTimeout { elapsed_ms: 123 });
+        assert!(matches!(
+            coordinator.state(),
+            IndexState::Degraded { reason: DegradationReason::ScanTimeout { .. }, .. }
+        ));
+        assert!(!server.workspace_index_stale_for_any_open_document());
+        let missing = qualified_fallback_request(&server, caller_uri, 2, 9)?;
+        assert!(
+            missing.as_ref().is_some_and(|value| value.is_null() || value.as_array().is_some_and(Vec::is_empty)),
+            "missing Other must yield no guessed Caller location: {missing:?}"
+        );
+        assert_qualified_fallback_location(
+            &qualified_fallback_request(&server, caller_uri, 3, 2)?,
+            caller_uri,
+            1,
+        );
+        assert_qualified_fallback_location(
+            &qualified_fallback_request(&server, caller_uri, 4, 10)?,
+            caller_uri,
+            1,
+        );
+        Ok(())
+    }
+
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn qualified_definition_fallback_refuses_stale_target_and_recovers_exact_location()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        let caller_uri = "file:///workspace/Caller.pm";
+        let target_uri = "file:///workspace/Other.pm";
+        let unrelated_uri = "file:///workspace/Unrelated.pm";
+        let caller = "package Caller;\nsub compute_0 { return 1; }\nOther::compute_0();\ncompute_0();\nCaller::compute_0();\n";
+        let target = "package Other;\nsub compute_0 { return 2; }\n1;\n";
+        let unrelated = "package Unrelated;\nsub helper {}\n";
+        for (uri, text) in [(caller_uri, caller), (target_uri, target), (unrelated_uri, unrelated)]
+        {
+            server.test_apply_did_open(uri, text, 1)?;
+            let generation = server.test_document_generation(uri).ok_or("open generation")?;
+            server.test_index_live_file(uri, text, generation).map_err(std::io::Error::other)?;
+        }
+        server.test_simulate_indexing_complete();
+        assert!(!server.workspace_index_stale_for_any_open_document());
+        assert_qualified_fallback_location(
+            &qualified_fallback_request(&server, caller_uri, 2, 9)?,
+            target_uri,
+            1,
+        );
+        let updated = "package Unrelated;\nsub renamed {}\n";
+        server
+            .test_replace_document_without_index(unrelated_uri, updated, 2)
+            .map_err(std::io::Error::other)?;
+        assert!(
+            server.workspace_index_stale_for_any_open_document(),
+            "unrelated buffer must expose the stale fallback"
+        );
+        let stale = qualified_fallback_request(&server, caller_uri, 2, 9)?;
+        assert!(
+            stale.as_ref().is_some_and(|value| value.is_null() || value.as_array().is_some_and(Vec::is_empty)),
+            "an unavailable fresh target must not be replaced by Caller: {stale:?}"
+        );
+        assert_qualified_fallback_location(
+            &qualified_fallback_request(&server, caller_uri, 3, 2)?,
+            caller_uri,
+            1,
+        );
+        assert_qualified_fallback_location(
+            &qualified_fallback_request(&server, caller_uri, 4, 10)?,
+            caller_uri,
+            1,
+        );
+        let generation =
+            server.test_document_generation(unrelated_uri).ok_or("updated generation")?;
+        server
+            .test_index_live_file(unrelated_uri, updated, generation)
+            .map_err(std::io::Error::other)?;
+        assert!(!server.workspace_index_stale_for_any_open_document());
+        assert_qualified_fallback_location(
+            &qualified_fallback_request(&server, caller_uri, 2, 9)?,
+            target_uri,
+            1,
+        );
+        Ok(())
+    }
+
+    /// #17252 review (PR #17280): the same-file validator must read an
+    /// explicitly qualified declaration name with the FINAL `::` as the
+    /// package boundary — `sub Scale03::Mod00::helper` declares
+    /// `Scale03::Mod00`, not `Scale03`.
+    #[test]
+    fn same_file_answer_package_matches_reads_final_qualifier() {
+        // Explicitly qualified declaration, requested package matches.
+        assert!(same_file_answer_package_matches(
+            Some("Scale03::Mod00::helper {\n    9;\n}"),
+            "Scale00::Mod00",
+            "Scale03::Mod00",
+        ));
+        // A first-`::` split would yield "Scale03" and wrongly reject.
+        assert!(same_file_answer_package_matches(
+            Some("Scale03::Mod00::helper { 9 }"),
+            "Scale00::Mod00",
+            "Scale03::Mod00",
+        ));
+        // Explicitly qualified declaration for a different package: rejected.
+        assert!(!same_file_answer_package_matches(
+            Some("Other::helper { 1 }"),
+            "Scale00::Mod00",
+            "Scale03::Mod00",
+        ));
+        // Bare declaration resolves against the ambient package.
+        assert!(same_file_answer_package_matches(
+            Some("helper { 1 }"),
+            "Scale03::Mod00",
+            "Scale03::Mod00"
+        ));
+        assert!(!same_file_answer_package_matches(
+            Some("helper { 1 }"),
+            "Scale00::Mod00",
+            "Scale03::Mod00"
+        ));
+        // Unreadable text falls back to the ambient comparison.
+        assert!(same_file_answer_package_matches(None, "Scale03::Mod00", "Scale03::Mod00"));
+        assert!(!same_file_answer_package_matches(None, "Scale00::Mod00", "Scale03::Mod00"));
+    }
 
     fn serde_freshness_spelling(variant: ProviderDecisionFreshness) -> Option<String> {
         serde_json::to_value(variant).ok().and_then(|value| value.as_str().map(str::to_owned))

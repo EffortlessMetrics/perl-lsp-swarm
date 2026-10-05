@@ -279,9 +279,35 @@ impl TransportArgs {
     }
 }
 
+/// Hand-written usage block for clap's error rendering (#17261).
+///
+/// This is the same 7-line block `help_text()` prints after `Usage: `, minus
+/// that prefix (clap's error template supplies `Usage: ` itself). It names the
+/// `--check` file operands explicitly, so conflict errors for `--check` keep
+/// their operands while conflicts for actions without positionals
+/// (`--ripr-facts`, `--doctor`, …) no longer inherit an invented `<FILES>...`.
+/// `override_usage` is the documented clap API for error usage; `hide` on
+/// `files` removes the positional from help, not from error usage, so it
+/// cannot carry this fix across clap versions.
+const CLI_OVERRIDE_USAGE: &str = concat!(
+    "perllsp [options]\n",
+    "       perllsp --check <file.pl> [file2.pm ...]\n",
+    "       perllsp --check-project [dir]\n",
+    "       perllsp --doctor [dir]\n",
+    "       perllsp --doctor --external-tools\n",
+    "       perllsp --doctor --critic-compatibility\n",
+    "       perllsp --doctor --dev-environment",
+);
+
 /// Command line arguments for the Perl LSP binary.
 #[derive(Parser, Debug, Clone)]
-#[command(name = "perl-lsp", version, about = "Perl Language Server", long_about = None)]
+#[command(
+    name = "perl-lsp",
+    version,
+    about = "Perl Language Server",
+    long_about = None,
+    override_usage = CLI_OVERRIDE_USAGE
+)]
 pub struct LspArgs {
     /// Transport configuration (stdio or socket).
     #[command(flatten)]
@@ -404,6 +430,14 @@ pub struct LspArgs {
     #[arg(long, value_name = "OUT", default_value = "target/ripr/reports/perl-facts.json")]
     pub ripr_out: String,
 
+    /// Unified-diff file feeding `changes[]` (#17152). Read relative to the
+    /// working directory, like `--diff` on the `perl-ripr-facts` binary.
+    /// Absent = no-diff packet (`changes[]` empty plus `no-diff-supplied`).
+    /// Requires `--ripr-facts`: without it the flag would fall through to
+    /// `Run` and start the server while silently ignoring the diff.
+    #[arg(long, value_name = "DIFF", requires = "ripr_facts")]
+    pub ripr_diff: Option<String>,
+
     /// Set feature profile
     #[arg(long)]
     pub feature_profile: Option<String>,
@@ -429,7 +463,14 @@ pub struct LspArgs {
     pub file_watchers: Option<bool>,
 
     /// Files to check (used with --check)
-    #[arg(trailing_var_arg = true, requires = "check")]
+    ///
+    /// Hidden from clap's auto-help (#17261): `--help` renders the hand
+    /// `help_text()`, which already documents
+    /// `perllsp --check <file.pl> [file2.pm ...]`, so the auto-help entry is
+    /// redundant. Conflict-error usage is owned by `override_usage` on the
+    /// `Command`, not by this flag — `hide` removes the positional from help,
+    /// not from error usage — and parsing is unchanged.
+    #[arg(trailing_var_arg = true, requires = "check", hide = true)]
     pub files: Vec<String>,
 }
 
@@ -548,6 +589,9 @@ pub enum LaunchAction {
         fact_classes: String,
         /// Output path (repo-relative; e.g. `target/ripr/reports/perl-facts.json`).
         out: String,
+        /// Unified-diff file feeding `changes[]` (#17152); `None` = no-diff
+        /// packet. Read by the dispatcher, like the binary's `--diff`.
+        diff_path: Option<String>,
     },
     /// Print CLI help output.
     Help,
@@ -662,6 +706,11 @@ pub enum LaunchParseError {
         /// Raw token from CLI.
         raw_mode: String,
     },
+    /// Trailing positionals reached an action that never reads them.
+    UnexpectedPositionals {
+        /// The junk tokens, verbatim.
+        tokens: Vec<String>,
+    },
 }
 
 impl fmt::Display for LaunchParseError {
@@ -703,6 +752,14 @@ impl fmt::Display for LaunchParseError {
             Self::InvalidDiagnosticMode { raw_mode } => {
                 write!(f, "Invalid diagnostic mode: {raw_mode}. Supported: normal, syntax-only")
             }
+            Self::UnexpectedPositionals { tokens } => {
+                let quoted =
+                    tokens.iter().map(|token| format!("'{token}'")).collect::<Vec<_>>().join(", ");
+                write!(
+                    f,
+                    "Unexpected positional arguments: {quoted}. Only --check accepts file paths."
+                )
+            }
         }
     }
 }
@@ -724,7 +781,8 @@ impl perl_parser_core::ErrorClass for LaunchParseError {
             | Self::InvalidShell { .. }
             | Self::InvalidDiagnosticDebounceMs { .. }
             | Self::InvalidRuntimeMode { .. }
-            | Self::InvalidDiagnosticMode { .. } => perl_parser_core::ErrorCategory::UserError,
+            | Self::InvalidDiagnosticMode { .. }
+            | Self::UnexpectedPositionals { .. } => perl_parser_core::ErrorCategory::UserError,
         }
     }
 }
@@ -812,10 +870,26 @@ where
                 let head = parsed_args.ripr_head.clone();
                 let fact_classes = parsed_args.ripr_fact_classes.clone();
                 let out = parsed_args.ripr_out.clone();
-                LaunchAction::RiprFacts { schema, root, base, head, fact_classes, out }
+                let diff_path = parsed_args.ripr_diff.clone();
+                LaunchAction::RiprFacts { schema, root, base, head, fact_classes, out, diff_path }
             } else {
                 LaunchAction::Run
             };
+
+            // Fail closed on trailing positionals no action will read (#17262):
+            // only `Check` consumes `files`, and clap's `requires = "check"`
+            // does not reliably reject junk on conflicting actions
+            // (`--ripr-facts EXTRA` parsed Ok and the packet silently dropped
+            // the token). Key on the RESOLVED action, not the parsed --check
+            // flag: health/info win over --check in dispatch yet neither
+            // conflicts with it, so `--health --check file.pl` resolves Health
+            // and would silently drop the file. This also covers any future
+            // flag/action skew, not just health/info.
+            if action != LaunchAction::Check && !parsed_args.files.is_empty() {
+                return Err(LaunchParseError::UnexpectedPositionals {
+                    tokens: parsed_args.files.clone(),
+                });
+            }
 
             Ok(LaunchPlan { action, config, files: parsed_args.files })
         }
@@ -1020,13 +1094,9 @@ pub fn help_text() -> String {
     let mut out = String::with_capacity(1024);
     out.push_str("Perl Language Server\n");
     out.push('\n');
-    out.push_str("Usage: perllsp [options]\n");
-    out.push_str("       perllsp --check <file.pl> [file2.pm ...]\n");
-    out.push_str("       perllsp --check-project [dir]\n");
-    out.push_str("       perllsp --doctor [dir]\n");
-    out.push_str("       perllsp --doctor --external-tools\n");
-    out.push_str("       perllsp --doctor --critic-compatibility\n");
-    out.push_str("       perllsp --doctor --dev-environment\n");
+    out.push_str("Usage: ");
+    out.push_str(CLI_OVERRIDE_USAGE);
+    out.push('\n');
     out.push('\n');
     out.push_str("Server options:\n");
     out.push_str("  --stdio              Use stdio for communication (default)\n");
@@ -1113,6 +1183,9 @@ pub fn help_text() -> String {
     out.push_str("                       Comma-separated fact classes to emit (default: all)\n");
     out.push_str(
         "  --ripr-out <path>    Output path (default: target/ripr/reports/perl-facts.json)\n",
+    );
+    out.push_str(
+        "  --ripr-diff <file>   Unified-diff file feeding changes[] (absent = no-diff packet)\n",
     );
     out.push('\n');
     out.push_str("Checking commands (native vs real Perl):\n");
@@ -1207,7 +1280,7 @@ const BASH_COMPLETION: &str = r#"_perl_lsp() {
     COMPREPLY=()
     cur="${COMP_WORDS[COMP_CWORD]}"
     prev="${COMP_WORDS[COMP_CWORD-1]}"
-    opts="--stdio --socket --port --log --health --info --check --check-project --doctor --external-tools --critic-compatibility --dev-environment --json --version --features-json --identity --identity-json --perltidy-compat-report --perlcritic-compat-report --feature-profile --completion --help --runtime-mode --diagnostic-mode --diagnostic-debounce-ms --eager-workspace-indexing --file-watchers --ripr-facts --ripr-schema --ripr-root --ripr-base --ripr-head --ripr-fact-classes --ripr-out"
+    opts="--stdio --socket --port --log --health --info --check --check-project --doctor --external-tools --critic-compatibility --dev-environment --json --version --features-json --identity --identity-json --perltidy-compat-report --perlcritic-compat-report --feature-profile --completion --help --runtime-mode --diagnostic-mode --diagnostic-debounce-ms --eager-workspace-indexing --file-watchers --ripr-facts --ripr-schema --ripr-root --ripr-base --ripr-head --ripr-fact-classes --ripr-out --ripr-diff"
 
     case "${prev}" in
         --port)
@@ -1233,7 +1306,7 @@ const BASH_COMPLETION: &str = r#"_perl_lsp() {
             COMPREPLY=( $(compgen -d -- "${cur}") )
             return 0
             ;;
-        --ripr-out)
+        --ripr-out|--ripr-diff)
             COMPREPLY=( $(compgen -f -- "${cur}") )
             return 0
             ;;
@@ -1292,6 +1365,7 @@ _perl-lsp() {
         '--ripr-head[Head git ref]:ref:' \
         '--ripr-fact-classes[Fact classes filter]:classes:' \
         '--ripr-out[Output path]:path:_files' \
+        '--ripr-diff[Unified diff file]:path:_files' \
         '--help[Show help message]' \
         '*:file:_files -g "*.{pl,pm,t}"'
 }
@@ -1330,6 +1404,7 @@ complete -c perl-lsp -l ripr-base -x -d 'Base git ref recorded in the packet'
 complete -c perl-lsp -l ripr-head -x -d 'Head git ref recorded in the packet'
 complete -c perl-lsp -l ripr-fact-classes -x -d 'Fact classes filter'
 complete -c perl-lsp -l ripr-out -r -F -d 'Output path'
+complete -c perl-lsp -l ripr-diff -r -F -d 'Unified diff file'
 complete -c perl-lsp -l help -d 'Show help message'
 "#;
 
@@ -1370,6 +1445,7 @@ const POWERSHELL_COMPLETION: &str = r#"Register-ArgumentCompleter -Native -Comma
         [System.Management.Automation.CompletionResult]::new('--ripr-head', '--ripr-head', 'ParameterName', 'Head git ref')
         [System.Management.Automation.CompletionResult]::new('--ripr-fact-classes', '--ripr-fact-classes', 'ParameterName', 'Fact classes filter')
         [System.Management.Automation.CompletionResult]::new('--ripr-out', '--ripr-out', 'ParameterName', 'Output path')
+        [System.Management.Automation.CompletionResult]::new('--ripr-diff', '--ripr-diff', 'ParameterName', 'Unified diff file')
         [System.Management.Automation.CompletionResult]::new('--help', '--help', 'ParameterName', 'Show help message')
     )
 
@@ -2318,6 +2394,138 @@ mod tests {
     fn parse_doctor_conflicts_with_check() {
         let result = parse_args(["perl-lsp", "--doctor", "--check", "script.pl"]);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn ripr_facts_threads_optional_diff_path() {
+        // `--ripr-diff <file>` must land on the action (#17152); absent, the
+        // action carries None and dispatch emits the no-diff packet.
+        let plan = must(parse_args(["perl-lsp", "--ripr-facts", "--ripr-diff", "change.diff"]));
+        match plan.action {
+            LaunchAction::RiprFacts { diff_path, .. } => {
+                assert_eq!(diff_path.as_deref(), Some("change.diff"));
+            }
+            other => panic!("expected RiprFacts action, got {other:?}"),
+        }
+        let plan = must(parse_args(["perl-lsp", "--ripr-facts"]));
+        match plan.action {
+            LaunchAction::RiprFacts { diff_path, .. } => {
+                assert_eq!(diff_path, None);
+            }
+            other => panic!("expected RiprFacts action, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn ripr_diff_requires_ripr_facts() {
+        // Bare `--ripr-diff` used to fall through to `Run` and start the
+        // server, silently ignoring the diff (#17330 review).
+        let error = must_err(parse_args(["perl-lsp", "--ripr-diff", "change.diff"]));
+        let rendered = error.to_string();
+        assert!(
+            rendered.contains("--ripr-facts"),
+            "rejection must name the required --ripr-facts flag; got:\n{rendered}"
+        );
+    }
+
+    #[test]
+    fn ripr_facts_rejects_trailing_positionals() {
+        // `--ripr-facts EXTRA` used to exit 0 with a packet byte-identical to
+        // the no-junk run: clap's `requires = "check"` never fired and the
+        // dispatch arm never read the token (#17262).
+        let error = must_err(parse_args(["perl-lsp", "--ripr-facts", "EXTRA"]));
+        let rendered = error.to_string();
+        assert!(
+            rendered.contains("'EXTRA'") && rendered.contains("--check"),
+            "rejection must name the junk token and the only action taking files; got:\n{rendered}"
+        );
+    }
+
+    #[test]
+    fn conflict_usage_names_no_positional_files() {
+        // `--ripr-facts --check x` must still exit 1 with the conflict error,
+        // but the usage line must not invent `<FILES>...` syntax for
+        // `--ripr-facts` (#17261).
+        let error = must_err(parse_args(["perl-lsp", "--ripr-facts", "--check", "script.pl"]));
+        let rendered = error.to_string();
+        assert!(
+            rendered.contains("cannot be used with"),
+            "conflict error must survive; got:\n{rendered}"
+        );
+        assert!(
+            !rendered.contains("FILES"),
+            "conflict usage must name no positional FILES; got:\n{rendered}"
+        );
+    }
+
+    #[test]
+    fn non_check_actions_reject_trailing_positionals() {
+        // Bare and server-mode junk: bare EXTRA was already rejected by clap's
+        // `requires`; --info/--health paths must fail closed too.
+        assert!(parse_args(["perl-lsp", "EXTRA"]).is_err());
+        assert!(parse_args(["perl-lsp", "--info", "EXTRA"]).is_err());
+        assert!(parse_args(["perl-lsp", "--socket", "--port", "9999", "EXTRA"]).is_err());
+    }
+
+    #[test]
+    fn check_and_doctor_positional_flows_are_untouched() {
+        // --check consumes trailing files; --doctor takes its dir as an
+        // option value (files stays empty) — neither may trip the rejection.
+        let plan = must(parse_args(["perl-lsp", "--check", "script.pl"]));
+        assert_eq!(plan.files, vec!["script.pl".to_string()]);
+        let plan = must(parse_args(["perl-lsp", "--doctor", "app/"]));
+        assert_eq!(plan.action, LaunchAction::Doctor { dir: "app/".to_string(), json: false });
+    }
+
+    #[test]
+    fn health_check_combo_rejects_ignored_files() {
+        // Health/info win dispatch over --check yet neither conflicts with it,
+        // so `--health --check file.pl` resolves Health — keying the rejection
+        // on the parsed --check flag would silently drop the file (#17262).
+        for combo in [
+            ["perl-lsp", "--health", "--check", "file.pl"].as_slice(),
+            ["perl-lsp", "--info", "--check", "file.pl"].as_slice(),
+        ] {
+            let error = must_err(parse_args(combo));
+            let rendered = error.to_string();
+            assert!(
+                rendered.contains("'file.pl'"),
+                "rejection must name the ignored file; got:\n{rendered}"
+            );
+        }
+    }
+
+    #[test]
+    fn health_check_combo_without_files_still_dispatches_health() {
+        // No files, no rejection: the flag combo keeps its historical dispatch.
+        let plan = must(parse_args(["perl-lsp", "--health", "--check"]));
+        assert_eq!(plan.action, LaunchAction::Health);
+    }
+
+    #[test]
+    fn check_still_accepts_trailing_files_when_hidden() {
+        // `hide` changes rendering only — the `--check` file flow is untouched.
+        let plan = must(parse_args(["perl-lsp", "--check", "script.pl", "other.pm"]));
+        assert_eq!(plan.files, vec!["script.pl".to_string(), "other.pm".to_string()]);
+    }
+
+    #[test]
+    fn check_conflict_usage_shows_file_operands() {
+        // `--check --doctor` is a genuine conflict, and its error usage must
+        // name the `--check` file operands (#17261): hiding the positional
+        // stripped them from legitimate `--check` errors too. `override_usage`
+        // restores them while keeping bogus `<FILES>...` out of actions that
+        // take no positionals.
+        let error = must_err(parse_args(["perl-lsp", "--check", "--doctor"]));
+        let rendered = error.to_string();
+        assert!(
+            rendered.contains("cannot be used with"),
+            "conflict error must survive; got:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("perllsp --check <file.pl> [file2.pm ...]"),
+            "check conflict usage must name the file operands; got:\n{rendered}"
+        );
     }
 
     #[test]
