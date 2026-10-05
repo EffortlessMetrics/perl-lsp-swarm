@@ -66,14 +66,16 @@ consume are produced separately by the `perl-ripr-facts` crate as a
 `ripr-perl-facts-v1` packet:
 
 - `perllsp --ripr-facts [--ripr-schema <ver> --ripr-root <path> --ripr-base
-  <ref> --ripr-head <ref> --ripr-fact-classes <list> --ripr-out <path>]` —
-  batch export flag; records base/head opaquely and exits without starting
-  the LSP server. This path never derives a diff, so when `changes` is
-  requested `changes[]` is always empty with a `no-diff-supplied` limitation.
+  <ref> --ripr-head <ref> --ripr-fact-classes <list> --ripr-out <path>
+  --ripr-diff <file>]` — batch export flag; records base/head opaquely and
+  exits without starting the LSP server. Base/head never derive a diff, but
+  `--ripr-diff` accepts caller-supplied diff text for diff-owned `changes[]`
+  (#17152); without it `changes[]` is empty with a `no-diff-supplied`
+  limitation.
 - `perl-ripr-facts ripr-facts --schema <ver> --root <path> [--base <ref>]
   [--head <ref>] [--fact-classes <list>] [--diff <cwd-relative-diff>] --out
-  <out>` — standalone binary; the only CLI path that accepts caller-supplied
-  diff text for diff-owned `changes[]`.
+  <out>` — standalone binary; accepts caller-supplied diff text for
+  diff-owned `changes[]`, like `perllsp --ripr-diff`.
 - `build_ripr_facts_packet(&RiprFactsRequest)` — structured batch API; reads
   workspace files but performs no output writes and spawns no processes.
   Library and managed-producer callers can also supply diff text directly via
