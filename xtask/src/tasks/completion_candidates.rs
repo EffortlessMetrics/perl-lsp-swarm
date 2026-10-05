@@ -505,9 +505,9 @@ impl RankDisposition {
 /// which is the documented default for unmigrated rows. Inventing a `Forbidden*`
 /// variant to mirror the sibling shape would either forbid a state the ledger
 /// currently uses as its honest default or rename a real disposition, neither
-/// of which is the change `#16085` asked for. The consumer-side gate owned by
-/// `#10230` is what blocks `Complete` while any reached row is
-/// `legacy_unreported`; that block lives downstream, not here.
+/// of which is the change `#16085` asked for. `#10230` owns the planned
+/// consumer-side gate, but source-completeness data does not reach request
+/// outcomes yet. Until propagation changes, no request can earn `Complete`.
 ///
 /// This decision is pinned by `deliberately_accepts_every_completeness_variant`.
 /// The test derives its inventory from the enum itself, so adding a variant
