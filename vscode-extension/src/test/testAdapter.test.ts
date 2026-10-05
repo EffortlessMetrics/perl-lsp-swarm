@@ -323,6 +323,8 @@ describe('bounded prove process execution', () => {
       const resolved = resolveProveCommand(['-v', '--nocolor', '-']);
       expect(resolved).toMatchObject({ command: '', args: [], shell: false });
       expect(resolved.error).toContain('matching Perl/prove installation');
+      expect(resolved.error).toContain('Test::Harness');
+      expect(resolved.error).toContain('PATH');
     } finally {
       childProcess.execFileSync = original;
     }
@@ -343,6 +345,8 @@ describe('bounded prove process execution', () => {
       expect(resolved.command).toBe('');
       expect(resolved.args).toEqual([]);
       expect(resolved.error).toContain('matching Perl/prove installation');
+      expect(resolved.error).toContain('Test::Harness');
+      expect(resolved.error).toContain('PATH');
     } finally {
       childProcess.execFileSync = original;
     }
@@ -873,5 +877,60 @@ describe('file-level failure explanation', () => {
     expect(describeFileFailure(null, { total: 0, failed: 0, bailOut: null })).toBe(
       'No test results were reported; the test process was terminated by a signal.',
     );
+  });
+});
+
+describe('bounded prove spawn remediation', () => {
+  async function spawnFailure(code: string, message: string) {
+    const child = fakeChildProcess();
+    try {
+      const result = runBoundedProcess('prove', ['-v', 'selected.t'], {
+        shell: false,
+        timeoutMs: 5_000,
+        maxOutputBytes: 32,
+        terminationGraceMs: 25,
+        spawnProcess: (() => child) as never,
+      });
+      child.emit('error', Object.assign(new Error(message), { code }));
+      return await result;
+    } finally {
+      child.removeAllListeners();
+    }
+  }
+
+  test('missing prove names Test::Harness installation and PATH', async () => {
+    const result = await spawnFailure('ENOENT', 'spawn prove ENOENT');
+    expect(result.outcome).toBe('spawn_error');
+    expect(result.diagnostic).toContain('Test::Harness');
+    expect(result.diagnostic).toContain('PATH');
+    expect(result.diagnostic).toContain('spawn prove ENOENT');
+  });
+
+  test('permission refusal does not claim that prove is missing', async () => {
+    const result = await spawnFailure('EACCES', 'permission denied');
+    expect(result.outcome).toBe('spawn_error');
+    expect(result.diagnostic).toContain('permissions');
+    expect(result.diagnostic).toContain('permission denied');
+    expect(result.diagnostic).not.toContain('Install Test::Harness');
+  });
+
+  test('a completed fake process has no installation remediation', async () => {
+    const child = fakeChildProcess();
+    try {
+      const pending = runBoundedProcess('prove', ['-v', 'selected.t'], {
+        shell: false,
+        timeoutMs: 5_000,
+        maxOutputBytes: 32,
+        terminationGraceMs: 25,
+        spawnProcess: (() => child) as never,
+      });
+      child.emit('exit', 0, null);
+      child.emit('close', 0, null);
+      const result = await pending;
+      expect(result.outcome).toBe('completed');
+      expect(result.diagnostic).toBeUndefined();
+    } finally {
+      child.removeAllListeners();
+    }
   });
 });

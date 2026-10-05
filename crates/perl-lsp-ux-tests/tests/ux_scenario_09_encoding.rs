@@ -117,3 +117,63 @@ fn scenario_09_latin1_extended_chars_in_comment() -> Result<(), String> {
     harness.assert_no_crash();
     Ok(())
 }
+
+fn has_required_static_symbol(symbols: &[serde_json::Value], expected: &str) -> bool {
+    symbols.iter().any(|symbol| {
+        symbol.get("name").and_then(serde_json::Value::as_str) == Some(expected)
+            || symbol
+                .get("children")
+                .and_then(serde_json::Value::as_array)
+                .is_some_and(|children| has_required_static_symbol(children, expected))
+    })
+}
+
+#[test]
+fn static_symbol_control_rejects_empty_unrelated_and_accepts_named_symbol() {
+    use serde_json::json;
+    assert!(!has_required_static_symbol(&[], "decode_payload"));
+    assert!(!has_required_static_symbol(&[json!({"name":"unrelated"})], "decode_payload"));
+    assert!(!has_required_static_symbol(&[json!({"name":null})], "decode_payload"));
+    assert!(has_required_static_symbol(&[json!({"name":"decode_payload"})], "decode_payload"));
+    assert!(has_required_static_symbol(
+        &[json!({"name":"package","children":[{"name":"decode_payload"}]})],
+        "decode_payload"
+    ));
+}
+
+#[test]
+fn scenario_09_static_symbol_survives_encoding_and_extension_boundary() {
+    use perl_lsp_ux_tests::{UxCiTier, UxComponent, missing_binary_skip, run_ux_scenario};
+    run_ux_scenario(
+        "encoding_and_bom_resilience",
+        "ux_scenario_09_encoding.rs",
+        "scenario_09_static_symbol_survives_encoding_and_extension_boundary",
+        UxCiTier::Pr,
+        Some(UxComponent::Infra),
+        |recorder| {
+            if !binary_available() {
+                return Err(missing_binary_skip().into());
+            }
+            let source = concat!(
+                "\u{FEFF}",
+                "#!/usr/bin/env perl\nuse strict;\nuse warnings;\nsub decode_payload { return 42; }\ndecode_payload();\n"
+            );
+            let harness = UxHarness::new(ScenarioConfig::default().with_file("bom.pl", &source))?;
+            harness.open_file("bom.pl", &source)?;
+            let uri = harness.workspace.uri("bom.pl");
+            perl_lsp_ux_tests::wait_with_subject(
+                "static symbol active-document readiness",
+                harness.wait_for_active_document_ready(&uri, std::time::Duration::from_secs(20)),
+            )?;
+            recorder.mark_request_start("static_document_symbol");
+            let symbols = harness.document_symbols("bom.pl")?;
+            recorder.check(
+                "static document exposes decode_payload symbol",
+                has_required_static_symbol(&symbols, "decode_payload"),
+            )?;
+            recorder.mark_first_useful_result("static_document_symbol");
+            harness.assert_no_crash();
+            Ok(())
+        },
+    );
+}

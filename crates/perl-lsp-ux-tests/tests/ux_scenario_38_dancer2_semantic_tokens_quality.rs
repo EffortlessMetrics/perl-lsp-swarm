@@ -519,6 +519,12 @@ fn scenario_38_dancer2_semantic_tokens_quality_receipt() {
                 recorder.mark_request_start(&request_name);
 
                 let report = probe_report(&harness, &fixture_files, probe)?;
+                if !probe.expected_tokens.is_empty() && !probe.category.contains("boundary") {
+                    recorder.check(
+                        "required static probe returns its source-backed known answer",
+                        !report.fallback_or_empty && report.missing_expected_tokens.is_empty(),
+                    )?;
+                }
                 if !report.fallback_or_empty {
                     recorder.mark_first_useful_result(&request_name);
                 }

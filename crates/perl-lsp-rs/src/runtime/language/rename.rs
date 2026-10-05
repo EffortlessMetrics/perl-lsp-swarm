@@ -280,6 +280,12 @@ fn add_qualified_document_rename_edits<F>(
     }
 }
 
+fn invalid_rename_target(summary: &str) -> JsonRpcError {
+    crate::protocol::invalid_params(&format!(
+        "{summary}: textDocument/rename expects newName to be a valid Perl identifier, for example renamed_value; for variables, keep the current sigil or omit it so perl-lsp preserves the existing sigil"
+    ))
+}
+
 impl LspServer {
     #[cfg(feature = "workspace")]
     fn package_rename_pilot_entity_id<Q: SemanticQueries>(
@@ -1096,11 +1102,7 @@ impl LspServer {
         requested_name: &str,
     ) -> Result<String, JsonRpcError> {
         if requested_name.is_empty() {
-            return Err(JsonRpcError {
-                code: -32602,
-                message: "Invalid identifier: empty rename target".to_string(),
-                data: None,
-            });
+            return Err(invalid_rename_target("Invalid identifier: empty rename target"));
         }
 
         let current_sigil =
@@ -1113,14 +1115,10 @@ impl LspServer {
                 let bare_name = if let Some(first) = requested_first {
                     if is_perl_sigil(first) {
                         if first != sigil {
-                            return Err(JsonRpcError {
-                                code: -32602,
-                                message: format!(
-                                    "Invalid identifier: sigil '{}' does not match '{}'",
-                                    first, sigil
-                                ),
-                                data: None,
-                            });
+                            return Err(invalid_rename_target(&format!(
+                                "Invalid identifier: sigil '{}' does not match '{}'",
+                                first, sigil
+                            )));
                         }
                         requested_chars.collect::<String>()
                     } else {
@@ -1131,34 +1129,28 @@ impl LspServer {
                 };
 
                 if !self.is_valid_identifier(&bare_name) {
-                    return Err(JsonRpcError {
-                        code: -32602,
-                        message: format!("Invalid identifier: {}", requested_name),
-                        data: None,
-                    });
+                    return Err(invalid_rename_target(&format!(
+                        "Invalid identifier: {}",
+                        requested_name
+                    )));
                 }
 
                 Ok(format!("{}{}", sigil, bare_name))
             }
             None => {
                 if !self.is_valid_identifier(requested_name) {
-                    return Err(JsonRpcError {
-                        code: -32602,
-                        message: format!("Invalid identifier: {}", requested_name),
-                        data: None,
-                    });
+                    return Err(invalid_rename_target(&format!(
+                        "Invalid identifier: {}",
+                        requested_name
+                    )));
                 }
                 // Non-sigiled targets are subroutine or package names.
                 // Renaming them to a reserved keyword would create a syntax error (`sub if {}`).
                 if is_rename_keyword(requested_name) {
-                    return Err(JsonRpcError {
-                        code: -32602,
-                        message: format!(
-                            "'{}' is a reserved Perl keyword; subroutine names cannot be keywords",
-                            requested_name
-                        ),
-                        data: None,
-                    });
+                    return Err(invalid_rename_target(&format!(
+                        "'{}' is a reserved Perl keyword; subroutine names cannot be keywords",
+                        requested_name
+                    )));
                 }
                 Ok(requested_name.to_string())
             }
@@ -1500,7 +1492,7 @@ impl LspServer {
         let _ = req_uri(validated)?;
         let _ = req_position(validated)?;
         if validated.get("newName").and_then(Value::as_str).is_none() {
-            return Err(crate::protocol::invalid_params("Missing required parameter: newName"));
+            return Err(invalid_rename_target("Missing required parameter: newName"));
         }
 
         if let Some(p) = params
@@ -3645,6 +3637,49 @@ mod tests {
         assert!(LspServer::offset_is_generated_accessor_declaration(text, spaced_accessor_offset));
         assert!(LspServer::offset_is_generated_accessor_declaration(text, wrapped_accessor_offset));
         assert!(!LspServer::offset_is_generated_accessor_declaration(text, hash_offset));
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod merge_sync_rename_guidance_tests {
+    use crate::runtime::LspServer;
+
+    #[test]
+    fn rename_recovery_keeps_identifier_sigil_and_keyword_decisions() -> Result<(), String> {
+        let server = LspServer::new();
+        for (current, requested) in [
+            (Some("$old"), ""),
+            (Some("$old"), "@other"),
+            (Some("$old"), "bad-name"),
+            (None, "bad-name"),
+            (None, "if"),
+        ] {
+            let error = server
+                .normalize_rename_target(current, requested)
+                .err()
+                .ok_or("invalid rename target must fail")?;
+            assert_eq!(error.code, crate::protocol::INVALID_PARAMS);
+            for expected in
+                ["textDocument/rename", "newName", "renamed_value", "current sigil or omit it"]
+            {
+                assert!(error.message.contains(expected), "missing {expected}: {}", error.message);
+            }
+        }
+        for (current, requested, expected) in [
+            (Some("$old"), "renamed_value", "$renamed_value"),
+            (Some("$old"), "$renamed_value", "$renamed_value"),
+            (Some("@old"), "renamed_values", "@renamed_values"),
+            (Some("%old"), "renamed_values", "%renamed_values"),
+            (None, "renamed_value", "renamed_value"),
+        ] {
+            assert_eq!(
+                server
+                    .normalize_rename_target(current, requested)
+                    .map_err(|error| error.to_string())?,
+                expected
+            );
+        }
         Ok(())
     }
 }

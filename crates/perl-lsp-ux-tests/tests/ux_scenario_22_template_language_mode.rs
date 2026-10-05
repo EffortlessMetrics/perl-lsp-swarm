@@ -36,8 +36,8 @@ const TEMPLATE_SOURCE: &str = r#"% my $user = shift;
 % }
 "#;
 
-#[test]
-fn scenario_22_template_in_html_mode_preserves_neighboring_perl_navigation() -> Result<()> {
+fn source_reconciliation_scenario_22_template_in_html_mode_preserves_neighboring_perl_navigation()
+-> Result<()> {
     let harness = UxHarness::new(
         ScenarioConfig::default()
             .with_file("app.pl", APP_SOURCE)
@@ -71,4 +71,30 @@ fn scenario_22_template_in_html_mode_preserves_neighboring_perl_navigation() -> 
 
     harness.assert_no_crash();
     Ok(())
+}
+
+#[test]
+fn scenario_22_template_in_html_mode_preserves_neighboring_perl_navigation() {
+    use perl_lsp_ux_tests::{
+        UxCiTier, UxComponent, UxEvidenceClass, missing_binary_skip,
+        run_ux_scenario_with_evidence_class,
+    };
+    run_ux_scenario_with_evidence_class(
+        "template_language_mode_resilience",
+        "ux_scenario_22_template_language_mode.rs",
+        "scenario_22_template_in_html_mode_preserves_neighboring_perl_navigation",
+        UxCiTier::Pr,
+        Some(UxComponent::GotoDefinition),
+        UxEvidenceClass::SemanticProof,
+        |recorder| {
+            if !binary_available() {
+                return Err(missing_binary_skip().into());
+            }
+            // Preserve source assertions; their helper does not expose an exact timing boundary.
+            source_reconciliation_scenario_22_template_in_html_mode_preserves_neighboring_perl_navigation().map_err(|error| anyhow::anyhow!("{error}"))?;
+            recorder.check("current source assertions for scenario_22_template_in_html_mode_preserves_neighboring_perl_navigation completed successfully", true)?;
+            // Aggregate completion records no request/first-useful timing boundary.
+            Ok(())
+        },
+    );
 }

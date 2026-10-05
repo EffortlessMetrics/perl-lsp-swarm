@@ -1505,7 +1505,7 @@ impl LspServer {
         if let Some(mut action) = params {
             if action.get("title").and_then(Value::as_str).is_none() {
                 return Err(crate::protocol::invalid_params(
-                    "Missing or invalid code action title",
+                    "Missing or invalid code action title: codeAction/resolve expects the CodeAction object returned by textDocument/codeAction; retain its title and any data when retrying",
                 ));
             }
             // The action should already have minimal information
@@ -1549,7 +1549,9 @@ impl LspServer {
             self.enforce_code_action_tag_capabilities(std::slice::from_mut(&mut action));
             Ok(Some(action))
         } else {
-            Err(crate::protocol::invalid_params("Missing code action parameters"))
+            Err(crate::protocol::invalid_params(
+                "Missing code action parameters: codeAction/resolve expects the CodeAction object returned by textDocument/codeAction; retain its title and any data when retrying",
+            ))
         }
     }
 }
@@ -3971,6 +3973,35 @@ my $x = 1 + 2;
             titles.iter().any(|title| title == "Add debug print"),
             "unrelated code actions must still be returned: {titles:?}"
         );
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod merge_sync_resolve_guidance_tests {
+    use crate::runtime::LspServer;
+    use serde_json::json;
+
+    #[test]
+    fn resolve_rejects_missing_shape_and_preserves_valid_returned_objects() -> Result<(), String> {
+        let server = LspServer::new();
+        for params in [None, Some(json!({})), Some(json!([]))] {
+            let error = server
+                .handle_code_action_resolve(params)
+                .err()
+                .ok_or("malformed resolve must fail")?;
+            assert_eq!(error.code, crate::protocol::INVALID_PARAMS);
+            for expected in ["CodeAction object", "textDocument/codeAction", "title", "any data"] {
+                assert!(error.message.contains(expected), "missing {expected}: {}", error.message);
+            }
+        }
+        let object = json!({"title": "Project action", "data": {"opaque": true}});
+        let resolved = server
+            .handle_code_action_resolve(Some(object.clone()))
+            .map_err(|error| error.to_string())?
+            .ok_or("resolved object required")?;
+        assert_eq!(resolved["title"], object["title"]);
+        assert_eq!(resolved["data"], object["data"]);
         Ok(())
     }
 }

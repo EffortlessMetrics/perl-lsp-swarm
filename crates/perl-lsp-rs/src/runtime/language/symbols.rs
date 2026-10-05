@@ -117,6 +117,12 @@ fn pod_section_symbols(source: &str) -> Vec<Value> {
     symbols
 }
 
+fn folding_range_uri_guidance() -> JsonRpcError {
+    invalid_params(
+        "Missing required parameter: textDocument.uri. textDocument/foldingRange expects params.textDocument.uri identifying the document to fold, for example {\"textDocument\":{\"uri\":\"file:///workspace/lib/My/Module.pm\"}}",
+    )
+}
+
 impl LspServer {
     /// Canonical Dancer2 route/hook document symbols (#8928).
     ///
@@ -334,9 +340,11 @@ impl LspServer {
             return Err(crate::protocol::method_not_advertised());
         }
 
-        let params =
-            params.ok_or_else(|| invalid_params("Missing required parameter: textDocument.uri"))?;
-        let uri = req_uri(params)?;
+        let params = params.ok_or_else(folding_range_uri_guidance)?;
+        let uri = req_uri(params).map_err(|mut error| {
+            error.message.push_str("; textDocument/foldingRange expects params.textDocument.uri identifying the document to fold, for example file:///workspace/lib/My/Module.pm");
+            error
+        })?;
         let req_version =
             params["textDocument"]["version"].as_i64().and_then(|n| i32::try_from(n).ok());
         self.ensure_latest(uri, req_version)?;
@@ -1354,6 +1362,53 @@ mod tests {
         assert!(
             !restored_ranges.is_empty(),
             "accepted full replacement must restore current foldingRange: {restored}"
+        );
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod merge_sync_folding_guidance_tests {
+    use crate::runtime::LspServer;
+    use serde_json::json;
+
+    #[test]
+    fn folding_uri_recovery_preserves_the_current_admission_contract() -> Result<(), String> {
+        let server = LspServer::new();
+        let initialized = server
+            .handle_request(crate::protocol::JsonRpcRequest {
+                _jsonrpc: "2.0".into(),
+                id: Some(crate::protocol::JsonRpcId::Integer(1)),
+                method: "initialize".into(),
+                params: Some(json!({"capabilities": {}})),
+            })
+            .ok_or("initialize response required")?;
+        assert!(
+            initialized.error.is_none(),
+            "initialize must succeed before folding admission checks"
+        );
+        assert!(
+            server.advertised_features.lock().folding_range,
+            "folding must be advertised so malformed params exercise INVALID_PARAMS"
+        );
+        for params in [None, Some(json!({})), Some(json!({"textDocument": {"uri": 1}}))] {
+            let error = server
+                .admit_folding_range_request(params.as_ref())
+                .err()
+                .ok_or("malformed folding URI must fail")?;
+            assert_eq!(error.code, crate::protocol::INVALID_PARAMS);
+            for expected in [
+                "textDocument/foldingRange",
+                "params.textDocument.uri",
+                "file:///workspace/lib/My/Module.pm",
+            ] {
+                assert!(error.message.contains(expected), "missing {expected}: {}", error.message);
+            }
+        }
+        let valid = json!({"textDocument": {"uri": "file:///workspace/lib/My/Module.pm"}});
+        assert_eq!(
+            server.admit_folding_range_request(Some(&valid)).map_err(|error| error.to_string())?,
+            "file:///workspace/lib/My/Module.pm"
         );
         Ok(())
     }

@@ -348,12 +348,11 @@ export function runBoundedProcess(
     proc.stdout?.on('data', (chunk: Buffer) => appendOutput('stdout', chunk));
     proc.stderr?.on('data', (chunk: Buffer) => appendOutput('stderr', chunk));
     proc.on('error', (error: Error) => {
-      finish(
-        'spawn_error',
-        null,
-        null,
-        `Failed to run prove: ${error.message}. Is prove installed?`,
-      );
+      const remedy =
+        (error as NodeJS.ErrnoException).code === 'ENOENT'
+          ? 'Install Test::Harness for your Perl installation and ensure prove is on PATH, then retry.'
+          : 'Check the prove executable and its permissions, then retry.';
+      finish('spawn_error', null, null, `Failed to run prove: ${error.message}. ${remedy}`);
     });
     proc.on('exit', () => {
       parentExited = true;
@@ -459,7 +458,7 @@ export function resolveProveCommand(extraArgs: string[]): {
       args: [],
       shell: false,
       error:
-        'A matching Perl/prove installation was not found on PATH; install Perl with prove or configure a supported Perl runtime.',
+        'A matching Perl/prove installation was not found on PATH; install Perl with Test::Harness (which provides prove) and ensure that installation is on PATH, or configure a supported Perl runtime.',
     };
   }
 

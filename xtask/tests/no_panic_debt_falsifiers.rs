@@ -2921,3 +2921,194 @@ mod tests {
         inventory.instruments
     );
 }
+
+#[test]
+fn rustdoc_debt_reaches_the_existing_identity_inventory() {
+    let temp = fixture_root();
+    fs::write(
+        temp.path().join("crates/demo/src/lib.rs"),
+        "#![allow(clippy::unwrap_used, reason = \"#13397 source only\")]\n/// ```rust,ignore\n/// let _ = Some(1).unwrap();\n/// ```\n/// ```text,rust\n/// panic!(\"known\");\n/// ```\n/// ```json\n/// panic!(\"foreign\");\n/// ```\npub fn documented() {}\n",
+    ).expect("write documented source");
+    let inventory = inventory_at(temp.path());
+    let docs: Vec<_> = inventory
+        .rows
+        .iter()
+        .filter(|row| row.kind == "site" && row.entrypoint.starts_with("rustdoc-fence-"))
+        .collect();
+    assert_eq!(docs.len(), 2, "{docs:?}");
+    assert!(docs.iter().all(|row| row.target_kind.as_str() == "doctest"));
+    assert!(
+        docs.iter().all(|row| row.declaration_identity.is_empty()),
+        "source allowance leaked into doctest: {docs:?}"
+    );
+    assert!(docs.iter().all(|row| row.status == DebtStatus::Unowned));
+    assert!(inventory.population.entrypoints.iter().any(|entry| entry.name == "rustdoc-fence-1"));
+}
+
+#[test]
+fn unsupported_doc_input_fails_the_existing_check_instead_of_a_complete_zero() {
+    let temp = fixture_root();
+    fs::write(
+        temp.path().join("crates/demo/src/lib.rs"),
+        "#[doc = include_str!(\"missing.md\")] pub fn documented() {}\n",
+    )
+    .expect("write unsupported documented source");
+    let inventory = inventory_at(temp.path());
+    assert!(!inventory.counts.observation_complete);
+    assert!(
+        inventory
+            .instruments
+            .iter()
+            .any(|item| item.kind == "doc_fence" && item.status == InstrumentStatus::NotProven)
+    );
+    let checked = check_inventory(xtask::no_panic_debt::CheckRequest {
+        root: temp.path(),
+        current: &inventory,
+        artifact: None,
+        baseline: None,
+    })
+    .expect("check inventory");
+    assert!(!checked.ok);
+    assert!(
+        checked
+            .findings
+            .iter()
+            .any(|finding| finding.contains("doc-fence observation is not_proven"))
+    );
+}
+
+#[test]
+fn a_retired_doc_site_cannot_be_credited_absent_after_a_failed_fence_scan() {
+    let temp = fixture_root();
+    let path = temp.path().join("crates/demo/src/lib.rs");
+    fs::write(
+        &path,
+        "/// ```rust\n/// let _ = Some(1).unwrap();\n/// ```\npub fn documented() {}\n",
+    )
+    .expect("write documented source");
+    let observed = inventory_at(temp.path());
+    let row = observed
+        .rows
+        .iter()
+        .find(|row| row.kind == "site" && row.entrypoint.starts_with("rustdoc-fence-"))
+        .expect("documented debt row");
+    write_registry(
+        temp.path(),
+        &serde_json::json!({
+            "schema_version": 1,
+            "sites": [{
+                "path": row.path, "enclosing_test_or_function": row.entrypoint,
+                "macro_family": row.site_family, "normalized_snippet": row.source_identity,
+                "selector_identity": row.selector_identity,
+                "accepted_reason": "#13397 reviewed conversion fixture", "state": "retired"
+            }]
+        })
+        .to_string(),
+    );
+    for replacement in
+        ["/// ```rust\n/// let = ;\n/// ```\npub fn documented() {}\n", "fn not rust {{{"]
+    {
+        fs::write(&path, replacement).expect("write malformed replacement");
+        let current = inventory_at(temp.path());
+        let registry: Vec<_> = current.rows.iter().filter(|row| row.kind == "registry").collect();
+        assert_eq!(registry.len(), 1);
+        assert_eq!(registry[0].status, DebtStatus::InstrumentNotProven);
+        assert_ne!(registry[0].status, DebtStatus::ConvertedAbsent);
+    }
+}
+
+#[test]
+fn included_document_reaches_the_existing_identity_and_input_digest_inventory() {
+    let temp = fixture_root();
+    fs::write(
+        temp.path().join("crates/demo/src/lib.rs"),
+        "#![doc = include_str!(\"../README.md\")]\npub fn documented() {}\n",
+    )
+    .expect("write include source");
+    let readme = temp.path().join("crates/demo/README.md");
+    fs::write(&readme, "# Example\n\n```rust\nlet _ = Some(1).unwrap();\n```\n")
+        .expect("write included document");
+    let observed = inventory_at(temp.path());
+    let docs: Vec<_> =
+        observed.rows.iter().filter(|row| row.entrypoint.starts_with("rustdoc-fence-")).collect();
+    assert_eq!(docs.len(), 1);
+    assert_eq!(docs[0].path, "crates/demo/README.md");
+    assert_eq!(docs[0].status, DebtStatus::Unowned);
+    let original_digest = observed
+        .digests
+        .iter()
+        .find(|digest| digest.path == "crates/demo/README.md")
+        .expect("include digest");
+    fs::write(&readme, "# Example\n\n```rust\npanic!(\"changed\");\n```\n")
+        .expect("change dependency");
+    let changed = inventory_at(temp.path());
+    let changed_digest = changed
+        .digests
+        .iter()
+        .find(|digest| digest.path == "crates/demo/README.md")
+        .expect("changed include digest");
+    assert_ne!(original_digest.sha256, changed_digest.sha256);
+    fs::remove_file(&readme).expect("remove included dependency");
+    let missing = inventory_at(temp.path());
+    let checked = check_inventory(xtask::no_panic_debt::CheckRequest {
+        root: temp.path(),
+        current: &missing,
+        artifact: None,
+        baseline: None,
+    })
+    .expect("check missing dependency");
+    assert!(!checked.ok);
+    assert!(!missing.counts.observation_complete);
+}
+
+#[test]
+fn one_include_consumer_cannot_retire_another_failed_consumer_identity() {
+    let temp = fixture_root();
+    let first = temp.path().join("crates/demo/src/lib.rs");
+    let second = temp.path().join("crates/demo/src/second.rs");
+    let source = "#![doc = include_str!(\"../README.md\")]\npub fn documented() {}\n";
+    fs::write(&first, source).expect("write first consumer");
+    fs::write(&second, source).expect("write second consumer");
+    fs::write(
+        temp.path().join("crates/demo/README.md"),
+        "```rust\nlet _ = Some(1).unwrap();\n```\n",
+    )
+    .expect("write shared documentation");
+    let observed = inventory_at(temp.path());
+    let row = observed
+        .rows
+        .iter()
+        .find(|row| {
+            row.kind == "site" && row.entrypoint.contains(":include:crates/demo/src/lib.rs:")
+        })
+        .expect("first consumer debt row");
+    write_registry(
+        temp.path(),
+        &serde_json::json!({
+            "schema_version": 1,
+            "sites": [{
+                "path": row.path, "enclosing_test_or_function": row.entrypoint,
+                "macro_family": row.site_family, "normalized_snippet": row.source_identity,
+                "selector_identity": row.selector_identity,
+                "accepted_reason": "#13397 reviewed conversion fixture", "state": "retired"
+            }]
+        })
+        .to_string(),
+    );
+    for replacement in [
+        "fn not rust {{{",
+        "#[cfg_attr(feature = \"docs\", doc = include_str!(\"../README.md\"))] pub fn documented() {}\n",
+    ] {
+        fs::write(&first, replacement).expect("replace first consumer");
+        let current = inventory_at(temp.path());
+        let registry: Vec<_> = current.rows.iter().filter(|row| row.kind == "registry").collect();
+        assert_eq!(registry.len(), 1);
+        assert_eq!(registry[0].status, DebtStatus::InstrumentNotProven, "{replacement}");
+        assert_ne!(registry[0].status, DebtStatus::ConvertedAbsent);
+        assert!(
+            current.rows.iter().any(|row| row.kind == "site"
+                && row.entrypoint.contains(":include:crates/demo/src/second.rs:")),
+            "supported second consumer was lost"
+        );
+    }
+}

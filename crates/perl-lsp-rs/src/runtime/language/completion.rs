@@ -2425,7 +2425,9 @@ impl LspServer {
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
         let Some(mut item) = params else {
-            return Err(crate::protocol::invalid_params("Missing completion item parameters"));
+            return Err(crate::protocol::invalid_params(
+                "Missing completion item parameters: completionItem/resolve expects the CompletionItem object returned by textDocument/completion; retain its label and any data when retrying",
+            ));
         };
 
         // Extract the label and kind upfront (clone to avoid borrow issues)
@@ -2433,7 +2435,7 @@ impl LspServer {
             .get("label")
             .and_then(Value::as_str)
             .ok_or_else(|| {
-                crate::protocol::invalid_params("Missing or invalid completion item label")
+                crate::protocol::invalid_params("Missing or invalid completion item label: completionItem/resolve expects the CompletionItem object returned by textDocument/completion; retain its label and any data when retrying")
             })?
             .to_string();
         let kind = item.get("kind").and_then(|v| v.as_u64()).unwrap_or(0);
@@ -5895,5 +5897,36 @@ our $single_root_var;
         );
         assert!(variable.text_edit_range.is_some());
         assert!(!qualified.iter().any(|item| item.label.as_ref() == "$foobar_value"));
+    }
+}
+
+#[cfg(test)]
+mod merge_sync_resolve_guidance_tests {
+    use crate::runtime::LspServer;
+    use serde_json::json;
+
+    #[test]
+    fn resolve_rejects_missing_shape_and_preserves_valid_returned_objects() -> Result<(), String> {
+        let server = LspServer::new();
+        for params in [None, Some(json!({})), Some(json!([]))] {
+            let error = server
+                .handle_completion_resolve(params)
+                .err()
+                .ok_or("malformed resolve must fail")?;
+            assert_eq!(error.code, crate::protocol::INVALID_PARAMS);
+            for expected in
+                ["CompletionItem object", "textDocument/completion", "label", "any data"]
+            {
+                assert!(error.message.contains(expected), "missing {expected}: {}", error.message);
+            }
+        }
+        let object = json!({"label": "project_custom_symbol", "data": {"opaque": true}});
+        let resolved = server
+            .handle_completion_resolve(Some(object.clone()))
+            .map_err(|error| error.to_string())?
+            .ok_or("resolved object required")?;
+        assert_eq!(resolved["label"], object["label"]);
+        assert_eq!(resolved["data"], object["data"]);
+        Ok(())
     }
 }

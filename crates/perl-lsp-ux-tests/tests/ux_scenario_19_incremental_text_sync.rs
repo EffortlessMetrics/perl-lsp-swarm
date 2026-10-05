@@ -56,8 +56,7 @@ fn wait_for_any_diagnostics_event(
     None
 }
 
-#[test]
-fn scenario_19_didchange_recovers_after_parse_error_fix() -> Result<()> {
+fn source_reconciliation_scenario_19_didchange_recovers_after_parse_error_fix() -> Result<()> {
     if !binary_available() {
         tracing::info!("SKIP scenario_19: perl-lsp binary not found");
         return Ok(());
@@ -139,4 +138,31 @@ fn scenario_19_didchange_recovers_after_parse_error_fix() -> Result<()> {
 
     harness.assert_no_crash();
     Ok(())
+}
+
+#[test]
+fn scenario_19_didchange_recovers_after_parse_error_fix() {
+    use perl_lsp_ux_tests::{
+        UxCiTier, UxComponent, UxEvidenceClass, missing_binary_skip,
+        run_ux_scenario_with_evidence_class,
+    };
+    run_ux_scenario_with_evidence_class(
+        "incremental_text_sync_recovery",
+        "ux_scenario_19_incremental_text_sync.rs",
+        "scenario_19_didchange_recovers_after_parse_error_fix",
+        UxCiTier::Pr,
+        Some(UxComponent::Infra),
+        UxEvidenceClass::SemanticProof,
+        |recorder| {
+            if !binary_available() {
+                return Err(missing_binary_skip().into());
+            }
+            // Preserve source assertions; their helper does not expose an exact timing boundary.
+            source_reconciliation_scenario_19_didchange_recovers_after_parse_error_fix()
+                .map_err(|error| anyhow::anyhow!("{error}"))?;
+            recorder.check("current source assertions for scenario_19_didchange_recovers_after_parse_error_fix completed successfully", true)?;
+            // Aggregate completion records no request/first-useful timing boundary.
+            Ok(())
+        },
+    );
 }

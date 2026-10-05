@@ -98,6 +98,22 @@ fn workspace_symbol_to_item(
     }
 }
 
+fn call_hierarchy_item_param<'a>(
+    params: &'a Value,
+    method: &str,
+) -> Result<&'a Value, JsonRpcError> {
+    params
+        .get("item")
+        .filter(|item| item.is_object())
+        .ok_or_else(|| call_hierarchy_item_guidance(method))
+}
+
+fn call_hierarchy_item_guidance(method: &str) -> JsonRpcError {
+    crate::protocol::invalid_params(&format!(
+        "Missing or invalid required parameter: item. {method} expects params.item to be the CallHierarchyItem returned by textDocument/prepareCallHierarchy; retain its name, kind, uri, range, selectionRange, and any data before retrying"
+    ))
+}
+
 impl LspServer {
     #[cfg(feature = "workspace")]
     fn enrich_call_hierarchy_item(
@@ -652,7 +668,7 @@ impl LspServer {
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
         if let Some(params) = params {
-            let item = &params["item"];
+            let item = call_hierarchy_item_param(&params, "callHierarchy/incomingCalls")?;
             let target_name = item["name"].as_str().unwrap_or("");
 
             tracing::debug!(target = target_name, "Getting incoming calls");
@@ -745,7 +761,7 @@ impl LspServer {
             return Ok(Some(json!(json_calls)));
         }
 
-        Ok(Some(json!([])))
+        Err(call_hierarchy_item_guidance("callHierarchy/incomingCalls"))
     }
 
     /// Handle outgoing calls request
@@ -757,7 +773,7 @@ impl LspServer {
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
         if let Some(params) = params {
-            let item = &params["item"];
+            let item = call_hierarchy_item_param(&params, "callHierarchy/outgoingCalls")?;
             let uri = item["uri"].as_str().unwrap_or("");
             let ch_item = self.json_to_call_hierarchy_item(item)?;
 
@@ -858,7 +874,7 @@ impl LspServer {
             return Ok(Some(json!(json_calls)));
         }
 
-        Ok(Some(json!([])))
+        Err(call_hierarchy_item_guidance("callHierarchy/outgoingCalls"))
     }
 
     /// Convert JSON to CallHierarchyItem
@@ -1342,5 +1358,63 @@ mod tests {
             }
         })));
         assert!(result.is_ok(), "handle_outgoing_calls must not error: {result:?}");
+    }
+}
+
+#[cfg(test)]
+mod merge_sync_hierarchy_guidance_tests {
+    use crate::runtime::LspServer;
+    use serde_json::json;
+
+    #[test]
+    fn hierarchy_requires_returned_item_objects_and_accepts_current_valid_items()
+    -> Result<(), String> {
+        let server = LspServer::new();
+        for outgoing in [false, true] {
+            let method = if outgoing {
+                "callHierarchy/outgoingCalls"
+            } else {
+                "callHierarchy/incomingCalls"
+            };
+            for params in [
+                None,
+                Some(json!({})),
+                Some(json!({"item": null})),
+                Some(json!({"item": []})),
+                Some(json!({"item": "main"})),
+            ] {
+                let result = if outgoing {
+                    server.handle_outgoing_calls(params)
+                } else {
+                    server.handle_incoming_calls(params)
+                };
+                let error = result.err().ok_or("missing/nonobject hierarchy item must fail")?;
+                assert_eq!(error.code, crate::protocol::INVALID_PARAMS);
+                for expected in
+                    [method, "params.item", "textDocument/prepareCallHierarchy", "selectionRange"]
+                {
+                    assert!(
+                        error.message.contains(expected),
+                        "missing {expected}: {}",
+                        error.message
+                    );
+                }
+            }
+            let params = Some(
+                json!({"item": {"name": "main", "kind": 12, "uri": "file:///workspace/main.pl", "range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 10}}, "selectionRange": {"start": {"line": 0, "character": 4}, "end": {"line": 0, "character": 8}}, "data": {"packageName": "main"}}}),
+            );
+            let result = if outgoing {
+                server.handle_outgoing_calls(params)
+            } else {
+                server.handle_incoming_calls(params)
+            }
+            .map_err(|error| error.to_string())?;
+            assert_eq!(
+                result,
+                Some(json!([])),
+                "a valid item without open callers retains the current empty result"
+            );
+        }
+        Ok(())
     }
 }

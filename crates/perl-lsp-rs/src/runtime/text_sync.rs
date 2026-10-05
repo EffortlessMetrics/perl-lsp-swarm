@@ -43,6 +43,12 @@ fn uri_tail(uri: &str) -> String {
         .unwrap_or_else(|| tail.to_string())
 }
 
+fn missing_text_document_uri_params(method: &str) -> JsonRpcError {
+    invalid_params(&format!(
+        "Missing required parameter: textDocument.uri: {method} expects params.textDocument.uri to be a document URI string, for example {{\"textDocument\":{{\"uri\":\"file:///workspace/lib/Foo.pm\"}}}}"
+    ))
+}
+
 impl LspServer {
     /// Reject malformed batches before accepted document or parser state changes.
     /// Obsolete editor-output streams still stop when the editor reports a change.
@@ -190,7 +196,7 @@ impl LspServer {
             let uri = params
                 .pointer("/textDocument/uri")
                 .and_then(|v| v.as_str())
-                .ok_or_else(|| invalid_params("Missing required parameter: textDocument.uri"))?;
+                .ok_or_else(|| missing_text_document_uri_params("textDocument/didOpen"))?;
             let admission_key = self.normalize_uri_key(uri);
             if let Err(err) = crate::security::validate_document_uri(&admission_key) {
                 return Err(invalid_params(&err.to_string()));
@@ -730,7 +736,7 @@ impl LspServer {
             let uri = params
                 .pointer("/textDocument/uri")
                 .and_then(|v| v.as_str())
-                .ok_or_else(|| invalid_params("Missing required parameter: textDocument.uri"))?;
+                .ok_or_else(|| missing_text_document_uri_params("textDocument/didChange"))?;
             let admission_key = self.normalize_uri_key(uri);
             if let Err(err) = crate::security::validate_document_uri(&admission_key) {
                 return Err(invalid_params(&err.to_string()));
@@ -1867,3 +1873,29 @@ pub(crate) fn commit_parse_effect_if_current<T>(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod merge_sync_text_document_guidance_tests {
+    use crate::runtime::LspServer;
+    use serde_json::json;
+
+    #[test]
+    fn missing_document_uris_explain_recovery_without_changing_full_sync_admission()
+    -> Result<(), String> {
+        let server = LspServer::new();
+        let open = server.handle_did_open(Some(json!({"textDocument": {"languageId": "perl", "version": 1, "text": "my $value = 1;"}}))).err().ok_or("didOpen without URI must fail")?;
+        let change = server.handle_did_change(Some(json!({"textDocument": {"version": 2}, "contentChanges": [{"text": "my $value = 2;"}]}))).err().ok_or("didChange without URI must fail")?;
+        for (error, method) in [(open, "textDocument/didOpen"), (change, "textDocument/didChange")]
+        {
+            assert_eq!(error.code, crate::protocol::INVALID_PARAMS);
+            for expected in [method, "params.textDocument.uri", "file:///workspace/lib/Foo.pm"] {
+                assert!(error.message.contains(expected), "missing {expected}: {}", error.message);
+            }
+        }
+        let uri = "file:///workspace/lib/Foo.pm";
+        server.test_apply_did_open(uri, "my $value = 1;", 1).map_err(|error| error.to_string())?;
+        server.handle_did_change(Some(json!({"textDocument": {"uri": uri, "version": 2}, "contentChanges": [{"text": "my $value = 2;"}]}))).map_err(|error| error.to_string())?;
+        assert_eq!(server.buffer_text(uri).as_deref(), Some("my $value = 2;"));
+        Ok(())
+    }
+}

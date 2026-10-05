@@ -27,10 +27,11 @@ impl LspServer {
         &self,
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
-        let params = params.ok_or_else(|| invalid_params("missing params"))?;
+        let params = params.ok_or_else(|| invalid_streaming_shape("missing params"))?;
 
-        let uri = req_uri(&params)?;
-        let (line, character) = req_position(&params)?;
+        let uri = req_uri(&params).map_err(|error| invalid_streaming_shape(&error.message))?;
+        let (line, character) =
+            req_position(&params).map_err(|error| invalid_streaming_shape(&error.message))?;
         // Parse the actual request context the same way the standard route
         // does, so the stream applies the identical trigger and
         // selected-completion policy.
@@ -516,4 +517,52 @@ mod tests {
         );
         Ok(())
     }
+}
+
+#[cfg(test)]
+mod source_reconciliation_streaming_shape_controls {
+    use super::*;
+    #[test]
+    fn malformed_shape_has_progress_and_one_shot_guidance_and_valid_shapes_succeed()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        for params in
+            [None, Some(json!({})), Some(json!({"textDocument":{"uri":"file:///shape.pl"}}))]
+        {
+            let error = match server.handle_streaming_inline_completion(params) {
+                Ok(_) => return Err("malformed streaming request succeeded".into()),
+                Err(error) => error,
+            };
+            assert_eq!(error.code, crate::protocol::INVALID_PARAMS);
+            for expected in [
+                "textDocument/perlInlineCompletionStream",
+                "params.textDocument.uri",
+                "params.position.line",
+                "params.position.character",
+                "params.partialResultToken",
+                "$/progress",
+                "textDocument/inlineCompletion",
+            ] {
+                assert!(error.message.contains(expected), "missing {expected}: {}", error.message);
+            }
+        }
+        for token in [None, Some("shape-control-token")] {
+            let mut params = json!({"textDocument":{"uri":"file:///shape.pl"},"position":{"line":0,"character":0}});
+            if let Some(token) = token {
+                params["partialResultToken"] = json!(token);
+            }
+            assert!(
+                server.handle_streaming_inline_completion(Some(params)).is_ok(),
+                "valid unopened-document request must retain current successful empty/fallback result"
+            );
+        }
+        Ok(())
+    }
+}
+
+fn invalid_streaming_shape(summary: &str) -> JsonRpcError {
+    invalid_params(&format!(
+        "{summary}: {}",
+        "textDocument/perlInlineCompletionStream expects params.textDocument.uri plus params.position.line and params.position.character. Supply a zero-based UTF-16 position in an open Perl document. Include params.partialResultToken to receive $/progress chunks; without it the request uses the supported textDocument/inlineCompletion one-shot result."
+    ))
 }

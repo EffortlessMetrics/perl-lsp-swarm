@@ -17,7 +17,7 @@ export function scaffoldContent(
 
   if (kind === FileKind.Test) {
     return path.extname(relative).toLowerCase() === '.t'
-      ? 'use strict;\nuse warnings;\nuse Test::More;\n\n\n\ndone_testing;\n'
+      ? "use strict;\nuse warnings;\nuse lib 'lib';\nuse Test::More;\n\n\n\ndone_testing;\n"
       : null;
   }
 

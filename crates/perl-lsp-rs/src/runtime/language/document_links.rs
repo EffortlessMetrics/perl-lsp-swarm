@@ -93,6 +93,12 @@ fn is_valid_pod_section_fragment(section: &str) -> bool {
         && section.chars().all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | ' '))
 }
 
+fn document_link_resolve_guidance(summary: &str) -> String {
+    format!(
+        "{summary}: documentLink/resolve expects the DocumentLink object returned by textDocument/documentLink; data.type may be module, file, url, or pod_section; request fresh document links before retrying"
+    )
+}
+
 impl LspServer {
     /// Handle textDocument/documentLink request
     pub(crate) fn handle_document_links(
@@ -167,14 +173,14 @@ impl LspServer {
                             .and_then(|m| m.as_str())
                             .ok_or_else(|| JsonRpcError {
                                 code: INVALID_PARAMS,
-                                message: "Missing module name in data".into(),
+                                message: document_link_resolve_guidance("Missing module name in data; module links require data.module such as Data::Dumper"),
                                 data: None,
                             })?;
 
                         let documentation_target = PerlDocumentationTarget::new(module_name)
                             .ok_or_else(|| JsonRpcError {
                                 code: INVALID_PARAMS,
-                                message: "Invalid module name in data".into(),
+                                message: document_link_resolve_guidance("Invalid module name in data; data.module must be a Perl module name such as Data::Dumper"),
                                 data: Some(json!({"module": module_name})),
                             })?;
 
@@ -192,7 +198,9 @@ impl LspServer {
                             data_obj.get("path").and_then(|p| p.as_str()).ok_or_else(|| {
                                 JsonRpcError {
                                     code: INVALID_PARAMS,
-                                    message: "Missing file path in data".into(),
+                                    message: document_link_resolve_guidance(
+                                        "Missing file path in data; file links require data.path",
+                                    ),
                                     data: None,
                                 }
                             })?;
@@ -203,7 +211,7 @@ impl LspServer {
                             .and_then(|u| u.as_str())
                             .ok_or_else(|| JsonRpcError {
                                 code: INVALID_PARAMS,
-                                message: "Missing base URI in data".into(),
+                                message: document_link_resolve_guidance("Missing base URI in data; file and pod_section links require data.baseUri"),
                                 data: None,
                             })?;
 
@@ -224,14 +232,16 @@ impl LspServer {
                             data_obj.get("section").and_then(|s| s.as_str()).ok_or_else(|| {
                                 JsonRpcError {
                                     code: INVALID_PARAMS,
-                                    message: "Missing POD section in data".into(),
+                                    message: document_link_resolve_guidance("Missing POD section in data; pod_section links require data.section"),
                                     data: None,
                                 }
                             })?;
                         if !is_valid_pod_section_fragment(section) {
                             return Err(JsonRpcError {
                                 code: INVALID_PARAMS,
-                                message: "Invalid POD section in data".into(),
+                                message: document_link_resolve_guidance(
+                                    "Invalid POD section in data; data.section must identify a local POD heading",
+                                ),
                                 data: Some(json!({"section": section})),
                             });
                         }
@@ -241,13 +251,15 @@ impl LspServer {
                             .and_then(|u| u.as_str())
                             .ok_or_else(|| JsonRpcError {
                                 code: INVALID_PARAMS,
-                                message: "Missing base URI in data".into(),
+                                message: document_link_resolve_guidance("Missing base URI in data; file and pod_section links require data.baseUri"),
                                 data: None,
                             })?;
                         let mut target_url =
                             url::Url::parse(base_uri).map_err(|_| JsonRpcError {
                                 code: INVALID_PARAMS,
-                                message: "Invalid base URI in data".into(),
+                                message: document_link_resolve_guidance(
+                                    "Invalid base URI in data; data.baseUri must be a URI",
+                                ),
                                 data: Some(json!({"baseUri": base_uri})),
                             })?;
                         target_url.set_fragment(Some(section));
@@ -257,7 +269,9 @@ impl LspServer {
                         // Unknown link type - return error
                         return Err(JsonRpcError {
                             code: INVALID_PARAMS,
-                            message: "Unknown link type in data field".into(),
+                            message: document_link_resolve_guidance(
+                                "Unknown link type in data field",
+                            ),
                             data: Some(json!({"linkType": link_type})),
                         });
                     }
@@ -268,7 +282,9 @@ impl LspServer {
         } else {
             Err(JsonRpcError {
                 code: INVALID_PARAMS,
-                message: "Missing parameters for documentLink/resolve".into(),
+                message: document_link_resolve_guidance(
+                    "Missing parameters for documentLink/resolve",
+                ),
                 data: None,
             })
         }

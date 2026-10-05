@@ -267,3 +267,54 @@ mod contract_tests {
         }
     }
 }
+
+fn mentions_undeclared_static_variable(diagnostics: &[Value]) -> bool {
+    diagnostics.iter().any(|diagnostic| {
+        diagnostic.get("message").and_then(Value::as_str).is_some_and(|message| {
+            message.contains("$missing_name") && message.contains("not declared")
+        })
+    })
+}
+
+#[test]
+fn undeclared_variable_control_rejects_empty_and_unrelated_diagnostics() {
+    use serde_json::json;
+    assert!(!mentions_undeclared_static_variable(&[]));
+    assert!(!mentions_undeclared_static_variable(&[json!({"message":"unused $other"})]));
+    assert!(!mentions_undeclared_static_variable(&[json!({"message":"$missing_name is unused"})]));
+    assert!(mentions_undeclared_static_variable(&[
+        json!({"message":"Variable '$missing_name' is used but not declared"})
+    ]));
+}
+
+#[test]
+fn scenario_12_undeclared_static_variable_is_not_an_empty_success() {
+    run_ux_scenario(
+        WORKFLOW_ID,
+        SCENARIO_FILE,
+        "scenario_12_undeclared_static_variable_is_not_an_empty_success",
+        UxCiTier::Pr,
+        Some(UxComponent::Diagnostics),
+        |recorder| {
+            if !binary_available() {
+                return Err(missing_binary_skip().into());
+            }
+            let source = "use strict;\nuse warnings;\nprint $missing_name;\n";
+            let harness = UxHarness::new(
+                ScenarioConfig::default()
+                    .unset_env("PERL_LSP_E2E")
+                    .with_file("undeclared.pl", source),
+            )?;
+            recorder.mark_request_start("undeclared_variable_diagnostic");
+            let diagnostics = open_and_wait_for_diagnostics(&harness, "undeclared.pl", source)?;
+            validate_diagnostics(&diagnostics)?;
+            recorder.check(
+                "undeclared static variable emits source-backed diagnostic naming $missing_name",
+                mentions_undeclared_static_variable(&diagnostics),
+            )?;
+            recorder.mark_first_useful_result("undeclared_variable_diagnostic");
+            harness.assert_no_crash();
+            Ok(())
+        },
+    );
+}

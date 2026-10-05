@@ -17,9 +17,13 @@ impl LspServer {
         &self,
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
+        if params.is_none() {
+            return Err(invalid_moniker_shape("Missing moniker params"));
+        }
         if let Some(params) = params {
-            let uri = req_uri(&params)?;
-            let (line, character) = req_position(&params)?;
+            let uri = req_uri(&params).map_err(|error| invalid_moniker_shape(&error.message))?;
+            let (line, character) =
+                req_position(&params).map_err(|error| invalid_moniker_shape(&error.message))?;
 
             let documents = self.documents_guard();
             if let Some(doc) = self.get_document(&documents, uri) {
@@ -657,4 +661,42 @@ mod tests {
         );
         Ok(())
     }
+}
+
+#[cfg(test)]
+mod source_reconciliation_moniker_shape_controls {
+    use super::*;
+    #[test]
+    fn malformed_shape_has_recovery_and_valid_unknown_document_remains_clean_empty()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        for params in
+            [None, Some(json!(false)), Some(json!({"textDocument":{"uri":"file:///shape.pl"}}))]
+        {
+            let error = match server.handle_moniker(params) {
+                Ok(_) => return Err("malformed moniker request succeeded".into()),
+                Err(error) => error,
+            };
+            assert_eq!(error.code, crate::protocol::INVALID_PARAMS);
+            for expected in [
+                "textDocument/moniker",
+                "params.textDocument.uri",
+                "params.position.line",
+                "params.position.character",
+                "UTF-16",
+                "retry",
+            ] {
+                assert!(error.message.contains(expected), "missing {expected}: {}", error.message);
+            }
+        }
+        assert_eq!(server.handle_moniker(Some(json!({"textDocument":{"uri":"file:///shape.pl"},"position":{"line":0,"character":0}})))?,Some(json!([])));
+        Ok(())
+    }
+}
+
+fn invalid_moniker_shape(summary: &str) -> JsonRpcError {
+    crate::protocol::invalid_params(&format!(
+        "{summary}: {}",
+        "textDocument/moniker expects params.textDocument.uri plus params.position.line and params.position.character to identify the symbol under the cursor. Send the URI of an open Perl document and a zero-based UTF-16 line/character position, then retry."
+    ))
 }

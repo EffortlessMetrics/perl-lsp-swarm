@@ -327,6 +327,28 @@ fn scenario_44_real_editor_trust_smoke_receipt() {
 
             recorder.mark_request_start("workspace_trust_report");
             let trust_report = workspace_trust_report(&harness)?;
+            let setup_hints = trust_report.pointer("/setup_hints/hints").and_then(Value::as_array);
+            let count = trust_report.pointer("/setup_hints/hint_count").and_then(Value::as_u64);
+            recorder.check(
+                "workspace trust report surfaces positive setup hint count with matching hints",
+                count.is_some_and(|count| {
+                    count > 0
+                        && setup_hints
+                            .is_some_and(|hints| u64::try_from(hints.len()).ok() == Some(count))
+                }),
+            )?;
+            let no_probe = trust_report
+                .pointer("/setup_hints/claim_boundary")
+                .and_then(Value::as_str)
+                .is_some_and(|boundary| {
+                    boundary.contains("do not resolve Perl")
+                        && boundary.contains("change provider behavior")
+                });
+            recorder.check(
+                "setup hints retain explicit no-probe/provider-mutation boundary",
+                no_probe,
+            )?;
+
             recorder.mark_first_useful_result("workspace_trust_report");
             let trust_schema = trust_report.get("schema_version").and_then(Value::as_str);
             let trust_boundary_mentions_no_scan = trust_report

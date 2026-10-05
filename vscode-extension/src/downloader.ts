@@ -1039,8 +1039,14 @@ export class BinaryDownloader {
         buttons = ['Install Manually', 'View Logs'];
       }
 
+      buttons.push('Configure serverPath');
       vscode.window.showErrorMessage(message, ...buttons).then((choice: string | undefined) => {
-        if (choice === 'Install Manually') {
+        if (choice === 'Configure serverPath') {
+          void vscode.commands.executeCommand(
+            'workbench.action.openSettings',
+            'perl-lsp.serverPath',
+          );
+        } else if (choice === 'Install Manually') {
           vscode.env.openExternal(vscode.Uri.parse(manualInstallUrl));
         } else if (choice === 'Open Proxy Settings') {
           vscode.commands.executeCommand('workbench.action.openSettings', 'http.proxy');

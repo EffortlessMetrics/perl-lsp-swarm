@@ -150,7 +150,7 @@
       "ci_tier": "nightly",
       "component": "infra",
       "instrumentation": {
-        "run_receipt": false,
+        "run_receipt": true,
         "first_useful_result": false,
         "protocol_goldens": false
       },
@@ -204,8 +204,8 @@
       "ci_tier": "pr",
       "component": "infra",
       "instrumentation": {
-        "run_receipt": false,
-        "first_useful_result": false,
+        "run_receipt": true,
+        "first_useful_result": true,
         "protocol_goldens": false
       },
       "user_journey": "open a Perl file without a .pl extension",
@@ -214,7 +214,8 @@
         "workflow_stability_rate"
       ],
       "expected_outcomes": [
-        "languageId-perl files without extensions still behave like Perl"
+        "languageId-perl files without extensions still behave like Perl",
+        "static named deploy_task symbol survives no-extension shebang document"
       ],
       "confidence_signals": [
         "first_five_minutes_harness",
@@ -228,8 +229,8 @@
       "ci_tier": "pr",
       "component": "infra",
       "instrumentation": {
-        "run_receipt": false,
-        "first_useful_result": false,
+        "run_receipt": true,
+        "first_useful_result": true,
         "protocol_goldens": false
       },
       "user_journey": "open files with BOMs, utf8 pragmas, and Unicode text",
@@ -239,7 +240,8 @@
       ],
       "expected_outcomes": [
         "encoding edge cases do not crash the server",
-        "user workflow remains intact"
+        "user workflow remains intact",
+        "static named decode_payload symbol survives UTF-8 BOM document"
       ],
       "confidence_signals": [
         "first_five_minutes_harness",
@@ -317,7 +319,8 @@
       ],
       "expected_outcomes": [
         "publishDiagnostics arrives",
-        "diagnostic payload shape stays valid"
+        "diagnostic payload shape stays valid",
+        "static undeclared $missing_name produces a diagnostic naming the offending variable"
       ],
       "confidence_signals": [
         "first_five_minutes_harness",
@@ -357,7 +360,7 @@
       "ci_tier": "pr",
       "component": "module_resolution",
       "instrumentation": {
-        "run_receipt": false,
+        "run_receipt": true,
         "first_useful_result": false,
         "protocol_goldens": false
       },
@@ -411,7 +414,7 @@
       "ci_tier": "pr",
       "component": "workspace_symbols",
       "instrumentation": {
-        "run_receipt": false,
+        "run_receipt": true,
         "first_useful_result": false,
         "protocol_goldens": false
       },
@@ -439,7 +442,7 @@
       "ci_tier": "pr",
       "component": "workspace_symbols",
       "instrumentation": {
-        "run_receipt": false,
+        "run_receipt": true,
         "first_useful_result": false,
         "protocol_goldens": false
       },
@@ -466,7 +469,7 @@
       "ci_tier": "pr",
       "component": "workspace_symbols",
       "instrumentation": {
-        "run_receipt": false,
+        "run_receipt": true,
         "first_useful_result": false,
         "protocol_goldens": false
       },
@@ -604,7 +607,7 @@
       "ci_tier": "pr",
       "component": "goto_definition",
       "instrumentation": {
-        "run_receipt": false,
+        "run_receipt": true,
         "first_useful_result": false,
         "protocol_goldens": false
       },
@@ -631,7 +634,7 @@
       "ci_tier": "pr",
       "component": "diagnostics",
       "instrumentation": {
-        "run_receipt": false,
+        "run_receipt": true,
         "first_useful_result": false,
         "protocol_goldens": false
       },
@@ -657,7 +660,7 @@
       "ci_tier": "nightly",
       "component": "diagnostics",
       "instrumentation": {
-        "run_receipt": false,
+        "run_receipt": true,
         "first_useful_result": false,
         "protocol_goldens": false
       },
@@ -683,7 +686,7 @@
       "ci_tier": "pr",
       "component": "rename",
       "instrumentation": {
-        "run_receipt": false,
+        "run_receipt": true,
         "first_useful_result": false,
         "protocol_goldens": false
       },
@@ -709,7 +712,7 @@
       "ci_tier": "pr",
       "component": "workspace_symbols",
       "instrumentation": {
-        "run_receipt": false,
+        "run_receipt": true,
         "first_useful_result": false,
         "protocol_goldens": false
       },
@@ -763,7 +766,7 @@
       "component": "completion",
       "instrumentation": {
         "run_receipt": true,
-        "first_useful_result": true,
+        "first_useful_result": false,
         "protocol_goldens": true
       },
       "user_journey": "request completion for builtins and in-file symbols in a representative editor session",
@@ -1239,7 +1242,7 @@
       "ci_tier": "pr",
       "component": "infra",
       "instrumentation": {
-        "run_receipt": false,
+        "run_receipt": true,
         "first_useful_result": false,
         "protocol_goldens": false
       },
@@ -1266,7 +1269,7 @@
       "ci_tier": "pr",
       "component": "diagnostics",
       "instrumentation": {
-        "run_receipt": false,
+        "run_receipt": true,
         "first_useful_result": false,
         "protocol_goldens": false
       },
@@ -1292,8 +1295,8 @@
       "ci_tier": "pr",
       "component": "signature_help",
       "instrumentation": {
-        "run_receipt": false,
-        "first_useful_result": false,
+        "run_receipt": true,
+        "first_useful_result": true,
         "protocol_goldens": false
       },
       "user_journey": "request signature help at Perl builtin call sites",
@@ -1304,7 +1307,8 @@
       "expected_outcomes": [
         "builtin signatureHelp requests do not return JSON-RPC errors",
         "non-null builtin signatureHelp responses have valid signature labels",
-        "repeated builtin signatureHelp requests do not crash the server"
+        "repeated builtin signatureHelp requests do not crash the server",
+        "static builtin push and join signature labels are non-null and exact"
       ],
       "confidence_signals": [
         "first_five_minutes_harness",
@@ -1344,7 +1348,7 @@
       "ci_tier": "pr",
       "component": "folding_range",
       "instrumentation": {
-        "run_receipt": false,
+        "run_receipt": true,
         "first_useful_result": false,
         "protocol_goldens": false
       },
@@ -2254,6 +2258,36 @@
       ],
       "confidence_signals": [
         "first_five_minutes_harness",
+        "issue_burndown_regression_guard"
+      ]
+    },
+    {
+      "id": "dancer2_navigation_quality",
+      "scenario_file": "ux_scenario_51_dancer2_navigation_quality.rs",
+      "subsystem_owner": "editor_intelligence",
+      "ci_tier": "pr",
+      "component": "goto_definition",
+      "instrumentation": {
+        "run_receipt": true,
+        "first_useful_result": true,
+        "protocol_goldens": false
+      },
+      "user_journey": "request definition and references over the Dancer2 real-workspace fixture and record second-project navigation quality boundaries",
+      "measures": [
+        "workflow_pass_rate",
+        "workflow_stability_rate",
+        "cross_file_definition_success_rate",
+        "p95_time_to_first_useful_result_ms"
+      ],
+      "expected_outcomes": [
+        "definition and references probes return without JSON-RPC errors",
+        "non-empty navigation results use valid LSP Location or LocationLink shapes",
+        "receipt records module, local, dynamic, coderef, and declaration-including navigation surfaces without provider behavior promotion",
+        "declared static URI targets are required; generated/dynamic boundary probes remain explicit no-proof boundaries"
+      ],
+      "confidence_signals": [
+        "first_five_minutes_harness",
+        "manual_editor_smoke",
         "issue_burndown_regression_guard"
       ]
     }

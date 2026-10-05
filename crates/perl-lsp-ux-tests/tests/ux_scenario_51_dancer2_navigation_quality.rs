@@ -1,29 +1,36 @@
-//! Scenario 30 - Mojolicious navigation quality receipt.
+//! Scenario 51 - Dancer2 navigation quality receipt.
 //!
-//! This receipt exercises the committed Mojolicious skeleton workspace and
-//! records current `textDocument/definition` and `textDocument/references`
-//! quality signals without changing provider behavior.
+//! This receipt exercises `textDocument/definition` and
+//! `textDocument/references` over the committed Dancer2 skeleton workspace. It
+//! records a second project-shaped navigation quality signal without changing
+//! provider behavior.
 //!
 //! Receipt signals:
-//! - definition/reference result counts for exact, imported, module, dynamic,
+//! - definition/reference result counts for module, local, dynamic, coderef,
 //!   and declaration-including probe shapes
 //! - shape-valid LSP Location / LocationLink payloads
 //! - expected workspace target hits where current live behavior can prove them
-//! - fallback/empty counts for uncertain dynamic or unsupported surfaces
+//! - fallback/empty counts for uncertain framework and dynamic export surfaces
+
+// UX receipt scenarios intentionally emit JSON receipts under `--nocapture`.
+#![expect(
+    clippy::print_stderr,
+    reason = "Canonical Dancer2 receipt emits reviewed source signals under --nocapture."
+)]
 
 use anyhow::{Context, Result};
 use perl_lsp_ux_tests::binary_available;
 use perl_lsp_ux_tests::missing_binary_skip;
 use perl_lsp_ux_tests::{
     ProjectFixtureFile as FixtureFile, UxCiTier, UxComponent, UxHarness, create_fixture_harness,
-    fixture_content, load_mojolicious_fixture_files, open_all_fixture_files, run_ux_scenario,
+    fixture_content, load_dancer2_fixture_files, open_all_fixture_files, run_ux_scenario,
 };
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::BTreeSet;
 use std::time::Duration;
 
-const SCENARIO_FILE: &str = "ux_scenario_30_mojolicious_navigation_quality.rs";
+const SCENARIO_FILE: &str = "ux_scenario_51_dancer2_navigation_quality.rs";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -67,6 +74,7 @@ struct NavigationProbeReport {
     result_lines: Vec<u64>,
     expected_target_hits: Vec<String>,
     missing_expected_uri_suffixes: Vec<String>,
+    missing_required_workspace_target_uris: Vec<String>,
     fallback_or_empty: bool,
 }
 
@@ -87,10 +95,71 @@ fn resolve_probe_position(files: &[FixtureFile], probe: &NavigationProbe) -> Res
     })
 }
 
+fn ordered_lsp_range(range: &Value) -> Option<((u32, u32), (u32, u32))> {
+    let position = |name: &str| -> Option<(u32, u32)> {
+        let value = range.get(name)?;
+        Some((
+            u32::try_from(value.get("line")?.as_u64()?).ok()?,
+            u32::try_from(value.get("character")?.as_u64()?).ok()?,
+        ))
+    };
+    let start = position("start")?;
+    let end = position("end")?;
+    (start <= end).then_some((start, end))
+}
+
 fn is_lsp_location_shape(entry: &Value) -> bool {
-    let is_location = entry.get("uri").is_some() && entry.get("range").is_some();
-    let is_location_link = entry.get("targetUri").is_some() && entry.get("targetRange").is_some();
-    is_location || is_location_link
+    if let Some(uri) = entry.get("uri").and_then(Value::as_str) {
+        return url::Url::parse(uri).is_ok()
+            && entry.get("range").and_then(ordered_lsp_range).is_some();
+    }
+    let Some(uri) = entry.get("targetUri").and_then(Value::as_str) else {
+        return false;
+    };
+    let Some((start, end)) = entry.get("targetRange").and_then(ordered_lsp_range) else {
+        return false;
+    };
+    let Some((selection_start, selection_end)) =
+        entry.get("targetSelectionRange").and_then(ordered_lsp_range)
+    else {
+        return false;
+    };
+    url::Url::parse(uri).is_ok() && start <= selection_start && selection_end <= end
+}
+
+fn missing_exact_workspace_targets(results: &[Value], expected: &[String]) -> Vec<String> {
+    expected
+        .iter()
+        .filter(|uri| {
+            !results
+                .iter()
+                .any(|entry| is_lsp_location_shape(entry) && entry_uri(entry) == Some(uri.as_str()))
+        })
+        .cloned()
+        .collect()
+}
+
+#[test]
+fn navigation_shape_and_exact_workspace_controls_reject_invalid_and_other_roots() {
+    let range =
+        serde_json::json!({"start":{"line":1,"character":0},"end":{"line":1,"character":4}});
+    let good = serde_json::json!({"uri":"file:///expected/lib/Dancer2.pm","range":range});
+    let expected = vec!["file:///expected/lib/Dancer2.pm".to_string()];
+    assert!(is_lsp_location_shape(&good));
+    assert!(missing_exact_workspace_targets(&[good.clone()], &expected).is_empty());
+    for bad in [
+        serde_json::json!({"uri":"file:///expected/lib/Dancer2.pm","range":null}),
+        serde_json::json!({"uri":"file:///expected/lib/Dancer2.pm","range":{"start":{"line":2,"character":0},"end":{"line":1,"character":0}}}),
+        serde_json::json!({"targetUri":"file:///expected/lib/Dancer2.pm","targetRange":range}),
+        serde_json::json!({"targetUri":"file:///expected/lib/Dancer2.pm","targetRange":range,"targetSelectionRange":{"start":{"line":0,"character":0},"end":{"line":0,"character":1}}}),
+    ] {
+        assert!(!is_lsp_location_shape(&bad));
+    }
+    let wrong = serde_json::json!({"uri":"file:///other/lib/Dancer2.pm","range":range});
+    assert!(!missing_exact_workspace_targets(&[wrong], &expected).is_empty());
+    assert!(!is_lsp_location_shape(&serde_json::json!({"uri":"garbage","range":range})));
+    let link = serde_json::json!({"targetUri":"file:///expected/lib/Dancer2.pm","targetRange":range,"targetSelectionRange":range});
+    assert!(missing_exact_workspace_targets(&[link], &expected).is_empty());
 }
 
 fn entry_uri(entry: &Value) -> Option<&str> {
@@ -168,6 +237,14 @@ fn run_probe(
         result_lines,
         expected_target_hits: expected_hits,
         missing_expected_uri_suffixes: missing_expected,
+        missing_required_workspace_target_uris: missing_exact_workspace_targets(
+            &results,
+            &probe
+                .expected_uri_suffixes
+                .iter()
+                .map(|path| harness.workspace.uri(path))
+                .collect::<Vec<_>>(),
+        ),
         fallback_or_empty: results.is_empty(),
     })
 }
@@ -175,91 +252,91 @@ fn run_probe(
 fn navigation_probes() -> Vec<NavigationProbe> {
     vec![
         NavigationProbe {
-            name: "definition_module_import_commands",
+            name: "definition_module_import_core_app",
             category: "definition_module_resolution",
             surface: NavigationSurface::Definition,
-            file: "lib/Mojolicious.pm",
-            zero_based_line: 8,
-            needle: "Mojolicious::Commands",
+            file: "lib/Dancer2.pm",
+            zero_based_line: 10,
+            needle: "Dancer2::Core::App",
             cursor_offset: 3,
             include_declaration: false,
-            expected_uri_suffixes: &["lib/Mojolicious/Commands.pm"],
+            expected_uri_suffixes: &["lib/Dancer2/Core/App.pm"],
         },
         NavigationProbe {
-            name: "definition_local_startup_call",
+            name: "definition_local_runner_call",
             category: "definition_exact_local",
             surface: NavigationSurface::Definition,
-            file: "lib/Mojolicious.pm",
-            zero_based_line: 34,
-            needle: "startup",
+            file: "lib/Dancer2.pm",
+            zero_based_line: 64,
+            needle: "_runner",
             cursor_offset: 1,
             include_declaration: false,
-            expected_uri_suffixes: &["lib/Mojolicious.pm"],
+            expected_uri_suffixes: &["lib/Dancer2.pm"],
         },
         NavigationProbe {
-            name: "definition_imported_croak",
-            category: "definition_imported_symbol",
-            surface: NavigationSurface::Definition,
-            file: "lib/Mojolicious.pm",
-            zero_based_line: 72,
-            needle: "croak",
-            cursor_offset: 1,
-            include_declaration: false,
-            expected_uri_suffixes: &[],
-        },
-        NavigationProbe {
-            name: "definition_dynamic_callable_shape",
+            name: "definition_dynamic_export_method_name",
             category: "definition_dynamic_boundary_shape",
             surface: NavigationSurface::Definition,
-            file: "lib/Mojolicious/Controller.pm",
-            zero_based_line: 37,
-            needle: "->$cb",
+            file: "lib/Dancer2.pm",
+            zero_based_line: 58,
+            needle: "->$name",
             cursor_offset: 2,
             include_declaration: false,
             expected_uri_suffixes: &[],
         },
         NavigationProbe {
-            name: "references_local_dispatch_without_declaration",
+            name: "definition_coderef_route_callback",
+            category: "definition_coderef_boundary_shape",
+            surface: NavigationSurface::Definition,
+            file: "lib/Dancer2/Core/App.pm",
+            zero_based_line: 39,
+            needle: "->{code}",
+            cursor_offset: 3,
+            include_declaration: false,
+            expected_uri_suffixes: &[],
+        },
+        NavigationProbe {
+            name: "references_local_runner_without_declaration",
             category: "references_exact_local",
             surface: NavigationSurface::References,
-            file: "lib/Mojolicious.pm",
-            zero_based_line: 53,
-            needle: "dispatch",
+            file: "lib/Dancer2.pm",
+            zero_based_line: 64,
+            needle: "_runner",
             cursor_offset: 1,
             include_declaration: false,
-            expected_uri_suffixes: &["lib/Mojolicious.pm"],
+            expected_uri_suffixes: &["lib/Dancer2.pm"],
         },
         NavigationProbe {
-            name: "references_imported_croak_without_declaration",
-            category: "references_imported_symbol",
-            surface: NavigationSurface::References,
-            file: "lib/Mojolicious.pm",
-            zero_based_line: 72,
-            needle: "croak",
-            cursor_offset: 1,
-            include_declaration: false,
-            expected_uri_suffixes: &["lib/Mojolicious.pm"],
-        },
-        NavigationProbe {
-            name: "references_dispatch_with_declaration_boundary",
+            name: "references_add_route_with_declaration_boundary",
             category: "references_include_declaration_boundary",
             surface: NavigationSurface::References,
-            file: "lib/Mojolicious.pm",
-            zero_based_line: 53,
-            needle: "dispatch",
+            file: "lib/Dancer2/Core/App.pm",
+            zero_based_line: 21,
+            needle: "add_route",
             cursor_offset: 1,
             include_declaration: true,
-            expected_uri_suffixes: &["lib/Mojolicious.pm"],
+            expected_uri_suffixes: &["lib/Dancer2/Core/App.pm"],
+        },
+        NavigationProbe {
+            name: "references_dsl_keyword_call_shape",
+            category: "references_cross_file_method_shape",
+            surface: NavigationSurface::References,
+            file: "lib/Dancer2.pm",
+            zero_based_line: 56,
+            needle: "dsl_keywords",
+            cursor_offset: 1,
+            include_declaration: false,
+            expected_uri_suffixes: &[],
         },
     ]
 }
 
 #[test]
-fn scenario_30_mojolicious_navigation_quality_receipt() {
+fn scenario_51_dancer2_navigation_quality_receipt() {
     run_ux_scenario(
-        "mojolicious_navigation_quality",
+        "dancer2_navigation_quality",
         SCENARIO_FILE,
-        "scenario_30_mojolicious_navigation_quality_receipt",
+        "scenario_51_dancer2_navigation_quality_receipt",
         UxCiTier::Pr,
         Some(UxComponent::GotoDefinition),
         |recorder| {
@@ -267,13 +344,16 @@ fn scenario_30_mojolicious_navigation_quality_receipt() {
                 return Err(missing_binary_skip().into());
             }
 
-            let fixture_files = load_mojolicious_fixture_files()?;
+            let fixture_files = load_dancer2_fixture_files()?;
             recorder
-                .check("mojolicious fixture has committed Perl files", !fixture_files.is_empty())?;
+                .check("Dancer2 fixture has committed Perl files", !fixture_files.is_empty())?;
 
             let harness = create_fixture_harness(&fixture_files)?;
             open_all_fixture_files(&harness, &fixture_files)?;
-            std::thread::sleep(Duration::from_millis(500));
+            perl_lsp_ux_tests::wait_with_subject(
+                "Dancer2 fixture index readiness",
+                harness.wait_for_index_ready(Duration::from_secs(20)),
+            )?;
 
             let probes = navigation_probes();
             let mut reports = Vec::new();
@@ -281,18 +361,60 @@ fn scenario_30_mojolicious_navigation_quality_receipt() {
             for probe in &probes {
                 recorder.mark_request_start(probe.name);
                 let report = run_probe(&harness, &fixture_files, probe)?;
-                if !probe.expected_uri_suffixes.is_empty() && !probe.category.contains("boundary") {
-                    recorder.check(
-                        "required static probe returns its source-backed known answer",
-                        !report.fallback_or_empty
-                            && report.missing_expected_uri_suffixes.is_empty(),
-                    )?;
-                }
-                if report.result_count > 0 {
+                // Time only the original qualified source-target response.
+                // Extra declaration inclusion/exclusion controls below do not
+                // inflate this request-to-first-useful boundary.
+                if !probe.expected_uri_suffixes.is_empty()
+                    && report.invalid_shape_count == 0
+                    && report.missing_required_workspace_target_uris.is_empty()
+                {
                     recorder.mark_first_useful_result(probe.name);
                 }
+
+                if probe.name == "references_add_route_with_declaration_boundary" {
+                    // The source declares `sub add_route` at this exact name span.
+                    // Include-declaration is a static source obligation, even
+                    // though the descriptive probe category uses boundary.
+                    let position = resolve_probe_position(&fixture_files, probe)?;
+                    let declaration_uri = harness.workspace.uri(probe.file);
+                    let declaration_start = position
+                        .character
+                        .checked_sub(probe.cursor_offset as u32)
+                        .context("declaration start underflow")?;
+                    let expected = (
+                        (position.line, declaration_start),
+                        (position.line, declaration_start + u32::try_from(probe.needle.len())?),
+                    );
+                    let is_declaration = |entry: &Value| {
+                        entry_uri(entry) == Some(declaration_uri.as_str())
+                            && entry
+                                .get("range")
+                                .or_else(|| entry.get("targetSelectionRange"))
+                                .and_then(ordered_lsp_range)
+                                == Some(expected)
+                    };
+                    let including =
+                        harness.references(probe.file, position.line, position.character, true)?;
+                    recorder.check("includeDeclaration true retains exact source add_route name range in App.pm", including.iter().any(is_declaration))?;
+                    let excluding =
+                        harness.references(probe.file, position.line, position.character, false)?;
+                    recorder.check(
+                        "includeDeclaration false excludes that exact declaration anchor",
+                        !excluding.iter().any(is_declaration),
+                    )?;
+                }
+
+                if !probe.expected_uri_suffixes.is_empty() && !probe.category.contains("boundary") {
+                    recorder.check(
+                        "required static Dancer2 navigation probe reaches its exact fixture target",
+                        !report.fallback_or_empty
+                            && report.invalid_shape_count == 0
+                            && report.missing_required_workspace_target_uris.is_empty(),
+                    )?;
+                }
+
                 eprintln!(
-                    "navigation_probe={} surface={:?} category={} count={} hits={:?} uris={:?}",
+                    "dancer2_navigation_probe={} surface={:?} category={} count={} hits={:?} uris={:?}",
                     report.name,
                     report.surface,
                     report.category,
@@ -318,12 +440,21 @@ fn scenario_30_mojolicious_navigation_quality_receipt() {
                 reports.iter().map(|report| report.expected_target_hits.len()).sum();
             let fallback_or_empty_count =
                 reports.iter().filter(|report| report.fallback_or_empty).count();
-            let include_declaration_probe_count =
+            let declaration_boundary_probe_count =
                 reports.iter().filter(|report| report.include_declaration).count();
+            let dynamic_or_coderef_probe_count = reports
+                .iter()
+                .filter(|report| {
+                    matches!(
+                        report.category,
+                        "definition_dynamic_boundary_shape" | "definition_coderef_boundary_shape"
+                    )
+                })
+                .count();
 
             let receipt = serde_json::json!({
                 "schema_version": 1,
-                "project": "mojolicious",
+                "project": "dancer2",
                 "surface": "navigation",
                 "claim_boundary": "real-workspace navigation quality receipt only; no provider behavior changed or promoted",
                 "fixture_file_count": fixture_files.len(),
@@ -332,12 +463,13 @@ fn scenario_30_mojolicious_navigation_quality_receipt() {
                 "references_probe_count": references_count,
                 "expected_hit_total": expected_hit_total,
                 "fallback_or_empty_count": fallback_or_empty_count,
-                "include_declaration_probe_count": include_declaration_probe_count,
+                "declaration_boundary_probe_count": declaration_boundary_probe_count,
+                "dynamic_or_coderef_probe_count": dynamic_or_coderef_probe_count,
                 "invalid_shape_total": invalid_shape_total,
                 "reports": reports,
             });
             eprintln!(
-                "mojolicious_navigation_quality_receipt={}",
+                "dancer2_navigation_quality_receipt={}",
                 serde_json::to_string_pretty(&receipt)?
             );
 
@@ -347,17 +479,21 @@ fn scenario_30_mojolicious_navigation_quality_receipt() {
                 "navigation probes covered all intended receipt categories",
                 categories
                     == BTreeSet::from([
+                        "definition_coderef_boundary_shape",
                         "definition_dynamic_boundary_shape",
                         "definition_exact_local",
-                        "definition_imported_symbol",
                         "definition_module_resolution",
+                        "references_cross_file_method_shape",
                         "references_exact_local",
-                        "references_imported_symbol",
                         "references_include_declaration_boundary",
                     ]),
             )?;
             recorder.check("definition probes were exercised", definition_count >= 4)?;
             recorder.check("references probes were exercised", references_count >= 3)?;
+            recorder.check(
+                "dynamic and coderef navigation boundary probes were exercised",
+                dynamic_or_coderef_probe_count >= 2,
+            )?;
             recorder.check(
                 "all non-empty navigation results used valid LSP shapes",
                 invalid_shape_total == 0,

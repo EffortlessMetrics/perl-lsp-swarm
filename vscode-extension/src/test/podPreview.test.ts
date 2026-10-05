@@ -362,3 +362,33 @@ describe('pod preview save watcher', () => {
     expect(panelOf().webview.html).toContain('AAA2');
   });
 });
+
+describe('labeled POD module links', () => {
+  test.each(['Some::Module', 'Some::Module/usage'])(
+    'links %s to perldoc with its label',
+    (target) => {
+      const html = podToHtml(`=pod\n\nSee L<module docs|${target}>.\n\n=cut\n`);
+      expect(html).toContain('<a href="https://perldoc.perl.org/Some::Module">module docs</a>');
+      expect(html).not.toContain('href="#some::module');
+    },
+  );
+
+  test('retains nested formatting inside the module label', () => {
+    const html = podToHtml('=pod\n\nSee L<C<module docs>|Some::Module>.\n\n=cut\n');
+    expect(html).toContain(
+      '<a href="https://perldoc.perl.org/Some::Module"><code>module docs</code></a>',
+    );
+  });
+
+  test('does not turn a local section into a module page', () => {
+    const html = podToHtml('=pod\n\nSee L<local docs|/Local Section>.\n\n=cut\n');
+    expect(html).toContain('<a href="#/local-section">local docs</a>');
+    expect(html).not.toContain('https://perldoc.perl.org/');
+  });
+
+  test('does not make an unrecognized URI scheme executable', () => {
+    const html = podToHtml('=pod\n\nSee L<unsafe|javascript:alert(1)>.\n\n=cut\n');
+    expect(html).not.toContain('href="javascript:');
+    expect(html).not.toContain('https://perldoc.perl.org/');
+  });
+});

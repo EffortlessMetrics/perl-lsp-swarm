@@ -61,8 +61,8 @@ fn load_real_repo_fixture_source() -> Result<String> {
     Ok(merged)
 }
 
-#[test]
-fn scenario_18_first_diagnostics_under_five_seconds_on_real_repo_fixture() -> Result<()> {
+fn source_reconciliation_scenario_18_first_diagnostics_under_five_seconds_on_real_repo_fixture()
+-> Result<()> {
     if !binary_available() {
         eprintln!("SKIP scenario_18: perl-lsp binary not found");
         return Ok(());
@@ -107,4 +107,30 @@ fn scenario_18_first_diagnostics_under_five_seconds_on_real_repo_fixture() -> Re
     }
 
     bail!("no diagnostics notification for {relative_path} within {:?}", FIRST_DIAGNOSTICS_BUDGET);
+}
+
+#[test]
+fn scenario_18_first_diagnostics_under_five_seconds_on_real_repo_fixture() {
+    use perl_lsp_ux_tests::{
+        UxCiTier, UxComponent, UxEvidenceClass, missing_binary_skip,
+        run_ux_scenario_with_evidence_class,
+    };
+    run_ux_scenario_with_evidence_class(
+        "real_repo_first_diagnostics_budget",
+        "ux_scenario_18_real_repo_perf.rs",
+        "scenario_18_first_diagnostics_under_five_seconds_on_real_repo_fixture",
+        UxCiTier::Nightly,
+        Some(UxComponent::Diagnostics),
+        UxEvidenceClass::TransportCharacterization,
+        |recorder| {
+            if !binary_available() {
+                return Err(missing_binary_skip().into());
+            }
+            // Preserve source assertions; their helper does not expose an exact timing boundary.
+            source_reconciliation_scenario_18_first_diagnostics_under_five_seconds_on_real_repo_fixture().map_err(|error| anyhow::anyhow!("{error}"))?;
+            recorder.check("current source assertions for scenario_18_first_diagnostics_under_five_seconds_on_real_repo_fixture completed successfully", true)?;
+            // Aggregate completion records no request/first-useful timing boundary.
+            Ok(())
+        },
+    );
 }
