@@ -504,7 +504,7 @@ fn ux_latency_document_symbols_returns_real_process_shape() -> Result<()> {
             "handler_branches": branches,
         }))?;
 
-        for response in expected {
+        for response in observed_responses {
             assert!(
                 probe_branch(&branches, response).is_some(),
                 "missing request-correlated branch probe: {response}"
