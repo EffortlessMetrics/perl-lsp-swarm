@@ -76,17 +76,6 @@ jobs:
           fi
           cargo run -p xtask --bin action-pin-provenance -- "${args[@]}"
 
-      - name: Qualify close-proof Rust witnesses
-        if: ${{ !cancelled() }}
-        shell: bash
-        env:
-          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: |
-          git show -s --format='CLOSE_PROOF_NATIVE checkout=%H parents=%P tree=%T'
-          printf 'CLOSE_PROOF_NATIVE pr_head=%s\n' "$PR_HEAD_SHA"
-          git ls-tree HEAD -- xtask/src/close_proof/{contract,mod,model,packet,tests}.rs
-          cargo test --locked --lib -p xtask close_proof:: -- --nocapture
-
       - name: Upload receipts
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

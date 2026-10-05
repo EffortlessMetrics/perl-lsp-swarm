@@ -531,17 +531,16 @@ impl ContractIdentityEnvelope {
                 &ruling.changed_propositions,
             )?;
         }
-        if let Some(legacy) = &self.contract.identity.accepted_ruling {
-            if !context
+        if let Some(legacy) = &self.contract.identity.accepted_ruling
+            && !context
                 .accepted_rulings
                 .iter()
                 .any(|r| r.source.identity == legacy.identity && r.source.digest == legacy.digest)
-            {
-                return Err(CloseProofError::Identity {
-                    message: "legacy ruling is absent or contradictory in the declared ruling set"
-                        .to_string(),
-                });
-            }
+        {
+            return Err(CloseProofError::Identity {
+                message: "legacy ruling is absent or contradictory in the declared ruling set"
+                    .to_string(),
+            });
         }
         for (field, identity) in [
             ("context.compiler_generation", &context.compiler_generation),
