@@ -1749,6 +1749,15 @@ mod tests {
     }
 
     #[test]
+    fn build_packet_propagates_diff_unparseable_limitation() {
+        // Packet-level proof: garbage diff text flows through assembly with
+        // the `diff-unparseable` limitation attached (#17266 review).
+        let p = packet_for_diff("garbage", "changes", Some("this is not a diff\n"));
+        assert!(changes_of(&p).is_empty(), "garbage diff → no changes");
+        assert!(has_limitation(&p, "diff-unparseable"), "must propagate diff-unparseable");
+    }
+
+    #[test]
     fn build_packet_verify_only_request_reads_partial_not_unavailable() {
         // A root with one pattern-free .t file, requesting only
         // `verify_commands`: the packet carries a usable command, so it must
