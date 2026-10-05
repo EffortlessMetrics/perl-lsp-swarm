@@ -738,40 +738,18 @@ impl LspServer {
         let symbol_at_cursor = if token_candidate_is_proven {
             analyzer.find_definition(offset).filter(|sym| {
                 let token = Self::get_token_at_position_static(text, offset);
-                #[cfg(feature = "workspace")]
-                {
-                    if matches!(
-                        sym.kind,
-                        crate::symbol::SymbolKind::Subroutine | crate::symbol::SymbolKind::Method
-                    ) && Self::extract_arrow_receiver(text, offset).is_some()
-                        && sym.declaration.as_deref() != Some("has")
-                    {
-                        if token != sym.name && !token.is_empty() {
-                            return false;
-                        }
-                        if token == sym.name
-                            && let Some(raw_receiver) = Self::extract_arrow_receiver(text, offset)
-                        {
-                            let receiver_pkg =
-                                Self::resolve_receiver_package_name(ast, offset, &raw_receiver);
-                            if !receiver_pkg.is_empty()
-                                && analyzer
-                                    .resolve_inherited_method_hover(&receiver_pkg, &sym.name)
-                                    .is_some_and(|hover| {
-                                        hover
-                                            .details
-                                            .iter()
-                                            .any(|detail| detail.starts_with("Decorated with:"))
-                                    })
-                            {
-                                return false;
-                            }
-                        }
-                    }
-                }
-                // The analyzer may return the containing sub when a special variable
-                // has no declaration. Let the existing special-variable card answer
-                // instead of presenting that unrelated sub as the hovered entity.
+                // A containment-based Subroutine/Method answer may only stand
+                // when the cursor is on the symbol's own name (or on bare
+                // punctuation). `find_definition`'s containment fallback
+                // returns the smallest declaration *containing* the offset, so
+                // every identifier inside a sub body resolves to the enclosing
+                // sub; answering with that card while the hover range covers a
+                // built-in (`keys`), a call-site package name (`WidgetGarden`
+                // in `WidgetGarden->new`), or a keyword (`my`) describes symbol
+                // X over token Y (#17296). Special variables keep their
+                // dedicated card even where the token scanner reads an empty
+                // token (cursor on the pipe of `$|`), so they are checked
+                // before the empty-token keep (#2831).
                 if matches!(
                     sym.kind,
                     crate::symbol::SymbolKind::Subroutine | crate::symbol::SymbolKind::Method
@@ -782,12 +760,46 @@ impl LspServer {
                     if Self::get_special_variable_hover(&special).is_some() {
                         return false;
                     }
+                    if !token.is_empty() {
+                        // Discard and let the token fallback answer instead —
+                        // it already renders builtins, `::`-qualified package
+                        // names, and keywords, and fails closed otherwise.
+                        return false;
+                    }
                 }
-                // If the token matches the symbol name this IS a direct hover on that
-                // symbol (e.g. hovering on `sub run` where cursor is on `run`).
-                if token == sym.name || token.is_empty() {
-                    return true; // keep — cursor is directly on the symbol
+                #[cfg(feature = "workspace")]
+                {
+                    // A method name that really is the hovered symbol's own name
+                    // (`$pkg->method` with the cursor on `method`) may still be
+                    // better described by the class model: when the inherited
+                    // hover carries modifier metadata, defer to it.
+                    if matches!(
+                        sym.kind,
+                        crate::symbol::SymbolKind::Subroutine | crate::symbol::SymbolKind::Method
+                    ) && Self::extract_arrow_receiver(text, offset).is_some()
+                        && sym.declaration.as_deref() != Some("has")
+                        && token == sym.name
+                        && let Some(raw_receiver) = Self::extract_arrow_receiver(text, offset)
+                    {
+                        let receiver_pkg =
+                            Self::resolve_receiver_package_name(ast, offset, &raw_receiver);
+                        if !receiver_pkg.is_empty()
+                            && analyzer
+                                .resolve_inherited_method_hover(&receiver_pkg, &sym.name)
+                                .is_some_and(|hover| {
+                                    hover
+                                        .details
+                                        .iter()
+                                        .any(|detail| detail.starts_with("Decorated with:"))
+                                })
+                        {
+                            return false;
+                        }
+                    }
                 }
+                // The token matches the symbol name (or is empty): this IS a
+                // direct hover on that symbol (e.g. hovering on `sub run` where
+                // cursor is on `run`).
                 true
             })
         } else {
