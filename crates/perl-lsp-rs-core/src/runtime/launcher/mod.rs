@@ -695,6 +695,11 @@ pub enum LaunchParseError {
         /// Raw token from CLI.
         raw_mode: String,
     },
+    /// Trailing positionals reached an action that never reads them.
+    UnexpectedPositionals {
+        /// The junk tokens, verbatim.
+        tokens: Vec<String>,
+    },
 }
 
 impl fmt::Display for LaunchParseError {
@@ -736,6 +741,14 @@ impl fmt::Display for LaunchParseError {
             Self::InvalidDiagnosticMode { raw_mode } => {
                 write!(f, "Invalid diagnostic mode: {raw_mode}. Supported: normal, syntax-only")
             }
+            Self::UnexpectedPositionals { tokens } => {
+                let quoted =
+                    tokens.iter().map(|token| format!("'{token}'")).collect::<Vec<_>>().join(", ");
+                write!(
+                    f,
+                    "Unexpected positional arguments: {quoted}. Only --check accepts file paths."
+                )
+            }
         }
     }
 }
@@ -757,7 +770,8 @@ impl perl_parser_core::ErrorClass for LaunchParseError {
             | Self::InvalidShell { .. }
             | Self::InvalidDiagnosticDebounceMs { .. }
             | Self::InvalidRuntimeMode { .. }
-            | Self::InvalidDiagnosticMode { .. } => perl_parser_core::ErrorCategory::UserError,
+            | Self::InvalidDiagnosticMode { .. }
+            | Self::UnexpectedPositionals { .. } => perl_parser_core::ErrorCategory::UserError,
         }
     }
 }
@@ -849,6 +863,21 @@ where
             } else {
                 LaunchAction::Run
             };
+
+            // Fail closed on trailing positionals no action will read (#17262):
+            // only `Check` consumes `files`, and clap's `requires = "check"`
+            // does not reliably reject junk on conflicting actions
+            // (`--ripr-facts EXTRA` parsed Ok and the packet silently dropped
+            // the token). Key on the RESOLVED action, not the parsed --check
+            // flag: health/info win over --check in dispatch yet neither
+            // conflicts with it, so `--health --check file.pl` resolves Health
+            // and would silently drop the file. This also covers any future
+            // flag/action skew, not just health/info.
+            if action != LaunchAction::Check && !parsed_args.files.is_empty() {
+                return Err(LaunchParseError::UnexpectedPositionals {
+                    tokens: parsed_args.files.clone(),
+                });
+            }
 
             Ok(LaunchPlan { action, config, files: parsed_args.files })
         }
@@ -2350,6 +2379,19 @@ mod tests {
     }
 
     #[test]
+    fn ripr_facts_rejects_trailing_positionals() {
+        // `--ripr-facts EXTRA` used to exit 0 with a packet byte-identical to
+        // the no-junk run: clap's `requires = "check"` never fired and the
+        // dispatch arm never read the token (#17262).
+        let error = must_err(parse_args(["perl-lsp", "--ripr-facts", "EXTRA"]));
+        let rendered = error.to_string();
+        assert!(
+            rendered.contains("'EXTRA'") && rendered.contains("--check"),
+            "rejection must name the junk token and the only action taking files; got:\n{rendered}"
+        );
+    }
+
+    #[test]
     fn conflict_usage_names_no_positional_files() {
         // `--ripr-facts --check x` must still exit 1 with the conflict error,
         // but the usage line must not invent `<FILES>...` syntax for
@@ -2364,6 +2406,50 @@ mod tests {
             !rendered.contains("FILES"),
             "conflict usage must name no positional FILES; got:\n{rendered}"
         );
+    }
+
+    #[test]
+    fn non_check_actions_reject_trailing_positionals() {
+        // Bare and server-mode junk: bare EXTRA was already rejected by clap's
+        // `requires`; --info/--health paths must fail closed too.
+        assert!(parse_args(["perl-lsp", "EXTRA"]).is_err());
+        assert!(parse_args(["perl-lsp", "--info", "EXTRA"]).is_err());
+        assert!(parse_args(["perl-lsp", "--socket", "--port", "9999", "EXTRA"]).is_err());
+    }
+
+    #[test]
+    fn check_and_doctor_positional_flows_are_untouched() {
+        // --check consumes trailing files; --doctor takes its dir as an
+        // option value (files stays empty) — neither may trip the rejection.
+        let plan = must(parse_args(["perl-lsp", "--check", "script.pl"]));
+        assert_eq!(plan.files, vec!["script.pl".to_string()]);
+        let plan = must(parse_args(["perl-lsp", "--doctor", "app/"]));
+        assert_eq!(plan.action, LaunchAction::Doctor { dir: "app/".to_string(), json: false });
+    }
+
+    #[test]
+    fn health_check_combo_rejects_ignored_files() {
+        // Health/info win dispatch over --check yet neither conflicts with it,
+        // so `--health --check file.pl` resolves Health — keying the rejection
+        // on the parsed --check flag would silently drop the file (#17262).
+        for combo in [
+            ["perl-lsp", "--health", "--check", "file.pl"].as_slice(),
+            ["perl-lsp", "--info", "--check", "file.pl"].as_slice(),
+        ] {
+            let error = must_err(parse_args(combo));
+            let rendered = error.to_string();
+            assert!(
+                rendered.contains("'file.pl'"),
+                "rejection must name the ignored file; got:\n{rendered}"
+            );
+        }
+    }
+
+    #[test]
+    fn health_check_combo_without_files_still_dispatches_health() {
+        // No files, no rejection: the flag combo keeps its historical dispatch.
+        let plan = must(parse_args(["perl-lsp", "--health", "--check"]));
+        assert_eq!(plan.action, LaunchAction::Health);
     }
 
     #[test]
