@@ -21,8 +21,14 @@
 //! line must appear in it and the `+++ b/` marker must name the staged path;
 //! both are asserted at load so a rotting fixture fails here rather than as a
 //! mysterious attribution miss.
+//!
+//! On success each leg prints the per-fixture score table plus a one-line
+//! `MATCH` summary so reference baselines capture values, not just pass/fail.
 
-#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598); see src/lib.rs.
+#![deny(clippy::map_err_ignore)]
+// Cohort C0 activation (#12598); see src/lib.rs.
+// Score output is the bench's baselining contract (cf. E1/A1/P3 MATCH lines).
+#![allow(clippy::print_stdout)]
 
 use perl_ripr_facts::{RiprFactsRequest, build_ripr_facts_packet};
 use perl_tdd_support::{must_some_with, must_with};
@@ -371,6 +377,10 @@ fn c2_assert_precision_for_leg(
     assert!(
         precision >= MIN_PRECISION,
         "C2 {leg} precision {precision:.3} ({correct}/{emitted}) is below the {MIN_PRECISION} bar\n{report}"
+    );
+    print!("{report}");
+    println!(
+        "C2 {leg} | precision={correct}/{emitted} = {precision:.3} bar={MIN_PRECISION} | MATCH"
     );
 }
 
