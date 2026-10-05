@@ -89,7 +89,8 @@ LC_ALL=C exec awk -v trace="$prefix.trace.log" -v reasons="$prefix.dirty.log" -v
         # be padded; projected events keep a pending chain until a real
         # ordinary stderr/status boundary, even if a payload spoofs a header.
         plain=$0; gsub(/\033\[[0-9;]*[[:alpha:]]/,"",plain)
-        tagged=(plain ~ /^[[:space:]]*[0-9]+\.[0-9]{9}s[[:space:]]+(TRACE|DEBUG|INFO|WARN|ERROR)[[:space:]]+/ && plain ~ /cargo::core::compiler::fingerprint/)
+        # Spell out nine digits for awk implementations without intervals.
+        tagged=(plain ~ /^[[:space:]]*[0-9]+\.[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]s[[:space:]]+(TRACE|DEBUG|INFO|WARN|ERROR)[[:space:]]+/ && plain ~ /cargo::core::compiler::fingerprint/)
         if (error_chain && !tagged && plain !~ /^[[:space:]]*(Compiling |Checking |Finished |error(\[E[0-9]+\])?:|warning:)/ && (plain ~ /^[[:space:]]*$/ || plain ~ /^(Caused by:|Stack backtrace:|stack backtrace:)/ || plain ~ /^[[:space:]]/)) { continuations++; next }
     }
     /cargo::core::compiler::fingerprint/ {

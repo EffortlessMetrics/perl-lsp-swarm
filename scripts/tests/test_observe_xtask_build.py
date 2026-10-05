@@ -310,6 +310,55 @@ DIAGNOSTIC
         self.assertGreaterEqual(record["stderr"]["filtered_error_continuations"], 6)
         self.assertFalse(record["selected_trace_complete"])
 
+    def test_native_header_projection_without_interval_expressions(self):
+        # Execute the production collector directly. GNU awk's traditional
+        # mode exercises a real interpreter profile without regexp intervals;
+        # other interpreters still run the default-profile controls.
+        source = OBSERVER.read_text()
+        program = source.split('summary="$prefix.stderr.json" \'\n', 1)[1].split("\n'\n}", 1)[0]
+        shell = 'export PATH=/usr/bin:/bin:$PATH; exec awk "$@"'
+        probe = subprocess.run([BASH, "--noprofile", "--norc", "-c", shell, "interval-probe",
+                                "--traditional", 'BEGIN { print ("123456789" ~ /^[0-9]{9}$/) }'],
+                               capture_output=True, text=True, timeout=5)
+        modes = [("default", [])]
+        if probe.returncode == 0 and probe.stdout.strip() == "0":
+            modes.append(("without-intervals", ["--traditional"]))
+        marker = "cargo::core::compiler::fingerprint:"
+        secret = "CONTROL-SYNTHETIC-HEADER-PAYLOAD"
+        payload = "\n".join([
+            f"   0.010000000s INFO {marker} fingerprint error for fixture",
+            f"   0.010000001s INFO {marker}     err: {secret}", "Caused by:", f"    {secret}",
+            f"   0.010000002s INFO {marker}     dirty: FreshBuild {{ {secret} }}",
+            f"   0.010000003s TRACE {marker} fingerprint at: /work/{secret}",
+            f"   0.01000000s INFO {marker} dirty: Forced",
+            f"   0.0100000000s INFO {marker} dirty: Forced",
+            f"   0.01000000xs INFO {marker} dirty: Forced",
+            f"   0.010000004s INFO unrelated.target: {secret}",
+            f"    read {marker} dirty: Forced", f"    {secret}",
+            "    \033[32mCompiling\033[0m header-control v1.0.0", "ordinary stderr", ""])
+        for name, flags in modes:
+            with self.subTest(profile=name):
+                trace = self.work / f"header-{name}.trace.log"
+                summary = self.work / f"header-{name}.json"
+                result = subprocess.run(
+                    [BASH, "--noprofile", "--norc", "-c", shell, "native-header-control", *flags,
+                     "-v", f"trace={posix(trace)}", "-v", "reasons=/dev/null", "-v", "finished=/dev/null",
+                     "-v", f"summary={posix(summary)}", program],
+                    input=payload, capture_output=True, text=True, timeout=5)
+                self.assertEqual(result.returncode, 0)
+                record = json.loads(summary.read_text())
+                retained = trace.read_text()
+                self.assertEqual(record["fingerprint_lines"], 4)
+                self.assertEqual(record["fingerprint_errors"], 1)
+                self.assertEqual(record["compiling_messages"], 1)
+                self.assertGreaterEqual(record["filtered_error_continuations"], 8)
+                self.assertIn("dirty: FreshBuild (details omitted)", retained)
+                self.assertIn("fingerprint at: (context omitted)", retained)
+                self.assertNotIn("Forced", retained)
+                self.assertNotIn(secret, retained + result.stdout + result.stderr)
+                self.assertIn("header-control", result.stderr)
+                self.assertIn("ordinary stderr", result.stderr)
+
     def test_missing_source_identity_is_not_accepted(self):
         _, record = self.observe(FAKE_CHANGE="missing-head")
         self.assertFalse(record["identity_stable"])
