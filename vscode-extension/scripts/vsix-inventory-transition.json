@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
   "owner_issue": 7804,
-  "reason": "Merge reconciliation after main moved (#17200/#17203 installed receipt assembler wiring): against the accepted main baseline, this candidate changes only out/extension.js (+14451 bytes) for the managedHttpTransport module and the proxy-aware downloader routing; package.json carries main accepted +46 bytes unchanged, all 30 package members and every other byte limit remain as declared; size-only growth, no structural packaging change.",
+  "reason": "Repair the plain-HTTP proxy inner hop against the extension-host patch self-CONNECT loop (http.proxySupport: override): against the prior candidate baseline this candidate changes only out/extension.js (+2386 bytes) for the http.ClientRequest inner-hop construction, the patched-host transport test, and the verified patch-behavior module header; package.json and all other members remain as declared; size-only growth, no structural packaging change.",
   "base_baseline_file_sha256": "ed73e4ac567f36d73e987ffda907a272e2e35afcef0cb1640eabb636300b6291",
-  "candidate_baseline_file_sha256": "61f5d55f5ef47d5bddebb42fcf80a5ed220a19c40fa1945b387a1a5c591b9410",
+  "candidate_baseline_file_sha256": "858eedfd9df10f4c52d9f7a48a2e25cc329818f5513fc2a1f9b5bd1b6ff79c7f",
   "base_inventory_sha256": "eca87de013c378aed31924190eaf783fb691e3b850fa8eb99c1eeb93efef4f6f",
-  "candidate_inventory_sha256": "7df38db309ec045317b2f0ef8eefe069c46299434416063663b5a4156458084e"
+  "candidate_inventory_sha256": "f7af875eac06d2898b826f2dd6016b26bbc04f992901ff5b62ab80ad59259dce"
 }

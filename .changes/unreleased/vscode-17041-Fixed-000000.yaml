@@ -1,7 +1,7 @@
 project: vscode
 component: Packaging and distribution
 kind: Fixed
-body: Managed binary downloads now honor the `http.proxy` setting and the standard proxy environment variables (including CONNECT tunnels for HTTPS release hosts), follow relative redirects instead of failing the archive download, keep proxy credentials out of every error and log, and classify proxy/TLS failures as actionable network problems.
+body: Managed binary downloads now honor the `http.proxy` setting and the standard proxy environment variables (including CONNECT tunnels for HTTPS release hosts), follow relative redirects instead of failing the archive download, keep proxy credentials out of every error and log, classify proxy/TLS failures as actionable network problems, and route the proxy hop itself around the extension host's patched HTTP modules so a proxy that resolves itself cannot loop the plain-HTTP path.
 time: 2026-10-01T00:00:00Z
 custom:
   PR: 17041

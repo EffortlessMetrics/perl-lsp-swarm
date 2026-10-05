@@ -25,12 +25,27 @@ import type { Duplex } from 'stream';
  *
  * In the VS Code extension host the patched `http`/`https` modules route
  * requests through VS Code's proxy agent according to `http.proxySupport`
- * (default `override`). Verified patch behavior (`createHttpPatch`): an
- * explicitly provided agent is honored for localhost targets and when support
- * is `off`, and replaced by VS Code's own agent otherwise — the same resolved
- * route either way, so an explicit agent never double-proxies. Plain Node
- * (unit tests, non-patched hosts) uses the explicit agent directly, which is
- * the environment where raw `http.get`/`https.get` ignored `http.proxy` (#7804).
+ * (default `override`). Verified patch behavior (`createHttpPatch` in
+ * microsoft/vscode-proxy-agent `src/index.ts`): only the `get`/`request`
+ * module functions are substituted, and under `override`/`fallback` any agent
+ * that is not a `PacProxyAgent` — including `agent: false` — is replaced by
+ * VS Code's agent unless the request target is localhost. For target-bound
+ * requests that replacement resolves the proxy for the destination: the same
+ * resolved route either way, so an explicit agent never double-proxies the
+ * target. For the transport's own proxy-directed inner hop that substitution
+ * is a hazard instead of a convergence: the request's target IS the proxy, so
+ * the replacement resolves the proxy for the proxy host itself and loops the
+ * plain-HTTP absolute-form request into a self-CONNECT. The extension host
+ * merges the patch into the module object itself, overwriting only
+ * `get`/`request` (`mergeModules` in microsoft/vscode
+ * `src/vs/workbench/api/node/proxyResolver.ts`), so every other member —
+ * including the `http.ClientRequest` constructor — stays the unpatched Node
+ * original. The plain-HTTP inner hop therefore constructs its request with
+ * that constructor instead of the substituted module functions, and
+ * `agent: false` keeps its one-shot Node semantics in every host. Plain
+ * Node (unit tests, non-patched hosts) uses the explicit agent directly, which
+ * is the environment where raw `http.get`/`https.get` ignored `http.proxy`
+ * (#7804).
  */
 
 /** Stable error prefix so downloader's network classifier recognizes proxy dispositions. */
@@ -446,9 +461,19 @@ export function createManagedHttpRequest(params: {
   readonly options: https.RequestOptions;
   readonly callback: (response: http.IncomingMessage) => void;
   readonly proxySources?: ManagedProxySources | undefined;
+  /**
+   * `http`-shaped module surface for the plain-HTTP inner hop. Production
+   * resolves no override and uses Node's own `http` module — the same object
+   * the extension host's proxy patch merges its `get`/`request` substitutions
+   * into, keeping `ClientRequest` unpatched. Tests supply a patched-module
+   * shape to emulate `http.proxySupport: 'override'` and assert the inner hop
+   * never consults the substituted functions.
+   */
+  readonly httpModule?: typeof http | undefined;
 }): http.ClientRequest {
   const { isHttps, url, options, callback } = params;
   const sources = params.proxySources ?? {};
+  const innerHttp = params.httpModule ?? http;
   const targetUrl = new URL(url);
   const resolution = resolveManagedProxy(targetUrl, sources);
 
@@ -461,7 +486,7 @@ export function createManagedHttpRequest(params: {
     if (targetUrl.protocol === 'https:') {
       return httpsOverProxyRequest(resolution.proxyUrl, url, options, callback);
     }
-    return httpOverProxyRequest(resolution.proxyUrl, targetUrl, options, callback);
+    return httpOverProxyRequest(resolution.proxyUrl, targetUrl, options, callback, innerHttp);
   }
   return isHttps ? https.get(url, options, callback) : http.get(url, options, callback);
 }
@@ -469,30 +494,50 @@ export function createManagedHttpRequest(params: {
 /**
  * Plain HTTP target through a proxy: one absolute-form request to the proxy
  * (RFC 7230 §5.3.2). The Host header stays the target's; the proxy forwards.
+ *
+ * The inner hop is issued through the unpatched `http.ClientRequest`
+ * constructor instead of the `http.request` module function. Under the VS Code
+ * default `http.proxySupport: 'override'` the verified `createHttpPatch`
+ * replaces a non-`PacProxyAgent` agent (including `agent: false`) with VS
+ * Code's proxy agent for every non-localhost target; this request's target is
+ * the proxy itself, so that replacement would resolve the proxy for the proxy
+ * host and self-CONNECT loop. The patch substitutes only the module
+ * `get`/`request` functions, never the constructor, so the constructor reaches
+ * Node core where `agent: false` stays one-shot. An `https:` proxy keeps its
+ * explicit `protocol` so the default agent selection and one-shot agent are
+ * the TLS ones, exactly as `https.request` would build them. The CONNECT hop
+ * inside `ConnectTunnelAgent` needs no bypass: under `override` the outer
+ * request's agent is replaced before `createConnection` runs (VS Code resolves
+ * the target's own proxy), under `on` the patch passes a non-undefined agent
+ * through unmodified, and plain Node never patches at all.
  */
 function httpOverProxyRequest(
   proxyUrl: URL,
   targetUrl: URL,
   options: https.RequestOptions,
   callback: (response: http.IncomingMessage) => void,
+  httpModule: typeof http,
 ): http.ClientRequest {
   const proxy = parseResolvedProxy(proxyUrl);
-  const request = proxyRequestFor(proxy.protocol, options.rejectUnauthorized ?? true)(
-    {
-      hostname: proxy.hostname,
-      port: proxy.port,
-      method: 'GET',
-      path: `${targetUrl.protocol}//${targetUrl.host}${targetUrl.pathname}${targetUrl.search}`,
-      headers: {
-        ...options.headers,
-        host: targetUrl.host,
-        ...proxyAuthorizationHeader(proxy),
-      },
-      // One-shot proxied request: never pool through another agent.
-      agent: false,
+  const innerOptions: https.RequestOptions = {
+    hostname: proxy.hostname,
+    port: proxy.port,
+    method: 'GET',
+    path: `${targetUrl.protocol}//${targetUrl.host}${targetUrl.pathname}${targetUrl.search}`,
+    headers: {
+      ...options.headers,
+      host: targetUrl.host,
+      ...proxyAuthorizationHeader(proxy),
     },
-    callback,
-  );
+    // One-shot proxied request: never pool through another agent.
+    agent: false,
+  };
+  if (proxy.protocol === 'https:') {
+    innerOptions.protocol = 'https:';
+    innerOptions.rejectUnauthorized = options.rejectUnauthorized ?? true;
+  }
+  const request = new httpModule.ClientRequest(innerOptions);
+  request.once('response', callback);
   request.end();
   return request;
 }

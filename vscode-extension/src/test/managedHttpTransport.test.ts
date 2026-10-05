@@ -155,6 +155,7 @@ function requestViaTransport(params: {
   url: string;
   proxySetting?: string | undefined;
   env?: NodeJS.ProcessEnv | undefined;
+  httpModule?: typeof http | undefined;
 }): Promise<{ body: string; error?: Error }> {
   return new Promise((resolve, reject) => {
     let request: http.ClientRequest;
@@ -180,6 +181,7 @@ function requestViaTransport(params: {
           settingProxyUrl: params.proxySetting,
           env: params.env ?? {},
         },
+        httpModule: params.httpModule,
       });
       request.once('error', (error) => finish(error));
     } catch (error) {
@@ -430,6 +432,77 @@ describe('createManagedHttpRequest over a proxy', () => {
       }),
     ).rejects.toThrow(`${MANAGED_PROXY_ERROR_PREFIX} configuration is unsupported`);
     expect(proxy.requests).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Patched extension-host inner hop (http.proxySupport: 'override')
+// ---------------------------------------------------------------------------
+describe('createManagedHttpRequest inner hop under a patched extension host', () => {
+  let proxy: ProxyFixture;
+  let deadTargetPort: number;
+
+  beforeEach(async () => {
+    proxy = await startProxyFixture();
+    deadTargetPort = await closedLocalPort();
+  });
+
+  afterEach(async () => {
+    await proxy.close();
+  });
+
+  test('plain-HTTP inner hop bypasses the patched http module so the proxy is never resolved against itself', async () => {
+    // Emulate the verified extension-host patch shape. Under the VS Code
+    // default `http.proxySupport: 'override'` the host merges
+    // `createHttpPatch` into the `http` module object, overwriting only
+    // `get`/`request` (`mergeModules` in microsoft/vscode
+    // `src/vs/workbench/api/node/proxyResolver.ts`); for a non-`PacProxyAgent`
+    // agent (including `agent: false`) on a non-localhost target the
+    // substituted function re-routes the request through a PacProxyAgent. The
+    // transport's inner hop targets the proxy itself, so such a re-route
+    // resolves the proxy for the proxy host and self-CONNECT loops; the
+    // emulation fails loud instead of hanging. `ClientRequest` stays the
+    // unpatched Node constructor on the patched module, exactly as in the
+    // extension host.
+    let patchedInvocations = 0;
+    const patchedFunction = ((..._args: unknown[]) => {
+      patchedInvocations += 1;
+      throw new Error(
+        'patched http module function invoked for the managed inner hop: PacProxyAgent would resolve the proxy for the proxy host and self-CONNECT loop',
+      );
+    }) as unknown as typeof http.request;
+    const patchedHttpModule = {
+      ...http,
+      request: patchedFunction,
+      get: patchedFunction,
+    } as unknown as typeof http;
+
+    // Negative control: the emulation does intercept module-function
+    // requests, so a regression to `request`/`get` routing is observable.
+    expect(() =>
+      patchedHttpModule.request(
+        { host: '127.0.0.1', port: deadTargetPort, path: '/' },
+        () => undefined,
+      ),
+    ).toThrow(/self-CONNECT loop/);
+    expect(patchedInvocations).toBe(1);
+
+    const { body, error } = await requestViaTransport({
+      url: `http://127.0.0.1:${deadTargetPort}/asset.bin?x=1`,
+      proxySetting: `http://127.0.0.1:${proxy.port}`,
+      httpModule: patchedHttpModule,
+    });
+    // The inner hop reached the proxy through the unpatched
+    // `http.ClientRequest` constructor carried by the patched module: the
+    // proxied request succeeded and the substituted functions were never
+    // consulted again.
+    expect(error).toBeUndefined();
+    expect(body).toBe(PROXIED_BODY);
+    expect(patchedInvocations).toBe(1);
+    expect(proxy.requests).toHaveLength(1);
+    expect(proxy.requests[0]?.method).toBe('GET');
+    expect(proxy.requests[0]?.url).toBe(`http://127.0.0.1:${deadTargetPort}/asset.bin?x=1`);
+    expect(proxy.requests[0]?.headers.host).toBe(`127.0.0.1:${deadTargetPort}`);
   });
 });
 
