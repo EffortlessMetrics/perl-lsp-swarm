@@ -3781,14 +3781,12 @@ mod tests {
 
         // This is an actual inherited method, with a same-named Caller override
         // that would expose bypassed inheritance lookup or a guessed local target.
+        // A plain Base package need not have a ClassModel: prove Caller ancestry
+        // and the production workspace target before the whole-handler request.
         let parent_source = "package Base;\nsub override { 'base' }\npackage Caller;\nour @ISA = ('Base');\nsub override { 'caller' }\nsub invoke { shift->SUPER::override() }\nprint Caller->invoke();\n";
         let ast = Parser::new(parent_source).parse()?;
         let analyzer = crate::semantic::SemanticAnalyzer::analyze_with_source(&ast, parent_source);
-        let parent = analyzer
-            .resolve_inherited_method_location("Caller", "override")
-            .ok_or("source-built Base ancestor target")?;
-        let base_start = parent_source.find("sub override").ok_or("Base declaration")?;
-        assert!(parent.start == base_start || parent.start == base_start + 4);
+        assert_eq!(analyzer.resolve_parent_chain("Caller"), Some(vec!["Base".to_string()]));
         let server = LspServer::new();
         let uri = "file:///workspace/super-proved-parent.pl";
         server.test_apply_did_open(uri, parent_source, 1)?;
@@ -3798,6 +3796,16 @@ mod tests {
             .map_err(std::io::Error::other)?;
         server.test_simulate_indexing_complete();
         assert!(!server.workspace_index_stale_for_any_open_document());
+        let parent = inherited_method_definition_location(
+            server.index_coordinator.as_ref().ok_or("parent coordinator")?.index(),
+            "Caller",
+            "override",
+        )
+        .and_then(|location| crate::workspace_index::lsp_adapter::to_lsp_location(&location))
+        .ok_or("workspace-index Base ancestor target")?;
+        let parent_result = Some(json!([parent]));
+        assert_qualified_fallback_location(&parent_result, uri, 1);
+        assert_qualified_fallback_start(&parent_result, &[0, 4]);
         let call = parent_source.lines().nth(5).ok_or("inherited call line")?;
         let result =
             qualified_fallback_request(&server, uri, 5, call.find("override").ok_or("call")? + 2)?;
