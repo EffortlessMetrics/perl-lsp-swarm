@@ -21,9 +21,12 @@
 //!   (evidence ref).
 //! - `total_benchmarks` — the `Total benchmarks:` count; must equal the number
 //!   of parsed timing rows (scores).
-//! - `passed_targets` / `failed_targets` — the target score lines (scores).
+//! - `passed_targets` / `failed_targets` — the target score lines (scores);
+//!   printed only when at least one target was scored, so absent (pinned
+//!   `None`) on targetless receipts such as the vacuous run.
 //! - `timings` — one `name duration [marker]` row per benchmark with a numeric
-//!   `<float><unit>` duration (scores).
+//!   `<float><unit>` duration (scores). Names are producer-verbatim and may
+//!   contain spaces, so rows parse from the right.
 //! - `failed_categories` — the `FAILED CATEGORIES:` section naming each failed
 //!   category with its error (unresolved items); absent on a clean receipt.
 //!
@@ -66,8 +69,9 @@ const FIXTURE_SHA: &str = "a1bench0deadbeef1234567890abcdef12345678";
 const FIXTURE_VERSION: &str = "0.9.0";
 
 /// Minimal simplified-format results (the shape `bench-extract` writes):
-/// two benchmarks, one meeting its target and one missing it, so the score
-/// lines discriminate instead of merely existing.
+/// three benchmarks, one meeting its target, one missing it, and one spaced
+/// name (`state transitions`, from the supported `run-benchmarks.sh`
+/// producer), so the score lines discriminate instead of merely existing.
 fn complete_fixture() -> Value {
     serde_json::json!({
         "version": FIXTURE_VERSION,
@@ -83,7 +87,8 @@ fn complete_fixture() -> Value {
             "parser": {
                 "_category": "parser",
                 "parse_simple_script": {"mean_ns": 1500, "meets_target": true},
-                "parse_large_file": {"mean_ns": 2_500_000, "meets_target": false}
+                "parse_large_file": {"mean_ns": 2_500_000, "meets_target": false},
+                "state transitions": {"mean_ns": 1_100_000, "meets_target": true}
             }
         }
     })
@@ -148,6 +153,10 @@ fn stage_results(payload: &Value) -> Result<(tempfile::TempDir, PathBuf)> {
 fn run_bench_format(stage: &Path) -> Result<Output> {
     let output = Command::cargo_bin("xtask")?
         .current_dir(stage)
+        // The stage is hermetic on disk but the child inherits our env, and
+        // `run_python_script` passes it on to `python3`: a foreign PYTHONPATH
+        // could shadow the stdlib modules the formatter imports.
+        .env_remove("PYTHONPATH")
         .args(["bench-format", "--receipt"])
         .output()
         .context("A1 bench-format --receipt spawn failed")?;
@@ -174,28 +183,28 @@ fn prefixed_line<'a>(stdout: &'a str, prefix: &str) -> Option<&'a str> {
 }
 
 /// Parse the `<name> <duration> [[OK|FAIL]]` rows of one `<CATEGORY>
-/// BENCHMARKS:` section. Durations must be numeric `<float><unit>` with a
-/// known unit; anything else is a readability hole, not a row.
+/// BENCHMARKS:` section. Names come from the producer verbatim and may
+/// contain spaces (`state transitions` in the `run-benchmarks.sh` parse
+/// fixtures), so rows parse from the right: an optional trailing marker,
+/// then a numeric `<float><unit>` duration, then the name. Durations must
+/// carry a known unit; anything else is a readability hole, not a row.
 fn parse_timing_row(line: &str) -> Option<(String, String)> {
-    let mut tokens = line.split_whitespace();
-    let name = tokens.next()?;
-    let duration = tokens.next()?;
-    if let Some(marker) = tokens.next()
-        && marker != "[OK]"
-        && marker != "[FAIL]"
-    {
-        return None;
+    let mut tokens = line.split_whitespace().collect::<Vec<_>>();
+    if matches!(tokens.last(), Some(marker) if *marker == "[OK]" || *marker == "[FAIL]") {
+        tokens.pop();
     }
-    if tokens.next().is_some() {
-        return None;
-    }
+    let duration = tokens.pop()?;
     let magnitude = duration
         .strip_suffix("ns")
         .or_else(|| duration.strip_suffix("us"))
         .or_else(|| duration.strip_suffix("ms"))
         .or_else(|| duration.strip_suffix('s'))?;
     magnitude.parse::<f64>().ok()?;
-    Some((name.to_string(), duration.to_string()))
+    let name = tokens.join(" ");
+    if name.is_empty() {
+        return None;
+    }
+    Some((name, duration.to_string()))
 }
 
 /// Strict parse of the receipt stdout grammar. Every required key extracts
@@ -254,7 +263,14 @@ fn parse_receipt(stdout: &str) -> Receipt {
             }
             continue;
         }
-        if in_timings && let Some((name, duration)) = parse_timing_row(line) {
+        // Blank lines and SUMMARY: are consumed above, so every line reaching
+        // the timings branch is a nonempty row candidate: a readability hole
+        // must fail the bench, never drop silently.
+        if in_timings {
+            let (name, duration) = must_some_with(
+                parse_timing_row(line),
+                "A1 timing row must match `<name> <float><unit> [marker]`",
+            );
             timings.insert(name, duration);
         } else if in_failures && let Some((category, error)) = line.trim().split_once(':') {
             failed_categories.insert(category.trim().to_string(), error.trim().to_string());
@@ -277,7 +293,8 @@ fn assert_run_id_shape(run_id: &str) {
 }
 
 /// Complete receipt: exit 0, `COMPLETE` verdict, both score lines present with
-/// discriminating values, both timing rows parseable, no unresolved items.
+/// discriminating values, all three timing rows parseable (including the
+/// spaced name), no unresolved items.
 #[test]
 fn a1_complete_receipt_has_all_required_keys() -> Result<()> {
     let (_temp, stage) = stage_results(&complete_fixture())?;
@@ -296,12 +313,13 @@ fn a1_complete_receipt_has_all_required_keys() -> Result<()> {
     assert_eq!(receipt.version, FIXTURE_VERSION, "A1 `version` must echo the fixture\n{stdout}");
     assert_eq!(
         receipt.timings.len(),
-        2,
-        "A1 `timings` must hold both fixture benchmarks\n{stdout}"
+        3,
+        "A1 `timings` must hold all three fixture benchmarks\n{stdout}"
     );
     assert!(
         receipt.timings.contains_key("parse_simple_script")
-            && receipt.timings.contains_key("parse_large_file"),
+            && receipt.timings.contains_key("parse_large_file")
+            && receipt.timings.contains_key("state transitions"),
         "A1 `timings` must name the fixture benchmarks\n{stdout}"
     );
     assert_eq!(
@@ -309,7 +327,7 @@ fn a1_complete_receipt_has_all_required_keys() -> Result<()> {
         receipt.timings.len() as u32,
         "A1 `total_benchmarks` must equal the timing row count\n{stdout}"
     );
-    assert_eq!(receipt.passed, Some(1), "A1 `passed_targets` must be 1\n{stdout}");
+    assert_eq!(receipt.passed, Some(2), "A1 `passed_targets` must be 2\n{stdout}");
     assert_eq!(receipt.failed, Some(1), "A1 `failed_targets` must be 1\n{stdout}");
     assert!(
         receipt.failed_categories.is_empty(),
@@ -384,6 +402,10 @@ fn a1_vacuous_receipt_verdict_stays_machine_readable() -> Result<()> {
     assert_eq!(receipt.version, FIXTURE_VERSION, "A1 `version` must echo the fixture\n{stdout}");
     assert_eq!(receipt.total, 0, "A1 `total_benchmarks` must be 0\n{stdout}");
     assert!(receipt.timings.is_empty(), "A1 vacuous receipt must have no timings\n{stdout}");
+    // `format-results.py` prints the target lines only when a target was
+    // scored: pin the absence so a formatter change fails loudly here.
+    assert_eq!(receipt.passed, None, "A1 vacuous receipt must omit `passed_targets`\n{stdout}");
+    assert_eq!(receipt.failed, None, "A1 vacuous receipt must omit `failed_targets`\n{stdout}");
 
     println!(
         "A1 vacuous | verdict={} total={} timings={} | MATCH",
