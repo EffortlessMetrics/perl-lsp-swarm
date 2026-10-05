@@ -1,6 +1,6 @@
 //! The `perl-ripr-facts` standalone binary's `ripr-facts` subcommand
 //! ([`run_cli`]) and the thin `run_ripr_facts`/`run_ripr_facts_with_diff`
-//! wrapper the `perl-lsp` / `perllsp` `ripr-facts` subcommand calls: argv
+//! wrapper the `perl-lsp` / `perllsp` `--ripr-facts` flag calls: argv
 //! parsing, output-path validation, writing the packet to disk, and mapping
 //! to a process exit code. All the actual fact production happens in
 //! [`crate::packet::build_ripr_facts_packet`].
@@ -40,6 +40,7 @@ impl Default for RiprFactsCli {
     clippy::print_stderr,
     reason = "ripr-facts is a batch CLI unit — user-facing diagnostics intentionally use stderr"
 )]
+#[expect(clippy::print_stdout, reason = "explicit --help output goes to stdout by convention")]
 /// Entry point for the `perl-ripr-facts` binary. Parses argv, runs the requested
 /// packet generation, and returns a process exit code.
 pub fn run_cli<I, S>(args: I) -> i32
@@ -49,13 +50,26 @@ where
 {
     let args: Vec<String> = args.into_iter().map(Into::into).collect();
     let cli = match parse_ripr_facts_cli(&args) {
-        Ok(cli) => cli,
+        Ok(CliParse::Run(cli)) => cli,
+        Ok(CliParse::Help) => {
+            println!("{}", ripr_facts_usage());
+            return 0;
+        }
         Err(reason) => {
             eprintln!("ripr-facts: {reason}");
             eprintln!("{}", ripr_facts_usage());
             return 1;
         }
     };
+
+    // Fail fast on an invalid write destination before any diff I/O: an
+    // unreadable `--diff` must not mask a directory-valued `--out`, and a
+    // readable diff must not be read only to reject the destination afterwards
+    // (#17263 review). Same shared check the wrapper runs before the scan.
+    if let Err(line) = validate_out_destination(&cli.out) {
+        eprintln!("{line}");
+        return 1;
+    }
 
     let diff_text = match cli.diff_path.as_deref() {
         Some(path) => match read_diff_text(&cli.root, path) {
@@ -79,12 +93,19 @@ where
     )
 }
 
-fn parse_ripr_facts_cli(args: &[String]) -> Result<RiprFactsCli, String> {
+/// Parse outcome: run the packet generation, or print usage (explicit
+/// `--help`/`-h` in flag position — never a value — exits 0, not 1).
+enum CliParse {
+    Run(RiprFactsCli),
+    Help,
+}
+
+fn parse_ripr_facts_cli(args: &[String]) -> Result<CliParse, String> {
     let mut iter = args.iter();
     let _program = iter.next();
     match iter.next().map(String::as_str) {
         Some("ripr-facts") => {}
-        Some("--help" | "-h") => return Err("missing subcommand `ripr-facts`".to_string()),
+        Some("--help" | "-h") => return Ok(CliParse::Help),
         Some(other) => return Err(format!("unexpected subcommand or option `{other}`")),
         None => return Err("missing subcommand `ripr-facts`".to_string()),
     }
@@ -94,6 +115,12 @@ fn parse_ripr_facts_cli(args: &[String]) -> Result<RiprFactsCli, String> {
     let mut index = 0usize;
     while index < rest.len() {
         let flag = rest[index];
+        // Help in flag position short-circuits before value consumption, so a
+        // trailing `--help` is help, not a "missing value" error. A `--help`
+        // in *value* position (e.g. `--out --help`) stays a value.
+        if matches!(flag, "--help" | "-h") {
+            return Ok(CliParse::Help);
+        }
         let value = rest.get(index + 1).ok_or_else(|| format!("missing value for `{flag}`"))?;
         match flag {
             "--schema" => cli.schema = (*value).to_string(),
@@ -108,13 +135,15 @@ fn parse_ripr_facts_cli(args: &[String]) -> Result<RiprFactsCli, String> {
         index += 2;
     }
 
-    Ok(cli)
+    Ok(CliParse::Run(cli))
 }
 
 fn ripr_facts_usage() -> &'static str {
-    "usage: perl-ripr-facts ripr-facts --schema ripr-perl-facts-v1 --root <root> \
+    "usage: perl-ripr-facts ripr-facts [--schema ripr-perl-facts-v1] [--root <root>] \
      [--base <base>] [--head <head>] [--fact-classes <classes>] \
-     [--diff <cwd-relative-diff>] --out <out>"
+     [--diff <cwd-relative-diff>] [--out <out>]\n\
+     defaults: --schema ripr-perl-facts-v1, --root ., --fact-classes <all classes>, \
+     --out target/ripr/reports/perl-facts.json"
 }
 
 fn read_diff_text(root: &str, diff_path: &str) -> Result<String, String> {
@@ -123,6 +152,26 @@ fn read_diff_text(root: &str, diff_path: &str) -> Result<String, String> {
     let path = std::path::Path::new(diff_path);
     std::fs::read_to_string(path)
         .map_err(|error| format!("failed to read diff `{}`: {error}", path.display()))
+}
+
+/// Validate the `out` write destination: repo-relative shape plus target kind.
+///
+/// Shape validation alone says nothing about target kind, so `out` naming an
+/// existing directory used to scan the whole workspace and then die with a raw
+/// OS error that never said "is a directory" (#17263). This fails fast
+/// instead, naming the condition. (`is_dir` follows symlinks, matching what
+/// the write path would hit; a TOCTOU dir still fails closed below, just less
+/// prettily.)
+///
+/// Shared by both entry points — [`run_cli`] (before diff I/O) and
+/// [`run_ripr_facts_with_diff`] (before the workspace scan) — so the two
+/// cannot drift. The `Err` is the complete stderr line, ready to print.
+fn validate_out_destination(out: &str) -> Result<(), String> {
+    validate_ripr_facts_path(out, "out").map_err(|reason| format!("ripr-facts: {reason}"))?;
+    if std::path::Path::new(out).is_dir() {
+        return Err(out_names_directory_message(out));
+    }
+    Ok(())
 }
 
 /// Run the `ripr-facts` exporter (Campaign 31, ripr-swarm#1379).
@@ -166,8 +215,8 @@ pub fn run_ripr_facts_with_diff(
 ) -> i32 {
     // Validate the output path first — the cheapest check — so an invalid write
     // destination fails fast, before the emitter scans the workspace.
-    if let Err(reason) = validate_ripr_facts_path(out, "out") {
-        eprintln!("ripr-facts: {reason}");
+    if let Err(line) = validate_out_destination(out) {
+        eprintln!("{line}");
         return 1;
     }
 
@@ -195,6 +244,15 @@ pub fn run_ripr_facts_with_diff(
     let status = packet["packet_status"].as_str().unwrap_or("unknown");
     eprintln!("ripr-facts: wrote {status} packet to `{out}`");
     0
+}
+
+/// Fail-fast message when `out` names an existing directory (#17263),
+/// extracted as a constructor so the wording is unit-testable (the wrapper
+/// itself only signals `stderr` + exit code).
+fn out_names_directory_message(out: &str) -> String {
+    format!(
+        "ripr-facts: `out` names an existing directory (`{out}`); pass a file path for the packet."
+    )
 }
 
 /// Write a JSON packet to the output path, creating parent directories.
@@ -465,6 +523,50 @@ mod tests {
             "target/ripr/test-wrong-schema.json",
         );
         assert_eq!(rc, 1, "wrong schema must exit 1");
+    }
+
+    #[test]
+    fn ripr_facts_help_exits_zero() {
+        for argv in [
+            vec!["perl-ripr-facts", "--help"],
+            vec!["perl-ripr-facts", "-h"],
+            vec!["perl-ripr-facts", "ripr-facts", "--help"],
+            vec!["perl-ripr-facts", "ripr-facts", "--schema", "ripr-perl-facts-v1", "--help"],
+        ] {
+            let owned: Vec<String> = argv.into_iter().map(str::to_string).collect();
+            assert_eq!(run_cli(owned), 0, "explicit --help must exit 0");
+        }
+    }
+
+    #[test]
+    fn ripr_facts_help_in_value_position_stays_a_value() {
+        let argv: Vec<String> = ["perl-ripr-facts", "ripr-facts", "--out", "--help"]
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+        assert!(
+            matches!(parse_ripr_facts_cli(&argv), Ok(CliParse::Run(_))),
+            "--help as a flag value must not trigger help"
+        );
+    }
+
+    #[test]
+    fn ripr_facts_bare_subcommand_uses_defaults() {
+        let argv: Vec<String> =
+            ["perl-ripr-facts", "ripr-facts"].into_iter().map(str::to_string).collect();
+        let parsed = parse_ripr_facts_cli(&argv).expect("bare subcommand parses");
+        assert!(matches!(parsed, CliParse::Run(_)), "bare subcommand must run, not help");
+        if let CliParse::Run(cli) = parsed {
+            assert_eq!(cli.schema, "ripr-perl-facts-v1");
+            assert_eq!(cli.root, ".");
+            assert_eq!(cli.out, "target/ripr/reports/perl-facts.json");
+        }
+    }
+
+    #[test]
+    fn ripr_facts_missing_subcommand_still_exits_one() {
+        let rc = run_cli(vec!["perl-ripr-facts".to_string()]);
+        assert_eq!(rc, 1, "bare invocation must still exit 1");
     }
 
     #[test]
@@ -893,17 +995,50 @@ mod tests {
     }
 
     #[test]
-    fn failed_replace_reports_failure_and_removes_the_staged_sibling() -> std::io::Result<()> {
-        // Occupy the destination with a directory. Staging succeeds, then the
-        // rename fails (a file cannot replace a directory on Unix or Windows),
-        // which exercises the replace-failure path end to end.
-        let dir = "target/ripr-atomic-replace-failure";
+    fn out_naming_directory_fails_fast_without_litter() -> std::io::Result<()> {
+        // `#17263`: `out` naming a directory fails before the workspace scan
+        // (not after, with a raw OS error) and stages nothing.
+        let dir = "target/ripr-out-is-dir";
         let _ = std::fs::remove_dir_all(dir);
         std::fs::create_dir_all(format!("{dir}/packet.json"))?;
         let out = format!("{dir}/packet.json");
 
         let rc = run_ripr_facts("ripr-perl-facts-v1", ".", None, None, "tests,oracles", &out);
-        assert_eq!(rc, 1, "an unusable destination must fail the run");
+        assert_eq!(rc, 1, "a directory destination must fail the run");
+        assert_eq!(
+            dir_entries(dir)?,
+            vec!["packet.json".to_string()],
+            "the fail-fast path must stage nothing"
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
+        Ok(())
+    }
+
+    #[test]
+    fn out_naming_directory_message_names_the_condition() {
+        let message = super::out_names_directory_message("out");
+        assert!(
+            message.contains("existing directory") && message.contains("out"),
+            "message must say the destination is a directory and name it; got: {message}"
+        );
+    }
+
+    #[test]
+    fn failed_replace_reports_failure_and_removes_the_staged_sibling() -> std::io::Result<()> {
+        // Occupy the destination with a directory and call the writer
+        // directly: staging succeeds, then the rename fails (a file cannot
+        // replace a directory on Unix or Windows), which exercises the
+        // replace-failure cleanup end to end. (Via `run_ripr_facts` the
+        // #17263 fail-fast check now preempts this path, so the direct call
+        // is what keeps the cleanup proof deterministic.)
+        let dir = "target/ripr-atomic-replace-failure";
+        let _ = std::fs::remove_dir_all(dir);
+        std::fs::create_dir_all(format!("{dir}/packet.json"))?;
+        let out = format!("{dir}/packet.json");
+
+        let result = super::write_packet(&out, &serde_json::json!({"probe": true}));
+        assert!(result.is_err(), "replacing a directory must fail");
         assert_eq!(
             dir_entries(dir)?,
             vec!["packet.json".to_string()],

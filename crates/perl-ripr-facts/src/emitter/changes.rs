@@ -182,6 +182,19 @@ fn strip_root_prefix<'a>(path: &'a str, root: &str) -> &'a str {
 /// the three syntactically-detectable ones (`predicate_boundary`,
 /// `return_value`, `exception_path`) are inferred; everything else is
 /// `"unknown"` and `missing_discriminator` is always `null` in this slice.
+/// The `diff-provenance-unverified` caveat, shared by the diff-supplied path
+/// (`emit_changes_from_diff`) and the no-diff path (`packet.rs`): base/head
+/// (and any diff) are caller-asserted and never verified against a repository.
+/// One constructor so the two sites cannot drift (#17258).
+pub(crate) fn diff_provenance_unverified_limitation() -> Value {
+    json!({
+        "limitation_id": "diff-provenance-unverified",
+        "kind": "unverified_provenance",
+        "message": "base/head/diff are caller-asserted and not verified against a repository; this packet does not confirm the supplied diff is the actual base->head diff.",
+        "evidence_refs": [],
+    })
+}
+
 pub(crate) fn emit_changes_from_diff(
     diff_text: &str,
     root: &str,
@@ -193,12 +206,7 @@ pub(crate) fn emit_changes_from_diff(
 
     // base/head/diff are caller-asserted; this crate never runs git to confirm
     // the supplied diff is the actual base→head diff. Always surface that.
-    limitations.push(json!({
-        "limitation_id": "diff-provenance-unverified",
-        "kind": "unverified_provenance",
-        "message": "base/head/diff are caller-asserted and not verified against a repository; this packet does not confirm the supplied diff is the actual base->head diff.",
-        "evidence_refs": [],
-    }));
+    limitations.push(diff_provenance_unverified_limitation());
 
     let known_files: std::collections::HashSet<&str> =
         files.iter().filter_map(|file| file["file_id"].as_str()).collect();

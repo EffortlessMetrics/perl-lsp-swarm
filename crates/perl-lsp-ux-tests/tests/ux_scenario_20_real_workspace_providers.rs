@@ -805,8 +805,10 @@ fn scenario_20_diagnostics_no_false_pl701_hard_assert() -> anyhow::Result<()> {
     harness.open_file("lib/RealBaseline/App.pm", APP_PM)?;
     harness.open_file("lib/RealBaseline/Base.pm", BASE_PM)?;
     harness.open_file("lib/RealBaseline/Util.pm", UTIL_PM)?;
-    let diagnostics =
-        harness.wait_for_diagnostics("lib/RealBaseline/App.pm", Duration::from_secs(5));
+    let diagnostics = perl_lsp_ux_tests::wait_with_subject(
+        &format!("diagnostics for {}", "lib/RealBaseline/App.pm"),
+        harness.wait_for_diagnostics("lib/RealBaseline/App.pm", Duration::from_secs(5)),
+    )?;
 
     validate_diagnostics(&diagnostics)?;
     anyhow::ensure!(
@@ -827,8 +829,10 @@ fn scenario_20_diagnostics_missing_module_fires_pl701_hard_assert() -> anyhow::R
     let harness =
         UxHarness::new(ScenarioConfig::default().with_file("lib/RealBaseline/App.pm", APP_PM))?;
     harness.open_file("lib/RealBaseline/App.pm", APP_PM)?;
-    let diagnostics =
-        harness.wait_for_diagnostics("lib/RealBaseline/App.pm", Duration::from_secs(5));
+    let diagnostics = perl_lsp_ux_tests::wait_with_subject(
+        &format!("diagnostics for {}", "lib/RealBaseline/App.pm"),
+        harness.wait_for_diagnostics("lib/RealBaseline/App.pm", Duration::from_secs(5)),
+    )?;
 
     validate_diagnostics(&diagnostics)?;
     anyhow::ensure!(
@@ -848,8 +852,10 @@ fn scenario_20_diagnostics_typeglob_alias_no_false_positive_hard_assert() -> any
 
     let harness = create_harness()?;
     harness.open_file("lib/RealBaseline/Util.pm", UTIL_PM)?;
-    let diagnostics =
-        harness.wait_for_diagnostics("lib/RealBaseline/Util.pm", Duration::from_secs(5));
+    let diagnostics = perl_lsp_ux_tests::wait_with_subject(
+        &format!("diagnostics for {}", "lib/RealBaseline/Util.pm"),
+        harness.wait_for_diagnostics("lib/RealBaseline/Util.pm", Duration::from_secs(5)),
+    )?;
 
     validate_diagnostics(&diagnostics)?;
     let false_positive = diagnostics.iter().any(|diag| {

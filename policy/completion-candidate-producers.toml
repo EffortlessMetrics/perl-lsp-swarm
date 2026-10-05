@@ -102,6 +102,14 @@ outcome_owner = "#10230"
 # reopened package — an inherited or composed method that was previously dropped
 # is now reachable — so it is a source re-audit, not a claim that completion
 # behavior is unchanged. Projection diff is digest-only.
+# Re-anchor 2026-09-29 (#16983): methods.rs gained two helpers and one
+# non-candidate parameter. `receiver_packages` returns `Option<Vec<String>>`
+# and `symbol_package` returns `&str`; neither takes a `&mut Vec<CompletionItem>`
+# channel nor returns a container of candidates, so neither is a producer. The
+# 42-file product scan, discovered producer population, authored dispositions,
+# entry routes, delegations, and finalizer route are unchanged. This re-anchor
+# is a source re-audit, not a claim that completion behavior is unchanged: the
+# methods row below narrows document-resident candidates to a resolved receiver.
 # Re-anchor 2026-10-01 (#17045): the #16850/#16809 regression repair restored
 # persisted `use parent`/role inheritance edges and persisted explicit and
 # generated members for current-document packages whenever the open buffer is
@@ -148,7 +156,24 @@ outcome_owner = "#10230"
 # 4-argument `collect_all_package_members_with_source` signature; no producer
 # add/remove/re-channel and no entry/finalizer change. Digest recomputed over
 # the merged tree.
-source_digest = "sha256:d9269500b743739ed6618e435919af2aeab94a3787b9e3faf706f13583c76b33"
+# Re-anchor 2026-10-02 (merge of #17045/#17043 into #16983): the freshness-seam
+# rewrite touched request/dispatch.rs beside this branch's type_engine threading
+# of the same call sites; both compose (URI argument retained on the workspace
+# call, type_engine added to the methods calls). No producer
+# add/remove/re-channel and no entry/finalizer change. Digest recomputed over
+# the merged tree.
+# Re-anchor 2026-10-04 (review repair in #16988): add_method_completions
+# admission and metadata selection now read one combined callable+package
+# predicate; same function, same append channel, no producer
+# add/remove/re-channel, no entry/finalizer change. The methods row's
+# limitations text documents the combined predicate and the
+# receiver_packages=None fallback. Digest-only projection diff.
+# Re-anchor 2026-10-04 (merge of origin/main into #16853): main's #16983/#16988
+# receiver resolution landed in methods.rs beside this branch's per-segment
+# class-model merge in workspace.rs; the two compose on different seams of the
+# same workspace-methods pipeline. No producer add/remove/re-channel and no
+# entry/finalizer change. Digest recomputed over the merged tree.
+source_digest = "sha256:71f9e000c5903629d41b076d701178c26b48c27376a82fac8e2e1cf8d4a74918"
 
 [[delegations]]
 module = "dancer2"
@@ -488,7 +513,7 @@ finalizer_route = "compatibility_adapter_before_shared_finalizer"
 reach_evidence = "provider_seam"
 reached_by = ["handle_completion", "handle_completion_cancellable"]
 migration_owner = "#8958"
-limitations = "Identity is the label today, so a same-named binding in another scope, package, or document instance can merge with this one. Nothing here proves visibility."
+limitations = "Identity is the label today, so a same-named binding in another scope, package, or document instance can merge with this one. A receiver resolving to exact evidence scopes candidates to its own package (#16983): a group is admitted only when one definition is both callable and receiver-resident. When receiver_packages is None, this producer keeps document-wide callable-symbol behavior for Unknown and Dynamic receivers. add_workspace_method_completions separately admits bounded fallback only for eligible Unknown evidence; Dynamic receivers remain fail-closed."
 note = "Method candidates for an arrow receiver."
 
 [[producers]]

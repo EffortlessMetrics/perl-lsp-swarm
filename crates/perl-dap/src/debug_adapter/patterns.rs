@@ -11,6 +11,36 @@ pub(super) const DEBUG_SESSION_TERMINATE_WAIT_MS: u64 = 250;
 pub(super) const DEBUGGER_QUERY_WAIT_MS: u64 = 75;
 pub(super) const DEBUGGER_FRAME_POLL_MS: u64 = 10;
 
+/// Effective kill-confirmation budget for the terminate/cleanup paths.
+///
+/// Production keeps the tight [`DEBUG_SESSION_TERMINATE_WAIT_MS`] bounded
+/// reap: after `kill()` the exit confirmation only needs to absorb
+/// process-teardown latency, and a tight bound keeps a genuinely stuck
+/// cleanup verdict prompt.
+///
+/// #17173: under the parallel unit-test suite the reaping thread itself can
+/// be starved well past that budget (observed: 10 polls / 260ms for an
+/// already-terminated child), which fails tests that drive real children
+/// through `disconnect`/`terminate` and cleanup retries with a spurious
+/// "cleanup remains unconfirmed" verdict. Test builds resolve a larger
+/// budget so the assertion stays "the killed child was reaped", not "the
+/// reaper thread won a scheduling race". The value stays under the
+/// cleanup-driving tests' own 2s response deadlines so a slow confirm
+/// surfaces as a pass, not as a different timeout, and the production
+/// default is unchanged.
+pub(super) fn debug_session_terminate_wait_ms() -> u64 {
+    if cfg!(test) {
+        // Test-build budget (#17173): ~5x the observed worst starvation
+        // (260ms) while remaining under the 2s response deadlines of the
+        // disconnect/terminate tests. TerminateProcess/`kill()` completes
+        // in milliseconds; the window only absorbs observer scheduling
+        // latency under load and returns as soon as the exit is observed.
+        1_500
+    } else {
+        DEBUG_SESSION_TERMINATE_WAIT_MS
+    }
+}
+
 pub(super) const RECENT_OUTPUT_MAX_LINES: usize = 2048;
 
 /// Capacity of the outbound DAP event queue.

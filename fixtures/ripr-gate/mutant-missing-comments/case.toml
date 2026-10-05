@@ -1,0 +1,8 @@
+# E1 case manifest: ground truth + provenance for the precision/recall oracle.
+kind = "gate"
+description = "Zero counted gaps but no guidance receipt; the missing input blocks."
+ground_truth = "unprovable"
+inputs = ["ripr-plus.json", "repo-exposure.json"]
+base_case = "clean-zero"
+mutation = "comments.json absent"
+mutant_verdict = "kill"
