@@ -410,7 +410,12 @@ fn is_pr_fast_gate_command(line: &str) -> bool {
     let Some(binary) = words.next() else {
         return false;
     };
-    let binary = binary.trim_matches('"');
+    let binary = if let Some(quoted) = binary.strip_prefix('"') {
+        let Some(binary) = quoted.strip_suffix('"') else { return false };
+        binary
+    } else {
+        binary
+    };
     binary.ends_with("/debug/xtask")
         && binary.chars().all(|ch| ch.is_ascii_alphanumeric() || "/${}._-".contains(ch))
         && words.eq([
@@ -471,9 +476,6 @@ fn pr_fast_watchdog_region(script: &str) -> Result<String, &'static str> {
         let Some(tail_start) = body.len().checked_sub(4) else {
             return Err("the timed heredoc must run the gate and propagate its status");
         };
-        if !body.starts_with(&["set -uo pipefail", "navigation_status=0"]) {
-            return Err("the timed Bash runner must initialize navigation status without errexit");
-        }
         if !is_pr_fast_gate_command(body[tail_start])
             || body[tail_start + 1..]
                 != [
@@ -484,40 +486,14 @@ fn pr_fast_watchdog_region(script: &str) -> Result<String, &'static str> {
         {
             return Err("the gate must execute inside PR_FAST and immediately propagate failure");
         }
-        // The optional navigation prelude must finish before the gate. Reject
-        // early exits, nested heredoc data, and an unclosed conditional/loop that
-        // could make the apparent gate tail unreachable.
-        let mut blocks = Vec::new();
-        for line in &body[..tail_start] {
-            if line.contains("<<")
-                || line.ends_with('\\')
-                || line
-                    .split(|ch: char| ch.is_ascii_whitespace() || ";|&".contains(ch))
-                    .any(|word| matches!(word, "exit" | "return" | "exec" | "eval" | "trap"))
-                || line.starts_with('(')
-                || line.starts_with('{')
-                || line.starts_with("function ")
-                || line.contains("()")
-                || line.starts_with("source ")
-                || line.starts_with(". ")
-                || line.starts_with("while ")
-                || line.starts_with("until ")
-                || line.starts_with("case ")
-                || line.chars().filter(|ch| *ch == '\'').count() % 2 != 0
-                || line.chars().filter(|ch| *ch == '"').count() % 2 != 0
-            {
-                return Err("unsupported control flow before the timed gate tail");
-            }
-            if line.starts_with("if ") && line.ends_with("then") {
-                blocks.push("fi");
-            } else if line.starts_with("for ") && line.ends_with("do") {
-                blocks.push("done");
-            } else if matches!(*line, "fi" | "done") && blocks.pop() != Some(*line) {
-                return Err("navigation control flow must close before the gate");
-            }
-        }
-        if !blocks.is_empty() {
-            return Err("the timed gate must run outside navigation conditionals and loops");
+        // Admit the reviewed navigation block as a whole. A token blacklist is
+        // insufficient: Bash can spell an early exit as 'exit' or ex""it.
+        // Intentional prelude changes need a paired contract-fixture update.
+        let navigation: Vec<_> = PR_FAST_NAVIGATION_PRELUDE.lines().map(str::trim).collect();
+        if body[..tail_start] != ["set -uo pipefail", "navigation_status=0"]
+            && body[..tail_start] != navigation
+        {
+            return Err("the timed gate must follow a supported, reviewed navigation prelude");
         }
         end
     };
@@ -534,6 +510,35 @@ fn pr_fast_watchdog_region(script: &str) -> Result<String, &'static str> {
     }
     Ok(lines[start..=end].join("\n"))
 }
+
+const PR_FAST_NAVIGATION_PRELUDE: &str = r#"set -uo pipefail
+navigation_status=0
+if [ "$PR_SMOKE_NAVIGATION_PROOF" = 'true' ]; then
+  source_sha="$(git rev-parse --verify HEAD)"
+  source_status=$?
+  echo "NAVIGATION_PROOF source=$source_sha"
+  for target in cross_file_goto_definition_tests navigation_regression_tests; do
+    log="target/receipts/logs/navigation-${target}.log"
+    target_status=1
+    if ! printf 'NAVIGATION_PROOF source=%s target=%s\n' "$source_sha" "$target" | tee "$log"; then
+      navigation_status=1
+    fi
+    if [ "$source_status" -eq 0 ]; then
+      cargo test -p perl-lsp-rs --locked --test "$target" -- --test-threads=1 --color never 2>&1 | tee -a "$log"
+      result=("${PIPESTATUS[@]}")
+      target_status="${result[0]}"
+      if [ "${result[1]}" -ne 0 ] || ! grep -Eq 'test result: ok\. [1-9][0-9]* passed; 0 failed;' "$log"; then
+        target_status=1
+      fi
+    else
+      echo 'NOT_PROVEN: current source identity prerequisite failed' | tee -a "$log"
+    fi
+    if ! printf 'NAVIGATION_PROOF source=%s target=%s exit=%s\n' "$source_sha" "$target" "$target_status" | tee -a "$log"; then
+      navigation_status=1
+    fi
+    if [ "$target_status" -ne 0 ]; then navigation_status=1; fi
+  done
+fi"#;
 
 const DIRECT_PR_FAST: &str = "timeout --signal=TERM --kill-after=60s 3600s ./target/debug/xtask gates --tier pr-fast --subject target/receipts/ci-subject.json --receipt\nstatus=$?\nexit \"$status\"\n";
 const HEREDOC_PR_FAST: &str = "timeout --signal=TERM --kill-after=60s 3600s bash <<'PR_FAST'\nset -uo pipefail\nnavigation_status=0\n\"$CARGO_TARGET_DIR/debug/xtask\" gates --tier pr-fast --subject target/receipts/ci-subject.json --receipt\nfull_status=$?\nif [ \"$full_status\" -ne 0 ]; then exit \"$full_status\"; fi\nexit \"$navigation_status\"\nPR_FAST\nstatus=$?\nexit \"$status\"\n";
@@ -587,6 +592,22 @@ fn pr_fast_watchdog_rejects_untimed_or_status_losing_runners() {
             "inline early exit",
             HEREDOC_PR_FAST
                 .replace("navigation_status=0", "navigation_status=0\necho ready;exit 0"),
+        ),
+        (
+            "quoted early exit",
+            HEREDOC_PR_FAST.replace("navigation_status=0", "navigation_status=0\n'exit' 0"),
+        ),
+        (
+            "concatenated early exit",
+            HEREDOC_PR_FAST.replace("navigation_status=0", "navigation_status=0\nex\"\"it 0"),
+        ),
+        (
+            "escaped early exit",
+            HEREDOC_PR_FAST.replace("navigation_status=0", "navigation_status=0\n\\exit 0"),
+        ),
+        (
+            "unclosed binary quote",
+            DIRECT_PR_FAST.replace("./target/debug/xtask", "\"./target/debug/xtask"),
         ),
         (
             "gate capture after command",
