@@ -57,7 +57,10 @@ def successful_report():
                              **{f"qualified_{case}_call": [] for case in PROBE.ARITHMETIC_CASES},
                              "qualified_inside_qualified_format_value": [],
                              "qualified_format_declaration_control": format_location(),
-                             "qualified_format_name_end_control": format_location()},
+                             "qualified_format_name_end_control": format_location(),
+                             **{f"super_{case}_call": [] for case, _ in PROBE.SUPER_CASES},
+                             "super_helper_declaration_control": location(CALLER_PATH, 1),
+                             "super_parent_override_control": location(CALLER_PATH, 1)},
             "position_encoding": "utf-16", "exit": 0, "cleanup": "protocol_exit_reaped",
             "binary_sha256_before": "a" * 64, "binary_sha256_after": "a" * 64}
 
@@ -139,6 +142,25 @@ class OracleTests(unittest.TestCase):
         del report["observations"]["qualified_call_same_name_package"]
         self.assertFalse(self.outcomes(report)["same_name_package_cannot_stand_in_for_callable"])
 
+    def test_super_refusals_require_observations_and_retain_proved_parent(self):
+        for case, _ in PROBE.SUPER_CASES:
+            report = successful_report()
+            key = f"super_{case}_call"
+            outcome = f"super_{case}_does_not_select_unproved_callable"
+            report["observations"][key] = location(CALLER_PATH, 1)
+            outcomes = self.outcomes(report)
+            self.assertFalse(outcomes.pop(outcome))
+            self.assertTrue(all(outcomes.values()))
+            del report["observations"][key]
+            self.assertFalse(self.outcomes(report)[outcome])
+        for wrong in ([], location(CALLER_PATH, 4), location(TARGET_PATH, 1)):
+            report = successful_report()
+            report["observations"]["super_parent_override_control"] = wrong
+            self.assertFalse(self.outcomes(report)["super_proven_parent_override_retained"])
+        report = successful_report()
+        report["observations"]["super_helper_declaration_control"] = []
+        self.assertFalse(self.outcomes(report)["super_enclosing_helper_declaration_retained"])
+
     def test_same_line_call_tokens_are_not_declaration_targets(self):
         for key, outcome, line, valid_starts, wrong_start in (
             ("same_name_package_declaration_control", "same_name_package_declaration_retained", 0, (0, 8),
@@ -171,6 +193,8 @@ class OracleTests(unittest.TestCase):
             ("qualified_format_name_end_control", "qualified_format_name_end_navigation_retained", 1, (0, 7)),
             ("qualified_variable_control", "qualified_variable_navigation_retained", 3, (4,)),
             ("bare_variable_control", "bare_variable_navigation_retained", 3, (4,)),
+            ("super_helper_declaration_control", "super_enclosing_helper_declaration_retained", 1, (0, 4)),
+            ("super_parent_override_control", "super_proven_parent_override_retained", 1, (0, 4)),
         ):
             with self.subTest(key=key):
                 report = successful_report()

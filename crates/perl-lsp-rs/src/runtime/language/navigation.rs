@@ -1537,11 +1537,10 @@ fn same_file_definition_matches_qualification(
                                 && node.location.end == definition.location.end
                     )
                 });
-            // SUPER names an inheritance lookup, not a literal package. Its
-            // resolution belongs to the earlier parent-chain path.
-            (is_callable && (package == "SUPER" || package.ends_with("::SUPER")))
-                || definition.qualified_name == qualified_name
-                || is_format_declaration
+            // Ancestor-backed SUPER results return from the earlier parent-chain
+            // path. A generic terminal symbol has no such ancestry proof: SUPER
+            // must not exempt an unrelated callable from the identity check.
+            definition.qualified_name == qualified_name || is_format_declaration
         }
         _ => true,
     }
@@ -3588,11 +3587,26 @@ mod tests {
         assert!(same_file_definition_matches_qualification(text, exact, candidate, &ast));
         let bare = text.find("\ncompute_0()").ok_or("bare call")? + 3;
         assert!(same_file_definition_matches_qualification(text, bare, candidate, &ast));
-        let inherited = text.find("SUPER::compute_0").ok_or("SUPER call")? + 9;
+        let unproved_super = text.find("SUPER::compute_0").ok_or("SUPER call")? + 9;
         assert!(
-            same_file_definition_matches_qualification(text, inherited, candidate, &ast),
-            "SUPER is resolved by inheritance rather than literal package equality"
+            !same_file_definition_matches_qualification(text, unproved_super, candidate, &ast),
+            "a same-named Caller callable is not a proven ancestor target"
         );
+        // A plain subroutine call to a real package named SUPER still has a
+        // literal identity; removing the ancestry exemption is not blanket refusal.
+        let literal = "package SUPER;\nsub compute_0 {}\npackage Caller;\nSUPER::compute_0();\n";
+        let literal_ast = Parser::new(literal).parse()?;
+        let literal_model = crate::semantic::SemanticModel::build(&literal_ast, literal);
+        let literal_offset = literal.rfind("compute_0()").ok_or("literal SUPER call")? + 2;
+        let literal_candidate =
+            literal_model.definition_at(literal_offset).ok_or("literal SUPER declaration")?;
+        assert_eq!(literal_candidate.qualified_name, "SUPER::compute_0");
+        assert!(same_file_definition_matches_qualification(
+            literal,
+            literal_offset,
+            literal_candidate,
+            &literal_ast
+        ));
         #[cfg(feature = "workspace")]
         for (case, source, callable) in [
             ("function", "package Caller; use constant PI => 3;", true),
@@ -3668,6 +3682,128 @@ mod tests {
             start.is_some_and(|start| starts.contains(&start)),
             "wrong declaration token: {result:?}"
         );
+    }
+
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn qualified_definition_fallback_super_requires_proved_parent_target()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use perl_workspace::workspace_index::{DegradationReason, IndexState};
+
+        for (case, statement, name) in [
+            ("missing", "SUPER::missing();", "missing"),
+            ("same-name", "SUPER::helper();", "helper"),
+            ("qualified-missing", "Caller::SUPER::missing();", "missing"),
+            ("method-missing", "my $self = shift; $self->SUPER::missing();", "missing"),
+            (
+                "qualified-method-missing",
+                "my $self = shift; $self->Caller::SUPER::missing();",
+                "missing",
+            ),
+        ] {
+            let source = format!("package Caller;\nsub helper {{ {statement} }}\n");
+            let offset = source.rfind(name).ok_or("SUPER call name")? + 2;
+            let ast = Arc::new(Parser::new(&source).parse()?);
+            let mut parent_map = ParentMap::default();
+            crate::declaration::DeclarationProvider::build_parent_map(&ast, &mut parent_map, None);
+            let uri = format!("file:///workspace/super-{case}.pl");
+            let provider = crate::declaration::DeclarationProvider::new(
+                Arc::clone(&ast),
+                source.clone(),
+                uri.clone(),
+            )
+            .with_parent_map(&parent_map)
+            .with_doc_version(1);
+            assert!(
+                provider.find_declaration(offset, 1).is_none_or(|locations| locations.is_empty()),
+                "{case}: declaration tier must decline this unresolved SUPER call"
+            );
+            let analyzer = crate::semantic::SemanticAnalyzer::analyze_with_source(&ast, &source);
+            assert!(analyzer.resolve_inherited_method_location("Caller", name).is_none());
+            let model = crate::semantic::SemanticModel::build(&ast, &source);
+            let candidate = model.definition_at(offset).ok_or("unproved terminal callable")?;
+            assert_eq!(candidate.kind, crate::symbol::SymbolKind::Subroutine, "{case}");
+            assert_eq!(candidate.qualified_name, "Caller::helper", "{case}");
+            assert!(
+                !same_file_definition_matches_qualification(&source, offset, candidate, &ast),
+                "{case}: no name or ancestor proof permits the Caller fallback"
+            );
+
+            let server = LspServer::new();
+            let unrelated_uri = "file:///workspace/super-unrelated.pl";
+            for (file, text) in [
+                (uri.as_str(), source.as_str()),
+                (unrelated_uri, "package Unrelated;\nsub helper {}\n"),
+            ] {
+                server.test_apply_did_open(file, text, 1)?;
+                let generation = server.test_document_generation(file).ok_or("open generation")?;
+                server
+                    .test_index_live_file(file, text, generation)
+                    .map_err(std::io::Error::other)?;
+            }
+            server.test_simulate_indexing_complete();
+            for state in ["fresh", "degraded", "stale"] {
+                if state == "degraded" {
+                    server
+                        .index_coordinator
+                        .as_ref()
+                        .ok_or("SUPER coordinator")?
+                        .transition_to_degraded(DegradationReason::ScanTimeout { elapsed_ms: 123 });
+                } else if state == "stale" {
+                    // Isolate generation staleness from the preceding degraded
+                    // mode: the coordinator is Ready while this buffer is stale.
+                    server.test_simulate_indexing_complete();
+                    server
+                        .test_replace_document_without_index(
+                            unrelated_uri,
+                            "package Unrelated;\nsub renamed {}\n",
+                            2,
+                        )
+                        .map_err(std::io::Error::other)?;
+                }
+                if state != "degraded" {
+                    assert!(matches!(
+                        server.index_coordinator.as_ref().ok_or("SUPER coordinator")?.state(),
+                        IndexState::Ready { .. }
+                    ));
+                }
+                assert_eq!(server.workspace_index_stale_for_any_open_document(), state == "stale");
+                let line_start = source.find('\n').ok_or("call line")? + 1;
+                let result = qualified_fallback_request(&server, &uri, 1, offset - line_start)?;
+                assert!(
+                    result.as_ref().is_some_and(|value| {
+                        value.is_null() || value.as_array().is_some_and(Vec::is_empty)
+                    }),
+                    "{case}/{state}: missing SUPER target cannot select Caller: {result:?}"
+                );
+            }
+        }
+
+        // This is an actual inherited method, with a same-named Caller override
+        // that would expose bypassed inheritance lookup or a guessed local target.
+        let parent_source = "package Base;\nsub override { 'base' }\npackage Caller;\nour @ISA = ('Base');\nsub override { 'caller' }\nsub invoke { shift->SUPER::override() }\nprint Caller->invoke();\n";
+        let ast = Parser::new(parent_source).parse()?;
+        let analyzer = crate::semantic::SemanticAnalyzer::analyze_with_source(&ast, parent_source);
+        let parent = analyzer
+            .resolve_inherited_method_location("Caller", "override")
+            .ok_or("source-built Base ancestor target")?;
+        let base_start = parent_source.find("sub override").ok_or("Base declaration")?;
+        assert!(parent.start == base_start || parent.start == base_start + 4);
+        let server = LspServer::new();
+        let uri = "file:///workspace/super-proved-parent.pl";
+        server.test_apply_did_open(uri, parent_source, 1)?;
+        let generation = server.test_document_generation(uri).ok_or("parent generation")?;
+        server
+            .test_index_live_file(uri, parent_source, generation)
+            .map_err(std::io::Error::other)?;
+        server.test_simulate_indexing_complete();
+        assert!(!server.workspace_index_stale_for_any_open_document());
+        let call = parent_source.lines().nth(5).ok_or("inherited call line")?;
+        let result =
+            qualified_fallback_request(&server, uri, 5, call.find("override").ok_or("call")? + 2)?;
+        assert_qualified_fallback_location(&result, uri, 1);
+        assert_qualified_fallback_start(&result, &[0, 4]);
+        Ok(())
     }
 
     #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]

@@ -48,6 +48,18 @@ FORMAT_CALL = "package Caller;\nformat REPORT =\n@<<<<\nOther::compute_0()\n.\n"
 QUALIFIED_FORMAT_CALL = FORMAT_CALL.replace("format REPORT", "format Other::REPORT")
 MOO_CALL = "package Caller;\nuse Moo;\nhas 'value' => (is => 'ro', reader => undef, default => sub { Other::compute_0(); });\nour $kept = 7;\n$Caller::kept;\n$kept;\n"
 SAME_NAME_PACKAGE = "package Other::compute_0 { Other::compute_0(); }\n"
+SUPER_CASES = (
+    ("missing", "SUPER::missing();"),
+    ("same_name", "SUPER::helper();"),
+    ("qualified_missing", "Caller::SUPER::missing();"),
+    ("method_missing", "$self->SUPER::missing();"),
+    ("qualified_method_missing", "$self->Caller::SUPER::missing();"),
+)
+SUPER_MISSING = ("package Caller;\nsub helper {\n    my $self = shift;\n"
+                 + "".join(f"    {statement}\n" for _, statement in SUPER_CASES) + "}\n")
+SUPER_PARENT = ("package Base;\nsub override { 'base' }\npackage Caller;\n"
+                "our @ISA = ('Base');\nsub override { 'caller' }\n"
+                "sub invoke { shift->SUPER::override() }\nprint Caller->invoke();\n")
 REQUEST_SECONDS = 5
 SESSION_SECONDS = 30
 
@@ -145,6 +157,16 @@ def assertions(report: dict, caller: Path, target: Path) -> dict[str, bool]:
             at_declaration(observations.get("qualified_format_name_end_control"), caller, 1, end_line, (0, 7))
             for end_line in (1, 4, 5)
         ),
+        **{f"super_{case}_does_not_select_unproved_callable": (
+            f"super_{case}_call" in observations
+            and observations[f"super_{case}_call"] in (None, [])
+        ) for case, _ in SUPER_CASES},
+        "super_enclosing_helper_declaration_retained": any(
+            at_declaration(observations.get("super_helper_declaration_control"), caller, 1, end_line, (0, 4))
+            for end_line in (1, 8)
+        ),
+        "super_proven_parent_override_retained": at_declaration(
+            observations.get("super_parent_override_control"), caller, 1, start_characters=(0, 4)),
         "utf16_negotiated": report.get("position_encoding") == "utf-16",
         "server_clean_exit": report.get("exit") == 0 and report.get("cleanup") == "protocol_exit_reaped",
         "binary_unchanged": (
@@ -273,11 +295,11 @@ class Session:
                       for frame in self.report["frames"]):
             self.receive(deadline)
 
-    def wait_target(self, target: Path):
+    def wait_target(self, target: Path, name: str = "compute_0", package: str = "Scale24::Mod00"):
         deadline = min(time.perf_counter() + REQUEST_SECONDS, self.deadline)
         while time.perf_counter() < deadline:
-            symbols = self.request("workspace/symbol", {"query": "compute_0"})
-            if any(symbol.get("containerName") == "Scale24::Mod00"
+            symbols = self.request("workspace/symbol", {"query": name})
+            if any(symbol.get("containerName") == package
                    and unquote(symbol.get("location", {}).get("uri", "")) == target.as_uri()
                    for symbol in symbols):
                 return symbols
@@ -374,7 +396,8 @@ def run_probe(binary: Path, fixture: Path, report: dict):
             {"version": version, "sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(), "text": text}
             for version, text in ((2, PACKAGE_BLOCK), (3, QUALIFIED_ALIAS), (4, CONSTANT_VALUE),
                                   (5, LABEL_CALL), (6, FORMAT_CALL), (7, MOO_CALL), (8, SAME_NAME_PACKAGE),
-                                  (9, ARITHMETIC_CALLS), (10, QUALIFIED_FORMAT_CALL))
+                                  (9, ARITHMETIC_CALLS), (10, QUALIFIED_FORMAT_CALL),
+                                  (11, SUPER_MISSING), (12, SUPER_PARENT))
         ]
         one_shot([perl, "-c", "-e", PACKAGE_BLOCK], app, environment, report)
         session.notify("textDocument/didChange", {"textDocument": {"uri": caller.as_uri(), "version": 2},
@@ -482,6 +505,36 @@ def run_probe(binary: Path, fixture: Path, report: dict):
         report["observations"]["qualified_format_name_end_control"] = session.request("textDocument/definition", {
             "textDocument": {"uri": caller.as_uri()},
             "position": {"line": 1, "character": QUALIFIED_FORMAT_CALL.splitlines()[1].index("REPORT") + len("REPORT")}})
+        # Missing ancestors must not turn SUPER into permission to select the
+        # enclosing/same-named Caller subroutine. Perl independently rejects all
+        # five call shapes; the final edit retains a genuine Base override.
+        for case, statement in SUPER_CASES:
+            oracle_source = ("package Caller; sub helper { my $self = shift; " + statement
+                             + " } my $self = bless {}, 'Caller'; eval { $self->helper(); };"
+                             + "die 'unexpected successful SUPER call' unless $@; print 'missing:' . $@;")
+            oracle = one_shot([perl, "-e", oracle_source], app, environment, report)
+            name = "helper" if case == "same_name" else "missing"
+            if (not oracle["stdout"].startswith("missing:") or name not in oracle["stdout"]
+                    or re.search(r"Undefined subroutine|Can't locate object method", oracle["stdout"]) is None):
+                raise ValueError(f"independent missing SUPER binding failed ({case}): {oracle}")
+        session.notify("textDocument/didChange", {"textDocument": {"uri": caller.as_uri(), "version": 11},
+                       "contentChanges": [{"text": SUPER_MISSING}]})
+        for line, (case, statement) in enumerate(SUPER_CASES, start=3):
+            name = "helper" if case == "same_name" else "missing"
+            report["observations"][f"super_{case}_call"] = session.request_after_edit("textDocument/definition", {
+                "textDocument": {"uri": caller.as_uri()},
+                "position": {"line": line, "character": 4 + statement.index(name) + 2}})
+        report["observations"]["super_helper_declaration_control"] = session.request("textDocument/definition", {
+            "textDocument": {"uri": caller.as_uri()}, "position": {"line": 1, "character": 6}})
+        parent_oracle = one_shot([perl, "-e", SUPER_PARENT], app, environment, report)
+        if parent_oracle["stdout"] != "base":
+            raise ValueError(f"independent SUPER inheritance binding failed: {parent_oracle}")
+        session.notify("textDocument/didChange", {"textDocument": {"uri": caller.as_uri(), "version": 12},
+                       "contentChanges": [{"text": SUPER_PARENT}]})
+        report["observations"]["super_index_after_edit"] = session.wait_target(caller, "override", "Base")
+        report["observations"]["super_parent_override_control"] = session.request_after_edit("textDocument/definition", {
+            "textDocument": {"uri": caller.as_uri()},
+            "position": {"line": 5, "character": SUPER_PARENT.splitlines()[5].index("override") + 2}})
     except Exception as error:
         report["instrument_failure"] = repr(error)
     finally:
