@@ -1900,13 +1900,7 @@ impl LspServer {
 
                 self.invalidate_workspace_identity();
 
-                let open_uris: Vec<String> = {
-                    let documents = self.documents.lock();
-                    documents.keys().cloned().collect()
-                };
-                for open_uri in open_uris {
-                    self.publish_diagnostics_debounced(&open_uri);
-                }
+                self.republish_open_document_diagnostics();
             }
         }
 
@@ -1971,6 +1965,14 @@ impl LspServer {
                     if let Some(coordinator) = self.coordinator() {
                         coordinator.notify_parse_complete(&uri);
                     }
+
+                    // Eviction dropped this file's indexed facts, so open buffers
+                    // whose diagnostics resolved dependencies through it now show
+                    // a stale result until their next edit. Nothing in the buffer
+                    // changed, so push the corrected publications here (#17332);
+                    // the conservative all-open sweep matches the workspace-folder
+                    // seam below and the debouncer coalesces per URI.
+                    self.republish_open_document_diagnostics();
                 }
                 FileChangeType::CREATED | FileChangeType::CHANGED
                     // CREATED and CHANGED are debounced so that bulk operations
@@ -2274,6 +2276,11 @@ impl LspServer {
             }
 
             self.refresh_project_metadata_facts(&metadata_roots);
+
+            // Same repair as the watched-DELETED seam (#17332): eviction above
+            // dropped index facts open consumers may have resolved through, and
+            // a buffer edit is not coming to republish for them.
+            self.republish_open_document_diagnostics();
 
             // Trigger client refresh after file deletions
             if let Err(e) = self.refresh_controller.refresh_all(self) {
