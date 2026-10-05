@@ -143,7 +143,10 @@ fn oracle_recall_meets_c1_threshold() {
         })
         .collect();
 
-        let root = format!("target/ripr-c1/{stem}");
+        // Pid-namespaced: two concurrent `cargo test` invocations must never
+        // share a fixture tree (#17272 lesson — one invocation's setup/teardown
+        // `remove_dir_all` could otherwise remove another's fixture mid-read).
+        let root = format!("target/ripr-c1/{stem}-pid{}", std::process::id());
         let _ = std::fs::remove_dir_all(&root);
         must_with(std::fs::create_dir_all(format!("{root}/t")), format!("mkdir {root}/t"));
         must_with(
