@@ -380,7 +380,13 @@ fn load_workspace_config(
     match load_project_config(workspace) {
         Ok(Some(project_config)) => {
             let rejected = project_config.apply_to_workspace_config(workspace_config, workspace);
-            let defaults_retained = project_config.include_paths_defaults_retained(&rejected);
+            // Same empty-retained gate as the editor warning: a prior list
+            // explicitly emptied through the client channel retains as empty,
+            // so no roots remain in effect. Doctor starts from the built-in
+            // defaults and reads no client channel, so this gate is
+            // belt-and-braces here.
+            let defaults_retained = project_config.include_paths_defaults_retained(&rejected)
+                && !workspace_config.include_paths.is_empty();
             // Provenance is decided AFTER application: an all-rejected list
             // retains the built-in defaults (#16596), so attributing the
             // effective roots to `.perl-lsp.toml` would be false.

@@ -376,8 +376,13 @@ impl LspServer {
                             &folder_path,
                         );
                         if !rejected_include_paths.is_empty() {
+                            // An explicitly emptied prior list (client-settings
+                            // `includePaths: []`) is retained as empty, so no
+                            // roots remain in effect and the consequence must
+                            // not be claimed.
                             let defaults_retained = project_config
-                                .include_paths_defaults_retained(&rejected_include_paths);
+                                .include_paths_defaults_retained(&rejected_include_paths)
+                                && !folder.effective_workspace_config.include_paths.is_empty();
                             self.emit_rejected_include_paths_warning(
                                 folder.display_name(),
                                 &rejected_include_paths,
@@ -2823,6 +2828,45 @@ perlcritic_severity = 2
         // The #16596 retention itself (defaults kept in WorkspaceConfig) is
         // pinned at the config layer; this test pins the editor-visible
         // consequence. A partial-rejection popup must NOT claim retention.
+        Ok(())
+    }
+
+    /// #16596 sibling: the "remain in effect" consequence is only true when
+    /// the retained list is non-empty. An explicit client-settings
+    /// `includePaths: []` wipes the built-in defaults before `.perl-lsp.toml`
+    /// is layered, so an all-rejected project list retains an empty list and
+    /// the popup must NOT claim roots remain in effect.
+    #[test]
+    fn folder_all_rejected_include_paths_warning_silent_when_retained_list_empty()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let folder = temp.path().join("project");
+        std::fs::create_dir_all(&folder)?;
+        let absolute = if cfg!(windows) { r"C:\Windows" } else { "/etc" };
+        std::fs::write(
+            folder.join(".perl-lsp.toml"),
+            format!("[perl]\ninclude_paths = [\"{}\"]\n", absolute.escape_default()),
+        )?;
+
+        let (server, buffer) = make_capture_server();
+        *server.initialization_options_perl_settings.lock() =
+            Some(serde_json::json!({ "workspace": { "includePaths": [] } }));
+        let folder_uri = url::Url::from_directory_path(&folder)
+            .map_err(|()| "failed to build folder URI".to_string())?
+            .to_string();
+        server.workspace_folders.lock().push(
+            crate::runtime::workspace_folder::WorkspaceFolderState::new(folder_uri)
+                .with_path(folder),
+        );
+
+        server.load_and_apply_project_config();
+
+        let output = capture_until_after(&buffer, "include_paths entries that were ignored");
+        assert!(
+            !output.contains("remain in effect"),
+            "an all-rejected list over an explicitly emptied client list retains an \
+             empty list, so the popup must not claim roots remain in effect; got: {output}"
+        );
         Ok(())
     }
 }

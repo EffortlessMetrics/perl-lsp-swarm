@@ -3000,6 +3000,13 @@ impl ProjectConfig {
     /// The fail-closed workspace-root failure is excluded: that case clears
     /// the list rather than retaining it, so it is never reported as a
     /// retention.
+    ///
+    /// This answers "was the prior list retained?", not "do roots remain in
+    /// effect?": the retained prior list can itself be empty when an explicit
+    /// client-settings `includePaths: []` wiped the built-in defaults before
+    /// `.perl-lsp.toml` was layered. Callers that state the "remain in
+    /// effect" consequence must therefore also require a non-empty
+    /// post-application `WorkspaceConfig::include_paths`.
     pub fn include_paths_defaults_retained(&self, rejected: &[RejectedIncludePath]) -> bool {
         !self.perl.include_paths.is_empty()
             && rejected.len() == self.perl.include_paths.len()
