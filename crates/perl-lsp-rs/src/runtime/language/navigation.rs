@@ -3606,7 +3606,7 @@ mod tests {
         ] {
             let index = crate::workspace_index::WorkspaceIndex::new();
             let uri = format!("file:///workspace/constant-kind-{case}.pl");
-            index.index_file_str(&uri, source).map_err(std::io::Error::other)?;
+            index.index_initial_file_str(&uri, source).map_err(std::io::Error::other)?;
             let symbols = index.file_symbols(&uri);
             let symbol = symbols
                 .iter()
