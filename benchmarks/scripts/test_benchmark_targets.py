@@ -12,6 +12,7 @@ feature authority and the legacy libtest harness are rejected.
 """
 
 import copy
+import importlib.util
 import json
 import re
 import subprocess
@@ -166,6 +167,77 @@ class BenchmarkTargetAuthorityTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(AssertionError, "harness = false"):
             _require_criterion_target(entry, source)
+
+
+def _load_sibling_module(filename: str):
+    path = Path(__file__).resolve().parent / filename
+    name = "bench_" + path.stem.replace("-", "_")
+    spec = importlib.util.spec_from_file_location(name, path)
+    if spec is None or spec.loader is None:
+        raise AssertionError(f"cannot load sibling script {filename}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _workflow_expect_ids() -> list[str]:
+    text = WORKFLOW.read_text(encoding="utf-8")
+    ids = re.findall(r'--expect-id "([^"]+)"', text)
+    # Skip loop-variable placeholders; only static declared ids are auditable.
+    return [i for i in ids if not i.startswith("$")]
+
+
+def _latest_baseline() -> dict:
+    candidates = sorted(
+        (ROOT / "benchmarks/baselines").glob("v*.json"),
+        key=lambda p: p.stat().st_mtime,
+    )
+    if not candidates:
+        raise AssertionError("no nightly baseline file found")
+    return json.loads(candidates[-1].read_text(encoding="utf-8"))
+
+
+def _validate_ripr_baseline_coverage(baseline: dict | None = None) -> None:
+    """Every ripr expect-id must categorize into a baseline category (#17355).
+
+    Uses the production classifier and alias map, so the guard tracks the real
+    nightly join instead of duplicating its rules.
+    """
+    extract = _load_sibling_module("extract-criterion.py")
+    compare = _load_sibling_module("compare.py")
+    if baseline is None:
+        baseline = _latest_baseline()
+    baseline_cats = {
+        compare.normalize_category_name(c) for c in baseline["benchmarks"]
+    }
+    ripr_ids = [i for i in _workflow_expect_ids() if "packet" in i or "ripr" in i]
+    if not ripr_ids:
+        raise AssertionError("nightly workflow must declare ripr expect-ids")
+    for expect_id in ripr_ids:
+        if "/" in expect_id:
+            group, name = expect_id.split("/", 1)
+        else:
+            group, name = "other", expect_id
+        category = compare.normalize_category_name(
+            extract.categorize_benchmark(group, name)
+        )
+        if category not in baseline_cats:
+            raise AssertionError(
+                f"ripr expect-id {expect_id!r} categorizes to {category!r}, "
+                "which has no baseline category; nightly compare/alert would "
+                "silently skip it (#17355)"
+            )
+
+
+class BaselineCoverageTests(unittest.TestCase):
+    def test_ripr_expect_ids_have_baseline_categories(self) -> None:
+        _validate_ripr_baseline_coverage()
+
+    def test_missing_ripr_category_is_rejected(self) -> None:
+        baseline = copy.deepcopy(_latest_baseline())
+        baseline["benchmarks"].pop("ripr", None)
+        with self.assertRaisesRegex(AssertionError, "no baseline category"):
+            _validate_ripr_baseline_coverage(baseline)
 
 
 class CargoHarnessNegativeControlTests(unittest.TestCase):
