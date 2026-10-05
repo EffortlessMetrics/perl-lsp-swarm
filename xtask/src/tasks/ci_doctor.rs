@@ -498,22 +498,26 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn ci_doctor_fmt_drift_routes_to_package_formatter() -> Result<()> {
+        if !crate::test_support::FakeCargoChild::child_requested() {
+            let fake_cargo = crate::test_support::FakeCargoChild::run(
+                "tasks::ci_doctor::tests::ci_doctor_fmt_drift_routes_to_package_formatter",
+            )?;
+            fake_cargo.ensure_success()?;
+            let invocations = fake_cargo.invocations()?;
+            assert!(invocations.iter().any(|line| line == "metadata --format-version 1 --no-deps"));
+            fake_cargo.assert_package_formatting()?;
+            return Ok(());
+        }
         let _guard = CURRENT_DIR_LOCK
             .lock()
             .map_err(|_| color_eyre::eyre::eyre!("current-dir test lock poisoned"))?;
-        let fake_cargo = crate::test_support::FakeCargo::install()?;
         let start_dir = env::current_dir()?;
         let dir = tempdir()?;
         let mut warnings = 0usize;
 
         check_fmt_drift(dir.path(), &mut warnings);
 
-        let invocations = fake_cargo.invocations();
         assert_eq!(warnings, 0);
-        assert!(invocations.iter().any(|line| line == "metadata --format-version 1 --no-deps"));
-        assert!(invocations.iter().any(|line| {
-            line.starts_with("fmt --manifest-path ") && line.ends_with(" -- --check")
-        }));
         assert_eq!(env::current_dir()?, start_dir);
         Ok(())
     }

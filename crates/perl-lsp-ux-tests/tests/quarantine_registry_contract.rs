@@ -9,10 +9,23 @@
 //!    re-verifies that binding: it fails when the recorded sha is fabricated or
 //!    pruned in a full-history clone, when the sha does not carry the recorded
 //!    blob, or when the quarantined artifact has drifted since verification.
-//! 3. Every `verified` disposition names the concrete `verification_pr` that
-//!    carried the evidence run, and all verified Scenario 14 rows share one
-//!    (verification_pr, verified_sha, artifact blob) evidence event, so stale
-//!    or free-floating provenance cannot hide behind the sha↔blob checks.
+//! 3. Every `verified` disposition names a well-formed `verification_pr`
+//!    (format gate: integer >= 1 — null, zero, or string identities fail), and
+//!    all verified Scenario 14 rows bind the same quarantined artifact blob, so
+//!    artifact drift invalidates every binding at once; each distinct
+//!    (verification_pr, verified_sha) evidence event is independently
+//!    re-verified against that blob by the drift control. Boundary: whether the
+//!    named PR actually carried the evidence run is attested by review, not
+//!    machine-verifiable from git — the sha↔blob checks bind the *artifact* to
+//!    exact commits, not the PR identity to the run.
+//! 4. Every `active` row carries the bounded review contract of #10015: a
+//!    current issue, a named owner, and a bounded `expires_after_days` — no
+//!    indefinite, ownerless quarantine may re-enter the registry silently.
+//!    Boundary: this is a bound-existence gate (integer >= 1). Anchor-date
+//!    deadline enforcement — #10015's "expired rows become action-required" —
+//!    is deliberately not implemented here; it is vacuous today because the
+//!    registry carries zero active rows, and must not be read as expiry
+//!    enforcement.
 
 use std::fs;
 use std::io;
@@ -58,6 +71,59 @@ fn check_verification_pr(test: &str, verification_pr: &Value) -> Result<(), Stri
              evidence run, got {verification_pr}"
         )),
     }
+}
+
+/// Enforce the #10015 bounded active-row contract: an `active` quarantine must
+/// name its current issue and owner and carry a bounded review expiry. Without
+/// this detector an active row can re-enter the registry with
+/// `expires_after_days: null` and no honest owner — the exact unbounded shape
+/// #10015 forbids. Boundary: bound-existence only — no anchor-date deadline
+/// arithmetic, so an active row whose window has passed is not auto-rejected;
+/// #10015's "expired rows become action-required" stays unimplemented here.
+/// Shared by the live contract test and the negative control.
+fn check_active_row_bounds(
+    test: &str,
+    issue: &Value,
+    owner: &Value,
+    expires_after_days: &Value,
+) -> Result<(), String> {
+    if issue.as_u64().map(|issue| issue >= 1) != Some(true) {
+        return Err(format!(
+            "{test}: active row must name its current tracking issue, got {issue}"
+        ));
+    }
+    if owner.as_str().is_none_or(|owner| owner.trim().is_empty()) {
+        return Err(format!("{test}: active row must name a current owner, got {owner}"));
+    }
+    if expires_after_days.as_u64().map(|days| days >= 1) != Some(true) {
+        return Err(format!(
+            "{test}: active row must carry a bounded expires_after_days (integer >= 1), \
+             got {expires_after_days} — no indefinite quarantine"
+        ));
+    }
+    Ok(())
+}
+
+/// Enforce the shared-artifact invariant across verified rows: every verified
+/// Scenario 14 row must record the same replacement-source blob, because they
+/// all quarantine the same artifact — a row claiming a different blob is
+/// either stale (verified against drifted source) or tampered. Distinct
+/// (verification_pr, verified_sha) evidence events are legitimate; blob
+/// disagreement is not. Shared by the live contract test and the negative
+/// control.
+fn check_shared_evidence_blob(events: &[(&str, u64, &str, &str)]) -> Result<(), String> {
+    let Some((first_test, _, _, first_blob)) = events.first() else {
+        return Ok(());
+    };
+    for (test, _, _, blob) in events {
+        if blob != first_blob {
+            return Err(format!(
+                "{test}: verified rows must all bind the same quarantined artifact blob; \
+                 this row records {blob} but {first_test} records {first_blob}"
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Re-verify one recorded `verified_sha` binding against the quarantined
@@ -233,9 +299,12 @@ fn scenario_14_quarantine_rows_have_terminal_executable_dispositions() -> TestRe
         }
     }
 
-    // The FindBin row is the honestly unproven one: its replacement tolerates
-    // the consumer divergence it claims to guard, so it stays an active,
-    // issue-owned blocker instead of a resolved disposition.
+    // The FindBin row was the last proof debt (#10015 A06 residue); its
+    // discriminating replacement (#14152) plus the strict child-environment
+    // isolation (#14308) carried the five-run exact-subject protocol recorded
+    // in PR #17042, so it must stay a resolved, stabilized disposition bound
+    // to that evidence — never silently re-activated without a bounded
+    // active-row contract.
     let findbin = entries
         .iter()
         .find(|entry| {
@@ -243,37 +312,28 @@ fn scenario_14_quarantine_rows_have_terminal_executable_dispositions() -> TestRe
                 == Some("ux_scenario_14_inc_conformance::scenario_14_findbin_relative")
         })
         .ok_or_else(|| invalid_data("FindBin row missing from registry"))?;
-    assert_eq!(findbin["state"], "active", "FindBin proof debt must stay active");
-    assert_eq!(findbin["disposition"], "not_proven");
-    assert_eq!(findbin["issue"], 10015, "FindBin proof debt must be issue-owned");
-    assert!(
-        findbin["owner"].as_str().is_some_and(|owner| !owner.is_empty()),
-        "active FindBin row must name an owner"
-    );
-    assert_eq!(findbin["evidence"]["verification_state"], "unverified");
+    assert_eq!(findbin["state"], "resolved", "FindBin proof debt was discharged in #17042");
+    assert_eq!(findbin["disposition"], "stabilized");
+    assert_eq!(findbin["evidence"]["verification_state"], "verified");
 
-    assert_eq!(verified_count, 10, "exactly 10 rows carry an exact-head binding");
-    assert_eq!(unverified_count, 1, "only the FindBin row is honestly unverified");
+    assert_eq!(
+        verified_count, 11,
+        "every historical Scenario 14 row carries an exact-head binding"
+    );
+    assert_eq!(unverified_count, 0, "no Scenario 14 row may stay honestly unverified forever");
 
     // Durable provenance join: every verified row binds the same Scenario 14
-    // artifact blob, so drift invalidates all of them at once and an honest
-    // re-verification is a single evidence event. The rows must therefore
-    // record one identical (verification_pr, verified_sha, artifact blob)
-    // triple; per-row provenance tampering cannot hide behind the aggregate
-    // sha↔blob re-verification.
-    if let Some((_, first_pr, first_sha, first_blob)) = verification_events.first() {
-        for (test, pr, sha, blob) in &verification_events {
-            assert!(
-                (pr, sha, blob) == (first_pr, first_sha, first_blob),
-                "{test}: verified rows must share one exact-head evidence event; this row \
-                 records (pr {pr}, sha {sha}, blob {blob}) but another row records \
-                 (pr {first_pr}, sha {first_sha}, blob {first_blob})"
-            );
-        }
-    }
+    // artifact blob, so artifact drift invalidates all of them at once. Rows
+    // may come from distinct exact-head evidence events (different
+    // verification_pr/verified_sha — each independently re-verified against
+    // the artifact by the drift control), but they must all describe the same
+    // quarantined source; per-row blob tampering cannot hide behind the
+    // aggregate sha↔blob re-verification.
+    check_shared_evidence_blob(&verification_events)
+        .map_err(|err| -> Box<dyn std::error::Error> { err.into() })?;
 
-    assert_eq!(ledger["summary"]["active"], 1);
-    assert_eq!(ledger["summary"]["resolved"], 10);
+    assert_eq!(ledger["summary"]["active"], 0);
+    assert_eq!(ledger["summary"]["resolved"], 11);
     Ok(())
 }
 
@@ -329,7 +389,34 @@ fn verified_bindings_reverify_without_drift() -> TestResult {
         sampled += 1;
     }
 
-    assert!(sampled >= 10, "drift control must actually sample the verified rows, got {sampled}");
+    assert!(sampled >= 11, "drift control must actually sample the verified rows, got {sampled}");
+    Ok(())
+}
+
+#[test]
+fn shared_evidence_blob_negative_control_fails_on_disagreeing_rows() -> TestResult {
+    const SHA_A: &str = "65f34b9061c0aab996e7f48e0efba43186d7db96";
+    const SHA_B: &str = "ac54b5f5d62f25a27070ab580b6de92d7fddf82b";
+    const BLOB_A: &str = "f3c571ac0c0c195ebf5c11a6d1b37480b761265c";
+    const BLOB_B: &str = "5c81bf0fec3edac3492d82c00a6d694380504133";
+    // Fault-injection half: the shared-artifact invariant must fail when one
+    // verified row claims a different quarantined blob — the signature of a
+    // stale (drift-verified) or tampered row hiding inside a healthy event.
+    let healthy = [("a", 14393, SHA_A, BLOB_A), ("b", 14393, SHA_A, BLOB_A)];
+    assert!(check_shared_evidence_blob(&healthy).is_ok());
+
+    // Distinct exact-head evidence events over the same artifact stay legal.
+    let distinct_events = [("a", 14393, SHA_A, BLOB_A), ("b", 17042, SHA_B, BLOB_A)];
+    assert!(check_shared_evidence_blob(&distinct_events).is_ok());
+
+    let disagreeing = [("a", 14393, SHA_A, BLOB_A), ("b", 17042, SHA_B, BLOB_B)];
+    let err = check_shared_evidence_blob(&disagreeing)
+        .err()
+        .ok_or_else(|| invalid_data("blob disagreement must fail"))?;
+    assert!(err.contains("same quarantined artifact blob"), "{err}");
+
+    // An empty event set is vacuously coherent (no verified rows yet).
+    assert!(check_shared_evidence_blob(&[]).is_ok());
     Ok(())
 }
 
@@ -395,6 +482,102 @@ fn drift_negative_control_fails_on_tampered_bindings() -> TestResult {
     .err()
     .ok_or_else(|| invalid_data("shallow clones must still detect artifact drift"))?;
     assert!(err.contains("drifted"), "{err}");
+
+    Ok(())
+}
+
+#[test]
+fn active_rows_carry_bounded_review_contract() -> TestResult {
+    // Live half: every currently active row must satisfy the #10015 bounded
+    // active-row contract. With zero active rows this is vacuously green, but
+    // the detector is exercised below by fault injection so the bound cannot
+    // silently rot.
+    let root = repo_root();
+    let ledger_raw = fs::read_to_string(root.join(".ci/ux-flakes.json"))?;
+    let ledger: Value = serde_json::from_str(&ledger_raw)?;
+    let summary_active = ledger["summary"]["active"].as_u64().ok_or_else(|| {
+        invalid_data("ux-flakes summary.active must be an integer for the active-row bound")
+    })?;
+
+    let mut active_count = 0usize;
+    for entry in ledger["entries"]
+        .as_array()
+        .ok_or_else(|| invalid_data("ux-flakes entries must be an array"))?
+    {
+        if entry["state"] != "active" {
+            continue;
+        }
+        let test = entry["test"].as_str().unwrap_or("<missing test>");
+        check_active_row_bounds(
+            test,
+            &entry["issue"],
+            &entry["owner"],
+            &entry["expires_after_days"],
+        )
+        .map_err(|err| -> Box<dyn std::error::Error> { err.into() })?;
+        active_count += 1;
+    }
+
+    // The summary is a generated projection; it must not disagree with the
+    // rows the bound just walked.
+    assert_eq!(
+        active_count as u64, summary_active,
+        "summary.active ({summary_active}) must equal the actual active row count ({active_count})"
+    );
+    Ok(())
+}
+
+#[test]
+fn active_row_bounds_negative_control_fails_on_unbounded_rows() -> TestResult {
+    // Fault-injection half: the detector must fail on each unbounded active
+    // shape, not just pass on the healthy ledger.
+    let issue = Value::from(10015);
+    let owner = Value::from("@maintainer");
+    let bounded = Value::from(30);
+
+    // 1. A bounded, issue-owned active row passes.
+    assert!(check_active_row_bounds("t", &issue, &owner, &bounded).is_ok());
+
+    // 2. Null expiry — the indefinite quarantine #10015 forbids — fails.
+    let err = check_active_row_bounds("t", &issue, &owner, &Value::Null)
+        .err()
+        .ok_or_else(|| invalid_data("null expiry must fail"))?;
+    assert!(err.contains("expires_after_days"), "{err}");
+
+    // 3. Zero/negative expiry bounds are placeholders, not review windows.
+    for days in [Value::from(0), Value::from(-5)] {
+        let err = check_active_row_bounds("t", &issue, &owner, &days)
+            .err()
+            .ok_or_else(|| invalid_data("non-positive expiry must fail"))?;
+        assert!(err.contains("expires_after_days"), "{err}");
+    }
+
+    // 4. A non-integer expiry shape fails the bound.
+    let err = check_active_row_bounds("t", &issue, &owner, &Value::from("30"))
+        .err()
+        .ok_or_else(|| invalid_data("string expiry must fail"))?;
+    assert!(err.contains("expires_after_days"), "{err}");
+
+    // 5. Ownerless, empty, or whitespace-only owner active rows fail. The
+    // whitespace shape pins the detector's trim semantics against the
+    // schema's non-blank `owner` pattern (issue #9879 review): `" "` would
+    // otherwise satisfy a bare minLength while naming nobody.
+    for owner in [Value::Null, Value::from(""), Value::from("   ")] {
+        let err = check_active_row_bounds("t", &issue, &owner, &bounded)
+            .err()
+            .ok_or_else(|| invalid_data("missing owner must fail"))?;
+        assert!(err.contains("owner"), "{err}");
+    }
+
+    // 6. Issue-less or placeholder issue identities fail. Fault shapes mirror
+    // the expiry cases (null, 0, negative, string) so a refactor weakening the
+    // issue >= 1 bound cannot stay green.
+    for bad_issue in [Value::Null, Value::from(0), Value::from(-10015), Value::from("10015")] {
+        let err = check_active_row_bounds("t", &bad_issue, &owner, &bounded)
+            .err()
+            .ok_or_else(|| invalid_data("invalid issue must fail"))?;
+        assert!(err.contains("issue"), "{err}");
+    }
 
     Ok(())
 }
