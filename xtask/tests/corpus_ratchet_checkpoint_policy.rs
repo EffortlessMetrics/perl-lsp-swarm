@@ -518,13 +518,26 @@ fn bounded_pin_controls_refuse_unknown_mutable_and_stale_projections() -> Result
         let issues = receipt["issues"]
             .as_array()
             .ok_or_else(|| anyhow!("provenance receipt must declare issues"))?;
+        let (_, expected_ref) = reference
+            .split_once('@')
+            .ok_or_else(|| anyhow!("pin control must declare an action reference"))?;
+        let occurrence = receipt["occurrences"]
+            .as_array()
+            .and_then(|occurrences| {
+                occurrences.iter().find(|occurrence| {
+                    occurrence["action"] == "taiki-e/install-action"
+                        && occurrence["reference"] == expected_ref
+                        && occurrence["path"] == format!(".github/workflows/{WORKFLOW_FILE}")
+                })
+            })
+            .ok_or_else(|| {
+                anyhow!("provenance instrument must scan the poisoned pin: {receipt}")
+            })?;
         ensure!(
             issues.iter().any(|issue| {
                 issue["code"] == expected_code
                     && issue["path"] == format!(".github/workflows/{WORKFLOW_FILE}")
-                    && issue["message"]
-                        .as_str()
-                        .is_some_and(|message| message.contains("taiki-e/install-action"))
+                    && issue["line"] == occurrence["line"]
             }),
             "pin must fail for the intended provenance reason: {receipt}"
         );
