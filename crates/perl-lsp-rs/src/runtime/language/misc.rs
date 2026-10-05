@@ -2500,7 +2500,16 @@ mod tests {
             .expect_err("missing execute command params must be rejected");
 
         assert_eq!(err.code, crate::protocol::INVALID_PARAMS);
-        assert_eq!(err.message, "workspace/executeCommand: missing required parameter 'params'");
+        assert_eq!(
+            err.message,
+            concat!(
+                "workspace/executeCommand: missing required parameter 'params': ",
+                "workspace/executeCommand expects params.command as a string; ",
+                "params.arguments is optional and must be an array when present. ",
+                "For example {\"command\":\"perl.runFile\",\"arguments\":[\"file:///path/to/script.pl\"]}; ",
+                "omit arguments or send [] for a command with no arguments."
+            )
+        );
         assert_eq!(
             err.data,
             Some(json!({

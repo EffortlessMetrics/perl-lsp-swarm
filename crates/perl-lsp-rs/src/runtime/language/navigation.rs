@@ -2712,7 +2712,20 @@ impl LspServer {
         &self,
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
-        let live_provider_result = self.handle_definition(params.clone())?;
+        let live_provider_result = match self.handle_definition(params.clone()) {
+            Err(error) if params.is_none() => {
+                return Ok(Some(json!({
+                    "provider": "definition",
+                    "live_provider_result": null,
+                    "live_provider_count": 0,
+                    "live_provider_error": error,
+                    "source_backed_receipt": null,
+                    "no_live_behavior_change": true,
+                    "note": "definition runtime proof missing request params"
+                })));
+            }
+            result => result?,
+        };
         let live_provider_count = lsp_location_count(live_provider_result.as_ref());
 
         #[cfg(not(all(feature = "workspace", not(target_arch = "wasm32"))))]
