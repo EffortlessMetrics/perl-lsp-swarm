@@ -6,6 +6,7 @@ import type { ChildProcess } from 'child_process';
 import { EventEmitter } from 'events';
 import { PassThrough } from 'stream';
 import {
+  defaultPerlCandidates,
   describeFileFailure,
   parseSubtestResults,
   parseTapOutput,
@@ -282,6 +283,13 @@ describe('bounded prove process execution', () => {
 
     try {
       const resolved = resolveProveCommand(['-v', '--nocolor', '-']);
+      if (resolved.error !== undefined) {
+        // No matching Windows Perl/prove installation on this machine's PATH.
+        // The resolver's selection contract is pinned platform-independently by
+        // the sandboxed walk tests; this test additionally runs real `prove`,
+        // which requires an actual installation.
+        return;
+      }
       expect(resolved.command.toLowerCase()).not.toMatch(/prove\.bat$/);
       expect(resolved.args[0]).toBe('-x');
       expect(resolved.args[1]?.toLowerCase()).toMatch(/prove\.bat$/);
@@ -821,6 +829,196 @@ describe('bounded prove process execution', () => {
       fs.rmSync(root, { recursive: true, force: true });
     }
   }, 30_000);
+});
+
+describe('prove command resolution walks PATH candidates (#17333)', () => {
+  const EXTRA_ARGS = ['-v', '--nocolor', '-'];
+
+  /** A temp directory standing in for one Perl installation. */
+  function fakeInstallation(files: string[]): string {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-install-'));
+    for (const file of files) {
+      fs.writeFileSync(path.join(directory, file), '', 'utf8');
+    }
+    return directory;
+  }
+
+  test('resolves a matching installation later on PATH after an unusable first Perl', () => {
+    const cygwinDir = fakeInstallation(['perl.exe']);
+    const strawberryDir = fakeInstallation(['perl.exe', 'prove.bat']);
+    const strawberryPerl = path.join(strawberryDir, 'perl.exe');
+
+    const resolved = resolveProveCommand(EXTRA_ARGS, {
+      isWindows: true,
+      perlCandidates: () => [path.join(cygwinDir, 'perl.exe'), strawberryPerl],
+      // cygwin Perl prints the bare string `perl`; the matching install
+      // reports its own absolute interpreter path.
+      probePerlExecutablePath: (candidate) =>
+        candidate === strawberryPerl ? strawberryPerl : 'perl',
+      fileExists: (candidatePath) => fs.existsSync(candidatePath),
+    });
+
+    expect(resolved.error).toBeUndefined();
+    expect(resolved.command).toBe(strawberryPerl);
+    expect(resolved.args[0]).toBe('-x');
+    expect(resolved.args[1]).toBe(path.join(strawberryDir, 'prove.bat'));
+    expect(resolved.args.slice(2)).toEqual(EXTRA_ARGS);
+    expect(resolved.shell).toBe(false);
+    fs.rmSync(cygwinDir, { recursive: true, force: true });
+    fs.rmSync(strawberryDir, { recursive: true, force: true });
+  });
+
+  test('treats a non-absolute $^X as unusable instead of resolving prove against the cwd', () => {
+    const cygwinDir = fakeInstallation(['perl.exe']);
+
+    const resolved = resolveProveCommand(EXTRA_ARGS, {
+      isWindows: true,
+      perlCandidates: () => [path.join(cygwinDir, 'perl.exe')],
+      probePerlExecutablePath: () => 'perl',
+      fileExists: (candidatePath) => fs.existsSync(candidatePath),
+    });
+
+    expect(resolved).toMatchObject({ command: '', args: [], shell: false });
+    expect(resolved.error).toContain('matching Perl/prove installation');
+    // The old defect resolved `.\prove.bat` from the bare `$^X`; that must
+    // never become the command.
+    expect(JSON.stringify(resolved)).not.toContain('prove.bat');
+    fs.rmSync(cygwinDir, { recursive: true, force: true });
+  });
+
+  test('fails closed when no candidate yields an adjacent prove shim', () => {
+    const perlOnlyDir = fakeInstallation(['perl.exe']);
+
+    const resolved = resolveProveCommand(EXTRA_ARGS, {
+      isWindows: true,
+      perlCandidates: () => [path.join(perlOnlyDir, 'perl.exe')],
+      probePerlExecutablePath: (candidate) => candidate,
+      fileExists: (candidatePath) => fs.existsSync(candidatePath),
+    });
+
+    expect(resolved.command).toBe('');
+    expect(resolved.args).toEqual([]);
+    expect(resolved.error).toContain('matching Perl/prove installation');
+    fs.rmSync(perlOnlyDir, { recursive: true, force: true });
+  });
+
+  test('stops probing once a matching installation is found', () => {
+    const goodDir = fakeInstallation(['perl.exe', 'prove.bat']);
+    const laterDir = fakeInstallation(['perl.exe', 'prove.bat']);
+    const probe = jest.fn((candidate: string) => candidate);
+
+    const resolved = resolveProveCommand(EXTRA_ARGS, {
+      isWindows: true,
+      perlCandidates: () => [path.join(goodDir, 'perl.exe'), path.join(laterDir, 'perl.exe')],
+      probePerlExecutablePath: probe,
+      fileExists: (candidatePath) => fs.existsSync(candidatePath),
+    });
+
+    expect(resolved.command).toBe(path.join(goodDir, 'perl.exe'));
+    expect(probe).toHaveBeenCalledTimes(1);
+    fs.rmSync(goodDir, { recursive: true, force: true });
+    fs.rmSync(laterDir, { recursive: true, force: true });
+  });
+
+  test('skips candidates that report no interpreter path and keeps walking', () => {
+    const brokenDir = fakeInstallation(['perl.exe']);
+    const goodDir = fakeInstallation(['perl.exe', 'prove.bat']);
+    const goodPerl = path.join(goodDir, 'perl.exe');
+
+    const resolved = resolveProveCommand(EXTRA_ARGS, {
+      isWindows: true,
+      perlCandidates: () => [path.join(brokenDir, 'perl.exe'), goodPerl],
+      probePerlExecutablePath: (candidate) => (candidate === goodPerl ? goodPerl : null),
+      fileExists: (candidatePath) => fs.existsSync(candidatePath),
+    });
+
+    expect(resolved.command).toBe(goodPerl);
+    expect(resolved.args[0]).toBe('-x');
+    fs.rmSync(brokenDir, { recursive: true, force: true });
+    fs.rmSync(goodDir, { recursive: true, force: true });
+  });
+
+  test('default probe keeps walking after a candidate fails to execute', () => {
+    const goodDir = fakeInstallation(['perl.exe', 'prove.bat']);
+    const goodPerl = path.join(goodDir, 'perl.exe');
+    const childProcess = require('child_process') as {
+      execFileSync: (...args: unknown[]) => Buffer | string;
+    };
+    const original = childProcess.execFileSync;
+    // The first probe fails like a missing/hung Perl would — the default probe
+    // catches and reports null, and the walk must continue; the second probe
+    // returns an absolute interpreter path whose temp directory carries
+    // prove.bat.
+    childProcess.execFileSync = (file: unknown) => {
+      if (String(file).includes('broken')) {
+        throw new Error('ENOENT');
+      }
+      return goodPerl;
+    };
+    try {
+      const resolved = resolveProveCommand(EXTRA_ARGS, {
+        isWindows: true,
+        perlCandidates: () => ['broken-perl', goodPerl],
+        fileExists: (candidatePath) => fs.existsSync(candidatePath),
+      });
+
+      expect(resolved.command).toBe(goodPerl);
+      expect(resolved.args[0]).toBe('-x');
+      expect(resolved.args[1]).toBe(path.join(goodDir, 'prove.bat'));
+    } finally {
+      childProcess.execFileSync = original;
+      fs.rmSync(goodDir, { recursive: true, force: true });
+    }
+  });
+
+  test('on POSIX resolves the adjacent prove shim without the -x stdin form', () => {
+    const binDir = fakeInstallation(['perl', 'prove']);
+    const perlPath = path.join(binDir, 'perl');
+
+    const resolved = resolveProveCommand(EXTRA_ARGS, {
+      isWindows: false,
+      perlCandidates: () => [perlPath],
+      probePerlExecutablePath: (candidate) => candidate,
+      fileExists: (candidatePath) => fs.existsSync(candidatePath),
+    });
+
+    expect(resolved).toEqual({
+      command: path.join(binDir, 'prove'),
+      args: EXTRA_ARGS,
+      shell: false,
+    });
+    fs.rmSync(binDir, { recursive: true, force: true });
+  });
+
+  test('on POSIX falls back to the PATH prove when no Perl reports an adjacent shim', () => {
+    const binDir = fakeInstallation(['perl']);
+
+    const resolved = resolveProveCommand(EXTRA_ARGS, {
+      isWindows: false,
+      perlCandidates: () => [path.join(binDir, 'perl')],
+      probePerlExecutablePath: () => null,
+      fileExists: (candidatePath) => fs.existsSync(candidatePath),
+    });
+
+    expect(resolved).toEqual({ command: 'prove', args: EXTRA_ARGS, shell: false });
+    fs.rmSync(binDir, { recursive: true, force: true });
+  });
+
+  test('defaultPerlCandidates enumerates the bare perl first, then every PATH entry', () => {
+    const first = path.resolve('path-one');
+    const second = path.resolve('path-two');
+    const previousPath = process.env.PATH;
+    process.env.PATH = [first, '', second].join(path.delimiter);
+    try {
+      expect(defaultPerlCandidates(process.platform === 'win32')).toEqual([
+        'perl',
+        path.join(first, process.platform === 'win32' ? 'perl.exe' : 'perl'),
+        path.join(second, process.platform === 'win32' ? 'perl.exe' : 'perl'),
+      ]);
+    } finally {
+      process.env.PATH = previousPath;
+    }
+  });
 });
 
 describe('file-level failure explanation', () => {
