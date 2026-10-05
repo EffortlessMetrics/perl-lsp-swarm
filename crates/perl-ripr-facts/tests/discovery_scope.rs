@@ -31,6 +31,10 @@ fn build_packet(root: &str, fact_classes: &str) -> serde_json::Value {
 }
 
 fn stage_file(root: &str, rel: &str, content: &str) {
+    stage_bytes(root, rel, content.as_bytes());
+}
+
+fn stage_bytes(root: &str, rel: &str, content: &[u8]) {
     let path = format!("{root}/{rel}");
     if let Some(parent) = std::path::Path::new(&path).parent() {
         must_with(std::fs::create_dir_all(parent), format!("mkdir for {rel}"));
@@ -38,10 +42,31 @@ fn stage_file(root: &str, rel: &str, content: &str) {
     must_with(std::fs::write(&path, content), format!("stage {rel}"));
 }
 
-fn fresh_root(name: &str) -> String {
-    let root = format!("target/ripr-g7/{name}");
-    let _ = std::fs::remove_dir_all(&root);
-    root
+/// Per-invocation fixture root: the directory name embeds the process id so two
+/// concurrent `cargo test` invocations never share a fixture tree — one
+/// invocation's setup/teardown `remove_dir_all` cannot remove another's
+/// fixture mid-read. The guard owns teardown (drop removes the tree), so the
+/// binding must stay alive through `build_packet` and every assertion.
+struct FixtureRoot {
+    path: String,
+}
+
+impl FixtureRoot {
+    fn new(name: &str) -> Self {
+        let path = format!("target/ripr-g7/{name}-pid{}", std::process::id());
+        let _ = std::fs::remove_dir_all(&path);
+        Self { path }
+    }
+
+    fn path(&self) -> &str {
+        &self.path
+    }
+}
+
+impl Drop for FixtureRoot {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.path);
+    }
 }
 
 fn limitation_ids(packet: &serde_json::Value) -> Vec<String> {
@@ -61,14 +86,14 @@ fn scope_limitation(packet: &serde_json::Value) -> &serde_json::Value {
 
 #[test]
 fn out_of_scope_files_are_limited_not_silent() {
-    let root = fresh_root("split");
+    let fixture = FixtureRoot::new("split");
+    let root = fixture.path().to_owned();
     stage_file(&root, "lib/App.pm", APP_PM);
     stage_file(&root, "t/app.t", APP_T);
     stage_file(&root, "xt/extra.t", EXTRA_T);
     stage_file(&root, "script/Helper.pm", HELPER_PM);
     let packet =
         build_packet(&root, "files,owners,tests,oracles,dynamic_boundaries,verify_commands");
-    let _ = std::fs::remove_dir_all(&root);
 
     // The skipped .t is in files[] (role test) but yields no test fact — the
     // exact silent shape from the issue; now it must be named.
@@ -103,12 +128,12 @@ fn out_of_scope_files_are_limited_not_silent() {
 
 #[test]
 fn conventional_layout_carries_no_scope_limitation() {
-    let root = fresh_root("conventional");
+    let fixture = FixtureRoot::new("conventional");
+    let root = fixture.path().to_owned();
     stage_file(&root, "lib/App.pm", APP_PM);
     stage_file(&root, "t/app.t", APP_T);
     let packet =
         build_packet(&root, "files,owners,tests,oracles,dynamic_boundaries,verify_commands");
-    let _ = std::fs::remove_dir_all(&root);
 
     assert!(
         !limitation_ids(&packet).contains(&"discovery-scope-split".to_string()),
@@ -119,10 +144,10 @@ fn conventional_layout_carries_no_scope_limitation() {
 
 #[test]
 fn files_only_request_carries_no_scope_limitation() {
-    let root = fresh_root("files-only");
+    let fixture = FixtureRoot::new("files-only");
+    let root = fixture.path().to_owned();
     stage_file(&root, "xt/extra.t", EXTRA_T);
     let packet = build_packet(&root, "files,owners");
-    let _ = std::fs::remove_dir_all(&root);
 
     // No scope-sensitive class requested: nothing to explain, no new noise.
     assert!(
@@ -136,7 +161,8 @@ fn files_only_request_carries_no_scope_limitation() {
 fn pl_and_psgi_skips_are_named_anywhere() {
     // No scoped collector scans `.pl`/`.psgi` at all, so they are skips
     // wherever they live — even directly under `lib/`.
-    let root = fresh_root("pl-psgi");
+    let fixture = FixtureRoot::new("pl-psgi");
+    let root = fixture.path().to_owned();
     stage_file(&root, "lib/App.pm", APP_PM);
     stage_file(&root, "lib/extra.pl", EXTRA_PL);
     stage_file(&root, "t/app.t", APP_T);
@@ -146,7 +172,6 @@ fn pl_and_psgi_skips_are_named_anywhere() {
         &root,
         "files,owners,tests,oracles,relations,dynamic_boundaries,verify_commands",
     );
-    let _ = std::fs::remove_dir_all(&root);
 
     // The `eval` in script/run.pl yields no boundary (scope unchanged —
     // Option 2) — but it must no longer be a silent skip either.
@@ -182,13 +207,13 @@ fn pl_and_psgi_skips_are_named_anywhere() {
 fn tests_only_request_reports_t_skips_not_pm_skips() {
     // Split gating: `.t` feeds tests, but `.pm` does not — a tests-only
     // request must not report unrelated source skips.
-    let root = fresh_root("tests-only-gating");
+    let fixture = FixtureRoot::new("tests-only-gating");
+    let root = fixture.path().to_owned();
     stage_file(&root, "lib/App.pm", APP_PM);
     stage_file(&root, "t/app.t", APP_T);
     stage_file(&root, "xt/extra.t", EXTRA_T);
     stage_file(&root, "script/Helper.pm", HELPER_PM);
     let packet = build_packet(&root, "tests");
-    let _ = std::fs::remove_dir_all(&root);
 
     let limitation = scope_limitation(&packet);
     let message = must_some(limitation["message"].as_str());
@@ -209,13 +234,13 @@ fn tests_only_request_reports_t_skips_not_pm_skips() {
 fn relations_request_reports_both_t_and_source_skips() {
     // Relations consume both sides (test files + source files), so a
     // relations/dynamic_boundaries request reports both skip classes.
-    let root = fresh_root("relations-gating");
+    let fixture = FixtureRoot::new("relations-gating");
+    let root = fixture.path().to_owned();
     stage_file(&root, "lib/App.pm", APP_PM);
     stage_file(&root, "t/app.t", APP_T);
     stage_file(&root, "xt/extra.t", EXTRA_T);
     stage_file(&root, "script/Helper.pm", HELPER_PM);
     let packet = build_packet(&root, "relations,dynamic_boundaries");
-    let _ = std::fs::remove_dir_all(&root);
 
     let limitation = scope_limitation(&packet);
     let message = must_some(limitation["message"].as_str());
@@ -237,11 +262,11 @@ fn verify_only_request_names_excluded_commands() {
     // A verify-only caller requests commands, not facts — the limitation
     // must still name the out-of-scope .t as excluded from the requested
     // scoped facts or commands (PRRT_kwDOSid81M6o2Z3P).
-    let root = fresh_root("verify-only");
+    let fixture = FixtureRoot::new("verify-only");
+    let root = fixture.path().to_owned();
     stage_file(&root, "t/app.t", APP_T);
     stage_file(&root, "xt/extra.t", EXTRA_T);
     let packet = build_packet(&root, "verify_commands");
-    let _ = std::fs::remove_dir_all(&root);
 
     let limitation = scope_limitation(&packet);
     let message = must_some(limitation["message"].as_str());
@@ -257,11 +282,11 @@ fn subset_packet_uses_files_absent_wording() {
     // A tests-only packet carries empty `files[]` — the message must not
     // claim the skips "appear in `files[]`"; the `file:` evidence refs are
     // path-derived ids, stated as such.
-    let root = fresh_root("files-absent");
+    let fixture = FixtureRoot::new("files-absent");
+    let root = fixture.path().to_owned();
     stage_file(&root, "t/app.t", APP_T);
     stage_file(&root, "xt/extra.t", EXTRA_T);
     let packet = build_packet(&root, "tests");
-    let _ = std::fs::remove_dir_all(&root);
 
     assert!(
         must_some(packet["files"].as_array()).is_empty(),
@@ -283,4 +308,179 @@ fn subset_packet_uses_files_absent_wording() {
         .filter_map(|r| r.as_str())
         .collect();
     assert!(refs.contains(&"file:xt/extra.t"), "got {refs:?}");
+}
+
+#[test]
+fn unreadable_skip_uses_path_derived_wording() {
+    // Wave-2 thread 1 (all absent): one file reads OK (`files[]` present)
+    // while a skipped file fails `read_to_string` (invalid UTF-8) — the skip
+    // has no `files[]` fact, so the message must not claim it appears there.
+    let fixture = FixtureRoot::new("unreadable-skip");
+    let root = fixture.path().to_owned();
+    stage_file(&root, "lib/App.pm", APP_PM);
+    stage_file(&root, "t/app.t", APP_T);
+    stage_bytes(&root, "xt/extra.t", &[0xff, 0xfe, 0x00, 0x62]);
+    let packet = build_packet(&root, "files,owners,tests,oracles,relations,dynamic_boundaries");
+
+    assert!(
+        !must_some(packet["files"].as_array()).is_empty(),
+        "readable files must keep files[] present"
+    );
+    assert!(
+        must_some(packet["files"].as_array())
+            .iter()
+            .all(|f| f["file_id"].as_str() != Some("file:xt/extra.t")),
+        "unreadable skip must have no files[] fact"
+    );
+    assert!(
+        limitation_ids(&packet).contains(&"read-failed:file:xt/extra.t".to_string()),
+        "unreadable skip must carry its read-failed limitation; got {:?}",
+        limitation_ids(&packet)
+    );
+    let limitation = scope_limitation(&packet);
+    let message = must_some(limitation["message"].as_str());
+    assert!(message.contains("xt/extra.t"), "message must name the skip; got {message:?}");
+    assert!(
+        message.contains("path-derived"),
+        "absent skip wording must state path-derived ids; got {message:?}"
+    );
+    assert!(
+        !message.contains("appear in `files[]`"),
+        "no skip is present, so no presence claim is allowed; got {message:?}"
+    );
+}
+
+#[test]
+fn mixed_present_and_unreadable_skips_split_wording() {
+    // Wave-2 thread 1 (mixed): one skip present in `files[]`, one unreadable
+    // — the message names both but claims presence only for the present one.
+    let fixture = FixtureRoot::new("mixed-presence");
+    let root = fixture.path().to_owned();
+    stage_file(&root, "lib/App.pm", APP_PM);
+    stage_file(&root, "t/app.t", APP_T);
+    stage_file(&root, "xt/extra.t", EXTRA_T);
+    stage_bytes(&root, "script/Helper.pm", &[0xff, 0xfe]);
+    let packet = build_packet(&root, "files,owners,tests,oracles,relations,dynamic_boundaries");
+
+    let limitation = scope_limitation(&packet);
+    let message = must_some(limitation["message"].as_str());
+    let (present_part, absent_part) = must_some(message.split_once("Also excluded"));
+    assert!(
+        present_part.contains("xt/extra.t"),
+        "present skip must sit in the presence clause; got {message:?}"
+    );
+    assert!(
+        !present_part.contains("script/Helper.pm"),
+        "unreadable skip must not sit in the presence clause; got {message:?}"
+    );
+    assert!(
+        absent_part.contains("script/Helper.pm") && absent_part.contains("path-derived"),
+        "unreadable skip must sit in the path-derived clause; got {message:?}"
+    );
+}
+
+#[test]
+fn extension_and_directory_skips_are_distinguished() {
+    // Wave-2 thread 2 (files-present): `lib/extra.pl` sits INSIDE `<root>/lib`
+    // yet is excluded by extension, while `xt/extra.t` is excluded by
+    // directory — each group must carry its own reason.
+    let fixture = FixtureRoot::new("ext-vs-dir");
+    let root = fixture.path().to_owned();
+    stage_file(&root, "lib/App.pm", APP_PM);
+    stage_file(&root, "lib/extra.pl", EXTRA_PL);
+    stage_file(&root, "t/app.t", APP_T);
+    stage_file(&root, "xt/extra.t", EXTRA_T);
+    let packet = build_packet(
+        &root,
+        "files,owners,tests,oracles,relations,dynamic_boundaries,verify_commands",
+    );
+
+    let limitation = scope_limitation(&packet);
+    let message = must_some(limitation["message"].as_str());
+    assert!(message.contains("lib/extra.pl"), "got {message:?}");
+    assert!(message.contains("xt/extra.t"), "got {message:?}");
+    assert!(
+        message.contains("unscanned"),
+        "extension skips must be labeled by extension; got {message:?}"
+    );
+    assert!(
+        message.contains("directory scope"),
+        "directory skips must be labeled by directory; got {message:?}"
+    );
+    assert!(
+        message.contains("appear in `files[]`"),
+        "all-present packet keeps the presence claim; got {message:?}"
+    );
+}
+
+#[test]
+fn files_absent_extension_skip_names_extension_not_directory() {
+    // Wave-2 thread 2 (files-absent, ext-only): `lib/extra.pl` is inside
+    // `<root>/lib` yet excluded — the message must name the extension reason
+    // and never claim it "falls outside that scope". A boundaries-only request
+    // on an eval-free fixture carries no files: relations need test facts,
+    // which this request never parses, and nothing contains `eval`.
+    let fixture = FixtureRoot::new("ext-absent");
+    let root = fixture.path().to_owned();
+    stage_file(&root, "lib/App.pm", APP_PM);
+    stage_file(&root, "lib/extra.pl", EXTRA_PL);
+    stage_file(&root, "t/app.t", APP_T);
+    let packet = build_packet(&root, "dynamic_boundaries");
+
+    assert!(
+        must_some(packet["files"].as_array()).is_empty(),
+        "boundaries-only packet on an eval-free fixture must carry empty files[]"
+    );
+    let limitation = scope_limitation(&packet);
+    let message = must_some(limitation["message"].as_str());
+    assert!(message.contains("lib/extra.pl"), "got {message:?}");
+    assert!(message.contains("extension"), "must name the extension reason; got {message:?}");
+    assert!(
+        !message.contains("fall outside"),
+        "lib/extra.pl is inside lib/ — must not claim directory exclusion; got {message:?}"
+    );
+    assert!(
+        message.contains("not in this packet") && message.contains("path-derived"),
+        "files-absent wording must state path-derived ids; got {message:?}"
+    );
+}
+
+#[test]
+fn files_absent_mixed_skips_label_each_reason() {
+    // Wave-2 thread 2 (files-absent, mixed): both exclusion reasons appear
+    // with their labels, and every ref stays path-derived.
+    let fixture = FixtureRoot::new("mixed-absent");
+    let root = fixture.path().to_owned();
+    stage_file(&root, "lib/App.pm", APP_PM);
+    stage_file(&root, "lib/extra.pl", EXTRA_PL);
+    stage_file(&root, "t/app.t", APP_T);
+    stage_file(&root, "xt/extra.t", EXTRA_T);
+    let packet = build_packet(&root, "dynamic_boundaries");
+
+    assert!(
+        must_some(packet["files"].as_array()).is_empty(),
+        "boundaries-only packet on an eval-free fixture must carry empty files[]"
+    );
+    let limitation = scope_limitation(&packet);
+    let message = must_some(limitation["message"].as_str());
+    assert!(message.contains("lib/extra.pl"), "got {message:?}");
+    assert!(message.contains("xt/extra.t"), "got {message:?}");
+    assert!(message.contains("unscanned"), "got {message:?}");
+    assert!(message.contains("directory scope"), "got {message:?}");
+    assert!(
+        !message.contains("appear in `files[]`"),
+        "files-absent packet must not claim files[] presence; got {message:?}"
+    );
+}
+
+#[test]
+fn fixture_roots_are_isolated_per_invocation() {
+    // Wave-2 thread 3: the fixture directory embeds the process id, so two
+    // concurrent `cargo test` invocations never share a fixture tree.
+    let fixture = FixtureRoot::new("isolation");
+    assert!(
+        fixture.path().contains(&std::process::id().to_string()),
+        "fixture path must embed the process id; got {:?}",
+        fixture.path()
+    );
 }
