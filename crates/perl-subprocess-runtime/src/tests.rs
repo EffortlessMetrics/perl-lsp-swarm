@@ -102,18 +102,25 @@ fn test_os_runtime_rejects_nul_bytes_in_program_or_args() {
 #[cfg(windows)]
 #[test]
 fn test_resolve_command_invocation_uses_cmd_for_batch_wrappers() {
-    let (program, args) = perl_tdd_support::must(resolve_command_invocation(
+    let cmd = perl_tdd_support::must(resolve_command_invocation(
         r"C:\Strawberry\perl\bin\perltidy.bat",
         &["-st", "-se"],
     ));
 
     // The cmd.exe used for batch wrappers is resolved to an ABSOLUTE path —
     // never the bare "cmd.exe", which CreateProcess would search CWD-first.
+    let program = cmd.get_program().to_string_lossy().to_string();
     assert!(
         std::path::Path::new(&program).is_absolute()
             && program.to_ascii_lowercase().ends_with("cmd.exe"),
         "batch wrapper must run via an absolute cmd.exe path, not a bare name; got: {program}"
     );
+    // The /C payload is composed in cmd.exe conventions (per-token `"..."`),
+    // wrapped in ONE extra outer quote pair that cmd /S strips, and appended as
+    // a raw (un-MSVC-escaped) argument so its quotes reach cmd.exe verbatim
+    // (#17371).  std's default escaping would turn the inner `"` into `\"`,
+    // which cmd.exe cannot parse.
+    let args: Vec<String> = cmd.get_args().map(|arg| arg.to_string_lossy().to_string()).collect();
     assert_eq!(
         args,
         vec![
@@ -121,7 +128,7 @@ fn test_resolve_command_invocation_uses_cmd_for_batch_wrappers() {
             "/V:OFF".to_string(),
             "/S".to_string(),
             "/C".to_string(),
-            "\"C:\\Strawberry\\perl\\bin\\perltidy.bat\" \"-st\" \"-se\"".to_string(),
+            "\"\"C:\\Strawberry\\perl\\bin\\perltidy.bat\" \"-st\" \"-se\"\"".to_string(),
         ]
     );
 }
@@ -134,16 +141,18 @@ fn test_resolve_command_invocation_uses_cmd_for_batch_wrappers() {
 #[cfg(windows)]
 #[test]
 fn test_resolve_command_invocation_includes_v_off_flag() {
-    let (program, args) = perl_tdd_support::must(resolve_command_invocation(
+    let cmd = perl_tdd_support::must(resolve_command_invocation(
         r"C:\tools\perlcritic.bat",
         &["--profile=!TEMP!"],
     ));
 
+    let program = cmd.get_program().to_string_lossy().to_string();
     assert!(
         std::path::Path::new(&program).is_absolute()
             && program.to_ascii_lowercase().ends_with("cmd.exe"),
         "batch wrapper must run via an absolute cmd.exe path; got: {program}"
     );
+    let args: Vec<String> = cmd.get_args().map(|arg| arg.to_string_lossy().to_string()).collect();
     assert!(
         args.contains(&"/V:OFF".to_string()),
         "/V:OFF must be present to disable delayed expansion; got: {:?}",
@@ -151,15 +160,33 @@ fn test_resolve_command_invocation_includes_v_off_flag() {
     );
 }
 
+/// `%TEMP%` in a batch-wrapper argument would be silently substituted by
+/// cmd.exe's command-line expansion pass (`%` has no command-line escape), so
+/// the resolver must fail closed instead of corrupting the argument (#17371).
+#[cfg(windows)]
+#[test]
+fn test_resolve_command_invocation_fails_closed_on_expandable_percent_ref() {
+    // TEMP is defined in every Windows environment.
+    let result = resolve_command_invocation(r"C:\tools\perlcritic.bat", &[r"--out=%TEMP%\x"]);
+    assert!(result.is_err(), "an expandable %NAME% argument must fail closed; got: {result:?}");
+    let err = result.expect_err("must be Err");
+    assert!(
+        err.message.contains("cmd.exe would substitute"),
+        "error must explain the %...% substitution refusal; got: {}",
+        err.message
+    );
+}
+
 #[cfg(windows)]
 #[test]
 fn test_resolve_command_invocation_preserves_executable_paths() {
-    let (program, args) = perl_tdd_support::must(resolve_command_invocation(
+    let cmd = perl_tdd_support::must(resolve_command_invocation(
         r"C:\tools\perlcritic.exe",
         &["--version"],
     ));
 
-    assert_eq!(program, r"C:\tools\perlcritic.exe");
+    assert_eq!(cmd.get_program(), std::ffi::OsStr::new(r"C:\tools\perlcritic.exe"));
+    let args: Vec<String> = cmd.get_args().map(|arg| arg.to_string_lossy().to_string()).collect();
     assert_eq!(args, vec!["--version".to_string()]);
 }
 
@@ -617,6 +644,83 @@ fn test_run_command_does_not_execute_planted_cwd_binary() {
     );
 }
 
+// --- Batch-wrapper command-line round-trip (#17371) ---
+//
+// `resolve_command_invocation` routes `.bat`/`.cmd` tools through
+// `cmd.exe /D /V:OFF /S /C <payload>`. The payload is composed in cmd.exe
+// quoting conventions (per-token `"..."`, `%%` doubling, `""` doubling), so it
+// must reach cmd.exe byte-for-byte: std's default MSVC escaping rewrites its
+// `"` into `\"`, and cmd.exe — which does not understand `\"` — then fails to
+// recognize the batch file at all ('\"...bat\"' is not recognized). The fixed
+// path appends the payload with `CommandExt::raw_arg` wrapped in one extra
+// outer quote pair, which `/S` mode strips, leaving the per-token-quoted line
+// intact.
+//
+// This test drives the REAL spawn chain (`run_command` → resolve →
+// `std::process::Command` → CreateProcess → cmd.exe → child .bat) with a
+// perlcritic.bat-style probe and asserts every argument round-trips verbatim,
+// including the `%`-bearing format strings that direct `Command::new(bat)`
+// refuses (Rust's BatBadBut hardening) and a path containing a space.
+
+#[cfg(windows)]
+#[test]
+fn bat_wrapper_arguments_round_trip_through_real_cmd_spawn() {
+    let workspace =
+        std::env::temp_dir().join(format!("cmd_quote_roundtrip_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&workspace);
+    std::fs::create_dir_all(&workspace).expect("create temp workspace");
+
+    let probe = workspace.join("probe_args.bat");
+    {
+        use std::io::Write as _;
+        let mut f = std::fs::File::create(&probe).expect("write probe .bat");
+        writeln!(f, "@echo off").expect("write bat header");
+        writeln!(f, ":loop").expect("write bat loop label");
+        writeln!(f, "if [%1]==[] goto done").expect("write bat loop guard");
+        writeln!(f, "echo ARG=%1").expect("write bat arg echo");
+        writeln!(f, "shift").expect("write bat shift");
+        writeln!(f, "goto loop").expect("write bat loop jump");
+        writeln!(f, ":done").expect("write bat done label");
+        writeln!(f, "echo END_OF_ARGS").expect("write bat terminator");
+    }
+
+    let runtime = OsSubprocessRuntime::with_timeout(30);
+    let result = runtime.run_command(
+        probe.to_str().expect("temp path is UTF-8"),
+        &[
+            // Literal `\n` two-char sequence — perlcritic's --verbose format
+            // strings carry real `%` directives that must survive cmd's
+            // substitution pass untouched.
+            "--verbose=%f:%l:%c:%s:%p:%m\\n",
+            "--",
+            r"C:\dir with space\fixture.pl",
+        ],
+        None,
+    );
+    let _ = std::fs::remove_dir_all(&workspace);
+
+    let output = perl_tdd_support::must(result);
+    assert!(
+        output.success(),
+        "batch wrapper spawn must succeed; status={:?} stderr={:?}",
+        output.status_code,
+        output.stderr_lossy()
+    );
+    let stdout = output.stdout_lossy();
+    let lines: Vec<&str> =
+        stdout.lines().map(|l| l.trim_end_matches('\r')).filter(|l| !l.is_empty()).collect();
+    assert_eq!(
+        lines,
+        vec![
+            r#"ARG="--verbose=%f:%l:%c:%s:%p:%m\n""#,
+            r#"ARG="--""#,
+            r#"ARG="C:\dir with space\fixture.pl""#,
+            "END_OF_ARGS",
+        ],
+        "every argument must round-trip through cmd.exe verbatim; stdout={stdout:?}"
+    );
+}
+
 // --- Relative path-with-separator bypass regression ---
 //
 // `resolve_windows_program` passes a program through unchanged when it contains
@@ -645,11 +749,11 @@ fn test_resolve_command_invocation_relative_separator_path_fails_closed() {
 #[cfg(windows)]
 #[test]
 fn test_resolve_command_invocation_absolute_separator_path_passes_through() {
-    let (program, _args) = perl_tdd_support::must(resolve_command_invocation(
+    let cmd = perl_tdd_support::must(resolve_command_invocation(
         r"C:\tools\perltidy.exe",
         &["--version"],
     ));
-    assert_eq!(program, r"C:\tools\perltidy.exe");
+    assert_eq!(cmd.get_program(), std::ffi::OsStr::new(r"C:\tools\perltidy.exe"));
 }
 
 // --- Call-observation tests for resolve_program public API ---
