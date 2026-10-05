@@ -32,7 +32,6 @@ const SUCCESS_UTF8_PRAGMA: &str = "cac-parity-utf8-pragma-only-for-non-ascii-sou
 const SUCCESS_REWRITE_TRANSFORM: &str = "cac-parity-enhanced-rewrite-transform-publishes-an-edit";
 const IDENTITY_V2_DIAGNOSTIC: &str = "cac-parity-v2-attaches-originating-diagnostic";
 const IDENTITY_EXPLAIN: &str = "cac-parity-explain-diagnostic-command-only";
-const IDENTITY_TEST_GENERATION: &str = "cac-parity-test-generation-command-only";
 const DISABLED_EXTRACT: &str = "cac-parity-disabled-extract-requires-selection";
 const REFUSED_NO_DISABLED_SUPPORT: &str = "cac-parity-refused-without-disabled-support";
 const STALE_SUPERSEDED_VERSION: &str = "cac-parity-stale-superseded-document-version";
@@ -512,44 +511,6 @@ fn explain_diagnostic_action_is_command_only() -> TestResult {
     Ok(())
 }
 
-/// The test generator publishes a command-only action per discovered
-/// subroutine.
-#[test]
-fn test_generation_action_is_command_only() -> TestResult {
-    let uri = "file:///cac_parity_test_generation.pl";
-    let mut harness = harness_with(None)?;
-    harness.open(uri, EXTRACTABLE)?;
-    harness.barrier();
-
-    let actions = code_actions(&mut harness, uri, ((3, 0), (6, 1)), None)?;
-
-    let generated = actions
-        .iter()
-        .filter(|action| title(action).starts_with("Generate test for"))
-        .collect::<Vec<_>>();
-    assert!(
-        !generated.is_empty(),
-        "{IDENTITY_TEST_GENERATION}: expected a test generation action, got {:?}",
-        titles(&actions)
-    );
-
-    for action in generated {
-        assert_eq!(kind(action), "source", "{IDENTITY_TEST_GENERATION}: wrong kind");
-        assert!(
-            action.get("edit").is_none(),
-            "{IDENTITY_TEST_GENERATION}: {:?} must not carry a workspace edit",
-            title(action)
-        );
-        assert!(
-            action.get("command").is_some(),
-            "{IDENTITY_TEST_GENERATION}: {:?} must carry a command",
-            title(action)
-        );
-    }
-
-    Ok(())
-}
-
 /// The V2 generation is the only one that links a quick fix back to the
 /// diagnostic that produced it. This fixture is the retirement blocker
 /// `canonical_route_omits_diagnostic_association` in executable form: it must
@@ -810,16 +771,16 @@ fn parse_errors_stay_on_the_ast_path() -> TestResult {
 
     let actions = code_actions(&mut harness, uri, ((0, 0), (1, 0)), None)?;
 
-    // `source.modernize` and test generation exist only on the AST path; the
-    // degraded text generation cannot produce either.
+    // `source.modernize` and the `source.fixAll` aggregate exist only on the
+    // AST path; the degraded text generation cannot produce either.
     assert!(
         actions.iter().any(|action| kind(action) == "source.modernize"),
         "{RECOVERY_KEEPS_AST_PATH}: no source.modernize action, so the request did not stay on the AST path: {:?}",
         titles(&actions)
     );
     assert!(
-        actions.iter().any(|action| title(action).starts_with("Generate test for")),
-        "{RECOVERY_KEEPS_AST_PATH}: no test generation action, so the request did not stay on the AST path: {:?}",
+        actions.iter().any(|action| kind(action) == "source.fixAll"),
+        "{RECOVERY_KEEPS_AST_PATH}: no source.fixAll aggregate, so the request did not stay on the AST path: {:?}",
         titles(&actions)
     );
 

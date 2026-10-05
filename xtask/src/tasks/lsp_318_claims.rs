@@ -303,9 +303,13 @@ const CODE_LENS_TEST_MARKERS: &[RequiredMarker] = &[
 ];
 
 const COMMAND_TOOLTIP_TEST_MARKERS: &[RequiredMarker] = &[
+    // #17304 removed the executor-less generate-test command action, so its
+    // single-command tooltip receipt was superseded by a contract that asserts
+    // a tooltip AND a registered executor for every offered code-action
+    // command on the wire.
     RequiredMarker {
-        label: "generate-test Command.tooltip positive receipt",
-        marker: "generate_test_command_includes_lsp_318_tooltip",
+        label: "code-action Command.tooltip + executability receipt",
+        marker: "offered_code_action_commands_are_executable_and_carry_tooltips",
     },
     RequiredMarker {
         label: "explain-diagnostic Command.tooltip positive receipt",
