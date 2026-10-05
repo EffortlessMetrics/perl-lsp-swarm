@@ -18,6 +18,9 @@
 //!
 //! On success the bench prints the per-fixture score table plus a one-line
 //! `MATCH` summary so reference baselines capture values, not just pass/fail.
+//! The harness captures passing-test output, so baselines must disable
+//! capture: `cargo test -p perl-ripr-facts --locked --test oracle_recall --
+//! --nocapture`.
 
 #![deny(clippy::map_err_ignore)]
 // Cohort C0 activation (#12598); see src/lib.rs.
