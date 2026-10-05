@@ -8,8 +8,8 @@ pub(crate) const EXPECTED_RIPR_FACTS_SCHEMA: &str = "ripr-perl-facts-v1";
 ///
 /// This is the programmatic input shape for [`build_ripr_facts_packet`]. The
 /// `perl-lsp` / `perllsp` `ripr-facts` subcommand parses argv into one of these
-/// and calls the batch API through [`run_ripr_facts`]; other batch producers
-/// can construct it directly.
+/// and calls the batch API through [`crate::run_ripr_facts_with_diff_path`];
+/// other batch producers can construct it directly.
 #[derive(Debug, Clone, Copy)]
 pub struct RiprFactsRequest<'a> {
     /// Packet schema version; must equal `ripr-perl-facts-v1`.

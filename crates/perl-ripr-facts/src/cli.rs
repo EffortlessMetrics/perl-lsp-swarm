@@ -1,9 +1,10 @@
 //! The `perl-ripr-facts` standalone binary's `ripr-facts` subcommand
-//! ([`run_cli`]) and the thin `run_ripr_facts`/`run_ripr_facts_with_diff`
-//! wrapper the `perl-lsp` / `perllsp` `--ripr-facts` flag calls: argv
-//! parsing, output-path validation, writing the packet to disk, and mapping
-//! to a process exit code. All the actual fact production happens in
-//! [`crate::packet::build_ripr_facts_packet`].
+//! ([`run_cli`]) and the thin wrappers behind the `perl-lsp` / `perllsp`
+//! `--ripr-facts` flag ([`run_ripr_facts_with_diff_path`], with
+//! [`run_ripr_facts`]/[`run_ripr_facts_with_diff`] retained for no-diff
+//! callers): argv parsing, output-path validation, writing the packet to
+//! disk, and mapping to a process exit code. All the actual fact production
+//! happens in [`crate::packet::build_ripr_facts_packet`].
 
 use crate::packet::build_ripr_facts_packet;
 use crate::request::{EXPECTED_RIPR_FACTS_SCHEMA, RiprFactsRequest, validate_ripr_facts_path};

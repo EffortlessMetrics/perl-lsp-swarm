@@ -433,7 +433,9 @@ pub struct LspArgs {
     /// Unified-diff file feeding `changes[]` (#17152). Read relative to the
     /// working directory, like `--diff` on the `perl-ripr-facts` binary.
     /// Absent = no-diff packet (`changes[]` empty plus `no-diff-supplied`).
-    #[arg(long, value_name = "DIFF")]
+    /// Requires `--ripr-facts`: without it the flag would fall through to
+    /// `Run` and start the server while silently ignoring the diff.
+    #[arg(long, value_name = "DIFF", requires = "ripr_facts")]
     pub ripr_diff: Option<String>,
 
     /// Set feature profile
@@ -2412,6 +2414,18 @@ mod tests {
             }
             other => panic!("expected RiprFacts action, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn ripr_diff_requires_ripr_facts() {
+        // Bare `--ripr-diff` used to fall through to `Run` and start the
+        // server, silently ignoring the diff (#17330 review).
+        let error = must_err(parse_args(["perl-lsp", "--ripr-diff", "change.diff"]));
+        let rendered = error.to_string();
+        assert!(
+            rendered.contains("--ripr-facts"),
+            "rejection must name the required --ripr-facts flag; got:\n{rendered}"
+        );
     }
 
     #[test]
