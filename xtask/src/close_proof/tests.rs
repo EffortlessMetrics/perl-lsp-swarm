@@ -18,6 +18,489 @@ use super::{
 
 const CORPUS_FIXTURE_COUNT: usize = 15;
 
+// New additive identity protocol. These witnesses remain unchanged between
+// the disclosed row-only RED scaffold and full-material GREEN implementation.
+#[cfg(test)]
+mod full_identity {
+    use super::super::{
+        CONTRACT_IDENTITY_SCHEMA_V1, ChildRelationDeclaration, ContractIdentityContext,
+        ContractIdentityEnvelope, FULL_PACKET_BINDING_SCHEMA_V1, FullBindingMatch, FullBoundPacket,
+        IssueRef, NegativeControlRow, RulingDeclaration, SourceIdentity,
+        validate_packet_full_binding,
+    };
+    use super::*;
+
+    fn source(identity: &str, seed: u64) -> SourceIdentity {
+        SourceIdentity { identity: identity.to_string(), digest: leaf_digest(seed) }
+    }
+
+    fn subject() -> Result<(ContractIdentityEnvelope, FullBoundPacket), CloseProofError> {
+        let mut contract = leaf_contract()?;
+        contract.denominator.push(DenominatorRow {
+            row_id: "neighbor.parses".to_string(),
+            statement: "The neighboring valid form still parses.".to_string(),
+            required_proof_level: ProofLevel::Mechanism,
+        });
+        contract.identity.denominator_digest =
+            super::super::compute_denominator_digest(&contract.denominator)?;
+        contract.negative_controls = vec![
+            NegativeControlRow {
+                control_id: "nc.reject".to_string(),
+                guards_row_id: "single-row.defect.fixed".to_string(),
+                description: "Reject malformed input.".to_string(),
+            },
+            NegativeControlRow {
+                control_id: "nc.neighbor".to_string(),
+                guards_row_id: "neighbor.parses".to_string(),
+                description: "Preserve valid neighbors.".to_string(),
+            },
+        ];
+        contract.mandatory_children = vec![
+            IssueRef { repository: contract.repository.clone(), number: 9000500 },
+            IssueRef { repository: contract.repository.clone(), number: 9000501 },
+        ];
+        contract.transfer_policy.permitted = true;
+        contract.transfer_policy.conditions =
+            vec!["Exact open owner.".to_string(), "Reviewed transfer.".to_string()];
+        contract.domain_evidence_refs = vec!["domain.v1".to_string(), "domain.v2".to_string()];
+        let context = ContractIdentityContext {
+            child_relations: contract
+                .mandatory_children
+                .iter()
+                .map(|child| ChildRelationDeclaration {
+                    child: child.clone(),
+                    relation_class: "mandatory-phase".to_string(),
+                })
+                .collect(),
+            permitted_transferred_rows: contract
+                .row_ids()
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+            linked_authorities: vec![source("linked-a", 10), source("linked-b", 11)],
+            accepted_rulings: vec![
+                RulingDeclaration {
+                    ruling_type: "reviewed-ruling".to_string(),
+                    source: source("ruling-a", 20),
+                    review: source("review-a", 21),
+                    supersedes: vec![source("old-a", 22), source("old-b", 23)],
+                    changed_propositions: vec![
+                        "Require current proof.".to_string(),
+                        "Retain the neighbor.".to_string(),
+                    ],
+                },
+                RulingDeclaration {
+                    ruling_type: "reviewed-ruling".to_string(),
+                    source: source("ruling-b", 24),
+                    review: source("review-b", 25),
+                    supersedes: vec![],
+                    changed_propositions: vec!["Retain children.".to_string()],
+                },
+            ],
+            compiler_generation: source("compiler-1", 30),
+            schema_generation: source("schema-1", 31),
+            policy_generation: source("policy-1", 32),
+            limitations: vec![
+                "Authority unverified.".to_string(),
+                "Evidence not admitted.".to_string(),
+            ],
+            adoption_record: Some(source("candidate-adoption", 33)),
+        };
+        let mut envelope = ContractIdentityEnvelope {
+            schema_version: CONTRACT_IDENTITY_SCHEMA_V1.to_string(),
+            contract,
+            context,
+            full_contract_digest: String::new(),
+        };
+        reseal(&mut envelope)?;
+        let mut packet = passing_packet(&envelope.contract)?;
+        packet.row_dispositions.insert(
+            "neighbor.parses".to_string(),
+            RowDispositionValue::NotProven {
+                reason: "No independently admitted neighbor evidence.".to_string(),
+            },
+        );
+        for control in &envelope.contract.negative_controls {
+            packet
+                .negative_control_dispositions
+                .insert(control.control_id.clone(), ControlOutcome::Verified);
+        }
+        packet.child_dispositions = envelope
+            .contract
+            .mandatory_children
+            .iter()
+            .map(|child| ChildDispositionRecord {
+                child: child.clone(),
+                state: ChildState::StillOpen,
+            })
+            .collect();
+        let bound = FullBoundPacket {
+            schema_version: FULL_PACKET_BINDING_SCHEMA_V1.to_string(),
+            packet,
+            full_contract_digest: envelope.full_contract_digest.clone(),
+        };
+        assert_eq!(
+            validate_packet_full_binding(&bound, &envelope)?,
+            FullBindingMatch::RepresentationOnly
+        );
+        Ok((envelope, bound))
+    }
+
+    fn reseal(envelope: &mut ContractIdentityEnvelope) -> Result<(), CloseProofError> {
+        envelope.contract.identity.denominator_digest =
+            super::super::compute_denominator_digest(&envelope.contract.denominator)?;
+        envelope.full_contract_digest = envelope.compute_full_contract_digest()?;
+        envelope.validate()
+    }
+
+    fn assert_movements(
+        base: &ContractIdentityEnvelope,
+        packet: &FullBoundPacket,
+        changes: Vec<(&str, ContractIdentityEnvelope)>,
+    ) -> Result<(), CloseProofError> {
+        let mut missed = Vec::new();
+        for (name, mut current) in changes {
+            reseal(&mut current)?;
+            assert_ne!(current, *base, "mutation did not change material: {name}");
+            let changed = current.full_contract_digest != base.full_contract_digest;
+            let refused = matches!(
+                validate_packet_full_binding(packet, &current),
+                Err(CloseProofError::Identity { .. })
+            );
+            eprintln!("FULL_IDENTITY {name}: identity_changed={changed} stale_refused={refused}");
+            if !changed || !refused {
+                missed.push(name);
+            }
+            assert_eq!(
+                validate_packet_full_binding(packet, base)?,
+                FullBindingMatch::RepresentationOnly,
+                "restoration control: {name}"
+            );
+        }
+        assert!(missed.is_empty(), "full identity omitted load-bearing inputs: {missed:?}");
+        Ok(())
+    }
+
+    macro_rules! movements {
+        ($base:ident; $($name:literal => $change:expr),+ $(,)?) => {{
+            let mut changes = Vec::new();
+            $(let mut value = $base.clone(); ($change)(&mut value); changes.push(($name, value));)+
+            changes
+        }};
+    }
+
+    #[test]
+    fn red_full_identity_binds_issue_and_policy_mutation_pairs() -> Result<(), CloseProofError> {
+        let (base, packet) = subject()?;
+        let changes = movements!(base;
+            "repository" => |e: &mut ContractIdentityEnvelope| e.contract.repository = "other/repository".to_string(),
+            "issue-number" => |e: &mut ContractIdentityEnvelope| e.contract.issue_number += 1,
+            "title" => |e: &mut ContractIdentityEnvelope| e.contract.title.push_str(" with stronger scope"),
+            "kind" => |e: &mut ContractIdentityEnvelope| e.contract.kind = IssueKind::Installed,
+            "issue-proof" => |e: &mut ContractIdentityEnvelope| e.contract.required_proof_level = ProofLevel::Public,
+            "mode-removal" => |e: &mut ContractIdentityEnvelope| e.contract.allowed_close_modes.retain(|m| *m != CloseMode::NotPlanned),
+            "mode-addition" => |e: &mut ContractIdentityEnvelope| e.contract.allowed_close_modes.push(CloseMode::ControllerComplete),
+            "transfer-disabled" => |e: &mut ContractIdentityEnvelope| { e.contract.transfer_policy.permitted = false; e.context.permitted_transferred_rows.clear(); },
+            "transfer-condition" => |e: &mut ContractIdentityEnvelope| e.contract.transfer_policy.conditions[0] = "Exact independently adopted open owner.".to_string(),
+            "transfer-condition-tail" => |e: &mut ContractIdentityEnvelope| e.contract.transfer_policy.conditions[1] = "Review by the independent owner.".to_string(),
+            "transfer-condition-addition" => |e: &mut ContractIdentityEnvelope| e.contract.transfer_policy.conditions.push("Require adoption provenance.".to_string()),
+            "transfer-condition-removal" => |e: &mut ContractIdentityEnvelope| { e.contract.transfer_policy.conditions.pop(); },
+            "transfer-row-removal" => |e: &mut ContractIdentityEnvelope| { e.context.permitted_transferred_rows.pop(); },
+            "domain-reference" => |e: &mut ContractIdentityEnvelope| e.contract.domain_evidence_refs[0] = "domain.v3".to_string(),
+            "domain-reference-tail" => |e: &mut ContractIdentityEnvelope| e.contract.domain_evidence_refs[1] = "domain.v4".to_string(),
+            "domain-reference-addition" => |e: &mut ContractIdentityEnvelope| e.contract.domain_evidence_refs.push("domain.v5".to_string()),
+            "domain-reference-removal" => |e: &mut ContractIdentityEnvelope| { e.contract.domain_evidence_refs.pop(); },
+            "body-digest" => |e: &mut ContractIdentityEnvelope| e.contract.identity.issue_body_digest = leaf_digest(99),
+            "limitations" => |e: &mut ContractIdentityEnvelope| e.context.limitations[0] = "Authority only partially observed.".to_string(),
+            "limitations-tail" => |e: &mut ContractIdentityEnvelope| e.context.limitations[1] = "Evidence missing from independent owner.".to_string(),
+            "limitations-addition" => |e: &mut ContractIdentityEnvelope| e.context.limitations.push("No semantic verdict derived.".to_string()),
+            "limitations-removal" => |e: &mut ContractIdentityEnvelope| { e.context.limitations.pop(); },
+            "adoption-identity" => |e: &mut ContractIdentityEnvelope| e.context.adoption_record = Some(source("self-authored-adoption", 33)),
+            "adoption-digest" => |e: &mut ContractIdentityEnvelope| e.context.adoption_record = Some(source("candidate-adoption", 34)),
+            "adoption-removal" => |e: &mut ContractIdentityEnvelope| e.context.adoption_record = None,
+        );
+        assert_movements(&base, &packet, changes)
+    }
+
+    #[test]
+    fn red_full_identity_binds_row_control_and_child_mutation_pairs() -> Result<(), CloseProofError>
+    {
+        let (base, packet) = subject()?;
+        let changes = movements!(base;
+            "row-statement" => |e: &mut ContractIdentityEnvelope| e.contract.denominator[0].statement.push_str(" on the installed route"),
+            "row-proof" => |e: &mut ContractIdentityEnvelope| e.contract.denominator[0].required_proof_level = ProofLevel::Installed,
+            "row-addition" => |e: &mut ContractIdentityEnvelope| e.contract.denominator.push(DenominatorRow { row_id: "new.row".to_string(), statement: "A new explicit proposition.".to_string(), required_proof_level: ProofLevel::Mechanism }),
+            "row-removal" => |e: &mut ContractIdentityEnvelope| { e.contract.denominator.pop(); e.contract.negative_controls.pop(); e.context.permitted_transferred_rows.retain(|r| r != "neighbor.parses"); },
+            "row-same-count-replacement" => |e: &mut ContractIdentityEnvelope| { e.contract.denominator[0].row_id = "replacement".to_string(); e.contract.negative_controls[0].guards_row_id = "replacement".to_string(); for id in &mut e.context.permitted_transferred_rows { if *id == "single-row.defect.fixed" { *id = "replacement".to_string(); } } },
+            "control-description" => |e: &mut ContractIdentityEnvelope| e.contract.negative_controls[0].description.push_str(" at the public boundary"),
+            "control-association" => |e: &mut ContractIdentityEnvelope| e.contract.negative_controls[0].guards_row_id = "neighbor.parses".to_string(),
+            "control-same-count-replacement" => |e: &mut ContractIdentityEnvelope| e.contract.negative_controls[0].control_id = "nc.replacement".to_string(),
+            "control-removal" => |e: &mut ContractIdentityEnvelope| { e.contract.negative_controls.pop(); },
+            "control-addition" => |e: &mut ContractIdentityEnvelope| { let mut c = e.contract.negative_controls[0].clone(); c.control_id = "nc.addition".to_string(); e.contract.negative_controls.push(c); },
+            "child-relation-class" => |e: &mut ContractIdentityEnvelope| e.context.child_relations[0].relation_class = "mandatory-terminal".to_string(),
+            "child-same-count-replacement" => |e: &mut ContractIdentityEnvelope| { e.contract.mandatory_children[0].number += 2; e.context.child_relations[0].child.number += 2; },
+            "child-repository" => |e: &mut ContractIdentityEnvelope| { e.contract.mandatory_children[0].repository = "other/child".to_string(); e.context.child_relations[0].child.repository = "other/child".to_string(); },
+            "child-removal" => |e: &mut ContractIdentityEnvelope| { e.contract.mandatory_children.pop(); e.context.child_relations.pop(); },
+            "child-addition" => |e: &mut ContractIdentityEnvelope| { let c = IssueRef { repository: e.contract.repository.clone(), number: 9000503 }; e.contract.mandatory_children.push(c.clone()); e.context.child_relations.push(ChildRelationDeclaration { child: c, relation_class: "mandatory-phase".to_string() }); },
+        );
+        assert_movements(&base, &packet, changes)
+    }
+
+    #[test]
+    fn red_full_identity_binds_ruling_authority_and_generation_mutation_pairs()
+    -> Result<(), CloseProofError> {
+        let (base, packet) = subject()?;
+        let changes = movements!(base;
+            "linked-identity" => |e: &mut ContractIdentityEnvelope| e.context.linked_authorities[0].identity = "linked-c".to_string(),
+            "linked-digest" => |e: &mut ContractIdentityEnvelope| e.context.linked_authorities[0].digest = leaf_digest(40),
+            "linked-removal" => |e: &mut ContractIdentityEnvelope| { e.context.linked_authorities.pop(); },
+            "linked-addition" => |e: &mut ContractIdentityEnvelope| e.context.linked_authorities.push(source("linked-c", 40)),
+            "ruling-type" => |e: &mut ContractIdentityEnvelope| e.context.accepted_rulings[0].ruling_type = "reviewed-exception".to_string(),
+            "ruling-source-identity" => |e: &mut ContractIdentityEnvelope| e.context.accepted_rulings[0].source.identity = "ruling-c".to_string(),
+            "ruling-source-digest" => |e: &mut ContractIdentityEnvelope| e.context.accepted_rulings[0].source.digest = leaf_digest(41),
+            "ruling-review-identity" => |e: &mut ContractIdentityEnvelope| e.context.accepted_rulings[0].review.identity = "review-c".to_string(),
+            "ruling-review-digest" => |e: &mut ContractIdentityEnvelope| e.context.accepted_rulings[0].review.digest = leaf_digest(42),
+            "later-ruling-source-digest" => |e: &mut ContractIdentityEnvelope| e.context.accepted_rulings[1].source.digest = leaf_digest(50),
+            "later-ruling-review-identity" => |e: &mut ContractIdentityEnvelope| e.context.accepted_rulings[1].review.identity = "later-review".to_string(),
+            "later-ruling-review-digest" => |e: &mut ContractIdentityEnvelope| e.context.accepted_rulings[1].review.digest = leaf_digest(51),
+            "later-ruling-proposition" => |e: &mut ContractIdentityEnvelope| e.context.accepted_rulings[1].changed_propositions[0] = "Retain all mandatory children.".to_string(),
+            "later-ruling-supersedes" => |e: &mut ContractIdentityEnvelope| e.context.accepted_rulings[1].supersedes.push(source("older-later-ruling", 52)),
+            "ruling-superseded-identity" => |e: &mut ContractIdentityEnvelope| e.context.accepted_rulings[0].supersedes[0].identity = "old-c".to_string(),
+            "ruling-superseded-digest" => |e: &mut ContractIdentityEnvelope| e.context.accepted_rulings[0].supersedes[0].digest = leaf_digest(43),
+            "ruling-superseded-tail" => |e: &mut ContractIdentityEnvelope| e.context.accepted_rulings[0].supersedes[1].digest = leaf_digest(48),
+            "ruling-superseded-addition" => |e: &mut ContractIdentityEnvelope| e.context.accepted_rulings[0].supersedes.push(source("old-c", 49)),
+            "ruling-superseded-removal" => |e: &mut ContractIdentityEnvelope| { e.context.accepted_rulings[0].supersedes.pop(); },
+            "ruling-proposition" => |e: &mut ContractIdentityEnvelope| e.context.accepted_rulings[0].changed_propositions[0] = "Require independently accepted current proof.".to_string(),
+            "ruling-proposition-tail" => |e: &mut ContractIdentityEnvelope| e.context.accepted_rulings[0].changed_propositions[1] = "Retain the valid installed neighbor.".to_string(),
+            "ruling-proposition-addition" => |e: &mut ContractIdentityEnvelope| e.context.accepted_rulings[0].changed_propositions.push("Retain every negative control.".to_string()),
+            "ruling-proposition-removal" => |e: &mut ContractIdentityEnvelope| { e.context.accepted_rulings[0].changed_propositions.pop(); },
+            "ruling-removal" => |e: &mut ContractIdentityEnvelope| { e.context.accepted_rulings.pop(); },
+            "ruling-addition" => |e: &mut ContractIdentityEnvelope| { let mut r = e.context.accepted_rulings[0].clone(); r.source = source("ruling-c", 44); e.context.accepted_rulings.push(r); },
+            "compiler-identity" => |e: &mut ContractIdentityEnvelope| e.context.compiler_generation.identity = "compiler-2".to_string(),
+            "compiler-digest" => |e: &mut ContractIdentityEnvelope| e.context.compiler_generation.digest = leaf_digest(45),
+            "schema-generation-identity" => |e: &mut ContractIdentityEnvelope| e.context.schema_generation.identity = "schema-2".to_string(),
+            "schema-generation-digest" => |e: &mut ContractIdentityEnvelope| e.context.schema_generation.digest = leaf_digest(46),
+            "policy-identity" => |e: &mut ContractIdentityEnvelope| e.context.policy_generation.identity = "policy-2".to_string(),
+            "policy-digest" => |e: &mut ContractIdentityEnvelope| e.context.policy_generation.digest = leaf_digest(47),
+            "legacy-ruling-projection" => |e: &mut ContractIdentityEnvelope| e.contract.identity.accepted_ruling = Some(super::super::RulingIdentity { identity: "ruling-a".to_string(), digest: leaf_digest(20) }),
+        );
+        assert_movements(&base, &packet, changes)
+    }
+
+    #[test]
+    fn control_full_identity_unordered_permutations_and_round_trips() -> Result<(), CloseProofError>
+    {
+        let (base, packet) = subject()?;
+        let mut equivalent = base.clone();
+        equivalent.contract.allowed_close_modes.reverse();
+        equivalent.contract.denominator.reverse();
+        equivalent.contract.negative_controls.reverse();
+        equivalent.contract.mandatory_children.reverse();
+        equivalent.contract.transfer_policy.conditions.reverse();
+        equivalent.contract.domain_evidence_refs.reverse();
+        equivalent.context.child_relations.reverse();
+        equivalent.context.permitted_transferred_rows.reverse();
+        equivalent.context.linked_authorities.reverse();
+        equivalent.context.accepted_rulings.reverse();
+        for ruling in &mut equivalent.context.accepted_rulings {
+            ruling.supersedes.reverse();
+            ruling.changed_propositions.reverse();
+        }
+        equivalent.context.limitations.reverse();
+        reseal(&mut equivalent)?;
+        assert_eq!(equivalent.full_contract_digest, base.full_contract_digest);
+        assert_eq!(equivalent.to_canonical_json()?, base.to_canonical_json()?);
+        assert_eq!(
+            validate_packet_full_binding(&packet, &equivalent)?,
+            FullBindingMatch::RepresentationOnly
+        );
+        let decoded = ContractIdentityEnvelope::from_json_str(&equivalent.to_canonical_json()?)?;
+        decoded.validate()?;
+        let decoded_packet = FullBoundPacket::from_json_str(&packet.to_canonical_json()?)?;
+        assert_eq!(
+            validate_packet_full_binding(&decoded_packet, &decoded)?,
+            FullBindingMatch::RepresentationOnly
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn control_full_identity_rejects_duplicate_semantic_sets_and_dangling_context()
+    -> Result<(), CloseProofError> {
+        let (base, _) = subject()?;
+        let mut changes = movements!(base;
+            "duplicate-condition" => |e: &mut ContractIdentityEnvelope| e.contract.transfer_policy.conditions.push(e.contract.transfer_policy.conditions[0].clone()),
+            "duplicate-domain" => |e: &mut ContractIdentityEnvelope| e.contract.domain_evidence_refs.push(e.contract.domain_evidence_refs[0].clone()),
+            "duplicate-transfer-row" => |e: &mut ContractIdentityEnvelope| e.context.permitted_transferred_rows.push(e.context.permitted_transferred_rows[0].clone()),
+            "duplicate-child-relation" => |e: &mut ContractIdentityEnvelope| { let mut c = e.context.child_relations[0].clone(); c.relation_class = "conflicting".to_string(); e.context.child_relations.push(c); },
+            "duplicate-linked-identity" => |e: &mut ContractIdentityEnvelope| { let mut c = e.context.linked_authorities[0].clone(); c.digest = leaf_digest(80); e.context.linked_authorities.push(c); },
+            "duplicate-ruling-identity" => |e: &mut ContractIdentityEnvelope| { let mut c = e.context.accepted_rulings[0].clone(); c.source.digest = leaf_digest(81); e.context.accepted_rulings.push(c); },
+            "duplicate-superseded-identity" => |e: &mut ContractIdentityEnvelope| { let mut c = e.context.accepted_rulings[0].supersedes[0].clone(); c.digest = leaf_digest(82); e.context.accepted_rulings[0].supersedes.push(c); },
+            "duplicate-proposition" => |e: &mut ContractIdentityEnvelope| { let c = e.context.accepted_rulings[0].changed_propositions[0].clone(); e.context.accepted_rulings[0].changed_propositions.push(c); },
+            "duplicate-limitation" => |e: &mut ContractIdentityEnvelope| e.context.limitations.push(e.context.limitations[0].clone()),
+            "unknown-transfer-row" => |e: &mut ContractIdentityEnvelope| e.context.permitted_transferred_rows.push("unknown".to_string()),
+            "missing-child-relation" => |e: &mut ContractIdentityEnvelope| { e.context.child_relations.pop(); },
+            "unknown-child-relation" => |e: &mut ContractIdentityEnvelope| e.context.child_relations[0].child.number += 100,
+            "legacy-ruling-conflict" => |e: &mut ContractIdentityEnvelope| e.contract.identity.accepted_ruling = Some(super::super::RulingIdentity { identity: "ruling-a".to_string(), digest: leaf_digest(83) }),
+            "disabled-transfer-rows" => |e: &mut ContractIdentityEnvelope| e.contract.transfer_policy.permitted = false,
+            "malformed-generation-digest" => |e: &mut ContractIdentityEnvelope| e.context.policy_generation.digest = "BAD".to_string(),
+            "blank-source" => |e: &mut ContractIdentityEnvelope| e.context.linked_authorities[0].identity.clear(),
+            "ambiguous-source-whitespace" => |e: &mut ContractIdentityEnvelope| e.context.compiler_generation.identity.push(' '),
+            "empty-ruling-propositions" => |e: &mut ContractIdentityEnvelope| e.context.accepted_rulings[0].changed_propositions.clear(),
+        );
+        for (name, e) in changes.drain(..) {
+            assert!(
+                e.compute_full_contract_digest().is_err(),
+                "ambiguous/dangling material accepted: {name}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn control_full_identity_strict_raw_intake_and_explicit_metadata() -> Result<(), CloseProofError>
+    {
+        let (base, packet) = subject()?;
+        let raw = base.to_canonical_json()?;
+        let poisoned = raw.replacen("\"context\": {", "\"context\": {\"injected\": true,", 1);
+        assert!(matches!(
+            ContractIdentityEnvelope::from_json_str(&poisoned),
+            Err(CloseProofError::Schema { .. })
+        ));
+        let duplicate = raw.replacen(
+            "\"policy_generation\": {",
+            "\"policy_generation\": {\"identity\": \"shadow\",",
+            1,
+        );
+        assert!(
+            matches!(ContractIdentityEnvelope::from_json_str(&duplicate), Err(CloseProofError::Schema { message, .. }) if message.contains("duplicate"))
+        );
+        let escaped =
+            duplicate.replacen("\"identity\": \"shadow\"", "\"\\u0069dentity\": \"shadow\"", 1);
+        assert!(
+            matches!(ContractIdentityEnvelope::from_json_str(&escaped), Err(CloseProofError::Schema { message, .. }) if message.contains("duplicate"))
+        );
+        let mut value: serde_json::Value = serde_json::from_str(&raw).map_err(|e| {
+            CloseProofError::Schema { field: "test".to_string(), message: e.to_string() }
+        })?;
+        for field in [
+            "child_relations",
+            "permitted_transferred_rows",
+            "linked_authorities",
+            "accepted_rulings",
+            "compiler_generation",
+            "schema_generation",
+            "policy_generation",
+            "limitations",
+            "adoption_record",
+        ] {
+            let mut missing = value.clone();
+            if let Some(context) =
+                missing.get_mut("context").and_then(serde_json::Value::as_object_mut)
+            {
+                context.remove(field);
+            }
+            assert!(
+                matches!(
+                    ContractIdentityEnvelope::from_json_str(&missing.to_string()),
+                    Err(CloseProofError::Schema { .. })
+                ),
+                "missing context field accepted: {field}"
+            );
+        }
+        value["context"]["accepted_rulings"][0]["injected"] = serde_json::Value::Bool(true);
+        assert!(matches!(
+            ContractIdentityEnvelope::from_json_str(&value.to_string()),
+            Err(CloseProofError::Schema { .. })
+        ));
+        let raw_packet = packet.to_canonical_json()?;
+        let payload = raw_packet.replacen(
+            "\"state\": \"still_open\"",
+            "\"state\": \"still_open\", \"injected\": true",
+            1,
+        );
+        assert!(matches!(
+            FullBoundPacket::from_json_str(&payload),
+            Err(CloseProofError::Schema { .. })
+        ));
+        let duplicate_packet = raw_packet.replacen(
+            "\"full_contract_digest\":",
+            &format!(
+                "\"full_contract_digest\": \"{}\", \"full_contract_digest\":",
+                leaf_digest(88)
+            ),
+            1,
+        );
+        assert!(
+            matches!(FullBoundPacket::from_json_str(&duplicate_packet), Err(CloseProofError::Schema { message, .. }) if message.contains("duplicate"))
+        );
+        assert!(
+            ContractIdentityEnvelope::from_json_str(&base.contract.to_canonical_json()?).is_err()
+        );
+        assert!(FullBoundPacket::from_json_str(&packet.packet.to_canonical_json()?).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn control_full_identity_forged_digests_versions_and_representation_ceiling()
+    -> Result<(), CloseProofError> {
+        let (base, packet) = subject()?;
+        let mut forged = base.clone();
+        forged.full_contract_digest = leaf_digest(999);
+        assert!(matches!(forged.validate(), Err(CloseProofError::Digest { .. })));
+        let mut wrong = base.clone();
+        wrong.schema_version = "issue_contract_identity.v2".to_string();
+        assert!(matches!(wrong.validate(), Err(CloseProofError::Schema { .. })));
+        let mut wrong_packet = packet.clone();
+        wrong_packet.schema_version = "issue_close_proof_binding.v2".to_string();
+        assert!(matches!(
+            validate_packet_full_binding(&wrong_packet, &base),
+            Err(CloseProofError::Schema { .. })
+        ));
+        wrong_packet.schema_version = FULL_PACKET_BINDING_SCHEMA_V1.to_string();
+        wrong_packet.full_contract_digest = "BAD".to_string();
+        assert!(matches!(
+            validate_packet_full_binding(&wrong_packet, &base),
+            Err(CloseProofError::Digest { .. })
+        ));
+        // Self-authored adoption and a supplied Valid verdict already occur in
+        // the subject. A matching recomputation still cannot establish trust.
+        assert_eq!(
+            validate_packet_full_binding(&packet, &base)?,
+            FullBindingMatch::RepresentationOnly
+        );
+        let mut phase = packet.clone();
+        phase.packet.requested_close_mode = CloseMode::PhaseCompleteIssueRemainsOpen;
+        assert_eq!(phase.packet.verdict.issue_close, IssueCloseOutcome::Valid);
+        assert_eq!(
+            validate_packet_full_binding(&phase, &base)?,
+            FullBindingMatch::RepresentationOnly
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn red_candidate_recomputation_cannot_replace_separately_supplied_current_binding()
+    -> Result<(), CloseProofError> {
+        let (current, packet) = subject()?;
+        let mut candidate = current.clone();
+        candidate.contract.required_proof_level = ProofLevel::Representation;
+        candidate.context.adoption_record = Some(source("candidate-claims-adoption", 900));
+        reseal(&mut candidate)?;
+        let mut rebound = packet.clone();
+        rebound.full_contract_digest = candidate.full_contract_digest.clone();
+        assert_eq!(
+            validate_packet_full_binding(&rebound, &candidate)?,
+            FullBindingMatch::RepresentationOnly
+        );
+        assert!(matches!(
+            validate_packet_full_binding(&rebound, &current),
+            Err(CloseProofError::Identity { .. })
+        ));
+        Ok(())
+    }
+}
+
 // Adversarial qualification under #10414/#10415. These tests exercise the
 // existing Rust intake, never a second decoder or a semantic evaluator.
 // The red_* names retain the sealed pre-fix falsifiers, now required GREEN.
