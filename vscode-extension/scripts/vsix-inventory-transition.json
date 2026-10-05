@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "owner_issue": 17333,
-  "reason": "wave-4 surface repairs grow the bundled out/extension.js by 4735 bytes: the #17333 prove resolver PATH walk, the #17334 global-scope unscoped pull payload builder, and their contracts; the packaged file set is unchanged",
+  "owner_issue": 7804,
+  "reason": "Repair the plain-HTTP proxy inner hop against the extension-host patch self-CONNECT loop (http.proxySupport: override): against the prior candidate baseline this candidate changes only out/extension.js (+2386 bytes) for the http.ClientRequest inner-hop construction, the patched-host transport test, and the verified patch-behavior module header; package.json and all other members remain as declared; size-only growth, no structural packaging change.",
   "base_baseline_file_sha256": "ed73e4ac567f36d73e987ffda907a272e2e35afcef0cb1640eabb636300b6291",
-  "candidate_baseline_file_sha256": "13f9566e8353bddb7353b68a185217f05bfffc7d3d67e00c09323b612b255f0e",
+  "candidate_baseline_file_sha256": "858eedfd9df10f4c52d9f7a48a2e25cc329818f5513fc2a1f9b5bd1b6ff79c7f",
   "base_inventory_sha256": "eca87de013c378aed31924190eaf783fb691e3b850fa8eb99c1eeb93efef4f6f",
-  "candidate_inventory_sha256": "c3e8e1db9dcad64d48526b7ae702ae2f29cb44aef741a4be49b071652ab57ab3"
+  "candidate_inventory_sha256": "f7af875eac06d2898b826f2dd6016b26bbc04f992901ff5b62ab80ad59259dce"
 }
