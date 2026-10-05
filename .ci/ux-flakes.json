@@ -158,31 +158,31 @@
       "test": "ux_scenario_14_inc_conformance::scenario_14_findbin_relative",
       "crate": "perl-lsp-ux-tests",
       "subsystem": "editor_ux",
-      "state": "active",
-      "disposition": "not_proven",
+      "state": "resolved",
+      "disposition": "stabilized",
       "failure_mode": "FindBin-relative module resolution is environment-dependent; goto-definition may not resolve in harness environment",
       "failure_class": "provider_regression",
       "component": "module_resolution",
-      "issue": 10015,
-      "owner": "@maintainer",
+      "issue": null,
+      "owner": null,
       "first_seen": "2026-04-30",
       "scope": "pr",
       "quarantine_effect": "non_blocking_pr",
       "expires_after_days": null,
-      "resolved_in": null,
-      "resolved_at": null,
+      "resolved_in": 17042,
+      "resolved_at": "2026-10-01",
       "evidence": {
         "command": "PERL_LSP_UX_REQUIRE_BINARY=1 just ux-tests",
-        "verification_state": "unverified",
-        "verification_pr": 13167,
-        "verified_sha": null,
-        "verified_artifact_blob": null,
-        "unverified_reason": "The mapped replacement scenario_14_findbin_relative tolerates the no-PL701 + empty goto-definition consumer divergence (logs INFO and returns Ok) and never asserts completion_ok, so it does not discriminate the stated consumer-consistency contract (review thread 3880058194 on this PR). No verifying commit exists; the row stays active/not_proven until the replacement fails on that divergence.",
+        "verification_state": "verified",
+        "verification_pr": 17042,
+        "verified_sha": "42cd94189150bfe082b692627bb19232a38d31db",
+        "verified_artifact_blob": "4f649b13c13af7b594eaf337cc86b3d4d2881f1f",
+        "unverified_reason": null,
         "replacement_tests": [
           "scenario_14_findbin_relative"
         ]
       },
-      "notes": "Reclassified from resolved_by_intent to active/not_proven: the maintained test does not yet fail on the divergence class its disposition claims to prove. The maintained contract is consumer consistency under an environment-dependent FindBin capability; proof for that contract is still owed under #10015."
+      "notes": "Discharged the #10015 proof debt: after the replacement was made discriminating (#14152 hard-fails consumer divergence and consistent refusal) and the strict child-environment isolation landed (#14308), the exact-subject five-run protocol passed terminally (sha ac54b5f5d62f25a27070ab580b6de92d7fddf82b, artifact blob 5c81bf0f, perllsp sha256 71926b820eff5b3d1927387d1a0329851a73e1ce21915d251370d5f96d1ba46b, --test-threads=1, PERL_LSP_UX_REQUIRE_BINARY=1, explicit PERL_LSP_BIN; 14 passed / 0 failed / 0 skipped in each of 5 sequential runs, Windows x64, Perl 5.42.2). Evidence strength: bounded repetition, not an exhaustion proof; the canonical ubuntu lane re-executes the same target on this PR. Re-verified after main #16952 (49ba302ace) drifted the quarantined artifact during the #17042 merge: the evidence lane re-run at merge head 42cd941891 (artifact blob 4f649b13c13af7b594eaf337cc86b3d4d2881f1f) gave ux_scenario_14_inc_conformance 14 passed / 0 failed / 0 skipped, --test-threads=1, PERL_LSP_UX_REQUIRE_BINARY=1, explicit PERL_LSP_BIN; Windows x64, Perl 5.42.2. Single-run strength here is the drift repair, not the discharge protocol; the five-run protocol above remains the original discharge evidence."
     },
     {
       "test": "ux_scenario_14_inc_conformance::scenario_14_system_inc",
@@ -339,17 +339,17 @@
   ],
   "summary": {
     "total": 11,
-    "active": 1,
-    "resolved": 10,
+    "active": 0,
+    "resolved": 11,
     "by_subsystem": {
       "editor_ux": 11
     },
     "by_disposition": {
       "still_failing": 0,
-      "stabilized": 6,
+      "stabilized": 7,
       "resolved_by_intent": 2,
       "folded": 2,
-      "not_proven": 1
+      "not_proven": 0
     }
   }
 }

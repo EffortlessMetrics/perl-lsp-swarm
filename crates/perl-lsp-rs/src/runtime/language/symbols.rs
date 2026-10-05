@@ -26,6 +26,7 @@ struct DocumentSymbolProbeCounts {
 
 const DOCUMENT_SYMBOL_PROBE_HASH_LIMIT_BYTES: usize = 64 * 1024;
 const DOCUMENT_SYMBOL_PROBE_ID_LIMIT_BYTES: usize = 256;
+const DOCUMENT_SYMBOL_PROBE_URI_LIMIT_BYTES: usize = 4096;
 
 fn document_symbol_probe_request_id(id: Option<&Value>) -> (Option<&Value>, Option<usize>) {
     let bytes = id.and_then(Value::as_str).map(str::len);
@@ -50,9 +51,7 @@ fn emit_document_symbol_probe(
     counts: DocumentSymbolProbeCounts,
     cap: usize,
 ) {
-    if !document_symbol_probe_enabled()
-        || !tracing::enabled!(target: "document_symbol_probe", tracing::Level::DEBUG)
-    {
+    if !LspServer::document_symbol_probe_active() {
         return;
     }
     let request_id_was_present = request_id.is_some();
@@ -218,6 +217,72 @@ fn pod_section_symbols(source: &str) -> Vec<Value> {
 }
 
 impl LspServer {
+    pub(crate) fn document_symbol_probe_active() -> bool {
+        document_symbol_probe_enabled()
+            && tracing::enabled!(target: "document_symbol_probe", tracing::Level::DEBUG)
+    }
+
+    /// Bounded opt-in observation of actual ingress/admission/didOpen state.
+    /// URI digests are content-derived; raw URI, source and string IDs are omitted.
+    pub(crate) fn emit_document_symbol_lifecycle_probe(
+        &self,
+        stage: &str,
+        method: &str,
+        params: Option<&Value>,
+        request_id: Option<&JsonRpcId>,
+        mutation_sequence: Option<u64>,
+        error_code: Option<i32>,
+    ) {
+        if !matches!(method, "textDocument/didOpen" | "textDocument/documentSymbol")
+            || !Self::document_symbol_probe_active()
+        {
+            return;
+        }
+        let uri =
+            params.and_then(|params| params.pointer("/textDocument/uri")).and_then(Value::as_str);
+        let bounded_uri = uri.filter(|uri| uri.len() <= DOCUMENT_SYMBOL_PROBE_URI_LIMIT_BYTES);
+        let normalized = bounded_uri.map(|uri| self.normalize_uri_key(uri));
+        let numeric_id = request_id.and_then(|id| match id {
+            JsonRpcId::Integer(value) => Some(*value),
+            _ => None,
+        });
+        let documents = self.documents.lock();
+        let document = normalized
+            .as_ref()
+            .and_then(|key| documents.get(key))
+            .or_else(|| bounded_uri.and_then(|uri| documents.get(uri)));
+        let receipt = json!({
+            "kind": "document_symbol_lifecycle_probe",
+            "stage": stage,
+            "method": method,
+            "server_pid": std::process::id(),
+            "initialization_accepted": self.initialization_accepted(),
+            "initialized": self.initialized.load(std::sync::atomic::Ordering::Acquire),
+            "shutdown_received": self.shutdown_received.load(std::sync::atomic::Ordering::Acquire),
+            "request_id": numeric_id,
+            "request_id_omitted": request_id.is_some() && numeric_id.is_none(),
+            "mutation_sequence": mutation_sequence,
+            "error_code": error_code,
+            "uri_bytes": uri.map(str::len),
+            "uri_hash_limit_bytes": DOCUMENT_SYMBOL_PROBE_URI_LIMIT_BYTES,
+            "uri_hash_omitted_byte_limit": uri.is_some_and(|uri| uri.len() > DOCUMENT_SYMBOL_PROBE_URI_LIMIT_BYTES),
+            "uri_hash": bounded_uri.map(|uri| perl_lsp_rs_core::hashing::sha256_hex(uri.as_bytes())),
+            "normalized_uri_hash": normalized.as_ref()
+                .filter(|uri| uri.len() <= DOCUMENT_SYMBOL_PROBE_URI_LIMIT_BYTES)
+                .map(|uri| perl_lsp_rs_core::hashing::sha256_hex(uri.as_bytes())),
+            "incoming_text_bytes": params.and_then(|params| params.pointer("/textDocument/text"))
+                .and_then(Value::as_str).map(str::len),
+            "incoming_version": params.and_then(|params| params.pointer("/textDocument/version"))
+                .and_then(Value::as_i64),
+            "document_count": documents.len(),
+            "document_present": document.is_some(),
+            "document_generation": document.map(|doc| doc.current_generation()),
+            "document_version": document.map(|doc| doc.version),
+        });
+        drop(documents);
+        tracing::debug!(target: "document_symbol_probe", "{receipt}");
+    }
+
     /// Canonical Dancer2 route/hook document symbols (#8928).
     ///
     /// Returns labeled `[Dancer2 route]` / `[Dancer2 hook]` entries anchored

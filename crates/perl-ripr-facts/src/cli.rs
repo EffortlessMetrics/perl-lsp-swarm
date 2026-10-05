@@ -62,6 +62,15 @@ where
         }
     };
 
+    // Fail fast on an invalid write destination before any diff I/O: an
+    // unreadable `--diff` must not mask a directory-valued `--out`, and a
+    // readable diff must not be read only to reject the destination afterwards
+    // (#17263 review). Same shared check the wrapper runs before the scan.
+    if let Err(line) = validate_out_destination(&cli.out) {
+        eprintln!("{line}");
+        return 1;
+    }
+
     let diff_text = match cli.diff_path.as_deref() {
         Some(path) => match read_diff_text(&cli.root, path) {
             Ok(text) => Some(text),
@@ -145,6 +154,26 @@ fn read_diff_text(root: &str, diff_path: &str) -> Result<String, String> {
         .map_err(|error| format!("failed to read diff `{}`: {error}", path.display()))
 }
 
+/// Validate the `out` write destination: repo-relative shape plus target kind.
+///
+/// Shape validation alone says nothing about target kind, so `out` naming an
+/// existing directory used to scan the whole workspace and then die with a raw
+/// OS error that never said "is a directory" (#17263). This fails fast
+/// instead, naming the condition. (`is_dir` follows symlinks, matching what
+/// the write path would hit; a TOCTOU dir still fails closed below, just less
+/// prettily.)
+///
+/// Shared by both entry points — [`run_cli`] (before diff I/O) and
+/// [`run_ripr_facts_with_diff`] (before the workspace scan) — so the two
+/// cannot drift. The `Err` is the complete stderr line, ready to print.
+fn validate_out_destination(out: &str) -> Result<(), String> {
+    validate_ripr_facts_path(out, "out").map_err(|reason| format!("ripr-facts: {reason}"))?;
+    if std::path::Path::new(out).is_dir() {
+        return Err(out_names_directory_message(out));
+    }
+    Ok(())
+}
+
 /// Run the `ripr-facts` exporter (Campaign 31, ripr-swarm#1379).
 ///
 /// The thin CLI wrapper over [`build_ripr_facts_packet`]: it forwards the
@@ -186,8 +215,8 @@ pub fn run_ripr_facts_with_diff(
 ) -> i32 {
     // Validate the output path first — the cheapest check — so an invalid write
     // destination fails fast, before the emitter scans the workspace.
-    if let Err(reason) = validate_ripr_facts_path(out, "out") {
-        eprintln!("ripr-facts: {reason}");
+    if let Err(line) = validate_out_destination(out) {
+        eprintln!("{line}");
         return 1;
     }
 
@@ -215,6 +244,15 @@ pub fn run_ripr_facts_with_diff(
     let status = packet["packet_status"].as_str().unwrap_or("unknown");
     eprintln!("ripr-facts: wrote {status} packet to `{out}`");
     0
+}
+
+/// Fail-fast message when `out` names an existing directory (#17263),
+/// extracted as a constructor so the wording is unit-testable (the wrapper
+/// itself only signals `stderr` + exit code).
+fn out_names_directory_message(out: &str) -> String {
+    format!(
+        "ripr-facts: `out` names an existing directory (`{out}`); pass a file path for the packet."
+    )
 }
 
 /// Write a JSON packet to the output path, creating parent directories.
@@ -957,17 +995,50 @@ mod tests {
     }
 
     #[test]
-    fn failed_replace_reports_failure_and_removes_the_staged_sibling() -> std::io::Result<()> {
-        // Occupy the destination with a directory. Staging succeeds, then the
-        // rename fails (a file cannot replace a directory on Unix or Windows),
-        // which exercises the replace-failure path end to end.
-        let dir = "target/ripr-atomic-replace-failure";
+    fn out_naming_directory_fails_fast_without_litter() -> std::io::Result<()> {
+        // `#17263`: `out` naming a directory fails before the workspace scan
+        // (not after, with a raw OS error) and stages nothing.
+        let dir = "target/ripr-out-is-dir";
         let _ = std::fs::remove_dir_all(dir);
         std::fs::create_dir_all(format!("{dir}/packet.json"))?;
         let out = format!("{dir}/packet.json");
 
         let rc = run_ripr_facts("ripr-perl-facts-v1", ".", None, None, "tests,oracles", &out);
-        assert_eq!(rc, 1, "an unusable destination must fail the run");
+        assert_eq!(rc, 1, "a directory destination must fail the run");
+        assert_eq!(
+            dir_entries(dir)?,
+            vec!["packet.json".to_string()],
+            "the fail-fast path must stage nothing"
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
+        Ok(())
+    }
+
+    #[test]
+    fn out_naming_directory_message_names_the_condition() {
+        let message = super::out_names_directory_message("out");
+        assert!(
+            message.contains("existing directory") && message.contains("out"),
+            "message must say the destination is a directory and name it; got: {message}"
+        );
+    }
+
+    #[test]
+    fn failed_replace_reports_failure_and_removes_the_staged_sibling() -> std::io::Result<()> {
+        // Occupy the destination with a directory and call the writer
+        // directly: staging succeeds, then the rename fails (a file cannot
+        // replace a directory on Unix or Windows), which exercises the
+        // replace-failure cleanup end to end. (Via `run_ripr_facts` the
+        // #17263 fail-fast check now preempts this path, so the direct call
+        // is what keeps the cleanup proof deterministic.)
+        let dir = "target/ripr-atomic-replace-failure";
+        let _ = std::fs::remove_dir_all(dir);
+        std::fs::create_dir_all(format!("{dir}/packet.json"))?;
+        let out = format!("{dir}/packet.json");
+
+        let result = super::write_packet(&out, &serde_json::json!({"probe": true}));
+        assert!(result.is_err(), "replacing a directory must fail");
         assert_eq!(
             dir_entries(dir)?,
             vec!["packet.json".to_string()],
