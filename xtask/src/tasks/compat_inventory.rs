@@ -257,6 +257,8 @@ pub enum ReferenceKind {
     Policy,
     /// Repository automation that operates on the package by name.
     Tooling,
+    /// Test code naming the package as synthetic data without consuming it.
+    TestFixture,
 }
 
 impl ReferenceKind {
@@ -271,6 +273,7 @@ impl ReferenceKind {
             Self::Documentation => "documentation",
             Self::Policy => "policy",
             Self::Tooling => "tooling",
+            Self::TestFixture => "test_fixture",
         }
     }
 }
@@ -2207,6 +2210,53 @@ mod tests {
         );
         let d = discovered(vec![export("parse_to_tree")], vec!["docs/x.md"]);
         validate(&l, &d)
+    }
+
+    #[test]
+    fn test_fixture_reference_kind_has_a_stable_wire_spelling() -> TestResult {
+        let kind: ReferenceKind = serde_json::from_str("\"test_fixture\"")?;
+        assert_eq!(kind, ReferenceKind::TestFixture);
+        assert_eq!(kind.as_str(), "test_fixture");
+        assert_eq!(serde_json::to_string(&kind)?, "\"test_fixture\"");
+        Ok(())
+    }
+
+    #[test]
+    fn unused_test_fixture_is_explained_without_a_migration_obligation() -> TestResult {
+        let path = "xtask/tests/activation_check.rs";
+        let mut row = consumer(path, ReferenceKind::TestFixture);
+        row.disposition = Disposition::Unused;
+        row.canonical_owner = None;
+        row.removal_condition = None;
+        row.note = "Synthetic authority path in a JSON fixture, not a crate consumer".to_string();
+        let l = ledger(vec![], vec![row]);
+        let d = discovered(vec![], vec![path]);
+        validate(&l, &d)?;
+        assert!(
+            render_markdown(&l, &d).contains(
+                "| `xtask/tests/activation_check.rs` | `test_fixture` | `unused` | — | — |"
+            )
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn an_unexplained_test_fixture_still_blocks_the_inventory() {
+        let l = ledger(vec![], vec![]);
+        let d = discovered(vec![], vec!["xtask/tests/activation_check.rs"]);
+        let err = validate_err(&l, &d, "fixture data must have an explicit ledger row");
+        assert!(err.contains("an unexplained reference blocks the inventory"), "{err}");
+    }
+
+    #[test]
+    fn a_cargo_dependency_cannot_be_hidden_as_test_fixture_data() {
+        let path = "crates/other/Cargo.toml";
+        let l = ledger(vec![], vec![consumer(path, ReferenceKind::TestFixture)]);
+        let mut d = discovered(vec![], vec![path]);
+        d.cargo_dependents =
+            vec![CargoDependent { manifest: path.to_string(), kind: "normal".to_string() }];
+        let err = validate_err(&l, &d, "real link-time consumers cannot be fixture data");
+        assert!(err.contains("must be recorded as `cargo_dependency`"), "{err}");
     }
 
     /// A Cargo dependency with no text reference anywhere is exactly the case
