@@ -20,8 +20,8 @@ const CORPUS_FIXTURE_COUNT: usize = 15;
 
 // Adversarial qualification under #10414/#10415. These tests exercise the
 // existing Rust intake, never a second decoder or a semantic evaluator.
-// The red_* tests intentionally describe the future authoritative boundary;
-// diagnostic_* tests preserve the documented representation-only behavior.
+// The red_* names retain the sealed pre-fix falsifiers, now required GREEN.
+// Diagnostics preserve representation-only boundaries, never an evaluator.
 #[cfg(test)]
 mod qualification {
     use super::*;
@@ -109,6 +109,39 @@ mod qualification {
         }
     }
 
+    fn require_clean_wire_round_trip<T>(raw: &str)
+    where
+        T: serde::de::DeserializeOwned + serde::Serialize,
+    {
+        let parsed = serde_json::from_str::<T>(raw);
+        assert!(parsed.is_ok(), "clean variant must parse: {raw}");
+        let encoded = parsed.and_then(serde_json::to_value);
+        assert!(encoded.is_ok(), "clean variant must serialize: {raw}");
+        assert_eq!(encoded.ok(), serde_json::from_str::<serde_json::Value>(raw).ok());
+    }
+
+    fn fixture_subject() -> Result<FixtureDocument, CloseProofError> {
+        let (contract, packet) = rich_subject()?;
+        Ok(FixtureDocument {
+            schema_version: super::super::FIXTURE_SCHEMA_V1.to_string(),
+            provenance: super::super::FixtureProvenance {
+                captured_at: "2026-10-05T00:00:00Z".to_string(),
+                sources: Vec::new(),
+                subject_shas: Vec::new(),
+                boundary: "Synthetic representation-only falsifier; no admitted semantic evidence."
+                    .to_string(),
+            },
+            contract,
+            cases: vec![super::super::FixtureCase {
+                case_id: "self-asserted.verdict".to_string(),
+                description: "Unproven neighbor row remains.".to_string(),
+                expected_pr_scope: packet.verdict.pr_scope,
+                expected_issue_close: packet.verdict.issue_close,
+                packet,
+            }],
+        })
+    }
+
     #[test]
     fn red_raw_map_duplicates_must_be_rejected_before_value_conversion()
     -> Result<(), CloseProofError> {
@@ -168,26 +201,118 @@ mod qualification {
     }
 
     #[test]
-    fn diagnostic_raw_maps_currently_keep_the_last_value() -> Result<(), CloseProofError> {
-        let (contract, packet) = rich_subject()?;
+    fn control_raw_maps_refuse_hidden_contradictions_before_normalization()
+    -> Result<(), CloseProofError> {
+        let (_, packet) = rich_subject()?;
         let raw = duplicate_map_entry(
             &packet,
             "row_dispositions",
             "single-row.defect.fixed",
             r#"{"disposition":"contradicted","reason":"discarded contradiction"}"#,
         )?;
-        let parsed = ClosePacket::from_json_str(&raw)?;
-        assert_eq!(parsed.row_dispositions, packet.row_dispositions);
-        validate_packet_against_contract(&parsed, &contract)?;
+        assert!(matches!(
+            ClosePacket::from_json_str(&raw),
+            Err(CloseProofError::Schema { message, .. }) if message.contains("duplicate field")
+        ));
         let raw = duplicate_map_entry(
             &packet,
             "negative_control_dispositions",
             "nc.repair",
             r#"{"state":"failed","reason":"discarded control"}"#,
         )?;
-        let parsed = ClosePacket::from_json_str(&raw)?;
-        assert_eq!(parsed.negative_control_dispositions, packet.negative_control_dispositions);
-        validate_packet_against_contract(&parsed, &contract)?;
+        assert!(matches!(
+            ClosePacket::from_json_str(&raw),
+            Err(CloseProofError::Schema { message, .. }) if message.contains("duplicate field")
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn control_all_public_document_intakes_refuse_raw_duplicates() -> Result<(), CloseProofError> {
+        let fixture = fixture_subject()?;
+        let contract_raw = fixture.contract.to_canonical_json()?;
+        IssueContract::from_json_str(&contract_raw)?.validate()?;
+        let packet_raw = fixture.cases[0].packet.to_canonical_json()?;
+        let packet = ClosePacket::from_json_str(&packet_raw)?;
+        validate_packet_against_contract(&packet, &fixture.contract)?;
+        let fixture_raw = fixture.to_canonical_json()?;
+        FixtureDocument::from_json_str(&fixture_raw)?.verify()?;
+        let manifest_raw = super::super::canonical_json(&load_corpus_manifest()?)?;
+        super::super::CorpusManifest::from_json_str(&manifest_raw)?;
+
+        let contract_raw = replace_once(
+            &contract_raw,
+            "\"issue_number\": 9000300",
+            "\"issue_number\": 9000300, \"issue_number\": 9000300",
+        );
+        let packet_raw = duplicate_map_entry(
+            &packet,
+            "row_dispositions",
+            "single-row.defect.fixed",
+            r#"{"disposition":"not_proven","reason":"hidden result"}"#,
+        )?;
+        // Reach a free-key map nested inside a fixture, not merely a duplicate
+        // typed field that serde would already refuse without the wire pass.
+        let fixture_raw = replace_once(
+            &fixture_raw,
+            "\"row_dispositions\": {",
+            "\"row_dispositions\": {\"single-row.defect.fixed\": {\"disposition\":\"not_proven\",\"reason\":\"hidden result\"},",
+        );
+        // Executable wrong-route control: direct typed serde intake still
+        // loses a repeated free-map key. The public fixture parser must refuse
+        // the original raw bytes before that loss can occur.
+        assert!(serde_json::from_str::<FixtureDocument>(&fixture_raw).is_ok());
+        let manifest_raw = replace_once(
+            &manifest_raw,
+            "\"corpus_id\":",
+            "\"corpus_id\": \"hidden-corpus\", \"corpus_id\":",
+        );
+        for (field, result) in [
+            ("issue_contract", IssueContract::from_json_str(&contract_raw).map(|_| ())),
+            ("close_packet", ClosePacket::from_json_str(&packet_raw).map(|_| ())),
+            (
+                "close_proof_contract_fixture",
+                FixtureDocument::from_json_str(&fixture_raw).map(|_| ()),
+            ),
+            (
+                "corpus_manifest",
+                super::super::CorpusManifest::from_json_str(&manifest_raw).map(|_| ()),
+            ),
+        ] {
+            assert!(
+                matches!(result, Err(CloseProofError::Schema { field: actual, message })
+                    if actual == field && message.contains("duplicate field")),
+                "expected duplicate-key Schema at {field}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn control_wire_keys_cover_nested_arrays_escapes_and_valid_json_values()
+    -> Result<(), CloseProofError> {
+        let raw = r#"{"a":1,"nested":[{"a":2},{"a":3}],"text":"{\"a\":1,\"a\":2}","values":[null,true,false,-1,18446744073709551615,1.25],"escaped":{"\u0062":false}}"#;
+        let parsed = super::super::wire::from_json_str::<serde_json::Value>(raw, "wire-control")?;
+        assert_eq!(Some(parsed), serde_json::from_str::<serde_json::Value>(raw).ok());
+        for raw in [
+            r#"{"array":[{"key":1,"key":2}]}"#,
+            r#"{"unused":{"a\"b":true,"a\u0022b":false}}"#,
+            r#"{"parent":{"child":{"\u0061":null,"a":null}}}"#,
+        ] {
+            assert!(matches!(
+                super::super::wire::from_json_str::<serde_json::Value>(raw, "wire-control"),
+                Err(CloseProofError::Schema { message, .. }) if message.contains("duplicate field")
+            ));
+            // A Value-first implementation would accept and normalize each
+            // witness. This independent wrong route must stay distinguishable.
+            assert!(serde_json::from_str::<serde_json::Value>(raw).is_ok());
+        }
+        for raw in ["{} {}", "[", r#"{"key":}"#] {
+            assert!(matches!(
+                super::super::wire::from_json_str::<serde_json::Value>(raw, "wire-control"),
+                Err(CloseProofError::Schema { .. })
+            ));
+        }
         Ok(())
     }
 
@@ -209,10 +334,7 @@ mod qualification {
         let mut missed = Vec::new();
         for raw in row_variants {
             let clean = replace_once(raw, ",\"injected\":true", "");
-            assert!(
-                serde_json::from_str::<RowDispositionValue>(&clean).is_ok(),
-                "clean row variant must parse: {clean}"
-            );
+            require_clean_wire_round_trip::<RowDispositionValue>(&clean);
             let result = serde_json::from_str::<RowDispositionValue>(raw);
             if !is_unknown_field_refusal(&result) {
                 missed.push(raw);
@@ -225,10 +347,7 @@ mod qualification {
             r#"{"state":"not_proven","reason":"r","injected":true}"#,
         ] {
             let clean = replace_once(raw, ",\"injected\":true", "");
-            assert!(
-                serde_json::from_str::<ControlOutcome>(&clean).is_ok(),
-                "clean control variant must parse: {clean}"
-            );
+            require_clean_wire_round_trip::<ControlOutcome>(&clean);
             let result = serde_json::from_str::<ControlOutcome>(raw);
             if !is_unknown_field_refusal(&result) {
                 missed.push(raw);
@@ -241,10 +360,7 @@ mod qualification {
             r#"{"state":"transferred_to_open_owner","proposition":"p","destination_repository":"o/r","destination_issue":1,"destination_contract_identity":"d","rationale":"r","injected":true}"#,
         ] {
             let clean = replace_once(raw, ",\"injected\":true", "");
-            assert!(
-                serde_json::from_str::<ChildState>(&clean).is_ok(),
-                "clean child variant must parse: {clean}"
-            );
+            require_clean_wire_round_trip::<ChildState>(&clean);
             let result = serde_json::from_str::<ChildState>(raw);
             if !is_unknown_field_refusal(&result) {
                 missed.push(raw);
@@ -472,26 +588,9 @@ mod qualification {
     #[test]
     fn diagnostic_fixture_expectations_can_be_resealed_without_independent_evaluation()
     -> Result<(), CloseProofError> {
-        let (contract, mut packet) = rich_subject()?;
-        packet.verdict.issue_close = IssueCloseOutcome::Invalid;
-        let mut fixture = FixtureDocument {
-            schema_version: super::super::FIXTURE_SCHEMA_V1.to_string(),
-            provenance: super::super::FixtureProvenance {
-                captured_at: "2026-10-05T00:00:00Z".to_string(),
-                sources: Vec::new(),
-                subject_shas: Vec::new(),
-                boundary: "Synthetic representation-only falsifier; no admitted semantic evidence."
-                    .to_string(),
-            },
-            contract,
-            cases: vec![super::super::FixtureCase {
-                case_id: "self-asserted.verdict".to_string(),
-                description: "Unproven neighbor row remains.".to_string(),
-                packet,
-                expected_pr_scope: PrScopeOutcome::Pass,
-                expected_issue_close: IssueCloseOutcome::Invalid,
-            }],
-        };
+        let mut fixture = fixture_subject()?;
+        fixture.cases[0].packet.verdict.issue_close = IssueCloseOutcome::Invalid;
+        fixture.cases[0].expected_issue_close = IssueCloseOutcome::Invalid;
         fixture.verify()?;
         fixture.cases[0].packet.verdict.issue_close = IssueCloseOutcome::Valid;
         assert!(matches!(fixture.verify(), Err(CloseProofError::Corpus { .. })));
