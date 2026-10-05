@@ -245,14 +245,24 @@ mod tests {
     fn print_writes_both_fail_lines_when_both_counts_exceed_baseline() -> Result<()> {
         let (code, out) = rendered(&report(&["u"], &["p"], 0, 0))?;
         ensure!(code == 1, "expected exit 1, got {code}; output was {out}");
-        ensure!(
-            out.contains("FAIL: unwrap/expect count (1) exceeds baseline (0)"),
-            "missing unwrap FAIL; output was {out}"
+        // The report inputs are deterministic, so pin the complete rendered
+        // bytes: line order, both Offenders blocks, offender values, and the
+        // panic baseline-update hint. A substring check would let an
+        // ordering or duplication defect reach the report unnoticed.
+        let expected = concat!(
+            "unwrap/expect: 1 (baseline: 0)\n",
+            "FAIL: unwrap/expect count (1) exceeds baseline (0)\n",
+            "\n",
+            "Offenders:\n",
+            "u\n",
+            "panic-family macros: 1 (baseline: 0)\n",
+            "FAIL: panic-family count (1) exceeds baseline (0)\n",
+            "\n",
+            "Offenders:\n",
+            "p\n",
+            "If you removed panic-family macros, update ci/panic_prod_baseline.txt with the new lower count.\n",
         );
-        ensure!(
-            out.contains("FAIL: panic-family count (1) exceeds baseline (0)"),
-            "missing panic FAIL; output was {out}"
-        );
+        ensure!(out == expected, "unexpected report bytes:\n{out}");
         Ok(())
     }
 
