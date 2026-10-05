@@ -2548,3 +2548,53 @@ jobs:
           path: ${{ env.RECEIPT_PATH }}
           if-no-files-found: error
           retention-days: 7
+      # Temporary #10414 witness qualification; retire after sealed RED/GREEN.
+      - name: Qualify frozen adoption mapping witnesses
+        if: >-
+          !cancelled() &&
+          github.event_name == 'pull_request' &&
+          github.event.pull_request.draft == true &&
+          github.head_ref == 'codex/10414-adoption-report' &&
+          github.event.pull_request.head.repo.full_name == github.repository
+        shell: bash
+        env:
+          RUSTUP_TOOLCHAIN: 1.95.0
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          actual_sha="$(git rev-parse HEAD^{commit})"
+          test "$actual_sha" = "$SUBJECT_SHA"
+          test "$actual_sha" = "$PR_HEAD_SHA"
+          git show -s --format='adoption_subject actual=%H parents=%P tree=%T'
+          printf 'adoption_event github_sha=%s pr_head=%s\n' "$GITHUB_SHA" "$PR_HEAD_SHA"
+          git ls-tree -r HEAD -- xtask/src/close_proof/mod.rs xtask/src/close_proof/adoption
+          sha256sum xtask/src/close_proof/adoption/tests.rs
+          set +e
+          cargo test --locked --lib -p xtask close_proof::adoption::tests:: -- --nocapture 2>&1 | tee "$RUNNER_TEMP/adoption-selected-tests.log"
+          pipeline_status=("${PIPESTATUS[@]}")
+          set -e
+          test "${pipeline_status[1]}" -eq 0
+          python3 - "$RUNNER_TEMP/adoption-selected-tests.log" <<'PY'
+          import re
+          import sys
+          from pathlib import Path
+          output = Path(sys.argv[1]).read_text(encoding="utf-8")
+          expected = {
+              "red_adoption_candidate_bindings_cannot_replace_fixed_selection",
+              "red_adoption_rows_controls_and_proof_cannot_be_weakened",
+              "red_adoption_template_lexical_review_and_non_goal_survive",
+              "control_adoption_exact_mapping_permutations_and_simulation_ceiling",
+              "control_adoption_independent_source_identity_and_exact_bytes_refuse",
+              "control_adoption_transport_budget_failures_and_fixed_get_selection",
+              "control_adoption_raw_candidate_flags_duplicates_and_ambiguous_sets_refuse",
+              "control_adoption_no_role_status_marker_or_recency_authority",
+          }
+          summaries = re.findall(r"test result: (?:ok|FAILED)\. (\d+) passed; (\d+) failed; (\d+) ignored;", output)
+          names = re.findall(r"test close_proof::adoption::tests::([a-z0-9_]+) \.\.\. (?:ok|FAILED)", output)
+          assert len(summaries) == 1, "NOT_REACHED: missing/ambiguous native summary"
+          passed, failed, ignored = map(int, summaries[0])
+          assert passed + failed == 8 and ignored == 0, "NOT_REACHED: zero/partial/ignored witnesses"
+          assert len(names) == 8 and set(names) == expected, "NOT_REACHED: frozen witness set differs"
+          print(f"adoption_attestation executed={passed + failed} passed={passed} failed={failed} ignored={ignored}")
+          PY
+          exit "${pipeline_status[0]}"
