@@ -158,7 +158,7 @@ fn scenario_09_static_symbol_survives_encoding_and_extension_boundary() {
                 "\u{FEFF}",
                 "#!/usr/bin/env perl\nuse strict;\nuse warnings;\nsub decode_payload { return 42; }\ndecode_payload();\n"
             );
-            let harness = UxHarness::new(ScenarioConfig::default().with_file("bom.pl", &source))?;
+            let harness = UxHarness::new(ScenarioConfig::default().with_file("bom.pl", source))?;
             harness.open_file("bom.pl", &source)?;
             let uri = harness.workspace.uri("bom.pl");
             perl_lsp_ux_tests::wait_with_subject(
