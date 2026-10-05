@@ -277,6 +277,38 @@ DIAGNOSTIC
         self.assertNotIn("FsStatusOutdated", trace)
         self.assertIn("err: details omitted", trace)
 
+    def test_module_delimiter_in_span_or_payload_fails_closed(self):
+        # Pinned tracing formats span fields before the target. Git URL PATH
+        # permits colons; decoded path SourceId can also contain literal spaces.
+        marker = "cargo::core::compiler::fingerprint:"
+        secret = "CONTROL-SYNTHETIC-DELIMITER-COLLISION"
+        git_span = f"prepare_target{{package_id=fixture v1.0.0 (https://invalid.example/{marker}/repo)}}: "
+        path_span = f"prepare_target{{package_id=fixture v1.0.0 (/work/{marker} /repo)}}: "
+        lines = []
+        for span in [git_span, path_span]:
+            lines += [f"   0.010000001s INFO {span}{marker} fingerprint error for fixture v1.0.0",
+                      f"   0.010000002s INFO {span}{marker}     err: failed to read fingerprint",
+                      "Caused by:", f"    {secret}"]
+        lines += [f"0.01 INFO {marker} fingerprint error for fixture v1.0.0",
+                  f"0.01 INFO {marker}     err: failed to read /work/{marker} dirty: FsStatusOutdated",
+                  "Caused by:", f"    read {marker} unknown payload", f"    {secret}",
+                  f"    read {marker} dirty: FsStatusOutdated", f"    {secret}"]
+        cargo = self.bin / "cargo"
+        payload = "cat >&2 <<'DIAGNOSTIC'\n" + "\n".join(lines) + "\nDIAGNOSTIC\n"
+        body = cargo.read_text().replace("case ${FAKE_CHANGE:-none} in",
+                                        payload + "case ${FAKE_CHANGE:-none} in")
+        cargo.write_text(body, encoding="utf-8", newline="\n")
+        result, record = self.observe(FAKE_EXIT="37")
+        self.assertEqual(result.returncode, 37)
+        self.assertFalse(secret in result.stdout + result.stderr, "ambiguous continuation escaped to console")
+        for path in (self.work / "out").iterdir():
+            self.assertFalse(secret in path.read_text(), "ambiguous continuation retained in artifact")
+        self.assertEqual(record["stderr"]["fingerprint_errors"], 2)
+        self.assertEqual(record["stderr"]["ambiguous_fingerprint_lines"], 3)
+        self.assertEqual(record["stderr"]["compiling_messages"], 1)
+        self.assertGreaterEqual(record["stderr"]["filtered_error_continuations"], 6)
+        self.assertFalse(record["selected_trace_complete"])
+
     def test_missing_source_identity_is_not_accepted(self):
         _, record = self.observe(FAKE_CHANGE="missing-head")
         self.assertFalse(record["identity_stable"])
