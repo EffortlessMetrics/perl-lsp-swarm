@@ -135,7 +135,7 @@ jobs:
       - name: Run UX regression tests
         id: ux_tests
         continue-on-error: true
-        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.ux14_five_run == true) && steps.harness_check.outputs.harness_available == 'true' }}
+        if: steps.harness_check.outputs.harness_available == 'true'
         run: |
           set -o pipefail
           mkdir -p target/receipts
@@ -155,7 +155,7 @@ jobs:
           exit "$test_status"
 
       - name: Emit structured UX regression receipt
-        if: ${{ always() && !(github.event_name == 'workflow_dispatch' && inputs.ux14_five_run == true) && steps.harness_check.outputs.harness_available == 'true' }}
+        if: always() && steps.harness_check.outputs.harness_available == 'true'
         env:
           TESTED_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
         run: |
@@ -167,7 +167,7 @@ jobs:
 
       - name: Verify receipt subject identity
         id: verify_receipt
-        if: ${{ always() && !(github.event_name == 'workflow_dispatch' && inputs.ux14_five_run == true) && steps.harness_check.outputs.harness_available == 'true' }}
+        if: always() && steps.harness_check.outputs.harness_available == 'true'
         env:
           TESTED_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
         run: |
@@ -197,7 +197,7 @@ jobs:
       # rejected, under an artifact name asserting the exact candidate SHA — the
       # artifact would carry more authority than the check that produced it.
       - name: Upload UX regression evidence
-        if: ${{ always() && !(github.event_name == 'workflow_dispatch' && inputs.ux14_five_run == true) && steps.harness_check.outputs.harness_available == 'true' && steps.verify_receipt.outcome == 'success' }}
+        if: always() && steps.harness_check.outputs.harness_available == 'true' && steps.verify_receipt.outcome == 'success'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.0
         with:
           name: ux-regression-gate-receipt-${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
@@ -213,7 +213,7 @@ jobs:
       # Unverified output is still worth keeping for triage, but under a name
       # that does not claim to be evidence about a specific candidate.
       - name: Upload unverified UX diagnostics
-        if: ${{ always() && !(github.event_name == 'workflow_dispatch' && inputs.ux14_five_run == true) && steps.harness_check.outputs.harness_available == 'true' && steps.verify_receipt.outcome != 'success' }}
+        if: always() && steps.harness_check.outputs.harness_available == 'true' && steps.verify_receipt.outcome != 'success'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.0
         with:
           name: ux-regression-gate-unverified-${{ github.run_id }}-${{ github.run_attempt }}
@@ -226,7 +226,7 @@ jobs:
           retention-days: 7
 
       - name: Convert UX regression receipt to JUnit
-        if: ${{ always() && !(github.event_name == 'workflow_dispatch' && inputs.ux14_five_run == true) && steps.harness_check.outputs.harness_available == 'true' }}
+        if: always() && steps.harness_check.outputs.harness_available == 'true'
         run: |
           python3 scripts/ci/receipts-to-junit.py \
             --input target/receipts/ux-regression.json \
@@ -234,7 +234,7 @@ jobs:
             --suite-name ux-regression-gate
 
       - name: Upload test results to Codecov without a repository secret
-        if: ${{ always() && !(github.event_name == 'workflow_dispatch' && inputs.ux14_five_run == true) && steps.harness_check.outputs.harness_available == 'true' }}
+        if: always() && steps.harness_check.outputs.harness_available == 'true'
         continue-on-error: true
         uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
         with:
@@ -359,7 +359,7 @@ jobs:
           PY
 
       - name: Fail UX regression gate on test failures
-        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.ux14_five_run == true) && steps.harness_check.outputs.harness_available == 'true' && steps.ux_tests.outcome == 'failure' }}
+        if: steps.harness_check.outputs.harness_available == 'true' && steps.ux_tests.outcome == 'failure'
         run: exit 1
 
       - name: Fail UX regression gate when harness is unavailable
