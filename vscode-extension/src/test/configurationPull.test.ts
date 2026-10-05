@@ -49,10 +49,15 @@ function installScopedConfiguration(
 
       return {
         get: jest.fn((setting: string, defaultValue?: unknown) => {
+          // Real VS Code precedence: a defined folder value wins over the
+          // user/global value, which itself wins over the default.
+          if (setting in values) {
+            return values[setting];
+          }
           if (setting in globalValues) {
             return globalValues[setting];
           }
-          return setting in values ? values[setting] : defaultValue;
+          return defaultValue;
         }),
         has: jest.fn((setting: string) => setting in values || setting in globalValues),
         inspect: jest.fn((setting: string) => {
@@ -226,6 +231,29 @@ describe('workspace/configuration folder ownership (#14447)', () => {
     );
 
     expect(result[0]).toEqual({});
+    expect(result[1]).toEqual({ workspace: { includePaths: ['a/lib'] } });
+  });
+
+  test('the combined pull keeps global and folder include paths in their own slots', async () => {
+    // Folder values must win inside the folder slot (VS Code precedence) while
+    // the unscoped slot answers from user scope only (#17334).
+    installScopedConfiguration(
+      { '': {}, [FOLDER_A]: { includePaths: ['a/lib'] } },
+      { includePaths: ['user/lib'] },
+    );
+
+    const result = await resolvePerlConfiguration(
+      {
+        items: [
+          { section: PERL_CONFIGURATION_SECTION },
+          { scopeUri: FOLDER_A, section: PERL_CONFIGURATION_SECTION },
+        ],
+      },
+      undefined,
+      jest.fn(),
+    );
+
+    expect(result[0]).toEqual({ workspace: { includePaths: ['user/lib'] } });
     expect(result[1]).toEqual({ workspace: { includePaths: ['a/lib'] } });
   });
 

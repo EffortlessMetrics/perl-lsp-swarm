@@ -868,22 +868,30 @@ describe('prove command resolution walks PATH candidates (#17333)', () => {
     fs.rmSync(strawberryDir, { recursive: true, force: true });
   });
 
-  test('treats a non-absolute $^X as unusable instead of resolving prove against the cwd', () => {
-    const cygwinDir = fakeInstallation(['perl.exe']);
+  test('default probe treats a non-absolute $^X as unusable instead of resolving prove against the cwd', () => {
+    // Drives the DEFAULT probePerlExecutable (not an injected one) so the
+    // non-absolute-$^X rejection itself is pinned: a cygwin/perl printing the
+    // bare `perl` must never yield `.\prove.bat` as the resolved command.
+    const cygwinDir = fakeInstallation(['perl.exe', 'prove.bat']);
+    const childProcess = require('child_process') as {
+      execFileSync: (...args: unknown[]) => Buffer | string;
+    };
+    const original = childProcess.execFileSync;
+    childProcess.execFileSync = () => 'perl';
+    try {
+      const resolved = resolveProveCommand(EXTRA_ARGS, {
+        isWindows: true,
+        perlCandidates: () => [path.join(cygwinDir, 'perl.exe')],
+        fileExists: () => true,
+      });
 
-    const resolved = resolveProveCommand(EXTRA_ARGS, {
-      isWindows: true,
-      perlCandidates: () => [path.join(cygwinDir, 'perl.exe')],
-      probePerlExecutablePath: () => 'perl',
-      fileExists: (candidatePath) => fs.existsSync(candidatePath),
-    });
-
-    expect(resolved).toMatchObject({ command: '', args: [], shell: false });
-    expect(resolved.error).toContain('matching Perl/prove installation');
-    // The old defect resolved `.\prove.bat` from the bare `$^X`; that must
-    // never become the command.
-    expect(JSON.stringify(resolved)).not.toContain('prove.bat');
-    fs.rmSync(cygwinDir, { recursive: true, force: true });
+      expect(resolved).toMatchObject({ command: '', args: [], shell: false });
+      expect(resolved.error).toContain('matching Perl/prove installation');
+      expect(JSON.stringify(resolved)).not.toContain('prove.bat');
+    } finally {
+      childProcess.execFileSync = original;
+      fs.rmSync(cygwinDir, { recursive: true, force: true });
+    }
   });
 
   test('fails closed when no candidate yields an adjacent prove shim', () => {
