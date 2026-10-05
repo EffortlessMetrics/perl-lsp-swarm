@@ -3126,7 +3126,7 @@ impl LspServer {
                                 == Some(candidate.canonical_name.as_str())
                             && symbol.range.start.byte <= start
                             && end <= symbol.range.end.byte
-                            && workspace_symbol_is_callable(workspace_index, symbol)
+                            && workspace_symbol_is_callable(&workspace_index, symbol)
                     }) {
                         return None;
                     }
