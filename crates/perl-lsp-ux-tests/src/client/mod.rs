@@ -1175,40 +1175,56 @@ impl<W: Write> Write for SharedStdinWriter<W> {
 mod document_symbol_write_controls {
     use super::*;
 
+    struct InsertAtBoundary<W> {
+        adapter: SharedStdinWriter<W>,
+        insert: Option<Value>,
+        after_flush: bool,
+    }
+
+    impl<W: Write> InsertAtBoundary<W> {
+        fn insert(&mut self) -> std::io::Result<()> {
+            if let Some(message) = self.insert.take() {
+                let mut guard = self.adapter.stdin.lock().unwrap_or_else(|e| e.into_inner());
+                let target = guard.as_mut().ok_or_else(|| std::io::Error::other("closed"))?;
+                write_framed_to_with_probe(
+                    target,
+                    &message,
+                    self.adapter.probe.as_deref(),
+                    "foreground",
+                )
+                .map_err(std::io::Error::other)?;
+            }
+            Ok(())
+        }
+    }
+
+    impl<W: Write> Write for InsertAtBoundary<W> {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            let accepted = self.adapter.write(bytes)?;
+            // The actual lock is released, and short headers have completed.
+            if !self.after_flush && self.adapter.header_remaining == 0 {
+                self.insert()?;
+            }
+            Ok(accepted)
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            self.adapter.flush()?;
+            if self.after_flush {
+                self.insert()?;
+            }
+            Ok(())
+        }
+    }
+
     #[test]
     fn split_lock_adapter_records_a_frame_inserted_after_reply_header() -> Result<()> {
-        struct InsertAfterHeader {
-            adapter: SharedStdinWriter<Vec<u8>>,
-            insert: Option<Value>,
-        }
-        impl Write for InsertAfterHeader {
-            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-                let accepted = self.adapter.write(bytes)?;
-                // The real adapter has released the actual stdin lock here.
-                if let Some(message) = self.insert.take() {
-                    let mut guard = self.adapter.stdin.lock().unwrap_or_else(|e| e.into_inner());
-                    let target = guard.as_mut().ok_or_else(|| std::io::Error::other("closed"))?;
-                    write_framed_to_with_probe(
-                        target,
-                        &message,
-                        self.adapter.probe.as_deref(),
-                        "foreground",
-                    )
-                    .map_err(std::io::Error::other)?;
-                }
-                Ok(accepted)
-            }
-            fn flush(&mut self) -> std::io::Result<()> {
-                self.adapter.flush()
-            }
-        }
         let reply = json!({ "jsonrpc": "2.0", "id": "synthetic-server-id", "result": [] });
         let open = json!({ "jsonrpc": "2.0", "method": "textDocument/didOpen", "params": {
             "textDocument": { "uri": "file:///fixture.pm", "version": 1, "text": "sub alpha {}\n" }
         }});
         let probe = Arc::new(WriteProbe::new(55));
         let stdin = Arc::new(Mutex::new(Some(Vec::new())));
-        let mut writer = InsertAfterHeader {
+        let mut writer = InsertAtBoundary {
             adapter: SharedStdinWriter {
                 stdin: Arc::clone(&stdin),
                 probe: Some(Arc::clone(&probe)),
@@ -1216,6 +1232,7 @@ mod document_symbol_write_controls {
                 header_remaining: 0,
             },
             insert: Some(open.clone()),
+            after_flush: false,
         };
         write_framed_to(&mut writer, &reply)?;
         let mut expected =
@@ -1252,6 +1269,293 @@ mod document_symbol_write_controls {
         }
         assert_eq!(offset, expected.len() as u64);
         assert!(!receipt.to_string().contains("synthetic-server-id"));
+        Ok(())
+    }
+
+    fn server_probes(client: &UxClient, response: Option<&Value>) -> Vec<Value> {
+        let deadline = Instant::now() + Duration::from_secs(1);
+        loop {
+            let records: Vec<Value> = client
+                .peek_stderr_lines()
+                .iter()
+                .filter_map(|line| {
+                    let start = line.find('{')?;
+                    let record: Value = serde_json::from_str(&line[start..]).ok()?;
+                    record["kind"]
+                        .as_str()
+                        .is_some_and(|kind| kind.starts_with("document_symbol_"))
+                        .then_some(record)
+                })
+                .collect();
+            if response.is_none()
+                || records.iter().any(|record| {
+                    record["kind"] == "document_symbol_branch_probe"
+                        && response.and_then(|response| response.get("id"))
+                            == record.get("request_id")
+                })
+                || Instant::now() >= deadline
+            {
+                return records;
+            }
+            // Observe the already completed response; never retry a request.
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn number(value: &Value, key: &str) -> Result<u64> {
+        value[key].as_u64().with_context(|| format!("missing numeric {key}"))
+    }
+
+    fn assert_scheduled_capture(
+        writes: &Value,
+        before: usize,
+        server: &[Value],
+        response: &Value,
+        after_flush: bool,
+        pid: u32,
+    ) -> Result<()> {
+        assert_eq!(writes["enabled"], true);
+        assert_eq!(writes["complete"], true);
+        assert_eq!(writes["omitted_records"], 0);
+        let all = writes["records"].as_array().context("missing physical write ranges")?;
+        let mut offset = 0;
+        for (index, record) in all.iter().enumerate() {
+            assert_eq!(record["server_pid"], pid);
+            assert_eq!(number(record, "write_sequence")?, index as u64 + 1);
+            assert_eq!(number(record, "stream_start")?, offset);
+            offset += number(record, "accepted_bytes")?;
+            assert_eq!(number(record, "stream_end")?, offset);
+            assert_eq!(record["outcome"], "ok");
+        }
+        let measured = all.get(before..).context("missing scheduled write interval")?;
+        let mut tokens = Vec::new();
+        for record in measured {
+            let token = number(record, "frame_token")?;
+            if !tokens.contains(&token) {
+                tokens.push(token);
+            }
+        }
+        assert_eq!(tokens.len(), 3, "unexpected writer/frame makes the scheduled witness unproven");
+        let frames: Vec<Vec<&Value>> = tokens
+            .iter()
+            .map(|token| measured.iter().filter(|record| record["frame_token"] == *token).collect())
+            .collect();
+        let reply = &frames[0];
+        let open = &frames[1];
+        let query = &frames[2];
+        assert_eq!(reply[0]["frame"]["origin"], "auto_answer");
+        assert_eq!(open[0]["frame"]["method_class"], "did_open");
+        assert_eq!(open[0]["frame"]["text_bytes"], 119);
+        assert_eq!(query[0]["frame"]["numeric_id"], response["id"]);
+        assert_eq!(query[0]["frame"]["method_class"], "document_symbol");
+        for frame in &frames {
+            let body_bytes = number(&frame[0]["frame"], "body_bytes")?;
+            let mut header = 0;
+            let mut body = 0;
+            for record in frame {
+                match record["phase"].as_str() {
+                    Some("header") => header += number(record, "accepted_bytes")?,
+                    Some("body") => body += number(record, "accepted_bytes")?,
+                    Some("flush") => assert_eq!(number(record, "accepted_bytes")?, 0),
+                    _ => anyhow::bail!("unknown scheduled write phase"),
+                }
+            }
+            assert_eq!(header, format!("Content-Length: {body_bytes}\r\n\r\n").len() as u64);
+            assert_eq!(body, body_bytes);
+            assert_eq!(frame.last().context("missing frame flush")?["phase"], "flush");
+        }
+        let start = |frame: &[&Value]| number(frame[0], "stream_start");
+        let end =
+            |frame: &[&Value]| number(frame.last().context("missing frame end")?, "stream_end");
+        let transport: Vec<_> = server
+            .iter()
+            .filter(|record| record["kind"] == "document_symbol_transport_probe")
+            .collect();
+        assert!(!transport.is_empty());
+        let mut read_end = 0;
+        for (index, record) in transport.iter().enumerate() {
+            assert_eq!(record["server_pid"], pid);
+            assert_eq!(number(record, "event_sequence")?, index as u64 + 1);
+            assert_ne!(record["stage"], "record_limit_exceeded");
+            if record["stage"] == "stream_read" {
+                assert_eq!(number(&record["metadata"], "stream_start")?, read_end);
+                read_end += number(&record["metadata"], "accepted_bytes")?;
+                assert_eq!(number(&record["metadata"], "stream_end")?, read_end);
+            }
+        }
+        assert!(read_end >= end(query)?, "server read prefix must cover the query");
+        let extracted = |from: u64, to: u64| -> Result<&Value> {
+            transport
+                .iter()
+                .find(|record| {
+                    record["stage"] == "body_extracted"
+                        && record["metadata"]["stream_start"] == from
+                        && record["metadata"]["stream_end"] == to
+                })
+                .copied()
+                .context("missing matching actual server extraction span")
+        };
+        let decoded = |extraction: &Value, class: &str| -> Result<()> {
+            let sequence = &extraction["metadata"]["frame_sequence"];
+            assert!(transport.iter().any(|record| record["stage"] == "decoded_body"
+                && &record["metadata"]["frame_sequence"] == sequence
+                && record["metadata"]["outcome"] == "accepted"
+                && record["metadata"]["method_class"] == class));
+            Ok(())
+        };
+        let query_start = start(query)?;
+        let query_extraction = extracted(query_start, end(query)?)?;
+        decoded(query_extraction, "document_symbol")?;
+        assert!(transport.iter().any(|record| record["stage"] == "decoded_body"
+            && record["metadata"]["frame_sequence"]
+                == query_extraction["metadata"]["frame_sequence"]
+            && record["metadata"]["numeric_id"] == response["id"]));
+        if after_flush {
+            assert_eq!(end(reply)?, start(open)?);
+            assert_eq!(end(open)?, start(query)?);
+            decoded(extracted(start(reply)?, end(reply)?)?, "client_response")?;
+            decoded(extracted(start(open)?, end(open)?)?, "did_open")?;
+        } else {
+            let reply_body = reply
+                .iter()
+                .find(|record| record["phase"] == "body")
+                .context("missing reply body write")?;
+            assert_eq!(end(open)?, number(reply_body, "stream_start")?);
+            assert_eq!(end(reply)?, start(query)?);
+            let corrupt_end = start(reply)?
+                + number(&reply[0]["frame"], "body_bytes")?
+                + reply.iter().filter(|record| record["phase"] == "header").try_fold(
+                    0,
+                    |bytes, record| -> Result<u64> {
+                        Ok(bytes + number(record, "accepted_bytes")?)
+                    },
+                )?;
+            let corrupt = extracted(start(reply)?, corrupt_end)?;
+            assert!(transport.iter().any(|record| record["stage"] == "decoded_body"
+                && record["metadata"]["frame_sequence"] == corrupt["metadata"]["frame_sequence"]
+                && record["metadata"]["outcome"] == "rejected"
+                && record["metadata"]["rejection_stage"] == "json"));
+            assert!(transport.iter().any(|record| record["stage"] == "prefix_discarded"
+                && record["metadata"]["stream_start"] == corrupt_end
+                && record["metadata"]["stream_end"] == query_start));
+            assert!(!transport.iter().any(|record| record["stage"] == "decoded_body"
+                && record["metadata"]["method_class"] == "did_open"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn forced_reply_boundary_loses_open_in_real_child_then_intact_frames_recover() -> Result<()> {
+        if !crate::binary_available() {
+            return Ok(());
+        }
+        const SOURCE: &str = "package Latency::Symbols;\nuse strict;\nuse warnings;\n\nsub alpha {\n    return 1;\n}\n\nsub beta {\n    return alpha();\n}\n\n1;\n";
+        assert_eq!(SOURCE.len(), 119);
+        let config = ScenarioConfig {
+            timeout: Duration::from_secs(60),
+            path_restriction: None,
+            echo_stderr: false,
+            extra_env: vec![
+                ("PERL_LSP_E2E".into(), Some("1".into())),
+                ("PERL_LSP_DIAGNOSTIC_DEBOUNCE_MS".into(), Some("0".into())),
+                ("PERL_LSP_DIAGNOSTIC_MODE".into(), Some("syntax-only".into())),
+                ("PERL_LSP_EAGER_WORKSPACE_INDEXING".into(), Some("false".into())),
+                ("PERL_LSP_FILE_WATCHERS".into(), Some("false".into())),
+                ("PERL_LSP_QUIET".into(), Some("1".into())),
+                ("PERL_LSP_DOCUMENT_SYMBOL_PROBE".into(), Some("1".into())),
+                ("PERL_LSP_LOG".into(), Some("warn,document_symbol_probe=debug".into())),
+                ("RUST_LOG".into(), None),
+                ("NO_COLOR".into(), Some("1".into())),
+            ],
+            client_capability_overrides: json!({ "workspace": { "configuration": true } }),
+            ..ScenarioConfig::default()
+        };
+        let capabilities = build_client_capabilities(&config);
+        let harness = crate::UxHarness::new(config)?;
+        let pid = harness.client.child.lock().unwrap_or_else(|e| e.into_inner()).id();
+        // Buffer only: no disk fixture or ordinary didOpen can prepopulate it.
+        let uri = harness.workspace.uri("ForcedSymbols.pm");
+        let params = json!({ "textDocument": { "uri": uri } });
+        let baseline = harness.client.request(
+            "textDocument/documentSymbol",
+            params.clone(),
+            Duration::from_secs(60),
+        )?;
+        assert_eq!(baseline.get("result"), Some(&json!([])));
+        for after_flush in [false, true] {
+            let before = harness.client.document_symbol_client_write_probes()["records"]
+                .as_array()
+                .context("missing enabled write probe")?
+                .len();
+            let open = json!({ "jsonrpc": "2.0", "method": "textDocument/didOpen", "params": {
+                "textDocument": { "uri": uri, "languageId": "perl", "version": 1, "text": SOURCE }
+            }});
+            let writer = Mutex::new(InsertAtBoundary {
+                adapter: SharedStdinWriter {
+                    stdin: Arc::clone(&harness.client.stdin),
+                    probe: harness.client.write_probe.clone(),
+                    frame: None,
+                    header_remaining: 0,
+                },
+                insert: Some(open),
+                after_flush,
+            });
+            // A nonnumeric synthetic ID cannot match real pending configuration.
+            let outcome = route_message(&json!({ "jsonrpc": "2.0", "id": "synthetic-forced-17020", "method": "workspace/configuration", "params": { "items": [] } }),
+                &writer, &harness.client.inbox, &harness.client.server_requests, &harness.client.capability_violations, Some(&capabilities), None)
+                .map_err(anyhow::Error::msg)
+                .and_then(|()| harness.client.request("textDocument/documentSymbol", params.clone(), Duration::from_secs(60)));
+            let server = server_probes(&harness.client, outcome.as_ref().ok());
+            let writes = harness.client.document_symbol_client_write_probes();
+            let receipt = json!({ "kind": "document_symbol_forced_boundary_control", "synthetic_schedule": true,
+                "phase": if after_flush { "after_complete_flush" } else { "after_complete_header" },
+                "server_pid": pid, "response_received": outcome.is_ok(), "response": outcome.as_ref().ok(),
+                "failure_class": outcome.as_ref().err().map(|_| "control_io_or_rpc_failure"),
+                "client_write_probes": writes, "server_probes": server });
+            let mut output = std::io::stderr().lock();
+            serde_json::to_writer(&mut output, &receipt)?;
+            output.write_all(b"\n")?;
+            drop(output);
+            let response = outcome?;
+            assert!(
+                response.get("error").is_none(),
+                "control must return a successful actual response"
+            );
+            assert_scheduled_capture(&writes, before, &server, &response, after_flush, pid)?;
+            let branch = server
+                .iter()
+                .find(|record| {
+                    record["kind"] == "document_symbol_branch_probe"
+                        && record["request_id"] == response["id"]
+                })
+                .context("missing correlated actual branch")?;
+            if after_flush {
+                assert_eq!(branch["branch"], "ast");
+                assert_eq!(branch["document_present"], true);
+                assert_eq!(branch["text_bytes"], 119);
+                assert!(
+                    server.iter().any(|record| record["stage"] == "did_open_inserted_parsed"
+                        && record["incoming_text_bytes"] == 119
+                        && record["document_present"] == true
+                        && record["server_pid"] == pid),
+                    "missing actual accepted fixture insertion"
+                );
+                let result = response
+                    .get("result")
+                    .and_then(Value::as_array)
+                    .context("missing actual symbol result")?;
+                assert!(crate::document_symbol_names(result).contains(&"alpha"));
+            } else {
+                assert_eq!(response.get("result"), Some(&json!([])));
+                assert_eq!(branch["branch"], "not_open");
+                assert_eq!(branch["document_present"], false);
+                assert!(
+                    !server.iter().any(|record| record["method"] == "textDocument/didOpen"
+                        && record["incoming_text_bytes"] == 119),
+                    "forced lost frame must not enter serving lifecycle"
+                );
+            }
+        }
         Ok(())
     }
 }
