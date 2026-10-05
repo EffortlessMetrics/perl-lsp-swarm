@@ -24,10 +24,10 @@
 //!
 //! Bound provenance: 3 measured unix runs of 54.6 ms, 52.1 ms, 45.4 ms
 //! (16,773,286-byte log, 205,177 lines; WSL2 Ubuntu on the dev host,
-//! 2026-10-05) ×4 headroom → 218.4 ms, rounded up to the 250 ms
-//! `SCALE_WALL_BOUND`. The slowest run seen across all bench executions
-//! (60.2 ms, during mutant A's kill run) still clears the bound at 4.2×, and
-//! a 10x regression (~550 ms) exceeds it loudly.
+//! 2026-10-05). The 2000 ms `SCALE_WALL_BOUND` carries ~40x headroom as an
+//! order-of-magnitude tripwire: shared-runner noise cannot plausibly reach
+//! it, while algorithmic breakage (minutes) exceeds it loudly (#17345
+//! review: a tighter bound would flake on slow runners).
 //!
 //! Mutants: 2 attempted, 2 kills — shrinking the bound to 1 ms fails at the
 //! slowest-run assertion (`took 60.2ms, bound is 1ms`), and truncating the
@@ -36,11 +36,11 @@
 //! proving the counters — not just the class — discriminate a lost receipt.
 //! Both mutants were reverted after their kill runs.
 //!
-//! NOT_PROVEN boundaries: absolute CI-runner speed (the ×4 headroom absorbs
-//! machine skew; the bound is documented, not adaptive), api-evidence and
-//! stdin modes at scale (log-file mode is the gate's hot path), and over-cap
-//! fail-closed at scale (E1's `mutant-truncated-log-pass` pins the truncation
-//! rule at small scale).
+//! NOT_PROVEN boundaries: absolute CI-runner speed (the ×40 tripwire
+//! absorbs machine skew; fine-grained tracking belongs to nightly
+//! baselines), api-evidence and stdin modes at scale (log-file mode is the
+//! gate's hot path), and over-cap fail-closed at scale (E1's
+//! `mutant-truncated-log-pass` pins the truncation rule at small scale).
 
 // The bench prints its per-run score lines; the workspace-wide print denial
 // is a production-code rule.
@@ -78,12 +78,15 @@ const LANE_LOG_CAP_MARGIN_BYTES: u64 = 4096;
 #[cfg(unix)]
 const SCALE_RUNS: u32 = 3;
 
-/// Slowest single full-scan classification the bench tolerates: 4× the slowest
-/// measured unix run (54.6 ms → 218.4 ms, rounded up to 250 ms), so ordinary
-/// machine skew passes with room while a 10x regression (~550 ms) fails
-/// loudly. See the module docs for the measured runs.
+/// Slowest single full-scan classification the bench tolerates. The bound is
+/// an order-of-magnitude tripwire, not perf tracking: it catches algorithmic
+/// breakage (a per-line bash loop over 205k lines costs minutes) while
+/// shared-runner noise cannot plausibly reach it. Measured 45-55 ms on WSL2
+/// Ubuntu on the dev host, so 2000 ms carries ~40x headroom; fine-grained
+/// regression tracking belongs to nightly baselines, not a PR gate
+/// (#17345 review). See the module docs for the measured runs.
 #[cfg(unix)]
-const SCALE_WALL_BOUND: Duration = Duration::from_millis(250);
+const SCALE_WALL_BOUND: Duration = Duration::from_millis(2000);
 
 #[cfg(unix)]
 fn repo_root() -> Result<PathBuf> {
@@ -317,7 +320,7 @@ fn execute_scale_matrix() -> Result<()> {
     }
     assert!(
         worst < SCALE_WALL_BOUND,
-        "p3 slowest of {SCALE_RUNS} full-scan classifications took {worst:?}, bound is {SCALE_WALL_BOUND:?} (a 10x regression must fail here; machine skew is absorbed by the x4 headroom)"
+        "p3 slowest of {SCALE_RUNS} full-scan classifications took {worst:?}, bound is {SCALE_WALL_BOUND:?} (order-of-magnitude breakage must fail here; the x40 headroom absorbs shared-runner noise)"
     );
     println!(
         "p3 scale | bytes={byte_count} lines={line_count} runs={SCALE_RUNS} worst={worst:?} bound={SCALE_WALL_BOUND:?} | MATCH"
