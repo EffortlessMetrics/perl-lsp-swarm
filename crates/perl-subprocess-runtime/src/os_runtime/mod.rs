@@ -135,4 +135,41 @@ mod tests {
         );
         assert_eq!(OsSubprocessRuntime::with_bounded_timeout(5, 0).timeout_secs, Some(1));
     }
+
+    /// #17305 regression guard: with no caller-supplied stdin, the child sees
+    /// EOF on stdin instead of inheriting the parent's stdin.
+    ///
+    /// The child drains its whole stdin before printing. Under the fixed
+    /// `spawn_child`, stdin is the null device, so the read ends immediately.
+    /// If the null-stdin pin ever regresses to `inherit`, the child blocks on a
+    /// live pipe/console under `cargo test` and the short deadline reports the
+    /// timeout as a failure instead of a hang.
+    #[test]
+    fn a_child_without_supplied_stdin_reads_eof_not_the_parent_transport() {
+        let runtime = OsSubprocessRuntime::with_timeout(10);
+
+        #[cfg(windows)]
+        let (program, args): (&str, &[&str]) = (
+            "powershell",
+            &[
+                "-NoProfile",
+                "-Command",
+                "$null = [Console]::In.ReadToEnd(); [Console]::Out.Write('stdin-eof')",
+            ],
+        );
+
+        #[cfg(not(windows))]
+        let (program, args): (&str, &[&str]) = ("sh", &["-c", "cat > /dev/null; printf stdin-eof"]);
+
+        let output = runtime
+            .run_command(program, args, None)
+            .expect("stdin-reader child must spawn and complete");
+
+        assert!(output.success(), "stdin-reader child must exit successfully");
+        assert_eq!(
+            output.stdout_lossy(),
+            "stdin-eof",
+            "child must have observed EOF on stdin, not blocked on an inherited handle"
+        );
+    }
 }

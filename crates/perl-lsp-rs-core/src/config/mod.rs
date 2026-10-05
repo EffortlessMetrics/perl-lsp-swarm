@@ -2330,9 +2330,16 @@ mod system_inc_probe_injection {
 /// Polls `try_wait` every 20 ms. The 20 ms granularity is acceptable for the
 /// startup-`@INC` probe — total overhead at the bound is at most one extra
 /// poll tick.
+///
+/// The child's stdin is the null device. Probe children must never inherit the
+/// server's stdin: it is the LSP JSON-RPC transport, and on Windows a console
+/// child holding that inherited pipe handle blocks inside process
+/// initialization until the probe deadline, silently degrading every probe
+/// that shares this runner (#17305).
 #[cfg(not(target_arch = "wasm32"))]
 fn output_with_timeout(mut command: Command, timeout: Duration) -> std::io::Result<Output> {
-    let mut child = command.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
+    let mut child =
+        command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
     let start = Instant::now();
     let poll_interval = Duration::from_millis(20);
 
