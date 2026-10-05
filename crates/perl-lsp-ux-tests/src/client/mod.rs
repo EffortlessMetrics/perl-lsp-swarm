@@ -21,7 +21,9 @@ use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+mod document_symbol_write_probe;
 pub mod server_request_script;
+use document_symbol_write_probe::{Frame as WriteProbeFrame, ObservedWriter, WriteProbe};
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(100);
 const SHUTDOWN_RUNNING: u8 = 0;
@@ -153,6 +155,7 @@ pub struct CapabilityViolation {
 pub struct UxClient {
     child: Mutex<Child>,
     stdin: Arc<Mutex<Option<ChildStdin>>>,
+    write_probe: Option<Arc<WriteProbe>>,
     initialize_result: Value,
     /// The single observation substrate: buffered events, buffered responses,
     /// and the typed reason the server's output stream ended. Every wait in the
@@ -218,6 +221,16 @@ impl UxClient {
             .take()
             .ok_or_else(|| anyhow!("perl-lsp stdin not available after spawn"))?;
         let stdin = Arc::new(Mutex::new(Some(stdin)));
+        // Only explicitly opted-in unscripted probe children are observed.
+        let write_probe = (scripted_requests.is_none()
+            && config
+                .extra_env
+                .iter()
+                .rev()
+                .find(|(key, _)| key == "PERL_LSP_DOCUMENT_SYMBOL_PROBE")
+                .and_then(|(_, value)| value.as_deref())
+                == Some("1"))
+        .then(|| Arc::new(WriteProbe::new(child.id())));
         let stdout = child
             .stdout
             .take()
@@ -256,6 +269,7 @@ impl UxClient {
         // instead of both surfacing as an unexplained timeout.
         let reader_inbox = inbox.clone();
         let stdin_for_reader = Arc::clone(&stdin);
+        let write_probe_for_reader = write_probe.clone();
         let server_requests_for_reader = Arc::clone(&server_requests);
         let capability_violations_for_reader = Arc::clone(&capability_violations);
         let answering_capabilities_for_reader = answering_capabilities.clone();
@@ -270,7 +284,12 @@ impl UxClient {
                 let observer: Option<ServerRequestObserver> = observer;
                 // The answering loop writes through the shared optional stdin
                 // handle, failing closed once that handle has been taken over.
-                let stdin_writer = Mutex::new(SharedStdinWriter(stdin_for_reader));
+                let stdin_writer = Mutex::new(SharedStdinWriter {
+                    stdin: stdin_for_reader,
+                    probe: write_probe_for_reader,
+                    frame: None,
+                    header_remaining: 0,
+                });
                 loop {
                     match read_and_route(
                         &mut reader,
@@ -315,6 +334,7 @@ impl UxClient {
         let client = Self {
             child: Mutex::new(child),
             stdin,
+            write_probe,
             initialize_result: Value::Null,
             inbox,
             server_requests,
@@ -530,6 +550,15 @@ impl UxClient {
         self.stderr_lines.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
+    /// Bounded write ranges from explicitly opted-in unscripted probe children.
+    /// Raw bytes, arbitrary methods, string IDs and error details are omitted.
+    pub fn document_symbol_client_write_probes(&self) -> Value {
+        self.write_probe.as_ref().map_or_else(
+            || json!({ "records": [], "enabled": false, "complete": true }),
+            |probe| probe.snapshot(),
+        )
+    }
+
     /// Wait for all scripted server requests to be observed and answered.
     pub fn wait_for_script(&self, timeout: Duration) -> Result<Vec<ObservedServerRequest>> {
         self.script
@@ -676,7 +705,7 @@ impl UxClient {
     fn send_raw(&self, msg: &Value) -> Result<()> {
         let mut stdin = self.stdin.lock().unwrap_or_else(|e| e.into_inner());
         let stdin = stdin.as_mut().ok_or_else(|| anyhow!("LSP client stdin is already closed"))?;
-        write_framed_to(stdin, msg)
+        write_framed_to_with_probe(stdin, msg, self.write_probe.as_deref(), "foreground")
     }
 
     /// Explain a wait outcome, folding in the child's real exit status.
@@ -771,7 +800,11 @@ impl Drop for UxClient {
 
         let shutdown_state = self.shutdown_state.load(Ordering::SeqCst);
         let mut stdin = self.stdin.lock().unwrap_or_else(|error| error.into_inner());
-        finish_stdin(&mut stdin, shutdown_state == SHUTDOWN_RUNNING);
+        finish_stdin_with_probe(
+            &mut stdin,
+            shutdown_state == SHUTDOWN_RUNNING,
+            self.write_probe.as_deref(),
+        );
         if shutdown_state == SHUTDOWN_COMPLETE {
             return;
         }
@@ -851,24 +884,46 @@ fn reap_or_kill(child: &mut Child) {
 ///
 /// Closing must happen after the write: the frames are what let the server
 /// exit on its own terms, and an early close turns that into an EOF kill.
+#[cfg(test)]
 fn finish_stdin<W: Write>(slot: &mut Option<W>, send_shutdown: bool) {
+    finish_stdin_with_probe(slot, send_shutdown, None);
+}
+
+fn finish_stdin_with_probe<W: Write>(
+    slot: &mut Option<W>,
+    send_shutdown: bool,
+    probe: Option<&WriteProbe>,
+) {
     if send_shutdown && let Some(stdin) = slot.as_mut() {
         for message in [
             json!({"jsonrpc": "2.0", "id": 999998, "method": "shutdown", "params": {}}),
             json!({"jsonrpc": "2.0", "method": "exit"}),
         ] {
-            let _ = write_framed_to(stdin, &message);
+            let _ = write_framed_to_with_probe(stdin, &message, probe, "teardown");
         }
     }
     slot.take();
 }
 
 fn write_framed_to<W: Write>(stdin: &mut W, message: &Value) -> Result<()> {
+    write_framed_to_with_probe(stdin, message, None, "other")
+}
+
+fn write_framed_to_with_probe<W: Write>(
+    stdin: &mut W,
+    message: &Value,
+    probe: Option<&WriteProbe>,
+    origin: &'static str,
+) -> Result<()> {
     let body = message.to_string();
     let header = format!("Content-Length: {}\r\n\r\n", body.len());
-    stdin.write_all(header.as_bytes()).context("Failed to write LSP header to stdin")?;
-    stdin.write_all(body.as_bytes()).context("Failed to write LSP body to stdin")?;
-    stdin.flush().context("Failed to flush LSP stdin")
+    let frame = probe.map(|probe| probe.frame(origin, Some(message), Some(body.len())));
+    let mut writer =
+        ObservedWriter { writer: stdin, probe, frame: frame.as_ref(), phase: "header" };
+    writer.write_all(header.as_bytes()).context("Failed to write LSP header to stdin")?;
+    writer.phase = "body";
+    writer.write_all(body.as_bytes()).context("Failed to write LSP body to stdin")?;
+    writer.flush().context("Failed to flush LSP stdin")
 }
 
 /// The outcome of reading one LSP frame.
@@ -1063,23 +1118,141 @@ where
 /// Each write re-locks and fails closed if the handle was already taken over,
 /// so a scripted or finished client can never hand the answering loop a stale
 /// writer.
-struct SharedStdinWriter(Arc<Mutex<Option<ChildStdin>>>);
+struct SharedStdinWriter<W = ChildStdin> {
+    stdin: Arc<Mutex<Option<W>>>,
+    probe: Option<Arc<WriteProbe>>,
+    frame: Option<WriteProbeFrame>,
+    header_remaining: usize,
+}
 
-impl Write for SharedStdinWriter {
+impl<W: Write> Write for SharedStdinWriter<W> {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        let mut guard = self.0.lock().unwrap_or_else(|error| error.into_inner());
-        let stdin = guard
-            .as_mut()
-            .ok_or_else(|| std::io::Error::other("LSP client stdin is already closed"))?;
-        stdin.write(buf)
+        let mut guard = self.stdin.lock().unwrap_or_else(|error| error.into_inner());
+        if self.frame.is_none()
+            && let Some(probe) = &self.probe
+        {
+            // Generated headers are observed without retaining their text.
+            let body_bytes = std::str::from_utf8(buf)
+                .ok()
+                .and_then(|header| header.strip_prefix("Content-Length: "))
+                .and_then(|length| length.trim().parse::<usize>().ok());
+            self.frame = Some(probe.frame("auto_answer", None, body_bytes));
+            self.header_remaining = buf.len();
+        }
+        let result = match guard.as_mut() {
+            Some(stdin) => stdin.write(buf),
+            None => Err(std::io::Error::other("LSP client stdin is already closed")),
+        };
+        if let (Some(probe), Some(frame)) = (&self.probe, &self.frame) {
+            probe.record(frame, if self.header_remaining > 0 { "header" } else { "body" }, &result);
+            if let Ok(accepted) = &result {
+                self.header_remaining = self.header_remaining.saturating_sub(*accepted);
+            }
+        }
+        result
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
-        let mut guard = self.0.lock().unwrap_or_else(|error| error.into_inner());
-        match guard.as_mut() {
+        let mut guard = self.stdin.lock().unwrap_or_else(|error| error.into_inner());
+        let result = match guard.as_mut() {
             Some(stdin) => stdin.flush(),
             None => Err(std::io::Error::other("LSP client stdin is already closed")),
+        };
+        if let (Some(probe), Some(frame)) = (&self.probe, &self.frame) {
+            probe.record(
+                frame,
+                "flush",
+                &result.as_ref().map(|_| 0).map_err(|error| std::io::Error::from(error.kind())),
+            );
         }
+        self.frame = None;
+        self.header_remaining = 0;
+        result
+    }
+}
+
+#[cfg(test)]
+mod document_symbol_write_controls {
+    use super::*;
+
+    #[test]
+    fn split_lock_adapter_records_a_frame_inserted_after_reply_header() -> Result<()> {
+        struct InsertAfterHeader {
+            adapter: SharedStdinWriter<Vec<u8>>,
+            insert: Option<Value>,
+        }
+        impl Write for InsertAfterHeader {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                let accepted = self.adapter.write(bytes)?;
+                // The real adapter has released the actual stdin lock here.
+                if let Some(message) = self.insert.take() {
+                    let mut guard = self.adapter.stdin.lock().unwrap_or_else(|e| e.into_inner());
+                    let target = guard.as_mut().ok_or_else(|| std::io::Error::other("closed"))?;
+                    write_framed_to_with_probe(
+                        target,
+                        &message,
+                        self.adapter.probe.as_deref(),
+                        "foreground",
+                    )
+                    .map_err(std::io::Error::other)?;
+                }
+                Ok(accepted)
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                self.adapter.flush()
+            }
+        }
+        let reply = json!({ "jsonrpc": "2.0", "id": "synthetic-server-id", "result": [] });
+        let open = json!({ "jsonrpc": "2.0", "method": "textDocument/didOpen", "params": {
+            "textDocument": { "uri": "file:///fixture.pm", "version": 1, "text": "sub alpha {}\n" }
+        }});
+        let probe = Arc::new(WriteProbe::new(55));
+        let stdin = Arc::new(Mutex::new(Some(Vec::new())));
+        let mut writer = InsertAfterHeader {
+            adapter: SharedStdinWriter {
+                stdin: Arc::clone(&stdin),
+                probe: Some(Arc::clone(&probe)),
+                frame: None,
+                header_remaining: 0,
+            },
+            insert: Some(open.clone()),
+        };
+        write_framed_to(&mut writer, &reply)?;
+        let mut expected =
+            format!("Content-Length: {}\r\n\r\n", reply.to_string().len()).into_bytes();
+        write_framed_to(&mut expected, &open)?;
+        expected.extend(reply.to_string().as_bytes());
+        assert_eq!(stdin.lock().unwrap_or_else(|e| e.into_inner()).as_ref(), Some(&expected));
+        let receipt = probe.snapshot();
+        assert_eq!(receipt["records"].as_array().map(Vec::len), Some(6));
+        let phases = ["header", "header", "body", "flush", "body", "flush"];
+        let origins =
+            ["auto_answer", "foreground", "foreground", "foreground", "auto_answer", "auto_answer"];
+        let accepted_bytes = [
+            format!("Content-Length: {}\r\n\r\n", reply.to_string().len()).len(),
+            format!("Content-Length: {}\r\n\r\n", open.to_string().len()).len(),
+            open.to_string().len(),
+            0,
+            reply.to_string().len(),
+            0,
+        ];
+        let tokens = [1, 2, 2, 2, 1, 1];
+        let mut offset = 0;
+        for (index, (phase, origin)) in phases.into_iter().zip(origins).enumerate() {
+            let record = &receipt["records"][index];
+            assert_eq!(record["write_sequence"], index + 1);
+            assert_eq!(record["phase"], phase);
+            assert_eq!(record["frame"]["origin"], origin);
+            assert_eq!(record["frame_token"], tokens[index]);
+            assert_eq!(record["accepted_bytes"], accepted_bytes[index]);
+            assert_eq!(record["stream_start"], offset);
+            offset +=
+                record["accepted_bytes"].as_u64().ok_or_else(|| anyhow!("missing byte count"))?;
+            assert_eq!(record["stream_end"], offset);
+        }
+        assert_eq!(offset, expected.len() as u64);
+        assert!(!receipt.to_string().contains("synthetic-server-id"));
+        Ok(())
     }
 }
 

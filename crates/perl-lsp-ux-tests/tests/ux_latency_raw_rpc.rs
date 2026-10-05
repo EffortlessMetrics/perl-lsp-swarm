@@ -458,6 +458,8 @@ fn ux_latency_document_symbols_returns_real_process_shape() -> Result<()> {
             "immediate_raw_envelope": immediate,
             "handler_branches": primary_branches,
             "lifecycle_probes": document_symbol_probes(&harness, "document_symbol_lifecycle_probe"),
+            "client_write_probes": harness.client.document_symbol_client_write_probes(),
+            "transport_probes": document_symbol_probes(&harness, "document_symbol_transport_probe"),
         }))?;
         assert!(
             probe_branch(&primary_branches, &immediate).is_some(),
@@ -512,6 +514,8 @@ fn ux_latency_document_symbols_returns_real_process_shape() -> Result<()> {
             "hash_limit_raw_envelope": over_limit,
             "handler_branches": branches,
             "lifecycle_probes": lifecycle,
+            "client_write_probes": harness.client.document_symbol_client_write_probes(),
+            "transport_probes": document_symbol_probes(&harness, "document_symbol_transport_probe"),
         }))?;
 
         for response in observed_responses {
@@ -625,6 +629,11 @@ fn ux_latency_document_symbols_returns_real_process_shape() -> Result<()> {
             document_symbol_probe_uri_hash(empty_ingress, "normalized_uri_hash")?,
             normalized_hash
         );
+        assert_document_symbol_transport_capture(
+            &harness,
+            immediate["id"].as_i64().context("numeric primary ID")?,
+            server_pid,
+        )?;
         let primary = probe_receipt(&branches, &immediate).context("missing primary receipt")?;
         assert!(primary["text_hash"].is_u64(), "small fixture must retain its fingerprint");
         assert_eq!(primary["text_hash_omitted_byte_limit"], false);
@@ -690,6 +699,8 @@ fn ux_latency_document_symbol_probe_requires_explicit_opt_in() -> Result<()> {
         "global debug logging must not opt into document symbol fingerprints"
     );
     assert!(document_symbol_probes(&harness, "document_symbol_lifecycle_probe").is_empty());
+    assert!(document_symbol_probes(&harness, "document_symbol_transport_probe").is_empty());
+    assert_eq!(harness.client.document_symbol_client_write_probes()["enabled"], false);
     Ok(())
 }
 
@@ -726,6 +737,8 @@ fn document_symbol_primary_probe_request(
                 "error_metadata": document_symbol_transport_error_metadata(&error, harness.client.stream_end().as_ref()),
                 "handler_branches": document_symbol_branch_probes(harness),
                 "lifecycle_probes": document_symbol_probes(harness, "document_symbol_lifecycle_probe"),
+                "client_write_probes": harness.client.document_symbol_client_write_probes(),
+                "transport_probes": document_symbol_probes(harness, "document_symbol_transport_probe"),
             });
             // The request stays failed even if the evidence sink itself fails.
             // Do not replace or stringify the original error to report that.
@@ -841,6 +854,88 @@ fn document_symbol_probe_uri_hash<'a>(probe: &'a Value, key: &str) -> Result<&'a
             })
         })
         .with_context(|| format!("missing valid bounded URI identity: {key}"))
+}
+
+fn assert_document_symbol_transport_capture(
+    harness: &UxHarness,
+    query_id: i64,
+    server_pid: u64,
+) -> Result<()> {
+    let client = harness.client.document_symbol_client_write_probes();
+    assert_eq!(client["enabled"], true);
+    assert_eq!(client["complete"], true, "overflow makes write completeness unproven");
+    assert_eq!(client["omitted_records"], 0);
+    let writes = client["records"].as_array().context("missing client write ranges")?;
+    assert!(!writes.is_empty());
+    let mut offset = 0;
+    for (index, write) in writes.iter().enumerate() {
+        assert_eq!(write["server_pid"].as_u64(), Some(server_pid));
+        assert_eq!(write["write_sequence"].as_u64(), Some(index as u64 + 1));
+        assert_eq!(write["stream_start"].as_u64(), Some(offset));
+        let end = write["stream_end"].as_u64().context("write end offset")?;
+        let accepted = write["accepted_bytes"].as_u64().context("accepted write bytes")?;
+        assert_eq!(end.checked_sub(offset), Some(accepted));
+        offset = end;
+    }
+    let server = document_symbol_probes(harness, "document_symbol_transport_probe");
+    assert!(!server.is_empty(), "missing actual server frame/decode capture");
+    for (index, record) in server.iter().enumerate() {
+        assert_ne!(
+            record["stage"], "record_limit_exceeded",
+            "overflow makes decode completeness unproven"
+        );
+        assert_eq!(record["server_pid"].as_u64(), Some(server_pid));
+        assert_eq!(record["event_sequence"].as_u64(), Some(index as u64 + 1));
+    }
+    for method in ["did_open", "document_symbol"] {
+        let first = writes
+            .iter()
+            .find(|write| {
+                write["frame"]["origin"] == "foreground"
+                    && write["frame"]["method_class"] == method
+                    && if method == "did_open" {
+                        write["frame"]["text_bytes"] == SYMBOL_SOURCE.len()
+                    } else {
+                        write["frame"]["numeric_id"] == query_id
+                    }
+            })
+            .context("missing actual fixture/query write frame")?;
+        let token = first["frame_token"].as_u64().context("write frame token")?;
+        let parts: Vec<_> =
+            writes.iter().filter(|write| write["frame_token"].as_u64() == Some(token)).collect();
+        let header: Vec<_> = parts.iter().filter(|write| write["phase"] == "header").collect();
+        let body: Vec<_> = parts.iter().filter(|write| write["phase"] == "body").collect();
+        assert!(!header.is_empty() && !body.is_empty());
+        let start = header[0]["stream_start"].as_u64().context("header stream start")?;
+        let end = body.last().context("body writes")?["stream_end"]
+            .as_u64()
+            .context("body stream end")?;
+        let body_bytes = first["frame"]["body_bytes"].as_u64().context("serialized body length")?;
+        let actual_body_bytes: u64 =
+            body.iter().map(|write| write["accepted_bytes"].as_u64().unwrap_or(0)).sum();
+        assert_eq!(actual_body_bytes, body_bytes);
+        assert!(parts.iter().any(|write| write["phase"] == "flush" && write["outcome"] == "ok"));
+        let extracted = server
+            .iter()
+            .find(|record| {
+                record["stage"] == "body_extracted"
+                    && record["metadata"]["stream_start"].as_u64() == Some(start)
+                    && record["metadata"]["stream_end"].as_u64() == Some(end)
+            })
+            .context("missing matching actual extracted byte range")?;
+        assert_eq!(extracted["metadata"]["body_bytes"].as_u64(), Some(body_bytes));
+        let frame_sequence =
+            extracted["metadata"]["frame_sequence"].as_u64().context("server frame sequence")?;
+        assert!(
+            server.iter().any(|record| record["stage"] == "decoded_body"
+                && record["metadata"]["frame_sequence"].as_u64() == Some(frame_sequence)
+                && record["metadata"]["outcome"] == "accepted"
+                && record["metadata"]["method_class"] == method
+                && (method == "did_open" || record["metadata"]["numeric_id"] == query_id)),
+            "missing accepted decode for measured write"
+        );
+    }
+    Ok(())
 }
 
 fn document_symbol_branch_probes(harness: &UxHarness) -> Vec<Value> {
