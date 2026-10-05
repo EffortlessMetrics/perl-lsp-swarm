@@ -403,7 +403,20 @@ fn bounded_action_provenance(raw: &str) -> Result<(bool, serde_json::Value)> {
         .arg("--receipt")
         .arg(&receipt_path)
         .output()?;
-    let receipt: serde_json::Value = serde_json::from_str(&fs::read_to_string(&receipt_path)?)?;
+    let receipt_text = fs::read_to_string(&receipt_path).map_err(|error| {
+        let diagnostic_bytes = output.stderr.len().min(4096);
+        let stderr = String::from_utf8_lossy(&output.stderr[..diagnostic_bytes]);
+        let truncation = if output.stderr.len() > diagnostic_bytes {
+            " [stderr truncated to 4096 bytes]"
+        } else {
+            ""
+        };
+        anyhow!(
+            "reading provenance receipt failed ({error}); status={} stderr={stderr}{truncation}",
+            output.status
+        )
+    })?;
+    let receipt: serde_json::Value = serde_json::from_str(&receipt_text)?;
     ensure!(
         receipt["schema_version"] == "action_pin_provenance.v2"
             && receipt["strict_all"] == true
