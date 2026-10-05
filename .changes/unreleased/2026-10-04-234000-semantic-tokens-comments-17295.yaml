@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: "textDocument/semanticTokens now emits comment tokens for `#` comments (including the shebang line) and POD blocks, as its advertised legend promised: POD segments carry the `documentation` modifier (bit 8), `#`/shebang segments carry none, and full, delta, and range requests all report them. The main token stream stays trivia-free; comments and POD are recorded through a lexer trivia side channel that only the semantic-tokens collector consumes."
+time: 2026-10-04T23:40:00Z
+custom:
+  PR: "17315"
+  Slug: semantic-tokens-comments-17295
+  Breaking: "no"
