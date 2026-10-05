@@ -1759,18 +1759,24 @@ EOF
     fn test_file_paths_match_separator_spelling_identity() {
         // The same file spelled with the other path separator must match:
         // DAP clients do not guarantee one spelling between launch.program
-        // and setBreakpoints.source.path (#17246).
-        assert!(file_paths_match("F:\\w\\deep.pl", "F:/w/deep.pl",));
-        assert!(file_paths_match("F:/w/deep.pl", "F:\\w\\deep.pl"));
-        // Duplicate and trailing separators collapse.
-        assert!(file_paths_match("F://w\\deep.pl\\", "F:/w/deep.pl"));
-        // Case is deliberately NOT unified: this is spelling identity for
-        // the same on-disk file, not case-insensitive filesystem identity.
-        assert!(!file_paths_match("F:\\w\\deep.pl", "f:/w/deep.pl"));
-        // Different files still never match.
-        assert!(!file_paths_match("F:\\w\\deep.pl", "F:/w/other.pl"));
-        // Relative-vs-absolute pairs keep falling through to the suffix rule.
-        assert!(file_paths_match("F:\\w\\deep.pl", "deep.pl"));
+        // and setBreakpoints.source.path (#17246). Backslash equivalence is
+        // Windows separator semantics only; on POSIX a backslash is a literal
+        // filename character, so only `/` varies there (#17246 review).
+        if cfg!(windows) {
+            assert!(file_paths_match("F:\\w\\deep.pl", "F:/w/deep.pl",));
+            assert!(file_paths_match("F:/w/deep.pl", "F:\\w\\deep.pl"));
+            // Duplicate and trailing separators collapse.
+            assert!(file_paths_match("F://w\\deep.pl\\", "F:/w/deep.pl"));
+            // Case is deliberately NOT unified: this is spelling identity for
+            // the same on-disk file, not case-insensitive filesystem identity.
+            assert!(!file_paths_match("F:\\w\\deep.pl", "f:/w/deep.pl"));
+            assert!(!file_paths_match("F:\\w\\deep.pl", "F:/w/other.pl"));
+            assert!(file_paths_match("F:\\w\\deep.pl", "deep.pl"));
+        } else {
+            assert!(file_paths_match("/w//deep.pl/", "/w/deep.pl"));
+            assert!(!file_paths_match("/w/deep.pl", "/w/other.pl"));
+            assert!(file_paths_match("/w/deep.pl", "deep.pl"));
+        }
     }
 
     /// On POSIX a backslash is a legal filename character, so the separator
@@ -1791,18 +1797,21 @@ EOF
     /// an installation registered under the client's breakpoint spelling:
     /// before #17246 the spelling mismatch swallowed the stop entirely (no
     /// `stopped` event while the debuggee sat suspended at the line).
+    ///
+    /// The mismatch exists only where both separators denote the same file —
+    /// Windows. POSIX has exactly one separator, so there the fixture-derived
+    /// alternative spelling is a different (nonexistent) file and the
+    /// correlation must keep failing; that negative is covered by
+    /// [`Self::test_file_paths_match_posix_backslash_stays_literal`].
+    #[cfg(windows)]
     #[test]
     fn engine_hit_correlates_across_separator_spellings() -> Result<(), Box<dyn std::error::Error>>
     {
         let (_file, stored_spelling) = create_test_perl_file();
         // Derive the other spelling from whichever separator the fixture path
-        // actually uses: Windows temp paths carry `\`, POSIX paths carry `/`,
-        // so the pair stays a genuine spelling mismatch on every platform.
-        let observed_spelling = if stored_spelling.contains('/') {
-            stored_spelling.replace('/', "\\")
-        } else {
-            stored_spelling.replace('\\', "/")
-        };
+        // actually uses: Windows temp paths carry `\`, so the forward-slash
+        // rendering is the launch-side spelling of the same file.
+        let observed_spelling = stored_spelling.replace('\\', "/");
         assert_ne!(
             stored_spelling, observed_spelling,
             "test fixture must actually exercise both separator spellings"
