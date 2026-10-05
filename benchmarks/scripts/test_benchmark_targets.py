@@ -188,13 +188,28 @@ def _workflow_expect_ids() -> list[str]:
 
 
 def _latest_baseline() -> dict:
-    candidates = sorted(
-        (ROOT / "benchmarks/baselines").glob("v*.json"),
-        key=lambda p: p.stat().st_mtime,
-    )
-    if not candidates:
+    # Use the comparator's own selector: nightly compares against the
+    # semver-latest file (compare.find_latest_baseline), not the mtime-latest,
+    # so the guard must read the same file the comparator will.
+    compare = _load_sibling_module("compare.py")
+    latest = compare.find_latest_baseline(ROOT)
+    if latest is None:
         raise AssertionError("no nightly baseline file found")
-    return json.loads(candidates[-1].read_text(encoding="utf-8"))
+    return json.loads(latest.read_text(encoding="utf-8"))
+
+
+# Exact ripr rows the comparator joins on, as extract-criterion.py spells them
+# (verified by running the extractor: unique names unqualified, spanning names
+# qualified). Any row deletion, addition, or rename fails loudly so baseline
+# edits stay conscious.
+EXPECTED_RIPR_BASELINE_KEYS = frozenset(
+    {
+        "small",
+        "medium",
+        "packet_build/large",
+        "packet_fingerprint/large",
+    }
+)
 
 
 def _validate_ripr_baseline_coverage(baseline: dict | None = None) -> None:
@@ -227,6 +242,14 @@ def _validate_ripr_baseline_coverage(baseline: dict | None = None) -> None:
                 "which has no baseline category; nightly compare/alert would "
                 "silently skip it (#17355)"
             )
+    ripr_rows = set(baseline["benchmarks"].get("ripr", {}).keys())
+    if ripr_rows != EXPECTED_RIPR_BASELINE_KEYS:
+        raise AssertionError(
+            f"ripr baseline rows {sorted(ripr_rows)} do not match the "
+            f"extractor-emitted key set {sorted(EXPECTED_RIPR_BASELINE_KEYS)}; "
+            "a deleted, added, or renamed row would silently skip "
+            "comparison (#17355)"
+        )
 
 
 class BaselineCoverageTests(unittest.TestCase):
@@ -237,6 +260,12 @@ class BaselineCoverageTests(unittest.TestCase):
         baseline = copy.deepcopy(_latest_baseline())
         baseline["benchmarks"].pop("ripr", None)
         with self.assertRaisesRegex(AssertionError, "no baseline category"):
+            _validate_ripr_baseline_coverage(baseline)
+
+    def test_missing_ripr_row_is_rejected(self) -> None:
+        baseline = copy.deepcopy(_latest_baseline())
+        baseline["benchmarks"]["ripr"].pop("small", None)
+        with self.assertRaisesRegex(AssertionError, "do not match"):
             _validate_ripr_baseline_coverage(baseline)
 
 
