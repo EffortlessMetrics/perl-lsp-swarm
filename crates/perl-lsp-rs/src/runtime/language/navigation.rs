@@ -262,7 +262,7 @@ fn definition_resolve_at_trace(
     })
 }
 #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
-use perl_workspace::semantic::queries::QueryContext;
+use perl_workspace::semantic::queries::{QueryContext, SemanticQueries};
 
 #[cfg(feature = "workspace")]
 use crate::runtime::readiness::IndexReadinessPolicy;
@@ -2569,6 +2569,9 @@ impl LspServer {
                                     uri,
                                     &semantic_symbol,
                                     offset,
+                                    workspace_symbol_key.kind
+                                        == crate::workspace_index::SymKind::Sub
+                                        && workspace_symbol_key.sigil.is_none(),
                                 ) {
                                     return Ok(Some(json!([lsp_location])));
                                 }
@@ -3070,6 +3073,7 @@ impl LspServer {
         uri: &str,
         symbol: &str,
         byte_offset: usize,
+        require_callable: bool,
     ) -> Option<Value> {
         let byte_offset = u32::try_from(byte_offset).ok()?;
         if self.workspace_index_stale_for_any_open_document() {
@@ -3080,10 +3084,22 @@ impl LspServer {
         // path must not re-enter `WorkspaceIndex` while
         // `with_semantic_queries_for_uri` holds its read guards (#15644).
         let legacy_location = workspace_index.find_definition(symbol);
-        let outcome = workspace_index.with_semantic_queries_for_uri(uri, |file_id, queries| {
-            let ctx = QueryContext::new(file_id, None, Some(byte_offset));
-            goto_definition_live_exact_or_imported(legacy_location, &queries, symbol, &ctx)
-        })?;
+        let (outcome, constant_anchor) =
+            workspace_index.with_semantic_queries_for_uri(uri, |file_id, queries| {
+                let ctx = QueryContext::new(file_id, None, Some(byte_offset));
+                let outcome =
+                    goto_definition_live_exact_or_imported(legacy_location, &queries, symbol, &ctx);
+                let constant_anchor = match &outcome.result {
+                    DefinitionCutoverResult::Exact(candidate)
+                        if require_callable
+                            && candidate.kind == perl_semantic_facts::EntityKind::Constant =>
+                    {
+                        queries.anchor_source_span(candidate.anchor_id)
+                    }
+                    _ => None,
+                };
+                (outcome, constant_anchor)
+            })?;
 
         if self.workspace_index_stale_for_any_open_document() {
             return None;
@@ -3092,6 +3108,32 @@ impl LspServer {
         let DefinitionCutoverResult::Exact(candidate) = outcome.result else {
             return None;
         };
+        if require_callable {
+            match candidate.kind {
+                perl_semantic_facts::EntityKind::Subroutine
+                | perl_semantic_facts::EntityKind::Method => {}
+                perl_semantic_facts::EntityKind::Constant => {
+                    let anchor = constant_anchor?;
+                    let start = usize::try_from(anchor.start_byte).ok()?;
+                    let end = usize::try_from(anchor.end_byte).ok()?;
+                    // Semantic anchors can cover only the name. Match their
+                    // owning declaration by identity and byte containment,
+                    // then distinguish constant functions from readonly vars.
+                    // Do this after the semantic callback releases its guards.
+                    if !workspace_index.file_symbols(&anchor.source_uri).iter().any(|symbol| {
+                        symbol.uri == anchor.source_uri
+                            && symbol.qualified_name.as_deref()
+                                == Some(candidate.canonical_name.as_str())
+                            && symbol.range.start.byte <= start
+                            && end <= symbol.range.end.byte
+                            && workspace_symbol_is_callable(workspace_index, symbol)
+                    }) {
+                        return None;
+                    }
+                }
+                _ => return None,
+            }
+        }
         let def_location = workspace_index.semantic_anchor_wire_location(candidate.anchor_id)?;
         // An unconvertible URI yields no definition rather than a fabricated one:
         // this exact path claims source-backed exactness, which a substituted
@@ -3626,6 +3668,112 @@ mod tests {
             start.is_some_and(|start| starts.contains(&start)),
             "wrong declaration token: {result:?}"
         );
+    }
+
+    #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
+    #[test]
+    fn qualified_definition_fallback_live_cutover_retains_callable_anchors()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use perl_semantic_facts::EntityKind;
+
+        for (case, source, query, kind, callable) in [
+            (
+                "subroutine",
+                "package Caller;\nsub compute_0 { return 1; }\nCaller::compute_0();\n",
+                "Caller::compute_0",
+                EntityKind::Subroutine,
+                true,
+            ),
+            (
+                "method",
+                "class Caller { method compute_0 { return 1; } }\nCaller->compute_0();\n",
+                "Caller::compute_0",
+                EntityKind::Method,
+                true,
+            ),
+            (
+                "constant-function",
+                "package Caller;\nuse constant PI => 3;\nCaller::PI();\n",
+                "Caller::PI",
+                EntityKind::Constant,
+                true,
+            ),
+            (
+                "commented-constant-function",
+                "package Caller;\nuse # retained trivia\n constant PI => 3;\nCaller::PI();\n",
+                "Caller::PI",
+                EntityKind::Constant,
+                true,
+            ),
+            (
+                "readonly-variable",
+                "package Caller;\nuse Readonly; Readonly my $PI => 3;\nCaller::PI();\n",
+                "Caller::PI",
+                EntityKind::Constant,
+                false,
+            ),
+            (
+                "const-fast-variable",
+                "package Caller;\nuse Const::Fast; const my $PI => 3;\nCaller::PI();\n",
+                "Caller::PI",
+                EntityKind::Constant,
+                false,
+            ),
+            (
+                "same-name-package",
+                "package Other::compute_0 { Other::compute_0(); }\n",
+                "Other::compute_0",
+                EntityKind::Package,
+                false,
+            ),
+        ] {
+            let server = LspServer::new();
+            let uri = format!("file:///workspace/live-cutover-{case}.pl");
+            server.test_apply_did_open(&uri, source, 1)?;
+            let generation = server.test_document_generation(&uri).ok_or("open generation")?;
+            server.test_index_live_file(&uri, source, generation).map_err(std::io::Error::other)?;
+            server.test_simulate_indexing_complete();
+            assert!(!server.workspace_index_stale_for_any_open_document(), "{case}");
+            let index = server.workspace_index().ok_or("fresh workspace index")?;
+            let offset = source.rfind("();").ok_or("call site")?;
+            let candidate = index
+                .with_semantic_queries_for_uri(&uri, |file_id, queries| {
+                    let context = QueryContext::new(file_id, None, Some(offset as u32));
+                    goto_definition_live_exact_or_imported(None, &queries, query, &context)
+                })
+                .ok_or("semantic query snapshot")?;
+            let DefinitionCutoverResult::Exact(candidate) = candidate.result else {
+                return Err(format!("{case}: direct cutover must have an exact candidate").into());
+            };
+            assert_eq!(candidate.kind, kind, "{case}: source-built candidate kind");
+            assert_eq!(candidate.canonical_name, query, "{case}: source-built candidate identity");
+            let anchor = index
+                .semantic_anchor_wire_location(candidate.anchor_id)
+                .ok_or("source-backed anchor")?;
+            let expected = serde_json::to_value(lsp_types::Location::try_from(anchor)?)?;
+            assert_eq!(
+                server.live_exact_definition_location(&uri, query, offset, true),
+                callable.then_some(expected.clone()),
+                "{case}: direct consumer must retain callable anchors and refuse containers"
+            );
+            assert_eq!(
+                server.live_exact_definition_location(&uri, query, offset, false),
+                Some(expected.clone()),
+                "{case}: declaration navigation retains the same source anchor"
+            );
+            if case == "subroutine" {
+                assert_eq!(expected.pointer("/range/start/line").and_then(Value::as_u64), Some(1));
+                assert_eq!(
+                    expected.pointer("/range/start/character").and_then(Value::as_u64),
+                    Some(4)
+                );
+                assert_eq!(
+                    expected.pointer("/range/end/character").and_then(Value::as_u64),
+                    Some(13)
+                );
+            }
+        }
+        Ok(())
     }
 
     #[cfg(feature = "workspace")]
