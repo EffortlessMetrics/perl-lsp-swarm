@@ -30,6 +30,7 @@ const ALL_FACT_CLASSES: &str = "files,owners,changes,tests,oracles,relations,dyn
 /// under `<root>/lib/` because the boundary emitter scans `lib/**/*.pm`.
 const FIXTURES: &[(&str, &str)] = &[
     ("eval_string", "EvalString.pm"),
+    ("eval_spaced", "EvalSpaced.pm"),
     ("autoload", "Autoload.pm"),
     ("dynamic_require", "DynRequire.pm"),
     ("string_dispatch", "StrDispatch.pm"),
