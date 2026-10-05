@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "owner_issue": 16595,
-  "reason": "Folder-scoped includePaths configuration fix increases the combined bundled extension entrypoint by 639 bytes.",
-  "base_baseline_file_sha256": "02be3f2c70c23fe13159d7f0c3e1e84ac7f53ab291c51a28b21c22cb0d5a5791",
-  "candidate_baseline_file_sha256": "975f428f8ea36ca04de3ee3ae5093b961b9a0002dfd61a9fc3b25e8c9fdb42eb",
-  "base_inventory_sha256": "91c883030a238ffa984d0fe649ff56cb0f1669efb096f1beaaa3eabaa976c9cf",
-  "candidate_inventory_sha256": "02fe6fe2c7ab70962c657b90ca6b341bf245a1a1e7c6f1d637a3994500c4645e"
+  "owner_issue": 17200,
+  "reason": "adding the installed receipt assembler controls to test:receipt-summary grows packaged package.json by exactly 46 bytes; all 30 package members and every other byte limit remain unchanged",
+  "base_baseline_file_sha256": "8c5ba0a97559679ec4f2e33d6f5978dcf3c41c828b0afdd521e700997cbb0857",
+  "candidate_baseline_file_sha256": "ed73e4ac567f36d73e987ffda907a272e2e35afcef0cb1640eabb636300b6291",
+  "base_inventory_sha256": "85107aba396d47f6dadc11056330aa8f45e1e59452e32a1fd8dad533283540c2",
+  "candidate_inventory_sha256": "eca87de013c378aed31924190eaf783fb691e3b850fa8eb99c1eeb93efef4f6f"
 }

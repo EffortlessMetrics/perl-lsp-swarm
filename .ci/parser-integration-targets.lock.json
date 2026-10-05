@@ -64,6 +64,14 @@
       "invocation_sha256": "fced33575430f695ffe154bbbcf0fdb3fe026c6bed9a1ce116dd8927c9cd013c"
     },
     {
+      "id": "parser.loops.c_style_separator_recovery",
+      "invocation_sha256": "8ec1ec0814cba27119a4f1e036ecc056eeeaed6f234ab25388da16cf00a25b7b"
+    },
+    {
+      "id": "parser.loops.foreach_declaration_list",
+      "invocation_sha256": "2cd42c7d4fa70b28541edfec54093f23c25557dc5d6758b942a300e784ada9c6"
+    },
+    {
       "id": "parser.output.adjacent_call",
       "invocation_sha256": "e554a06ded99768caa9108ed255b09ba7f367bed72727628f96f7c913bca920c"
     },

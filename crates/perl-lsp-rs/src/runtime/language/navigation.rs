@@ -1121,6 +1121,36 @@ fn find_symbol_key_definition_locations(
 }
 
 #[cfg(feature = "workspace")]
+/// Decide whether a same-file answer whose declaration name starts at
+/// `declaration_text` may answer a qualified call requesting
+/// `requested_package`.
+///
+/// A declaration may name its package explicitly — `sub Foo::bar` written
+/// inside `package Other` defines `Foo::bar` without a `package Foo`
+/// statement — so an explicit `::` qualifier in the declaration name wins over
+/// `ambient_package_at_target`. The qualifier is the text BEFORE the FINAL
+/// `::`: `sub Scale03::Mod00::helper` declares `Scale03::Mod00` (review on PR
+/// #17280). Missing, unreadable, or unqualified declaration text falls back to
+/// the ambient-package comparison.
+#[cfg(feature = "workspace")]
+fn same_file_answer_package_matches(
+    declaration_text: Option<&str>,
+    ambient_package_at_target: &str,
+    requested_package: &str,
+) -> bool {
+    let explicitly_qualified_package = declaration_text.and_then(|tail| {
+        let name_end = tail
+            .find(|c: char| !(c.is_alphanumeric() || c == '_' || c == ':'))
+            .unwrap_or(tail.len());
+        let name = &tail[..name_end];
+        name.rsplit_once("::").map(|(pkg, _)| pkg.to_string())
+    });
+    match explicitly_qualified_package {
+        Some(declared_package) => declared_package == requested_package,
+        None => ambient_package_at_target == requested_package,
+    }
+}
+
 fn lookup_workspace_definition(
     coordinator: Option<&std::sync::Arc<crate::workspace_index::IndexCoordinator>>,
     pkg: &str,
@@ -2152,6 +2182,15 @@ impl LspServer {
                 // freshness would let a stale index re-enable the very wrong jump
                 // this arm was written to prevent. Only the `Final` arm — which
                 // consults the workspace index — stays gated.
+                // #17252: set when the cursor sits on the final component of a
+                // fully-qualified bare-sub call whose package the workspace
+                // index could not resolve (stale index or genuine miss). The
+                // same-file fallbacks below must not answer such a position:
+                // they match by bare name and would return a different
+                // package's same-named sub. `None` elsewhere, so every other
+                // cursor position keeps its existing resolution behavior.
+                #[cfg(feature = "workspace")]
+                let mut cross_package_qualified_sub: Option<String> = None;
                 #[cfg(feature = "workspace")]
                 {
                     let fqn_regex = get_fqn_regex()?;
@@ -2191,6 +2230,40 @@ impl LspServer {
                                     && workspace_index_is_fresh()
                                 {
                                     return Ok(Some(result));
+                                }
+                                // #17252: the workspace index could not answer
+                                // this fully-qualified sub call right now — the
+                                // index is stale (for example right after the
+                                // target buffer opened, or while a never-indexed
+                                // buffer holds the target), or the sub is a
+                                // genuine miss. Everything below resolves by
+                                // bare name against the CALLER's own packages,
+                                // so for a bare `sub` key this position must
+                                // never reach those fallbacks: they would answer
+                                // with a different package's same-named sub.
+                                // Restricted to bare subs on purpose: qualified
+                                // package variables (`$Foo::bar`) legitimately
+                                // resolve through the same-file variable path.
+                                let unresolved_bare_sub =
+                                    parsed
+                                        .as_ref()
+                                        .and_then(|snapshot| snapshot.ast())
+                                        .is_some_and(|ast| {
+                                            crate::declaration::symbol_at_cursor_with_source(
+                                                ast,
+                                                offset,
+                                                crate::declaration::current_package_at(ast, offset),
+                                                &doc.text,
+                                            )
+                                            .is_some_and(|key| {
+                                                let key = super::to_workspace_symbol_key(&key);
+                                                key.sigil.is_none()
+                                                    && key.kind
+                                                        == crate::workspace_index::SymKind::Sub
+                                            })
+                                        });
+                                if unresolved_bare_sub {
+                                    cross_package_qualified_sub = Some(package);
                                 }
                             }
                             FqnCursorComponent::Prefix => return Ok(Some(Value::Null)),
@@ -2327,8 +2400,52 @@ impl LspServer {
                             quoted_import_list_symbol(ast, snapshot, &doc.text, offset)
                         });
 
+                    // #17252: the caller-local resolvers below key off the
+                    // CALLER's own package or bare names. For a cross-package
+                    // qualified call they may only answer with a same-file sub
+                    // that genuinely lives in the REQUESTED package (e.g.
+                    // `Foo::bar()` called from another package must still reach
+                    // this file's `package Foo; sub bar`); an answer naming any
+                    // other package is a wrong-package shadow of the call and
+                    // must fall through to the honest empty result.
+                    #[cfg(feature = "workspace")]
+                    let same_file_answer_matches_requested_package = |target_start: usize| -> bool {
+                        match &cross_package_qualified_sub {
+                            None => true,
+                            Some(requested_package) => {
+                                let declaration_text =
+                                    doc.text.get(target_start.min(doc.text.len())..);
+                                let ambient_package =
+                                    crate::declaration::current_package_at(ast, target_start);
+                                same_file_answer_package_matches(
+                                    declaration_text,
+                                    ambient_package,
+                                    requested_package.as_str(),
+                                )
+                            }
+                        }
+                    };
+
+                    // #17252: a qualified call that names a package OTHER than
+                    // the caller's own must not reach the caller-package-keyed
+                    // lookups below — those key the symbol with the CALLER's
+                    // package and can only produce a wrong-package answer; the
+                    // FQN block above already searched the requested package
+                    // directly. A same-package qualified call keeps them: its
+                    // caller-package key IS the requested package, so their
+                    // answers stay correctly qualified.
+                    #[cfg(feature = "workspace")]
+                    let foreign_package_qualified_call =
+                        cross_package_qualified_sub.as_ref().is_some_and(|requested_package| {
+                            crate::declaration::current_package_at(ast, offset)
+                                != requested_package.as_str()
+                        });
+
                     #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
-                    if !cursor_in_single_quoted_literal && workspace_index_is_fresh() {
+                    if !cursor_in_single_quoted_literal
+                        && workspace_index_is_fresh()
+                        && !foreign_package_qualified_call
+                    {
                         let cursor_on_arrow_method = cursor_in_regex_capture(
                             get_arrow_method_regex()?,
                             &text_around,
@@ -2410,7 +2527,17 @@ impl LspServer {
                             })
                             .collect();
 
-                        if !result.is_empty() {
+                        if !result.is_empty()
+                            // #17252: a cross-package qualified call may only be
+                            // answered by a same-file sub in the requested
+                            // package; the links target the current document, so
+                            // the package at the target range decides.
+                            && location_links.first().is_some_and(|link| {
+                                same_file_answer_matches_requested_package(
+                                    link.target_selection_range.0,
+                                )
+                            })
+                        {
                             return Ok(Some(json!(result)));
                         }
                     }
@@ -2422,6 +2549,10 @@ impl LspServer {
                     // Try workspace index for cross-file definitions using routing policy
                     #[cfg(feature = "workspace")]
                     if workspace_index_is_fresh()
+                        // #17252: caller-package-keyed lookup — foreign-package
+                        // qualified calls must not reach it (see the
+                        // `foreign_package_qualified_call` rationale above).
+                        && !foreign_package_qualified_call
                         && let Some(coordinator) = self.coordinator()
                     {
                         let workspace_index = coordinator.index();
@@ -2518,24 +2649,35 @@ impl LspServer {
                         {
                             return Ok(Some(json!([])));
                         }
-                        let (def_line, def_char) =
-                            self.offset_to_pos16(doc, definition.location.start);
-                        let (def_end_line, def_end_char) =
-                            self.offset_to_pos16(doc, definition.location.end);
+                        // #17252: same rule as the DeclarationProvider arm —
+                        // a cross-package qualified call may only be answered
+                        // by a same-file sub in the requested package.
+                        if !same_file_answer_matches_requested_package(definition.location.start) {
+                            tracing::debug!(
+                                offset,
+                                "Suppressing same-file definition that names a different \
+                                 package than the qualified call at the cursor (#17252)"
+                            );
+                        } else {
+                            let (def_line, def_char) =
+                                self.offset_to_pos16(doc, definition.location.start);
+                            let (def_end_line, def_end_char) =
+                                self.offset_to_pos16(doc, definition.location.end);
 
-                        return Ok(Some(json!([{
-                            "uri": uri,
-                            "range": {
-                                "start": {
-                                    "line": def_line,
-                                    "character": def_char,
+                            return Ok(Some(json!([{
+                                "uri": uri,
+                                "range": {
+                                    "start": {
+                                        "line": def_line,
+                                        "character": def_char,
+                                    },
+                                    "end": {
+                                        "line": def_end_line,
+                                        "character": def_end_char,
+                                    },
                                 },
-                                "end": {
-                                    "line": def_end_line,
-                                    "character": def_end_char,
-                                },
-                            },
-                        }])));
+                            }])));
+                        }
                     }
                 }
             }
@@ -3312,6 +3454,46 @@ impl LspServer {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// #17252 review (PR #17280): the same-file validator must read an
+    /// explicitly qualified declaration name with the FINAL `::` as the
+    /// package boundary — `sub Scale03::Mod00::helper` declares
+    /// `Scale03::Mod00`, not `Scale03`.
+    #[test]
+    fn same_file_answer_package_matches_reads_final_qualifier() {
+        // Explicitly qualified declaration, requested package matches.
+        assert!(same_file_answer_package_matches(
+            Some("Scale03::Mod00::helper {\n    9;\n}"),
+            "Scale00::Mod00",
+            "Scale03::Mod00",
+        ));
+        // A first-`::` split would yield "Scale03" and wrongly reject.
+        assert!(same_file_answer_package_matches(
+            Some("Scale03::Mod00::helper { 9 }"),
+            "Scale00::Mod00",
+            "Scale03::Mod00",
+        ));
+        // Explicitly qualified declaration for a different package: rejected.
+        assert!(!same_file_answer_package_matches(
+            Some("Other::helper { 1 }"),
+            "Scale00::Mod00",
+            "Scale03::Mod00",
+        ));
+        // Bare declaration resolves against the ambient package.
+        assert!(same_file_answer_package_matches(
+            Some("helper { 1 }"),
+            "Scale03::Mod00",
+            "Scale03::Mod00"
+        ));
+        assert!(!same_file_answer_package_matches(
+            Some("helper { 1 }"),
+            "Scale00::Mod00",
+            "Scale03::Mod00"
+        ));
+        // Unreadable text falls back to the ambient comparison.
+        assert!(same_file_answer_package_matches(None, "Scale03::Mod00", "Scale03::Mod00"));
+        assert!(!same_file_answer_package_matches(None, "Scale00::Mod00", "Scale03::Mod00"));
+    }
 
     fn serde_freshness_spelling(variant: ProviderDecisionFreshness) -> Option<String> {
         serde_json::to_value(variant).ok().and_then(|value| value.as_str().map(str::to_owned))

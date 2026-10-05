@@ -1,0 +1,10 @@
+# E1 case manifest: lane-termination classifier mapping oracle.
+kind = "classifier"
+description = "Genuine gap receipt followed by teardown markers; receipt outranks, no retry."
+mode = "log-stdin"
+mutant_verdict = "kill"
+mutation = "genuine fail receipt printed before the eviction markers"
+base_input = "base-eviction.log"
+base_expected_class = "infra-no-proof"
+also_expect = { gap_receipt_matches = "1" }
+inputs = ["lane.log"]

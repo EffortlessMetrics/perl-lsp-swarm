@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use color_eyre::eyre::{Result, bail, eyre};
+use color_eyre::eyre::{Context, Result, bail, eyre};
 
 /// Get the project root directory using CARGO_MANIFEST_DIR.
 /// This is more robust than current_dir() in CI environments.
@@ -41,7 +41,11 @@ fn run_cargo_metadata_with(manifest_path: Option<&Path>, no_deps: bool) -> Resul
     if let Some(path) = manifest_path {
         cmd.arg("--manifest-path").arg(path);
     }
-    let output = cmd.output()?;
+    // Without this context a missing `cargo` surfaces as a bare "program not
+    // found" pointing at this line — naming neither the program nor the
+    // operation (#17168). Agents and release harnesses invoke the built
+    // binary directly, where cargo is not guaranteed to be on PATH.
+    let output = cmd.output().with_context(|| "spawning `cargo metadata` (is `cargo` on PATH?)")?;
     if !output.status.success() {
         bail!("cargo metadata failed:\n{}", String::from_utf8_lossy(&output.stderr));
     }
@@ -54,17 +58,6 @@ mod tests {
 
     #[test]
     fn run_cargo_metadata_at_reads_an_explicit_manifest() -> Result<()> {
-        // FakeCargo::install swaps process-global PATH for the lifetime of a
-        // fixture test. Hold the same env lock here so this test cannot run
-        // cargo while a concurrent test holds a FakeCargo install — otherwise
-        // the PATH swap can shadow real cargo and pollute the fake invocation
-        // log, surfacing as flaky `cargo metadata` failures under parallel
-        // runs (see #15296).
-        #[cfg(unix)]
-        let _env_guard = crate::test_support::ENV_LOCK
-            .lock()
-            .map_err(|_| color_eyre::eyre::eyre!("fake cargo environment lock poisoned"))?;
-
         let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
         let raw = run_cargo_metadata_at(&manifest, true)?;
         assert!(raw.starts_with(b"{"), "cargo metadata must return JSON");

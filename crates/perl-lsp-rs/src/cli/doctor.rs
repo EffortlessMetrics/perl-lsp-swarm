@@ -29,8 +29,9 @@ const DOCTOR_TOOL_TIMEOUT_SECS: u64 = 5;
 /// `perllsp --doctor --external-tools`: registry-driven, native-first
 /// external-tooling report (#7212). Source-only projection of the canonical
 /// registry (#7209): no probe, install, selection, or execution occurs, and
-/// every verdict comes from the registry rows.
-pub(super) fn run_doctor_external_tools(json: bool) -> i32 {
+/// every verdict comes from the registry rows. `command_name` is the name the
+/// binary was invoked under and flows into the report header (#17163).
+pub(super) fn run_doctor_external_tools(json: bool, command_name: &str) -> i32 {
     let entries = external_tool_doctor_entries(EXTERNAL_TOOL_REGISTRY);
     if json {
         match serde_json::to_string_pretty(&entries) {
@@ -44,7 +45,7 @@ pub(super) fn run_doctor_external_tools(json: bool) -> i32 {
             }
         }
     } else {
-        print!("{}", render_external_tool_doctor_text(&entries));
+        print!("{}", render_external_tool_doctor_text(&entries, command_name));
         0
     }
 }
@@ -52,7 +53,7 @@ pub(super) fn run_doctor_external_tools(json: bool) -> i32 {
 /// `perllsp --doctor --critic-compatibility`: registry-driven Perl::Critic
 /// configuration compatibility (#7212). Explains `.perlcriticrc` mapping
 /// process-free; never offers a runtime engine switch.
-pub(super) fn run_doctor_critic_compatibility(json: bool) -> i32 {
+pub(super) fn run_doctor_critic_compatibility(json: bool, command_name: &str) -> i32 {
     let Some(entry) = critic_compatibility_entry(EXTERNAL_TOOL_REGISTRY) else {
         eprintln!("registry does not own a .perlcriticrc compatibility row");
         return 1;
@@ -69,7 +70,7 @@ pub(super) fn run_doctor_critic_compatibility(json: bool) -> i32 {
             }
         }
     } else {
-        print!("{}", render_critic_compatibility_text(&entry));
+        print!("{}", render_critic_compatibility_text(&entry, command_name));
         0
     }
 }
@@ -82,7 +83,9 @@ pub(super) fn run_doctor_critic_compatibility(json: bool) -> i32 {
 /// identity divergence for DAP E2E / prove consumers. Typed statuses and
 /// copyable fix lines follow the #7212 posture; the symlink probe uses temporary
 /// files with best-effort cleanup and never installs or configures anything.
-pub(super) fn run_doctor_dev_environment(json: bool) -> i32 {
+/// `command_name` is the name the binary was invoked under and flows into the
+/// report header (#17163).
+pub(super) fn run_doctor_dev_environment(json: bool, command_name: &str) -> i32 {
     let report = build_dev_environment_report();
     if json {
         match serde_json::to_string_pretty(&report) {
@@ -96,12 +99,12 @@ pub(super) fn run_doctor_dev_environment(json: bool) -> i32 {
             }
         }
     } else {
-        print!("{}", render_dev_environment_report(&report));
+        print!("{}", render_dev_environment_report(&report, command_name));
         0
     }
 }
 
-pub(super) fn run_doctor(dir: &str, json: bool) -> i32 {
+pub(super) fn run_doctor(dir: &str, json: bool, command_name: &str) -> i32 {
     match build_doctor_report_struct(dir) {
         Ok(report) => {
             if json {
@@ -116,7 +119,7 @@ pub(super) fn run_doctor(dir: &str, json: bool) -> i32 {
                     }
                 }
             } else {
-                print!("{}", render_report(report));
+                print!("{}", render_report(report, command_name));
                 0
             }
         }
@@ -2347,10 +2350,15 @@ fn wsl_bash_flavor_report_from_status(status: Result<(), String>) -> BashFlavorR
 
 // ── Rendering ───────────────────────────────────────────────────────────────
 
-fn render_dev_environment_report(report: &DevEnvironmentReport) -> String {
+fn render_dev_environment_report(report: &DevEnvironmentReport, command_name: &str) -> String {
     let mut out = String::new();
-    out.push_str("perl-lsp doctor - development environment\n");
-    out.push_str("=========================================\n\n");
+    // The header names the binary as it was invoked (#17163); the underline
+    // width must keep matching the header so the format stays stable.
+    let header = format!("{command_name} doctor - development environment");
+    out.push_str(&header);
+    out.push('\n');
+    out.push_str(&"=".repeat(header.chars().count()));
+    out.push_str("\n\n");
     out.push_str(&format!(
         "Pins: workspace rust-version {}, rust-toolchain.toml channel {}\n",
         report.workspace_rust_version, report.toolchain_channel_pin
@@ -2474,10 +2482,15 @@ fn truncate_for_detail(text: &str, max_chars: usize) -> String {
     }
 }
 
-fn render_report(report: DoctorReport) -> String {
+fn render_report(report: DoctorReport, command_name: &str) -> String {
     let mut out = String::new();
-    out.push_str("perl-lsp doctor\n");
-    out.push_str("===============\n\n");
+    // The header names the binary as it was invoked (#17163); the underline
+    // width must keep matching the header so the format stays stable.
+    let header = format!("{command_name} doctor");
+    out.push_str(&header);
+    out.push('\n');
+    out.push_str(&"=".repeat(header.chars().count()));
+    out.push_str("\n\n");
     out.push_str(&format!("Workspace: {}\n", report.workspace.display()));
     out.push_str(&format!("Project config: {}\n", render_project_config_status(&report.config)));
     if !report.config.rejected_include_paths.is_empty() {
@@ -2955,7 +2968,7 @@ mod tests {
         let temp = tempfile::tempdir()?;
         let dir = temp.path().to_str().ok_or("non-UTF-8 temp path")?;
 
-        assert_eq!(run_doctor(dir, false), 0);
+        assert_eq!(run_doctor(dir, false, "perl-lsp"), 0);
         Ok(())
     }
 
@@ -2963,11 +2976,11 @@ mod tests {
     fn run_doctor_match_arm_discriminator() -> TestResult {
         let temp = tempfile::tempdir()?;
         let dir = temp.path().to_str().ok_or("non-UTF-8 temp path")?;
-        assert_eq!(run_doctor(dir, false), 0);
+        assert_eq!(run_doctor(dir, false, "perl-lsp"), 0);
 
         let missing = temp.path().join("missing-workspace");
         let missing_dir = missing.to_str().ok_or("non-UTF-8 temp path")?;
-        assert_eq!(run_doctor(missing_dir, false), 1);
+        assert_eq!(run_doctor(missing_dir, false, "perl-lsp"), 1);
         Ok(())
     }
 
@@ -3195,7 +3208,7 @@ mod tests {
         )?;
         let dir = temp.path().to_str().ok_or("non-UTF-8 temp path")?;
 
-        let report = render_report(build_doctor_report_struct(dir)?);
+        let report = render_report(build_doctor_report_struct(dir)?, "perl-lsp");
 
         assert!(report.contains("Project config: loaded .perl-lsp.toml"));
         assert!(report.contains("custom/lib"));
@@ -3252,7 +3265,7 @@ mod tests {
         )?;
         let dir = temp.path().to_str().ok_or("non-UTF-8 temp path")?;
 
-        let rendered = render_report(build_doctor_report_struct(dir)?);
+        let rendered = render_report(build_doctor_report_struct(dir)?, "perl-lsp");
 
         assert!(rendered.contains("Rejected .perl-lsp.toml include_paths entries:"));
         assert!(rendered.contains(absolute));
@@ -3272,7 +3285,7 @@ mod tests {
         )?;
         let dir = temp.path().to_str().ok_or("non-UTF-8 temp path")?;
 
-        let rendered = render_report(build_doctor_report_struct(dir)?);
+        let rendered = render_report(build_doctor_report_struct(dir)?, "perl-lsp");
 
         let configured = rendered
             .split("Configured includePaths:")
@@ -3618,7 +3631,7 @@ mod tests {
         let temp = tempfile::tempdir()?;
         let dir = temp.path().to_str().ok_or("non-UTF-8 temp path")?;
 
-        let report = render_report(build_doctor_report_struct(dir)?);
+        let report = render_report(build_doctor_report_struct(dir)?, "perl-lsp");
 
         assert!(report.contains("perltidy:"));
         assert!(report.contains("perlcritic:"));
@@ -3641,34 +3654,39 @@ mod tests {
         let perltidy = probe_tool_with_resolver("perltidy", "--version", |_| None);
         let perlcritic = probe_tool_with_resolver("perlcritic", "--version", |_| None);
 
-        let rendered = render_report(DoctorReport {
-            workspace,
-            config: ProjectConfigReport {
-                status: ProjectConfigStatus::Missing,
-                include_source: "default includePaths",
-                rejected_include_paths: Vec::new(),
-                include_paths_defaults_retained: false,
+        let rendered = render_report(
+            DoctorReport {
+                workspace,
+                config: ProjectConfigReport {
+                    status: ProjectConfigStatus::Missing,
+                    include_source: "default includePaths",
+                    rejected_include_paths: Vec::new(),
+                    include_paths_defaults_retained: false,
+                },
+                perl: PerlReport {
+                    binary: None,
+                    source: "PATH",
+                    version: None,
+                    error: Some(ReportFailure::Message(
+                        "perl binary not found on PATH".to_string(),
+                    )),
+                },
+                perltidy,
+                perlcritic,
+                perl5lib_paths: Vec::new(),
+                perl5lib_enabled: false,
+                perl5lib_precedence: Perl5LibPrecedence::Prepend,
+                configured_paths: Vec::new(),
+                effective_paths: Vec::new(),
+                system_inc: SystemIncReport { status: "disabled", paths: Vec::new() },
+                text_sync_envelope: TextSyncEnvelopeReport {
+                    decision: crate::runtime::v0_18_text_sync_envelope::DECISION,
+                    text_sync_kind: crate::runtime::v0_18_text_sync_envelope::TEXT_SYNC_KIND_NAME,
+                    position_encoding: crate::runtime::v0_18_text_sync_envelope::WIRE_ENCODING,
+                },
             },
-            perl: PerlReport {
-                binary: None,
-                source: "PATH",
-                version: None,
-                error: Some(ReportFailure::Message("perl binary not found on PATH".to_string())),
-            },
-            perltidy,
-            perlcritic,
-            perl5lib_paths: Vec::new(),
-            perl5lib_enabled: false,
-            perl5lib_precedence: Perl5LibPrecedence::Prepend,
-            configured_paths: Vec::new(),
-            effective_paths: Vec::new(),
-            system_inc: SystemIncReport { status: "disabled", paths: Vec::new() },
-            text_sync_envelope: TextSyncEnvelopeReport {
-                decision: crate::runtime::v0_18_text_sync_envelope::DECISION,
-                text_sync_kind: crate::runtime::v0_18_text_sync_envelope::TEXT_SYNC_KIND_NAME,
-                position_encoding: crate::runtime::v0_18_text_sync_envelope::WIRE_ENCODING,
-            },
-        });
+            "perl-lsp",
+        );
 
         assert!(rendered.contains("Install perltidy (cpanm Perl::Tidy)"));
         assert!(rendered.contains("Install perlcritic (cpanm Perl::Critic)"));
@@ -3767,18 +3785,18 @@ mod tests {
 
     #[test]
     fn run_doctor_external_tools_text_exit_zero() {
-        assert_eq!(run_doctor_external_tools(false), 0);
+        assert_eq!(run_doctor_external_tools(false, "perl-lsp"), 0);
     }
 
     #[test]
     fn run_doctor_external_tools_json_exit_zero() {
-        assert_eq!(run_doctor_external_tools(true), 0);
+        assert_eq!(run_doctor_external_tools(true, "perl-lsp"), 0);
     }
 
     #[test]
     fn run_doctor_critic_compatibility_exit_zero() {
-        assert_eq!(run_doctor_critic_compatibility(false), 0);
-        assert_eq!(run_doctor_critic_compatibility(true), 0);
+        assert_eq!(run_doctor_critic_compatibility(false, "perl-lsp"), 0);
+        assert_eq!(run_doctor_critic_compatibility(true, "perl-lsp"), 0);
     }
 
     #[test]
@@ -5021,7 +5039,8 @@ mod tests {
 
     #[test]
     fn render_dev_environment_report_surfaces_findings_and_prescribed_fixes() {
-        let rendered = render_dev_environment_report(&synthetic_dev_environment_report());
+        let rendered =
+            render_dev_environment_report(&synthetic_dev_environment_report(), "perl-lsp");
 
         assert!(rendered.contains("perl-lsp doctor - development environment"));
         assert!(rendered.contains("Symlink privilege: missing"));
@@ -5048,8 +5067,32 @@ mod tests {
             fix: None,
         }];
 
-        let rendered = render_dev_environment_report(&report);
+        let rendered = render_dev_environment_report(&report, "perl-lsp");
         assert!(rendered.contains("runs repo entrypoints: not_proven"));
+    }
+
+    #[test]
+    fn doctor_headers_follow_the_supplied_command_name() -> TestResult {
+        // #17163: the doctor headers used to hard-code the crate name while
+        // `--version` and `--help` followed the invocation name. The header
+        // must carry the name the binary was invoked under, and the `=`
+        // underline must still match the header width so line-oriented
+        // parsers see only the identity token move.
+        let rendered =
+            render_dev_environment_report(&synthetic_dev_environment_report(), "perllsp");
+        let header = rendered.lines().next().ok_or("dev-environment report is empty")?;
+        assert_eq!(header, "perllsp doctor - development environment");
+        let underline = rendered.lines().nth(1).ok_or("dev-environment report has no underline")?;
+        assert_eq!(underline.chars().count(), header.chars().count());
+
+        let temp = tempfile::tempdir()?;
+        let dir = temp.path().to_str().ok_or("non-UTF-8 temp path")?;
+        let rendered = render_report(build_doctor_report_struct(dir)?, "perllsp");
+        let header = rendered.lines().next().ok_or("doctor report is empty")?;
+        assert_eq!(header, "perllsp doctor");
+        let underline = rendered.lines().nth(1).ok_or("doctor report has no underline")?;
+        assert_eq!(underline.chars().count(), header.chars().count());
+        Ok(())
     }
 
     #[test]

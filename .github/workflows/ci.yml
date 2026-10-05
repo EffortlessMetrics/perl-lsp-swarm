@@ -429,6 +429,11 @@ jobs:
         # silently bit-rot. Unix remains the execution authority for the
         # Bash/chmod smoke.
         run: |
+          # Execute the public completion target before library smoke so a
+          # separate library failure cannot suppress this Windows regression.
+          if [[ " $WINDOWS_TEST_CRATES " == *" -p perllsp "* ]]; then
+            cargo test -p perllsp --test powershell_completion --locked -- --exact generated_powershell_completion_works_without_profile_namespace_imports --test-threads=1
+          fi
           cargo test $WINDOWS_TEST_CRATES --locked --lib
           cargo test -p xtask --test release_artifact_size_smoke_script --locked --no-run
           if [[ " $WINDOWS_TEST_CRATES " == *" -p perl-ci-hygiene "* ]]; then
@@ -1732,11 +1737,14 @@ jobs:
     needs: [draft-pr-check, preflight-latest-check]
     if: needs.draft-pr-check.outputs.run_ci == 'true' && needs.preflight-latest-check.outputs.is_latest == 'true'
     # Run on every PR push — this is the regression prevention gate.
-    # Flakiness note: 11 active entries in .ci/ux-flakes.json (all scenario_14 / @INC
-    # conformance tests) are registered as quarantine_effect=non_blocking_pr but that
-    # registry is advisory only — it is NOT enforced here. If any scenario_14 test
-    # fails this job fails and merge-gate blocks. Quarantine enforcement (reading the
-    # registry to generate --skip flags) is a follow-up; see .ci/ux-flakes.json.
+    # Flakiness note: .ci/ux-flakes.json records quarantine/disposition state for
+    # known-flaky UX scenario tests (currently all of them historical scenario_14 /
+    # @INC conformance rows); any active row must carry the bounded review contract
+    # (issue, owner, expiry) enforced by the quarantine registry contract test,
+    # but the registry is advisory only — it is NOT enforced here. If any
+    # scenario_14 test fails this job fails and merge-gate blocks. Quarantine
+    # enforcement (reading the registry to generate --skip flags) is a follow-up;
+    # see .ci/ux-flakes.json for the current per-row state.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -1821,7 +1829,7 @@ jobs:
         env:
           TESTED_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
         run: |
-          cargo xtask ux-regression-receipt \
+          cargo run -p perl-lsp-ux-tests --bin ux-regression-receipt --locked -- \
             --input target/receipts/ux-regression.log \
             --receipt target/receipts/ux-regression.json \
             --exit-status-file target/receipts/ux-regression.exit \
@@ -2033,6 +2041,22 @@ jobs:
       # merge surface, including the tracked root AGENTS.md instructions.
       - name: Direct command guidance contract (required merge surface)
         run: cargo test -p xtask --test direct_command_guidance --locked -- --nocapture
+
+      # #17233: the routed xtask library suite can fail before main-binary
+      # tests run. Execute the four retained formatter callers directly on
+      # this existing required surface, using its already compiled binary.
+      - name: Package formatter caller contracts (required merge surface)
+        run: |
+          set -o pipefail
+          cargo test -p xtask --bin xtask --locked -- --exact \
+            tasks::check::tests::check_task_run_routes_fmt_through_package_formatter \
+            tasks::check::tests::check_task_run_preserves_all_check_order \
+            tasks::ci::runner::tests::ci_runner_fmt_check_routes_to_package_formatter \
+            tasks::ci_doctor::tests::ci_doctor_fmt_drift_routes_to_package_formatter \
+            --nocapture | tee "$RUNNER_TEMP/package-formatter-callers.log"
+          # libtest succeeds with zero matches; require all four contracts to run.
+          grep -Eq '^test result: ok\. 4 passed; 0 failed; 0 ignored; 0 measured;' \
+            "$RUNNER_TEMP/package-formatter-callers.log"
 
       # The active cache denominator (#9177) is derived from workflow source, so it
       # silently rots whenever a cache step, trigger, or save guard moves. This
