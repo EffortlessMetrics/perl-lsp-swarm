@@ -3,17 +3,17 @@
 //! Defines and validates the versioned machine-readable representation of the
 //! proposition an issue owns:
 //!
-//! - `issue_contract.v1` ([`contract::IssueContract`]) — issue kind, required
+//! - `issue_contract.v1` ([`contract::IssueContract`]) - issue kind, required
 //!   proof level, allowed close modes, stable denominator rows, negative
 //!   controls, mandatory children, transfer policy, and current identity.
 //! - `issue_close_proof.v1` ([`packet::ClosePacket`] and
-//!   [`packet::validate_packet_against_contract`]) — requested close mode,
+//!   [`packet::validate_packet_against_contract`]) - requested close mode,
 //!   contract binding, claims, row/control/child dispositions, and independent
 //!   PR-scope versus issue-close verdicts.
 //!
 //! This layer is representation-only: it validates documents and their
 //! referential integrity. It does not decide whether a requested close mode is
-//! semantically satisfied — CP03 (#10382) owns that evaluation — and it does
+//! semantically satisfied - CP03 (#10382) owns that evaluation - and it does
 //! not inspect live GitHub state, PR bodies, or closing keywords.
 //!
 //! The immutable regression corpus under `.ci/close-proof-contract/`
@@ -22,16 +22,16 @@
 //! canonical re-serialization; repository history remains the final arbiter
 //! for reviewed mutation.
 //!
-//! Serde strictness note: top-level documents reject unknown fields; payload
-//! variants inside internally tagged enums (`disposition`, `state`) cannot use
-//! `deny_unknown_fields`, so unknown keys inside variant payloads are ignored
-//! by serde, and serde_json resolves duplicate JSON object keys last-wins.
-//! Downstream evaluators must not treat that silence as authority.
+//! Public document parsers reject duplicate decoded JSON object keys before
+//! typed map conversion. Documents and tagged variant payloads reject unknown
+//! fields, including unit states. Strict wire decoding establishes an
+//! unambiguous representation, never independent completion evidence.
 
 pub mod contract;
 pub mod corpus;
 pub mod model;
 pub mod packet;
+mod wire;
 
 #[cfg(test)]
 mod tests;

@@ -514,6 +514,13 @@ Before spawning `perl -d`, the launch path validates the interpreter name in
 
 ```rust
 // crates/perl-dap/src/debug_adapter/process/perl_spawn.rs
+use regex::Regex;
+use std::path::Path;
+use std::sync::LazyLock;
+
+static PERL_NAME_RE: LazyLock<Result<Regex, regex::Error>> =
+    LazyLock::new(|| Regex::new(r"^perl(\d+(\.\d+)*)?$"));
+
 pub(super) fn is_valid_perl_interpreter(perl_interpreter: &str) -> bool {
     let trimmed = perl_interpreter.trim();
     if trimmed.is_empty() {
@@ -525,12 +532,18 @@ pub(super) fn is_valid_perl_interpreter(perl_interpreter: &str) -> bool {
         .unwrap_or(trimmed)
         .to_ascii_lowercase();
     let candidate = candidate.strip_suffix(".exe").unwrap_or(&candidate);
-    candidate == "perl" || candidate.starts_with("perl")
+
+    match &*PERL_NAME_RE {
+        Ok(re) => re.is_match(candidate),
+        Err(_) => candidate == "perl",
+    }
 }
 ```
 
-This guards against a launch config that points the interpreter at an
-arbitrary executable.
+The validator accepts `perl` and numeric dotted version names such as `perl5`,
+`perl5.38`, and `perl5.38.2` (with an optional `.exe` suffix). It rejects
+lookalikes such as `perlevil`, `perlscript`, and `perl_backdoor`; if the regex
+cannot initialize, it fails closed to the exact `perl` name.
 
 ### 5.3 Command-injection prevention (flag arguments and shell quoting)
 

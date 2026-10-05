@@ -710,12 +710,14 @@ proptest! {
     }
 
     /// FPH-004: the second pass from a fresh context never re-applies and
-    /// keeps the rendered bytes stable; line-level families must classify as
-    /// a legitimate already-formatted no-change with zero edits. Bare-CR
-    /// subjects are excluded from the strict classification: their
-    /// Insert-policy renders can contain `\r`-inside-`\n` lines that the
-    /// safe-subset line admission does not cover, so a typed refusal is
-    /// legitimate there (registered FPH-008 dormancy).
+    /// keeps the rendered bytes stable, and must classify as a legitimate
+    /// already-formatted no-change with zero edits. Since #13205 this bar is
+    /// uniform: rendered-block families included, because the already-formatted
+    /// admission now recognizes the block boundaries the renderers own. Only
+    /// Bare-CR subjects are excluded: their Insert-policy renders can contain
+    /// `\r`-inside-`\n` lines that the safe-subset line admission does not
+    /// cover, so a typed refusal is legitimate there (registered FPH-008
+    /// dormancy).
     #[test]
     fn second_pass_is_legitimate_nochange(case in arb_valid_case()) {
         let receipt = run_case(&case).map_err(|violation| TestCaseError::fail(violation.to_string()))?;
@@ -727,12 +729,11 @@ proptest! {
             prop_assert_ne!(second.disposition, "failed_or_not_proven");
             prop_assert_eq!(second.edit_count, 0);
             prop_assert!(second.bytes_stable);
-            if !record.renders_closed_blocks && !bare_cr_subject {
-                prop_assert_eq!(second.disposition, "no_change");
-            } else {
-                prop_assert!(
-                    second.disposition == "no_change" || second.disposition == "refused",
-                    "rendered-block families may only stabilize or refuse, got {}",
+            if !bare_cr_subject {
+                prop_assert_eq!(
+                    second.disposition, "no_change",
+                    "family {:?} must classify as already-formatted, got {}",
+                    record.family,
                     second.disposition
                 );
             }
@@ -894,7 +895,7 @@ fn fuzz_decoder_consumes_bytes_past_the_selector() -> TestResult {
 #[test]
 fn dormant_invariants_report_not_proven_until_dependencies_land() -> TestResult {
     let dormant = dormant_registry();
-    assert!(dormant.len() >= 7, "expected the registered dormant slots to be present");
+    assert!(dormant.len() >= 6, "expected the registered dormant slots to be present");
     let mut seen_ids: Vec<&str> = Vec::new();
     for entry in dormant {
         assert!(!seen_ids.contains(&entry.id), "duplicate dormant id {}", entry.id);
@@ -916,7 +917,6 @@ fn dormant_invariants_report_not_proven_until_dependencies_land() -> TestResult 
         "cancellation_budget_interruption",
         "structural_preservation_beyond_parse_success",
         "protected_region_hash_preservation",
-        "strict_second_pass_typed_idempotence_for_rendered_blocks",
         "bare_cr_line_ending_preservation",
         "wrap_line_separators_follow_source_convention",
         "final_newline_policy_owns_terminator",
@@ -926,13 +926,15 @@ fn dormant_invariants_report_not_proven_until_dependencies_land() -> TestResult 
             "dormant slot {expected} is missing from the registry"
         );
     }
-    // #10301 remains open; this branch lands only a bounded subset, and the
-    // rendered-block dormancy points at the explicit conversion follow-up.
-    let rendered_block = dormant
-        .iter()
-        .find(|entry| entry.id == "strict_second_pass_typed_idempotence_for_rendered_blocks")
-        .ok_or("rendered-block dormancy must stay registered (FPH-008)")?;
-    assert_eq!(rendered_block.owning_issues, ["13205"]);
+    // #13205 converted `strict_second_pass_typed_idempotence_for_rendered_blocks`
+    // into the real `idempotence.already_formatted` second-pass assertion, so
+    // the slot left the registry. A converted invariant is asserted, not
+    // tracked as a gate that may later be reported proven; keeping it here
+    // would be a second authority that can drift from the assertion.
+    assert!(
+        !seen_ids.contains(&"strict_second_pass_typed_idempotence_for_rendered_blocks"),
+        "the converted rendered-block slot must not linger in the dormant registry"
+    );
     Ok(())
 }
 
