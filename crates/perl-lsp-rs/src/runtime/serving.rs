@@ -90,6 +90,16 @@ impl LspServer {
                     response_delivery_failed = true;
                     break;
                 }
+                // Per-connection `exit` (#17331): the socket frontend's exit
+                // handler ends this session only, so the process keeps
+                // accepting and serving other connections. Only the exit
+                // handler fires this, and only under `ExitPolicy::
+                // EndConnection`; under `TerminateProcess` the process is
+                // gone before any notify could matter.
+                _ = self.connection_exit_notified() => {
+                    tracing::info!("connection exit received; ending this session, server keeps serving");
+                    break;
+                }
                 request = rx.recv() => request,
             };
             let Some(request) = request else { break };
@@ -141,6 +151,17 @@ impl LspServer {
     /// frontends use this to close the peer while scheduler cleanup proceeds.
     pub(crate) async fn response_delivery_failure_notified(&self) {
         self.outbound.response_failure_notified().await;
+    }
+
+    /// End this connection's serve loop after a protocol-clean `exit`
+    /// (#17331). Fired only under `ExitPolicy::EndConnection`, after the
+    /// outbound writer has settled.
+    pub(crate) fn notify_connection_exit(&self) {
+        self.connection_exit.notify_one();
+    }
+
+    async fn connection_exit_notified(&self) {
+        self.connection_exit.notified().await;
     }
 
     pub(crate) fn response_delivery_failed(&self) -> bool {

@@ -1,0 +1,9 @@
+project: product
+component: Language server
+kind: Fixed
+body: "In --socket/--port mode, the LSP `exit` notification from one connection no longer terminates the whole server process. The exit handler now scopes teardown to the sending connection: it settles that session's outbound writer, releases only that session's serve loop, and the frontend closes the peer socket, so the listener keeps accepting and concurrent sessions keep serving (#17331). A harness that runs sessions sequentially no longer has to restart the server per session, and a second concurrent client no longer loses its session with a bare connection reset when another client exits. Stdio keeps today's process-exit semantics because its single client owns the process, and the shutdown-received exit-status rule is unchanged."
+time: 2026-10-05T00:00:00Z
+custom:
+  PR: "17331"
+  Slug: socket-exit-connection-scope-17331
+  Breaking: "no"

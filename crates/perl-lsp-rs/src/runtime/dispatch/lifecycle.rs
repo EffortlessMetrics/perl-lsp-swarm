@@ -2,7 +2,7 @@
 //!
 //! Wraps LSP lifecycle requests (initialize, shutdown, exit).
 
-use super::super::{JsonRpcError, LspServer, Ordering, Value, json};
+use super::super::{JsonRpcError, LspServer, Ordering, Value, exit_policy, json};
 use std::time::Duration;
 
 const TRACE_LEVEL_OFF: &str = "off";
@@ -142,19 +142,34 @@ impl LspServer {
 
     /// Handle exit request
     pub(super) fn handle_exit_dispatch(&self) -> Result<Option<Value>, JsonRpcError> {
-        // `process::exit` skips destructors. Close all outbound admission gates
-        // and give the existing writer a bounded chance to flush frames that
-        // were already accepted. A timeout remains unsettled and is reported
-        // as such; it must never be treated as successful delivery.
+        // Teardown skips Rust destructors on both exit paths (process exit
+        // and per-connection release). Close all outbound admission gates and
+        // give the existing writer a bounded chance to flush frames that were
+        // already accepted. A timeout remains unsettled and is reported as
+        // such; it must never be treated as successful delivery.
         let settlement = self.outbound.close_and_wait(OUTBOUND_SETTLEMENT_TIMEOUT);
         match settlement.as_ref() {
             Some(outcome) => outcome.report_settlement(),
-            None => tracing::error!("outbound writer did not settle before process exit"),
+            None => tracing::error!("outbound writer did not settle before exit"),
         }
         // LSP exit status is defined by whether shutdown was received. Writer
         // settlement remains independent evidence and must not change that
         // protocol status when shutdown was accepted.
         let exit_code = protocol_exit_code(self.shutdown_received.load(Ordering::Acquire));
+        if self.exit_policy == exit_policy::ExitPolicy::EndConnection {
+            // Socket transport (#17331): this connection's `exit` ends only
+            // this connection. Release this session's serve loop and let the
+            // frontend close the peer socket; the listener and concurrent
+            // sessions keep serving. The protocol exit status stays in the
+            // log, and global logging must stay up for the surviving
+            // sessions, so the process logging guard is not drained here.
+            tracing::info!(
+                exit_code,
+                "LSP connection exiting; server continues serving other sessions"
+            );
+            self.notify_connection_exit();
+            return Ok(None);
+        }
         tracing::info!(exit_code, "LSP server exiting");
         // `process::exit` skips Rust destructors, including the non-blocking
         // file writer guard. Drain it explicitly so the final lifecycle log
