@@ -111,6 +111,21 @@ pub(crate) enum SessionWarningCode {
     /// each names a different remedy (PR #16566 review).
     #[cfg(not(target_arch = "wasm32"))]
     ProjectConfigVersionInvalid,
+    /// A loaded `.perl-lsp.toml` carried a setting value the server refused to
+    /// apply (subject: the offending config path fingerprint + setting name).
+    ///
+    /// A separate kind from [`SessionWarningCode::ProjectConfigInvalid`] and
+    /// [`SessionWarningCode::ProjectConfigVersionInvalid`] because the file
+    /// parsed and loaded cleanly: only one value was unusable, and the rest of
+    /// the file is in force. The user fixes the value, not the file (#16598).
+    ///
+    /// The subject also carries the **setting name**, unlike its siblings. A
+    /// file with two unusable settings gets one warning per setting, because
+    /// each names a different edit; the value itself stays out of the identity
+    /// so re-reading the same file cannot produce a fresh popup for the same
+    /// correction.
+    #[cfg(not(target_arch = "wasm32"))]
+    ProjectConfigSettingValueInvalid,
 }
 
 /// Closed set of static dimensions that distinguish identities inside one
@@ -397,6 +412,39 @@ impl SessionWarningDedupStore {
                 code,
                 SessionWarningSubjectTag::None,
                 config_path,
+            ),
+            emit,
+        )
+    }
+
+    /// Decide, emit, and roll back on failed delivery for one unusable
+    /// `.perl-lsp.toml` setting value.
+    ///
+    /// Same persistent-condition family as the sibling project-config
+    /// warnings, with the subject refined to **config path + setting name**
+    /// so suppression is per setting rather than per file: a file carrying two
+    /// bad settings warns once for each, and re-reading the file on every
+    /// `didOpen` still warns only once per setting. The rejected *value* is
+    /// deliberately excluded from the identity — the user corrects the setting,
+    /// and a value that keeps changing is the same condition, not a new one
+    /// (#16548, #16598).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn emit_project_setting_value_warning(
+        &self,
+        config_path: &str,
+        setting: &str,
+        emit: impl FnOnce() -> bool,
+    ) -> SessionWarningDecision {
+        let mut subject = String::with_capacity(config_path.len() + setting.len() + 1);
+        subject.push_str(config_path);
+        subject.push('\u{0}');
+        subject.push_str(setting);
+        self.emit_once_with(
+            SessionWarningFamily::ProjectConfig,
+            SessionWarningIdentity::fingerprinted(
+                SessionWarningCode::ProjectConfigSettingValueInvalid,
+                SessionWarningSubjectTag::None,
+                &subject,
             ),
             emit,
         )

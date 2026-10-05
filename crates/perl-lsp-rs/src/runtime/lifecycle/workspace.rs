@@ -279,7 +279,13 @@ impl LspServer {
                     );
                 }
                 let mut server_config = self.config.lock();
-                config.apply_to_server_config(&mut server_config);
+                let rejected_setting_values = config.apply_to_server_config(&mut server_config);
+                drop(server_config);
+                self.emit_rejected_setting_value_warning(
+                    "single-file project",
+                    &rejected_setting_values,
+                    selected_config_path.as_deref(),
+                );
             }
             // Replay cached tier-3 (client) settings on top so the
             // documented layering (init-options < TOML < client responses)
@@ -448,13 +454,30 @@ impl LspServer {
             let (merged, conflicts) =
                 perl_lsp_rs_core::config::merge_project_configs_for_server(&merge_inputs);
 
-            {
+            let rejected_setting_values = {
                 let mut config = self.config.lock();
-                merged.apply_to_server_config(&mut config);
-            }
+                merged.apply_to_server_config(&mut config)
+            };
 
             if !conflicts.is_empty() {
                 self.emit_multi_root_config_conflict_warning(&conflicts);
+            }
+
+            // The merged config is a cross-folder projection, so no single
+            // config file owns a rejected value here; name the folders that
+            // contributed one instead. The per-setting dedup key falls back to
+            // that folder list, which is stable for the merge.
+            if !rejected_setting_values.is_empty() {
+                let contributing = global_configs
+                    .iter()
+                    .map(|(name, _)| name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                self.emit_rejected_setting_value_warning(
+                    &format!("workspace folders {contributing}"),
+                    &rejected_setting_values,
+                    None,
+                );
             }
         }
 
@@ -580,6 +603,59 @@ impl LspServer {
                 }
             },
         );
+    }
+
+    /// Emit a `window/showMessage` Warning for every `.perl-lsp.toml` setting
+    /// value the server refused to apply (#16598).
+    ///
+    /// The file loaded and parsed cleanly — only these values were unusable —
+    /// so the remedy is "correct this value", not "fix the file". One warning
+    /// is emitted per offending setting so each names its own edit, and each
+    /// is deduplicated on the config path plus setting name for the session,
+    /// because the folder is re-read on every `didOpen` and a repeated popup
+    /// trains the user to dismiss the one message that matters (#16548).
+    ///
+    /// The prior accepted value for every rejected setting is already retained
+    /// by the time this runs; rendering the warning changes no server state.
+    fn emit_rejected_setting_value_warning(
+        &self,
+        authority: &str,
+        rejections: &[perl_lsp_rs_core::config::RejectedSettingValue],
+        selected_config_path: Option<&std::path::Path>,
+    ) {
+        if rejections.is_empty() {
+            return;
+        }
+        let identity_path = selected_config_path
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|| authority.to_string());
+        for rejection in rejections {
+            let user_msg = format!(
+                "Perl LSP: {authority}'s .perl-lsp.toml has a setting this server \
+                 could not apply: {}. The previous value is still in use; correct \
+                 the file to enable it.",
+                rejection.render()
+            );
+            tracing::warn!(
+                message = %user_msg,
+                setting = %rejection.setting,
+                "Rejected .perl-lsp.toml setting value"
+            );
+            let _ = self.session_warning_dedup.emit_project_setting_value_warning(
+                &identity_path,
+                &rejection.setting,
+                || match self.show_message(MessageType::Warning, &user_msg) {
+                    Ok(()) => true,
+                    Err(error) => {
+                        tracing::warn!(
+                            %error,
+                            "Failed to send rejected setting value warning"
+                        );
+                        false
+                    }
+                },
+            );
+        }
     }
 
     /// Emit a `window/showMessage` Warning describing the conflicting
