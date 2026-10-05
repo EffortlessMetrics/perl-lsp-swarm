@@ -198,3 +198,124 @@ fn pod_with_multibyte_utf8_content() -> R {
     assert_eq!(my_count, 2, "Should have two 'my' keywords: {texts:?}");
     Ok(())
 }
+
+// ===========================================================================
+// 10. Trivia side channel (#17295): comments and POD are recorded for
+//     trivia-painting surfaces while the main token stream stays trivia-free.
+// ===========================================================================
+
+/// Lex to EOF while asserting the main stream never carries trivia tokens.
+fn drain_main_stream(lexer: &mut PerlLexer<'_>, code: &str) -> R {
+    while let Some(token) = lexer.next_token() {
+        assert!(
+            !matches!(token.token_type, TokenType::Comment(_) | TokenType::Pod),
+            "main token stream must stay comment-free: {token:?} at {}..{} in {code:?}",
+            token.start,
+            token.end
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn comments_are_recorded_in_trivia_side_channel() -> R {
+    let code = "#!/usr/bin/perl\nmy $x = 1; # trailing\n# last line no newline";
+    let mut lexer = PerlLexer::new(code);
+    drain_main_stream(&mut lexer, code)?;
+
+    let trivia = lexer.take_trivia_tokens();
+    assert_eq!(trivia.len(), 3, "shebang + trailing + final comment: {trivia:?}");
+    let spans: Vec<&str> = trivia.iter().map(|t| &code[t.start..t.end]).collect();
+    assert_eq!(spans, ["#!/usr/bin/perl", "# trailing", "# last line no newline"]);
+    // Line terminators stay out of every recorded comment span.
+    assert!(spans.iter().all(|span| !span.contains('\n')), "spans: {spans:?}");
+    // The recorded text matches the source slice.
+    for token in &trivia {
+        let TokenType::Comment(text) = &token.token_type else {
+            return Err(format!("expected Comment trivia, got {:?}", token.token_type).into());
+        };
+        assert_eq!(text.as_ref(), &code[token.start..token.end]);
+    }
+    Ok(())
+}
+
+#[test]
+fn pod_block_is_recorded_in_trivia_side_channel() -> R {
+    let code = "my $x = 1;\n=pod\nname\n=cut\nmy $y = 2;";
+    let mut lexer = PerlLexer::new(code);
+    drain_main_stream(&mut lexer, code)?;
+
+    let trivia = lexer.take_trivia_tokens();
+    assert_eq!(trivia.len(), 1, "one POD block: {trivia:?}");
+    let pod = &trivia[0];
+    assert_eq!(pod.token_type, TokenType::Pod);
+    assert_eq!(&code[pod.start..pod.end], "=pod\nname\n=cut");
+    Ok(())
+}
+
+#[test]
+fn unterminated_pod_side_channel_extends_to_end_of_input() -> R {
+    let code = "=head1 NAME\nbody without cut";
+    let mut lexer = PerlLexer::new(code);
+    drain_main_stream(&mut lexer, code)?;
+
+    let trivia = lexer.take_trivia_tokens();
+    assert_eq!(trivia.len(), 1, "{trivia:?}");
+    assert_eq!(trivia[0].token_type, TokenType::Pod);
+    assert_eq!(trivia[0].start, 0);
+    assert_eq!(trivia[0].end, code.len());
+    Ok(())
+}
+
+#[test]
+fn comment_inside_pod_block_is_not_double_recorded() -> R {
+    let code = "=pod\n# not a comment inside POD\n=cut\n# real comment";
+    let mut lexer = PerlLexer::new(code);
+    drain_main_stream(&mut lexer, code)?;
+
+    let trivia = lexer.take_trivia_tokens();
+    assert_eq!(trivia.len(), 2, "POD block + trailing comment: {trivia:?}");
+    assert_eq!(trivia[0].token_type, TokenType::Pod);
+    assert_eq!(&code[trivia[0].start..trivia[0].end], "=pod\n# not a comment inside POD\n=cut");
+    assert_eq!(&code[trivia[1].start..trivia[1].end], "# real comment");
+    Ok(())
+}
+
+#[test]
+fn trivia_drain_is_destructive() -> R {
+    let code = "# once\nmy $x = 1;";
+    let mut lexer = PerlLexer::new(code);
+    while lexer.next_token().is_some() {}
+    assert_eq!(lexer.take_trivia_tokens().len(), 1);
+    assert!(lexer.take_trivia_tokens().is_empty(), "a second drain must return nothing");
+    Ok(())
+}
+
+#[test]
+fn checkpoint_restore_clears_trivia_recorded_before_the_boundary() -> R {
+    use perl_lexer::checkpoint::Checkpointable;
+
+    let code = "# before\nmy $x = 1;\n# after\n";
+    let mut lexer = PerlLexer::new(code);
+    let mut boundary = None;
+    while let Some(token) = lexer.next_token() {
+        if token.token_type == TokenType::Semicolon {
+            boundary = Some(lexer.checkpoint());
+        }
+    }
+    let boundary = boundary.ok_or("no statement boundary found")?;
+
+    // A full pass records both comments; a lexer resumed from the statement
+    // boundary must record only the comment after it.
+    let mut full = PerlLexer::new(code);
+    while full.next_token().is_some() {}
+    assert_eq!(full.take_trivia_tokens().len(), 2);
+
+    let mut resumed = PerlLexer::new(code);
+    resumed.restore(&boundary)?;
+    while resumed.next_token().is_some() {}
+    let trivia = resumed.take_trivia_tokens();
+    assert_eq!(trivia.len(), 1, "restore must drop pre-boundary trivia: {trivia:?}");
+    assert_eq!(&code[trivia[0].start..trivia[0].end], "# after");
+    Ok(())
+}

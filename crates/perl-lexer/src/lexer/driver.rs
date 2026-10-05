@@ -34,6 +34,7 @@ impl<'a> PerlLexer<'a> {
             logical_source: None,
             generation: perl_source_identity::SourceGeneration::Unknown,
             content_digest: std::sync::OnceLock::new(),
+            trivia_tokens: Vec::new(),
         }
     }
 
