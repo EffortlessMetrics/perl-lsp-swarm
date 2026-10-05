@@ -24,8 +24,31 @@ struct DocumentSymbolProbeCounts {
     result: usize,
 }
 
-/// Opt-in, source-private observation of the actual documentSymbol return branch.
-/// The disabled tracing target avoids snapshot/hash work on ordinary requests.
+const DOCUMENT_SYMBOL_PROBE_HASH_LIMIT_BYTES: usize = 64 * 1024;
+const DOCUMENT_SYMBOL_PROBE_ID_LIMIT_BYTES: usize = 256;
+
+fn document_symbol_probe_request_id(id: Option<&Value>) -> (Option<&Value>, Option<usize>) {
+    let bytes = id.and_then(Value::as_str).map(str::len);
+    (
+        id.filter(|id| {
+            id.is_null()
+                || id.is_number()
+                || id.as_str().is_some_and(|id| id.len() <= DOCUMENT_SYMBOL_PROBE_ID_LIMIT_BYTES)
+        }),
+        bytes,
+    )
+}
+
+fn document_symbol_probe_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        std::env::var("PERL_LSP_DOCUMENT_SYMBOL_PROBE").is_ok_and(|value| value == "1")
+    })
+}
+
+/// Explicitly opted-in observation of the actual documentSymbol return branch.
+/// Ordinary requests, including global debug logging, avoid snapshot/hash work.
+/// Fingerprints are content-derived; raw source text and URIs are never emitted.
 fn emit_document_symbol_probe(
     request_id: Option<&Value>,
     branch: &str,
@@ -33,9 +56,13 @@ fn emit_document_symbol_probe(
     counts: DocumentSymbolProbeCounts,
     cap: usize,
 ) {
-    if !tracing::enabled!(target: "document_symbol_probe", tracing::Level::DEBUG) {
+    if !document_symbol_probe_enabled()
+        || !tracing::enabled!(target: "document_symbol_probe", tracing::Level::DEBUG)
+    {
         return;
     }
+    let request_id_was_present = request_id.is_some();
+    let (request_id, request_id_bytes) = document_symbol_probe_request_id(request_id);
     let current = doc.and_then(|doc| doc.current_parsed());
     let latest = doc.and_then(|doc| doc.latest_parsed());
     let statements =
@@ -46,6 +73,10 @@ fn emit_document_symbol_probe(
     let receipt = json!({
         "kind": "document_symbol_branch_probe",
         "request_id": request_id,
+        "request_id_omitted": request_id_was_present && request_id.is_none(),
+        "request_id_string_bytes": request_id_bytes,
+        "request_id_limit_bytes": DOCUMENT_SYMBOL_PROBE_ID_LIMIT_BYTES,
+        "request_id_omitted_byte_limit": request_id_bytes.is_some_and(|bytes| bytes > DOCUMENT_SYMBOL_PROBE_ID_LIMIT_BYTES),
         "branch": branch,
         "document_present": doc.is_some(),
         "full_sync_required": doc.map(|doc| doc.full_sync_required()),
@@ -54,7 +85,10 @@ fn emit_document_symbol_probe(
         "snapshot_generation": current.as_ref().map(|snapshot| snapshot.generation()),
         "latest_snapshot_generation": latest.as_ref().map(|snapshot| snapshot.generation()),
         "text_bytes": doc.map(|doc| doc.text.len()),
-        "text_hash": doc.map(|doc| perl_lsp_rs_core::tooling::perl_critic::hash_content(&doc.text)),
+        "text_hash": doc.filter(|doc| doc.text.len() <= DOCUMENT_SYMBOL_PROBE_HASH_LIMIT_BYTES)
+            .map(|doc| perl_lsp_rs_core::tooling::perl_critic::hash_content(&doc.text)),
+        "text_hash_limit_bytes": DOCUMENT_SYMBOL_PROBE_HASH_LIMIT_BYTES,
+        "text_hash_omitted_byte_limit": doc.map(|doc| doc.text.len() > DOCUMENT_SYMBOL_PROBE_HASH_LIMIT_BYTES),
         "snapshot_content_hash": current.as_ref().map(|snapshot| snapshot.content_hash()),
         "ast_present": current.as_ref().is_some_and(|snapshot| snapshot.ast().is_some()),
         "root_statement_count": statements,
@@ -881,6 +915,20 @@ mod tests {
         CONTENT_MODIFIED, INTERNAL_ERROR, INVALID_PARAMS, JsonRpcId, JsonRpcRequest,
         JsonRpcResponse, METHOD_NOT_FOUND, REQUEST_FAILED,
     };
+
+    #[test]
+    fn document_symbol_probe_id_budget_preserves_small_ids_and_omits_large_utf8_ids() {
+        let numeric = json!(42);
+        assert_eq!(document_symbol_probe_request_id(Some(&numeric)), (Some(&numeric), None));
+        let at_limit = json!("x".repeat(256));
+        assert_eq!(document_symbol_probe_request_id(Some(&at_limit)), (Some(&at_limit), Some(256)));
+        let over_limit = json!("é".repeat(129));
+        assert_eq!(document_symbol_probe_request_id(Some(&over_limit)), (None, Some(258)));
+        // Omission affects the receipt only; the original response ID survives.
+        assert_eq!(over_limit.as_str().map(str::len), Some(258));
+        let compound = json!({"invalid_id": "x".repeat(257)});
+        assert_eq!(document_symbol_probe_request_id(Some(&compound)), (None, None));
+    }
 
     #[test]
     fn push_multiline_folding_range_boundary_discriminator_end_line_gt_start_line_rejects_equal_input()

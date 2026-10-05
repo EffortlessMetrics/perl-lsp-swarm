@@ -427,6 +427,7 @@ fn ux_latency_document_symbols_returns_real_process_shape() -> Result<()> {
     for session in 0..4 {
         let mut config = e2e_config(timeout());
         config.extra_env.extend([
+            ("PERL_LSP_DOCUMENT_SYMBOL_PROBE".to_string(), Some("1".to_string())),
             ("PERL_LSP_LOG".to_string(), Some("warn,document_symbol_probe=debug".to_string())),
             ("RUST_LOG".to_string(), None),
             ("NO_COLOR".to_string(), Some("1".to_string())),
@@ -474,9 +475,19 @@ fn ux_latency_document_symbols_returns_real_process_shape() -> Result<()> {
             }),
         )?;
         let desync = document_symbol_probe_request(&harness, "desync-control.pl")?;
+        // One bounded control proves oversized buffers retain the wire result
+        // while avoiding a content fingerprint scan in the opted-in probe.
+        let over_limit = if session == 0 {
+            let source = format!("sub alpha {{}}\n#{}\n", "x".repeat(64 * 1024));
+            harness.open_file("hash-limit-control.pl", &source)?;
+            Some(document_symbol_probe_request(&harness, "hash-limit-control.pl")?)
+        } else {
+            None
+        };
         let expected = [&immediate, &empty, &unopened, &desync];
         let mut observed_responses = expected.to_vec();
         observed_responses.extend(after_ready.as_ref());
+        observed_responses.extend(over_limit.as_ref());
         let branches = wait_for_document_symbol_branch_probes(&harness, &observed_responses);
         emit_document_symbol_probe_receipt(&json!({
             "kind": "document_symbol_same_child_probe",
@@ -489,6 +500,7 @@ fn ux_latency_document_symbols_returns_real_process_shape() -> Result<()> {
             "empty_raw_envelope": empty,
             "unopened_raw_envelope": unopened,
             "full_sync_raw_envelope": desync,
+            "hash_limit_raw_envelope": over_limit,
             "handler_branches": branches,
         }))?;
 
@@ -518,6 +530,19 @@ fn ux_latency_document_symbols_returns_real_process_shape() -> Result<()> {
             "full-sync control must return []"
         );
 
+        let primary = probe_receipt(&branches, &immediate).context("missing primary receipt")?;
+        assert!(primary["text_hash"].is_u64(), "small fixture must retain its fingerprint");
+        assert_eq!(primary["text_hash_omitted_byte_limit"], false);
+        if let Some(over_limit) = &over_limit {
+            let receipt =
+                probe_receipt(&branches, over_limit).context("missing hash-limit receipt")?;
+            assert_eq!(receipt["text_hash_limit_bytes"], 64 * 1024);
+            assert!(receipt["text_bytes"].as_u64().is_some_and(|bytes| bytes > 64 * 1024));
+            assert!(receipt["text_hash"].is_null(), "over-limit source must not be hashed");
+            assert_eq!(receipt["text_hash_omitted_byte_limit"], true);
+            assert!(symbol_tree_contains_name(document_symbol_probe_result(over_limit)?, "alpha"));
+        }
+
         let symbols = document_symbol_probe_result(&immediate)?;
         assert!(
             symbol_tree_contains_name(symbols, "alpha"),
@@ -531,6 +556,49 @@ fn ux_latency_document_symbols_returns_real_process_shape() -> Result<()> {
         );
         harness.assert_no_crash();
     }
+    Ok(())
+}
+
+#[test]
+fn ux_latency_document_symbol_probe_requires_explicit_opt_in() -> Result<()> {
+    if !binary_available() {
+        return Ok(());
+    }
+    let mut config = e2e_config(timeout());
+    config.extra_env.extend([
+        ("PERL_LSP_DOCUMENT_SYMBOL_PROBE".to_string(), None),
+        ("PERL_LSP_LOG".to_string(), Some("debug".to_string())),
+        ("RUST_LOG".to_string(), None),
+        ("NO_COLOR".to_string(), Some("1".to_string())),
+    ]);
+    let harness = UxHarness::new(config)?;
+    harness.open_file("probe-opt-out.pl", SYMBOL_SOURCE)?;
+    let response = document_symbol_probe_request(&harness, "probe-opt-out.pl")?;
+    assert!(symbol_tree_contains_name(document_symbol_probe_result(&response)?, "alpha"));
+    harness.client.shutdown_and_exit(timeout())?;
+    // The exit INFO marker follows this response and fences the asynchronous
+    // stderr reader. Elapsed time alone cannot prove absence of an earlier log.
+    let deadline = Instant::now() + Duration::from_secs(1);
+    loop {
+        if harness.client.peek_stderr_lines().iter().any(|line| line.contains("LSP server exiting"))
+        {
+            break;
+        }
+        if Instant::now() >= deadline {
+            bail!("missing post-response stderr exit fence for probe opt-out control");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let branches = document_symbol_branch_probes(&harness);
+    emit_document_symbol_probe_receipt(&json!({
+        "kind": "document_symbol_opt_out_probe",
+        "raw_envelope": response,
+        "handler_branches": branches,
+    }))?;
+    assert!(
+        branches.is_empty(),
+        "global debug logging must not opt into document symbol fingerprints"
+    );
     Ok(())
 }
 
@@ -581,8 +649,12 @@ fn wait_for_document_symbol_branch_probes(harness: &UxHarness, responses: &[&Val
 }
 
 fn probe_branch<'a>(branches: &'a [Value], response: &Value) -> Option<&'a str> {
+    probe_receipt(branches, response)?.get("branch")?.as_str()
+}
+
+fn probe_receipt<'a>(branches: &'a [Value], response: &Value) -> Option<&'a Value> {
     let id = response.get("id")?;
-    branches.iter().find(|branch| branch.get("request_id") == Some(id))?.get("branch")?.as_str()
+    branches.iter().find(|branch| branch.get("request_id") == Some(id))
 }
 
 fn emit_document_symbol_probe_receipt(receipt: &Value) -> Result<()> {
