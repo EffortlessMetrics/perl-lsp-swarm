@@ -110,10 +110,34 @@ fn parse_diff_hunks(diff_text: &str) -> ParsedDiff {
 }
 
 /// From a hunk header body ` -a,b +c,d @@ ...`, return the new-file start line
-/// `c` as a 0-based line (`c - 1`). `None` if the `+c` token is unparseable.
+/// `c` as a 0-based line (`c - 1`). The full header shape is validated: two
+/// numeric range tokens (`-old`, `+new`) followed by the closing `@@`. `None`
+/// if any part is missing or unparseable, so a malformed header such as
+/// `@@ nonsense +5` never counts as recognized structure (#17266 review).
 fn parse_hunk_new_start(header_rest: &str) -> Option<u32> {
-    let plus = header_rest.split_whitespace().find(|tok| tok.starts_with('+'))?;
-    let start: u32 = plus.trim_start_matches('+').split(',').next()?.parse().ok()?;
+    let (range_part, _) = header_rest.split_once("@@")?;
+    let mut toks = range_part.split_whitespace();
+    let old_tok = toks.next()?;
+    let new_tok = toks.next()?;
+    if toks.next().is_some() {
+        return None;
+    }
+    parse_range_start(old_tok, '-')?;
+    parse_range_start(new_tok, '+')
+}
+
+/// Parse one hunk range token (`-a[,b]` / `+c[,d]`) into its 0-based start
+/// line. Both the start and the optional count must be all-digit numerics.
+fn parse_range_start(tok: &str, prefix: char) -> Option<u32> {
+    let body = tok.strip_prefix(prefix)?;
+    let mut parts = body.split(',');
+    let start: u32 = parts.next()?.parse().ok()?;
+    if let Some(count) = parts.next() {
+        let _count: u32 = count.parse().ok()?;
+    }
+    if parts.next().is_some() {
+        return None;
+    }
     Some(start.saturating_sub(1))
 }
 
@@ -633,18 +657,23 @@ mod tests {
 
     #[test]
     fn emit_changes_from_diff_malformed_hunk_header_is_unparseable() {
-        // `@@ not a hunk` looks like a hunk header but its `+c` token does
-        // not parse: it must NOT count as recognized structure, so the
-        // input is still labeled `diff-unparseable` (#17266 review).
-        let files = vec![json!({ "file_id": "file:lib/My/App.pm" })];
-        let owners: Vec<Value> = Vec::new();
-        let (changes, limitations) =
-            emit_changes_from_diff("@@ not a hunk\n+    return 1;\n", ".", &files, &owners);
-        assert!(changes.is_empty(), "malformed hunk header yields no changes");
-        assert!(
-            limitations.iter().any(|l| l["limitation_id"] == "diff-unparseable"),
-            "malformed @@ header must still be labeled unparseable, got: {limitations:?}"
-        );
+        // These look like hunk headers but fail full-header validation (no
+        // numeric `-old +new` pair closed by `@@`): none must count as
+        // recognized structure, so each input is still labeled
+        // `diff-unparseable` (#17266 review).
+        for header in
+            ["@@ not a hunk\n", "@@ nonsense +5\n", "@@ nonsense +5 @@\n", "@@ -5,3 +5,foo @@\n"]
+        {
+            let files = vec![json!({ "file_id": "file:lib/My/App.pm" })];
+            let owners: Vec<Value> = Vec::new();
+            let diff = format!("{header}+    return 1;\n");
+            let (changes, limitations) = emit_changes_from_diff(&diff, ".", &files, &owners);
+            assert!(changes.is_empty(), "malformed hunk header yields no changes: {header:?}");
+            assert!(
+                limitations.iter().any(|l| l["limitation_id"] == "diff-unparseable"),
+                "malformed @@ header must still be labeled unparseable ({header:?}), got: {limitations:?}"
+            );
+        }
     }
 
     #[test]
