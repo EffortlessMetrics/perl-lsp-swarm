@@ -117,9 +117,20 @@ class ConsumerPacket(unittest.TestCase):
         formats = ["repo-badge-json", "repo-seams-json"]
         self.assertEqual(phases["baseline"]["fresh_generation_repo_checks"], formats)
         self.assertEqual(phases["validation"]["additional_repo_checks"], formats)
+        self.assertIn("hosted", self.collect()["source_profile"]["lane"])
+        self.assertIn("cargo install ripr --version 0.10.0 --locked", phases["freshness_and_build"]["host_setup"])
+        self.assertIn("cargo install ripr --version 0.10.0 --locked", phases["pr_evidence"]["container_setup"])
+        self.assertIn("observe-xtask-build.sh container -- cargo build -p xtask --locked",
+                      phases["pr_evidence"]["container_setup"])
+        self.assertIn("ripr doctor", phases["pr_evidence"]["container_setup"])
+        self.assertIn("25m", phases["pr_evidence"]["analysis_envelope"])
+        self.assertIn("40m", phases["pr_evidence"]["container_envelope"])
+        self.assertIn("no new RIPR analysis", phases["pr_evidence"]["immediate_validation"][1])
         self.assertIn("no new RIPR analysis", phases["validation"]["pr_check"])
         self.assertIn("--check", phases["genuine_gap_gate"]["commands"][1])
         self.assertIn("ready", phases["proof_export"]["condition"])
+        self.assertIn("partial diagnostics", phases["proof_export"]["proof_boundary"])
+        self.assertIn("static-limitation credit", phases["genuine_gap_gate"]["requires"])
         self.assertIn("no proof authority", phases["diagnostic_export"]["condition"])
         self.assertIn("success()", phases["memo_save"]["condition"])
 

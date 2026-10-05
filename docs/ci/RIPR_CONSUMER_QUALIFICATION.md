@@ -14,7 +14,8 @@ The accepted source profile is the workflow blob
 `4319363165a78b80bb826299246c6c56da271b5d`. Their immutable identities bind the
 static phase recipe. Different source requires reviewed recipe qualification;
 the collector refuses it instead of guessing compatibility. The live consumer
-pins **0.10.0**. The separately identified inactive `.ci/ripr-proof.sh` profile
+recipe describes the primary hosted `ripr-github` lane; selfhosted and disk-full
+fallback lanes need separate qualification. It pins **0.10.0**. The separately identified inactive `.ci/ripr-proof.sh` profile
 requires **0.10.1**; neither that script nor an upstream source version qualifies
 a replacement binary. Executed binary hash, features and toolchain remain runtime
 evidence requirements.
@@ -80,7 +81,22 @@ See the [exact run/attempt](https://github.com/EffortlessMetrics/perl-lsp-swarm/
 The retained worker log ends during baseline. It does not show guidance-child entry,
 and establishes no timeout, OOM or initiating lost-contact cause.
 
-The complete recipe includes fresh baseline badge/seam analysis, required guidance,
+Host preparation includes full-history checkout, the freshness handoff, restore-only
+Cargo/fact caches, locked RIPR installation, observer fixture controls, host xtask
+build and doctor. Cold/warm accounting includes these costs. The PR producer then
+pulls and identifies its image, installs system dependencies
+and locked RIPR 0.10.0, records binary/toolchain identity, builds xtask again inside
+the container, and runs `ripr doctor`. Its timed analysis is followed immediately
+by a nonempty exposure check, `ripr-pr --check` and the invocation freshness-token
+check. Analysis has TERM at 25 minutes plus a 30-second kill delay; the enclosing
+container has TERM at 40 minutes plus a 30-second kill delay, covering setup,
+build, analysis and that check. Image pull and inspection have separate bounds.
+The EXIT trap bounds container inspection/removal separately; ownership restoration
+has no separate timeout. Configured bounds do not establish process-tree settlement.
+The host fact-cache path is not passed or mounted into this container; its restoration
+does not establish warm container PR analysis.
+
+The subsequent recipe includes fresh baseline badge/seam analysis, required guidance,
 derived outputs, six contract checks, both genuine-gap gate passes, freshness-bound
 proof export, separate diagnostic export and the unchanged successful fresh-producer
 memo-save. **Mandatory `ripr-plus --check` runs two more repository-wide analyses**
@@ -90,6 +106,13 @@ does not rerun RIPR analysis. The 3600-second bound is for the guidance child,
 not its entire Cargo/fallback/settlement phase or the 135-minute hosted job.
 No full-sequence cost can be derived by adding configured limits or extrapolating
 unreached checks.
+
+Downstream producers, validation, gate and summary attempt `always()` continuation.
+The export's `ready` guard proves invocation invalidation, not successful producer
+completion; a partial archive does not establish validated proof. The existing gate
+interprets guidance status: missing/invalid/stale receipts block; incomplete guidance
+can name actionable failure evidence, while static-limitation credit requires completed
+head-bound guidance. Collection preserves that contract and supplies no gate verdict.
 
 Qualification must retain actual selected/parsed/indexed/closure populations,
 effective exclusions, cold/warm reuse, per-phase user/system CPU and wall time,
@@ -105,7 +128,7 @@ upstream Rust guidance replay [#4693](https://github.com/EffortlessMetrics/ripr-
 These Rust consumer inputs do not replace ordinary/large Perl product corpora.
 [#10064](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/10064)/
 [#10066](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/10066) own executor
-qualification, #17122 owns canonical orchestration, #13718 owns admission, and
+qualification, #17122 owns canonical orchestration, #13718 owns admission inputs, and
 #17224 owns authorized protected continuation. This collector grants none of those
 authorities and cannot recover the consumed attempt.
 
