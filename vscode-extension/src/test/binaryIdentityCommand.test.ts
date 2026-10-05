@@ -13,7 +13,11 @@ import {
   type BinaryIdentityCommandHost,
   type BinaryIdentityRequestClient,
 } from '../binaryIdentityCommand';
-import { createBinaryIdentityCommand, createBinaryIdentityDialogShow } from '../extension';
+import {
+  createBinaryIdentityCommand,
+  createBinaryIdentityDialogShow,
+  installedIdentityFromManifest,
+} from '../extension';
 
 function response(): BinaryIdentityResponseV1 {
   return {
@@ -205,6 +209,61 @@ describe('binary identity command', () => {
     };
     expect(second.expected_extension).not.toHaveProperty('candidate_identity');
     expect(second.expected_extension).not.toHaveProperty('target');
+  });
+
+  test('installed identity carries the release-tag token, not the hash-derived cache id', () => {
+    // The server compares `candidate_identity` against its build-embedded
+    // release tag (`PERL_LSP_CANDIDATE_ID`), so the manifest's `subject.release`
+    // — the same tag — is the only comparable value. The manifest's hash-derived
+    // `candidate_id` is a local managed-cache key that can never match it.
+    const manifest = {
+      schema_version: 'managed_candidate_manifest.v1' as const,
+      candidate_id: `candidate-${'a'.repeat(64)}`,
+      subject: {
+        release: 'v0.18.0',
+        version: 'v0.18.0',
+        target: 'x86_64-unknown-linux-gnu',
+        topology_digest: 'sha256:0'.padEnd(71, '0'),
+        perllsp_digest: 'sha256:0'.padEnd(71, '0'),
+        perl_dap_digest: null,
+      },
+      verification: {
+        perllsp: 'verified' as const,
+        perl_dap: 'not_present' as const,
+        topology: 'verified' as const,
+        provenance: 'verified' as const,
+      },
+    };
+    expect(installedIdentityFromManifest(manifest)).toEqual({
+      candidate: 'v0.18.0',
+      target: 'x86_64-unknown-linux-gnu',
+    });
+  });
+
+  test('installed identity omits the expectations for a missing or mistyped subject', () => {
+    expect(installedIdentityFromManifest(null)).toBeUndefined();
+    expect(installedIdentityFromManifest({})).toBeUndefined();
+    expect(
+      installedIdentityFromManifest({
+        schema_version: 'managed_candidate_manifest.v1',
+        candidate_id: `candidate-${'a'.repeat(64)}`,
+        subject: { release: 'v0.18.0' },
+      }),
+    ).toBeUndefined();
+    expect(
+      installedIdentityFromManifest({
+        schema_version: 'managed_candidate_manifest.v1',
+        candidate_id: `candidate-${'a'.repeat(64)}`,
+        subject: { release: 'v0.18.0', target: 42 },
+      }),
+    ).toBeUndefined();
+    expect(
+      installedIdentityFromManifest({
+        schema_version: 'managed_candidate_manifest.v1',
+        candidate_id: `candidate-${'a'.repeat(64)}`,
+        subject: { release: 7, target: 'x86_64-unknown-linux-gnu' },
+      }),
+    ).toBeUndefined();
   });
 
   test('production dialog maps the selected action to the governed callback', async () => {

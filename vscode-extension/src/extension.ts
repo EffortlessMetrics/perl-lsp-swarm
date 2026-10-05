@@ -282,10 +282,45 @@ export function createBinaryIdentityCommand(
 }
 
 /**
+ * Maps an installed managed candidate manifest to the identity expectations
+ * the server can actually compare. The server's embedded `candidate_identity`
+ * is the release-tag token its release build embedded (`release.yml`
+ * `CANDIDATE_ID: ${{ needs.release-metadata.outputs.tag }}` →
+ * `scripts/release_build_identity.py` `PERL_LSP_CANDIDATE_ID` →
+ * `product_identity.rs:441`), and the manifest's `subject.release` records
+ * that same tag for the archive this binary came from. The manifest's
+ * hash-derived `candidate_id` is a local managed-cache key in a different
+ * identity vocabulary; sending it would compare a `candidate-<sha256>` token
+ * against a release tag and report `candidate_mismatch` on every valid
+ * managed install. `undefined` when the manifest is absent or its subject
+ * fields are not strings, so the identity request omits the expectations
+ * instead of fabricating or mistyping them.
+ */
+export function installedIdentityFromManifest(
+  manifest: unknown,
+): { candidate: string; target: string } | undefined {
+  // The shared reader validates the manifest envelope (schema_version,
+  // candidate_id) but not `subject`, so the identity fields are read through
+  // the same defensive shape the reader itself casts to; a tampered manifest
+  // missing its subject omits the expectations instead of throwing in the
+  // builder.
+  const subject = (manifest as { subject?: { release?: unknown; target?: unknown } } | null)
+    ?.subject;
+  if (
+    subject === undefined ||
+    typeof subject.release !== 'string' ||
+    typeof subject.target !== 'string'
+  ) {
+    return undefined;
+  }
+  return { candidate: subject.release, target: subject.target };
+}
+
+/**
  * The installed managed candidate's recorded identity, read from the resolved
- * install dir's `candidate.json` manifest (#10083). This is the candidate and
- * target that actually run, not the host-preferred one, so a fallback install
- * (e.g. Windows ARM64 emulation) is compared against what was really
+ * install dir's `candidate.json` manifest (#10083). This is the release tag
+ * and target that actually run, not the host-preferred one, so a fallback
+ * install (e.g. Windows ARM64 emulation) is compared against what was really
  * installed. `undefined` for a user-supplied or pre-policy install, which
  * carries no manifest; the identity request then omits the candidate and
  * target expectations instead of fabricating them.
@@ -295,16 +330,9 @@ function installedManagedIdentity(): { candidate: string; target: string } | und
   if (serverPath === null) {
     return undefined;
   }
-  const manifest = readInstalledManagedCandidateManifest(path.dirname(serverPath));
-  // The shared reader validates the manifest envelope (schema_version,
-  // candidate_id) but not `subject`, so the target is read through the same
-  // defensive shape the reader itself casts to; a tampered manifest missing
-  // `subject` omits the expectations instead of throwing in the builder.
-  const target = (manifest as { subject?: { target?: string } } | null)?.subject?.target;
-  if (manifest === null || target === undefined) {
-    return undefined;
-  }
-  return { candidate: manifest.candidate_id, target };
+  return installedIdentityFromManifest(
+    readInstalledManagedCandidateManifest(path.dirname(serverPath)),
+  );
 }
 
 /**
