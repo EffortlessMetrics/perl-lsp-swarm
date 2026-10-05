@@ -2060,6 +2060,24 @@ jobs:
       - name: Compile all targets (catches integration-test + bench bit-rot)
         run: just check-all-targets
 
+      # #17349: routed xtask library failures can prevent this integration
+      # target from executing. Run its 15 retained tests independently here;
+      # require the real workflow assertion and both positive/negative controls.
+      - name: PR-fast watchdog contract (required merge surface)
+        run: |
+          set -o pipefail
+          cargo test -p xtask --test gates_1469_pr_required_static_checks --locked -- \
+            --test-threads=1 --color never | tee "$RUNNER_TEMP/pr-fast-watchdog-contract.log"
+          # Reject zero matches, ignored/filtered tests, and missing target controls.
+          grep -Eq '^test result: ok\. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in ' \
+            "$RUNNER_TEMP/pr-fast-watchdog-contract.log"
+          for test_name in \
+            ci_workflow_runs_unit_routed_full_in_pr_smoke \
+            pr_fast_watchdog_accepts_direct_and_heredoc_runners \
+            pr_fast_watchdog_rejects_untimed_or_status_losing_runners; do
+            grep -Fx "test $test_name ... ok" "$RUNNER_TEMP/pr-fast-watchdog-contract.log"
+          done
+
       # The frozen legacy parity authority is a required merge surface. Keep
       # both integration targets here because compile-all-targets alone cannot
       # execute their assertions, and the routed pr-fast lane is advisory.
