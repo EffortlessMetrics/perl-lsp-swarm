@@ -1,0 +1,1 @@
+{"framework": "Test::More", "runner_hints": ["prove"], "expected_oracles": [{"call": "warning_is", "kind": "warn_observer", "strength": "weak_broad"}, {"call": "warning_like", "kind": "warn_observer", "strength": "weak_broad"}, {"call": "warnings_are", "kind": "warn_observer", "strength": "weak_broad"}]}
