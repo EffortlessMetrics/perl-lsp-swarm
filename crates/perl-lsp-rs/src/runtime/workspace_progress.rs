@@ -20,6 +20,31 @@ pub(super) fn send_index_ready_notification(outbound: &dyn OutboundSink, state: 
     }
 }
 
+/// Report the initial scan's budget-exceeded window as `ready_limited` without
+/// moving the coordinator out of its live state.
+///
+/// #17245: the scan keeps indexing past the budget while the workspace index
+/// really is partial, so the client still gets the degraded signal at the trip
+/// moment. The payload is exactly what a `Degraded(ScanTimeout)` state would
+/// produce; the coordinator itself stays in `Building` because the scan is
+/// still running — degrading it mid-scan would let generic parse-storm
+/// recovery mark the workspace Ready while unindexed files remain (review on
+/// PR #17274).
+#[cfg(feature = "workspace")]
+pub(super) fn send_index_budget_exceeded_notification(
+    outbound: &dyn OutboundSink,
+    elapsed_ms: u64,
+) {
+    let payload = index_readiness_payload(&IndexState::Degraded {
+        reason: perl_workspace::workspace_index::DegradationReason::ScanTimeout { elapsed_ms },
+        available_symbols: 0,
+        since: std::time::Instant::now(),
+    });
+    if let Err(e) = outbound.send_notification("perl-lsp/index-ready", payload) {
+        tracing::warn!(error = %e, "Failed to send index-ready notification");
+    }
+}
+
 #[cfg(feature = "workspace")]
 fn index_readiness_payload(state: &IndexState) -> serde_json::Value {
     let (ready, state_name, reason) = match state {

@@ -8,8 +8,8 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use crate::emitter::{
-    emit_boundaries_and_commands, emit_changes_from_diff, emit_files_and_owners,
-    emit_relations_and_discriminators, emit_tests_and_oracles,
+    diff_provenance_unverified_limitation, emit_boundaries_and_commands, emit_changes_from_diff,
+    emit_files_and_owners, emit_relations_and_discriminators, emit_tests_and_oracles,
 };
 use crate::request::{
     EXPECTED_RIPR_FACTS_SCHEMA, RiprFactsError, RiprFactsRequest, normalize_fact_classes,
@@ -40,6 +40,53 @@ pub fn build_ripr_facts_packet(
     // Validate root is repo-relative (forward-slash, no host/drive/temp).
     validate_ripr_facts_path(root, "root").map_err(RiprFactsError::InvalidRoot)?;
 
+    // Name the root condition (#17257): a missing root, or a root that is not a
+    // directory, would otherwise scan silently (the discovery walks return
+    // early on `read_dir` failure) and exit 0 with an undifferentiated
+    // `unavailable` packet. Surface it as a limitation, mirroring the packet's
+    // soft-failure posture, so a typo'd root cannot masquerade as an empty one.
+    let not_a_directory_limitation = || {
+        serde_json::json!({
+            "limitation_id": "root-not-a-directory",
+            "kind": "missing_input",
+            "message": format!("The requested root `{root}` cannot be scanned because a path component is not a directory, so no files were scanned."),
+            "evidence_refs": []
+        })
+    };
+    let root_limitations = match std::fs::metadata(root) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            if root_has_non_directory_ancestor(root) {
+                vec![not_a_directory_limitation()]
+            } else {
+                vec![serde_json::json!({
+                    "limitation_id": "root-missing",
+                    "kind": "missing_input",
+                    "message": format!("The requested root `{root}` does not exist under the current directory, so no files were scanned. An empty packet here means \"root not found\", not \"root is empty\"."),
+                    "evidence_refs": []
+                })]
+            }
+        }
+        Err(_) if root_has_non_directory_ancestor(root) => {
+            vec![not_a_directory_limitation()]
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotADirectory => {
+            vec![not_a_directory_limitation()]
+        }
+        Err(error) => vec![serde_json::json!({
+            "limitation_id": "root-inspection-failed",
+            "kind": "read_failure",
+            "message": format!("The requested root `{root}` could not be inspected ({error}), so no files were scanned."),
+            "evidence_refs": []
+        })],
+        Ok(metadata) if !metadata.is_dir() => vec![serde_json::json!({
+            "limitation_id": "root-not-a-directory",
+            "kind": "missing_input",
+            "message": format!("The requested root `{root}` exists but is not a directory, so no files were scanned."),
+            "evidence_refs": []
+        })],
+        Ok(_) => Vec::new(),
+    };
+
     // Validate + normalize fact classes.
     let normalized_classes =
         normalize_fact_classes(fact_classes).map_err(RiprFactsError::InvalidFactClasses)?;
@@ -59,7 +106,9 @@ pub fn build_ripr_facts_packet(
     let wants_tests = normalized_classes.iter().any(|c| c == "tests");
     let wants_oracles = normalized_classes.iter().any(|c| c == "oracles");
     let wants_relations = normalized_classes.iter().any(|c| c == "relations");
-    let (tests, oracles, test_provenance, test_limitations) =
+    let wants_dynamic_boundaries = normalized_classes.iter().any(|c| c == "dynamic_boundaries");
+    let wants_verify_commands = normalized_classes.iter().any(|c| c == "verify_commands");
+    let (tests, oracles, mut test_provenance, mut test_limitations) =
         if wants_tests || wants_oracles || wants_relations {
             emit_tests_and_oracles(root)
         } else {
@@ -70,6 +119,26 @@ pub fn build_ripr_facts_packet(
         emit_relations_and_discriminators(root, &tests, &oracles);
     let has_relation_candidates = !relations.is_empty();
 
+    // Gate `dynamic_boundaries[]`/`verify_commands[]` on the requested classes
+    // (#17256): subset requests must not carry facts outside the advertised
+    // `requested_fact_classes`. The emitter runs when either class is wanted
+    // (one fused walk feeds both, mirroring the "computed for internal need"
+    // split), then each array is dropped unless explicitly requested. Boundary
+    // limitations describe boundary facts, so they flow only when boundaries
+    // are in the packet.
+    let (boundaries, boundary_limitations, verify_commands) =
+        if wants_dynamic_boundaries || wants_verify_commands {
+            emit_boundaries_and_commands(root)
+        } else {
+            (Vec::new(), Vec::new(), Vec::new())
+        };
+    let boundaries = if wants_dynamic_boundaries { boundaries } else { Vec::new() };
+    let boundary_limitations =
+        if wants_dynamic_boundaries { boundary_limitations } else { Vec::new() };
+    let verify_commands = if wants_verify_commands { verify_commands } else { Vec::new() };
+    let has_boundary_facts = !boundaries.is_empty();
+    let has_verify_facts = !verify_commands.is_empty();
+
     // Emit `tests[]`/`oracles[]` only for the specifically-requested classes; the
     // facts computed above may exist solely to feed `relations`. But referential
     // integrity trumps strict gating: an `oracle` carries a required `test_id` and
@@ -78,19 +147,37 @@ pub fn build_ripr_facts_packet(
     // request (nothing references an oracle — relations set `oracle_id: null` in
     // this slice), then keep `tests[]` whenever a relation OR an oracle references
     // one. This preserves the referential integrity origin/main had by always
-    // populating `tests[]`.
+    // populating `tests[]`. A `verify_commands[]` entry likewise carries a
+    // required `test_id`, so it forces `tests[]` too (#17256).
     let mut oracles = if wants_oracles { oracles } else { Vec::new() };
     let has_oracle_facts = !oracles.is_empty();
-    let tests =
-        if wants_tests || has_relation_candidates || has_oracle_facts { tests } else { Vec::new() };
+    let tests = if wants_tests || has_relation_candidates || has_oracle_facts || has_verify_facts {
+        // `#17256`: when neither tests, oracles, nor relations were requested,
+        // the tests parse above never ran — but a `verify_commands` request
+        // needs the referenced `test` facts. Re-run the parse for internal
+        // need (mirroring how PR 4 shared the gate for relations) and adopt
+        // its provenance + limitations: the forced tests reference their
+        // `test_discovery` provenance by id, and dropping it would dangle.
+        // Relations stay empty here — the relation pass above already ran on
+        // empty inputs — so no unrequested class leaks.
+        if !wants_tests && !wants_oracles && !wants_relations {
+            let (forced_tests, _, forced_provenance, forced_limitations) =
+                emit_tests_and_oracles(root);
+            test_provenance = forced_provenance;
+            test_limitations = forced_limitations;
+            forced_tests
+        } else {
+            tests
+        }
+    } else {
+        Vec::new()
+    };
     let has_test_facts = !tests.is_empty();
 
-    let (boundaries, boundary_limitations, verify_commands) = emit_boundaries_and_commands(root);
-    let has_boundary_facts = !boundaries.is_empty();
-    // Verify commands are facts too: a verify-only packet carries usable
-    // commands and must read `partial`, never `unavailable`-with-facts.
-    let has_verify_facts = !verify_commands.is_empty();
-
+    // `has_verify_facts` is computed above from the gated `verify_commands`
+    // array (#17256); main's unconditional emission lived here before the
+    // subset gate moved it up. Same status rule as main (verify facts count),
+    // subset-honoring value.
     // PR 3 (perl-lsp-swarm#3293): emit parser-backed files + owners facts (plus
     // per-file provenance and parse/read limitations) by parsing every Perl
     // source/test file under `root`. Only do the (potentially expensive) walk +
@@ -107,39 +194,67 @@ pub fn build_ripr_facts_packet(
         .any(|class| class == "files" || class == "owners" || class == "provenance");
     // `changes` needs the parsed owners to attribute diff hunks, and a
     // `relation` now carries a resolvable `owner_id` (#3342) — so its referenced
-    // `owners[]`/`files[]` facts must be present in the packet. Run the walk
-    // whenever files/owners/provenance or changes are requested, or a relation
-    // was emitted, mirroring how PR 4 kept `tests[]` for a relation's `test_id`.
-    let (files, owners, file_provenance, file_limitations) =
-        if wants_file_facts_explicit || wants_changes || has_relation_candidates {
-            emit_files_and_owners(root)
-        } else {
-            (Vec::new(), Vec::new(), Vec::new(), Vec::new())
-        };
+    // `owners[]`/`files[]` facts must be present in the packet. Likewise a kept
+    // `verify_commands[]` entry forces its referenced `tests[]` above, and each
+    // forced test carries a `file_id` — so the walk must run then too, or the
+    // forced tests dangle against an empty `files[]` (#17256). A kept
+    // `dynamic_boundaries[]` entry carries a required `file_id` (plus a resolved
+    // `owner_id`), so the walk must run then too (#17270 review). Run the walk
+    // whenever files/owners/provenance or changes are requested, or a relation,
+    // boundary, or verify command was emitted, mirroring how PR 4 kept `tests[]`
+    // for a relation's `test_id`.
+    let (files, owners, file_provenance, file_limitations) = if wants_file_facts_explicit
+        || wants_changes
+        || has_relation_candidates
+        || has_boundary_facts
+        || has_verify_facts
+    {
+        emit_files_and_owners(root)
+    } else {
+        (Vec::new(), Vec::new(), Vec::new(), Vec::new())
+    };
 
     // PR 5 (perl-lsp-swarm#3293): emit diff-owned `changes[]` from a caller-
     // supplied unified diff (`RiprFactsRequest.diff`). No git, no subprocess —
     // the diff is opaque text. `changes` requested without a diff yields an empty
     // array plus a `no-diff-supplied` limitation, so a downstream consumer can
     // distinguish "not analyzed" from "nothing changed".
-    let (changes, change_limitations) = if wants_changes {
+    let (changes, mut change_limitations) = if wants_changes {
         match diff {
             Some(diff_text) if !diff_text.trim().is_empty() => {
                 emit_changes_from_diff(diff_text, root, &files, &owners)
             }
-            _ => (
-                Vec::new(),
-                vec![serde_json::json!({
+            _ => {
+                let limitations = vec![serde_json::json!({
                     "limitation_id": "no-diff-supplied",
                     "kind": "missing_input",
                     "message": "`changes` was requested but no diff text was supplied; no caller derives diff text from base/head yet. An empty `changes[]` here means \"not analyzed\", not \"nothing changed\".",
                     "evidence_refs": []
-                })],
-            ),
+                })];
+                (Vec::new(), limitations)
+            }
         }
     } else {
         (Vec::new(), Vec::new())
     };
+    // `#17258`: `input.base`/`input.head` echo caller strings verbatim —
+    // including garbage — whenever no diff was analyzed, not only when
+    // `changes` was requested. A caller supplying base/head with `files` or
+    // `tests,oracles,relations` (and no diff) previously got unverified refs
+    // echoed with no caveat. So derive the `diff-provenance-unverified`
+    // disclosure independently of `wants_changes`: refs present AND no diff
+    // analyzed (no/blank diff, or `changes` not requested). The diff-supplied
+    // path already carries exactly one via `emit_changes_from_diff`, so it is
+    // excluded here — one caveat per packet, never a duplicate. Packets
+    // without base/head gain no new noise. This rides `change_limitations`
+    // so both merge arms (has-facts + no-facts) surface it — provenance-
+    // about-absence must not depend on fact presence — while the no-diff
+    // golden keeps its exact limitation order.
+    let diff_analyzed =
+        wants_changes && matches!(diff, Some(diff_text) if !diff_text.trim().is_empty());
+    if (base.is_some() || head.is_some()) && !diff_analyzed {
+        change_limitations.push(diff_provenance_unverified_limitation());
+    }
     let has_change_facts = !changes.is_empty();
     let mut relations = bind_relations_to_changes(relations, &changes);
     annotate_oracles_for_bound_relations(&mut oracles, &mut relations, &changes);
@@ -154,17 +269,28 @@ pub fn build_ripr_facts_packet(
     // referenced a `test_id`. `diff-file-not-found` references an UNparsed path
     // (genuinely absent), so it needs no force-include. A `relation`'s resolved
     // `owner_id` (#3342) likewise references an `owners[]` fact, so force
-    // files+owners in whenever a relation was emitted.
+    // files+owners in whenever a relation was emitted. A kept `verify_commands[]`
+    // entry forces `tests[]` whose `file_id`s reference `files[]` (#17256), so
+    // force files+owners in then too. A kept `dynamic_boundaries[]` entry
+    // carries a required `file_id` (+ resolved `owner_id`), so force
+    // files+owners in then too (#17270 review). All force-includes mirror the
+    // relations precedent wholesale: keep ALL files+owners, not just the
+    // referenced subset — filtering to referenced ids would fork the full-class
+    // packet shape subset consumers diff against.
     let changes_reference_known_file = has_change_facts
         || change_limitations.iter().any(|l| {
             l["limitation_id"].as_str().is_some_and(|id| id.starts_with("unattributable-change:"))
         });
-    let (files, owners) =
-        if wants_file_facts_explicit || changes_reference_known_file || has_relation_candidates {
-            (files, owners)
-        } else {
-            (Vec::new(), Vec::new())
-        };
+    let (files, owners) = if wants_file_facts_explicit
+        || changes_reference_known_file
+        || has_relation_candidates
+        || has_boundary_facts
+        || has_verify_facts
+    {
+        (files, owners)
+    } else {
+        (Vec::new(), Vec::new())
+    };
     let has_file_facts = !files.is_empty();
     let has_owner_facts = !owners.is_empty();
 
@@ -244,7 +370,9 @@ pub fn build_ripr_facts_packet(
 
     // Upgrade status + merge limitations if we found any facts. Parse/read
     // limitations from the test and files passes are always surfaced (even with
-    // no facts).
+    // no facts). `verify_commands[]` counts (a verify-only packet carries
+    // usable commands and reads `partial`), computed from the gated array
+    // (#17256) so unrequested verify facts can neither leak nor upgrade.
     let has_facts = has_test_facts
         || has_oracle_facts
         || has_relation_facts
@@ -271,21 +399,28 @@ pub fn build_ripr_facts_packet(
         // because its package exposed no `owners[]` fact. Empty `evidence_refs`,
         // so no referential dependency — always safe to surface.
         all_limitations.extend(relation_limitations);
+        // `#17257`: a bad root can still coexist with diff-derived `changes[]`
+        // (the diff is opaque text, not a scan), so surface the root condition
+        // alongside facts too — never silently.
+        all_limitations.extend(root_limitations);
         packet["limitations"] = serde_json::Value::Array(all_limitations);
     } else if !test_limitations.is_empty()
         || !change_limitations.is_empty()
         || !file_limitations.is_empty()
         || !relation_limitations.is_empty()
+        || !root_limitations.is_empty()
     {
         // No facts, but a pass produced limitations (test/file parse failures, a
-        // `changes` request with no diff, or a relation omitted for an
-        // unresolvable owner) — surface them next to the base
-        // `emitter-not-yet-implemented` limitation so they are never dropped.
+        // `changes` request with no diff, a relation omitted for an
+        // unresolvable owner, or a missing/non-directory root) — surface them
+        // next to the base `emitter-not-yet-implemented` limitation so they are
+        // never dropped.
         if let Some(limitations) = packet["limitations"].as_array_mut() {
             limitations.extend(test_limitations);
             limitations.extend(change_limitations);
             limitations.extend(file_limitations);
             limitations.extend(relation_limitations);
+            limitations.extend(root_limitations);
         }
     }
 
@@ -296,6 +431,28 @@ pub fn build_ripr_facts_packet(
     packet["packet_fingerprint"] = serde_json::Value::String(fingerprint);
 
     Ok(packet)
+}
+
+/// `true` when an existing ancestor of `root` is provably not a directory.
+///
+/// Windows reports `<file>/child` metadata failure as `NotFound` rather than
+/// `NotADirectory`, so a bare `ErrorKind` match would misname that root as
+/// missing. Probing ancestors keeps the limitation honest on every platform:
+/// a positive hit means a path component is provably not a directory, while
+/// any inconclusive probe conservatively keeps the caller's `ErrorKind`
+/// reading.
+fn root_has_non_directory_ancestor(root: &str) -> bool {
+    for ancestor in std::path::Path::new(root).ancestors().skip(1) {
+        if ancestor.as_os_str().is_empty() {
+            continue;
+        }
+        match std::fs::metadata(ancestor) {
+            Ok(metadata) => return !metadata.is_dir(),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(_) => return false,
+        }
+    }
+    false
 }
 
 fn bind_relations_to_changes(relations: Vec<Value>, changes: &[Value]) -> Vec<Value> {
@@ -546,13 +703,22 @@ pub(crate) fn build_unavailable_packet(
     fact_classes: &[String],
 ) -> serde_json::Value {
     let capabilities = producer_capabilities(fact_classes);
+    // #17260 platform rule: on Windows backslash is a separator, so normalize
+    // to forward-slash under the `posix` claim; on Unix backslash is a literal
+    // filename char and the emitters scan `Path::new(root)` verbatim, so the
+    // echo must stay verbatim to name the scanned directory.
+    #[cfg(windows)]
+    let echo_root = normalize_repo_relative(root);
+    #[cfg(not(windows))]
+    let echo_root = root.to_owned();
     serde_json::json!({
         "schema_version": schema,
         // M1 contract convergence: deterministic packet ID (no timestamp).
-        // The ID is derived from the schema + root + fact_classes so the same
-        // input always produces the same packet ID.
+        // The ID is derived from the schema + normalized root + fact_classes
+        // so the same input always produces the same packet ID, and equivalent
+        // Windows spellings (`project/lib` vs `project\lib`) share one ID.
         "packet_id": format!(
-            "perl-lsp-ripr-facts-{schema}-{root}-{}",
+            "perl-lsp-ripr-facts-{schema}-{echo_root}-{}",
             fact_classes.join(",")
         ),
         "packet_status": "unavailable",
@@ -563,7 +729,10 @@ pub(crate) fn build_unavailable_packet(
             "capabilities": capabilities,
         },
         "root": {
-            "repo_relative": root,
+            // #17260: `echo_root` per the platform rule above — normalized on
+            // Windows, verbatim elsewhere (a verbatim backslash is valid
+            // posix). Forward-slash roots are byte-identical on both.
+            "repo_relative": echo_root,
             "vcs_head": head,
             "path_style": "posix",
         },
