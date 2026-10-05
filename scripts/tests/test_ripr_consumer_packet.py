@@ -34,6 +34,8 @@ class ConsumerPacket(unittest.TestCase):
         # Directory/file prefix and Unicode paths discriminate Git's byte ordering.
         files = {"a.rs": b"base rust\n", "a/\u03bb.rs": b"nested rust\n", "Cargo.toml": b"fixture config\n",
                  ".github/workflows/ripr.yml": b"frozen workflow fixture\n",
+                 "xtask/src/main.rs": b"dispatch fixture\n",
+                 "scripts/ci/observe-xtask-build.sh": b"observer fixture\n",
                  "xtask/src/tasks/ripr_evidence.rs": b"producer fixture\n",
                  "xtask/src/tasks/quality_gate.rs": b"gate fixture\n"}
         for name, raw in files.items():
@@ -96,7 +98,8 @@ class ConsumerPacket(unittest.TestCase):
         args.update(overrides)
         # Toy source bodies test collection mechanics, not the real analyzer recipe.
         # The real frozen profile is exercised by a separately retained native packet.
-        with patch.dict(PACKET.KNOWN_BLOBS, self.profile, clear=True):
+        with patch.dict(PACKET.KNOWN_BLOBS, self.profile, clear=True), \
+                patch.object(PACKET, "KNOWN_EVALUATED_TREE", self.tree, create=True):
             return PACKET.collect(**args)
 
     def test_complete_packet_is_nonadmitting_and_preserves_unknowns(self):
@@ -106,7 +109,7 @@ class ConsumerPacket(unittest.TestCase):
         self.assertEqual(packet["admission_effect"], "none")
         self.assertEqual(packet["qualification"], "NOT_PROVEN")
         self.assertEqual(set(packet["required_runtime_evidence"].values()), {"NOT_PROVEN"})
-        self.assertEqual(packet["evaluated_inventory"]["tracked_regular_rust_candidates"], 5)
+        self.assertEqual(packet["evaluated_inventory"]["tracked_regular_rust_candidates"], 6)
         self.assertEqual([(row["path"], row["change"]) for row in packet["changed_paths"]],
                          [("a.rs", "modified"), ("new.rs", "added")])
         self.assertEqual([row["path"] for row in packet["named_configuration_group"]], ["Cargo.toml"])
@@ -137,7 +140,7 @@ class ConsumerPacket(unittest.TestCase):
     def test_native_git_roster_with_unicode_and_prefix_order(self):
         leaves = PACKET.verify_tree(self.e_snapshot, self.tree)
         self.assertIn("a/\u03bb.rs", leaves)
-        self.assertEqual(len(leaves), 8)
+        self.assertEqual(len(leaves), 10)
 
     def test_omitted_entry_with_false_truncation_flag_is_rejected(self):
         bad = copy.deepcopy(self.e_snapshot)
@@ -175,6 +178,30 @@ class ConsumerPacket(unittest.TestCase):
         with self.assertRaisesRegex(PACKET.PacketError, "unsupported consumer"):
             PACKET.collect(self.repo, self.evaluated, self.base, self.head, self.tree, self.e_path, self.b_path)
 
+    def test_changed_dispatch_or_observer_with_fixed_named_blobs_is_refused(self):
+        for name in ("xtask/src/main.rs", "scripts/ci/observe-xtask-build.sh"):
+            with self.subTest(path=name):
+                path = self.repo / name
+                original = path.read_bytes()
+                try:
+                    path.write_bytes(original + b"changed executable route\n")
+                    self.git("add", "--", name)
+                    changed_tree = self.git("write-tree").decode().strip()
+                    changed_e = self.git("commit-tree", changed_tree, "-p", self.base,
+                                         "-p", self.head, "-m", "different consumer route").decode().strip()
+                    # Same named profile blobs and expected ordered parents; only
+                    # the full tree identity can reject this unsupported recipe.
+                    for pinned, blob in self.profile.items():
+                        self.assertEqual(self.git("rev-parse", changed_e + ":" + pinned).decode().strip(), blob)
+                    changed_path = Path(self.temp.name) / "changed-tree.json"
+                    changed_path.write_text(json.dumps(self.snapshot(changed_e)), encoding="utf-8")
+                    with self.assertRaisesRegex(PACKET.PacketError, "unsupported consumer evaluated tree"):
+                        self.collect(evaluated=changed_e, expected_tree=changed_tree,
+                                     evaluated_snapshot=changed_path)
+                finally:
+                    path.write_bytes(original)
+                    self.git("add", "--", name)
+
     def test_workflow_object_content_is_verified(self):
         original = PACKET.read_object
         def wrong(repo, kind, identity):
@@ -204,7 +231,8 @@ class ConsumerPacket(unittest.TestCase):
                 "--pr-head", self.head, "--expected-tree", self.tree,
                 "--evaluated-tree-json", str(self.e_path), "--base-tree-json", str(self.b_path)]
         out, err = io.StringIO(), io.StringIO()
-        with patch.dict(PACKET.KNOWN_BLOBS, self.profile, clear=True), contextlib.redirect_stdout(out):
+        with patch.dict(PACKET.KNOWN_BLOBS, self.profile, clear=True), \
+                patch.object(PACKET, "KNOWN_EVALUATED_TREE", self.tree, create=True), contextlib.redirect_stdout(out):
             self.assertEqual(PACKET.main(argv), 0)
         self.assertEqual(json.loads(out.getvalue())["admission_effect"], "none")
         out = io.StringIO()

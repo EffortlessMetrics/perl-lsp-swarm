@@ -17,6 +17,7 @@ import sys
 
 MAX_TREE_BYTES = 8 * 1024 * 1024
 MAX_OBJECT_BYTES = 1024 * 1024
+KNOWN_EVALUATED_TREE = "beea1d3a1b7b3c42ef510cd66f1a4337ce76f894"
 KNOWN_BLOBS = {
     ".github/workflows/ripr.yml": "f39dbbda84d264af20a5025c9083d520fa2090de",
     "xtask/src/tasks/ripr_evidence.rs": "daaaefa06dc13e5340ce6a5ba31027fa5239caf3",
@@ -235,6 +236,8 @@ def collect(repo, evaluated, base, head, expected_tree, evaluated_snapshot, base
     commit(repo, head)
     if tree != expected_tree or parents != [base, head]:
         raise PacketError("evaluated tree or ordered B/H parents differ from the expected subject")
+    if tree != KNOWN_EVALUATED_TREE:
+        raise PacketError("unsupported consumer evaluated tree; static recipe requires the frozen source tree")
     e_raw, e_digest = read_snapshot(evaluated_snapshot)
     b_raw, b_digest = read_snapshot(base_snapshot)
     current = verify_tree(e_raw, tree)
@@ -264,6 +267,7 @@ def collect(repo, evaluated, base, head, expected_tree, evaluated_snapshot, base
         "subject": {"evaluated_head": evaluated, "tree": tree, "base": base,
                     "pr_head": head, "ordered_parents": parents, "base_tree": base_tree},
         "source_profile": {"consumer_ripr_version": "0.10.0", "source_blobs": KNOWN_BLOBS,
+                           "evaluated_tree": KNOWN_EVALUATED_TREE,
                            "lane": "ripr-github (primary hosted); not selfhosted or disk-full fallback",
                            "inactive_entry": {"blob": INACTIVE_ENTRY_BLOB, "ripr_version": "0.10.1"}
                            if current.get(".ci/ripr-proof.sh", {}).get("sha") == INACTIVE_ENTRY_BLOB

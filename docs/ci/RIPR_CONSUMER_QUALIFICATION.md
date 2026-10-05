@@ -8,11 +8,15 @@ It does not fetch, materialize a corpus, invoke Cargo/RIPR, select a runner, cha
 cache, or publish a required result. Exit zero means collection succeeded;
 `admission_effect` stays `none` and `qualification` stays `NOT_PROVEN`.
 
-The accepted source profile is the workflow blob
+The accepted source profile is the complete evaluated tree
+`beea1d3a1b7b3c42ef510cd66f1a4337ce76f894`, including the workflow blob
 `f39dbbda84d264af20a5025c9083d520fa2090de`, producer blob
 `daaaefa06dc13e5340ce6a5ba31027fa5239caf3`, and gate blob
-`4319363165a78b80bb826299246c6c56da271b5d`. Their immutable identities bind the
-static phase recipe. Different source requires reviewed recipe qualification;
+`4319363165a78b80bb826299246c6c56da271b5d`. The independently pinned full tree
+binds the static phase recipe, including dispatcher, observer, dependencies and
+configuration identities. The three named blobs alone would allow an unreviewed
+dispatcher or observer to change the recipe. Any different evaluated tree requires
+reviewed recipe qualification;
 the collector refuses it instead of guessing compatibility. The live consumer
 recipe describes the primary hosted `ripr-github` lane; selfhosted and disk-full
 fallback lanes need separate qualification. It pins **0.10.0**. The separately identified inactive `.ci/ripr-proof.sh` profile
@@ -53,7 +57,7 @@ python3 -B scripts/ci/prepare_ripr_consumer_packet.py \
 Git verifies the commit object bytes and ordered B/H parents. The collector
 reconstructs every supplied subtree and the root from paths, modes and object IDs.
 An omitted entry is rejected even with `truncated=false`. Duplicate paths,
-missing parents, altered modes, foreign subjects and unsupported workflow blobs
+missing parents, altered modes, foreign subjects and unsupported source trees
 also fail before a packet is printed. Complete leaf comparison disables rename
 detection; it is independent of the compare API's file-list limits.
 
@@ -133,7 +137,9 @@ qualification, #17122 owns canonical orchestration, #13718 owns admission inputs
 authorities and cannot recover the consumed attempt.
 
 The lightweight controls use real Git fixture commits/trees, including Unicode
-and directory/file ordering, and run in the existing CI Gate Self-Tests job:
+and directory/file ordering. They also reject a valid merge with a changed dispatcher
+or observer even when its three named blobs and caller-supplied tree match. They run
+in the existing CI Gate Self-Tests job:
 
 ```bash
 python3 -B -m unittest scripts.tests.test_ripr_consumer_packet
