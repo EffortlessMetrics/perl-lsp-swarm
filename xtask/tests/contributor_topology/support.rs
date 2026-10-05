@@ -41,6 +41,9 @@ release, history, and canonical package-lineage repo.
 | `perl-lsp-swarm/main` | Active development |
 | `perl-lsp/master` | Release lineage |
 
+External contribution ingress is different from product-development authority. Public
+contributors open issues and pull requests against `perl-lsp/master`.
+
 #### Mechanics: history-preserving complete-tree merge
 
 git merge -s ours --no-commit swarm/main
