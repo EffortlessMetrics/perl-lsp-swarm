@@ -33,6 +33,7 @@ Identical repeated captures do not rewrite any file. A wrong executable digest,
 failed child, timeout, oversized output, malformed/mismatched report or observed
 input change prevents publication. Execution is limited to 30 seconds, 1 MiB stdout
 and 64 KiB stderr, with process-group cleanup.
+Generated execution receipts must fit within 16 KiB; an oversized receipt prevents publication.
 
 The receipt establishes observed input identity for this capture. Pre/post hashes
 do not guarantee immutability or close TOCTOU races. The report's tracked-file

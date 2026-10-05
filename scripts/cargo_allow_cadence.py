@@ -23,6 +23,7 @@ RECEIPT_NAME = "execution-receipt.json"
 STDERR_NAME = "cargo-allow-cadence.stderr"
 MAX_STDOUT_BYTES = 1024 * 1024
 MAX_STDERR_BYTES = 64 * 1024
+MAX_RECEIPT_BYTES = 16 * 1024
 TIMEOUT_SECONDS = 30
 
 
@@ -126,9 +127,13 @@ def unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
     return value
 
 
+def reject_json_constant(value: str) -> None:
+    raise CaptureError(f"upstream stdout contains nonstandard JSON constant: {value}")
+
+
 def validate_report(raw: bytes, root: Path, policy: Path, as_of: str) -> None:
     try:
-        report = json.loads(raw.decode("utf-8"), object_pairs_hook=unique_object)
+        report = json.loads(raw.decode("utf-8"), object_pairs_hook=unique_object, parse_constant=reject_json_constant)
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
         raise CaptureError("upstream stdout is not one complete UTF-8 JSON report") from error
     if not isinstance(report, dict):
@@ -199,7 +204,7 @@ def check_output(output: Path, inputs: tuple[Path, Path]) -> None:
     if output.exists():
         if not output.is_dir() or {item.name for item in output.iterdir()} != {REPORT_NAME, RECEIPT_NAME, STDERR_NAME}:
             raise CaptureError("--output-dir must be fresh or contain only an identical prior capture")
-        for name, cap in ((REPORT_NAME, MAX_STDOUT_BYTES), (RECEIPT_NAME, 16 * 1024), (STDERR_NAME, MAX_STDERR_BYTES)):
+        for name, cap in ((REPORT_NAME, MAX_STDOUT_BYTES), (RECEIPT_NAME, MAX_RECEIPT_BYTES), (STDERR_NAME, MAX_STDERR_BYTES)):
             path = output / name
             if not path.is_file() or path.stat().st_size > cap:
                 raise CaptureError("existing capture artifacts have an invalid type or size")
@@ -208,6 +213,8 @@ def check_output(output: Path, inputs: tuple[Path, Path]) -> None:
 
 
 def publish(output: Path, raw: bytes, stderr: bytes, receipt: bytes, inputs: tuple[Path, Path]) -> str:
+    if len(receipt) > MAX_RECEIPT_BYTES:
+        raise CaptureError("cargo-allow cadence exceeded the receipt byte bound")
     check_output(output, inputs)
     if output.exists():
         if (output / REPORT_NAME).read_bytes() != raw or (output / STDERR_NAME).read_bytes() != stderr or (output / RECEIPT_NAME).read_bytes() != receipt:

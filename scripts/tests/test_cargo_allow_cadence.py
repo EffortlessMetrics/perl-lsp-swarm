@@ -59,6 +59,8 @@ if mode == "empty-driving-date": report["rows"][0]["driving_date"] = ""
 if mode == "arbitrary-driving-date": report["rows"][0]["driving_date"] = "arbitrary"
 if mode == "empty-evidence-ref": report["rows"][0]["evidence_refs"] = [""]
 if mode == "empty-evidence-array": report["rows"][0]["evidence_refs"] = []
+if mode in ("json-NaN", "json-Infinity", "json--Infinity"):
+ report["inventory"]["files_scanned"] = float(mode[5:])
 if mode == "warning": sys.stderr.buffer.write(b"upstream warning\xff\n")
 if mode == "malformed": print("{"); sys.exit(0)
 if mode == "duplicate": print('{"schema_id":"cargo-allow.cadence.v1","schema_id":"cargo-allow.cadence.v1"}'); sys.exit(0)
@@ -156,6 +158,16 @@ class AdmissionTests(unittest.TestCase):
                 with self.assertRaises(capture.CaptureError):
                     self.validate(report, root, policy)
 
+    def test_json_rejects_nonstandard_constants_in_unchecked_field(self):
+        report, root, policy = self.report()
+        report["inventory"]["files_scanned"] = 3
+        self.validate(report, root, policy)
+        for constant in ("NaN", "Infinity", "-Infinity"):
+            with self.subTest(constant=constant):
+                report["inventory"]["files_scanned"] = float(constant)
+                with self.assertRaisesRegex(capture.CaptureError, "nonstandard JSON constant"):
+                    self.validate(report, root, policy)
+
     def test_explicit_date_and_absolute_paths(self):
         for date in ("today", "2026-2-03", "2026-02-30"):
             with self.assertRaises(capture.CaptureError):
@@ -225,6 +237,7 @@ class CaptureTests(unittest.TestCase):
         raw = (self.output / capture.REPORT_NAME).read_bytes()
         self.assertEqual(raw, (self.root / "expected-stdout").read_bytes())
         report = json.loads(raw)
+        self.assertEqual(report["inventory"]["files_scanned"], 1)
         self.assertEqual(report["horizons"], {"review_due_soon_days": 14, "expiring_soon_days": 14})
         self.assertEqual(report["rows"][0]["class"], "expiring")
         receipt = json.loads((self.output / capture.RECEIPT_NAME).read_bytes())
@@ -259,9 +272,61 @@ class CaptureTests(unittest.TestCase):
         self.assertIn(b"unchanged", result.stdout)
         self.assertEqual(before, {path.name: (path.read_bytes(), path.stat().st_mtime_ns) for path in self.output.iterdir()})
 
+    @unittest.skipUnless(sys.platform.startswith("linux"), "long-path process fixture requires Linux PATH_MAX")
+    def test_oversized_receipt_refuses_before_first_publication(self):
+        def long_directory(name):
+            directory = self.base / name
+            directory.mkdir()
+            while len(str(directory)) < 3399:
+                component = "x" * min(200, 3400 - len(str(directory)) - 1)
+                directory /= component
+                directory.mkdir()
+            return directory
+
+        policy_bytes = self.policy.read_bytes()
+        executable_bytes = self.executable.read_bytes()
+        self.root = long_directory("long consumer")
+        (self.root / "policy").mkdir()
+        self.policy = self.root / "policy" / "allow.toml"
+        self.policy.write_bytes(policy_bytes)
+        self.executable = long_directory("long executable") / "cargo-allow"
+        self.executable.write_bytes(executable_bytes)
+        self.executable.chmod(0o700)
+        self.mode("valid")
+        self.assertLess(len(str(self.executable)), 4096)
+        self.assertLess(len(str(self.policy)), 4096)
+        result = self.cli()
+        self.assertTrue((self.root / "child-marker").exists())
+        self.assertEqual((self.root / "expected-stdout").read_bytes()[:3], b" \n{")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(b"receipt byte bound", result.stderr)
+        self.assertFalse(self.output.exists())
+        self.assertEqual(list(self.base.glob(".cargo-allow-cadence-*")), [])
+
+    def test_receipt_byte_boundary_and_existing_output_preservation(self):
+        self.assertEqual(capture.capture(self.args()), "captured")
+        receipt_bytes = (self.output / capture.RECEIPT_NAME).read_bytes()
+        original = {path.name: (path.read_bytes(), path.stat().st_mtime_ns) for path in self.output.iterdir()}
+        equal_output = self.base / "exact receipt cap"
+        with patch.object(capture, "MAX_RECEIPT_BYTES", len(receipt_bytes)):
+            self.assertEqual(capture.capture(self.args(output_dir=str(equal_output))), "captured")
+            self.assertEqual((equal_output / capture.RECEIPT_NAME).read_bytes(), receipt_bytes)
+            before = {path.name: (path.read_bytes(), path.stat().st_mtime_ns) for path in equal_output.iterdir()}
+            self.assertEqual(capture.capture(self.args(output_dir=str(equal_output))), "unchanged")
+            self.assertEqual(before, {path.name: (path.read_bytes(), path.stat().st_mtime_ns) for path in equal_output.iterdir()})
+        fresh_output = self.base / "one byte over cap"
+        with patch.object(capture, "MAX_RECEIPT_BYTES", len(receipt_bytes) - 1):
+            with self.assertRaisesRegex(capture.CaptureError, "receipt byte bound"):
+                capture.capture(self.args(output_dir=str(fresh_output)))
+            self.assertFalse(fresh_output.exists())
+            self.assertEqual(list(self.base.glob(".cargo-allow-cadence-*")), [])
+            with self.assertRaisesRegex(capture.CaptureError, "invalid type or size"):
+                capture.capture(self.args())
+        self.assertEqual(original, {path.name: (path.read_bytes(), path.stat().st_mtime_ns) for path in self.output.iterdir()})
+
     def test_bad_reports_and_child_failure_preserve_existing_outputs(self):
         self.sentinels()
-        cases = {"wrong-date": b"as_of", "ambient-date": b"as_of_source", "wrong-policy": b"policy_path", "wrong-root": b"inventory.root", "wrong-schema": b"schema_id", "boolean-version": b"schema_version", "wrong-horizons": b"horizons", "malformed": b"complete UTF-8 JSON", "duplicate": b"duplicate upstream JSON key", "partial-row": b"row allow_id", "wrong-summary": b"summary does not match", "malformed-class": b"row class is invalid", "null-driving-date": b"row driving_date must be", "empty-driving-date": b"row driving_date must be", "arbitrary-driving-date": b"row driving_date must be", "empty-evidence-ref": b"evidence_refs must be nonempty strings", "fail": b"exited 7"}
+        cases = {"wrong-date": b"as_of", "ambient-date": b"as_of_source", "wrong-policy": b"policy_path", "wrong-root": b"inventory.root", "wrong-schema": b"schema_id", "boolean-version": b"schema_version", "wrong-horizons": b"horizons", "malformed": b"complete UTF-8 JSON", "duplicate": b"duplicate upstream JSON key", "partial-row": b"row allow_id", "wrong-summary": b"summary does not match", "malformed-class": b"row class is invalid", "null-driving-date": b"row driving_date must be", "empty-driving-date": b"row driving_date must be", "arbitrary-driving-date": b"row driving_date must be", "empty-evidence-ref": b"evidence_refs must be nonempty strings", "json-NaN": b"nonstandard JSON constant: NaN", "json-Infinity": b"nonstandard JSON constant: Infinity", "json--Infinity": b"nonstandard JSON constant: -Infinity", "fail": b"exited 7"}
         for mode, diagnostic in cases.items():
             with self.subTest(mode=mode):
                 self.mode(mode)
