@@ -437,7 +437,14 @@ fn ux_latency_document_symbols_returns_real_process_shape() -> Result<()> {
         harness.open_file(path, SYMBOL_SOURCE)?;
         let uri = harness.workspace.uri(path);
         let ready_before = harness.wait_for_active_document_ready(&uri, Duration::ZERO).is_ok();
-        let immediate = document_symbol_probe_request(&harness, path)?;
+        let immediate = document_symbol_primary_probe_request(
+            &harness,
+            path,
+            session,
+            ready_before,
+            timeout(),
+            emit_document_symbol_probe_receipt,
+        )?;
         let ready_by_response =
             harness.wait_for_active_document_ready(&uri, Duration::ZERO).is_ok();
         // Persist the primary observation before any later readiness/control
@@ -608,6 +615,71 @@ fn document_symbol_probe_request(harness: &UxHarness, path: &str) -> Result<Valu
         json!({ "textDocument": { "uri": harness.workspace.uri(path) } }),
         timeout(),
     )
+}
+
+fn document_symbol_primary_probe_request(
+    harness: &UxHarness,
+    path: &str,
+    session: usize,
+    ready_before: bool,
+    request_timeout: Duration,
+    emit: impl FnOnce(&Value) -> Result<()>,
+) -> Result<Value> {
+    match harness.client.request(
+        "textDocument/documentSymbol",
+        json!({ "textDocument": { "uri": harness.workspace.uri(path) } }),
+        request_timeout,
+    ) {
+        Ok(response) => Ok(response),
+        Err(error) => {
+            // Persist the actual failure before propagating it. There is no
+            // response envelope to invent; UxClient's bounded Drop owns cleanup.
+            let receipt = json!({
+                "kind": "document_symbol_primary_transport_failure",
+                "session": session,
+                "ready_before_query": ready_before,
+                "response_received": false,
+                "error": format!("{error:#}"),
+                "handler_branches": document_symbol_branch_probes(harness),
+            });
+            if let Err(record_error) = emit(&receipt) {
+                return Err(error
+                    .context(format!("failed to persist transport evidence: {record_error:#}")));
+            }
+            Err(error)
+        }
+    }
+}
+
+#[test]
+fn ux_latency_document_symbol_transport_failure_persists_actual_error() -> Result<()> {
+    if !binary_available() {
+        return Ok(());
+    }
+    let harness = UxHarness::new(e2e_config(timeout()))?;
+    harness.client.shutdown_and_exit(timeout())?;
+    let mut persisted = Vec::new();
+    let result = document_symbol_primary_probe_request(
+        &harness,
+        "closed-transport.pl",
+        0,
+        false,
+        Duration::from_millis(250),
+        |receipt| {
+            emit_document_symbol_probe_receipt(receipt)?;
+            persisted.push(receipt.clone());
+            Ok(())
+        },
+    );
+    let error =
+        result.err().context("closed transport must remain an error, never an empty result")?;
+    assert_eq!(persisted.len(), 1, "failure must persist exactly once before returning");
+    assert_eq!(persisted[0]["kind"], "document_symbol_primary_transport_failure");
+    assert_eq!(persisted[0]["response_received"], false);
+    assert_eq!(persisted[0]["error"], format!("{error:#}"));
+    assert!(persisted[0].get("immediate_raw_envelope").is_none());
+    assert!(persisted[0].get("result").is_none());
+    Ok(())
 }
 
 fn document_symbol_probe_result(response: &Value) -> Result<&[Value]> {

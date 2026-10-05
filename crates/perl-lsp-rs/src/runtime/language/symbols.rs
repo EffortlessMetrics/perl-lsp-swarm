@@ -29,14 +29,7 @@ const DOCUMENT_SYMBOL_PROBE_ID_LIMIT_BYTES: usize = 256;
 
 fn document_symbol_probe_request_id(id: Option<&Value>) -> (Option<&Value>, Option<usize>) {
     let bytes = id.and_then(Value::as_str).map(str::len);
-    (
-        id.filter(|id| {
-            id.is_null()
-                || id.is_number()
-                || id.as_str().is_some_and(|id| id.len() <= DOCUMENT_SYMBOL_PROBE_ID_LIMIT_BYTES)
-        }),
-        bytes,
-    )
+    (id.filter(|id| id.is_null() || id.is_number()), bytes)
 }
 
 fn document_symbol_probe_enabled() -> bool {
@@ -48,7 +41,8 @@ fn document_symbol_probe_enabled() -> bool {
 
 /// Explicitly opted-in observation of the actual documentSymbol return branch.
 /// Ordinary requests, including global debug logging, avoid snapshot/hash work.
-/// Fingerprints are content-derived; raw source text and URIs are never emitted.
+/// Fingerprints are content-derived; client string IDs are omitted.
+/// Raw client text, source text and URIs are not captured by the receipt.
 fn emit_document_symbol_probe(
     request_id: Option<&Value>,
     branch: &str,
@@ -62,7 +56,24 @@ fn emit_document_symbol_probe(
         return;
     }
     let request_id_was_present = request_id.is_some();
+    let request_id_type = request_id.map(|id| match id {
+        Value::Null => "null",
+        Value::Number(_) => "number",
+        Value::String(_) => "string",
+        _ => "unsupported",
+    });
     let (request_id, request_id_bytes) = document_symbol_probe_request_id(request_id);
+    let request_id_omission_reason = match request_id_type {
+        Some("string")
+            if request_id_bytes
+                .is_some_and(|bytes| bytes > DOCUMENT_SYMBOL_PROBE_ID_LIMIT_BYTES) =>
+        {
+            Some("byte_limit")
+        }
+        Some("string") => Some("client_text"),
+        Some("unsupported") => Some("unsupported_type"),
+        _ => None,
+    };
     let current = doc.and_then(|doc| doc.current_parsed());
     let latest = doc.and_then(|doc| doc.latest_parsed());
     let statements =
@@ -73,7 +84,9 @@ fn emit_document_symbol_probe(
     let receipt = json!({
         "kind": "document_symbol_branch_probe",
         "request_id": request_id,
+        "request_id_type": request_id_type,
         "request_id_omitted": request_id_was_present && request_id.is_none(),
+        "request_id_omission_reason": request_id_omission_reason,
         "request_id_string_bytes": request_id_bytes,
         "request_id_limit_bytes": DOCUMENT_SYMBOL_PROBE_ID_LIMIT_BYTES,
         "request_id_omitted_byte_limit": request_id_bytes.is_some_and(|bytes| bytes > DOCUMENT_SYMBOL_PROBE_ID_LIMIT_BYTES),
@@ -917,17 +930,49 @@ mod tests {
     };
 
     #[test]
-    fn document_symbol_probe_id_budget_preserves_small_ids_and_omits_large_utf8_ids() {
+    fn document_symbol_probe_id_budget_omits_client_text_and_preserves_numeric_identity() {
         let numeric = json!(42);
         assert_eq!(document_symbol_probe_request_id(Some(&numeric)), (Some(&numeric), None));
+        let secret = json!("probe-secret-token");
+        let (projected, bytes) = document_symbol_probe_request_id(Some(&secret));
+        assert_eq!(bytes, Some(18));
+        assert_eq!(projected, None, "even short client text must be omitted");
+        assert_eq!(document_symbol_probe_request_id(Some(&json!("42"))), (None, Some(2)));
+        let null = Value::Null;
+        assert_eq!(document_symbol_probe_request_id(Some(&null)), (Some(&null), None));
         let at_limit = json!("x".repeat(256));
-        assert_eq!(document_symbol_probe_request_id(Some(&at_limit)), (Some(&at_limit), Some(256)));
+        let (projected, bytes) = document_symbol_probe_request_id(Some(&at_limit));
+        assert_eq!(bytes, Some(256));
+        assert_eq!(projected, None);
         let over_limit = json!("é".repeat(129));
         assert_eq!(document_symbol_probe_request_id(Some(&over_limit)), (None, Some(258)));
         // Omission affects the receipt only; the original response ID survives.
         assert_eq!(over_limit.as_str().map(str::len), Some(258));
         let compound = json!({"invalid_id": "x".repeat(257)});
         assert_eq!(document_symbol_probe_request_id(Some(&compound)), (None, None));
+    }
+
+    #[test]
+    fn document_symbol_probe_preserves_secret_and_oversized_string_wire_ids()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = initialized_folding_range_server();
+        let uri = "file:///17020-string-id-control.pl";
+        server.test_apply_did_open(uri, "sub alpha {}\n", 1)?;
+        for id in ["probe-secret-token".to_string(), "é".repeat(129)] {
+            let response = server
+                .handle_request(JsonRpcRequest {
+                    _jsonrpc: "2.0".to_string(),
+                    id: Some(JsonRpcId::String(id.clone())),
+                    method: "textDocument/documentSymbol".to_string(),
+                    params: Some(json!({ "textDocument": { "uri": uri } })),
+                })
+                .ok_or("string-ID request must produce a response")?;
+            assert_eq!(response.id, Some(JsonRpcId::String(id)));
+            assert!(response.error.is_none(), "string-ID request must succeed");
+            let names = document_symbol_names(response.result.as_ref().ok_or("symbol result")?)?;
+            assert!(names.iter().any(|name| name == "alpha"), "string-ID result must retain alpha");
+        }
+        Ok(())
     }
 
     #[test]
