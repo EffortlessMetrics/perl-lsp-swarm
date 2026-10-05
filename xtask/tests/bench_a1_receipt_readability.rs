@@ -69,9 +69,9 @@ const FIXTURE_SHA: &str = "a1bench0deadbeef1234567890abcdef12345678";
 const FIXTURE_VERSION: &str = "0.9.0";
 
 /// Minimal simplified-format results (the shape `bench-extract` writes):
-/// three benchmarks, one meeting its target, one missing it, and one spaced
-/// name (`state transitions`, from the supported `run-benchmarks.sh`
-/// producer), so the score lines discriminate instead of merely existing.
+/// three benchmarks, one meeting its target, one missing it, and one name
+/// with consecutive spaces (`state  transitions`) proving the parser keeps
+/// internal spacing verbatim instead of collapsing it.
 fn complete_fixture() -> Value {
     serde_json::json!({
         "version": FIXTURE_VERSION,
@@ -88,7 +88,7 @@ fn complete_fixture() -> Value {
                 "_category": "parser",
                 "parse_simple_script": {"mean_ns": 1500, "meets_target": true},
                 "parse_large_file": {"mean_ns": 2_500_000, "meets_target": false},
-                "state transitions": {"mean_ns": 1_100_000, "meets_target": true}
+                "state  transitions": {"mean_ns": 1_100_000, "meets_target": true}
             }
         }
     })
@@ -184,27 +184,30 @@ fn prefixed_line<'a>(stdout: &'a str, prefix: &str) -> Option<&'a str> {
 
 /// Parse the `<name> <duration> [[OK|FAIL]]` rows of one `<CATEGORY>
 /// BENCHMARKS:` section. Names come from the producer verbatim and may
-/// contain spaces (`state transitions` in the `run-benchmarks.sh` parse
-/// fixtures), so rows parse from the right: an optional trailing marker,
-/// then a numeric `<float><unit>` duration, then the name. Durations must
-/// carry a known unit; anything else is a readability hole, not a row.
+/// contain spaces, including consecutive ones (`state  transitions` in the
+/// complete fixture), so the row splits at its final whitespace boundary
+/// and the name keeps its internal spacing verbatim; tokenizing + joining
+/// would collapse it. Marker first (always a separate trailing token per the
+/// ` [OK]`/` [FAIL]` rendering), then the duration, then the name. Durations
+/// must carry a known unit; anything else is a readability hole, not a row.
 fn parse_timing_row(line: &str) -> Option<(String, String)> {
-    let mut tokens = line.split_whitespace().collect::<Vec<_>>();
-    if matches!(tokens.last(), Some(marker) if *marker == "[OK]" || *marker == "[FAIL]") {
-        tokens.pop();
+    let row = line.trim();
+    let row =
+        row.strip_suffix("[OK]").or_else(|| row.strip_suffix("[FAIL]")).unwrap_or(row).trim_end();
+    let duration_start = row.rfind(char::is_whitespace)?;
+    let (name, duration) = row.split_at(duration_start);
+    let name = name.trim();
+    let duration = duration.trim();
+    if name.is_empty() {
+        return None;
     }
-    let duration = tokens.pop()?;
     let magnitude = duration
         .strip_suffix("ns")
         .or_else(|| duration.strip_suffix("us"))
         .or_else(|| duration.strip_suffix("ms"))
         .or_else(|| duration.strip_suffix('s'))?;
     magnitude.parse::<f64>().ok()?;
-    let name = tokens.join(" ");
-    if name.is_empty() {
-        return None;
-    }
-    Some((name, duration.to_string()))
+    Some((name.to_string(), duration.to_string()))
 }
 
 /// Strict parse of the receipt stdout grammar. Every required key extracts
@@ -319,7 +322,7 @@ fn a1_complete_receipt_has_all_required_keys() -> Result<()> {
     assert!(
         receipt.timings.contains_key("parse_simple_script")
             && receipt.timings.contains_key("parse_large_file")
-            && receipt.timings.contains_key("state transitions"),
+            && receipt.timings.contains_key("state  transitions"),
         "A1 `timings` must name the fixture benchmarks\n{stdout}"
     );
     assert_eq!(
