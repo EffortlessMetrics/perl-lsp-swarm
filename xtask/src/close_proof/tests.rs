@@ -27,11 +27,7 @@ mod qualification {
     use super::*;
 
     fn replace_once(raw: &str, from: &str, to: &str) -> String {
-        assert_eq!(
-            raw.matches(from).count(),
-            1,
-            "mutation anchor must be unique: {from}"
-        );
+        assert_eq!(raw.matches(from).count(), 1, "mutation anchor must be unique: {from}");
         raw.replacen(from, to, 1)
     }
 
@@ -44,13 +40,11 @@ mod qualification {
         });
         contract.identity.denominator_digest =
             super::super::compute_denominator_digest(&contract.denominator)?;
-        contract
-            .negative_controls
-            .push(super::super::NegativeControlRow {
-                control_id: "nc.repair".to_string(),
-                guards_row_id: "single-row.defect.fixed".to_string(),
-                description: "The malformed delimiter is rejected.".to_string(),
-            });
+        contract.negative_controls.push(super::super::NegativeControlRow {
+            control_id: "nc.repair".to_string(),
+            guards_row_id: "single-row.defect.fixed".to_string(),
+            description: "The malformed delimiter is rejected.".to_string(),
+        });
         contract.mandatory_children.push(super::super::IssueRef {
             repository: contract.repository.clone(),
             number: 9000500,
@@ -58,18 +52,14 @@ mod qualification {
         let mut packet = passing_packet(&contract)?;
         packet.row_dispositions.insert(
             "neighbor.parses".to_string(),
-            RowDispositionValue::NotProven {
-                reason: "Neighbor remains untested.".to_string(),
-            },
+            RowDispositionValue::NotProven { reason: "Neighbor remains untested.".to_string() },
         );
         packet
             .negative_control_dispositions
             .insert("nc.repair".to_string(), ControlOutcome::Verified);
         packet.child_dispositions.push(ChildDispositionRecord {
             child: contract.mandatory_children[0].clone(),
-            state: ChildState::ClosedByPacket {
-                packet_subject: "child-packet".to_string(),
-            },
+            state: ChildState::ClosedByPacket { packet_subject: "child-packet".to_string() },
         });
         validate_packet_against_contract(&packet, &contract)?;
         Ok((contract, packet))
@@ -83,11 +73,7 @@ mod qualification {
     ) -> Result<String, CloseProofError> {
         let raw = packet.to_canonical_json()?;
         let anchor = format!("\"{field}\": {{");
-        Ok(replace_once(
-            &raw,
-            &anchor,
-            &format!("{anchor}\n    \"{key}\": {value},"),
-        ))
+        Ok(replace_once(&raw, &anchor, &format!("{anchor}\n    \"{key}\": {value},")))
     }
 
     fn require_schema_rejections(cases: Vec<(&str, String)>) {
@@ -95,10 +81,7 @@ mod qualification {
         for (name, raw) in cases {
             match ClosePacket::from_json_str(&raw) {
                 Err(CloseProofError::Schema { field, message }) => {
-                    assert!(
-                        message.contains("duplicate"),
-                        "wrong refusal for {name}: {message}"
-                    );
+                    assert!(message.contains("duplicate"), "wrong refusal for {name}: {message}");
                     eprintln!("QUALIFICATION reject {name}: {field}: {message}");
                 }
                 other => {
@@ -107,10 +90,7 @@ mod qualification {
                 }
             }
         }
-        assert!(
-            accepted.is_empty(),
-            "authoritative intake accepted ambiguous cases: {accepted:?}"
-        );
+        assert!(accepted.is_empty(), "authoritative intake accepted ambiguous cases: {accepted:?}");
     }
 
     fn is_unknown_field_refusal<T>(result: &Result<T, serde_json::Error>) -> bool {
@@ -150,16 +130,10 @@ mod qualification {
         )?;
         packet.row_dispositions.insert(
             "single-row.defect.fixed".to_string(),
-            RowDispositionValue::NotProven {
-                reason: "later unproven result".to_string(),
-            },
+            RowDispositionValue::NotProven { reason: "later unproven result".to_string() },
         );
-        let reverse = duplicate_map_entry(
-            &packet,
-            "row_dispositions",
-            "single-row.defect.fixed",
-            &proven,
-        )?;
+        let reverse =
+            duplicate_map_entry(&packet, "row_dispositions", "single-row.defect.fixed", &proven)?;
         let control_forward = duplicate_map_entry(
             &packet,
             "negative_control_dispositions",
@@ -168,9 +142,7 @@ mod qualification {
         )?;
         packet.negative_control_dispositions.insert(
             "nc.repair".to_string(),
-            ControlOutcome::Failed {
-                reason: "later failure".to_string(),
-            },
+            ControlOutcome::Failed { reason: "later failure".to_string() },
         );
         let control_reverse = duplicate_map_entry(
             &packet,
@@ -214,10 +186,7 @@ mod qualification {
             r#"{"state":"failed","reason":"discarded control"}"#,
         )?;
         let parsed = ClosePacket::from_json_str(&raw)?;
-        assert_eq!(
-            parsed.negative_control_dispositions,
-            packet.negative_control_dispositions
-        );
+        assert_eq!(parsed.negative_control_dispositions, packet.negative_control_dispositions);
         validate_packet_against_contract(&parsed, &contract)?;
         Ok(())
     }
@@ -293,10 +262,7 @@ mod qualification {
         if ClosePacket::from_json_str(&poisoned).is_ok() {
             missed.push("public packet control payload");
         }
-        assert!(
-            missed.is_empty(),
-            "unknown variant fields were silently ignored: {missed:?}"
-        );
+        assert!(missed.is_empty(), "unknown variant fields were silently ignored: {missed:?}");
         Ok(())
     }
 
@@ -306,19 +272,10 @@ mod qualification {
         let (_, packet) = rich_subject()?;
         let raw = packet.to_canonical_json()?;
         for (from, to) in [
-            (
-                "\"disposition\": \"proven_current_main\"",
-                "\"disposition\": \"future_success\"",
-            ),
+            ("\"disposition\": \"proven_current_main\"", "\"disposition\": \"future_success\""),
             ("\"state\": \"verified\"", "\"state\": \"future_success\""),
-            (
-                "\"state\": \"closed_by_packet\"",
-                "\"state\": \"future_success\"",
-            ),
-            (
-                "\"issue_number\": 9000300",
-                "\"issue_number\": 9000300, \"issue_number\": 9000300",
-            ),
+            ("\"state\": \"closed_by_packet\"", "\"state\": \"future_success\""),
+            ("\"issue_number\": 9000300", "\"issue_number\": 9000300, \"issue_number\": 9000300"),
             (
                 "\"producer\": \"xtask-landing-proof\"",
                 "\"producer\": \"xtask-landing-proof\", \"producer\": \"xtask-landing-proof\"",
@@ -351,14 +308,8 @@ mod qualification {
                 "\"required_proof_level\": \"mechanism\",\n  \"allowed_close_modes\"",
                 "\"required_proof_level\": \"unknown_level\",\n  \"allowed_close_modes\"",
             ),
-            (
-                "\"permitted\": false",
-                "\"permitted\": false, \"permitted\": true",
-            ),
-            (
-                "\"permitted\": false",
-                "\"permitted\": false, \"injected\": true",
-            ),
+            ("\"permitted\": false", "\"permitted\": false, \"permitted\": true"),
+            ("\"permitted\": false", "\"permitted\": false, \"injected\": true"),
         ] {
             assert!(
                 matches!(
@@ -374,10 +325,7 @@ mod qualification {
                 "\"disposition\": \"proven_current_main\"",
                 "\"disposition\": \"proven_current_main\", \"disposition\": \"proven_current_main\"",
             ),
-            (
-                "\"state\": \"verified\"",
-                "\"state\": \"verified\", \"state\": \"verified\"",
-            ),
+            ("\"state\": \"verified\"", "\"state\": \"verified\", \"state\": \"verified\""),
         ] {
             assert!(
                 matches!(
@@ -405,16 +353,11 @@ mod qualification {
         moved.kind = IssueKind::Installed;
         movements.push(("issue-kind", moved));
         let mut moved = contract.clone();
-        moved
-            .allowed_close_modes
-            .retain(|m| *m != CloseMode::NotPlanned);
+        moved.allowed_close_modes.retain(|m| *m != CloseMode::NotPlanned);
         movements.push(("allowed-mode-set", moved));
         let mut moved = contract.clone();
         moved.transfer_policy.permitted = true;
-        moved
-            .transfer_policy
-            .conditions
-            .push("Only to an adopted exact owner.".to_string());
+        moved.transfer_policy.conditions.push("Only to an adopted exact owner.".to_string());
         movements.push(("transfer-policy", moved));
         let mut moved = contract.clone();
         moved.negative_controls[0].description =
@@ -424,9 +367,7 @@ mod qualification {
         moved.negative_controls[0].guards_row_id = "neighbor.parses".to_string();
         movements.push(("control-row-association", moved));
         let mut moved = contract.clone();
-        moved
-            .domain_evidence_refs
-            .push("adopted-domain-contract.v2".to_string());
+        moved.domain_evidence_refs.push("adopted-domain-contract.v2".to_string());
         movements.push(("linked-domain-contract", moved));
         for (name, moved) in movements {
             moved.validate()?;
@@ -502,11 +443,9 @@ mod qualification {
             RowDispositionValue::NotProven { .. }
         ));
         validate_packet_against_contract(&packet, &contract)?;
-        for verdict in [
-            IssueCloseOutcome::Valid,
-            IssueCloseOutcome::Invalid,
-            IssueCloseOutcome::NotProven,
-        ] {
+        for verdict in
+            [IssueCloseOutcome::Valid, IssueCloseOutcome::Invalid, IssueCloseOutcome::NotProven]
+        {
             packet.verdict.issue_close = verdict;
             validate_packet_against_contract(&packet, &contract)?;
         }
@@ -526,10 +465,7 @@ mod qualification {
         packet.landed_subjects.clear();
         packet.landing_content_proof.clear();
         validate_packet_against_contract(&packet, &contract)?;
-        assert_eq!(
-            packet.requested_close_mode,
-            CloseMode::PhaseCompleteIssueRemainsOpen
-        );
+        assert_eq!(packet.requested_close_mode, CloseMode::PhaseCompleteIssueRemainsOpen);
         Ok(())
     }
 
@@ -558,10 +494,7 @@ mod qualification {
         };
         fixture.verify()?;
         fixture.cases[0].packet.verdict.issue_close = IssueCloseOutcome::Valid;
-        assert!(matches!(
-            fixture.verify(),
-            Err(CloseProofError::Corpus { .. })
-        ));
+        assert!(matches!(fixture.verify(), Err(CloseProofError::Corpus { .. })));
         fixture.cases[0].expected_issue_close = IssueCloseOutcome::Valid;
         fixture.verify()?;
         // Do not edit the historical corpus or promote its expectations into
@@ -581,12 +514,7 @@ mod qualification {
             let raw = super::super::corpus::read_file(&corpus_root().join(entry.file))?;
             let fixture = FixtureDocument::from_json_str(&raw)?;
             fixture.verify()?;
-            assert!(
-                fixture
-                    .provenance
-                    .boundary
-                    .contains("schema-level dispositions only")
-            );
+            assert!(fixture.provenance.boundary.contains("schema-level dispositions only"));
             for case in fixture.cases {
                 case_count += 1;
                 for disposition in case.packet.row_dispositions.values() {
@@ -698,14 +626,7 @@ fn tampered_manifest_digest_fails_verification() -> Result<(), CloseProofError> 
     let mut manifest = load_corpus_manifest()?;
     let first = &mut manifest.fixtures[0];
     let mut tampered = first.sha256.clone();
-    tampered.replace_range(
-        0..1,
-        if first.sha256.starts_with('0') {
-            "1"
-        } else {
-            "0"
-        },
-    );
+    tampered.replace_range(0..1, if first.sha256.starts_with('0') { "1" } else { "0" });
     first.sha256 = tampered;
     let result = verify_corpus_at(&corpus_root(), &manifest);
     assert!(matches!(result, Err(CloseProofError::Corpus { .. })));
@@ -751,10 +672,7 @@ fn unknown_top_level_field_is_rejected() -> Result<(), CloseProofError> {
         "{\n  \"schema_version\"",
         "{\n  \"bogus_extra_field\": true,\n  \"schema_version\"",
     );
-    assert!(matches!(
-        IssueContract::from_json_str(&poisoned),
-        Err(CloseProofError::Schema { .. })
-    ));
+    assert!(matches!(IssueContract::from_json_str(&poisoned), Err(CloseProofError::Schema { .. })));
     Ok(())
 }
 
@@ -762,10 +680,7 @@ fn unknown_top_level_field_is_rejected() -> Result<(), CloseProofError> {
 fn mistyped_issue_number_is_rejected() -> Result<(), CloseProofError> {
     let json = leaf_contract()?.to_canonical_json()?;
     let poisoned = json.replace("\"issue_number\": 9000300", "\"issue_number\": \"9000300\"");
-    assert!(matches!(
-        IssueContract::from_json_str(&poisoned),
-        Err(CloseProofError::Schema { .. })
-    ));
+    assert!(matches!(IssueContract::from_json_str(&poisoned), Err(CloseProofError::Schema { .. })));
     Ok(())
 }
 
@@ -801,10 +716,7 @@ fn duplicate_row_ids_are_rejected() -> Result<(), CloseProofError> {
     });
     contract.identity.denominator_digest =
         super::compute_denominator_digest(&contract.denominator)?;
-    assert!(matches!(
-        contract.validate(),
-        Err(CloseProofError::Coverage { .. })
-    ));
+    assert!(matches!(contract.validate(), Err(CloseProofError::Coverage { .. })));
     Ok(())
 }
 
@@ -816,10 +728,7 @@ fn dangling_negative_control_is_rejected() -> Result<(), CloseProofError> {
         guards_row_id: "row-that-does-not-exist".to_string(),
         description: "Guards nothing.".to_string(),
     }];
-    assert!(matches!(
-        contract.validate(),
-        Err(CloseProofError::Coverage { .. })
-    ));
+    assert!(matches!(contract.validate(), Err(CloseProofError::Coverage { .. })));
     Ok(())
 }
 
@@ -827,10 +736,7 @@ fn dangling_negative_control_is_rejected() -> Result<(), CloseProofError> {
 fn forged_denominator_digest_is_rejected() -> Result<(), CloseProofError> {
     let mut contract = leaf_contract()?;
     contract.identity.denominator_digest = leaf_digest(1);
-    assert!(matches!(
-        contract.validate(),
-        Err(CloseProofError::Digest { .. })
-    ));
+    assert!(matches!(contract.validate(), Err(CloseProofError::Digest { .. })));
     Ok(())
 }
 
@@ -838,10 +744,7 @@ fn forged_denominator_digest_is_rejected() -> Result<(), CloseProofError> {
 fn malformed_body_digest_is_rejected() -> Result<(), CloseProofError> {
     let mut contract = leaf_contract()?;
     contract.identity.issue_body_digest = "not-a-digest".to_string();
-    assert!(matches!(
-        contract.validate(),
-        Err(CloseProofError::Digest { .. })
-    ));
+    assert!(matches!(contract.validate(), Err(CloseProofError::Digest { .. })));
     Ok(())
 }
 
@@ -849,10 +752,7 @@ fn malformed_body_digest_is_rejected() -> Result<(), CloseProofError> {
 fn controller_without_children_is_rejected() -> Result<(), CloseProofError> {
     let mut contract = leaf_contract()?;
     contract.kind = IssueKind::Controller;
-    assert!(matches!(
-        contract.validate(),
-        Err(CloseProofError::Coverage { .. })
-    ));
+    assert!(matches!(contract.validate(), Err(CloseProofError::Coverage { .. })));
     Ok(())
 }
 
@@ -861,10 +761,7 @@ fn permitted_transfer_requires_conditions() -> Result<(), CloseProofError> {
     let mut contract = leaf_contract()?;
     contract.transfer_policy.permitted = true;
     contract.transfer_policy.conditions = Vec::new();
-    assert!(matches!(
-        contract.validate(),
-        Err(CloseProofError::Coverage { .. })
-    ));
+    assert!(matches!(contract.validate(), Err(CloseProofError::Coverage { .. })));
     Ok(())
 }
 
@@ -892,12 +789,7 @@ fn unauthorized_close_mode_is_rejected() -> Result<(), CloseProofError> {
         .ok_or_else(|| CloseProofError::Corpus {
             message: "controller fan-in regression case is missing".to_string(),
         })?;
-    assert!(
-        !fixture
-            .contract
-            .allowed_close_modes
-            .contains(&CloseMode::ControllerComplete)
-    );
+    assert!(!fixture.contract.allowed_close_modes.contains(&CloseMode::ControllerComplete));
 
     let mut unauthorized = case.packet.clone();
     unauthorized.requested_close_mode = CloseMode::ControllerComplete;
@@ -997,9 +889,7 @@ fn unknown_row_disposition_is_rejected() -> Result<(), CloseProofError> {
     let mut extra = passing_packet(&contract)?;
     extra.row_dispositions.insert(
         "row.not-in-contract".to_string(),
-        RowDispositionValue::NotProven {
-            reason: "invented".to_string(),
-        },
+        RowDispositionValue::NotProven { reason: "invented".to_string() },
     );
     assert!(matches!(
         validate_packet_against_contract(&extra, &contract),
@@ -1012,10 +902,8 @@ fn unknown_row_disposition_is_rejected() -> Result<(), CloseProofError> {
 fn missing_child_coverage_is_rejected() -> Result<(), CloseProofError> {
     let mut contract = leaf_contract()?;
     contract.kind = IssueKind::MultiPhase;
-    contract.mandatory_children = vec![super::IssueRef {
-        repository: contract.repository.clone(),
-        number: 9000301,
-    }];
+    contract.mandatory_children =
+        vec![super::IssueRef { repository: contract.repository.clone(), number: 9000301 }];
     contract.validate()?;
     let mut incomplete = passing_packet(&contract)?;
     incomplete.child_dispositions = Vec::new();
@@ -1030,20 +918,13 @@ fn missing_child_coverage_is_rejected() -> Result<(), CloseProofError> {
 fn covered_child_satisfies_controller_shape() -> Result<(), CloseProofError> {
     let mut contract = leaf_contract()?;
     contract.kind = IssueKind::Controller;
-    contract.mandatory_children = vec![super::IssueRef {
-        repository: contract.repository.clone(),
-        number: 9000301,
-    }];
+    contract.mandatory_children =
+        vec![super::IssueRef { repository: contract.repository.clone(), number: 9000301 }];
     contract.validate()?;
     let mut complete = passing_packet(&contract)?;
     complete.child_dispositions = vec![ChildDispositionRecord {
-        child: super::IssueRef {
-            repository: contract.repository.clone(),
-            number: 9000301,
-        },
-        state: ChildState::ClosedByPacket {
-            packet_subject: "PR #9000401".to_string(),
-        },
+        child: super::IssueRef { repository: contract.repository.clone(), number: 9000301 },
+        state: ChildState::ClosedByPacket { packet_subject: "PR #9000401".to_string() },
     }];
     complete.validate_shape()?;
     validate_packet_against_contract(&complete, &contract)?;
@@ -1054,27 +935,17 @@ fn covered_child_satisfies_controller_shape() -> Result<(), CloseProofError> {
 fn conflicting_duplicate_child_dispositions_are_rejected() -> Result<(), CloseProofError> {
     let mut contract = leaf_contract()?;
     contract.kind = IssueKind::Controller;
-    contract.mandatory_children = vec![super::IssueRef {
-        repository: contract.repository.clone(),
-        number: 9000301,
-    }];
+    contract.mandatory_children =
+        vec![super::IssueRef { repository: contract.repository.clone(), number: 9000301 }];
     contract.validate()?;
     let mut duplicate = passing_packet(&contract)?;
     duplicate.child_dispositions = vec![
         ChildDispositionRecord {
-            child: super::IssueRef {
-                repository: contract.repository.clone(),
-                number: 9000301,
-            },
-            state: ChildState::ClosedByPacket {
-                packet_subject: "PR #9000401".to_string(),
-            },
+            child: super::IssueRef { repository: contract.repository.clone(), number: 9000301 },
+            state: ChildState::ClosedByPacket { packet_subject: "PR #9000401".to_string() },
         },
         ChildDispositionRecord {
-            child: super::IssueRef {
-                repository: contract.repository.clone(),
-                number: 9000301,
-            },
+            child: super::IssueRef { repository: contract.repository.clone(), number: 9000301 },
             state: ChildState::StillOpen,
         },
     ];
@@ -1158,9 +1029,7 @@ fn pr_scope_pass_and_issue_close_failure_coexist() -> Result<(), CloseProofError
     mixed.verdict.issue_close = IssueCloseOutcome::Invalid;
     mixed.row_dispositions.insert(
         "single-row.defect.fixed".to_string(),
-        RowDispositionValue::NotProven {
-            reason: "bounded slice only".to_string(),
-        },
+        RowDispositionValue::NotProven { reason: "bounded slice only".to_string() },
     );
     mixed.verdict.reasons =
         vec!["The bounded slice passes PR scope while the issue close stays invalid.".to_string()];
@@ -1183,23 +1052,10 @@ fn disposition_vocabulary_separates_completion_from_not_proven() {
         .satisfies_completion()
     );
     assert!(
-        !RowDispositionValue::NotProven {
-            reason: "unbounded".to_string()
-        }
-        .satisfies_completion()
+        !RowDispositionValue::NotProven { reason: "unbounded".to_string() }.satisfies_completion()
     );
-    assert!(
-        !RowDispositionValue::Contradicted {
-            reason: "c".to_string()
-        }
-        .satisfies_completion()
-    );
-    assert!(
-        !RowDispositionValue::Stale {
-            reason: "s".to_string()
-        }
-        .satisfies_completion()
-    );
+    assert!(!RowDispositionValue::Contradicted { reason: "c".to_string() }.satisfies_completion());
+    assert!(!RowDispositionValue::Stale { reason: "s".to_string() }.satisfies_completion());
 }
 
 #[test]
@@ -1253,12 +1109,9 @@ fn control_outcome_reasons_must_be_exact() -> Result<(), CloseProofError> {
     }];
     contract.validate()?;
     let mut controlled = passing_packet(&contract)?;
-    controlled.negative_control_dispositions.insert(
-        "nc.must-hold".to_string(),
-        ControlOutcome::Failed {
-            reason: String::new(),
-        },
-    );
+    controlled
+        .negative_control_dispositions
+        .insert("nc.must-hold".to_string(), ControlOutcome::Failed { reason: String::new() });
     assert!(matches!(
         validate_packet_against_contract(&controlled, &contract),
         Err(CloseProofError::Schema { field, .. }) if field.contains("reason")
