@@ -2037,6 +2037,25 @@ impl LspServer {
         Ok(Some(json!([])))
     }
 
+    /// Report the #16550 builtin-fallback fact for one `perl.runCritic` result.
+    ///
+    /// Under an explicitly legacy (`external`) critic engine, a result labeled
+    /// `analyzerUsed: "builtin"` can only mean the external `perlcritic` binary
+    /// was unavailable: a present-but-failing binary now surfaces its own
+    /// bounded error instead of degrading silently. The user-facing warning is
+    /// deduped per session via the bounded Critic warning family.
+    pub(crate) fn note_critic_command_fallback(
+        &self,
+        result: &Value,
+        engine: perl_lsp_rs_core::config::CriticEngine,
+    ) {
+        if matches!(engine, perl_lsp_rs_core::config::CriticEngine::Legacy)
+            && result.get("analyzerUsed").and_then(Value::as_str) == Some("builtin")
+        {
+            self.notify_critic_external_unavailable();
+        }
+    }
+
     /// Handle execute command request
     pub(crate) fn handle_execute_command(
         &self,
@@ -2211,7 +2230,12 @@ impl LspServer {
                 | "perl.debugTestFile"
                 | "perl.explainProviderDecision" => {
                     match provider.execute_command(command, arguments) {
-                        Ok(result) => return Ok(Some(result)),
+                        Ok(result) => {
+                            if command == "perl.runCritic" {
+                                self.note_critic_command_fallback(&result, critic_engine);
+                            }
+                            return Ok(Some(result));
+                        }
                         Err(e) => {
                             // Return proper JSON-RPC error according to LSP 3.17 specification
                             let error_code = if e.contains("Missing") || e.contains("argument") {
