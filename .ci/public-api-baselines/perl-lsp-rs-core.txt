@@ -9933,6 +9933,7 @@ pub perl_lsp_rs_core::runtime::launcher::LaunchAction::PerltidyCompatReport
 pub perl_lsp_rs_core::runtime::launcher::LaunchAction::PerltidyCompatReport::profile: alloc::string::String
 pub perl_lsp_rs_core::runtime::launcher::LaunchAction::RiprFacts
 pub perl_lsp_rs_core::runtime::launcher::LaunchAction::RiprFacts::base: core::option::Option<alloc::string::String>
+pub perl_lsp_rs_core::runtime::launcher::LaunchAction::RiprFacts::diff_path: core::option::Option<alloc::string::String>
 pub perl_lsp_rs_core::runtime::launcher::LaunchAction::RiprFacts::fact_classes: alloc::string::String
 pub perl_lsp_rs_core::runtime::launcher::LaunchAction::RiprFacts::head: core::option::Option<alloc::string::String>
 pub perl_lsp_rs_core::runtime::launcher::LaunchAction::RiprFacts::out: alloc::string::String
@@ -10018,6 +10019,7 @@ pub perl_lsp_rs_core::runtime::launcher::LspArgs::log: bool
 pub perl_lsp_rs_core::runtime::launcher::LspArgs::perlcritic_compat_report: core::option::Option<alloc::string::String>
 pub perl_lsp_rs_core::runtime::launcher::LspArgs::perltidy_compat_report: core::option::Option<alloc::string::String>
 pub perl_lsp_rs_core::runtime::launcher::LspArgs::ripr_base: core::option::Option<alloc::string::String>
+pub perl_lsp_rs_core::runtime::launcher::LspArgs::ripr_diff: core::option::Option<alloc::string::String>
 pub perl_lsp_rs_core::runtime::launcher::LspArgs::ripr_fact_classes: alloc::string::String
 pub perl_lsp_rs_core::runtime::launcher::LspArgs::ripr_facts: bool
 pub perl_lsp_rs_core::runtime::launcher::LspArgs::ripr_head: core::option::Option<alloc::string::String>
@@ -10282,6 +10284,7 @@ pub perl_lsp_rs_core::runtime::LaunchAction::PerltidyCompatReport
 pub perl_lsp_rs_core::runtime::LaunchAction::PerltidyCompatReport::profile: alloc::string::String
 pub perl_lsp_rs_core::runtime::LaunchAction::RiprFacts
 pub perl_lsp_rs_core::runtime::LaunchAction::RiprFacts::base: core::option::Option<alloc::string::String>
+pub perl_lsp_rs_core::runtime::LaunchAction::RiprFacts::diff_path: core::option::Option<alloc::string::String>
 pub perl_lsp_rs_core::runtime::LaunchAction::RiprFacts::fact_classes: alloc::string::String
 pub perl_lsp_rs_core::runtime::LaunchAction::RiprFacts::head: core::option::Option<alloc::string::String>
 pub perl_lsp_rs_core::runtime::LaunchAction::RiprFacts::out: alloc::string::String
@@ -10408,6 +10411,7 @@ pub perl_lsp_rs_core::runtime::LspArgs::log: bool
 pub perl_lsp_rs_core::runtime::LspArgs::perlcritic_compat_report: core::option::Option<alloc::string::String>
 pub perl_lsp_rs_core::runtime::LspArgs::perltidy_compat_report: core::option::Option<alloc::string::String>
 pub perl_lsp_rs_core::runtime::LspArgs::ripr_base: core::option::Option<alloc::string::String>
+pub perl_lsp_rs_core::runtime::LspArgs::ripr_diff: core::option::Option<alloc::string::String>
 pub perl_lsp_rs_core::runtime::LspArgs::ripr_fact_classes: alloc::string::String
 pub perl_lsp_rs_core::runtime::LspArgs::ripr_facts: bool
 pub perl_lsp_rs_core::runtime::LspArgs::ripr_head: core::option::Option<alloc::string::String>
