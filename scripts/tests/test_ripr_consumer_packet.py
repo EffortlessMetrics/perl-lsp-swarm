@@ -8,6 +8,7 @@ import io
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import tempfile
 import unittest
@@ -102,6 +103,12 @@ class ConsumerPacket(unittest.TestCase):
                 patch.object(PACKET, "KNOWN_EVALUATED_TREES",
                              supported_trees if supported_trees is not None else {self.tree}):
             return PACKET.collect(**args)
+
+    def test_documented_cli_subjects_match_production_profiles(self):
+        guide = (ROOT / "docs/ci/RIPR_CONSUMER_QUALIFICATION.md").read_text(encoding="utf-8")
+        trees = re.findall(r"--expected-tree ([0-9a-f]{40})", guide)
+        self.assertEqual(len(trees), 2)
+        self.assertEqual(set(trees), PACKET.KNOWN_EVALUATED_TREES)
 
     def test_complete_packet_is_nonadmitting_and_preserves_unknowns(self):
         packet = self.collect()
