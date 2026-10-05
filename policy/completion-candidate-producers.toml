@@ -90,6 +90,14 @@ outcome_owner = "#10230"
 # test setup in scanned completion/workspace.rs, and a test-only module already
 # excluded above. The 42-file product scan, discovered producer population,
 # authored dispositions, entry routes, delegations, and finalizer are unchanged.
+# Re-anchor 2026-09-29 (#16983): methods.rs gained two helpers and one
+# non-candidate parameter. `receiver_packages` returns `Option<Vec<String>>`
+# and `symbol_package` returns `&str`; neither takes a `&mut Vec<CompletionItem>`
+# channel nor returns a container of candidates, so neither is a producer. The
+# 42-file product scan, discovered producer population, authored dispositions,
+# entry routes, delegations, and finalizer route are unchanged. This re-anchor
+# is a source re-audit, not a claim that completion behavior is unchanged: the
+# methods row below narrows document-resident candidates to a resolved receiver.
 # Re-anchor 2026-10-01 (#17045): the #16850/#16809 regression repair restored
 # persisted `use parent`/role inheritance edges and persisted explicit and
 # generated members for current-document packages whenever the open buffer is
@@ -133,7 +141,22 @@ outcome_owner = "#10230"
 # index-freshness limitation, and finalizer route remain. Two new test fixtures
 # use the canonical initial-index API. No other scanned file changed from the
 # previous ledger binding, and the 42-file producer population is unchanged.
-source_digest = "sha256:a1e362c0c67b2fe8327dc54ed4e1867e3be2b24a632a3fd63417a9e7589a1874"
+# Re-anchor 2026-10-02 (merge of #17045/#17043 into #16983): the freshness-seam
+# rewrite touched request/dispatch.rs beside this branch's type_engine threading
+# of the same call sites; both compose (URI argument retained on the workspace
+# call, type_engine added to the methods calls). No producer
+# add/remove/re-channel and no entry/finalizer change. Digest recomputed over
+# the merged tree.
+# Re-anchor 2026-10-04 (review repair in #16988): add_method_completions
+# admission and metadata selection now read one combined callable+package
+# predicate; same function, same append channel, no producer
+# add/remove/re-channel, no entry/finalizer change. The methods row's
+# limitations text documents the combined predicate and the
+# receiver_packages=None fallback. Digest-only projection diff.
+# Re-anchor 2026-10-05 (#17226): compose retained strict workspace-prefix
+# admission/recovery controls with current-main receiver-scoped method producers.
+# Both append channels, the 42-file population and finalizer routes remain.
+source_digest = "sha256:b836c310aa91e69c233b05c38f830dbccf32789ee1b46f5cf89586b82d0c2c39"
 
 [[delegations]]
 module = "dancer2"
@@ -473,7 +496,7 @@ finalizer_route = "compatibility_adapter_before_shared_finalizer"
 reach_evidence = "provider_seam"
 reached_by = ["handle_completion", "handle_completion_cancellable"]
 migration_owner = "#8958"
-limitations = "Identity is the label today, so a same-named binding in another scope, package, or document instance can merge with this one. Nothing here proves visibility."
+limitations = "Identity is the label today, so a same-named binding in another scope, package, or document instance can merge with this one. A receiver resolving to exact evidence scopes candidates to its own package (#16983): a group is admitted only when one definition is both callable and receiver-resident. When receiver_packages is None, this producer keeps document-wide callable-symbol behavior for Unknown and Dynamic receivers. add_workspace_method_completions separately admits bounded fallback only for eligible Unknown evidence; Dynamic receivers remain fail-closed."
 note = "Method candidates for an arrow receiver."
 
 [[producers]]
