@@ -114,9 +114,11 @@ fn match_candidate(
     compiled: &CandidateMapping,
 ) -> Result<(), String> {
     candidate.validate().map_err(|error| error.to_string())?;
-    let _ = compiled;
-    // Deliberate RED scaffold: candidate integrity is not independently selected adoption.
-    // Frozen witnesses must discriminate this realistic self-consistent candidate matcher.
+    if candidate.canonicalized().map_err(|error| error.to_string())?
+        != compiled.canonicalized().map_err(|error| error.to_string())?
+    {
+        return Err("Candidate mapping differs from independently selected source material.".into());
+    }
     Ok(())
 }
 
