@@ -12802,7 +12802,7 @@ mod semantic_query_callback_tests {
             ),
         ];
         for (uri, code) in sources {
-            must(index.index_file(must(url::Url::parse(uri)), code.to_string()));
+            must(index.index_initial_file(must(url::Url::parse(uri)), code.to_string()));
         }
 
         let mut all_anchor_ids: Vec<AnchorId> = Vec::new();
