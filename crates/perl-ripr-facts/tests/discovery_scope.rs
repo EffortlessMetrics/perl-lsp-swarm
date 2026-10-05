@@ -45,28 +45,24 @@ fn stage_bytes(root: &str, rel: &str, content: &[u8]) {
 /// Per-invocation fixture root: the directory name embeds the process id so two
 /// concurrent `cargo test` invocations never share a fixture tree — one
 /// invocation's setup/teardown `remove_dir_all` cannot remove another's
-/// fixture mid-read. The guard owns teardown (drop removes the tree), so the
-/// binding must stay alive through `build_packet` and every assertion.
-struct FixtureRoot {
-    path: String,
+/// fixture mid-read.
+///
+/// These are intentionally free functions with unique names, not a guard
+/// struct with `new`/`Drop`. `ripr review-comments` resolves changed-function
+/// owners by bare name and expands caller scope per owner; common names
+/// (`new`, `path`, `drop`) explode the scope to the whole workspace and the
+/// command never finishes (EffortlessMetrics/ripr#1824). Unique names keep
+/// the gate fast. Call `teardown_g7_fixture` at the end of every test; a
+/// failed assertion skips teardown and leaves a pid-namespaced directory that
+/// the next setup with the same name+pid removes before reuse.
+fn setup_g7_fixture(name: &str) -> String {
+    let path = format!("target/ripr-g7/{name}-pid{}", std::process::id());
+    let _ = std::fs::remove_dir_all(&path);
+    path
 }
 
-impl FixtureRoot {
-    fn new(name: &str) -> Self {
-        let path = format!("target/ripr-g7/{name}-pid{}", std::process::id());
-        let _ = std::fs::remove_dir_all(&path);
-        Self { path }
-    }
-
-    fn path(&self) -> &str {
-        &self.path
-    }
-}
-
-impl Drop for FixtureRoot {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.path);
-    }
+fn teardown_g7_fixture(root: &str) {
+    let _ = std::fs::remove_dir_all(root);
 }
 
 fn limitation_ids(packet: &serde_json::Value) -> Vec<String> {
@@ -86,8 +82,7 @@ fn scope_limitation(packet: &serde_json::Value) -> &serde_json::Value {
 
 #[test]
 fn out_of_scope_files_are_limited_not_silent() {
-    let fixture = FixtureRoot::new("split");
-    let root = fixture.path().to_owned();
+    let root = setup_g7_fixture("split");
     stage_file(&root, "lib/App.pm", APP_PM);
     stage_file(&root, "t/app.t", APP_T);
     stage_file(&root, "xt/extra.t", EXTRA_T);
@@ -124,12 +119,12 @@ fn out_of_scope_files_are_limited_not_silent() {
         .collect();
     assert!(refs.contains(&"file:xt/extra.t"), "evidence must name skipped ids; got {refs:?}");
     assert!(refs.contains(&"file:script/Helper.pm"), "got {refs:?}");
+    teardown_g7_fixture(&root);
 }
 
 #[test]
 fn conventional_layout_carries_no_scope_limitation() {
-    let fixture = FixtureRoot::new("conventional");
-    let root = fixture.path().to_owned();
+    let root = setup_g7_fixture("conventional");
     stage_file(&root, "lib/App.pm", APP_PM);
     stage_file(&root, "t/app.t", APP_T);
     let packet =
@@ -140,12 +135,12 @@ fn conventional_layout_carries_no_scope_limitation() {
         "conventional lib/+t/ layout must gain no scope limitation; got {:?}",
         limitation_ids(&packet)
     );
+    teardown_g7_fixture(&root);
 }
 
 #[test]
 fn files_only_request_carries_no_scope_limitation() {
-    let fixture = FixtureRoot::new("files-only");
-    let root = fixture.path().to_owned();
+    let root = setup_g7_fixture("files-only");
     stage_file(&root, "xt/extra.t", EXTRA_T);
     let packet = build_packet(&root, "files,owners");
 
@@ -155,14 +150,14 @@ fn files_only_request_carries_no_scope_limitation() {
         "files-only request must gain no scope limitation; got {:?}",
         limitation_ids(&packet)
     );
+    teardown_g7_fixture(&root);
 }
 
 #[test]
 fn pl_and_psgi_skips_are_named_anywhere() {
     // No scoped collector scans `.pl`/`.psgi` at all, so they are skips
     // wherever they live — even directly under `lib/`.
-    let fixture = FixtureRoot::new("pl-psgi");
-    let root = fixture.path().to_owned();
+    let root = setup_g7_fixture("pl-psgi");
     stage_file(&root, "lib/App.pm", APP_PM);
     stage_file(&root, "lib/extra.pl", EXTRA_PL);
     stage_file(&root, "t/app.t", APP_T);
@@ -201,14 +196,14 @@ fn pl_and_psgi_skips_are_named_anywhere() {
     for skipped in ["file:script/run.pl", "file:lib/extra.pl", "file:app.psgi"] {
         assert!(refs.contains(&skipped), "evidence must name skipped ids; got {refs:?}");
     }
+    teardown_g7_fixture(&root);
 }
 
 #[test]
 fn tests_only_request_reports_t_skips_not_pm_skips() {
     // Split gating: `.t` feeds tests, but `.pm` does not — a tests-only
     // request must not report unrelated source skips.
-    let fixture = FixtureRoot::new("tests-only-gating");
-    let root = fixture.path().to_owned();
+    let root = setup_g7_fixture("tests-only-gating");
     stage_file(&root, "lib/App.pm", APP_PM);
     stage_file(&root, "t/app.t", APP_T);
     stage_file(&root, "xt/extra.t", EXTRA_T);
@@ -228,14 +223,14 @@ fn tests_only_request_reports_t_skips_not_pm_skips() {
         .collect();
     assert!(refs.contains(&"file:xt/extra.t"), "got {refs:?}");
     assert!(!refs.contains(&"file:script/Helper.pm"), "got {refs:?}");
+    teardown_g7_fixture(&root);
 }
 
 #[test]
 fn relations_request_reports_both_t_and_source_skips() {
     // Relations consume both sides (test files + source files), so a
     // relations/dynamic_boundaries request reports both skip classes.
-    let fixture = FixtureRoot::new("relations-gating");
-    let root = fixture.path().to_owned();
+    let root = setup_g7_fixture("relations-gating");
     stage_file(&root, "lib/App.pm", APP_PM);
     stage_file(&root, "t/app.t", APP_T);
     stage_file(&root, "xt/extra.t", EXTRA_T);
@@ -255,6 +250,7 @@ fn relations_request_reports_both_t_and_source_skips() {
         .collect();
     assert!(refs.contains(&"file:xt/extra.t"), "got {refs:?}");
     assert!(refs.contains(&"file:script/Helper.pm"), "got {refs:?}");
+    teardown_g7_fixture(&root);
 }
 
 #[test]
@@ -262,8 +258,7 @@ fn verify_only_request_names_excluded_commands() {
     // A verify-only caller requests commands, not facts — the limitation
     // must still name the out-of-scope .t as excluded from the requested
     // scoped facts or commands (PRRT_kwDOSid81M6o2Z3P).
-    let fixture = FixtureRoot::new("verify-only");
-    let root = fixture.path().to_owned();
+    let root = setup_g7_fixture("verify-only");
     stage_file(&root, "t/app.t", APP_T);
     stage_file(&root, "xt/extra.t", EXTRA_T);
     let packet = build_packet(&root, "verify_commands");
@@ -275,6 +270,7 @@ fn verify_only_request_names_excluded_commands() {
         message.contains("excluded from the requested scoped facts or commands"),
         "verify-only wording must name the exclusion from requested facts/commands; got {message:?}"
     );
+    teardown_g7_fixture(&root);
 }
 
 #[test]
@@ -282,8 +278,7 @@ fn subset_packet_uses_files_absent_wording() {
     // A tests-only packet carries empty `files[]` — the message must not
     // claim the skips "appear in `files[]`"; the `file:` evidence refs are
     // path-derived ids, stated as such.
-    let fixture = FixtureRoot::new("files-absent");
-    let root = fixture.path().to_owned();
+    let root = setup_g7_fixture("files-absent");
     stage_file(&root, "t/app.t", APP_T);
     stage_file(&root, "xt/extra.t", EXTRA_T);
     let packet = build_packet(&root, "tests");
@@ -308,6 +303,7 @@ fn subset_packet_uses_files_absent_wording() {
         .filter_map(|r| r.as_str())
         .collect();
     assert!(refs.contains(&"file:xt/extra.t"), "got {refs:?}");
+    teardown_g7_fixture(&root);
 }
 
 #[test]
@@ -315,8 +311,7 @@ fn unreadable_skip_uses_path_derived_wording() {
     // Wave-2 thread 1 (all absent): one file reads OK (`files[]` present)
     // while a skipped file fails `read_to_string` (invalid UTF-8) — the skip
     // has no `files[]` fact, so the message must not claim it appears there.
-    let fixture = FixtureRoot::new("unreadable-skip");
-    let root = fixture.path().to_owned();
+    let root = setup_g7_fixture("unreadable-skip");
     stage_file(&root, "lib/App.pm", APP_PM);
     stage_file(&root, "t/app.t", APP_T);
     stage_bytes(&root, "xt/extra.t", &[0xff, 0xfe, 0x00, 0x62]);
@@ -348,14 +343,14 @@ fn unreadable_skip_uses_path_derived_wording() {
         !message.contains("appear in `files[]`"),
         "no skip is present, so no presence claim is allowed; got {message:?}"
     );
+    teardown_g7_fixture(&root);
 }
 
 #[test]
 fn mixed_present_and_unreadable_skips_split_wording() {
     // Wave-2 thread 1 (mixed): one skip present in `files[]`, one unreadable
     // — the message names both but claims presence only for the present one.
-    let fixture = FixtureRoot::new("mixed-presence");
-    let root = fixture.path().to_owned();
+    let root = setup_g7_fixture("mixed-presence");
     stage_file(&root, "lib/App.pm", APP_PM);
     stage_file(&root, "t/app.t", APP_T);
     stage_file(&root, "xt/extra.t", EXTRA_T);
@@ -377,6 +372,7 @@ fn mixed_present_and_unreadable_skips_split_wording() {
         absent_part.contains("script/Helper.pm") && absent_part.contains("path-derived"),
         "unreadable skip must sit in the path-derived clause; got {message:?}"
     );
+    teardown_g7_fixture(&root);
 }
 
 #[test]
@@ -384,8 +380,7 @@ fn extension_and_directory_skips_are_distinguished() {
     // Wave-2 thread 2 (files-present): `lib/extra.pl` sits INSIDE `<root>/lib`
     // yet is excluded by extension, while `xt/extra.t` is excluded by
     // directory — each group must carry its own reason.
-    let fixture = FixtureRoot::new("ext-vs-dir");
-    let root = fixture.path().to_owned();
+    let root = setup_g7_fixture("ext-vs-dir");
     stage_file(&root, "lib/App.pm", APP_PM);
     stage_file(&root, "lib/extra.pl", EXTRA_PL);
     stage_file(&root, "t/app.t", APP_T);
@@ -411,6 +406,7 @@ fn extension_and_directory_skips_are_distinguished() {
         message.contains("appear in `files[]`"),
         "all-present packet keeps the presence claim; got {message:?}"
     );
+    teardown_g7_fixture(&root);
 }
 
 #[test]
@@ -420,8 +416,7 @@ fn files_absent_extension_skip_names_extension_not_directory() {
     // and never claim it "falls outside that scope". A boundaries-only request
     // on an eval-free fixture carries no files: relations need test facts,
     // which this request never parses, and nothing contains `eval`.
-    let fixture = FixtureRoot::new("ext-absent");
-    let root = fixture.path().to_owned();
+    let root = setup_g7_fixture("ext-absent");
     stage_file(&root, "lib/App.pm", APP_PM);
     stage_file(&root, "lib/extra.pl", EXTRA_PL);
     stage_file(&root, "t/app.t", APP_T);
@@ -443,14 +438,14 @@ fn files_absent_extension_skip_names_extension_not_directory() {
         message.contains("not in this packet") && message.contains("path-derived"),
         "files-absent wording must state path-derived ids; got {message:?}"
     );
+    teardown_g7_fixture(&root);
 }
 
 #[test]
 fn files_absent_mixed_skips_label_each_reason() {
     // Wave-2 thread 2 (files-absent, mixed): both exclusion reasons appear
     // with their labels, and every ref stays path-derived.
-    let fixture = FixtureRoot::new("mixed-absent");
-    let root = fixture.path().to_owned();
+    let root = setup_g7_fixture("mixed-absent");
     stage_file(&root, "lib/App.pm", APP_PM);
     stage_file(&root, "lib/extra.pl", EXTRA_PL);
     stage_file(&root, "t/app.t", APP_T);
@@ -471,16 +466,18 @@ fn files_absent_mixed_skips_label_each_reason() {
         !message.contains("appear in `files[]`"),
         "files-absent packet must not claim files[] presence; got {message:?}"
     );
+    teardown_g7_fixture(&root);
 }
 
 #[test]
 fn fixture_roots_are_isolated_per_invocation() {
     // Wave-2 thread 3: the fixture directory embeds the process id, so two
     // concurrent `cargo test` invocations never share a fixture tree.
-    let fixture = FixtureRoot::new("isolation");
+    let root = setup_g7_fixture("isolation");
     assert!(
-        fixture.path().contains(&std::process::id().to_string()),
+        root.as_str().contains(&std::process::id().to_string()),
         "fixture path must embed the process id; got {:?}",
-        fixture.path()
+        root.as_str()
     );
+    teardown_g7_fixture(&root);
 }
