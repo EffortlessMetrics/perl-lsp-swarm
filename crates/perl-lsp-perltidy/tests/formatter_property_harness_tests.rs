@@ -740,23 +740,31 @@ proptest! {
     }
 
     /// FPH-005: refused/not-proven outcomes never carry a plan, and their
-    /// reason is one of the stable refusal classes; deliberately invalid or
-    /// recovered subjects map only to typed refusals.
+    /// reason is one of the stable refusal classes; deliberately unparseable
+    /// subjects map only to typed refusals. The one parse-clean mutation (the
+    /// appended empty statement, `expects_refusal == false`) is valid Perl,
+    /// so under #17300 it must classify as a proven already-formatted no-op
+    /// with an empty plan instead of a safe-subset refusal.
     #[test]
     fn refusals_carry_no_plan_and_exact_reason_class(case in arb_invalidation_case()) {
         let receipt = run_case(&case).map_err(|violation| TestCaseError::fail(violation.to_string()))?;
-        prop_assert!(
-            receipt.outcome_disposition == "refused"
-                || receipt.outcome_disposition == "failed_or_not_proven",
-            "deliberately invalid subject produced {}",
-            receipt.outcome_disposition
-        );
+        if case.expects_refusal {
+            prop_assert!(
+                receipt.outcome_disposition == "refused"
+                    || receipt.outcome_disposition == "failed_or_not_proven",
+                "deliberately invalid subject produced {}",
+                receipt.outcome_disposition
+            );
+            prop_assert!(
+                REFUSAL_REASON_CLASSES.contains(&receipt.outcome_reason),
+                "refusal reason {} is not a stable refusal class",
+                receipt.outcome_reason
+            );
+        } else {
+            prop_assert_eq!(receipt.outcome_disposition, "no_change");
+            prop_assert_eq!(receipt.outcome_reason, "already_formatted");
+        }
         prop_assert_eq!(receipt.plan_edit_count, 0);
-        prop_assert!(
-            REFUSAL_REASON_CLASSES.contains(&receipt.outcome_reason),
-            "refusal reason {} is not a stable refusal class",
-            receipt.outcome_reason
-        );
     }
 
     /// FPH-006: line-ending conventions survive LF/CRLF/mixed variants and
