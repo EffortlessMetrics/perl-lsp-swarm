@@ -24,9 +24,18 @@
 # A run is only cancelled when every other job of that run is already
 # completed, so a cancel can never interrupt live hosted or aggregate work;
 # a run whose aggregate is still polling is left for the next 15-minute
-# tick. A failed cancel call fails the step (scheduled-workflow failure
-# notifies maintainers) instead of being swallowed into a green run, which
-# is how the dead job-level endpoint went unnoticed for days.
+# tick. The selected trusted job itself is rechecked in a fresh jobs read
+# immediately before the cancel, and the cancel is skipped if it left the
+# queued state, so a nano runner resuming mid-tick is not interrupted
+# either. GitHub offers no atomic queued-state cancel (the job-level
+# endpoint fails for queued jobs, above), so a seconds-wide recheck-to-cancel
+# window remains in which a resumed runner could still lose its run; that
+# residual race is accepted and bounded: it requires the em-ci-nano runner
+# to return in that exact window after MAX_QUEUE_SECONDS of silence, once
+# per 15-minute tick. A failed cancel call fails the step
+# (scheduled-workflow failure notifies maintainers) instead of being
+# swallowed into a green run, which is how the dead job-level endpoint went
+# unnoticed for days.
 #
 # See policy/ci-lane-whitelist.toml entry `policy_validators_nano_reaper`.
 
@@ -89,6 +98,15 @@ jobs:
               --jq ".jobs[] | select(.name != \"$NANO_JOB\" and .status != \"completed\") | .id")"
             if [ -n "$pending_others" ]; then
               echo "::notice::Trusted lane job $job_id on run $run_id queued with no runner for ${age}s, but the run still has non-completed jobs; deferring to the next tick so a cancel cannot interrupt live work."
+              continue
+            fi
+            # Recheck the selected trusted job immediately before the cancel:
+            # if the nano runner picked it up between reads, it is live work
+            # and the run-level cancel must not fire.
+            recheck_status="$(gh api "repos/$REPO/actions/runs/$run_id/jobs?per_page=100" \
+              --jq ".jobs[] | select(.id == $job_id) | .status")"
+            if [ "$recheck_status" != "queued" ]; then
+              echo "::notice::Trusted lane job $job_id on run $run_id queued with no runner for ${age}s, but left the queued state (status '${recheck_status:-gone}') before cancel; skipping so a cancel cannot interrupt live validation."
               continue
             fi
             err_file="$tmpdir/cancel-$run_id.err"
