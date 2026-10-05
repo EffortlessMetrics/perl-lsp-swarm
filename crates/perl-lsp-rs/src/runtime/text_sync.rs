@@ -1898,4 +1898,81 @@ mod merge_sync_text_document_guidance_tests {
         assert_eq!(server.buffer_text(uri).as_deref(), Some("my $value = 2;"));
         Ok(())
     }
+
+    #[test]
+    fn close_and_save_shape_guidance_names_only_the_requested_method() -> Result<(), String> {
+        let server = LspServer::new();
+        let uri = "file:///workspace/lib/Foo.pm";
+        let source = "my $value = 1;";
+        server.test_apply_did_open(uri, source, 1).map_err(|error| error.to_string())?;
+        for malformed in [
+            json!({}),
+            json!({"textDocument": {}}),
+            json!({"textDocument": {"uri": null}}),
+            json!({"textDocument": {"uri": 42}}),
+        ] {
+            let close = server
+                .handle_did_close(Some(malformed.clone()))
+                .err()
+                .ok_or("didClose with malformed URI must fail")?;
+            let save = server
+                .handle_did_save(Some(malformed))
+                .err()
+                .ok_or("didSave with malformed URI must fail")?;
+            for (error, method, other_method) in [
+                (close, "textDocument/didClose", "textDocument/didSave"),
+                (save, "textDocument/didSave", "textDocument/didClose"),
+            ] {
+                assert_eq!(error.code, crate::protocol::INVALID_PARAMS);
+                for expected in [method, "params.textDocument.uri", uri] {
+                    assert!(
+                        error.message.contains(expected),
+                        "missing {expected}: {}",
+                        error.message
+                    );
+                }
+                for unexpected in [other_method, "textDocument/didOpen", "textDocument/didChange"] {
+                    assert!(
+                        !error.message.contains(unexpected),
+                        "wrong method {unexpected}: {}",
+                        error.message
+                    );
+                }
+            }
+            assert_eq!(server.buffer_text(uri).as_deref(), Some(source));
+        }
+        // The established absent-params no-op contract stays separate from
+        // a supplied but malformed textDocument object.
+        server.handle_did_close(None).map_err(|error| error.to_string())?;
+        server.handle_did_save(None).map_err(|error| error.to_string())?;
+        assert_eq!(server.buffer_text(uri).as_deref(), Some(source));
+        Ok(())
+    }
+
+    #[test]
+    fn valid_save_preserves_or_replaces_buffer_and_close_evicts_it() -> Result<(), String> {
+        let server = LspServer::new();
+        let uri = "file:///workspace/lib/Foo.pm";
+        server.test_apply_did_open(uri, "my $value = 1;", 3).map_err(|error| error.to_string())?;
+        server
+            .handle_did_save(Some(json!({"textDocument": {"uri": uri}})))
+            .map_err(|error| error.to_string())?;
+        assert_eq!(server.buffer_text(uri).as_deref(), Some("my $value = 1;"));
+        server
+            .handle_did_save(Some(json!({"textDocument": {"uri": uri}, "text": "my $value = 2;"})))
+            .map_err(|error| error.to_string())?;
+        assert_eq!(server.buffer_text(uri).as_deref(), Some("my $value = 2;"));
+        {
+            let documents = server.documents.lock();
+            let document = documents
+                .get(&server.normalize_uri_key(uri))
+                .ok_or("saved document must remain open")?;
+            assert_eq!(document.version, 3, "didSave must preserve the client version");
+        }
+        server
+            .handle_did_close(Some(json!({"textDocument": {"uri": uri}})))
+            .map_err(|error| error.to_string())?;
+        assert_eq!(server.buffer_text(uri), None);
+        Ok(())
+    }
 }

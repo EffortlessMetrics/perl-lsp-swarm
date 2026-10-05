@@ -1,6 +1,6 @@
 use super::{
     Arc, AtomicU32, JsonRpcError, LspServer, NonZeroU32, Value, invalid_params, json,
-    source_path_from_uri,
+    missing_text_document_uri_params, source_path_from_uri,
 };
 use crate::runtime::BackingFileTransition;
 #[cfg(feature = "workspace")]
@@ -18,7 +18,7 @@ impl LspServer {
             let uri = params
                 .pointer("/textDocument/uri")
                 .and_then(|v| v.as_str())
-                .ok_or_else(|| invalid_params("Missing required parameter: textDocument.uri"))?;
+                .ok_or_else(|| missing_text_document_uri_params("textDocument/didClose"))?;
 
             tracing::debug!("Document closed: {}", uri);
 
@@ -130,7 +130,7 @@ impl LspServer {
             let uri = params
                 .pointer("/textDocument/uri")
                 .and_then(|v| v.as_str())
-                .ok_or_else(|| invalid_params("Missing required parameter: textDocument.uri"))?;
+                .ok_or_else(|| missing_text_document_uri_params("textDocument/didSave"))?;
             let normalized_uri = self.normalize_uri_key(uri);
             // Sink-owned admission (#8895): the save path resolves the URI for
             // diagnostics and index refresh, so it owns URI policy, judged on
