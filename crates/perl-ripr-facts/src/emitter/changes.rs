@@ -43,6 +43,10 @@ fn parse_diff_hunks(diff_text: &str) -> ParsedDiff {
     let mut head_line: u32 = 0;
     let mut run: Option<DiffHunkRun> = None;
     let mut recognized_structure = false;
+    // True only between a parseable hunk header and the next file/header
+    // boundary. A rejected header leaves the parser outside any hunk so body
+    // lines are skipped until a valid header starts one (#17266 review).
+    let mut in_hunk = false;
 
     for line in diff_text.lines() {
         if line.starts_with("diff --git ") {
@@ -50,23 +54,37 @@ fn parse_diff_hunks(diff_text: &str) -> ParsedDiff {
             // recognizable structure even with zero hunks.
             flush(&mut run, &mut runs);
             recognized_structure = true;
+            in_hunk = false;
             continue;
         }
         if let Some(rest) = line.strip_prefix("+++ b/") {
             flush(&mut run, &mut runs);
             current_file = Some(rest.trim().to_string());
             recognized_structure = true;
+            in_hunk = false;
             continue;
         }
         if line.starts_with("+++") || line.starts_with("---") {
+            // Generic file markers (`--- a/f`, `+++ /dev/null`) and body lines
+            // whose content starts with `++`/`--` at column zero: flush but
+            // leave in_hunk alone so a colliding body line cannot silently
+            // drop the rest of a valid hunk. Genuine file boundaries reset
+            // via `diff --git` / `+++ b/` above.
             flush(&mut run, &mut runs);
             continue;
         }
         if let Some(header_rest) = line.strip_prefix("@@") {
             flush(&mut run, &mut runs);
-            let new_start = parse_hunk_new_start(header_rest);
-            head_line = new_start.unwrap_or(0);
-            recognized_structure |= new_start.is_some();
+            if let Some(new_start) = parse_hunk_new_start(header_rest) {
+                head_line = new_start;
+                recognized_structure = true;
+                in_hunk = true;
+            } else {
+                // Rejected header: stay outside any hunk. The retained file
+                // path must not combine with a zeroed cursor into a line-zero
+                // run on the next added line.
+                in_hunk = false;
+            }
             continue;
         }
         if line.starts_with('\\') {
@@ -74,6 +92,9 @@ fn parse_diff_hunks(diff_text: &str) -> ParsedDiff {
             // present in neither file version. Do not flush the open run or
             // advance the head cursor (advancing it would shift every following
             // added line down by one).
+            continue;
+        }
+        if !in_hunk {
             continue;
         }
         if let Some(added) = line.strip_prefix('+') {
@@ -674,6 +695,32 @@ mod tests {
                 "malformed @@ header must still be labeled unparseable ({header:?}), got: {limitations:?}"
             );
         }
+    }
+
+    #[test]
+    fn emit_changes_from_diff_malformed_header_after_file_marker_emits_no_change() {
+        // A rejected hunk header must leave the parser outside any hunk: the
+        // retained file path plus a head_line reset to zero must not turn a
+        // following added line into a line-zero change attached to the wrong
+        // owner (#17266 review wave3). The package owner below spans 0..20, so
+        // the buggy line-zero run would attribute to it.
+        let (files, owners) = app_files_and_owners();
+        let diff = "+++ b/lib/My/App.pm\n@@ -5,3 +5,foo @@\n+    return 1;\n";
+        let (changes, _) = emit_changes_from_diff(diff, ".", &files, &owners);
+        assert!(changes.is_empty(), "rejected header must emit no change fact, got: {changes:?}");
+        // A later valid header re-enters a hunk: body lines are skipped only
+        // until a parseable header starts one.
+        let diff = "+++ b/lib/My/App.pm\n\
+             @@ -5,3 +5,foo @@\n\
+             +    bogus = 1;\n\
+             @@ -5,3 +5,4 @@\n\
+             sub discount {\n\
+                 my ($amount) = @_;\n\
+             +    return $amount / 2;\n\
+             }\n";
+        let (changes, _) = emit_changes_from_diff(diff, ".", &files, &owners);
+        assert_eq!(changes.len(), 1, "valid header after a rejected one still parses");
+        assert_eq!(changes[0]["owner_id"], "owner:lib/My/App.pm:sub:main::discount:60-140");
     }
 
     #[test]
