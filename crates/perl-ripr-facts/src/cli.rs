@@ -201,6 +201,42 @@ pub fn run_ripr_facts(
     clippy::print_stderr,
     reason = "ripr-facts is a batch CLI unit — user-facing diagnostics intentionally use stderr"
 )]
+/// Run the packet generator with a diff read from a file. Called by the
+/// `perllsp --ripr-facts --ripr-diff <file>` surface (#17152); mirrors the
+/// binary's [`run_cli`] ordering (output destination validated before diff
+/// I/O, unreadable diff fails closed with exit 1) and delegates the rest.
+pub fn run_ripr_facts_with_diff_path(
+    schema: &str,
+    root: &str,
+    base: Option<&str>,
+    head: Option<&str>,
+    fact_classes: &str,
+    diff_path: Option<&str>,
+    out: &str,
+) -> i32 {
+    if let Err(line) = validate_out_destination(out) {
+        eprintln!("{line}");
+        return 1;
+    }
+
+    let diff_text = match diff_path {
+        Some(path) => match read_diff_text(root, path) {
+            Ok(text) => Some(text),
+            Err(reason) => {
+                eprintln!("ripr-facts: {reason}");
+                return 1;
+            }
+        },
+        None => None,
+    };
+
+    run_ripr_facts_with_diff(schema, root, base, head, fact_classes, diff_text.as_deref(), out)
+}
+
+#[expect(
+    clippy::print_stderr,
+    reason = "ripr-facts is a batch CLI unit — user-facing diagnostics intentionally use stderr"
+)]
 /// Run the packet generator with an explicit diff input. Used by tests and
 /// library callers that already have the diff bytes; the binary routes here
 /// after CLI parsing.

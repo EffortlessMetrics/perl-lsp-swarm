@@ -46,8 +46,9 @@
 //! - [`packet`] (private) — [`build_ripr_facts_packet`] itself: runs the
 //!   emitters, binds relations to changes, computes `packet_fingerprint`.
 //! - [`cli`] (private) — [`run_cli`], [`run_ripr_facts`],
-//!   [`run_ripr_facts_with_diff`]: argv parsing, output-path validation, and
-//!   the process-exit-code mapping around [`build_ripr_facts_packet`].
+//!   [`run_ripr_facts_with_diff`], [`run_ripr_facts_with_diff_path`]: argv
+//!   parsing, output-path validation, and the process-exit-code mapping
+//!   around [`build_ripr_facts_packet`].
 //! - [`emitter`] (private) — the fact emitters themselves, one submodule per
 //!   packet fact family; see its module docs for the full breakdown.
 #![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
@@ -57,6 +58,6 @@ mod emitter;
 mod packet;
 mod request;
 
-pub use cli::{run_cli, run_ripr_facts, run_ripr_facts_with_diff};
+pub use cli::{run_cli, run_ripr_facts, run_ripr_facts_with_diff, run_ripr_facts_with_diff_path};
 pub use packet::build_ripr_facts_packet;
 pub use request::{RiprFactsError, RiprFactsRequest};

@@ -129,12 +129,14 @@ where
             ref head,
             ref fact_classes,
             ref out,
-        } => perl_ripr_facts::run_ripr_facts(
+            ref diff_path,
+        } => perl_ripr_facts::run_ripr_facts_with_diff_path(
             schema,
             root,
             base.as_deref(),
             head.as_deref(),
             fact_classes,
+            diff_path.as_deref(),
             out,
         ),
         LaunchAction::Help => {
@@ -719,7 +721,7 @@ mod tests {
     #[test]
     fn help_text_documents_ripr_facts_flags() {
         // The --ripr-facts surface must be discoverable from --help output.
-        // Regression guard for issue #5278 — covers all 7 --ripr-* flags.
+        // Regression guard for issue #5278 — covers all 8 --ripr-* flags.
         let rendered = render_help_text("perllsp");
         for flag in [
             "--ripr-facts",
@@ -729,6 +731,7 @@ mod tests {
             "--ripr-head",
             "--ripr-fact-classes",
             "--ripr-out",
+            "--ripr-diff",
         ] {
             assert!(rendered.contains(flag), "help must list {flag}");
         }
