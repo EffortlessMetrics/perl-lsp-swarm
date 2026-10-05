@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "owner_issue": 17200,
-  "reason": "adding the installed receipt assembler controls to test:receipt-summary grows packaged package.json by exactly 46 bytes; all 30 package members and every other byte limit remain unchanged",
-  "base_baseline_file_sha256": "8c5ba0a97559679ec4f2e33d6f5978dcf3c41c828b0afdd521e700997cbb0857",
-  "candidate_baseline_file_sha256": "ed73e4ac567f36d73e987ffda907a272e2e35afcef0cb1640eabb636300b6291",
-  "base_inventory_sha256": "85107aba396d47f6dadc11056330aa8f45e1e59452e32a1fd8dad533283540c2",
-  "candidate_inventory_sha256": "eca87de013c378aed31924190eaf783fb691e3b850fa8eb99c1eeb93efef4f6f"
+  "owner_issue": 17333,
+  "reason": "wave-4 surface repairs grow the bundled out/extension.js by 4735 bytes: the #17333 prove resolver PATH walk, the #17334 global-scope unscoped pull payload builder, and their contracts; the packaged file set is unchanged",
+  "base_baseline_file_sha256": "ed73e4ac567f36d73e987ffda907a272e2e35afcef0cb1640eabb636300b6291",
+  "candidate_baseline_file_sha256": "13f9566e8353bddb7353b68a185217f05bfffc7d3d67e00c09323b612b255f0e",
+  "base_inventory_sha256": "eca87de013c378aed31924190eaf783fb691e3b850fa8eb99c1eeb93efef4f6f",
+  "candidate_inventory_sha256": "c3e8e1db9dcad64d48526b7ae702ae2f29cb44aef741a4be49b071652ab57ab3"
 }
