@@ -914,17 +914,13 @@ impl<'a> Parser<'a> {
                             return Err(e);
                         }
 
+                        // The original error is already recorded above; recovery
+                        // must not synthesize a second one at the same position
+                        // (#16605).
                         self.record_error(e.clone());
                         let error_location = self.current_position();
                         let error_msg = format!("{}", e);
-                        let peek_display =
-                            self.peek_kind().map(|k| k.display_name()).unwrap_or("end of input");
-                        let error_node = self.recover_from_error(
-                            error_msg,
-                            "statement".to_string(),
-                            peek_display.to_string(),
-                            error_location,
-                        );
+                        let error_node = self.recovery_error_node(error_msg, error_location);
                         statements.push(error_node);
 
                         // If synchronization fails we stop to prevent an infinite
