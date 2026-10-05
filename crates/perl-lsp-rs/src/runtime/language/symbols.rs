@@ -995,6 +995,124 @@ mod tests {
     };
 
     #[test]
+    fn emit_document_symbol_probe_boundary_discriminator_reports_byte_limit_only_above_256()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Each child has a fresh production OnceLock; the test process's global
+        // environment is never mutated. A receipt rules out a zero-test filter.
+        for value in [None, Some("true"), Some("1")] {
+            let mut child = std::process::Command::new(std::env::current_exe()?);
+            child
+                .args([
+                    "--exact",
+                    "runtime::language::symbols::tests::document_symbol_probe_enabled_call_presence_observer",
+                    "--nocapture",
+                ])
+                .env("PERL_LSP_SYMBOL_PROBE_NATIVE_CONTROL", "1")
+                .env_remove("PERL_LSP_DOCUMENT_SYMBOL_PROBE");
+            if let Some(value) = value {
+                child.env("PERL_LSP_DOCUMENT_SYMBOL_PROBE", value);
+            }
+            let output = child.output()?;
+            assert!(
+                output.status.success(),
+                "isolated probe control failed: {}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let stdout = String::from_utf8(output.stdout)?;
+            let receipt = stdout
+                .lines()
+                .filter_map(|line| {
+                    let start = line.find('{')?;
+                    serde_json::from_str::<Value>(&line[start..]).ok()
+                })
+                .find(|record| record["kind"] == "document_symbol_probe_native_control")
+                .ok_or("isolated probe control did not execute")?;
+            assert_eq!(receipt["enabled"], value == Some("1"));
+            assert_eq!(receipt["emitted_records"], if value == Some("1") { 5 } else { 0 });
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn document_symbol_probe_enabled_call_presence_observer()
+    -> Result<(), Box<dyn std::error::Error>> {
+        if std::env::var("PERL_LSP_SYMBOL_PROBE_NATIVE_CONTROL").as_deref() != Ok("1") {
+            return Ok(());
+        }
+        let expected_enabled =
+            std::env::var("PERL_LSP_DOCUMENT_SYMBOL_PROBE").as_deref() == Ok("1");
+        // Reach the actual OnceLock::new/get_or_init/env read owner directly.
+        assert_eq!(document_symbol_probe_enabled(), expected_enabled);
+        assert_eq!(document_symbol_probe_enabled(), expected_enabled);
+        let ids = [
+            json!("probe-secret-token"),
+            json!("x".repeat(256)),
+            json!("y".repeat(257)),
+            json!("\u{00e9}".repeat(129)),
+            json!(42),
+        ];
+        let output = crate::runtime::outbound::tests::capture_tracing_records(|| {
+            for id in &ids {
+                emit_document_symbol_probe(
+                    Some(id),
+                    "budget_control",
+                    None,
+                    DocumentSymbolProbeCounts::default(),
+                    500,
+                );
+            }
+        });
+        assert!(!output.contains("probe-secret-token"));
+        let records: Vec<Value> = output
+            .lines()
+            .filter_map(|line| {
+                let start = line.find('{')?;
+                serde_json::from_str::<Value>(&line[start..]).ok()
+            })
+            .filter(|record| record["kind"] == "document_symbol_branch_probe")
+            .collect();
+        if expected_enabled {
+            assert_eq!(records.len(), 5, "actual emitter must retain every control");
+            for (index, (bytes, reason, over_limit)) in [
+                (18, "client_text", false),
+                (256, "client_text", false),
+                (257, "byte_limit", true),
+                (258, "byte_limit", true),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let record = &records[index];
+                assert_eq!(record["request_id"], Value::Null);
+                assert_eq!(record["request_id_omitted"], true);
+                assert_eq!(record["request_id_type"], "string");
+                assert_eq!(record["request_id_string_bytes"], bytes);
+                assert_eq!(record["request_id_limit_bytes"], 256);
+                assert_eq!(
+                    record["request_id_omission_reason"], reason,
+                    "input that hits the boundary: bytes > DOCUMENT_SYMBOL_PROBE_ID_LIMIT_BYTES"
+                );
+                assert_eq!(record["request_id_omitted_byte_limit"], over_limit);
+            }
+            assert_eq!(records[4]["request_id"], 42);
+            assert_eq!(records[4]["request_id_omitted"], false);
+            assert_eq!(records[4]["request_id_type"], "number");
+            assert_eq!(records[4]["request_id_omission_reason"], Value::Null);
+            assert_eq!(records[4]["request_id_string_bytes"], Value::Null);
+            assert_eq!(records[4]["request_id_omitted_byte_limit"], false);
+        } else {
+            assert!(records.is_empty(), "global TRACE cannot enable an unopted probe");
+        }
+        println!(
+            "{}",
+            json!({"kind": "document_symbol_probe_native_control",
+            "enabled": expected_enabled, "emitted_records": records.len()})
+        );
+        Ok(())
+    }
+
+    #[test]
     fn document_symbol_probe_id_budget_omits_client_text_and_preserves_numeric_identity() {
         let numeric = json!(42);
         assert_eq!(document_symbol_probe_request_id(Some(&numeric)), (Some(&numeric), None));

@@ -311,6 +311,8 @@ impl UxClient {
         // ── stderr drain thread ───────────────────────────────────────────────
         let echo = config.echo_stderr;
         let stderr_clone = stderr_lines.clone();
+        #[cfg(test)]
+        let stderr_inbox = inbox.clone();
         let _stderr_thread = std::thread::Builder::new()
             .name("ux-lsp-stderr".into())
             .spawn(move || {
@@ -318,6 +320,9 @@ impl UxClient {
                 for l in reader.lines().map_while(Result::ok) {
                     if let Ok(mut guard) = stderr_clone.lock() {
                         guard.push(l.clone());
+                        drop(guard);
+                        #[cfg(test)]
+                        stderr_inbox.observe_stderr();
                     }
                     if echo {
                         eprintln!("[perl-lsp stderr] {}", l);
@@ -1273,9 +1278,8 @@ mod document_symbol_write_controls {
     }
 
     fn server_probes(client: &UxClient, response: Option<&Value>) -> Vec<Value> {
-        let deadline = Instant::now() + Duration::from_secs(1);
-        loop {
-            let records: Vec<Value> = client
+        let collect = || -> Vec<Value> {
+            client
                 .peek_stderr_lines()
                 .iter()
                 .filter_map(|line| {
@@ -1286,20 +1290,26 @@ mod document_symbol_write_controls {
                         .is_some_and(|kind| kind.starts_with("document_symbol_"))
                         .then_some(record)
                 })
-                .collect();
-            if response.is_none()
-                || records.iter().any(|record| {
-                    record["kind"] == "document_symbol_branch_probe"
-                        && response.and_then(|response| response.get("id"))
-                            == record.get("request_id")
-                })
-                || Instant::now() >= deadline
-            {
-                return records;
-            }
-            // Observe the already completed response; never retry a request.
-            std::thread::sleep(Duration::from_millis(10));
-        }
+                .collect()
+        };
+        let Some(response) = response else {
+            return collect();
+        };
+        // Stderr publication advances the existing inbox sequence. Its wait
+        // detects arrivals during predicate evaluation without polling or RPC retries.
+        client
+            .inbox
+            .wait_for(Duration::from_secs(1), |_| {
+                let records = collect();
+                records
+                    .iter()
+                    .any(|record| {
+                        record["kind"] == "document_symbol_branch_probe"
+                            && response.get("id") == record.get("request_id")
+                    })
+                    .then_some(records)
+            })
+            .unwrap_or_else(|_| collect())
     }
 
     fn number(value: &Value, key: &str) -> Result<u64> {
