@@ -728,7 +728,7 @@ jobs:
 
       - name: Upload verified UX14 qualification
         if: ${{ always() && (github.event_name == 'workflow_dispatch' && inputs.ux14_five_run == true) && steps.ux14_verify.outcome == 'success' }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.0
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ux14-five-run-verified-${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
           path: |
@@ -739,7 +739,7 @@ jobs:
 
       - name: Upload unverified UX14 diagnostics
         if: ${{ always() && (github.event_name == 'workflow_dispatch' && inputs.ux14_five_run == true) && steps.ux14_verify.outcome != 'success' }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.0
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ux14-five-run-unverified-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
