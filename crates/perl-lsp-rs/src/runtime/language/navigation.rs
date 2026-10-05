@@ -2861,10 +2861,18 @@ impl LspServer {
                         {
                             return Ok(Some(json!([])));
                         }
-                        // #17252: same rule as the DeclarationProvider arm —
-                        // a cross-package qualified call may only be answered
-                        // by a same-file sub in the requested package.
-                        if !same_file_answer_matches_requested_package(definition.location.start) {
+                        // #17252: use the typed semantic identity at this tier.
+                        // An alias span starts at its assignment, not a declaration
+                        // name; inspecting that text would lose its explicit package.
+                        let semantic_answer_matches_requested_package =
+                            cross_package_qualified_sub.as_ref().is_none_or(|requested_package| {
+                                definition.qualified_name.rsplit_once("::").is_some_and(
+                                    |(declared_package, _)| {
+                                        declared_package == requested_package.as_str()
+                                    },
+                                )
+                            });
+                        if !semantic_answer_matches_requested_package {
                             tracing::debug!(
                                 offset,
                                 "Suppressing same-file definition that names a different \
