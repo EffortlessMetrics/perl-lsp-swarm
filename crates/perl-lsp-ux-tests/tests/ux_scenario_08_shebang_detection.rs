@@ -123,7 +123,7 @@ fn scenario_08_static_symbol_survives_encoding_and_extension_boundary() {
             }
             let source = "#!/usr/bin/env perl\nuse strict;\nuse warnings;\nsub deploy_task { return 42; }\ndeploy_task();\n";
             let harness =
-                UxHarness::new(ScenarioConfig::default().with_file("deploy_script", &source))?;
+                UxHarness::new(ScenarioConfig::default().with_file("deploy_script", source))?;
             harness.open_file("deploy_script", &source)?;
             let uri = harness.workspace.uri("deploy_script");
             perl_lsp_ux_tests::wait_with_subject(

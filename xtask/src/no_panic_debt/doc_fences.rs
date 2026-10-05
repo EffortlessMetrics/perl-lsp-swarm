@@ -996,7 +996,11 @@ mod tests {
             .find(|item| item.kind == "doc_include")
             .ok_or("missing include receipt")?;
         let receipt: serde_json::Value = serde_json::from_str(&input.detail)?;
-        assert_eq!(receipt["sha256"], format!("{:x}", Sha256::digest(document.as_bytes())));
+        // Independent known-answer digest for the literal fixture bytes above.
+        assert_eq!(
+            receipt["sha256"],
+            "72ecdfd357f4af6493fc9dd159aa3616b57944e3d7808aada457ec4c14a0f893"
+        );
         std::fs::write(package.join("README.md"), document.replace("unwrap", "expect"))?;
         let changed = scan_source_with_inputs(&file(), &vocabulary(), source, Some(&inputs));
         let changed_input = changed
