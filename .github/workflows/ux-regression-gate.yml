@@ -385,6 +385,7 @@ jobs:
           from pathlib import Path
           import platform
           import re
+          import resource
           import signal
           import subprocess
           import time
@@ -435,7 +436,77 @@ jobs:
                       'terminalGreen': bool(expected) and counts_match and not missing
                                        and not failed and not ignored and 'SKIP' not in log}
 
-          def command(args, log_path, env, deadline, cap):
+          def build_environment(env):
+              # Allowlisted settings or presence/digests only; never dump raw environment.
+              def setting(key, accepted):
+                  value = env.get(key)
+                  return value if value is None or value in accepted else 'other_present'
+              def fingerprint(key):
+                  value = env.get(key)
+                  return None if value is None else hashlib.sha256(value.encode()).hexdigest()
+              return {'CARGO_BUILD_JOBS': setting('CARGO_BUILD_JOBS', {'1'}),
+                      'CARGO_INCREMENTAL': setting('CARGO_INCREMENTAL', {'0', '1'}),
+                      'CARGO_PROFILE_DEV_DEBUG': setting('CARGO_PROFILE_DEV_DEBUG',
+                          {'0', '1', '2', 'none', 'limited', 'full', 'line-tables-only'}),
+                      'CARGO_PROFILE_DEV_OPT_LEVEL': setting('CARGO_PROFILE_DEV_OPT_LEVEL',
+                          {'0', '1', '2', '3', 's', 'z'}),
+                      'RUSTC_WRAPPER_present': 'RUSTC_WRAPPER' in env,
+                      'CARGO_BUILD_TARGET_SHA256': fingerprint('CARGO_BUILD_TARGET'),
+                      'RUSTFLAGS_SHA256': fingerprint('RUSTFLAGS'),
+                      'CARGO_ENCODED_RUSTFLAGS_SHA256': fingerprint('CARGO_ENCODED_RUSTFLAGS'),
+                      'RUSTUP_TOOLCHAIN_SHA256': fingerprint('RUSTUP_TOOLCHAIN')}
+
+          def resource_sample(group):
+              # Only numeric kernel counters for this command's process group; no argv/env.
+              result = {'cpuCount': os.cpu_count(), 'groupProcesses': 0,
+                        'liveGroupCPUSeconds': 0.0, 'observedGroupRSSBytes': 0}
+              if hasattr(os, 'sched_getaffinity'):
+                  result['affinityCPUCount'] = len(os.sched_getaffinity(0))
+              ticks = os.sysconf('SC_CLK_TCK')
+              page = os.sysconf('SC_PAGE_SIZE')
+              scanned = 0
+              scan_deadline = time.monotonic()+0.25
+              for proc in Path('/proc').iterdir():
+                  if scanned >= 256 or time.monotonic() >= scan_deadline:
+                      result['procScanCapped'] = True
+                      break
+                  if not proc.name.isdigit():
+                      continue
+                  scanned += 1
+                  try:
+                      with (proc/'stat').open() as stream:
+                          stat = stream.read(8192)
+                      fields = stat[stat.rfind(')')+2:].split()
+                      if int(fields[2]) == group:
+                          result['groupProcesses'] += 1
+                          result['liveGroupCPUSeconds'] += (int(fields[11])+int(fields[12]))/ticks
+                          result['observedGroupRSSBytes'] += max(0, int(fields[21]))*page
+                  except (OSError, ValueError, IndexError):
+                      continue  # A process can exit between enumeration and reading.
+              try:
+                  with Path('/proc/meminfo').open() as stream:
+                      for line in stream:
+                          key, _, value = line.partition(':')
+                          if key in {'MemTotal', 'MemAvailable'}:
+                              result[key+'Bytes'] = int(value.split()[0])*1024
+              except (OSError, ValueError, IndexError):
+                  result['memorySampleUnavailable'] = True
+              disk = os.statvfs('.')
+              result['diskAvailableBytes'] = disk.f_bavail*disk.f_frsize
+              for name in ['memory.max', 'memory.current', 'cpu.max']:
+                  try:
+                      with Path('/sys/fs/cgroup', name).open() as stream:
+                          values = stream.read(128).split()
+                      if values and len(values) <= 2 and all(v == 'max' or v.isdigit() for v in values):
+                          result['cgroup_'+name] = values
+                  except OSError:
+                      pass
+              usage = resource.getrusage(resource.RUSAGE_CHILDREN)
+              result['waitedChildrenCPUSecondsCumulative'] = usage.ru_utime+usage.ru_stime
+              result['waitedChildrenMaxRSSKiBCumulative'] = usage.ru_maxrss
+              return result
+
+          def command(args, log_path, env, deadline, cap, telemetry_path=None):
               row = {'command': args, 'startedUTC': utc(), 'exit': None, 'status': 'not_run'}
               remaining = deadline - time.monotonic()
               if remaining <= 0:
@@ -443,24 +514,89 @@ jobs:
                   return row
               timeout = min(cap, remaining)
               row['timeoutSeconds'] = timeout
+              started = time.monotonic()
+              stop = min(deadline, started+timeout)
+              cursor = 0
+              pending = b''
+              compiled = 0
+              downloaded = 0
+              last_crate = None
+              records = 0
+              observed_rss_high_water = 0
+              if telemetry_path is not None:
+                  Path(telemetry_path).touch(exist_ok=False)
+                  row.update(telemetryLog=Path(telemetry_path).name, telemetryStatus='captured')
+
+              def sample(event, group):
+                  nonlocal cursor, pending, compiled, downloaded, last_crate, records
+                  nonlocal observed_rss_high_water
+                  if telemetry_path is None:
+                      return
+                  try:
+                      # Read at most64KiB per sample, retaining only safe crate names/counters.
+                      with Path(log_path).open('rb') as stream:
+                          stream.seek(cursor)
+                          chunk = stream.read(65536)
+                          cursor = stream.tell()
+                      lines = (pending+chunk).split(b'\n')
+                      pending = lines.pop()[-2048:]
+                      for line in lines:
+                          match = re.match(rb'^\s*Compiling ([A-Za-z0-9_-]+) v([0-9A-Za-z.+_-]+)', line)
+                          if match:
+                              compiled += 1
+                              last_crate = [value.decode('ascii') for value in match.groups()]
+                          if re.match(rb'^\s*Downloaded [A-Za-z0-9_-]+ v[0-9A-Za-z.+_-]+', line):
+                              downloaded += 1
+                      counters = resource_sample(group)
+                      observed_rss_high_water = max(observed_rss_high_water,
+                                                    counters['observedGroupRSSBytes'])
+                      item = {'event': event, 'utc': utc(), 'elapsedSeconds': time.monotonic()-started,
+                              'remainingAggregateSeconds': max(0, deadline-time.monotonic()),
+                              'logBytes': Path(log_path).stat().st_size, 'logBytesScanned': cursor,
+                              'compileAnnouncementsScanned': compiled, 'downloadAnnouncementsScanned': downloaded,
+                              'lastCompileCrateScanned': last_crate, 'resources': counters,
+                              'sampledGroupRSSHighWaterBytes': observed_rss_high_water,
+                              'limits': 'Live-group sampling omits exited processes and caps each proc scan at256 processes/0.25s; high-water is sampled, not exact peak; waited-child counters are cumulative for this observer and may omit orphan descendants after timeout.'}
+                      if event == 'start':
+                          item['buildEnvironment'] = build_environment(env)
+                      encoded = (json.dumps(item, sort_keys=True)+'\n').encode()
+                      if records >= 64 or Path(telemetry_path).stat().st_size+len(encoded) > 65536:
+                          raise ValueError('Bounded telemetry limit reached')
+                      with Path(telemetry_path).open('ab') as stream:
+                          stream.write(encoded)
+                      records += 1
+                  except Exception as error:
+                      row.update(telemetryStatus='instrumentation_failure',
+                                 telemetryErrorClass=type(error).__name__)
+
               with Path(log_path).open('wb') as log:
                   process = subprocess.Popen(args, env=env, stdout=log, stderr=subprocess.STDOUT,
                                              start_new_session=True)
+                  sample('start', process.pid)
                   try:
-                      row['exit'] = process.wait(timeout=timeout)
-                      row['status'] = 'completed'
+                      while True:
+                          try:
+                              row['exit'] = process.wait(timeout=max(0, min(10, stop-time.monotonic())))
+                              row['status'] = 'completed'
+                              break
+                          except subprocess.TimeoutExpired:
+                              if time.monotonic() >= stop:
+                                  raise
+                              sample('progress', process.pid)
                   except subprocess.TimeoutExpired:
                       row['status'] = 'timeout'
                       row['reason'] = 'command_budget_exhausted'
                   finally:
-                      # Terminate the whole native group, including descendants that may
-                      # outlive Cargo, before a subsequent observation can start.
+                      # Kill/reap the command group before any next observation, as before.
                       try:
                           os.killpg(process.pid, signal.SIGKILL)
                       except ProcessLookupError:
                           pass
                       process.wait()
+                      sample('end', process.pid)
               row.update(endedUTC=utc(), log=Path(log_path).name, logSHA256=digest(log_path))
+              if telemetry_path is not None:
+                  row.update(telemetrySHA256=digest(telemetry_path), telemetryRecords=records)
               return row
 
           def observe():
@@ -482,7 +618,8 @@ jobs:
               def save():
                   (output/'receipt.json').write_text(json.dumps(receipt, indent=2)+'\n', encoding='utf8')
               def prep(args, name, cap):
-                  result = command(args, output/name, env, deadline, cap)
+                  result = command(args, output/name, env, deadline, cap,
+                                   output/'build-telemetry.jsonl' if name == 'build.log' else None)
                   receipt['preparation'].append(result)
                   save()
                   if result['status'] != 'completed' or result['exit'] != 0:
@@ -509,7 +646,7 @@ jobs:
                   metadata = json.loads(next(line for line in metadata_log.splitlines()
                                              if line.startswith('{')))
                   prep(['cargo', 'build', '-p', 'perllsp', '--bin', 'perllsp', '--locked'],
-                       'build.log', 480)
+                       'build.log', 540)
                   binary_dir = Path(metadata['target_directory'])
                   if env.get('CARGO_BUILD_TARGET'):
                       binary_dir /= env['CARGO_BUILD_TARGET']
@@ -522,7 +659,8 @@ jobs:
                   receipt.update(binaryPath=str(binary), binarySHA256=binary_hash,
                                  cargoTargetDirectory=metadata['target_directory'],
                                  cargoBuildTarget=env.get('CARGO_BUILD_TARGET'),
-                                 rustFlags=env.get('RUSTFLAGS'), rustupToolchain=env.get('RUSTUP_TOOLCHAIN'))
+                                 rustFlagsSHA256=build_environment(env)['RUSTFLAGS_SHA256'],
+                                 rustupToolchainSHA256=build_environment(env)['RUSTUP_TOOLCHAIN_SHA256'])
                   receipt['binaryVersion'] = prep([str(binary), '--version'], 'binary-version.log', 15)
                   # Compile once, retain the exact test executable, then execute it five
                   # times without another Cargo build that could replace either binary.
@@ -666,6 +804,19 @@ jobs:
                       or type(row['exit']) is not int or row['exit'] != 0
                       or digest(root/row['log']) != row['logSHA256']):
                   raise SystemExit('Qualification preparation failed or its log changed')
+          build = preparation[3]
+          telemetry = root/'build-telemetry.jsonl'
+          if (build.get('telemetryLog') != telemetry.name
+                  or build.get('telemetryStatus') != 'captured'
+                  or not telemetry.is_file() or telemetry.is_symlink()
+                  or not 0 < telemetry.stat().st_size <= 65536
+                  or digest(telemetry) != build.get('telemetrySHA256')):
+              raise SystemExit('Build telemetry missing, failed or changed')
+          samples = [json.loads(line) for line in telemetry.read_text(encoding='utf8').splitlines()]
+          if (not 2 <= len(samples) <= 64 or len(samples) != build.get('telemetryRecords')
+                  or samples[0].get('event') != 'start' or samples[-1].get('event') != 'end'
+                  or any(s.get('event') not in {'start', 'progress', 'end'} for s in samples)):
+              raise SystemExit('Build telemetry denominator changed')
           metadata = json.loads(next(line for line in (root/'metadata.log').read_text(
               encoding='utf8').splitlines() if line.startswith('{')))
           binary_dir = Path(metadata['target_directory'])
