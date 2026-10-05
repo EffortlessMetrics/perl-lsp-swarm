@@ -5,7 +5,10 @@
 use super::super::{JsonRpcError, LspServer, Ordering};
 use super::root_input::{InitialRootInput, classify_initial_root_input};
 use crate::protocol::command::code_action_documentation_entries;
-use perl_workspace::folder::{extract_workspace_folder_uris, root_path_to_file_uri};
+use perl_lsp_rs_core::protocol::INVALID_PARAMS;
+use perl_workspace::folder::{
+    WorkspaceFolderRejection, admit_workspace_folder_uris, root_path_to_file_uri,
+};
 use serde_json::{Value, json};
 
 /// Workspace-folder implementation truth for this build (#8161).
@@ -183,6 +186,10 @@ fn merge_experimental_capability(capabilities: &mut Value, key: &str, value: Val
     };
 
     experimental.insert(key.to_string(), value);
+}
+
+fn workspace_folder_rejection_to_rpc(rejection: WorkspaceFolderRejection) -> JsonRpcError {
+    JsonRpcError::new(INVALID_PARAMS, rejection.message())
 }
 
 impl LspServer {
@@ -584,23 +591,9 @@ impl LspServer {
                     if let Some(workspace_folders) =
                         params.get("workspaceFolders").and_then(|f| f.as_array())
                     {
-                        let uris = extract_workspace_folder_uris(workspace_folders);
-                        if let Some(first_uri) = uris.first() {
-                            self.set_root_uri(first_uri);
-                        }
-
-                        let mut folders = self.workspace_folders.lock();
-                        for uri in uris {
-                            tracing::debug!(uri, "Initialized with workspace folder");
-                            let mut folder =
-                                super::super::workspace_folder::WorkspaceFolderState::new(
-                                    uri.clone(),
-                                );
-                            if let Some(path) = super::super::source_path_from_uri(&uri) {
-                                folder = folder.with_path(path);
-                            }
-                            folders.push(folder);
-                        }
+                        let uris = admit_workspace_folder_uris(workspace_folders)
+                            .map_err(workspace_folder_rejection_to_rpc)?;
+                        self.register_initialized_workspace_folders(uris);
                     }
                 }
                 rootless @ (InitialRootInput::ExplicitEmptyWorkspaceFolders
@@ -648,7 +641,7 @@ impl LspServer {
                     }
                 }
                 InitialRootInput::NoWorkspaceRoot => {
-                    self.initialize_rootless_compat_fallback(params);
+                    self.initialize_rootless_compat_fallback(params)?;
                 }
             }
         }
@@ -889,6 +882,21 @@ impl LspServer {
         Ok(Some(result))
     }
 
+    fn register_initialized_workspace_folders(&self, uris: Vec<String>) {
+        if let Some(first_uri) = uris.first() {
+            self.set_root_uri(first_uri);
+        }
+        let mut folders = self.workspace_folders.lock();
+        for uri in uris {
+            tracing::debug!(uri, "Initialized with workspace folder");
+            let mut folder = super::super::workspace_folder::WorkspaceFolderState::new(uri.clone());
+            if let Some(path) = super::super::source_path_from_uri(&uri) {
+                folder = folder.with_path(path);
+            }
+            folders.push(folder);
+        }
+    }
+
     /// Compatibility fallbacks for sessions whose initialize request carried
     /// no client-declared root input (`NoWorkspaceRoot`, #8161).
     ///
@@ -896,32 +904,17 @@ impl LspServer {
     /// receipt stays `no_workspace_root` because the client declared nothing.
     /// Rootless-session policy (including whether these fallbacks should keep
     /// existing at all) is #8945's decision.
-    fn initialize_rootless_compat_fallback(&self, params: &Value) {
+    fn initialize_rootless_compat_fallback(&self, params: &Value) -> Result<(), JsonRpcError> {
         if let Some(init_options) = params.get("initializationOptions") {
             // Compatibility fallback for clients that place workspace roots in
             // initializationOptions instead of top-level initialize params.
             if let Some(workspace_folders) =
                 init_options.get("workspaceFolders").and_then(|f| f.as_array())
             {
-                let uris = extract_workspace_folder_uris(workspace_folders);
-                // Mirror top-level workspaceFolders: set root URI from first folder.
-                if let Some(first_uri) = uris.first() {
-                    self.set_root_uri(first_uri);
-                }
-                let mut folders = self.workspace_folders.lock();
-                for uri in uris {
-                    tracing::debug!(
-                        uri,
-                        "Initialized with workspace folder from initializationOptions"
-                    );
-                    let mut folder =
-                        super::super::workspace_folder::WorkspaceFolderState::new(uri.clone());
-                    if let Some(path) = super::super::source_path_from_uri(&uri) {
-                        folder = folder.with_path(path);
-                    }
-                    folders.push(folder);
-                }
-                return;
+                let uris = admit_workspace_folder_uris(workspace_folders)
+                    .map_err(workspace_folder_rejection_to_rpc)?;
+                self.register_initialized_workspace_folders(uris);
+                return Ok(());
             }
             if let Some(root_uri) = init_options.get("rootUri").and_then(|u| u.as_str()) {
                 let mut folders = self.workspace_folders.lock();
@@ -933,7 +926,7 @@ impl LspServer {
                 }
                 folders.push(folder);
                 self.set_root_uri(root_uri);
-                return;
+                return Ok(());
             }
             if let Some(root_path) = init_options.get("rootPath").and_then(|p| p.as_str()) {
                 tracing::debug!(
@@ -946,7 +939,7 @@ impl LspServer {
                     root_uri.clone(),
                 ));
                 self.set_root_uri(&root_uri);
-                return;
+                return Ok(());
             }
             // `initializationOptions` was present but carried no recognized
             // compatibility root. Stop here: the CWD fallback below is for
@@ -957,7 +950,7 @@ impl LspServer {
             // the pre-#8161 chain, where the `initializationOptions` arm
             // consumed the branch and the CWD arm was unreachable once the
             // field was present.
-            return;
+            return Ok(());
         }
         if let Ok(cwd) = std::env::current_dir() {
             // Compatibility fallback for lightweight clients (for example Aider)
@@ -969,6 +962,7 @@ impl LspServer {
             self.set_root_uri(&cwd_uri);
             tracing::debug!(cwd_uri, "Initialized with process current directory fallback");
         }
+        Ok(())
     }
 
     /// Recorded root-input classification of the most recent initialize
@@ -1089,8 +1083,8 @@ mod tests {
         reason = "tracked conversion debt: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3021"
     )]
     use super::{
-        WORKSPACE_FOLDER_CHANGE_ROUTE_AVAILABLE, apply_disabled_feature_id, is_jetbrains_client,
-        is_opencode_client,
+        INVALID_PARAMS, WORKSPACE_FOLDER_CHANGE_ROUTE_AVAILABLE, apply_disabled_feature_id,
+        is_jetbrains_client, is_opencode_client,
     };
     use crate::LspServer;
     use crate::protocol::JsonRpcError;
@@ -1600,6 +1594,142 @@ mod tests {
             "malformed entries are rejected by the URI policy, not skipped into another mode"
         );
         assert!(server.root_path.lock().is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn initialize_rejects_relative_workspace_folder_path_with_invalid_params()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        let params = json!({
+            "capabilities": {},
+            "workspaceFolders": [
+                { "uri": "file:///tmp/ws", "name": "ws" },
+                { "path": "relative/rel2", "name": "rel2" }
+            ]
+        });
+
+        let err = match server.handle_initialize(Some(params)) {
+            Err(err) => err,
+            Ok(value) => {
+                return Err(format!("relative folder must be InvalidParams, got {value:?}").into());
+            }
+        };
+        assert_eq!(err.code, INVALID_PARAMS);
+        assert!(
+            err.message.contains("relative/rel2"),
+            "message must name the rejected input: {}",
+            err.message
+        );
+        assert!(
+            !err.message.contains("file:///relative/rel2"),
+            "message must not advertise a manufactured URI: {}",
+            err.message
+        );
+        assert_eq!(server.active_workspace_folder_count(), 0);
+        assert!(server.root_path.lock().is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn initialize_rejects_non_filesystem_workspace_folder_schemes()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for uri in [
+            "untitled:Untitled-1",
+            "git:///repo",
+            "file://evil.example.com/share/project",
+            "file:relative/rel2",
+        ] {
+            let server = LspServer::new();
+            let params = json!({
+                "capabilities": {},
+                "workspaceFolders": [{ "uri": uri, "name": "virtual" }]
+            });
+            let err = match server.handle_initialize(Some(params)) {
+                Err(err) => err,
+                Ok(value) => {
+                    return Err(format!(
+                        "non-filesystem folder {uri} must be InvalidParams, got {value:?}"
+                    )
+                    .into());
+                }
+            };
+            assert_eq!(err.code, INVALID_PARAMS, "uri={uri}");
+            assert!(err.message.contains(uri), "message must name {uri}: {}", err.message);
+            assert!(
+                !err.message.contains("file:///relative/rel2"),
+                "message must not advertise a manufactured URI for {uri}: {}",
+                err.message
+            );
+            assert_eq!(server.active_workspace_folder_count(), 0, "uri={uri}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn initialize_rejects_relative_uri_string_that_is_not_a_uri()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        let params = json!({
+            "capabilities": {},
+            "workspaceFolders": [{ "uri": "just/a/relative/uri", "name": "rel3" }]
+        });
+        let err = match server.handle_initialize(Some(params)) {
+            Err(err) => err,
+            Ok(value) => {
+                return Err(format!("relative uri must be InvalidParams, got {value:?}").into());
+            }
+        };
+        assert_eq!(err.code, INVALID_PARAMS);
+        assert_eq!(server.active_workspace_folder_count(), 0);
+        Ok(())
+    }
+
+    #[test]
+    fn initialize_rejects_unc_style_workspace_folder_path() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let server = LspServer::new();
+        let params = json!({
+            "capabilities": {},
+            "workspaceFolders": [{
+                "path": "//evil.example.com/share/project",
+                "name": "unc"
+            }]
+        });
+        let err = match server.handle_initialize(Some(params)) {
+            Err(err) => err,
+            Ok(value) => {
+                return Err(format!("UNC folder must be InvalidParams, got {value:?}").into());
+            }
+        };
+        assert_eq!(err.code, INVALID_PARAMS);
+        assert!(
+            err.message.contains("//evil.example.com/share/project"),
+            "message must name the rejected input: {}",
+            err.message
+        );
+        assert!(
+            !err.message.contains("file://evil.example.com"),
+            "message must not advertise a manufactured URI: {}",
+            err.message
+        );
+        assert_eq!(server.active_workspace_folder_count(), 0);
+        Ok(())
+    }
+
+    #[test]
+    fn initialize_still_admits_absolute_file_workspace_folders()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        let params = json!({
+            "capabilities": {},
+            "workspaceFolders": [
+                { "uri": "file:///tmp/ws", "name": "ws" },
+                { "path": "/absolute/path", "name": "abs" }
+            ]
+        });
+        let _ = server.handle_initialize(Some(params))?;
+        assert_eq!(server.active_workspace_folder_count(), 2);
         Ok(())
     }
 
