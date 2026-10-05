@@ -8,6 +8,10 @@ cargo_safe := "./scripts/cargo-safe"
 default:
     @just --list
 
+# Optional explicit-date upstream cadence capture; no install or policy promotion (#15304).
+cargo-allow-cadence executable sha256 as_of root output_dir:
+    python3 scripts/cargo_allow_cadence.py --executable {{quote(executable)}} --expected-sha256 {{quote(sha256)}} --as-of {{quote(as_of)}} --root {{quote(root)}} --output-dir {{quote(output_dir)}}
+
 
 # Initialize bounded build/cache directories.
 devplane-init:
