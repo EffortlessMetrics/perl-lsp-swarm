@@ -51,10 +51,7 @@ impl IssueContract {
     /// Parse a contract document. Structural validation is separate so that
     /// mis-typed documents and semantically invalid ones are distinguishable.
     pub fn from_json_str(json: &str) -> Result<Self, CloseProofError> {
-        serde_json::from_str(json).map_err(|error| CloseProofError::Schema {
-            field: "issue_contract".to_string(),
-            message: error.to_string(),
-        })
+        super::wire::from_json_str(json, "issue_contract")
     }
 
     /// Deterministic serialization; a second generation produces no diff.
