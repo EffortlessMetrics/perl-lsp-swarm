@@ -212,8 +212,9 @@ fn file_paths_match(stored: &str, observed: &str) -> bool {
         return true;
     }
     // Separator-spelling identity: `/` and `\` are the same separator on
-    // Windows, and DAP clients do not guarantee one spelling between
-    // `launch.program` and `setBreakpoints.source.path` (#17246).
+    // Windows (on POSIX a backslash stays a literal filename character), and
+    // DAP clients do not guarantee one spelling between `launch.program` and
+    // `setBreakpoints.source.path` (#17246).
     if same_path_components(stored, observed) {
         return true;
     }
@@ -223,13 +224,27 @@ fn file_paths_match(stored: &str, observed: &str) -> bool {
     path_suffix_matches(stored, observed) || path_suffix_matches(observed, stored)
 }
 
-/// Compare two path spellings component-wise, treating `/` and `\` as
-/// equivalent separators and collapsing duplicate or trailing separators.
-/// Case is preserved deliberately: this is spelling identity for the same
-/// on-disk file, not case-insensitive filesystem identity (#17246).
+/// The separator set for spelling-identity comparison. Both `/` and `\` are
+/// separators only where the platform gives `\` no filename meaning (Windows);
+/// on POSIX a backslash is a legal filename character and must stay literal,
+/// or `/tmp/a\b.pl` and `/tmp/a/b.pl` would be conflated (#17246).
+#[cfg(windows)]
+fn is_path_separator(character: char) -> bool {
+    character == '/' || character == '\\'
+}
+
+#[cfg(not(windows))]
+fn is_path_separator(character: char) -> bool {
+    character == '/'
+}
+
+/// Compare two path spellings component-wise, treating the platform's
+/// separator set as equivalent and collapsing duplicate or trailing
+/// separators. Case is preserved deliberately: this is spelling identity for
+/// the same on-disk file, not case-insensitive filesystem identity (#17246).
 fn same_path_components(a: &str, b: &str) -> bool {
-    let mut left = a.split(['/', '\\']).filter(|component| !component.is_empty());
-    let mut right = b.split(['/', '\\']).filter(|component| !component.is_empty());
+    let mut left = a.split(is_path_separator).filter(|component| !component.is_empty());
+    let mut right = b.split(is_path_separator).filter(|component| !component.is_empty());
     loop {
         match (left.next(), right.next()) {
             (None, None) => return true,
@@ -1756,6 +1771,20 @@ EOF
         assert!(!file_paths_match("F:\\w\\deep.pl", "F:/w/other.pl"));
         // Relative-vs-absolute pairs keep falling through to the suffix rule.
         assert!(file_paths_match("F:\\w\\deep.pl", "deep.pl"));
+    }
+
+    /// On POSIX a backslash is a legal filename character, so the separator
+    /// equivalence must not conflate `/tmp/a\b.pl` with `/tmp/a/b.pl`; on
+    /// Windows the two names cannot coexist and remain one file (#17246).
+    #[test]
+    fn test_file_paths_match_posix_backslash_stays_literal() {
+        let backslash_name = "/tmp/a\\b.pl";
+        let slash_name = "/tmp/a/b.pl";
+        if cfg!(windows) {
+            assert!(file_paths_match(backslash_name, slash_name));
+        } else {
+            assert!(!file_paths_match(backslash_name, slash_name));
+        }
     }
 
     /// A runtime stop reported under the launch spelling must correlate with

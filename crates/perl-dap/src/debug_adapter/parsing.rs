@@ -111,12 +111,15 @@ impl DebugAdapter {
     /// trims indentation, so a dump containing nested referent contents is
     /// structurally indistinguishable from a flat dump of the same line
     /// sequence (`x [1, 2]` and `x ([1], [2])` frame identically up to their
-    /// ambiguous tail). Rather than guess and fabricate a value, the reshape
-    /// accepts only dumps whose every line is a strictly sequential
-    /// top-level ordinal (`0, 1, 2, …`) at indent zero with no quoted
-    /// `'key' =>` entries; any other shape declines, and the generic evaluate
-    /// parse paths keep handling the output exactly as before (#5086 keeps
-    /// address-preserving reference rendering a follow-up).
+    /// ambiguous tail). A multi-line string value is equally ambiguous:
+    /// perl5db prints embedded newlines literally, so the payload's
+    /// continuation lines arrive looking exactly like further dump elements
+    /// (`0  'foo` / `1  bar'`). Rather than guess and fabricate a value, the
+    /// reshape accepts only dumps whose every line is a strictly sequential
+    /// top-level ordinal (`0, 1, 2, …`) at indent zero whose payload closes
+    /// every quote it opens; any other shape declines, and the generic
+    /// evaluate parse paths keep handling the output exactly as before
+    /// (#5086 keeps address-preserving reference rendering a follow-up).
     pub(super) fn parse_evaluate_result_from_x_dump(lines: &[String]) -> Option<(String, String)> {
         let mut top_level: Vec<String> = Vec::new();
         for line in lines {
@@ -128,6 +131,12 @@ impl DebugAdapter {
             // A dump with nested (indented) referent contents or hash entries
             // is not unambiguously reshapable once trimmed; decline it whole.
             if indent > 0 || ordinal != Some(top_level.len() as u64) {
+                return None;
+            }
+            // An odd number of quotes means the payload's string continues on
+            // the next output line; the following lines would be continuations
+            // masquerading as further elements.
+            if payload.matches('\'').count() % 2 == 1 {
                 return None;
             }
             top_level.push(payload);
@@ -827,6 +836,22 @@ mod tests {
         let indented =
             vec!["0  ARRAY(0x557f8a9c)".to_string(), "   0  1".to_string(), "   1  2".to_string()];
         assert_eq!(DebugAdapter::parse_evaluate_result_from_x_dump(&indented), None);
+    }
+
+    /// perl5db prints embedded newlines literally, so a multi-line string
+    /// value's continuation lines arrive looking exactly like further dump
+    /// elements (`0  'foo` / `1  bar'`). An unterminated quote declines the
+    /// reshape so the string is never fabricated into an array (#17244).
+    #[test]
+    pub(super) fn x_dump_declines_multiline_string_payloads() {
+        // Live shape of `x $ml` for $ml = "foo\n1  bar" (perl5db 1.82).
+        let multiline = vec!["0  'foo".to_string(), "1  bar'".to_string()];
+        assert_eq!(DebugAdapter::parse_evaluate_result_from_x_dump(&multiline), None);
+
+        // A multi-line element inside a list declines too.
+        let list_with_multiline =
+            vec!["0  'foo".to_string(), "1  bar'".to_string(), "2  5".to_string()];
+        assert_eq!(DebugAdapter::parse_evaluate_result_from_x_dump(&list_with_multiline), None);
     }
 
     /// Quoted string payloads keep their exact perl5db rendering; `undef` and
