@@ -292,7 +292,8 @@ DIAGNOSTIC
         lines += [f"0.01 INFO {marker} fingerprint error for fixture v1.0.0",
                   f"0.01 INFO {marker}     err: failed to read /work/{marker} dirty: FsStatusOutdated",
                   "Caused by:", f"    read {marker} unknown payload", f"    {secret}",
-                  f"    read {marker} dirty: FsStatusOutdated", f"    {secret}"]
+                  f"    read {marker} dirty: FsStatusOutdated", f"    {secret}",
+                  f"   0.010000003s INFO unrelated.target: {secret}", f"    {secret}"]
         cargo = self.bin / "cargo"
         payload = "cat >&2 <<'DIAGNOSTIC'\n" + "\n".join(lines) + "\nDIAGNOSTIC\n"
         body = cargo.read_text().replace("case ${FAKE_CHANGE:-none} in",
