@@ -554,7 +554,7 @@ fn target_has_only_supported_lines(
 ) -> bool {
     let body_indent = indent_unit(config);
     let mut open_blocks: Vec<&str> = Vec::new();
-    for (line, text) in source.split('\n').enumerate() {
+    for (line, text) in split_lines_for_range_validation(source).into_iter().enumerate() {
         let included = match target {
             FormatRequestTarget::Document => true,
             FormatRequestTarget::Range { range } => range_includes_line(range, line as u32),
