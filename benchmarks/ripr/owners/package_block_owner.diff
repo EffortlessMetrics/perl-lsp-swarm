@@ -1,0 +1,8 @@
+diff --git a/lib/Shop.pm b/lib/Shop.pm
+--- a/lib/Shop.pm
++++ b/lib/Shop.pm
+@@ -1,2 +1,3 @@
+ package Shop {
+     our $VERSION = '1.0';
++    our $OPEN_SINCE = '2026';
+     sub price { return 9; }

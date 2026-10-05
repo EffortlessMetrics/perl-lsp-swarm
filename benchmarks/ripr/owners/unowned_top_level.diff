@@ -1,0 +1,8 @@
+diff --git a/lib/Loose.pm b/lib/Loose.pm
+--- a/lib/Loose.pm
++++ b/lib/Loose.pm
+@@ -2,2 +2,3 @@
+ use strict;
+
++our $DEFAULT_TIMEOUT = 30;
+
