@@ -230,7 +230,7 @@ fn include_document(
     if bytes.len() as u64 > MAX_INCLUDE_BYTES {
         return Err("doc include exceeds byte bound".to_string());
     }
-    let digest = format!("{:x}", Sha256::digest(&bytes));
+    let digest: String = Sha256::digest(&bytes).iter().map(|byte| format!("{byte:02x}")).collect();
     let content =
         String::from_utf8(bytes).map_err(|err| format!("doc include is not UTF-8: {err}"))?;
     let mut included = file.clone();

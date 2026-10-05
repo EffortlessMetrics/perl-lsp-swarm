@@ -314,7 +314,7 @@ impl LspServer {
                     tracing::debug!(method = %method, "Unknown $-prefixed request");
                     Err(JsonRpcError {
                         code: METHOD_NOT_FOUND,
-                        message: unsupported_method_message(method),
+                        message: unsupported_method_message(&method),
                         data: None,
                     })
                 }
@@ -324,7 +324,7 @@ impl LspServer {
                 // Enhanced error response with comprehensive context
                 Err(enhanced_error(
                     METHOD_NOT_FOUND,
-                    &unsupported_method_message(method),
+                    &unsupported_method_message(&method),
                     "method_not_found",
                     Some(&method),
                 ))
@@ -366,7 +366,7 @@ impl LspServer {
             }
             _ => Err(enhanced_error(
                 METHOD_NOT_FOUND,
-                &unsupported_method_message(method),
+                &unsupported_method_message(&method),
                 "method_not_found",
                 Some(&method),
             )),
