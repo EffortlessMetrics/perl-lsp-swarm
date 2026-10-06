@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { COEXISTENCE_CONFIGURATION_INPUTS } from '../coexistenceAdvisory';
 import {
   buildDisabledFeaturesFromConfig,
+  buildGlobalWorkspaceConfigurationPayload,
   buildLanguageClientConfigurationPayload,
   buildPerlCriticConfiguration,
   buildUserAiCompletionConfigurationPayload,
@@ -44,6 +45,48 @@ describe('language client configuration', () => {
 
     expect(payload).toEqual({
       workspace: { includePaths: ['vendor/lib', 'local/lib/perl5'] },
+    });
+  });
+
+  test('global payload answers from user scope only, never workspace/folder scope (#17334)', () => {
+    // The unscoped pull item feeds the server's session-global layer: a
+    // workspace/folder value visible to `get()` and to `inspect()`'s
+    // workspace fields must not be able to enter it.
+    const config = {
+      get: jest.fn(() => ['/folder-should-not-win']),
+      inspect: jest.fn((key: string) =>
+        key === 'includePaths'
+          ? { workspaceValue: ['/workspace-should-not-win'], workspaceFolderValue: ['/folder'] }
+          : undefined,
+      ),
+    } as unknown as vscode.WorkspaceConfiguration;
+
+    expect(buildGlobalWorkspaceConfigurationPayload(config)).toBeUndefined();
+  });
+
+  test('global payload carries user-scoped include paths (#17334)', () => {
+    const config = {
+      get: jest.fn((_key: string, defaultValue?: unknown) => defaultValue),
+      inspect: jest.fn((key: string) =>
+        key === 'includePaths' ? { globalValue: ['user/lib', 42, null] } : undefined,
+      ),
+    } as unknown as vscode.WorkspaceConfiguration;
+
+    expect(buildGlobalWorkspaceConfigurationPayload(config)).toEqual({
+      workspace: { includePaths: ['user/lib'] },
+    });
+  });
+
+  test('global payload forwards global external include paths', () => {
+    const config = {
+      get: jest.fn((_key: string, defaultValue?: unknown) => defaultValue),
+      inspect: jest.fn((key: string) =>
+        key === 'externalIncludePaths' ? { globalValue: ['/opt/perl/lib'] } : undefined,
+      ),
+    } as unknown as vscode.WorkspaceConfiguration;
+
+    expect(buildGlobalWorkspaceConfigurationPayload(config)).toEqual({
+      workspace: { externalIncludePaths: ['/opt/perl/lib'] },
     });
   });
 

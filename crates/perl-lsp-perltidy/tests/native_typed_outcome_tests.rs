@@ -1,7 +1,9 @@
 #![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
+use perl_lsp_perltidy::PerlFormatter;
 use perl_lsp_perltidy::native::{
-    FormatConfig, FormatContext, FormatDisposition, FormatEngine, FormatEvidenceState,
-    FormatReasonCode, FormatRequestTarget, FormatterMode, NativeFormatter, TextPosition, TextRange,
+    BracePlacement, ElsePlacement, FormatConfig, FormatContext, FormatDisposition, FormatEngine,
+    FormatEvidenceState, FormatReasonCode, FormatRequestTarget, FormatterMode, KeywordSpacing,
+    NativeFormatter, TextPosition, TextRange,
 };
 
 #[test]
@@ -101,6 +103,267 @@ fn typed_document_result_does_not_flatten_parse_refusal_to_no_change() {
     assert_eq!(typed.result.formatted, source);
     assert!(typed.result.edits.is_empty());
     assert_eq!(typed.result.diagnostics[0].code, "native.format.parse_error");
+}
+
+#[test]
+fn typed_document_result_admits_the_blocks_it_rendered_on_a_second_pass() {
+    // #13205 / FPH-008. The block renderers emit headers and tails on their
+    // own lines, and neither is re-derivable from one line, so before the
+    // already-formatted admission recognized them a block the formatter had
+    // just rendered classified as `Refused/UnsupportedSyntax` on the next
+    // pass. That is what kept the FPH-008 dormancy fail-closed.
+    let formatter = NativeFormatter::new();
+    let config = FormatConfig::default();
+
+    let sources = [
+        "while($ok){my$x=1;return$x;}\n",
+        "while($ok){next;}continue{last;}\n",
+        "if($ok){my$x=1;}else{my$y=2;}\n",
+        "if($ok){my$x=1;}elsif($z){my$y=2;}else{my$w=3;}\n",
+        "unless($ok){my$x=1;}\n",
+        "until($ok){my$x=1;}\n",
+        "sub foo{my$x=1;return$x;}\n",
+    ];
+
+    for source in sources {
+        let rendered = formatter.format_document(source, &config);
+        assert!(rendered.changed, "source {source:?} was expected to render a block");
+
+        let second = formatter.format_document_typed(
+            &rendered.formatted,
+            &config,
+            &FormatContext::default(),
+        );
+
+        assert_eq!(
+            second.outcome.disposition,
+            FormatDisposition::NoChange,
+            "second pass over rendered {:?} must be NoChange",
+            rendered.formatted
+        );
+        assert_eq!(second.outcome.reason, FormatReasonCode::AlreadyFormatted);
+        assert!(!second.result.changed);
+        assert!(second.result.edits.is_empty(), "second pass must carry no edits");
+        assert!(second.result.diagnostics.is_empty());
+        assert_eq!(
+            second.result.formatted, rendered.formatted,
+            "second pass must leave the rendered bytes stable"
+        );
+        assert_eq!(second.outcome.change.source_bytes_changed, 0);
+        assert_eq!(second.outcome.change.rendered_bytes_changed, 0);
+    }
+}
+
+#[test]
+fn typed_document_result_admits_next_line_braces_on_a_second_pass() {
+    // The same conversion under `BracePlacement::NextLine`, which is a distinct
+    // rendered shape: the header loses its trailing brace and the opening brace
+    // becomes its own line. `foreach$e(@list){next;}\r\nforeach my$item(@items){return$item;}\nforeach$e(@list){next;} # tail`
+    // is the FPH-008 harness counterexample that caught a brace-terminated-only
+    // admission, and it also mixes in CRLF separators, compact keyword spacing,
+    // and a trailing tail comment.
+    let formatter = NativeFormatter::new();
+    let config = FormatConfig {
+        brace_placement: BracePlacement::NextLine,
+        keyword_spacing: KeywordSpacing::Compact,
+        ..FormatConfig::default()
+    };
+    let source = "foreach$e(@list){next;}\r\nforeach my$item(@items){return$item;}\nforeach$e(@list){next;} # tail";
+
+    let rendered = formatter.format_document(source, &config);
+    assert!(rendered.changed, "source was expected to render foreach blocks");
+    assert!(
+        rendered.formatted.contains("\r\n"),
+        "the rendered shape must keep the mixed CRLF separator under test"
+    );
+
+    let second =
+        formatter.format_document_typed(&rendered.formatted, &config, &FormatContext::default());
+
+    assert_eq!(
+        second.outcome.disposition,
+        FormatDisposition::NoChange,
+        "second pass over NextLine-brace render {:?} must be NoChange",
+        rendered.formatted
+    );
+    assert_eq!(second.outcome.reason, FormatReasonCode::AlreadyFormatted);
+    assert!(!second.result.changed);
+    assert!(second.result.edits.is_empty());
+    assert!(second.result.diagnostics.is_empty());
+    assert_eq!(second.result.formatted, rendered.formatted);
+}
+
+#[test]
+fn typed_document_result_admits_separate_line_clauses_on_a_second_pass() {
+    // #16708: under `ElsePlacement::SeparateLine` the else/elsif renderers put
+    // the clause header on its own line, and under `BracePlacement::NextLine`
+    // that header loses its brace. Neither shape was admitted by the
+    // already-formatted check, so the formatter refused its own output on a
+    // second pass. Both placements must classify NoChange.
+    let formatter = NativeFormatter::new();
+    for brace_placement in [BracePlacement::SameLine, BracePlacement::NextLine] {
+        let config = FormatConfig {
+            else_placement: ElsePlacement::SeparateLine,
+            brace_placement,
+            ..FormatConfig::default()
+        };
+        for source in [
+            "if($ok){return 1;}else{return 2;}
+",
+            "if($ok){return 1;}elsif($z){return 2;}else{return 3;}
+",
+        ] {
+            let rendered = formatter.format_document(source, &config);
+            assert!(
+                rendered.changed,
+                "source {source:?} under {brace_placement:?} was expected to render"
+            );
+            let second = formatter.format_document_typed(
+                &rendered.formatted,
+                &config,
+                &FormatContext::default(),
+            );
+            assert_eq!(
+                second.outcome.disposition,
+                FormatDisposition::NoChange,
+                "second pass over the SeparateLine render under {brace_placement:?} ({:?}) must be NoChange",
+                rendered.formatted
+            );
+            assert_eq!(second.outcome.reason, FormatReasonCode::AlreadyFormatted);
+            assert_eq!(second.result.formatted, rendered.formatted);
+        }
+    }
+}
+
+#[test]
+fn typed_document_result_refuses_a_tail_with_an_inline_body() {
+    // #16708: a `}`-prefixed tail used to be admitted unconditionally, so an
+    // inline unsupported body riding the tail line reached `NoChange` even
+    // though no renderer emits that shape. The tail must end at the clause's
+    // opening brace.
+    let formatter = NativeFormatter::new();
+    let source = "if ($ok) {
+    my $x = 1;
+} else { my %h = (a => 1, b => 2); }
+";
+
+    let typed = formatter.format_document_typed(
+        source,
+        &FormatConfig::default(),
+        &FormatContext::default(),
+    );
+
+    assert_eq!(typed.outcome.disposition, FormatDisposition::Refused);
+    assert_eq!(typed.outcome.reason, FormatReasonCode::UnsupportedSyntax);
+    assert!(!typed.result.changed);
+}
+
+#[test]
+fn typed_document_result_refuses_a_header_condition_the_renderer_cannot_format() {
+    // #16708: header admission checked only the line's endpoints, so a
+    // multi-operator condition (which `format_simple_condition_tokens`
+    // refuses) endpoint-admitted as `NoChange` despite never passing a
+    // renderer. The interior must be validated with the renderer's own
+    // condition formatter.
+    let formatter = NativeFormatter::new();
+    let source = "if ($a && $b && $c) {
+    my $x = 1;
+}
+";
+
+    let typed = formatter.format_document_typed(
+        source,
+        &FormatConfig::default(),
+        &FormatContext::default(),
+    );
+
+    assert_eq!(typed.outcome.disposition, FormatDisposition::Refused);
+    assert_eq!(typed.outcome.reason, FormatReasonCode::UnsupportedSyntax);
+    assert!(!typed.result.changed);
+}
+
+#[test]
+fn typed_document_result_still_refuses_a_block_whose_body_is_unsupported() {
+    // Negative control for the admission above: recognizing block boundaries
+    // must not admit the block *body*. This subject is already in rendered
+    // form and its body line parses cleanly with no diagnostic, so only the
+    // already-formatted admission can refuse it.
+    let formatter = NativeFormatter::new();
+    let source = "while ($ok) {\n    my %h = (a => 1, b => 2);\n}\n";
+
+    let typed = formatter.format_document_typed(
+        source,
+        &FormatConfig::default(),
+        &FormatContext::default(),
+    );
+
+    assert_eq!(typed.outcome.disposition, FormatDisposition::Refused);
+    assert_eq!(typed.outcome.reason, FormatReasonCode::UnsupportedSyntax);
+    assert!(!typed.result.changed);
+    assert!(typed.result.diagnostics.is_empty(), "refusal is by admission, not by diagnostic");
+}
+
+#[test]
+fn typed_document_result_refuses_a_hand_written_block_the_renderer_never_emitted() {
+    // Class falsifier for the #16708 review: boundary *shape* alone cannot
+    // claim rendered form. `push_simple_block_body_docs` indents every body
+    // line at least one `indent_unit` past its block's header, so an
+    // unindented body under an admitted boundary is hand-written input, not
+    // formatter output. This is the exact subject the `perl-lsp-rs`
+    // formatting-policy receipt tests pin as `Refused/UnsupportedSyntax` with
+    // its unsupported-syntax warning. The safety evidence stays unproven:
+    // no pipeline pass established parse or literal evidence for this input.
+    let formatter = NativeFormatter::new();
+    for source in [
+        // The receipt-policy subject: supported header, supported unindented
+        // body statement, bare tail.
+        "sub f {\nreturn 1;\n}\n",
+        "while ($ok) {\nreturn 1;\n}\n",
+        // `BracePlacement::NextLine` opener with the same unindented body.
+        "if ($ok)\n{\nreturn 1;\n}\n",
+        // Renderer-consistent body, but the tail sits at a foreign indent.
+        "sub f {\n    return 1;\n  }\n",
+    ] {
+        let typed = formatter.format_document_typed(
+            source,
+            &FormatConfig::default(),
+            &FormatContext::default(),
+        );
+
+        assert_eq!(
+            typed.outcome.disposition,
+            FormatDisposition::Refused,
+            "hand-written {source:?} must not classify as already formatted"
+        );
+        assert_eq!(typed.outcome.reason, FormatReasonCode::UnsupportedSyntax);
+        assert!(!typed.result.changed);
+        assert!(typed.result.diagnostics.is_empty(), "refusal is by admission, not by diagnostic");
+        assert_eq!(typed.outcome.safety.parse_before, FormatEvidenceState::NotRun);
+        assert_eq!(typed.outcome.safety.parse_after, FormatEvidenceState::NotRun);
+        assert_eq!(typed.outcome.safety.literal_preservation, FormatEvidenceState::Refused);
+    }
+}
+
+#[test]
+fn typed_document_result_admits_renderer_layout_bytes_without_a_rendering_pass() {
+    // The document-level evidence admits exactly the layout the renderer
+    // emits — checked directly against those bytes, not only through a first
+    // rendering pass: same block as the refused hand-written subject above,
+    // with the body at the renderer's own indent.
+    let formatter = NativeFormatter::new();
+    let source = "sub f {\n    return 1;\n}\n";
+
+    let typed = formatter.format_document_typed(
+        source,
+        &FormatConfig::default(),
+        &FormatContext::default(),
+    );
+
+    assert_eq!(typed.outcome.disposition, FormatDisposition::NoChange);
+    assert_eq!(typed.outcome.reason, FormatReasonCode::AlreadyFormatted);
+    assert!(!typed.result.changed);
+    assert!(typed.result.edits.is_empty());
+    assert!(typed.result.diagnostics.is_empty());
 }
 
 #[test]

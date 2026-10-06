@@ -183,13 +183,13 @@ fn moniker_unclosed_multiline_list_declines_instead_of_sweeping_later_code() -> 
 ",
     )?;
 
-    let accidental = request_monikers(&mut harness, &uri, 4, 6)?;
+    let accidental = request_monikers(&mut harness, uri, 4, 6)?;
     assert!(
         !moniker_kinds(&accidental).contains(&"export"),
         "a declaration after an unclosed qw( must not be exported by the fallback: {accidental:?}"
     );
 
-    let qw_export = request_monikers(&mut harness, &uri, 3, 6)?;
+    let qw_export = request_monikers(&mut harness, uri, 3, 6)?;
     assert!(
         !moniker_kinds(&qw_export).contains(&"export"),
         "an uncloseable list must be declined outright, not partially classified: {qw_export:?}"

@@ -2,14 +2,15 @@
 //! relations to diff-owned changes, and computes the deterministic
 //! `packet_fingerprint`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use crate::emitter::{
-    diff_provenance_unverified_limitation, emit_boundaries_and_commands, emit_changes_from_diff,
-    emit_files_and_owners, emit_relations_and_discriminators, emit_tests_and_oracles,
+    diff_provenance_unverified_limitation, discovery_scope_skips, emit_boundaries_and_commands,
+    emit_changes_from_diff, emit_files_and_owners, emit_relations_and_discriminators,
+    emit_tests_and_oracles,
 };
 use crate::request::{
     EXPECTED_RIPR_FACTS_SCHEMA, RiprFactsError, RiprFactsRequest, normalize_fact_classes,
@@ -106,6 +107,42 @@ pub fn build_ripr_facts_packet(
     let wants_tests = normalized_classes.iter().any(|c| c == "tests");
     let wants_oracles = normalized_classes.iter().any(|c| c == "oracles");
     let wants_relations = normalized_classes.iter().any(|c| c == "relations");
+    // `#17259`: `files[]` walks the whole root, but tests/oracles/verify scan
+    // only `<root>/t` and boundaries/relations only `<root>/lib`. When a
+    // scope-sensitive class is requested and files exist outside those dirs,
+    // name the skips — a `.t` outside `t/` would otherwise sit in `files[]`
+    // (role `test`) with silently zero test facts.
+    //
+    // Split gating (verified against each emitter's actual consumption):
+    // `.t` feeds every scoped class — tests/oracles via `test_facts`,
+    // relations via the test side, dynamic_boundaries via the boundary scan,
+    // verify_commands one-per-`.t` — so `.t` skips apply to any
+    // scope-sensitive request; `.pm`/`.pl`/`.psgi` feed only relations +
+    // dynamic_boundaries, so a tests-only request must not report unrelated
+    // source skips. The limitation describes REQUESTED facts (post-#17256
+    // subset semantics), not leaked ones.
+    //
+    // The skip *list* is computed here (the gating decision needs it before
+    // emission), but the limitation JSON is built after the files
+    // force-include decision below is known — see the `scope_limitations`
+    // site for why the message must be conditional on `files[]` presence.
+    let wants_scoped_facts = normalized_classes.iter().any(|c| {
+        c == "tests"
+            || c == "oracles"
+            || c == "relations"
+            || c == "dynamic_boundaries"
+            || c == "verify_commands"
+    });
+    let wants_pm_scope =
+        normalized_classes.iter().any(|c| c == "relations" || c == "dynamic_boundaries");
+    let scope_skips: Vec<String> = if wants_scoped_facts {
+        discovery_scope_skips(root)
+            .into_iter()
+            .filter(|rel| wants_pm_scope || rel.ends_with(".t"))
+            .collect()
+    } else {
+        Vec::new()
+    };
     let wants_dynamic_boundaries = normalized_classes.iter().any(|c| c == "dynamic_boundaries");
     let wants_verify_commands = normalized_classes.iter().any(|c| c == "verify_commands");
     let (tests, oracles, mut test_provenance, mut test_limitations) =
@@ -302,6 +339,111 @@ pub fn build_ripr_facts_packet(
     let file_limitations =
         if wants_file_facts_explicit || has_file_facts { file_limitations } else { Vec::new() };
 
+    // `#17259`: the scope limitation JSON is built HERE — after the files
+    // force-include decision above is known — because subset packets without a
+    // `files[]` force-include (tests-only) carry empty `files[]`: claiming the
+    // skips "appear in `files[]`" there would be a self-contradiction with
+    // dangling evidence. The files-present wording names `files[]` + `file:`
+    // refs; the files-absent wording describes the path-derived `file:` ids
+    // without claiming presence (the same about-absence reference class as
+    // `diff-file-not-found`, which points at genuinely unparsed paths). Two
+    // refinements keep the claim exact:
+    // (1) presence: a skip whose file failed `read_to_string` has no `files[]`
+    // fact even when other files read fine (`emit_files_and_owners` emits a
+    // `read-failed:` limitation instead), so skips are checked against the
+    // actually emitted `files[]` — absent ones get path-derived-id wording,
+    // never a presence claim;
+    // (2) reason: `.pl`/`.psgi` skips are excluded by extension (no scoped
+    // collector scans them, anywhere — even under `lib/`), while `.t`/`.pm`
+    // skips are excluded by directory; each group is labeled with its reason
+    // in both the files-present and files-absent wordings.
+    let scope_limitations = if scope_skips.is_empty() {
+        Vec::new()
+    } else {
+        let evidence_refs: Vec<serde_json::Value> =
+            scope_skips.iter().map(|rel| serde_json::json!(format!("file:{rel}"))).collect();
+        let emitted: HashSet<&str> = files
+            .iter()
+            .filter_map(|file| file["file_id"].as_str()?.strip_prefix("file:"))
+            .collect();
+        let mut present_dir: Vec<&str> = Vec::new();
+        let mut present_ext: Vec<&str> = Vec::new();
+        let mut absent_dir: Vec<&str> = Vec::new();
+        let mut absent_ext: Vec<&str> = Vec::new();
+        for rel in &scope_skips {
+            let group = if emitted.contains(rel.as_str()) {
+                if rel.ends_with(".pl") || rel.ends_with(".psgi") {
+                    &mut present_ext
+                } else {
+                    &mut present_dir
+                }
+            } else if rel.ends_with(".pl") || rel.ends_with(".psgi") {
+                &mut absent_ext
+            } else {
+                &mut absent_dir
+            };
+            group.push(rel.as_str());
+        }
+        let label_groups = |dir: &[&str], ext: &[&str]| {
+            let mut groups = Vec::new();
+            if !dir.is_empty() {
+                groups.push(format!("{} (outside the directory scope)", dir.join(", ")));
+            }
+            if !ext.is_empty() {
+                groups.push(format!("{} (unscanned `.pl`/`.psgi` extensions)", ext.join(", ")));
+            }
+            groups
+        };
+        let present_groups: Vec<String> = label_groups(&present_dir, &present_ext);
+        let absent_groups: Vec<String> = label_groups(&absent_dir, &absent_ext);
+        let message = if has_file_facts {
+            let mut message = String::from(
+                "test/source discovery is scoped to `<root>/t` + `<root>/lib` while `files[]` walks the whole root; ",
+            );
+            if present_groups.is_empty() {
+                // Every skip is unreadable: `files[]` is in the packet, but
+                // none of the skips is in it — path-derived wording only.
+                message.push_str("these files are excluded from the requested scoped facts or commands but absent from `files[]` (unreadable — see the `read-failed:` limitation); their `file:` evidence refs are path-derived ids, not references to present facts: ");
+                message.push_str(&absent_groups.join("; "));
+                message.push('.');
+            } else {
+                message.push_str("these files appear in `files[]` but are excluded from the requested scoped facts or commands: ");
+                message.push_str(&present_groups.join("; "));
+                message.push('.');
+                if !absent_groups.is_empty() {
+                    message.push(' ');
+                    message.push_str("Also excluded but absent from `files[]` (unreadable — see the `read-failed:` limitation); their `file:` evidence refs are path-derived ids, not references to present facts: ");
+                    message.push_str(&absent_groups.join("; "));
+                    message.push('.');
+                }
+            }
+            message
+        } else if absent_ext.is_empty() {
+            // Directory-only files-absent: every skip genuinely falls outside
+            // the `<root>/t` + `<root>/lib` scope, so the direct wording stays.
+            format!(
+                "test/source discovery is scoped to `<root>/t` + `<root>/lib`; these files fall outside that scope and are excluded from the requested scoped facts or commands: {}. (`files[]` is not in this packet — the `file:` evidence refs are path-derived ids, not references to present facts.)",
+                scope_skips.join(", ")
+            )
+        } else if absent_dir.is_empty() {
+            format!(
+                "test/source discovery scans only `.t` files under `<root>/t` and `.pm` files under `<root>/lib`; these files are excluded from the requested scoped facts or commands because no scoped collector scans their extensions (`.pl` and `.psgi` are unscanned wherever they live): {}. (`files[]` is not in this packet — the `file:` evidence refs are path-derived ids, not references to present facts.)",
+                scope_skips.join(", ")
+            )
+        } else {
+            format!(
+                "test/source discovery is scoped to `<root>/t` + `<root>/lib`; these files are excluded from the requested scoped facts or commands: {}. (`files[]` is not in this packet — the `file:` evidence refs are path-derived ids, not references to present facts.)",
+                absent_groups.join("; ")
+            )
+        };
+        vec![serde_json::json!({
+            "limitation_id": "discovery-scope-split",
+            "kind": "discovery_scope",
+            "message": message,
+            "evidence_refs": evidence_refs
+        })]
+    };
+
     let mut packet = build_unavailable_packet(schema, root, base, head, &normalized_classes);
 
     // Populate tests + oracles arrays (parser-backed, #3293 PR 4) and append the
@@ -403,24 +545,29 @@ pub fn build_ripr_facts_packet(
         // (the diff is opaque text, not a scan), so surface the root condition
         // alongside facts too — never silently.
         all_limitations.extend(root_limitations);
+        // `#17259`: discovery-scope skips are about absence (like
+        // `diff-file-not-found`), so they surface alongside facts too.
+        all_limitations.extend(scope_limitations);
         packet["limitations"] = serde_json::Value::Array(all_limitations);
     } else if !test_limitations.is_empty()
         || !change_limitations.is_empty()
         || !file_limitations.is_empty()
         || !relation_limitations.is_empty()
         || !root_limitations.is_empty()
+        || !scope_limitations.is_empty()
     {
         // No facts, but a pass produced limitations (test/file parse failures, a
         // `changes` request with no diff, a relation omitted for an
-        // unresolvable owner, or a missing/non-directory root) — surface them
-        // next to the base `emitter-not-yet-implemented` limitation so they are
-        // never dropped.
+        // unresolvable owner, a missing/non-directory root, or test/source
+        // files outside the discovery scope) — surface them next to the base
+        // `emitter-not-yet-implemented` limitation so they are never dropped.
         if let Some(limitations) = packet["limitations"].as_array_mut() {
             limitations.extend(test_limitations);
             limitations.extend(change_limitations);
             limitations.extend(file_limitations);
             limitations.extend(relation_limitations);
             limitations.extend(root_limitations);
+            limitations.extend(scope_limitations);
         }
     }
 

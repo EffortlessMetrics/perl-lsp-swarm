@@ -806,6 +806,91 @@ fn ripr_facts_emits_schema_valid_deterministic_packet() -> Result<(), Box<dyn st
     Ok(())
 }
 
+/// `--ripr-diff` feeds a unified diff into `changes[]` (#17152): the perllsp
+/// surface previously had no diff input, so every packet from this path
+/// reported empty `changes[]` plus `no-diff-supplied`. A one-hunk change
+/// inside `sub add` must now attribute exactly one change to the Calc owner.
+#[test]
+fn ripr_facts_ripr_diff_attributes_changes_to_owners() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempfile::tempdir()?;
+    std::fs::create_dir_all(dir.path().join("lib"))?;
+    std::fs::write(
+        dir.path().join("lib/Calc.pm"),
+        "package Calc;\nuse strict;\nuse warnings;\n\nsub add {\n    my ($x, $y) = @_;\n    return $x + $y;\n}\n\n1;\n",
+    )?;
+    std::fs::write(
+        dir.path().join("change.diff"),
+        "+++ b/lib/Calc.pm\n@@ -5,3 +5,4 @@\n sub add {\n     my ($x, $y) = @_;\n+    my $note = 'change';\n     return $x + $y;\n",
+    )?;
+
+    let mut cmd = product_command();
+    cmd.current_dir(dir.path())
+        .args([
+            "--ripr-facts",
+            "--ripr-root",
+            ".",
+            "--ripr-diff",
+            "change.diff",
+            "--ripr-out",
+            "out.json",
+        ])
+        .assert()
+        .success();
+
+    let packet_bytes = std::fs::read(dir.path().join("out.json"))?;
+    let packet: serde_json::Value = serde_json::from_slice(&packet_bytes)?;
+    let changes = packet["changes"].as_array().ok_or("changes is not an array")?;
+    assert_eq!(changes.len(), 1, "one hunk must yield one change, got {changes:?}");
+    let owner_id = changes[0]["owner_id"].as_str().ok_or("change has no owner_id")?;
+    assert!(
+        owner_id.starts_with("owner:lib/Calc.pm:"),
+        "change must attribute to the Calc owner, got `{owner_id}`"
+    );
+    let limitation_ids: Vec<&str> = packet["limitations"]
+        .as_array()
+        .ok_or("limitations is not an array")?
+        .iter()
+        .filter_map(|l| l["limitation_id"].as_str())
+        .collect();
+    assert!(
+        !limitation_ids.contains(&"no-diff-supplied"),
+        "a supplied diff must clear no-diff-supplied, got {limitation_ids:?}"
+    );
+    Ok(())
+}
+
+/// Without `--ripr-diff` the legacy no-diff contract holds: empty `changes[]`,
+/// a `no-diff-supplied` limitation, and exit 0 (not a failure).
+#[test]
+fn ripr_facts_without_diff_keeps_empty_changes_contract() -> Result<(), Box<dyn std::error::Error>>
+{
+    let dir = tempfile::tempdir()?;
+    std::fs::create_dir_all(dir.path().join("lib"))?;
+    std::fs::write(dir.path().join("lib/Calc.pm"), "package Calc;\nsub add { 1 }\n1;\n")?;
+
+    let mut cmd = product_command();
+    cmd.current_dir(dir.path())
+        .args(["--ripr-facts", "--ripr-root", ".", "--ripr-out", "out.json"])
+        .assert()
+        .success();
+
+    let packet_bytes = std::fs::read(dir.path().join("out.json"))?;
+    let packet: serde_json::Value = serde_json::from_slice(&packet_bytes)?;
+    let changes = packet["changes"].as_array().ok_or("changes is not an array")?;
+    assert!(changes.is_empty(), "no-diff packet must keep changes[] empty, got {changes:?}");
+    let limitation_ids: Vec<&str> = packet["limitations"]
+        .as_array()
+        .ok_or("limitations is not an array")?
+        .iter()
+        .filter_map(|l| l["limitation_id"].as_str())
+        .collect();
+    assert!(
+        limitation_ids.contains(&"no-diff-supplied"),
+        "no-diff packet must carry no-diff-supplied, got {limitation_ids:?}"
+    );
+    Ok(())
+}
+
 /// The `--ripr-out` path is validated as repo-relative; an absolute path is
 /// rejected with a clear error and a non-zero exit, and no file is written.
 #[test]

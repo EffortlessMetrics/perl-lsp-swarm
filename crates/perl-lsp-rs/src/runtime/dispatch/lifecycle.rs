@@ -121,8 +121,11 @@ impl LspServer {
     /// Handle shutdown request
     pub(super) fn handle_shutdown_dispatch(&self) -> Result<Option<Value>, JsonRpcError> {
         // Enforce single-shutdown idempotence via atomic swap.
-        // Note: The LSP router permits shutdown before initialize_requested
-        // (see dispatch/mod.rs), so we do not check initialize_requested here.
+        // Note: the router's pre-initialize -32002 gate (#17346) rejects
+        // `shutdown` before the text-sync session contract is accepted, so
+        // this handler only runs on an accepted session. A shutdown latch on
+        // a never-initialized session would wedge it permanently: the
+        // post-shutdown -32600 reject also stops `initialize`.
         if self.shutdown_received.swap(true, Ordering::AcqRel) {
             return Err(JsonRpcError {
                 code: -32600, // InvalidRequest per LSP spec
@@ -347,8 +350,14 @@ mod tests {
         // on the accepted-session authority, so a consumed-but-unaccepted
         // connection is refused outright (ServerNotInitialized), matching the
         // routing-layer expectation for a rejected first initialize.
-        let err = server.handle_initialized_dispatch().map_err(|e| e.code).unwrap_err();
-        assert_eq!(err, -32002, "initialized without an accepted contract is ServerNotInitialized");
+        let err = server
+            .handle_initialized_dispatch()
+            .err()
+            .ok_or("initialized notification without an accepted contract must fail")?;
+        assert_eq!(
+            err.code, -32002,
+            "initialized without an accepted contract is ServerNotInitialized"
+        );
 
         // Then
         assert!(

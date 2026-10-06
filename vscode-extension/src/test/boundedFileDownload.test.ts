@@ -196,7 +196,7 @@ describe('downloadBoundedFile', () => {
         downloadBoundedFile({
           requestFactory: (listener) => http.get(url, listener),
           dest,
-          timeoutMs: 1000,
+          timeoutMs: 10_000, // #17335: load-tolerant budget; the suite proves completion, not speed
           maxBytes: 64,
           operationName: 'Archive download',
         }),
@@ -223,7 +223,7 @@ describe('downloadBoundedFile', () => {
           downloadBoundedFile({
             requestFactory: (listener) => http.get(url, listener),
             dest,
-            timeoutMs: 1000,
+            timeoutMs: 10_000, // #17335: load-tolerant budget; the suite proves completion, not speed
             maxBytes: 32,
             operationName: 'Archive download',
           }),
@@ -248,7 +248,7 @@ describe('downloadBoundedFile', () => {
             downloadBoundedFile({
               requestFactory: (listener) => http.get(url, listener),
               dest,
-              timeoutMs: 1000,
+              timeoutMs: 10_000, // #17335: load-tolerant budget; the suite proves completion, not speed
               maxBytes: 12,
               operationName: 'Archive download',
             }),
@@ -270,7 +270,7 @@ describe('downloadBoundedFile', () => {
           throw new Error('must not start a request after pre-cancellation');
         },
         dest,
-        timeoutMs: 1000,
+        timeoutMs: 10_000, // #17335: load-tolerant budget; the suite proves completion, not speed
         maxBytes: 64,
         cancellationToken: token,
         operationName: 'Archive download',
@@ -294,7 +294,7 @@ describe('downloadBoundedFile', () => {
             downloadBoundedFile({
               requestFactory: (listener) => http.get(url, listener),
               dest,
-              timeoutMs: 1000,
+              timeoutMs: 10_000, // #17335: load-tolerant budget; the suite proves completion, not speed
               maxBytes: 12,
               operationName: 'Archive download',
               removePartialFile: async () => {},
@@ -325,7 +325,7 @@ describe('downloadBoundedFile', () => {
         downloadBoundedFile({
           requestFactory: (listener) => http.get(url, listener),
           dest,
-          timeoutMs: 1000,
+          timeoutMs: 10_000, // #17335: load-tolerant budget; the suite proves completion, not speed
           maxBytes: 12,
           operationName: 'Archive download',
           removePartialFile: async (filePath) => {
@@ -373,7 +373,7 @@ describe('downloadBoundedFile', () => {
           downloadBoundedFile({
             requestFactory: (listener) => http.get(url, listener),
             dest,
-            timeoutMs: 1000,
+            timeoutMs: 10_000, // #17335: load-tolerant budget; the suite proves completion, not speed
             maxBytes: 12,
             operationName: 'Archive download',
             removePartialFile: () => {
@@ -408,7 +408,7 @@ describe('downloadBoundedFile', () => {
           downloadBoundedFile({
             requestFactory: (listener) => http.get(url, listener),
             dest,
-            timeoutMs: 1000,
+            timeoutMs: 10_000, // #17335: load-tolerant budget; the suite proves completion, not speed
             maxBytes: 12,
             operationName: 'Archive download',
             removePartialFile: async () => {
@@ -442,7 +442,7 @@ describe('downloadBoundedFile', () => {
           downloadBoundedFile({
             requestFactory: (listener) => http.get(url, listener),
             dest,
-            timeoutMs: 1000,
+            timeoutMs: 10_000, // #17335: load-tolerant budget; the suite proves completion, not speed
             maxBytes: 12,
             operationName: 'Archive download',
             removePartialFile: async () => {
@@ -477,7 +477,7 @@ describe('downloadBoundedFile', () => {
             downloadBoundedFile({
               requestFactory: (listener) => http.get(url, listener),
               dest,
-              timeoutMs: 1000,
+              timeoutMs: 10_000, // #17335: load-tolerant budget; the suite proves completion, not speed
               maxBytes: 12,
               operationName: 'Archive download',
               removePartialFile: async () => {},
@@ -505,7 +505,7 @@ describe('downloadBoundedFile', () => {
             downloadBoundedFile({
               requestFactory: (listener) => http.get(url, listener),
               dest,
-              timeoutMs: 1000,
+              timeoutMs: 10_000, // #17335: load-tolerant budget; the suite proves completion, not speed
               maxBytes: 1024,
               cancellationToken: token,
               operationName: 'Archive download',
@@ -532,7 +532,7 @@ describe('downloadBoundedFile', () => {
             downloadBoundedFile({
               requestFactory: (listener) => http.get(url, listener),
               dest,
-              timeoutMs: 1000,
+              timeoutMs: 10_000, // #17335: load-tolerant budget; the suite proves completion, not speed
               maxBytes: 1024,
               operationName: 'Archive download',
             }),
@@ -584,7 +584,7 @@ describe('downloadBoundedFile', () => {
               requestFactory: (listener) => http.get(url, listener),
               createWriteStream: (filePath) => fs.createWriteStream(filePath, { emitClose: false }),
               dest,
-              timeoutMs: 1000,
+              timeoutMs: 10_000, // #17335: load-tolerant budget; the suite proves completion, not speed
               maxBytes: 12,
               operationName: 'Archive download',
             }),
@@ -610,7 +610,7 @@ describe('downloadBoundedFile', () => {
             downloadBoundedFile({
               requestFactory: (listener) => http.get(url, listener),
               dest,
-              timeoutMs: 1000,
+              timeoutMs: 10_000, // #17335: load-tolerant budget; the suite proves completion, not speed
               maxBytes: 64,
               operationName: 'Archive download',
             }),
@@ -648,7 +648,7 @@ describe('downloadBoundedFile', () => {
                 return stream;
               },
               dest,
-              timeoutMs: 1000,
+              timeoutMs: 10_000, // #17335: load-tolerant budget; the suite proves completion, not speed
               maxBytes: 12,
               operationName: 'Archive download',
             }),
