@@ -43,7 +43,7 @@ The Marketplace package is designed to work with `PATH`, `serverPath`, or runtim
 | `perl-lsp.enableTestIntegration` | `true` | Enable test integration for `.t` and runnable `.pl` files. |
 | `perl-lsp.featureProfile` | `"auto"` | Forward a concrete feature profile to `perl-lsp` when needed. |
 | `perl-lsp.disabledFeatures` | `[]` | Array of LSP feature IDs to disable (e.g. `["lsp.hover", "lsp.semantic_tokens"]`). See the feature catalog via `perllsp --features-json`. |
-| `perl-lsp.aiCompletion.enabled` | `false` | Enable AI-assisted inline completion. |
+| `perl-lsp.aiCompletion.enabled` | `false` | Reserved preference for AI-assisted inline completion. No shipped server can arm its AI backend yet, so this does not change completion behaviour today. See [the AI completion reference](reference/AI_COMPLETION.md). |
 | `perl-lsp.critic.enabled` | `true` | Enable Perl::Critic diagnostics. |
 | `perl-lsp.critic.engine` | `"native"` | Critic engine: `native` (Rust-native) or `legacy` (shells out to `perlcritic`). |
 | `perl-lsp.critic.severity` | `3` | Minimum critic severity to report (1 = least severe, 5 = most severe). |

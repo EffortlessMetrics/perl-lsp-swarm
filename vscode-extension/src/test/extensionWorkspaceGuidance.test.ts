@@ -1379,7 +1379,7 @@ test('keeps committed settings when the folder is removed after update', async (
   );
 });
 
-test('does not prompt for AI completion without a real server capability', async () => {
+test('does not prompt for AI completion without an activation capability', async () => {
   (vscode.workspace.getConfiguration as jest.Mock).mockReturnValue({
     get: jest.fn(() => false),
     update: jest.fn(),
@@ -1393,7 +1393,45 @@ test('does not prompt for AI completion without a real server capability', async
   expect(vscode.window.showInformationMessage).not.toHaveBeenCalled();
 });
 
-test('offers AI completion when the server advertises inline completions', async () => {
+test('stays silent when only inline-completion support is advertised (#16585)', async () => {
+  // `inlineCompletionProvider` is advertised by every shipped profile
+  // (`features/flags.rs` `production()`/`ga_lock()`), so it selects nothing. The
+  // server also rejects `aiCompletion.enabled` on arrival (#4997) and fails
+  // closed on remote construction until #10817, so offering the journey here
+  // would write a setting that cannot do what the success message claims.
+  const update = jest.fn(async () => undefined);
+  (vscode.workspace.getConfiguration as jest.Mock).mockReturnValue({
+    get: jest.fn(() => false),
+    update,
+  });
+  const workspaceState = makeState();
+
+  await suggestAiCompletionIfSupported({ workspaceState } as unknown as vscode.ExtensionContext, {
+    initializeResult: { capabilities: { inlineCompletionProvider: {} } },
+  });
+
+  expect(vscode.window.showInformationMessage).not.toHaveBeenCalled();
+  expect(update).not.toHaveBeenCalled();
+  expect(workspaceState.update).not.toHaveBeenCalled();
+});
+
+test('stays silent when the activation capability is absent from experimental (#16585)', async () => {
+  const update = jest.fn(async () => undefined);
+  (vscode.workspace.getConfiguration as jest.Mock).mockReturnValue({
+    get: jest.fn(() => false),
+    update,
+  });
+  const workspaceState = makeState();
+
+  await suggestAiCompletionIfSupported({ workspaceState } as unknown as vscode.ExtensionContext, {
+    initializeResult: { capabilities: { inlineCompletionProvider: {} } },
+  });
+
+  expect(vscode.window.showInformationMessage).not.toHaveBeenCalled();
+  expect(update).not.toHaveBeenCalled();
+});
+
+test('offers AI completion when the server advertises AI activation (#16585)', async () => {
   const update = jest.fn(async () => undefined);
   (vscode.workspace.getConfiguration as jest.Mock).mockReturnValue({
     get: jest.fn(() => false),
@@ -1403,7 +1441,12 @@ test('offers AI completion when the server advertises inline completions', async
   const workspaceState = makeState();
 
   await suggestAiCompletionIfSupported({ workspaceState } as unknown as vscode.ExtensionContext, {
-    initializeResult: { capabilities: { inlineCompletionProvider: {} } },
+    initializeResult: {
+      capabilities: {
+        inlineCompletionProvider: {},
+        experimental: { perlAiCompletionActivation: true },
+      },
+    },
   });
 
   expect(update).toHaveBeenCalledWith(
@@ -1415,7 +1458,78 @@ test('offers AI completion when the server advertises inline completions', async
     'AI-powered inline completions enabled.',
   );
   expect(workspaceState.update).toHaveBeenCalledWith(
-    'perl-lsp.aiCompletion.firstRunNotificationShown',
+    'perl-lsp.aiCompletion.firstRunNotificationShown.v2',
     true,
   );
+});
+
+test('no journey when the server cannot display inline completions (#16585 review)', async () => {
+  // The activation capability proves only that the server can arm the
+  // backend; the extension's inline completion owner is middleware on the
+  // client provider, which exists only when `inlineCompletionProvider` is
+  // advertised. Without that surface, accepting Enable would enable a feature
+  // the user cannot see.
+  for (const capabilities of [
+    { experimental: { perlAiCompletionActivation: true } },
+    { inlineCompletionProvider: false, experimental: { perlAiCompletionActivation: true } },
+  ]) {
+    (vscode.workspace.getConfiguration as jest.Mock).mockReturnValue({
+      get: jest.fn(() => false),
+      update: jest.fn(),
+    });
+    const workspaceState = makeState();
+
+    await suggestAiCompletionIfSupported({ workspaceState } as unknown as vscode.ExtensionContext, {
+      initializeResult: { capabilities },
+    });
+
+    expect(vscode.window.showInformationMessage).not.toHaveBeenCalled();
+    expect(workspaceState.update).not.toHaveBeenCalled();
+  }
+});
+
+test('an old unversioned prompt receipt does not suppress the corrected journey (#16585 review)', async () => {
+  (vscode.workspace.getConfiguration as jest.Mock).mockReturnValue({
+    get: jest.fn(() => false),
+    update: jest.fn(),
+  });
+  (vscode.window.showInformationMessage as jest.Mock).mockResolvedValue('Dismiss');
+  const workspaceState = makeState();
+  // Seed the pre-gate receipt the obsolete prompt wrote.
+  await workspaceState.update('perl-lsp.aiCompletion.firstRunNotificationShown', true);
+
+  await suggestAiCompletionIfSupported({ workspaceState } as unknown as vscode.ExtensionContext, {
+    initializeResult: {
+      capabilities: {
+        inlineCompletionProvider: {},
+        experimental: { perlAiCompletionActivation: true },
+      },
+    },
+  });
+
+  // The versioned receipt key is what suppresses; the pre-gate receipt is
+  // ignored so the corrected journey is offered once.
+  expect(workspaceState.get).toHaveBeenCalledWith(
+    'perl-lsp.aiCompletion.firstRunNotificationShown.v2',
+    false,
+  );
+  expect(vscode.window.showInformationMessage).toHaveBeenCalled();
+});
+
+test('a non-true activation capability does not open the journey (#16585)', async () => {
+  // Fails closed on shape as well as value: a truthy-but-not-`true` capability is
+  // not a server that says it can arm the backend.
+  (vscode.workspace.getConfiguration as jest.Mock).mockReturnValue({
+    get: jest.fn(() => false),
+    update: jest.fn(),
+  });
+  const workspaceState = makeState();
+
+  await suggestAiCompletionIfSupported({ workspaceState } as unknown as vscode.ExtensionContext, {
+    initializeResult: {
+      capabilities: { experimental: { perlAiCompletionActivation: 'yes' } },
+    },
+  });
+
+  expect(vscode.window.showInformationMessage).not.toHaveBeenCalled();
 });

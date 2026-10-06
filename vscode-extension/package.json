@@ -627,16 +627,16 @@
             "default": false,
             "scope": "machine",
             "order": 10,
-            "description": "Enable AI-powered inline code suggestions. Off by default; requires a language server that advertises inline-completion support. See the README for configuration.",
-            "markdownDescription": "Enable AI-powered inline code suggestions. Off by default; requires a language server that advertises inline-completion support. See the [README](https://github.com/EffortlessMetrics/perl-lsp/tree/master/vscode-extension#ai-completion) for configuration."
+            "description": "Reserved preference for AI-powered inline completions. No shipped server can arm its AI backend yet, so this does not change completion behaviour today; inline suggestions stay deterministic. See the AI completion reference for details.",
+            "markdownDescription": "Reserved preference for AI-powered inline completions. No shipped server can arm its AI backend yet, so this does not change completion behaviour today; inline suggestions stay deterministic. See the [AI completion reference](https://github.com/EffortlessMetrics/perl-lsp/blob/master/docs/reference/AI_COMPLETION.md) for what is accepted today and what is reserved."
           },
           "perl-lsp.aiCompletion.streaming.enabled": {
             "type": "boolean",
             "default": true,
             "scope": "machine",
             "order": 20,
-            "description": "Enable progressive streaming for AI completions so results appear as they are generated. Requires aiCompletion.enabled to be true.",
-            "markdownDescription": "Enable progressive streaming for AI completions so results appear as they are generated. Requires `aiCompletion.enabled` to be true."
+            "description": "Reserved preference for progressive streaming of AI completions. It does not currently authorize server streaming, and completions are delivered one-shot. Requires aiCompletion.enabled to be true.",
+            "markdownDescription": "Reserved preference for progressive streaming of AI completions. It does not currently authorize server streaming, and completions are delivered one-shot. Requires `aiCompletion.enabled` to be true. See the [AI completion reference](https://github.com/EffortlessMetrics/perl-lsp/blob/master/docs/reference/AI_COMPLETION.md)."
           }
         }
       },
