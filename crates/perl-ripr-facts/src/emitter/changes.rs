@@ -217,10 +217,71 @@ fn find_enclosing_owner<'a>(
 /// Explicitly out of scope (still misclassifiable): heredocs, multi-line
 /// strings, `q{}`/`qq{}` and other quote-like operators, regex literals
 /// (`m//`, `s///`, `qr//`), and tokens in trailing comments.
-fn strip_single_line_string_literals(line: &str) -> String {
-    fn is_word_char(c: char) -> bool {
-        c.is_ascii_alphanumeric() || c == '_'
+fn is_word_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || c == '_'
+}
+
+/// Byte ranges of single-line string literals in `line`, using the same
+/// opener/escape/separator rules as [`strip_single_line_string_literals`].
+/// Byte-exact (multi-byte chars keep their width) so callers can map
+/// positions back onto the original line.
+fn single_line_string_spans(line: &str) -> Vec<(usize, usize)> {
+    let chars: Vec<char> = line.chars().collect();
+    // Byte offset of each char index.
+    let mut byte_at: Vec<usize> = Vec::with_capacity(chars.len() + 1);
+    let mut b = 0;
+    for c in &chars {
+        byte_at.push(b);
+        b += c.len_utf8();
     }
+    byte_at.push(b);
+    let mut spans = Vec::new();
+    let mut i = 0;
+    while i < chars.len() {
+        let quote = chars[i];
+        let opens_literal =
+            quote == '"' || (quote == '\'' && (i == 0 || !is_word_char(chars[i - 1])));
+        if opens_literal {
+            let start = byte_at[i];
+            i += 1;
+            while i < chars.len() {
+                if chars[i] == '\\' {
+                    i = i.saturating_add(2).min(chars.len());
+                } else if chars[i] == quote {
+                    i += 1;
+                    break;
+                } else {
+                    i += 1;
+                }
+            }
+            spans.push((start, byte_at[i]));
+        } else {
+            i += 1;
+        }
+    }
+    spans
+}
+
+/// Byte index of the first `needle` occurrence in `line` that starts outside
+/// any single-line string literal, or `None`. Lets discriminator extraction
+/// preserve the detected keyword's position instead of matching text inside
+/// an earlier string (#17389 review).
+fn find_outside_strings(line: &str, needle: &str) -> Option<usize> {
+    let spans = single_line_string_spans(line);
+    let mut from = 0;
+    while let Some(rel) = line[from..].find(needle) {
+        let idx = from + rel;
+        let inside = spans.iter().any(|&(s, e)| idx >= s && idx < e);
+        if !inside {
+            return Some(idx);
+        }
+        // Advance one char (never splitting a multi-byte boundary).
+        from = line[idx..].chars().next().map_or(line.len(), |c| idx + c.len_utf8());
+    }
+    None
+}
+
+fn strip_single_line_string_literals(line: &str) -> String {
     let chars: Vec<char> = line.chars().collect();
     let mut out = String::with_capacity(line.len());
     let mut i = 0;
@@ -498,13 +559,25 @@ fn extract_discriminator(kind: &str, line: &str) -> String {
     match kind {
         // Extract the condition text as the discriminator.
         "predicate_boundary" => extract_condition(trimmed).unwrap_or_else(|| trimmed.to_string()),
-        "return_value" => trimmed
-            .strip_prefix("return")
-            .unwrap_or(trimmed)
-            .trim()
-            .trim_end_matches(';')
-            .to_string(),
-        "exception_path" => extract_die_message(trimmed).unwrap_or_else(|| "exception".to_string()),
+        // Slice from the detected keyword's position (outside strings) so a
+        // quoted keyword earlier in the line cannot supply the observable.
+        "return_value" => {
+            let from = find_outside_strings(trimmed, "return").unwrap_or(0);
+            trimmed[from..]
+                .strip_prefix("return")
+                .unwrap_or(&trimmed[from..])
+                .trim()
+                .trim_end_matches(';')
+                .to_string()
+        }
+        "exception_path" => {
+            let from = ["die ", "croak ", "confess "]
+                .iter()
+                .filter_map(|kw| find_outside_strings(trimmed, kw))
+                .min()
+                .unwrap_or(0);
+            extract_die_message(&trimmed[from..]).unwrap_or_else(|| "exception".to_string())
+        }
         _ => String::new(),
     }
 }
@@ -925,6 +998,20 @@ mod tests {
         // Guards: stripping string contents must not hide genuine statements.
         assert_eq!(behavior_hint_for_hunk(&["return \"ok\";".into()]).0, "return_value");
         assert_eq!(behavior_hint_for_hunk(&["die \"bad\";".into()]).0, "exception_path");
+    }
+
+    #[test]
+    fn behavior_hint_for_hunk_skips_quoted_keywords_before_real_statement() {
+        // #17389 review: a quoted keyword earlier in the line must not supply
+        // the observable; extraction starts at the detected keyword's position.
+        let (kind, disc) =
+            behavior_hint_for_hunk(&["my $s = \"return die bogus\"; die \"real\";".into()]);
+        assert_eq!(kind, "exception_path");
+        assert!(disc.contains("real"), "observable must come from the real die: {disc}");
+        assert!(!disc.contains("bogus"), "observable must not come from the string: {disc}");
+        let (kind, disc) = behavior_hint_for_hunk(&["my $t = \"x return y\"; return $z;".into()]);
+        assert_eq!(kind, "return_value");
+        assert_eq!(disc, "$z");
     }
 
     #[test]
