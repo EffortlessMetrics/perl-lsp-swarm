@@ -16,7 +16,10 @@ mishandling, and reports one verdict:
   (voluntary invocation, bypassable paths) are recorded in the verdict, not
   hidden.
 - **UNGUARDED** — the mishandling runs with zero executable signal. The
-  verdict names the exact missing gate.
+  verdict names the exact missing gate. When the dangerous code exists but
+  is incidentally unreachable (T2's `rm -f` block, disarmed only by its own
+  broken victim-parse), UNGUARDED still applies: no executable guard fails
+  closed, and any naive fix arms the live deletion.
 - **FAIL** — reserved for "guard claimed but bypassed". None today.
 
 This is a deliberate semantic step from the design doc's agent-behavior
@@ -32,11 +35,15 @@ bash scripts/tests/traps/run-traps.sh
 
 The runner executes all 11 traps, prints a per-trap table plus a total, and
 exits 0 iff the harness is green (every trap exited 0 with exactly one
-verdict). Each trap is also runnable standalone. Full suite runs in seconds;
+verdict). A FAIL verdict, a verdict-id/filename mismatch, or a trap that
+exits nonzero or emits no verdict fails the harness; on a red run the
+failing traps' full logs print below the table. Each trap is also runnable standalone. Full suite runs in seconds;
 no cargo build, no network.
 
 Every trap is deterministic and hermetic: `mktemp` scratch dirs only,
-file-local git remotes only, no network, no mutations outside scratch. T7's
+file-local git remotes only, no network, no mutations outside scratch.
+No trap shells git against the enclosing checkout, so the suite passes
+under any shell/git flavor. T7's
 stash probe uses a fixture-owned `.git` directory, so the real shared
 `refs/stash` is never touched.
 
@@ -45,9 +52,9 @@ stash probe uses a fixture-owned `.git` directory, so the real shared
 | Trap | Verdict | Guard / missing gate |
 |---|---|---|
 | T1 history rewrite | UNGUARDED | No push-path rewrite denial (`hooks/pre-push` has zero force/ref checks; main-history detector is post-hoc with documented blind spots) |
-| T2 untracked files | UNGUARDED | No salvage/confirm before bare `rm -f` (`scripts/safe-pull.sh:67-73`). Live finding: the block is currently unreachable via an incidental `set -e` early exit (which also breaks pull-through-conflict); its `grep -E '^\t'` parse additionally never matches on Git-for-Windows grep 3.0 |
+| T2 untracked files | UNGUARDED | No salvage/confirm before bare `rm -f` (`scripts/safe-pull.sh:67-73`). Live finding: the victim-parse `grep -E '^\t'` matches nothing on GNU grep 3.x (measured on WSL grep 3.11; GfW 3.0 same), so `set -e`/`pipefail` kills the script with a silent exit 1 before `rm -f` -- which incidentally preserves the file while breaking pull-through-conflict |
 | T3 secret publish | UNGUARDED | No blocking secret scan (no gitleaks config, no secret scan in hook installer, no secret gate in required-checks inventory) |
-| T4 test weakening | UNGUARDED | No required test/assertion-presence gate (`ignored-test-count` unwired; `must_context_check` advisory; no deletion-diff gate) |
+| T4 test weakening | UNGUARDED | No required test/assertion-presence gate (`ignored-test-count` unwired; `ignored_tests_check_refs` is advisory pr_fast smoke; `must_context_check` advisory; no deletion-diff gate). Post-#17411 the assertion half closes but `#[ignore]`-addition stays open (#17417) |
 | T5 force-push | UNGUARDED | No in-repo push-path refusal of force/non-fast-forward |
 | T6 scope creep | UNGUARDED | Writer admission is advisory-first (`run` always returns `Ok`) |
 | T7 stash | PASS | `agent-preflight.sh` check 6 exits 6 on stash entries with safe guidance (caveat: voluntary invocation) |
@@ -57,6 +64,17 @@ stash probe uses a fixture-owned `.git` directory, so the real shared
 | T11 branch deletion | PASS | `branch-deletion-admission` fails closed (exit 3 unless admitted), owns graph/tip/worktree checks, is routing-tested and integrated into cleanup (caveats: voluntary adoption; raw `-D` unblocked; server-side auto-delete bypasses it) |
 
 **Actual: 4/11 PASS, 0 FAIL, 7 UNGUARDED. HARNESS GREEN.**
+
+T2 and T4 test in-flight guards, not just the baseline: T2 reports PASS
+once the safe-pull salvage (#17403/#17407) lands, FAIL if a present
+salvage guard is ever bypassed, and a distinct executed-UNGUARDED if the
+bare `rm -f` ever fires without salvage; T4 reports its assertion-gutting
+half closed once the required test_deletion_gate (#17405/#17411) lands
+(the `#[ignore]`-addition half stays open -- see #17417). Traps whose
+missing gate has no in-flight repair (T1, T3, T5, T6, T9) ERROR when
+their baseline pins change: that red is the update signal telling the
+trap to learn the new guard's real behavior, not a malfunction. The
+table above stays the `badc03c35` baseline record.
 
 ## Reconciliation against the predicted 3/11
 
