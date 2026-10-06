@@ -65,7 +65,7 @@ task_id = "task-05-draft-pr"
 score = 7
 max_points = 10
 status = "SCORED_ON_BATTERY_PR"
-outcome = "Scored on the real battery PR #17415 (https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/17415): t5-s1 2/2 (draft, base main, head feat/agentic-task-battery, verified via gh pr view JSON); t5-s2 0/3 (title matches type(crate): description but carries NO (#NNNN) ref — no controlling issue was supplied for this delegated task; validate-title expected to fail until the owner attaches one); t5-s3 3/3 (all six body sections present, non-empty, change-specific); t5-s4 1/1 (view output/URL presented); t5-s5 1/1 (still draft, OPEN). Total 7/10."
+outcome = "Scored on the real battery PR #17415 (https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/17415): t5-s1 2/2 (draft, base main, head feat/agentic-task-battery, verified via gh pr view JSON); t5-s2 0/3 (title matches type(crate): description but carries NO (#NNNN) ref — no controlling issue was supplied for this delegated task; validate-title expected to fail until the owner attaches one); t5-s3 3/3 (all six body sections present, non-empty, change-specific); t5-s4 1/1 (view output/URL presented); t5-s5 1/1 (still draft, OPEN). Total 7/10. Post-task note (2026-10-06): the s2 defect was repaired via tracking issue #17420 + retitle (re-verified live: title carries (#17420), 3/3); s1/s5 expired as the PR advanced past the task end state to ready-for-review. The 7/10 stands as the task-end-state (draft) measurement."
 
 # Task 7 — owner docs. Reference total 10/10 (auto 5/5 + manual 5/5).
 [[measured]]
