@@ -200,20 +200,64 @@ fn find_enclosing_owner<'a>(
     best
 }
 
+/// Strip single-line double/single-quoted string literals from a Perl source
+/// line (#17358).
+///
+/// Each `"..."` / `'...'` literal (backslash escapes honored) is replaced with
+/// an empty `""` placeholder so keyword/substring scans cannot match tokens
+/// that are only string contents — e.g. `my $msg = "please return the form";`
+/// must not classify as `return_value`. An unterminated quote consumes to end
+/// of line (the single-line approximation of a multi-line string start).
+///
+/// Explicitly out of scope (still misclassifiable): heredocs, multi-line
+/// strings, `q{}`/`qq{}` and other quote-like operators, regex literals
+/// (`m//`, `s///`, `qr//`), and tokens in trailing comments.
+fn strip_single_line_string_literals(line: &str) -> String {
+    let chars: Vec<char> = line.chars().collect();
+    let mut out = String::with_capacity(line.len());
+    let mut i = 0;
+    while i < chars.len() {
+        let quote = chars[i];
+        if quote == '"' || quote == '\'' {
+            out.push_str("\"\"");
+            i += 1;
+            while i < chars.len() {
+                if chars[i] == '\\' {
+                    i = i.saturating_add(2).min(chars.len());
+                } else if chars[i] == quote {
+                    i += 1;
+                    break;
+                } else {
+                    i += 1;
+                }
+            }
+        } else {
+            out.push(quote);
+            i += 1;
+        }
+    }
+    out
+}
+
 /// Pick a `behavior_hint` + discriminator for a hunk by scanning its added lines
 /// top-to-bottom; the first line matching a known pattern (predicate boundary →
 /// return value → exception path) wins. No match on any line → `"unknown"`.
 fn behavior_hint_for_hunk(lines: &[String]) -> (&'static str, String) {
     for line in lines {
         // A whole-line comment is never executable, so it must never yield a
-        // concrete behavior hint (e.g. `# return $x;` is not a return). This is
-        // a cheap, safe filter; false positives from `die`/`return` substrings
-        // *inside string literals* remain possible and are documented as a
-        // limitation (a robust fix needs tokenization, out of this slice's scope).
+        // concrete behavior hint (e.g. `# return $x;` is not a return).
         if line.trim_start().starts_with('#') {
             continue;
         }
-        let (hint, discriminator) = infer_behavior_and_discriminator(line);
+        // Strip single-line string literals first so tokens inside them (e.g.
+        // `die` in `my $s = 'die hard';`) cannot drive the classification
+        // (#17358). The stripped line also feeds discriminator extraction, so
+        // a comparison inside a string cannot leak into a predicate-boundary
+        // discriminator either. Guarantee covers `"..."` / `'...'` only;
+        // heredocs, multi-line strings, q{}, regex literals, and trailing
+        // comments remain unhandled (see `strip_single_line_string_literals`).
+        let stripped = strip_single_line_string_literals(line);
+        let (hint, discriminator) = infer_behavior_and_discriminator(&stripped);
         if hint != "unknown" {
             return (hint, discriminator);
         }
@@ -826,6 +870,56 @@ mod tests {
         // Real code after a comment still wins.
         let lines = vec!["# comment".into(), "    return $x;".into()];
         assert_eq!(behavior_hint_for_hunk(&lines).0, "return_value");
+    }
+
+    #[test]
+    fn behavior_hint_for_hunk_ignores_tokens_inside_string_literals() {
+        // #17358: tokens that appear only inside single-line string literals
+        // must not drive the classification.
+        assert_eq!(
+            behavior_hint_for_hunk(&["my $msg = \"please return the form\";".into()]).0,
+            "unknown"
+        );
+        assert_eq!(behavior_hint_for_hunk(&["my $s = 'die hard';".into()]).0, "unknown");
+        assert_eq!(behavior_hint_for_hunk(&["if ($label eq \"a>b\") {".into()]).0, "unknown");
+    }
+
+    #[test]
+    fn behavior_hint_for_hunk_string_stripping_keeps_real_statements() {
+        // Guards: stripping string contents must not hide genuine statements.
+        assert_eq!(behavior_hint_for_hunk(&["return \"ok\";".into()]).0, "return_value");
+        assert_eq!(behavior_hint_for_hunk(&["die \"bad\";".into()]).0, "exception_path");
+    }
+
+    #[test]
+    fn strip_single_line_string_literals_honors_escapes() {
+        assert_eq!(strip_single_line_string_literals("return \"a\\\"b\";"), "return \"\";");
+        assert_eq!(strip_single_line_string_literals("my $s = 'it\\'s';"), "my $s = \"\";");
+        // Unterminated quote consumes to end of line.
+        assert_eq!(strip_single_line_string_literals("my $s = \"foo"), "my $s = \"\"");
+    }
+
+    #[test]
+    fn emit_changes_from_diff_string_only_token_yields_unknown_hint() {
+        // #17358 packet-level: a hunk whose only hint token sits inside a
+        // string literal still emits a change fact, but with an "unknown" hint.
+        let (files, owners) = app_files_and_owners();
+        let diff = "\
+--- a/lib/My/App.pm
++++ b/lib/My/App.pm
+@@ -5,3 +5,4 @@
+ sub discount {
+     my ($amount) = @_;
++    my $msg = \"please return the form\";
+ }
+";
+        let (changes, _) = emit_changes_from_diff(diff, ".", &files, &owners);
+        assert_eq!(changes.len(), 1, "string-only-token line still emits a change fact");
+        assert_eq!(changes[0]["behavior_hint"], "unknown");
+        assert!(
+            changes[0]["changed_observable"].is_null(),
+            "unknown hint must carry a null changed_observable"
+        );
     }
 
     #[test]

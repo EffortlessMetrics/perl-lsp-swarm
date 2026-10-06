@@ -19,7 +19,7 @@
     {
       "behavior_hint": "exception_path",
       "change_id": "change:file:lib/App.pm:15:16",
-      "changed_observable": "boom\" if $x < 0",
+      "changed_observable": " if $x < 0",
       "changed_text_digest": "fnv64:aab3376966267fd5",
       "file_id": "file:lib/App.pm",
       "missing_discriminator": null,
