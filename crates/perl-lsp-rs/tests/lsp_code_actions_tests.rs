@@ -509,11 +509,13 @@ print $undefined_var;
     Ok(())
 }
 
+type ExtractedEdits = (String, Vec<(usize, usize, String)>);
+
 fn apply_extract_workspace_edit(
     source: &str,
     action: &serde_json::Value,
     uri: &str,
-) -> Result<(String, Vec<(usize, usize, String)>), Box<dyn std::error::Error>> {
+) -> Result<ExtractedEdits, Box<dyn std::error::Error>> {
     let edits =
         action["edit"]["changes"][uri].as_array().ok_or("Expected WorkspaceEdit changes")?;
     let offset = |point: &serde_json::Value| -> Result<usize, Box<dyn std::error::Error>> {

@@ -2212,7 +2212,7 @@ mod tests {
                 assert!(server.accepted_text_sync_session().is_none());
                 assert!(!server.initialization_accepted());
             }
-            other => panic!("unexpected concurrent initialize outcomes: {other:?}"),
+            other => unreachable!("unexpected concurrent initialize outcomes: {other:?}"),
         }
     }
 
@@ -2381,8 +2381,10 @@ mod tests {
         std::thread::scope(|scope| {
             let first = scope.spawn(|| server.handle_initialize(Some(valid.clone())));
             let second = scope.spawn(|| server.handle_initialize(Some(malformed.clone())));
-            let first = first.join().expect("first initialize thread");
-            let second = second.join().expect("second initialize thread");
+            let Ok(first) = first.join() else { unreachable!("first initialize thread panicked") };
+            let Ok(second) = second.join() else {
+                unreachable!("second initialize thread panicked")
+            };
 
             let outcomes = [first, second];
             let owners = outcomes

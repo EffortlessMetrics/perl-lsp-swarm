@@ -347,7 +347,11 @@ mod tests {
         // on the accepted-session authority, so a consumed-but-unaccepted
         // connection is refused outright (ServerNotInitialized), matching the
         // routing-layer expectation for a rejected first initialize.
-        let err = server.handle_initialized_dispatch().map_err(|e| e.code).unwrap_err();
+        let err = server
+            .handle_initialized_dispatch()
+            .map_err(|e| e.code)
+            .err()
+            .ok_or("expected initialized to fail, but it succeeded".to_string())?;
         assert_eq!(err, -32002, "initialized without an accepted contract is ServerNotInitialized");
 
         // Then
