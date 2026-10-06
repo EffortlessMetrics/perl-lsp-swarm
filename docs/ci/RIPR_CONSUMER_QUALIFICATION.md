@@ -1,21 +1,22 @@
 # Exact RIPR consumer qualification inputs
 
 `scripts/ci/prepare_ripr_consumer_packet.py` prepares offline workload inputs for
-the source profile diagnosed in [#16126](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/16126)
+the source profiles diagnosed in [#16126](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/16126)
 and [#15498](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/15498#issuecomment-5995297478).
 It reads existing Git objects and two bounded native recursive Git-tree snapshots.
 It does not fetch, materialize a corpus, invoke Cargo/RIPR, select a runner, change a
 cache, or publish a required result. Exit zero means collection succeeded;
 `admission_effect` stays `none` and `qualification` stays `NOT_PROVEN`.
 
-The accepted source profile is the complete evaluated tree
-`beea1d3a1b7b3c42ef510cd66f1a4337ce76f894`, including the workflow blob
+The accepted source profiles are the complete evaluated trees
+`beea1d3a1b7b3c42ef510cd66f1a4337ce76f894` (#17293) and
+`38e5307f5a6bbc96733821efde2bd728b9d0fe50` (#17238). Both include the workflow blob
 `f39dbbda84d264af20a5025c9083d520fa2090de`, producer blob
 `daaaefa06dc13e5340ce6a5ba31027fa5239caf3`, and gate blob
 `4319363165a78b80bb826299246c6c56da271b5d`. The independently pinned full tree
 binds the static phase recipe, including dispatcher, observer, dependencies and
 configuration identities. The three named blobs alone would allow an unreviewed
-dispatcher or observer to change the recipe. Any different evaluated tree requires
+dispatcher or observer to change the recipe. Any other evaluated tree requires
 reviewed recipe qualification;
 the collector refuses it instead of guessing compatibility. The live consumer
 recipe describes the primary hosted `ripr-github` lane; selfhosted and disk-full
@@ -53,6 +54,42 @@ python3 -B scripts/ci/prepare_ripr_consumer_packet.py \
   --evaluated-tree-json evaluated-tree.json \
   --base-tree-json base-tree.json > consumer-packet.json
 ```
+
+For #17238, use the separate subject from the
+[#15498 handoff](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/15498#issuecomment-5997302461)
+and [#17224 continuation condition](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/17224#issuecomment-5997303255).
+Capture these separate tree responses:
+
+```text
+repos/EffortlessMetrics/perl-lsp-swarm/git/trees/38e5307f5a6bbc96733821efde2bd728b9d0fe50?recursive=1
+repos/EffortlessMetrics/perl-lsp-swarm/git/trees/8d6605c411a006cf55747b0afdc6792c73b70972?recursive=1
+```
+
+```bash
+python3 -B scripts/ci/prepare_ripr_consumer_packet.py \
+  --repo /path/to/selected/repository \
+  --evaluated-head 4c80681bbed820b10445cabe6c3ad1c98689a329 \
+  --base 18049c49650151bf2e4111b0419fee0cc6d462ea \
+  --pr-head 0415579be1ad0229665c0c4bbdd1c24e1bf5bacb \
+  --expected-tree 38e5307f5a6bbc96733821efde2bd728b9d0fe50 \
+  --evaluated-tree-json 17238-evaluated-tree.json \
+  --base-tree-json 17238-base-tree.json > 17238-consumer-packet.json
+```
+
+The second profile was reviewed against the first complete source tree. Workflow,
+producer, gate, dispatcher and observer identities are unchanged; changed xtask
+modules are reached by separate commands. `xtask/Cargo.toml` adds a `strum`
+dev-dependency, and `Cargo.lock` advances `regex-automata` from 0.4.16 to 0.4.18.
+These are changed build inputs. This supports the same static command sequence;
+it establishes no build success, realized features, binary identity or runtime
+compatibility. Each packet retains its own evaluated tree and complete inventories.
+
+For this #17238 subject, E has 4,420 regular Rust candidates / 90,411,435
+API-reported bytes; B has 4,415 / 90,151,348. Complete leaf comparison gives
+122 changed paths (111 modified, 11 added), including 78 Rust paths. The named
+configuration group has 70 files / 680,769 API-reported bytes on each side, yet
+`Cargo.lock` changes identity with an equal 103,219-byte size. Matching counts or
+sizes do not justify reusing producer qualification from another subject.
 
 Git verifies the commit object bytes and ordered B/H parents. The collector
 reconstructs every supplied subtree and the root from paths, modes and object IDs.
@@ -137,7 +174,9 @@ qualification, #17122 owns canonical orchestration, #13718 owns admission inputs
 authorities and cannot recover the consumed attempt.
 
 The lightweight controls use real Git fixture commits/trees, including Unicode
-and directory/file ordering. They also reject a valid merge with a changed dispatcher
+and directory/file ordering. A separately registered second tree preserves distinct
+subject and manifest identities while all runtime evidence remains `NOT_PROVEN`.
+They also reject a valid merge with a changed dispatcher
 or observer even when its three named blobs and caller-supplied tree match. They run
 in the existing CI Gate Self-Tests job:
 

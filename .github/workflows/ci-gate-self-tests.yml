@@ -115,6 +115,7 @@ on:
       # no gate authority, but must reject incomplete or foreign Git rosters.
       - 'scripts/ci/prepare_ripr_consumer_packet.py'
       - 'scripts/tests/test_ripr_consumer_packet.py'
+      - 'docs/ci/RIPR_CONSUMER_QUALIFICATION.md'
       # Toolchain guard for bash entrypoints (issue #12593): the coverage
       # consistency test scans every cargo-invoking scripts/*.sh, so any
       # script change re-proves that none of them dodges the guard.

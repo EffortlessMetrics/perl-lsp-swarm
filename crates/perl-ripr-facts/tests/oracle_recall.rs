@@ -15,8 +15,17 @@
 //!
 //! Sources are `.t` (not `.pm`): the oracle emitter scans `<root>/t` only, so
 //! `.pm` fixtures would score a dishonest zero.
+//!
+//! On success the bench prints the per-fixture score table plus a one-line
+//! `MATCH` summary so reference baselines capture values, not just pass/fail.
+//! The harness captures passing-test output, so baselines must disable
+//! capture: `cargo test -p perl-ripr-facts --locked --test oracle_recall --
+//! --nocapture`.
 
-#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598); see src/lib.rs.
+#![deny(clippy::map_err_ignore)]
+// Cohort C0 activation (#12598); see src/lib.rs.
+// Score output is the bench's baselining contract (cf. E1/A1/P3 MATCH lines).
+#![allow(clippy::print_stdout)]
 
 use perl_ripr_facts::{RiprFactsRequest, build_ripr_facts_packet};
 use perl_tdd_support::{must_some_with, must_with};
@@ -277,5 +286,9 @@ fn oracle_recall_meets_c1_threshold() {
     assert!(
         overall >= MIN_RECALL,
         "C1 overall recall {overall:.2} ({total_matched}/{total_expected}) is below the {MIN_RECALL} bar\n{report}"
+    );
+    print!("{report}");
+    println!(
+        "C1 oracle-recall | overall={total_matched}/{total_expected} = {overall:.3} bar={MIN_RECALL} | MATCH"
     );
 }
