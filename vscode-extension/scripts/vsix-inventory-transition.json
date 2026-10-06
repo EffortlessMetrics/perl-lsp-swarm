@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "owner_issue": 17333,
-  "reason": "wave-4 surface repairs on top of the #17041 proxy-aware transport re-ratchet: the #17333 prove resolver PATH walk and the #17334 global-scope unscoped pull payload builder add their delta to the bundled out/extension.js; the packaged file set is unchanged",
-  "base_baseline_file_sha256": "858eedfd9df10f4c52d9f7a48a2e25cc329818f5513fc2a1f9b5bd1b6ff79c7f",
-  "candidate_baseline_file_sha256": "6f23a8c37892a55b556ef3505fa064ddba164ba29e3801429e6c0893f5c35161",
-  "base_inventory_sha256": "f7af875eac06d2898b826f2dd6016b26bbc04f992901ff5b62ab80ad59259dce",
-  "candidate_inventory_sha256": "9169e50dced95244e40f4999b33738282226fe8efb56cf6968726b73315c3789"
+  "owner_issue": 10307,
+  "reason": "Re-anchor the #10307 remediation UX transition onto main's #17333 wave-4 + #17041 proxy-aware transport baseline: the merged candidate composes main's +21572-byte bundle growth (1709937 -> 1731509) with this PR's binary-identity remediation UX for a measured out/extension.js of 1736217 (total 1921480); no members were added or removed",
+  "base_baseline_file_sha256": "6f23a8c37892a55b556ef3505fa064ddba164ba29e3801429e6c0893f5c35161",
+  "candidate_baseline_file_sha256": "08c38ce7363722e1c100902772b6f2410ed3c5113a47456c51115ee346ea93a2",
+  "base_inventory_sha256": "9169e50dced95244e40f4999b33738282226fe8efb56cf6968726b73315c3789",
+  "candidate_inventory_sha256": "471063cbaca00782af8cd09fab050998148eee1840f1b4a89c7cfdf115c2b2bb"
 }

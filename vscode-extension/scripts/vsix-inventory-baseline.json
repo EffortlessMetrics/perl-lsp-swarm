@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "total_files": 30,
-  "total_bytes": 1916772,
+  "total_bytes": 1921480,
   "files": {
     "readme.md": 27722,
     "package.nls.json": 2210,
@@ -17,6 +17,7 @@
     "syntaxes/gherkin.tmLanguage.json": 1875,
     "snippets/perl.json": 12172,
     "snippets/launch.json": 791,
+    "out/extension.js": 1736217,
     "media/walkthrough/welcome.svg": 756,
     "media/walkthrough/verify-perl.svg": 1189,
     "media/walkthrough/try-goto-definition.svg": 1857,
@@ -31,7 +32,6 @@
     "assets/demo-project/README.md": 842,
     "assets/demo-project/main.pl": 199,
     "assets/demo-project/lib/Utils.pm": 272,
-    "assets/demo-project/lib/Database.pm": 257,
-    "out/extension.js": 1731509
+    "assets/demo-project/lib/Database.pm": 257
   }
 }
