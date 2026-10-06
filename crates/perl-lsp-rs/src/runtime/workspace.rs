@@ -1675,10 +1675,22 @@ impl LspServer {
                 continue;
             }
 
-            let message = format!(
-                "Perl LSP ignored invalid `{}` value {:?}; keeping the current setting. Valid values: {}.",
-                invalid.setting, invalid.value, invalid.valid_options
-            );
+            let message = match invalid.disposition {
+                perl_lsp_rs_core::config::InvalidClientSettingDisposition::KeepCurrent => format!(
+                    "Perl LSP ignored invalid `{}` value {:?}; keeping the current setting. \
+                     Valid values: {}.",
+                    invalid.setting, invalid.value, invalid.valid_options
+                ),
+                perl_lsp_rs_core::config::InvalidClientSettingDisposition::ClampToValidRange => {
+                    format!(
+                        "Perl LSP `{}` value {:?} is out of range; {}. Valid range: {}.",
+                        invalid.setting,
+                        invalid.value,
+                        invalid.disposition.as_str(),
+                        invalid.valid_options
+                    )
+                }
+            };
             if let Err(error) =
                 self.show_message(crate::runtime::window::MessageType::Warning, &message)
             {

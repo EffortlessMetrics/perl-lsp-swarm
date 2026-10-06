@@ -127,6 +127,8 @@ pub(crate) enum SessionWarningSubjectTag {
     ClientCriticProfile,
     /// `formatting.engine` client setting.
     ClientFormattingEngine,
+    /// `critic.severity` client setting (#17341).
+    ClientCriticSeverity,
 }
 
 impl SessionWarningSubjectTag {
@@ -140,6 +142,7 @@ impl SessionWarningSubjectTag {
             "critic.engine" => Some(Self::ClientCriticEngine),
             "critic.profile" => Some(Self::ClientCriticProfile),
             "formatting.engine" => Some(Self::ClientFormattingEngine),
+            "critic.severity" => Some(Self::ClientCriticSeverity),
             _ => None,
         }
     }
