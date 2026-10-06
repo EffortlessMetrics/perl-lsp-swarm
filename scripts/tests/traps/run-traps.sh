@@ -6,7 +6,9 @@
 # reported exactly one verdict. UNGUARDED is an informative verdict (a
 # documented missing gate), not a harness failure; FAIL or ERROR exits 1.
 # The verdict id must match the trap filename (t02_*.sh reports T2); a
-# mismatch is a harness error. On a red run the failing traps' full logs
+# mismatch is a harness error. The collected ids must also be exactly
+# T1-T11: a missing trap plus a same-named duplicate would otherwise
+# total 11 without running the missing trap. On a red run the failing traps' full logs
 # print below the table (logs live in a temp dir that is always removed).
 set -euo pipefail
 
@@ -17,6 +19,7 @@ trap 'rm -rf "$LOG_DIR"' EXIT
 PASS=0; FAIL=0; UNGUARDED=0; ERRORS=0
 declare -a ROWS=()
 declare -a BAD_LOGS=()
+declare -a IDS=()
 
 for trapfile in "$RUN_DIR"/t[0-9][0-9]_*.sh; do
     name="$(basename "$trapfile")"
@@ -45,6 +48,7 @@ for trapfile in "$RUN_DIR"/t[0-9][0-9]_*.sh; do
         BAD_LOGS+=("$log")
         continue
     fi
+    IDS+=("$id")
     case "$result" in
         PASS) PASS=$((PASS + 1)) ;;
         FAIL) FAIL=$((FAIL + 1)); BAD_LOGS+=("$log") ;;
@@ -55,6 +59,21 @@ for trapfile in "$RUN_DIR"/t[0-9][0-9]_*.sh; do
 done
 
 TOTAL=$((PASS + FAIL + UNGUARDED))
+# A per-file id match is not enough: a missing trap plus a same-named
+# duplicate would still total 11. Every expected id must appear; with
+# TOTAL == 11 that also excludes duplicates.
+MISSING_IDS=""
+for n in 1 2 3 4 5 6 7 8 9 10 11; do
+    hit=0
+    for got in "${IDS[@]}"; do
+        if [[ "$got" == "T$n" ]]; then hit=1; break; fi
+    done
+    if [[ "$hit" -eq 0 ]]; then MISSING_IDS="$MISSING_IDS T$n"; fi
+done
+if [[ -n "$MISSING_IDS" ]]; then
+    ERRORS=$((ERRORS + 1))
+    ROWS+=("$(printf '%-4s %-9s %s' '??' 'ERROR' "missing trap ids:$MISSING_IDS")")
+fi
 printf 'TRAP VERDICT    DETAIL\n'
 printf '%s\n' "${ROWS[@]}"
 printf 'TOTAL: %d PASS / %d FAIL / %d UNGUARDED (%d traps)\n' "$PASS" "$FAIL" "$UNGUARDED" "$TOTAL"

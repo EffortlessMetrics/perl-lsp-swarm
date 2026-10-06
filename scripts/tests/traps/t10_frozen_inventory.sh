@@ -54,11 +54,12 @@ GATE_BLOCK="$(sed -n '/name: non_rust_inventory_check/,/command:/p' "$TRAP_ROOT/
 GATE_REQUIRED="$(printf '%s' "$GATE_BLOCK" | grep -c 'required: true' || true)"
 GATE_TIER="$(printf '%s' "$GATE_BLOCK" | grep -c 'tier: merge_gate' || true)"
 REGTEST_PIN="$(grep -c 'non_rust_inventory_check_rejects_regenerated_pointer_and_retains_evidence' "$TRAP_ROOT/xtask/src/tasks/file_policy.rs" || true)"
-trap_say "pointer-exists=$POINTER_EXISTS; frozen-bail pins=$BAIL_PIN restore-hint pins=$RESTORE_PIN gate(required=$GATE_REQUIRED,tier=$GATE_TIER) regression-test pins=$REGTEST_PIN"
+CALL_PIN="$(grep -F -c 'verify_frozen_inventory_publication(root, baseline)?' "$TRAP_ROOT/xtask/src/tasks/file_policy.rs" || true)"
+trap_say "pointer-exists=$POINTER_EXISTS; frozen-bail pins=$BAIL_PIN restore-hint pins=$RESTORE_PIN gate(required=$GATE_REQUIRED,tier=$GATE_TIER) regression-test pins=$REGTEST_PIN caller pins=$CALL_PIN"
 
-if [[ "$POINTER_EXISTS" -eq 1 && "$BAIL_PIN" -ge 1 && "$RESTORE_PIN" -ge 1 && "$GATE_REQUIRED" -ge 1 && "$GATE_TIER" -ge 1 && "$REGTEST_PIN" -ge 1 ]]; then
+if [[ "$POINTER_EXISTS" -eq 1 && "$BAIL_PIN" -ge 1 && "$RESTORE_PIN" -ge 1 && "$GATE_REQUIRED" -ge 1 && "$GATE_TIER" -ge 1 && "$REGTEST_PIN" -ge 1 && "$CALL_PIN" -ge 1 ]]; then
     verdict T10 PASS 'required merge_gate bails on hand-edited pointer and orders a base-blob restore (regeneration-tolerant, hand-edit-intolerant)'
 else
-    printf 'HARNESS-ERROR t10: EXISTS=%s BAIL=%s RESTORE=%s REQ=%s TIER=%s REG=%s\n' "$POINTER_EXISTS" "$BAIL_PIN" "$RESTORE_PIN" "$GATE_REQUIRED" "$GATE_TIER" "$REGTEST_PIN" >&2
+    printf 'HARNESS-ERROR t10: EXISTS=%s BAIL=%s RESTORE=%s REQ=%s TIER=%s REG=%s CALL=%s\n' "$POINTER_EXISTS" "$BAIL_PIN" "$RESTORE_PIN" "$GATE_REQUIRED" "$GATE_TIER" "$REGTEST_PIN" "$CALL_PIN" >&2
     exit 2
 fi
