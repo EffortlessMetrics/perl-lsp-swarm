@@ -3420,19 +3420,16 @@ mod tests {
         std::fs::write(root.path().join("real.md"), "inside")?;
         #[cfg(unix)]
         std::os::unix::fs::symlink(outside.path(), root.path().join("link.md"))?;
+        // Stock Windows without Developer Mode / SeCreateSymbolicLinkPrivilege
+        // cannot create symlinks (os error 1314): skip visibly, don't fail
+        // (#17367). The shared helper honors PLSW_REQUIRE_SYMLINK_PRIVILEGE,
+        // so required-proof runs still fail closed; Linux CI runs the real
+        // assertions through the advisory pr-fast lane.
         #[cfg(windows)]
-        if let Err(e) =
-            std::os::windows::fs::symlink_file(outside.path(), root.path().join("link.md"))
+        if perl_tdd_support::try_create_file_symlink(outside.path(), &root.path().join("link.md"))?
+            .is_none()
         {
-            // Stock Windows without Developer Mode / SeCreateSymbolicLinkPrivilege
-            // cannot create symlinks (os error 1314): skip, don't fail (#17367).
-            // Linux CI still enforces the real assertions; every other error
-            // fails closed below.
-            if e.raw_os_error() == Some(1314) {
-                println!("SKIP: symlink privilege unavailable (os error 1314); Linux CI enforces");
-                return Ok(());
-            }
-            return Err(e.into());
+            return Ok(());
         }
         let canonical_root = root.path().canonicalize()?;
         assert!(
