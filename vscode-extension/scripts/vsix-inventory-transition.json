@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "owner_issue": 17333,
-  "reason": "wave-4 surface repairs on top of the #17041 proxy-aware transport re-ratchet: the #17333 prove resolver PATH walk and the #17334 global-scope unscoped pull payload builder add their delta to the bundled out/extension.js; the packaged file set is unchanged",
-  "base_baseline_file_sha256": "858eedfd9df10f4c52d9f7a48a2e25cc329818f5513fc2a1f9b5bd1b6ff79c7f",
-  "candidate_baseline_file_sha256": "6f23a8c37892a55b556ef3505fa064ddba164ba29e3801429e6c0893f5c35161",
-  "base_inventory_sha256": "f7af875eac06d2898b826f2dd6016b26bbc04f992901ff5b62ab80ad59259dce",
-  "candidate_inventory_sha256": "9169e50dced95244e40f4999b33738282226fe8efb56cf6968726b73315c3789"
+  "owner_issue": 7807,
+  "reason": "Compose issue 7807 POD preview webview accessibility (+780 bundled entrypoint bytes, re-measured from a rolldown build of the merged sources and unchanged from the prior 780-byte measurement) with main ledger growth already ratcheted by #17041 and #17333 (out/extension.js 1731509) after merging origin/main at dcba895c03",
+  "base_baseline_file_sha256": "6f23a8c37892a55b556ef3505fa064ddba164ba29e3801429e6c0893f5c35161",
+  "candidate_baseline_file_sha256": "7b5b4aaa065337c36d0ecaace73fc16348768edc1f5396a25e541c202a3cece5",
+  "base_inventory_sha256": "9169e50dced95244e40f4999b33738282226fe8efb56cf6968726b73315c3789",
+  "candidate_inventory_sha256": "a2cc64d75856c586c52f996b214d35205a57121254fa70c97dc9ffc05f3ee806"
 }

@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "total_files": 30,
-  "total_bytes": 1916772,
+  "total_bytes": 1917552,
   "files": {
     "readme.md": 27722,
     "package.nls.json": 2210,
@@ -32,6 +32,6 @@
     "assets/demo-project/main.pl": 199,
     "assets/demo-project/lib/Utils.pm": 272,
     "assets/demo-project/lib/Database.pm": 257,
-    "out/extension.js": 1731509
+    "out/extension.js": 1732289
   }
 }
