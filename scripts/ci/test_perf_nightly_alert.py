@@ -83,6 +83,11 @@ def validate_ci_route(workflow: dict) -> None:
             raise ValueError(message)
 
     triggers = workflow.get("on", workflow.get(True, {}))
+    require(set(triggers.get("pull_request", {})) == {"paths"},
+            "consumer must retain default PR activities and branches")
+    push = triggers.get("push", {})
+    require(set(push) == {"branches", "paths"} and push["branches"] == ["main"],
+            "consumer must retain main push coverage")
     for event in ("pull_request", "push"):
         paths = set(triggers.get(event, {}).get("paths", []))
         require(not any(path.startswith("!") for path in paths), f"{event} path exclusions can suppress direct inputs")
@@ -291,6 +296,19 @@ class NightlyAlertTests(unittest.TestCase):
                     mutant[key][event]["paths"].append(exclusion)
                     with self.assertRaises(ValueError):
                         validate_ci_route(mutant)
+        for event, field, value in (
+            ("push", "branches", ["develop"]),
+            ("push", "branches", ["main", "!main"]),
+            ("push", "branches-ignore", ["main"]),
+            ("pull_request", "types", ["closed"]),
+            ("pull_request", "branches", ["develop"]),
+            ("pull_request", "paths-ignore", ["scripts/**"]),
+        ):
+            with self.subTest(event=event, field=field, value=value):
+                mutant = copy.deepcopy(workflow)
+                mutant[key][event][field] = value
+                with self.assertRaises(ValueError):
+                    validate_ci_route(mutant)
 
     def test_ci_route_rejects_printed_skipped_or_suppressed_commands(self) -> None:
         workflow = yaml.safe_load(CI_WORKFLOW.read_text(encoding="utf-8"))
