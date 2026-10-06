@@ -17,6 +17,13 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 SAFE_PULL="${SAFE_PULL_SCRIPT:-${REPO_ROOT}/scripts/safe-pull.sh}"
+# run_safe_pull cds into the fixture before invoking the script, so a relative
+# override would resolve against the fixture, not the invocation directory.
+# Absolutize once, here, while the cwd is still the invocation directory.
+case "${SAFE_PULL}" in
+  /*|[A-Za-z]:*) ;;
+  *) SAFE_PULL="$(pwd)/${SAFE_PULL}" ;;
+esac
 
 PASS=0
 FAIL=0

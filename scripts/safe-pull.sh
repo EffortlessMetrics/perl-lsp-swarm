@@ -90,7 +90,7 @@ if printf '%s\n' "${MERGE_OUTPUT}" | grep -q "would be overwritten by merge"; th
   # index BEFORE moving anything; any tracked path aborts the pull untouched.
   TRACKED_OFFENDERS=""
   while IFS= read -r f; do
-    if [ -n "${f}" ] && git ls-files --error-unmatch -- "${f}" >/dev/null 2>&1; then
+    if [ -n "${f}" ] && git ls-files --error-unmatch -- ":(literal)${f}" >/dev/null 2>&1; then
       TRACKED_OFFENDERS="${TRACKED_OFFENDERS}${f}
 "
     fi
