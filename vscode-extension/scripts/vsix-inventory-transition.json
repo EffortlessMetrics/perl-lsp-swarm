@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "owner_issue": 17200,
-  "reason": "adding the installed receipt assembler controls to test:receipt-summary grows packaged package.json by exactly 46 bytes; all 30 package members and every other byte limit remain unchanged",
-  "base_baseline_file_sha256": "8c5ba0a97559679ec4f2e33d6f5978dcf3c41c828b0afdd521e700997cbb0857",
-  "candidate_baseline_file_sha256": "ed73e4ac567f36d73e987ffda907a272e2e35afcef0cb1640eabb636300b6291",
-  "base_inventory_sha256": "85107aba396d47f6dadc11056330aa8f45e1e59452e32a1fd8dad533283540c2",
-  "candidate_inventory_sha256": "eca87de013c378aed31924190eaf783fb691e3b850fa8eb99c1eeb93efef4f6f"
+  "owner_issue": 7804,
+  "reason": "Repair the plain-HTTP proxy inner hop against the extension-host patch self-CONNECT loop (http.proxySupport: override): against the prior candidate baseline this candidate changes only out/extension.js (+2386 bytes) for the http.ClientRequest inner-hop construction, the patched-host transport test, and the verified patch-behavior module header; package.json and all other members remain as declared; size-only growth, no structural packaging change.",
+  "base_baseline_file_sha256": "ed73e4ac567f36d73e987ffda907a272e2e35afcef0cb1640eabb636300b6291",
+  "candidate_baseline_file_sha256": "858eedfd9df10f4c52d9f7a48a2e25cc329818f5513fc2a1f9b5bd1b6ff79c7f",
+  "base_inventory_sha256": "eca87de013c378aed31924190eaf783fb691e3b850fa8eb99c1eeb93efef4f6f",
+  "candidate_inventory_sha256": "f7af875eac06d2898b826f2dd6016b26bbc04f992901ff5b62ab80ad59259dce"
 }

@@ -10,14 +10,59 @@ use super::model::{
 };
 use super::{CloseProofError, is_digest_hex, is_repository_id, is_stable_token};
 
+/// A consistent full binding remains representation-only. Unsupported source
+/// authority is NOT_PROVEN; this type contains no trust or semantic verdict.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FullBindingMatch {
+    RepresentationOnly,
+}
+
+impl super::model::FullBoundPacket {
+    pub fn from_json_str(json: &str) -> Result<Self, CloseProofError> {
+        super::wire::from_json_str(json, "issue_close_proof_binding")
+    }
+
+    pub fn to_canonical_json(&self) -> Result<String, CloseProofError> {
+        super::canonical_json(self)
+    }
+}
+
+/// Compare full identity to a separately supplied current envelope.
+///
+/// `current` is caller-selected: this function does not authenticate it, adopt
+/// its declarations, admit evidence or derive the packet's supplied verdict.
+/// There is no automatic upgrade from a legacy packet to authority.
+pub fn validate_packet_full_binding(
+    bound: &super::model::FullBoundPacket,
+    current: &super::contract::ContractIdentityEnvelope,
+) -> Result<FullBindingMatch, CloseProofError> {
+    use super::model::FULL_PACKET_BINDING_SCHEMA_V1;
+    if bound.schema_version != FULL_PACKET_BINDING_SCHEMA_V1 {
+        return Err(CloseProofError::Schema {
+            field: "schema_version".to_string(),
+            message: format!("expected `{FULL_PACKET_BINDING_SCHEMA_V1}`"),
+        });
+    }
+    current.validate()?;
+    if !is_digest_hex(&bound.full_contract_digest) {
+        return Err(CloseProofError::Digest {
+            message: "packet full_contract_digest is not 64 lowercase hex characters".to_string(),
+        });
+    }
+    if bound.full_contract_digest != current.full_contract_digest {
+        return Err(CloseProofError::Identity {
+            message: "full contract material moved; the packet binding is stale".to_string(),
+        });
+    }
+    validate_packet_against_contract(&bound.packet, &current.contract)?;
+    Ok(FullBindingMatch::RepresentationOnly)
+}
+
 impl ClosePacket {
     /// Parse a close packet document. Structural validation is separate so
     /// mis-typed documents and semantically invalid ones stay distinguishable.
     pub fn from_json_str(json: &str) -> Result<Self, CloseProofError> {
-        serde_json::from_str(json).map_err(|error| CloseProofError::Schema {
-            field: "close_packet".to_string(),
-            message: error.to_string(),
-        })
+        super::wire::from_json_str(json, "close_packet")
     }
 
     /// Deterministic serialization; a second generation produces no diff.

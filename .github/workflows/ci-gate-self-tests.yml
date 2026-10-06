@@ -111,6 +111,11 @@ on:
       # recording controls gate each other, so both halves re-run here.
       - '.ci/ripr-proof.sh'
       - 'scripts/ci/test_governed_ripr_proof.py'
+      # Offline exact-consumer qualification inputs (#16126): collection has
+      # no gate authority, but must reject incomplete or foreign Git rosters.
+      - 'scripts/ci/prepare_ripr_consumer_packet.py'
+      - 'scripts/tests/test_ripr_consumer_packet.py'
+      - 'docs/ci/RIPR_CONSUMER_QUALIFICATION.md'
       # Toolchain guard for bash entrypoints (issue #12593): the coverage
       # consistency test scans every cargo-invoking scripts/*.sh, so any
       # script change re-proves that none of them dodges the guard.
@@ -640,6 +645,9 @@ jobs:
 
       - name: Run governed RIPR proof self-test
         run: python3 -m unittest scripts.ci.test_governed_ripr_proof
+
+      - name: Run offline RIPR consumer-packet controls
+        run: python3 -B -m unittest scripts.tests.test_ripr_consumer_packet
 
       - name: Summary
         if: always()
