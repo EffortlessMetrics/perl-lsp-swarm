@@ -266,10 +266,13 @@ fn single_line_string_spans(line: &str) -> Vec<(usize, usize)> {
 /// any single-line string literal at a Perl keyword boundary, or `None`.
 /// Lets discriminator extraction preserve the detected keyword's position
 /// instead of matching text inside an earlier string (#17389 review). A
-/// match preceded by a word char or sigil (`$return`, `@die`) is part of a
-/// longer name, not the keyword.
+/// match preceded by a word char or sigil (`$return`, `@die`), or followed by
+/// a word char (`returning`), is part of a longer name, not the keyword.
+/// A needle's trailing whitespace remains required by existing exception
+/// callers; the right boundary is checked at the keyword before that suffix.
 fn find_outside_strings(line: &str, needle: &str) -> Option<usize> {
     let spans = single_line_string_spans(line);
+    let keyword_len = needle.trim_end().len();
     let mut from = 0;
     while let Some(rel) = line[from..].find(needle) {
         let idx = from + rel;
@@ -278,13 +281,24 @@ fn find_outside_strings(line: &str, needle: &str) -> Option<usize> {
             None => true,
             Some(c) => !is_word_char(c) && !matches!(c, '$' | '@' | '%'),
         };
-        if !inside && starts_at_keyword_boundary {
+        let ends_at_keyword_boundary =
+            line[idx + keyword_len..].chars().next().is_none_or(|c| !is_word_char(c));
+        if !inside && starts_at_keyword_boundary && ends_at_keyword_boundary {
             return Some(idx);
         }
         // Advance one char (never splitting a multi-byte boundary).
         from = line[idx..].chars().next().map_or(line.len(), |c| idx + c.len_utf8());
     }
     None
+}
+
+/// Select a bounded return occurrence with the existing start/space shape.
+/// Check shape and quote/keyword boundaries on the same occurrence, so a
+/// method or key name cannot borrow another occurrence's supported shape.
+fn find_return_outside_strings(line: &str) -> Option<usize> {
+    find_outside_strings(line, "return")
+        .filter(|&index| index == 0)
+        .or_else(|| find_outside_strings(line, "return "))
 }
 
 fn strip_single_line_string_literals(line: &str) -> String {
@@ -543,8 +557,10 @@ fn detect_behavior_kind(line: &str) -> &'static str {
         return "predicate_boundary";
     }
 
-    // Return value.
-    if trimmed.starts_with("return") || trimmed.contains("return ") {
+    // Return value. Retain the existing supported start/space shapes so the
+    // keyword scan cannot promote punctuation-only call or key names such as
+    // `$obj->return()` / `$obj->{return}` into new concrete hints.
+    if find_return_outside_strings(trimmed).is_some() {
         return "return_value";
     }
 
@@ -568,7 +584,7 @@ fn extract_discriminator(kind: &str, line: &str) -> String {
         // Slice from the detected keyword's position (outside strings) so a
         // quoted keyword earlier in the line cannot supply the observable.
         "return_value" => {
-            let from = find_outside_strings(trimmed, "return").unwrap_or(0);
+            let from = find_return_outside_strings(trimmed).unwrap_or(0);
             trimmed[from..]
                 .strip_prefix("return")
                 .unwrap_or(&trimmed[from..])
@@ -1022,6 +1038,144 @@ mod tests {
         let (kind, disc) = behavior_hint_for_hunk(&["my $return = 1; return $value;".into()]);
         assert_eq!(kind, "return_value");
         assert_eq!(disc, "$value");
+    }
+
+    #[test]
+    fn behavior_hint_for_hunk_return_names_are_not_keywords() {
+        for line in [
+            "returning();",
+            "return_value();",
+            "return0();",
+            "my $return = 1;",
+            "my @return = ();",
+            "my %return = ();",
+            "my $pre_return = 1;",
+        ] {
+            let (kind, disc) = behavior_hint_for_hunk(&[line.to_string()]);
+            assert_eq!(kind, "unknown", "name must not classify as a return: {line}");
+            assert!(disc.is_empty(), "unknown hint must have no observable: {line}: {disc}");
+        }
+    }
+
+    #[test]
+    fn behavior_hint_for_hunk_skips_return_names_before_real_statement() {
+        for line in [
+            "returning(); return $value;",
+            "return_value(); return $value;",
+            "my $return = 1; returning(); return $value;",
+            "my $s = \"🧵 return bogus\"; returning(); return $value;",
+        ] {
+            let (kind, disc) = behavior_hint_for_hunk(&[line.to_string()]);
+            assert_eq!(kind, "return_value", "real return must still classify: {line}");
+            assert_eq!(disc, "$value", "observable must start at the real return: {line}");
+        }
+    }
+
+    #[test]
+    fn behavior_hint_for_hunk_return_boundaries_preserve_original_expression() {
+        for (line, expected) in [
+            ("return($value);", "($value)"),
+            ("return\t$value;", "$value"),
+            ("returning(); return \"ok\";", "\"ok\""),
+            ("my $s = 'return bogus'; return \"a\\\"b\";", "\"a\\\"b\""),
+        ] {
+            let (kind, disc) = behavior_hint_for_hunk(&[line.to_string()]);
+            assert_eq!(kind, "return_value", "keyword boundary must retain real return: {line}");
+            assert_eq!(disc, expected, "observable must retain the original expression: {line}");
+        }
+    }
+
+    #[test]
+    fn behavior_hint_for_hunk_skips_return_name_on_earlier_line() {
+        let (kind, disc) =
+            behavior_hint_for_hunk(&["returning();".into(), "return $value;".into()]);
+        assert_eq!(kind, "return_value");
+        assert_eq!(disc, "$value", "a name-only earlier line must not win the hunk");
+    }
+
+    #[test]
+    fn behavior_hint_for_hunk_return_detection_does_not_expand_to_call_or_key_names() {
+        for line in ["my $value = $obj->{return};", "Foo::return();", "$obj->return();"] {
+            let (kind, disc) = behavior_hint_for_hunk(&[line.to_string()]);
+            assert_eq!(kind, "unknown", "a call or key name must stay unknown: {line}");
+            assert!(disc.is_empty(), "a call or key name must have no observable: {line}");
+        }
+        let (kind, disc) = behavior_hint_for_hunk(&["{ return $value; }".into()]);
+        assert_eq!(kind, "return_value", "a real return inside a block remains detectable");
+        assert_eq!(disc, "$value; }");
+    }
+
+    #[test]
+    fn behavior_hint_for_hunk_return_shape_belongs_to_selected_occurrence() {
+        for line in [
+            "returning(); $obj->return();",
+            "returning(); Foo::return();",
+            "returning(); my $value = $obj->{return};",
+        ] {
+            let (kind, disc) = behavior_hint_for_hunk(&[line.to_string()]);
+            assert_eq!(kind, "unknown", "unsupported occurrence must stay unknown: {line}");
+            assert!(disc.is_empty(), "unsupported occurrence has no observable: {line}");
+        }
+        for line in [
+            "$obj->return(); return $value;",
+            "Foo::return(); return $value;",
+            "returning(); $obj->return(); return $value;",
+            "my $s = \"\u{1f642} return bogus\"; $obj->return(); return $value;",
+        ] {
+            let (kind, disc) = behavior_hint_for_hunk(&[line.to_string()]);
+            assert_eq!(kind, "return_value", "later supported occurrence must classify: {line}");
+            assert_eq!(
+                disc, "$value",
+                "only the supported occurrence supplies the observable: {line}"
+            );
+        }
+    }
+
+    #[test]
+    fn emit_changes_from_diff_return_shape_belongs_to_selected_occurrence() {
+        let (files, owners) = app_files_and_owners();
+        for (line, expected_kind, expected_observable) in [
+            ("returning(); $obj->return();", "unknown", Value::Null),
+            ("returning(); Foo::return();", "unknown", Value::Null),
+            ("returning(); my $value = $obj->{return};", "unknown", Value::Null),
+            ("$obj->return(); return $value;", "return_value", json!("$value")),
+            ("Foo::return(); return $value;", "return_value", json!("$value")),
+            ("returning(); $obj->return(); return $value;", "return_value", json!("$value")),
+        ] {
+            let diff =
+                format!("+++ b/lib/My/App.pm\n@@ -5,2 +5,3 @@\n sub discount {{\n+    {line}\n");
+            let (changes, _) = emit_changes_from_diff(&diff, ".", &files, &owners);
+            assert_eq!(changes.len(), 1, "added line must reach a change fact: {line}");
+            assert_eq!(changes[0]["behavior_hint"], expected_kind, "packet hint: {line}");
+            assert_eq!(
+                changes[0]["changed_observable"], expected_observable,
+                "packet observable: {line}"
+            );
+        }
+    }
+
+    #[test]
+    fn emit_changes_from_diff_return_keyword_boundaries_reach_packet() {
+        let (files, owners) = app_files_and_owners();
+        for (line, expected_kind, expected_observable) in [
+            ("returning();", "unknown", Value::Null),
+            ("my $return = 1;", "unknown", Value::Null),
+            ("my $value = $obj->{return};", "unknown", Value::Null),
+            ("Foo::return();", "unknown", Value::Null),
+            ("$obj->return();", "unknown", Value::Null),
+            ("returning(); return $value;", "return_value", json!("$value")),
+            ("my $s = \"return bogus\"; return \"ok\";", "return_value", json!("\"ok\"")),
+        ] {
+            let diff =
+                format!("+++ b/lib/My/App.pm\n@@ -5,2 +5,3 @@\n sub discount {{\n+    {line}\n");
+            let (changes, _) = emit_changes_from_diff(&diff, ".", &files, &owners);
+            assert_eq!(changes.len(), 1, "each added line must reach a change fact: {line}");
+            assert_eq!(changes[0]["behavior_hint"], expected_kind, "packet hint: {line}");
+            assert_eq!(
+                changes[0]["changed_observable"], expected_observable,
+                "packet observable must come from the real keyword or stay null: {line}"
+            );
+        }
     }
 
     #[test]
