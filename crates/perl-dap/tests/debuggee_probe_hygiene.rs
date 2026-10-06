@@ -483,8 +483,15 @@ fn main() {
         Ok(_) => return Err(io::Error::other("termination-command failure was accepted")),
         Err(error) => error,
     };
+    // Unix terminates the owned process GROUP, Windows the owned process: the
+    // same explicit owned-termination failure carries platform wording
+    // ("injected owned process-group termination failure" vs "injected owned
+    // process termination failure"). This test skips on Windows, so Linux
+    // always sees the group wording; accept both so the matrix also holds if
+    // the Windows skip is ever lifted (#17393).
     require!(
-        termination_error.contains("owned process termination failure"),
+        termination_error.contains("owned process termination failure")
+            || termination_error.contains("owned process-group termination failure"),
         "owned termination failure must be explicit: {termination_error}"
     );
     require!(
