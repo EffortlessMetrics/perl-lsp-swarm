@@ -86,8 +86,9 @@ All times in the JSON files are reported in nanoseconds unless otherwise specifi
 - 1,000 milliseconds = 1 second (s)
 
 **Confidence intervals:**
-- All measurements include 95% confidence intervals
+- Criterion measurements include 95% confidence intervals
 - Lower/upper bounds represent the range of likely true values
+- `benchmark-result.v1` receipts (test outcomes, wall-time tripwires) carry no intervals
 
 **Outliers:**
 - Measurements significantly different from the mean
