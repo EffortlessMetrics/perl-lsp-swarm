@@ -16,6 +16,8 @@ perl-lsp-swarm agents:
     Disposable per-PR Cargo target directory.
 
 Run this from the task worktree before making edits.
+Missing or stale installed pre-push hooks fail with exit code 7. Windows has no
+executable-bit gate; hook comparison ignores CR and trailing LF only.
 #>
 [CmdletBinding()]
 param(
@@ -74,12 +76,28 @@ function Invoke-Git {
         [string[]]$GitArgs
     )
 
-    $output = & git -C $Repository @GitArgs 2>&1
-    if ($LASTEXITCODE -ne 0) {
+    # Native stderr is diagnostic data, not porcelain/path output. In Windows
+    # PowerShell, Continue also prevents an exit-zero warning from terminating
+    # the invocation before its actual exit status can be inspected.
+    $savedPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        $output = @(& git -C $Repository @GitArgs 2>&1)
+        $gitStatus = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $savedPreference
+    }
+    if ($gitStatus -ne 0) {
         Fail "git $($GitArgs -join ' ') failed in $Repository. Output: $output"
     }
 
-    return @($output)
+    foreach ($record in $output) {
+        if ($record -is [System.Management.Automation.ErrorRecord]) {
+            Write-Warning "$record"
+        } else {
+            Write-Output $record
+        }
+    }
 }
 
 if ($Slug -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]*$' -or $Slug -match '[\\/]') {
@@ -132,6 +150,35 @@ if (-not $ReadOnly) {
 
     if (-not $currentRoot.Equals($worktreePath, [System.StringComparison]::OrdinalIgnoreCase)) {
         Fail "Current checkout does not match the requested worktree. Current: $currentRoot Requested: $worktreePath"
+    }
+}
+
+# Match the invoking worktree's checked-in authority, as the shell preflight
+# does. Linked worktrees share the common-dir installation; revision ownership
+# of that shared directory remains the separate #17414 architectural question.
+$checkedInHook = Join-Path $currentRoot 'hooks/pre-push'
+if (Test-Path -LiteralPath $checkedInHook -PathType Leaf) {
+    $commonDir = @(Invoke-Git -Repository $currentRoot -GitArgs @('rev-parse', '--path-format=absolute', '--git-common-dir'))[0]
+    $installedHook = Join-Path $commonDir 'hooks/pre-push'
+    $hookProblem = $null
+    if (-not (Test-Path -LiteralPath $installedHook -PathType Leaf)) {
+        $hookProblem = "pre-push hook is missing ($installedHook)"
+    } else {
+        # The installer can append a newline; Windows checkout can use CRLF.
+        # Preserve case and all other whitespace so real drift still fails.
+        # Latin-1 maps each byte one-to-one: unlike ReadAllText it does not
+        # strip BOMs or accept UTF-16 recoding as an unchanged shell hook.
+        $byteEncoding = [Text.Encoding]::GetEncoding(28591)
+        $checkedInText = $byteEncoding.GetString([IO.File]::ReadAllBytes($checkedInHook)).Replace("`r", '').TrimEnd([char]10)
+        $installedText = $byteEncoding.GetString([IO.File]::ReadAllBytes($installedHook)).Replace("`r", '').TrimEnd([char]10)
+        if (-not [string]::Equals($installedText, $checkedInText, [StringComparison]::Ordinal)) {
+            $hookProblem = 'pre-push hook is stale (installed copy differs from hooks/pre-push)'
+        }
+    }
+    if ($null -ne $hookProblem) {
+        Write-Host "ERR $hookProblem. Hook-assumed guards are void."
+        Write-Host 'Fix: bash scripts/install-githooks.sh (run from the repo root).'
+        exit 7
     }
 }
 
