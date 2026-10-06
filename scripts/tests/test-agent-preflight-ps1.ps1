@@ -114,7 +114,8 @@ try {
         @{ Name = 'crlf-installation'; Expected = 0; Diagnostic = 'agent preflight ok'; Installed = $crlfBytes },
         @{ Name = 'trailing-space-drift'; Expected = 7; Diagnostic = 'pre-push hook is stale'; Installed = $spaceBytes },
         @{ Name = 'pre-commit-missing'; Expected = 7; Diagnostic = 'pre-commit hook is missing'; Installed = $authorityBytes; NoCommitHook = $true },
-        @{ Name = 'no-authority-noop'; Expected = 0; Diagnostic = 'agent preflight ok'; Installed = $staleBytes; NoAuthority = $true }
+        @{ Name = 'no-authority-noop'; Expected = 0; Diagnostic = 'agent preflight ok'; Installed = $staleBytes; NoAuthority = $true },
+        @{ Name = 'hookspath-isolation'; Expected = 0; Diagnostic = 'agent preflight ok'; Installed = $null; NoCommitHook = $true; CustomHooks = $true }
     )
 
     foreach ($case in $cases) {
@@ -128,6 +129,21 @@ try {
         if (Test-Path -LiteralPath $InstalledCommit) { Remove-Item -LiteralPath $InstalledCommit -Force }
         if (-not $case.ContainsKey('NoCommitHook')) {
             [IO.File]::WriteAllBytes($InstalledCommit, $utf8NoBom.GetBytes("#!/bin/sh`necho COMMIT-HOOK`n"))
+        }
+        $hpProbe = Invoke-Native -Executable $GitExecutable -Arguments @('-C', $Worktree, 'config', 'core.hooksPath')
+        if ($hpProbe.Status -eq 0) {
+            Invoke-FixtureGit @('-C', $Worktree, 'config', '--unset', 'core.hooksPath')
+        }
+        if ($case.ContainsKey('CustomHooks')) {
+            # Rule-C shape (#17414): live hooks in a worktree-local dir named
+            # by a relative core.hooksPath, common dir deliberately empty.
+            # The check must follow --git-path (exit 0); a --git-common-dir
+            # resolution would report missing (exit 7).
+            $customDir = Join-Path $Worktree 'custom-hooks'
+            New-Item -ItemType Directory -Force -Path $customDir | Out-Null
+            [IO.File]::WriteAllBytes((Join-Path $customDir 'pre-push'), $authorityBytes)
+            [IO.File]::WriteAllBytes((Join-Path $customDir 'pre-commit'), $utf8NoBom.GetBytes("#!/bin/sh`necho COMMIT-HOOK`n"))
+            Invoke-FixtureGit @('-C', $Worktree, 'config', 'core.hooksPath', 'custom-hooks')
         }
         $result = Invoke-Preflight
         $valid = ($result.Status -eq $case.Expected) -and $result.Text.Contains($case.Diagnostic)

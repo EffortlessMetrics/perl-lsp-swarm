@@ -146,8 +146,12 @@ if (-not $ReadOnly) {
 # does. Exit code 7 matches the shell preflight.
 $checkedInHook = Join-Path $currentRoot 'hooks/pre-push'
 if (Test-Path -LiteralPath $checkedInHook -PathType Leaf) {
-    $commonDir = @(Invoke-Git -Repository $currentRoot -GitArgs @('rev-parse', '--path-format=absolute', '--git-common-dir'))[0]
-    $installedHook = Join-Path $commonDir 'hooks/pre-push'
+    # Resolve via --git-path so a repo-local core.hooksPath is honored
+    # (rule C forward-compat, #17414): while hooksPath is unset this is
+    # identical to --git-common-dir/hooks; under per-worktree isolation it
+    # follows the live dir instead of the inert common-dir leftovers.
+    $hooksDir = @(Invoke-Git -Repository $currentRoot -GitArgs @('rev-parse', '--path-format=absolute', '--git-path', 'hooks'))[0]
+    $installedHook = Join-Path $hooksDir 'pre-push'
     $hookProblem = $null
     if (-not (Test-Path -LiteralPath $installedHook -PathType Leaf)) {
         $hookProblem = "pre-push hook is missing ($installedHook)"
@@ -173,7 +177,7 @@ if (Test-Path -LiteralPath $checkedInHook -PathType Leaf) {
     # hooks in one invocation, so a current pre-push implies a current
     # pre-commit unless the latter was deleted outright. No exec-bit gate on
     # Windows (mirrors the shell check's MINGW carve-out).
-    $installedCommitHook = Join-Path $commonDir 'hooks/pre-commit'
+    $installedCommitHook = Join-Path $hooksDir 'pre-commit'
     if (-not (Test-Path -LiteralPath $installedCommitHook -PathType Leaf)) {
         Write-Host "ERR pre-commit hook is missing ($installedCommitHook). Commits run without the staged gate. Hook-assumed guards are void."
         Write-Host 'Fix: bash scripts/install-githooks.sh (run from the repo root).'
