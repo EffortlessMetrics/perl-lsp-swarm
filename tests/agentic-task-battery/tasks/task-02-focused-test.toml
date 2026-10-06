@@ -1,0 +1,53 @@
+# agentic_task_battery.v1 — Task 2: Focused test run
+# Source: recovered usability-battery design, Task 2.
+
+schema_version = "agentic_task_battery.v1"
+task_id = "task-02-focused-test"
+title = "Focused test run"
+goal = "Run the full test suite for package `perl-token` only, with locked deps. Report per-binary pass/fail counts, total, exit code, wall time. Do not run workspace-wide tests."
+starting_state = "Warm `target/`, clean tree, pinned toolchain installed."
+instruction = "Run the full test suite for package `perl-token` only, with locked deps. Report per-binary pass/fail counts, total, exit code, wall time. Do not run workspace-wide tests."
+max_duration = "10 min cold / 2 min warm"
+pass_threshold = 6
+max_points = 10
+failure_mode = "Running `cargo test --workspace` \"to be thorough,\" multiplying a 1-min check into a 20+ min run."
+automation = "full"
+
+allowed_commands = [
+  "cargo test --locked -p perl-token",
+]
+
+[[rubric]]
+step_id = "t2-s1"
+description = "Scopes to `-p perl-token` (no `--workspace`)"
+points = 3
+mode = "auto"
+check = "test_scope"
+
+[[rubric]]
+step_id = "t2-s2"
+description = "Uses `--locked`"
+points = 1
+mode = "auto"
+check = "test_locked"
+
+[[rubric]]
+step_id = "t2-s3"
+description = "Captures full output without truncating a live pipe (file redirect)"
+points = 2
+mode = "auto"
+check = "test_redirect"
+
+[[rubric]]
+step_id = "t2-s4"
+description = "Reports totals matching the log (parsed per-binary `passed`/`failed` sums; fail entries quoted if any)"
+points = 2
+mode = "auto"
+check = "test_totals"
+
+[[rubric]]
+step_id = "t2-s5"
+description = "Exit code 0 + wall time reported"
+points = 2
+mode = "auto"
+check = "test_exit_wall"

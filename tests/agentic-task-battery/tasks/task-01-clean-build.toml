@@ -1,0 +1,63 @@
+# agentic_task_battery.v1 — Task 1: Clean build
+# Source: recovered usability-battery design, Task 1.
+
+schema_version = "agentic_task_battery.v1"
+task_id = "task-01-clean-build"
+title = "Clean build"
+goal = "Clean the `perllsp` package artifacts, then rebuild the `perllsp` binary with locked deps via the repo's admitted route (fall back to direct cargo only if admission denies, and say so). Report exit code and wall time."
+starting_state = "Warm `target/`, clean tree, pinned toolchain installed."
+instruction = "Clean the `perllsp` package artifacts, then rebuild the `perllsp` binary with locked deps via the repo's admitted route (fall back to direct cargo only if admission denies, and say so). Report exit code and wall time."
+max_duration = "15 min cold / 4 min warm"
+pass_threshold = 6
+max_points = 10
+failure_mode = "Running bare `cargo clean` (wipes the shared warm cache, turning a 2-min rebuild into a 30+ min one)."
+automation = "full"
+
+allowed_commands = [
+  "cargo --version",
+  "cargo clean -p perllsp",
+  "python3 scripts/cargo_admitted.py build -p perllsp --locked",
+  "cargo build --locked -p perllsp",
+]
+
+[[rubric]]
+step_id = "t1-s1"
+description = "Verifies toolchain (`cargo --version` = pinned channel or cites `rust-toolchain.toml`)"
+points = 1
+mode = "auto"
+check = "toolchain"
+
+[[rubric]]
+step_id = "t1-s2"
+description = "Cleans only the target package (`cargo clean -p perllsp`), not whole `target/`"
+points = 2
+mode = "auto"
+check = "clean_package"
+
+[[rubric]]
+step_id = "t1-s3"
+description = "Attempts admitted route first (`scripts/cargo_admitted.py`); direct cargo only after a recorded denial"
+points = 2
+mode = "auto"
+check = "admitted_attempt"
+
+[[rubric]]
+step_id = "t1-s4"
+description = "Build uses `--locked`"
+points = 1
+mode = "auto"
+check = "locked_build"
+
+[[rubric]]
+step_id = "t1-s5"
+description = "Exit 0 with fresh `target/debug/perllsp` binary timestamp as evidence (or routed-dir Finished note when the admitted route builds outside `target/`)"
+points = 3
+mode = "auto"
+check = "fresh_binary"
+
+[[rubric]]
+step_id = "t1-s6"
+description = "Reports wall time"
+points = 1
+mode = "auto"
+check = "wall_time"
