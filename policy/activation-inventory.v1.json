@@ -49,8 +49,8 @@
       "rule": "gate-policy-gates",
       "authority": ".ci/gate-policy.yaml",
       "emits": "gate",
-      "considered": 95,
-      "emitted": 95,
+      "considered": 96,
+      "emitted": 96,
       "not_seeded_reason": "every entry under gates: is emitted; nothing is filtered"
     },
     {
@@ -4877,6 +4877,33 @@
         "state": "not_evaluated"
       },
       "notes": "Wiring proof: resolves git write-tree and reports staged-file count (not a hygiene check)"
+    },
+    {
+      "surface_id": "gate:test_deletion_gate",
+      "class": "gate",
+      "class_authority": {
+        "kind": "derived",
+        "authority": ".ci/gate-policy.yaml",
+        "rule": "gate-policy-gates"
+      },
+      "semantic_authority": ".ci/gate-policy.yaml#test_deletion_gate",
+      "consumers": [],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": ".ci/gate-policy.yaml",
+        "detail": "tier = \"merge_gate\"; required = true"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": ".ci/gate-policy.yaml"
+      },
+      "owner": "release/ci",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "Fail changes that delete test files/cases or hollow assertions without a linked TEST-DELETION-JUSTIFIED(#issue) marker"
     },
     {
       "surface_id": "gate:unit_analysis_full",
