@@ -239,8 +239,11 @@ test_current_worktree_passes() {
 
     local git_dir
     local git_common_dir
-    git_dir="$(git -C "$repo_root" rev-parse --git-dir 2>/dev/null)"
-    git_common_dir="$(git -C "$repo_root" rev-parse --git-common-dir 2>/dev/null)"
+    # Guarded: outside any readable repo (non-checkout copy, WSL view of a
+    # Windows-pointer worktree) git fails, and both vars land empty+equal so
+    # the "not a proper agent worktree" skip below is taken by design.
+    git_dir="$(git -C "$repo_root" rev-parse --git-dir 2>/dev/null || true)"
+    git_common_dir="$(git -C "$repo_root" rev-parse --git-common-dir 2>/dev/null || true)"
 
     # If git-dir != git-common-dir, we're in a proper worktree. Test it.
     if [[ "$git_dir" != "$git_common_dir" ]]; then
