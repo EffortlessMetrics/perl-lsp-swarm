@@ -524,8 +524,10 @@ jobs:
 
       - name: Summary
         if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
         run: |
-          if [ "${{ job.status }}" = "success" ]; then
+          if [ "$JOB_STATUS" = "success" ]; then
             echo "## Worktree hook-provisioning self-test passed" >> "$GITHUB_STEP_SUMMARY"
             echo "" >> "$GITHUB_STEP_SUMMARY"
             echo "Fresh worktrees (issue #17406) get a current executable pre-push hook via scripts/worktree-add.sh and worktree-manager.py \`allocate\`, installer failures fail loudly naming the installer, and current hooks skip the installer build." >> "$GITHUB_STEP_SUMMARY"
@@ -549,8 +551,10 @@ jobs:
 
       - name: Summary
         if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
         run: |
-          if [ "${{ job.status }}" = "success" ]; then
+          if [ "$JOB_STATUS" = "success" ]; then
             echo "## Agent preflight self-test passed" >> "$GITHUB_STEP_SUMMARY"
             echo "" >> "$GITHUB_STEP_SUMMARY"
             echo "scripts/agent-preflight.sh enforces branch, worktree, conflict, cwd, target-dir, and stash isolation, and (issue #17406) refuses with exit 7 while the installed pre-push hook is missing, stale, or not executable." >> "$GITHUB_STEP_SUMMARY"
