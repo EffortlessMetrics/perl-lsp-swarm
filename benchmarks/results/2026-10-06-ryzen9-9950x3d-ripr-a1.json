@@ -1,0 +1,28 @@
+{
+  "schema": "benchmark-result.v1",
+  "change": {
+    "issue": "#17154",
+    "pr": "#17329",
+    "before_sha": null,
+    "after_sha": "5981b48a4dd4fd68c776df5bba1a8a045f16d7c8"
+  },
+  "command": "cargo test -p xtask --test bench_a1_receipt_readability --locked -- --nocapture",
+  "machine": {
+    "os": "Microsoft Windows 11 Pro",
+    "kernel": "10.0.26200",
+    "cpu": "AMD Ryzen 9 9950X3D 16-Core Processor",
+    "memory_gib": 253.6,
+    "architecture": "x86_64-pc-windows-msvc"
+  },
+  "runtime": {
+    "rustc": "rustc 1.95.0 (59807616e 2026-04-14)",
+    "cargo_target_dir": "private worktree target/ (host path redacted)",
+    "relevant_env": []
+  },
+  "result": {
+    "artifact": "xtask/tests/bench_a1_receipt_readability.rs",
+    "summary": "A1 receipt machine-readability: 3/3 MATCH (complete verdict=COMPLETE 2/3 pass, vacuous verdict=INVALID, failed-category verdict=INCOMPLETE).",
+    "comparison": "new baseline; no prior",
+    "status": "measured"
+  }
+}
