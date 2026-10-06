@@ -1,6 +1,6 @@
 # agentic_task_battery.v1 — Task 4: Bisect a regression to a commit
 # Source: recovered usability-battery design, Task 4.
-# Requires grader-supplied params: failing_test, good_sha. The runner degrades
+# Requires grader-supplied params: failing-test, good-sha. The runner degrades
 # to explicitly-marked MANUAL/NOT_RUN when they are absent.
 
 schema_version = "agentic_task_battery.v1"
@@ -24,8 +24,8 @@ allowed_commands = [
 ]
 
 [params]
-failing_test = "<pkg> <test-name> supplied by the grader, e.g. `perl-token fmt::tests::x`"
-good_sha = "Known-good commit SHA supplied by the grader"
+"failing-test" = "<pkg> <test-name> supplied by the grader, e.g. `perl-token fmt::tests::x`"
+"good-sha" = "Known-good commit SHA supplied by the grader"
 
 [[rubric]]
 step_id = "t4-s1"

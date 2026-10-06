@@ -26,6 +26,7 @@ from __future__ import annotations
 import argparse
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -156,7 +157,10 @@ def run_child(argv, cwd, timeout_s, log_path=None):
         )
         out, exit_code, timed_out = proc.stdout, proc.returncode, False
     except subprocess.TimeoutExpired as exc:
-        out = (exc.stdout or "") if isinstance(exc.stdout, str) else ""
+        # On timeout the partial output may be bytes even in text mode;
+        # decode it so a timed-out bench/bisect keeps its evidence.
+        raw = exc.stdout or ""
+        out = raw.decode("utf-8", "replace") if isinstance(raw, bytes) else raw
         exit_code, timed_out = None, True
     wall = time.time() - start
     if log_path:
@@ -197,8 +201,9 @@ def run_just(recipe_argv, repo, timeout_s, log_path):
     """
     bash = find_git_bash() if os.name == "nt" else None
     if bash:
-        # Single -lc string; recipe argv is repo-controlled (spec gate table).
-        cmd = "just " + " ".join(recipe_argv)
+        # Single -lc string; quote every part (the <pkg> slot comes from a
+        # grader --param, so a naive join would be a command injection).
+        cmd = "just " + " ".join(shlex.quote(p) for p in recipe_argv)
         res = run_child([bash, "-lc", cmd], cwd=repo, timeout_s=timeout_s,
                         log_path=log_path)
         return res, f"via Git Bash ({bash})"
@@ -301,6 +306,17 @@ def check_locked_build(ctx, res, state):
         res.evidence = ("already built via admitted route with --locked "
                         f"(wall={state['admitted_wall']:.1f}s)")
         state["build_exit"] = 0
+        return
+    if state.get("built_via") != "direct-after-deny":
+        # The task allows direct cargo only after a RECORDED DENIAL. An
+        # admitted-route error (crash, timeout, missing script) is not a
+        # denial: running direct cargo anyway would award locked-build and
+        # freshness points for an unpermitted build.
+        state["build_exit"] = state.get("admitted_exit", 1)
+        res.status = "FAIL"
+        res.evidence = ("no recorded admission denial "
+                        f"(built_via={state.get('built_via')}); "
+                        "direct cargo fallback is not allowed")
         return
     argv = ["cargo", "build", "--locked", "-p", "perllsp"]
     assert "--locked" in argv
@@ -430,6 +446,24 @@ def _tracked_status(ctx):
     return r["out"]
 
 
+SCORECARD_PATH = "docs/project/status/parser_performance_scorecard.json"
+
+
+def _path_dirty(tracked_porcelain, rel_posix_path):
+    """True when the porcelain status shows rel_posix_path as dirty.
+
+    Compares full status rows (handles `R  old -> new` renames and simple
+    C-quoting); the scorecard path has no special characters.
+    """
+    for line in tracked_porcelain.splitlines():
+        if len(line) <= 3:
+            continue
+        paths = [p.strip().strip('"') for p in line[3:].split(" -> ")]
+        if rel_posix_path in paths:
+            return True
+    return False
+
+
 def _restore_bench_side_effects(ctx, before):
     """Restore tracked files the bench run rewrote (e.g. the generated
     parser scorecard). Only touches files that were clean before the run
@@ -455,6 +489,20 @@ def check_quick_bench(ctx, res, state):
     # and unusable from a bare PowerShell/Windows-Python spawn.
     argv = ["cargo", "xtask", "bench-run", "--quick", "--output", out_path]
     tracked_before = _tracked_status(ctx)
+    if _path_dirty(tracked_before, SCORECARD_PATH):
+        # The benchmark rewrites the tracked scorecard in place. With
+        # uncommitted changes already present, running would either clobber
+        # them (dirty-before is never restored) or lose a deletion (a ` D`
+        # row rewritten to ` M` would be "restored" by checkout). Refuse.
+        res.status = "FAIL"
+        res.earned = 0
+        res.evidence = (f"{SCORECARD_PATH} is dirty before the run; bench "
+                        "refused (would overwrite uncommitted changes)")
+        state["bench_exit"] = None
+        state["bench_wall"] = 0.0
+        state["bench_out"] = ""
+        state["results_path"] = ""
+        return
     r = ctx.run(argv, 1200, "t3-bench-run")
     restored, dirtied = _restore_bench_side_effects(ctx, tracked_before)
     state["bench_restored"] = restored
@@ -835,6 +883,18 @@ def run_task(spec, repo, params, tmpdir):
     return result
 
 
+def _bisect_reset_failed(spec, result):
+    """True when the task ran a bisect_reset check that did not pass.
+
+    A failed reset leaves HEAD mid-bisect (or BISECT state behind); later
+    tasks must not run against that tree.
+    """
+    for rubric_step, step_result in zip(spec["rubric"], result.steps):
+        if rubric_step.get("check") == "bisect_reset":
+            return step_result.status != "PASS"
+    return False
+
+
 def print_task(result, verbose=True):
     spec = result.spec
     print(f"\n=== {spec['task_id']}: {spec['title']} "
@@ -960,8 +1020,14 @@ def main(argv=None):
     results = []
     with tempfile.TemporaryDirectory(prefix="battery-") as tmpdir:
         for spec in specs:
-            results.append(run_task(spec, repo, params, tmpdir))
-            print_task(results[-1], verbose=not args.quiet)
+            result = run_task(spec, repo, params, tmpdir)
+            results.append(result)
+            print_task(result, verbose=not args.quiet)
+            if _bisect_reset_failed(spec, result):
+                print("Stopping battery: bisect reset check failed; later "
+                      "tasks would run against a bisected tree.",
+                      file=sys.stderr)
+                break
     print_table(results)
     if args.results_out:
         write_results_toml(args.results_out, results, repo, params, sha)

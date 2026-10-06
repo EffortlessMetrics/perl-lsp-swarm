@@ -25,7 +25,7 @@ allowed_commands = [
 ]
 
 [params]
-change_type = "One of: rust-prod | must-migration | public-api | docs-only | parser (default: rust-prod)"
+"change-type" = "One of: rust-prod | must-migration | public-api | docs-only | parser (default: rust-prod)"
 pkg = "Focused package for -p flags (default: perl-token)"
 
 # Gate table: change type -> full cheapest-first gate list, per CONTRIBUTING

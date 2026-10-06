@@ -24,8 +24,8 @@ allowed_commands = [
 ]
 
 [params]
-check_name = "Failed check name supplied by the grader"
-run_url = "Failed run URL supplied by the grader"
+"check-name" = "Failed check name supplied by the grader"
+"run-url" = "Failed run URL supplied by the grader"
 
 # Local-equivalent mapping: check-name pattern -> local command.
 [local_equivalents]

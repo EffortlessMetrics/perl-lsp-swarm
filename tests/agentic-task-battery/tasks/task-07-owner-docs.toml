@@ -20,7 +20,7 @@ allowed_commands = [
 ]
 
 [params]
-file_path = "Repo-relative file path supplied by the grader (default: crates/perl-lsp-rs-core/src/providers/mod.rs)"
+"file-path" = "Repo-relative file path supplied by the grader (default: crates/perl-lsp-rs-core/src/providers/mod.rs)"
 
 [[rubric]]
 step_id = "t7-s1"

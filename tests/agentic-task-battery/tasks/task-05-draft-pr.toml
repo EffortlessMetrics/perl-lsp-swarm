@@ -8,7 +8,7 @@ task_id = "task-05-draft-pr"
 title = "Open a well-formed PR (draft)"
 goal = "Open a draft PR with `gh` targeting `main`, titled per convention with the real issue number, with the repo PR template filled. Verify with `gh pr view`. Do not mark ready, do not merge."
 starting_state = "Branch `fix/<slug>-<issue>` with one coherent committed change, pushed; controlling issue number `<NNNN>` supplied."
-instruction = "Open a **draft** PR with `gh` targeting `main`. Title must be `type(crate): description (#NNNN)` with the real issue number. Fill the repo PR template: Claim, Controlling issue, Proof, Hosted proof, Non-goals, Risk and rollback. Verify with `gh pr view` and paste the URL. Do not mark ready, do not merge."
+instruction = "Open a **draft** PR with `gh` targeting `main`. Title must be `type(crate): description (#NNNN)` with the real issue number. Fill the repo PR template's six load-bearing sections: Claim, Controlling issue, Proof, Hosted proof, Non-goals, Risk and rollback. Verify with `gh pr view` and paste the URL. Do not mark ready, do not merge."
 max_duration = "15 min"
 pass_threshold = 6
 max_points = 10
@@ -22,7 +22,7 @@ allowed_commands = [
 ]
 
 [params]
-issue_number = "Controlling issue number supplied by the grader"
+"issue-number" = "Controlling issue number supplied by the grader"
 branch = "Pushed feature branch name"
 
 [[rubric]]
@@ -43,7 +43,7 @@ evidence = "Title of the form `type(crate): description (#NNNN)` where NNNN is t
 
 [[rubric]]
 step_id = "t5-s3"
-description = "All six body sections non-empty and specific to the change (Claim, Controlling issue, Proof, Hosted proof, Non-goals, Risk and rollback)"
+description = "The six load-bearing body sections non-empty and specific to the change (Claim, Controlling issue, Proof, Hosted proof, Non-goals, Risk and rollback)"
 points = 3
 mode = "manual"
 verify = "gh pr view <number> --json body --jq .body"

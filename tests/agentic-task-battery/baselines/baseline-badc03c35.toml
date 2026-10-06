@@ -144,4 +144,4 @@ outcome = "bench-compare names the baseline VERSION (v0.10.0), not the file; run
 [[friction]]
 id = "N4"
 status = "NEW"
-outcome = "PowerShell `>` redirect defaults to UTF-16; any byte-level parsing of redirected logs must decode accordingly (runner unaffected — it captures children directly)."
+outcome = "Windows PowerShell 5.1 `>` redirect writes UTF-16LE (this host; PowerShell 7 defaults to UTF-8 no-BOM); check the log encoding before byte-level parsing (runner unaffected — it captures children directly)."
