@@ -19,8 +19,10 @@
 #   - no hooks/pre-push authority in the new worktree → skip (nothing to
 #     provision; e.g. a revision that predates the hook);
 #   - installed pre-push already current (bytes + executable bit) → skip the
-#     installer (no cargo build; linked worktrees share the common hooks dir,
-#     so this is the common case);
+#     installer (no cargo build; reachable in the mixed-mode window where
+#     core.hooksPath is not yet set and the shared common-dir hooks are
+#     current — otherwise each tree owns its hooks and fresh trees always
+#     provision, see issue #17414 rule C);
 #   - otherwise run the installer, then re-verify; any failure exits non-zero.
 #
 # A provisioning failure does NOT roll back the created worktree (it may hold
@@ -83,8 +85,18 @@ if [[ ! -f "$AUTHORITY" ]]; then
   exit 0
 fi
 
-INSTALLED="$(git -C "$NEW_WT" rev-parse --git-common-dir 2>/dev/null)/hooks/pre-push"
-INSTALLED_COMMIT="$(git -C "$NEW_WT" rev-parse --git-common-dir 2>/dev/null)/hooks/pre-commit"
+# --git-path honors the installer's repo-local core.hooksPath, so this follows
+# the new tree's own hooks dir (#17414 rule C). --path-format=absolute is
+# load-bearing: with a relative hooksPath the bare output is relative to the
+# -C dir while this script runs elsewhere.
+#
+# Resolved twice: the installer may set core.hooksPath as it runs, which moves
+# the answer from the common dir to the new tree's own dir mid-provision.
+resolve_installed() {
+  INSTALLED="$(git -C "$NEW_WT" rev-parse --path-format=absolute --git-path hooks 2>/dev/null)/pre-push"
+  INSTALLED_COMMIT="$(git -C "$NEW_WT" rev-parse --path-format=absolute --git-path hooks 2>/dev/null)/pre-commit"
+}
+resolve_installed
 
 # True when the installed hooks are good. pre-push is compared against the
 # checked-in authority (command-substitution comparison strips trailing
@@ -133,6 +145,7 @@ if ! (cd "$NEW_WT" && bash "$INSTALLER"); then
   exit 1
 fi
 
+resolve_installed
 if ! hooks_current; then
   echo "ERROR: hook provisioning FAILED verification for worktree $NEW_WT" >&2
   echo "    The installer ran but $INSTALLED still does not match hooks/pre-push," >&2

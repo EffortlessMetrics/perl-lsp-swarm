@@ -421,7 +421,16 @@ fi
 "#
 }
 
+/// Worktree-relative hooks directory managed by the installer (#17414 rule C).
+///
+/// Stored as a repo-local relative `core.hooksPath`, so every linked worktree
+/// resolves it against its own top level (`<tree>/.githooks`) while sharing
+/// the one config value in the common `.git/config`. Must stay relative: an
+/// absolute value would fork all trees onto one shared directory again.
+pub(crate) const INSTALLER_HOOKS_PATH: &str = ".githooks";
+
 pub(crate) fn cmd_install_githooks(repo_root: &Path) -> Result<i32> {
+    set_installer_hooks_path(repo_root)?;
     let hooks_dir = resolve_git_hooks_dir(repo_root)?;
     fs::create_dir_all(&hooks_dir)?;
 
@@ -467,6 +476,29 @@ pub(crate) fn check_githooks(repo_root: &Path) -> Result<i32> {
 
 fn normalize_hook(script: &str) -> String {
     script.replace("\r\n", "\n").trim_end().to_string()
+}
+
+/// Point this repository at the installer-managed per-worktree hooks dir.
+///
+/// `--local` from a linked worktree lands in the shared common `.git/config`,
+/// which is exactly what rule C wants: one relative value, resolved per tree.
+/// The toolchain never writes the common hooks dir again; whatever remains
+/// there is inert (git ignores it while `core.hooksPath` is set).
+fn set_installer_hooks_path(repo_root: &Path) -> Result<()> {
+    let output = Command::new("git")
+        .current_dir(repo_root)
+        .args(["config", "--local", "core.hooksPath", INSTALLER_HOOKS_PATH])
+        .output()
+        .with_context(|| format!("setting core.hooksPath from {}", repo_root.display()))?;
+
+    if !output.status.success() {
+        return Err(color_eyre::eyre::eyre!(
+            "git config --local core.hooksPath failed in {}: {}",
+            repo_root.display(),
+            String::from_utf8_lossy(&output.stderr).trim_end()
+        ));
+    }
+    Ok(())
 }
 
 fn resolve_git_hooks_dir(repo_root: &Path) -> Result<PathBuf> {
@@ -609,6 +641,34 @@ mod tests {
         let hooks_dir = resolve_git_hooks_dir(&repo)?;
         fs::write(hooks_dir.join("pre-commit"), "stale\n")?;
         assert_eq!(check_githooks(&repo)?, 1);
+        fs::remove_dir_all(repo)?;
+        Ok(())
+    }
+
+    #[test]
+    fn installer_sets_relative_hookspath_and_leaves_common_dir_alone() -> Result<()> {
+        // #17414 rule C: the installer owns a repo-local relative
+        // core.hooksPath and writes only the per-tree dir it resolves to.
+        let repo = temp_repo()?;
+        cmd_install_githooks(&repo)?;
+
+        let output = Command::new("git")
+            .current_dir(&repo)
+            .args(["config", "--get", "core.hooksPath"])
+            .output()?;
+        assert!(output.status.success());
+        let value = String::from_utf8(output.stdout)?;
+        assert_eq!(value.trim(), INSTALLER_HOOKS_PATH);
+        assert!(
+            Path::new(value.trim()).is_relative(),
+            "core.hooksPath must stay worktree-relative"
+        );
+
+        assert!(resolve_git_hooks_dir(&repo)? == repo.join(INSTALLER_HOOKS_PATH));
+        assert!(repo.join(INSTALLER_HOOKS_PATH).join("pre-push").is_file());
+        assert!(repo.join(INSTALLER_HOOKS_PATH).join("pre-commit").is_file());
+        assert!(!repo.join(".git").join("hooks").join("pre-push").exists());
+        assert!(!repo.join(".git").join("hooks").join("pre-commit").exists());
         fs::remove_dir_all(repo)?;
         Ok(())
     }
