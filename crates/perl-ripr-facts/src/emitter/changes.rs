@@ -209,16 +209,26 @@ fn find_enclosing_owner<'a>(
 /// must not classify as `return_value`. An unterminated quote consumes to end
 /// of line (the single-line approximation of a multi-line string start).
 ///
+/// A `'` between word characters (`[A-Za-z0-9_]`) is the legacy Perl package
+/// separator (`$main'flag`), not a literal opener, and is left alone. Only a
+/// `'` at line start or after a non-word char opens a literal. Closing
+/// behavior inside an open literal is unchanged.
+///
 /// Explicitly out of scope (still misclassifiable): heredocs, multi-line
 /// strings, `q{}`/`qq{}` and other quote-like operators, regex literals
 /// (`m//`, `s///`, `qr//`), and tokens in trailing comments.
 fn strip_single_line_string_literals(line: &str) -> String {
+    fn is_word_char(c: char) -> bool {
+        c.is_ascii_alphanumeric() || c == '_'
+    }
     let chars: Vec<char> = line.chars().collect();
     let mut out = String::with_capacity(line.len());
     let mut i = 0;
     while i < chars.len() {
         let quote = chars[i];
-        if quote == '"' || quote == '\'' {
+        let opens_literal =
+            quote == '"' || (quote == '\'' && (i == 0 || !is_word_char(chars[i - 1])));
+        if opens_literal {
             out.push_str("\"\"");
             i += 1;
             while i < chars.len() {
@@ -249,17 +259,20 @@ fn behavior_hint_for_hunk(lines: &[String]) -> (&'static str, String) {
         if line.trim_start().starts_with('#') {
             continue;
         }
-        // Strip single-line string literals first so tokens inside them (e.g.
-        // `die` in `my $s = 'die hard';`) cannot drive the classification
-        // (#17358). The stripped line also feeds discriminator extraction, so
-        // a comparison inside a string cannot leak into a predicate-boundary
-        // discriminator either. Guarantee covers `"..."` / `'...'` only;
-        // heredocs, multi-line strings, q{}, regex literals, and trailing
-        // comments remain unhandled (see `strip_single_line_string_literals`).
+        // Strip single-line string literals for the hint DECISION only, so
+        // tokens inside them (e.g. `die` in `my $s = 'die hard';`) cannot
+        // drive the classification (#17358). The discriminator is extracted
+        // from the ORIGINAL line, so the observable keeps the real
+        // expression (`return "ok";` observes `"ok"`, not `""`): stripping
+        // is classification-only, never observable input. String-only-token
+        // lines still classify `unknown` (null observable). Guarantee
+        // covers `"..."` / `'...'` only; heredocs, multi-line strings, q{},
+        // regex literals, and trailing comments remain unhandled (see
+        // `strip_single_line_string_literals`).
         let stripped = strip_single_line_string_literals(line);
-        let (hint, discriminator) = infer_behavior_and_discriminator(&stripped);
+        let hint = detect_behavior_kind(&stripped);
         if hint != "unknown" {
-            return (hint, discriminator);
+            return (hint, extract_discriminator(hint, line));
         }
     }
     ("unknown", String::new())
@@ -414,7 +427,7 @@ pub(crate) fn emit_changes_from_diff(
         limitations.push(json!({
             "limitation_id": "change-behavior-hint-partial",
             "kind": "partial_inference",
-            "message": "only predicate_boundary / return_value / exception_path behavior_hints are inferred from added-line text; every other change resolves to \"unknown\", and missing_discriminator is always null in this slice. Whole-line comments are skipped, but a die/return/comparison token inside a string literal can still be misclassified (a robust fix needs tokenization).",
+            "message": "only predicate_boundary / return_value / exception_path behavior_hints are inferred from added-line text; every other change resolves to \"unknown\", and missing_discriminator is always null in this slice. Whole-line comments are skipped and single-line \"...\" / '...' literal contents cannot drive classification, but tokens inside heredocs, multi-line strings, q{}/qq{} and other quote-like operators, regex literals, or trailing comments are still scanned as code and can be misclassified.",
             "evidence_refs": [],
         }));
     }
@@ -427,7 +440,19 @@ pub(crate) fn emit_changes_from_diff(
 /// Conservative: only the three alpha-supported classes produce concrete
 /// discriminators. Everything else is "unknown" with an empty discriminator
 /// (ripr's strict-actionability fails closed on unknown).
+///
+/// Test-only seam: production classifies via [`detect_behavior_kind`] on the
+/// stripped line and extracts via [`extract_discriminator`] on the original.
+#[cfg(test)]
 fn infer_behavior_and_discriminator(line: &str) -> (&'static str, String) {
+    let kind = detect_behavior_kind(line);
+    (kind, extract_discriminator(kind, line))
+}
+
+/// Classify a changed Perl line into one of the three
+/// syntactically-detectable behavior kinds (or `"unknown"`). Detection only —
+/// no discriminator extraction.
+fn detect_behavior_kind(line: &str) -> &'static str {
     let trimmed = line.trim();
 
     // Predicate boundary: a LEADING conditional (if/unless/while/elsif at the
@@ -448,29 +473,40 @@ fn infer_behavior_and_discriminator(line: &str) -> (&'static str, String) {
             || trimmed.contains(">")
             || trimmed.contains("<"))
     {
-        // Extract the condition text as the discriminator.
-        let disc = extract_condition(trimmed).unwrap_or_else(|| trimmed.to_string());
-        return ("predicate_boundary", disc);
+        return "predicate_boundary";
     }
 
     // Return value.
     if trimmed.starts_with("return") || trimmed.contains("return ") {
-        let expr = trimmed
-            .strip_prefix("return")
-            .unwrap_or(trimmed)
-            .trim()
-            .trim_end_matches(';')
-            .to_string();
-        return ("return_value", expr);
+        return "return_value";
     }
 
     // Exception path.
     if trimmed.contains("die ") || trimmed.contains("croak ") || trimmed.contains("confess ") {
-        let msg = extract_die_message(trimmed).unwrap_or_else(|| "exception".to_string());
-        return ("exception_path", msg);
+        return "exception_path";
     }
 
-    ("unknown", String::new())
+    "unknown"
+}
+
+/// Extract the discriminator for an already-detected `kind` from `line`.
+/// Callers pass the ORIGINAL (unstripped) line so the observable keeps the
+/// real expression. `"unknown"` (or any unrecognized kind) yields an empty
+/// discriminator.
+fn extract_discriminator(kind: &str, line: &str) -> String {
+    let trimmed = line.trim();
+    match kind {
+        // Extract the condition text as the discriminator.
+        "predicate_boundary" => extract_condition(trimmed).unwrap_or_else(|| trimmed.to_string()),
+        "return_value" => trimmed
+            .strip_prefix("return")
+            .unwrap_or(trimmed)
+            .trim()
+            .trim_end_matches(';')
+            .to_string(),
+        "exception_path" => extract_die_message(trimmed).unwrap_or_else(|| "exception".to_string()),
+        _ => String::new(),
+    }
 }
 
 /// Extract the condition expression from a leading if/unless/while/elsif line.
@@ -889,6 +925,46 @@ mod tests {
         // Guards: stripping string contents must not hide genuine statements.
         assert_eq!(behavior_hint_for_hunk(&["return \"ok\";".into()]).0, "return_value");
         assert_eq!(behavior_hint_for_hunk(&["die \"bad\";".into()]).0, "exception_path");
+    }
+
+    #[test]
+    fn behavior_hint_for_hunk_extracts_discriminator_from_original_line() {
+        // #17358 follow-up: stripping is classification-only. The observable
+        // comes from the ORIGINAL line, so literal-bearing statements keep
+        // their real (pre-repair) expression — never `""`/empty.
+        let (kind, disc) = behavior_hint_for_hunk(&["return \"ok\";".into()]);
+        assert_eq!(kind, "return_value");
+        assert_eq!(disc, "\"ok\"", "return observable keeps the literal: {disc}");
+
+        let (kind, disc) = behavior_hint_for_hunk(&["die \"boom\";".into()]);
+        assert_eq!(kind, "exception_path");
+        assert!(!disc.is_empty(), "die observable must be non-empty");
+        assert_eq!(
+            disc,
+            infer_behavior_and_discriminator("die \"boom\";").1,
+            "observable equals the pre-repair extraction"
+        );
+
+        // The golden `die "boom" if ...` fixture: extraction-from-original
+        // reproduces the exact pre-repair observable text.
+        let (kind, disc) = behavior_hint_for_hunk(&["die \"boom\" if $x < 0;".into()]);
+        assert_eq!(kind, "exception_path");
+        assert_eq!(disc, "boom\" if $x < 0");
+    }
+
+    #[test]
+    fn behavior_hint_for_hunk_apostrophe_separator_still_predicate_boundary() {
+        // Legacy `'` package separator must not open a string literal: the
+        // predicate survives stripping and still classifies (#17358 follow-up).
+        let line = "if ($main'flag > 0) {";
+        assert_eq!(
+            strip_single_line_string_literals(line),
+            line,
+            "apostrophe separator must pass through the stripper untouched"
+        );
+        let (kind, disc) = behavior_hint_for_hunk(&[line.to_string()]);
+        assert_eq!(kind, "predicate_boundary");
+        assert!(disc.contains("$main'flag > 0"), "condition keeps the separator: {disc}");
     }
 
     #[test]

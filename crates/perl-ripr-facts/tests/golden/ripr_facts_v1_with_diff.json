@@ -19,7 +19,7 @@
     {
       "behavior_hint": "exception_path",
       "change_id": "change:file:lib/App.pm:15:16",
-      "changed_observable": " if $x < 0",
+      "changed_observable": "boom\" if $x < 0",
       "changed_text_digest": "fnv64:aab3376966267fd5",
       "file_id": "file:lib/App.pm",
       "missing_discriminator": null,
@@ -183,7 +183,7 @@
       "evidence_refs": [],
       "kind": "partial_inference",
       "limitation_id": "change-behavior-hint-partial",
-      "message": "only predicate_boundary / return_value / exception_path behavior_hints are inferred from added-line text; every other change resolves to \"unknown\", and missing_discriminator is always null in this slice. Whole-line comments are skipped, but a die/return/comparison token inside a string literal can still be misclassified (a robust fix needs tokenization)."
+      "message": "only predicate_boundary / return_value / exception_path behavior_hints are inferred from added-line text; every other change resolves to \"unknown\", and missing_discriminator is always null in this slice. Whole-line comments are skipped and single-line \"...\" / '...' literal contents cannot drive classification, but tokens inside heredocs, multi-line strings, q{}/qq{} and other quote-like operators, regex literals, or trailing comments are still scanned as code and can be misclassified."
     }
   ],
   "oracles": [
