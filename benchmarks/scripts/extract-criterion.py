@@ -216,15 +216,18 @@ def categorize_benchmark(group: str, bench_name: str) -> str:
     group_lower = group.lower()
     bench_lower = bench_name.lower()
 
-    if "parser" in group_lower or "parse" in bench_lower:
+    if "parser" in group_lower or "parse" in bench_lower or bench_lower == "scope_analysis":
+        # scope_analysis is a direct parser bench whose name carries no parse
+        # marker; without the exact-name rule it falls to the scope branch
+        # while the baseline stores it under parser (#17380 review).
         return "parser"
     elif "lexer" in group_lower or "token" in bench_lower:
         return "lexer"
-    elif "rope" in group_lower or "rope" in bench_lower or "lsp" in group_lower or "position" in bench_lower:
-        # document_insertions/rope_insertion carries the rope marker in the
-        # bench name, not the group; matching the group alone drops it into
-        # "other", which no baseline covers (#17380). Name match is safe:
-        # rope_insertion is the only current bench name containing "rope".
+    elif "document_insertions" == group_lower or "rope" in group_lower or "rope" in bench_lower or "lsp" in group_lower or "position" in bench_lower:
+        # The document_insertions group holds rope_insertion and
+        # string_insertion siblings, both stored under lsp in the baseline;
+        # matching the group joins both, while a rope-only name match would
+        # leave string_insertion in "other" (#17380 review).
         return "lsp"
     elif "index" in group_lower or "workspace" in group_lower or "symbol" in bench_lower:
         return "index"
