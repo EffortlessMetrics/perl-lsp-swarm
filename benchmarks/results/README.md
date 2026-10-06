@@ -33,6 +33,17 @@ Examples:
 - LSP server performance tests pending
 - Workspace indexing data available in `/target/criterion/`
 
+### 2026-10-06: ripr bench-suite baselines (AMD Ryzen 9 9950X3D, main @ 5981b48a4)
+
+- E1 gap precision/recall: FP=0/6, FN=0/11 (17/17 MATCH) — `2026-10-06-ryzen9-9950x3d-ripr-e1.json`
+- A1 receipt readability: 3/3 MATCH — `2026-10-06-ryzen9-9950x3d-ripr-a1.json`
+- P3 classifier scale: worst 85.35ms vs 2s bound (WSL2) — `2026-10-06-ryzen9-9950x3d-ripr-p3.json`
+- C1 oracle recall: 33/33 = 1.000 — `2026-10-06-ryzen9-9950x3d-ripr-c1.json`
+- C2 owner attribution: lib 5/5 + cli 5/5 = 1.000 — `2026-10-06-ryzen9-9950x3d-ripr-c2.json`
+
+Criterion `packet_build` (Windows layer, same host): small 1.4036ms, medium 10.97ms,
+large 55.478ms, fingerprint 221.02us — pending first-Linux-nightly refresh.
+
 ## Performance Targets
 
 ### Parser Performance
