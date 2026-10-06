@@ -983,6 +983,7 @@ ci-gate:
     just ci-print-in-lib-ratchet && \
     just ci-regex-static-ratchet && \
     just ci-must-context && \
+    just ci-test-deletion && \
     just ci-forbid-fatal && \
     just ci-test-lib && \
     just check-all-targets && \
@@ -1157,6 +1158,13 @@ ci-must-context:
     @echo "🧾 Checking must* migrations preserve assertion context..."
     @cargo xtask ci-hygiene check-must-context
     @echo "✅ No assertion context dropped by a must* migration"
+
+# Test-deletion guard: removals of test files/cases or assertions need a linked
+# TEST-DELETION-JUSTIFIED(#issue) marker introduced by the change (#17405)
+ci-test-deletion:
+    @echo "🧪 Checking no tests or assertions were removed without justification..."
+    @cargo xtask ci-hygiene check-test-deletion
+    @echo "✅ No unjustified test or assertion removals"
 
 # Print-macro ratchet: no raw println!/eprintln! in library source (use tracing)
 ci-print-in-lib-ratchet:
