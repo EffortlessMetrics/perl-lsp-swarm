@@ -263,16 +263,22 @@ fn single_line_string_spans(line: &str) -> Vec<(usize, usize)> {
 }
 
 /// Byte index of the first `needle` occurrence in `line` that starts outside
-/// any single-line string literal, or `None`. Lets discriminator extraction
-/// preserve the detected keyword's position instead of matching text inside
-/// an earlier string (#17389 review).
+/// any single-line string literal at a Perl keyword boundary, or `None`.
+/// Lets discriminator extraction preserve the detected keyword's position
+/// instead of matching text inside an earlier string (#17389 review). A
+/// match preceded by a word char or sigil (`$return`, `@die`) is part of a
+/// longer name, not the keyword.
 fn find_outside_strings(line: &str, needle: &str) -> Option<usize> {
     let spans = single_line_string_spans(line);
     let mut from = 0;
     while let Some(rel) = line[from..].find(needle) {
         let idx = from + rel;
         let inside = spans.iter().any(|&(s, e)| idx >= s && idx < e);
-        if !inside {
+        let starts_at_keyword_boundary = match line[..idx].chars().next_back() {
+            None => true,
+            Some(c) => !is_word_char(c) && !matches!(c, '$' | '@' | '%'),
+        };
+        if !inside && starts_at_keyword_boundary {
             return Some(idx);
         }
         // Advance one char (never splitting a multi-byte boundary).
@@ -1012,6 +1018,10 @@ mod tests {
         let (kind, disc) = behavior_hint_for_hunk(&["my $t = \"x return y\"; return $z;".into()]);
         assert_eq!(kind, "return_value");
         assert_eq!(disc, "$z");
+        // Keyword boundary: `$return` is a longer name, not the keyword.
+        let (kind, disc) = behavior_hint_for_hunk(&["my $return = 1; return $value;".into()]);
+        assert_eq!(kind, "return_value");
+        assert_eq!(disc, "$value");
     }
 
     #[test]
