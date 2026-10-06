@@ -78,9 +78,22 @@ if echo "${MERGE_OUTPUT}" | grep -q "would be overwritten by merge"; then
   # (same packet convention as clean-worktrees.sh recovery packets) instead of
   # deleting it, so the pull stays recoverable. The packet lives under the git
   # dir so the merge retry below can never collide with it.
-  SALVAGE_DIR="$(git rev-parse --absolute-git-dir)/safe-pull-salvage/$(date -u +%Y-%m-%dT%H-%M-%SZ)-$$"
-  if ! mkdir -p "${SALVAGE_DIR}"; then
-    echo "ERROR: Could not create salvage directory ${SALVAGE_DIR}; refusing to touch conflicting files."
+  GIT_DIR="$(git rev-parse --absolute-git-dir 2>/dev/null || true)"
+  if [ -z "${GIT_DIR}" ]; then
+    echo "ERROR: Could not resolve the git dir; refusing to touch conflicting files."
+    exit 1
+  fi
+  # mktemp -d (not timestamp-pid mkdir) so two salvages can never share a
+  # packet: a reused packet dir would let the second mv silently overwrite the
+  # first salvage's same-named file.
+  SALVAGE_PARENT="${GIT_DIR}/safe-pull-salvage"
+  if ! mkdir -p "${SALVAGE_PARENT}"; then
+    echo "ERROR: Could not create salvage parent ${SALVAGE_PARENT}; refusing to touch conflicting files."
+    exit 1
+  fi
+  SALVAGE_DIR="$(mktemp -d "${SALVAGE_PARENT}/$(date -u +%Y-%m-%dT%H-%M-%SZ)-XXXXXX" 2>/dev/null || true)"
+  if [ -z "${SALVAGE_DIR}" ] || [ ! -d "${SALVAGE_DIR}" ]; then
+    echo "ERROR: Could not create salvage directory under ${SALVAGE_PARENT}; refusing to touch conflicting files."
     exit 1
   fi
   echo "==> Salvaging conflicting untracked files:"
