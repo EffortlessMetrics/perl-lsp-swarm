@@ -61,5 +61,5 @@ allowed_commands = [
   description = "Reports failing assertion observed at first-bad commit"
   points = 1
   mode = "manual"
-  verify = "At the first-bad SHA, re-run the single test and quote the failing assertion: `git show -s --oneline <first-bad-sha>` then `cargo test --locked -p <pkg> <test-name>`"
+  verify = "In a temporary worktree at the first-bad SHA, re-run the single test and quote the failing assertion: `git worktree add /tmp/<name> <first-bad-sha>` then `cargo test --locked -p <pkg> <test-name>` there; remove the worktree afterward. (After `git bisect reset` the main tree is back at HEAD, so testing there cannot verify the assertion at the reported commit.)"
   evidence = "Quoted failing assertion line from the test output at the first-bad commit."

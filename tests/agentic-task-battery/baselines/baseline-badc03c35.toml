@@ -10,7 +10,7 @@ base_desc = "origin/main at fetch; fix(dap): probe fixtures capability-check fas
 measured_at = "2026-10-06"
 host = "Windows (native MSVC toolchain; Git Bash present; no nix)"
 toolchain = "cargo/rustc 1.95.0 (matches rust-toolchain.toml); Python 3.14 (runner)"
-worktree = "E:/Code/Rust/pls-battery, branch feat/agentic-task-battery"
+worktree = "<local worktree>, branch feat/agentic-task-battery"
 pass_threshold = 6
 
 # B1 — Clean build (Task 1). PARTIAL-ENV PASS: 10/10 with admitted-route DENY.
@@ -89,7 +89,7 @@ pass_threshold = 6
 [[friction]]
   id = "F1"
   status = "CONFIRMED"
-  outcome = "Admitted build route DENIED on this host: 'insufficient disk headroom at C:\\Users\\steven\\.cache\\devplane\\...' — direct cargo was the only working path."
+  outcome = "Admitted build route DENIED on this host: 'insufficient disk headroom at <user-cache>/devplane/...' — direct cargo was the only working path."
 
 [[friction]]
   id = "F2"

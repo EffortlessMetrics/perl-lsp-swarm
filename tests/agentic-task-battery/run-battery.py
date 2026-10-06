@@ -76,7 +76,9 @@ class TaskResult:
         self.spec = spec
         self.steps = []
         self.wall_s = 0.0
-        self.status = "PENDING"  # PASS | BELOW_THRESHOLD | MANUAL | NOT_RUN
+        # PASS | BELOW_THRESHOLD | MANUAL | NEEDS-PARAM | PENDING-MANUAL | NOT_RUN
+        self.status = "PENDING"
+        self.outcome_blockers = []
 
 
 def load_specs():
@@ -134,34 +136,108 @@ def load_specs():
                 errors.append(f"{fname}/{sid}: mode must be auto|manual")
         if total != spec.get("max_points"):
             errors.append(f"{fname}: rubric sums to {total}, max_points is {spec.get('max_points')}")
-        if not (0 < spec.get("pass_threshold", 0) <= spec.get("max_points", 0)):
-            errors.append(f"{fname}: pass_threshold out of range")
+        pt, mp = spec.get("pass_threshold"), spec.get("max_points")
+        if not (isinstance(pt, int) and isinstance(mp, int)
+                and not isinstance(pt, bool) and not isinstance(mp, bool)
+                and 0 < pt <= mp):
+            errors.append(f"{fname}: pass_threshold/max_points must be ints "
+                          f"with 0 < pass_threshold <= max_points")
         specs.append(spec)
-    ids = [s["task_id"] for s in specs]
+    # A spec missing task_id already earned an error above; never crash the
+    # duplicate scan on it (a KeyError here would exit 1 with a traceback
+    # instead of the documented spec-validation exit 2).
+    ids = [s.get("task_id") for s in specs if "task_id" in s]
     if len(ids) != len(set(ids)):
         errors.append("duplicate task_id across specs")
     return specs, errors
 
 
-def run_child(argv, cwd, timeout_s, log_path=None):
+def _kill_tree(proc, grouped):
+    """Terminate a timed-out child and, when grouped, its whole tree.
+
+    Best-effort on every platform: POSIX kills the process group the
+    child was started in; Windows falls back to `taskkill /T` (tree
+    kill) and then to terminating the direct child. Never raises.
+    """
+    try:
+        if grouped and os.name == "posix":
+            import signal
+            try:
+                os.killpg(proc.pid, signal.SIGTERM)
+            except (ProcessLookupError, PermissionError, OSError):
+                pass
+            try:
+                proc.wait(timeout=10)
+                return
+            except subprocess.TimeoutExpired:
+                pass
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError, OSError):
+                pass
+            try:
+                proc.wait(timeout=10)
+                return
+            except subprocess.TimeoutExpired:
+                pass
+        if grouped and os.name != "posix" and shutil.which("taskkill"):
+            try:
+                subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                               capture_output=True, timeout=30, check=False)
+            except (OSError, subprocess.SubprocessError):
+                pass
+            try:
+                proc.wait(timeout=10)
+                return
+            except subprocess.TimeoutExpired:
+                pass
+    finally:
+        try:
+            proc.kill()
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+
+
+def run_child(argv, cwd, timeout_s, log_path=None, kill_tree=False):
     """Run a child to completion, capturing ALL output (never a live-pipe cut).
 
     Returns dict(exit=int|None, out=str, wall_s=float, timed_out=bool).
     A log file is written only after the child completes.
+
+    With kill_tree=True the child starts in its own process group and a
+    timeout kills the whole group: plain subprocess.run would kill only
+    the direct child, orphaning e.g. `git bisect run`'s cargo test to
+    race the post-timeout `git bisect reset`.
     """
     start = time.time()
+    popen_kw = {}
+    if kill_tree:
+        if os.name == "posix":
+            popen_kw["start_new_session"] = True
+        else:
+            popen_kw["creationflags"] = getattr(
+                subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
     try:
-        proc = subprocess.run(
+        proc = subprocess.Popen(
             argv, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            timeout=timeout_s, check=False, text=True, errors="replace",
+            text=True, errors="replace", **popen_kw,
         )
-        out, exit_code, timed_out = proc.stdout, proc.returncode, False
-    except subprocess.TimeoutExpired as exc:
-        # On timeout the partial output may be bytes even in text mode;
-        # decode it so a timed-out bench/bisect keeps its evidence.
-        raw = exc.stdout or ""
-        out = raw.decode("utf-8", "replace") if isinstance(raw, bytes) else raw
-        exit_code, timed_out = None, True
+        try:
+            out, _ = proc.communicate(timeout=timeout_s)
+        except subprocess.TimeoutExpired as exc:
+            _kill_tree(proc, kill_tree)
+            out, _ = proc.communicate()
+            if out is None:
+                out = ""
+            # On timeout the partial output may be bytes even in text mode;
+            # decode it so a timed-out bench/bisect keeps its evidence.
+            if isinstance(out, bytes):
+                out = out.decode("utf-8", "replace")
+            exit_code, timed_out = None, True
+        else:
+            exit_code, timed_out = proc.returncode, False
+    except OSError as exc:
+        out, exit_code, timed_out = f"(spawn failed: {exc})", None, False
     wall = time.time() - start
     if log_path:
         with open(log_path, "w", encoding="utf-8", errors="replace") as fh:
@@ -230,9 +306,10 @@ class Ctx:
         safe = re.sub(r"[^A-Za-z0-9_.-]", "_", name)
         return os.path.join(self.tmpdir, safe + ".log")
 
-    def run(self, argv, timeout_s, name):
+    def run(self, argv, timeout_s, name, kill_tree=False):
         self.argv_log.append(list(argv))
-        return run_child(argv, self.repo, timeout_s, self.log_path(name))
+        return run_child(argv, self.repo, timeout_s, self.log_path(name),
+                         kill_tree=kill_tree)
 
 
 # --------------------------------------------------------------------------
@@ -503,13 +580,29 @@ def check_quick_bench(ctx, res, state):
         state["bench_out"] = ""
         state["results_path"] = ""
         return
-    r = ctx.run(argv, 1200, "t3-bench-run")
+    # kill_tree: a timeout must not leave the bench alive to rewrite the
+    # scorecard after _restore_bench_side_effects runs (same race class
+    # as the bisect reset).
+    try:
+        before_stat = os.stat(out_path)
+        before_fp = (before_stat.st_mtime_ns, before_stat.st_size)
+    except OSError:
+        before_fp = None
+    r = ctx.run(argv, 1200, "t3-bench-run", kill_tree=True)
     restored, dirtied = _restore_bench_side_effects(ctx, tracked_before)
     state["bench_restored"] = restored
     state["bench_exit"] = r["exit"]
     state["bench_wall"] = r["wall_s"]
     state["bench_out"] = r["out"]
-    wrote = os.path.isfile(out_path)
+    # A stale latest.json from an earlier run must not score as this run's
+    # output when the bench fails before writing: require the file to be
+    # new or changed (mtime/size fingerprint), not merely present.
+    try:
+        after_stat = os.stat(out_path)
+        after_fp = (after_stat.st_mtime_ns, after_stat.st_size)
+    except OSError:
+        after_fp = None
+    wrote = after_fp is not None and after_fp != before_fp
     state["results_path"] = out_path if wrote else ""
     ok = r["exit"] == 0 and wrote
     res.status = "PASS" if ok else "FAIL"
@@ -518,8 +611,11 @@ def check_quick_bench(ctx, res, state):
     m = re.search(r"benchmark categories failed: (.+)", r["out"])
     if m:
         fail_detail = f"; categories failed: {m.group(1).strip()}"
+    freshness = ("written" if wrote
+                 else "STALE (pre-existing file untouched by this run)"
+                 if after_fp is not None else "MISSING")
     res.evidence = (f"`{' '.join(argv)}` exit={r['exit']} wall={r['wall_s']:.1f}s; "
-                    f"results {'written' if wrote else 'MISSING'}{fail_detail}")
+                    f"results {freshness}{fail_detail}")
     if r["exit"] != 0 and wrote:
         # A partial run still leaves comparable results; later steps proceed
         # against them while this step stays FAIL. The failure is data.
@@ -530,6 +626,20 @@ def check_quick_bench(ctx, res, state):
     unrestored = [p for p in dirtied if p not in restored]
     if unrestored:
         res.evidence += f"; WARNING: unrestored tracked modifications: {unrestored}"
+
+
+def _compare_shared(clean_out):
+    """Shared-measurement count from a compare.py report (0 when unparsed).
+
+    Parses the Summary counters (Regressions/Improvements/Unchanged);
+    MISSING entries are not shared measurements.
+    """
+    total = 0
+    for label in ("Regressions", "Improvements", "Unchanged"):
+        m = re.search(rf"^\s*{label}:\s*(\d+)", clean_out, re.MULTILINE)
+        if m:
+            total += int(m.group(1))
+    return total
 
 
 def check_baseline_named(ctx, res, state):
@@ -551,15 +661,18 @@ def check_baseline_named(ctx, res, state):
         # Fallback: a literal baselines path in the output.
         m2 = BASELINE_RE.search(r["out"])
         fname = m2.group(0) if m2 else None
-    if fname:
+    shared = _compare_shared(ansi_clean(r["out"]))
+    state["compare_shared"] = shared
+    if fname and shared > 0:
         state["baseline_file"] = fname
         res.status = "PASS"
         res.earned = res.points
-        res.evidence = f"compared against {fname} (exit={r['exit']})"
+        res.evidence = (f"compared against {fname} (exit={r['exit']}; "
+                        f"{shared} shared measurements)")
     else:
         res.status = "FAIL"
-        res.evidence = (f"no baseline resolved from compare output "
-                        f"(exit={r['exit']}); possible empty comparison. "
+        res.evidence = (f"no valid comparison: baseline={fname or 'unresolved'} "
+                        f"shared={shared} (exit={r['exit']}); "
                         f"Tail: {tail(r['out'], 6)}")
 
 
@@ -575,17 +688,25 @@ def check_verdict_quoted(ctx, res, state):
     if cut < 0:
         cut = out.find("bench-compare")
     report = out[cut:] if cut >= 0 else out
-    verdicts = sorted(set(ansi_clean(ln).strip() for ln in report.splitlines()
-                          if ansi_clean(ln).strip()
-                          and VERDICT_RE.search(ansi_clean(ln))))
+    # The `Baseline:` header is report chrome, not a verdict; an empty
+    # comparison (header only) must not score.
+    verdicts = sorted(set(
+        ln for ln in (ansi_clean(x).strip() for x in report.splitlines())
+        if ln and VERDICT_RE.search(ln)
+        and not ln.startswith("Baseline:")))
     state["verdict_lines"] = verdicts
-    if verdicts:
+    shared = state.get("compare_shared")
+    if shared is None:
+        shared = _compare_shared(ansi_clean(out))
+    if verdicts and shared > 0:
         res.status = "PASS"
         res.earned = res.points
-        res.evidence = "verdict lines: " + " | ".join(verdicts[:6])
+        res.evidence = (f"{len(verdicts)} verdict lines "
+                        f"({shared} shared): " + " | ".join(verdicts))
     else:
         res.status = "FAIL"
-        res.evidence = ("no WARNING/REGRESSION/CRITICAL/baseline verdict line found; "
+        res.evidence = (f"no quotable verdicts over shared measurements "
+                        f"(verdicts={len(verdicts)} shared={shared}); "
                         f"tail: {tail(out, 6)}")
 
 
@@ -635,7 +756,8 @@ def check_bisect_run(ctx, res, state):
         res.evidence = f"bisect start failed: {tail(start['out'], 4)}"
         return
     try:
-        r = ctx.run(["git", "bisect", "run"] + argv, 2400, "t4-bisect-run")
+        r = ctx.run(["git", "bisect", "run"] + argv, 2400, "t4-bisect-run",
+                    kill_tree=True)
         state["bisect_out"] = r["out"]
         m = re.search(r"^([0-9a-f]{40}) is the first bad commit",
                       r["out"], re.MULTILINE)
@@ -739,6 +861,17 @@ def check_gate_exits(ctx, res, state):
         return
     summary = "; ".join(f"{g['cmd']} -> exit={g['exit']} ({g['wall_s']}s)"
                         for g in results)
+    skipped = state.get("gates", [])[len(results):]
+    if skipped:
+        # Stopping at the first falsifier is correct order behavior, but
+        # the unrun gates are blocked proof, not completed proof: the
+        # failing gate plus everything it shielded must be named.
+        failed = [g for g in results if g["exit"] != 0]
+        blocker = failed[-1]["cmd"] if failed else results[-1]["cmd"]
+        res.status = "FAIL"
+        res.evidence = (f"{summary}; BLOCKED PROOF: {blocker} stopped the "
+                        f"run; never executed: {skipped}")
+        return
     # The graded behavior is complete reporting; greenness is recorded, not
     # conflated: a failing gate is data, and the evidence names it.
     res.status = "PASS"
@@ -834,6 +967,16 @@ CHECKS = {
 # Checks taking (ctx, res, state, spec).
 SPEC_CHECKS = {"gate_select"}
 
+# Task verdicts gated on required outcomes: reaching the point threshold
+# alone must not PASS a task whose required command failed (e.g. T1 at
+# 6/10 via toolchain+clean+admission+wall with no build, T2 at 6/10 via
+# scope+locked+capture with failing tests, T6 with skipped gates).
+REQUIRED_OUTCOME = {
+    "task-01-clean-build": ("locked_build", "fresh_binary"),
+    "task-02-focused-test": ("test_totals", "test_exit_wall"),
+    "task-06-hygiene-gate": ("gate_exits",),
+}
+
 
 # --------------------------------------------------------------------------
 # Task execution, scoring, reporting
@@ -872,12 +1015,32 @@ def run_task(spec, repo, params, tmpdir):
             res.evidence = f"task wall time {result.wall_s:.1f}s"
     earned = sum(s.earned for s in result.steps)
     auto_max = sum(s.points for s in result.steps if s.mode == "auto")
+    by_check = {step.get("check"): res
+                for step, res in zip(spec["rubric"], result.steps)
+                if step.get("check")}
+    # Outcome gates: reaching the point threshold is not sufficient when
+    # the task's required outcome failed. Points stay as evidence; only
+    # the task verdict is gated.
+    required = REQUIRED_OUTCOME.get(spec["task_id"], ())
+    outcome_failed = [c for c in required
+                      if c not in by_check or by_check[c].status != "PASS"]
+    has_manual = any(s.mode == "manual" for s in result.steps)
+    all_auto_pass = all(s.status == "PASS" for s in result.steps
+                        if s.mode == "auto")
     if spec["automation"] == "manual-only":
         result.status = "MANUAL"
-    elif earned >= spec["pass_threshold"]:
+    elif any(s.status == "NEEDS-PARAM" for s in result.steps):
+        result.status = "NEEDS-PARAM"
+    elif (spec["automation"] == "partial" and has_manual
+          and all_auto_pass and earned < spec["pass_threshold"]):
+        # Automatic work complete; manual citations still await grading.
+        result.status = "PENDING-MANUAL"
+    elif earned >= spec["pass_threshold"] and not outcome_failed:
         result.status = "PASS"
     else:
         result.status = "BELOW_THRESHOLD"
+    if outcome_failed and result.status == "BELOW_THRESHOLD":
+        result.outcome_blockers = outcome_failed
     result.earned = earned
     result.auto_max = auto_max
     return result
@@ -918,6 +1081,9 @@ def print_task(result, verbose=True):
           f"(auto {sum(s.earned for s in result.steps if s.mode == 'auto')}"
           f"/{result.auto_max}; threshold {spec['pass_threshold']}) "
           f"[{result.status}] wall={result.wall_s:.1f}s")
+    if result.outcome_blockers:
+        print(f"         outcome-blocked by: "
+              f"{', '.join(result.outcome_blockers)}")
 
 
 def print_table(results):
@@ -935,7 +1101,23 @@ def print_table(results):
 
 
 def _toml_str(s):
-    return '"' + str(s).replace("\\", "\\\\").replace('"', '\\"') + '"'
+    """Quote a string for TOML output, escaping all control characters.
+
+    Evidence strings carry raw child output (ANSI escapes, tabs); TOML
+    basic strings forbid those, so anything outside the short escapes
+    becomes \\uXXXX. The result always parses with tomllib.
+    """
+    _esc = {"\\": "\\\\", '"': '\\"', "\b": "\\b", "\t": "\\t",
+            "\n": "\\n", "\f": "\\f", "\r": "\\r"}
+    out = []
+    for ch in str(s):
+        if ch in _esc:
+            out.append(_esc[ch])
+        elif ord(ch) < 0x20 or ord(ch) == 0x7f:
+            out.append("\\u%04x" % ord(ch))
+        else:
+            out.append(ch)
+    return '"' + "".join(out) + '"'
 
 
 def write_results_toml(path, results, repo, params, base_sha):

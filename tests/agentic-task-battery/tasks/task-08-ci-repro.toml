@@ -38,8 +38,8 @@ allowed_commands = [
   description = "Names check + evaluated commit SHA (not \"latest\")"
   points = 2
   mode = "manual"
-  verify = "gh run view <run-id> --json name,headSha,conclusion,url"
-  evidence = "Check name + headSha quoted from the run (state the SHA, not \"latest\")."
+  verify = "gh run view <run-id> --json name,headSha,conclusion,url,jobs --jq '.jobs[] | select(.conclusion == \"failure\") | .name'"
+  evidence = "Check name matched to a failed job (not just the workflow run) + headSha quoted from the run (state the SHA, not \"latest\"); retain that job's log."
 
 [[rubric]]
   step_id = "t8-s2"
