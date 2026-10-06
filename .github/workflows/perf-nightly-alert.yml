@@ -77,6 +77,11 @@ jobs:
           if [ "$(printf '%s\n' "$excerpt" | wc -l)" -gt 400 ]; then
             excerpt="$(printf '%s\n' "$excerpt" | head -400; printf '\n...\n(truncated at 400 lines; full table in the nightly run artifact: %s)' "$RUN_URL")"
           fi
+          # GitHub rejects issue bodies over 65536 chars; cap bytes too (the
+          # 400-line cap alone does not bound pathological row widths).
+          if [ "$(printf '%s' "$excerpt" | wc -c)" -gt 60000 ]; then
+            excerpt="$(printf '%s' "$excerpt" | head -c 60000; printf '\n...\n(truncated at 60000 bytes; full table in the nightly run artifact: %s)' "$RUN_URL")"
+          fi
           body=$(printf 'Nightly regressions on `%s` (%s).\n\n%s\n\n**Run:** %s' "$HEAD_SHA" "$token" "$excerpt" "$RUN_URL")
           if [ -z "$existing" ]; then
             gh issue create --title "$title" --body "$body" --label performance --label benchmark
