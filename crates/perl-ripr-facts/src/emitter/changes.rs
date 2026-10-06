@@ -292,6 +292,15 @@ fn find_outside_strings(line: &str, needle: &str) -> Option<usize> {
     None
 }
 
+/// Select a bounded return occurrence with the existing start/space shape.
+/// Check shape and quote/keyword boundaries on the same occurrence, so a
+/// method or key name cannot borrow another occurrence's supported shape.
+fn find_return_outside_strings(line: &str) -> Option<usize> {
+    find_outside_strings(line, "return")
+        .filter(|&index| index == 0)
+        .or_else(|| find_outside_strings(line, "return "))
+}
+
 fn strip_single_line_string_literals(line: &str) -> String {
     let chars: Vec<char> = line.chars().collect();
     let mut out = String::with_capacity(line.len());
@@ -551,9 +560,7 @@ fn detect_behavior_kind(line: &str) -> &'static str {
     // Return value. Retain the existing supported start/space shapes so the
     // keyword scan cannot promote punctuation-only call or key names such as
     // `$obj->return()` / `$obj->{return}` into new concrete hints.
-    if (trimmed.starts_with("return") || trimmed.contains("return "))
-        && find_outside_strings(trimmed, "return").is_some()
-    {
+    if find_return_outside_strings(trimmed).is_some() {
         return "return_value";
     }
 
@@ -577,7 +584,7 @@ fn extract_discriminator(kind: &str, line: &str) -> String {
         // Slice from the detected keyword's position (outside strings) so a
         // quoted keyword earlier in the line cannot supply the observable.
         "return_value" => {
-            let from = find_outside_strings(trimmed, "return").unwrap_or(0);
+            let from = find_return_outside_strings(trimmed).unwrap_or(0);
             trimmed[from..]
                 .strip_prefix("return")
                 .unwrap_or(&trimmed[from..])
@@ -1096,6 +1103,55 @@ mod tests {
         let (kind, disc) = behavior_hint_for_hunk(&["{ return $value; }".into()]);
         assert_eq!(kind, "return_value", "a real return inside a block remains detectable");
         assert_eq!(disc, "$value; }");
+    }
+
+    #[test]
+    fn behavior_hint_for_hunk_return_shape_belongs_to_selected_occurrence() {
+        for line in [
+            "returning(); $obj->return();",
+            "returning(); Foo::return();",
+            "returning(); my $value = $obj->{return};",
+        ] {
+            let (kind, disc) = behavior_hint_for_hunk(&[line.to_string()]);
+            assert_eq!(kind, "unknown", "unsupported occurrence must stay unknown: {line}");
+            assert!(disc.is_empty(), "unsupported occurrence has no observable: {line}");
+        }
+        for line in [
+            "$obj->return(); return $value;",
+            "Foo::return(); return $value;",
+            "returning(); $obj->return(); return $value;",
+            "my $s = \"\u{1f642} return bogus\"; $obj->return(); return $value;",
+        ] {
+            let (kind, disc) = behavior_hint_for_hunk(&[line.to_string()]);
+            assert_eq!(kind, "return_value", "later supported occurrence must classify: {line}");
+            assert_eq!(
+                disc, "$value",
+                "only the supported occurrence supplies the observable: {line}"
+            );
+        }
+    }
+
+    #[test]
+    fn emit_changes_from_diff_return_shape_belongs_to_selected_occurrence() {
+        let (files, owners) = app_files_and_owners();
+        for (line, expected_kind, expected_observable) in [
+            ("returning(); $obj->return();", "unknown", Value::Null),
+            ("returning(); Foo::return();", "unknown", Value::Null),
+            ("returning(); my $value = $obj->{return};", "unknown", Value::Null),
+            ("$obj->return(); return $value;", "return_value", json!("$value")),
+            ("Foo::return(); return $value;", "return_value", json!("$value")),
+            ("returning(); $obj->return(); return $value;", "return_value", json!("$value")),
+        ] {
+            let diff =
+                format!("+++ b/lib/My/App.pm\n@@ -5,2 +5,3 @@\n sub discount {{\n+    {line}\n");
+            let (changes, _) = emit_changes_from_diff(&diff, ".", &files, &owners);
+            assert_eq!(changes.len(), 1, "added line must reach a change fact: {line}");
+            assert_eq!(changes[0]["behavior_hint"], expected_kind, "packet hint: {line}");
+            assert_eq!(
+                changes[0]["changed_observable"], expected_observable,
+                "packet observable: {line}"
+            );
+        }
     }
 
     #[test]
