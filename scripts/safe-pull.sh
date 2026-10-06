@@ -52,7 +52,7 @@ MERGE_OUTPUT=$(git merge "${REMOTE}/${BRANCH}" 2>&1) && {
 }
 
 # Merge failed — check what kind of failure
-if echo "${MERGE_OUTPUT}" | grep -q "would be overwritten by merge"; then
+if printf '%s\n' "${MERGE_OUTPUT}" | grep -q "would be overwritten by merge"; then
   # Untracked file conflicts: git refused to start the merge, so no cleanup needed.
   # Extract conflicting file paths from the error message.
   # Git formats these as tab-indented file paths between the error header and footer.
@@ -62,7 +62,7 @@ if echo "${MERGE_OUTPUT}" | grep -q "would be overwritten by merge"; then
   # assignment when nothing matches, so the graceful fallback below stays
   # reachable instead of dying silently with no message.
   TAB="$(printf '\t')"
-  CONFLICTING_FILES=$(echo "${MERGE_OUTPUT}" \
+  CONFLICTING_FILES=$(printf '%s\n' "${MERGE_OUTPUT}" \
     | grep -E "^${TAB}" \
     | sed "s/^${TAB}//" || true)
 
@@ -70,6 +70,35 @@ if echo "${MERGE_OUTPUT}" | grep -q "would be overwritten by merge"; then
     echo "ERROR: Detected untracked file conflict but could not parse file list."
     echo "Raw output:"
     echo "${MERGE_OUTPUT}"
+    exit 1
+  fi
+
+  # Git reports collision paths relative to the worktree root, but this script
+  # may run from any subdirectory. Act from the root so existence checks and
+  # moves resolve the same files git named.
+  TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+  if [ -z "${TOPLEVEL}" ] || ! cd "${TOPLEVEL}"; then
+    echo "ERROR: Could not resolve the worktree root; refusing to touch conflicting files."
+    exit 1
+  fi
+
+  # The tab-indented parser above also matches git's "local changes ... would
+  # be overwritten" block: a merge blocked by tracked dirty files (alone or
+  # mixed with untracked collisions) lists tracked paths here. Salvaging those
+  # would relocate committed-file edits out of the tree and let the retry
+  # report success on a mangled checkout. Validate every candidate against the
+  # index BEFORE moving anything; any tracked path aborts the pull untouched.
+  TRACKED_OFFENDERS=""
+  while IFS= read -r f; do
+    if [ -n "${f}" ] && git ls-files --error-unmatch -- "${f}" >/dev/null 2>&1; then
+      TRACKED_OFFENDERS="${TRACKED_OFFENDERS}${f}
+"
+    fi
+  done <<< "${CONFLICTING_FILES}"
+  if [ -n "${TRACKED_OFFENDERS}" ]; then
+    echo "ERROR: Refusing to salvage: these conflicting files have tracked changes."
+    echo "Commit or stash them before pulling; nothing was moved."
+    printf '%s' "${TRACKED_OFFENDERS}"
     exit 1
   fi
 
@@ -104,12 +133,12 @@ if echo "${MERGE_OUTPUT}" | grep -q "would be overwritten by merge"; then
         echo "  skip ${f} (no longer present)"
         continue
       fi
-      if ! mkdir -p "${SALVAGE_DIR}/$(dirname "${f}")"; then
+      if ! mkdir -p -- "${SALVAGE_DIR}/$(dirname -- "${f}")"; then
         echo "ERROR: Could not create salvage path for ${f}; aborting before the retry."
         exit 1
       fi
       echo "  salvage ${f}"
-      if ! mv "${f}" "${SALVAGE_DIR}/${f}"; then
+      if ! mv -- "${f}" "${SALVAGE_DIR}/${f}"; then
         echo "ERROR: Could not salvage ${f} to ${SALVAGE_DIR}/${f}; aborting before the retry."
         exit 1
       fi

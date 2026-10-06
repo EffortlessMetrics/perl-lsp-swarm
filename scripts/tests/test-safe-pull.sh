@@ -109,11 +109,13 @@ setup_repos() {
 }
 
 run_safe_pull() {
-  # $1 = directory to pull in; prints output, returns script exit status
+  # $1 = directory to pull in; $2 = cwd to invoke from (default $1);
+  # prints output, returns script exit status
   local dir="$1"
+  local cwd="${2:-$1}"
   local out rc
   rc=0
-  out="$(cd "$dir" && bash "$SAFE_PULL" 2>&1)" || rc=$?
+  out="$(cd "$cwd" && bash "$SAFE_PULL" 2>&1)" || rc=$?
   printf '%s' "$out"
   return "$rc"
 }
@@ -129,13 +131,17 @@ test_colliding_untracked_file_survives_with_content() {
   mkdir -p "${WORK}/docs"
   printf 'NESTED-KNOWN-17403\n' > "${WORK}/docs/plan.txt"
   cp "${WORK}/docs/plan.txt" "${TMPDIR_BASE}/expected-nested.txt"
+  # Leading-hyphen name: must be treated as an operand, not an option.
+  printf 'DASH-KNOWN-17403\n' > "${WORK}/-draft.txt"
+  cp "${WORK}/-draft.txt" "${TMPDIR_BASE}/expected-dash.txt"
 
   # Origin advances the same paths so the pull reports
   # "would be overwritten by merge".
   printf 'REMOTE-CONTENT\n' > "${ADV}/notes.txt"
   mkdir -p "${ADV}/docs"
   printf 'REMOTE-NESTED\n' > "${ADV}/docs/plan.txt"
-  git -C "$ADV" add notes.txt docs/plan.txt
+  printf 'REMOTE-DASH\n' > "${ADV}/-draft.txt"
+  git -C "$ADV" add notes.txt docs/plan.txt ./-draft.txt
   git -C "$ADV" commit -qm "add notes"
   git -C "$ADV" push -q origin main
 
@@ -177,6 +183,11 @@ test_colliding_untracked_file_survives_with_content() {
   assert_byte_identical "collision: nested content salvaged byte-identical" \
     "${salvage_dir}/docs/plan.txt" "${TMPDIR_BASE}/expected-nested.txt"
 
+  # Leading-hyphen colliding path must survive byte-identical (operand, not
+  # option, through dirname/mkdir/mv).
+  assert_byte_identical "collision: leading-hyphen content salvaged byte-identical" \
+    "${salvage_dir}/-draft.txt" "${TMPDIR_BASE}/expected-dash.txt"
+
   # The merge itself must have completed: work now tracks origin's version.
   assert_byte_identical "collision: pull delivers remote content" \
     "${WORK}/notes.txt" "${ADV}/notes.txt"
@@ -208,8 +219,85 @@ test_clean_pull_still_succeeds() {
     "${WORK}/other.txt" "${ADV}/other.txt"
 }
 
+test_tracked_blockage_aborts_without_moving() {
+  setup_repos
+
+  # Mixed refusal: git lists the tracked dirty file AND the untracked
+  # collider in one merge output. The pull must abort before moving anything.
+  printf 'LOCAL-TRACKED-EDIT\n' > "${WORK}/base.txt"
+  cp "${WORK}/base.txt" "${TMPDIR_BASE}/expected-tracked.txt"
+  printf 'LOCAL-UNTRACKED\n' > "${WORK}/notes.txt"
+  cp "${WORK}/notes.txt" "${TMPDIR_BASE}/expected-untracked.txt"
+  printf 'REMOTE-NOTES\n' > "${ADV}/notes.txt"
+  printf 'REMOTE-BASE\n' > "${ADV}/base.txt"
+  git -C "$ADV" add notes.txt base.txt
+  git -C "$ADV" commit -qm "advance both"
+  git -C "$ADV" push -q origin main
+
+  local out rc
+  rc=0
+  out="$(run_safe_pull "$WORK")" || rc=$?
+  if [[ "$rc" -ne 0 ]]; then
+    pass "tracked: safe-pull refuses with nonzero exit"
+  else
+    fail "tracked: safe-pull refuses with nonzero exit (got 0)"
+    printf 'output:\n%s\n' "$out"
+    return
+  fi
+  assert_contains "tracked: output names the tracked offender" "$out" "base.txt"
+  assert_contains "tracked: output says nothing was moved" "$out" "nothing was moved"
+  assert_byte_identical "tracked: tracked edits stay in place" \
+    "${WORK}/base.txt" "${TMPDIR_BASE}/expected-tracked.txt"
+  assert_byte_identical "tracked: untracked collider stays in place" \
+    "${WORK}/notes.txt" "${TMPDIR_BASE}/expected-untracked.txt"
+  if [[ -d "${WORK}/.git/safe-pull-salvage" ]]; then
+    fail "tracked: no salvage packet is created on refusal"
+  else
+    pass "tracked: no salvage packet is created on refusal"
+  fi
+}
+
+test_nested_invocation_salvages_from_root() {
+  setup_repos
+
+  printf 'NESTED-INVOCATION\n' > "${WORK}/notes.txt"
+  cp "${WORK}/notes.txt" "${TMPDIR_BASE}/expected-nested-inv.txt"
+  printf 'REMOTE-NOTES\n' > "${ADV}/notes.txt"
+  git -C "$ADV" add notes.txt
+  git -C "$ADV" commit -qm "add notes"
+  git -C "$ADV" push -q origin main
+  mkdir -p "${WORK}/sub/inner"
+
+  # Invoke from a nested directory: git names root-relative paths, so the
+  # salvage must still resolve the worktree root.
+  local out rc
+  rc=0
+  out="$(run_safe_pull "$WORK" "${WORK}/sub/inner")" || rc=$?
+  if [[ "$rc" -eq 0 ]]; then
+    pass "nested: safe-pull exits 0"
+  else
+    fail "nested: safe-pull exits 0 (got $rc)"
+    printf 'output:\n%s\n' "$out"
+    return
+  fi
+
+  local salvage_dir
+  salvage_dir="$(grep -F 'salvage -> ' <<<"$out" | head -n 1 | sed 's/.*salvage -> //' || true)"
+  if [[ -z "${salvage_dir:-}" ]]; then
+    fail "nested: salvage directory is printed"
+    return
+  fi
+  pass "nested: salvage directory is printed"
+  assert_byte_identical "nested: content salvaged byte-identical" \
+    "${salvage_dir}/notes.txt" "${TMPDIR_BASE}/expected-nested-inv.txt"
+  assert_byte_identical "nested: pull delivers remote content" \
+    "${WORK}/notes.txt" "${ADV}/notes.txt"
+}
+
 test_colliding_untracked_file_survives_with_content
 test_clean_pull_still_succeeds
+test_tracked_blockage_aborts_without_moving
+test_nested_invocation_salvages_from_root
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 if [[ "$FAIL" -ne 0 ]]; then
