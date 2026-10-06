@@ -763,6 +763,9 @@ ci-disk-guard() {
         .env("TMPDIR", scratch.join("tmp"))
         .env("CARGO_TARGET_DIR", scratch.join("target"))
         .env("CARGO_HOME", cache.join("cargo-home"))
+        // The real preflight run block ends with `mkdir -p ... "$RIPR_CACHE_DIR"`
+        // under `set -u` (ripr.yml), so the sandbox must provide it (#17182).
+        .env("RIPR_CACHE_DIR", cache.join("ripr"))
         .env("GITHUB_OUTPUT", &output_file)
         .env("GITHUB_STEP_SUMMARY", &summary)
         .stdin(Stdio::piped())
