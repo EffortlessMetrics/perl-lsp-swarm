@@ -5,6 +5,6 @@ kind: Fixed
 body: "Document the native formatter's generated-indentation boundary: configured indentColumns/tabs govern indentation the formatter generates (e.g. expanded one-line blocks) and do not re-indent existing lines; a live didChangeConfiguration regression test pins the channel."
 time: 2026-10-05T00:00:00Z
 custom:
-  PR: "17343"
+  PR: "17386"
   Slug: fix-native-indent-contract-17340
   Breaking: "no"
