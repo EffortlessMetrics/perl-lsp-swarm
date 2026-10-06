@@ -665,10 +665,15 @@ impl ServerConfig {
         // Warn on wrong-type values for well-known settings. (#5093)
         // The and_then(|v| v.as_*) guards above silently ignore type mismatches;
         // this pass surfaces them so users know their config is being ignored.
+        // Every listed key must be consumed by `update_from_value` above:
+        // `diagnostics.enabled` was listed here while no consumer exists
+        // (ServerConfig has no diagnostics master switch), so a correctly
+        // typed `false` was as silently ignored as a wrongly typed one —
+        // the type check advertised support the server does not have
+        // (#17342). Re-list it only together with a real consumer.
         warn_on_type_mismatch(settings, "inlayHints", "enabled", "boolean");
         warn_on_type_mismatch(settings, "inlayHints", "parameterHints", "boolean");
         warn_on_type_mismatch(settings, "inlayHints", "typeHints", "boolean");
-        warn_on_type_mismatch(settings, "diagnostics", "enabled", "boolean");
         warn_on_type_mismatch(settings, "formatting", "enabled", "boolean");
     }
 
