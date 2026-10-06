@@ -24,51 +24,51 @@ allowed_commands = [
 ]
 
 [params]
-"check-name" = "Failed check name supplied by the grader"
-"run-url" = "Failed run URL supplied by the grader"
+  "check-name" = "Failed check name supplied by the grader"
+  "run-url" = "Failed run URL supplied by the grader"
 
 # Local-equivalent mapping: check-name pattern -> local command.
 [local_equivalents]
-"pr-fast" = "just pr-fast (from Git Bash on Windows)"
-"merge-gate" = "just ci-gate (from Git Bash on Windows; canonical: nix develop -c just ci-gate)"
-"default" = "The label-gated job's documented command from its workflow file under .github/workflows/"
+  "pr-fast" = "just pr-fast (from Git Bash on Windows)"
+  "merge-gate" = "just ci-gate (from Git Bash on Windows; canonical: nix develop -c just ci-gate)"
+  "default" = "The label-gated job's documented command from its workflow file under .github/workflows/"
 
 [[rubric]]
-step_id = "t8-s1"
-description = "Names check + evaluated commit SHA (not \"latest\")"
-points = 2
-mode = "manual"
-verify = "gh run view <run-id> --json name,headSha,conclusion,url"
-evidence = "Check name + headSha quoted from the run (state the SHA, not \"latest\")."
+  step_id = "t8-s1"
+  description = "Names check + evaluated commit SHA (not \"latest\")"
+  points = 2
+  mode = "manual"
+  verify = "gh run view <run-id> --json name,headSha,conclusion,url"
+  evidence = "Check name + headSha quoted from the run (state the SHA, not \"latest\")."
 
 [[rubric]]
-step_id = "t8-s2"
-description = "Selects the correct local equivalent command"
-points = 2
-mode = "manual"
-verify = "Look up the check in the spec local_equivalents table (else its workflow file under .github/workflows/) and state the chosen local command."
-evidence = "Named local command + the mapping source (spec table entry or workflow file path)."
+  step_id = "t8-s2"
+  description = "Selects the correct local equivalent command"
+  points = 2
+  mode = "manual"
+  verify = "Look up the check in the spec local_equivalents table (else its workflow file under .github/workflows/) and state the chosen local command."
+  evidence = "Named local command + the mapping source (spec table entry or workflow file path)."
 
 [[rubric]]
-step_id = "t8-s3"
-description = "Reproduces the same failure signature locally (quoted)"
-points = 3
-mode = "manual"
-verify = "Run the local equivalent from a clean tree on the PR head SHA; on Windows run `just` recipes from Git Bash."
-evidence = "Local failure output quoted beside the CI log excerpt, with the matching signature highlighted."
+  step_id = "t8-s3"
+  description = "Reproduces the same failure signature locally (quoted)"
+  points = 3
+  mode = "manual"
+  verify = "Run the local equivalent from a clean tree on the PR head SHA; on Windows run `just` recipes from Git Bash."
+  evidence = "Local failure output quoted beside the CI log excerpt, with the matching signature highlighted."
 
 [[rubric]]
-step_id = "t8-s4"
-description = "Correct attribution with stated evidence (incl. merge-base comparison when blaming base)"
-points = 2
-mode = "manual"
-verify = "Classify per the PR template (broken vs missing vs cancelled/instrument-failed); when blaming base, show the same signature at the merge base: `git merge-base HEAD origin/main` then re-run the local equivalent there."
-evidence = "Attribution + the evidence for it (merge-base SHA and its result when blaming base)."
+  step_id = "t8-s4"
+  description = "Correct attribution with stated evidence (incl. merge-base comparison when blaming base)"
+  points = 2
+  mode = "manual"
+  verify = "Classify per the PR template (broken vs missing vs cancelled/instrument-failed); when blaming base, show the same signature at the merge base: `git merge-base HEAD origin/main` then re-run the local equivalent there."
+  evidence = "Attribution + the evidence for it (merge-base SHA and its result when blaming base)."
 
 [[rubric]]
-step_id = "t8-s5"
-description = "No CI re-trigger / empty commit / rebase offered as verification"
-points = 1
-mode = "manual"
-verify = "git log --oneline -3 && git status --short"
-evidence = "No empty/re-trigger commits; verification came from the local reproduction, not a new CI run."
+  step_id = "t8-s5"
+  description = "No CI re-trigger / empty commit / rebase offered as verification"
+  points = 1
+  mode = "manual"
+  verify = "git log --oneline -3 && git status --short"
+  evidence = "No empty/re-trigger commits; verification came from the local reproduction, not a new CI run."

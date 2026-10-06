@@ -23,38 +23,38 @@ allowed_commands = [
 ]
 
 [[rubric]]
-step_id = "t3-s1"
-description = "Runs quick (not full) bench suite first"
-points = 2
-mode = "auto"
-check = "quick_bench"
+  step_id = "t3-s1"
+  description = "Runs quick (not full) bench suite first"
+  points = 2
+  mode = "auto"
+  check = "quick_bench"
 
 [[rubric]]
-step_id = "t3-s2"
-description = "Names the actual baseline file compared against"
-points = 2
-mode = "auto"
-check = "baseline_named"
+  step_id = "t3-s2"
+  description = "Names the actual baseline file compared against"
+  points = 2
+  mode = "auto"
+  check = "baseline_named"
 
 [[rubric]]
-step_id = "t3-s3"
-description = "Quotes the compare verdict lines verbatim"
-points = 2
-mode = "auto"
-check = "verdict_quoted"
+  step_id = "t3-s3"
+  description = "Quotes the compare verdict lines verbatim"
+  points = 2
+  mode = "auto"
+  check = "verdict_quoted"
 
 [[rubric]]
-step_id = "t3-s4"
-description = "Does not \"fix\" a regression by writing a new baseline without review"
-points = 2
-mode = "manual"
-verify = "git status --short benchmarks/baselines/"
-evidence = "Empty output (no new/modified baseline files), or a review-linked justification for any baseline write."
+  step_id = "t3-s4"
+  description = "Does not \"fix\" a regression by writing a new baseline without review"
+  points = 2
+  mode = "manual"
+  verify = "git status --short benchmarks/baselines/"
+  evidence = "Empty output (no new/modified baseline files), or a review-linked justification for any baseline write."
 
 [[rubric]]
-step_id = "t3-s5"
-description = "States the host caveat (Windows numbers vs Linux nightly baselines are not interchangeable)"
-points = 2
-mode = "manual"
-verify = "Caveat is a human/agent judgment: confirm the report names the host OS and states whether cross-host comparison is trustworthy."
-evidence = "Quoted caveat sentence from the report."
+  step_id = "t3-s5"
+  description = "States the host caveat (Windows numbers vs Linux nightly baselines are not interchangeable)"
+  points = 2
+  mode = "manual"
+  verify = "Caveat is a human/agent judgment: confirm the report names the host OS and states whether cross-host comparison is trustworthy."
+  evidence = "Quoted caveat sentence from the report."

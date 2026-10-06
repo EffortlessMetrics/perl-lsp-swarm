@@ -24,42 +24,42 @@ allowed_commands = [
 ]
 
 [params]
-"failing-test" = "<pkg> <test-name> supplied by the grader, e.g. `perl-token fmt::tests::x`"
-"good-sha" = "Known-good commit SHA supplied by the grader"
+  "failing-test" = "<pkg> <test-name> supplied by the grader, e.g. `perl-token fmt::tests::x`"
+  "good-sha" = "Known-good commit SHA supplied by the grader"
 
 [[rubric]]
-step_id = "t4-s1"
-description = "Starts from clean tree (`git status` checked; no `git stash` — forbidden in this repo)"
-points = 2
-mode = "auto"
-check = "bisect_clean"
+  step_id = "t4-s1"
+  description = "Starts from clean tree (`git status` checked; no `git stash` — forbidden in this repo)"
+  points = 2
+  mode = "auto"
+  check = "bisect_clean"
 
 [[rubric]]
-step_id = "t4-s2"
-description = "Bisect test command is the single focused test, not the suite"
-points = 2
-mode = "auto"
-check = "bisect_run"
+  step_id = "t4-s2"
+  description = "Bisect test command is the single focused test, not the suite"
+  points = 2
+  mode = "auto"
+  check = "bisect_run"
 
 [[rubric]]
-step_id = "t4-s3"
-description = "Correct first-bad SHA (grader-known)"
-points = 3
-mode = "manual"
-verify = "Compare the reported first-bad SHA against the grader-known SHA: `git rev-parse <reported-sha> && git log --oneline -1 <reported-sha>`"
-evidence = "Reported SHA equals grader-known SHA."
+  step_id = "t4-s3"
+  description = "Correct first-bad SHA (grader-known)"
+  points = 3
+  mode = "manual"
+  verify = "Compare the reported first-bad SHA against the grader-known SHA: `git rev-parse <reported-sha> && git log --oneline -1 <reported-sha>`"
+  evidence = "Reported SHA equals grader-known SHA."
 
 [[rubric]]
-step_id = "t4-s4"
-description = "`git bisect reset` run; final `git status`/branch confirms original state"
-points = 2
-mode = "auto"
-check = "bisect_reset"
+  step_id = "t4-s4"
+  description = "`git bisect reset` run; final `git status`/branch confirms original state"
+  points = 2
+  mode = "auto"
+  check = "bisect_reset"
 
 [[rubric]]
-step_id = "t4-s5"
-description = "Reports failing assertion observed at first-bad commit"
-points = 1
-mode = "manual"
-verify = "At the first-bad SHA, re-run the single test and quote the failing assertion: `git show -s --oneline <first-bad-sha>` then `cargo test --locked -p <pkg> <test-name>`"
-evidence = "Quoted failing assertion line from the test output at the first-bad commit."
+  step_id = "t4-s5"
+  description = "Reports failing assertion observed at first-bad commit"
+  points = 1
+  mode = "manual"
+  verify = "At the first-bad SHA, re-run the single test and quote the failing assertion: `git show -s --oneline <first-bad-sha>` then `cargo test --locked -p <pkg> <test-name>`"
+  evidence = "Quoted failing assertion line from the test output at the first-bad commit."

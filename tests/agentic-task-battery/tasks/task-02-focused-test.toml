@@ -13,41 +13,39 @@ max_points = 10
 failure_mode = "Running `cargo test --workspace` \"to be thorough,\" multiplying a 1-min check into a 20+ min run."
 automation = "full"
 
-allowed_commands = [
-  "cargo test --locked -p perl-token",
-]
+allowed_commands = ["cargo test --locked -p perl-token"]
 
 [[rubric]]
-step_id = "t2-s1"
-description = "Scopes to `-p perl-token` (no `--workspace`)"
-points = 3
-mode = "auto"
-check = "test_scope"
+  step_id = "t2-s1"
+  description = "Scopes to `-p perl-token` (no `--workspace`)"
+  points = 3
+  mode = "auto"
+  check = "test_scope"
 
 [[rubric]]
-step_id = "t2-s2"
-description = "Uses `--locked`"
-points = 1
-mode = "auto"
-check = "test_locked"
+  step_id = "t2-s2"
+  description = "Uses `--locked`"
+  points = 1
+  mode = "auto"
+  check = "test_locked"
 
 [[rubric]]
-step_id = "t2-s3"
-description = "Captures full output without truncating a live pipe (file redirect)"
-points = 2
-mode = "auto"
-check = "test_redirect"
+  step_id = "t2-s3"
+  description = "Captures full output without truncating a live pipe (file redirect)"
+  points = 2
+  mode = "auto"
+  check = "test_redirect"
 
 [[rubric]]
-step_id = "t2-s4"
-description = "Reports totals matching the log (parsed per-binary `passed`/`failed` sums; fail entries quoted if any)"
-points = 2
-mode = "auto"
-check = "test_totals"
+  step_id = "t2-s4"
+  description = "Reports totals matching the log (parsed per-binary `passed`/`failed` sums; fail entries quoted if any)"
+  points = 2
+  mode = "auto"
+  check = "test_totals"
 
 [[rubric]]
-step_id = "t2-s5"
-description = "Exit code 0 + wall time reported"
-points = 2
-mode = "auto"
-check = "test_exit_wall"
+  step_id = "t2-s5"
+  description = "Exit code 0 + wall time reported"
+  points = 2
+  mode = "auto"
+  check = "test_exit_wall"
