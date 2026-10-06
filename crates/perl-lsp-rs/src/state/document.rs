@@ -705,6 +705,19 @@ pub struct DocumentState {
     /// predecessor snapshot so workspace-index eligibility can tell “was indexed”
     /// from “never parsed.”
     full_sync_required: bool,
+
+    /// The URI exactly as the client spelled it when opening or last changing
+    /// this document, if the sync handler recorded it.
+    ///
+    /// The `documents` map is keyed by the normalized [`perl_uri::uri_key`]
+    /// (Windows drive letters are lowercased), so a map key alone cannot
+    /// reproduce the spelling the client addresses the document by. Wire
+    /// surfaces that echo a document identity —
+    /// `textDocument/publishDiagnostics` in particular — must answer under the
+    /// client's spelling, or config-triggered republishes land under a
+    /// lowercased phantom identity the client never opened and the open buffer
+    /// keeps stale diagnostics (#17339).
+    client_uri: Option<String>,
 }
 
 impl DocumentState {
@@ -728,6 +741,7 @@ impl DocumentState {
             #[cfg(feature = "incremental")]
             incremental_state: None,
             full_sync_required: false,
+            client_uri: None,
         }
     }
 
@@ -786,6 +800,7 @@ impl DocumentState {
             #[cfg(feature = "incremental")]
             incremental_state: None,
             full_sync_required: false,
+            client_uri: None,
         }
     }
 
@@ -817,6 +832,20 @@ impl DocumentState {
     #[must_use]
     pub(crate) fn full_sync_required(&self) -> bool {
         self.full_sync_required
+    }
+
+    /// Record the URI spelling the client used for this document.
+    ///
+    /// Called by the text-sync handlers at every accepted open/change insert;
+    /// see [`Self::client_uri`] for why the normalized map key is not enough.
+    pub(crate) fn set_client_uri(&mut self, uri: String) {
+        self.client_uri = Some(uri);
+    }
+
+    /// The URI exactly as the client spelled it, when known.
+    #[must_use]
+    pub(crate) fn client_uri(&self) -> Option<&str> {
+        self.client_uri.as_deref()
     }
 
     /// Clear the Full-sync violation after an accepted complete replacement.

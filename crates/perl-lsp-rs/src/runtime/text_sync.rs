@@ -231,7 +231,8 @@ impl LspServer {
                 let normalized_uri = self.normalize_uri_key(uri);
                 // Guarded no-parse state still carries document identity
                 // through the push-diagnostics sink (#11673).
-                let guard_state = minimal_state(text, version);
+                let mut guard_state = minimal_state(text, version);
+                guard_state.set_client_uri(uri.to_string());
                 let symbols_identity = SymbolsIdentity::for_document(
                     &normalized_uri,
                     &guard_state.generation,
@@ -285,7 +286,8 @@ impl LspServer {
 
                 // Store document state without AST
                 let normalized_uri = self.normalize_uri_key(uri);
-                let guard_state = minimal_state(text, version);
+                let mut guard_state = minimal_state(text, version);
+                guard_state.set_client_uri(uri.to_string());
                 let symbols_identity = SymbolsIdentity::for_document(
                     &normalized_uri,
                     &guard_state.generation,
@@ -335,7 +337,8 @@ impl LspServer {
                 );
 
                 let normalized_uri = self.normalize_uri_key(uri);
-                let guard_state = minimal_state(text, version);
+                let mut guard_state = minimal_state(text, version);
+                guard_state.set_client_uri(uri.to_string());
                 let symbols_identity = SymbolsIdentity::for_document(
                     &normalized_uri,
                     &guard_state.generation,
@@ -469,6 +472,7 @@ impl LspServer {
                 version,
                 Arc::clone(&generation),
             );
+            doc_state.set_client_uri(uri.to_string());
             #[cfg(feature = "incremental")]
             {
                 doc_state.incremental_doc = incremental_doc;
@@ -779,6 +783,10 @@ impl LspServer {
                 let document_was_open = existing_doc.is_some();
                 let mut doc_state =
                     existing_doc.unwrap_or_else(|| empty_state(incoming_version.unwrap_or(0)));
+                // Every rebuild/insert below flows from this binding, so one
+                // recording here keeps the client's URI spelling current
+                // (#17339).
+                doc_state.set_client_uri(uri.to_string());
 
                 // Ignore stale didChange notifications that arrive out of order.
                 // We only gate on explicit client-provided versions; if a client omits
@@ -980,6 +988,7 @@ impl LspServer {
                         version,
                         doc_state.generation.clone(),
                     );
+                    doc_state.set_client_uri(uri.to_string());
                     let symbols_identity = SymbolsIdentity::for_document(
                         &normalized_uri,
                         &doc_state.generation,
@@ -1036,6 +1045,7 @@ impl LspServer {
                         version,
                         doc_state.generation.clone(),
                     );
+                    doc_state.set_client_uri(uri.to_string());
                     let symbols_identity = SymbolsIdentity::for_document(
                         &normalized_uri,
                         &doc_state.generation,
@@ -1088,6 +1098,7 @@ impl LspServer {
                         version,
                         doc_state.generation.clone(),
                     );
+                    doc_state.set_client_uri(uri.to_string());
                     let symbols_identity = SymbolsIdentity::for_document(
                         &normalized_uri,
                         &doc_state.generation,
