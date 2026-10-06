@@ -220,7 +220,11 @@ def categorize_benchmark(group: str, bench_name: str) -> str:
         return "parser"
     elif "lexer" in group_lower or "token" in bench_lower:
         return "lexer"
-    elif "rope" in group_lower or "lsp" in group_lower or "position" in bench_lower:
+    elif "rope" in group_lower or "rope" in bench_lower or "lsp" in group_lower or "position" in bench_lower:
+        # document_insertions/rope_insertion carries the rope marker in the
+        # bench name, not the group; matching the group alone drops it into
+        # "other", which no baseline covers (#17380). Name match is safe:
+        # rope_insertion is the only current bench name containing "rope".
         return "lsp"
     elif "index" in group_lower or "workspace" in group_lower or "symbol" in bench_lower:
         return "index"
@@ -230,6 +234,14 @@ def categorize_benchmark(group: str, bench_name: str) -> str:
         # markers, and matching bench names would risk stealing unrelated
         # benches into this category.
         return "ripr"
+    elif "scope" in group_lower or "scope" in bench_lower:
+        # Scope-analysis benches (scope_benchmark's scope_analysis_many_vars
+        # and scope_analysis_strict_barewords), which otherwise fall into the
+        # baseline-less "other" bucket (#17380). No other current bench name
+        # contains "scope" except parser's scope_analysis and the cpan/pragma
+        # scope-labeled benches, which have no baseline rows and stay dropped
+        # at the row join either way.
+        return "scope"
     else:
         return "other"
 
