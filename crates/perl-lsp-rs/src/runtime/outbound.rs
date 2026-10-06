@@ -20,8 +20,11 @@
 //! the short admission-gate lock only to snapshot the shared sender and perform
 //! `try_send`; the writer thread never takes that gate. The writer thread holds
 //! the `output` lock (for `spawn_writer_shared`) only while performing the actual
-//! write, and it reads from the channel via `blocking_recv`/`try_recv` with no
-//! other lock held. Therefore there is no circular lock+channel dependency.
+//! write, and it reads from the channel via the bounded poll of `recv_bounded`
+//! (`try_recv` with a short sleep while empty) with no other lock held.
+//! Therefore there is no circular lock+channel dependency. The bounded poll
+//! also guarantees egress progress even when a channel wakeup is lost
+//! (#17347).
 
 #[cfg(test)]
 use crate::protocol::JsonRpcId;
@@ -434,7 +437,40 @@ impl WriterTerminalOutcome {
     }
 }
 
-/// Blocking receive loop with message batching.
+/// Idle wait bound for the egress writer loops.
+///
+/// The writer loops must never park indefinitely on the channel's blocking
+/// receive: the parked-thread wakeup of `blocking_recv` was observed to be
+/// lost under heavy thread churn (#17347) — an initialize response was
+/// admitted to the channel and logged as outgoing, yet the bytes only reached
+/// stdout when the next inbound frame's `try_send` released the parked
+/// receiver, hanging every spec-compliant client that waits for
+/// `InitializeResult` before sending anything else. Receiving through a
+/// bounded poll guarantees egress progress regardless of wakeup delivery, at
+/// the cost of at most one poll interval of added latency on the first
+/// message after an idle period (well under any LSP client's timeout).
+const EGRESS_IDLE_POLL: Duration = Duration::from_millis(5);
+
+/// Receive the next outbound message with a bounded idle wait.
+///
+/// Fast path: [`tokio::sync::mpsc::Receiver::try_recv`] picks up whatever is
+/// already queued without parking. When the queue is empty, sleep
+/// [`EGRESS_IDLE_POLL`] and retry instead of parking indefinitely in
+/// `blocking_recv` (#17347). Returns `None` only after the channel is closed
+/// and fully drained, matching `blocking_recv`'s termination semantics.
+fn recv_bounded(rx: &mut tokio::sync::mpsc::Receiver<OutboundMessage>) -> Option<OutboundMessage> {
+    loop {
+        match rx.try_recv() {
+            Ok(msg) => return Some(msg),
+            Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => return None,
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
+                thread::sleep(EGRESS_IDLE_POLL);
+            }
+        }
+    }
+}
+
+/// Receive loop with message batching.
 ///
 /// Drains the channel and writes all immediately-available messages
 /// in a single write+flush cycle, reducing syscalls under burst load.
@@ -446,7 +482,7 @@ fn writer_loop_batched(
     mut output: Box<dyn Write + Send>,
 ) -> WriterTerminalOutcome {
     let mut batch_buf = Vec::with_capacity(4096);
-    while let Some(msg) = rx.blocking_recv() {
+    while let Some(msg) = recv_bounded(&mut rx) {
         let mut batch_messages = 1usize;
         // Serialize first message.
         let bytes = serialize_message(&msg);
@@ -484,7 +520,7 @@ fn writer_loop_batched(
     WriterTerminalOutcome::NormalClose
 }
 
-/// Blocking receive loop with message batching for shared writer.
+/// Receive loop with message batching for shared writer.
 ///
 /// Same coalescing strategy as [`writer_loop_batched`] but acquires the
 /// shared lock once per batch rather than once per message.
@@ -493,7 +529,7 @@ fn writer_loop_batched_shared(
     output: std::sync::Arc<parking_lot::Mutex<Box<dyn Write + Send>>>,
 ) -> WriterTerminalOutcome {
     let mut batch_buf = Vec::with_capacity(4096);
-    while let Some(msg) = rx.blocking_recv() {
+    while let Some(msg) = recv_bounded(&mut rx) {
         let mut batch_messages = 1usize;
         // Serialize first message.
         let bytes = serialize_message(&msg);
@@ -823,6 +859,72 @@ pub(crate) mod tests {
         assert_eq!(payloads[2]["method"], "workspace/configuration");
 
         Ok(())
+    }
+
+    /// #17347: a message accepted while the writer is idle must reach the sink
+    /// within a bounded time even though the writer is sitting in the idle
+    /// poll (the lost-wakeup shape observed under thread churn). The generous
+    /// bound only fails when egress progress is lost entirely, never on
+    /// scheduler jitter.
+    #[test]
+    fn idle_writer_delivers_message_accepted_during_idle_poll() -> Result<(), Box<dyn Error>> {
+        let buffer = SharedBuffer::new();
+        let (sender, handle) = spawn_writer(Box::new(buffer.clone()));
+
+        // Let the writer drain nothing and settle into the idle poll path.
+        thread::sleep(EGRESS_IDLE_POLL * 3);
+
+        let send_started = Instant::now();
+        sender.send_response(JsonRpcResponse::success(
+            Some(JsonRpcId::Integer(17347)),
+            json!({"wakeup": "lost"}),
+        ))?;
+
+        // A lost wakeup would withhold the bytes indefinitely; the bounded
+        // poll must release them within a few poll intervals (generous slack).
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let payloads = loop {
+            let parsed = parse_framed_payloads(&buffer.bytes())?;
+            if !parsed.is_empty() {
+                break parsed;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "egress stalled after {:?}: bounded poll failed to deliver an accepted message",
+                send_started.elapsed()
+            );
+            thread::sleep(Duration::from_millis(10));
+        };
+        let [only] = payloads.as_slice() else {
+            return Err(format!("expected exactly one payload, got {}", payloads.len()).into());
+        };
+        assert_eq!(only["id"], 17347);
+
+        drop(sender);
+        let outcome = handle.join().map_err(|_| "writer thread panicked")?;
+        assert_eq!(outcome, WriterTerminalOutcome::NormalClose);
+        Ok(())
+    }
+
+    /// #17347 liveness invariant: the writer loops must receive through the
+    /// bounded idle poll, never through an indefinite `blocking_recv` park —
+    /// that parked wakeup is the shape observed to be lost under load.
+    /// The searched literals are split via `concat!` so this test's own
+    /// source text cannot satisfy them.
+    #[test]
+    fn egress_writer_loops_receive_through_bounded_poll_not_blocking_recv() {
+        let source = include_str!("outbound.rs");
+        let poll_call = concat!("recv_bounded", "(&mut rx)");
+        assert_eq!(
+            source.matches(poll_call).count(),
+            2,
+            "both writer loops must receive through the bounded poll"
+        );
+        let blocking_park = concat!("rx", ".blocking_recv()");
+        assert!(
+            !source.contains(blocking_park),
+            "the egress path must not park indefinitely on blocking_recv (#17347)"
+        );
     }
 
     /// #8402: normal channel closure must exercise the settlement reporting
