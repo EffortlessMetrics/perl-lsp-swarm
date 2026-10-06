@@ -42,6 +42,7 @@ jobs:
       - name: Upsert rolling regression issue
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
           RUN_URL: ${{ github.event.workflow_run.html_url }}
           RUN_ID: ${{ github.event.workflow_run.id }}
           RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
