@@ -564,7 +564,12 @@ impl LspServer {
             return;
         }
 
-        if params.get("error").is_some() {
+        // Only a non-null `error` member fails the request. JSON-RPC success
+        // carries no `error` at all, and a hand-built internal notification
+        // with an explicit `"error": null` also means "no failure" (#17338) —
+        // key presence alone discarded every successful
+        // workspace/configuration response.
+        if params.get("error").is_some_and(|error| !error.is_null()) {
             tracing::debug!(
                 request_id = id.as_i32(),
                 "workspace/configuration request failed; keeping TOML/default config"

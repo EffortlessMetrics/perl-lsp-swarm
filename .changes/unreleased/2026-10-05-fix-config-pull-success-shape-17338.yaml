@@ -1,0 +1,10 @@
+---
+project: product
+component: Language intelligence
+kind: Fixed
+body: "Apply successful workspace/configuration pull responses. The transport no longer stamps rewritten success responses with an `error: null` member, so the runtime no longer discards every standard client answer as a failure; per-folder settings and re-pulls after `didChangeConfiguration` now apply."
+time: 2026-10-05T00:00:00Z
+custom:
+  PR: "17343"
+  Slug: fix-config-pull-success-shape-17338
+  Breaking: "no"

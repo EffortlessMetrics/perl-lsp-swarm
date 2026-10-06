@@ -1616,6 +1616,88 @@ perlcritic_severity = 2
         assert!(folder2_state.effective_workspace_config.use_system_inc);
     }
 
+    /// Regression (#17338): the transport previously stamped every rewritten
+    /// success response with an explicit `"error": null` member. A success
+    /// response in that shape — the exact params a standard client's
+    /// `workspace/configuration` answer produces — must still apply, not be
+    /// discarded as a failure.
+    #[test]
+    fn handle_client_response_applies_success_carrying_null_error() {
+        let server = LspServer::new();
+        let temp = tempfile::tempdir().expect("failed to create temp dir");
+        let folder = temp.path().join("folder");
+        std::fs::create_dir_all(&folder).expect("failed to create folder");
+        let uri = url::Url::from_directory_path(&folder).expect("failed to create uri").to_string();
+
+        server.workspace_folders.lock().push(
+            crate::runtime::workspace_folder::WorkspaceFolderState::new(uri.clone())
+                .with_path(folder.clone()),
+        );
+        server.pending_workspace_configuration_requests.lock().insert(
+            ServerRequestId::for_test(13),
+            crate::runtime::PendingWorkspaceConfigurationRequest {
+                folder_uris: vec![uri.clone()],
+                includes_global_item: true,
+                created_at: std::time::Instant::now(),
+            },
+        );
+
+        server.handle_client_response(Some(serde_json::json!({
+            "id": 13,
+            "result": [
+                { "workspace": { "useSystemInc": true } },
+                { "workspace": { "includePaths": ["site_lib"] } }
+            ],
+            "error": null
+        })));
+
+        let folders = server.workspace_folders.lock();
+        let folder_state = folders.iter().find(|f| f.uri == uri).expect("missing folder");
+        assert!(
+            folder_state.effective_workspace_config.include_paths.contains(&"site_lib".to_string()),
+            "a null error member is success; pulled settings must apply"
+        );
+        assert!(folder_state.effective_workspace_config.use_system_inc);
+    }
+
+    #[test]
+    fn handle_client_response_discards_non_null_error() {
+        let server = LspServer::new();
+        let temp = tempfile::tempdir().expect("failed to create temp dir");
+        let folder = temp.path().join("folder");
+        std::fs::create_dir_all(&folder).expect("failed to create folder");
+        let uri = url::Url::from_directory_path(&folder).expect("failed to create uri").to_string();
+
+        server.workspace_folders.lock().push(
+            crate::runtime::workspace_folder::WorkspaceFolderState::new(uri.clone())
+                .with_path(folder.clone()),
+        );
+        server.pending_workspace_configuration_requests.lock().insert(
+            ServerRequestId::for_test(14),
+            crate::runtime::PendingWorkspaceConfigurationRequest {
+                folder_uris: vec![uri.clone()],
+                includes_global_item: true,
+                created_at: std::time::Instant::now(),
+            },
+        );
+
+        server.handle_client_response(Some(serde_json::json!({
+            "id": 14,
+            "result": [{ "workspace": { "includePaths": ["must_not_apply"] } }],
+            "error": { "code": -32601, "message": "method not found" }
+        })));
+
+        let folders = server.workspace_folders.lock();
+        let folder_state = folders.iter().find(|f| f.uri == uri).expect("missing folder");
+        assert!(
+            !folder_state
+                .effective_workspace_config
+                .include_paths
+                .contains(&"must_not_apply".to_string()),
+            "a real error object must keep the prior TOML/default config"
+        );
+    }
+
     #[test]
     fn handle_client_response_ignores_removed_test_runner_authority() {
         let server = LspServer::new();
