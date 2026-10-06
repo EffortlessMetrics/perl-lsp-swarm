@@ -72,6 +72,13 @@ on:
       - 'scripts/tests/test-review-threads-inline.sh'
       - 'scripts/worktree-manager.py'
       - 'scripts/tests/test-worktree-manager.sh'
+      # Hook provisioning on worktree setup + agent-entry drift detection
+      # (issue #17406): both halves gate each other, so changes to either
+      # half must re-run the self-test gate.
+      - 'scripts/worktree-add.sh'
+      - 'scripts/tests/test-worktree-add-hooks.sh'
+      - 'scripts/agent-preflight.sh'
+      - 'scripts/test-agent-preflight.sh'
       # Ci-gate evaluation, disk-guard, and receipt-freshness oracles
       # (#15400/A2 of #15394): the tests gate the implementations, so changes
       # to either half must re-run the self-test gate.
@@ -501,6 +508,60 @@ jobs:
             echo "## Worktree-manager allocate self-test FAILED" >> "$GITHUB_STEP_SUMMARY"
             echo "" >> "$GITHUB_STEP_SUMMARY"
             echo "The worktree-manager allocate contract regressed. Check the step output above for the failed case." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  worktree-hook-provisioning-self-test:
+    name: Worktree hook-provisioning self-test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Run worktree hook-provisioning self-test
+        run: bash scripts/tests/test-worktree-add-hooks.sh
+
+      - name: Summary
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          if [ "$JOB_STATUS" = "success" ]; then
+            echo "## Worktree hook-provisioning self-test passed" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "Fresh worktrees (issue #17406) get a current executable pre-push hook via scripts/worktree-add.sh and worktree-manager.py \`allocate\`, installer failures fail loudly naming the installer, and current hooks skip the installer build." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "## Worktree hook-provisioning self-test FAILED" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "The worktree hook-provisioning contract regressed. Check the step output above for the failed case." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  agent-preflight-self-test:
+    name: Agent preflight self-test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Run agent preflight self-test
+        run: bash scripts/test-agent-preflight.sh
+
+      - name: Summary
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          if [ "$JOB_STATUS" = "success" ]; then
+            echo "## Agent preflight self-test passed" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "scripts/agent-preflight.sh enforces branch, worktree, conflict, cwd, target-dir, and stash isolation, and (issue #17406) refuses with exit 7 while the installed pre-push hook is missing, stale, or not executable." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "## Agent preflight self-test FAILED" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "The agent preflight contract regressed. Check the step output above for the failed case." >> "$GITHUB_STEP_SUMMARY"
           fi
 
   target-isolation-self-test:
