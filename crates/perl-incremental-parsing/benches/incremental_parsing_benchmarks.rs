@@ -367,7 +367,7 @@ fn bench_repeated_edits(c: &mut Criterion) {
 fn bench_checkpoint_boundaries(c: &mut Criterion) {
     let mut group = c.benchmark_group("checkpoint_boundaries");
 
-    // Checkpoints are recorded at the first token boundary at-or-after: 0, 100, 500, 1000, 5000 (#17397)
+    // Checkpoints are recorded at a token boundary at-or-after: 0, 100, 500, 1000, 5000 (#17397)
     let boundary_positions = vec![
         ("before_100", 90),
         ("at_100", 100),
