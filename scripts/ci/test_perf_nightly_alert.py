@@ -7,6 +7,7 @@ neither GitHub access nor benchmark/Rust builds are needed.
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 import re
@@ -22,6 +23,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from bash_binary import bash_binary, bash_path
 
 WORKFLOW = Path(__file__).resolve().parents[2] / ".github/workflows/perf-nightly-alert.yml"
+CI_WORKFLOW = WORKFLOW.with_name("workflow-contracts-advisory.yml")
+CI_SETUP = '''command -v bash
+command -v jq
+python3 -m venv "$RUNNER_TEMP/nightly-alert-venv"
+"$RUNNER_TEMP/nightly-alert-venv/bin/python" -m pip install --disable-pip-version-check --quiet 'PyYAML==6.0.3'
+'''.strip()
+CI_RUN = '"$RUNNER_TEMP/nightly-alert-venv/bin/python" -B scripts/ci/test_perf_nightly_alert.py -v'
 REPOSITORY = "fixture-owner/nightly-project"
 TITLE = "[perf] nightly benchmark regressions (rolling)"
 REGRESSION = "### 🔴 Critical Regressions\n| parse | +25% |\n"
@@ -66,6 +74,34 @@ else:
     sys.exit("fake gh: unexpected command: " + repr(args))
 state_path.write_text(json.dumps(state), encoding="utf-8")
 '''
+
+
+def validate_ci_route(workflow: dict) -> None:
+    """Keep the actual advisory consumer executable on every direct input edit."""
+    def require(condition: bool, message: str) -> None:
+        if not condition:
+            raise ValueError(message)
+
+    triggers = workflow.get("on", workflow.get(True, {}))
+    for event in ("pull_request", "push"):
+        paths = set(triggers.get(event, {}).get("paths", []))
+        require(not any(path.startswith("!") for path in paths), f"{event} path exclusions can suppress direct inputs")
+        require({".github/workflows/**", "scripts/ci/test_perf_nightly_alert.py",
+                 "scripts/bash_binary.py"} <= paths, f"incomplete {event} input coverage")
+    job = workflow["jobs"]["workflow-contracts"]
+    require("if" not in job and not job.get("continue-on-error"), "consumer job can be skipped or suppressed")
+    require(not workflow.get("defaults") and not job.get("defaults"), "consumer defaults can retarget execution")
+    steps = job["steps"]
+    for index, name, command in ((1, "Setup nightly alert regression dependencies", CI_SETUP),
+                                 (2, "Run nightly alert regression", CI_RUN)):
+        require(len(steps) > index and steps[index].get("name") == name,
+                f"{name} must run immediately after checkout")
+        step = steps[index]
+        require("if" not in step and not step.get("continue-on-error")
+                and not step.get("working-directory") and not step.get("env"),
+                f"{name} can be skipped, suppressed or retargeted")
+        require(step.get("shell", "bash") == "bash", f"{name} must execute with Bash")
+        require(step.get("run", "").strip() == command, f"{name} must execute the tested command")
 
 
 class NightlyAlertTests(unittest.TestCase):
@@ -234,6 +270,61 @@ class NightlyAlertTests(unittest.TestCase):
                 self.assertIn("wrong explicit repository", result.stderr)
                 self.assertEqual(self.calls()[-1]["argv"][:2], ["issue", "create"])
                 self.assertEqual(self.issues(), [])
+
+    def test_actual_advisory_ci_route_executes_regression(self) -> None:
+        validate_ci_route(yaml.safe_load(CI_WORKFLOW.read_text(encoding="utf-8")))
+
+    def test_ci_route_rejects_missing_input_triggers(self) -> None:
+        workflow = yaml.safe_load(CI_WORKFLOW.read_text(encoding="utf-8"))
+        validate_ci_route(workflow)  # mutants must start from a passing real route
+        key = "on" if "on" in workflow else True
+        for event in ("pull_request", "push"):
+            for path in (".github/workflows/**", "scripts/ci/test_perf_nightly_alert.py", "scripts/bash_binary.py"):
+                with self.subTest(event=event, path=path):
+                    mutant = copy.deepcopy(workflow)
+                    mutant[key][event]["paths"].remove(path)
+                    with self.assertRaises(ValueError):
+                        validate_ci_route(mutant)
+            for exclusion in ("!scripts/ci/test_perf_nightly_alert.py", "!scripts/bash_binary.py", "!scripts/**"):
+                with self.subTest(event=event, exclusion=exclusion):
+                    mutant = copy.deepcopy(workflow)
+                    mutant[key][event]["paths"].append(exclusion)
+                    with self.assertRaises(ValueError):
+                        validate_ci_route(mutant)
+
+    def test_ci_route_rejects_printed_skipped_or_suppressed_commands(self) -> None:
+        workflow = yaml.safe_load(CI_WORKFLOW.read_text(encoding="utf-8"))
+        validate_ci_route(workflow)
+        for mutation in ("remove", "echo", "comment", "false_if", "suppress", "continue", "wrong_python", "job_if", "defaults",
+                         "boolean_false_if", "boolean_false_job_if", "print_only_shell"):
+            with self.subTest(mutation=mutation):
+                mutant = copy.deepcopy(workflow)
+                job = mutant["jobs"]["workflow-contracts"]
+                step = job["steps"][2]
+                if mutation == "remove":
+                    job["steps"].pop(2)
+                elif mutation in ("echo", "comment"):
+                    step["run"] = ("echo " if mutation == "echo" else "# ") + CI_RUN
+                elif mutation == "false_if":
+                    step["if"] = "false"
+                elif mutation == "suppress":
+                    step["run"] += " || true"
+                elif mutation == "continue":
+                    step["continue-on-error"] = True
+                elif mutation == "wrong_python":
+                    step["run"] = CI_RUN.replace('"$RUNNER_TEMP/nightly-alert-venv/bin/python"', "python3")
+                elif mutation == "job_if":
+                    job["if"] = "false"
+                elif mutation == "boolean_false_if":
+                    step["if"] = False
+                elif mutation == "boolean_false_job_if":
+                    job["if"] = False
+                elif mutation == "print_only_shell":
+                    step["shell"] = "cat {0}"
+                else:
+                    job["defaults"] = {"run": {"working-directory": "other"}}
+                with self.assertRaises(ValueError):
+                    validate_ci_route(mutant)
 
 
 if __name__ == "__main__":
