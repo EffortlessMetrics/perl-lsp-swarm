@@ -2405,14 +2405,14 @@ mod tests {
             LaunchAction::RiprFacts { diff_path, .. } => {
                 assert_eq!(diff_path.as_deref(), Some("change.diff"));
             }
-            other => panic!("expected RiprFacts action, got {other:?}"),
+            other => unreachable!("expected RiprFacts action, got {other:?}"),
         }
         let plan = must(parse_args(["perl-lsp", "--ripr-facts"]));
         match plan.action {
             LaunchAction::RiprFacts { diff_path, .. } => {
                 assert_eq!(diff_path, None);
             }
-            other => panic!("expected RiprFacts action, got {other:?}"),
+            other => unreachable!("expected RiprFacts action, got {other:?}"),
         }
     }
 

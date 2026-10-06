@@ -1561,6 +1561,8 @@ fn pod_directive(line: &str) -> Option<&str> {
 
 #[cfg(test)]
 mod tests {
+    use perl_test_must::must_some;
+
     use super::*;
 
     fn assert_quote_like_start(
@@ -2177,19 +2179,19 @@ my $after = "op"#;
     fn is_in_pod_ignores_cut_inside_unclosed_heredoc() {
         let source = "<<'EOF'\n=cut\nEOF\nmy $code = 1;";
         assert!(!is_in_pod(source, source.len()));
-        assert!(!is_in_heredoc(source, source.find("my $code").unwrap()));
+        assert!(!is_in_heredoc(source, must_some(source.find("my $code"))));
     }
 
     #[test]
     fn is_in_regex_resumes_after_line_comment() {
         let source = "my $http; # prior comment\nmy $pattern = qr{$http = HTTP::Tiny->new()};\n";
-        let regex_body = source.find("HTTP::Tiny").unwrap();
+        let regex_body = must_some(source.find("HTTP::Tiny"));
         assert!(
             is_in_regex(source, regex_body),
             "a regex opened after a line comment must still be detected as a regex position"
         );
 
-        let before_pattern = source.find("my $pattern").unwrap();
+        let before_pattern = must_some(source.find("my $pattern"));
         assert!(!is_in_regex(source, before_pattern));
     }
 
@@ -2197,11 +2199,11 @@ my $after = "op"#;
     fn substitution_replacement_section_is_string_like() {
         let source = "my $x = s;foo;replacement;;
 ";
-        let replacement = source.find("replacement").unwrap();
+        let replacement = must_some(source.find("replacement"));
         assert!(is_in_string(source, replacement));
         assert!(!is_in_regex(source, replacement));
 
-        let pattern = source.find("foo").unwrap();
+        let pattern = must_some(source.find("foo"));
         assert!(is_in_regex(source, pattern));
         assert!(!is_in_string(source, pattern));
     }
@@ -2212,7 +2214,7 @@ my $after = "op"#;
         // with `s///`, so the replacement side pins the same classification.
         for operator in ["tr", "y"] {
             let source = format!("my $x = {operator};abc;replacement;;\n");
-            let replacement = source.find("replacement").unwrap();
+            let replacement = must_some(source.find("replacement"));
             assert!(is_in_string(&source, replacement), "{operator} replacement is string-like");
             assert!(!is_in_regex(&source, replacement), "{operator} replacement is not regex");
         }
@@ -2222,13 +2224,13 @@ my $after = "op"#;
     fn is_in_regex_ignores_regex_like_text_in_non_code_regions_after_comment() {
         let heredoc = "# docs\nmy $text = <<'END';\nqr{ unmatched\nEND\nmy $code = 1;\n";
         assert!(
-            !is_in_regex(heredoc, heredoc.find("my $code").unwrap()),
+            !is_in_regex(heredoc, must_some(heredoc.find("my $code"))),
             "regex-like text inside a heredoc body must not leave literal state active"
         );
 
         let pod = "# docs\n=pod\nqr{ unmatched\n=cut\nmy $code = 1;\n";
         assert!(
-            !is_in_regex(pod, pod.find("my $code").unwrap()),
+            !is_in_regex(pod, must_some(pod.find("my $code"))),
             "regex-like text inside a POD body must not leave literal state active"
         );
     }

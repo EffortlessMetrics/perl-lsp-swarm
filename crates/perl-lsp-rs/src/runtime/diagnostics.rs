@@ -414,6 +414,23 @@ impl LspServer {
     ///
     /// Only publishes if client doesn't support pull diagnostics to avoid
     /// double-flow for modern LSP 3.17+ clients.
+    /// Resolve the URI spelling to echo on the wire for `uri` (#17339).
+    ///
+    /// The `documents` map is keyed by the normalized URI (Windows drive
+    /// letters lowercased), so callers that hold only a map key — the
+    /// config-triggered republish loops — would otherwise publish under a
+    /// spelling the client never addressed. The client-spelled URI recorded at
+    /// open/change time wins when known; the argument stands in otherwise.
+    fn wire_uri_for(&self, uri: &str) -> String {
+        let normalized_uri = self.normalize_uri_key(uri);
+        let documents = self.documents.lock();
+        documents
+            .get(&normalized_uri)
+            .or_else(|| documents.get(uri))
+            .and_then(|doc| doc.client_uri())
+            .map_or_else(|| uri.to_owned(), str::to_owned)
+    }
+
     pub(crate) fn publish_diagnostics(&self, uri: &str) {
         if self.client_supports_pull_diags.load(Ordering::Relaxed) {
             return;
@@ -537,6 +554,10 @@ impl LspServer {
 
         // Position helper on the snapshotted line_starts + text (no rope clone).
         let pos16 = |offset: usize| line_starts.offset_to_position(&text, offset);
+
+        // The wire spelling for every URI this publication echoes — payload
+        // and relatedInformation alike (#17339).
+        let wire_uri = self.wire_uri_for(uri);
 
         // Accepted native critic policy behind whatever critic rows this
         // publication ends up carrying (#13304). Stays `None` for the
@@ -805,7 +826,7 @@ impl LspServer {
                                     let (ri_el, ri_ec) = pos16(ri.location.1);
                                     json!({
                                         "location": {
-                                            "uri": uri,
+                                            "uri": wire_uri,
                                             "range": {
                                                 "start": {"line": ri_sl, "character": ri_sc},
                                                 "end":   {"line": ri_el, "character": ri_ec},
@@ -914,7 +935,7 @@ impl LspServer {
         } else {
             PushDiagnosticsDisposition::Replacement
         };
-        let payload = publish_diagnostics_params(uri, Some(version), &lsp_diagnostics);
+        let payload = publish_diagnostics_params(&wire_uri, Some(version), &lsp_diagnostics);
         match self.commit_push_diagnostics(&identity, payload, disposition) {
             PushDiagnosticsCommitOutcome::CommittedCurrent
             | PushDiagnosticsCommitOutcome::SafeClearCommitted => {}
@@ -1160,7 +1181,8 @@ impl LspServer {
             self.workspace_identity_generation.load(Ordering::SeqCst),
         )
         .with_folder_config_generation(config_generation_at_snapshot);
-        let payload = publish_diagnostics_params(uri, Some(version), &lsp_diagnostics);
+        let payload =
+            publish_diagnostics_params(&self.wire_uri_for(uri), Some(version), &lsp_diagnostics);
         match self.commit_push_diagnostics(
             &identity,
             payload,
@@ -1327,7 +1349,7 @@ impl LspServer {
         )
         .with_folder_config_generation(config_generation_at_snapshot);
         let payload = json!({
-            "uri": uri,
+            "uri": self.wire_uri_for(uri),
             "version": version,
             "diagnostics": lsp_diagnostics
         });

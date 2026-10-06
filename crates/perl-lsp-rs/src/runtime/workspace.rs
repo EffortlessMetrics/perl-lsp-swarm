@@ -564,7 +564,12 @@ impl LspServer {
             return;
         }
 
-        if params.get("error").is_some() {
+        // Only a non-null `error` member fails the request. JSON-RPC success
+        // carries no `error` at all, and a hand-built internal notification
+        // with an explicit `"error": null` also means "no failure" (#17338) —
+        // key presence alone discarded every successful
+        // workspace/configuration response.
+        if params.get("error").is_some_and(|error| !error.is_null()) {
             tracing::debug!(
                 request_id = id.as_i32(),
                 "workspace/configuration request failed; keeping TOML/default config"
@@ -1670,10 +1675,22 @@ impl LspServer {
                 continue;
             }
 
-            let message = format!(
-                "Perl LSP ignored invalid `{}` value {:?}; keeping the current setting. Valid values: {}.",
-                invalid.setting, invalid.value, invalid.valid_options
-            );
+            let message = match invalid.disposition {
+                perl_lsp_rs_core::config::InvalidClientSettingDisposition::KeepCurrent => format!(
+                    "Perl LSP ignored invalid `{}` value {:?}; keeping the current setting. \
+                     Valid values: {}.",
+                    invalid.setting, invalid.value, invalid.valid_options
+                ),
+                perl_lsp_rs_core::config::InvalidClientSettingDisposition::ClampToValidRange => {
+                    format!(
+                        "Perl LSP `{}` value {:?} is out of range; {}. Valid range: {}.",
+                        invalid.setting,
+                        invalid.value,
+                        invalid.disposition.as_str(),
+                        invalid.valid_options
+                    )
+                }
+            };
             if let Err(error) =
                 self.show_message(crate::runtime::window::MessageType::Warning, &message)
             {

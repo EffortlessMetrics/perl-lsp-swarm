@@ -693,3 +693,28 @@ fn two_selected_config_paths_never_cross_suppress_through_the_emit_path() {
     let snapshot = server.session_warning_dedup_snapshot();
     assert_eq!(snapshot.project_config.entries, 2);
 }
+
+#[test]
+fn out_of_range_critic_severity_warns_with_clamp_wording() -> Result<(), Box<dyn std::error::Error>>
+{
+    let (server, output) = server_with_output_capture();
+
+    // Regression (#17341): the invalid-setting warning family covered
+    // critic.engine/critic.profile/formatting.engine but silently clamped an
+    // out-of-range critic.severity. The same bounded session-warning path
+    // must surface the clamp, and repeats of the same value stay suppressed.
+    server.test_handle_did_change_configuration(Some(json!({
+        "settings": { "perl": { "critic": { "severity": 99 } } }
+    })));
+    server.test_handle_did_change_configuration(Some(json!({
+        "settings": { "perl": { "critic": { "severity": 99 } } }
+    })));
+
+    drop(server);
+    let texts = warning_texts(&output.messages()?);
+    assert_eq!(texts.len(), 1, "same out-of-range value must warn exactly once: {texts:?}");
+    assert!(texts[0].contains("critic.severity"), "warning must name the setting: {texts:?}");
+    assert!(texts[0].contains("99"), "warning must echo the supplied value: {texts:?}");
+    assert!(texts[0].contains("clamped"), "warning must state the clamp outcome: {texts:?}");
+    Ok(())
+}

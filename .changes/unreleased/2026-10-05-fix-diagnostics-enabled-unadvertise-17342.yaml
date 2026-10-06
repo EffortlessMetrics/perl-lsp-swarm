@@ -1,0 +1,10 @@
+---
+project: product
+component: Language intelligence
+kind: Fixed
+body: "Stop type-checking `perl.diagnostics.enabled` as a well-known setting. No consumer exists, so the type check advertised a diagnostics master switch the server does not implement; setting it is now simply unknown rather than silently honored-then-ignored."
+time: 2026-10-05T00:00:00Z
+custom:
+  PR: "17386"
+  Slug: fix-diagnostics-enabled-unadvertise-17342
+  Breaking: "no"

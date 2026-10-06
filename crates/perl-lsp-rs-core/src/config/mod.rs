@@ -156,13 +156,21 @@ pub struct ServerConfig {
     /// from `.perl-lsp.toml`, a discovered `.perltidyrc`, or
     /// `didChangeConfiguration` — the configured width wins over `tabSize` on
     /// both the native and external formatting paths.
+    ///
+    /// Boundary (#17340): the width governs indentation the formatter
+    /// *generates* — for example the body lines the native engine emits when
+    /// it expands a one-line `sub answer{return 1;}` into a block, or every
+    /// indented line the external `perltidy` produces. It is not a
+    /// re-indentation pass: the native engine preserves the existing leading
+    /// indentation of lines it does not re-render, so a document that is
+    /// already one statement per line formats identically under any width.
     pub perltidy_indent_columns: Option<u32>,
 
     /// Use tabs instead of spaces for perltidy.
     ///
     /// `None` means unconfigured; formatting falls back to the editor-supplied
     /// `insertSpaces`. See [`ServerConfig::perltidy_indent_columns`] for the
-    /// precedence rule.
+    /// precedence rule and the generated-indentation boundary (#17340).
     pub perltidy_tabs: Option<bool>,
 
     /// Opening brace on new line for perltidy.
@@ -665,10 +673,15 @@ impl ServerConfig {
         // Warn on wrong-type values for well-known settings. (#5093)
         // The and_then(|v| v.as_*) guards above silently ignore type mismatches;
         // this pass surfaces them so users know their config is being ignored.
+        // Every listed key must be consumed by `update_from_value` above:
+        // `diagnostics.enabled` was listed here while no consumer exists
+        // (ServerConfig has no diagnostics master switch), so a correctly
+        // typed `false` was as silently ignored as a wrongly typed one —
+        // the type check advertised support the server does not have
+        // (#17342). Re-list it only together with a real consumer.
         warn_on_type_mismatch(settings, "inlayHints", "enabled", "boolean");
         warn_on_type_mismatch(settings, "inlayHints", "parameterHints", "boolean");
         warn_on_type_mismatch(settings, "inlayHints", "typeHints", "boolean");
-        warn_on_type_mismatch(settings, "diagnostics", "enabled", "boolean");
         warn_on_type_mismatch(settings, "formatting", "enabled", "boolean");
     }
 
@@ -695,6 +708,7 @@ impl ServerConfig {
                         value: client_setting_display_value(engine),
                         value_type: client_setting_value_type(engine),
                         valid_options: CLIENT_CRITIC_ENGINE_VALID_OPTIONS,
+                        disposition: InvalidClientSettingDisposition::KeepCurrent,
                     });
                 }
             }
@@ -709,8 +723,27 @@ impl ServerConfig {
                         value: client_setting_display_value(profile),
                         value_type: client_setting_value_type(profile),
                         valid_options: NativeCriticProfile::VALID_OPTIONS,
+                        disposition: InvalidClientSettingDisposition::KeepCurrent,
                     });
                 }
+            }
+            // An admitted-but-out-of-range severity is not refused: the
+            // candidate parser clamps it into 1..=5 and applies the clamped
+            // value. The user must be told the applied value differs from
+            // what they typed (#17341); wrong-typed severities take the
+            // whole-candidate rejection path instead and are not inspected
+            // here.
+            if let Some(severity) = critic.get("severity")
+                && let Some(raw) = as_config_u64(severity)
+                && !CRITIC_SEVERITY_RANGE.contains(&raw)
+            {
+                invalid.push(InvalidClientSetting {
+                    setting: "critic.severity",
+                    value: client_setting_display_value(severity),
+                    value_type: client_setting_value_type(severity),
+                    valid_options: CLIENT_CRITIC_SEVERITY_VALID_OPTIONS,
+                    disposition: InvalidClientSettingDisposition::ClampToValidRange,
+                });
             }
         }
 
@@ -727,6 +760,7 @@ impl ServerConfig {
                     value: client_setting_display_value(engine),
                     value_type: client_setting_value_type(engine),
                     valid_options: CLIENT_FORMATTER_MODE_VALID_OPTIONS,
+                    disposition: InvalidClientSettingDisposition::KeepCurrent,
                 });
             }
         }
@@ -761,6 +795,32 @@ pub struct InvalidClientSetting {
     pub value_type: &'static str,
     /// Human-readable accepted values for the setting.
     pub valid_options: &'static str,
+    /// What the server does with the invalid value after this inspection
+    /// (#17341). Enum members are refused outright, but an out-of-range
+    /// numeric such as `critic.severity` is still applied after clamping —
+    /// the user-facing message must say that instead of claiming the
+    /// setting was ignored.
+    pub disposition: InvalidClientSettingDisposition,
+}
+
+/// How the server disposes of an invalid client-supplied setting value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InvalidClientSettingDisposition {
+    /// The value is refused; the previously accepted value stands.
+    KeepCurrent,
+    /// The value is applied after clamping into the setting's valid range.
+    ClampToValidRange,
+}
+
+impl InvalidClientSettingDisposition {
+    /// The user-facing clause describing this disposition.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::KeepCurrent => "keeping the current setting",
+            Self::ClampToValidRange => "applying the clamped value",
+        }
+    }
 }
 
 /// Log a warning when a config value has the wrong type. (#5093)
@@ -847,6 +907,12 @@ const CLIENT_FORMATTER_MODE_VALID_OPTIONS: &str = "native, off (disabled, none)"
 /// channel. Legacy subprocess aliases remain available only through trusted
 /// project configuration.
 const CLIENT_CRITIC_ENGINE_VALID_OPTIONS: &str = "native";
+
+/// Valid severity threshold range for `critic.severity` (client settings
+/// channel and project files); the parser clamps into it (#17341).
+const CRITIC_SEVERITY_RANGE: std::ops::RangeInclusive<u64> = 1..=5;
+const CLIENT_CRITIC_SEVERITY_VALID_OPTIONS: &str =
+    "1-5 (out-of-range values are clamped to the nearest bound)";
 
 /// Which config channel supplied a critic rule-ID list.
 ///
@@ -4752,18 +4818,21 @@ profile = "recommended"
                     value: "nativ".to_string(),
                     value_type: "string",
                     valid_options: CLIENT_CRITIC_ENGINE_VALID_OPTIONS,
+                    disposition: InvalidClientSettingDisposition::KeepCurrent,
                 },
                 InvalidClientSetting {
                     setting: "critic.profile",
                     value: "recomended".to_string(),
                     value_type: "string",
                     valid_options: NativeCriticProfile::VALID_OPTIONS,
+                    disposition: InvalidClientSettingDisposition::KeepCurrent,
                 },
                 InvalidClientSetting {
                     setting: "formatting.engine",
                     value: "perltide".to_string(),
                     value_type: "string",
                     valid_options: CLIENT_FORMATTER_MODE_VALID_OPTIONS,
+                    disposition: InvalidClientSettingDisposition::KeepCurrent,
                 },
             ]
         );
@@ -4825,6 +4894,40 @@ profile = "recommended"
         assert_eq!(invalid[1].value, "[\"recommended\"]");
         assert_eq!(invalid[2].setting, "formatting.engine");
         assert_eq!(invalid[2].value, "null");
+    }
+
+    /// Out-of-range `critic.severity` is applied after clamping, not refused,
+    /// so the inspection reports it with the clamp disposition (#17341).
+    #[test]
+    fn client_invalid_severity_inspection_reports_out_of_range_numerics() {
+        let invalid = ServerConfig::invalid_client_setting_values(&serde_json::json!({
+            "critic": { "severity": 99 }
+        }));
+        assert_eq!(
+            invalid,
+            vec![InvalidClientSetting {
+                setting: "critic.severity",
+                value: "99".to_string(),
+                value_type: "number",
+                valid_options: CLIENT_CRITIC_SEVERITY_VALID_OPTIONS,
+                disposition: InvalidClientSettingDisposition::ClampToValidRange,
+            }]
+        );
+
+        // In-range and boundary values are admitted without inspection noise.
+        for severity in [1_u8, 3, 5] {
+            let payload = serde_json::json!({ "critic": { "severity": severity } });
+            assert!(
+                ServerConfig::invalid_client_setting_values(&payload).is_empty(),
+                "in-range severity {severity} must not be reported"
+            );
+        }
+        // A wrong-typed severity is refused by the whole-candidate parser via
+        // a different path and is deliberately not inspected here.
+        let wrong_type = ServerConfig::invalid_client_setting_values(&serde_json::json!({
+            "critic": { "severity": "very strict" }
+        }));
+        assert!(wrong_type.is_empty(), "wrong-typed severity takes the candidate-rejection path");
     }
 
     #[test]

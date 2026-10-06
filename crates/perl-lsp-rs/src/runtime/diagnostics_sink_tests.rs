@@ -102,6 +102,50 @@ mod tests {
         );
     }
 
+    /// Regression (#17339): a config-triggered republish iterates the
+    /// document map, whose keys are normalized (`perl_uri::uri_key`
+    /// lowercases Windows drive letters). The wire payload must still echo
+    /// the URI spelling the client opened the document with, or the open
+    /// buffer keeps stale diagnostics while a phantom lowercased identity
+    /// receives the fresh set.
+    #[test]
+    fn config_triggered_republish_keeps_client_uri_spelling() {
+        let (server, buf) = make_server_with_capture();
+        let uri = "file:///F:/config-republish-spelling/app.pl";
+        server
+            .test_handle_did_open(Some(json!({
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "perl",
+                    "version": 1,
+                    "text": "my $value = 1;\n"
+                }
+            })))
+            .expect("didOpen should succeed");
+        assert!(wait_for_frames(&buf, 1), "initial open should publish diagnostics");
+        let opened = String::from_utf8_lossy(&buf.lock()).into_owned();
+        assert!(opened.contains(uri), "didOpen publish must echo the client spelling: {opened}");
+        buf.lock().clear();
+
+        server.test_handle_did_change_configuration(Some(json!({
+            "settings": { "perl": { "critic": { "severity": 5 } } }
+        })));
+        assert!(
+            wait_for_frames(&buf, 1),
+            "config change must republish diagnostics for open documents"
+        );
+        let republished = String::from_utf8_lossy(&buf.lock()).into_owned();
+        assert!(
+            republished.contains(uri),
+            "config-triggered republish must use the client's URI spelling, not the \
+             normalized map key; got: {republished}"
+        );
+        assert!(
+            !republished.contains("\"uri\":\"file:///f:/"),
+            "republish must not leak the lowercased drive-letter key onto the wire: {republished}"
+        );
+    }
+
     /// didClose + didOpen of the SAME URI installs a brand-new document
     /// instance whose numeric generation can equal the removed one. Performed
     /// directly on the documents map so no handler reentrancy is needed.

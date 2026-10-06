@@ -815,4 +815,61 @@ mod tests {
         );
         Ok(())
     }
+
+    /// Regression probe (#17340): a mid-session `didChangeConfiguration`
+    /// indentColumns change must be observable in native formatting output.
+    /// The configured width governs indentation the formatter *generates* —
+    /// here the body line the engine emits when it expands a one-line `sub` —
+    /// while lines it does not re-render keep their existing leading
+    /// indentation (the boundary the config contract documents).
+    #[test]
+    fn did_change_configuration_indent_columns_is_live_on_native_path()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        let uri = "file:///test_indent_columns_live.pl";
+        server.test_apply_did_open(
+            uri,
+            "sub answer{return 1;}
+",
+            1,
+        )?;
+
+        let params = json!({
+            "textDocument": { "uri": uri, "version": 1 },
+            "options": { "tabSize": 4, "insertSpaces": true },
+        });
+
+        let before = server
+            .handle_formatting(Some(params.clone()))?
+            .ok_or("expected baseline formatting edits")?;
+        let before_text = before[0]["newText"].as_str().ok_or("baseline edit missing text")?;
+        assert!(
+            before_text.contains(
+                "
+    return 1;"
+            ),
+            "default (editor tabSize 4) must indent generated body lines by 4: {before_text:?}"
+        );
+
+        server.test_handle_did_change_configuration(Some(json!({
+            "settings": { "perl": { "formatting": { "indentColumns": 8 } } }
+        })));
+
+        let after = server
+            .handle_formatting(Some(params))?
+            .ok_or("expected formatting edits after config change")?;
+        let after_text = after[0]["newText"].as_str().ok_or("post-change edit missing text")?;
+        assert_ne!(
+            before_text, after_text,
+            "indentColumns from didChangeConfiguration must change native output"
+        );
+        assert!(
+            after_text.contains(
+                "
+        return 1;"
+            ),
+            "configured indentColumns 8 must win over editor tabSize 4: {after_text:?}"
+        );
+        Ok(())
+    }
 }
