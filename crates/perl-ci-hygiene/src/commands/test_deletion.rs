@@ -264,11 +264,12 @@ pub(crate) fn is_test_file_path(path: &str) -> bool {
 /// Blanks comments and string/char literal bodies, preserving newlines.
 ///
 /// `//` line comments run to end of line; `/* */` block comments nest as in
-/// Rust; ordinary strings honour backslash escapes; raw strings honour any
-/// hash count; char literals match only the `'x'` / `'\e'` shapes so a
-/// lifetime (`&'a str`) never opens one. Every blanked byte becomes a space,
-/// so token boundaries — and therefore counts — are unaffected by what the
-/// prose happened to contain.
+/// Rust; ordinary strings run to the closing unescaped quote across physical
+/// newlines; raw strings honour any hash count and the `br`/`cr` prefixes;
+/// char literals match only the `'x'` / `'\e'` shapes so a lifetime
+/// (`&'a str`) never opens one. Every blanked byte becomes a space, so token
+/// boundaries — and therefore counts — are unaffected by what the prose
+/// happened to contain.
 fn strip_code(text: &str) -> String {
     let chars: Vec<char> = text.chars().collect();
     let mut out = String::with_capacity(text.len());
@@ -315,13 +316,15 @@ fn strip_code(text: &str) -> String {
         if chars[index] == '"' {
             out.push(' ');
             index += 1;
-            while index < chars.len() && chars[index] != '"' && chars[index] != '\n' {
-                // A backslash escapes the next character, `\"` included; an
-                // unterminated string ends at the newline rather than eating
-                // the rest of the file.
+            // Ordinary strings may span physical newlines, so run to the
+            // closing unescaped quote; newlines are preserved. An
+            // unterminated string runs to end of input (invalid Rust never
+            // merges — the compile gates own that state).
+            while index < chars.len() && chars[index] != '"' {
+                // A backslash escapes the next character, `\"` included.
                 let step = if chars[index] == '\\' { 2 } else { 1 };
-                for _ in 0..step.min(chars.len() - index) {
-                    out.push(' ');
+                for offset in 0..step.min(chars.len() - index) {
+                    out.push(if chars[index + offset] == '\n' { '\n' } else { ' ' });
                 }
                 index += step;
             }
@@ -347,13 +350,20 @@ fn strip_code(text: &str) -> String {
 /// Index just past a raw string starting at `index`, or `None`.
 ///
 /// Any hash count is honoured (unlike single-line masking, whole-text lexing
-/// has no ceiling to document). An unterminated body runs to end of input.
+/// has no ceiling to document). Byte (`br"..."`) and C (`cr"..."`) raw
+/// strings prefix the `r` with a lone `b`/`c`; anything else glued to the
+/// `r` is an identifier, not a string. An unterminated body runs to end of
+/// input.
 fn raw_string_end(chars: &[char], index: usize) -> Option<usize> {
     if chars[index] != 'r' {
         return None;
     }
     if index > 0 && (chars[index - 1].is_alphanumeric() || chars[index - 1] == '_') {
-        return None;
+        let lone_prefix = (chars[index - 1] == 'b' || chars[index - 1] == 'c')
+            && (index < 2 || (!chars[index - 2].is_alphanumeric() && chars[index - 2] != '_'));
+        if !lone_prefix {
+            return None;
+        }
     }
     let mut cursor = index + 1;
     while chars.get(cursor) == Some(&'#') {
@@ -1024,6 +1034,25 @@ fn keeps_working() {
     #[test]
     fn raw_strings_of_any_hash_count_do_not_count() -> Result<()> {
         let text = "fn f() {\n    let a = r#\"#[test]\"#;\n    let b = r####\"assert!(false);\"####;\n    assert!(a.len() + b.len() > 0);\n}\n";
+        assert_eq!(count_source(text)?, FileCounts { tests: 0, assertions: 1 });
+        Ok(())
+    }
+
+    #[test]
+    fn multiline_ordinary_strings_do_not_leak_or_swallow() -> Result<()> {
+        // Physical newlines are legal inside `"..."`: the whole literal is
+        // one string, so fixture text never counts and the real assertion
+        // after the closing quote stays visible.
+        let text = "fn f() {\n    let fixture = \"first\nassert!(false);\n#[test]\nlast\";\n    assert!(!fixture.is_empty());\n}\n";
+        assert_eq!(count_source(text)?, FileCounts { tests: 0, assertions: 1 });
+        Ok(())
+    }
+
+    #[test]
+    fn byte_and_c_raw_strings_do_not_count() -> Result<()> {
+        // `br`/`cr` raw strings (single-line and multiline) blank like plain
+        // raw strings; a longer identifier ending in `br` is not a prefix.
+        let text = "fn f() {\n    let a = br#\"#[test]\nassert!(false);\n\"#;\n    let b = cr#\"must_with(x)\"#;\n    let cabr = 1;\n    assert!(a.len() + b.len() + cabr > 0);\n}\n";
         assert_eq!(count_source(text)?, FileCounts { tests: 0, assertions: 1 });
         Ok(())
     }
