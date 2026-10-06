@@ -37,25 +37,42 @@ if [[ $# -eq 0 ]]; then
   exit 2
 fi
 
-BEFORE_LIST="$(git worktree list --porcelain 2>/dev/null | grep '^worktree ' || true)"
+# Resolve the destination path from the forwarded `git worktree add` args.
+# A before/after snapshot delta of the shared worktree list would race
+# concurrent adds (another caller's path could be selected); the args are
+# per-call. Prints the path, or nothing when none is found.
+resolve_wt_path() {
+  local prev="" arg
+  local seen_dashdash=false
+  for arg in "$@"; do
+    if $seen_dashdash; then printf '%s\n' "$arg"; return 0; fi
+    if [[ "$prev" == "skip" ]]; then prev=""; continue; fi
+    case "$arg" in
+      --) seen_dashdash=true ;;
+      -b|-B|--reason) prev="skip" ;; # value-taking options consume the next arg
+      --*=*) ;;                       # --opt=value never consumes the next arg
+      --*) ;;                         # boolean long flags (--force, --no-checkout, ...)
+      -b?*|-B?*) ;;                   # attached value (-bfoo): self-contained
+      -?) ;;                          # single boolean short flag (-f, -d, -q)
+      -??*)
+        # Combined short cluster (-qf, -fb): boolean unless it ends in the
+        # value-taking b/B, which consumes the next arg.
+        case "$arg" in *b|*B) prev="skip";; esac
+        ;;
+      *) printf '%s\n' "$arg"; return 0 ;;
+    esac
+  done
+  return 1
+}
 
 if ! git worktree add "$@"; then
   echo "ERROR: git worktree add failed (see above); no worktree created, hooks not provisioned" >&2
   exit 1
 fi
 
-AFTER_LIST="$(git worktree list --porcelain 2>/dev/null | grep '^worktree ' || true)"
-NEW_WT=""
-while IFS= read -r line; do
-  [[ -z "$line" ]] && continue
-  if ! grep -qxF "$line" <<< "$BEFORE_LIST"; then
-    NEW_WT="${line#worktree }"
-    break
-  fi
-done <<< "$AFTER_LIST"
-
+NEW_WT="$(resolve_wt_path "$@" || true)"
 if [[ -z "$NEW_WT" ]]; then
-  echo "ERROR: worktree created but the new path could not be determined; hooks NOT provisioned" >&2
+  echo "ERROR: worktree created but the new path could not be determined from the arguments; hooks NOT provisioned" >&2
   echo "    Fix: cd into the new worktree and run: $INSTALLER_HINT" >&2
   exit 1
 fi
@@ -67,20 +84,27 @@ if [[ ! -f "$AUTHORITY" ]]; then
 fi
 
 INSTALLED="$(git -C "$NEW_WT" rev-parse --git-common-dir 2>/dev/null)/hooks/pre-push"
+INSTALLED_COMMIT="$(git -C "$NEW_WT" rev-parse --git-common-dir 2>/dev/null)/hooks/pre-commit"
 
-# True when the installed hook matches the checked-in authority. The
-# command-substitution comparison strips trailing newlines, mirroring
-# check_githooks' normalization (the installer appends one "\n" to the
-# generated script, so a byte-exact diff would always report drift).
+# True when the installed hooks are good. pre-push is compared against the
+# checked-in authority (command-substitution comparison strips trailing
+# newlines, mirroring check_githooks' normalization: the installer appends
+# one "\n" to the generated script, so a byte-exact diff would always report
+# drift). pre-commit has no checked-in authority (its bytes are generated
+# inside the installer), so it gets a presence + executable check instead:
+# the installer always writes both hooks in one invocation, so a current
+# pre-push implies a current pre-commit unless the latter was deleted or
+# de-executed outright.
 hooks_current() {
   [[ -f "$INSTALLED" ]] || return 1
   [[ "$(tr -d '\r' < "$INSTALLED")" == "$(tr -d '\r' < "$AUTHORITY")" ]] || return 1
+  [[ -f "$INSTALLED_COMMIT" ]] || return 1
   case "$(uname -s 2>/dev/null || echo unknown)" in
     MINGW* | MSYS* | CYGWIN*)
       return 0
       ;; # Windows has no exec-bit semantics (mirrors check_githooks' cfg gate)
     *)
-      [[ -x "$INSTALLED" ]] || return 1
+      [[ -x "$INSTALLED" && -x "$INSTALLED_COMMIT" ]] || return 1
       ;;
   esac
   return 0
@@ -111,7 +135,8 @@ fi
 
 if ! hooks_current; then
   echo "ERROR: hook provisioning FAILED verification for worktree $NEW_WT" >&2
-  echo "    The installer ran but $INSTALLED still does not match hooks/pre-push." >&2
+  echo "    The installer ran but $INSTALLED still does not match hooks/pre-push," >&2
+  echo "    or $INSTALLED_COMMIT is missing/not executable." >&2
   echo "    (One cause is revision skew: a worktree cut from an old base whose hook" >&2
   echo "    authority predates the installer. Check out a current base or provision manually.)" >&2
   echo "    Fix: cd $NEW_WT && $INSTALLER_HINT" >&2

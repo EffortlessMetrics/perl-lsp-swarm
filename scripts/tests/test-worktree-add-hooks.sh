@@ -20,6 +20,15 @@
 #      provisioning and exit 0 without invoking the installer;
 #   G. wrapper with a failing `git worktree add` → non-zero exit, installer
 #      never invoked.
+#   E2. manager retries a provisioning-failed slot: same allocate resumes
+#      (provision + record) without resetting the branch (recovery commit
+#      survives).
+#   H. wrapper repairs a missing pre-commit while pre-push is current
+#      (installer runs, not the fast path).
+#   I. manager allocate repairs a missing pre-commit the same way.
+#   J. wrapper resolves the destination from tricky but valid flag salads
+#      (combined shorts, attached -b value); guards the arg parser against
+#      breaking valid invocations.
 #
 # Fully hermetic: a throwaway bare "origin" plus a clone under a tmpdir. The
 # fixture commits its OWN scripts/install-githooks.sh, which both
@@ -87,7 +96,11 @@ mkdir -p "$(dirname "$dest")"
 cp hooks/pre-push "$dest"
 printf '\n' >> "$dest"
 chmod +x "$dest"
-echo "stub installed pre-push to $dest"
+commit_dest="$(git rev-parse --git-path hooks)/pre-commit"
+printf '#!/usr/bin/env bash\necho fixture-commit\n' > "$commit_dest"
+printf '\n' >> "$commit_dest"
+chmod +x "$commit_dest"
+echo "stub installed pre-push to $dest and pre-commit to $commit_dest"
 FIXTURE
   chmod +x "$1"
 }
@@ -139,7 +152,8 @@ write_fixture_installer "${AGENT_ONE}/scripts/install-githooks.sh"
 )
 PRE_HOOK_SHA="$(git -C "$AGENT_ONE" rev-parse HEAD~2)"
 INSTALLED_HOOK="${AGENT_ONE}/.git/hooks/pre-push"
-rm -f "$INSTALLED_HOOK" # belt-and-braces: the clone starts with zero hooks
+INSTALLED_COMMIT_HOOK="${AGENT_ONE}/.git/hooks/pre-commit"
+rm -f "$INSTALLED_HOOK" "$INSTALLED_COMMIT_HOOK" # belt-and-braces: the clone starts with zero hooks
 
 # Place the manager under test where REPO_ROOT resolution expects it.
 mkdir -p "${AGENT_ONE}/scripts"
@@ -170,6 +184,10 @@ elif [[ ! -x "$INSTALLED_HOOK" ]]; then
   fail "wrapper provisions on drift: installed pre-push is not executable"
 elif ! installed_matches_authority "$INSTALLED_HOOK" "$WT_A/hooks/pre-push"; then
   fail "wrapper provisions on drift: installed pre-push does not match hooks/pre-push"
+elif [[ ! -f "$INSTALLED_COMMIT_HOOK" ]]; then
+  fail "wrapper provisions on drift: no installed pre-commit at $INSTALLED_COMMIT_HOOK"
+elif [[ ! -x "$INSTALLED_COMMIT_HOOK" ]]; then
+  fail "wrapper provisions on drift: installed pre-commit is not executable"
 elif [[ "$(stub_install_count)" -ne 1 ]]; then
   fail "wrapper provisions on drift: installer ran $(stub_install_count) times, expected 1"
 else
@@ -212,6 +230,9 @@ fi
 cp "$WT_A/hooks/pre-push" "$INSTALLED_HOOK"
 printf '\n' >> "$INSTALLED_HOOK"
 chmod +x "$INSTALLED_HOOK"
+printf '#!/usr/bin/env bash\necho fixture-commit\n' > "$INSTALLED_COMMIT_HOOK"
+printf '\n' >> "$INSTALLED_COMMIT_HOOK"
+chmod +x "$INSTALLED_COMMIT_HOOK"
 
 # ── Case D: manager allocate provisions on drift ──────────────────────────
 printf '#!/usr/bin/env bash\necho stale\n' > "$INSTALLED_HOOK" # force drift
@@ -258,10 +279,43 @@ elif [[ -f "$STATE_E" ]] && grep -q '"slot-e"' "$STATE_E"; then
 else
   pass "manager allocate loud failure: non-zero exit naming the installer, worktree kept, slot unrecorded"
 fi
+# ── Case E2: manager retries the failed slot without resetting ────────────
+# The slot-e worktree from case E exists on disk but was never recorded, and
+# the hooks are still stale. Add a unique commit (recovery work), leave the
+# installer repaired (STUB_INSTALL_FAIL was contained to case E's subshell),
+# and retry the identical allocate: it must resume (provision + record)
+# without resetting the branch to base.
+SLOT_E_WT="${MANAGED_E}/slot-e"
+echo "recovery" > "${SLOT_E_WT}/recovery.txt"
+git -C "$SLOT_E_WT" -c user.email="fixture@example.com" -c user.name="Fixture" add recovery.txt >/dev/null 2>&1
+# Redirected: the commit runs the installed pre-commit hook, whose echo is
+# noise here (a commit failure still kills the suite via set -e).
+git -C "$SLOT_E_WT" -c user.email="fixture@example.com" -c user.name="Fixture" commit -qm "recovery work" >/dev/null 2>&1
+BEFORE_E2="$(stub_install_count)"
+CASE_E2_EXIT=0
+CASE_E2_OUT="$(run_manager "$STATE_E" "$MANAGED_E" allocate --slot slot-e --branch feature/slot-e 2>&1)" || CASE_E2_EXIT=$?
+
+if [[ "$CASE_E2_EXIT" -ne 0 ]]; then
+  fail "manager retry resumes the failed slot: exited $CASE_E2_EXIT: $CASE_E2_OUT"
+elif [[ "$CASE_E2_OUT" != *"resumed-tip"* ]]; then
+  fail "manager retry resumes the failed slot: output does not report the resume: $CASE_E2_OUT"
+elif ! grep -q '"slot-e"' "$STATE_E"; then
+  fail "manager retry resumes the failed slot: slot-e not recorded in state"
+elif ! git -C "$SLOT_E_WT" log --oneline | grep -q "recovery work"; then
+  fail "manager retry resumes the failed slot: recovery commit was reset away"
+elif [[ "$(stub_install_count)" -ne $((BEFORE_E2 + 1)) ]]; then
+  fail "manager retry resumes the failed slot: installer did not run exactly once on resume"
+else
+  pass "manager retry resumes the failed slot: provisioned, recorded, branch untouched"
+fi
+
 # Repair the staled hook for the remaining cases.
 cp "$WT_A/hooks/pre-push" "$INSTALLED_HOOK"
 printf '\n' >> "$INSTALLED_HOOK"
 chmod +x "$INSTALLED_HOOK"
+printf '#!/usr/bin/env bash\necho fixture-commit\n' > "$INSTALLED_COMMIT_HOOK"
+printf '\n' >> "$INSTALLED_COMMIT_HOOK"
+chmod +x "$INSTALLED_COMMIT_HOOK"
 
 # ── Case F: no authority → both paths skip ────────────────────────────────
 WT_F="${TMPDIR_BASE}/wt-f"
@@ -308,6 +362,65 @@ elif [[ "$CASE_G_OUT" != *"no worktree created"* ]]; then
   fail "wrapper git failure: output does not report the git failure: $CASE_G_OUT"
 else
   pass "wrapper git failure: non-zero exit, installer never invoked"
+fi
+
+# ── Case H: wrapper repairs a missing pre-commit ──────────────────────────
+# pre-push is current; only pre-commit was deleted. The fast path must not
+# mask it: the installer runs and both hooks end up usable.
+rm -f "$INSTALLED_COMMIT_HOOK"
+WT_H="${TMPDIR_BASE}/wt-h"
+BEFORE_H="$(stub_install_count)"
+CASE_H_EXIT=0
+CASE_H_OUT="$(cd "$AGENT_ONE" && bash "$WRAPPER" -b "feature/wt-h" "$WT_H" 2>&1)" || CASE_H_EXIT=$?
+
+if [[ "$CASE_H_EXIT" -ne 0 ]]; then
+  fail "wrapper repairs missing pre-commit: exited $CASE_H_EXIT: $CASE_H_OUT"
+elif [[ ! -f "$INSTALLED_COMMIT_HOOK" ]]; then
+  fail "wrapper repairs missing pre-commit: pre-commit still absent after provisioning"
+elif [[ ! -x "$INSTALLED_COMMIT_HOOK" ]]; then
+  fail "wrapper repairs missing pre-commit: reinstalled pre-commit is not executable"
+elif [[ "$(stub_install_count)" -ne $((BEFORE_H + 1)) ]]; then
+  fail "wrapper repairs missing pre-commit: installer did not run exactly once"
+else
+  pass "wrapper repairs missing pre-commit: installer ran, both hooks usable"
+fi
+
+# ── Case I: manager repairs a missing pre-commit ──────────────────────────
+rm -f "$INSTALLED_COMMIT_HOOK"
+STATE_I="${TMPDIR_BASE}/state-i.json"
+MANAGED_I="${TMPDIR_BASE}/managed-i"
+BEFORE_I="$(stub_install_count)"
+CASE_I_EXIT=0
+CASE_I_OUT="$(run_manager "$STATE_I" "$MANAGED_I" allocate --slot slot-i --branch feature/slot-i 2>&1)" || CASE_I_EXIT=$?
+
+if [[ "$CASE_I_EXIT" -ne 0 ]]; then
+  fail "manager repairs missing pre-commit: exited $CASE_I_EXIT: $CASE_I_OUT"
+elif [[ ! -f "$INSTALLED_COMMIT_HOOK" ]]; then
+  fail "manager repairs missing pre-commit: pre-commit still absent after provisioning"
+elif [[ ! -x "$INSTALLED_COMMIT_HOOK" ]]; then
+  fail "manager repairs missing pre-commit: reinstalled pre-commit is not executable"
+elif [[ "$(stub_install_count)" -ne $((BEFORE_I + 1)) ]]; then
+  fail "manager repairs missing pre-commit: installer did not run exactly once"
+else
+  pass "manager repairs missing pre-commit: installer ran, both hooks usable"
+fi
+
+# ── Case J: wrapper resolves tricky flag salads ───────────────────────────
+# Combined short flags plus an attached -b value are valid `git worktree
+# add` invocations; the arg parser must resolve the destination path from
+# them (no shared-list delta, so concurrent adds cannot confuse it).
+WT_J="${TMPDIR_BASE}/wt-j"
+CASE_J_EXIT=0
+CASE_J_OUT="$(cd "$AGENT_ONE" && bash "$WRAPPER" -qf -bfeat/salad "$WT_J" main 2>&1)" || CASE_J_EXIT=$?
+
+if [[ "$CASE_J_EXIT" -ne 0 ]]; then
+  fail "wrapper flag salad: exited $CASE_J_EXIT: $CASE_J_OUT"
+elif [[ ! -d "$WT_J" ]]; then
+  fail "wrapper flag salad: destination worktree was not created at $WT_J"
+elif [[ "$(git -C "$WT_J" rev-parse --abbrev-ref HEAD 2>/dev/null)" != "feat/salad" ]]; then
+  fail "wrapper flag salad: worktree branch is not feat/salad"
+else
+  pass "wrapper flag salad: destination resolved from combined/attached flags"
 fi
 
 echo ""

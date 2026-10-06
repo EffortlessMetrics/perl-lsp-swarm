@@ -851,6 +851,39 @@ def _usable_bash() -> str | None:
     return exe
 
 
+def _slot_was_recorded(state_path: Path, slot_id: str) -> bool:
+    """True when the state FILE already records slot_id (pre-sync snapshot).
+
+    allocate runs after sync_state, which appends live-but-unrecorded trees,
+    so the in-memory state cannot distinguish a recorded slot from a mere
+    discovery. Re-reading the file answers it; under the state lock the file
+    cannot change concurrently. An unreadable file answers True so the
+    caller falls through to the existing (non-resume) flow.
+    """
+    try:
+        recorded = load_json(state_path)
+    except (OSError, ValueError):
+        return True
+    return any(s.get("slot_id") == slot_id for s in recorded.get("slots", []))
+
+
+def _installed_hook_usable(path: Path) -> bool:
+    """True when an installed hook exists and (POSIX) is executable.
+
+    Byte currency needs a checked-in authority, which only pre-push has;
+    pre-commit's authority is generated inside the installer. The installer
+    always writes both hooks in one invocation, so a current pre-push implies
+    a current pre-commit unless the latter was deleted or de-executed
+    outright — exactly what this presence check closes. CI's check_githooks
+    still owns byte-level truth for both hooks.
+    """
+    if not path.is_file():
+        return False
+    if os.name != "nt":
+        return os.access(path, os.X_OK)
+    return True
+
+
 def _hook_bytes_current(installed: Path, authority: Path) -> bool:
     """True when the installed hook matches the checked-in authority.
 
@@ -901,7 +934,8 @@ def provision_worktree_hooks(slot_path: Path) -> None:
     if not common_dir.is_absolute():
         common_dir = slot_path / common_dir
     installed = common_dir / "hooks" / "pre-push"
-    if _hook_bytes_current(installed, authority):
+    installed_commit = common_dir / "hooks" / "pre-commit"
+    if _hook_bytes_current(installed, authority) and _installed_hook_usable(installed_commit):
         print("hooks: installed git hooks already current — installer skipped (no build)")
         return
     script = slot_path / "scripts" / "install-githooks.sh"
@@ -929,11 +963,12 @@ def provision_worktree_hooks(slot_path: Path) -> None:
             f"The worktree exists but its hooks are missing or stale. "
             f"Fix: {HOOK_INSTALLER_HINT}"
         )
-    if not _hook_bytes_current(installed, authority):
+    if not (_hook_bytes_current(installed, authority) and _installed_hook_usable(installed_commit)):
         raise RuntimeError(
             f"hook provisioning FAILED verification for {slot_path}: the installer ran but "
-            f"{installed} still does not match {authority} (one cause is revision skew: a "
-            f"slot cut from an old base whose hook authority predates the installer). "
+            f"{installed} still does not match {authority}, or {installed_commit} is missing/"
+            f"not executable (one cause is revision skew: a slot cut from an old base whose "
+            f"hook authority predates the installer). "
             f"Fix: {HOOK_INSTALLER_HINT}"
         )
     print(f"hooks: git hooks provisioned and verified for {slot_path}")
@@ -971,6 +1006,35 @@ def allocate(
         }
         state["slots"].append(slot)
         slots[args.slot] = slot
+
+    if slot_path.exists() and not _slot_was_recorded(state_path, args.slot):
+        # Unrecorded worktree on disk: an allocate interrupted after `git
+        # worktree add` but before save_state (e.g. hook provisioning
+        # failed), or a foreign tree. Resume instead of refusing: provision
+        # hooks and record the slot WITHOUT resetting the branch, so a retry
+        # after repairing the installer cannot strand recovery work.
+        actual_branch = normalize_branch(slot.get("branch", "HEAD"))
+        if actual_branch != normalize_branch(args.branch):
+            raise RuntimeError(
+                f"slot {args.slot!r} path holds branch {actual_branch!r}, not {args.branch!r}; "
+                f"release it or use --force to reallocate"
+            )
+        if args.dry_run:
+            print(f"would resume slot={args.slot} path={slot_rel} branch={args.branch} "
+                  f"(provision hooks, record active, no reset)")
+            return
+        provision_worktree_hooks(slot_path)
+        slot["branch"] = normalize_branch(args.branch)
+        slot["path"] = slot_rel
+        slot["status"] = "active"
+        slot["reuse_count"] = int(slot.get("reuse_count", 0)) + 1
+        slot["last_used_at"] = utc_now()
+        set_owner(slot, owner, owner_source)
+        save_state(state_path, state)
+        tip = git(["-C", str(slot_path), "rev-parse", "HEAD"], check=False).stdout.strip() or "unknown"
+        print(f"allocated slot={args.slot} path={slot_rel} branch={args.branch} resumed-tip={tip} "
+              f"(existing worktree kept as-is; hooks provisioned)")
+        return
 
     if slot.get("status") not in {"idle", "missing", "retired"} and not args.force:
         raise RuntimeError(f"slot {args.slot!r} is currently {slot.get('status')!r}; use --force to reallocate")

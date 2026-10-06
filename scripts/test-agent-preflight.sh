@@ -593,6 +593,8 @@ test_current_hook_passes() {
     read -r repo wt installed <<< "$(make_hook_worktree "agent-hook-current-test")"
     cp "$wt/hooks/pre-push" "$installed"
     chmod +x "$installed"
+    printf '#!/usr/bin/env bash\necho fixture-commit\n' > "$(dirname "$installed")/pre-commit"
+    chmod +x "$(dirname "$installed")/pre-commit"
 
     local code=0
     (cd "$wt" && unset CARGO_TARGET_DIR && bash "$PREFLIGHT" >/dev/null 2>&1) || code=$?
@@ -620,6 +622,8 @@ test_installer_shaped_hook_passes() {
     cp "$wt/hooks/pre-push" "$installed"
     printf '\n' >> "$installed"
     chmod +x "$installed"
+    printf '#!/usr/bin/env bash\necho fixture-commit\n' > "$(dirname "$installed")/pre-commit"
+    chmod +x "$(dirname "$installed")/pre-commit"
 
     local code=0
     (cd "$wt" && unset CARGO_TARGET_DIR && bash "$PREFLIGHT" >/dev/null 2>&1) || code=$?
@@ -679,6 +683,78 @@ test_non_executable_hook_fails() {
     esac
 }
 
+# ── Test 23: Current pre-push but missing pre-commit fails ─────────────────
+# The installer manages both hooks; a current pre-push must not mask a
+# deleted pre-commit.
+
+test_missing_precommit_hook_fails() {
+    local repo wt installed installed_commit
+    read -r repo wt installed <<< "$(make_hook_worktree "agent-hook-nocommit-test")"
+    installed_commit="$(dirname "$installed")/pre-commit"
+    cp "$wt/hooks/pre-push" "$installed"
+    chmod +x "$installed"
+    rm -f "$installed_commit"
+
+    local output code=0
+    output="$(cd "$wt" && unset CARGO_TARGET_DIR && bash "$PREFLIGHT" 2>&1)" || code=$?
+
+    git -C "$repo" worktree remove --force "$wt" 2>/dev/null || true
+    git -C "$repo" worktree prune 2>/dev/null || true
+    rm -rf "$repo"
+
+    if [[ "$code" -eq 7 ]] && [[ "$output" == *"pre-commit"* ]] && [[ "$output" == *"install-githooks"* ]]; then
+        pass "missing pre-commit hook fails (exit 7) naming the installer"
+    else
+        fail "missing pre-commit hook — expected exit 7 naming install-githooks, got exit $code: $output"
+    fi
+}
+
+# ── Test 24: Current pre-push but non-executable pre-commit fails ───────────
+# POSIX-only (mirrors the pre-push exec gate); skipped when the filesystem
+# cannot represent the missing bit.
+
+test_non_executable_precommit_hook_fails() {
+    local repo wt installed installed_commit
+    read -r repo wt installed <<< "$(make_hook_worktree "agent-hook-commitnoexec-test")"
+    installed_commit="$(dirname "$installed")/pre-commit"
+    cp "$wt/hooks/pre-push" "$installed"
+    chmod +x "$installed"
+    printf '#!/usr/bin/env bash\necho fixture-commit\n' > "$installed_commit"
+    chmod -x "$installed_commit"
+
+    if [[ -x "$installed_commit" ]]; then
+        git -C "$repo" worktree remove --force "$wt" 2>/dev/null || true
+        git -C "$repo" worktree prune 2>/dev/null || true
+        rm -rf "$repo"
+        pass "non-executable pre-commit fails (exec-bit not representable on this fs — skipped)"
+        return
+    fi
+
+    local output code=0
+    output="$(cd "$wt" && unset CARGO_TARGET_DIR && bash "$PREFLIGHT" 2>&1)" || code=$?
+
+    git -C "$repo" worktree remove --force "$wt" 2>/dev/null || true
+    git -C "$repo" worktree prune 2>/dev/null || true
+    rm -rf "$repo"
+
+    case "$(uname -s 2>/dev/null || echo unknown)" in
+        MINGW* | MSYS* | CYGWIN*)
+            if [[ "$code" -eq 0 ]]; then
+                pass "non-executable pre-commit passes on Windows (no exec-bit semantics)"
+            else
+                fail "non-executable pre-commit on Windows — expected exit 0, got $code"
+            fi
+            ;;
+        *)
+            if [[ "$code" -eq 7 ]] && [[ "$output" == *"pre-commit"* ]]; then
+                pass "non-executable pre-commit fails (exit 7) naming the installer"
+            else
+                fail "non-executable pre-commit — expected exit 7 naming install-githooks, got exit $code: $output"
+            fi
+            ;;
+    esac
+}
+
 # ── Run all tests ─────────────────────────────────────────────────────────────
 
 echo "=== agent-preflight test suite ==="
@@ -706,6 +782,8 @@ test_stale_hook_fails
 test_current_hook_passes
 test_installer_shaped_hook_passes
 test_non_executable_hook_fails
+test_missing_precommit_hook_fails
+test_non_executable_precommit_hook_fails
 
 echo ""
 echo "=== Results: $PASS_COUNT passed, $FAIL_COUNT failed ==="

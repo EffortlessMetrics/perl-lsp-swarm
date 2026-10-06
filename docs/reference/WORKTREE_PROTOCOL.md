@@ -54,7 +54,9 @@ From the coordination checkout, use the provisioned wrapper (issue #17406):
 it runs `git worktree add`, then installs and verifies current git hooks so
 the fresh worktree does not run with zero guards. It fails loudly (non-zero
 exit) when provisioning fails; rerun the installer from the new worktree and
-retry. `worktree-manager.py allocate` provisions the same way.
+retry. `worktree-manager.py allocate` provisions the same way, and a failed
+manager allocate can be retried with the identical command once fixed: it
+resumes (provisions hooks, records the slot) without resetting the branch.
 
 ```bash
 git fetch origin main

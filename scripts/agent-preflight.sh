@@ -158,6 +158,7 @@ fi
 
 REPO_ROOT_AGENT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
 INSTALLED_HOOK="$(git rev-parse --git-common-dir 2>/dev/null)/hooks/pre-push"
+INSTALLED_COMMIT_HOOK="$(git rev-parse --git-common-dir 2>/dev/null)/hooks/pre-commit"
 CHECKED_IN_HOOK="$REPO_ROOT_AGENT/hooks/pre-push"
 HOOK_INSTALLER_FIX="bash scripts/install-githooks.sh"
 if [[ ! -f "$CHECKED_IN_HOOK" ]]; then
@@ -190,8 +191,35 @@ else
             ;;
     esac
     if [[ "$HOOK_EXEC_OK" == true ]]; then
-        ok "pre-push hook is current"
-        HOOKS_OK=true
+        # pre-commit has no checked-in authority (its bytes are generated
+        # inside the installer), so it gets presence + executable instead of
+        # a byte comparison. The installer writes both hooks in one
+        # invocation, so a current pre-push implies a current pre-commit
+        # unless the latter was deleted or de-executed outright.
+        COMMIT_OK=true
+        COMMIT_PROBLEM=""
+        if [[ ! -f "$INSTALLED_COMMIT_HOOK" ]]; then
+            COMMIT_OK=false
+            COMMIT_PROBLEM="missing ($INSTALLED_COMMIT_HOOK). Commits run without the staged gate."
+        else
+            case "$(uname -s 2>/dev/null || echo unknown)" in
+                MINGW* | MSYS* | CYGWIN*) ;;
+                *)
+                    if [[ ! -x "$INSTALLED_COMMIT_HOOK" ]]; then
+                        COMMIT_OK=false
+                        COMMIT_PROBLEM="not executable ($INSTALLED_COMMIT_HOOK). Git silently skips non-executable hooks."
+                    fi
+                    ;;
+            esac
+        fi
+        if [[ "$COMMIT_OK" == true ]]; then
+            ok "pre-push hook is current"
+            HOOKS_OK=true
+        else
+            err "pre-commit hook is $COMMIT_PROBLEM"
+            echo "    Fix: $HOOK_INSTALLER_FIX (run from the repo root)"
+            HOOKS_OK=false
+        fi
     else
         err "pre-push hook is not executable ($INSTALLED_HOOK). Git silently skips non-executable hooks."
         echo "    Fix: $HOOK_INSTALLER_FIX (run from the repo root)"
