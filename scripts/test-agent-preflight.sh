@@ -55,6 +55,23 @@ cleanup() {
     done
 }
 
+# Create a git repo carrying a hooks/pre-push authority, plus a worktree.
+# Prints "<repo> <worktree> <installed-hook-path>"; caller cleans up the
+# worktree (remove + prune) and the repo, like the other tests.
+make_hook_worktree() {
+    local branch="${1:-agent-hook-test}"
+    local repo wt installed
+    repo="$(make_git_repo)"
+    mkdir -p "$repo/hooks"
+    printf '#!/usr/bin/env bash\necho current-hook\n' > "$repo/hooks/pre-push"
+    git -C "$repo" add hooks/pre-push
+    git -C "$repo" commit -q -m "hook authority"
+    wt="$(make_worktree "$repo" "$branch")"
+    # Resolve exactly the way agent-preflight.sh does (cwd = worktree).
+    installed="$(cd "$wt" && git rev-parse --git-common-dir)/hooks/pre-push"
+    printf '%s %s %s\n' "$repo" "$wt" "$installed"
+}
+
 # ── Test 1: Fails on master branch ───────────────────────────────────────────
 
 test_fails_on_master() {
@@ -238,8 +255,15 @@ test_current_worktree_passes() {
             # This is expected in multi-agent environments and validates
             # that Check 6 is working correctly.
             pass "current worktree passes preflight (exit 6 — stash from other agents, expected)"
+        elif [[ "$code" -eq 7 ]]; then
+            # Exit 7 = installed hooks missing/stale on this host (issue
+            # #17406). The drift detector is working correctly; provisioning
+            # the host's hooks (bash scripts/install-githooks.sh) returns
+            # this to exit 0. Dedicated fixture tests below pin the exact
+            # hook semantics.
+            pass "current worktree passes preflight (exit 7 — hooks not provisioned on this host, expected)"
         else
-            fail "current worktree should pass preflight — expected exit 0 or 6, got $code"
+            fail "current worktree should pass preflight — expected exit 0, 6, or 7, got $code"
         fi
     else
         # We're not in a proper agent worktree. That's OK — test 4 already
@@ -514,6 +538,144 @@ test_stash_error_message() {
     fi
 }
 
+# ── Test 18: Missing installed hook fails naming the installer ──────────────
+# Issue #17406: a fresh worktree has zero hooks (git init creates only
+# *.sample); preflight must fail with the installer as the fix, not pass.
+
+test_missing_hook_fails() {
+    local repo wt installed
+    read -r repo wt installed <<< "$(make_hook_worktree "agent-hook-missing-test")"
+    rm -f "$installed" # belt-and-braces: git init only creates *.sample
+
+    local output code=0
+    output="$(cd "$wt" && unset CARGO_TARGET_DIR && bash "$PREFLIGHT" 2>&1)" || code=$?
+
+    git -C "$repo" worktree remove --force "$wt" 2>/dev/null || true
+    git -C "$repo" worktree prune 2>/dev/null || true
+    rm -rf "$repo"
+
+    if [[ "$code" -eq 7 ]] && [[ "$output" == *"install-githooks"* ]]; then
+        pass "missing installed hook fails (exit 7) naming the installer"
+    else
+        fail "missing installed hook — expected exit 7 naming install-githooks, got exit $code: $output"
+    fi
+}
+
+# ── Test 19: Stale installed hook fails naming the installer ────────────────
+
+test_stale_hook_fails() {
+    local repo wt installed
+    read -r repo wt installed <<< "$(make_hook_worktree "agent-hook-stale-test")"
+    printf '#!/usr/bin/env bash\necho stale-hook\n' > "$installed"
+    chmod +x "$installed"
+
+    local output code=0
+    output="$(cd "$wt" && unset CARGO_TARGET_DIR && bash "$PREFLIGHT" 2>&1)" || code=$?
+
+    git -C "$repo" worktree remove --force "$wt" 2>/dev/null || true
+    git -C "$repo" worktree prune 2>/dev/null || true
+    rm -rf "$repo"
+
+    if [[ "$code" -eq 7 ]] && [[ "$output" == *"install-githooks"* ]]; then
+        pass "stale installed hook fails (exit 7) naming the installer"
+    else
+        fail "stale installed hook — expected exit 7 naming install-githooks, got exit $code: $output"
+    fi
+}
+
+# ── Test 20: Current installed hook passes ──────────────────────────────────
+
+test_current_hook_passes() {
+    local repo wt installed
+    read -r repo wt installed <<< "$(make_hook_worktree "agent-hook-current-test")"
+    cp "$wt/hooks/pre-push" "$installed"
+    chmod +x "$installed"
+
+    local code=0
+    (cd "$wt" && unset CARGO_TARGET_DIR && bash "$PREFLIGHT" >/dev/null 2>&1) || code=$?
+
+    git -C "$repo" worktree remove --force "$wt" 2>/dev/null || true
+    git -C "$repo" worktree prune 2>/dev/null || true
+    rm -rf "$repo"
+
+    if [[ "$code" -eq 0 ]]; then
+        pass "current installed hook passes (exit 0)"
+    else
+        fail "current installed hook — expected exit 0, got $code"
+    fi
+}
+
+# ── Test 21: Installer-shaped hook (extra trailing newline) passes ──────────
+# write_git_hook appends "\n" to the generated script, so a hook installed by
+# the real installer always carries one more trailing newline than the
+# checked-in authority. The comparison must tolerate exactly that, or every
+# provisioned host would report drift forever.
+
+test_installer_shaped_hook_passes() {
+    local repo wt installed
+    read -r repo wt installed <<< "$(make_hook_worktree "agent-hook-shaped-test")"
+    cp "$wt/hooks/pre-push" "$installed"
+    printf '\n' >> "$installed"
+    chmod +x "$installed"
+
+    local code=0
+    (cd "$wt" && unset CARGO_TARGET_DIR && bash "$PREFLIGHT" >/dev/null 2>&1) || code=$?
+
+    git -C "$repo" worktree remove --force "$wt" 2>/dev/null || true
+    git -C "$repo" worktree prune 2>/dev/null || true
+    rm -rf "$repo"
+
+    if [[ "$code" -eq 0 ]]; then
+        pass "installer-shaped hook (extra trailing newline) passes (exit 0)"
+    else
+        fail "installer-shaped hook — expected exit 0, got $code"
+    fi
+}
+
+# ── Test 22: Non-executable current hook fails ──────────────────────────────
+# Git silently skips non-executable hooks, so current bytes without the exec
+# bit are still a void guard. POSIX-only (mirrors check_githooks' cfg gate);
+# skipped when the filesystem cannot represent the missing bit.
+
+test_non_executable_hook_fails() {
+    local repo wt installed
+    read -r repo wt installed <<< "$(make_hook_worktree "agent-hook-noexec-test")"
+    cp "$wt/hooks/pre-push" "$installed"
+    chmod -x "$installed"
+
+    if [[ -x "$installed" ]]; then
+        git -C "$repo" worktree remove --force "$wt" 2>/dev/null || true
+        git -C "$repo" worktree prune 2>/dev/null || true
+        rm -rf "$repo"
+        pass "non-executable hook fails (exec-bit not representable on this fs — skipped)"
+        return
+    fi
+
+    local output code=0
+    output="$(cd "$wt" && unset CARGO_TARGET_DIR && bash "$PREFLIGHT" 2>&1)" || code=$?
+
+    git -C "$repo" worktree remove --force "$wt" 2>/dev/null || true
+    git -C "$repo" worktree prune 2>/dev/null || true
+    rm -rf "$repo"
+
+    case "$(uname -s 2>/dev/null || echo unknown)" in
+        MINGW* | MSYS* | CYGWIN*)
+            if [[ "$code" -eq 0 ]]; then
+                pass "non-executable hook passes on Windows (no exec-bit semantics)"
+            else
+                fail "non-executable hook on Windows — expected exit 0, got $code"
+            fi
+            ;;
+        *)
+            if [[ "$code" -eq 7 ]] && [[ "$output" == *"install-githooks"* ]]; then
+                pass "non-executable hook fails (exit 7) naming the installer"
+            else
+                fail "non-executable hook — expected exit 7 naming install-githooks, got exit $code: $output"
+            fi
+            ;;
+    esac
+}
+
 # ── Run all tests ─────────────────────────────────────────────────────────────
 
 echo "=== agent-preflight test suite ==="
@@ -536,6 +698,11 @@ test_target_dir_guidance_uses_worktree_default
 test_fails_with_stash_entries
 test_passes_with_empty_stash
 test_stash_error_message
+test_missing_hook_fails
+test_stale_hook_fails
+test_current_hook_passes
+test_installer_shaped_hook_passes
+test_non_executable_hook_fails
 
 echo ""
 echo "=== Results: $PASS_COUNT passed, $FAIL_COUNT failed ==="

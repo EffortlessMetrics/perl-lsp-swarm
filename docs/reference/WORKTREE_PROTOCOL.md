@@ -50,11 +50,15 @@ or a branch-local WIP commit for work that must survive.
 
 ## Create a worktree
 
-From the coordination checkout:
+From the coordination checkout, use the provisioned wrapper (issue #17406):
+it runs `git worktree add`, then installs and verifies current git hooks so
+the fresh worktree does not run with zero guards. It fails loudly (non-zero
+exit) when provisioning fails; rerun the installer from the new worktree and
+retry. `worktree-manager.py allocate` provisions the same way.
 
 ```bash
 git fetch origin main
-git worktree add -b fix/<issue>-<slug> \
+bash scripts/worktree-add.sh -b fix/<issue>-<slug> \
   .worktrees/<short-slot> \
   origin/main
 ```
@@ -62,8 +66,18 @@ git worktree add -b fix/<issue>-<slug> \
 For an existing candidate branch:
 
 ```bash
-git worktree add .worktrees/<short-slot> <branch>
+bash scripts/worktree-add.sh .worktrees/<short-slot> <branch>
 ```
+
+Raw `git worktree add` skips provisioning (local hooks cannot be strictly
+enforced). After a raw add, install hooks before editing:
+
+```bash
+bash scripts/install-githooks.sh
+```
+
+Either way, `bash scripts/agent-preflight.sh` refuses to proceed (exit 7)
+while the installed pre-push hook is missing or stale.
 
 `/.worktrees/` is ignored in `.gitignore`, so a linked checkout created there never
 appears as untracked content in the coordination checkout. A worktree root that is not
