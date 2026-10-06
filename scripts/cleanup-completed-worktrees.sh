@@ -351,6 +351,23 @@ process_worktree() {
         return 0
     fi
 
+    # Push state is judged before the landed verdict (#17404). `landed` matches
+    # by branch NAME, so a reused or locally-advanced branch can match a stale
+    # merged PR while HEAD still carries commits that exist nowhere else; any
+    # ahead commits veto removal. A missing remote-tracking ref or a failed
+    # fetch leaves the count unproven, so those axes keep their verdicts below.
+    local has_remote=false
+    if git_read -C "$REPO_ROOT" rev-parse --verify --quiet "origin/$branch" >/dev/null; then
+        has_remote=true
+    fi
+    local ahead=0
+    if $has_remote && $FETCH_OK; then
+        ahead="$(git_read -C "$REPO_ROOT" rev-list --count "origin/$branch..$head" 2>/dev/null || echo 1)"
+    fi
+    if [[ "$ahead" -gt 0 ]]; then
+        emit "$name" "$branch" "unpushed:$ahead" "KEEP"; KEPT=$((KEPT + 1)); return 0
+    fi
+
     if $landed; then
         emit "$name" "$branch" "landed" "REMOVE"
         if remove_worktree "$path"; then
@@ -363,21 +380,16 @@ process_worktree() {
     fi
 
     # Not landed: is every commit already on the remote?
-    if ! git_read -C "$REPO_ROOT" rev-parse --verify --quiet "origin/$branch" >/dev/null; then
+    if ! $has_remote; then
         emit "$name" "$branch" "no-remote" "KEEP"; KEPT=$((KEPT + 1)); return 0
     fi
     if ! $FETCH_OK; then
         emit "$name" "$branch" "not-proven" "KEEP"; KEPT=$((KEPT + 1)); return 0
     fi
 
-    local ahead
-    ahead="$(git_read -C "$REPO_ROOT" rev-list --count "origin/$branch..$head" 2>/dev/null || echo 1)"
-    if [[ "$ahead" -gt 0 ]]; then
-        emit "$name" "$branch" "unpushed:$ahead" "KEEP"; KEPT=$((KEPT + 1)); return 0
-    fi
-
-    # Fully pushed. An open PR is not a reason to keep the directory: the branch,
-    # PR, and review all survive, and `git worktree add` restores it on demand.
+    # Fully pushed ($ahead is 0 here: a positive count returned above). An open
+    # PR is not a reason to keep the directory: the branch, PR, and review all
+    # survive, and `git worktree add` restores it on demand.
     emit "$name" "$branch" "pushed" "REMOVE"
     if remove_worktree "$path"; then
         REMOVED=$((REMOVED + 1))

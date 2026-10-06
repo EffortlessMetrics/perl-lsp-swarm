@@ -546,6 +546,48 @@ test_squash_merged_branch_without_remote_is_removed() {
   assert_no_destructive_commands "dry-run does not remove squash-merged worktrees" "$case_dir"
 }
 
+# Regression test for #17404: `landed` matches by branch NAME, so a reused or
+# locally-advanced branch can match a stale merged PR while HEAD still carries
+# commits that exist nowhere else. Unpushed commits must veto removal before
+# the landed verdict is acted on.
+test_reused_branch_name_with_unpushed_commits_keeps_tree() {
+  local case_dir output worktree_path
+  case_dir="$(new_case reused-unpushed)"
+  write_worktree_list "$case_dir" "fix/reused"
+  worktree_path="${case_dir}/repo/.claude/worktrees/fix-reused"
+  printf '1\n' > "${case_dir}/remote-branch"
+  printf '2\n' > "${case_dir}/ahead-count"
+  printf '[{"number":42}]\n' > "${case_dir}/merged-pr"
+
+  output="$(run_cleanup_dry_run "$case_dir")"
+
+  assert_contains "reused branch name with unpushed commits reports unpushed count" "$output" "unpushed:2"
+  assert_contains "reused branch name with unpushed commits is kept" "$output" "KEEP"
+  assert_not_contains "reused branch name with unpushed commits is not judged landed" "$output" "landed"
+  assert_no_destructive_commands "reused branch dry-run removes nothing" "$case_dir"
+  if [[ -d "$worktree_path" ]]; then
+    pass "reused branch worktree directory still exists"
+  else
+    fail "reused branch worktree directory still exists"
+  fi
+
+  # The mutating sweep must veto removal the same way: no worktree remove and
+  # no branch deletion may even be attempted.
+  case_dir="$(new_case reused-unpushed-real)"
+  write_worktree_list "$case_dir" "fix/reused"
+  printf '1\n' > "${case_dir}/remote-branch"
+  printf '2\n' > "${case_dir}/ahead-count"
+  printf '[{"number":42}]\n' > "${case_dir}/merged-pr"
+
+  output="$(run_cleanup_real "$case_dir")"
+
+  assert_contains "mutating sweep keeps the reused branch with unpushed commits" "$output" "unpushed:2"
+  assert_contains "mutating sweep keeps the reused branch action KEEP" "$output" "KEEP"
+  assert_no_destructive_commands "mutating sweep attempts no removal for unpushed commits" "$case_dir"
+  assert_not_contains "mutating sweep issues no worktree remove" \
+    "$(cat "${case_dir}/git.log")" "worktree remove"
+}
+
 # The NOT_PROVEN downgrade guards a fetch that was attempted and failed, leaving
 # refs at unknown staleness. Only the mutating run fetches, so that is where the
 # contract is proven.
@@ -821,6 +863,7 @@ test_branch_without_remote_is_kept
 test_managed_owner_keeps_pushed_worktree
 test_json_escapes_special_characters
 test_squash_merged_branch_without_remote_is_removed
+test_reused_branch_name_with_unpushed_commits_keeps_tree
 test_fetch_failure_keeps_ambiguous_remote_branch
 test_dry_run_performs_no_mutating_git_commands
 test_real_run_fetches_without_global_prune
