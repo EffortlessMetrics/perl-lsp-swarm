@@ -156,13 +156,21 @@ pub struct ServerConfig {
     /// from `.perl-lsp.toml`, a discovered `.perltidyrc`, or
     /// `didChangeConfiguration` — the configured width wins over `tabSize` on
     /// both the native and external formatting paths.
+    ///
+    /// Boundary (#17340): the width governs indentation the formatter
+    /// *generates* — for example the body lines the native engine emits when
+    /// it expands a one-line `sub answer{return 1;}` into a block, or every
+    /// indented line the external `perltidy` produces. It is not a
+    /// re-indentation pass: the native engine preserves the existing leading
+    /// indentation of lines it does not re-render, so a document that is
+    /// already one statement per line formats identically under any width.
     pub perltidy_indent_columns: Option<u32>,
 
     /// Use tabs instead of spaces for perltidy.
     ///
     /// `None` means unconfigured; formatting falls back to the editor-supplied
     /// `insertSpaces`. See [`ServerConfig::perltidy_indent_columns`] for the
-    /// precedence rule.
+    /// precedence rule and the generated-indentation boundary (#17340).
     pub perltidy_tabs: Option<bool>,
 
     /// Opening brace on new line for perltidy.
