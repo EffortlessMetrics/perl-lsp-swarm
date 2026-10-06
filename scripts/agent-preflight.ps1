@@ -153,13 +153,12 @@ if (-not $ReadOnly) {
     }
 }
 
-# Match the invoking worktree's checked-in authority, as the shell preflight
-# does. Linked worktrees share the common-dir installation; revision ownership
-# of that shared directory remains the separate #17414 architectural question.
+# Match the invoking worktree's checked-in authority against the hook Git uses.
+# Git resolves common-dir defaults and absolute/relative core.hooksPath overrides;
+# revision ownership of shared installation remains the separate #17414 question.
 $checkedInHook = Join-Path $currentRoot 'hooks/pre-push'
 if (Test-Path -LiteralPath $checkedInHook -PathType Leaf) {
-    $commonDir = @(Invoke-Git -Repository $currentRoot -GitArgs @('rev-parse', '--path-format=absolute', '--git-common-dir'))[0]
-    $installedHook = Join-Path $commonDir 'hooks/pre-push'
+    $installedHook = @(Invoke-Git -Repository $currentRoot -GitArgs @('rev-parse', '--path-format=absolute', '--git-path', 'hooks/pre-push'))[0]
     $hookProblem = $null
     if (-not (Test-Path -LiteralPath $installedHook -PathType Leaf)) {
         $hookProblem = "pre-push hook is missing ($installedHook)"

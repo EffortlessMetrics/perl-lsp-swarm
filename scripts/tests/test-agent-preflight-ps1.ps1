@@ -68,6 +68,9 @@ function git {
     }
     & $GitExecutable @GitArgs
 }
+# Native cases must reach the executable directly, without a function changing
+# native stream types at the preflight call boundary.
+if ($GitMode -eq 'native') { Remove-Item Function:git }
 Set-Location -LiteralPath $Worktree
 & $Preflight -Issue 17413 -Slug fixture -CanonicalRoot $Canonical -WorktreeRoot $Worktrees -TargetRoot $Targets
 exit $LASTEXITCODE
@@ -79,7 +82,7 @@ try {
     New-Item -ItemType Directory -Path $CanonicalHooks | Out-Null
     Write-FixtureText (Join-Path $CanonicalHooks 'pre-push') $AuthorityText
     Invoke-FixtureGit -GitArgs @('-C', $Canonical, 'add', '--', 'hooks/pre-push')
-    Invoke-FixtureGit -GitArgs @('-C', $Canonical, '-c', 'user.name=Preflight fixture', '-c', 'user.email=preflight@example.invalid', 'commit', '-q', '-m', 'fixture authority')
+    Invoke-FixtureGit -GitArgs @('-C', $Canonical, '-c', 'user.name=Preflight fixture', '-c', 'user.email=preflight@example.invalid', 'commit', '--no-gpg-sign', '-q', '-m', 'fixture authority')
     New-Item -ItemType Directory -Path $Worktrees | Out-Null
     Invoke-FixtureGit -GitArgs @('-C', $Canonical, 'worktree', 'add', '-q', '-b', 'fixture/17413', $Worktree)
     $Installed = Join-Path $Canonical '.git/hooks/pre-push'
@@ -88,6 +91,9 @@ try {
     $PrivateHookDir = Join-Path $Canonical '.git/worktrees/17413-fixture/hooks'
     New-Item -ItemType Directory -Path $PrivateHookDir | Out-Null
     Write-FixtureText (Join-Path $PrivateHookDir 'pre-push') $AuthorityText
+    $CustomHooks = Join-Path $FixtureRoot 'custom hooks'
+    $RelativeHooks = Join-Path $Worktree 'relative hooks'
+    New-Item -ItemType Directory -Path $CustomHooks, $RelativeHooks | Out-Null
 
     $Cases = @(
         @{ Name = 'missing'; Expected = 7; Diagnostic = 'pre-push hook is missing'; Installed = $null },
@@ -105,6 +111,13 @@ try {
         @{ Name = 'installed-directory'; Expected = 7; Diagnostic = 'pre-push hook is missing'; Installed = $null; Directory = $true },
         @{ Name = 'no-authority'; Expected = 0; Diagnostic = 'agent preflight ok'; Installed = "echo STALE`n"; NoAuthority = $true },
         @{ Name = 'worktree-revision-authority'; Expected = 0; Diagnostic = 'agent preflight ok'; Installed = "#!/bin/sh`necho BRANCH_REVISION`n"; Authority = "#!/bin/sh`necho BRANCH_REVISION`n" },
+        @{ Name = 'absolute-hooks-path-missing'; Expected = 7; Diagnostic = 'pre-push hook is missing'; Installed = $AuthorityText; HooksPath = $CustomHooks; ActiveInstalled = $null },
+        @{ Name = 'absolute-hooks-path-stale'; Expected = 7; Diagnostic = 'pre-push hook is stale'; Installed = $AuthorityText; HooksPath = $CustomHooks; ActiveInstalled = "echo STALE`n" },
+        @{ Name = 'absolute-hooks-path-current'; Expected = 0; Diagnostic = 'agent preflight ok'; Installed = "echo STALE`n"; HooksPath = $CustomHooks; ActiveInstalled = $AuthorityText },
+        @{ Name = 'relative-hooks-path-missing'; Expected = 7; Diagnostic = 'pre-push hook is missing'; Installed = $AuthorityText; HooksPath = 'relative hooks'; ActiveInstalled = $null },
+        @{ Name = 'relative-hooks-path-stale'; Expected = 7; Diagnostic = 'pre-push hook is stale'; Installed = $AuthorityText; HooksPath = 'relative hooks'; ActiveInstalled = "echo STALE`n" },
+        @{ Name = 'relative-hooks-path-current'; Expected = 0; Diagnostic = 'agent preflight ok'; Installed = "echo STALE`n"; HooksPath = 'relative hooks'; ActiveInstalled = $AuthorityText },
+        @{ Name = 'no-authority-custom-hooks-path'; Expected = 0; Diagnostic = 'agent preflight ok'; Installed = $null; HooksPath = 'relative hooks'; ActiveInstalled = $null; NoAuthority = $true },
         @{ Name = 'native-git-current'; Expected = 0; Diagnostic = 'agent preflight ok'; Installed = $AuthorityText; GitMode = 'native' },
         @{ Name = 'native-dirty-porcelain-refused'; Expected = 1; Diagnostic = 'Canonical checkout is dirty'; Installed = $AuthorityText; GitMode = 'native'; DirtyCanonical = $true },
         @{ Name = 'git-warning-not-dirty'; Expected = 0; Diagnostic = 'fixture git diagnostic: exit zero, empty porcelain'; Installed = $AuthorityText; GitMode = 'warning' },
@@ -112,7 +125,26 @@ try {
         @{ Name = 'failed-git-refused'; Expected = 1; Diagnostic = 'fixture git failed'; Installed = $AuthorityText; GitMode = 'failure' }
     )
 
+    $CustomPathConfigured = $false
     foreach ($Case in $Cases) {
+        $CaseTarget = Join-Path $Targets '17413-fixture'
+        # Preflight creates an empty directory only; refuse unexpected contents.
+        if (Test-Path -LiteralPath $CaseTarget) { Remove-Item -LiteralPath $CaseTarget }
+        # Change only this disposable repository's configuration. The parent
+        # directory exists for every configured path, including paths with spaces.
+        if ($CustomPathConfigured) {
+            Invoke-FixtureGit -GitArgs @('-C', $Canonical, 'config', '--local', '--unset', 'core.hooksPath')
+            $CustomPathConfigured = $false
+        }
+        if ($Case.ContainsKey('HooksPath')) {
+            Invoke-FixtureGit -GitArgs @('-C', $Canonical, 'config', '--local', 'core.hooksPath', $Case.HooksPath)
+            $CustomPathConfigured = $true
+            $ActiveDirectory = $Case.HooksPath
+            if (-not [IO.Path]::IsPathRooted($ActiveDirectory)) { $ActiveDirectory = Join-Path $Worktree $ActiveDirectory }
+            $ActiveHook = Join-Path $ActiveDirectory 'pre-push'
+            if (Test-Path -LiteralPath $ActiveHook) { Remove-Item -LiteralPath $ActiveHook }
+            if ($null -ne $Case.ActiveInstalled) { Write-FixtureText $ActiveHook $Case.ActiveInstalled }
+        }
         Write-FixtureText (Join-Path $CanonicalHooks 'pre-push') $AuthorityText
         if ($Case.ContainsKey('DirtyCanonical')) { Write-FixtureText (Join-Path $CanonicalHooks 'pre-push') "echo DIRTY`n" }
         if (Test-Path -LiteralPath $Installed) { Remove-Item -LiteralPath $Installed -Force }
@@ -131,8 +163,9 @@ try {
         $Text = $Output -join "`n"
         $Valid = $Status -eq $Case.Expected -and $Text.Contains($Case.Diagnostic)
         if ($Case.Expected -eq 7) {
-            $Valid = $Valid -and $Text.Contains('bash scripts/install-githooks.sh') -and -not $Text.Contains('agent preflight ok')
+            $Valid = $Valid -and $Text.Contains('bash scripts/install-githooks.sh') -and -not $Text.Contains('agent preflight ok') -and -not (Test-Path -LiteralPath $CaseTarget)
         }
+        if ($Case.Expected -eq 0) { $Valid = $Valid -and (Test-Path -LiteralPath $CaseTarget -PathType Container) }
         if ($Valid) { Write-Output "PASS $($Case.Name)"; $Passed++ }
         else { Write-Output "FAIL $($Case.Name): expected=$($Case.Expected), actual=$Status`n$Text"; $Failed++ }
     }
