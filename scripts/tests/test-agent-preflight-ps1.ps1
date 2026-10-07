@@ -6,6 +6,8 @@ Exercise Windows agent preflight with small, real linked-worktree fixtures.
 Override -PreflightScript to falsify the suite against a pre-fix script.
 The optional Git fault modes inject diagnostics without reading or changing user
 configuration. Ordinary cases use Git's actual common-dir discovery.
+All fixture commands and children use disposable configuration; caller settings
+are restored even when setup or a case fails.
 #>
 [CmdletBinding()]
 param(
@@ -28,6 +30,14 @@ $CommitText = "#!/bin/sh`necho COMMIT-HOOK`n"
 $Passed = 0
 $Failed = 0
 New-Item -ItemType Directory -Path $FixtureRoot | Out-Null
+$GitEnvironmentNames = @('GIT_CONFIG', 'GIT_CONFIG_GLOBAL', 'GIT_CONFIG_SYSTEM',
+    'GIT_CONFIG_NOSYSTEM', 'GIT_CONFIG_COUNT', 'GIT_CONFIG_PARAMETERS',
+    'GIT_TEMPLATE_DIR', 'GIT_TRACE', 'GIT_DIR', 'GIT_WORK_TREE', 'GIT_COMMON_DIR',
+    'GIT_INDEX_FILE', 'GIT_OBJECT_DIRECTORY', 'GIT_ALTERNATE_OBJECT_DIRECTORIES')
+$OriginalGitEnvironment = @{}
+foreach ($Name in $GitEnvironmentNames) {
+    $OriginalGitEnvironment[$Name] = [Environment]::GetEnvironmentVariable($Name, 'Process')
+}
 
 function Invoke-FixtureGit {
     param([string[]]$GitArgs)
@@ -71,13 +81,36 @@ function git {
 }
 # Native cases must reach the executable directly, without a function changing
 # native stream types at the preflight call boundary.
-if ($GitMode -eq 'native') { Remove-Item Function:git }
+if ($GitMode -eq 'native') {
+    Remove-Item Function:git
+    # Deterministic native stderr at exit zero, independent of ambient warnings.
+    $env:GIT_TRACE = '1'
+}
 Set-Location -LiteralPath $Worktree
 & $Preflight -Issue 17413 -Slug fixture -CanonicalRoot $Canonical -WorktreeRoot $Worktrees -TargetRoot $Targets
 exit $LASTEXITCODE
 '@ | Set-Content -LiteralPath $Harness -Encoding UTF8
 
 try {
+    $FixtureConfig = Join-Path $FixtureRoot 'gitconfig'
+    $FixtureIgnore = Join-Path $FixtureRoot 'empty ignore'
+    $FixtureSystemConfig = Join-Path $FixtureRoot 'empty system config'
+    $FixtureTemplate = Join-Path $FixtureRoot 'empty template'
+    $UnavailableSigner = (Join-Path $FixtureRoot 'absent signer').Replace('\', '/')
+    New-Item -ItemType Directory -Path $FixtureTemplate | Out-Null
+    Write-FixtureText $FixtureIgnore ''
+    Write-FixtureText $FixtureSystemConfig ''
+    $IgnoreForGit = $FixtureIgnore.Replace('\', '/')
+    Write-FixtureText $FixtureConfig "[core]`n excludesFile = `"$IgnoreForGit`"`n autocrlf = false`n[commit]`n gpgSign = true`n[gpg]`n program = `"$UnavailableSigner`"`n"
+    # Clear environment overrides before bootstrap, including repository paths
+    # and templates that could import an unrelated checkout's hooks.
+    foreach ($Name in $GitEnvironmentNames) {
+        Remove-Item -LiteralPath "Env:$Name" -ErrorAction SilentlyContinue
+    }
+    $env:GIT_CONFIG_GLOBAL = $FixtureConfig
+    $env:GIT_CONFIG_SYSTEM = $FixtureSystemConfig
+    $env:GIT_CONFIG_NOSYSTEM = '1'
+    $env:GIT_TEMPLATE_DIR = $FixtureTemplate
     Invoke-FixtureGit -GitArgs @('init', '-q', '-b', 'main', $Canonical)
     $CanonicalHooks = Join-Path $Canonical 'hooks'
     New-Item -ItemType Directory -Path $CanonicalHooks | Out-Null
@@ -86,6 +119,8 @@ try {
     Invoke-FixtureGit -GitArgs @('-C', $Canonical, '-c', 'user.name=Preflight fixture', '-c', 'user.email=preflight@example.invalid', 'commit', '--no-gpg-sign', '-q', '-m', 'fixture authority')
     New-Item -ItemType Directory -Path $Worktrees | Out-Null
     Invoke-FixtureGit -GitArgs @('-C', $Canonical, 'worktree', 'add', '-q', '-b', 'fixture/17413', $Worktree)
+    # The empty template deliberately imports no default hook directory/files.
+    New-Item -ItemType Directory -Path (Join-Path $Canonical '.git/hooks') | Out-Null
     $Installed = Join-Path $Canonical '.git/hooks/pre-push'
     $InstalledCommit = Join-Path $Canonical '.git/hooks/pre-commit'
     $Authority = Join-Path $Worktree 'hooks/pre-push'
@@ -174,6 +209,7 @@ try {
         $Status = $LASTEXITCODE
         $Text = $Output -join "`n"
         $Valid = $Status -eq $Case.Expected -and $Text.Contains($Case.Diagnostic)
+        if ($GitMode -eq 'native') { $Valid = $Valid -and $Text.Contains('trace: built-in: git') }
         if ($Case.Expected -eq 7) {
             $Valid = $Valid -and $Text.Contains('bash scripts/install-githooks.sh') -and -not $Text.Contains('agent preflight ok') -and -not (Test-Path -LiteralPath $CaseTarget)
         }
@@ -183,6 +219,14 @@ try {
     }
     Write-Output "$Passed passed, $Failed failed"
 } finally {
+    # Preserve absent versus empty values on PowerShell versions supporting both.
+    foreach ($Name in $GitEnvironmentNames) {
+        if ($null -eq $OriginalGitEnvironment[$Name]) {
+            Remove-Item -LiteralPath "Env:$Name" -ErrorAction SilentlyContinue
+        } else {
+            Set-Item -LiteralPath "Env:$Name" -Value $OriginalGitEnvironment[$Name]
+        }
+    }
     # Only this unique, owned fixture tree is removed; it contains no user work.
     $ResolvedFixture = [IO.Path]::GetFullPath($FixtureRoot)
     $TempPrefix = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\', '/') + [IO.Path]::DirectorySeparatorChar
