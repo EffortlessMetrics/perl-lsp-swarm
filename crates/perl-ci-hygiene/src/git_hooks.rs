@@ -74,6 +74,10 @@ cargo xtask precommit
              ('cargo xtask fmt --staged'), then runs 'cargo xtask precommit'"
         );
         println!("   The pre-push hook runs 'nix develop -c just pr-fast' before each push");
+        println!(
+            "   The pre-push hook also refuses non-fast-forward updates and protected-ref rewrites \
+             (escape hatch: PERL_LSP_ALLOW_HISTORY_REWRITE=\"<remote-ref>\")"
+        );
         println!("   Skip with: git commit --no-verify / git push --no-verify");
     }
 }
@@ -91,8 +95,15 @@ pub(crate) fn pre_push_hook_script() -> &'static str {
 # Bypass policy
 # -------------
 # OK to bypass with `git push --no-verify`:
-#   * Deletion-only push on master (the hook already auto-skips, but if it
-#     doesn't, bypassing is safe — there's nothing to validate).
+#   * Deletion-only push on a non-protected branch (the hook already
+#     auto-skips, but if it doesn't, bypassing is safe — there's nothing
+#     to validate). Deleting a protected branch (main, master) is refused
+#     by the hook's own ref-update check, not bypassable this way in spirit.
+#   * A non-fast-forward push you have proven safe (your own rebased branch,
+#     no teammate work): prefer the admit-list escape hatch
+#     (PERL_LSP_ALLOW_HISTORY_REWRITE="<remote-ref>") over --no-verify,
+#     so the remaining gates still run — and push with the printed
+#     --force-with-lease=<ref>:<inspected-sha>, never plain --force.
 #   * Urgent fixes during incident response, when the gate has a known bug
 #     being tracked (see hint output below for issue numbers).
 #   * The hook is failing for an environmental reason that is out of band of
@@ -104,9 +115,16 @@ pub(crate) fn pre_push_hook_script() -> &'static str {
 #   * "I just don't want to wait."
 #   * "I just want to push something quick."
 #   * Code-touching changes where you haven't actually run the gate locally.
+#   * A non-fast-forward refusal you have not investigated (fetch and
+#     rebase/merge instead — see the refusal's recovery order).
 #
 # If you find yourself bypassing repeatedly, file an issue and link it here.
 # ============================================================================
+#
+# Hook logic version (#17431 review wave 3): bump the integer below on EVERY
+# guard-logic change. Self-heal only upgrades (checkout > installed) and
+# never downgrades; unmarked legacy hooks count as version 0.
+# pre-push-hook-version: 1
 
 set -euo pipefail
 
@@ -124,15 +142,40 @@ fi
 
 # --- Self-heal stale hook installation (issue #4220) ---
 # When hooks/pre-push is updated in master, .git/hooks/pre-push is only
-# updated when install-githooks is re-run. Auto-copy when drift is detected.
-# Note: exec "$0" "$@" does NOT work here — git stdin is already consumed
-# before the hook executes. Copy and continue; the fresh hook takes effect
-# on the next push.
+# updated when install-githooks is re-run. On drift, UPGRADE only: copy the
+# checkout file over the installed hook solely when its version marker is
+# strictly newer, then REFUSE this push: exec "$0" "$@" does NOT work here —
+# git stdin is already consumed before the hook executes — so continuing
+# would guard this push with stale logic (#17431 review: upgrade barrier).
+# Exactly one aborted push per hook upgrade; re-push runs the fresh guards.
+# When the checkout copy is NOT newer (stale branch/worktree), the installed
+# hook is never downgraded: the push proceeds under the installed guards
+# with a warning (#17431 review wave 3: downgrade barrier).
+hook_version() {
+    # Print the numeric hook-version marker of $1; prints nothing when absent.
+    sed -n 's/^# pre-push-hook-version: *\([0-9][0-9]*\).*/\1/p' "$1" 2>/dev/null | head -n 1
+}
 REPO_ROOT_FOR_HOOK="$(git rev-parse --show-toplevel 2>/dev/null || true)"
 if [ -n "$REPO_ROOT_FOR_HOOK" ] && [ -f "$REPO_ROOT_FOR_HOOK/hooks/pre-push" ]; then
     if ! diff -q "$0" "$REPO_ROOT_FOR_HOOK/hooks/pre-push" >/dev/null 2>&1; then
-        echo "pre-push hook updated from hooks/pre-push (was stale — takes effect next push)"
-        cp "$REPO_ROOT_FOR_HOOK/hooks/pre-push" "$0" && chmod +x "$0" || true
+        installed_version="$(hook_version "$0")"
+        case "$installed_version" in ''|*[!0-9]*) installed_version=0 ;; esac
+        checkout_version="$(hook_version "$REPO_ROOT_FOR_HOOK/hooks/pre-push")"
+        case "$checkout_version" in ''|*[!0-9]*) checkout_version=0 ;; esac
+        if [ "$checkout_version" -gt "$installed_version" ]; then
+            # Atomic replace (#17431 review wave 4): a failed cp must never
+            # leave $0 truncated, or later pushes run a broken hook.
+            heal_tmp="$0.tmp.$$"
+            if cp "$REPO_ROOT_FOR_HOOK/hooks/pre-push" "$heal_tmp" && chmod +x "$heal_tmp" && mv "$heal_tmp" "$0"; then
+                echo "pre-push hook updated itself from hooks/pre-push (v$installed_version -> v$checkout_version)."
+                echo "This push was refused so stale logic never guards it — re-push to run the fresh guards."
+            else
+                rm -f "$heal_tmp"
+                echo "pre-push hook is stale and could not be self-updated (check permissions on $0); re-run install-githooks to refresh it." >&2
+            fi
+            exit 1
+        fi
+        echo "warning: hooks/pre-push in this checkout (v$checkout_version) is not newer than the installed hook (v$installed_version); keeping the installed hook. Update this branch/worktree to get the latest hook." >&2
     fi
 fi
 
@@ -142,6 +185,86 @@ fi
 PUSH_REFS=()
 while IFS= read -r line; do
     PUSH_REFS+=("$line")
+done
+
+# --- Refuse non-fast-forward updates and protected-ref rewrites (issue #17427) ---
+# A push that would discard remote commits — force-push, reset+push, or
+# deleting a protected branch (main, master) — is refused here, before any
+# gate runs, with a recovery order. Fast-forward updates, new branches, and
+# deletions of non-protected branches are unaffected.
+#
+# Escape hatch: when you have proven the discarded commits are safe to drop
+# (your own rebased branch, no teammate work), name the full remote ref(s)
+# in PERL_LSP_ALLOW_HISTORY_REWRITE (space-separated, as git reports them,
+# e.g. "refs/heads/my-rebased-branch") and push with
+# --force-with-lease=<ref>:<inspected-sha> (printed in the refusal) so a
+# concurrent push after your inspection fails instead of being erased.
+# Prefer this over --no-verify so the remaining gates still run.
+# Protected branches should ~never need it.
+#
+# Implementation note: the protected list holds short branch names on purpose
+# (compared against ${remote_ref#refs/heads/}), so no executable line names a
+# full protected ref — see the T8 trap's hook-gate pin.
+ZERO_SHA="0000000000000000000000000000000000000000"
+PROTECTED_BRANCHES="main master"
+ALLOW_HISTORY_REWRITE="${PERL_LSP_ALLOW_HISTORY_REWRITE:-}"
+
+ref_update_admitted() {
+    case " $ALLOW_HISTORY_REWRITE " in
+        *" $1 "*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+for line in "${PUSH_REFS[@]+"${PUSH_REFS[@]}"}"; do
+    [ -z "$line" ] && continue
+    read -r _local_ref local_sha remote_ref remote_sha <<< "$line"
+    if ref_update_admitted "$remote_ref"; then
+        continue
+    fi
+    # Pastable forms, computed for every refused ref: a ref name may
+    # legally contain shell syntax (e.g. refs/heads/$(id)), so anything
+    # the refusal prints for copy-paste goes through %q (#17431 review).
+    printf -v RECOVERY_REMOTE '%q' "${1:-origin}"
+    printf -v RECOVERY_REF '%q' "$remote_ref"
+    printf -v RECOVERY_ADMIT '%q' "$remote_ref"
+    printf -v RECOVERY_LEASE '%q' "$remote_ref:$remote_sha"
+    if [ "$local_sha" = "$ZERO_SHA" ]; then
+        remote_short="${remote_ref#refs/heads/}"
+        case " $PROTECTED_BRANCHES " in
+            *" $remote_short "*)
+                echo ""
+                echo "❌ Refusing deletion of protected ref $remote_ref."
+                echo "   Deleting shared branches destroys history other people build on."
+                echo "   If this is genuinely intended (repository decommission, never"
+                echo "   routine work), admit this ref explicitly and re-push:"
+                echo "   PERL_LSP_ALLOW_HISTORY_REWRITE=$RECOVERY_ADMIT git push <remote> --delete <branch>"
+                exit 1
+                ;;
+        esac
+        continue
+    fi
+    if [ "$remote_sha" = "$ZERO_SHA" ]; then
+        continue
+    fi
+    if git merge-base --is-ancestor "$remote_sha" "$local_sha" 2>/dev/null; then
+        continue
+    fi
+    if git cat-file -e "$remote_sha" 2>/dev/null; then
+        UNKNOWN_TIP=""
+    else
+        UNKNOWN_TIP=" (tip $remote_sha is not in your local object store — fetch first)"
+    fi
+    echo ""
+    echo "❌ Refusing non-fast-forward push to $remote_ref$UNKNOWN_TIP."
+    echo "   Your push would discard remote commit(s)."
+    echo "   Recover with: git fetch $RECOVERY_REMOTE $RECOVERY_REF && git rebase FETCH_HEAD (or git merge FETCH_HEAD), then push again."
+    echo "   Only when you have proven the remote commits are safe to discard"
+    echo "   (your own rebased branch, no teammate work), admit this ref explicitly"
+    echo "   and bind the push to the tip you inspected — plain --force could erase"
+    echo "   concurrent work pushed after your inspection:"
+    echo "   PERL_LSP_ALLOW_HISTORY_REWRITE=$RECOVERY_ADMIT git push --force-with-lease=$RECOVERY_LEASE <remote> <branch>"
+    exit 1
 done
 
 # --- Skip CI gate when all refs are being deleted ---
@@ -694,6 +817,144 @@ mod tests {
             .ok_or_else(|| color_eyre::eyre::eyre!("staged gate missing"))?;
         assert!(guard < format, "identity guard must run before staged formatting");
         assert!(format < gate, "staged formatting must run before the commit gate");
+        Ok(())
+    }
+
+    #[test]
+    fn pre_push_hook_refuses_non_fast_forward_updates() -> Result<()> {
+        // Issue #17427 (traps T1/T5): the generated hook must deny any ref
+        // update that discards remote commits, before any gate runs, and the
+        // refusal must carry a recovery order plus the documented admit-list
+        // escape hatch. The hatch binds the re-push to the inspected tip
+        // (--force-with-lease), never plain --force, so a concurrent push
+        // after inspection fails instead of being erased (#17431 review).
+        let hook = pre_push_hook_script();
+        for marker in [
+            "merge-base --is-ancestor",
+            "Refusing non-fast-forward",
+            "Recover with: git fetch $RECOVERY_REMOTE $RECOVERY_REF",
+            "git rebase FETCH_HEAD",
+            "PERL_LSP_ALLOW_HISTORY_REWRITE",
+            "printf -v RECOVERY_LEASE '%q'",
+            "--force-with-lease=$RECOVERY_LEASE",
+        ] {
+            assert!(hook.contains(marker), "hook must contain push-path refusal marker {marker:?}");
+        }
+        let refusal = hook
+            .find("Refusing non-fast-forward")
+            .ok_or_else(|| color_eyre::eyre::eyre!("refusal headline must exist in hook script"))?;
+        let gate = hook.find("just pr-fast").ok_or_else(|| {
+            color_eyre::eyre::eyre!("fast gate invocation must exist in hook script")
+        })?;
+        assert!(
+            refusal < gate,
+            "refusal must precede the gates so doomed pushes fail fast without running them"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn pre_push_hook_refuses_protected_ref_deletion() {
+        // Issue #17427: deleting a protected branch must be refused even
+        // though deletions of ordinary branches still skip the gate below.
+        let hook = pre_push_hook_script();
+        assert!(
+            hook.contains("PROTECTED_BRANCHES=\"main master\""),
+            "hook must name the protected short branch names"
+        );
+        assert!(
+            hook.contains("Refusing deletion of protected ref"),
+            "hook must refuse protected-ref deletion with a recovery order"
+        );
+    }
+
+    #[test]
+    fn pre_push_hook_aborts_after_self_heal() {
+        // #17431 review (upgrade barrier): when the installed hook detects
+        // drift and heals itself, it must refuse the current push instead
+        // of guarding it with stale logic — the fresh guards run on re-push.
+        let hook = pre_push_hook_script();
+        assert!(
+            hook.contains("This push was refused so stale logic never guards it"),
+            "hook must abort the push it healed during"
+        );
+        assert!(
+            hook.contains("could not be self-updated"),
+            "hook must name the failed-heal path honestly instead of claiming an update"
+        );
+    }
+
+    #[test]
+    fn pre_push_hook_self_heal_never_downgrades() {
+        // #17431 review wave 3 (downgrade barrier): when the checkout copy
+        // predates the installed hook, self-heal must keep the installed
+        // hook and continue under its guards — never copy the older file
+        // over the newer installation. Only a strictly newer checkout copy
+        // upgrades (and refuses that one push).
+        let hook = pre_push_hook_script();
+        for marker in [
+            "# pre-push-hook-version: 1",
+            "hook_version()",
+            "\"$checkout_version\" -gt \"$installed_version\"",
+            "keeping the installed hook. Update this branch/worktree",
+        ] {
+            assert!(hook.contains(marker), "hook must contain downgrade-barrier marker {marker:?}");
+        }
+    }
+
+    #[test]
+    fn pre_push_hook_self_heal_replaces_atomically() {
+        // #17431 review wave 4: the upgrade copy must stage to a temp file
+        // and rename over the installed hook — a failed cp must never leave
+        // $0 truncated, or later pushes run a broken hook.
+        let hook = pre_push_hook_script();
+        for marker in ["heal_tmp=\"$0.tmp.$$\"", "mv \"$heal_tmp\" \"$0\"", "rm -f \"$heal_tmp\""] {
+            assert!(hook.contains(marker), "hook must contain atomic-replace marker {marker:?}");
+        }
+        assert!(
+            !hook.contains("cp \"$REPO_ROOT_FOR_HOOK/hooks/pre-push\" \"$0\""),
+            "hook must not copy directly over the installed hook"
+        );
+    }
+
+    #[test]
+    fn embedded_pre_push_matches_checked_in_hook() -> Result<()> {
+        // The installer writes the embedded bytes; the traps and the
+        // drift detectors compare against hooks/pre-push. If the two
+        // drift apart, installed hooks silently stop matching the
+        // authority they are verified against.
+        let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let checked_in = fs::read_to_string(manifest.join("../../hooks/pre-push"))?;
+        assert_eq!(
+            normalize_hook(pre_push_hook_script()),
+            normalize_hook(&checked_in),
+            "embedded pre-push bytes must match hooks/pre-push"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn installed_pre_push_hook_carries_push_path_refusal() -> Result<()> {
+        // The installer must write the refusal into the installed hook, and
+        // `check_githooks` must verify those installed bytes as current.
+        let repo = temp_repo()?;
+        cmd_install_githooks(&repo)?;
+        assert_eq!(check_githooks(&repo)?, 0);
+
+        let hooks_dir = resolve_git_hooks_dir(&repo)?;
+        let installed = fs::read_to_string(hooks_dir.join("pre-push"))?;
+        for marker in [
+            "merge-base --is-ancestor",
+            "Refusing non-fast-forward",
+            "Refusing deletion of protected ref",
+            "PERL_LSP_ALLOW_HISTORY_REWRITE",
+        ] {
+            assert!(
+                installed.contains(marker),
+                "installed pre-push hook must contain push-path refusal marker {marker:?}"
+            );
+        }
+        fs::remove_dir_all(repo)?;
         Ok(())
     }
 
