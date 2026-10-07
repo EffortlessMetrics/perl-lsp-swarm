@@ -157,8 +157,11 @@ fi
 # paths that keep it green by default.
 
 REPO_ROOT_AGENT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
-INSTALLED_HOOK="$(git rev-parse --git-common-dir 2>/dev/null)/hooks/pre-push"
-INSTALLED_COMMIT_HOOK="$(git rev-parse --git-common-dir 2>/dev/null)/hooks/pre-commit"
+# --git-path honors the installer's repo-local core.hooksPath, so this checks
+# this tree's own hooks dir (#17414 rule C). The output is relative to the
+# cwd, which is where this script runs, so no --path-format is needed.
+INSTALLED_HOOK="$(git rev-parse --git-path hooks 2>/dev/null)/pre-push"
+INSTALLED_COMMIT_HOOK="$(git rev-parse --git-path hooks 2>/dev/null)/pre-commit"
 CHECKED_IN_HOOK="$REPO_ROOT_AGENT/hooks/pre-push"
 HOOK_INSTALLER_FIX="bash scripts/install-githooks.sh"
 if [[ ! -f "$CHECKED_IN_HOOK" ]]; then

@@ -68,7 +68,7 @@ make_hook_worktree() {
     git -C "$repo" commit -q -m "hook authority"
     wt="$(make_worktree "$repo" "$branch")"
     # Resolve exactly the way agent-preflight.sh does (cwd = worktree).
-    installed="$(cd "$wt" && git rev-parse --git-common-dir)/hooks/pre-push"
+    installed="$(cd "$wt" && git rev-parse --git-path hooks)/pre-push"
     printf '%s %s %s\n' "$repo" "$wt" "$installed"
 }
 

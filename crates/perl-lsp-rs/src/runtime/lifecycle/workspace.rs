@@ -318,6 +318,7 @@ impl LspServer {
                 let mut effective_config = WorkspaceConfig::default();
                 if let Some(init_opts) = self.initialization_options_perl_settings.lock().as_ref() {
                     let rejected = effective_config.update_from_value(init_opts);
+                    self.warn_rejected_client_include_paths(&rejected);
                     for entry in rejected {
                         tracing::warn!(
                             target: "perl_lsp::config",

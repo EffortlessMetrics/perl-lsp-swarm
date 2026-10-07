@@ -906,18 +906,37 @@ def _hook_bytes_current(installed: Path, authority: Path) -> bool:
     return True
 
 
+def _installed_hook_paths(slot_path: Path) -> tuple[Path, Path]:
+    """Return the slot's installed (pre-push, pre-commit) hook paths.
+
+    ``--git-path`` honors the installer's repo-local ``core.hooksPath``, so
+    this follows the slot's own hooks dir (#17414 rule C). The output is
+    relative to ``cwd=slot_path`` when hooksPath is set, hence the join.
+    Callers re-resolve after running the installer: setting ``core.hooksPath``
+    moves the answer from the common dir to the slot's own dir mid-provision.
+    """
+    hooks_raw = git(["rev-parse", "--git-path", "hooks"], cwd=slot_path, check=True).stdout.strip()
+    hooks_dir = Path(hooks_raw)
+    if not hooks_dir.is_absolute():
+        hooks_dir = slot_path / hooks_dir
+    return hooks_dir / "pre-push", hooks_dir / "pre-commit"
+
+
 def provision_worktree_hooks(slot_path: Path) -> None:
     """Install current git hooks for a freshly allocated worktree (#17406).
 
     Skips (with a note, not an error) when the worktree carries no
     ``hooks/pre-push`` authority — foreign fixtures and old revisions have
-    nothing to provision.  When the authority exists but the shared installed
-    hook is missing or stale, runs the installer and re-verifies; any failure
-    raises (loud) instead of leaving the worktree unguarded without notice.
+    nothing to provision.  When the authority exists but the slot's own
+    installed hook is missing or stale, runs the installer and re-verifies;
+    any failure raises (loud) instead of leaving the worktree unguarded
+    without notice.
 
     The currency fast-path also avoids a cargo build while holding the state
-    lock: linked worktrees share the common hooks dir, so the installer is
-    skipped whenever another worktree already provisioned current hooks.
+    lock: it is reachable in the mixed-mode window where ``core.hooksPath``
+    is not yet set and the shared common-dir hooks are current — otherwise
+    each tree owns its hooks (#17414 rule C) and fresh slots always
+    provision.
 
     The slot's own installer script is preferred so installer and authority
     stay at the same revision; direct cargo is the fallback when the slot
@@ -929,12 +948,7 @@ def provision_worktree_hooks(slot_path: Path) -> None:
     if not authority.is_file():
         print(f"hooks: no hooks/pre-push authority in {slot_path} — skipping hook provisioning")
         return
-    common_raw = git(["rev-parse", "--git-common-dir"], cwd=slot_path, check=True).stdout.strip()
-    common_dir = Path(common_raw)
-    if not common_dir.is_absolute():
-        common_dir = slot_path / common_dir
-    installed = common_dir / "hooks" / "pre-push"
-    installed_commit = common_dir / "hooks" / "pre-commit"
+    installed, installed_commit = _installed_hook_paths(slot_path)
     if _hook_bytes_current(installed, authority) and _installed_hook_usable(installed_commit):
         print("hooks: installed git hooks already current — installer skipped (no build)")
         return
@@ -963,6 +977,7 @@ def provision_worktree_hooks(slot_path: Path) -> None:
             f"The worktree exists but its hooks are missing or stale. "
             f"Fix: {HOOK_INSTALLER_HINT}"
         )
+    installed, installed_commit = _installed_hook_paths(slot_path)
     if not (_hook_bytes_current(installed, authority) and _installed_hook_usable(installed_commit)):
         raise RuntimeError(
             f"hook provisioning FAILED verification for {slot_path}: the installer ran but "

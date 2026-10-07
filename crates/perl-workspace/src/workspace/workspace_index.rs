@@ -5276,6 +5276,38 @@ impl WorkspaceIndex {
         locations.dedup_by(|left, right| left.uri == right.uri && left.range == right.range);
         locations
     }
+
+    /// Find every arrow method-call site recorded under the bare method name of
+    /// a symbol key, regardless of receiver attribution (#9814).
+    ///
+    /// Arrow dispatch is indexed under the bare method name with no package
+    /// attribution, and [`Self::find_refs`] retains only the conventional
+    /// `$self`/`$this` receivers (see `bare_reference_matches_package`) — every
+    /// other receiver (`$obj->method`) is invisible to it. Consumers that
+    /// attribute receivers themselves (the rename layer resolves constructor-
+    /// typed receivers from the call-site AST) need the unfiltered arrow-site
+    /// denominator so a resolvable call site is never silently omitted from a
+    /// rename edit set. Each span covers the full method-call expression
+    /// (`$obj->greet`), mirroring the bare-name index entries.
+    pub fn find_method_call_refs(&self, key: &SymbolKey) -> Vec<Location> {
+        if key.sigil.is_some() {
+            return Vec::new();
+        }
+
+        let global_refs = self.global_references.read();
+        let mut locations = global_refs
+            .get(key.name.as_ref())
+            .into_iter()
+            .flat_map(|refs| refs.iter())
+            .filter(|reference| reference.kind == ReferenceKind::MethodCall)
+            .map(|reference| Location { uri: reference.uri.clone(), range: reference.range })
+            .collect::<Vec<_>>();
+        drop(global_refs);
+
+        Self::sort_locations_deterministically(&mut locations);
+        locations.dedup_by(|left, right| left.uri == right.uri && left.range == right.range);
+        locations
+    }
 }
 
 /// **`build_unified` is the production extraction path (perl-lsp-swarm#1711-B

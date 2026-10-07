@@ -594,6 +594,7 @@ impl LspServer {
             results,
             i64::from(id.as_i32()),
             init_options_perl.as_ref(),
+            &|rejected| self.warn_rejected_client_include_paths(rejected),
         );
         let include_paths_changed = folders.iter().any(|folder| {
             previous_include_paths.get(&folder.uri)
@@ -1686,6 +1687,38 @@ impl LspServer {
         }
     }
 
+    /// Surface rejected client `includePaths` entries to the editor user
+    /// (#17164), mirroring the invalid-enum `show_message` path above.
+    ///
+    /// Suppression identity lives in the bounded session-warning dedup store,
+    /// keyed per entry plus bounded reason kind and fingerprinted, so the raw
+    /// path is never retained: the same rejected entry warns once per session
+    /// across every channel that re-validates it, while a different entry or
+    /// reason still warns. The `tracing::warn!` log copy at each validation
+    /// site is unchanged; this adds the editor-visible surface only.
+    pub(crate) fn warn_rejected_client_include_paths(
+        &self,
+        rejected: &[perl_lsp_rs_core::config::RejectedClientIncludePath],
+    ) {
+        for entry in rejected {
+            let message = format!(
+                "Perl LSP rejected a `perl.workspace.includePaths` entry: {}",
+                entry.render()
+            );
+            let decision = self.session_warning_dedup.emit_client_include_path_warning(
+                &entry.entry,
+                entry.reason.dedup_key(),
+                || {
+                    self.show_message(crate::runtime::window::MessageType::Warning, &message)
+                        .is_ok()
+                },
+            );
+            if !matches!(decision, super::session_warning_dedup::SessionWarningDecision::Suppress) {
+                tracing::debug!(?decision, "rejected includePaths warning emission decided");
+            }
+        }
+    }
+
     /// Handle workspace/didChangeConfiguration notification
     ///
     /// Updates both ServerConfig and WorkspaceConfig when the client
@@ -1786,6 +1819,7 @@ impl LspServer {
                             ),
                         },
                     );
+                    self.warn_rejected_client_include_paths(&rejected);
                     for entry in rejected {
                         tracing::warn!(
                             target: "perl_lsp::config",
@@ -1835,6 +1869,7 @@ impl LspServer {
                                         ),
                                     },
                                 );
+                                self.warn_rejected_client_include_paths(&rejected);
                                 for entry in rejected {
                                     tracing::warn!(
                                         target: "perl_lsp::config",
@@ -1865,6 +1900,7 @@ impl LspServer {
                                     ),
                                 },
                             );
+                            self.warn_rejected_client_include_paths(&rejected);
                             for entry in rejected {
                                 tracing::warn!(
                                     target: "perl_lsp::config",
@@ -1900,13 +1936,7 @@ impl LspServer {
 
                 self.invalidate_workspace_identity();
 
-                let open_uris: Vec<String> = {
-                    let documents = self.documents.lock();
-                    documents.keys().cloned().collect()
-                };
-                for open_uri in open_uris {
-                    self.publish_diagnostics_debounced(&open_uri);
-                }
+                self.republish_open_document_diagnostics();
             }
         }
 
@@ -1944,6 +1974,10 @@ impl LspServer {
         let mut metadata_roots: std::collections::BTreeSet<std::path::PathBuf> =
             std::collections::BTreeSet::new();
 
+        // Whether this notification carried a DELETED change; the all-open
+        // republish runs once, after the metadata refresh below (#17332).
+        let mut watched_delete = false;
+
         for change in params.changes {
             let uri = change.uri.to_string();
             let change_type = change.typ;
@@ -1971,6 +2005,8 @@ impl LspServer {
                     if let Some(coordinator) = self.coordinator() {
                         coordinator.notify_parse_complete(&uri);
                     }
+
+                    watched_delete = true;
                 }
                 FileChangeType::CREATED | FileChangeType::CHANGED
                     // CREATED and CHANGED are debounced so that bulk operations
@@ -1992,6 +2028,17 @@ impl LspServer {
 
         // One refresh per affected folder for the whole notification (#13640).
         self.refresh_project_metadata_facts(&metadata_roots);
+
+        // Eviction above dropped indexed facts open buffers may have resolved
+        // dependencies through, and no buffer edit is coming to republish for
+        // them (#17332). One sweep after the refresh, so immediate-path
+        // publications (e2e mode, or a missing/unavailable debouncer) use the
+        // refreshed facts — a deleted metadata file retires its include root
+        // here — and a bulk delete costs one sweep instead of one per change.
+        // Matches the `handle_did_delete_files` seam order.
+        if watched_delete {
+            self.republish_open_document_diagnostics();
+        }
 
         // This is a notification, no response needed
         Ok(None)
@@ -2274,6 +2321,11 @@ impl LspServer {
             }
 
             self.refresh_project_metadata_facts(&metadata_roots);
+
+            // Same repair as the watched-DELETED seam (#17332): eviction above
+            // dropped index facts open consumers may have resolved through, and
+            // a buffer edit is not coming to republish for them.
+            self.republish_open_document_diagnostics();
 
             // Trigger client refresh after file deletions
             if let Err(e) = self.refresh_controller.refresh_all(self) {
@@ -4670,6 +4722,117 @@ mod tests {
             "formatter warning must list the accepted values: {formatter_text}"
         );
         assert_eq!(current_engine, perl_lsp_rs_core::config::CriticEngine::Native);
+        Ok(())
+    }
+
+    #[test]
+    fn rejected_include_path_entry_is_shown_once_and_keeps_valid_sibling()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (server, output) = server_with_output_capture();
+        let absolute = if cfg!(windows) { "C:\\Windows" } else { "/etc" };
+
+        // The #17164 live repro: an absolute entry alongside a valid
+        // workspace-relative sibling, delivered twice on the same channel.
+        // Validation behavior is unchanged (absolute dropped, sibling kept);
+        // only visibility is added: one editor-visible warning, deduped.
+        let payload = json!({
+            "settings": {
+                "perl": { "workspace": { "includePaths": [absolute, "lib"] } }
+            }
+        });
+        server.test_handle_did_change_configuration(Some(payload.clone()));
+        server.test_handle_did_change_configuration(Some(payload));
+
+        let include_paths = server.workspace_config.lock().include_paths.clone();
+        drop(server);
+
+        let messages = output.messages()?;
+        let warnings: Vec<&Value> = messages
+            .iter()
+            .filter(|message| {
+                message.get("method").and_then(Value::as_str) == Some("window/showMessage")
+            })
+            .collect();
+        assert_eq!(
+            warnings.len(),
+            1,
+            "the rejected entry must surface exactly once per session: {warnings:?}"
+        );
+        let warning = warnings[0];
+        assert_eq!(warning.pointer("/params/type").and_then(Value::as_i64), Some(2));
+        let text = warning
+            .pointer("/params/message")
+            .and_then(Value::as_str)
+            .ok_or("expected warning message text")?;
+        assert!(text.contains(absolute), "warning must name the rejected entry: {text}");
+        assert!(
+            !text.contains("externalIncludePaths"),
+            "warning must not advise the inert `externalIncludePaths` setting (#17164): {text}"
+        );
+        assert!(
+            text.contains("workspace-relative"),
+            "warning must name the supported form: {text}"
+        );
+        assert!(
+            include_paths.iter().any(|path| path == "lib"),
+            "the workspace-relative sibling must still be accepted: {include_paths:?}"
+        );
+        assert!(
+            !include_paths.iter().any(|path| path == absolute),
+            "the absolute entry must stay rejected: {include_paths:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn rejected_include_path_in_configuration_response_warns_once_across_pulls()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (server, output) = server_with_output_capture();
+        let absolute = if cfg!(windows) { "C:\\Windows" } else { "/etc" };
+        let temp = tempfile::tempdir()?;
+        let uri = url::Url::from_directory_path(temp.path())
+            .map_err(|_| "failed to create folder URI")?
+            .to_string();
+        server
+            .workspace_folders
+            .lock()
+            .push(super::WorkspaceFolderState::new(uri).with_path(temp.path().to_path_buf()));
+        {
+            let mut capabilities = server.client_capabilities.lock();
+            capabilities.workspace_configuration_support = true;
+        }
+        server.initialized.store(true, Ordering::Release);
+
+        // The same rejected entry arriving through two scoped
+        // `workspace/configuration` pulls must surface once (#17164).
+        for _ in 0..2 {
+            server.request_workspace_configuration_for_folders();
+            let request_id = server
+                .pending_workspace_configuration_requests
+                .lock()
+                .keys()
+                .next()
+                .copied()
+                .ok_or("scoped request missing")?;
+            server.handle_client_response(Some(json!({
+                "id": request_id.as_i32(),
+                "result": [{}, { "workspace": { "includePaths": [absolute, "lib"] } }]
+            })));
+        }
+
+        drop(server);
+        let messages = output.messages()?;
+        let warnings: Vec<&Value> = messages
+            .iter()
+            .filter(|message| {
+                message.get("method").and_then(Value::as_str) == Some("window/showMessage")
+            })
+            .collect();
+        assert_eq!(
+            warnings.len(),
+            1,
+            "one rejected entry across two configuration pulls must warn once: {warnings:?}"
+        );
         Ok(())
     }
 
