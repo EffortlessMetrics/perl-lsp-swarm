@@ -44,6 +44,11 @@
 //! cargo bench -p perl-lsp-rs --bench lsp_stdio_roundtrip_benchmark -- hover
 //! ```
 //!
+//! `cargo test -p perl-lsp-rs --benches` (and `--all-targets`) runs this binary
+//! without `--bench`: the receipt pass is skipped so a plain test run never
+//! overwrites the committed baseline, and only the criterion groups execute
+//! (once each, in Criterion's test mode).
+//!
 //! Request coordinates mirror `MOJOLICIOUS_FIXTURE` in
 //! `tests/real_project_latency.rs` so this receipt and the real-project
 //! receipt stay comparable.
@@ -54,7 +59,7 @@
 // does not apply the way it does to production code.
 #![allow(clippy::print_stdout, clippy::print_stderr)]
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use criterion::Criterion;
 use perl_lsp_ux_tests::{
     LspEvent, REQUIRE_BINARY_ENV, ScenarioConfig, UxClient, UxHarness,
@@ -424,15 +429,29 @@ fn run_criterion_pass(session: &RoundTripSession) {
     group.bench_function("completion", |b| {
         b.iter(|| {
             let start = Instant::now();
-            let outcome = session.harness.client.request(
-                "textDocument/completion",
-                json!({
-                    "textDocument": { "uri": completion_uri },
-                    "position": { "line": COMPLETION_LINE, "character": COMPLETION_COL },
-                    "context": { "triggerKind": 2, "triggerCharacter": ">" }
-                }),
-                REQUEST_TIMEOUT,
-            );
+            // `client.request` returns `Ok` for a JSON-RPC error response
+            // (only the transport can fail it), so mirror the receipt pass and
+            // the harness request helpers by mapping an `error` field to `Err`;
+            // otherwise the round-trip failure counter misses the failure.
+            let outcome = session
+                .harness
+                .client
+                .request(
+                    "textDocument/completion",
+                    json!({
+                        "textDocument": { "uri": completion_uri },
+                        "position": { "line": COMPLETION_LINE, "character": COMPLETION_COL },
+                        "context": { "triggerKind": 2, "triggerCharacter": ">" }
+                    }),
+                    REQUEST_TIMEOUT,
+                )
+                .and_then(|response| {
+                    if response.get("error").is_some() {
+                        Err(anyhow!("completion returned a JSON-RPC error: {response}"))
+                    } else {
+                        Ok(())
+                    }
+                });
             let elapsed = millis_since(start);
             record_criterion_outcome("completion", &outcome);
             black_box(elapsed);
@@ -505,6 +524,11 @@ fn resolve_session() -> Result<SessionStart> {
 }
 
 fn run() -> Result<()> {
+    // `cargo bench` passes `--bench` to this harness-free binary; plain
+    // `cargo test --benches`/`--all-targets` runs it without one. The receipt
+    // pass measures a real session and overwrites the committed baseline, so
+    // it must only run in bench mode — never from an unrelated test run.
+    let bench_mode = std::env::args().any(|arg| arg == "--bench");
     let session = match resolve_session()? {
         SessionStart::Skipped => {
             eprintln!(
@@ -515,6 +539,15 @@ fn run() -> Result<()> {
         }
         SessionStart::Running(session) => session,
     };
+
+    if !bench_mode {
+        eprintln!(
+            "SKIP receipt pass lsp_stdio_roundtrip_benchmark: no --bench (test mode); \
+             criterion groups still run once in test mode"
+        );
+        run_criterion_pass(&session);
+        return Ok(());
+    }
 
     if !session.index_ready {
         eprintln!(
