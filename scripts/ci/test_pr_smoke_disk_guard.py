@@ -307,9 +307,9 @@ class ClassifyFlowTests(unittest.TestCase):
             self.assertNotIn("not candidate defects", verdict)
 
     def test_enospc_alongside_sigbus_still_earns_definitive_verdict(self) -> None:
-        # Corroboration semantics (review #12183): an ENOSPC match proves disk
-        # exhaustion by itself, so a SIGBUS log in the same run keeps the run's
-        # definitive verdict while its own annotation names the weaker class.
+        # An ENOSPC match proves an occurrence only in its named log.
+        # The separate SIGBUS log keeps its weaker annotation and cannot
+        # inherit a definitive cause from the strong log.
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             logs_dir = root / "logs"
@@ -330,12 +330,20 @@ class ClassifyFlowTests(unittest.TestCase):
             )
             verdict = pressure_log.read_text(encoding="utf-8")
             self.assertIn("VERDICT: resource-exhaustion detected", verdict)
-            self.assertIn("not candidate defects", verdict)
+            self.assertNotIn("not candidate defects", verdict)
+            self.assertEqual(
+                [line for line in verdict.splitlines() if line.startswith("VERDICT:")],
+                [
+                    "VERDICT: resource-exhaustion detected in gate logs "
+                    "(ENOSPC / os-error-28 class); matched logs: "
+                    f"{logs_dir / 'clippy_full.log'}. "
+                    "Other gate failure causes remain unattributed."
+                ],
+            )
 
     def test_enospc_match_anywhere_still_earns_definitive_verdict(self) -> None:
-        # Corroboration semantics: once a strong signature exists anywhere,
-        # the run keeps the definitive verdict while the LLVM-only log's own
-        # annotation still names its weaker evidence class.
+        # Strong evidence names only the ENOSPC log. The LLVM-only log
+        # retains its weaker annotation and is excluded from that scope.
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             logs_dir = root / "logs"
@@ -356,7 +364,82 @@ class ClassifyFlowTests(unittest.TestCase):
             )
             verdict = pressure_log.read_text(encoding="utf-8")
             self.assertIn("VERDICT: resource-exhaustion detected", verdict)
-            self.assertIn("not candidate defects", verdict)
+            self.assertNotIn("not candidate defects", verdict)
+            self.assertEqual(
+                [line for line in verdict.splitlines() if line.startswith("VERDICT:")],
+                [
+                    "VERDICT: resource-exhaustion detected in gate logs "
+                    "(ENOSPC / os-error-28 class); matched logs: "
+                    f"{logs_dir / 'clippy_full.log'}. "
+                    "Other gate failure causes remain unattributed."
+                ],
+            )
+
+    def test_mixed_gate_failures_are_not_globally_exonerated(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            logs_dir = root / "logs"
+            logs_dir.mkdir()
+            (logs_dir / "unit_routed_full.log").write_text(
+                "error: No space left on device (os error 28)\n"
+                "collect2: fatal error: ld terminated with signal 7 [Bus error]",
+                encoding="utf-8",
+            )
+            (logs_dir / "unit_scoped.log").write_text(
+                "assertion failed: expected Ready, got DegradedCancelled\n"
+                "test result: FAILED. 2487 passed; 1 failed",
+                encoding="utf-8",
+            )
+            (logs_dir / "source_commit_api_check.log").write_text(
+                "source commit API ledger mismatch: ledger705/source706",
+                encoding="utf-8",
+            )
+            pressure_log = root / "pr-fast-disk-pressure.log"
+            output = self.run_classify(logs_dir, pressure_log, "/mnt/target-x")
+            verdict = pressure_log.read_text(encoding="utf-8")
+            self.assertEqual(
+                [line for line in verdict.splitlines() if line.startswith("VERDICT:")],
+                [
+                    "VERDICT: resource-exhaustion detected in gate logs "
+                    "(ENOSPC / os-error-28 class); matched logs: "
+                    f"{logs_dir / 'unit_routed_full.log'}. "
+                    "Other gate failure causes remain unattributed."
+                ],
+            )
+            self.assertIn("::error::resource-exhaustion [enospc]", output)
+            self.assertNotIn("unit_scoped.log", output)
+            self.assertNotIn("source_commit_api_check.log", output)
+            self.assertNotIn("not candidate defects", verdict)
+
+    def test_multiple_strong_logs_have_deterministic_named_scope(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            logs_dir = root / "logs"
+            logs_dir.mkdir()
+            # Create reverse lexical order; the oracle pins known fixture paths.
+            (logs_dir / "z_compile.log").write_text(
+                "error: No space left on device", encoding="utf-8"
+            )
+            (logs_dir / "a_compile.log").write_text(
+                "error: failed to write output (os error 28)", encoding="utf-8"
+            )
+            (logs_dir / "unit_scoped.log").write_text(
+                "assertion failed: expected Ready", encoding="utf-8"
+            )
+            pressure_log = root / "pr-fast-disk-pressure.log"
+            output = self.run_classify(logs_dir, pressure_log, "/mnt/target-x")
+            verdict = pressure_log.read_text(encoding="utf-8")
+            self.assertEqual(
+                [line for line in verdict.splitlines() if line.startswith("VERDICT:")],
+                [
+                    "VERDICT: resource-exhaustion detected in gate logs "
+                    "(ENOSPC / os-error-28 class); matched logs: "
+                    f"{logs_dir / 'a_compile.log'}, {logs_dir / 'z_compile.log'}. "
+                    "Other gate failure causes remain unattributed."
+                ],
+            )
+            self.assertNotIn("unit_scoped.log", output)
+            self.assertNotIn("not candidate defects", verdict)
 
     def test_clean_run_records_absence_of_exhaustion(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
