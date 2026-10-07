@@ -421,3 +421,105 @@ fn missing_c_style_separator_still_reports_a_blocking_error() {
         );
     }
 }
+
+
+#[test]
+fn implicit_foreach_owns_its_continue_block_and_following_statement() -> TestResult {
+    for keyword in ["for", "foreach"] {
+        for list_text in ["1, 2", "my @values = @_"] {
+            for prefix in ["", "# café\r\n"] {
+                let body_text = "{ print $_; }";
+                let continue_text = "{ print \"done\"; }";
+                let loop_text =
+                    format!("{keyword} ({list_text}) {body_text} continue {continue_text}");
+                let source = format!("{prefix}{loop_text} my $after = 1;");
+                let ast = parse(&source)?;
+                let NodeKind::Program { statements } = &ast.kind else {
+                    return Err("expected program".into());
+                };
+                assert_eq!(statements.len(), 2, "continuation must belong to the loop");
+                let node = &statements[0];
+                let NodeKind::Foreach { variable, list, body, continue_block } = &node.kind else {
+                    return Err("expected top-level foreach".into());
+                };
+                assert!(matches!(
+                    &variable.kind,
+                    NodeKind::Variable { sigil, name } if sigil == "$" && name == "_"
+                ));
+                assert_eq!(variable.location.start, prefix.len());
+                assert_eq!(variable.location.end, prefix.len());
+                assert_eq!(&source[list.location.start..list.location.end], list_text);
+                assert_eq!(&source[body.location.start..body.location.end], body_text);
+                let continuation = continue_block.as_deref().ok_or("continue block disappeared")?;
+                assert_eq!(
+                    &source[continuation.location.start..continuation.location.end],
+                    continue_text
+                );
+                assert_eq!(node.location.start, prefix.len());
+                assert_eq!(node.location.end, prefix.len() + loop_text.len());
+                let children = node.children();
+                assert!(children.into_iter().any(|child| std::ptr::eq(child, continuation)));
+
+                let NodeKind::VariableDeclaration { declarator, variable, initializer, .. } =
+                    &statements[1].kind
+                else {
+                    return Err("following declaration disappeared or changed ownership".into());
+                };
+                assert_eq!(declarator, "my");
+                assert!(matches!(
+                    &variable.kind,
+                    NodeKind::Variable { sigil, name } if sigil == "$" && name == "after"
+                ));
+                let initializer = initializer.as_deref().ok_or("following initializer lost")?;
+                assert!(matches!(&initializer.kind, NodeKind::Number { value } if value == "1"));
+                assert_eq!(&source[initializer.location.start..initializer.location.end], "1");
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn explicit_foreach_continuation_remains_attached() -> TestResult {
+    for keyword in ["for", "foreach"] {
+        let body_text = "{ print $item; }";
+        let continue_text = "{ print \"done\"; }";
+        let loop_text = format!("{keyword} my $item (1, 2) {body_text} continue {continue_text}");
+        let source = format!("{loop_text} my $after = 1;");
+        let ast = parse(&source)?;
+        let NodeKind::Program { statements } = &ast.kind else {
+            return Err("expected program".into());
+        };
+        assert_eq!(statements.len(), 2);
+        let NodeKind::Foreach { variable, body, continue_block, .. } = &statements[0].kind else {
+            return Err("explicit iterator changed kind".into());
+        };
+        assert!(matches!(
+            &variable.kind,
+            NodeKind::Variable { sigil, name } if sigil == "$" && name == "item"
+        ));
+        assert_eq!(&source[variable.location.start..variable.location.end], "$item");
+        assert_eq!(&source[body.location.start..body.location.end], body_text);
+        let continuation = continue_block.as_deref().ok_or("explicit continue block lost")?;
+        assert_eq!(
+            &source[continuation.location.start..continuation.location.end],
+            continue_text
+        );
+        assert_eq!(statements[0].location.end, loop_text.len());
+    }
+    Ok(())
+}
+
+#[test]
+fn c_style_for_continuation_blocks_remain_rejected() {
+    for keyword in ["for", "foreach"] {
+        let source =
+            format!("{keyword} (my $i = 0; $i < 2; ++$i) {{ print $i; }} continue {{ print $i; }}");
+        let mut parser = Parser::new(&source);
+        let result = parser.parse();
+        assert!(
+            result.is_err() || parser.errors().iter().any(|error| error.blocks_clean_parse()),
+            "C-style continuation block silently accepted: {source}"
+        );
+    }
+}
