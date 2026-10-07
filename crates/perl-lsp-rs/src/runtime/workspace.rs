@@ -1938,6 +1938,10 @@ impl LspServer {
         let mut metadata_roots: std::collections::BTreeSet<std::path::PathBuf> =
             std::collections::BTreeSet::new();
 
+        // Whether this notification carried a DELETED change; the all-open
+        // republish runs once, after the metadata refresh below (#17332).
+        let mut watched_delete = false;
+
         for change in params.changes {
             let uri = change.uri.to_string();
             let change_type = change.typ;
@@ -1966,13 +1970,7 @@ impl LspServer {
                         coordinator.notify_parse_complete(&uri);
                     }
 
-                    // Eviction dropped this file's indexed facts, so open buffers
-                    // whose diagnostics resolved dependencies through it now show
-                    // a stale result until their next edit. Nothing in the buffer
-                    // changed, so push the corrected publications here (#17332);
-                    // the conservative all-open sweep matches the workspace-folder
-                    // seam below and the debouncer coalesces per URI.
-                    self.republish_open_document_diagnostics();
+                    watched_delete = true;
                 }
                 FileChangeType::CREATED | FileChangeType::CHANGED
                     // CREATED and CHANGED are debounced so that bulk operations
@@ -1994,6 +1992,17 @@ impl LspServer {
 
         // One refresh per affected folder for the whole notification (#13640).
         self.refresh_project_metadata_facts(&metadata_roots);
+
+        // Eviction above dropped indexed facts open buffers may have resolved
+        // dependencies through, and no buffer edit is coming to republish for
+        // them (#17332). One sweep after the refresh, so immediate-path
+        // publications (e2e mode, or a missing/unavailable debouncer) use the
+        // refreshed facts — a deleted metadata file retires its include root
+        // here — and a bulk delete costs one sweep instead of one per change.
+        // Matches the `handle_did_delete_files` seam order.
+        if watched_delete {
+            self.republish_open_document_diagnostics();
+        }
 
         // This is a notification, no response needed
         Ok(None)
