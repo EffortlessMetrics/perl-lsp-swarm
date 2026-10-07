@@ -621,9 +621,13 @@ fn run_server(command_name: &str, launch_config: LaunchConfig) {
                                 // Whatever ended this session's serve loop —
                                 // peer EOF, a failed required response, or a
                                 // protocol-clean `exit` (#17331) — this
-                                // connection is finished. Shut the peer socket
-                                // down so the reader thread cannot stay
-                                // blocked and hold the dead session open.
+                                // connection is finished. Settle the outbound
+                                // writer first so responses accepted by the
+                                // drained workers still reach the peer, then
+                                // shut the peer socket down so the reader
+                                // thread cannot stay blocked and hold the dead
+                                // session open.
+                                server.settle_outbound_for_teardown();
                                 let _ = peer_shutdown.shutdown(std::net::Shutdown::Both);
                                 failure_task.abort();
                             });
