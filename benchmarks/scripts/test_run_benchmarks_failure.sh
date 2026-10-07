@@ -31,6 +31,7 @@ for want in ${FAIL_BENCHES:-}; do
                 fatal) echo "fatal: unable to read $want output" >&2 ;;
                 empty) : ;;
                 homepath) echo "error: cannot write ${HOME:-/home/test}/.cache/$want" >&2 ;;
+                cr) printf 'error: spinner frame one\rlast frame (redraw, no newline)\n' >&2 ;;
                 *) echo "error: stub cargo failing for $want" >&2 ;;
             esac
             exit 101
@@ -190,6 +191,25 @@ if [[ ${HOME:-} =~ ^[A-Za-z0-9_@%+:,./-]+$ ]]; then
 else
     ok "HOME exotic; redaction skipped by design (nothing to assert)"
 fi
+unset STUB_FAIL_MODE
+
+# Case 6: carriage returns in cargo stderr fold to spaces so failure
+# receipts stay valid JSON (#17453 review).
+export FAIL_BENCHES="benchmark"
+export STUB_FAIL_MODE="cr"
+if PATH="$STUB:$PATH" bash "$RUNNER" --category ripr >"$OUT" 2>"$ERR"; then
+    bad "cr-mode run exited 0; expected nonzero"
+else
+    ok "cr-mode run exits nonzero"
+fi
+if python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$OUT" 2>/dev/null; then
+    ok "cr-mode output is valid JSON (no raw CR in string)"
+else
+    bad "cr-mode output is invalid JSON (raw CR leaked)"
+fi
+json_get "$OUT" ripr _error | grep -q "spinner frame one last frame" \
+    && ok "_error folds CR redraws to spaces" \
+    || bad "_error mishandles CR redraws"
 unset STUB_FAIL_MODE
 
 rm -rf "$STUB" "$OUT" "$ERR" "$ARGS_LOG"

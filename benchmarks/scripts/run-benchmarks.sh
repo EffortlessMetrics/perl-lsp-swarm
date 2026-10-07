@@ -117,9 +117,12 @@ cargo_stderr_excerpt() {
     # Both greps must tolerate no-match: under `set -euo pipefail` a grep
     # exit 1 inside this substitution would abort the whole runner instead
     # of recording the failure (#17453 review).
-    excerpt=$(grep -aA2 -m1 -E '^error' "$log_file" | tr '\n' ' ' | sed -e 's/  */ /g' -e 's/^ *//; s/ *$//' || true)
+    # CR folds to a space alongside LF: json_escape strips every other C0
+    # control, but a raw CR would survive into the JSON string (#17453
+    # review — cargo progress redraws and CRLF output carry CRs).
+    excerpt=$(grep -aA2 -m1 -E '^error' "$log_file" | tr '\r\n' '  ' | sed -e 's/  */ /g' -e 's/^ *//; s/ *$//' || true)
     if [[ -z "$excerpt" ]]; then
-        excerpt=$(grep -avE '^[[:space:]]*$' "$log_file" | tail -n 1 || true)
+        excerpt=$(grep -avE '^[[:space:]]*$' "$log_file" | tail -n 1 | tr '\r' ' ' || true)
     fi
     # Redact the home directory so shared receipts don't carry local paths
     # (#17453 review). The guard keeps the replacement literal: an exotic
