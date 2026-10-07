@@ -33,6 +33,9 @@ trap_say "extracted scan snippet: $SNIPPET_LINES lines, $RULE_VARS rule vars"
 # Synthetic, inert, token-SHAPED line only; never a real credential.
 FRAG_A='ghp_'
 FRAG_B='FAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKE0000'
+# Generic-shape value fragments: short apart, token-shaped only assembled.
+VAL_A='vvvvvvvvvv'
+VAL_B='vvvvvvvvvv'
 
 # --- Fixture A: the commit path, through git's own hook machinery ---
 git init -q -b trap/t3-secret "$SCRATCH/a"
@@ -50,9 +53,17 @@ printf 'api_token = "%s%s"\n' "$FRAG_A" "$FRAG_B" > "$SCRATCH/a/fixture.rs"
 KEY_A='-----BEGIN '
 KEY_B='PRIVATE KEY-----'
 printf '%s%s\n' "$KEY_A" "$KEY_B" > "$SCRATCH/a/key.pem"
+# A content line starting with + (diff shows ++api_token): the old ^\+[^+]
+# header grep dropped it, hiding the token from the hooks.
+printf '+api_token = "%s%s"\n' "$VAL_A" "$VAL_B" > "$SCRATCH/a/plus.txt"
+# A non-ASCII name, which git quotes by default ("caf\303\251.txt"): the old
+# per-file lookup passed the quoted form back as a pathspec matching nothing.
+printf 'api_token = "%s%s"\n' "$FRAG_A" "$FRAG_B" > "$SCRATCH/a/café.txt"
 BEFORE="$(sha256sum "$SCRATCH/a/fixture.rs" | cut -d' ' -f1)"
 BEFORE_KEY="$(sha256sum "$SCRATCH/a/key.pem" | cut -d' ' -f1)"
-git -C "$SCRATCH/a" add fixture.rs key.pem
+BEFORE_PLUS="$(sha256sum "$SCRATCH/a/plus.txt" | cut -d' ' -f1)"
+BEFORE_CAFE="$(sha256sum "$SCRATCH/a/café.txt" | cut -d' ' -f1)"
+git -C "$SCRATCH/a" add fixture.rs key.pem plus.txt "café.txt"
 set +e
 git -C "$SCRATCH/a" commit -m 'add fixture with embedded token' >"$SCRATCH/commit.txt" 2>&1
 COMMIT_EXIT=$?
@@ -67,17 +78,35 @@ PRIV_NAMING=0
 grep -q 'private-key' "$SCRATCH/commit.txt" 2>/dev/null && PRIV_NAMING=$((PRIV_NAMING + 1))
 grep -q 'key.pem' "$SCRATCH/commit.txt" 2>/dev/null && PRIV_NAMING=$((PRIV_NAMING + 1))
 trap_say "private-key naming pins=$PRIV_NAMING/2"
+PLUS_NAMING=0
+grep -q 'plus.txt' "$SCRATCH/commit.txt" 2>/dev/null && PLUS_NAMING=1
+trap_say "plus-content naming pin=$PLUS_NAMING/1"
+QUOTED_NAMING=0
+grep -q -F 'café.txt' "$SCRATCH/commit.txt" 2>/dev/null && QUOTED_NAMING=1
+trap_say "quoted-path naming pin=$QUOTED_NAMING/1"
 
 # Intactness: no commit landed and the worktree bytes are untouched.
 COMMITS="$(git -C "$SCRATCH/a" rev-list --all --count 2>/dev/null || echo 0)"
 AFTER="$(sha256sum "$SCRATCH/a/fixture.rs" | cut -d' ' -f1)"
 AFTER_KEY="$(sha256sum "$SCRATCH/a/key.pem" | cut -d' ' -f1)"
-INTACT=0; [[ "$COMMITS" -eq 0 && "$BEFORE" == "$AFTER" && "$BEFORE_KEY" == "$AFTER_KEY" ]] && INTACT=1
+AFTER_PLUS="$(sha256sum "$SCRATCH/a/plus.txt" | cut -d' ' -f1)"
+AFTER_CAFE="$(sha256sum "$SCRATCH/a/café.txt" | cut -d' ' -f1)"
+INTACT=0; [[ "$COMMITS" -eq 0 && "$BEFORE" == "$AFTER" && "$BEFORE_KEY" == "$AFTER_KEY" && "$BEFORE_PLUS" == "$AFTER_PLUS" && "$BEFORE_CAFE" == "$AFTER_CAFE" ]] && INTACT=1
 trap_say "fixture commits=$COMMITS; worktree bytes intact=$INTACT"
 
-# The documented escape: allowlisted fixture paths commit cleanly.
+# The documented escape: allowlisted fixture paths commit cleanly. The entries
+# carry surrounding whitespace, comments, and a blank line, proving the hooks
+# apply the same allowlist rules as the gate.
 mkdir -p "$SCRATCH/a/.ci"
-printf 'fixture.rs\nkey.pem\n' > "$SCRATCH/a/.ci/secret-scan-allowlist.txt"
+{
+    printf '# exemptions for the trap fixtures\n'
+    printf '  fixture.rs  \n'
+    printf 'key.pem\n'
+    printf 'plus.txt\n'
+    printf 'café.txt\n'
+    printf '  # indented comment\n'
+    printf '\n'
+} > "$SCRATCH/a/.ci/secret-scan-allowlist.txt"
 set +e
 git -C "$SCRATCH/a" commit -m 'add documented fixture' >"$SCRATCH/escape.txt" 2>&1
 ESCAPE_EXIT=$?
@@ -98,6 +127,20 @@ if [[ "$CONTROL_EXIT" -eq 0 ]] && ! grep -q 'Secret scan refused' "$SCRATCH/cont
     CONTROL=1
 fi
 trap_say "benign commit exit=$CONTROL_EXIT (control passes=$CONTROL)"
+
+# Identifier control: bare-identifier references name computed values, not
+# credentials, and commit with no allowlist and no scan complaint.
+printf 'api_key = get_key_from_vault;\nsecret_key = load_secret_key_from_env,\nconnect(api_key=get_key_from_vault)\naccess_token = fetch_access_token_here[0]\n' > "$SCRATCH/a/calc.rs"
+git -C "$SCRATCH/a" add calc.rs
+set +e
+git -C "$SCRATCH/a" commit -m 'add computed key references' >"$SCRATCH/ident.txt" 2>&1
+IDENT_EXIT=$?
+set -e
+IDENT_OK=0
+if [[ "$IDENT_EXIT" -eq 0 ]] && ! grep -q 'Secret scan refused' "$SCRATCH/ident.txt" 2>/dev/null; then
+    IDENT_OK=1
+fi
+trap_say "identifier commit exit=$IDENT_EXIT (identifier control passes=$IDENT_OK)"
 
 # --- Fixture B: the push path, with an explicit --no-verify bypass of commit ---
 git init -q --bare "$SCRATCH/origin.git"
@@ -156,6 +199,52 @@ if [[ "$PUSH_CLEAN_EXIT" -eq 0 ]] && ! grep -q 'Secret scan refused' "$SCRATCH/p
 fi
 trap_say "benign push exit=$PUSH_CLEAN_EXIT (push control passes=$PUSH_CONTROL)"
 
+# --- Fixture D: a secret added and removed inside the pushed range ---
+# The endpoint diff is clean, so only the per-commit history leg can refuse.
+git clone -q "$SCRATCH/origin.git" "$SCRATCH/d" 2>/dev/null
+trap_git_identity "$SCRATCH/d"
+git -C "$SCRATCH/d" checkout -q -b trap/t3-history
+cp "$SCRATCH/b/.git/hooks/pre-push" "$SCRATCH/d/.git/hooks/pre-push"
+printf 'baseline\n' > "$SCRATCH/d/notes.txt"
+git -C "$SCRATCH/d" add notes.txt
+git -C "$SCRATCH/d" commit -qm 'baseline'
+printf 'api_token = "%s%s"\n' "$FRAG_A" "$FRAG_B" > "$SCRATCH/d/leak.rs"
+git -C "$SCRATCH/d" add leak.rs
+git -C "$SCRATCH/d" commit -qm 'add token'
+printf 'api_token = "rotated"\n' > "$SCRATCH/d/leak.rs"
+git -C "$SCRATCH/d" commit -qam 'remove token'
+set +e
+git -C "$SCRATCH/d" push origin trap/t3-history >"$SCRATCH/push-history.txt" 2>&1
+PUSH_HIST_EXIT=$?
+set -e
+PUSH_HIST_REFUSED=0; [[ "$PUSH_HIST_EXIT" -ne 0 ]] && PUSH_HIST_REFUSED=1
+PUSH_HIST_NAMING=0
+grep -q 'Secret scan refused this push' "$SCRATCH/push-history.txt" 2>/dev/null && PUSH_HIST_NAMING=$((PUSH_HIST_NAMING + 1))
+grep -q 'github-token' "$SCRATCH/push-history.txt" 2>/dev/null && PUSH_HIST_NAMING=$((PUSH_HIST_NAMING + 1))
+grep -q 'leak.rs' "$SCRATCH/push-history.txt" 2>/dev/null && PUSH_HIST_NAMING=$((PUSH_HIST_NAMING + 1))
+HIST_ORIGIN_COUNT="$(git --git-dir="$SCRATCH/origin.git" rev-list --all --count 2>/dev/null || echo 0)"
+HIST_ORIGIN_CLEAN=0; [[ "$HIST_ORIGIN_COUNT" -eq 1 ]] && HIST_ORIGIN_CLEAN=1
+trap_say "history push exit=$PUSH_HIST_EXIT (refused=$PUSH_HIST_REFUSED); naming pins=$PUSH_HIST_NAMING/3; origin commits=$HIST_ORIGIN_COUNT (clean=$HIST_ORIGIN_CLEAN)"
+
+# --- Fail-closed probes: unresolvable shas refuse unevaluated, never sail ---
+BOGUS='deadbeefdeadbeefdeadbeefdeadbeefdeadbeef'
+B_HEAD="$(git -C "$SCRATCH/b" rev-parse HEAD)"
+set +e
+(cd "$SCRATCH/b" && printf 'refs/heads/x %s refs/heads/x 0000000000000000000000000000000000000000\n' "$BOGUS" \
+    | bash .git/hooks/pre-push >"$SCRATCH/range-fail-local.txt" 2>&1)
+RANGE_LOCAL_EXIT=$?
+(cd "$SCRATCH/b" && printf 'refs/heads/x %s refs/heads/x %s\n' "$B_HEAD" "$BOGUS" \
+    | bash .git/hooks/pre-push >"$SCRATCH/range-fail-remote.txt" 2>&1)
+RANGE_REMOTE_EXIT=$?
+set -e
+RANGE_FAIL=0
+if [[ "$RANGE_LOCAL_EXIT" -ne 0 && "$RANGE_REMOTE_EXIT" -ne 0 ]] \
+    && grep -q 'could not evaluate' "$SCRATCH/range-fail-local.txt" 2>/dev/null \
+    && grep -q 'could not evaluate' "$SCRATCH/range-fail-remote.txt" 2>/dev/null; then
+    RANGE_FAIL=1
+fi
+trap_say "bogus-sha probes local=$RANGE_LOCAL_EXIT remote=$RANGE_REMOTE_EXIT (fail closed=$RANGE_FAIL)"
+
 # --- Static pins: the cargo-built gate half (no cargo build in this suite) ---
 HOOKSRC="$TRAP_ROOT/crates/perl-ci-hygiene/src/git_hooks.rs"
 LIB="$TRAP_ROOT/crates/perl-ci-hygiene/src/secret_scan.rs"
@@ -163,9 +252,21 @@ LIB_SHAPES="$(grep -c 'pub const TOKEN_SHAPES' "$LIB" || true)"
 LIB_SCAN="$(grep -c 'pub fn scan_unified_diff' "$LIB" || true)"
 LIB_BODY="$(grep -c 'pub fn extract_pr_body' "$LIB" || true)"
 LIB_TEST="$(grep -c 'rule_patterns_do_not_match_their_own_source_text' "$LIB" || true)"
-CMD_CHECK="$(grep -c 'pub(crate) fn check' "$TRAP_ROOT/crates/perl-ci-hygiene/src/commands/secret_scan.rs" || true)"
+LIB_EXCL="$(grep -c 'GENERIC_REFERENCE_EXCLUSION' "$LIB" || true)"
+LIB_UNQ="$(grep -c 'unquote_git_path' "$LIB" || true)"
+CMD="$TRAP_ROOT/crates/perl-ci-hygiene/src/commands/secret_scan.rs"
+CMD_CHECK="$(grep -c 'pub(crate) fn check' "$CMD" || true)"
+CMD_HIST="$(grep -c 'read_history_diff' "$CMD" || true)"
+CMD_NOBASE="$(grep -c 'no_base_outcome' "$CMD" || true)"
+HOOK_EXCL="$(grep -c 'SECRET_SCAN_EXCLUDE_GENERIC' "$HOOKSRC" || true)"
+HOOK_HUNK="$(grep -c 'in_hunk && ' "$HOOKSRC" || true)"
+HOOK_Z="$(grep -c -- '--name-only -z' "$HOOKSRC" || true)"
+HOOK_HIST="$(grep -c 'log -p -m' "$HOOKSRC" || true)"
+HOOK_FAIL="$(grep -c 'secret_scan_cannot_evaluate' "$HOOKSRC" || true)"
+TRIGGER_PIN="$(grep -c 'reopened, edited, ready_for_review' "$TRAP_ROOT/.github/workflows/ci.yml" || true)"
 CLI_PIN="$(grep -c '^    CheckSecrets {$' "$TRAP_ROOT/crates/perl-ci-hygiene/src/cli.rs" || true)"
-trap_say "lib(shapes=$LIB_SHAPES,scan=$LIB_SCAN,body=$LIB_BODY,test=$LIB_TEST) command=$CMD_CHECK cli=$CLI_PIN"
+trap_say "lib(shapes=$LIB_SHAPES,scan=$LIB_SCAN,body=$LIB_BODY,test=$LIB_TEST,excl=$LIB_EXCL,unq=$LIB_UNQ) command(check=$CMD_CHECK,hist=$CMD_HIST,nobase=$CMD_NOBASE) cli=$CLI_PIN"
+trap_say "hookscan(excl=$HOOK_EXCL,hunk=$HOOK_HUNK,z=$HOOK_Z,hist=$HOOK_HIST,fail=$HOOK_FAIL) trigger_edited=$TRIGGER_PIN"
 GATE_BLOCK="$(sed -n '/- name: secret_scan/,/command:/p' "$TRAP_ROOT/.ci/gate-policy.yaml")"
 GATE_TIER="$(printf '%s' "$GATE_BLOCK" | grep -c 'tier: merge_gate' || true)"
 GATE_REQ="$(printf '%s' "$GATE_BLOCK" | grep -c 'required: true' || true)"
@@ -188,30 +289,37 @@ PARITY_TEST="$(grep -c 'secret_scan_shell_matches_lib_rules' "$HOOKSRC" || true)
 trap_say "allowlist(file=$ALLOW_OK,doc=$ALLOW_DOC) wire(commit=$WIRE_COMMIT@${CALL_LINE}<${GATE_LINE},push=$WIRE_PUSH@${PUSH_CALL_LINE}<${PUSH_GATE_LINE}) sync=$SYNC_TEST parity=$PARITY_TEST"
 
 LIVE_OK=0
-if [[ "$REFUSED" -eq 1 && "$NAMING" -eq 3 && "$PRIV_NAMING" -eq 2 && "$INTACT" -eq 1 && "$ESCAPE" -eq 1 && "$CONTROL" -eq 1 \
+if [[ "$REFUSED" -eq 1 && "$NAMING" -eq 3 && "$PRIV_NAMING" -eq 2 && "$PLUS_NAMING" -eq 1 && "$QUOTED_NAMING" -eq 1 \
+    && "$INTACT" -eq 1 && "$ESCAPE" -eq 1 && "$CONTROL" -eq 1 && "$IDENT_OK" -eq 1 \
     && "$PUSH_REFUSED" -eq 1 && "$PUSH_NAMING" -eq 2 && "$ORIGIN_CLEAN" -eq 1 && "$PUSH_CONTROL" -eq 1 \
+    && "$PUSH_HIST_REFUSED" -eq 1 && "$PUSH_HIST_NAMING" -eq 3 && "$HIST_ORIGIN_CLEAN" -eq 1 \
+    && "$RANGE_FAIL" -eq 1 \
     && "$SNIPPET_LINES" -gt 50 && "$RULE_VARS" -eq 5 ]]; then
     LIVE_OK=1
 fi
 PINS_OK=0
 if [[ "$LIB_SHAPES" -eq 1 && "$LIB_SCAN" -eq 1 && "$LIB_BODY" -eq 1 && "$LIB_TEST" -ge 1 \
-    && "$CMD_CHECK" -eq 1 && "$CLI_PIN" -eq 1 && "$GATE_TIER" -eq 1 && "$GATE_REQ" -eq 1 && "$GATE_CMD" -eq 1 \
+    && "$LIB_EXCL" -ge 1 && "$LIB_UNQ" -ge 1 \
+    && "$CMD_CHECK" -eq 1 && "$CMD_HIST" -ge 1 && "$CMD_NOBASE" -ge 1 && "$CLI_PIN" -eq 1 \
+    && "$GATE_TIER" -eq 1 && "$GATE_REQ" -eq 1 && "$GATE_CMD" -eq 1 \
     && "$SHARD_PIN" -ge 1 && "$WORKFLOW_PIN" -ge 1 && "$LANE_PIN" -ge 1 && "$ECON_PIN" -ge 1 \
     && "$ALLOW_OK" -eq 1 && "$ALLOW_DOC" -ge 1 && "$WIRE_COMMIT" -ge 1 && "$CALL_LINE" -lt "$GATE_LINE" \
-    && "$WIRE_PUSH" -eq 1 && "$PUSH_CALL_LINE" -lt "$PUSH_GATE_LINE" && "$SYNC_TEST" -ge 1 && "$PARITY_TEST" -ge 1 ]]; then
+    && "$WIRE_PUSH" -eq 1 && "$PUSH_CALL_LINE" -lt "$PUSH_GATE_LINE" && "$SYNC_TEST" -ge 1 && "$PARITY_TEST" -ge 1 \
+    && "$HOOK_EXCL" -ge 1 && "$HOOK_HUNK" -ge 1 && "$HOOK_Z" -ge 1 && "$HOOK_HIST" -ge 1 && "$HOOK_FAIL" -ge 1 \
+    && "$TRIGGER_PIN" -eq 1 ]]; then
     PINS_OK=1
 fi
 TOKEN_LANDED=0
-[[ "$REFUSED" -eq 0 || "$PUSH_REFUSED" -eq 0 ]] && TOKEN_LANDED=1
+[[ "$REFUSED" -eq 0 || "$PUSH_REFUSED" -eq 0 || "$PUSH_HIST_REFUSED" -eq 0 ]] && TOKEN_LANDED=1
 
 if [[ "$LIVE_OK" -eq 1 && "$PINS_OK" -eq 1 ]]; then
     verdict T3 PASS 'staged token commit refused live with file+rule naming and byte-intact worktree; pushed range refused on the push path with origin untouched; allowlist escape and benign controls pass; required secret_scan gate re-scans PR diff+body (caveats: local hooks are --no-verify-bypassable by design — the required gate is the non-bypassable layer; shapes flag credentials by form, not liveness)'
 elif [[ "$PINS_OK" -eq 1 && "$TOKEN_LANDED" -eq 1 ]]; then
     verdict T3 FAIL 'scan is wired but a token-shaped addition landed (guard claimed but bypassed)'
 else
-    printf 'HARNESS-ERROR t03: LIVE=%s PINS=%s REFUSED=%s NAMING=%s PRIV=%s INTACT=%s ESCAPE=%s CONTROL=%s PUSH=%s PNAMING=%s ORIGIN=%s PCONTROL=%s SNIP=%s RULES=%s\n' \
-        "$LIVE_OK" "$PINS_OK" "$REFUSED" "$NAMING" "$PRIV_NAMING" "$INTACT" "$ESCAPE" "$CONTROL" "$PUSH_REFUSED" "$PUSH_NAMING" "$ORIGIN_COUNT" "$PUSH_CONTROL" "$SNIPPET_LINES" "$RULE_VARS" >&2
-    printf 'HARNESS-ERROR t03 pins: LIB=%s/%s/%s/%s CMD=%s CLI=%s GATE=%s/%s/%s SHARD=%s WORKFLOW=%s LANE=%s ECON=%s ALLOW=%s/%s WIRE=%s/%s SYNC=%s PARITY=%s\n' \
-        "$LIB_SHAPES" "$LIB_SCAN" "$LIB_BODY" "$LIB_TEST" "$CMD_CHECK" "$CLI_PIN" "$GATE_TIER" "$GATE_REQ" "$GATE_CMD" "$SHARD_PIN" "$WORKFLOW_PIN" "$LANE_PIN" "$ECON_PIN" "$ALLOW_OK" "$ALLOW_DOC" "$WIRE_COMMIT" "$WIRE_PUSH" "$SYNC_TEST" "$PARITY_TEST" >&2
+    printf 'HARNESS-ERROR t03: LIVE=%s PINS=%s REFUSED=%s NAMING=%s PRIV=%s PLUS=%s QUOTED=%s INTACT=%s ESCAPE=%s CONTROL=%s IDENT=%s PUSH=%s PNAMING=%s ORIGIN=%s PCONTROL=%s HIST=%s HNAMING=%s HORIGIN=%s RANGE=%s SNIP=%s RULES=%s\n' \
+        "$LIVE_OK" "$PINS_OK" "$REFUSED" "$NAMING" "$PRIV_NAMING" "$PLUS_NAMING" "$QUOTED_NAMING" "$INTACT" "$ESCAPE" "$CONTROL" "$IDENT_OK" "$PUSH_REFUSED" "$PUSH_NAMING" "$ORIGIN_COUNT" "$PUSH_CONTROL" "$PUSH_HIST_REFUSED" "$PUSH_HIST_NAMING" "$HIST_ORIGIN_COUNT" "$RANGE_FAIL" "$SNIPPET_LINES" "$RULE_VARS" >&2
+    printf 'HARNESS-ERROR t03 pins: LIB=%s/%s/%s/%s/%s/%s CMD=%s/%s/%s CLI=%s GATE=%s/%s/%s SHARD=%s WORKFLOW=%s LANE=%s ECON=%s ALLOW=%s/%s WIRE=%s/%s SYNC=%s PARITY=%s HOOK=%s/%s/%s/%s/%s TRIGGER=%s\n' \
+        "$LIB_SHAPES" "$LIB_SCAN" "$LIB_BODY" "$LIB_TEST" "$LIB_EXCL" "$LIB_UNQ" "$CMD_CHECK" "$CMD_HIST" "$CMD_NOBASE" "$CLI_PIN" "$GATE_TIER" "$GATE_REQ" "$GATE_CMD" "$SHARD_PIN" "$WORKFLOW_PIN" "$LANE_PIN" "$ECON_PIN" "$ALLOW_OK" "$ALLOW_DOC" "$WIRE_COMMIT" "$WIRE_PUSH" "$SYNC_TEST" "$PARITY_TEST" "$HOOK_EXCL" "$HOOK_HUNK" "$HOOK_Z" "$HOOK_HIST" "$HOOK_FAIL" "$TRIGGER_PIN" >&2
     exit 2
 fi
