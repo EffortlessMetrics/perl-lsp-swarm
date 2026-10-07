@@ -6222,7 +6222,6 @@ impl IndexVisitor {
         }
     }
 
-
     /// Give live call references the bare callee token shared with text search.
     fn call_reference_range(&mut self, node: &Node, name: &str) -> Range {
         if matches!(name, "->()" | "&{}" | "field") {
@@ -8365,7 +8364,6 @@ sub test {
         let refs = index.find_references("$x");
         assert!(refs.len() >= 2); // Definition + at least one usage
     }
-
 
     #[test]
     fn test_call_reference_ranges_preserve_callee_offsets() {
