@@ -416,8 +416,15 @@ fn next_indexing_progress_request_id(next_request_id: &AtomicI32) -> ServerReque
 }
 
 #[cfg(feature = "workspace")]
-fn indexing_cancellation_request_id(progress_create_id: ServerRequestId) -> JsonRpcId {
-    JsonRpcId::String(format!("workspace-indexing:{}", progress_create_id.as_i32()))
+fn indexing_cancellation_request_id() -> JsonRpcId {
+    // The registry is process-wide, while wire request IDs belong to one server.
+    static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    JsonRpcId::String(format!("workspace-indexing:{}", NEXT_ID.fetch_add(1, Ordering::Relaxed)))
+}
+
+#[cfg(feature = "workspace")]
+fn indexing_cancellation_is_requested(registered: bool, request_id: &JsonRpcId) -> bool {
+    registered && GLOBAL_CANCELLATION_REGISTRY.is_cancelled(request_id)
 }
 
 #[cfg(feature = "workspace")]
@@ -2925,24 +2932,28 @@ impl LspServer {
         // progress-create request ID is server-generated, while the registry
         // also contains client request IDs; sharing numeric IDs would allow a
         // progress registration to overwrite an unrelated client request.
-        let progress_request_id = indexing_cancellation_request_id(progress_create_id);
+        let progress_request_id = indexing_cancellation_request_id();
         let progress_tokens = resources.progress_tokens;
         let progress_token_to_request = resources.progress_token_to_request;
-        if work_done_progress {
+        let cancellation_registered = if work_done_progress {
             let cancellation_token = PerlLspCancellationToken::new(
                 progress_request_id.clone(),
                 "workspace-indexing".to_string(),
             );
             if let Err(error) = GLOBAL_CANCELLATION_REGISTRY.register_token(cancellation_token) {
                 tracing::warn!(%error, "Failed to register workspace indexing cancellation token");
+                false
             } else {
                 progress_tokens.lock().insert(WORKSPACE_INDEX_PROGRESS_TOKEN.to_string());
                 progress_token_to_request.lock().insert(
                     WORKSPACE_INDEX_PROGRESS_TOKEN.to_string(),
                     progress_request_id.clone(),
                 );
+                true
             }
-        }
+        } else {
+            false
+        };
         let permission_denied_shown = resources.permission_denied_shown;
         let readiness_receipt = resources.readiness_receipt;
         #[cfg(all(feature = "workspace", any(test, feature = "expose_lsp_test_api")))]
@@ -2958,11 +2969,12 @@ impl LspServer {
             #[cfg(test)]
             let mut scan_observation = scan_observation;
             let _guard = indexing_guard; // moved into closure, drops when closure exits
-            let _cancellation_guard = work_done_progress.then(|| WorkspaceIndexCancellationGuard {
-                progress_tokens,
-                progress_token_to_request,
-                request_id: progress_request_id.clone(),
-            });
+            let _cancellation_guard =
+                cancellation_registered.then(|| WorkspaceIndexCancellationGuard {
+                    progress_tokens,
+                    progress_token_to_request,
+                    request_id: progress_request_id.clone(),
+                });
             #[cfg(test)]
             if let Some(observation) = &scan_observation {
                 observation.worker_started();
@@ -3021,7 +3033,8 @@ impl LspServer {
             let discovery_started = Instant::now();
 
             'scan: for folder_state in workspace_folders {
-                if GLOBAL_CANCELLATION_REGISTRY.is_cancelled(&progress_request_id) {
+                if indexing_cancellation_is_requested(cancellation_registered, &progress_request_id)
+                {
                     let elapsed_ms = budget_start.elapsed().as_millis() as u64;
                     early_exit = Some((EarlyExitReason::Cancelled, elapsed_ms, 0, files.len()));
                     break 'scan;
@@ -3046,8 +3059,10 @@ impl LspServer {
                     &workspace_config.include_paths,
                     &discovery_config,
                     || {
-                        work_done_progress
-                            && GLOBAL_CANCELLATION_REGISTRY.is_cancelled(&progress_request_id)
+                        indexing_cancellation_is_requested(
+                            cancellation_registered,
+                            &progress_request_id,
+                        )
                     },
                 );
 
@@ -3058,7 +3073,10 @@ impl LspServer {
                 }
 
                 for path in discovery.files {
-                    if GLOBAL_CANCELLATION_REGISTRY.is_cancelled(&progress_request_id) {
+                    if indexing_cancellation_is_requested(
+                        cancellation_registered,
+                        &progress_request_id,
+                    ) {
                         let elapsed_ms = budget_start.elapsed().as_millis() as u64;
                         early_exit = Some((EarlyExitReason::Cancelled, elapsed_ms, 0, files.len()));
                         break 'scan;
@@ -3115,7 +3133,8 @@ impl LspServer {
             let mut last_reported = 0usize;
 
             for path in files {
-                if GLOBAL_CANCELLATION_REGISTRY.is_cancelled(&progress_request_id) {
+                if indexing_cancellation_is_requested(cancellation_registered, &progress_request_id)
+                {
                     let elapsed_ms = budget_start.elapsed().as_millis() as u64;
                     early_exit =
                         Some((EarlyExitReason::Cancelled, elapsed_ms, indexed_files, total_files));
@@ -3453,9 +3472,10 @@ impl LspServer {
                 }
                 readiness_receipt.lock().log();
                 send_index_ready_notification(&outbound, &coordinator.state());
-            } else if work_done_progress
-                && GLOBAL_CANCELLATION_REGISTRY.is_cancelled(&progress_request_id)
-            {
+            } else if indexing_cancellation_is_requested(
+                cancellation_registered,
+                &progress_request_id,
+            ) {
                 let elapsed_ms = budget_start.elapsed().as_millis() as u64;
                 coordinator.transition_to_degraded(DegradationReason::Cancelled);
                 coordinator.record_early_exit(
@@ -5835,6 +5855,132 @@ mod tests {
             );
         }
         Ok(())
+    }
+
+    #[cfg(feature = "workspace")]
+    fn assert_indexing_cancellation_is_session_scoped(
+        other_supports_progress: bool,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let cancelled_dir = tempfile::tempdir()?;
+        let other_dir = tempfile::tempdir()?;
+        const FILE_COUNT: usize = 40;
+        for (directory, prefix) in
+            [(cancelled_dir.path(), "CancelledSession"), (other_dir.path(), "OtherSession")]
+        {
+            for index in 0..FILE_COUNT {
+                std::fs::write(
+                    directory.join(format!("session-{index:03}.pm")),
+                    format!(
+                        "package {prefix}{index:03};\nsub symbol_{index:03} {{ {index} }}\n1;\n"
+                    ),
+                )?;
+            }
+        }
+        let (mut cancelled_server, _cancelled_output) = server_with_output_capture();
+        let (mut other_server, _other_output) = server_with_output_capture();
+        let (receipt_tx, receipt_rx) = std::sync::mpsc::channel();
+        let receipt_guard =
+            crate::runtime::readiness::set_workspace_readiness_receipt_observer(receipt_tx);
+        for (server, directory, supports_progress, budget_ms) in [
+            (&mut cancelled_server, cancelled_dir.path(), true, 30_000),
+            (&mut other_server, other_dir.path(), other_supports_progress, 0),
+        ] {
+            server.client_capabilities.lock().work_done_progress_support = supports_progress;
+            server.index_coordinator =
+                Some(std::sync::Arc::new(IndexCoordinator::with_limits_and_caps(
+                    IndexResourceLimits::default(),
+                    IndexPerformanceCaps {
+                        initial_scan_budget_ms: budget_ms,
+                        ..Default::default()
+                    },
+                )));
+            let uri = url::Url::from_directory_path(directory)
+                .map_err(|_| "invalid session workspace path")?
+                .to_string();
+            server.workspace_folders.lock().push(
+                crate::runtime::workspace_folder::WorkspaceFolderState::new(uri)
+                    .with_path(directory.to_path_buf()),
+            );
+            server
+                .readiness_receipt_observer_id
+                .store(receipt_guard.id(), std::sync::atomic::Ordering::Relaxed);
+        }
+        let (cancelled_started_tx, cancelled_started_rx) = std::sync::mpsc::channel();
+        let (cancelled_release_tx, cancelled_release_rx) = std::sync::mpsc::channel();
+        cancelled_server
+            .test_gate_workspace_indexing_start(cancelled_started_tx, cancelled_release_rx);
+        let (other_started_tx, other_started_rx) = std::sync::mpsc::channel();
+        let (other_release_tx, other_release_rx) = std::sync::mpsc::channel();
+        other_server.test_gate_workspace_indexing_start(other_started_tx, other_release_rx);
+        let mut cancelled_scan = cancelled_server.test_observe_indexing_scan()?;
+        let mut other_scan = other_server.test_observe_indexing_scan()?;
+        cancelled_server.start_workspace_indexing();
+        cancelled_started_rx.recv_timeout(SCAN_GATE_WAIT)?;
+        other_server.start_workspace_indexing();
+        other_started_rx.recv_timeout(SCAN_GATE_WAIT)?;
+        let cancelled_request = cancelled_server
+            .progress_token_to_request
+            .lock()
+            .get(WORKSPACE_INDEX_PROGRESS_TOKEN)
+            .cloned()
+            .ok_or("cancelled session did not register progress")?;
+        let other_request = other_server
+            .progress_token_to_request
+            .lock()
+            .get(WORKSPACE_INDEX_PROGRESS_TOKEN)
+            .cloned();
+        cancelled_server.handle_progress_cancel(Some(json!({"token": "workspace-index"})));
+        // Keep A paused with its cancelled token live while B completes. This
+        // makes the historical cross-session collision deterministic.
+        other_release_tx.send(())?;
+        receipt_rx.recv_timeout(std::time::Duration::from_secs(30))?;
+        cancelled_release_tx.send(())?;
+        receipt_rx.recv_timeout(std::time::Duration::from_secs(30))?;
+        cancelled_scan.wait_for_exit(SCAN_GATE_WAIT);
+        other_scan.wait_for_exit(SCAN_GATE_WAIT);
+        assert_eq!(
+            cancelled_scan.snapshot_at(std::time::Instant::now()).state(),
+            "exited_before_first_commit_gate"
+        );
+        assert_eq!(
+            other_scan.snapshot_at(std::time::Instant::now()).state(),
+            "exited_after_first_commit_gate"
+        );
+        let other_coordinator = other_server.coordinator().ok_or("missing other coordinator")?;
+        assert!(
+            matches!(other_coordinator.state(), IndexState::Ready { .. }),
+            "another session's cancellation changed readiness: {:?}",
+            other_coordinator.state()
+        );
+        assert_eq!(other_coordinator.index().file_count(), FILE_COUNT);
+        let cancelled_coordinator =
+            cancelled_server.coordinator().ok_or("missing cancelled coordinator")?;
+        assert!(matches!(
+            cancelled_coordinator.state(),
+            IndexState::Degraded { reason: DegradationReason::Cancelled, .. }
+        ));
+        assert!(cancelled_server.progress_token_to_request.lock().is_empty());
+        assert!(other_server.progress_token_to_request.lock().is_empty());
+        assert!(GLOBAL_CANCELLATION_REGISTRY.get_token(&cancelled_request).is_none());
+        if let Some(other_request) = other_request {
+            assert_ne!(cancelled_request, other_request);
+            assert!(GLOBAL_CANCELLATION_REGISTRY.get_token(&other_request).is_none());
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn indexing_cancellation_does_not_cross_progress_sessions()
+    -> Result<(), Box<dyn std::error::Error>> {
+        assert_indexing_cancellation_is_session_scoped(true)
+    }
+
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn indexing_cancellation_does_not_cross_sessions_without_progress()
+    -> Result<(), Box<dyn std::error::Error>> {
+        assert_indexing_cancellation_is_session_scoped(false)
     }
 
     /// #17245: a tripped initial scan budget must degrade readiness reporting,
