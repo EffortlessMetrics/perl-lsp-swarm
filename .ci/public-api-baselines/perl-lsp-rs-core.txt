@@ -132,6 +132,7 @@ pub perl_lsp_rs_core::config::RejectedClientIncludePathReason::EscapesWorkspace(
 pub perl_lsp_rs_core::config::RejectedClientIncludePathReason::ExternalInvalidCharacters
 pub perl_lsp_rs_core::config::RejectedClientIncludePathReason::ExternalRelative
 pub perl_lsp_rs_core::config::RejectedClientIncludePathReason::ExternalUnauthorized(perl_lsp_rs_core::config::UnauthorizedExternalIncludePathSource)
+pub fn perl_lsp_rs_core::config::RejectedClientIncludePathReason::dedup_key(&self) -> &'static str
 pub fn perl_lsp_rs_core::config::RejectedClientIncludePathReason::clone(&self) -> perl_lsp_rs_core::config::RejectedClientIncludePathReason
 pub fn perl_lsp_rs_core::config::RejectedClientIncludePathReason::eq(&self, other: &perl_lsp_rs_core::config::RejectedClientIncludePathReason) -> bool
 pub fn perl_lsp_rs_core::config::RejectedClientIncludePathReason::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
