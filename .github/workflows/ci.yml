@@ -315,7 +315,7 @@ jobs:
   platform-overrides:
     name: CI scope platform overrides
     runs-on: ubuntu-24.04
-    timeout-minutes: 8
+    timeout-minutes: 15
     needs: [draft-pr-check, preflight-latest-check]
     if: needs.draft-pr-check.outputs.run_ci == 'true' && needs.preflight-latest-check.outputs.is_latest == 'true'
     outputs:
