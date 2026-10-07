@@ -757,8 +757,7 @@ mod tests {
         // drift apart, installed hooks silently stop matching the
         // authority they are verified against.
         let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-        let checked_in =
-            fs::read_to_string(manifest.join("../../hooks/pre-push"))?;
+        let checked_in = fs::read_to_string(manifest.join("../../hooks/pre-push"))?;
         assert_eq!(
             normalize_hook(pre_push_hook_script()),
             normalize_hook(&checked_in),
