@@ -2807,6 +2807,7 @@ workflow_integration:
 
         - unsafe_prod_check
         - code_action_generation_ledger
+        - no_verify_recover_check
       # `compile_all_targets` is not listed here since #15638: the meta shard
       # no longer executes it (the required `Compile All Targets (bit-rot
       # guard)` job owns the property), and this mapping must not claim

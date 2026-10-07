@@ -149,7 +149,9 @@ pub(crate) enum CliCommand {
     /// Re-run the commit-attribution hook policy over the pushed range, so `--no-verify` cannot smuggle a placeholder git identity past review (#17430).
     CheckNoVerifyRecover {
         /// Base ref to scan `HEAD` against. Defaults to `$CI_SCOPE_BASE`,
-        /// `$GITHUB_BASE_REF`, `origin/main`, `main`, then `HEAD~1`.
+        /// `$GITHUB_BASE_REF`, `origin/main`, `main`, then `HEAD~1` (local
+        /// runs only — in CI the `HEAD~1` tail is excluded so a multi-commit
+        /// push fails closed instead of scanning just the last commit).
         #[arg(long, value_name = "REF")]
         base: Option<String>,
     },

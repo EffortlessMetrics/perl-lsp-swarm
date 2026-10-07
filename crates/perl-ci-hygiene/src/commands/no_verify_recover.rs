@@ -251,17 +251,39 @@ fn unresolved_base_result(ci: bool) -> Result<i32> {
 /// Candidate base refs tried, in order, when no explicit base is supplied.
 ///
 /// Same convention as the sibling range gates: an explicit CI scope override,
-/// the PR base ref, the main line, then the previous commit.
+/// the PR base ref, the main line, then the previous commit — except the
+/// `HEAD~1` tail is local-only. In CI a multi-commit push with no resolvable
+/// main line would otherwise scan just the last commit and report green over
+/// the earlier ones; excluding the tail fails closed through
+/// [`unresolved_base_result`] instead, and push runs carry the event's actual
+/// previous tip in `CI_SCOPE_BASE` (see the `merge-gate-shards` runner env).
 fn base_candidates() -> Vec<String> {
+    base_candidates_from(
+        std::env::var("CI_SCOPE_BASE").ok(),
+        std::env::var("GITHUB_BASE_REF").ok(),
+        std::env::var_os("CI").is_some(),
+    )
+}
+
+/// Pure candidate selection behind [`base_candidates`], so tests can pin the
+/// CI/local split without mutating process-global environment.
+fn base_candidates_from(
+    scope_base: Option<String>,
+    github_base_ref: Option<String>,
+    ci: bool,
+) -> Vec<String> {
     let mut candidates = Vec::new();
-    if let Ok(value) = std::env::var("CI_SCOPE_BASE") {
+    if let Some(value) = scope_base {
         candidates.push(value);
     }
-    if let Ok(value) = std::env::var("GITHUB_BASE_REF") {
+    if let Some(value) = github_base_ref {
         candidates.push(format!("origin/{value}"));
         candidates.push(value);
     }
-    candidates.extend(["origin/main".to_owned(), "main".to_owned(), "HEAD~1".to_owned()]);
+    candidates.extend(["origin/main".to_owned(), "main".to_owned()]);
+    if !ci {
+        candidates.push("HEAD~1".to_owned());
+    }
     candidates
 }
 
@@ -371,8 +393,8 @@ fn hook_placeholders(script: &str) -> Result<HookPlaceholders> {
 mod tests {
     use super::{
         AttributionFinding, AttributionSlot, PLACEHOLDER_IDENTITY_EMAILS,
-        PLACEHOLDER_IDENTITY_NAMES, hook_placeholders, scan_commit_attribution,
-        unresolved_base_result,
+        PLACEHOLDER_IDENTITY_NAMES, base_candidates_from, hook_placeholders,
+        scan_commit_attribution, unresolved_base_result,
     };
     use color_eyre::eyre::Result;
     use std::collections::BTreeSet;
@@ -624,5 +646,42 @@ mod tests {
             "fail-closed error must name the missing baseline: {error}"
         );
         Ok(())
+    }
+
+    #[test]
+    fn ci_candidates_exclude_head_parent_so_multi_commit_pushes_fail_closed() {
+        // A multi-commit push with no resolvable main line must not silently
+        // narrow to the last commit: without HEAD~1 nothing resolves and the
+        // gate fails closed instead of reporting green over earlier commits.
+        assert_eq!(
+            base_candidates_from(None, None, true),
+            vec!["origin/main".to_owned(), "main".to_owned()]
+        );
+    }
+
+    #[test]
+    fn local_candidates_keep_head_parent_fallback() {
+        assert_eq!(
+            base_candidates_from(None, None, false),
+            vec!["origin/main".to_owned(), "main".to_owned(), "HEAD~1".to_owned()]
+        );
+    }
+
+    #[test]
+    fn scope_base_leads_so_push_tip_beats_degenerate_branch_refs() {
+        // On a push to main, origin/main can resolve to HEAD (empty range);
+        // the wired previous tip must sort before every branch candidate.
+        let candidates =
+            base_candidates_from(Some("before-sha".to_owned()), Some("main".to_owned()), true);
+        assert_eq!(
+            candidates,
+            vec![
+                "before-sha".to_owned(),
+                "origin/main".to_owned(),
+                "main".to_owned(),
+                "origin/main".to_owned(),
+                "main".to_owned(),
+            ]
+        );
     }
 }

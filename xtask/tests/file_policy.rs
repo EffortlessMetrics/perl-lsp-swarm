@@ -492,6 +492,95 @@ fn non_rust_inventory_check_is_wired_to_policy_shard() -> Result<()> {
     Ok(())
 }
 
+/// The `--no-verify` re-cover gate (#17430) is only useful when the hosted
+/// policy shard actually executes it over the pushed range. Keep the source
+/// policy, the workflow matrix, the lane mapping, and the shard's scan-base
+/// wiring pointed at the same required gate.
+///
+/// The scan-base leg is the load-bearing one: on a push to main, checkout
+/// leaves `origin/main` at `HEAD`, so a branch-ref base would scan an empty
+/// `HEAD..HEAD` range and pass smuggled commits. The runner must therefore
+/// hand the gates the push event's previous tip, and only the push event has
+/// one — `GITHUB_BASE_REF` is PR-only and cannot cover push runs.
+#[test]
+fn no_verify_recover_check_is_wired_to_policy_shard_with_push_base() -> Result<()> {
+    let root = project_root()?;
+    let policy: Value =
+        serde_yaml_ng::from_str(&std::fs::read_to_string(root.join(".ci/gate-policy.yaml"))?)?;
+    let gate = policy
+        .get("gates")
+        .and_then(Value::as_sequence)
+        .and_then(|gates| {
+            gates.iter().find(|gate| {
+                gate.get("name").and_then(Value::as_str) == Some("no_verify_recover_check")
+            })
+        })
+        .ok_or_else(|| eyre!("no_verify_recover_check is missing from gate policy"))?;
+
+    assert_eq!(gate.get("tier").and_then(Value::as_str), Some("merge_gate"));
+    assert_eq!(gate.get("required").and_then(Value::as_bool), Some(true));
+    assert_eq!(
+        gate.get("command").and_then(Value::as_str),
+        Some("cargo xtask ci-hygiene check-no-verify-recover")
+    );
+
+    // Policy/workflow agreement: the ci-gate job mapping must claim the gate,
+    // exactly once, or policy and execution disagree about what the merge
+    // surface owns.
+    let mapped = policy
+        .get("workflow_integration")
+        .and_then(|integration| integration.get("job_mapping"))
+        .and_then(|mapping| mapping.get("ci-gate"))
+        .and_then(|ci_gate| ci_gate.get("gates"))
+        .and_then(Value::as_sequence)
+        .map(|gates| {
+            gates
+                .iter()
+                .filter_map(Value::as_str)
+                .filter(|name| *name == "no_verify_recover_check")
+                .count()
+        })
+        .unwrap_or_default();
+    assert_eq!(mapped, 1, "gate must be mapped exactly once in the policy shard");
+
+    // Matrix membership with the same negative control as the inventory gate:
+    // prove the resolved row is the real policy row before asserting
+    // membership, so a mis-navigated parse fails loud instead of false.
+    let job = merge_gate_shards_job(&root)?;
+    let shard_gates = policy_shard_gates(&job)?;
+    let defined = defined_gate_names(&policy)?;
+    let undefined: Vec<&str> =
+        shard_gates.iter().map(String::as_str).filter(|&name| !defined.contains(name)).collect();
+    ensure!(
+        undefined.is_empty(),
+        "the `policy` shard names gates that .ci/gate-policy.yaml does not define: {undefined:?}"
+    );
+    ensure!(
+        shard_gates.iter().filter(|name| *name == "no_verify_recover_check").count() == 1,
+        "the live policy matrix must execute the re-cover gate exactly once; \
+         the `policy` shard declares {shard_gates:?}"
+    );
+
+    // The execution seam: the step consuming `matrix.gates` must hand every
+    // shard the push event's previous tip as CI_SCOPE_BASE. Without it the
+    // pushed-range gates fall back to branch refs that resolve to HEAD on
+    // main-push runs and scan nothing.
+    let runner = shard_runner_step(&job)?;
+    let scope_base = runner
+        .get("env")
+        .and_then(|env| env.get("CI_SCOPE_BASE"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| eyre!("the shard runner no longer wires CI_SCOPE_BASE"))?;
+    ensure!(
+        scope_base.contains("github.event_name == 'push'")
+            && scope_base.contains("github.event.before"),
+        "CI_SCOPE_BASE must carry the push event's previous tip \
+         (github.event.before, push-scoped); got: {scope_base}"
+    );
+
+    Ok(())
+}
+
 /// Execute the actual workflow scripts over a repository whose push ref moved.
 /// The immutable integration event SHA must match checkout, even if a moving
 /// ref advances. An early producer failure must not publish cached files.

@@ -1356,6 +1356,14 @@ jobs:
         env:
           SHARD_NAME: ${{ matrix.name }}
           SHARD_GATES: ${{ matrix.gates }}
+          # The pushed-range gates resolve their scan base from this override
+          # first. On a push to main, checkout leaves origin/main at HEAD, so
+          # a branch ref would scan an empty HEAD..HEAD range and pass
+          # placeholder commits the push carried (#17430). The push event's
+          # previous tip is the honest baseline; GITHUB_BASE_REF is PR-only
+          # and cannot cover push events. Empty for non-push events, which the
+          # gates skip past like any other unresolvable candidate.
+          CI_SCOPE_BASE: ${{ github.event_name == 'push' && github.event.before || '' }}
         run: |
           set +e
           (
