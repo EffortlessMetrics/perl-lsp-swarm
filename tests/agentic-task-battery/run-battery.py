@@ -838,6 +838,14 @@ def _run_gate(ctx, gate, idx):
 
 def check_gate_order(ctx, res, state):
     gates = state.get("gates", [])
+    if not gates:
+        # gate_select failed (unknown change-type): nothing was executed,
+        # so the ordering points must not be awarded vacuously.
+        state["gate_results"] = []
+        res.status = "FAIL"
+        res.earned = 0
+        res.evidence = "no gates selected; nothing executed"
+        return
     results = []
     for i, gate in enumerate(gates):
         r = _run_gate(ctx, gate, i)
