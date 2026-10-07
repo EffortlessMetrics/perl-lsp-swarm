@@ -3,6 +3,8 @@
 #
 # A category whose cargo run fails must be marked explicitly failed in the
 # JSON and must fail the process -- never a silent empty stub with exit 0.
+# Failure records quote cargo's stderr, and the index bench is invoked with
+# its required features (#17425).
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -19,6 +21,9 @@ make_stub() {
     local dir=$1
     cat > "$dir/cargo" <<'EOF'
 #!/usr/bin/env bash
+if [[ -n "${CARGO_ARGS_LOG:-}" ]]; then
+    printf '%s\n' "$*" >>"$CARGO_ARGS_LOG"
+fi
 for want in ${FAIL_BENCHES:-}; do
     for arg in "$@"; do
         if [[ "$arg" == *"$want"* ]]; then
@@ -59,6 +64,9 @@ fi
 json_get "$OUT" ripr _error | grep -q "ripr_facts_benchmark" \
     && ok "_error names the failed bench target" \
     || bad "_error does not name the failed bench target"
+json_get "$OUT" ripr _error | grep -q "stub cargo failing" \
+    && ok "_error quotes cargo stderr" \
+    || bad "_error does not quote cargo stderr"
 grep -q "benchmark categories failed: ripr" "$ERR" \
     && ok "stderr names the failed category" \
     || bad "stderr does not name the failed category"
@@ -110,7 +118,32 @@ fi
     && ok "successful category entries unchanged" \
     || bad "successful category entries missing"
 
-rm -rf "$STUB" "$OUT" "$ERR"
+# Case 4: the index bench gets its required features; others unchanged (#17425).
+ARGS_LOG=$(mktemp)
+export CARGO_ARGS_LOG="$ARGS_LOG"
+export FAIL_BENCHES=""
+if PATH="$STUB:$PATH" bash "$RUNNER" --category index >"$OUT" 2>"$ERR"; then
+    ok "index stub run exits 0"
+else
+    bad "index stub run exited nonzero"
+fi
+grep -q "workspace_index_benchmark.*--features workspace" "$ARGS_LOG" \
+    && ok "index bench invoked with --features workspace" \
+    || bad "index bench missing --features workspace"
+: >"$ARGS_LOG"
+if PATH="$STUB:$PATH" bash "$RUNNER" --category parser >"$OUT" 2>"$ERR"; then
+    ok "parser stub run exits 0"
+else
+    bad "parser stub run exited nonzero"
+fi
+if grep "parser_benchmark" "$ARGS_LOG" | grep -q -- "--features"; then
+    bad "non-index bench gained --features"
+else
+    ok "non-index bench keeps default features"
+fi
+unset CARGO_ARGS_LOG
+
+rm -rf "$STUB" "$OUT" "$ERR" "$ARGS_LOG"
 echo "---"
 echo "pass=$PASS fail=$FAIL"
 [[ "$FAIL" -eq 0 ]]

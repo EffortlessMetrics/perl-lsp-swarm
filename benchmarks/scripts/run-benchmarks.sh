@@ -102,11 +102,31 @@ to_nanoseconds() {
     awk -v value="$value" -v mult="$multiplier" 'BEGIN { printf "%.0f\n", value * mult }'
 }
 
+# Escape a single-line string for embedding in a JSON double-quoted value.
+json_escape() {
+    printf '%s' "$1" | tr '\t' ' ' | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' | tr -d '\001-\010\013\014\016-\037'
+}
+
+# Extract a one-line excerpt of cargo's stderr from a captured bench log so a
+# failed category records the proximate error instead of only the exit code
+# (#17425). Prefers the first `error` line plus its hint context; falls back
+# to the last non-empty line when cargo printed no error line.
+cargo_stderr_excerpt() {
+    local log_file=$1
+    local excerpt
+    excerpt=$(grep -aA2 -m1 -E '^error' "$log_file" | tr '\n' ' ' | sed -e 's/  */ /g' -e 's/^ *//; s/ *$//')
+    if [[ -z "$excerpt" ]]; then
+        excerpt=$(grep -avE '^[[:space:]]*$' "$log_file" | tail -n 1)
+    fi
+    json_escape "$excerpt"
+}
+
 # Function to run benchmarks and extract results
 run_criterion_bench() {
     local crate=$1
     local bench=$2
     local category=$3
+    local features=${4:-}
 
     log "Running $crate::$bench..."
 
@@ -114,8 +134,17 @@ run_criterion_bench() {
     local temp_output
     temp_output=$(mktemp)
 
+    # Benches with required-features (e.g. the workspace index bench) need
+    # those features passed explicitly; every other bench keeps its default
+    # feature set (#17425). Mirrors the crate:bench:feature triples in
+    # .github/workflows/ci-nightly.yml.
+    local features_args=""
+    if [[ -n "$features" ]]; then
+        features_args="--features $features"
+    fi
+
     # Run benchmark, capturing output
-    if cargo bench -p "$crate" --bench "$bench" $CRITERION_ARGS 2>&1 | tee "$temp_output" > /dev/null; then
+    if cargo bench -p "$crate" --bench "$bench" $features_args $CRITERION_ARGS 2>&1 | tee "$temp_output" > /dev/null; then
         # Parse criterion output for timing.
         # Single-line layout: "parse_simple  time:   [45.123 us 45.234 us 45.345 us]"
         # Long-name layout (#17219): the bench name stands alone on its own
@@ -173,10 +202,12 @@ run_criterion_bench() {
         # mark the category explicitly instead of rendering a silent empty
         # stub. Downstream counters skip underscore keys (#17218).
         local cargo_status=$?
+        local cargo_err
+        cargo_err=$(cargo_stderr_excerpt "$temp_output")
         echo "      \"_status\": \"failed\","
-        echo "      \"_error\": \"cargo bench -p $crate --bench $bench failed (exit $cargo_status)\","
+        echo "      \"_error\": \"cargo bench -p $crate --bench $bench failed (exit $cargo_status): $cargo_err\","
         FAILED_CATEGORIES="${FAILED_CATEGORIES:+$FAILED_CATEGORIES }$category"
-        log "FAILED $crate::$bench (exit $cargo_status)"
+        log "FAILED $crate::$bench (exit $cargo_status): $cargo_err"
     fi
 
     rm -f "$temp_output"
@@ -224,7 +255,8 @@ json_output() {
     # Workspace index benchmarks
     if [[ -z "$CATEGORY" || "$CATEGORY" == "index" ]]; then
         echo "    \"index\": {"
-        run_criterion_bench "perl-workspace" "workspace_index_benchmark" "index"
+        # The index bench target declares required-features=["workspace"].
+        run_criterion_bench "perl-workspace" "workspace_index_benchmark" "index" "workspace"
         echo "      \"_category\": \"index\""
         echo "    },"
     fi
