@@ -22,9 +22,18 @@ by the source repository until a separate deliberate migration.
 (`rust_small_proof.v1`) at `target/receipts/rust-small-proof.json`, or at
 `--receipt <path>`, after admitting the destination and establishing a clean
 candidate. The schema binds the candidate SHA, `rustc`/`cargo` versions, and
-scorecard profile/features from the pinned argv to all nine selected steps.
+scorecard profile/features from the pinned argv to all eleven selected steps.
 Outcomes are `ok`, `product_failure`, `not_completed`, `instrument_failure`,
 and `not_run`.
+
+The references protocol step selects only the `perl-lsp-rs`
+`lsp_references_tests` integration binary with the existing `agent` profile
+and `workspace` feature. It runs all eight cases without a name filter,
+including `test_unresolved_references_return_each_name_token_once` and its
+exact seven-location, mixed-producer and UTF-16 assertions. This adds focused
+protocol coverage while preserving every prior Rust Small step. The separate
+full routed workspace gate remains required; a passing focused step does not
+establish full routed qualification.
 
 Exact candidate production and `--verify-receipt <path>` require a clean
 checkout. The required `worktree_dirty` field remains in the v1 schema for
@@ -89,7 +98,7 @@ artifact exclusion through the producer or verifier entry points.
 unknown fields; missing, extra, reordered, or renamed steps; argv drift;
 inconsistent census/outcome/exit-code combinations; execution after the first
 failure; and a subject differing from the clean candidate, toolchain, or
-scorecard profile. All nine steps and their typed failure rules remain the
+scorecard profile. All eleven steps and their typed failure rules remain the
 canonical lane contract.
 
 **Verification checks consistency and candidate identity, not success.** A

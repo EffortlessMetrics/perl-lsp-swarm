@@ -1732,8 +1732,9 @@ my $bar = Bar::process_data();
         .ok_or("missing package-qualified open-document rename result")?;
 
     let edit_count = workspace_edit_change_count(&rename_result)?;
-    assert!(
-        edit_count == 3,
+    assert_eq!(
+        edit_count,
+        3,
         "package rename should edit the declaration and qualified open-document call sites: {rename_result}"
     );
 
@@ -1744,8 +1745,9 @@ my $bar = Bar::process_data();
         foo_texts.contains(&"process_records"),
         "Foo declaration edit should carry the new name: {rename_result}"
     );
-    assert!(
-        main_texts.iter().filter(|text| **text == "process_records").count() == 2,
+    assert_eq!(
+        main_texts.iter().filter(|text| **text == "process_records").count(),
+        2,
         "main.pl should carry the renamed Foo call-site token: {rename_result}"
     );
     assert!(
