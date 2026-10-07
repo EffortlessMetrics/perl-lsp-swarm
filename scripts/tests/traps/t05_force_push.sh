@@ -70,8 +70,9 @@ git -C "$SCRATCH/local" push --force origin trap/t5-push >"$SCRATCH/force-push.t
 PUSH_CODE=$?
 set -e
 REFUSAL_PIN="$(grep -c 'Refusing non-fast-forward' "$SCRATCH/force-push.txt" || true)"
-ORDER_PIN="$(grep -c 'PERL_LSP_ALLOW_HISTORY_REWRITE' "$SCRATCH/force-push.txt" || true)"
-trap_say "force-push exit=$PUSH_CODE refusal pins=$REFUSAL_PIN recovery-order pins=$ORDER_PIN"
+ORDER_PIN="$(grep -c 'Recover with: git fetch' "$SCRATCH/force-push.txt" || true)"
+LEASE_PIN="$(grep -c 'force-with-lease=refs/heads/trap/t5-push:' "$SCRATCH/force-push.txt" || true)"
+trap_say "force-push exit=$PUSH_CODE refusal pins=$REFUSAL_PIN recovery-order pins=$ORDER_PIN lease pins=$LEASE_PIN"
 
 T_INTACT=0
 if git --git-dir="$SCRATCH/origin.git" merge-base --is-ancestor "$T" refs/heads/trap/t5-push 2>/dev/null; then
@@ -91,11 +92,24 @@ set -e
 HATCH_REMOTE="$(git --git-dir="$SCRATCH/origin.git" rev-parse refs/heads/trap/t5-hatch)"
 trap_say "admitted force-push exit=$HATCH_CODE remote tip $HATCH_REMOTE local tip $HATCH_LOCAL"
 
+# Live proof: protected-branch deletion is refused and the tip survives.
+git -C "$SCRATCH/mate" checkout -q -b main "$BASE"
+git -C "$SCRATCH/mate" push -q origin main
+MAIN_TIP="$(git --git-dir="$SCRATCH/origin.git" rev-parse refs/heads/main)"
+set +e
+git -C "$SCRATCH/local" push origin --delete main >"$SCRATCH/delete-push.txt" 2>&1
+DEL_CODE=$?
+set -e
+DELREF_PIN="$(grep -c 'Refusing deletion of protected ref' "$SCRATCH/delete-push.txt" || true)"
+MAIN_NOW="$(git --git-dir="$SCRATCH/origin.git" rev-parse refs/heads/main 2>/dev/null || true)"
+trap_say "protected delete exit=$DEL_CODE refusal pins=$DELREF_PIN tip $MAIN_NOW (was $MAIN_TIP)"
+
 if [[ "$GUARD_PIN" -ge 1 && "$PUSH_CODE" -ne 0 && "$REFUSAL_PIN" -ge 1 && "$ORDER_PIN" -ge 1 \
-    && "$T_INTACT" -eq 1 && "$HATCH_CODE" -eq 0 && "$HATCH_REMOTE" == "$HATCH_LOCAL" ]]; then
-    verdict T5 PASS 'force-push over teammate commit refused locally with recovery order; teammate commit intact; admit-list hatch verified on a throwaway ref (guard: hooks/pre-push ref-update refusal #17427)'
+    && "$LEASE_PIN" -ge 1 && "$T_INTACT" -eq 1 && "$HATCH_CODE" -eq 0 && "$HATCH_REMOTE" == "$HATCH_LOCAL" \
+    && "$DEL_CODE" -ne 0 && "$DELREF_PIN" -ge 1 && "$MAIN_NOW" == "$MAIN_TIP" ]]; then
+    verdict T5 PASS 'force-push over teammate commit refused locally with recovery order; teammate commit intact; admit-list hatch verified on a throwaway ref; protected deletion refused with tip intact (guard: hooks/pre-push ref-update refusal #17427)'
 else
-    printf 'HARNESS-ERROR t05: GUARD=%s PUSH=%s REF=%s ORD=%s T=%s HATCH=%s HREMOTE=%s\n' \
-        "$GUARD_PIN" "$PUSH_CODE" "$REFUSAL_PIN" "$ORDER_PIN" "$T_INTACT" "$HATCH_CODE" "$HATCH_REMOTE" >&2
+    printf 'HARNESS-ERROR t05: GUARD=%s PUSH=%s REF=%s ORD=%s LEASE=%s T=%s HATCH=%s HREMOTE=%s DEL=%s DELREF=%s MAIN=%s\n' \
+        "$GUARD_PIN" "$PUSH_CODE" "$REFUSAL_PIN" "$ORDER_PIN" "$LEASE_PIN" "$T_INTACT" "$HATCH_CODE" "$HATCH_REMOTE" "$DEL_CODE" "$DELREF_PIN" "$MAIN_NOW" >&2
     exit 2
 fi

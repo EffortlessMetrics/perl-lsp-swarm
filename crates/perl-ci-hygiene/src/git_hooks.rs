@@ -88,7 +88,8 @@ pub(crate) fn pre_push_hook_script() -> &'static str {
 #   * A non-fast-forward push you have proven safe (your own rebased branch,
 #     no teammate work): prefer the admit-list escape hatch
 #     (PERL_LSP_ALLOW_HISTORY_REWRITE="<remote-ref>") over --no-verify,
-#     so the remaining gates still run.
+#     so the remaining gates still run — and push with the printed
+#     --force-with-lease=<ref>:<inspected-sha>, never plain --force.
 #   * Urgent fixes during incident response, when the gate has a known bug
 #     being tracked (see hint output below for issue numbers).
 #   * The hook is failing for an environmental reason that is out of band of
@@ -122,15 +123,18 @@ fi
 
 # --- Self-heal stale hook installation (issue #4220) ---
 # When hooks/pre-push is updated in master, .git/hooks/pre-push is only
-# updated when install-githooks is re-run. Auto-copy when drift is detected.
-# Note: exec "$0" "$@" does NOT work here — git stdin is already consumed
-# before the hook executes. Copy and continue; the fresh hook takes effect
-# on the next push.
+# updated when install-githooks is re-run. Auto-copy when drift is detected,
+# then REFUSE this push: exec "$0" "$@" does NOT work here — git stdin is
+# already consumed before the hook executes — so continuing would guard this
+# push with stale logic (#17431 review: upgrade barrier). Exactly one
+# aborted push per hook upgrade; re-push runs the fresh guards.
 REPO_ROOT_FOR_HOOK="$(git rev-parse --show-toplevel 2>/dev/null || true)"
 if [ -n "$REPO_ROOT_FOR_HOOK" ] && [ -f "$REPO_ROOT_FOR_HOOK/hooks/pre-push" ]; then
     if ! diff -q "$0" "$REPO_ROOT_FOR_HOOK/hooks/pre-push" >/dev/null 2>&1; then
-        echo "pre-push hook updated from hooks/pre-push (was stale — takes effect next push)"
         cp "$REPO_ROOT_FOR_HOOK/hooks/pre-push" "$0" && chmod +x "$0" || true
+        echo "pre-push hook updated itself from hooks/pre-push (was stale)."
+        echo "This push was refused so stale logic never guards it — re-push to run the fresh guards."
+        exit 1
     fi
 fi
 
@@ -151,8 +155,11 @@ done
 # Escape hatch: when you have proven the discarded commits are safe to drop
 # (your own rebased branch, no teammate work), name the full remote ref(s)
 # in PERL_LSP_ALLOW_HISTORY_REWRITE (space-separated, as git reports them,
-# e.g. "refs/heads/my-rebased-branch"). Prefer this over --no-verify so the
-# remaining gates still run. Protected branches should ~never need it.
+# e.g. "refs/heads/my-rebased-branch") and push with
+# --force-with-lease=<ref>:<inspected-sha> (printed in the refusal) so a
+# concurrent push after your inspection fails instead of being erased.
+# Prefer this over --no-verify so the remaining gates still run.
+# Protected branches should ~never need it.
 #
 # Implementation note: the protected list holds short branch names on purpose
 # (compared against ${remote_ref#refs/heads/}), so no executable line names a
@@ -200,13 +207,17 @@ for line in "${PUSH_REFS[@]+"${PUSH_REFS[@]}"}"; do
     else
         UNKNOWN_TIP=" (tip $remote_sha is not in your local object store — fetch first)"
     fi
+    printf -v RECOVERY_REMOTE '%q' "${1:-origin}"
+    printf -v RECOVERY_REF '%q' "$remote_ref"
     echo ""
     echo "❌ Refusing non-fast-forward push to $remote_ref$UNKNOWN_TIP."
     echo "   Your push would discard remote commit(s)."
-    echo "   Recover with: git fetch origin && git rebase origin/<branch> (or merge), then push again."
+    echo "   Recover with: git fetch $RECOVERY_REMOTE $RECOVERY_REF && git rebase FETCH_HEAD (or git merge FETCH_HEAD), then push again."
     echo "   Only when you have proven the remote commits are safe to discard"
-    echo "   (your own rebased branch, no teammate work), admit this ref explicitly:"
-    echo "   PERL_LSP_ALLOW_HISTORY_REWRITE=\"$remote_ref\" git push --force <remote> <branch>"
+    echo "   (your own rebased branch, no teammate work), admit this ref explicitly"
+    echo "   and bind the push to the tip you inspected — plain --force could erase"
+    echo "   concurrent work pushed after your inspection:"
+    echo "   PERL_LSP_ALLOW_HISTORY_REWRITE=\"$remote_ref\" git push --force-with-lease=$remote_ref:$remote_sha <remote> <branch>"
     exit 1
 done
 
@@ -685,13 +696,17 @@ mod tests {
         // Issue #17427 (traps T1/T5): the generated hook must deny any ref
         // update that discards remote commits, before any gate runs, and the
         // refusal must carry a recovery order plus the documented admit-list
-        // escape hatch.
+        // escape hatch. The hatch binds the re-push to the inspected tip
+        // (--force-with-lease), never plain --force, so a concurrent push
+        // after inspection fails instead of being erased (#17431 review).
         let hook = pre_push_hook_script();
         for marker in [
             "merge-base --is-ancestor",
             "Refusing non-fast-forward",
-            "Recover with: git fetch origin",
+            "Recover with: git fetch $RECOVERY_REMOTE $RECOVERY_REF",
+            "git rebase FETCH_HEAD",
             "PERL_LSP_ALLOW_HISTORY_REWRITE",
+            "--force-with-lease=$remote_ref:$remote_sha",
         ] {
             assert!(hook.contains(marker), "hook must contain push-path refusal marker {marker:?}");
         }
@@ -720,6 +735,18 @@ mod tests {
         assert!(
             hook.contains("Refusing deletion of protected ref"),
             "hook must refuse protected-ref deletion with a recovery order"
+        );
+    }
+
+    #[test]
+    fn pre_push_hook_aborts_after_self_heal() {
+        // #17431 review (upgrade barrier): when the installed hook detects
+        // drift and heals itself, it must refuse the current push instead
+        // of guarding it with stale logic — the fresh guards run on re-push.
+        let hook = pre_push_hook_script();
+        assert!(
+            hook.contains("This push was refused so stale logic never guards it"),
+            "hook must abort the push it healed during"
         );
     }
 

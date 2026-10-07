@@ -58,7 +58,7 @@ git -C "$SCRATCH/wt" push --force origin trap/t1-messy >"$SCRATCH/force-push.txt
 PUSH_CODE=$?
 set -e
 REFUSAL_PIN="$(grep -c 'Refusing non-fast-forward' "$SCRATCH/force-push.txt" || true)"
-ORDER_PIN="$(grep -c 'PERL_LSP_ALLOW_HISTORY_REWRITE' "$SCRATCH/force-push.txt" || true)"
+ORDER_PIN="$(grep -c 'Recover with: git fetch' "$SCRATCH/force-push.txt" || true)"
 trap_say "force-push exit=$PUSH_CODE refusal pins=$REFUSAL_PIN recovery-order pins=$ORDER_PIN"
 
 REMOTE_TIP="$(git --git-dir="$SCRATCH/origin.git" rev-parse refs/heads/trap/t1-messy)"
