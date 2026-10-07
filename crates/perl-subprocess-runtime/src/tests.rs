@@ -648,7 +648,7 @@ fn test_run_command_does_not_execute_planted_cwd_binary() {
 //
 // `resolve_command_invocation` routes `.bat`/`.cmd` tools through
 // `cmd.exe /D /V:OFF /S /C <payload>`. The payload is composed in cmd.exe
-// quoting conventions (per-token `"..."`, `%%` doubling, `""` doubling), so it
+// quoting conventions (per-token `"..."`, `%` verbatim, `""` doubling), so it
 // must reach cmd.exe byte-for-byte: std's default MSVC escaping rewrites its
 // `"` into `\"`, and cmd.exe — which does not understand `\"` — then fails to
 // recognize the batch file at all ('\"...bat\"' is not recognized). The fixed
@@ -658,9 +658,10 @@ fn test_run_command_does_not_execute_planted_cwd_binary() {
 //
 // This test drives the REAL spawn chain (`run_command` → resolve →
 // `std::process::Command` → CreateProcess → cmd.exe → child .bat) with a
-// perlcritic.bat-style probe and asserts every argument round-trips verbatim,
-// including the `%`-bearing format strings that direct `Command::new(bat)`
-// refuses (Rust's BatBadBut hardening) and a path containing a space.
+// perlcritic.bat-style probe and asserts every argument round-trips verbatim:
+// the `%`-bearing format strings that direct `Command::new(bat)` refuses
+// (Rust's BatBadBut hardening), a path containing a space, an empty argument,
+// embedded double quotes, and shell metacharacters.
 
 #[cfg(windows)]
 #[test]
@@ -694,6 +695,14 @@ fn bat_wrapper_arguments_round_trip_through_real_cmd_spawn() {
             "--verbose=%f:%l:%c:%s:%p:%m\\n",
             "--",
             r"C:\dir with space\fixture.pl",
+            // Empty argument: must survive as an empty quoted token.
+            "",
+            // Embedded double quotes: cmd.exe `""` doubling must deliver the
+            // cmd-convention-encoded token without losing the quotes.
+            r#"--note="quoted value""#,
+            // Shell metacharacters: must stay literal inside the quoted token
+            // (no `&` command split, no `|`/`^` processing by cmd.exe).
+            "--flag=a&b|c^d",
         ],
         None,
     );
@@ -715,6 +724,9 @@ fn bat_wrapper_arguments_round_trip_through_real_cmd_spawn() {
             r#"ARG="--verbose=%f:%l:%c:%s:%p:%m\n""#,
             r#"ARG="--""#,
             r#"ARG="C:\dir with space\fixture.pl""#,
+            r#"ARG="""#,
+            r#"ARG="--note=""quoted value""""#,
+            r#"ARG="--flag=a&b|c^d""#,
             "END_OF_ARGS",
         ],
         "every argument must round-trip through cmd.exe verbatim; stdout={stdout:?}"
