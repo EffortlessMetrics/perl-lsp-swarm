@@ -1376,6 +1376,11 @@ sub process {
 /// contexts, so call-hierarchy traversal previously claimed `my $cref = \&foo;`
 /// as a call edge while the genuine dynamic invocation stayed unreported — the
 /// semantic result was a phantom call at the reference line.
+///
+/// The zero-argument parenthesized form stays a call site: `\&foo()` invokes
+/// `foo` and references its result, and the parser gives `&foo()` empty `args`
+/// just like bare `&foo`, so the exclusion must key on the operand's parens,
+/// not on argument emptiness (PR #17379 review BUG_0001).
 #[test]
 fn test_incoming_calls_do_not_report_code_reference_creation() -> TestResult {
     let mut harness = LspHarness::new();
@@ -1392,6 +1397,7 @@ sub call_both {
     indirected();
     &indirected();
     my $cref = \&indirected;
+    my $result_ref = \&indirected();
     $cref->();
     return 1;
 }
@@ -1411,9 +1417,10 @@ sub call_both {
     assert!(!items.is_empty(), "prepareCallHierarchy returned empty array");
     assert_eq!(items[0]["name"], "indirected", "expected to prepare on indirected");
 
-    // incomingCalls on `indirected`: the direct call (line 5) and the
-    // symbol-table call `&indirected()` (line 6) are call sites; the
-    // reference creation `\&indirected` (line 7) is not.
+    // incomingCalls on `indirected`: the direct call (line 5), the
+    // symbol-table call `&indirected()` (line 6), and the result-reference
+    // call `\&indirected()` (line 8) are call sites; the reference creation
+    // `\&indirected` (line 7) is not.
     let incoming_response =
         harness.request("callHierarchy/incomingCalls", json!({ "item": &items[0] }))?;
     let calls = incoming_response.as_array().ok_or("incomingCalls returned non-array")?;
@@ -1426,15 +1433,16 @@ sub call_both {
     let ranges = call_both["fromRanges"].as_array().ok_or("fromRanges missing")?;
     assert_eq!(
         ranges.len(),
-        2,
-        "reference creation \\&indirected must not be reported as a call site; got: {:?}",
+        3,
+        "reference creation \\&indirected must not be reported as a call site, and the \
+         zero-argument parenthesized \\&indirected() must be; got: {:?}",
         ranges
     );
     for range in ranges {
         let line = range["start"]["line"].as_u64().ok_or("range start line missing")?;
         assert_ne!(line, 7, "reference-creation line 7 must not appear in fromRanges");
         assert!(
-            line == 5 || line == 6,
+            line == 5 || line == 6 || line == 8,
             "unexpected call-site line {} in fromRanges: {:?}",
             line,
             ranges
@@ -1466,8 +1474,9 @@ sub call_both {
         indirected_out["fromRanges"].as_array().ok_or("outgoing fromRanges missing")?;
     assert_eq!(
         out_ranges.len(),
-        2,
-        "outgoing indirected edge must carry only the two real call sites; got: {:?}",
+        3,
+        "outgoing indirected edge must carry the three real call sites (bare ref line 7 \
+         excluded, result-ref call line 8 included); got: {:?}",
         out_ranges
     );
     for range in out_ranges {

@@ -82,11 +82,17 @@ pub(crate) fn synthetic_file_level_caller(uri: &str, range: Range) -> CallHierar
 /// The parser shapes the `&foo` inside `\&foo` as `AmperCall` in both
 /// contexts, so the reference-creation form must be excluded at the parent
 /// `Unary { op: "\\" }` before call-site traversal claims it as a call edge.
+/// Bare `&foo` and parenthesized `&foo()` both carry empty `args`, so
+/// argument emptiness cannot distinguish the forms; the operand's source
+/// span can — explicit parentheses mean the ampersand call actually ran.
 /// Genuine call forms keep normal traversal: `&foo(...)` calls through the
 /// sigil, and `\foo()` / `\&foo()` reference the *result* of a real call.
-fn is_code_reference_creation(node: &Node) -> bool {
+fn is_code_reference_creation(node: &Node, source: &str) -> bool {
     let NodeKind::Unary { op, operand } = &node.kind else { return false };
-    op == "\\" && matches!(&operand.kind, NodeKind::AmperCall { args, .. } if args.is_empty())
+    if op != "\\" || !matches!(&operand.kind, NodeKind::AmperCall { .. }) {
+        return false;
+    }
+    source.get(operand.location.start..operand.location.end).is_none_or(|text| !text.contains('('))
 }
 
 impl CallHierarchyProvider {
@@ -253,7 +259,7 @@ impl CallHierarchyProvider {
         current_function: Option<&CallHierarchyItem>,
     ) {
         // `\&foo` creates a code reference; it is not a call site (#17370).
-        if is_code_reference_creation(node) {
+        if is_code_reference_creation(node, &self.source) {
             return;
         }
 
@@ -335,7 +341,7 @@ impl CallHierarchyProvider {
         receiver_packages: &mut HashMap<String, String>,
     ) {
         // `\&foo` creates a code reference; it is not a call site (#17370).
-        if is_code_reference_creation(node) {
+        if is_code_reference_creation(node, &self.source) {
             return;
         }
 
