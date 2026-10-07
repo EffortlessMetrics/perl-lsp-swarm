@@ -94,6 +94,11 @@ pub fn build_rename_edit(
     // rather than silently renaming only the definition.
     if key.kind == SymKind::Sub {
         for loc in idx.find_cross_package_bare_refs(key) {
+            // Bare-name indexing also includes explicitly qualified foreign calls.
+            // Their callee-only range hides the qualifier, but they are not bare.
+            if has_explicit_sub_qualifier(idx, key, &loc) {
+                continue;
+            }
             if is_ambiguous_sub_reference(
                 idx,
                 key,
@@ -235,6 +240,42 @@ pub fn build_rename_edit(
 /// inheritance chain.  The workspace index returns the full expression span
 /// (`$self->shared`), so detecting `->` inside the span itself is sufficient to
 /// identify an arrow method call.
+/// Recover qualification evidence for the bare-reference ambiguity preflight.
+/// This does not add foreign qualified calls to the target rename edit set.
+fn has_explicit_sub_qualifier(
+    idx: &WorkspaceIndex,
+    key: &SymbolKey,
+    loc: &perl_workspace::workspace_index::Location,
+) -> bool {
+    let Some(doc) = idx.document_store().get(&loc.uri) else {
+        return false;
+    };
+    let Some(start) =
+        doc.line_index.position_to_offset(loc.range.start.line, loc.range.start.column)
+    else {
+        return false;
+    };
+    let Some(end) = doc.line_index.position_to_offset(loc.range.end.line, loc.range.end.column)
+    else {
+        return false;
+    };
+    if doc.text().get(start..end) != Some(key.name.as_ref()) {
+        return false;
+    }
+    let Some(prefix) = doc.text().get(..start).and_then(|text| text.strip_suffix("::")) else {
+        return false;
+    };
+    let qualifier = prefix
+        .rsplit(|ch: char| !ch.is_alphanumeric() && !matches!(ch, '_' | ':' | '\''))
+        .next()
+        .unwrap_or_default();
+    qualifier.split("::").all(|part| {
+        let mut chars = part.chars();
+        chars.next().is_some_and(|ch| ch.is_alphabetic() || ch == '_')
+            && chars.all(|ch| ch.is_alphanumeric() || ch == '_')
+    })
+}
+
 fn is_ambiguous_sub_reference(
     idx: &WorkspaceIndex,
     key: &SymbolKey,
@@ -819,6 +860,62 @@ mod tests {
                 is_ambiguous_sub_reference(&idx, &key, uri, 1, start, 1, end),
                 ambiguous,
                 "callee-only range must preserve the explicit identity in {call:?}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn rename_foreign_qualified_calls_do_not_block_target_edits()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let idx = WorkspaceIndex::new();
+        index_text(&idx, "file:///Foo.pm", "package Foo;\nsub run { }\n")?;
+        index_text(&idx, "file:///Bar.pm", "package Bar;\nsub run { }\n")?;
+        index_text(
+            &idx,
+            "file:///caller.pl",
+            "package Caller;\nFoo::run();\nBar::run();\n&Foo::run();\n&Bar::run();\nNotFoo::run();\nOther::Foo::run();\n",
+        )?;
+        let key = SymbolKey {
+            pkg: Arc::from("Foo"),
+            name: Arc::from("run"),
+            sigil: None,
+            kind: SymKind::Sub,
+        };
+
+        let edits = build_rename_edit(&idx, &key, "renamed")?;
+        let mut actual = edits
+            .iter()
+            .flat_map(|file| {
+                file.edits.iter().map(|edit| {
+                    (file.uri.as_str(), edit.start, edit.end, edit.new_text.as_str())
+                })
+            })
+            .collect::<Vec<_>>();
+        actual.sort();
+        assert_eq!(
+            actual,
+            vec![
+                ("file:///Foo.pm", (1, 4), (1, 7), "renamed"),
+                ("file:///caller.pl", (1, 5), (1, 8), "renamed"),
+                ("file:///caller.pl", (3, 6), (3, 9), "renamed"),
+            ],
+            "foreign qualified calls and the Bar declaration must stay untouched"
+        );
+        for bare_call in ["run();", "&run();"] {
+            index_text(
+                &idx,
+                "file:///caller.pl",
+                &format!(
+                    "package Caller;\nFoo::run();\nBar::run();\n&Foo::run();\n&Bar::run();\n{bare_call}\n"
+                ),
+            )?;
+            assert!(
+                matches!(
+                    build_rename_edit(&idx, &key, "renamed"),
+                    Err(RenameRefusal::AmbiguousIdentity(_))
+                ),
+                "a qualified foreign call must not hide an ambiguous {bare_call}"
             );
         }
         Ok(())
