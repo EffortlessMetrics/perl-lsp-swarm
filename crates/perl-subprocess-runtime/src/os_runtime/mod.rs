@@ -117,6 +117,7 @@ mod tests {
     use std::env;
     use std::io::Read;
     use std::process::{Command, Stdio};
+    use std::thread;
 
     #[test]
     fn generic_timeout_normalizes_zero_without_changing_large_valid_values() {
@@ -196,10 +197,19 @@ mod tests {
 
         let mut helper_stdout = helper.stdout.take().expect("helper stdout must be piped");
         let mut helper_stderr = helper.stderr.take().expect("helper stderr must be piped");
+        // Drain both pipes concurrently: a helper that fills its stderr pipe —
+        // for example a failing guard echoing output under RUST_BACKTRACE=full —
+        // would otherwise block on its next stderr write while this parent still
+        // waits for stdout EOF, hanging the guard instead of reporting the
+        // regression failure it exists to surface.
+        let stderr_drainer = thread::spawn(move || {
+            let mut stderr_bytes = Vec::new();
+            helper_stderr.read_to_end(&mut stderr_bytes).expect("helper stderr must drain");
+            stderr_bytes
+        });
         let mut stdout_bytes = Vec::new();
-        let mut stderr_bytes = Vec::new();
         helper_stdout.read_to_end(&mut stdout_bytes).expect("helper stdout must drain");
-        helper_stderr.read_to_end(&mut stderr_bytes).expect("helper stderr must drain");
+        let stderr_bytes = stderr_drainer.join().expect("helper stderr drainer must join");
 
         let status = helper.wait().expect("stdin-EOF helper must be waitable");
         drop(held_helper_stdin);
