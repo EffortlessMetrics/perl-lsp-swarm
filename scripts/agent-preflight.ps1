@@ -16,8 +16,11 @@ perl-lsp-swarm agents:
     Disposable per-PR Cargo target directory.
 
 Run this from the task worktree before making edits.
-Missing or stale installed pre-push hooks fail with exit code 7. Windows has no
-executable-bit gate; hook comparison ignores CR and trailing LF only.
+
+A missing or stale installed pre-push hook fails with exit code 7, as does
+a missing installed pre-commit hook (check 7 parity with
+agent-preflight.sh). Comparison tolerates CR and trailing newlines only;
+Windows applies no executable-bit gate.
 #>
 [CmdletBinding()]
 param(
@@ -153,29 +156,46 @@ if (-not $ReadOnly) {
     }
 }
 
-# Match the invoking worktree's checked-in authority against the hook Git uses.
-# Git resolves common-dir defaults and absolute/relative core.hooksPath overrides;
-# revision ownership of shared installation remains the separate #17414 question.
+# Hook-currency drift detector (#17413): mirrors check 7 of
+# scripts/agent-preflight.sh. The installed pre-push hook must match this
+# checkout's hooks/pre-push authority; hook-assumed guards are void until it
+# does. Exit code 7 matches the shell preflight.
 $checkedInHook = Join-Path $currentRoot 'hooks/pre-push'
 if (Test-Path -LiteralPath $checkedInHook -PathType Leaf) {
-    $installedHook = @(Invoke-Git -Repository $currentRoot -GitArgs @('rev-parse', '--path-format=absolute', '--git-path', 'hooks/pre-push'))[0]
+    # Resolve via --git-path so a repo-local core.hooksPath is honored
+    # (rule C forward-compat, #17414): while hooksPath is unset this is
+    # identical to --git-common-dir/hooks; under per-worktree isolation it
+    # follows the live dir instead of the inert common-dir leftovers.
+    $hooksDir = @(Invoke-Git -Repository $currentRoot -GitArgs @('rev-parse', '--path-format=absolute', '--git-path', 'hooks'))[0]
+    $installedHook = Join-Path $hooksDir 'pre-push'
     $hookProblem = $null
     if (-not (Test-Path -LiteralPath $installedHook -PathType Leaf)) {
         $hookProblem = "pre-push hook is missing ($installedHook)"
     } else {
-        # The installer can append a newline; Windows checkout can use CRLF.
-        # Preserve case and all other whitespace so real drift still fails.
-        # Latin-1 maps each byte one-to-one: unlike ReadAllText it does not
-        # strip BOMs or accept UTF-16 recoding as an unchanged shell hook.
-        $byteEncoding = [Text.Encoding]::GetEncoding(28591)
-        $checkedInText = $byteEncoding.GetString([IO.File]::ReadAllBytes($checkedInHook)).Replace("`r", '').TrimEnd([char]10)
-        $installedText = $byteEncoding.GetString([IO.File]::ReadAllBytes($installedHook)).Replace("`r", '').TrimEnd([char]10)
+        # Byte comparison through Latin-1 (one char per byte, no BOM handling):
+        # strip CR for CRLF checkouts and trailing LF for the newline the
+        # installer appends. Case and every other byte still count, and there
+        # is no executable-bit gate on Windows.
+        $hookEncoding = [Text.Encoding]::GetEncoding(28591)
+        $checkedInText = $hookEncoding.GetString([IO.File]::ReadAllBytes($checkedInHook)).Replace("`r", '').TrimEnd([char]10)
+        $installedText = $hookEncoding.GetString([IO.File]::ReadAllBytes($installedHook)).Replace("`r", '').TrimEnd([char]10)
         if (-not [string]::Equals($installedText, $checkedInText, [StringComparison]::Ordinal)) {
             $hookProblem = 'pre-push hook is stale (installed copy differs from hooks/pre-push)'
         }
     }
     if ($null -ne $hookProblem) {
         Write-Host "ERR $hookProblem. Hook-assumed guards are void."
+        Write-Host 'Fix: bash scripts/install-githooks.sh (run from the repo root).'
+        exit 7
+    }
+    # pre-commit has no checked-in authority (its bytes are generated inside
+    # the installer), so it gets presence only: the installer writes both
+    # hooks in one invocation, so a current pre-push implies a current
+    # pre-commit unless the latter was deleted outright. No exec-bit gate on
+    # Windows (mirrors the shell check's MINGW carve-out).
+    $installedCommitHook = Join-Path $hooksDir 'pre-commit'
+    if (-not (Test-Path -LiteralPath $installedCommitHook -PathType Leaf)) {
+        Write-Host "ERR pre-commit hook is missing ($installedCommitHook). Commits run without the staged gate. Hook-assumed guards are void."
         Write-Host 'Fix: bash scripts/install-githooks.sh (run from the repo root).'
         exit 7
     }

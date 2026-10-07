@@ -830,6 +830,150 @@ def ensure_branch_not_in_use(branch: str, entries: list[dict[str, str]], slot_id
         raise RuntimeError(f"branch {branch!r} is already checked out at {conflict}")
 
 
+HOOK_INSTALLER_HINT = "bash scripts/install-githooks.sh (run from the worktree)"
+
+
+def _usable_bash() -> str | None:
+    """Absolute path of a bash that shares this process's filesystem view.
+
+    Bare ``bash`` must not be spawned directly: on Windows, CreateProcess
+    resolves ``C:\\Windows\\System32\\bash.exe`` (the WSL launcher) via system
+    directory search before PATH, so native Python would run WSL bash, which
+    cannot see native paths. ``shutil.which`` honors PATH order — but a PATH
+    entry pointing into System32 would still yield the WSL launcher, so that
+    is excluded explicitly and the caller falls back to direct cargo.
+    """
+    exe = shutil.which("bash")
+    if exe is None:
+        return None
+    if Path(exe).parent.name.lower() in {"system32", "sysnative"}:
+        return None
+    return exe
+
+
+def _slot_was_recorded(state_path: Path, slot_id: str) -> bool:
+    """True when the state FILE already records slot_id (pre-sync snapshot).
+
+    allocate runs after sync_state, which appends live-but-unrecorded trees,
+    so the in-memory state cannot distinguish a recorded slot from a mere
+    discovery. Re-reading the file answers it; under the state lock the file
+    cannot change concurrently. An unreadable file answers True so the
+    caller falls through to the existing (non-resume) flow.
+    """
+    try:
+        recorded = load_json(state_path)
+    except (OSError, ValueError):
+        return True
+    return any(s.get("slot_id") == slot_id for s in recorded.get("slots", []))
+
+
+def _installed_hook_usable(path: Path) -> bool:
+    """True when an installed hook exists and (POSIX) is executable.
+
+    Byte currency needs a checked-in authority, which only pre-push has;
+    pre-commit's authority is generated inside the installer. The installer
+    always writes both hooks in one invocation, so a current pre-push implies
+    a current pre-commit unless the latter was deleted or de-executed
+    outright — exactly what this presence check closes. CI's check_githooks
+    still owns byte-level truth for both hooks.
+    """
+    if not path.is_file():
+        return False
+    if os.name != "nt":
+        return os.access(path, os.X_OK)
+    return True
+
+
+def _hook_bytes_current(installed: Path, authority: Path) -> bool:
+    """True when the installed hook matches the checked-in authority.
+
+    Mirrors ``check_githooks`` normalization (CRLF-insensitive, trailing
+    whitespace ignored — the installer appends one ``\\n`` to the generated
+    script, so a byte-exact comparison would always report drift) plus the
+    executable bit on POSIX (mirrors its ``cfg(unix)`` gate).
+    """
+    try:
+        if not installed.is_file():
+            return False
+        installed_text = installed.read_bytes().replace(b"\r\n", b"\n").decode("utf-8")
+        authority_text = authority.read_bytes().replace(b"\r\n", b"\n").decode("utf-8")
+    except (OSError, UnicodeDecodeError):
+        return False
+    if installed_text.rstrip() != authority_text.rstrip():
+        return False
+    if os.name != "nt":
+        return os.access(installed, os.X_OK)
+    return True
+
+
+def provision_worktree_hooks(slot_path: Path) -> None:
+    """Install current git hooks for a freshly allocated worktree (#17406).
+
+    Skips (with a note, not an error) when the worktree carries no
+    ``hooks/pre-push`` authority — foreign fixtures and old revisions have
+    nothing to provision.  When the authority exists but the shared installed
+    hook is missing or stale, runs the installer and re-verifies; any failure
+    raises (loud) instead of leaving the worktree unguarded without notice.
+
+    The currency fast-path also avoids a cargo build while holding the state
+    lock: linked worktrees share the common hooks dir, so the installer is
+    skipped whenever another worktree already provisioned current hooks.
+
+    The slot's own installer script is preferred so installer and authority
+    stay at the same revision; direct cargo is the fallback when the slot
+    predates the installer script or no bash is available. Either way the
+    verification below fails loudly on skew instead of silently leaving
+    zero hooks.
+    """
+    authority = slot_path / "hooks" / "pre-push"
+    if not authority.is_file():
+        print(f"hooks: no hooks/pre-push authority in {slot_path} — skipping hook provisioning")
+        return
+    common_raw = git(["rev-parse", "--git-common-dir"], cwd=slot_path, check=True).stdout.strip()
+    common_dir = Path(common_raw)
+    if not common_dir.is_absolute():
+        common_dir = slot_path / common_dir
+    installed = common_dir / "hooks" / "pre-push"
+    installed_commit = common_dir / "hooks" / "pre-commit"
+    if _hook_bytes_current(installed, authority) and _installed_hook_usable(installed_commit):
+        print("hooks: installed git hooks already current — installer skipped (no build)")
+        return
+    script = slot_path / "scripts" / "install-githooks.sh"
+    bash_exe = _usable_bash()
+    if script.is_file() and bash_exe is not None:
+        # as_posix: a native Windows path (backslashes) would be mangled by
+        # msys/cygwin bash argument parsing; forward-slash form survives and
+        # is identity on POSIX.
+        cmd = [bash_exe, script.as_posix()]
+    else:
+        cmd = ["cargo", "xtask", "ci-hygiene", "install-githooks"]
+    print(f"hooks: provisioning git hooks for {slot_path} ...")
+    try:
+        proc = run(cmd, cwd=slot_path, check=False)
+    except OSError as exc:
+        raise RuntimeError(
+            f"hook provisioning FAILED for {slot_path}: cannot run installer ({exc}). "
+            f"The worktree exists but its hooks are missing or stale. "
+            f"Fix: {HOOK_INSTALLER_HINT}"
+        ) from exc
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"hook provisioning FAILED for {slot_path}: installer exited {proc.returncode}.\n"
+            f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
+            f"The worktree exists but its hooks are missing or stale. "
+            f"Fix: {HOOK_INSTALLER_HINT}"
+        )
+    if not (_hook_bytes_current(installed, authority) and _installed_hook_usable(installed_commit)):
+        raise RuntimeError(
+            f"hook provisioning FAILED verification for {slot_path}: the installer ran but "
+            f"{installed} still does not match {authority}, or {installed_commit} is missing/"
+            f"not executable (one cause is revision skew: a slot cut from an old base whose "
+            f"hook authority predates the installer). "
+            f"Fix: {HOOK_INSTALLER_HINT}"
+        )
+    print(f"hooks: git hooks provisioned and verified for {slot_path}")
+
+
 def allocate(
     args: argparse.Namespace,
     state: dict[str, Any],
@@ -863,6 +1007,35 @@ def allocate(
         state["slots"].append(slot)
         slots[args.slot] = slot
 
+    if slot_path.exists() and not _slot_was_recorded(state_path, args.slot):
+        # Unrecorded worktree on disk: an allocate interrupted after `git
+        # worktree add` but before save_state (e.g. hook provisioning
+        # failed), or a foreign tree. Resume instead of refusing: provision
+        # hooks and record the slot WITHOUT resetting the branch, so a retry
+        # after repairing the installer cannot strand recovery work.
+        actual_branch = normalize_branch(slot.get("branch", "HEAD"))
+        if actual_branch != normalize_branch(args.branch):
+            raise RuntimeError(
+                f"slot {args.slot!r} path holds branch {actual_branch!r}, not {args.branch!r}; "
+                f"release it or use --force to reallocate"
+            )
+        if args.dry_run:
+            print(f"would resume slot={args.slot} path={slot_rel} branch={args.branch} "
+                  f"(provision hooks, record active, no reset)")
+            return
+        provision_worktree_hooks(slot_path)
+        slot["branch"] = normalize_branch(args.branch)
+        slot["path"] = slot_rel
+        slot["status"] = "active"
+        slot["reuse_count"] = int(slot.get("reuse_count", 0)) + 1
+        slot["last_used_at"] = utc_now()
+        set_owner(slot, owner, owner_source)
+        save_state(state_path, state)
+        tip = git(["-C", str(slot_path), "rev-parse", "HEAD"], check=False).stdout.strip() or "unknown"
+        print(f"allocated slot={args.slot} path={slot_rel} branch={args.branch} resumed-tip={tip} "
+              f"(existing worktree kept as-is; hooks provisioned)")
+        return
+
     if slot.get("status") not in {"idle", "missing", "retired"} and not args.force:
         raise RuntimeError(f"slot {args.slot!r} is currently {slot.get('status')!r}; use --force to reallocate")
 
@@ -891,6 +1064,14 @@ def allocate(
         git(["-C", str(slot_path), "checkout", "-B", args.branch, base])
     else:
         git(["worktree", "add", "-B", args.branch, str(slot_path), base])
+
+    # Issue #17406: provision current git hooks for the fresh worktree. This
+    # runs before the slot bookkeeping below so a provisioning failure fails
+    # the allocate loudly (non-zero exit) instead of recording success while
+    # the worktree runs with zero hooks. The worktree itself is left in place
+    # for inspection and retry, matching the failure contract of
+    # scripts/worktree-add.sh.
+    provision_worktree_hooks(slot_path)
 
     slot["branch"] = normalize_branch(args.branch)
     slot["path"] = slot_rel

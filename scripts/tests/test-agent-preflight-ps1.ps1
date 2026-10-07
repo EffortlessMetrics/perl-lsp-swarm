@@ -24,6 +24,7 @@ $Worktrees = Join-Path $FixtureRoot 'worktrees'
 $Worktree = Join-Path $Worktrees '17413-fixture'
 $Targets = Join-Path $FixtureRoot 'targets'
 $AuthorityText = "#!/bin/sh`necho AUTHORITY`n"
+$CommitText = "#!/bin/sh`necho COMMIT-HOOK`n"
 $Passed = 0
 $Failed = 0
 New-Item -ItemType Directory -Path $FixtureRoot | Out-Null
@@ -86,6 +87,7 @@ try {
     New-Item -ItemType Directory -Path $Worktrees | Out-Null
     Invoke-FixtureGit -GitArgs @('-C', $Canonical, 'worktree', 'add', '-q', '-b', 'fixture/17413', $Worktree)
     $Installed = Join-Path $Canonical '.git/hooks/pre-push'
+    $InstalledCommit = Join-Path $Canonical '.git/hooks/pre-commit'
     $Authority = Join-Path $Worktree 'hooks/pre-push'
     # A linked-worktree-local decoy must never satisfy common-dir installation.
     $PrivateHookDir = Join-Path $Canonical '.git/worktrees/17413-fixture/hooks'
@@ -109,7 +111,7 @@ try {
         @{ Name = 'leading-whitespace-drift'; Expected = 7; Diagnostic = 'pre-push hook is stale'; Installed = ' ' + $AuthorityText },
         @{ Name = 'trailing-space-drift'; Expected = 7; Diagnostic = 'pre-push hook is stale'; Installed = $AuthorityText.TrimEnd([char]10) + ' ' },
         @{ Name = 'installed-directory'; Expected = 7; Diagnostic = 'pre-push hook is missing'; Installed = $null; Directory = $true },
-        @{ Name = 'no-authority'; Expected = 0; Diagnostic = 'agent preflight ok'; Installed = "echo STALE`n"; NoAuthority = $true },
+        @{ Name = 'no-authority'; Expected = 0; Diagnostic = 'agent preflight ok'; Installed = "echo STALE`n"; NoAuthority = $true; NoCommit = $true },
         @{ Name = 'worktree-revision-authority'; Expected = 0; Diagnostic = 'agent preflight ok'; Installed = "#!/bin/sh`necho BRANCH_REVISION`n"; Authority = "#!/bin/sh`necho BRANCH_REVISION`n" },
         @{ Name = 'absolute-hooks-path-missing'; Expected = 7; Diagnostic = 'pre-push hook is missing'; Installed = $AuthorityText; HooksPath = $CustomHooks; ActiveInstalled = $null },
         @{ Name = 'absolute-hooks-path-stale'; Expected = 7; Diagnostic = 'pre-push hook is stale'; Installed = $AuthorityText; HooksPath = $CustomHooks; ActiveInstalled = "echo STALE`n" },
@@ -117,7 +119,11 @@ try {
         @{ Name = 'relative-hooks-path-missing'; Expected = 7; Diagnostic = 'pre-push hook is missing'; Installed = $AuthorityText; HooksPath = 'relative hooks'; ActiveInstalled = $null },
         @{ Name = 'relative-hooks-path-stale'; Expected = 7; Diagnostic = 'pre-push hook is stale'; Installed = $AuthorityText; HooksPath = 'relative hooks'; ActiveInstalled = "echo STALE`n" },
         @{ Name = 'relative-hooks-path-current'; Expected = 0; Diagnostic = 'agent preflight ok'; Installed = "echo STALE`n"; HooksPath = 'relative hooks'; ActiveInstalled = $AuthorityText },
-        @{ Name = 'no-authority-custom-hooks-path'; Expected = 0; Diagnostic = 'agent preflight ok'; Installed = $null; HooksPath = 'relative hooks'; ActiveInstalled = $null; NoAuthority = $true },
+        @{ Name = 'no-authority-custom-hooks-path'; Expected = 0; Diagnostic = 'agent preflight ok'; Installed = $null; HooksPath = 'relative hooks'; ActiveInstalled = $null; NoAuthority = $true; NoCommit = $true; NoActiveCommit = $true },
+        @{ Name = 'pre-commit-missing'; Expected = 7; Diagnostic = 'pre-commit hook is missing'; Installed = $AuthorityText; NoCommit = $true },
+        @{ Name = 'pre-commit-directory'; Expected = 7; Diagnostic = 'pre-commit hook is missing'; Installed = $AuthorityText; CommitDirectory = $true },
+        @{ Name = 'absolute-pre-commit-missing-despite-common-copy'; Expected = 7; Diagnostic = 'pre-commit hook is missing'; Installed = "echo STALE`n"; HooksPath = $CustomHooks; ActiveInstalled = $AuthorityText; NoActiveCommit = $true },
+        @{ Name = 'relative-pre-commit-missing-despite-common-copy'; Expected = 7; Diagnostic = 'pre-commit hook is missing'; Installed = "echo STALE`n"; HooksPath = 'relative hooks'; ActiveInstalled = $AuthorityText; NoActiveCommit = $true },
         @{ Name = 'native-git-current'; Expected = 0; Diagnostic = 'agent preflight ok'; Installed = $AuthorityText; GitMode = 'native' },
         @{ Name = 'native-dirty-porcelain-refused'; Expected = 1; Diagnostic = 'Canonical checkout is dirty'; Installed = $AuthorityText; GitMode = 'native'; DirtyCanonical = $true },
         @{ Name = 'git-warning-not-dirty'; Expected = 0; Diagnostic = 'fixture git diagnostic: exit zero, empty porcelain'; Installed = $AuthorityText; GitMode = 'warning' },
@@ -144,10 +150,16 @@ try {
             $ActiveHook = Join-Path $ActiveDirectory 'pre-push'
             if (Test-Path -LiteralPath $ActiveHook) { Remove-Item -LiteralPath $ActiveHook }
             if ($null -ne $Case.ActiveInstalled) { Write-FixtureText $ActiveHook $Case.ActiveInstalled }
+            $ActiveCommit = Join-Path $ActiveDirectory 'pre-commit'
+            if (Test-Path -LiteralPath $ActiveCommit) { Remove-Item -LiteralPath $ActiveCommit }
+            if (-not $Case.ContainsKey('NoActiveCommit')) { Write-FixtureText $ActiveCommit $CommitText }
         }
         Write-FixtureText (Join-Path $CanonicalHooks 'pre-push') $AuthorityText
         if ($Case.ContainsKey('DirtyCanonical')) { Write-FixtureText (Join-Path $CanonicalHooks 'pre-push') "echo DIRTY`n" }
         if (Test-Path -LiteralPath $Installed) { Remove-Item -LiteralPath $Installed -Force }
+        if (Test-Path -LiteralPath $InstalledCommit) { Remove-Item -LiteralPath $InstalledCommit }
+        if ($Case.ContainsKey('CommitDirectory')) { New-Item -ItemType Directory -Path $InstalledCommit | Out-Null }
+        elseif (-not $Case.ContainsKey('NoCommit')) { Write-FixtureText $InstalledCommit $CommitText }
         if (-not (Test-Path -LiteralPath (Split-Path -Parent $Authority))) { New-Item -ItemType Directory -Path (Split-Path -Parent $Authority) | Out-Null }
         Write-FixtureText $Authority $AuthorityText
         if ($Case.ContainsKey('Authority')) { Write-FixtureText $Authority $Case.Authority }
