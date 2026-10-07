@@ -887,9 +887,9 @@ mod tests {
         let mut actual = edits
             .iter()
             .flat_map(|file| {
-                file.edits.iter().map(|edit| {
-                    (file.uri.as_str(), edit.start, edit.end, edit.new_text.as_str())
-                })
+                file.edits
+                    .iter()
+                    .map(|edit| (file.uri.as_str(), edit.start, edit.end, edit.new_text.as_str()))
             })
             .collect::<Vec<_>>();
         actual.sort();
