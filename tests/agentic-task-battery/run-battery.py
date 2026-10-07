@@ -607,7 +607,11 @@ def check_quick_bench(ctx, res, state):
         before_fp = (before_stat.st_mtime_ns, before_stat.st_size)
     except OSError:
         before_fp = None
-    r = ctx.run(argv, 1200, "t3-bench-run")
+    # T3 bench-run timeout: cold `cargo xtask bench-run --quick` measured
+    # T=1338.4s on 2026-10-07 (32-core Windows 11 host, rustc 1.95.0, base
+    # 19b220476, unthrottled; the run was progressing through the index
+    # category at the old 1200s mark, issue #17463). 2100 = T + ~57% margin.
+    r = ctx.run(argv, 2100, "t3-bench-run")
     restored, dirtied = _restore_bench_side_effects(ctx, tracked_before)
     state["bench_restored"] = restored
     state["bench_exit"] = r["exit"]
