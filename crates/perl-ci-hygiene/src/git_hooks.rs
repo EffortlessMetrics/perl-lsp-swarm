@@ -5,6 +5,20 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// A `git` command bound to the caller's `.current_dir`, never to an
+/// inherited repository.
+///
+/// `Command` inherits the process environment, so a stray `GIT_DIR`,
+/// `GIT_WORK_TREE`, or `GIT_COMMON_DIR` would redirect enumeration,
+/// configuration, and resolution at another repository despite
+/// `.current_dir` (#17426 review). Every git invocation in this module —
+/// production and test helpers alike — goes through here.
+fn git_command() -> Command {
+    let mut command = Command::new("git");
+    command.env_remove("GIT_DIR").env_remove("GIT_WORK_TREE").env_remove("GIT_COMMON_DIR");
+    command
+}
+
 mod install {
     pub(super) const PRE_COMMIT_HOOK: &str = r#"#!/usr/bin/env bash
 set -euo pipefail
@@ -453,9 +467,9 @@ pub(crate) fn cmd_install_githooks(repo_root: &Path) -> Result<i32> {
 /// guard there. An enumeration failure is loud — installing into one tree
 /// while siblings stay unknown would silently unguard them at the flip.
 fn worktree_roots(repo_root: &Path) -> Result<Vec<PathBuf>> {
-    let output = Command::new("git")
+    let output = git_command()
         .current_dir(repo_root)
-        .args(["worktree", "list", "--porcelain"])
+        .args(["worktree", "list", "--porcelain", "-z"])
         .output()
         .with_context(|| format!("listing worktrees from {}", repo_root.display()))?;
     if !output.status.success() {
@@ -465,14 +479,11 @@ fn worktree_roots(repo_root: &Path) -> Result<Vec<PathBuf>> {
             String::from_utf8_lossy(&output.stderr).trim_end()
         ));
     }
+    // NUL-delimited: a worktree path may itself contain a newline, which
+    // line-based parsing cannot recover (#17426 review).
     let stdout =
         String::from_utf8(output.stdout).context("git worktree list emitted non-UTF8 output")?;
-    let roots: Vec<PathBuf> = stdout
-        .lines()
-        .filter_map(|line| line.strip_prefix("worktree "))
-        .map(PathBuf::from)
-        .filter(|root| root.is_dir())
-        .collect();
+    let roots = parse_worktree_roots_porcelain_z(&stdout);
     if roots.is_empty() {
         return Err(color_eyre::eyre::eyre!(
             "git worktree list reported no live trees in {}",
@@ -480,6 +491,19 @@ fn worktree_roots(repo_root: &Path) -> Result<Vec<PathBuf>> {
         ));
     }
     Ok(roots)
+}
+
+/// Live worktree roots from `git worktree list --porcelain -z` output.
+///
+/// Fields split on NUL, so paths containing newlines survive; stale
+/// entries whose directories are gone are dropped.
+fn parse_worktree_roots_porcelain_z(output: &str) -> Vec<PathBuf> {
+    output
+        .split('\0')
+        .filter_map(|field| field.strip_prefix("worktree "))
+        .map(PathBuf::from)
+        .filter(|root| root.is_dir())
+        .collect()
 }
 
 /// Check that installed hooks match the repository-generated authorities.
@@ -526,7 +550,7 @@ fn normalize_hook(script: &str) -> String {
 /// The toolchain never writes the common hooks dir again; whatever remains
 /// there is inert (git ignores it while `core.hooksPath` is set).
 fn set_installer_hooks_path(repo_root: &Path) -> Result<()> {
-    let output = Command::new("git")
+    let output = git_command()
         .current_dir(repo_root)
         .args(["config", "--local", "core.hooksPath", INSTALLER_HOOKS_PATH])
         .output()
@@ -543,7 +567,7 @@ fn set_installer_hooks_path(repo_root: &Path) -> Result<()> {
 }
 
 fn resolve_git_hooks_dir(repo_root: &Path) -> Result<PathBuf> {
-    let output = Command::new("git")
+    let output = git_command()
         .current_dir(repo_root)
         .args(["rev-parse", "--git-path", "hooks"])
         .output()
@@ -605,7 +629,7 @@ mod tests {
             SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()
         ));
         fs::create_dir_all(&path)?;
-        let status = Command::new("git").args(["init", "--quiet"]).current_dir(&path).status()?;
+        let status = git_command().args(["init", "--quiet"]).current_dir(&path).status()?;
         if !status.success() {
             return Err(color_eyre::eyre::eyre!("git init failed"));
         }
@@ -693,7 +717,7 @@ mod tests {
         let repo = temp_repo()?;
         cmd_install_githooks(&repo)?;
 
-        let output = Command::new("git")
+        let output = git_command()
             .current_dir(&repo)
             .args(["config", "--get", "core.hooksPath"])
             .output()?;
@@ -719,7 +743,7 @@ mod tests {
         // #17426 review: the shared config flip takes effect in every tree
         // at once, so installing from one tree must guard its siblings too.
         let repo = temp_repo()?;
-        let seed = Command::new("git")
+        let seed = git_command()
             .current_dir(&repo)
             .args(["-c", "user.email=t@t", "-c", "user.name=t"])
             .arg("commit")
@@ -727,7 +751,7 @@ mod tests {
             .status()?;
         assert!(seed.success());
         let sib = repo.with_extension("sib");
-        let added = Command::new("git")
+        let added = git_command()
             .current_dir(&repo)
             .args(["worktree", "add", "--quiet"])
             .arg(&sib)
@@ -740,15 +764,100 @@ mod tests {
             assert!(tree.join(INSTALLER_HOOKS_PATH).join("pre-push").is_file());
             assert!(tree.join(INSTALLER_HOOKS_PATH).join("pre-commit").is_file());
         }
-        let output = Command::new("git")
-            .current_dir(&sib)
-            .args(["config", "--get", "core.hooksPath"])
-            .output()?;
+        let output =
+            git_command().current_dir(&sib).args(["config", "--get", "core.hooksPath"]).output()?;
         assert!(output.status.success());
         assert_eq!(String::from_utf8(output.stdout)?.trim(), INSTALLER_HOOKS_PATH);
 
         fs::remove_dir_all(&sib)?;
         fs::remove_dir_all(repo)?;
+        Ok(())
+    }
+
+    #[test]
+    fn worktree_parser_keeps_stale_entries_out() {
+        // Missing directories are dropped, never provisioned.
+        let output = "worktree /definitely/not/here\0HEAD abc\0worktree /also/missing\0";
+        assert!(parse_worktree_roots_porcelain_z(output).is_empty());
+    }
+
+    // Newlines are illegal in Windows path names, so the newline-path
+    // case can only be built on Unix; the -z listing itself still runs
+    // on every platform via the installer tests below.
+    #[cfg(unix)]
+    #[test]
+    fn worktree_parser_survives_newline_paths() -> Result<()> {
+        // #17426 review: NUL-delimited parsing must recover a path a
+        // line-based parser would shred (and then drop as non-dir,
+        // leaving that tree unguarded at the flip).
+        let base = std::env::temp_dir().join(format!(
+            "perl-ci-hygiene-hooks-nl-{}-{}",
+            std::process::id(),
+            SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()
+        ));
+        let odd = base.join("wt\nwith\nnewlines");
+        fs::create_dir_all(&odd)?;
+        let output = format!(
+            "worktree {}\0HEAD abc123\0branch refs/heads/x\0worktree /also/missing\0",
+            odd.display()
+        );
+        assert_eq!(parse_worktree_roots_porcelain_z(&output), vec![odd]);
+        fs::remove_dir_all(base)?;
+        Ok(())
+    }
+
+    /// Process-env override that restores the previous value on drop.
+    ///
+    /// Every git invocation in this module strips the three repository
+    /// variables, so polluting them here cannot redirect a concurrently
+    /// running test's git.
+    struct EnvGuard {
+        key: &'static str,
+        prev: Option<std::ffi::OsString>,
+    }
+
+    impl EnvGuard {
+        fn set(key: &'static str, value: &std::ffi::OsStr) -> Self {
+            let prev = std::env::var_os(key);
+            unsafe {
+                std::env::set_var(key, value);
+            }
+            Self { key, prev }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            unsafe {
+                match self.prev.take() {
+                    Some(value) => std::env::set_var(self.key, value),
+                    None => std::env::remove_var(self.key),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn installer_ignores_inherited_git_repository_env() -> Result<()> {
+        // #17426 review: a stray GIT_DIR/GIT_WORK_TREE/GIT_COMMON_DIR must
+        // not redirect enumeration or the hooksPath flip at another repo.
+        let repo = temp_repo()?;
+        let decoy = temp_repo()?;
+        let _dir = EnvGuard::set("GIT_DIR", decoy.join(".git").as_os_str());
+        let _tree = EnvGuard::set("GIT_WORK_TREE", decoy.as_os_str());
+        let _common = EnvGuard::set("GIT_COMMON_DIR", decoy.join(".git").as_os_str());
+
+        cmd_install_githooks(&repo)?;
+
+        assert!(repo.join(INSTALLER_HOOKS_PATH).join("pre-push").is_file());
+        let flipped = git_command()
+            .current_dir(&decoy)
+            .args(["config", "--get", "core.hooksPath"])
+            .output()?;
+        assert!(!flipped.status.success(), "decoy repo must not gain core.hooksPath");
+
+        fs::remove_dir_all(repo)?;
+        fs::remove_dir_all(decoy)?;
         Ok(())
     }
 
