@@ -29,10 +29,12 @@
 //!   reporting "not evaluated" — exactly like `must_context`'s unevaluated
 //!   run. The gate constrains only changes that declare a scope, so landing
 //!   it required breaks no existing PR.
-//! - **Stale declarations are inert.** A scope file byte-identical to its base
-//!   blob was not written by this change (it rode in on the base), so it is
-//!   ignored rather than enforced. Scope cannot leak from one change into the
-//!   next, and a merged scope file constrains nobody.
+//! - **Stale declarations are inert.** A scope file byte-identical to its
+//!   merge-base blob was not written by this change (it rode in on the base),
+//!   so it is ignored rather than enforced. Scope cannot leak from one change
+//!   into the next, and a merged scope file constrains nobody. The comparison
+//!   uses the merge base — the same subject the diff uses — so a scope file the
+//!   target branch advanced after divergence never activates here.
 //! - **The declaration admits itself.** The scope file is always exempt from
 //!   its own check; otherwise declaring a scope would itself be a violation.
 //!
@@ -89,7 +91,7 @@ impl ChangeScope {
 /// Normalizes one scope line or candidate path for comparison: surrounding
 /// whitespace trimmed, backslashes folded to `/` (a Windows-authored
 /// declaration must mean the same as a POSIX one), and a leading `./` or `/`
-/// stripped so root-anchored spellings match `git diff --name-only` output.
+/// stripped so root-anchored spellings match `git diff --name-status` output.
 fn normalize_path(text: &str) -> String {
     let mut normalized = text.trim().replace('\\', "/");
     if let Some(rest) = normalized.strip_prefix("./") {
@@ -139,7 +141,7 @@ pub(crate) fn parse_scope_declaration(text: &str) -> Result<ChangeScope> {
 }
 
 /// Returns `true` when `path` (a repo-relative changed path, as produced by
-/// `git diff --name-only`) falls inside the admitted scope: an exact-pattern
+/// `git diff --name-status`) falls inside the admitted scope: an exact-pattern
 /// hit, or a directory-prefix hit for anything beneath the prefix. The scope
 /// declaration itself is always admitted — it is the declaration, not a
 /// change under judgment. An empty candidate is never admitted.
@@ -201,11 +203,17 @@ pub(crate) fn check(repo_root: &Path, base: Option<&str>) -> Result<i32> {
             return Err(eyre!("failed to read {SCOPE_DECLARATION_PATH}: {error}"));
         }
     };
-    if base_blob_matches_worktree(repo_root, &requested_base, &declaration_bytes) {
+    // The staleness subject and the diff subject are one commit: the merge
+    // base. Comparing the worktree declaration against the base-ref tip instead
+    // would activate an inherited declaration whenever the target branch
+    // advanced its own copy after this change diverged — failing unrelated PRs
+    // against a scope they never declared.
+    let merge_base_commit = merge_base(repo_root, &requested_base);
+    if base_blob_matches_worktree(repo_root, &merge_base_commit, &declaration_bytes) {
         println!(
             "{YELLOW}• change-scope gate not evaluated{NC}: {SCOPE_DECLARATION_PATH} is \
-             byte-identical to its {requested_base} blob, so this change declares no scope. \
-             A scope file that rode in on the base constrains nobody."
+             byte-identical to its blob at the merge-base with {requested_base}, so this \
+             change declares no scope. A scope file that rode in on the base constrains nobody."
         );
         return Ok(0);
     }
@@ -213,7 +221,6 @@ pub(crate) fn check(repo_root: &Path, base: Option<&str>) -> Result<i32> {
         eyre!("{SCOPE_DECLARATION_PATH} is not valid UTF-8 ({error}): declare scope as text")
     })?;
     let scope = parse_scope_declaration(&declaration_text)?;
-    let merge_base_commit = merge_base(repo_root, &requested_base);
     let changed = read_changed_files(repo_root, &merge_base_commit)?;
 
     if changed.is_empty() {
@@ -335,33 +342,64 @@ fn base_blob_matches_worktree(repo_root: &Path, base: &str, worktree_bytes: &[u8
 /// non-ASCII paths unquoted so they compare equal to their scope lines;
 /// anything still undecodable is lossy-mapped, which can only mismatch — a
 /// false unadmitted, never a false admission.
+///
+/// The diff is NUL-delimited name-status so renames and copies report both
+/// sides: `--name-only` prints only the destination, which would let a rename
+/// move an out-of-scope file into an admitted directory unflagged.
 fn read_changed_files(repo_root: &Path, base: &str) -> Result<Vec<String>> {
     let output = Command::new("git")
         .current_dir(repo_root)
-        .args(["-c", "core.quotePath=false", "diff", "--name-only", "--no-color", base])
+        .args(["-c", "core.quotePath=false", "diff", "--name-status", "-z", "--no-color", base])
         .output()
-        .map_err(|error| eyre!("failed to run `git diff --name-only` against '{base}': {error}"))?;
+        .map_err(|error| {
+            eyre!("failed to run `git diff --name-status -z` against '{base}': {error}")
+        })?;
 
     if !output.status.success() {
         return Err(eyre!(
-            "`git diff --name-only {base}` failed: {}",
+            "`git diff --name-status -z {base}` failed: {}",
             String::from_utf8_lossy(&output.stderr).trim()
         ));
     }
-    Ok(String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .filter_map(|line| {
-            let trimmed = line.trim();
-            (!trimmed.is_empty()).then(|| trimmed.to_owned())
-        })
-        .collect())
+    Ok(parse_name_status_z(&output.stdout))
+}
+
+/// Parses NUL-delimited `git diff --name-status -z` output into changed paths,
+/// in diff order.
+///
+/// Every record is `<STATUS>\0<PATH>\0`, except renames and copies which carry
+/// both sides (`R100\0<OLD>\0<NEW>\0`, `C75\0<OLD>\0<NEW>\0`). Both sides are
+/// reported: a rename deletes its source, so the source is a touched file even
+/// when the destination is admitted. A truncated trailing record contributes
+/// nothing — `git` either wrote the record or it did not.
+fn parse_name_status_z(output: &[u8]) -> Vec<String> {
+    let tokens: Vec<&[u8]> =
+        output.split(|byte| *byte == 0).filter(|token| !token.is_empty()).collect();
+    let mut changed = Vec::new();
+    let mut index = 0;
+    while index < tokens.len() {
+        let status = String::from_utf8_lossy(tokens[index]);
+        index += 1;
+        let path_count = if status.starts_with('R') || status.starts_with('C') { 2 } else { 1 };
+        for _ in 0..path_count {
+            let Some(path) = tokens.get(index) else {
+                break;
+            };
+            let decoded = String::from_utf8_lossy(path).trim().to_owned();
+            if !decoded.is_empty() {
+                changed.push(decoded);
+            }
+            index += 1;
+        }
+    }
+    changed
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
         ChangeScope, SCOPE_DECLARATION_PATH, ScopePattern, find_unadmitted, is_admitted,
-        parse_scope_declaration,
+        parse_name_status_z, parse_scope_declaration,
     };
     use color_eyre::eyre::{Result, eyre};
 
@@ -490,5 +528,41 @@ mod tests {
         let unadmitted = find_unadmitted(&changed(&["zeta.rs", "scope.rs", "alpha.rs"]), &scope);
         assert_eq!(unadmitted, vec!["zeta.rs".to_owned(), "alpha.rs".to_owned()]);
         Ok(())
+    }
+
+    #[test]
+    fn name_status_reports_both_sides_of_a_rename() -> Result<()> {
+        // Regression: `--name-only` printed only the destination, so
+        // `git mv docs/guide.md src/guide.md` read as an in-scope change.
+        let changed = parse_name_status_z(b"R100\0docs/guide.md\0src/guide.md\0");
+        assert_eq!(changed, vec!["docs/guide.md".to_owned(), "src/guide.md".to_owned()]);
+        let scope = scope_of("src/\n")?;
+        let unadmitted = find_unadmitted(&changed, &scope);
+        assert_eq!(unadmitted, vec!["docs/guide.md".to_owned()]);
+        Ok(())
+    }
+
+    #[test]
+    fn name_status_handles_plain_copy_and_unmerged_records() {
+        let parsed = parse_name_status_z(
+            b"M\0kept.rs\0A\0added.rs\0D\0removed.rs\0C90\0origin.rs\0clone.rs\0U\0conflicted.rs\0",
+        );
+        assert_eq!(
+            parsed,
+            changed(&[
+                "kept.rs",
+                "added.rs",
+                "removed.rs",
+                "origin.rs",
+                "clone.rs",
+                "conflicted.rs"
+            ])
+        );
+    }
+
+    #[test]
+    fn name_status_empty_diff_reports_no_changes() {
+        assert!(parse_name_status_z(b"").is_empty());
+        assert!(parse_name_status_z(b"\0").is_empty());
     }
 }
