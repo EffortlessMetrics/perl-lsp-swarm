@@ -10,6 +10,6 @@
 # contains it to `.perl-lsp.toml` `include_paths`".
 #
 # This file is byte-identical to the other tracked demo copy, by assertion in
-# `src/test/packageManifest.test.ts` ("first-run demo content").
+# `vscode-extension/src/test/packageManifest.test.ts` ("first-run demo content").
 [perl]
 include_paths = ["lib"]

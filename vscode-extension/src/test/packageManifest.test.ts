@@ -125,14 +125,18 @@ describe('first-run demo content (#16591)', () => {
       const perlBody = uncommented
         .slice(perlHeader + 1, nextHeader === -1 ? uncommented.length : nextHeader)
         .join('\n');
-      const declared = /include_paths\s*=\s*\[([^\]]*)\]/.exec(perlBody);
-      expect(declared).not.toBeNull();
-      const body = declared?.[1] ?? '';
-      const entries = body
-        .split(',')
-        .map((entry) => entry.trim().replace(/^["']|["']$/g, ''))
-        .filter((entry) => entry.length > 0);
-      expect(entries).toContain('lib');
+      // Pin the section to its exact valid-TOML form. A permissive parse
+      // (strip quotes, drop empties, `toContain`) would also accept configs
+      // the server rejects — e.g. an unquoted entry (`include_paths = [lib]`)
+      // makes the whole file a TOML syntax error, so the server warns and
+      // skips it, and demo resolution would silently regress to unpinned
+      // defaults while this assertion stayed green. Blank lines are dropped
+      // because they are valid TOML anywhere; anything else must match.
+      const perlEntries = perlBody
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter((line) => line.length > 0);
+      expect(perlEntries).toEqual(['include_paths = ["lib"]']);
       // And that directory is the one holding the demo's modules.
       expect(fs.existsSync(path.join(root, 'lib', 'Utils.pm'))).toBe(true);
     }
