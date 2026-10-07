@@ -181,7 +181,7 @@ if PATH="$STUB:$PATH" bash "$RUNNER" --category ripr >"$OUT" 2>"$ERR"; then
 else
     ok "homepath-mode run exits nonzero"
 fi
-if [[ ${HOME:-} =~ ^[A-Za-z0-9_@%+:,./-]+$ ]]; then
+if [[ ${HOME:-} =~ ^[A-Za-z0-9_@%+:,./-]+$ && ${HOME:-} =~ [^/] ]]; then
     json_get "$OUT" ripr _error | grep -q "~/.cache" \
         && ok "_error redacts HOME to ~" \
         || bad "_error does not redact HOME"
@@ -189,7 +189,7 @@ if [[ ${HOME:-} =~ ^[A-Za-z0-9_@%+:,./-]+$ ]]; then
         && bad "_error leaks raw HOME" \
         || ok "_error carries no raw HOME"
 else
-    ok "HOME exotic; redaction skipped by design (nothing to assert)"
+    ok "HOME exotic or slash-only; redaction skipped by design (nothing to assert)"
 fi
 # HOME=/ (containers/CI) skips redaction instead of replacing every `/`
 # with `~` (#17453 review).
