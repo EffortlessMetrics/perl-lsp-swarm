@@ -463,7 +463,10 @@ pub(crate) fn merge_base(repo_root: &Path, base: &str) -> String {
 }
 
 /// Returns `true` when `git rev-parse --verify` resolves `reference`.
-fn ref_exists(repo_root: &Path, reference: &str) -> bool {
+///
+/// Shared with the secret-scan gate, which degrades to an empty commit
+/// history (rather than erroring) when `HEAD` itself does not resolve.
+pub(crate) fn ref_exists(repo_root: &Path, reference: &str) -> bool {
     Command::new("git")
         .current_dir(repo_root)
         .args(["rev-parse", "--verify", "--quiet", reference])

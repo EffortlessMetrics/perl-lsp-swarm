@@ -48,14 +48,25 @@ SECRET_SCAN_RULE_PRIVKEY='-----BEGIN (RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----'
 # cannot appear inside single quotes. The pattern holds no $, backtick, or
 # backslash, so double-quoting expands nothing.
 SECRET_SCAN_RULE_GENERIC="([Aa][Pp][Ii][_-]?[Kk][Ee][Yy]|[Aa][Pp][Ii][_-]?[Tt][Oo][Kk][Ee][Nn]|[Ss][Ee][Cc][Rr][Ee][Tt][_-]?[Kk][Ee][Yy]|[Aa][Cc][Cc][Ee][Ss][Ss][_-]?[Tt][Oo][Kk][Ee][Nn])[[:space:]]*[:=][[:space:]]*[\"']?[A-Za-z0-9_./+=-]{16,}($|[^A-Za-z0-9_./+()=-])"
+# Lines the generic rule must not report: a key-word assigned a bare identifier
+# terminated by code punctuation (a computed value, not a credential). Mirrors
+# GENERIC_REFERENCE_EXCLUSION in crates/perl-ci-hygiene/src/secret_scan.rs.
+SECRET_SCAN_EXCLUDE_GENERIC='([Aa][Pp][Ii][_-]?[Kk][Ee][Yy]|[Aa][Pp][Ii][_-]?[Tt][Oo][Kk][Ee][Nn]|[Ss][Ee][Cc][Rr][Ee][Tt][_-]?[Kk][Ee][Yy]|[Aa][Cc][Cc][Ee][Ss][Ss][_-]?[Tt][Oo][Kk][Ee][Nn])[[:space:]]*[:=][[:space:]]*[A-Za-z0-9_]{16,}[[:space:]]*([;,)]|\[)'
 SECRET_SCAN_HITS=""
 secret_scan_allowed() {
     [ -n "${SECRET_SCAN_ALLOWLIST:-}" ] && [ -f "$SECRET_SCAN_ALLOWLIST" ] || return 1
-    grep -F -x -q -- "$1" "$SECRET_SCAN_ALLOWLIST" 2>/dev/null
+    # Same whitespace and comment rules as Allowlist::parse in the gate: trim
+    # each line, skip blanks and #-comments. Normalized per call so the file
+    # on disk is never rewritten.
+    grep -F -x -q -- "$1" <(sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e '/^#/d' -e '/^$/d' "$SECRET_SCAN_ALLOWLIST") 2>/dev/null
 }
 secret_scan_stream() {
     local file="$1" added name pattern hits
-    added="$(grep -E '^\+[^+]' || true)"
+    # Hunk-aware added-line filter: diff and file headers print before the
+    # first @@, so only + lines inside a hunk are scanned. A content line that
+    # itself starts with + (++token = …) is kept — the old ^\+[^+] grep
+    # dropped it, hiding tokens in such lines from the hooks.
+    added="$(awk '/^diff --git / { in_hunk = 0 } /^@@/ { in_hunk = 1; next } in_hunk && /^\+/ { print }' || true)"
     [ -z "$added" ] && return 0
     for name in github-token aws-access-key slack-token private-key generic-assignment; do
         case "$name" in
@@ -67,7 +78,13 @@ secret_scan_stream() {
         esac
         # The -- matters: the private-key shape starts with dashes and would
         # otherwise parse as grep options, failing that rule open.
-        hits="$(printf '%s\n' "$added" | grep -E -c -- "$pattern" || true)"
+        if [ "$name" = "generic-assignment" ]; then
+            # Bare-identifier references match the generic shape but name
+            # computed values; filter them exactly like the gate does.
+            hits="$(printf '%s\n' "$added" | grep -E -- "$pattern" | grep -E -v -- "$SECRET_SCAN_EXCLUDE_GENERIC" | grep -c . || true)"
+        else
+            hits="$(printf '%s\n' "$added" | grep -E -c -- "$pattern" || true)"
+        fi
         if [ -n "$hits" ] && [ "$hits" != "0" ]; then
             SECRET_SCAN_HITS="${SECRET_SCAN_HITS}  $file: rule $name matched $hits added line(s)
 "
@@ -85,39 +102,97 @@ secret_scan_refuse_if_hits() {
     echo "   path in .ci/secret-scan-allowlist.txt (one per line)."
     return 1
 }
+secret_scan_cannot_evaluate() {
+    # Fail-closed refusal when git cannot produce the scan subject: a scan
+    # that ran on nothing must never read as clean.
+    echo ""
+    echo "Secret scan could not evaluate this $1: $2"
+    echo "   Refusing unevaluated — fix the git failure, or bypass with"
+    echo "   git $1 --no-verify only for a genuinely environmental failure."
+    return 1
+}
 secret_scan_staged() {
     SECRET_SCAN_ALLOWLIST="$(git rev-parse --show-toplevel 2>/dev/null)/.ci/secret-scan-allowlist.txt"
     SECRET_SCAN_HITS=""
-    local file diff
-    while IFS= read -r file; do
+    local file diff list_tmp
+    list_tmp="$(mktemp 2>/dev/null)" || {
+        secret_scan_cannot_evaluate commit "cannot allocate a temp file for the staged list"
+        return 1
+    }
+    # -z (NUL-delimited) plus quotePath=false: a quoted name ("caf\303\251")
+    # would otherwise reach the per-file diff as a literal pathspec matching
+    # nothing, silently skipping the file.
+    if ! git -c core.quotePath=false diff --cached --name-only -z >"$list_tmp" 2>/dev/null; then
+        rm -f "$list_tmp"
+        secret_scan_cannot_evaluate commit "git diff --cached --name-only failed"
+        return 1
+    fi
+    while IFS= read -r -d '' file; do
         [ -z "$file" ] && continue
         secret_scan_allowed "$file" && continue
-        diff="$(git diff --cached --unified=0 --no-color --src-prefix=a/ --dst-prefix=b/ -- "$file" 2>/dev/null || true)"
-        [ -z "$diff" ] && continue
-        secret_scan_stream "$file" <<< "$diff"
-    done <<SECRET_SCAN_FILES
-$(git diff --cached --name-only 2>/dev/null || true)
-SECRET_SCAN_FILES
+        if ! diff="$(git --literal-pathspecs -c core.quotePath=false diff --cached --unified=0 --no-color --src-prefix=a/ --dst-prefix=b/ -- "$file" 2>/dev/null)"; then
+            rm -f "$list_tmp"
+            secret_scan_cannot_evaluate commit "git diff --cached for $file failed"
+            return 1
+        fi
+        [ -n "$diff" ] && secret_scan_stream "$file" <<< "$diff"
+    done <"$list_tmp"
+    rm -f "$list_tmp"
     secret_scan_refuse_if_hits commit
 }
 secret_scan_range() {
     SECRET_SCAN_ALLOWLIST="$(git rev-parse --show-toplevel 2>/dev/null)/.ci/secret-scan-allowlist.txt"
     SECRET_SCAN_HITS=""
-    local base file diff
+    local base file diff hist_diff list_tmp range
+    git cat-file -e "$1" 2>/dev/null || {
+        secret_scan_cannot_evaluate push "local sha $1 does not resolve"
+        return 1
+    }
     if [ "$2" != "0000000000000000000000000000000000000000" ]; then
         base="$2"
+        git cat-file -e "$base" 2>/dev/null || {
+            secret_scan_cannot_evaluate push "remote sha $base does not resolve locally"
+            return 1
+        }
     else
         base="$(git merge-base origin/main "$1" 2>/dev/null || git merge-base main "$1" 2>/dev/null || git merge-base origin/master "$1" 2>/dev/null || git merge-base master "$1" 2>/dev/null || echo 4b825dc642cb6eb9a060e54bf8d69288fbee4904)"
     fi
-    while IFS= read -r file; do
+    list_tmp="$(mktemp 2>/dev/null)" || {
+        secret_scan_cannot_evaluate push "cannot allocate a temp file for the file list"
+        return 1
+    }
+    if ! git -c core.quotePath=false diff --name-only -z "$base" "$1" >"$list_tmp" 2>/dev/null; then
+        rm -f "$list_tmp"
+        secret_scan_cannot_evaluate push "git diff --name-only $base $1 failed"
+        return 1
+    fi
+    # History leg: a secret added and removed inside the range never appears
+    # in the endpoint diff, so every commit's tree delta is scanned too (-m
+    # splits merges per parent). With an empty-tree base the range is every
+    # commit reachable from the head, since a tree sha is not a revision
+    # endpoint.
+    if [ "$base" = "4b825dc642cb6eb9a060e54bf8d69288fbee4904" ]; then
+        range="$1"
+    else
+        range="$base..$1"
+    fi
+    while IFS= read -r -d '' file; do
         [ -z "$file" ] && continue
         secret_scan_allowed "$file" && continue
-        diff="$(git diff --unified=0 --no-color --src-prefix=a/ --dst-prefix=b/ "$base" "$1" -- "$file" 2>/dev/null || true)"
-        [ -z "$diff" ] && continue
-        secret_scan_stream "$file" <<< "$diff"
-    done <<SECRET_SCAN_FILES
-$(git diff --name-only "$base" "$1" 2>/dev/null || true)
-SECRET_SCAN_FILES
+        if ! diff="$(git --literal-pathspecs -c core.quotePath=false diff --unified=0 --no-color --src-prefix=a/ --dst-prefix=b/ "$base" "$1" -- "$file" 2>/dev/null)"; then
+            rm -f "$list_tmp"
+            secret_scan_cannot_evaluate push "git diff $base $1 for $file failed"
+            return 1
+        fi
+        [ -n "$diff" ] && secret_scan_stream "$file" <<< "$diff"
+        if ! hist_diff="$(git --literal-pathspecs -c core.quotePath=false log -p -m --format=commit\ %H --no-color --unified=0 --src-prefix=a/ --dst-prefix=b/ "$range" -- "$file" 2>/dev/null)"; then
+            rm -f "$list_tmp"
+            secret_scan_cannot_evaluate push "git log $range for $file failed"
+            return 1
+        fi
+        [ -n "$hist_diff" ] && secret_scan_stream "$file" <<< "$hist_diff"
+    done <"$list_tmp"
+    rm -f "$list_tmp"
     secret_scan_refuse_if_hits push
 }
 # SECRET_SCAN_SH_END
@@ -1139,11 +1214,16 @@ mod tests {
         // The lib TOKEN_SHAPES is the rule authority; the shell copy embedded
         // in both hooks must contain every shape exactly. The generic rule is
         // double-quoted in shell (it holds a literal single quote), so its \"
-        // escape normalizes back before comparing.
+        // escape normalizes back before comparing. The generic-reference
+        // exclusion travels the same road and is pinned the same way.
         let shell = install::SECRET_SCAN_SH.replace("\\\"", "\"");
         for (name, ere) in perl_ci_hygiene::secret_scan::TOKEN_SHAPES {
             assert!(shell.contains(ere), "shell scan must embed the lib {name} shape exactly");
         }
+        assert!(
+            shell.contains(perl_ci_hygiene::secret_scan::GENERIC_REFERENCE_EXCLUSION),
+            "shell scan must embed the lib generic-reference exclusion exactly"
+        );
         for var in [
             "SECRET_SCAN_RULE_GITHUB",
             "SECRET_SCAN_RULE_AWS",
@@ -1183,6 +1263,59 @@ mod tests {
             install::SECRET_SCAN_SH.contains("grep -F -x -q -- "),
             "allowlist greps must terminate options before the path"
         );
+    }
+
+    #[test]
+    fn secret_scan_added_line_filter_is_hunk_aware() {
+        // The old ^\+[^+] grep dropped added lines whose content starts with
+        // +, hiding tokens in such lines from the hooks. The awk filter tracks
+        // hunk boundaries instead, keeping ++content lines.
+        assert!(
+            install::SECRET_SCAN_SH.contains("in_hunk && /^\\+/ { print }"),
+            "hook scan must filter added lines hunk-aware, keeping ++content lines"
+        );
+        assert!(
+            !install::SECRET_SCAN_SH.contains("grep -E '^\\+[^+]'"),
+            "hook scan must not use the header grep that drops ++content lines"
+        );
+    }
+
+    #[test]
+    fn secret_scan_file_loops_are_nul_delimited_and_unquoted() {
+        // Quoted names ("caf\303\251") must never reach a per-file diff or the
+        // allowlist compare as literal pathspecs: -z plus quotePath=false
+        // keeps raw bytes end to end, and literal-pathspecs stops magic
+        // characters in names from globbing.
+        for pin in
+            ["read -r -d ''", "--name-only -z", "core.quotePath=false", "--literal-pathspecs"]
+        {
+            assert!(
+                install::SECRET_SCAN_SH.contains(pin),
+                "hook scan must use NUL-delimited unquoted file loops ({pin})"
+            );
+        }
+    }
+
+    #[test]
+    fn secret_scan_range_covers_commit_history() {
+        // A secret added and removed inside the pushed range never appears in
+        // the endpoint diff; every commit's tree delta is scanned too.
+        assert!(
+            install::SECRET_SCAN_SH.contains("log -p -m --format=commit\\ %H"),
+            "pushed-range scan must cover per-commit history, not only the endpoint diff"
+        );
+    }
+
+    #[test]
+    fn secret_scan_fails_closed_on_git_errors() {
+        // Unresolvable shas and failed git listings must refuse unevaluated,
+        // never sail through on an empty subject.
+        for pin in ["git cat-file -e", "secret_scan_cannot_evaluate", "could not evaluate"] {
+            assert!(
+                install::SECRET_SCAN_SH.contains(pin),
+                "hook scan must fail closed on git errors ({pin})"
+            );
+        }
     }
 
     #[test]

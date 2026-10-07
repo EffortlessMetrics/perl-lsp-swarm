@@ -30,6 +30,34 @@ use std::sync::LazyLock;
 /// accident, so entries should be rare and fixture-shaped.
 pub const ALLOWLIST_PATH: &str = ".ci/secret-scan-allowlist.txt";
 
+/// Rule name of the generic key-word assignment shape in [`TOKEN_SHAPES`].
+///
+/// Named so the reference-exclusion gate in the scan loop cannot drift from
+/// the shape table.
+pub const GENERIC_ASSIGNMENT_RULE: &str = "generic-assignment";
+
+/// Lines the generic rule must not report: a key-word assigned a bare
+/// identifier-shaped value terminated by code punctuation.
+///
+/// Matches `api_key = get_key_from_vault;` (and `,`, `)`, `[` siblings, with
+/// optional whitespace before the punctuation) so computed values, kwarg
+/// references, and indexed lookups read as references, not credentials. The
+/// value run is deliberately the pure identifier charset: a run containing a
+/// token-special character (`-`, `.`, `/`, `+`, `=`) still reports — a shell
+/// one-liner like `export TOKEN=sk-live-...;` is a literal, not a reference.
+/// Fully quoted values never match either: a quoted 16+ character string is
+/// indistinguishable from a passphrase, so it stays in subject (fail closed).
+///
+/// Line granularity is the known limit: a line mixing a bare reference with a
+/// second, quoted generic assignment is excluded whole. The anchored
+/// family shapes (github/aws/slack/private-key) are unaffected and still fire
+/// on such a line.
+///
+/// Like [`TOKEN_SHAPES`], the spelling must stay valid POSIX ERE: the hooks
+/// apply it through `grep -E -v`, and `secret_scan_shell_matches_lib_rules`
+/// fails if the embedded shell copy drifts.
+pub const GENERIC_REFERENCE_EXCLUSION: &str = "([Aa][Pp][Ii][_-]?[Kk][Ee][Yy]|[Aa][Pp][Ii][_-]?[Tt][Oo][Kk][Ee][Nn]|[Ss][Ee][Cc][Rr][Ee][Tt][_-]?[Kk][Ee][Yy]|[Aa][Cc][Cc][Ee][Ss][Ss][_-]?[Tt][Oo][Kk][Ee][Nn])[[:space:]]*[:=][[:space:]]*[A-Za-z0-9_]{16,}[[:space:]]*([;,)]|\\[)";
+
 /// (rule name, ERE) pairs defining every token shape in subject.
 ///
 /// The spelling must stay valid POSIX ERE: the hooks run these through
@@ -43,13 +71,20 @@ pub const ALLOWLIST_PATH: &str = ".ci/secret-scan-allowlist.txt";
 /// character) keeps call-shaped values out of subject: without it,
 /// `api_key = get_key_from_vault()` reads as an 18-character credential.
 /// ERE has no lookaround, so the guard consumes one character instead.
+///
+/// Bare-identifier references need a second layer the guard cannot express:
+/// `api_key = get_key_from_vault;` is an 18-character value run followed by
+/// `;`, which the guard accepts, yet it names a computed value rather than a
+/// credential. [`GENERIC_REFERENCE_EXCLUSION`] carves exactly that shape back
+/// out (see its contract); the hooks embed the same spelling so both layers
+/// stay in lockstep.
 pub const TOKEN_SHAPES: [(&str, &str); 5] = [
     ("github-token", "gh[pousr]_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{22}_[A-Za-z0-9]{59}"),
     ("aws-access-key", "AKIA[0-9A-Z]{16}"),
     ("slack-token", "xox[baprs]-[A-Za-z0-9-]{10,48}"),
     ("private-key", "-----BEGIN (RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----"),
     (
-        "generic-assignment",
+        GENERIC_ASSIGNMENT_RULE,
         "([Aa][Pp][Ii][_-]?[Kk][Ee][Yy]|[Aa][Pp][Ii][_-]?[Tt][Oo][Kk][Ee][Nn]|[Ss][Ee][Cc][Rr][Ee][Tt][_-]?[Kk][Ee][Yy]|[Aa][Cc][Cc][Ee][Ss][Ss][_-]?[Tt][Oo][Kk][Ee][Nn])[[:space:]]*[:=][[:space:]]*[\"']?[A-Za-z0-9_./+=-]{16,}($|[^A-Za-z0-9_./+()=-])",
     ),
 ];
@@ -58,6 +93,10 @@ pub const TOKEN_SHAPES: [(&str, &str); 5] = [
 /// regex for `TOKEN_SHAPES[i]`.
 static COMPILED_SHAPES: LazyLock<Result<Vec<Regex>, regex::Error>> =
     LazyLock::new(|| TOKEN_SHAPES.iter().map(|(_, ere)| Regex::new(ere)).collect());
+
+/// [`GENERIC_REFERENCE_EXCLUSION`] compiled once, beside the shapes it gates.
+static COMPILED_EXCLUSION: LazyLock<Result<Regex, regex::Error>> =
+    LazyLock::new(|| Regex::new(GENERIC_REFERENCE_EXCLUSION));
 
 /// One token-shaped line.
 ///
@@ -154,9 +193,12 @@ impl Allowlist {
 ///
 /// # Errors
 ///
-/// Returns an error when one of this module's static shapes failed to compile.
+/// Returns an error when one of this module's static shapes failed to compile,
+/// or when a file boundary cannot be attributed to a path. The latter fails
+/// the scan rather than silently skipping the file's hunks.
 pub fn scan_unified_diff(diff: &str, allowlist: &Allowlist) -> Result<Vec<SecretFinding>> {
     let shapes = compiled_shapes()?;
+    let exclusion = compiled_exclusion()?;
     let mut findings = Vec::new();
     let mut current_file: Option<String> = None;
     let mut in_hunk = false;
@@ -164,7 +206,15 @@ pub fn scan_unified_diff(diff: &str, allowlist: &Allowlist) -> Result<Vec<Secret
 
     for line in diff.lines() {
         if let Some(path) = post_image_path(line) {
-            current_file = path;
+            let Some(file) = path else {
+                // An unattributable boundary fails the scan instead of silently
+                // dropping the file: every hunk past this line would otherwise
+                // report clean without ever being examined.
+                return Err(eyre!(
+                    "secret scan cannot attribute a diff boundary, refusing to silently skip it: {line}"
+                ));
+            };
+            current_file = Some(file);
             in_hunk = false;
             continue;
         }
@@ -192,7 +242,7 @@ pub fn scan_unified_diff(diff: &str, allowlist: &Allowlist) -> Result<Vec<Secret
         }
         if let Some(added) = line.strip_prefix('+') {
             if let Some(file) = current_file.as_ref() {
-                scan_line_into(file, new_line, added, shapes, &mut findings);
+                scan_line_into(file, new_line, added, shapes, exclusion, &mut findings);
             }
             if new_line > 0 {
                 new_line += 1;
@@ -219,9 +269,10 @@ pub fn scan_unified_diff(diff: &str, allowlist: &Allowlist) -> Result<Vec<Secret
 /// Returns an error when one of this module's static shapes failed to compile.
 pub fn scan_text(file: &str, text: &str) -> Result<Vec<SecretFinding>> {
     let shapes = compiled_shapes()?;
+    let exclusion = compiled_exclusion()?;
     let mut findings = Vec::new();
     for (index, line) in text.lines().enumerate() {
-        scan_line_into(file, index + 1, line, shapes, &mut findings);
+        scan_line_into(file, index + 1, line, shapes, exclusion, &mut findings);
     }
     Ok(findings)
 }
@@ -249,15 +300,23 @@ pub fn extract_pr_body(event_json: &str) -> Result<Option<String>> {
 }
 
 /// Records a finding per rule matching `line`.
+///
+/// A generic-assignment match on a line that also matches `exclusion` is a
+/// bare-identifier reference ([`GENERIC_REFERENCE_EXCLUSION`]), not a
+/// credential, and is not recorded. Every other rule reports unconditionally.
 fn scan_line_into(
     file: &str,
     line_number: usize,
     line: &str,
     shapes: &[Regex],
+    exclusion: &Regex,
     findings: &mut Vec<SecretFinding>,
 ) {
     for (index, shape) in shapes.iter().enumerate() {
         if shape.is_match(line) {
+            if TOKEN_SHAPES[index].0 == GENERIC_ASSIGNMENT_RULE && exclusion.is_match(line) {
+                continue;
+            }
             findings.push(SecretFinding {
                 file: file.to_owned(),
                 line: line_number,
@@ -270,16 +329,72 @@ fn scan_line_into(
 /// Extracts the post-image path from a `diff --git a/OLD b/NEW` boundary line.
 ///
 /// Returns `None` when `line` is not a file boundary, and `Some(None)` when the
-/// boundary is malformed. Mirrors `must_context::post_image_path`: the path is
-/// anchored on the last ` b/` occurrence, and a rename reports the post-image
-/// (`b/`) side.
+/// boundary is malformed; the caller fails closed on the latter rather than
+/// silently dropping the file. Mirrors `must_context::post_image_path`: the
+/// path is anchored on the last ` b/` occurrence, and a rename reports the
+/// post-image (`b/`) side.
+///
+/// Git quotes names holding non-ASCII bytes, quotes, tabs, or backslashes
+/// (`core.quotePath`, the default), emitting
+/// `diff --git "a/caf\303\251" "b/caf\303\251"`. The separator there is ` "b/`,
+/// not ` b/`, so the quoted form is detected by its trailing quote and
+/// C-unescaped; without this every hunk in such a file would be unattributed.
 fn post_image_path(line: &str) -> Option<Option<String>> {
     let rest = line.strip_prefix("diff --git ")?;
-    let Some(index) = rest.rfind(" b/") else {
-        return Some(None);
+    let raw = if rest.ends_with('"') {
+        rest.rfind(" \"b/").and_then(|index| unquote_git_path(&rest[index + 1..]))
+    } else {
+        rest.rfind(" b/").map(|index| rest[index + 1..].to_owned())
     };
-    let path = &rest[index + " b/".len()..];
-    if path.is_empty() { Some(None) } else { Some(Some(path.to_owned())) }
+    let path = raw.and_then(|p| p.strip_prefix("b/").map(str::to_owned)).filter(|p| !p.is_empty());
+    Some(path)
+}
+
+/// Decodes a C-style quoted path as emitted by git (for example `"b/caf\303\251"`).
+///
+/// Handles the single-letter escapes plus three-digit octal for non-ASCII
+/// bytes. Returns `None` on any malformed escape so the caller fails closed.
+/// Invalid UTF-8 decodes lossy rather than erroring: a latin-1 filename must
+/// still be scanned, and lossy decoding can only mislabel — never skip — its
+/// hunks.
+fn unquote_git_path(quoted: &str) -> Option<String> {
+    let inner = quoted.strip_prefix('"')?.strip_suffix('"')?;
+    let bytes = inner.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] != b'\\' {
+            out.push(bytes[index]);
+            index += 1;
+            continue;
+        }
+        index += 1;
+        let escaped = *bytes.get(index)?;
+        match escaped {
+            b'a' => out.push(7),
+            b'b' => out.push(8),
+            b'f' => out.push(12),
+            b'n' => out.push(b'\n'),
+            b'r' => out.push(b'\r'),
+            b't' => out.push(b'\t'),
+            b'v' => out.push(11),
+            b'\\' | b'"' => out.push(escaped),
+            b'0'..=b'3' => {
+                let digits = bytes.get(index..index + 3)?;
+                if !digits.iter().all(|digit| (b'0'..=b'7').contains(digit)) {
+                    return None;
+                }
+                let value = (u32::from(digits[0] - b'0') << 6)
+                    | (u32::from(digits[1] - b'0') << 3)
+                    | u32::from(digits[2] - b'0');
+                out.push(value as u8);
+                index += 2;
+            }
+            _ => return None,
+        }
+        index += 1;
+    }
+    Some(String::from_utf8_lossy(&out).into_owned())
 }
 
 /// Parses the post-image start line out of an `@@ -a,b +c,d @@` header.
@@ -296,10 +411,18 @@ fn compiled_shapes() -> Result<&'static Vec<Regex>> {
         .map_err(|error| eyre!("failed to compile a secret-scan token shape: {error}"))
 }
 
+/// Resolves the compiled generic-reference exclusion without panicking.
+fn compiled_exclusion() -> Result<&'static Regex> {
+    COMPILED_EXCLUSION
+        .as_ref()
+        .map_err(|error| eyre!("failed to compile the secret-scan generic exclusion: {error}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        Allowlist, TOKEN_SHAPES, compiled_shapes, extract_pr_body, scan_text, scan_unified_diff,
+        Allowlist, GENERIC_REFERENCE_EXCLUSION, TOKEN_SHAPES, compiled_exclusion, compiled_shapes,
+        extract_pr_body, post_image_path, scan_text, scan_unified_diff,
     };
     use color_eyre::eyre::Result;
 
@@ -452,6 +575,94 @@ mod tests {
     }
 
     #[test]
+    fn bare_identifier_references_are_not_credentials() -> Result<()> {
+        // A key-word assigned a bare identifier terminated by code punctuation
+        // names a computed value, a kwarg reference, or an indexed lookup —
+        // not an embedded credential.
+        // The `;`- and `,`-terminated cases are format-built: spelling one out
+        // as a literal source line would itself flag the guard's own diff
+        // (the string quote sits between the value run and the punctuation,
+        // defeating the exclusion), while only the runtime value must read
+        // as a reference.
+        for line in [
+            format!("+api_key = {};", "get_key_from_vault"),
+            format!("+api_key = {},", "get_key_from_vault"),
+            "+connect(api_key=get_key_from_vault)".to_owned(),
+            "+api_key = get_key_from_vault ;".to_owned(),
+            format!("+secret_key = {},", "load_secret_key_from_env"),
+            "+access_token = fetch_access_token_here[0]".to_owned(),
+        ] {
+            assert_eq!(
+                matched_rules("crates/example/src/lib.rs", &[&line])?,
+                Vec::<&str>::new(),
+                "expected {line} to read as a reference, not a credential"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn unquoted_token_values_still_flag() -> Result<()> {
+        // The reference exclusion must not swallow real unquoted values:
+        // end-of-line, trailing whitespace, a trailing comment, and a value
+        // run holding a token-special character all stay in subject.
+        let special = format!("{}-{}", "q".repeat(8), "r".repeat(9));
+        for line in [
+            format!("+secret-key: {}", "x".repeat(16)),
+            format!("+api_key = {}   ", "v".repeat(20)),
+            format!("+secret_key: {} # production", "w".repeat(18)),
+            format!("+export API_TOKEN={special}; echo deployed"),
+        ] {
+            assert_eq!(
+                matched_rules("crates/example/src/lib.rs", &[&line])?,
+                vec!["generic-assignment"],
+                "expected {line} to match the generic-assignment rule"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn quoted_values_still_flag() -> Result<()> {
+        // Quoted literals report even when statement-terminated (JS/Perl
+        // style) or identifier-shaped (a quoted 16+ character string is
+        // indistinguishable from a passphrase, so it stays in subject).
+        for line in [
+            format!("+api_key = \"{}\";", "v".repeat(20)),
+            "+api_key = \"get_key_from_vault_abc\";".to_owned(),
+        ] {
+            assert_eq!(
+                matched_rules("crates/example/src/lib.rs", &[&line])?,
+                vec!["generic-assignment"],
+                "expected {line} to match the generic-assignment rule"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn exclusion_does_not_gate_family_shapes() -> Result<()> {
+        // The reference exclusion only gates the generic rule: an anchored
+        // family shape on the same line still reports.
+        let token = fake_github_token("ghp_");
+        let line = format!("+api_key = get_key_from_vault; token = \"{token}\"");
+        assert_eq!(
+            matched_rules("crates/example/src/lib.rs", &[&line])?,
+            vec!["github-token"],
+            "a family shape beside a reference must still report"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn exclusion_compiles_and_matches_references() -> Result<()> {
+        let exclusion = compiled_exclusion()?;
+        assert!(exclusion.is_match("api_key = get_key_from_vault;"));
+        assert!(!exclusion.is_match("api_key = \"vVVVVVVVVVVVVVVVVVVVV\""));
+        Ok(())
+    }
+
+    #[test]
     fn added_lines_are_scanned_removed_and_context_are_not() -> Result<()> {
         let token = fake_github_token("ghp_");
         let removed = format!("-old_token = \"{token}\"");
@@ -528,12 +739,82 @@ mod tests {
     }
 
     #[test]
-    fn malformed_boundary_drops_the_current_file() -> Result<()> {
+    fn malformed_boundary_fails_closed() {
         let token = fake_github_token("ghp_");
-        let text = format!("diff --git a/broken\n@@ -10,1 +10,1 @@\n+token = \"{token}\"\n");
+        for boundary in [
+            "diff --git a/broken".to_owned(),
+            "diff --git a/broken b/".to_owned(),
+            "diff --git \"a/broken\" \"unterminated".to_owned(),
+            "diff --git \"a/old\" \"b/ba\\d_decode\"".to_owned(),
+        ] {
+            let text = format!("{boundary}\n@@ -10,1 +10,1 @@\n+token = \"{token}\"\n");
+            assert!(
+                scan_unified_diff(&text, &Allowlist::default()).is_err(),
+                "expected {boundary} to fail the scan rather than silently skip the file"
+            );
+        }
+    }
 
-        assert_eq!(scan_unified_diff(&text, &Allowlist::default())?, vec![]);
+    #[test]
+    fn added_lines_starting_with_plus_are_scanned() -> Result<()> {
+        // A content line that itself starts with `+` gains a second marker in
+        // the diff (`++token = …`); stripping one marker must still scan it.
+        let token = fake_github_token("ghp_");
+        let line = format!("++token = \"{token}\"");
+        assert_eq!(
+            matched_rules("crates/example/src/lib.rs", &[&line])?,
+            vec!["github-token"],
+            "an added line whose content starts with + must still be scanned"
+        );
         Ok(())
+    }
+
+    #[test]
+    fn quoted_non_ascii_boundary_is_attributed_and_scanned() -> Result<()> {
+        // git quotes non-ASCII names (core.quotePath): the post-image side
+        // arrives as `"b/caf\303\251.txt"`, whose separator is ` "b/`, not ` b/`.
+        let token = fake_github_token("ghp_");
+        let text = format!(
+            "diff --git \"a/caf\\303\\251.txt\" \"b/caf\\303\\251.txt\"\n\
+             --- \"a/caf\\303\\251.txt\"\n+++ \"b/caf\\303\\251.txt\"\n\
+             @@ -10,1 +10,1 @@\n+token = \"{token}\"\n"
+        );
+
+        let findings = scan_unified_diff(&text, &Allowlist::default())?;
+
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].file, "caf\u{e9}.txt");
+        assert_eq!(findings[0].rule, "github-token");
+        Ok(())
+    }
+
+    #[test]
+    fn allowlist_matches_unquoted_paths() -> Result<()> {
+        // The allowlist holds real paths; a quoted boundary must resolve to
+        // the same spelling before the exemption check.
+        let token = fake_github_token("ghp_");
+        let text = format!(
+            "diff --git \"a/caf\\303\\251.txt\" \"b/caf\\303\\251.txt\"\n\
+             --- \"a/caf\\303\\251.txt\"\n+++ \"b/caf\\303\\251.txt\"\n\
+             @@ -10,1 +10,1 @@\n+token = \"{token}\"\n"
+        );
+        let allowlist = Allowlist::parse("caf\u{e9}.txt\n");
+
+        assert_eq!(scan_unified_diff(&text, &allowlist)?, vec![]);
+        Ok(())
+    }
+
+    #[test]
+    fn quoted_boundary_with_spaces_and_escapes_is_attributed() {
+        assert_eq!(
+            post_image_path("diff --git \"a/my\\tfile.txt\" \"b/my\\tfile.txt\""),
+            Some(Some("my\tfile.txt".to_owned()))
+        );
+        assert_eq!(
+            post_image_path("diff --git a/plain.txt b/plain.txt"),
+            Some(Some("plain.txt".to_owned()))
+        );
+        assert_eq!(post_image_path("+++ b/plain.txt"), None);
     }
 
     #[test]
@@ -602,8 +883,10 @@ mod tests {
     fn rule_patterns_do_not_match_their_own_source_text() -> Result<()> {
         // Self-hosting pin: the shapes ship inside the hook scripts, the gate
         // source, and this test module, so a shape matching its own spelling
-        // would flag the guard's own diff on every run.
+        // would flag the guard's own diff on every run. The exclusion travels
+        // the same road, so it is pinned both ways too.
         let shapes = compiled_shapes()?;
+        let exclusion = compiled_exclusion()?;
         for (name, ere) in TOKEN_SHAPES {
             for (index, shape) in shapes.iter().enumerate() {
                 assert!(
@@ -612,6 +895,17 @@ mod tests {
                     TOKEN_SHAPES[index].0
                 );
             }
+            assert!(
+                !exclusion.is_match(ere),
+                "the generic exclusion matches the source text of rule {name}"
+            );
+        }
+        for (index, shape) in shapes.iter().enumerate() {
+            assert!(
+                !shape.is_match(GENERIC_REFERENCE_EXCLUSION),
+                "rule {} matches the generic exclusion source text",
+                TOKEN_SHAPES[index].0
+            );
         }
         Ok(())
     }
