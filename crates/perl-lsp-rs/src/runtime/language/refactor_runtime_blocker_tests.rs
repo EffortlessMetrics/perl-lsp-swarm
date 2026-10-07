@@ -1733,8 +1733,7 @@ my $bar = Bar::process_data();
 
     let edit_count = workspace_edit_change_count(&rename_result)?;
     assert_eq!(
-        edit_count,
-        3,
+        edit_count, 3,
         "package rename should edit the declaration and qualified open-document call sites: {rename_result}"
     );
 
