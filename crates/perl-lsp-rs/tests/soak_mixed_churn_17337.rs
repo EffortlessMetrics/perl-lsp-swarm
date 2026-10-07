@@ -35,8 +35,8 @@ const WORKSPACE_DOCS: usize = 10;
 /// collide with server-issued requests.
 const FIRST_REQUEST_ID: i64 = 1_000_000;
 const PER_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
-const CHURN_DEADLINE: Duration = Duration::from_secs(240);
-const EOF_DRAIN_TIMEOUT: Duration = Duration::from_secs(60);
+const CHURN_DEADLINE: Duration = Duration::from_mins(4);
+const EOF_DRAIN_TIMEOUT: Duration = Duration::from_mins(1);
 
 /// Append-only capture of everything the outbound writer thread emits.
 #[derive(Clone)]
@@ -212,6 +212,33 @@ async fn sustained_mixed_churn_keeps_serving_until_eof() -> Result<(), Box<dyn s
     if !server.is_initialized() {
         return Err("server never reached the initialized state".into());
     }
+
+    // Post-close ingress probe. The final `didClose` above is only queued —
+    // every response assertion happens before it — and a failed scheduler
+    // hand-off there ends `serve_async`'s receive loop early while the task
+    // still returns normally after worker shutdown, so the successful join
+    // after `drop(tx)` below cannot distinguish that teardown from input EOF.
+    // Reopen the final document and prove ingress still settles a request
+    // before the EOF teardown is exercised.
+    let probe_index = (CHURN_CYCLES - 1) % WORKSPACE_DOCS;
+    let probe_uri = format!("file:///workspace/Module{probe_index}.pl");
+    let probe_text = source(probe_index, "0.1.probe");
+    let probe_position = position(&probe_text, "helper_");
+    send(
+        &tx,
+        None,
+        "textDocument/didOpen",
+        json!({"textDocument": {"uri": probe_uri.clone(), "languageId": "perl",
+                                 "version": (CHURN_CYCLES + 2) as i64, "text": probe_text}}),
+    )?;
+    let probe_id = next_id;
+    send(
+        &tx,
+        Some(probe_id),
+        "textDocument/hover",
+        json!({"textDocument": {"uri": probe_uri}, "position": probe_position}),
+    )?;
+    wait_for_response(&captured, format!("\"id\":{probe_id},"), "post-close ingress probe").await?;
 
     // EOF teardown: dropping ingress must end `serve_async` cooperatively —
     // a hang here would be the wedge half of the #17337 wedge-then-exit shape.
