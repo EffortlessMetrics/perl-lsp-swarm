@@ -806,58 +806,60 @@ mod tests {
         Ok(())
     }
 
-    /// Process-env override that restores the previous value on drop.
-    ///
-    /// Every git invocation in this module strips the three repository
-    /// variables, so polluting them here cannot redirect a concurrently
-    /// running test's git.
-    struct EnvGuard {
-        key: &'static str,
-        prev: Option<std::ffi::OsString>,
-    }
-
-    impl EnvGuard {
-        fn set(key: &'static str, value: &std::ffi::OsStr) -> Self {
-            let prev = std::env::var_os(key);
-            unsafe {
-                std::env::set_var(key, value);
-            }
-            Self { key, prev }
-        }
-    }
-
-    impl Drop for EnvGuard {
-        fn drop(&mut self) {
-            unsafe {
-                match self.prev.take() {
-                    Some(value) => std::env::set_var(self.key, value),
-                    None => std::env::remove_var(self.key),
-                }
-            }
-        }
-    }
+    /// Child-process probe: runs inside a child whose *inherited* environment
+    /// carries hostile GIT_DIR/GIT_WORK_TREE/GIT_COMMON_DIR, and reports the
+    /// installer outcome with a stdout marker. No-op under the normal harness
+    /// (marker env absent), mirroring the `process::tests` child pattern.
+    const INHERITED_GIT_ENV_FILTER: &str = "git_hooks::tests::inherited_git_env_child";
+    const INHERITED_GIT_ENV_REPO: &str = "PERL_CI_HYGIENE_GIT_ENV_TEST_REPO";
+    const INHERITED_GIT_ENV_DECOY: &str = "PERL_CI_HYGIENE_GIT_ENV_TEST_DECOY";
+    const INHERITED_GIT_ENV_MARKER: &str = "INHERITED-GIT-ENV-OK";
 
     #[test]
-    fn installer_ignores_inherited_git_repository_env() -> Result<()> {
-        // #17426 review: a stray GIT_DIR/GIT_WORK_TREE/GIT_COMMON_DIR must
-        // not redirect enumeration or the hooksPath flip at another repo.
-        let repo = temp_repo()?;
-        let decoy = temp_repo()?;
-        let _dir = EnvGuard::set("GIT_DIR", decoy.join(".git").as_os_str());
-        let _tree = EnvGuard::set("GIT_WORK_TREE", decoy.as_os_str());
-        let _common = EnvGuard::set("GIT_COMMON_DIR", decoy.join(".git").as_os_str());
-
+    fn inherited_git_env_child() -> Result<()> {
+        let repo = match std::env::var_os(INHERITED_GIT_ENV_REPO) {
+            None => return Ok(()),
+            Some(path) => PathBuf::from(path),
+        };
+        let decoy = PathBuf::from(std::env::var_os(INHERITED_GIT_ENV_DECOY).ok_or_else(|| {
+            color_eyre::eyre::eyre!("child decoy path missing ({INHERITED_GIT_ENV_DECOY} unset)")
+        })?);
         cmd_install_githooks(&repo)?;
-
         assert!(repo.join(INSTALLER_HOOKS_PATH).join("pre-push").is_file());
         let flipped = git_command()
             .current_dir(&decoy)
             .args(["config", "--get", "core.hooksPath"])
             .output()?;
         assert!(!flipped.status.success(), "decoy repo must not gain core.hooksPath");
+        println!("{INHERITED_GIT_ENV_MARKER}");
+        Ok(())
+    }
 
+    #[test]
+    fn installer_ignores_inherited_git_repository_env() -> Result<()> {
+        // #17426 review: a stray GIT_DIR/GIT_WORK_TREE/GIT_COMMON_DIR must
+        // not redirect enumeration or the hooksPath flip at another repo.
+        // #17426 review wave 2: the hostile variables are inherited by a
+        // child probe process — the parent never mutates process env, so no
+        // concurrently running test can observe the pollution (#1269).
+        let repo = temp_repo()?;
+        let decoy = temp_repo()?;
+        let child = Command::new(std::env::current_exe()?)
+            .args([INHERITED_GIT_ENV_FILTER, "--exact", "--nocapture"])
+            .env("GIT_DIR", decoy.join(".git"))
+            .env("GIT_WORK_TREE", decoy.as_os_str())
+            .env("GIT_COMMON_DIR", decoy.join(".git"))
+            .env(INHERITED_GIT_ENV_REPO, repo.as_os_str())
+            .env(INHERITED_GIT_ENV_DECOY, decoy.as_os_str())
+            .output()?;
+        let stdout = String::from_utf8_lossy(&child.stdout).into_owned();
+        let stderr = String::from_utf8_lossy(&child.stderr).into_owned();
         fs::remove_dir_all(repo)?;
         fs::remove_dir_all(decoy)?;
+        assert!(
+            child.status.success() && stdout.contains(INHERITED_GIT_ENV_MARKER),
+            "child probe must install under hostile inherited git env and report {INHERITED_GIT_ENV_MARKER}:\n{stdout}\n{stderr}"
+        );
         Ok(())
     }
 
