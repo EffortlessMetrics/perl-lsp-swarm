@@ -191,6 +191,16 @@ if [[ ${HOME:-} =~ ^[A-Za-z0-9_@%+:,./-]+$ ]]; then
 else
     ok "HOME exotic; redaction skipped by design (nothing to assert)"
 fi
+# HOME=/ (containers/CI) skips redaction instead of replacing every `/`
+# with `~` (#17453 review).
+if HOME=/ PATH="$STUB:$PATH" STUB_FAIL_MODE="homepath" bash "$RUNNER" --category ripr >"$OUT" 2>"$ERR"; then
+    bad "slash-HOME run exited 0; expected nonzero"
+else
+    ok "slash-HOME run exits nonzero"
+fi
+json_get "$OUT" ripr _error | grep -qF "//.cache" \
+    && ok "slash-HOME keeps slashes intact (no tilde soup)" \
+    || bad "slash-HOME mangled slashes"
 unset STUB_FAIL_MODE
 
 # Case 6: carriage returns in cargo stderr fold to spaces so failure

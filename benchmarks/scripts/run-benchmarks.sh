@@ -126,8 +126,10 @@ cargo_stderr_excerpt() {
     fi
     # Redact the home directory so shared receipts don't carry local paths
     # (#17453 review). The guard keeps the replacement literal: an exotic
-    # $HOME skips redaction rather than mangling the excerpt.
-    if [[ ${HOME:-} =~ ^[A-Za-z0-9_@%+:,./-]+$ ]]; then
+    # $HOME skips redaction rather than mangling the excerpt. A HOME of
+    # only slashes (notably HOME=/, common in containers/CI) must also
+    # skip: it would replace every `/` in the excerpt with `~`.
+    if [[ ${HOME:-} =~ ^[A-Za-z0-9_@%+:,./-]+$ && ${HOME:-} =~ [^/] ]]; then
         # The replacement must be `\~`: a bare `~` tilde-expands back to
         # $HOME, making the substitution a silent no-op.
         excerpt=${excerpt//$HOME/\~}
