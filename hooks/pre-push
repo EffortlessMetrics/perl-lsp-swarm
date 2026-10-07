@@ -193,6 +193,105 @@ if [ "$IS_DELETE_ONLY" = true ]; then
     exit 0
 fi
 
+# SECRET_SCAN_SH_BEGIN
+# --- Token-shape secret scan (issue #17428) ---
+# Refuses token-shaped additions before they enter history. Pure git + grep:
+# no build, no network. The rule list mirrors TOKEN_SHAPES in
+# crates/perl-ci-hygiene/src/secret_scan.rs; the required secret_scan gate
+# re-scans the same shapes over the PR diff + body, so --no-verify bypasses
+# the hook but not the gate.
+SECRET_SCAN_RULE_GITHUB='gh[pousr]_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{22}_[A-Za-z0-9]{59}'
+SECRET_SCAN_RULE_AWS='AKIA[0-9A-Z]{16}'
+SECRET_SCAN_RULE_SLACK='xox[baprs]-[A-Za-z0-9-]{10,48}'
+SECRET_SCAN_RULE_PRIVKEY='-----BEGIN (RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----'
+# Double-quoted: the optional quote class needs a literal single quote, which
+# cannot appear inside single quotes. The pattern holds no $, backtick, or
+# backslash, so double-quoting expands nothing.
+SECRET_SCAN_RULE_GENERIC="([Aa][Pp][Ii][_-]?[Kk][Ee][Yy]|[Aa][Pp][Ii][_-]?[Tt][Oo][Kk][Ee][Nn]|[Ss][Ee][Cc][Rr][Ee][Tt][_-]?[Kk][Ee][Yy]|[Aa][Cc][Cc][Ee][Ss][Ss][_-]?[Tt][Oo][Kk][Ee][Nn])[[:space:]]*[:=][[:space:]]*[\"']?[A-Za-z0-9_./+=-]{16,}($|[^A-Za-z0-9_./+()=-])"
+SECRET_SCAN_HITS=""
+secret_scan_allowed() {
+    [ -n "${SECRET_SCAN_ALLOWLIST:-}" ] && [ -f "$SECRET_SCAN_ALLOWLIST" ] || return 1
+    grep -F -x -q -- "$1" "$SECRET_SCAN_ALLOWLIST" 2>/dev/null
+}
+secret_scan_stream() {
+    local file="$1" added name pattern hits
+    added="$(grep -E '^\+[^+]' || true)"
+    [ -z "$added" ] && return 0
+    for name in github-token aws-access-key slack-token private-key generic-assignment; do
+        case "$name" in
+            github-token) pattern="$SECRET_SCAN_RULE_GITHUB" ;;
+            aws-access-key) pattern="$SECRET_SCAN_RULE_AWS" ;;
+            slack-token) pattern="$SECRET_SCAN_RULE_SLACK" ;;
+            private-key) pattern="$SECRET_SCAN_RULE_PRIVKEY" ;;
+            generic-assignment) pattern="$SECRET_SCAN_RULE_GENERIC" ;;
+        esac
+        # The -- matters: the private-key shape starts with dashes and would
+        # otherwise parse as grep options, failing that rule open.
+        hits="$(printf '%s\n' "$added" | grep -E -c -- "$pattern" || true)"
+        if [ -n "$hits" ] && [ "$hits" != "0" ]; then
+            SECRET_SCAN_HITS="${SECRET_SCAN_HITS}  $file: rule $name matched $hits added line(s)
+"
+        fi
+    done
+}
+secret_scan_refuse_if_hits() {
+    [ -z "$SECRET_SCAN_HITS" ] && return 0
+    echo ""
+    echo "Secret scan refused this $1: token-shaped line(s) detected"
+    printf '%s' "$SECRET_SCAN_HITS"
+    echo ""
+    echo "   Rotate the credential if it is real; never commit secrets."
+    echo "   Documented escape for inert test fixtures: list the repo-relative"
+    echo "   path in .ci/secret-scan-allowlist.txt (one per line)."
+    return 1
+}
+secret_scan_staged() {
+    SECRET_SCAN_ALLOWLIST="$(git rev-parse --show-toplevel 2>/dev/null)/.ci/secret-scan-allowlist.txt"
+    SECRET_SCAN_HITS=""
+    local file diff
+    while IFS= read -r file; do
+        [ -z "$file" ] && continue
+        secret_scan_allowed "$file" && continue
+        diff="$(git diff --cached --unified=0 --no-color --src-prefix=a/ --dst-prefix=b/ -- "$file" 2>/dev/null || true)"
+        [ -z "$diff" ] && continue
+        secret_scan_stream "$file" <<< "$diff"
+    done <<SECRET_SCAN_FILES
+$(git diff --cached --name-only 2>/dev/null || true)
+SECRET_SCAN_FILES
+    secret_scan_refuse_if_hits commit
+}
+secret_scan_range() {
+    SECRET_SCAN_ALLOWLIST="$(git rev-parse --show-toplevel 2>/dev/null)/.ci/secret-scan-allowlist.txt"
+    SECRET_SCAN_HITS=""
+    local base file diff
+    if [ "$2" != "0000000000000000000000000000000000000000" ]; then
+        base="$2"
+    else
+        base="$(git merge-base origin/main "$1" 2>/dev/null || git merge-base main "$1" 2>/dev/null || git merge-base origin/master "$1" 2>/dev/null || git merge-base master "$1" 2>/dev/null || echo 4b825dc642cb6eb9a060e54bf8d69288fbee4904)"
+    fi
+    while IFS= read -r file; do
+        [ -z "$file" ] && continue
+        secret_scan_allowed "$file" && continue
+        diff="$(git diff --unified=0 --no-color --src-prefix=a/ --dst-prefix=b/ "$base" "$1" -- "$file" 2>/dev/null || true)"
+        [ -z "$diff" ] && continue
+        secret_scan_stream "$file" <<< "$diff"
+    done <<SECRET_SCAN_FILES
+$(git diff --name-only "$base" "$1" 2>/dev/null || true)
+SECRET_SCAN_FILES
+    secret_scan_refuse_if_hits push
+}
+# SECRET_SCAN_SH_END
+
+# --- Token-shape secret scan over every pushed ref (issue #17428) ---
+# Runs before all gates (including the doc-only fast path: secrets in docs
+# refuse too). Pure git + grep; see SECRET_SCAN_SH_BEGIN above.
+for line in "${PUSH_REFS[@]+"${PUSH_REFS[@]}"}"; do
+    read -r _push_ref push_local _remote_ref push_remote <<< "$line"
+    if [ "$push_local" != "0000000000000000000000000000000000000000" ]; then
+        secret_scan_range "$push_local" "$push_remote" || exit 1
+    fi
+done
+
 # --- Detect doc-only changes for the fast-path gate ---
 # A push is doc-only if every changed file matches one of:
 #   *.md, *.txt, LICENSE*, CHANGELOG*, docs/**, .github/ISSUE_TEMPLATE/**,
