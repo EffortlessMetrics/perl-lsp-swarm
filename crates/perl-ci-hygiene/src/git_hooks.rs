@@ -751,6 +751,23 @@ mod tests {
     }
 
     #[test]
+    fn embedded_pre_push_matches_checked_in_hook() -> Result<()> {
+        // The installer writes the embedded bytes; the traps and the
+        // drift detectors compare against hooks/pre-push. If the two
+        // drift apart, installed hooks silently stop matching the
+        // authority they are verified against.
+        let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let checked_in =
+            fs::read_to_string(manifest.join("../../hooks/pre-push"))?;
+        assert_eq!(
+            normalize_hook(pre_push_hook_script()),
+            normalize_hook(&checked_in),
+            "embedded pre-push bytes must match hooks/pre-push"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn installed_pre_push_hook_carries_push_path_refusal() -> Result<()> {
         // The installer must write the refusal into the installed hook, and
         // `check_githooks` must verify those installed bytes as current.
