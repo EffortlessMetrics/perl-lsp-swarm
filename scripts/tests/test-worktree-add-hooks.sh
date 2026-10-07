@@ -8,9 +8,13 @@
 # Cases:
 #   A. wrapper provisions on drift: fresh worktree gets an executable
 #      installed pre-push matching hooks/pre-push (modulo the installer's
-#      trailing newline), and the installer runs exactly once;
-#   B. wrapper fast path: hooks already current → installer NOT invoked
-#      (no cargo build);
+#      trailing newline) in its OWN hooks dir, the installer runs exactly
+#      once, core.hooksPath is set, and the shared common dir is untouched;
+#   B. wrapper provisions each fresh worktree independently: a second tree
+#      provisions its own hooks (installer runs again) and the same-revision
+#      fan-out keeps the first tree guarded and byte-identical;
+#   B2. mixed-mode fast path: core.hooksPath unset with current shared
+#      common-dir hooks → installer NOT invoked (no cargo build);
 #   C. wrapper loud failure: installer fails → non-zero exit naming the
 #      installer, worktree left in place for retry;
 #   D. manager allocate provisions on drift (same assertions as A);
@@ -23,9 +27,10 @@
 #   E2. manager retries a provisioning-failed slot: same allocate resumes
 #      (provision + record) without resetting the branch (recovery commit
 #      survives).
-#   H. wrapper repairs a missing pre-commit while pre-push is current
-#      (installer runs, not the fast path).
-#   I. manager allocate repairs a missing pre-commit the same way.
+#   H. wrapper with partial shared state (mixed mode: current common
+#      pre-push, missing pre-commit) runs the installer instead of the fast
+#      path, and lands per-tree hooks.
+#   I. manager allocate does the same from partial shared state.
 #   J. wrapper resolves the destination from tricky but valid flag salads
 #      (combined shorts, attached -b value); guards the arg parser against
 #      breaking valid invocations.
@@ -33,8 +38,10 @@
 # Fully hermetic: a throwaway bare "origin" plus a clone under a tmpdir. The
 # fixture commits its OWN scripts/install-githooks.sh, which both
 # provisioning paths prefer (installer and authority stay at the same
-# revision); the fixture installer emulates the real one (copy authority →
-# installed hook + trailing newline + exec bit, exactly like write_git_hook)
+# revision); the fixture installer emulates the real one (fan the running
+# authority out to every tree's own .githooks dir, then set the repo-local
+# relative core.hooksPath — writes before the flip, exactly like the real
+# installer since the #17426 sibling-guarding repair)
 # and honors STUB_INSTALL_FAIL / STUB_INSTALL_LOG. The real installer's byte
 # contract is pinned by the perl-ci-hygiene Rust tests; this suite pins the
 # provisioning wiring around it. No cargo, no network, no interaction with
@@ -91,15 +98,26 @@ write_fixture_installer() {
 set -u
 if [ -n "${STUB_INSTALL_FAIL:-}" ]; then echo "stub: install refused" >&2; exit "${STUB_INSTALL_FAIL}"; fi
 printf 'install %s\n' "$(pwd)" >> "${STUB_INSTALL_LOG:?}"
-dest="$(git rev-parse --git-path hooks)/pre-push"
-mkdir -p "$(dirname "$dest")"
-cp hooks/pre-push "$dest"
-printf '\n' >> "$dest"
-chmod +x "$dest"
-commit_dest="$(git rev-parse --git-path hooks)/pre-commit"
-printf '#!/usr/bin/env bash\necho fixture-commit\n' > "$commit_dest"
-printf '\n' >> "$commit_dest"
-chmod +x "$commit_dest"
+# Fan out like the real installer (#17426 review): the running tree's
+# authority bytes go to EVERY tree's own .githooks dir first (spelled
+# directly — --git-path still resolves to the common dir before the flip),
+# then the shared config flips so no sibling is left unguarded.
+top="$(git rev-parse --show-toplevel)"
+dest=""
+commit_dest=""
+while IFS= read -r wt; do
+  [ -n "$wt" ] && [ -d "$wt" ] || continue
+  dest="$wt/.githooks/pre-push"
+  mkdir -p "$(dirname "$dest")"
+  cp "$top/hooks/pre-push" "$dest"
+  printf '\n' >> "$dest"
+  chmod +x "$dest"
+  commit_dest="$wt/.githooks/pre-commit"
+  printf '#!/usr/bin/env bash\necho fixture-commit\n' > "$commit_dest"
+  printf '\n' >> "$commit_dest"
+  chmod +x "$commit_dest"
+done < <(git worktree list --porcelain | sed -n 's/^worktree //p')
+git config --local core.hooksPath .githooks
 echo "stub installed pre-push to $dest and pre-commit to $commit_dest"
 FIXTURE
   chmod +x "$1"
@@ -111,6 +129,17 @@ stub_install_count() {
   else
     echo 0
   fi
+}
+
+# Resolve a tree's installed hooks dir the way the provisioning paths do.
+hooks_dir_of() {
+  git -C "$1" rev-parse --path-format=absolute --git-path hooks
+}
+
+# True when the shared common hooks dir carries no real hooks (only the
+# *.sample files git init creates). Rule C: the toolchain never writes there.
+common_hooks_clean() {
+  [[ -z "$(find "$1" -type f ! -name '*.sample' 2>/dev/null)" ]]
 }
 
 echo "=== worktree hook-provisioning test suite (#17406) ==="
@@ -151,9 +180,8 @@ write_fixture_installer "${AGENT_ONE}/scripts/install-githooks.sh"
   git push -q origin main
 )
 PRE_HOOK_SHA="$(git -C "$AGENT_ONE" rev-parse HEAD~2)"
-INSTALLED_HOOK="${AGENT_ONE}/.git/hooks/pre-push"
-INSTALLED_COMMIT_HOOK="${AGENT_ONE}/.git/hooks/pre-commit"
-rm -f "$INSTALLED_HOOK" "$INSTALLED_COMMIT_HOOK" # belt-and-braces: the clone starts with zero hooks
+COMMON_HOOKS="$(git -C "$AGENT_ONE" rev-parse --path-format=absolute --git-common-dir)/hooks"
+rm -f "$COMMON_HOOKS/pre-push" "$COMMON_HOOKS/pre-commit" # belt-and-braces: the clone starts with zero hooks
 
 # Place the manager under test where REPO_ROOT resolution expects it.
 mkdir -p "${AGENT_ONE}/scripts"
@@ -175,42 +203,97 @@ run_manager() {
 WT_A="${TMPDIR_BASE}/wt-a"
 CASE_A_EXIT=0
 CASE_A_OUT="$(cd "$AGENT_ONE" && bash "$WRAPPER" -b "feature/wt-a" "$WT_A" 2>&1)" || CASE_A_EXIT=$?
+HOOKS_A="$(hooks_dir_of "$WT_A")"
+INSTALLED_A="$HOOKS_A/pre-push"
+INSTALLED_COMMIT_A="$HOOKS_A/pre-commit"
 
 if [[ "$CASE_A_EXIT" -ne 0 ]]; then
   fail "wrapper provisions on drift: exited $CASE_A_EXIT: $CASE_A_OUT"
-elif [[ ! -f "$INSTALLED_HOOK" ]]; then
-  fail "wrapper provisions on drift: no installed pre-push at $INSTALLED_HOOK"
-elif [[ ! -x "$INSTALLED_HOOK" ]]; then
+elif [[ "$HOOKS_A" != */wt-a/.githooks ]]; then
+  fail "wrapper provisions on drift: hooks dir is $HOOKS_A, expected the tree's own .githooks"
+elif [[ ! -f "$INSTALLED_A" ]]; then
+  fail "wrapper provisions on drift: no installed pre-push at $INSTALLED_A"
+elif [[ ! -x "$INSTALLED_A" ]]; then
   fail "wrapper provisions on drift: installed pre-push is not executable"
-elif ! installed_matches_authority "$INSTALLED_HOOK" "$WT_A/hooks/pre-push"; then
+elif ! installed_matches_authority "$INSTALLED_A" "$WT_A/hooks/pre-push"; then
   fail "wrapper provisions on drift: installed pre-push does not match hooks/pre-push"
-elif [[ ! -f "$INSTALLED_COMMIT_HOOK" ]]; then
-  fail "wrapper provisions on drift: no installed pre-commit at $INSTALLED_COMMIT_HOOK"
-elif [[ ! -x "$INSTALLED_COMMIT_HOOK" ]]; then
+elif [[ ! -f "$INSTALLED_COMMIT_A" ]]; then
+  fail "wrapper provisions on drift: no installed pre-commit at $INSTALLED_COMMIT_A"
+elif [[ ! -x "$INSTALLED_COMMIT_A" ]]; then
   fail "wrapper provisions on drift: installed pre-commit is not executable"
+elif [[ "$(git -C "$WT_A" config --get core.hooksPath)" != ".githooks" ]]; then
+  fail "wrapper provisions on drift: core.hooksPath is not the installer-managed relative value"
+elif ! common_hooks_clean "$COMMON_HOOKS"; then
+  fail "wrapper provisions on drift: the shared common hooks dir was written"
 elif [[ "$(stub_install_count)" -ne 1 ]]; then
   fail "wrapper provisions on drift: installer ran $(stub_install_count) times, expected 1"
 else
-  pass "wrapper provisions on drift: fresh worktree gets current executable pre-push, installer ran once"
+  pass "wrapper provisions on drift: fresh worktree gets its own current executable pre-push, installer ran once"
 fi
+cp "$INSTALLED_A" "${TMPDIR_BASE}/a-pre-push.snapshot" 2>/dev/null || true
 
-# ── Case B: wrapper fast path (hooks already current) ─────────────────────
+# ── Case B: wrapper provisions each fresh worktree independently ──────────
+# The second tree provisions its own hooks (the installer runs again); the
+# same-revision fan-out rewrites the first tree's file with identical bytes,
+# so it stays guarded and byte-identical (cross-revision skew is covered by
+# the isolation fixture's case 3/7, not here).
 WT_B="${TMPDIR_BASE}/wt-b"
 CASE_B_EXIT=0
 CASE_B_OUT="$(cd "$AGENT_ONE" && bash "$WRAPPER" -b "feature/wt-b" "$WT_B" 2>&1)" || CASE_B_EXIT=$?
+HOOKS_B="$(hooks_dir_of "$WT_B")"
+INSTALLED_B="$HOOKS_B/pre-push"
+INSTALLED_COMMIT_B="$HOOKS_B/pre-commit"
 
 if [[ "$CASE_B_EXIT" -ne 0 ]]; then
-  fail "wrapper fast path: exited $CASE_B_EXIT: $CASE_B_OUT"
-elif [[ "$(stub_install_count)" -ne 1 ]]; then
-  fail "wrapper fast path: installer ran again (count $(stub_install_count)) instead of skipping the build"
-elif [[ "$CASE_B_OUT" != *"already current"* ]]; then
-  fail "wrapper fast path: output does not report the skip: $CASE_B_OUT"
+  fail "wrapper independent provision: exited $CASE_B_EXIT: $CASE_B_OUT"
+elif [[ ! -f "$INSTALLED_B" ]]; then
+  fail "wrapper independent provision: no installed pre-push at $INSTALLED_B"
+elif [[ ! -x "$INSTALLED_B" ]]; then
+  fail "wrapper independent provision: installed pre-push is not executable"
+elif ! installed_matches_authority "$INSTALLED_B" "$WT_B/hooks/pre-push"; then
+  fail "wrapper independent provision: installed pre-push does not match hooks/pre-push"
+elif [[ ! -x "$INSTALLED_COMMIT_B" ]]; then
+  fail "wrapper independent provision: installed pre-commit is missing or not executable"
+elif [[ "$(stub_install_count)" -ne 2 ]]; then
+  fail "wrapper independent provision: installer ran $(stub_install_count) times, expected 2 (fresh tree, own dir)"
+elif ! cmp -s "${TMPDIR_BASE}/a-pre-push.snapshot" "$INSTALLED_A"; then
+  fail "wrapper independent provision: provisioning wt-b altered wt-a's installed bytes"
+elif ! common_hooks_clean "$COMMON_HOOKS"; then
+  fail "wrapper independent provision: the shared common hooks dir was written"
 else
-  pass "wrapper fast path: current hooks skip the installer (no build)"
+  pass "wrapper independent provision: second tree gets its own hooks, first tree guarded and byte-identical"
 fi
 
+# ── Case B2: mixed-mode fast path (hooks already current, shared) ─────────
+# core.hooksPath unset + current common-dir hooks (pre-migration leftovers):
+# the installer is NOT invoked. Seeds are removed and hooksPath restored at
+# the end so later cases start from the migrated state.
+git -C "$AGENT_ONE" config --local --unset core.hooksPath
+cp "$WT_A/hooks/pre-push" "$COMMON_HOOKS/pre-push"
+printf '\n' >> "$COMMON_HOOKS/pre-push"
+chmod +x "$COMMON_HOOKS/pre-push"
+printf '#!/usr/bin/env bash\necho fixture-commit\n' > "$COMMON_HOOKS/pre-commit"
+printf '\n' >> "$COMMON_HOOKS/pre-commit"
+chmod +x "$COMMON_HOOKS/pre-commit"
+WT_B2="${TMPDIR_BASE}/wt-b2"
+BEFORE_B2="$(stub_install_count)"
+CASE_B2_EXIT=0
+CASE_B2_OUT="$(cd "$AGENT_ONE" && bash "$WRAPPER" -b "feature/wt-b2" "$WT_B2" 2>&1)" || CASE_B2_EXIT=$?
+
+if [[ "$CASE_B2_EXIT" -ne 0 ]]; then
+  fail "mixed-mode fast path: exited $CASE_B2_EXIT: $CASE_B2_OUT"
+elif [[ "$(stub_install_count)" -ne "$BEFORE_B2" ]]; then
+  fail "mixed-mode fast path: installer ran (count $(stub_install_count)) instead of skipping the build"
+elif [[ "$CASE_B2_OUT" != *"already current"* ]]; then
+  fail "mixed-mode fast path: output does not report the skip: $CASE_B2_OUT"
+else
+  pass "mixed-mode fast path: current shared hooks skip the installer (no build)"
+fi
+rm -f "$COMMON_HOOKS/pre-push" "$COMMON_HOOKS/pre-commit"
+git -C "$AGENT_ONE" config --local core.hooksPath .githooks
+
 # ── Case C: wrapper loud failure ──────────────────────────────────────────
-printf '#!/usr/bin/env bash\necho stale\n' > "$INSTALLED_HOOK" # force drift
+# No drift-forcing needed: a fresh tree's own hooks dir starts empty.
 WT_C="${TMPDIR_BASE}/wt-c"
 CASE_C_EXIT=0
 CASE_C_OUT="$(cd "$AGENT_ONE" && STUB_INSTALL_FAIL=42 bash "$WRAPPER" -b "feature/wt-c" "$WT_C" 2>&1)" || CASE_C_EXIT=$?
@@ -226,38 +309,38 @@ elif [[ ! -d "$WT_C" ]]; then
 else
   pass "wrapper loud failure: non-zero exit naming the installer, worktree left in place"
 fi
-# Repair the staled hook for the manager cases below.
-cp "$WT_A/hooks/pre-push" "$INSTALLED_HOOK"
-printf '\n' >> "$INSTALLED_HOOK"
-chmod +x "$INSTALLED_HOOK"
-printf '#!/usr/bin/env bash\necho fixture-commit\n' > "$INSTALLED_COMMIT_HOOK"
-printf '\n' >> "$INSTALLED_COMMIT_HOOK"
-chmod +x "$INSTALLED_COMMIT_HOOK"
 
 # ── Case D: manager allocate provisions on drift ──────────────────────────
-printf '#!/usr/bin/env bash\necho stale\n' > "$INSTALLED_HOOK" # force drift
 STATE_D="${TMPDIR_BASE}/state-d.json"
 MANAGED_D="${TMPDIR_BASE}/managed-d"
 BEFORE_D="$(stub_install_count)"
 CASE_D_EXIT=0
 CASE_D_OUT="$(run_manager "$STATE_D" "$MANAGED_D" allocate --slot slot-d --branch feature/slot-d 2>&1)" || CASE_D_EXIT=$?
+HOOKS_D="$(hooks_dir_of "${MANAGED_D}/slot-d")"
+INSTALLED_D="$HOOKS_D/pre-push"
+INSTALLED_COMMIT_D="$HOOKS_D/pre-commit"
 
 if [[ "$CASE_D_EXIT" -ne 0 ]]; then
   fail "manager allocate provisions on drift: exited $CASE_D_EXIT: $CASE_D_OUT"
-elif [[ ! -f "$INSTALLED_HOOK" ]]; then
-  fail "manager allocate provisions on drift: no installed pre-push at $INSTALLED_HOOK"
-elif [[ ! -x "$INSTALLED_HOOK" ]]; then
+elif [[ "$HOOKS_D" != */slot-d/.githooks ]]; then
+  fail "manager allocate provisions on drift: hooks dir is $HOOKS_D, expected the slot's own .githooks"
+elif [[ ! -f "$INSTALLED_D" ]]; then
+  fail "manager allocate provisions on drift: no installed pre-push at $INSTALLED_D"
+elif [[ ! -x "$INSTALLED_D" ]]; then
   fail "manager allocate provisions on drift: installed pre-push is not executable"
-elif ! installed_matches_authority "$INSTALLED_HOOK" "${MANAGED_D}/slot-d/hooks/pre-push"; then
+elif ! installed_matches_authority "$INSTALLED_D" "${MANAGED_D}/slot-d/hooks/pre-push"; then
   fail "manager allocate provisions on drift: installed pre-push does not match hooks/pre-push"
+elif [[ ! -x "$INSTALLED_COMMIT_D" ]]; then
+  fail "manager allocate provisions on drift: installed pre-commit is missing or not executable"
+elif ! common_hooks_clean "$COMMON_HOOKS"; then
+  fail "manager allocate provisions on drift: the shared common hooks dir was written"
 elif [[ "$(stub_install_count)" -ne $((BEFORE_D + 1)) ]]; then
   fail "manager allocate provisions on drift: installer invocation count did not advance by exactly 1"
 else
-  pass "manager allocate provisions on drift: slot gets current executable pre-push"
+  pass "manager allocate provisions on drift: slot gets its own current executable pre-push"
 fi
 
 # ── Case E: manager allocate loud failure ─────────────────────────────────
-printf '#!/usr/bin/env bash\necho stale\n' > "$INSTALLED_HOOK" # force drift
 STATE_E="${TMPDIR_BASE}/state-e.json"
 MANAGED_E="${TMPDIR_BASE}/managed-e"
 CASE_E_EXIT=0
@@ -309,14 +392,6 @@ else
   pass "manager retry resumes the failed slot: provisioned, recorded, branch untouched"
 fi
 
-# Repair the staled hook for the remaining cases.
-cp "$WT_A/hooks/pre-push" "$INSTALLED_HOOK"
-printf '\n' >> "$INSTALLED_HOOK"
-chmod +x "$INSTALLED_HOOK"
-printf '#!/usr/bin/env bash\necho fixture-commit\n' > "$INSTALLED_COMMIT_HOOK"
-printf '\n' >> "$INSTALLED_COMMIT_HOOK"
-chmod +x "$INSTALLED_COMMIT_HOOK"
-
 # ── Case F: no authority → both paths skip ────────────────────────────────
 WT_F="${TMPDIR_BASE}/wt-f"
 BEFORE_F="$(stub_install_count)"
@@ -364,46 +439,72 @@ else
   pass "wrapper git failure: non-zero exit, installer never invoked"
 fi
 
-# ── Case H: wrapper repairs a missing pre-commit ──────────────────────────
-# pre-push is current; only pre-commit was deleted. The fast path must not
-# mask it: the installer runs and both hooks end up usable.
-rm -f "$INSTALLED_COMMIT_HOOK"
+# ── Case H: wrapper provisions from partial shared state ──────────────────
+# Mixed mode: core.hooksPath unset, common pre-push current but pre-commit
+# missing. Partial currency must not trigger the fast path: the installer
+# runs and the tree lands its own hooks (and sets hooksPath). Seeds are
+# removed at the end; hooksPath stays set (the installer set it).
+git -C "$AGENT_ONE" config --local --unset core.hooksPath
+cp "$WT_A/hooks/pre-push" "$COMMON_HOOKS/pre-push"
+printf '\n' >> "$COMMON_HOOKS/pre-push"
+chmod +x "$COMMON_HOOKS/pre-push"
+rm -f "$COMMON_HOOKS/pre-commit"
 WT_H="${TMPDIR_BASE}/wt-h"
 BEFORE_H="$(stub_install_count)"
 CASE_H_EXIT=0
 CASE_H_OUT="$(cd "$AGENT_ONE" && bash "$WRAPPER" -b "feature/wt-h" "$WT_H" 2>&1)" || CASE_H_EXIT=$?
+HOOKS_H="$(hooks_dir_of "$WT_H")"
+INSTALLED_H="$HOOKS_H/pre-push"
+INSTALLED_COMMIT_H="$HOOKS_H/pre-commit"
 
 if [[ "$CASE_H_EXIT" -ne 0 ]]; then
-  fail "wrapper repairs missing pre-commit: exited $CASE_H_EXIT: $CASE_H_OUT"
-elif [[ ! -f "$INSTALLED_COMMIT_HOOK" ]]; then
-  fail "wrapper repairs missing pre-commit: pre-commit still absent after provisioning"
-elif [[ ! -x "$INSTALLED_COMMIT_HOOK" ]]; then
-  fail "wrapper repairs missing pre-commit: reinstalled pre-commit is not executable"
+  fail "wrapper provisions from partial shared state: exited $CASE_H_EXIT: $CASE_H_OUT"
+elif [[ "$HOOKS_H" != */wt-h/.githooks ]]; then
+  fail "wrapper provisions from partial shared state: hooks dir is $HOOKS_H, expected the tree's own .githooks"
+elif ! installed_matches_authority "$INSTALLED_H" "$WT_H/hooks/pre-push"; then
+  fail "wrapper provisions from partial shared state: installed pre-push does not match hooks/pre-push"
+elif [[ ! -x "$INSTALLED_COMMIT_H" ]]; then
+  fail "wrapper provisions from partial shared state: installed pre-commit is missing or not executable"
+elif [[ "$(git -C "$WT_H" config --get core.hooksPath)" != ".githooks" ]]; then
+  fail "wrapper provisions from partial shared state: core.hooksPath was not set by the installer"
 elif [[ "$(stub_install_count)" -ne $((BEFORE_H + 1)) ]]; then
-  fail "wrapper repairs missing pre-commit: installer did not run exactly once"
+  fail "wrapper provisions from partial shared state: installer did not run exactly once"
 else
-  pass "wrapper repairs missing pre-commit: installer ran, both hooks usable"
+  pass "wrapper provisions from partial shared state: installer ran, per-tree hooks usable"
 fi
+rm -f "$COMMON_HOOKS/pre-push" "$COMMON_HOOKS/pre-commit"
 
-# ── Case I: manager repairs a missing pre-commit ──────────────────────────
-rm -f "$INSTALLED_COMMIT_HOOK"
+# ── Case I: manager provisions from partial shared state ──────────────────
+git -C "$AGENT_ONE" config --local --unset core.hooksPath
+cp "$WT_A/hooks/pre-push" "$COMMON_HOOKS/pre-push"
+printf '\n' >> "$COMMON_HOOKS/pre-push"
+chmod +x "$COMMON_HOOKS/pre-push"
+rm -f "$COMMON_HOOKS/pre-commit"
 STATE_I="${TMPDIR_BASE}/state-i.json"
 MANAGED_I="${TMPDIR_BASE}/managed-i"
 BEFORE_I="$(stub_install_count)"
 CASE_I_EXIT=0
 CASE_I_OUT="$(run_manager "$STATE_I" "$MANAGED_I" allocate --slot slot-i --branch feature/slot-i 2>&1)" || CASE_I_EXIT=$?
+HOOKS_I="$(hooks_dir_of "${MANAGED_I}/slot-i")"
+INSTALLED_I="$HOOKS_I/pre-push"
+INSTALLED_COMMIT_I="$HOOKS_I/pre-commit"
 
 if [[ "$CASE_I_EXIT" -ne 0 ]]; then
-  fail "manager repairs missing pre-commit: exited $CASE_I_EXIT: $CASE_I_OUT"
-elif [[ ! -f "$INSTALLED_COMMIT_HOOK" ]]; then
-  fail "manager repairs missing pre-commit: pre-commit still absent after provisioning"
-elif [[ ! -x "$INSTALLED_COMMIT_HOOK" ]]; then
-  fail "manager repairs missing pre-commit: reinstalled pre-commit is not executable"
+  fail "manager provisions from partial shared state: exited $CASE_I_EXIT: $CASE_I_OUT"
+elif [[ "$HOOKS_I" != */slot-i/.githooks ]]; then
+  fail "manager provisions from partial shared state: hooks dir is $HOOKS_I, expected the slot's own .githooks"
+elif ! installed_matches_authority "$INSTALLED_I" "${MANAGED_I}/slot-i/hooks/pre-push"; then
+  fail "manager provisions from partial shared state: installed pre-push does not match hooks/pre-push"
+elif [[ ! -x "$INSTALLED_COMMIT_I" ]]; then
+  fail "manager provisions from partial shared state: installed pre-commit is missing or not executable"
+elif [[ "$(git -C "${MANAGED_I}/slot-i" config --get core.hooksPath)" != ".githooks" ]]; then
+  fail "manager provisions from partial shared state: core.hooksPath was not set by the installer"
 elif [[ "$(stub_install_count)" -ne $((BEFORE_I + 1)) ]]; then
-  fail "manager repairs missing pre-commit: installer did not run exactly once"
+  fail "manager provisions from partial shared state: installer did not run exactly once"
 else
-  pass "manager repairs missing pre-commit: installer ran, both hooks usable"
+  pass "manager provisions from partial shared state: installer ran, per-tree hooks usable"
 fi
+rm -f "$COMMON_HOOKS/pre-push" "$COMMON_HOOKS/pre-commit"
 
 # ── Case J: wrapper resolves tricky flag salads ───────────────────────────
 # Combined short flags plus an attached -b value are valid `git worktree
