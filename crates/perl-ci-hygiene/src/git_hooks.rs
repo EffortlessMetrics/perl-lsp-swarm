@@ -60,6 +60,10 @@ cargo xtask precommit
              ('cargo xtask fmt --staged'), then runs 'cargo xtask precommit'"
         );
         println!("   The pre-push hook runs 'nix develop -c just pr-fast' before each push");
+        println!(
+            "   The pre-push hook also refuses non-fast-forward updates and protected-ref rewrites \
+             (escape hatch: PERL_LSP_ALLOW_HISTORY_REWRITE=\"<remote-ref>\")"
+        );
         println!("   Skip with: git commit --no-verify / git push --no-verify");
     }
 }
@@ -77,8 +81,14 @@ pub(crate) fn pre_push_hook_script() -> &'static str {
 # Bypass policy
 # -------------
 # OK to bypass with `git push --no-verify`:
-#   * Deletion-only push on master (the hook already auto-skips, but if it
-#     doesn't, bypassing is safe — there's nothing to validate).
+#   * Deletion-only push on a non-protected branch (the hook already
+#     auto-skips, but if it doesn't, bypassing is safe — there's nothing
+#     to validate). Deleting a protected branch (main, master) is refused
+#     by the hook's own ref-update check, not bypassable this way in spirit.
+#   * A non-fast-forward push you have proven safe (your own rebased branch,
+#     no teammate work): prefer the admit-list escape hatch
+#     (PERL_LSP_ALLOW_HISTORY_REWRITE="<remote-ref>") over --no-verify,
+#     so the remaining gates still run.
 #   * Urgent fixes during incident response, when the gate has a known bug
 #     being tracked (see hint output below for issue numbers).
 #   * The hook is failing for an environmental reason that is out of band of
@@ -90,6 +100,8 @@ pub(crate) fn pre_push_hook_script() -> &'static str {
 #   * "I just don't want to wait."
 #   * "I just want to push something quick."
 #   * Code-touching changes where you haven't actually run the gate locally.
+#   * A non-fast-forward refusal you have not investigated (fetch and
+#     rebase/merge instead — see the refusal's recovery order).
 #
 # If you find yourself bypassing repeatedly, file an issue and link it here.
 # ============================================================================
@@ -128,6 +140,74 @@ fi
 PUSH_REFS=()
 while IFS= read -r line; do
     PUSH_REFS+=("$line")
+done
+
+# --- Refuse non-fast-forward updates and protected-ref rewrites (issue #17427) ---
+# A push that would discard remote commits — force-push, reset+push, or
+# deleting a protected branch (main, master) — is refused here, before any
+# gate runs, with a recovery order. Fast-forward updates, new branches, and
+# deletions of non-protected branches are unaffected.
+#
+# Escape hatch: when you have proven the discarded commits are safe to drop
+# (your own rebased branch, no teammate work), name the full remote ref(s)
+# in PERL_LSP_ALLOW_HISTORY_REWRITE (space-separated, as git reports them,
+# e.g. "refs/heads/my-rebased-branch"). Prefer this over --no-verify so the
+# remaining gates still run. Protected branches should ~never need it.
+#
+# Implementation note: the protected list holds short branch names on purpose
+# (compared against ${remote_ref#refs/heads/}), so no executable line names a
+# full protected ref — see the T8 trap's hook-gate pin.
+ZERO_SHA="0000000000000000000000000000000000000000"
+PROTECTED_BRANCHES="main master"
+ALLOW_HISTORY_REWRITE="${PERL_LSP_ALLOW_HISTORY_REWRITE:-}"
+
+ref_update_admitted() {
+    case " $ALLOW_HISTORY_REWRITE " in
+        *" $1 "*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+for line in "${PUSH_REFS[@]+"${PUSH_REFS[@]}"}"; do
+    [ -z "$line" ] && continue
+    read -r _local_ref local_sha remote_ref remote_sha <<< "$line"
+    if ref_update_admitted "$remote_ref"; then
+        continue
+    fi
+    if [ "$local_sha" = "$ZERO_SHA" ]; then
+        remote_short="${remote_ref#refs/heads/}"
+        case " $PROTECTED_BRANCHES " in
+            *" $remote_short "*)
+                echo ""
+                echo "❌ Refusing deletion of protected ref $remote_ref."
+                echo "   Deleting shared branches destroys history other people build on."
+                echo "   If this is genuinely intended (repository decommission, never"
+                echo "   routine work), admit this ref explicitly and re-push:"
+                echo "   PERL_LSP_ALLOW_HISTORY_REWRITE=\"$remote_ref\" git push <remote> --delete <branch>"
+                exit 1
+                ;;
+        esac
+        continue
+    fi
+    if [ "$remote_sha" = "$ZERO_SHA" ]; then
+        continue
+    fi
+    if git merge-base --is-ancestor "$remote_sha" "$local_sha" 2>/dev/null; then
+        continue
+    fi
+    if git cat-file -e "$remote_sha" 2>/dev/null; then
+        UNKNOWN_TIP=""
+    else
+        UNKNOWN_TIP=" (tip $remote_sha is not in your local object store — fetch first)"
+    fi
+    echo ""
+    echo "❌ Refusing non-fast-forward push to $remote_ref$UNKNOWN_TIP."
+    echo "   Your push would discard remote commit(s)."
+    echo "   Recover with: git fetch origin && git rebase origin/<branch> (or merge), then push again."
+    echo "   Only when you have proven the remote commits are safe to discard"
+    echo "   (your own rebased branch, no teammate work), admit this ref explicitly:"
+    echo "   PERL_LSP_ALLOW_HISTORY_REWRITE=\"$remote_ref\" git push --force <remote> <branch>"
+    exit 1
 done
 
 # --- Skip CI gate when all refs are being deleted ---
@@ -597,6 +677,74 @@ mod tests {
             .ok_or_else(|| color_eyre::eyre::eyre!("staged gate missing"))?;
         assert!(guard < format, "identity guard must run before staged formatting");
         assert!(format < gate, "staged formatting must run before the commit gate");
+        Ok(())
+    }
+
+    #[test]
+    fn pre_push_hook_refuses_non_fast_forward_updates() -> Result<()> {
+        // Issue #17427 (traps T1/T5): the generated hook must deny any ref
+        // update that discards remote commits, before any gate runs, and the
+        // refusal must carry a recovery order plus the documented admit-list
+        // escape hatch.
+        let hook = pre_push_hook_script();
+        for marker in [
+            "merge-base --is-ancestor",
+            "Refusing non-fast-forward",
+            "Recover with: git fetch origin",
+            "PERL_LSP_ALLOW_HISTORY_REWRITE",
+        ] {
+            assert!(hook.contains(marker), "hook must contain push-path refusal marker {marker:?}");
+        }
+        let refusal = hook
+            .find("Refusing non-fast-forward")
+            .ok_or_else(|| color_eyre::eyre::eyre!("refusal headline must exist in hook script"))?;
+        let gate = hook.find("just pr-fast").ok_or_else(|| {
+            color_eyre::eyre::eyre!("fast gate invocation must exist in hook script")
+        })?;
+        assert!(
+            refusal < gate,
+            "refusal must precede the gates so doomed pushes fail fast without running them"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn pre_push_hook_refuses_protected_ref_deletion() {
+        // Issue #17427: deleting a protected branch must be refused even
+        // though deletions of ordinary branches still skip the gate below.
+        let hook = pre_push_hook_script();
+        assert!(
+            hook.contains("PROTECTED_BRANCHES=\"main master\""),
+            "hook must name the protected short branch names"
+        );
+        assert!(
+            hook.contains("Refusing deletion of protected ref"),
+            "hook must refuse protected-ref deletion with a recovery order"
+        );
+    }
+
+    #[test]
+    fn installed_pre_push_hook_carries_push_path_refusal() -> Result<()> {
+        // The installer must write the refusal into the installed hook, and
+        // `check_githooks` must verify those installed bytes as current.
+        let repo = temp_repo()?;
+        cmd_install_githooks(&repo)?;
+        assert_eq!(check_githooks(&repo)?, 0);
+
+        let hooks_dir = resolve_git_hooks_dir(&repo)?;
+        let installed = fs::read_to_string(hooks_dir.join("pre-push"))?;
+        for marker in [
+            "merge-base --is-ancestor",
+            "Refusing non-fast-forward",
+            "Refusing deletion of protected ref",
+            "PERL_LSP_ALLOW_HISTORY_REWRITE",
+        ] {
+            assert!(
+                installed.contains(marker),
+                "installed pre-push hook must contain push-path refusal marker {marker:?}"
+            );
+        }
+        fs::remove_dir_all(repo)?;
         Ok(())
     }
 

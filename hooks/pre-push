@@ -6,8 +6,14 @@
 # Bypass policy
 # -------------
 # OK to bypass with `git push --no-verify`:
-#   * Deletion-only push on master (the hook already auto-skips, but if it
-#     doesn't, bypassing is safe — there's nothing to validate).
+#   * Deletion-only push on a non-protected branch (the hook already
+#     auto-skips, but if it doesn't, bypassing is safe — there's nothing
+#     to validate). Deleting a protected branch (main, master) is refused
+#     by the hook's own ref-update check, not bypassable this way in spirit.
+#   * A non-fast-forward push you have proven safe (your own rebased branch,
+#     no teammate work): prefer the admit-list escape hatch
+#     (PERL_LSP_ALLOW_HISTORY_REWRITE="<remote-ref>") over --no-verify,
+#     so the remaining gates still run.
 #   * Urgent fixes during incident response, when the gate has a known bug
 #     being tracked (see hint output below for issue numbers).
 #   * The hook is failing for an environmental reason that is out of band of
@@ -19,6 +25,8 @@
 #   * "I just don't want to wait."
 #   * "I just want to push something quick."
 #   * Code-touching changes where you haven't actually run the gate locally.
+#   * A non-fast-forward refusal you have not investigated (fetch and
+#     rebase/merge instead — see the refusal's recovery order).
 #
 # If you find yourself bypassing repeatedly, file an issue and link it here.
 # ============================================================================
@@ -57,6 +65,74 @@ fi
 PUSH_REFS=()
 while IFS= read -r line; do
     PUSH_REFS+=("$line")
+done
+
+# --- Refuse non-fast-forward updates and protected-ref rewrites (issue #17427) ---
+# A push that would discard remote commits — force-push, reset+push, or
+# deleting a protected branch (main, master) — is refused here, before any
+# gate runs, with a recovery order. Fast-forward updates, new branches, and
+# deletions of non-protected branches are unaffected.
+#
+# Escape hatch: when you have proven the discarded commits are safe to drop
+# (your own rebased branch, no teammate work), name the full remote ref(s)
+# in PERL_LSP_ALLOW_HISTORY_REWRITE (space-separated, as git reports them,
+# e.g. "refs/heads/my-rebased-branch"). Prefer this over --no-verify so the
+# remaining gates still run. Protected branches should ~never need it.
+#
+# Implementation note: the protected list holds short branch names on purpose
+# (compared against ${remote_ref#refs/heads/}), so no executable line names a
+# full protected ref — see the T8 trap's hook-gate pin.
+ZERO_SHA="0000000000000000000000000000000000000000"
+PROTECTED_BRANCHES="main master"
+ALLOW_HISTORY_REWRITE="${PERL_LSP_ALLOW_HISTORY_REWRITE:-}"
+
+ref_update_admitted() {
+    case " $ALLOW_HISTORY_REWRITE " in
+        *" $1 "*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+for line in "${PUSH_REFS[@]+"${PUSH_REFS[@]}"}"; do
+    [ -z "$line" ] && continue
+    read -r _local_ref local_sha remote_ref remote_sha <<< "$line"
+    if ref_update_admitted "$remote_ref"; then
+        continue
+    fi
+    if [ "$local_sha" = "$ZERO_SHA" ]; then
+        remote_short="${remote_ref#refs/heads/}"
+        case " $PROTECTED_BRANCHES " in
+            *" $remote_short "*)
+                echo ""
+                echo "❌ Refusing deletion of protected ref $remote_ref."
+                echo "   Deleting shared branches destroys history other people build on."
+                echo "   If this is genuinely intended (repository decommission, never"
+                echo "   routine work), admit this ref explicitly and re-push:"
+                echo "   PERL_LSP_ALLOW_HISTORY_REWRITE=\"$remote_ref\" git push <remote> --delete <branch>"
+                exit 1
+                ;;
+        esac
+        continue
+    fi
+    if [ "$remote_sha" = "$ZERO_SHA" ]; then
+        continue
+    fi
+    if git merge-base --is-ancestor "$remote_sha" "$local_sha" 2>/dev/null; then
+        continue
+    fi
+    if git cat-file -e "$remote_sha" 2>/dev/null; then
+        UNKNOWN_TIP=""
+    else
+        UNKNOWN_TIP=" (tip $remote_sha is not in your local object store — fetch first)"
+    fi
+    echo ""
+    echo "❌ Refusing non-fast-forward push to $remote_ref$UNKNOWN_TIP."
+    echo "   Your push would discard remote commit(s)."
+    echo "   Recover with: git fetch origin && git rebase origin/<branch> (or merge), then push again."
+    echo "   Only when you have proven the remote commits are safe to discard"
+    echo "   (your own rebased branch, no teammate work), admit this ref explicitly:"
+    echo "   PERL_LSP_ALLOW_HISTORY_REWRITE=\"$remote_ref\" git push --force <remote> <branch>"
+    exit 1
 done
 
 # --- Skip CI gate when all refs are being deleted ---
