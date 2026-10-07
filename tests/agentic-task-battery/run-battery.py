@@ -152,15 +152,18 @@ def load_specs():
     return specs, errors
 
 
-def _kill_tree(proc, grouped):
-    """Terminate a timed-out child and, when grouped, its whole tree.
+def _kill_tree(proc):
+    """Terminate a timed-out child and its whole tree. Never raises.
 
-    Best-effort on every platform: POSIX kills the process group the
-    child was started in; Windows falls back to `taskkill /T` (tree
-    kill) and then to terminating the direct child. Never raises.
+    Every run_child child starts in its own group/session, so this is
+    always safe: POSIX kills the process group (TERM, then KILL);
+    Windows uses `taskkill /T` (tree kill), falling back to the direct
+    child. Killing the whole tree matters because surviving
+    grandchildren would otherwise hold the shared stdout pipe open and
+    the post-kill drain would hang until they exit.
     """
     try:
-        if grouped and os.name == "posix":
+        if os.name == "posix":
             import signal
             try:
                 os.killpg(proc.pid, signal.SIGTERM)
@@ -180,7 +183,7 @@ def _kill_tree(proc, grouped):
                 return
             except subprocess.TimeoutExpired:
                 pass
-        if grouped and os.name != "posix" and shutil.which("taskkill"):
+        elif shutil.which("taskkill"):
             try:
                 subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)],
                                capture_output=True, timeout=30, check=False)
@@ -198,25 +201,25 @@ def _kill_tree(proc, grouped):
             pass
 
 
-def run_child(argv, cwd, timeout_s, log_path=None, kill_tree=False):
+def run_child(argv, cwd, timeout_s, log_path=None):
     """Run a child to completion, capturing ALL output (never a live-pipe cut).
 
     Returns dict(exit=int|None, out=str, wall_s=float, timed_out=bool).
     A log file is written only after the child completes.
 
-    With kill_tree=True the child starts in its own process group and a
-    timeout kills the whole group: plain subprocess.run would kill only
-    the direct child, orphaning e.g. `git bisect run`'s cargo test to
-    race the post-timeout `git bisect reset`.
+    Every child starts in its own process group/session, and a timeout
+    always kills the whole tree: killing only the direct child would
+    orphan grandchildren holding the shared stdout pipe, and the
+    post-kill drain would then hang until they exit (probed: a second
+    communicate() with its own timeout still hung 120s, and on Windows
+    even closing our pipe ends blocks while a reader is outstanding).
     """
     start = time.time()
-    popen_kw = {}
-    if kill_tree:
-        if os.name == "posix":
-            popen_kw["start_new_session"] = True
-        else:
-            popen_kw["creationflags"] = getattr(
-                subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    if os.name == "posix":
+        popen_kw = {"start_new_session": True}
+    else:
+        popen_kw = {"creationflags": getattr(
+            subprocess, "CREATE_NEW_PROCESS_GROUP", 0)}
     try:
         proc = subprocess.Popen(
             argv, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -225,8 +228,22 @@ def run_child(argv, cwd, timeout_s, log_path=None, kill_tree=False):
         try:
             out, _ = proc.communicate(timeout=timeout_s)
         except subprocess.TimeoutExpired as exc:
-            _kill_tree(proc, kill_tree)
-            out, _ = proc.communicate()
+            _kill_tree(proc)
+            try:
+                proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                pass
+            for stream in (proc.stdout, proc.stderr, proc.stdin):
+                if stream is not None:
+                    try:
+                        stream.close()
+                    except Exception:
+                        pass
+            # Partial output comes from the timed-out call's own buffer,
+            # not a second drain: dead trees cannot produce more, and a
+            # re-drain would wait for pipe EOF unbounded if anything
+            # survived the kill.
+            out = exc.stdout
             if out is None:
                 out = ""
             # On timeout the partial output may be bytes even in text mode;
@@ -234,6 +251,9 @@ def run_child(argv, cwd, timeout_s, log_path=None, kill_tree=False):
             if isinstance(out, bytes):
                 out = out.decode("utf-8", "replace")
             exit_code, timed_out = None, True
+        except KeyboardInterrupt:
+            _kill_tree(proc)
+            raise
         else:
             exit_code, timed_out = proc.returncode, False
     except OSError as exc:
@@ -306,10 +326,9 @@ class Ctx:
         safe = re.sub(r"[^A-Za-z0-9_.-]", "_", name)
         return os.path.join(self.tmpdir, safe + ".log")
 
-    def run(self, argv, timeout_s, name, kill_tree=False):
+    def run(self, argv, timeout_s, name):
         self.argv_log.append(list(argv))
-        return run_child(argv, self.repo, timeout_s, self.log_path(name),
-                         kill_tree=kill_tree)
+        return run_child(argv, self.repo, timeout_s, self.log_path(name))
 
 
 # --------------------------------------------------------------------------
@@ -580,15 +599,15 @@ def check_quick_bench(ctx, res, state):
         state["bench_out"] = ""
         state["results_path"] = ""
         return
-    # kill_tree: a timeout must not leave the bench alive to rewrite the
-    # scorecard after _restore_bench_side_effects runs (same race class
-    # as the bisect reset).
+    # run_child kills the whole tree on timeout: a timeout must not leave
+    # the bench alive to rewrite the scorecard after
+    # _restore_bench_side_effects runs (same race class as the bisect reset).
     try:
         before_stat = os.stat(out_path)
         before_fp = (before_stat.st_mtime_ns, before_stat.st_size)
     except OSError:
         before_fp = None
-    r = ctx.run(argv, 1200, "t3-bench-run", kill_tree=True)
+    r = ctx.run(argv, 1200, "t3-bench-run")
     restored, dirtied = _restore_bench_side_effects(ctx, tracked_before)
     state["bench_restored"] = restored
     state["bench_exit"] = r["exit"]
@@ -756,8 +775,7 @@ def check_bisect_run(ctx, res, state):
         res.evidence = f"bisect start failed: {tail(start['out'], 4)}"
         return
     try:
-        r = ctx.run(["git", "bisect", "run"] + argv, 2400, "t4-bisect-run",
-                    kill_tree=True)
+        r = ctx.run(["git", "bisect", "run"] + argv, 2400, "t4-bisect-run")
         state["bisect_out"] = r["out"]
         m = re.search(r"^([0-9a-f]{40}) is the first bad commit",
                       r["out"], re.MULTILINE)
