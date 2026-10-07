@@ -226,6 +226,40 @@ HIST_ORIGIN_COUNT="$(git --git-dir="$SCRATCH/origin.git" rev-list --all --count 
 HIST_ORIGIN_CLEAN=0; [[ "$HIST_ORIGIN_COUNT" -eq 1 ]] && HIST_ORIGIN_CLEAN=1
 trap_say "history push exit=$PUSH_HIST_EXIT (refused=$PUSH_HIST_REFUSED); naming pins=$PUSH_HIST_NAMING/3; origin commits=$HIST_ORIGIN_COUNT (clean=$HIST_ORIGIN_CLEAN)"
 
+# --- Fixture D2: range-only paths — token file deleted, token file renamed ---
+# Neither path survives to the endpoint diff, so only the range-history file
+# list (wave 5) visits them; the per-commit history leg then refuses each.
+git clone -q "$SCRATCH/origin.git" "$SCRATCH/e" 2>/dev/null
+trap_git_identity "$SCRATCH/e"
+git -C "$SCRATCH/e" checkout -q -b trap/t3-range-only
+cp "$SCRATCH/b/.git/hooks/pre-push" "$SCRATCH/e/.git/hooks/pre-push"
+printf 'baseline\n' > "$SCRATCH/e/notes.txt"
+git -C "$SCRATCH/e" add notes.txt
+git -C "$SCRATCH/e" commit -qm 'baseline'
+printf 'api_token = "%s%s"\n' "$FRAG_A" "$FRAG_B" > "$SCRATCH/e/gone.rs"
+git -C "$SCRATCH/e" add gone.rs
+git -C "$SCRATCH/e" commit -qm 'add token file'
+git -C "$SCRATCH/e" rm -q gone.rs
+git -C "$SCRATCH/e" commit -qm 'delete token file again'
+printf 'api_token = "%s%s"\n' "$FRAG_A" "$FRAG_B" > "$SCRATCH/e/moved.rs"
+git -C "$SCRATCH/e" add moved.rs
+git -C "$SCRATCH/e" commit -qm 'add second token file'
+git -C "$SCRATCH/e" mv moved.rs renamed.rs
+printf 'api_token = "rotated"\n' > "$SCRATCH/e/renamed.rs"
+git -C "$SCRATCH/e" commit -qam 'rename away and rotate token'
+set +e
+git -C "$SCRATCH/e" push origin trap/t3-range-only >"$SCRATCH/push-range-only.txt" 2>&1
+PUSH_RANGE_EXIT=$?
+set -e
+PUSH_RANGE_REFUSED=0; [[ "$PUSH_RANGE_EXIT" -ne 0 ]] && PUSH_RANGE_REFUSED=1
+PUSH_RANGE_NAMING=0
+grep -q 'Secret scan refused this push' "$SCRATCH/push-range-only.txt" 2>/dev/null && PUSH_RANGE_NAMING=$((PUSH_RANGE_NAMING + 1))
+grep -q 'gone.rs' "$SCRATCH/push-range-only.txt" 2>/dev/null && PUSH_RANGE_NAMING=$((PUSH_RANGE_NAMING + 1))
+grep -q 'moved.rs' "$SCRATCH/push-range-only.txt" 2>/dev/null && PUSH_RANGE_NAMING=$((PUSH_RANGE_NAMING + 1))
+RANGE_ORIGIN_COUNT="$(git --git-dir="$SCRATCH/origin.git" rev-list --all --count 2>/dev/null || echo 0)"
+RANGE_ORIGIN_CLEAN=0; [[ "$RANGE_ORIGIN_COUNT" -eq 1 ]] && RANGE_ORIGIN_CLEAN=1
+trap_say "range-only push exit=$PUSH_RANGE_EXIT (refused=$PUSH_RANGE_REFUSED); naming pins=$PUSH_RANGE_NAMING/3; origin commits=$RANGE_ORIGIN_COUNT (clean=$RANGE_ORIGIN_CLEAN)"
+
 # --- Fail-closed probes: unresolvable shas refuse unevaluated, never sail ---
 BOGUS='deadbeefdeadbeefdeadbeefdeadbeefdeadbeef'
 B_HEAD="$(git -C "$SCRATCH/b" rev-parse HEAD)"
@@ -293,6 +327,7 @@ if [[ "$REFUSED" -eq 1 && "$NAMING" -eq 3 && "$PRIV_NAMING" -eq 2 && "$PLUS_NAMI
     && "$INTACT" -eq 1 && "$ESCAPE" -eq 1 && "$CONTROL" -eq 1 && "$IDENT_OK" -eq 1 \
     && "$PUSH_REFUSED" -eq 1 && "$PUSH_NAMING" -eq 2 && "$ORIGIN_CLEAN" -eq 1 && "$PUSH_CONTROL" -eq 1 \
     && "$PUSH_HIST_REFUSED" -eq 1 && "$PUSH_HIST_NAMING" -eq 3 && "$HIST_ORIGIN_CLEAN" -eq 1 \
+    && "$PUSH_RANGE_REFUSED" -eq 1 && "$PUSH_RANGE_NAMING" -eq 3 && "$RANGE_ORIGIN_CLEAN" -eq 1 \
     && "$RANGE_FAIL" -eq 1 \
     && "$SNIPPET_LINES" -gt 50 && "$RULE_VARS" -eq 5 ]]; then
     LIVE_OK=1
@@ -310,7 +345,7 @@ if [[ "$LIB_SHAPES" -eq 1 && "$LIB_SCAN" -eq 1 && "$LIB_BODY" -eq 1 && "$LIB_TES
     PINS_OK=1
 fi
 TOKEN_LANDED=0
-[[ "$REFUSED" -eq 0 || "$PUSH_REFUSED" -eq 0 || "$PUSH_HIST_REFUSED" -eq 0 ]] && TOKEN_LANDED=1
+[[ "$REFUSED" -eq 0 || "$PUSH_REFUSED" -eq 0 || "$PUSH_HIST_REFUSED" -eq 0 || "$PUSH_RANGE_REFUSED" -eq 0 ]] && TOKEN_LANDED=1
 
 if [[ "$LIVE_OK" -eq 1 && "$PINS_OK" -eq 1 ]]; then
     verdict T3 PASS 'staged token commit refused live with file+rule naming and byte-intact worktree; pushed range refused on the push path with origin untouched; allowlist escape and benign controls pass; required secret_scan gate re-scans PR diff+body (caveats: local hooks are --no-verify-bypassable by design — the required gate is the non-bypassable layer; shapes flag credentials by form, not liveness)'
