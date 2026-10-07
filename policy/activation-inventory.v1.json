@@ -49,8 +49,8 @@
       "rule": "gate-policy-gates",
       "authority": ".ci/gate-policy.yaml",
       "emits": "gate",
-      "considered": 95,
-      "emitted": 95,
+      "considered": 96,
+      "emitted": 96,
       "not_seeded_reason": "every entry under gates: is emitted; nothing is filtered"
     },
     {
@@ -4688,6 +4688,33 @@
         "state": "not_evaluated"
       },
       "notes": "SBOM generation and verification for supply chain security (advisory; no workflow route)"
+    },
+    {
+      "surface_id": "gate:secret_scan",
+      "class": "gate",
+      "class_authority": {
+        "kind": "derived",
+        "authority": ".ci/gate-policy.yaml",
+        "rule": "gate-policy-gates"
+      },
+      "semantic_authority": ".ci/gate-policy.yaml#secret_scan",
+      "consumers": [],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": ".ci/gate-policy.yaml",
+        "detail": "tier = \"merge_gate\"; required = true"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": ".ci/gate-policy.yaml"
+      },
+      "owner": "release/ci",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "Refuse token-shaped secrets in the PR diff and PR body"
     },
     {
       "surface_id": "gate:security_audit",
