@@ -265,6 +265,19 @@ fn is_ambiguous_sub_reference(
         return false;
     }
 
+    // Indexed call ranges now cover only the callee token. Recover an exact
+    // adjacent qualifier without admitting bare calls from another package.
+    if original == key.name.as_ref()
+        && let Some(prefix) = doc.text().get(..start_off)
+        && let Some(before_qualifier) = prefix.strip_suffix(&format!("{}::", key.pkg))
+        && !before_qualifier
+            .chars()
+            .last()
+            .is_some_and(|ch| ch.is_alphanumeric() || matches!(ch, '_' | ':' | '\''))
+    {
+        return false;
+    }
+
     let package_at_line = package_name_for_line(doc.text(), start_line);
 
     // Arrow method calls (`$self->name`, `$obj->name`) are not bare function calls,
@@ -773,6 +786,41 @@ mod tests {
     ) -> Result<(), Box<dyn std::error::Error>> {
         let url = Url::parse(uri)?;
         idx.index_file(url, text.to_string())?;
+        Ok(())
+    }
+
+    #[test]
+    fn rename_name_token_ranges_preserve_qualified_identity()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let cases = [
+            ("Foo", "Foo::run();", 5, 8, false),
+            ("Foo", "&Foo::run();", 6, 9, false),
+            ("Foo::Inner", "Foo::Inner::run();", 12, 15, false),
+            ("Foo", "NotFoo::run();", 8, 11, true),
+            ("Foo", "Other::Foo::run();", 12, 15, true),
+            ("Foo", "Other::run();", 7, 10, true),
+            ("Foo", "run();", 0, 3, true),
+            ("Foo", "&run();", 1, 4, true),
+            ("Foo", "my $x = 'Foo::'; run();", 17, 20, true),
+            ("Foo", "my $x = '🙂'; Foo::run();", 19, 22, false),
+            ("Foo", "Foo::runner();", 5, 11, true),
+        ];
+        for (package, call, start, end, ambiguous) in cases {
+            let idx = WorkspaceIndex::new();
+            let uri = "file:///callee-identity.pl";
+            index_text(&idx, uri, &format!("package Caller;\n{call}\n"))?;
+            let key = SymbolKey {
+                pkg: Arc::from(package),
+                name: Arc::from("run"),
+                sigil: None,
+                kind: SymKind::Sub,
+            };
+            assert_eq!(
+                is_ambiguous_sub_reference(&idx, &key, uri, 1, start, 1, end),
+                ambiguous,
+                "callee-only range must preserve the explicit identity in {call:?}"
+            );
+        }
         Ok(())
     }
 

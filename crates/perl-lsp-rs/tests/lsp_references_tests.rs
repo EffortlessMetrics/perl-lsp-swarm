@@ -427,9 +427,16 @@ fn test_unresolved_references_return_each_name_token_once() -> TestResult {
         "my $u = '🙂'; ghost_call();\n",
         "sub refs_ready_marker {}\n",
     );
-    let (mut harness, workspace) = LspHarness::with_workspace(&[("ghost.pl", doc)])?;
+    // The marker exists only in the opened buffer, never in the disk seed.
+    let (mut harness, workspace) = LspHarness::with_workspace(&[("ghost.pl", "package main;\n")])?;
     let uri = workspace.uri("ghost.pl");
     harness.open_document(&uri, doc)?;
+    let ready = harness.wait_for_notification(
+        "perl-lsp/active-document-ready",
+        std::time::Duration::from_secs(10),
+    )?;
+    assert_eq!(ready["uri"], json!(uri));
+    assert_eq!(ready["generation"], json!(1));
     harness.wait_for_symbol("refs_ready_marker", Some(&uri), std::time::Duration::from_secs(10))?;
 
     let mut expected = vec![
@@ -494,6 +501,20 @@ fn test_unresolved_references_return_each_name_token_once() -> TestResult {
                 "context": {"includeDeclaration": include_declaration}
             }),
         )?;
+        // Parser-core readiness is separate from workspace-index currency.
+        // The live receipt must prove this request consulted both producers.
+        let explanation = harness.request(
+            "workspace/executeCommand",
+            json!({
+                "command": "perl.explainProviderDecision",
+                "arguments": [{"provider": "references"}]
+            }),
+        )?;
+        let receipt = explanation.get("request_receipt").ok_or("missing references receipt")?;
+        assert_eq!(receipt["index_state"], json!("full"));
+        assert_eq!(receipt["answering_tier"], json!("workspace_mixed"));
+        assert!(receipt["index_result_count"].as_u64().is_some_and(|count| count > 0));
+        assert!(receipt["text_result_count"].as_u64().is_some_and(|count| count > 0));
         let mut actual = result.as_array().ok_or("references must be a non-null array")?.clone();
         actual.sort_by_key(|location| location.to_string());
         assert_eq!(
