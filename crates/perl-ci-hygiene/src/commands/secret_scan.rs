@@ -36,8 +36,10 @@ const EMPTY_TREE_SHA: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 ///
 /// Returns an error when an explicitly requested base ref does not resolve,
 /// when `git diff` or `git log` cannot be executed, when the event payload
-/// cannot be read or parsed, when the allowlist exists but cannot be read, or
-/// — in CI only — when no base ref resolves. That last arm is the fail-closed
+/// cannot be read or parsed, when the base-pinned allowlist cannot be read
+/// (an unresolvable base, an unreadable blob, or undecodable bytes — a base
+/// without the file loads as empty, never as an error), or — in CI only —
+/// when no base ref resolves. That last arm is the fail-closed
 /// direction for a required gate: an unevaluated run must never report green
 /// where a merge decision reads it. Outside CI the same state stays exit `0`
 /// with a plainly-worded "not evaluated" line, since a local checkout without
@@ -54,7 +56,12 @@ pub(crate) fn check(repo_root: &Path, base: Option<&str>) -> Result<i32> {
     let base_sha = merge_base(repo_root, &requested_base);
     let diff = read_diff(repo_root, &base_sha)?;
     let history = read_history_diff(repo_root, &base_sha)?;
-    let allowlist = Allowlist::load(repo_root)?;
+    // Base-pinned: the PR-head checkout is the hostile side of the trust
+    // boundary, so the gate reads exemptions from the trusted base revision
+    // and ignores the PR-head allowlist — a PR that widens the allowlist in
+    // the same diff it needs the exemption for still fails. (The local hooks
+    // keep their working-tree read: advisory, pre-commit, no base in scope.)
+    let allowlist = Allowlist::load_from_rev(repo_root, &base_sha)?;
     let mut findings = secret_scan::scan_unified_diff(&diff, &allowlist)?;
     let history_commits = count_history_commits(&history);
     findings.extend(secret_scan::scan_unified_diff(&history, &allowlist)?);
@@ -232,7 +239,7 @@ fn count_history_commits(history: &str) -> usize {
 mod tests {
     use super::{check, count_history_commits, dedupe_findings, no_base_outcome};
     use color_eyre::eyre::Result;
-    use perl_ci_hygiene::secret_scan::SecretFinding;
+    use perl_ci_hygiene::secret_scan::{ALLOWLIST_PATH, Allowlist, SecretFinding};
     use std::path::{Path, PathBuf};
     use std::process::Command;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -251,6 +258,100 @@ mod tests {
         let code = check(&repo, Some(&base))?;
 
         assert_eq!(code, 1, "a secret removed inside the range must still be reported");
+        std::fs::remove_dir_all(repo)?;
+        Ok(())
+    }
+
+    /// Ignores an allowlist widening made in the same diff: the gate reads
+    /// exemptions from the base, so a PR that adds a token-shaped file and
+    /// lists that file in the allowlist in one commit still fails.
+    #[test]
+    fn check_ignores_allowlist_widening_in_the_same_diff() -> Result<()> {
+        let repo = fixture_repo()?;
+        commit_file(&repo, "ok.rs", "benign content\n", "benign base")?;
+        let base = rev_parse(&repo, "HEAD")?;
+        let token = format!("ghp_{}", "E".repeat(36));
+        std::fs::write(repo.join("leak.rs"), format!("token = \"{token}\"\n"))?;
+        write_allowlist(&repo, b"leak.rs\n")?;
+        git(&repo, &["add", "-A"])?;
+        git(&repo, &["commit", "--quiet", "-m", "add token and self-exempt it"])?;
+
+        let code = check(&repo, Some(&base))?;
+
+        assert_eq!(code, 1, "a same-diff allowlist widening must not exempt the token");
+        std::fs::remove_dir_all(repo)?;
+        Ok(())
+    }
+
+    /// Honors an allowlist entry already present at the base: only the
+    /// PR-head widening is ignored, not exemptions the base trusted.
+    #[test]
+    fn check_honors_an_allowlist_entry_already_at_base() -> Result<()> {
+        // Same CI guard as the quiet-tree test: the runner's own event
+        // payload is in subject too, so the zero-finding assertion only runs
+        // where no event payload is present.
+        if std::env::var_os("GITHUB_EVENT_PATH").is_some() {
+            return Ok(());
+        }
+        let repo = fixture_repo()?;
+        commit_file(&repo, "ok.rs", "benign content\n", "benign base")?;
+        commit_allowlist(&repo, "leak.rs\n", "allowlist the fixture path")?;
+        let base = rev_parse(&repo, "HEAD")?;
+        let token = format!("ghp_{}", "F".repeat(36));
+        commit_file(
+            &repo,
+            "leak.rs",
+            &format!("token = \"{token}\"\n"),
+            "add allowlisted fixture",
+        )?;
+
+        let code = check(&repo, Some(&base))?;
+
+        assert_eq!(code, 0, "an entry already at base must still exempt its path");
+        std::fs::remove_dir_all(repo)?;
+        Ok(())
+    }
+
+    /// Fails closed when the allowlist blob at the base is undecodable:
+    /// corrupt policy bytes are an error, never a silent empty scan.
+    #[test]
+    fn check_fails_closed_on_a_corrupt_allowlist_at_base() -> Result<()> {
+        let repo = fixture_repo()?;
+        commit_file(&repo, "ok.rs", "benign content\n", "benign base")?;
+        commit_raw_allowlist(&repo, b"leak.rs\n\xff\xfe not utf8\n", "corrupt allowlist")?;
+        let base = rev_parse(&repo, "HEAD")?;
+        commit_file(&repo, "other.rs", "more benign content\n", "benign head")?;
+
+        let result = check(&repo, Some(&base));
+
+        let Err(error) = result else {
+            std::fs::remove_dir_all(repo)?;
+            return Err(color_eyre::eyre::eyre!(
+                "undecodable allowlist bytes at base must fail the gate closed"
+            ));
+        };
+        assert!(
+            error.to_string().contains("not valid UTF-8"),
+            "the failure must name the undecodable allowlist: {error}"
+        );
+        std::fs::remove_dir_all(repo)?;
+        Ok(())
+    }
+
+    /// Pins the advisory path as unchanged: the working-tree load still sees
+    /// uncommitted exemptions (invisible to the base-pinned gate) and still
+    /// reads a missing file as empty rather than an error.
+    #[test]
+    fn working_tree_allowlist_load_still_serves_local_use() -> Result<()> {
+        let repo = fixture_repo()?;
+        write_allowlist(&repo, b"leak.rs\n")?;
+
+        let allowlist = Allowlist::load(&repo)?;
+
+        assert!(allowlist.contains("leak.rs"));
+        assert!(!allowlist.is_empty());
+        std::fs::remove_file(repo.join(ALLOWLIST_PATH))?;
+        assert!(Allowlist::load(&repo)?.is_empty());
         std::fs::remove_dir_all(repo)?;
         Ok(())
     }
@@ -343,6 +444,33 @@ mod tests {
     fn commit_file(repo: &Path, name: &str, content: &str, message: &str) -> Result<()> {
         std::fs::write(repo.join(name), content)?;
         git(repo, &["add", name])?;
+        git(repo, &["commit", "--quiet", "-m", message])?;
+        Ok(())
+    }
+
+    /// Writes `bytes` to the allowlist path, creating its parent directory.
+    fn write_allowlist(repo: &Path, bytes: &[u8]) -> Result<()> {
+        let path = repo.join(ALLOWLIST_PATH);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&path, bytes)?;
+        Ok(())
+    }
+
+    /// Commits a text allowlist: the exemption shape a PR would add.
+    fn commit_allowlist(repo: &Path, content: &str, message: &str) -> Result<()> {
+        write_allowlist(repo, content.as_bytes())?;
+        git(repo, &["add", ALLOWLIST_PATH])?;
+        git(repo, &["commit", "--quiet", "-m", message])?;
+        Ok(())
+    }
+
+    /// Commits raw allowlist bytes: the corrupt-policy shape, which no text
+    /// helper can express.
+    fn commit_raw_allowlist(repo: &Path, bytes: &[u8], message: &str) -> Result<()> {
+        write_allowlist(repo, bytes)?;
+        git(repo, &["add", ALLOWLIST_PATH])?;
         git(repo, &["commit", "--quiet", "-m", message])?;
         Ok(())
     }

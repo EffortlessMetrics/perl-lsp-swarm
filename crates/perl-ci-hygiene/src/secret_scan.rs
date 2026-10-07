@@ -19,6 +19,7 @@ use color_eyre::eyre::{Result, eyre};
 use regex::Regex;
 use std::collections::HashSet;
 use std::path::Path;
+use std::process::Command;
 use std::sync::LazyLock;
 
 /// Repo-relative path of the scan allowlist.
@@ -121,7 +122,13 @@ pub struct Allowlist {
 }
 
 impl Allowlist {
-    /// Loads the allowlist at `repo_root`/[`ALLOWLIST_PATH`].
+    /// Loads the allowlist at `repo_root`/[`ALLOWLIST_PATH`] from the working tree.
+    ///
+    /// Working-tree load serves local, advisory use only — a contributor
+    /// previewing exemptions against uncommitted edits. The required gate
+    /// must use [`Allowlist::load_from_rev`] instead: the PR-head checkout is
+    /// the hostile side of the trust boundary, and a working-tree load lets a
+    /// PR widen its own exemptions in the same diff it needs them for.
     ///
     /// A missing file means "no exemptions" and loads as empty. A file that
     /// exists but cannot be read is an error: silently ignoring it would scan
@@ -147,6 +154,50 @@ impl Allowlist {
                 ));
             }
         };
+        Ok(Self::parse(&text))
+    }
+
+    /// Loads the allowlist blob at `revision`:[`ALLOWLIST_PATH`].
+    ///
+    /// The required gate reads exemptions from the trusted base revision and
+    /// ignores the PR-head version, so a PR cannot exempt itself by widening
+    /// the allowlist in the same diff. Deny by default: only a cleanly-absent
+    /// allowlist at the base means "no exemptions". An unresolvable revision,
+    /// an unreadable blob, or undecodable bytes fail closed with an error. A
+    /// `git show` miss on a verified base can only narrow exemptions to none,
+    /// which widens the scan rather than narrowing it — the safe direction.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `git` cannot verify `revision`, when `revision`
+    /// does not resolve, when the blob cannot be read, or when its bytes are
+    /// not valid UTF-8. A revision that resolves but carries no allowlist
+    /// loads as empty, never as an error.
+    pub fn load_from_rev(repo_root: &Path, revision: &str) -> Result<Self> {
+        let verified = Command::new("git")
+            .current_dir(repo_root)
+            .args(["cat-file", "-e", revision])
+            .status()
+            .map_err(|error| {
+                eyre!("failed to verify the secret-scan base '{revision}': {error}")
+            })?;
+        if !verified.success() {
+            return Err(eyre!(
+                "secret scan evaluated nothing: base '{revision}' does not resolve; failing closed"
+            ));
+        }
+        let spec = format!("{revision}:{ALLOWLIST_PATH}");
+        let output =
+            Command::new("git").current_dir(repo_root).args(["show", &spec]).output().map_err(
+                |error| eyre!("failed to read the secret-scan allowlist at '{spec}': {error}"),
+            )?;
+        if !output.status.success() {
+            // The base resolved, so the allowlist is simply absent there.
+            return Ok(Self::default());
+        }
+        let text = String::from_utf8(output.stdout).map_err(|error| {
+            eyre!("the secret-scan allowlist at '{spec}' is not valid UTF-8 ({error}); failing closed")
+        })?;
         Ok(Self::parse(&text))
     }
 
