@@ -1023,11 +1023,22 @@ fn bench_index_real_corpus(c: &mut Criterion) {
                 },
                 |temp_dir| {
                     // A failed cold sample invalidates the run: surface it via
-                    // the bench's house `must` diagnostic, then consume it.
+                    // the bench's house `must` diagnostic, then reject any
+                    // sample whose admitted files did not all index cleanly
+                    // (the same `indexed_predicate_holds` guard the receipt
+                    // test applies) so a partial index never becomes a
+                    // published timing.
                     let sample = must(index_real_corpus::cold_scan_index(temp_dir.path()));
+                    assert!(
+                        sample.indexed_predicate_holds(),
+                        "indexed predicate failed: {sample:?}"
+                    );
                     black_box(sample);
-                    // Keep the tree alive until the sample completes (:361 pattern).
-                    black_box(temp_dir);
+                    // Return the tree so Criterion drops it AFTER the timing
+                    // boundary: `iter_batched` drops the routine's output only
+                    // past `measurement.end` (criterion 0.8.2), so tree
+                    // deletion never lands inside the recorded cold sample.
+                    temp_dir
                 },
                 BatchSize::PerIteration,
             );
@@ -1045,8 +1056,13 @@ fn bench_index_real_corpus(c: &mut Criterion) {
             },
             |temp_dir| {
                 let sample = must(index_real_corpus::cold_scan_index(temp_dir.path()));
+                // Same rejection guard as the real-corpus case: a sample with
+                // indexing errors or an empty index is invalid, not faster.
+                assert!(sample.indexed_predicate_holds(), "indexed predicate failed: {sample:?}");
                 black_box(sample);
-                black_box(temp_dir);
+                // Returned so the tree drops after the timing boundary (see
+                // the real-corpus case above), not inside the recorded sample.
+                temp_dir
             },
             BatchSize::PerIteration,
         );

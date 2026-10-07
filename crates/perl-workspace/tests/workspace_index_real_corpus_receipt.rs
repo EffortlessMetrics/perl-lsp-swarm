@@ -191,6 +191,13 @@ fn write_receipt(receipts: &[ProjectReceipt], output_path: &Path) -> Result<(), 
         );
     }
 
+    // Optional runner/host provenance for CI variance tagging (issue
+    // #17159): None when none of these are set, so documented local runs
+    // keep working and the receipt still names its machine when one is.
+    let runner = ["RUNNER_NAME", "HOSTNAME", "COMPUTERNAME"]
+        .into_iter()
+        .find_map(|key| std::env::var(key).ok().filter(|value| !value.trim().is_empty()));
+
     // Baseline lifecycle (matrix row 5): this run records the baseline; the
     // -/+20% alert policy activates only after the baseline is calibrated.
     let output = json!({
@@ -199,6 +206,7 @@ fn write_receipt(receipts: &[ProjectReceipt], output_path: &Path) -> Result<(), 
         "issue": 17159,
         "measured_at_epoch_s": now_epoch_seconds(),
         "commit": git_short_sha(),
+        "runner": runner,
         "samples_per_project": COLD_SAMPLES,
         "warmup_discarded_runs": 0,
         "cold_definition": "fresh TempDir corpus copy (no .git) + fresh WorkspaceIndex per sample; discovery then per-file read/admit/decode/index_file in discovery's lexical order; OS page cache may stay warm across samples (documented limitation; p50 damps it)",
@@ -277,8 +285,12 @@ fn cold_scan_index_receipt_real_corpus() -> Result<(), String> {
         if receipt.synthetic {
             continue;
         }
+        // Compare durations, not truncated millis: `as_millis` floors, so a
+        // p50 just 1 µs over the bound would otherwise pass as 1000 <= 1000.
         assert!(
-            !enforce || receipt.p50_cold_scan_index.as_millis() <= PROVISIONAL_COLD_INDEX_LIMIT_MS,
+            !enforce
+                || receipt.p50_cold_scan_index
+                    <= Duration::from_millis(PROVISIONAL_COLD_INDEX_LIMIT_MS as u64),
             "provisional threshold exceeded for {}: p50 cold scan+index {} ms > {PROVISIONAL_COLD_INDEX_LIMIT_MS} ms",
             receipt.name,
             receipt.p50_cold_scan_index.as_millis()
