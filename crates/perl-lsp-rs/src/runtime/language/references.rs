@@ -4261,4 +4261,85 @@ mod tests {
 
         Ok(())
     }
+
+    /// Index and text producers must identify one occurrence by its name token.
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn unresolved_references_mixed_sources_return_name_tokens_once() -> Result<(), Box<dyn Error>> {
+        use crate::runtime::LspServer;
+        use parking_lot::Mutex;
+        use std::io::Cursor;
+        use std::sync::Arc;
+
+        let output = Arc::new(Mutex::new(
+            Box::new(Cursor::new(Vec::new())) as Box<dyn std::io::Write + Send>
+        ));
+        let server = LspServer::with_output(output);
+        let uri = "file:///test/ghost.pl";
+        let text = concat!(
+            "package main;\n",
+            "ghost_call(); ghost_call(1);\n",
+            "my $x = ghost_call();\n",
+            "my $h = { ghost_call => 1 };\n",
+            "# ghost_call()\n",
+            "my $s = 'ghost_call()';\n",
+            "ghost_callable();\n",
+        );
+        server.test_apply_did_open(uri, text, 1)?;
+        server.test_index_file_in_building_state(uri, text).map_err(std::io::Error::other)?;
+        server.test_simulate_indexing_complete();
+        assert!(matches!(route_index_access(server.coordinator()), IndexAccessMode::Full(_)));
+        assert!(!server.workspace_index_stale_for_any_open_document());
+
+        let mut expected = vec![
+            json!({
+                "uri": uri,
+                "range": {
+                    "start": {"line": 1, "character": 0},
+                    "end": {"line": 1, "character": 10}
+                }
+            }),
+            json!({
+                "uri": uri,
+                "range": {
+                    "start": {"line": 1, "character": 14},
+                    "end": {"line": 1, "character": 24}
+                }
+            }),
+            json!({
+                "uri": uri,
+                "range": {
+                    "start": {"line": 2, "character": 8},
+                    "end": {"line": 2, "character": 18}
+                }
+            }),
+        ];
+        expected.sort_by_key(|location| location.to_string());
+
+        for include_declaration in [false, true] {
+            let outcome = server.handle_references_inner(
+                Some(json!({
+                    "textDocument": {"uri": uri},
+                    "position": {"line": 1, "character": 2},
+                    "context": {"includeDeclaration": include_declaration}
+                })),
+                None,
+                reference_search_deadline(),
+            )?;
+            assert_eq!(outcome.1, ReferencesAnsweringTier::WorkspaceMixed);
+            assert_eq!(outcome.2, "full");
+            assert!(outcome.3 > 0, "the fixture must exercise index references");
+            assert!(outcome.4 > 0, "the fixture must exercise text references");
+            assert!(!outcome.7.deadline_exhausted, "the fixture must return a complete answer");
+            let result = outcome.0.ok_or("unresolved calls must return locations")?;
+            let mut actual = result.as_array().ok_or("references must be an array")?.clone();
+            actual.sort_by_key(|location| location.to_string());
+            assert_eq!(
+                actual, expected,
+                "each unresolved call must have exactly one name-token location"
+            );
+        }
+
+        Ok(())
+    }
 }

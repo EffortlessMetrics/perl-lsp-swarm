@@ -408,3 +408,67 @@ fn test_references_capability_advertised() -> TestResult {
 
     Ok(())
 }
+
+/// Real JSON-RPC references retain distinct calls and exclude non-call spellings.
+#[cfg(feature = "workspace")]
+#[test]
+fn test_unresolved_references_return_each_name_token_once() -> TestResult {
+    let doc = concat!(
+        "package main;\n",
+        "ghost_call(); ghost_call(1);\n",
+        "my $x = ghost_call();\n",
+        "my $h = { ghost_call => 1 };\n",
+        "# ghost_call()\n",
+        "my $s = 'ghost_call()';\n",
+        "ghost_callable();\n",
+        "sub refs_ready_marker {}\n",
+    );
+    let (mut harness, workspace) = LspHarness::with_workspace(&[("ghost.pl", doc)])?;
+    let uri = workspace.uri("ghost.pl");
+    harness.open_document(&uri, doc)?;
+    harness.wait_for_symbol("refs_ready_marker", Some(&uri), std::time::Duration::from_secs(10))?;
+
+    let mut expected = vec![
+        json!({
+            "uri": uri,
+            "range": {
+                "start": {"line": 1, "character": 0},
+                "end": {"line": 1, "character": 10}
+            }
+        }),
+        json!({
+            "uri": uri,
+            "range": {
+                "start": {"line": 1, "character": 14},
+                "end": {"line": 1, "character": 24}
+            }
+        }),
+        json!({
+            "uri": uri,
+            "range": {
+                "start": {"line": 2, "character": 8},
+                "end": {"line": 2, "character": 18}
+            }
+        }),
+    ];
+    expected.sort_by_key(|location| location.to_string());
+
+    for include_declaration in [false, true] {
+        let result = harness.request(
+            "textDocument/references",
+            json!({
+                "textDocument": {"uri": uri},
+                "position": {"line": 1, "character": 2},
+                "context": {"includeDeclaration": include_declaration}
+            }),
+        )?;
+        let mut actual = result.as_array().ok_or("references must be a non-null array")?.clone();
+        actual.sort_by_key(|location| location.to_string());
+        assert_eq!(
+            actual, expected,
+            "same-line calls must remain distinct and only name tokens may be returned"
+        );
+    }
+
+    Ok(())
+}
