@@ -6222,6 +6222,32 @@ impl IndexVisitor {
         }
     }
 
+
+    /// Give live call references the bare callee token shared with text search.
+    fn call_reference_range(&mut self, node: &Node, name: &str) -> Range {
+        if matches!(name, "->()" | "&{}" | "field") {
+            return self.node_to_range(node);
+        }
+        let Some(call_source) = self.document.text().get(node.location.start..node.location.end)
+        else {
+            return self.node_to_range(node);
+        };
+        let name_source = call_source.strip_prefix('&').unwrap_or(call_source).trim_start();
+        let bare_name = name.rsplit("::").next().unwrap_or(name);
+        // Preserve existing ranges when the parser name is not a literal source prefix.
+        if bare_name.is_empty() || name_source.get(..name.len()) != Some(name) {
+            return self.node_to_range(node);
+        }
+        let end = node.location.start + call_source.len() - name_source.len() + name.len();
+        let start = end - bare_name.len();
+        let ((start_line, start_col), (end_line, end_col)) =
+            self.document.line_index.range(start, end);
+        Range {
+            start: Position { byte: start, line: start_line, column: start_col },
+            end: Position { byte: end, line: end_line, column: end_col },
+        }
+    }
+
     /// **Production reference walk (perl-lsp-swarm#1711-B cutover).**
     /// Unified reference walk: produces BOTH the legacy [`FileIndex`]
     /// reference/dependency projection AND the canonical `Vec<SymbolRef>`
@@ -6435,7 +6461,7 @@ impl IndexVisitor {
 
             NodeKind::FunctionCall { name, args, .. } | NodeKind::AmperCall { name, args, .. } => {
                 let func_name = name.clone();
-                let location = self.node_to_range(node);
+                let location = self.call_reference_range(node, name);
 
                 let (pkg, bare_name) = if let Some(idx) = func_name.rfind("::") {
                     (&func_name[..idx], &func_name[idx + 2..])
