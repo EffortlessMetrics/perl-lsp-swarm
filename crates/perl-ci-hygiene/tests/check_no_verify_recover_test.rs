@@ -132,16 +132,17 @@ fn perl_ci_hygiene_binary() -> TestResult<PathBuf> {
 }
 
 /// Runs the gate with a scrubbed base-resolution environment, so the
-/// developer's (or CI's) ambient `CI` / `GITHUB_BASE_REF` / `CI_SCOPE_BASE`
-/// cannot leak into the fixture. Pass `ci = Some("1")` for the CI posture.
-/// Extra variables (e.g. a wired `CI_SCOPE_BASE`) layer on after the scrub.
+/// developer's (or CI's) ambient `CI` / `GITHUB_BASE_REF` / `CI_SCOPE_BASE` /
+/// `GITHUB_EVENT_NAME` / `GITHUB_EVENT_PATH` cannot leak into the fixture.
+/// Pass `ci = Some("1")` for the CI posture. Extra variables (e.g. a push
+/// event payload) layer on after the scrub.
 fn run_check(repo: &Path, args: &[&str], ci: Option<&str>) -> TestResult<Output> {
     run_check_with_env(repo, args, ci, &[])
 }
 
 /// [`run_check`] with additional environment layered on after the scrub, so
-/// tests can simulate one wired variable (like the push event's
-/// `CI_SCOPE_BASE`) while the rest of the ambient environment stays out.
+/// tests can simulate one wired variable (like the push event payload)
+/// while the rest of the ambient environment stays out.
 fn run_check_with_env(
     repo: &Path,
     args: &[&str],
@@ -156,7 +157,9 @@ fn run_check_with_env(
         .current_dir(repo)
         .env_remove("CI")
         .env_remove("CI_SCOPE_BASE")
-        .env_remove("GITHUB_BASE_REF");
+        .env_remove("GITHUB_BASE_REF")
+        .env_remove("GITHUB_EVENT_NAME")
+        .env_remove("GITHUB_EVENT_PATH");
     scrub_git_location(&mut command);
     if let Some(value) = ci {
         command.env("CI", value);
@@ -362,9 +365,8 @@ fn local_multi_commit_fixture_still_scans_previous_commit() -> TestResult {
 
 #[test]
 fn ci_scope_base_overrides_branch_ref_resolving_to_head() -> TestResult {
-    // (1b): on a push to main, origin/main can resolve to HEAD, which would
-    // scan an empty HEAD..HEAD range. The wired previous tip (CI_SCOPE_BASE)
-    // must win candidate selection so the pushed range is actually scanned.
+    // A manual CI_SCOPE_BASE override wins candidate selection, so an
+    // operator can always name the honest baseline explicitly.
     let repo = TempRepo::new("scope-base-wins")?;
     let base = repo.commit("file.txt", "base\n", "base commit")?;
     let violating = repo.commit_as(
@@ -382,12 +384,52 @@ fn ci_scope_base_overrides_branch_ref_resolving_to_head() -> TestResult {
 
     assert!(
         !output.status.success(),
-        "the wired previous tip must expose the pushed-range violation: {}",
+        "the override previous tip must expose the pushed-range violation: {}",
         combined(&output)
     );
     let text = stdout(&output);
     assert!(text.contains(&violating), "missing violating sha: {text}");
-    assert!(text.contains(&base), "the scan must use the wired base: {text}");
+    assert!(text.contains(&base), "the scan must use the override base: {text}");
+    Ok(())
+}
+
+#[test]
+fn push_event_payload_previous_tip_resolves_the_range() -> TestResult {
+    // (1b): on a push to main, origin/main can resolve to HEAD, which would
+    // scan an empty HEAD..HEAD range. The gate reads the push event's
+    // previous tip from the GITHUB_EVENT_PATH payload — no workflow wiring,
+    // which ci_subject forbids — so the pushed range is actually scanned.
+    let repo = TempRepo::new("payload-base-wins")?;
+    let base = repo.commit("file.txt", "base\n", "base commit")?;
+    let violating = repo.commit_as(
+        "file.txt",
+        "smuggled\n",
+        "bypassed commit gate",
+        "xtask hook tests",
+        "xtask@example.invalid",
+    )?;
+    repo.commit("file.txt", "head\n", "head commit")?;
+    // Simulate the post-push shape: a main-line ref sitting exactly at HEAD.
+    git(repo.path(), &["update-ref", "refs/heads/main", "HEAD"])?;
+    let payload_path = repo.path().join("event.json");
+    fs::write(&payload_path, format!("{{\"before\": \"{base}\", \"ref\": \"x\"}}"))?;
+    let payload_str = payload_path.to_string_lossy().into_owned();
+
+    let output = run_check_with_env(
+        repo.path(),
+        &[],
+        Some("1"),
+        &[("GITHUB_EVENT_NAME", "push"), ("GITHUB_EVENT_PATH", payload_str.as_str())],
+    )?;
+
+    assert!(
+        !output.status.success(),
+        "the payload previous tip must expose the pushed-range violation: {}",
+        combined(&output)
+    );
+    let text = stdout(&output);
+    assert!(text.contains(&violating), "missing violating sha: {text}");
+    assert!(text.contains(&base), "the scan must use the payload base: {text}");
     Ok(())
 }
 

@@ -494,16 +494,19 @@ fn non_rust_inventory_check_is_wired_to_policy_shard() -> Result<()> {
 
 /// The `--no-verify` re-cover gate (#17430) is only useful when the hosted
 /// policy shard actually executes it over the pushed range. Keep the source
-/// policy, the workflow matrix, the lane mapping, and the shard's scan-base
-/// wiring pointed at the same required gate.
+/// policy, the workflow matrix, and the lane mapping pointed at the same
+/// required gate.
 ///
-/// The scan-base leg is the load-bearing one: on a push to main, checkout
-/// leaves `origin/main` at `HEAD`, so a branch-ref base would scan an empty
-/// `HEAD..HEAD` range and pass smuggled commits. The runner must therefore
-/// hand the gates the push event's previous tip, and only the push event has
-/// one — `GITHUB_BASE_REF` is PR-only and cannot cover push runs.
+/// The scan base is deliberately NOT wired through the workflow: ci_subject
+/// forbids a platform scope base in `ci.yml`, so on a push to main — where
+/// checkout leaves `origin/main` at `HEAD` and a branch-ref base would scan
+/// an empty `HEAD..HEAD` range — the gate reads the event's previous tip
+/// from the `GITHUB_EVENT_PATH` payload itself
+/// (`push_base_from_event` in `no_verify_recover.rs`, covered by the
+/// `push_event_payload_previous_tip_resolves_the_range` integration test).
+/// `GITHUB_BASE_REF` is PR-only and cannot cover push runs.
 #[test]
-fn no_verify_recover_check_is_wired_to_policy_shard_with_push_base() -> Result<()> {
+fn no_verify_recover_check_is_wired_to_policy_shard() -> Result<()> {
     let root = project_root()?;
     let policy: Value =
         serde_yaml_ng::from_str(&std::fs::read_to_string(root.join(".ci/gate-policy.yaml"))?)?;
@@ -561,23 +564,11 @@ fn no_verify_recover_check_is_wired_to_policy_shard_with_push_base() -> Result<(
          the `policy` shard declares {shard_gates:?}"
     );
 
-    // The execution seam: the step consuming `matrix.gates` must hand every
-    // shard the push event's previous tip as CI_SCOPE_BASE. Without it the
-    // pushed-range gates fall back to branch refs that resolve to HEAD on
-    // main-push runs and scan nothing.
-    let runner = shard_runner_step(&job)?;
-    let scope_base = runner
-        .get("env")
-        .and_then(|env| env.get("CI_SCOPE_BASE"))
-        .and_then(Value::as_str)
-        .ok_or_else(|| eyre!("the shard runner no longer wires CI_SCOPE_BASE"))?;
-    ensure!(
-        scope_base.contains("github.event_name == 'push'")
-            && scope_base.contains("github.event.before"),
-        "CI_SCOPE_BASE must carry the push event's previous tip \
-         (github.event.before, push-scoped); got: {scope_base}"
-    );
-
+    // No runner-env leg: ci_subject forbids a platform scope base in the
+    // workflow, so the push base must not be wired here. The gate reads the
+    // push event's previous tip from GITHUB_EVENT_PATH instead (see the
+    // module doc above); that mechanism is pinned by the gate's own
+    // integration test, not by workflow shape.
     Ok(())
 }
 

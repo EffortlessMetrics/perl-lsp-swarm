@@ -41,6 +41,7 @@ use std::path::Path;
 use std::process::Command;
 
 use crate::{GREEN, NC, RED, YELLOW};
+use serde_json::Value as JsonValue;
 
 /// Placeholder author/committer names the pre-commit hook refuses.
 ///
@@ -250,17 +251,22 @@ fn unresolved_base_result(ci: bool) -> Result<i32> {
 
 /// Candidate base refs tried, in order, when no explicit base is supplied.
 ///
-/// Same convention as the sibling range gates: an explicit CI scope override,
-/// the PR base ref, the main line, then the previous commit — except the
+/// Same convention as the sibling range gates: a manual scope override, the
+/// PR base ref, the main line, then the previous commit — except the
 /// `HEAD~1` tail is local-only. In CI a multi-commit push with no resolvable
 /// main line would otherwise scan just the last commit and report green over
 /// the earlier ones; excluding the tail fails closed through
-/// [`unresolved_base_result`] instead, and push runs carry the event's actual
-/// previous tip in `CI_SCOPE_BASE` (see the `merge-gate-shards` runner env).
+/// [`unresolved_base_result`] instead. Push runs additionally resolve the
+/// event's previous tip from the `GITHUB_EVENT_PATH` payload: on a push to
+/// main, checkout leaves `origin/main` at `HEAD`, so without that candidate
+/// the gate would scan an empty `HEAD..HEAD` range and pass smuggled commits.
+/// The payload read stays inside the gate because ci_subject forbids wiring
+/// a platform scope base through the workflow.
 fn base_candidates() -> Vec<String> {
     base_candidates_from(
         std::env::var("CI_SCOPE_BASE").ok(),
         std::env::var("GITHUB_BASE_REF").ok(),
+        push_base_from_event(),
         std::env::var_os("CI").is_some(),
     )
 }
@@ -270,6 +276,7 @@ fn base_candidates() -> Vec<String> {
 fn base_candidates_from(
     scope_base: Option<String>,
     github_base_ref: Option<String>,
+    push_before: Option<String>,
     ci: bool,
 ) -> Vec<String> {
     let mut candidates = Vec::new();
@@ -280,11 +287,45 @@ fn base_candidates_from(
         candidates.push(format!("origin/{value}"));
         candidates.push(value);
     }
+    if let Some(value) = push_before {
+        candidates.push(value);
+    }
     candidates.extend(["origin/main".to_owned(), "main".to_owned()]);
     if !ci {
         candidates.push("HEAD~1".to_owned());
     }
     candidates
+}
+
+/// Previous tip of the current push, read from the platform event payload.
+///
+/// Returns `Some(sha)` only for `push` events whose payload carries a usable
+/// `before` SHA: anything else (other events, missing/unreadable payload,
+/// unparseable JSON, missing field, all-zero `before` from a new branch)
+/// yields `None` and the candidate chain falls through. The payload path and
+/// event name are platform-default environment, so this needs no workflow
+/// wiring — which ci_subject would reject.
+fn push_base_from_event() -> Option<String> {
+    if std::env::var("GITHUB_EVENT_NAME").as_deref() != Ok("push") {
+        return None;
+    }
+    let path = std::env::var_os("GITHUB_EVENT_PATH")?;
+    let bytes = std::fs::read(path).ok()?;
+    push_before_from_payload(&bytes)
+}
+
+/// Pure payload half of [`push_base_from_event`], so tests can pin parsing
+/// without touching process-global environment or the filesystem.
+fn push_before_from_payload(bytes: &[u8]) -> Option<String> {
+    let payload: JsonValue = serde_json::from_slice(bytes).ok()?;
+    let before = payload.get("before")?.as_str()?;
+    if before.len() != 40
+        || !before.bytes().all(|byte| byte.is_ascii_hexdigit())
+        || before.bytes().all(|byte| byte == b'0')
+    {
+        return None;
+    }
+    Some(before.to_owned())
 }
 
 /// Selects the first candidate base ref that `git` can resolve.
@@ -394,7 +435,7 @@ mod tests {
     use super::{
         AttributionFinding, AttributionSlot, PLACEHOLDER_IDENTITY_EMAILS,
         PLACEHOLDER_IDENTITY_NAMES, base_candidates_from, hook_placeholders,
-        scan_commit_attribution, unresolved_base_result,
+        push_before_from_payload, scan_commit_attribution, unresolved_base_result,
     };
     use color_eyre::eyre::Result;
     use std::collections::BTreeSet;
@@ -654,7 +695,7 @@ mod tests {
         // narrow to the last commit: without HEAD~1 nothing resolves and the
         // gate fails closed instead of reporting green over earlier commits.
         assert_eq!(
-            base_candidates_from(None, None, true),
+            base_candidates_from(None, None, None, true),
             vec!["origin/main".to_owned(), "main".to_owned()]
         );
     }
@@ -662,7 +703,7 @@ mod tests {
     #[test]
     fn local_candidates_keep_head_parent_fallback() {
         assert_eq!(
-            base_candidates_from(None, None, false),
+            base_candidates_from(None, None, None, false),
             vec!["origin/main".to_owned(), "main".to_owned(), "HEAD~1".to_owned()]
         );
     }
@@ -670,18 +711,46 @@ mod tests {
     #[test]
     fn scope_base_leads_so_push_tip_beats_degenerate_branch_refs() {
         // On a push to main, origin/main can resolve to HEAD (empty range);
-        // the wired previous tip must sort before every branch candidate.
-        let candidates =
-            base_candidates_from(Some("before-sha".to_owned()), Some("main".to_owned()), true);
+        // the event's previous tip must sort before every branch candidate.
+        let candidates = base_candidates_from(
+            Some("override-sha".to_owned()),
+            Some("main".to_owned()),
+            Some("before-sha".to_owned()),
+            true,
+        );
         assert_eq!(
             candidates,
             vec![
-                "before-sha".to_owned(),
+                "override-sha".to_owned(),
                 "origin/main".to_owned(),
                 "main".to_owned(),
+                "before-sha".to_owned(),
                 "origin/main".to_owned(),
                 "main".to_owned(),
             ]
         );
+    }
+
+    #[test]
+    fn push_before_parser_accepts_only_usable_shas() {
+        let sha = "0123456789abcdef0123456789abcdef01234567";
+        assert_eq!(
+            push_before_from_payload(format!(r#"{{"before": "{sha}", "ref": "x"}}"#).as_bytes()),
+            Some(sha.to_owned())
+        );
+        for bad in [
+            "not json",
+            "{}",
+            r#"{"before": 42}"#,
+            r#"{"before": "short"}"#,
+            r#"{"before": "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"}"#,
+            r#"{"before": "0000000000000000000000000000000000000000"}"#,
+        ] {
+            assert_eq!(
+                push_before_from_payload(bad.as_bytes()),
+                None,
+                "payload must not yield a base: {bad}"
+            );
+        }
     }
 }
