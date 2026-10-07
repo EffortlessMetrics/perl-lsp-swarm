@@ -2104,6 +2104,21 @@ jobs:
             grep -Fx "test $test_name ... ok" "$RUNNER_TEMP/pr-fast-watchdog-contract.log"
           done
 
+      # #17459: workflow/policy-only changes skip RustScoped routed tests.
+      # Execute this governed-surface contract on the protected merge surface.
+      - name: Routed test preparation contract (required merge surface)
+        run: |
+          set -o pipefail
+          cargo test -p xtask --test routed_test_preparation_contract --locked -- \
+            --test-threads=1 --color never | tee "$RUNNER_TEMP/routed-test-preparation-contract.log"
+          grep -Eq '^test result: ok\. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in ' \
+            "$RUNNER_TEMP/routed-test-preparation-contract.log"
+          for test_name in \
+            preparation_preserves_runtime_command_and_budget \
+            preparation_precedes_watchdog_and_has_separate_evidence; do
+            grep -Fx "test $test_name ... ok" "$RUNNER_TEMP/routed-test-preparation-contract.log"
+          done
+
       # The frozen legacy parity authority is a required merge surface. Keep
       # both integration targets here because compile-all-targets alone cannot
       # execute their assertions, and the routed pr-fast lane is advisory.
