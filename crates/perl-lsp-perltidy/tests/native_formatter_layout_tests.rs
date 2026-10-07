@@ -988,24 +988,18 @@ fn native_formatter_expands_simple_c_style_for_blocks() {
 }
 
 #[test]
-fn native_formatter_expands_simple_c_style_for_continue_blocks() {
+fn native_formatter_rejects_invalid_c_style_for_continue_blocks() {
     let formatter = NativeFormatter::new();
+    // Perl rejects a continue block after a C-style for loop (#16296).
     let source = "for(my$i=0;$i<3;$i++){next;}continue{tick($i);}\n";
 
     let result = formatter.format_document(source, &FormatConfig::default());
 
-    assert!(result.changed);
-    assert_eq!(
-        result.formatted,
-        concat!(
-            "for (my $i = 0; $i < 3; $i++) {\n",
-            "    next;\n",
-            "} continue {\n",
-            "    tick($i);\n",
-            "}\n",
-        )
-    );
-    assert!(result.diagnostics.is_empty());
+    assert!(!result.changed);
+    assert_eq!(result.formatted, source);
+    assert!(result.edits.is_empty());
+    assert_eq!(result.diagnostics.len(), 1);
+    assert_eq!(result.diagnostics[0].code, "native.format.parse_error");
 }
 
 #[test]
@@ -1176,7 +1170,7 @@ fn native_range_formatter_formats_selected_simple_c_style_for_line() {
 }
 
 #[test]
-fn native_range_formatter_formats_selected_simple_c_style_for_continue_line() {
+fn native_range_formatter_rejects_selected_invalid_c_style_for_continue_line() {
     let formatter = NativeFormatter::new();
     let source = "my$x=1;\nfor(my$i=0;$i<3;$i++){next;}continue{tick($i);}\n";
     let range = TextRange {
@@ -1186,16 +1180,11 @@ fn native_range_formatter_formats_selected_simple_c_style_for_continue_line() {
 
     let result = formatter.format_range(source, range, &FormatConfig::default());
 
-    assert!(result.changed);
-    assert_eq!(
-        result.formatted,
-        "my$x=1;\nfor (my $i = 0; $i < 3; $i++) {\n    next;\n} continue {\n    tick($i);\n}\n"
-    );
-    assert_eq!(result.edits.len(), 1);
-    assert_eq!(
-        result.edits[0].new_text,
-        "for (my $i = 0; $i < 3; $i++) {\n    next;\n} continue {\n    tick($i);\n}"
-    );
+    assert!(!result.changed);
+    assert_eq!(result.formatted, source);
+    assert!(result.edits.is_empty());
+    assert_eq!(result.diagnostics.len(), 1);
+    assert_eq!(result.diagnostics[0].code, "native.format.parse_error");
 }
 
 #[test]
