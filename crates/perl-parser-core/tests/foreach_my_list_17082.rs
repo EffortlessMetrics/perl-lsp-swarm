@@ -2,7 +2,7 @@
 //! the `for (my @filename = @_)` idiom in core parent.pm 0.241. The delimiter
 //! after the complete list, not its leading `my`, selects foreach vs C-style.
 
-use perl_parser_core::{Node, NodeKind, Parser};
+use perl_parser_core::{Node, NodeKind, ParseError, Parser};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -493,11 +493,21 @@ fn explicit_foreach_continuation_remains_attached() -> TestResult {
         let NodeKind::Foreach { variable, body, continue_block, .. } = &statements[0].kind else {
             return Err("explicit iterator changed kind".into());
         };
+        let NodeKind::VariableDeclaration {
+            declarator,
+            variable: iterator,
+            initializer: None,
+            ..
+        } = &variable.kind
+        else {
+            return Err("explicit iterator declaration changed kind".into());
+        };
+        assert_eq!(declarator, "my");
         assert!(matches!(
-            &variable.kind,
+            &iterator.kind,
             NodeKind::Variable { sigil, name } if sigil == "$" && name == "item"
         ));
-        assert_eq!(&source[variable.location.start..variable.location.end], "$item");
+        assert_eq!(&source[iterator.location.start..iterator.location.end], "$item");
         assert_eq!(&source[body.location.start..body.location.end], body_text);
         let continuation = continue_block.as_deref().ok_or("explicit continue block lost")?;
         assert_eq!(&source[continuation.location.start..continuation.location.end], continue_text);
@@ -514,8 +524,41 @@ fn c_style_for_continuation_blocks_remain_rejected() {
         let mut parser = Parser::new(&source);
         let result = parser.parse();
         assert!(
-            result.is_err() || parser.errors().iter().any(|error| error.blocks_clean_parse()),
-            "C-style continuation block silently accepted: {source}"
+            matches!(result, Err(ParseError::CStyleForContinueBlock { .. })),
+            "C-style continuation block did not report its specific error: {source}"
         );
     }
+}
+
+#[test]
+fn implicit_foreach_leaves_standalone_continue_as_a_following_statement() -> TestResult {
+    for keyword in ["for", "foreach"] {
+        let body_text = "{ print $_; }";
+        let loop_text = format!("{keyword} (1, 2) {body_text}");
+        let source = format!("{loop_text} continue; my $after = 1;");
+        let ast = parse(&source)?;
+        let NodeKind::Program { statements } = &ast.kind else {
+            return Err("expected program".into());
+        };
+        assert_eq!(statements.len(), 3);
+        let NodeKind::Foreach { continue_block, .. } = &statements[0].kind else {
+            return Err("implicit iterator changed kind".into());
+        };
+        assert!(continue_block.is_none());
+        assert_eq!(statements[0].location.end, loop_text.len());
+        let NodeKind::VariableDeclaration { declarator, variable, initializer, .. } =
+            &statements[2].kind
+        else {
+            return Err("following declaration changed kind".into());
+        };
+        assert_eq!(declarator, "my");
+        assert!(matches!(
+            &variable.kind,
+            NodeKind::Variable { sigil, name } if sigil == "$" && name == "after"
+        ));
+        let initializer = initializer.as_deref().ok_or("following initializer lost")?;
+        assert!(matches!(&initializer.kind, NodeKind::Number { value } if value == "1"));
+        assert_eq!(&source[initializer.location.start..initializer.location.end], "1");
+    }
+    Ok(())
 }
