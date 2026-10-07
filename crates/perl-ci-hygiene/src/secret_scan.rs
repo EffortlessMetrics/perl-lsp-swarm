@@ -196,7 +196,9 @@ impl Allowlist {
             return Ok(Self::default());
         }
         let text = String::from_utf8(output.stdout).map_err(|error| {
-            eyre!("the secret-scan allowlist at '{spec}' is not valid UTF-8 ({error}); failing closed")
+            eyre!(
+                "the secret-scan allowlist at '{spec}' is not valid UTF-8 ({error}); failing closed"
+            )
         })?;
         Ok(Self::parse(&text))
     }
