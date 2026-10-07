@@ -1009,12 +1009,26 @@ fn plan_gates(root: &Path, policy: &GatePolicy, config: &GateRunnerConfig) -> Re
     let staged_tree_oid = resolve_staged_tree_oid(root, config)?;
 
     if config.gate_filter.is_some() {
-        return Ok(static_gate_plan(
-            config.tier.clone(),
-            base,
-            filter_gates(policy, config)?,
-            staged_tree_oid,
-        ));
+        let filtered = filter_gates(policy, config)?;
+        if filtered.iter().any(|gate| {
+            gate.tier == "pr_fast"
+                && gate
+                    .planning
+                    .as_ref()
+                    .is_some_and(|planning| planning.role == GatePlanningRole::RustScoped)
+        }) {
+            // A named scoped gate needs the same package rendering and skip /
+            // fallback decisions as the full tier. Static filtering leaves
+            // {package_args} unresolved, even with an immutable subject.
+            let mut plan =
+                plan_pr_fast_gates(root, gates_for_tier(policy, "pr_fast"), base, subject_scope)?;
+            plan.selected.retain(|row| Some(&row.gate.name) == config.gate_filter.as_ref());
+            plan.skipped.retain(|row| Some(&row.name) == config.gate_filter.as_ref());
+            plan.tier = config.tier.clone();
+            plan.staged_tree_oid = staged_tree_oid;
+            return Ok(plan);
+        }
+        return Ok(static_gate_plan(config.tier.clone(), base, filtered, staged_tree_oid));
     }
 
     match config.tier {
@@ -4626,6 +4640,92 @@ gates:
         assert!(clippy.gate.command.contains("-p perl-parser"));
         assert!(clippy.gate.command.contains("-p perl-lsp-rs"));
         assert!(clippy.gate.command.contains("-p perl-dap"));
+        Ok(())
+    }
+
+    #[test]
+    fn scoped_gate_filter_preserves_full_tier_scope_and_dispositions()
+    -> color_eyre::eyre::Result<()> {
+        for scenario in ["code", "prose", "missing-metadata"] {
+            let repo = isolated_git_repo_with_origin_main()?;
+            let root = repo.path();
+            if scenario != "missing-metadata" {
+                fs::create_dir_all(root.join("crates/smoke-probe/src"))?;
+                fs::write(
+                    root.join("Cargo.toml"),
+                    "[workspace]\nmembers = [\"crates/smoke-probe\"]\nresolver = \"2\"\n",
+                )?;
+                fs::write(
+                    root.join("crates/smoke-probe/Cargo.toml"),
+                    "[package]\nname = \"smoke-probe\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+                )?;
+                fs::write(root.join("crates/smoke-probe/src/lib.rs"), "pub fn probe() {}\n")?;
+                run_git(root, &["add", "."])?;
+                run_git(root, &["commit", "--quiet", "-m", "workspace fixture"])?;
+                run_git(root, &["update-ref", "refs/remotes/origin/main", "HEAD"])?;
+            }
+            let changed =
+                if scenario == "code" { "crates/smoke-probe/src/lib.rs" } else { "README.md" };
+            fs::write(root.join(changed), "// changed\n")?;
+            run_git(root, &["add", "."])?;
+            run_git(root, &["commit", "--quiet", "-m", "subject change"])?;
+            let policy = policy_with_gates(vec![
+                pr_gate("fmt", GatePlanningRole::AlwaysOn, "cargo xtask fmt --check"),
+                pr_gate(
+                    "unit_routed_full_build",
+                    GatePlanningRole::RustScoped,
+                    "cargo test --locked --tests {package_args} --no-run",
+                ),
+                pr_gate(
+                    "unit_routed_full",
+                    GatePlanningRole::RustScoped,
+                    "cargo test --locked --tests {package_args}",
+                ),
+                pr_gate(
+                    "unit_core",
+                    GatePlanningRole::RustFallback,
+                    "cargo test --workspace --lib",
+                ),
+            ]);
+            let mut config = GateRunnerConfig {
+                tier: GateTier::PrFast,
+                base_ref: Some("origin/main".to_string()),
+                ..GateRunnerConfig::default()
+            };
+            let full = plan_gates(root, &policy, &config)?;
+            config.gate_filter = Some("unit_routed_full_build".to_string());
+            let filtered = plan_gates(root, &policy, &config)?;
+            let expected: Vec<_> = full
+                .selected
+                .iter()
+                .filter(|row| row.gate.name == "unit_routed_full_build")
+                .map(|row| &row.gate.command)
+                .collect();
+            assert_eq!(
+                filtered.selected.iter().map(|row| &row.gate.command).collect::<Vec<_>>(),
+                expected,
+                "{scenario}"
+            );
+            assert_eq!(filtered.package_args, full.package_args, "{scenario}");
+            assert_eq!(filtered.fallback_used, full.fallback_used, "{scenario}");
+            assert_eq!(filtered.scope_ok, full.scope_ok, "{scenario}");
+            if scenario == "code" {
+                assert_eq!(filtered.package_args, vec!["-p", "smoke-probe"]);
+                assert_eq!(selected_gate_names(&filtered), vec!["unit_routed_full_build"]);
+                assert!(!filtered.selected[0].gate.command.contains("{package_args}"));
+            } else {
+                assert!(filtered.selected.is_empty(), "no empty scope may widen to workspace");
+                assert_eq!(skipped_gate_names(&filtered), vec!["unit_routed_full_build"]);
+                assert_eq!(
+                    filtered.skipped[0].reason,
+                    full.skipped
+                        .iter()
+                        .find(|row| row.name == "unit_routed_full_build")
+                        .ok_or_else(|| color_eyre::eyre::eyre!("missing skipped build row"))?
+                        .reason
+                );
+            }
+        }
         Ok(())
     }
 

@@ -1092,6 +1092,27 @@ gates:
       role: rust_package_scoped
       packages:
         - xtask
+  # Compilation has its own receipt; --no-run never proves runtime assertions.
+  # PR Smoke prepares these exact targets before its runtime watchdog (#17459).
+  - name: unit_routed_full_build
+    tier: pr_fast
+    description: "Compile the routed integration-test targets without executing assertions"
+    required: true
+    command: cargo build -p perllsp --locked && env PERL_LSP_BIN="$PWD/target/debug/perllsp" cargo test --locked --tests {package_args} --no-run
+    # The retained main artifact spent 45s on perllsp plus 21m45s compiling
+    # test targets. Reuse the existing 25m gate bound, not a larger job budget.
+    timeout_seconds: 1500
+    retry_count: 0
+    budgets:
+      max_duration_ms: 1320000
+    quarantine: false
+    tags:
+      - compile
+      - integration
+      - routed
+    planning:
+      role: rust_scoped
+
   - name: unit_routed_full
     tier: pr_fast
     description: "Scoped routed integration tests for ci-scope selected crates (required test gate for #1470 coupling; --tests runs tests/ directories, catching runtime assertion failures not reachable by --lib)"
