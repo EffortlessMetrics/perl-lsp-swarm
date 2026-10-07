@@ -433,6 +433,99 @@ fn push_event_payload_previous_tip_resolves_the_range() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn unresolvable_push_before_fails_closed_instead_of_scanning_empty_range() -> TestResult {
+    // Fail-closed push baseline (#17434 wave-4): a nonzero `before` from the
+    // push payload names the exact pre-push tip. When it does not resolve
+    // locally (shallow fetch), falling through to origin/main — which sits
+    // at HEAD on a push-to-main checkout — would scan an empty HEAD..HEAD
+    // range and report green over the smuggled commit below. The gate must
+    // error naming the missing baseline instead, in both postures: a named
+    // baseline behaves like an explicit --base, not a genuinely absent one.
+    let repo = TempRepo::new("unresolvable-before")?;
+    repo.commit("file.txt", "base\n", "base commit")?;
+    repo.commit_as(
+        "file.txt",
+        "smuggled\n",
+        "bypassed commit gate",
+        "xtask hook tests",
+        "xtask@example.invalid",
+    )?;
+    // Simulate the post-push shape: the main-line ref sits exactly at HEAD.
+    git(repo.path(), &["update-ref", "refs/remotes/origin/main", "HEAD"])?;
+    let before = "1234567890abcdef1234567890abcdef12345678";
+    let payload_path = repo.path().join("event.json");
+    fs::write(&payload_path, format!("{{\"before\": \"{before}\", \"ref\": \"x\"}}"))?;
+    let payload_str = payload_path.to_string_lossy().into_owned();
+    let event_env = [("GITHUB_EVENT_NAME", "push"), ("GITHUB_EVENT_PATH", payload_str.as_str())];
+
+    for (label, ci) in [("CI", Some("1")), ("local", None)] {
+        let output = run_check_with_env(repo.path(), &[], ci, &event_env)?;
+        let text = combined(&output);
+        assert!(
+            !output.status.success(),
+            "{label}: an unresolvable push baseline must error, never pass: {text}"
+        );
+        // Deliberate fail-closed, not the accidental fallthrough: pre-fix,
+        // `rev-parse --verify` echoes any well-formed full SHA (exit 0
+        // without consulting the object database), so the unknown `before`
+        // was selected and died later in `git log` with "Invalid revision
+        // range". The gate must instead refuse the missing baseline up
+        // front, naming it and the fetch remedy.
+        assert!(
+            text.contains("push baseline") && text.contains("does not resolve"),
+            "{label}: the error must name the missing push baseline: {text}"
+        );
+        assert!(text.contains(before), "{label}: the error must carry the missing SHA: {text}");
+        assert!(
+            !text.contains("Invalid revision range"),
+            "{label}: must not reach git log with a bad revision: {text}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn all_zero_push_before_falls_through_to_automatic_candidates() -> TestResult {
+    // An all-zero `before` (new branch: no pre-push tip exists) is a
+    // genuinely absent baseline, so it stays fallthrough-eligible: with
+    // origin/main on a real earlier baseline, the scan must use it and fail
+    // naming the in-range violation.
+    let repo = TempRepo::new("zero-before-fallthrough")?;
+    let base = repo.commit("file.txt", "base\n", "base commit")?;
+    let violating = repo.commit_as(
+        "file.txt",
+        "smuggled\n",
+        "bypassed commit gate",
+        "xtask hook tests",
+        "xtask@example.invalid",
+    )?;
+    git(repo.path(), &["update-ref", "refs/remotes/origin/main", &base])?;
+    let payload_path = repo.path().join("event.json");
+    fs::write(
+        &payload_path,
+        r#"{"before": "0000000000000000000000000000000000000000", "ref": "x"}"#,
+    )?;
+    let payload_str = payload_path.to_string_lossy().into_owned();
+
+    let output = run_check_with_env(
+        repo.path(),
+        &[],
+        Some("1"),
+        &[("GITHUB_EVENT_NAME", "push"), ("GITHUB_EVENT_PATH", payload_str.as_str())],
+    )?;
+
+    assert!(
+        !output.status.success(),
+        "fallthrough to origin/main must expose the pushed-range violation: {}",
+        combined(&output)
+    );
+    let text = stdout(&output);
+    assert!(text.contains(&violating), "missing violating sha: {text}");
+    assert!(text.contains("origin/main"), "the scan must use the fallthrough base: {text}");
+    Ok(())
+}
+
 /// Marker the hostile-environment parent sets in the child probe's
 /// environment, carrying the hostile repository's path. Absent in normal
 /// suite runs, where the probe is a no-op pass.

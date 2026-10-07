@@ -185,7 +185,8 @@ fn is_placeholder(slot: AttributionSlot, value: &str) -> bool {
 ///
 /// Returns an error when no usable base ref resolves in CI (fail closed: an
 /// unscanned range must not report green), when an explicit `--base` does not
-/// resolve, or when `git log` cannot be executed or parsed.
+/// resolve, when a push payload names a `before` baseline missing locally, or
+/// when `git log` cannot be executed or parsed.
 pub(crate) fn check(repo_root: &Path, base: Option<&str>) -> Result<i32> {
     let Some(requested_base) = resolve_base(repo_root, base)? else {
         return unresolved_base_result(std::env::var_os("CI").is_some());
@@ -333,7 +334,12 @@ fn push_before_from_payload(bytes: &[u8]) -> Option<String> {
 /// An explicitly requested base that does not resolve is an error: the caller
 /// named a subject that does not exist. Auto-resolution finding nothing is not
 /// — that is "no subject to evaluate", which [`check`] reports as an
-/// unevaluated run locally and fails closed on in CI.
+/// unevaluated run locally and fails closed on in CI. The one exception is a
+/// nonzero push `before` from the event payload: it names the exact pre-push
+/// tip, so when it is missing locally the gate errors naming it instead of
+/// trying further automatic candidates (a shallower branch ref would scan the
+/// wrong range). A genuinely absent baseline (no/non-push event, unreadable
+/// payload, all-zero `before`) stays fallthrough-eligible via `None`.
 fn resolve_base(repo_root: &Path, requested: Option<&str>) -> Result<Option<String>> {
     if let Some(base) = requested {
         if ref_exists(repo_root, base) {
@@ -342,7 +348,27 @@ fn resolve_base(repo_root: &Path, requested: Option<&str>) -> Result<Option<Stri
         return Err(eyre!("base ref '{base}' does not resolve in {}", repo_root.display()));
     }
 
-    Ok(base_candidates().into_iter().find(|candidate| ref_exists(repo_root, candidate)))
+    let push_before = push_base_from_event();
+    for candidate in base_candidates() {
+        // A nonzero push `before` must exist locally, not merely parse:
+        // `rev-parse --verify` echoes any well-formed full SHA (exit 0
+        // without consulting the object database), so `ref_exists` cannot
+        // tell a missing baseline from a present one. Probe the database
+        // directly and fail closed naming the missing baseline.
+        if push_before.as_deref() == Some(candidate.as_str()) {
+            if object_exists(repo_root, &candidate) {
+                return Ok(Some(candidate));
+            }
+            return Err(eyre!(
+                "push baseline '{candidate}' from the GITHUB_EVENT_PATH payload does not resolve \
+                 locally (fetch with full history so the pushed range can be scanned)"
+            ));
+        }
+        if ref_exists(repo_root, &candidate) {
+            return Ok(Some(candidate));
+        }
+    }
+    Ok(None)
 }
 
 /// Resolves the merge base of `base` and `HEAD`, falling back to `base` itself.
@@ -360,10 +386,24 @@ fn merge_base(repo_root: &Path, base: &str) -> String {
 }
 
 /// Returns `true` when `git rev-parse --verify` resolves `reference`.
+///
+/// Note: for a well-formed full SHA this is a parse check, not an existence
+/// check — `rev-parse --verify` echoes the SHA with exit 0 even when the
+/// object is absent. Callers that need existence (the push baseline) use
+/// [`object_exists`].
 fn ref_exists(repo_root: &Path, reference: &str) -> bool {
     Command::new("git")
         .current_dir(repo_root)
         .args(["rev-parse", "--verify", "--quiet", reference])
+        .output()
+        .is_ok_and(|output| output.status.success())
+}
+
+/// Returns `true` when `object` exists in the local object database.
+fn object_exists(repo_root: &Path, object: &str) -> bool {
+    Command::new("git")
+        .current_dir(repo_root)
+        .args(["cat-file", "-e", object])
         .output()
         .is_ok_and(|output| output.status.success())
 }
