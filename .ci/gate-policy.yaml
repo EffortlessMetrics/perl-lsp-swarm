@@ -1872,6 +1872,35 @@ gates:
       - policy
       - tests
 
+  - name: no_verify_recover_check
+    tier: merge_gate
+    # REQUIRED on landing (#17430, trap T9). Unlike must_context_check, this
+    # guard needs no advisory bake-in: it flags only commits whose recorded
+    # author/committer name or email EXACTLY equals one of the four
+    # placeholder values the pre-commit hook itself refuses, and the hook
+    # forbids committing under those values — so no legitimate traffic can
+    # carry them. A flag proves a `--no-verify` (or `-c user.name=…`) bypass.
+    # V1 policy is commit attribution only; secret shapes (#17428) and ref
+    # rules (#17427) plug into this same pushed-range gate when those hooks
+    # land. Hook-policy parity is pinned by the
+    # `deny_list_matches_pre_commit_hook_policy` test: the deny lists must
+    # equal, exactly, the literals the generated pre-commit script refuses.
+    description: "Re-run the commit-attribution hook policy over the pushed range, so --no-verify cannot smuggle a placeholder git identity past review"
+    required: true
+    command: cargo xtask ci-hygiene check-no-verify-recover
+    # Matches must_context_check, the sibling `cargo xtask ci-hygiene ...`
+    # range gate in this shard: the cost is the cargo invocation, not the
+    # scan itself (a `git log` over the pushed range).
+    timeout_seconds: 300
+    retry_count: 0
+    budgets:
+      max_duration_ms: 240000
+    quarantine: false
+    tags:
+      - policy
+      - hooks
+      - attribution
+
   # #13774: before this route existed, nothing in the repository ever ran
   # `cargo test --doc` — not a gate, not a workflow, not a `justfile` recipe.
   # Every `compile_fail` doctest was therefore documentation that looked like

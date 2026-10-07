@@ -49,8 +49,8 @@
       "rule": "gate-policy-gates",
       "authority": ".ci/gate-policy.yaml",
       "emits": "gate",
-      "considered": 95,
-      "emitted": 95,
+      "considered": 96,
+      "emitted": 96,
       "not_seeded_reason": "every entry under gates: is emitted; nothing is filtered"
     },
     {
@@ -4148,6 +4148,33 @@
         "state": "not_evaluated"
       },
       "notes": "Ensure no nested Cargo.lock files exist (footgun prevention)"
+    },
+    {
+      "surface_id": "gate:no_verify_recover_check",
+      "class": "gate",
+      "class_authority": {
+        "kind": "derived",
+        "authority": ".ci/gate-policy.yaml",
+        "rule": "gate-policy-gates"
+      },
+      "semantic_authority": ".ci/gate-policy.yaml#no_verify_recover_check",
+      "consumers": [],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": ".ci/gate-policy.yaml",
+        "detail": "tier = \"merge_gate\"; required = true"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": ".ci/gate-policy.yaml"
+      },
+      "owner": "release/ci",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "Re-run the commit-attribution hook policy over the pushed range, so --no-verify cannot smuggle a placeholder git identity past review"
     },
     {
       "surface_id": "gate:non_rust_inventory_check",

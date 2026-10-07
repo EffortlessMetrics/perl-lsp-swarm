@@ -146,6 +146,13 @@ pub(crate) enum CliCommand {
         #[arg(long, value_name = "REF")]
         base: Option<String>,
     },
+    /// Re-run the commit-attribution hook policy over the pushed range, so `--no-verify` cannot smuggle a placeholder git identity past review (#17430).
+    CheckNoVerifyRecover {
+        /// Base ref to scan `HEAD` against. Defaults to `$CI_SCOPE_BASE`,
+        /// `$GITHUB_BASE_REF`, `origin/main`, `main`, then `HEAD~1`.
+        #[arg(long, value_name = "REF")]
+        base: Option<String>,
+    },
     /// Enforce `#[serial]`-style serialization on parallel-unsafe tests against `ci/serial_test_identities.json` (#1269).
     CheckSerialTest {
         /// Emit the parallel-unsafe test identity inventory without applying the registry gate.
@@ -220,6 +227,30 @@ mod tests {
                 &["--fail-on-regression", "--threshold=-0.5", "baseline.json", "candidate.json",]
             )
         );
+        Ok(())
+    }
+
+    #[test]
+    fn no_verify_recover_parses_optional_base() -> Result<()> {
+        let default_cli = Cli::try_parse_from(["perl-ci-hygiene", "check-no-verify-recover"])?;
+        let CliCommand::CheckNoVerifyRecover { base } = default_cli.command else {
+            return Err(eyre!("expected check-no-verify-recover command"));
+        };
+        assert_eq!(
+            base, None,
+            "omitted --base must stay None so the resolver tries its candidates"
+        );
+
+        let explicit_cli = Cli::try_parse_from([
+            "perl-ci-hygiene",
+            "check-no-verify-recover",
+            "--base",
+            "origin/main",
+        ])?;
+        let CliCommand::CheckNoVerifyRecover { base } = explicit_cli.command else {
+            return Err(eyre!("expected check-no-verify-recover command"));
+        };
+        assert_eq!(base.as_deref(), Some("origin/main"));
         Ok(())
     }
 
