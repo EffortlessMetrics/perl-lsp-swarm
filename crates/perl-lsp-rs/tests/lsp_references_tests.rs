@@ -421,6 +421,10 @@ fn test_unresolved_references_return_each_name_token_once() -> TestResult {
         "# ghost_call()\n",
         "my $s = 'ghost_call()';\n",
         "ghost_callable();\n",
+        "main::ghost_call();\n",
+        "&ghost_call(1);\n",
+        "&main::ghost_call();\n",
+        "my $u = '🙂'; ghost_call();\n",
         "sub refs_ready_marker {}\n",
     );
     let (mut harness, workspace) = LspHarness::with_workspace(&[("ghost.pl", doc)])?;
@@ -448,6 +452,34 @@ fn test_unresolved_references_return_each_name_token_once() -> TestResult {
             "range": {
                 "start": {"line": 2, "character": 8},
                 "end": {"line": 2, "character": 18}
+            }
+        }),
+        json!({
+            "uri": uri,
+            "range": {
+                "start": {"line": 7, "character": 6},
+                "end": {"line": 7, "character": 16}
+            }
+        }),
+        json!({
+            "uri": uri,
+            "range": {
+                "start": {"line": 8, "character": 1},
+                "end": {"line": 8, "character": 11}
+            }
+        }),
+        json!({
+            "uri": uri,
+            "range": {
+                "start": {"line": 9, "character": 7},
+                "end": {"line": 9, "character": 17}
+            }
+        }),
+        json!({
+            "uri": uri,
+            "range": {
+                "start": {"line": 10, "character": 14},
+                "end": {"line": 10, "character": 24}
             }
         }),
     ];
