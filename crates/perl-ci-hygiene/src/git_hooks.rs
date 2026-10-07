@@ -106,6 +106,11 @@ pub(crate) fn pre_push_hook_script() -> &'static str {
 #
 # If you find yourself bypassing repeatedly, file an issue and link it here.
 # ============================================================================
+#
+# Hook logic version (#17431 review wave 3): bump the integer below on EVERY
+# guard-logic change. Self-heal only upgrades (checkout > installed) and
+# never downgrades; unmarked legacy hooks count as version 0.
+# pre-push-hook-version: 1
 
 set -euo pipefail
 
@@ -123,21 +128,36 @@ fi
 
 # --- Self-heal stale hook installation (issue #4220) ---
 # When hooks/pre-push is updated in master, .git/hooks/pre-push is only
-# updated when install-githooks is re-run. Auto-copy when drift is detected,
-# then REFUSE this push: exec "$0" "$@" does NOT work here — git stdin is
-# already consumed before the hook executes — so continuing would guard this
-# push with stale logic (#17431 review: upgrade barrier). Exactly one
-# aborted push per hook upgrade; re-push runs the fresh guards.
+# updated when install-githooks is re-run. On drift, UPGRADE only: copy the
+# checkout file over the installed hook solely when its version marker is
+# strictly newer, then REFUSE this push: exec "$0" "$@" does NOT work here —
+# git stdin is already consumed before the hook executes — so continuing
+# would guard this push with stale logic (#17431 review: upgrade barrier).
+# Exactly one aborted push per hook upgrade; re-push runs the fresh guards.
+# When the checkout copy is NOT newer (stale branch/worktree), the installed
+# hook is never downgraded: the push proceeds under the installed guards
+# with a warning (#17431 review wave 3: downgrade barrier).
+hook_version() {
+    # Print the numeric hook-version marker of $1; prints nothing when absent.
+    sed -n 's/^# pre-push-hook-version: *\([0-9][0-9]*\).*/\1/p' "$1" 2>/dev/null | head -n 1
+}
 REPO_ROOT_FOR_HOOK="$(git rev-parse --show-toplevel 2>/dev/null || true)"
 if [ -n "$REPO_ROOT_FOR_HOOK" ] && [ -f "$REPO_ROOT_FOR_HOOK/hooks/pre-push" ]; then
     if ! diff -q "$0" "$REPO_ROOT_FOR_HOOK/hooks/pre-push" >/dev/null 2>&1; then
-        if cp "$REPO_ROOT_FOR_HOOK/hooks/pre-push" "$0" && chmod +x "$0"; then
-            echo "pre-push hook updated itself from hooks/pre-push (was stale)."
-            echo "This push was refused so stale logic never guards it — re-push to run the fresh guards."
-        else
-            echo "pre-push hook is stale and could not be self-updated (check permissions on $0); re-run install-githooks to refresh it." >&2
+        installed_version="$(hook_version "$0")"
+        case "$installed_version" in ''|*[!0-9]*) installed_version=0 ;; esac
+        checkout_version="$(hook_version "$REPO_ROOT_FOR_HOOK/hooks/pre-push")"
+        case "$checkout_version" in ''|*[!0-9]*) checkout_version=0 ;; esac
+        if [ "$checkout_version" -gt "$installed_version" ]; then
+            if cp "$REPO_ROOT_FOR_HOOK/hooks/pre-push" "$0" && chmod +x "$0"; then
+                echo "pre-push hook updated itself from hooks/pre-push (v$installed_version -> v$checkout_version)."
+                echo "This push was refused so stale logic never guards it — re-push to run the fresh guards."
+            else
+                echo "pre-push hook is stale and could not be self-updated (check permissions on $0); re-run install-githooks to refresh it." >&2
+            fi
+            exit 1
         fi
-        exit 1
+        echo "warning: hooks/pre-push in this checkout (v$checkout_version) is not newer than the installed hook (v$installed_version); keeping the installed hook. Update this branch/worktree to get the latest hook." >&2
     fi
 fi
 
@@ -761,6 +781,24 @@ mod tests {
             hook.contains("could not be self-updated"),
             "hook must name the failed-heal path honestly instead of claiming an update"
         );
+    }
+
+    #[test]
+    fn pre_push_hook_self_heal_never_downgrades() {
+        // #17431 review wave 3 (downgrade barrier): when the checkout copy
+        // predates the installed hook, self-heal must keep the installed
+        // hook and continue under its guards — never copy the older file
+        // over the newer installation. Only a strictly newer checkout copy
+        // upgrades (and refuses that one push).
+        let hook = pre_push_hook_script();
+        for marker in [
+            "# pre-push-hook-version: 1",
+            "hook_version()",
+            "\"$checkout_version\" -gt \"$installed_version\"",
+            "keeping the installed hook. Update this branch/worktree",
+        ] {
+            assert!(hook.contains(marker), "hook must contain downgrade-barrier marker {marker:?}");
+        }
     }
 
     #[test]
