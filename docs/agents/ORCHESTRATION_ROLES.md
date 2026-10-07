@@ -231,8 +231,9 @@ consolidation.
 **Constraints:**
 - Read-only for label decisions; may prune stale worktrees. Never run
   `git stash` — the stash is shared across all worktrees (see
-  [WORKTREE_PROTOCOL.md](../reference/WORKTREE_PROTOCOL.md)); discard with
-  scoped `git restore` or a branch-local WIP commit
+  [WORKTREE_PROTOCOL.md](../reference/WORKTREE_PROTOCOL.md)); discard work
+  with scoped `git restore`. Preserve work that must survive in a branch-local
+  WIP commit
 - Wisdom consolidation: captures learning into durable artifacts, not inline comments
 - Never delete a worktree with uncommitted work
 
