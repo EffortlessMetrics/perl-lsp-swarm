@@ -6,25 +6,28 @@
 #   1. tracked-never: .githooks is ignored and untracked in this repo;
 #   2. provision A via scripts/worktree-add.sh: A's hooks land in A's dir;
 #   3. provision B via worktree-manager.py allocate: B's hooks land in B's
-#      dir AND A's installed bytes are unchanged;
+#      dir AND A stays guarded (the installer fans out to every tree, so
+#      A's file carries the installing revision's bytes, never nothing);
 #   4. push-sim from B (execute B's installed pre-push, which carries a
-#      #4220-style self-heal like the real hook): A's bytes still unchanged;
+#      #4220-style self-heal like the real hook): only B's own file heals;
 #   5. the shared common hooks dir carries no real hooks (uninvolved);
 #   6. core.hooksPath is the installer-managed relative value;
-#   7. agent-preflight.sh passes in both provisioned trees (hookspath mode).
+#   7. agent-preflight.sh passes in B and fails closed (exit 7) in skewed A
+#      (hookspath mode): per-tree staleness is detectable, never silent.
 #
 # Installer behavior and scripts under test are selectable for red-green proof:
 #   HOOKSPATH_FIXTURE_INSTALLER_MODE=hookspath (default): the stub installer
-#     emulates the real one (set the repo-local relative core.hooksPath, then
-#     write via `git rev-parse --git-path hooks`).
+#     emulates the real one (write the running tree's authority bytes into
+#     EVERY tree's own .githooks dir, then set the repo-local relative
+#     core.hooksPath).
 #   HOOKSPATH_FIXTURE_INSTALLER_MODE=legacy: the stub emulates pre-#17414
 #     behavior (write the common hooks dir, never touch core.hooksPath).
 #   HOOKSPATH_FIXTURE_SCRIPTS_DIR (default: this repo's scripts/): must
 #     contain worktree-add.sh, worktree-manager.py, agent-preflight.sh.
 # Red-green: legacy mode plus pristine pre-change scripts (materialized via
-# `git show HEAD:path`, never `git stash`) FAIL the isolation assertions:
-# provisioning B rewrites A's installed bytes (the W2 flapping rule C
-# closes), while the default run PASSES.
+# `git show HEAD:path`, never `git stash`) FAIL the isolation assertions
+# (shared-file cross-talk, hooks in the common dir, hooksPath unset), while
+# the default run PASSES.
 #
 # Fully hermetic: a throwaway bare "origin" plus a clone under a tmpdir. No
 # cargo, no network, no interaction with the real repo's hooks or worktree
@@ -81,15 +84,25 @@ write_fixture_installer() {
     cat > "$1" <<'FIXTURE'
 #!/usr/bin/env bash
 set -u
+# Fan out like the real installer: the running tree's authority bytes go to
+# EVERY tree's own dir first, then the shared config flips (#17426 review:
+# siblings must never be left unguarded by another tree's provision).
+top="$(git rev-parse --show-toplevel)"
+while IFS= read -r wt; do
+  [[ -n "$wt" && -d "$wt" ]] || continue
+  # The tree's own dir spelled directly (.githooks): --git-path would still
+  # resolve to the common dir before the flip, exactly like the real
+  # installer joins INSTALLER_HOOKS_PATH onto each enumerated root.
+  dest="$wt/.githooks/pre-push"
+  mkdir -p "$(dirname "$dest")"
+  cp "$top/hooks/pre-push" "$dest"
+  printf '\n' >> "$dest"
+  chmod +x "$dest"
+  commit_dest="$wt/.githooks/pre-commit"
+  printf '#!/usr/bin/env bash\necho fixture-commit\n' > "$commit_dest"
+  chmod +x "$commit_dest"
+done < <(git worktree list --porcelain | sed -n 's/^worktree //p')
 git config --local core.hooksPath .githooks
-dest="$(git rev-parse --git-path hooks)/pre-push"
-mkdir -p "$(dirname "$dest")"
-cp hooks/pre-push "$dest"
-printf '\n' >> "$dest"
-chmod +x "$dest"
-commit_dest="$(git rev-parse --git-path hooks)/pre-commit"
-printf '#!/usr/bin/env bash\necho fixture-commit\n' > "$commit_dest"
-chmod +x "$commit_dest"
 FIXTURE
   else
     cat > "$1" <<'FIXTURE'
@@ -202,7 +215,7 @@ else
 fi
 cp "$INSTALLED_A" "${TMPDIR_BASE}/a-pre-push.snapshot" 2>/dev/null || true
 
-# -- Case 3: provision B (manager) leaves A's bytes alone -------------------
+# -- Case 3: provision B (manager) keeps A guarded ---------------------------
 STATE_B="${TMPDIR_BASE}/state-b.json"
 MANAGED_B="${TMPDIR_BASE}/managed-b"
 CASE3_EXIT=0
@@ -210,6 +223,7 @@ CASE3_OUT="$(run_manager "$STATE_B" "$MANAGED_B" allocate --slot slot-b --branch
 WT_B="${MANAGED_B}/slot-b"
 HOOKS_B="$(hooks_dir_of "$WT_B" 2>/dev/null || true)"
 INSTALLED_B="$HOOKS_B/pre-push"
+HOOKS_A_AFTER="$(hooks_dir_of "$WT_A" 2>/dev/null || true)"
 
 if [[ "$CASE3_EXIT" -ne 0 ]]; then
   fail "provision B: exited $CASE3_EXIT: $CASE3_OUT"
@@ -217,21 +231,20 @@ elif [[ "$INSTALLER_MODE" == "hookspath" && "$HOOKS_B" != */slot-b/.githooks ]];
   fail "provision B: hooks dir is $HOOKS_B, expected the slot's own .githooks"
 elif ! grep -q "fixture-hook-v2" "$INSTALLED_B" 2>/dev/null; then
   fail "provision B: installed pre-push does not carry the v2 authority"
-elif ! cmp -s "${TMPDIR_BASE}/a-pre-push.snapshot" "$INSTALLED_A"; then
+elif [[ "$INSTALLER_MODE" == "hookspath" && "$HOOKS_A_AFTER" != */wt-a/.githooks ]]; then
+  fail "provision B: A's hooks dir is $HOOKS_A_AFTER, expected A's own .githooks"
+elif [[ "$INSTALLER_MODE" == "hookspath" ]] && ! grep -q "fixture-hook-v2" "$INSTALLED_A" 2>/dev/null; then
+  fail "provision B: A's installed hook is missing the fan-out v2 bytes (sibling left unguarded)"
+elif [[ "$INSTALLER_MODE" == "hookspath" && ! -x "$INSTALLED_A" ]]; then
+  fail "provision B: A's installed hook is not executable after the fan-out"
+elif [[ "$INSTALLER_MODE" == "legacy" ]] && ! cmp -s "${TMPDIR_BASE}/a-pre-push.snapshot" "$INSTALLED_A"; then
   fail "provision B: provisioning B altered A's installed bytes"
 else
-  pass "provision B: slot at rev2 gets v2 hooks, A's installed bytes unchanged"
+  pass "provision B: slot at rev2 gets v2 hooks, A stays guarded via fan-out"
 fi
+cp "$INSTALLED_A" "${TMPDIR_BASE}/a-pre-push.snapshot" 2>/dev/null || true
 
-# Restore A's installed bytes through the stub directly (both modes), so the
-# push-sim below is independently discriminating: without the restore, the
-# legacy failure there would be a mere echo of case 3.
-if [[ -d "$WT_A" ]]; then
-  (cd "$WT_A" && bash scripts/install-githooks.sh >/dev/null 2>&1 || true)
-  cp "$INSTALLED_A" "${TMPDIR_BASE}/a-pre-push.snapshot" 2>/dev/null || true
-fi
-
-# -- Case 4: push-sim from B leaves A's bytes alone -------------------------
+# -- Case 4: push-sim from B heals only B's own file -------------------------
 PUSH_OUT=""
 if [[ -d "$WT_B" && -f "$INSTALLED_B" ]]; then
   PUSH_OUT="$(cd "$WT_B" && bash "$INSTALLED_B" </dev/null 2>&1 || true)"
@@ -259,19 +272,21 @@ else
   fail "hooksPath stays worktree-relative and installer-managed (got '$HOOKSPATH_VALUE')"
 fi
 
-# -- Case 7: preflight passes in both trees (hookspath mode) ------------------
+# -- Case 7: preflight passes in B, fails closed on skew in A ---------------
 if [[ "$INSTALLER_MODE" == "hookspath" ]]; then
   CODE_A=0
   (cd "$WT_A" && unset CARGO_TARGET_DIR && bash "$PREFLIGHT" >/dev/null 2>&1) || CODE_A=$?
   CODE_B=0
   (cd "$WT_B" && unset CARGO_TARGET_DIR && bash "$PREFLIGHT" >/dev/null 2>&1) || CODE_B=$?
-  if [[ "$CODE_A" -eq 0 && "$CODE_B" -eq 0 ]]; then
-    pass "preflight passes in both provisioned trees"
+  # B is at rev2 with v2 bytes: green. A is at rev1 with fan-out v2 bytes:
+  # per-tree staleness must fail closed (exit 7), never silently pass.
+  if [[ "$CODE_B" -eq 0 && "$CODE_A" -eq 7 ]]; then
+    pass "preflight passes in B and fails closed (exit 7) on skew in A"
   else
-    fail "preflight passes in both provisioned trees (got exit $CODE_A in A, $CODE_B in B)"
+    fail "preflight passes in B and fails closed on skew in A (got exit $CODE_A in A, $CODE_B in B)"
   fi
 else
-  pass "preflight passes in both provisioned trees (skipped in legacy mode)"
+  pass "preflight passes in B and fails closed on skew in A (skipped in legacy mode)"
 fi
 
 echo ""

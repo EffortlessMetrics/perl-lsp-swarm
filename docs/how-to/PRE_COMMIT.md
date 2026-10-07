@@ -27,10 +27,11 @@ installer on every provision.
 Files left behind in the common `.git/hooks/` dir by older installer runs are
 an inert fallback. Git ignores that directory entirely while `core.hooksPath`
 is set, and the toolchain never writes there again — provisioning in one tree
-can no longer rewrite another tree's hooks. Do not delete the leftovers by
-hand from a shared checkout unless the owning trees have all been provisioned
-at least once since the migration; until then an un-migrated tree still
-executes them.
+can no longer rewrite another tree's hooks. The shared config flip takes
+effect in every tree at once, so each installer run provisions every existing
+tree (main checkout plus linked worktrees) before flipping; trees created
+afterward are provisioned at creation by `worktree-add`. There is no
+half-migrated state left behind by a successful run.
 
 The published `.pre-commit-hooks.yaml` is an optional external integration and routes
 to the same `cargo xtask precommit` command; it is not a second repository policy.

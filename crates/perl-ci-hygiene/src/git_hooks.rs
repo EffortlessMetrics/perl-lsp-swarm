@@ -430,15 +430,56 @@ fi
 pub(crate) const INSTALLER_HOOKS_PATH: &str = ".githooks";
 
 pub(crate) fn cmd_install_githooks(repo_root: &Path) -> Result<i32> {
+    // The shared config flip takes effect in every tree at once, so every
+    // existing tree is provisioned in the same run: otherwise siblings
+    // without a .githooks dir yet would run unguarded until their own first
+    // provision (#17426 review). Writes land before the flip, so a failed
+    // flip leaves trees on their old (guarded) common-dir hooks.
+    for tree in worktree_roots(repo_root)? {
+        let hooks_dir = tree.join(INSTALLER_HOOKS_PATH);
+        fs::create_dir_all(&hooks_dir)?;
+        write_git_hook(&hooks_dir.join("pre-commit"), install::PRE_COMMIT_HOOK)?;
+        write_git_hook(&hooks_dir.join("pre-push"), pre_push_hook_script())?;
+    }
     set_installer_hooks_path(repo_root)?;
-    let hooks_dir = resolve_git_hooks_dir(repo_root)?;
-    fs::create_dir_all(&hooks_dir)?;
-
-    write_git_hook(&hooks_dir.join("pre-commit"), install::PRE_COMMIT_HOOK)?;
-    write_git_hook(&hooks_dir.join("pre-push"), pre_push_hook_script())?;
 
     install::print_install_summary();
     Ok(0)
+}
+
+/// Every worktree root (main checkout plus linked trees) sharing this repo.
+///
+/// Stale entries whose directories are gone are skipped: there is nothing to
+/// guard there. An enumeration failure is loud — installing into one tree
+/// while siblings stay unknown would silently unguard them at the flip.
+fn worktree_roots(repo_root: &Path) -> Result<Vec<PathBuf>> {
+    let output = Command::new("git")
+        .current_dir(repo_root)
+        .args(["worktree", "list", "--porcelain"])
+        .output()
+        .with_context(|| format!("listing worktrees from {}", repo_root.display()))?;
+    if !output.status.success() {
+        return Err(color_eyre::eyre::eyre!(
+            "git worktree list failed in {}: {}",
+            repo_root.display(),
+            String::from_utf8_lossy(&output.stderr).trim_end()
+        ));
+    }
+    let stdout =
+        String::from_utf8(output.stdout).context("git worktree list emitted non-UTF8 output")?;
+    let roots: Vec<PathBuf> = stdout
+        .lines()
+        .filter_map(|line| line.strip_prefix("worktree "))
+        .map(PathBuf::from)
+        .filter(|root| root.is_dir())
+        .collect();
+    if roots.is_empty() {
+        return Err(color_eyre::eyre::eyre!(
+            "git worktree list reported no live trees in {}",
+            repo_root.display()
+        ));
+    }
+    Ok(roots)
 }
 
 /// Check that installed hooks match the repository-generated authorities.
@@ -669,6 +710,44 @@ mod tests {
         assert!(repo.join(INSTALLER_HOOKS_PATH).join("pre-commit").is_file());
         assert!(!repo.join(".git").join("hooks").join("pre-push").exists());
         assert!(!repo.join(".git").join("hooks").join("pre-commit").exists());
+        fs::remove_dir_all(repo)?;
+        Ok(())
+    }
+
+    #[test]
+    fn installer_provisions_sibling_worktrees_in_the_same_run() -> Result<()> {
+        // #17426 review: the shared config flip takes effect in every tree
+        // at once, so installing from one tree must guard its siblings too.
+        let repo = temp_repo()?;
+        let seed = Command::new("git")
+            .current_dir(&repo)
+            .args(["-c", "user.email=t@t", "-c", "user.name=t"])
+            .arg("commit")
+            .args(["--quiet", "--allow-empty", "-m", "seed"])
+            .status()?;
+        assert!(seed.success());
+        let sib = repo.with_extension("sib");
+        let added = Command::new("git")
+            .current_dir(&repo)
+            .args(["worktree", "add", "--quiet"])
+            .arg(&sib)
+            .status()?;
+        assert!(added.success());
+
+        cmd_install_githooks(&repo)?;
+
+        for tree in [&repo, &sib] {
+            assert!(tree.join(INSTALLER_HOOKS_PATH).join("pre-push").is_file());
+            assert!(tree.join(INSTALLER_HOOKS_PATH).join("pre-commit").is_file());
+        }
+        let output = Command::new("git")
+            .current_dir(&sib)
+            .args(["config", "--get", "core.hooksPath"])
+            .output()?;
+        assert!(output.status.success());
+        assert_eq!(String::from_utf8(output.stdout)?.trim(), INSTALLER_HOOKS_PATH);
+
+        fs::remove_dir_all(&sib)?;
         fs::remove_dir_all(repo)?;
         Ok(())
     }

@@ -11,8 +11,8 @@
 #      trailing newline) in its OWN hooks dir, the installer runs exactly
 #      once, core.hooksPath is set, and the shared common dir is untouched;
 #   B. wrapper provisions each fresh worktree independently: a second tree
-#      provisions its own hooks (installer runs again) without altering the
-#      first tree's installed bytes (#17414 rule C isolation);
+#      provisions its own hooks (installer runs again) and the same-revision
+#      fan-out keeps the first tree guarded and byte-identical;
 #   B2. mixed-mode fast path: core.hooksPath unset with current shared
 #      common-dir hooks → installer NOT invoked (no cargo build);
 #   C. wrapper loud failure: installer fails → non-zero exit naming the
@@ -38,9 +38,10 @@
 # Fully hermetic: a throwaway bare "origin" plus a clone under a tmpdir. The
 # fixture commits its OWN scripts/install-githooks.sh, which both
 # provisioning paths prefer (installer and authority stay at the same
-# revision); the fixture installer emulates the real one (set the repo-local
-# relative core.hooksPath, then copy authority → installed hook + trailing
-# newline + exec bit, exactly like set_installer_hooks_path + write_git_hook)
+# revision); the fixture installer emulates the real one (fan the running
+# authority out to every tree's own .githooks dir, then set the repo-local
+# relative core.hooksPath — writes before the flip, exactly like the real
+# installer since the #17426 sibling-guarding repair)
 # and honors STUB_INSTALL_FAIL / STUB_INSTALL_LOG. The real installer's byte
 # contract is pinned by the perl-ci-hygiene Rust tests; this suite pins the
 # provisioning wiring around it. No cargo, no network, no interaction with
@@ -97,16 +98,26 @@ write_fixture_installer() {
 set -u
 if [ -n "${STUB_INSTALL_FAIL:-}" ]; then echo "stub: install refused" >&2; exit "${STUB_INSTALL_FAIL}"; fi
 printf 'install %s\n' "$(pwd)" >> "${STUB_INSTALL_LOG:?}"
+# Fan out like the real installer (#17426 review): the running tree's
+# authority bytes go to EVERY tree's own .githooks dir first (spelled
+# directly — --git-path still resolves to the common dir before the flip),
+# then the shared config flips so no sibling is left unguarded.
+top="$(git rev-parse --show-toplevel)"
+dest=""
+commit_dest=""
+while IFS= read -r wt; do
+  [ -n "$wt" ] && [ -d "$wt" ] || continue
+  dest="$wt/.githooks/pre-push"
+  mkdir -p "$(dirname "$dest")"
+  cp "$top/hooks/pre-push" "$dest"
+  printf '\n' >> "$dest"
+  chmod +x "$dest"
+  commit_dest="$wt/.githooks/pre-commit"
+  printf '#!/usr/bin/env bash\necho fixture-commit\n' > "$commit_dest"
+  printf '\n' >> "$commit_dest"
+  chmod +x "$commit_dest"
+done < <(git worktree list --porcelain | sed -n 's/^worktree //p')
 git config --local core.hooksPath .githooks
-dest="$(git rev-parse --git-path hooks)/pre-push"
-mkdir -p "$(dirname "$dest")"
-cp hooks/pre-push "$dest"
-printf '\n' >> "$dest"
-chmod +x "$dest"
-commit_dest="$(git rev-parse --git-path hooks)/pre-commit"
-printf '#!/usr/bin/env bash\necho fixture-commit\n' > "$commit_dest"
-printf '\n' >> "$commit_dest"
-chmod +x "$commit_dest"
 echo "stub installed pre-push to $dest and pre-commit to $commit_dest"
 FIXTURE
   chmod +x "$1"
@@ -222,8 +233,10 @@ fi
 cp "$INSTALLED_A" "${TMPDIR_BASE}/a-pre-push.snapshot" 2>/dev/null || true
 
 # ── Case B: wrapper provisions each fresh worktree independently ──────────
-# No shared hooks dir anymore: the second tree provisions its own hooks (the
-# installer runs again) and the first tree's installed bytes are untouched.
+# The second tree provisions its own hooks (the installer runs again); the
+# same-revision fan-out rewrites the first tree's file with identical bytes,
+# so it stays guarded and byte-identical (cross-revision skew is covered by
+# the isolation fixture's case 3/7, not here).
 WT_B="${TMPDIR_BASE}/wt-b"
 CASE_B_EXIT=0
 CASE_B_OUT="$(cd "$AGENT_ONE" && bash "$WRAPPER" -b "feature/wt-b" "$WT_B" 2>&1)" || CASE_B_EXIT=$?
@@ -248,7 +261,7 @@ elif ! cmp -s "${TMPDIR_BASE}/a-pre-push.snapshot" "$INSTALLED_A"; then
 elif ! common_hooks_clean "$COMMON_HOOKS"; then
   fail "wrapper independent provision: the shared common hooks dir was written"
 else
-  pass "wrapper independent provision: second tree gets its own hooks, first tree untouched"
+  pass "wrapper independent provision: second tree gets its own hooks, first tree guarded and byte-identical"
 fi
 
 # ── Case B2: mixed-mode fast path (hooks already current, shared) ─────────
