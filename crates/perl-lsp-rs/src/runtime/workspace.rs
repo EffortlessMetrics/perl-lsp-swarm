@@ -1936,13 +1936,7 @@ impl LspServer {
 
                 self.invalidate_workspace_identity();
 
-                let open_uris: Vec<String> = {
-                    let documents = self.documents.lock();
-                    documents.keys().cloned().collect()
-                };
-                for open_uri in open_uris {
-                    self.publish_diagnostics_debounced(&open_uri);
-                }
+                self.republish_open_document_diagnostics();
             }
         }
 
@@ -1980,6 +1974,10 @@ impl LspServer {
         let mut metadata_roots: std::collections::BTreeSet<std::path::PathBuf> =
             std::collections::BTreeSet::new();
 
+        // Whether this notification carried a DELETED change; the all-open
+        // republish runs once, after the metadata refresh below (#17332).
+        let mut watched_delete = false;
+
         for change in params.changes {
             let uri = change.uri.to_string();
             let change_type = change.typ;
@@ -2007,6 +2005,8 @@ impl LspServer {
                     if let Some(coordinator) = self.coordinator() {
                         coordinator.notify_parse_complete(&uri);
                     }
+
+                    watched_delete = true;
                 }
                 FileChangeType::CREATED | FileChangeType::CHANGED
                     // CREATED and CHANGED are debounced so that bulk operations
@@ -2028,6 +2028,17 @@ impl LspServer {
 
         // One refresh per affected folder for the whole notification (#13640).
         self.refresh_project_metadata_facts(&metadata_roots);
+
+        // Eviction above dropped indexed facts open buffers may have resolved
+        // dependencies through, and no buffer edit is coming to republish for
+        // them (#17332). One sweep after the refresh, so immediate-path
+        // publications (e2e mode, or a missing/unavailable debouncer) use the
+        // refreshed facts — a deleted metadata file retires its include root
+        // here — and a bulk delete costs one sweep instead of one per change.
+        // Matches the `handle_did_delete_files` seam order.
+        if watched_delete {
+            self.republish_open_document_diagnostics();
+        }
 
         // This is a notification, no response needed
         Ok(None)
@@ -2310,6 +2321,11 @@ impl LspServer {
             }
 
             self.refresh_project_metadata_facts(&metadata_roots);
+
+            // Same repair as the watched-DELETED seam (#17332): eviction above
+            // dropped index facts open consumers may have resolved through, and
+            // a buffer edit is not coming to republish for them.
+            self.republish_open_document_diagnostics();
 
             // Trigger client refresh after file deletions
             if let Err(e) = self.refresh_controller.refresh_all(self) {
