@@ -732,17 +732,30 @@ impl ServerConfig {
             // value. The user must be told the applied value differs from
             // what they typed (#17341); wrong-typed severities take the
             // whole-candidate rejection path instead and are not inspected
-            // here.
+            // here. The clamp only reaches the active configuration when the
+            // WHOLE critic candidate is accepted: an invalid sibling
+            // (engine/profile/include/exclude/enabled) rejects the candidate
+            // whole, the prior severity stays active, and claiming the
+            // clamped value applied would contradict the effective setting.
             if let Some(severity) = critic.get("severity")
                 && let Some(raw) = as_config_u64(severity)
                 && !CRITIC_SEVERITY_RANGE.contains(&raw)
             {
+                // `update_from_value` accepts or rejects the critic candidate
+                // through this same parse, so its outcome is exactly the
+                // applied disposition.
+                let candidate_accepted =
+                    CriticSettingsCandidate::parse_lsp_update(settings).is_ok();
                 invalid.push(InvalidClientSetting {
                     setting: "critic.severity",
                     value: client_setting_display_value(severity),
                     value_type: client_setting_value_type(severity),
                     valid_options: CLIENT_CRITIC_SEVERITY_VALID_OPTIONS,
-                    disposition: InvalidClientSettingDisposition::ClampToValidRange,
+                    disposition: if candidate_accepted {
+                        InvalidClientSettingDisposition::ClampToValidRange
+                    } else {
+                        InvalidClientSettingDisposition::KeepCurrent
+                    },
                 });
             }
         }
@@ -4928,6 +4941,18 @@ profile = "recommended"
             "critic": { "severity": "very strict" }
         }));
         assert!(wrong_type.is_empty(), "wrong-typed severity takes the candidate-rejection path");
+
+        // An invalid sibling rejects the whole critic candidate, so the
+        // out-of-range severity never applies and the inspection must not
+        // claim the clamped value was applied (PR #17386 review).
+        let rejected = ServerConfig::invalid_client_setting_values(&serde_json::json!({
+            "critic": { "severity": 99, "profile": "recomended" }
+        }));
+        assert_eq!(rejected.len(), 2, "profile + severity are both reported");
+        assert_eq!(rejected[0].setting, "critic.profile");
+        assert_eq!(rejected[0].disposition, InvalidClientSettingDisposition::KeepCurrent);
+        assert_eq!(rejected[1].setting, "critic.severity");
+        assert_eq!(rejected[1].disposition, InvalidClientSettingDisposition::KeepCurrent);
     }
 
     #[test]
