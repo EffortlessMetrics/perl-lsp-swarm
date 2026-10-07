@@ -1369,9 +1369,11 @@ mod tests {
         // that closes on its own line ends in quote-like consumption, so a
         // POD opener on the next line is still trusted and `phantom` stays
         // hidden. (`q/foo/` keeps the closing-slash path without putting a
-        // regex token in the fixture.)
+        // regex token in the fixture.) No `;` follows the closer: a stray
+        // `;` would clear a wrongly reported bare slash and mask a
+        // regression where the closing delimiter arms the guard.
         assert_membership_and_slash(
-            "my $s = q/foo/;\n=pod\nsub phantom { }\n=cut\nsub real { }\n",
+            "my $s = q/foo/\n=pod\nsub phantom { }\n=cut\nsub real { }\n",
             &["real"],
             &["phantom"],
         );
