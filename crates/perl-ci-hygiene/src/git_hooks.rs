@@ -176,6 +176,25 @@ secret_scan_range() {
     else
         range="$base..$1"
     fi
+    # The file list must also include paths that only exist inside the range
+    # (added then deleted, or added then renamed): the endpoint diff cannot
+    # see them, so the history leg below would never visit them (#17432
+    # review wave 5). -m splits merges per parent; --no-renames lists both
+    # sides of a rename.
+    if ! git -c core.quotePath=false log -m --no-renames --name-only -z --format= "$range" >>"$list_tmp" 2>/dev/null; then
+        rm -f "$list_tmp"
+        secret_scan_cannot_evaluate push "git log --name-only $range failed"
+        return 1
+    fi
+    # De-duplicate when the platform sort supports NUL mode; without it the
+    # list keeps duplicates, which only re-scan (findings are idempotent).
+    if printf '' | sort -z -u >/dev/null 2>&1; then
+        if ! sort -z -u "$list_tmp" -o "$list_tmp" 2>/dev/null; then
+            rm -f "$list_tmp"
+            secret_scan_cannot_evaluate push "de-duplicating the file list for $range failed"
+            return 1
+        fi
+    fi
     while IFS= read -r -d '' file; do
         [ -z "$file" ] && continue
         secret_scan_allowed "$file" && continue
@@ -1246,6 +1265,21 @@ mod tests {
             assert!(
                 hook.contains(perl_ci_hygiene::secret_scan::ALLOWLIST_PATH),
                 "refusal must name the allowlist escape path"
+            );
+        }
+    }
+
+    #[test]
+    fn secret_scan_range_visits_range_only_paths() {
+        // #17432 review wave 5: the pre-push history leg must visit files
+        // that only exist inside the pushed range (added then deleted, or
+        // added then renamed) — the endpoint diff cannot see them, so the
+        // file list is extended from range history with both rename sides.
+        let hook = pre_push_hook_script();
+        for marker in ["log -m --no-renames --name-only -z --format=", "sort -z -u"] {
+            assert!(
+                hook.contains(marker),
+                "push hook must contain range-history file-list marker {marker:?}"
             );
         }
     }
