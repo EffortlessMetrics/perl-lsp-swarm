@@ -27,7 +27,12 @@ fi
 for want in ${FAIL_BENCHES:-}; do
     for arg in "$@"; do
         if [[ "$arg" == *"$want"* ]]; then
-            echo "error: stub cargo failing for $want" >&2
+            case "${STUB_FAIL_MODE:-error}" in
+                fatal) echo "fatal: unable to read $want output" >&2 ;;
+                empty) : ;;
+                homepath) echo "error: cannot write ${HOME:-/home/test}/.cache/$want" >&2 ;;
+                *) echo "error: stub cargo failing for $want" >&2 ;;
+            esac
             exit 101
         fi
     done
@@ -142,6 +147,50 @@ else
     ok "non-index bench keeps default features"
 fi
 unset CARGO_ARGS_LOG
+
+# Case 5: nonstandard cargo failures still record (no pipefail abort under
+# `set -euo pipefail`), and $HOME is redacted from receipts (#17453 review).
+export FAIL_BENCHES="benchmark"
+export STUB_FAIL_MODE="fatal"
+if PATH="$STUB:$PATH" bash "$RUNNER" --category ripr >"$OUT" 2>"$ERR"; then
+    bad "fatal-mode run exited 0; expected nonzero"
+else
+    ok "fatal-mode (no error line) run exits nonzero, not abort"
+fi
+if python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$OUT" 2>/dev/null; then
+    ok "fatal-mode output is valid JSON (no truncation)"
+else
+    bad "fatal-mode output is truncated"
+fi
+json_get "$OUT" ripr _error | grep -q "fatal: unable to read" \
+    && ok "_error falls back to last line without error prefix" \
+    || bad "_error missing fatal fallback excerpt"
+export STUB_FAIL_MODE="empty"
+if PATH="$STUB:$PATH" bash "$RUNNER" --category ripr >"$OUT" 2>"$ERR"; then
+    bad "empty-mode run exited 0; expected nonzero"
+else
+    ok "empty-stderr run exits nonzero, not abort"
+fi
+[[ "$(json_get "$OUT" ripr _status)" == "failed" ]] \
+    && ok "empty-stderr category still marked failed" \
+    || bad "empty-stderr category not marked failed"
+export STUB_FAIL_MODE="homepath"
+if PATH="$STUB:$PATH" bash "$RUNNER" --category ripr >"$OUT" 2>"$ERR"; then
+    bad "homepath-mode run exited 0; expected nonzero"
+else
+    ok "homepath-mode run exits nonzero"
+fi
+if [[ ${HOME:-} =~ ^[A-Za-z0-9_@%+:,./-]+$ ]]; then
+    json_get "$OUT" ripr _error | grep -q "~/.cache" \
+        && ok "_error redacts HOME to ~" \
+        || bad "_error does not redact HOME"
+    json_get "$OUT" ripr _error | grep -qF -- "$HOME" \
+        && bad "_error leaks raw HOME" \
+        || ok "_error carries no raw HOME"
+else
+    ok "HOME exotic; redaction skipped by design (nothing to assert)"
+fi
+unset STUB_FAIL_MODE
 
 rm -rf "$STUB" "$OUT" "$ERR" "$ARGS_LOG"
 echo "---"

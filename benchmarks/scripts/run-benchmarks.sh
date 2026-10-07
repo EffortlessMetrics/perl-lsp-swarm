@@ -114,9 +114,20 @@ json_escape() {
 cargo_stderr_excerpt() {
     local log_file=$1
     local excerpt
-    excerpt=$(grep -aA2 -m1 -E '^error' "$log_file" | tr '\n' ' ' | sed -e 's/  */ /g' -e 's/^ *//; s/ *$//')
+    # Both greps must tolerate no-match: under `set -euo pipefail` a grep
+    # exit 1 inside this substitution would abort the whole runner instead
+    # of recording the failure (#17453 review).
+    excerpt=$(grep -aA2 -m1 -E '^error' "$log_file" | tr '\n' ' ' | sed -e 's/  */ /g' -e 's/^ *//; s/ *$//' || true)
     if [[ -z "$excerpt" ]]; then
-        excerpt=$(grep -avE '^[[:space:]]*$' "$log_file" | tail -n 1)
+        excerpt=$(grep -avE '^[[:space:]]*$' "$log_file" | tail -n 1 || true)
+    fi
+    # Redact the home directory so shared receipts don't carry local paths
+    # (#17453 review). The guard keeps the replacement literal: an exotic
+    # $HOME skips redaction rather than mangling the excerpt.
+    if [[ ${HOME:-} =~ ^[A-Za-z0-9_@%+:,./-]+$ ]]; then
+        # The replacement must be `\~`: a bare `~` tilde-expands back to
+        # $HOME, making the substitution a silent no-op.
+        excerpt=${excerpt//$HOME/\~}
     fi
     json_escape "$excerpt"
 }
