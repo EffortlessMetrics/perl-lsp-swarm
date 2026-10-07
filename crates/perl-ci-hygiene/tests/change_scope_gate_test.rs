@@ -37,8 +37,13 @@ impl TempRepo {
 
     /// Runs `git` with a hermetic identity: `-c` flags travel on the command
     /// line, so the fixture neither reads nor writes the developer's config.
+    /// Repository-location overrides are stripped (see `GIT_LOCATION_VARS`):
+    /// git hooks set them and the pre-push hook runs `cargo test`, so without
+    /// the strip a hook-launched suite would commit fixtures into the real repo.
     fn git(&self, args: &[&str]) -> TestResult<String> {
-        let output = Command::new("git")
+        let mut command = Command::new("git");
+        scrub_git_location(&mut command);
+        let output = command
             .current_dir(&self.path)
             .args([
                 "-c",
@@ -100,7 +105,30 @@ fn perl_ci_hygiene_binary() -> TestResult<PathBuf> {
 
 fn run_change_scope(repo: &Path, base: &str) -> TestResult<Output> {
     let bin = perl_ci_hygiene_binary()?;
-    Ok(Command::new(bin).args(["check-change-scope", "--base", base]).current_dir(repo).output()?)
+    let mut command = Command::new(bin);
+    scrub_git_location(&mut command);
+    Ok(command.args(["check-change-scope", "--base", base]).current_dir(repo).output()?)
+}
+
+/// Repository-location overrides that would retarget a child git (or a gate
+/// binary shelling to git) away from its `current_dir`. Same canonical set
+/// as `git_command()` in `git_hooks.rs` plus the object-store lookups.
+const GIT_LOCATION_VARS: [&str; 7] = [
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_COMMON_DIR",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_PREFIX",
+];
+
+/// Strips repository-location overrides from a child command so it cannot
+/// escape its `current_dir` into the caller's repository.
+fn scrub_git_location(command: &mut Command) {
+    for var in GIT_LOCATION_VARS {
+        command.env_remove(var);
+    }
 }
 
 /// A scope file the target branch advanced after divergence must not activate
