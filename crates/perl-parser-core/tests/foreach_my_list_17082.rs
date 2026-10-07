@@ -494,10 +494,7 @@ fn explicit_foreach_continuation_remains_attached() -> TestResult {
             return Err("explicit iterator changed kind".into());
         };
         let NodeKind::VariableDeclaration {
-            declarator,
-            variable: iterator,
-            initializer: None,
-            ..
+            declarator, variable: iterator, initializer: None, ..
         } = &variable.kind
         else {
             return Err("explicit iterator declaration changed kind".into());
