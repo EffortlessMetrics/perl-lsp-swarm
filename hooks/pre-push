@@ -56,9 +56,12 @@ fi
 REPO_ROOT_FOR_HOOK="$(git rev-parse --show-toplevel 2>/dev/null || true)"
 if [ -n "$REPO_ROOT_FOR_HOOK" ] && [ -f "$REPO_ROOT_FOR_HOOK/hooks/pre-push" ]; then
     if ! diff -q "$0" "$REPO_ROOT_FOR_HOOK/hooks/pre-push" >/dev/null 2>&1; then
-        cp "$REPO_ROOT_FOR_HOOK/hooks/pre-push" "$0" && chmod +x "$0" || true
-        echo "pre-push hook updated itself from hooks/pre-push (was stale)."
-        echo "This push was refused so stale logic never guards it — re-push to run the fresh guards."
+        if cp "$REPO_ROOT_FOR_HOOK/hooks/pre-push" "$0" && chmod +x "$0"; then
+            echo "pre-push hook updated itself from hooks/pre-push (was stale)."
+            echo "This push was refused so stale logic never guards it — re-push to run the fresh guards."
+        else
+            echo "pre-push hook is stale and could not be self-updated (check permissions on $0); re-run install-githooks to refresh it." >&2
+        fi
         exit 1
     fi
 fi
@@ -106,6 +109,13 @@ for line in "${PUSH_REFS[@]+"${PUSH_REFS[@]}"}"; do
     if ref_update_admitted "$remote_ref"; then
         continue
     fi
+    # Pastable forms, computed for every refused ref: a ref name may
+    # legally contain shell syntax (e.g. refs/heads/$(id)), so anything
+    # the refusal prints for copy-paste goes through %q (#17431 review).
+    printf -v RECOVERY_REMOTE '%q' "${1:-origin}"
+    printf -v RECOVERY_REF '%q' "$remote_ref"
+    printf -v RECOVERY_ADMIT '%q' "$remote_ref"
+    printf -v RECOVERY_LEASE '%q' "$remote_ref:$remote_sha"
     if [ "$local_sha" = "$ZERO_SHA" ]; then
         remote_short="${remote_ref#refs/heads/}"
         case " $PROTECTED_BRANCHES " in
@@ -115,7 +125,7 @@ for line in "${PUSH_REFS[@]+"${PUSH_REFS[@]}"}"; do
                 echo "   Deleting shared branches destroys history other people build on."
                 echo "   If this is genuinely intended (repository decommission, never"
                 echo "   routine work), admit this ref explicitly and re-push:"
-                echo "   PERL_LSP_ALLOW_HISTORY_REWRITE=\"$remote_ref\" git push <remote> --delete <branch>"
+                echo "   PERL_LSP_ALLOW_HISTORY_REWRITE=$RECOVERY_ADMIT git push <remote> --delete <branch>"
                 exit 1
                 ;;
         esac
@@ -132,8 +142,6 @@ for line in "${PUSH_REFS[@]+"${PUSH_REFS[@]}"}"; do
     else
         UNKNOWN_TIP=" (tip $remote_sha is not in your local object store — fetch first)"
     fi
-    printf -v RECOVERY_REMOTE '%q' "${1:-origin}"
-    printf -v RECOVERY_REF '%q' "$remote_ref"
     echo ""
     echo "❌ Refusing non-fast-forward push to $remote_ref$UNKNOWN_TIP."
     echo "   Your push would discard remote commit(s)."
@@ -142,7 +150,7 @@ for line in "${PUSH_REFS[@]+"${PUSH_REFS[@]}"}"; do
     echo "   (your own rebased branch, no teammate work), admit this ref explicitly"
     echo "   and bind the push to the tip you inspected — plain --force could erase"
     echo "   concurrent work pushed after your inspection:"
-    echo "   PERL_LSP_ALLOW_HISTORY_REWRITE=\"$remote_ref\" git push --force-with-lease=$remote_ref:$remote_sha <remote> <branch>"
+    echo "   PERL_LSP_ALLOW_HISTORY_REWRITE=$RECOVERY_ADMIT git push --force-with-lease=$RECOVERY_LEASE <remote> <branch>"
     exit 1
 done
 
