@@ -149,10 +149,14 @@ if [ -n "$REPO_ROOT_FOR_HOOK" ] && [ -f "$REPO_ROOT_FOR_HOOK/hooks/pre-push" ]; 
         checkout_version="$(hook_version "$REPO_ROOT_FOR_HOOK/hooks/pre-push")"
         case "$checkout_version" in ''|*[!0-9]*) checkout_version=0 ;; esac
         if [ "$checkout_version" -gt "$installed_version" ]; then
-            if cp "$REPO_ROOT_FOR_HOOK/hooks/pre-push" "$0" && chmod +x "$0"; then
+            # Atomic replace (#17431 review wave 4): a failed cp must never
+            # leave $0 truncated, or later pushes run a broken hook.
+            heal_tmp="$0.tmp.$$"
+            if cp "$REPO_ROOT_FOR_HOOK/hooks/pre-push" "$heal_tmp" && chmod +x "$heal_tmp" && mv "$heal_tmp" "$0"; then
                 echo "pre-push hook updated itself from hooks/pre-push (v$installed_version -> v$checkout_version)."
                 echo "This push was refused so stale logic never guards it — re-push to run the fresh guards."
             else
+                rm -f "$heal_tmp"
                 echo "pre-push hook is stale and could not be self-updated (check permissions on $0); re-run install-githooks to refresh it." >&2
             fi
             exit 1
@@ -799,6 +803,21 @@ mod tests {
         ] {
             assert!(hook.contains(marker), "hook must contain downgrade-barrier marker {marker:?}");
         }
+    }
+
+    #[test]
+    fn pre_push_hook_self_heal_replaces_atomically() {
+        // #17431 review wave 4: the upgrade copy must stage to a temp file
+        // and rename over the installed hook — a failed cp must never leave
+        // $0 truncated, or later pushes run a broken hook.
+        let hook = pre_push_hook_script();
+        for marker in ["heal_tmp=\"$0.tmp.$$\"", "mv \"$heal_tmp\" \"$0\"", "rm -f \"$heal_tmp\""] {
+            assert!(hook.contains(marker), "hook must contain atomic-replace marker {marker:?}");
+        }
+        assert!(
+            !hook.contains("cp \"$REPO_ROOT_FOR_HOOK/hooks/pre-push\" \"$0\""),
+            "hook must not copy directly over the installed hook"
+        );
     }
 
     #[test]
