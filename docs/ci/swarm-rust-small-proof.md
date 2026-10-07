@@ -50,8 +50,10 @@ paths tracked in either `HEAD` or the index (including staged deletions),
 unrelated existing files, and existing lock or staging sidecars. Existing
 parent-relative paths such as `../receipts/proof.json` are supported when the
 traversed directory exists. An existing destination must be a coherent v1
-receipt; an older-candidate or failed receipt is still a recognized prior
-artifact.
+receipt matching the current eleven-step plan; an older-candidate or failed
+receipt with that same plan is still a recognized prior artifact. Receipts
+from a previous step plan are refused before execution and preserved. The
+command does not migrate them or remove artifacts with uncertain ownership.
 
 After nonmutating preflight, missing parent directories may be created. An
 atomic `create_new` sibling lock then establishes exclusive ownership, and
