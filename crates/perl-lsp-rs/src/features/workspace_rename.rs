@@ -229,17 +229,6 @@ pub fn build_rename_edit(
     Ok(grouped.into_iter().map(|(uri, edits)| RenameEdit { uri, edits }).collect())
 }
 
-/// Returns true when `loc` is an unqualified bare call to `key.name` from a
-/// package other than `key.pkg`.  Such references are ambiguous: a Perl
-/// program importing a same-named sub from a different package would be
-/// incorrectly renamed.
-///
-/// Arrow method calls (`$self->method`, `$obj->method`) are NOT ambiguous: the
-/// receiver's class is determined at dispatch time via `@ISA`/Perl OO, and the
-/// workspace index already validated that this reference belongs to `key.pkg`'s
-/// inheritance chain.  The workspace index returns the full expression span
-/// (`$self->shared`), so detecting `->` inside the span itself is sufficient to
-/// identify an arrow method call.
 /// Recover qualification evidence for the bare-reference ambiguity preflight.
 /// This does not add foreign qualified calls to the target rename edit set.
 fn has_explicit_sub_qualifier(
@@ -276,6 +265,17 @@ fn has_explicit_sub_qualifier(
     })
 }
 
+/// Returns true when `loc` is an unqualified bare call to `key.name` from a
+/// package other than `key.pkg`.  Such references are ambiguous: a Perl
+/// program importing a same-named sub from a different package would be
+/// incorrectly renamed.
+///
+/// Arrow method calls (`$self->method`, `$obj->method`) are NOT ambiguous: the
+/// receiver's class is determined at dispatch time via `@ISA`/Perl OO, and the
+/// workspace index already validated that this reference belongs to `key.pkg`'s
+/// inheritance chain.  The workspace index returns the full expression span
+/// (`$self->shared`), so detecting `->` inside the span itself is sufficient to
+/// identify an arrow method call.
 fn is_ambiguous_sub_reference(
     idx: &WorkspaceIndex,
     key: &SymbolKey,

@@ -1753,7 +1753,6 @@ my $bar = Bar::process_data();
         "Bar.pm must not be edited when renaming Foo::process_data: {rename_result}"
     );
 
-
     let mut actual_edit = rename_result.clone();
     for edits in actual_edit
         .get_mut("changes")
