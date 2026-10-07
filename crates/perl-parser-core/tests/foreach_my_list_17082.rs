@@ -422,7 +422,6 @@ fn missing_c_style_separator_still_reports_a_blocking_error() {
     }
 }
 
-
 #[test]
 fn implicit_foreach_owns_its_continue_block_and_following_statement() -> TestResult {
     for keyword in ["for", "foreach"] {
@@ -501,10 +500,7 @@ fn explicit_foreach_continuation_remains_attached() -> TestResult {
         assert_eq!(&source[variable.location.start..variable.location.end], "$item");
         assert_eq!(&source[body.location.start..body.location.end], body_text);
         let continuation = continue_block.as_deref().ok_or("explicit continue block lost")?;
-        assert_eq!(
-            &source[continuation.location.start..continuation.location.end],
-            continue_text
-        );
+        assert_eq!(&source[continuation.location.start..continuation.location.end], continue_text);
         assert_eq!(statements[0].location.end, loop_text.len());
     }
     Ok(())
