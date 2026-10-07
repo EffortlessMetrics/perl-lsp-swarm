@@ -44,7 +44,8 @@ impl ScopeAnalyzer {
         let Some(between) = source.get(call.location.start..operand.location.start) else {
             return false;
         };
-        between.contains('(')
+        // A comment may contain punctuation without changing require's operand syntax.
+        between.lines().any(|line| line.split('#').next().unwrap_or_default().contains('('))
     }
 }
 
