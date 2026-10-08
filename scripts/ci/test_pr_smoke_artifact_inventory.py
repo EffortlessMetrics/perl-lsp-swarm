@@ -113,15 +113,15 @@ class InventoryTests(unittest.TestCase):
 
     def test_literal_partition_is_independent_of_directory_order(self):
         original_scandir = os.scandir
-        class ReverseScan:
+        class AliasFirstScan:
             def __init__(self, fd):
                 with original_scandir(fd) as entries:
-                    self.entries = iter(reversed(list(entries)))
+                    self.entries = iter(sorted(entries, key=lambda entry: (entry.name != "test-bin-alias", entry.name)))
             def __next__(self):
                 return next(self.entries)
             def close(self):
                 pass
-        with mock.patch.object(inventory.os, "scandir", side_effect=ReverseScan):
+        with mock.patch.object(inventory.os, "scandir", side_effect=AliasFirstScan):
             self.assert_literal_partition()
 
     def test_declared_artifact_removed_before_walk_is_incomplete_attribution(self):
@@ -130,6 +130,7 @@ class InventoryTests(unittest.TestCase):
         self.assertFalse(result["artifact_attribution_complete"])
         self.assertIn("artifact_path_unobserved", result["uncertainty_counts"])
         self.assertEqual(result["observed_known_inode_allocated_bytes"], 16384)
+        self.assertEqual(result["categories"]["dependency_output"]["known_inode_allocated_bytes"], 8192)
 
     def test_declared_artifact_behind_child_symlink_is_incomplete_attribution(self):
         linked = self.root / "linked-dir"
@@ -140,6 +141,8 @@ class InventoryTests(unittest.TestCase):
         self.assertIn("artifact_path_unobserved", result["uncertainty_counts"])
         self.assertEqual(result["symlinks_skipped"], 1)
         self.assertEqual(result["observed_known_inode_allocated_bytes"], 16384)
+        self.assertEqual(result["categories"]["test_executable"]["known_inode_allocated_bytes"], 4096)
+        self.assertEqual(result["categories"]["dependency_output"]["known_inode_allocated_bytes"], 8192)
 
     def test_actual_host_hardlinks_have_one_inode_contribution(self):
         result = inventory.collect(self.root, self.identity, artifacts=self.capture)

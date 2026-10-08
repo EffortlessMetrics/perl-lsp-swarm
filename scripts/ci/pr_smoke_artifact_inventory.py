@@ -321,6 +321,7 @@ def collect(target, identity, *, artifacts=None, budget=None, max_entries=MAX_EN
     if not _identity_complete(identity):
         _issue(report, "identity_incomplete")
     classes = _artifacts(artifacts, identity, root, budget, report)
+    matched_artifact_paths = set()
     inodes = {}
     stack = []
     accounting_complete = True
@@ -371,6 +372,8 @@ def collect(target, identity, *, artifacts=None, budget=None, max_entries=MAX_EN
                     report["nonregular_skipped"] += 1
                     continue
                 report["regular_paths"] += 1
+                if display_path in classes:
+                    matched_artifact_paths.add(display_path)
                 key = inode_key(info)
                 if key is None:
                     accounting_complete = False
@@ -401,6 +404,13 @@ def collect(target, identity, *, artifacts=None, budget=None, max_entries=MAX_EN
     finally:
         for frame in stack:
             _close_frame(frame)
+    # A syntactically complete capture does not prove its declared paths were
+    # observed as regular files. Keep known endpoint allocation separate.
+    unobserved = set(classes) - matched_artifact_paths
+    if unobserved:
+        report["artifact_attribution_complete"] = False
+        for path in unobserved:
+            _issue(report, "artifact_path_unobserved", path)
     totals = {c: {"inodes": 0, "known_logical_bytes": 0, "known_inode_allocated_bytes": 0} for c in CATEGORIES}
     for observation in inodes.values():
         categories = observation["categories"]
