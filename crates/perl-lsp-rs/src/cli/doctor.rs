@@ -4247,7 +4247,7 @@ mod tests {
         assert_eq!(cargo.path.as_deref(), Some("resolved-cargo"));
         assert!(cargo.fix.is_none());
         let report = environment_with_cargo(cargo);
-        let rendered = render_dev_environment_report(&report);
+        let rendered = render_dev_environment_report(&report, "perllsp");
         assert!(rendered.contains(
             "error: version probe failed (exit code 29); re-run with --json added for probe detail"
         ));
@@ -4270,7 +4270,7 @@ mod tests {
             Ok(cargo_exit_output(b"", b" \r\n\t", 29)),
             None,
         ));
-        let rendered = render_dev_environment_report(&report);
+        let rendered = render_dev_environment_report(&report, "perllsp");
         assert!(rendered.contains("error: version probe failed (exit code 29)\n"));
         assert!(!rendered.contains("--json"));
         let json = serde_json::to_value(&report)?;
@@ -4293,7 +4293,7 @@ mod tests {
                 assert!(cargo.path.is_none());
                 assert!(cargo.fix.is_none());
                 let report = environment_with_cargo(cargo);
-                let rendered = render_dev_environment_report(&report);
+                let rendered = render_dev_environment_report(&report, "perllsp");
                 assert!(rendered.contains(&format!(
                     "error: shell cargo probe output was invalid ({clause}); re-run with --json added for probe detail"
                 )));
@@ -4337,7 +4337,7 @@ mod tests {
                 )
             };
             let report = environment_with_cargo(cargo);
-            let rendered = render_dev_environment_report(&report);
+            let rendered = render_dev_environment_report(&report, "perllsp");
             assert!(!rendered.contains("start-sentinel"));
             let json = serde_json::to_value(&report)?;
             let detail = json
@@ -4366,7 +4366,7 @@ mod tests {
             Ok(cargo_exit_output(b"", &stderr, 29)),
             None,
         ));
-        let rendered = render_dev_environment_report(&report);
+        let rendered = render_dev_environment_report(&report, "perllsp");
         assert!(!rendered.contains("shell-provider-utf16-sentinel"));
         let json = serde_json::to_value(&report)?;
         assert_eq!(
@@ -4390,7 +4390,7 @@ mod tests {
             assert!(cargo.version.is_none());
             assert!(cargo.fix.is_none());
             let report = environment_with_cargo(cargo);
-            assert!(render_dev_environment_report(&report).contains(&format!("error: {detail}\n")));
+            assert!(render_dev_environment_report(&report, "perllsp").contains(&format!("error: {detail}\n")));
             let json = serde_json::to_value(&report)?;
             assert_eq!(
                 json.pointer("/cargo_toolchains/0/error").and_then(serde_json::Value::as_str),
@@ -4429,7 +4429,7 @@ mod tests {
         assert_eq!(cargo.status, STATUS_PROBE_ERROR);
         assert_eq!(cargo.path.as_deref(), cargo_path.to_str());
         let report = environment_with_cargo(cargo);
-        let rendered = render_dev_environment_report(&report);
+        let rendered = render_dev_environment_report(&report, "perllsp");
         assert!(rendered.contains(
             "error: version probe failed (exit code 29); re-run with --json added for probe detail"
         ));
@@ -4459,7 +4459,7 @@ mod tests {
         assert!(cargo.error.is_none());
         assert!(cargo.fix.is_none());
         let report = environment_with_cargo(cargo);
-        let rendered = render_dev_environment_report(&report);
+        let rendered = render_dev_environment_report(&report, "perllsp");
         assert!(!rendered.contains("version probe failed"));
         assert!(!rendered.contains("cargo-retry-fixture"));
         let json = serde_json::to_value(&report)?;
