@@ -644,9 +644,10 @@ def check_quick_bench(ctx, res, state):
     except OSError:
         before_fp = None
     # T3 bench-run timeout: the timed run executes from the warmed state
-    # above. Warm `cargo xtask bench-run --quick` measured T=497.7s on
+    # above. Warm `cargo xtask bench-run --quick` measured 497.7-979.6s on
     # 2026-10-07 (32-core Windows 11 host, rustc 1.95.0, base e0f111cfa,
-    # unthrottled, issue #17463); 1200s is a ~2.4x hang-guard over that.
+    # unthrottled, issue #17463); 1200s covers the slowest observed with
+    # ~220s headroom.
     # (Cold from-scratch runs take 1338-1607s; that build cost belongs to
     # the untimed warm-up, not to this budget.)
     r = ctx.run(argv, 1200, "t3-bench-run")
