@@ -2,6 +2,7 @@ import importlib.util
 import json
 import os
 import re
+import shutil
 from pathlib import Path
 import subprocess
 import sys
@@ -81,6 +82,33 @@ class ConfigurationTests(unittest.TestCase):
             execute.assert_not_called()
 
 
+@unittest.skipUnless(os.name != "nt", "requires a Unix shell")
+class UnixRouteTests(unittest.TestCase):
+    def test_ordinary_route_preserves_arguments_and_child_failure(self):
+        with tempfile.TemporaryDirectory(prefix="xtask-unix-route-") as temporary:
+            root = Path(temporary)
+            tools = root / "tools"
+            tools.mkdir()
+            cargo = tools / "cargo"
+            cargo.write_text("#!/usr/bin/env python3\nimport json, sys\n"
+                             "if sys.argv[1:] == ['--version']:\n"
+                             "    print('cargo 1.95.0 (fixture)')\n"
+                             "else:\n"
+                             "    print(json.dumps(sys.argv[1:]))\n"
+                             "    sys.exit(19)\n")
+            cargo.chmod(0o755)
+            env = os.environ.copy()
+            env.pop("OS", None)
+            env.update(PATH=str(tools) + os.pathsep + env["PATH"],
+                       DEVPLANE=str(root / "devplane"), CARGO_HOME=str(root / "home"))
+            arguments = ["xtask", "gates", "argument with spaces", "--literal=unchanged"]
+            result = subprocess.run(["bash", str(ROOT / "scripts/cargo-safe"), *arguments],
+                                    cwd=ROOT, env=env, capture_output=True, text=True, timeout=30)
+            self.assertEqual(result.returncode, 19, result.stdout + result.stderr)
+            self.assertEqual(json.loads(result.stdout.strip()), arguments)
+            self.assertNotIn("prepared xtask runner", result.stderr)
+
+
 @unittest.skipUnless(os.name == "nt", "requires Windows executable image locking")
 class NativeCargoTests(unittest.TestCase):
     def setUp(self):
@@ -88,6 +116,9 @@ class NativeCargoTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         (self.root / "src").mkdir()
+        # Exercise the actual repository alias on the unprepared route too.
+        (self.root / ".cargo").mkdir()
+        shutil.copyfile(ROOT / ".cargo/config.toml", self.root / ".cargo/config.toml")
         (self.root / "Cargo.toml").write_text('''[package]
 name="xtask"
 version="0.0.0"
@@ -161,7 +192,8 @@ fn main() {
         bash = git_exec.parents[2] / "usr/bin/bash.exe"
         self.assertTrue(bash.is_file(), "native Git Bash is required for cargo-safe")
         self.env["DEVPLANE"] = str(self.root / "devplane")
-        self.env["OS"] = "Windows_NT"
+        # Windows execution environments need not export the OS selector.
+        self.env.pop("OS", None)
         # Only this dependency-free, private fixture gets a small disk floor.
         # Production cargo-safe defaults and the enclosing admission stay intact.
         self.env["MIN_FREE_GB"] = "2"
