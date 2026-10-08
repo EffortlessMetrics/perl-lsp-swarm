@@ -4306,7 +4306,8 @@ mod tests {
                     .pointer("/cargo_toolchains/0/error")
                     .and_then(serde_json::Value::as_str)
                     .ok_or("Cargo parse failure must serialize as a JSON string")?;
-                let suffix = if stderr.is_empty() { "" } else { "; stderr: shell-child-stderr-sentinel" };
+                let suffix =
+                    if stderr.is_empty() { "" } else { "; stderr: shell-child-stderr-sentinel" };
                 assert_eq!(
                     detail,
                     format!(
@@ -4420,10 +4421,14 @@ mod tests {
             run_command_with_timeout(command, DEV_ENV_PROBE_TIMEOUT_SECS)
         };
 
-        let output = probe().map_err(|error| format!("failure fixture did not execute: {error}"))?;
+        let output =
+            probe().map_err(|error| format!("failure fixture did not execute: {error}"))?;
         assert_eq!(output.status.code(), Some(29));
         let cargo = cargo_report_from_output(
-            FLAVOR_NATIVE_SHELL, cargo_path.clone(), Ok(output), Some(temp.path()),
+            FLAVOR_NATIVE_SHELL,
+            cargo_path.clone(),
+            Ok(output),
+            Some(temp.path()),
         );
         assert_eq!(cargo.status, STATUS_PROBE_ERROR);
         assert_eq!(cargo.path.as_deref(), cargo_path.to_str());
