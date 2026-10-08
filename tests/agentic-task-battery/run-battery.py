@@ -577,6 +577,21 @@ def _restore_bench_side_effects(ctx, before):
     return restored, dirtied
 
 
+# T3 quick-bench triples mirrored from benchmarks/scripts/run-benchmarks.sh
+# (quick mode runs exactly these five; the index bench needs --features
+# workspace per #17425). The runner compiles each with `cargo bench --no-run`
+# before the timed run to establish the task's declared warm `target/`
+# starting state; a cold clone otherwise violates the spec's starting state
+# and its duration budget (issue #17463 review).
+T3_QUICK_WARMUP = [
+    ("perl-parser", "parser_benchmark", None),
+    ("perl-lexer", "lexer_benchmarks", None),
+    ("perl-lsp-rs", "rope_performance_benchmark", None),
+    ("perl-workspace", "workspace_index_benchmark", "workspace"),
+    ("perl-ripr-facts", "ripr_facts_benchmark", None),
+]
+
+
 def check_quick_bench(ctx, res, state):
     # Canonical `just bench-quick` path: bench-compare reads this exact file
     # and benchmarks/results/ is gitignored, so the tree stays clean.
@@ -599,6 +614,27 @@ def check_quick_bench(ctx, res, state):
         state["bench_out"] = ""
         state["results_path"] = ""
         return
+    # Untimed warm-up: establish the declared warm starting state. Each
+    # triple compiles without running; a warm-up failure refuses the timed
+    # run (it could not run as specified) instead of silently timing a cold
+    # build. --no-run writes no results, so this precedes the fingerprint.
+    for crate, bench, features in T3_QUICK_WARMUP:
+        wargv = ["cargo", "bench", "-p", crate, "--bench", bench]
+        if features:
+            wargv += ["--features", features]
+        wargv += ["--locked", "--no-run"]
+        w = ctx.run(wargv, 1200, f"t3-warmup-{bench}")
+        if w["exit"] != 0:
+            res.status = "FAIL"
+            res.earned = 0
+            res.evidence = (f"warm-up failed for {crate}::{bench} "
+                            f"(exit={w['exit']} wall={w['wall_s']:.1f}s); "
+                            "timed run refused (warm starting state not established)")
+            state["bench_exit"] = None
+            state["bench_wall"] = 0.0
+            state["bench_out"] = ""
+            state["results_path"] = ""
+            return
     # run_child kills the whole tree on timeout: a timeout must not leave
     # the bench alive to rewrite the scorecard after
     # _restore_bench_side_effects runs (same race class as the bisect reset).
@@ -607,11 +643,13 @@ def check_quick_bench(ctx, res, state):
         before_fp = (before_stat.st_mtime_ns, before_stat.st_size)
     except OSError:
         before_fp = None
-    # T3 bench-run timeout: cold `cargo xtask bench-run --quick` measured
-    # T=1338.4s on 2026-10-07 (32-core Windows 11 host, rustc 1.95.0, base
-    # 19b220476, unthrottled; the run was progressing through the index
-    # category at the old 1200s mark, issue #17463). 2100 = T + ~57% margin.
-    r = ctx.run(argv, 2100, "t3-bench-run")
+    # T3 bench-run timeout: the timed run executes from the warmed state
+    # above. Warm `cargo xtask bench-run --quick` measured T=497.7s on
+    # 2026-10-07 (32-core Windows 11 host, rustc 1.95.0, base e0f111cfa,
+    # unthrottled, issue #17463); 1200s is a ~2.4x hang-guard over that.
+    # (Cold from-scratch runs take 1338-1607s; that build cost belongs to
+    # the untimed warm-up, not to this budget.)
+    r = ctx.run(argv, 1200, "t3-bench-run")
     restored, dirtied = _restore_bench_side_effects(ctx, tracked_before)
     state["bench_restored"] = restored
     state["bench_exit"] = r["exit"]
