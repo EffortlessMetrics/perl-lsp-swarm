@@ -987,7 +987,7 @@ fn install_vim_lsp_checkout(
         ),
     ];
     for (label, args) in steps {
-        let mut command = Command::new("git");
+        let mut command = crate::git_environment::command();
         command.args(&args);
         // Bounded like every other acquisition subprocess: a wedged git
         // transport or an endlessly chatty step cannot hold provisioning
@@ -1563,7 +1563,7 @@ mod tests {
     }
 
     fn git(repo: &Path, args: &[&str]) -> Result<String> {
-        let output = Command::new("git")
+        let output = crate::git_environment::command()
             .args(["-c", "user.email=fixture@example.invalid", "-c", "user.name=fixture"])
             .arg("-C")
             .arg(repo)

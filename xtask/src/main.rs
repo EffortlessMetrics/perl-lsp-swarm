@@ -14,6 +14,7 @@ use std::path::PathBuf;
 
 mod allocation_tracker;
 mod cli;
+mod git_environment;
 mod tasks;
 #[cfg(test)]
 mod test_support;

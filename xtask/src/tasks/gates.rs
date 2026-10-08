@@ -39,6 +39,8 @@ use crate::utils::project_root;
 
 pub mod disposition;
 mod first_failure;
+#[cfg(test)]
+mod git_environment_tests;
 mod planning_types;
 pub mod route_profile;
 mod routed_result_adapter;
@@ -2705,6 +2707,23 @@ pub(crate) fn run_shell_command_with_timeout_in(
     let mut process = shell_command_process(command, timeout_secs);
     if let Some(dir) = current_dir {
         process.current_dir(dir);
+    }
+    if is_cargo_test_command(command) {
+        if command.split_whitespace().any(|token| {
+            let name = token.trim_matches(['\'', '"']).split('=').next().unwrap_or("");
+            token.contains('=') && crate::git_environment::is_local_variable(name)
+        }) {
+            return Err(GateShellError {
+                report: eyre!(
+                    "Cargo-test gate must not reintroduce repository-local Git variables"
+                ),
+                child_started,
+            });
+        }
+        // A pre-push hook's Git context belongs to that hook. Library test
+        // fixtures select their own repositories; keep Cargo admission and
+        // resource variables, but isolate only this test child from selectors.
+        crate::git_environment::isolate(&mut process);
     }
     let mut child = process
         .stdout(Stdio::from(log_file))

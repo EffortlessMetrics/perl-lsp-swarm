@@ -393,7 +393,7 @@ pub(crate) fn run_git_bounded(
 ) -> Result<String> {
     use std::io::Read;
     use std::process::Stdio;
-    let mut command = std::process::Command::new("git");
+    let mut command = crate::git_environment::command();
     command.args(args).stdout(Stdio::piped()).stderr(Stdio::piped());
     if let Some(cwd) = cwd {
         command.current_dir(cwd);
