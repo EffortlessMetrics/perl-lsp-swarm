@@ -344,12 +344,105 @@ fn semantic_inline_completion_receipt_inventory_is_current() -> Result<()> {
         receipt_backed_count >= 5,
         "semantic inline inventory should keep at least five receipt-backed workflows, got {receipt_backed_count}"
     );
+    // #16560 calibration: at base, seven semantic-inline scenarios declared
+    // `run_receipt: false` while calling the recorder wrapper. With the flags
+    // derived from source, 11 of these 15 workflows are receipt-backed and 4
+    // remain genuinely receipt-free (dbi_receiver, lexical_return,
+    // loop_binding, guard_condition), so the pre-existing floor of 2 still
+    // holds and is kept unchanged.
     assert!(
         direct_stdio_count >= 2,
         "semantic inline inventory should keep direct stdio proof workflows visible, got {direct_stdio_count}"
     );
 
     Ok(())
+}
+
+/// Receipt instrumentation is a property of the scenario source, not a free-form
+/// annotation: a workflow emits a `UxScenarioRunReceipt` if and only if its
+/// scenario calls one of the recorder wrappers. #16560 measured 18 of 82 rows
+/// disagreeing with that fact, so the matrix flag is now derived and enforced
+/// here instead of being hand-maintained.
+///
+/// The wrappers are the only receipt-producing entry points: `run_ux_scenario`
+/// and `run_ux_scenario_with_evidence_class` both funnel into
+/// `run_ux_scenario_with_receipt_dir`, which writes on every outcome (pass,
+/// fail, skip, panic — see `recorder.rs`). Matching the call form (the
+/// trailing `(`) keeps a `use ...::run_ux_scenario` import from counting.
+///
+/// Limitation: this reads source, not runtime artifacts, so a wrapper call
+/// placed behind a `#[cfg(feature = ...)]` gate would still count. No such
+/// case exists today: `ux_scenario_06_large_file` is the only feature-gated
+/// scenario and it calls no recorder wrapper.
+#[test]
+fn run_receipt_flag_matches_scenario_instrumentation() -> Result<()> {
+    let matrix = load_fixture_matrix()?;
+    let workflows =
+        matrix.get("workflows").and_then(Value::as_array).context("workflows missing")?;
+
+    let mut mismatches = Vec::new();
+    let mut instrumented = 0_usize;
+
+    for workflow in workflows {
+        let scenario_file = workflow
+            .get("scenario_file")
+            .and_then(Value::as_str)
+            .context("workflow missing scenario_file")?;
+        let declared = workflow
+            .get("instrumentation")
+            .and_then(|value| value.get("run_receipt"))
+            .and_then(Value::as_bool)
+            .with_context(|| {
+                format!("workflow `{scenario_file}` missing instrumentation.run_receipt")
+            })?;
+
+        let source = fs::read_to_string(workspace_root().join(UX_TESTS_DIR).join(scenario_file))
+            .with_context(|| format!("reading scenario {scenario_file}"))?;
+        let observed = source_writes_run_receipt(&source);
+
+        if observed {
+            instrumented += 1;
+        }
+        if observed != declared {
+            mismatches.push(format!(
+                "{scenario_file}: run_receipt={declared} but {}",
+                if observed {
+                    "the scenario calls a recorder wrapper"
+                } else {
+                    "the scenario never calls a recorder wrapper"
+                }
+            ));
+        }
+    }
+
+    assert!(
+        mismatches.is_empty(),
+        "run_receipt flags drifted from scenario instrumentation ({} row(s)):\n  {}",
+        mismatches.len(),
+        mismatches.join("\n  ")
+    );
+    assert!(
+        instrumented > 0,
+        "no workflow was detected as receipt-instrumented; the source heuristic has stopped working"
+    );
+
+    Ok(())
+}
+
+/// Whether a scenario file calls either recorder wrapper. Line comments are
+/// stripped first so a documented example in a `//!` header cannot register as
+/// real instrumentation.
+fn source_writes_run_receipt(source: &str) -> bool {
+    source
+        .lines()
+        .map(|line| match line.find("//") {
+            Some(idx) => &line[..idx],
+            None => line,
+        })
+        .any(|line| {
+            line.contains("run_ux_scenario(")
+                || line.contains("run_ux_scenario_with_evidence_class(")
+        })
 }
 
 fn collect_string_set(value: &Value, context_label: &str) -> Result<BTreeSet<String>> {
