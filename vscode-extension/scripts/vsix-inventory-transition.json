@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
   "owner_issue": 7807,
-  "reason": "Compose issue 7807 POD preview webview accessibility (+780 bundled entrypoint bytes, re-measured from a rolldown build of the merged sources and unchanged from the prior 780-byte measurement) with main ledger growth already ratcheted by #17040 (out/extension.js 1736217) after merging origin/main at 46afbf0f7b",
-  "base_baseline_file_sha256": "08c38ce7363722e1c100902772b6f2410ed3c5113a47456c51115ee346ea93a2",
-  "candidate_baseline_file_sha256": "aa06c8f9fe6033e3099e9d45daeed1abc78c08a5aee4ff7b0d515e40f99fa6b7",
-  "base_inventory_sha256": "471063cbaca00782af8cd09fab050998148eee1840f1b4a89c7cfdf115c2b2bb",
-  "candidate_inventory_sha256": "a853a1dd723923ac524dd8eccdcd2caf407daf03fa92c34f44017f9d85de9e40"
+  "reason": "Compose issue 7807 POD preview webview accessibility (+780 bundled entrypoint bytes, out/extension.js 1736217 to 1736997, re-measured from a rolldown build of the merged sources) with main's tinypool dev-dependency security patch ratchet (#17470, +25 manifest bytes, package.json 62154 to 62179) after merging origin/main at 3714724858",
+  "base_baseline_file_sha256": "bb22f581f9e7c3664ac0abc2db43e8f865eeccf2e3883b4d01a53333db2e72fa",
+  "candidate_baseline_file_sha256": "c52e90d09986b7e1d411abbb1067ab24c1a8cf6ec7c95aebb702ab426820d616",
+  "base_inventory_sha256": "bcb2845ae6066a3b9937debe5e11ad41584824969295a154adb8a4f92d9c5b92",
+  "candidate_inventory_sha256": "394fe19d6c8b75b31eec265d8d8255696e1020ca25a6705217a09941dc738282"
 }
