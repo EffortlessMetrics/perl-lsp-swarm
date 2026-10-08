@@ -110,6 +110,37 @@ class InventoryTests(unittest.TestCase):
                 self.assert_literal_partition()
         print("CONTROLLED_RED: per-path inode mutation rejected")
 
+
+    def test_literal_partition_is_independent_of_directory_order(self):
+        original_scandir = os.scandir
+        class ReverseScan:
+            def __init__(self, fd):
+                with original_scandir(fd) as entries:
+                    self.entries = iter(reversed(list(entries)))
+            def __next__(self):
+                return next(self.entries)
+            def close(self):
+                pass
+        with mock.patch.object(inventory.os, "scandir", side_effect=ReverseScan):
+            self.assert_literal_partition()
+
+    def test_declared_artifact_removed_before_walk_is_incomplete_attribution(self):
+        self.exe.unlink()
+        result = self.measured()
+        self.assertFalse(result["artifact_attribution_complete"])
+        self.assertIn("artifact_path_unobserved", result["uncertainty_counts"])
+        self.assertEqual(result["observed_known_inode_allocated_bytes"], 16384)
+
+    def test_declared_artifact_behind_child_symlink_is_incomplete_attribution(self):
+        linked = self.root / "linked-dir"
+        os.symlink(self.root, linked, target_is_directory=True)
+        self.write_capture(extra=self.unit(linked / "test-bin", True))
+        result = self.measured()
+        self.assertFalse(result["artifact_attribution_complete"])
+        self.assertIn("artifact_path_unobserved", result["uncertainty_counts"])
+        self.assertEqual(result["symlinks_skipped"], 1)
+        self.assertEqual(result["observed_known_inode_allocated_bytes"], 16384)
+
     def test_actual_host_hardlinks_have_one_inode_contribution(self):
         result = inventory.collect(self.root, self.identity, artifacts=self.capture)
         self.assertEqual(result["unique_regular_inodes"], 3)
@@ -208,6 +239,7 @@ class InventoryTests(unittest.TestCase):
                 self.assertIsNone(result["complete_inode_allocated_bytes"])
                 self.assertEqual(result["observed_known_inode_allocated_bytes"], 8192)
                 self.assertIn(type(error).__name__ + "_entry", result["uncertainty_counts"])
+                self.assertFalse(result["artifact_attribution_complete"])
 
     def test_unsupported_allocated_bytes_do_not_fall_back_to_logical_size(self):
         self.real_stat = os.lstat
