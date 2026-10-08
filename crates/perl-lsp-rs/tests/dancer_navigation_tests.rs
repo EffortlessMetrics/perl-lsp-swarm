@@ -54,7 +54,7 @@ mod dancer_navigation_tests {
     #[test]
     fn dancer_route_target_definitions_to_named_sub() -> TestResult {
         let code =
-            "use Dancer;\nget '/about' => 'show_about';\nsub show_about { return 'About'; }\n";
+            "use Dancer;\nget '/about' => \\&show_about;\nsub show_about { return 'About'; }\n";
         let uri = "file:///dancer_route_target.pl";
 
         let (resp, locations) = goto_def(code, uri, "show_about", 1)?;
