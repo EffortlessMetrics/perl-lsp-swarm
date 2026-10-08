@@ -215,11 +215,12 @@ class ExactIdentityControls(unittest.TestCase):
             calls.append((repo, run_id, name))
             return {"repository": repo, "run_id": run_id, "name": name, "bytes": observation()}
         # Entire platform and dispatch are mocked; no network or publication runs.
-        with patch.object(MODULE, "_workflow", return_value={"id": WORKFLOW_ID, "path": ".github/workflows/release.yml"}), patch.object(MODULE, "_runs", side_effect=[[], [run(5, created_at="2999-01-01T00:00:00Z")]]), patch.object(MODULE, "_run", return_value=run(5)), patch.object(MODULE, "_dispatch"):
+        with patch.object(MODULE, "_workflow", return_value={"id": WORKFLOW_ID, "path": ".github/workflows/release.yml"}), patch.object(MODULE, "_runs", side_effect=[[], [run(5, created_at="2999-01-01T00:00:00Z")]]), patch.object(MODULE, "_run", return_value=run(5)), patch.object(MODULE, "_dispatch") as dispatch:
             result = MODULE.dispatch_and_wait(repo=REPO, workflow="release.yml", ref=REF,
                 expected_sha=SHA, fields=[], timeout_seconds=10, poll_seconds=1,
                 expected_transaction_id=TRANSACTION, expected_workflow_ref=WORKFLOW_REF,
                 observation_loader=loader)
+        dispatch.assert_called_once_with(REPO, WORKFLOW_ID, REF, [])
         if result.run_id != 5 or calls != [(REPO, 5, "private-producer-" + TRANSACTION + "-1")]:
             raise RuntimeError("named artifact/run join changed")
 
