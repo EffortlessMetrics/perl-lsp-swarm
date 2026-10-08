@@ -591,6 +591,14 @@ T3_QUICK_WARMUP = [
     ("perl-ripr-facts", "ripr_facts_benchmark", None),
 ]
 
+# Per-triple warm-up budget. Cold triples share dependency builds (the first
+# is slowest); 1200s each keeps headroom over the slowest plausible triple
+# on a loaded host — a tighter per-triple value risks false kills given the
+# observed ~2x host variance. Worst case is 5x1200s of setup before an honest
+# FAIL; the setup is explicitly untimed (max_duration governs the timed
+# task), so no shared deadline is threaded through (review #17467).
+T3_WARMUP_TIMEOUT_S = 1200
+
 
 def check_quick_bench(ctx, res, state):
     # Canonical `just bench-quick` path: bench-compare reads this exact file
@@ -623,7 +631,7 @@ def check_quick_bench(ctx, res, state):
         if features:
             wargv += ["--features", features]
         wargv += ["--locked", "--no-run"]
-        w = ctx.run(wargv, 1200, f"t3-warmup-{bench}")
+        w = ctx.run(wargv, T3_WARMUP_TIMEOUT_S, f"t3-warmup-{bench}")
         if w["exit"] != 0:
             res.status = "FAIL"
             res.earned = 0
