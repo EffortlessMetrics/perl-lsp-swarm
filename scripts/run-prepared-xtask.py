@@ -68,6 +68,16 @@ def digest(path):
         return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
+def discard_unstarted_copy(directory, copied):
+    # No child has been returned by Popen. Remove only our file and empty
+    # directory; unexpected contents or a mapped image must remain untouched.
+    try:
+        copied.unlink(missing_ok=True)
+        directory.rmdir()
+    except OSError as error:
+        print(f"prepared xtask runner retained at {directory}: {error}", file=sys.stderr)
+
+
 def run_copy(executable, arguments):
     source = Path(executable).resolve(strict=True)
     if source.name.lower() != "xtask.exe" or not source.is_file():
@@ -75,16 +85,37 @@ def run_copy(executable, arguments):
     directory = Path(tempfile.mkdtemp(prefix="xtask-gates-runner-"))
     copied = directory / source.name
     # No fallback to the mapped Cargo output, including on copy/hash failure.
-    before = digest(source)
-    shutil.copyfile(source, copied)
-    if digest(source) != before or digest(copied) != before:
-        raise ValueError(f"xtask executable changed during handoff; retained {directory}")
+    try:
+        before = digest(source)
+        shutil.copyfile(source, copied)
+    except OSError:
+        discard_unstarted_copy(directory, copied)
+        raise
+    try:
+        if digest(source) != before or digest(copied) != before:
+            raise ValueError(f"xtask executable changed during handoff; retained {directory}")
+    except OSError as error:
+        print(f"prepared xtask handoff unverifiable; retained {directory}: {error}", file=sys.stderr)
+        raise
     print(f"prepared xtask runner sha256={before}", file=sys.stderr, flush=True)
-    status = subprocess.call([str(copied), *arguments])
+    try:
+        process = subprocess.Popen([str(copied), *arguments])
+    except (OSError, subprocess.SubprocessError):
+        discard_unstarted_copy(directory, copied)
+        raise
+    try:
+        status = process.wait()
+    except BaseException as error:
+        print(f"prepared xtask runner wait failed; retained {directory}: {error}", file=sys.stderr)
+        raise
     # Only remove our one verified file after its child exited. If another owned
     # descendant still maps it, Windows refuses removal and evidence is retained.
-    if digest(copied) != before:
-        raise ValueError(f"prepared xtask runner changed; retained {directory}")
+    try:
+        if digest(copied) != before:
+            raise ValueError(f"prepared xtask runner changed; retained {directory}")
+    except OSError as error:
+        print(f"prepared xtask runner unverifiable; retained {directory}: {error}", file=sys.stderr)
+        raise
     try:
         copied.unlink()
         directory.rmdir()

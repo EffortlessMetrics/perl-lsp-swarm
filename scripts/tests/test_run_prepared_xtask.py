@@ -1,4 +1,5 @@
 import importlib.util
+import io
 import json
 import os
 import re
@@ -8,7 +9,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 ROOT = Path(__file__).resolve().parents[2]
 HELPER = ROOT / "scripts/run-prepared-xtask.py"
@@ -76,10 +77,121 @@ class ConfigurationTests(unittest.TestCase):
         retained.mkdir()
         with patch.object(runner.tempfile, "mkdtemp", return_value=str(retained)), \
              patch.object(runner.shutil, "copyfile", side_effect=corrupt_copy), \
-             patch.object(runner.subprocess, "call") as execute:
+             patch.object(runner.subprocess, "Popen") as execute:
             with self.assertRaisesRegex(ValueError, "changed during handoff"):
                 runner.run_copy(source, ["gates"])
             execute.assert_not_called()
+
+    def handoff(self):
+        source = self.root / "xtask.exe"
+        source.write_bytes(b"source")
+        directory = self.root / "handoff"
+        directory.mkdir()
+        return source, directory, directory / "xtask.exe"
+
+    def test_initial_hash_failure_removes_only_empty_handoff(self):
+        source, directory, _ = self.handoff()
+        failure = OSError("source unavailable")
+        with patch.object(runner.tempfile, "mkdtemp", return_value=str(directory)), \
+             patch.object(runner, "digest", side_effect=failure), \
+             patch.object(runner.subprocess, "Popen") as execute:
+            with self.assertRaises(OSError) as caught:
+                runner.run_copy(source, ["gates"])
+            self.assertIs(caught.exception, failure)
+            execute.assert_not_called()
+        self.assertFalse(directory.exists())
+        self.assertEqual(source.read_bytes(), b"source")
+
+    def test_partial_copy_failure_removes_only_unstarted_copy(self):
+        source, directory, copied = self.handoff()
+        failure = OSError("copy interrupted")
+        def fail_copy(_source, destination):
+            Path(destination).write_bytes(b"partial")
+            raise failure
+        with patch.object(runner.tempfile, "mkdtemp", return_value=str(directory)), \
+             patch.object(runner.shutil, "copyfile", side_effect=fail_copy), \
+             patch.object(runner.subprocess, "Popen") as execute:
+            with self.assertRaises(OSError) as caught:
+                runner.run_copy(source, ["gates"])
+            self.assertIs(caught.exception, failure)
+            execute.assert_not_called()
+        self.assertFalse(copied.exists())
+        self.assertFalse(directory.exists())
+        self.assertEqual(source.read_bytes(), b"source")
+
+    def test_spawn_failure_removes_unstarted_copy_without_fallback(self):
+        source, directory, copied = self.handoff()
+        failure = OSError("creation refused")
+        with patch.object(runner.tempfile, "mkdtemp", return_value=str(directory)), \
+             patch.object(runner.subprocess, "Popen", side_effect=failure) as execute:
+            with self.assertRaises(OSError) as caught:
+                runner.run_copy(source, ["gates", "argument with spaces"])
+            self.assertIs(caught.exception, failure)
+            execute.assert_called_once_with([str(copied), "gates", "argument with spaces"])
+        self.assertFalse(directory.exists())
+        self.assertEqual(source.read_bytes(), b"source")
+
+    def test_wait_failure_retains_and_reports_copy_with_unknown_consumer(self):
+        source, directory, copied = self.handoff()
+        failure = OSError("wait interrupted")
+        process = Mock()
+        process.wait.side_effect = failure
+        diagnostics = io.StringIO()
+        with patch.object(runner.tempfile, "mkdtemp", return_value=str(directory)), \
+             patch.object(runner.subprocess, "Popen", return_value=process) as execute, \
+             patch.object(runner.sys, "stderr", diagnostics):
+            with self.assertRaises(OSError) as caught:
+                runner.run_copy(source, ["gates"])
+            self.assertIs(caught.exception, failure)
+            execute.assert_called_once_with([str(copied), "gates"])
+            process.wait.assert_called_once_with()
+        self.assertEqual(copied.read_bytes(), b"source")
+        self.assertIn(f"wait failed; retained {directory}", diagnostics.getvalue())
+        process.terminate.assert_not_called()
+        process.kill.assert_not_called()
+
+    def test_cleanup_failure_reports_retention_preserves_original_error(self):
+        source, directory, copied = self.handoff()
+        failure = OSError("copy failed")
+        diagnostics = io.StringIO()
+        with patch.object(runner.tempfile, "mkdtemp", return_value=str(directory)), \
+             patch.object(runner.shutil, "copyfile", side_effect=failure), \
+             patch.object(Path, "unlink", side_effect=PermissionError("mapped")), \
+             patch.object(runner.subprocess, "Popen") as execute, \
+             patch.object(runner.sys, "stderr", diagnostics):
+            with self.assertRaises(OSError) as caught:
+                runner.run_copy(source, ["gates"])
+            self.assertIs(caught.exception, failure)
+            execute.assert_not_called()
+        self.assertTrue(directory.exists())
+        self.assertIn(f"retained at {directory}: mapped", diagnostics.getvalue())
+
+    def test_success_preserves_exit_and_cleans_only_owned_file(self):
+        source, directory, copied = self.handoff()
+        process = Mock()
+        process.wait.return_value = 19
+        with patch.object(runner.tempfile, "mkdtemp", return_value=str(directory)), \
+             patch.object(runner.subprocess, "Popen", return_value=process) as execute:
+            self.assertEqual(runner.run_copy(source, ["gates"]), 19)
+            execute.assert_called_once_with([str(copied), "gates"])
+            process.wait.assert_called_once_with()
+        self.assertFalse(directory.exists())
+        self.assertEqual(source.read_bytes(), b"source")
+
+    def test_unexpected_contents_are_preserved_after_child_exit(self):
+        source, directory, copied = self.handoff()
+        sentinel = directory / "unexpected"
+        sentinel.write_bytes(b"preserve")
+        process = Mock()
+        process.wait.return_value = 19
+        diagnostics = io.StringIO()
+        with patch.object(runner.tempfile, "mkdtemp", return_value=str(directory)), \
+             patch.object(runner.subprocess, "Popen", return_value=process), \
+             patch.object(runner.sys, "stderr", diagnostics):
+            self.assertEqual(runner.run_copy(source, ["gates"]), 19)
+        self.assertEqual(sentinel.read_bytes(), b"preserve")
+        self.assertFalse(copied.exists())
+        self.assertIn(f"retained at {directory}", diagnostics.getvalue())
 
 
 @unittest.skipUnless(os.name != "nt", "requires a Unix shell")
