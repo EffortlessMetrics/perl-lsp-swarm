@@ -90,8 +90,8 @@ mod dancer_navigation_tests {
         // The two positives also prevent empty/error navigation from satisfying
         // the string and missing-handler controls.
         for (line, character, expected_line, label) in [
-            (1, 18, Some(6), "named CodeRef"),
             (2, 0, Some(6), "ordinary call"),
+            (1, 18, Some(6), "named CodeRef"),
             (3, 17, None, "quoted route spelling"),
             (4, 14, None, "ordinary quoted spelling"),
             (5, 18, None, "missing named CodeRef"),
