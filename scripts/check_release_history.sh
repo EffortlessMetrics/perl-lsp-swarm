@@ -106,6 +106,9 @@ fi
 if ! python3 scripts/tests/test_release_tag_provenance.py; then
     error "Release-tag provenance unit tests failed"
 fi
+if ! python3 scripts/tests/test_git_environment.py; then
+    error "Explicit-repository Git environment isolation tests failed"
+fi
 
 for tag in "${ALL_TAGS[@]}"; do
     # Skip (CL) entries — they have no tag by definition

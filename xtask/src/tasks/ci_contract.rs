@@ -602,7 +602,7 @@ fn is_changelog(file: &str) -> bool {
 }
 
 fn repository_identity(root: &Path) -> Result<String> {
-    let output = Command::new("git")
+    let output = crate::git_environment::command()
         .args(["config", "--get", "remote.origin.url"])
         .current_dir(root)
         .output()
@@ -624,7 +624,7 @@ fn repository_identity(root: &Path) -> Result<String> {
 }
 
 fn merge_base_sha(root: &Path, base: &str, head: &str) -> Result<String> {
-    let output = Command::new("git")
+    let output = crate::git_environment::command()
         .args(["merge-base", base, head])
         .current_dir(root)
         .output()
@@ -644,7 +644,7 @@ fn merge_base_sha(root: &Path, base: &str, head: &str) -> Result<String> {
 }
 
 fn resolve_sha(root: &Path, reference: &str) -> Result<String> {
-    let output = Command::new("git")
+    let output = crate::git_environment::command()
         .args(["rev-parse", "--verify", &format!("{reference}^{{commit}}")])
         .current_dir(root)
         .output()
@@ -746,7 +746,7 @@ mod tests {
     use color_eyre::eyre::{Result, ensure, eyre};
 
     fn git_in(repo: &Path, args: &[&str]) -> Result<String> {
-        let output = Command::new("git").args(args).current_dir(repo).output()?;
+        let output = crate::git_environment::command().args(args).current_dir(repo).output()?;
         ensure!(
             output.status.success(),
             "git {} failed: {}",

@@ -6,6 +6,8 @@
 //! `perl-core-harness-types`. The negative control below (a packet with a
 //! required field removed) must NOT validate, proving the check is not vacuous.
 
+#![deny(clippy::map_err_ignore)]
+
 use perl_ripr_facts::{RiprFactsRequest, build_ripr_facts_packet};
 use perl_tdd_support::{must, must_some_with, must_with};
 

@@ -497,9 +497,9 @@ fn filter_sed_expressions() -> Result<Vec<String>, Box<dyn std::error::Error>> {
     // would leave the lookalike cases below vacuously green: sed with no
     // substitution echoes its input, which is exactly what they assert. Pin
     // the count so a reformatted recipe fails loudly here instead.
-    if exprs.len() != 2 {
+    if exprs.len() != 5 {
         return Err(format!(
-            "expected 2 -e substitutions in _public-api-filter, parsed {}: {exprs:?}",
+            "expected 5 -e expressions in _public-api-filter, parsed {}: {exprs:?}",
             exprs.len()
         )
         .into());
@@ -611,6 +611,28 @@ fn apply_io_fold(line: &str) -> Result<String, Box<dyn std::error::Error>> {
         );
     }
     Ok(String::from_utf8(output.stdout)?.trim_end().to_string())
+}
+
+#[test]
+fn public_api_arc_alias_fold_is_complete_and_preserves_user_paths()
+-> Result<(), Box<dyn std::error::Error>> {
+    for (input, expected) in [
+        (
+            "pub fn nested() -> alloc::rcs::arc::Arc<alloc::rcs::arc::Arc<u8>>",
+            "pub fn nested() -> alloc::sync::Arc<alloc::sync::Arc<u8>>",
+        ),
+        (
+            "pub fn user() -> user::alloc::rcs::arc::Arc<u8>",
+            "pub fn user() -> user::alloc::rcs::arc::Arc<u8>",
+        ),
+        (
+            "pub fn lookalike() -> alloc::rcs::arc::ArcExtra",
+            "pub fn lookalike() -> alloc::rcs::arc::ArcExtra",
+        ),
+    ] {
+        assert_eq!(apply_io_fold(input)?.trim_end(), expected);
+    }
+    Ok(())
 }
 
 /// Run the recipe's own `sed` expressions over a whole buffer in one process.

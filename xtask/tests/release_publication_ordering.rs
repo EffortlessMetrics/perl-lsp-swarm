@@ -86,9 +86,7 @@ fn validate_release_graph(document: &Value) -> Result<()> {
         "release artifact-check",
         "Duplicate archive filename",
         "release_terminal_manifest.py",
-        "actions/attest@",
         "release-terminal-candidate",
-        "subject-checksums",
     ] {
         ensure!(
             candidate_text.contains(required),
@@ -121,6 +119,64 @@ fn validate_release_graph(document: &Value) -> Result<()> {
     ensure!(
         !eligibility_text.contains("secrets."),
         "publisher eligibility must not receive publisher secrets"
+    );
+
+    ensure!(
+        !candidate_text.contains("actions/attest@") && !permission_is_write(candidate),
+        "private candidate construction must not attest or receive write authority"
+    );
+    ensure!(
+        publication.get("if").and_then(Value::as_str)
+            == Some(
+                "${{ inputs.no_publish == false && needs.publisher-eligibility.outputs.qualification == 'satisfied' }}"
+            ),
+        "public attestation must be gated by publication intent and qualification"
+    );
+    let steps = publication
+        .get("steps")
+        .and_then(Value::as_sequence)
+        .context("publication requires ordered steps")?;
+    let attest = steps
+        .iter()
+        .position(|step| {
+            step.get("uses")
+                .and_then(Value::as_str)
+                .is_some_and(|action| action.starts_with("actions/attest@"))
+        })
+        .context("publication lacks terminal attestation")?;
+    ensure!(
+        steps[attest]
+            .get("with")
+            .and_then(|with| with.get("subject-checksums"))
+            .and_then(Value::as_str)
+            == Some("candidate/attestation-subjects.sha256"),
+        "attestation must bind exact candidate checksums"
+    );
+    let binding = steps
+        .iter()
+        .position(|step| {
+            step.get("run").and_then(Value::as_str).is_some_and(|run| {
+                run.contains("release_terminal_manifest.py") && run.contains("--check")
+            })
+        })
+        .context("publication lacks pre-attestation manifest binding")?;
+    let tag = steps
+        .iter()
+        .position(|step| {
+            step.get("run").and_then(Value::as_str).is_some_and(|run| run.contains("git/refs"))
+        })
+        .context("publication lacks tag creation boundary")?;
+    let release = steps
+        .iter()
+        .position(|step| {
+            step.get("uses")
+                .and_then(Value::as_str)
+                .is_some_and(|action| action.contains("action-gh-release"))
+        })
+        .context("publication lacks release boundary")?;
+    ensure!(
+        binding < attest && attest < tag && attest < release,
+        "exact manifest binding and attestation must precede every public mutation"
     );
 
     let publication_text = rendered(publication)?;
@@ -239,6 +295,57 @@ fn current_release_graph_is_fail_closed() -> Result<()> {
         "workflow overclaims structural reachability as hosted runtime proof"
     );
     validate_release_graph(&document)
+}
+
+#[test]
+fn deferred_attestation_rejects_missing_misbound_early_and_private_mutants() -> Result<()> {
+    let document = workflow("release.yml")?;
+    validate_release_graph(&document)?;
+    let publication_steps =
+        document["jobs"]["publish-release"]["steps"].as_sequence().context("publication steps")?;
+    let index = publication_steps
+        .iter()
+        .position(|step| {
+            step.get("uses")
+                .and_then(Value::as_str)
+                .is_some_and(|action| action.starts_with("actions/attest@"))
+        })
+        .context("attestation step")?;
+    let attestation = publication_steps[index].clone();
+    for variant in ["missing", "misbound", "early", "private", "unguarded"] {
+        let mut mutant = document.clone();
+        match variant {
+            "missing" => {
+                mutant["jobs"]["publish-release"]["steps"]
+                    .as_sequence_mut()
+                    .context("steps")?
+                    .remove(index);
+            }
+            "misbound" => {
+                mutant["jobs"]["publish-release"]["steps"][index]["with"]["subject-checksums"] =
+                    Value::String("other/checksums".into());
+            }
+            "early" => {
+                let steps = mutant["jobs"]["publish-release"]["steps"]
+                    .as_sequence_mut()
+                    .context("steps")?;
+                let step = steps.remove(index);
+                steps.insert(0, step);
+            }
+            "private" => {
+                mutant["jobs"]["candidate"]["steps"]
+                    .as_sequence_mut()
+                    .context("candidate steps")?
+                    .push(attestation.clone());
+            }
+            "unguarded" => {
+                mutant["jobs"]["publish-release"]["if"] = Value::String("${{ always() }}".into());
+            }
+            _ => bail!("unknown mutant"),
+        }
+        ensure!(validate_release_graph(&mutant).is_err(), "accepted {variant} attestation mutant");
+    }
+    Ok(())
 }
 
 #[test]

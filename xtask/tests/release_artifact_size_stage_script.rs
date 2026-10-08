@@ -7,6 +7,9 @@
 //! macOS runner nobody watches. These tests exercise it directly with real
 //! executables so the packaging contract is proven on every ordinary CI run.
 
+#[path = "support/workflow_bash.rs"]
+mod workflow_bash;
+
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -42,15 +45,35 @@ fn package_name() -> String {
 
 /// Build a throwaway repository root whose release directory holds two real,
 /// strippable executables. The test binary itself is the most convenient real
-/// ELF/Mach-O available on whichever host runs this suite.
+/// ELF/Mach-O/PE available on whichever host runs this suite.
 fn staged_root() -> Result<TempDir> {
     let root = tempfile::tempdir()?;
     let build_dir = root.path().join("target").join(TARGET).join("release");
     fs::create_dir_all(&build_dir)?;
     let source = std::env::current_exe().context("locating the test executable")?;
     for binary in BINARIES {
-        fs::copy(&source, build_dir.join(binary))
+        let destination = build_dir.join(binary);
+        fs::copy(&source, &destination)
             .with_context(|| format!("seeding {binary} from {}", source.display()))?;
+        #[cfg(windows)]
+        {
+            // MSVC keeps symbols in a separate PDB, so the copied PE can
+            // already be fully stripped. Add a real removable debug section
+            // so omitting strip still fails the strict-shrink oracle.
+            let debug = build_dir.join("fixture-debug.bin");
+            fs::write(&debug, vec![0x42; 65536])?;
+            let output = Command::new("objcopy")
+                .arg("--add-section")
+                .arg(format!(".debug_fixture={}", debug.display()))
+                .arg(&destination)
+                .output()
+                .context("adding removable PE fixture debug data")?;
+            ensure!(
+                output.status.success(),
+                "objcopy fixture preparation failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
     }
     for extra in ["README.md", "LICENSE-APACHE", "LICENSE-MIT"] {
         fs::write(root.path().join(extra), format!("{extra} placeholder\n"))?;
@@ -59,7 +82,7 @@ fn staged_root() -> Result<TempDir> {
 }
 
 fn stage(root: &Path, variant: &str) -> Result<Output> {
-    Command::new("bash")
+    Command::new(workflow_bash::bash_executable())
         .arg(script_arg_for_bash())
         .args([variant, TARGET, VERSION])
         .env("RELEASE_ARTIFACT_SIZE_ROOT", root)
@@ -75,6 +98,42 @@ fn sha256(path: &Path) -> Result<String> {
         .next()
         .context("empty sha256sum output")?
         .to_string())
+}
+
+fn require_strip_shrink(binary: &Path, unstripped: u64) -> Result<()> {
+    // Strictly smaller discriminates a script that omits strip entirely.
+    ensure!(
+        fs::metadata(binary)?.len() < unstripped,
+        "the staged binary was not stripped, so the post-strip claim would be false"
+    );
+    Ok(())
+}
+
+#[test]
+fn strict_strip_oracle_rejects_a_successful_noop_strip() -> Result<()> {
+    let root = staged_root()?;
+    let unstripped =
+        fs::metadata(root.path().join("target").join(TARGET).join("release").join(BINARIES[0]))?
+            .len();
+    let environment = root.path().join("target/noop-strip.bash");
+    fs::write(&environment, "strip() { return 0; }\n")?;
+    let output = Command::new(workflow_bash::bash_executable())
+        .arg(script_arg_for_bash())
+        .args(["baseline", TARGET, VERSION])
+        .env("RELEASE_ARTIFACT_SIZE_ROOT", root.path())
+        .env("BASH_ENV", environment.to_string_lossy().replace('\\', "/"))
+        .output()?;
+    ensure!(
+        output.status.success(),
+        "no-op fixture did not reach packaging: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let staged = root.path().join("target/shadow/baseline").join(package_name()).join(BINARIES[0]);
+    ensure!(
+        require_strip_shrink(&staged, unstripped).is_err(),
+        "strict strip oracle accepted a successful no-op"
+    );
+    Ok(())
 }
 
 #[test]
@@ -112,13 +171,7 @@ fn staging_packages_stripped_binaries_whose_archive_matches_the_directory() -> R
             "`{binary}` differs between the staged directory and the archive"
         );
     }
-    // Strictly smaller, not `<=`: `strip` can only shrink or leave a file
-    // alone, so `<=` would hold for an implementation that dropped the `strip`
-    // call entirely and could not discriminate one.
-    ensure!(
-        fs::metadata(package_dir.join(BINARIES[0]))?.len() < unstripped,
-        "the staged binary was not stripped, so the post-strip claim would be false"
-    );
+    require_strip_shrink(&package_dir.join(BINARIES[0]), unstripped)?;
 
     // A staging directory outside `target/` would dirty the checkout, and the
     // instrument records `subject_complete` only for a clean tree.

@@ -1,5 +1,8 @@
 //! Contract tests for scripts/target-gc.sh (#12791).
 
+#[path = "support/workflow_bash.rs"]
+mod workflow_bash;
+
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
@@ -14,7 +17,11 @@ fn project_root() -> Result<PathBuf, Box<dyn std::error::Error>> {
 // Windows process lookup may choose System32's WSL shim before PATH. Allow
 // the fixture runner to select its installed Git Bash without starting WSL.
 fn bash_command() -> Command {
-    Command::new(std::env::var_os("TARGET_GC_TEST_BASH").unwrap_or_else(|| "bash".into()))
+    Command::new(
+        std::env::var_os("TARGET_GC_TEST_BASH")
+            .map(PathBuf::from)
+            .unwrap_or_else(workflow_bash::bash_executable),
+    )
 }
 
 #[test]

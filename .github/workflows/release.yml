@@ -6,6 +6,45 @@ name: Release
 on:
   workflow_dispatch:
     inputs:
+      source_context_run_id:
+        description: 'Read-only unqualified context artifact run ID; absent keeps NOT_PROVEN'
+        required: false
+        type: string
+      source_context_artifact_name:
+        description: 'Exact named context artifact from the declared run'
+        required: false
+        type: string
+      source_context_sha256:
+        description: 'Expected canonical context.json byte digest'
+        required: false
+        type: string
+      expected_policy_sha256:
+        description: 'Independently expected selected policy digest'
+        required: true
+        type: string
+      expected_topology_sha256:
+        description: 'Independently expected candidate topology digest'
+        required: true
+        type: string
+      expected_run_attempt:
+        description: 'Exact selected child attempt; reruns cannot silently substitute'
+        required: false
+        type: string
+        default: '1'
+      no_publish:
+        description: 'Private rehearsal only; no public authority'
+        required: false
+        type: boolean
+        default: true
+      transaction_id:
+        description: 'Exact independently selected private transaction (64 lowercase hex)'
+        required: true
+        type: string
+      fail_before_publish:
+        description: 'Reject the private predecessor after validating actual bytes'
+        required: false
+        type: boolean
+        default: false
       tag:
         description: 'Release tag (e.g., v<0.x.y>)'
         required: true
@@ -358,9 +397,6 @@ jobs:
     permissions:
       actions: read
       contents: read
-      id-token: write
-      attestations: write
-      artifact-metadata: write
 
     steps:
       - name: Checkout
@@ -476,15 +512,10 @@ jobs:
             --tag "$TAG" \
             --check
 
-      - name: Attest exact terminal candidate subjects
-        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
-        with:
-          subject-checksums: candidate/attestation-subjects.sha256
-
       - name: Upload terminal candidate
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: release-terminal-candidate
+          name: release-terminal-candidate-${{ inputs.transaction_id }}-${{ github.run_attempt }}
           path: candidate
           if-no-files-found: error
           retention-days: 7
@@ -494,6 +525,7 @@ jobs:
   # the ordering visible to GitHub's job graph (and to the structural tests),
   # rather than relying on a shell step having completed successfully.
   publisher-eligibility:
+    if: ${{ always() }}
     name: Establish publisher eligibility
     needs: [candidate, release-metadata]
     runs-on: ubuntu-24.04
@@ -504,6 +536,7 @@ jobs:
     outputs:
       manifest_sha256: ${{ steps.bind.outputs.manifest_sha256 }}
       candidate_run_id: ${{ steps.bind.outputs.candidate_run_id }}
+      qualification: ${{ steps.bind.outputs.qualification }}
 
     steps:
       - name: Checkout
@@ -511,10 +544,58 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Setup eligibility schema Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+
+      - name: Install pinned eligibility schema dependencies
+        run: python3 -m pip install -r scripts/requirements-release.txt
+
+      - name: Download unqualified source context
+        if: ${{ inputs.source_context_run_id != '' && inputs.source_context_artifact_name != '' && inputs.source_context_sha256 != '' }}
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.source_context_run_id }}
+          name: ${{ inputs.source_context_artifact_name }}
+          github-token: ${{ github.token }}
+          path: source-context
+
+      - name: Validate unqualified source context before checkout
+        id: context
+        env:
+          CONTEXT_DIGEST: ${{ inputs.source_context_sha256 }}
+          CONTEXT_RUN_ID: ${{ inputs.source_context_run_id }}
+          CONTEXT_ARTIFACT_NAME: ${{ inputs.source_context_artifact_name }}
+        run: |
+          set -euo pipefail
+          python3 scripts/ci/release_private_producer.py inspect-source-context \
+            --directory source-context --digest "$CONTEXT_DIGEST" \
+            --repository "$GITHUB_REPOSITORY" --run-id "$CONTEXT_RUN_ID" \
+            --artifact-name "$CONTEXT_ARTIFACT_NAME" --output context-outputs.txt
+          cat context-outputs.txt >> "$GITHUB_OUTPUT"
+
+      - name: Checkout declared frozen source read-only
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.context.outputs.frozen_sha }}
+          path: source-frozen
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Checkout declared prepared source read-only
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.context.outputs.prepared_sha }}
+          path: source-prepared
+          fetch-depth: 0
+          persist-credentials: false
+
       - name: Download terminal candidate authority
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: release-terminal-candidate
+          name: release-terminal-candidate-${{ inputs.transaction_id }}-${{ github.run_attempt }}
           path: candidate
 
       - name: Bind and seal terminal candidate authority
@@ -523,8 +604,40 @@ jobs:
           SOURCE_SHA: ${{ github.sha }}
           TAG: ${{ needs.release-metadata.outputs.tag }}
           CANDIDATE_RUN_ID: ${{ github.run_id }}
+          CANDIDATE_RESULT: ${{ needs.candidate.result }}
+          METADATA_RESULT: ${{ needs.release-metadata.result }}
+          TRANSACTION_ID: ${{ inputs.transaction_id }}
+          EXPECTED_POLICY_SHA256: ${{ inputs.expected_policy_sha256 }}
+          EXPECTED_TOPOLOGY_SHA256: ${{ inputs.expected_topology_sha256 }}
+          EXPECTED_RUN_ATTEMPT: ${{ inputs.expected_run_attempt }}
+          PRIVATE_PRERELEASE: ${{ needs.release-metadata.outputs.prerelease }}
+          FAIL_BEFORE_PUBLISH: ${{ inputs.fail_before_publish }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          CONTEXT_DIGEST: ${{ inputs.source_context_sha256 }}
+          CONTEXT_RUN_ID: ${{ inputs.source_context_run_id }}
+          CONTEXT_ARTIFACT_NAME: ${{ inputs.source_context_artifact_name }}
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
         run: |
           set -euo pipefail
+          test "$CANDIDATE_RESULT" = success
+          test "$METADATA_RESULT" = success
+          python3 scripts/ci/release_private_producer.py \
+            --candidate candidate --source-sha "$SOURCE_SHA" --expected-sha "$EXPECTED_SHA" \
+            --planned-tag "$TAG" --transaction-id "$TRANSACTION_ID" \
+            --repository "$GITHUB_REPOSITORY" --workflow-ref "$GITHUB_WORKFLOW_REF" \
+            --run-id "$GITHUB_RUN_ID" --run-attempt "$RUN_ATTEMPT" \
+            --expected-policy-sha256 "$EXPECTED_POLICY_SHA256" --expected-topology-sha256 "$EXPECTED_TOPOLOGY_SHA256" \
+            --expected-run-attempt "$EXPECTED_RUN_ATTEMPT" \
+            --context-directory source-context --context-digest "$CONTEXT_DIGEST" \
+            --context-run-id "$CONTEXT_RUN_ID" --context-artifact-name "$CONTEXT_ARTIFACT_NAME" \
+            --frozen-root source-frozen --prepared-root source-prepared \
+            --policy policy/release-publication-admission.json --prerelease "$PRIVATE_PRERELEASE" --output private-producer.json
+          if [ "$FAIL_BEFORE_PUBLISH" = true ]; then
+            printf '::error::Deliberate rejected private predecessor; no publisher eligibility\n'
+            exit 1
+          fi
+          # No authenticated provenance, complete VSIX or isolation adapter exists.
+          printf 'qualification=not_proven\n' >> "$GITHUB_OUTPUT"
           python3 scripts/release_terminal_manifest.py \
             --candidate candidate \
             --source-sha "$SOURCE_SHA" \
@@ -536,10 +649,20 @@ jobs:
           test "$(jq -r '.source_sha' candidate/dist/release-terminal-manifest.json)" = "$SOURCE_SHA"
           printf 'manifest_sha256=%s\n' "$manifest_sha256" >> "$GITHUB_OUTPUT"
           printf 'candidate_run_id=%s\n' "$CANDIDATE_RUN_ID" >> "$GITHUB_OUTPUT"
-          printf 'Publisher eligibility sealed for %s at run %s (manifest sha256:%s).\n' \
+          printf 'Private candidate consistency recorded for %s at run %s (manifest sha256:%s).\n' \
             "$SOURCE_SHA" "$CANDIDATE_RUN_ID" "$manifest_sha256"
 
+      - name: Retain private producer observation
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: private-producer-${{ inputs.transaction_id }}-${{ github.run_attempt }}
+          path: private-producer.json
+          if-no-files-found: warn
+          retention-days: 7
+
   publish-release:
+    if: ${{ inputs.no_publish == false && needs.publisher-eligibility.outputs.qualification == 'satisfied' }}
     name: Publish terminal GitHub Release candidate
     needs: [candidate, publisher-eligibility, release-metadata]
     runs-on: ubuntu-24.04
@@ -547,6 +670,9 @@ jobs:
     permissions:
       actions: read
       contents: write
+      id-token: write
+      attestations: write
+      artifact-metadata: write
     env:
       STRUCTURAL_PROOF_BOUNDARY: 'Hosted zero-public-mutation remains NOT_PROVEN until #8576 runtime rehearsal'
 
@@ -563,7 +689,7 @@ jobs:
       - name: Download terminal candidate
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: release-terminal-candidate
+          name: release-terminal-candidate-${{ inputs.transaction_id }}-${{ github.run_attempt }}
           path: candidate
 
       - name: Bind terminal manifest to this publication subject
@@ -577,6 +703,11 @@ jobs:
             --source-sha "$SOURCE_SHA" \
             --tag "$TAG" \
             --check
+
+      - name: Attest exact terminal candidate subjects
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-checksums: candidate/attestation-subjects.sha256
 
       - name: Atomically create exact release tag
         env:
@@ -685,6 +816,7 @@ jobs:
           fi
 
   dispatch-publishers:
+    if: ${{ inputs.no_publish == false && needs.publisher-eligibility.outputs.qualification == 'satisfied' }}
     name: Dispatch admitted downstream publishers
     needs: [publish-release, publisher-eligibility, release-metadata]
     runs-on: ubuntu-24.04

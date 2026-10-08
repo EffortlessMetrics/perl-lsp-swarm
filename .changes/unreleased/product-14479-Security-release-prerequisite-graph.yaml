@@ -1,0 +1,9 @@
+project: product
+component: Packaging and distribution
+kind: Security
+body: Release preparation defaults to a private graph with public tag, attestation, release, and publisher jobs closed before qualification. Explicit context, source, workflow-run, and private artifact joins reject mismatches. Release qualification and admitted source execution remain NOT_PROVEN; this change grants no publication authority.
+time: 2026-08-31T22:00:00Z
+custom:
+  PR: 14479
+  Slug: release-prerequisite-graph
+  Breaking: "no"

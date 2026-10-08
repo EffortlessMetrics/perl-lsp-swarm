@@ -10,6 +10,8 @@
 //! that kill the wrong-order mutants (a schema error or a diff-read error
 //! appearing instead of the directory diagnostic).
 
+#![deny(clippy::map_err_ignore)]
+
 use perl_tdd_support::must_with;
 use std::process::Command;
 
