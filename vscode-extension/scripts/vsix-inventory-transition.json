@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "owner_issue": 7807,
-  "reason": "Compose issue 7807 POD preview webview accessibility (+780 bundled entrypoint bytes, out/extension.js 1736217 to 1736997, re-measured from a rolldown build of the merged sources) with main's tinypool dev-dependency security patch ratchet (#17470, +25 manifest bytes, package.json 62154 to 62179) after merging origin/main at 3714724858",
+  "owner_issue": 9072,
+  "reason": "Non-executing Critic health observations replace subprocess/profile readiness checks; only the generated source bundle byte inventory changes.",
   "base_baseline_file_sha256": "bb22f581f9e7c3664ac0abc2db43e8f865eeccf2e3883b4d01a53333db2e72fa",
-  "candidate_baseline_file_sha256": "c52e90d09986b7e1d411abbb1067ab24c1a8cf6ec7c95aebb702ab426820d616",
+  "candidate_baseline_file_sha256": "4b7015a4d9513bca24dabd2f163f3287d6390f2cf4cab2b4a67bc9ea38ee4f39",
   "base_inventory_sha256": "bcb2845ae6066a3b9937debe5e11ad41584824969295a154adb8a4f92d9c5b92",
-  "candidate_inventory_sha256": "394fe19d6c8b75b31eec265d8d8255696e1020ca25a6705217a09941dc738282"
+  "candidate_inventory_sha256": "6f8b14c43e8ac5316e0b05f6041d3c5ff5d9691270b3a221d8c439be9f47ed78"
 }
