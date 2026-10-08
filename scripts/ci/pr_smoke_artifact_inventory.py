@@ -305,6 +305,7 @@ def collect(target, identity, *, artifacts=None, budget=None, max_entries=MAX_EN
         "accounting_scope": "regular-file inodes only; directory/symlink/nonregular allocation excluded",
         "budget_seconds": budget.seconds,
         "prior_charged_seconds": budget.spent,
+        "charge_scope": "internal collection only; caller must supervise and measure full invocations",
         "status": "partial",
         "scan_complete": False,
         "artifact_attribution_complete": False,
@@ -483,14 +484,18 @@ def main(argv=None):
             # Output is exclusive/current-run: do not overwrite a prior report
             # or follow a symlink. No parent creation or artifact cleanup.
             with _deadline_write(budget):
+                report["charged_collection_seconds"] = budget.charged()
                 data = encode_report(report)
                 fd = os.open(args.output, os.O_WRONLY | os.O_CREAT | os.O_EXCL |
                              getattr(os, "O_NOFOLLOW", 0), 0o600)
                 with os.fdopen(fd, "wb") as stream:
                     stream.write(data)
     except Exception as error:
-        print(f"NOT_PROVEN: artifact inventory unavailable: {type(error).__name__}: {error}",
-              file=sys.stderr)
+        try:
+            print(f"NOT_PROVEN: artifact inventory unavailable: {type(error).__name__}: {error}",
+                  file=sys.stderr)
+        except (OSError, UnicodeError, ValueError):
+            pass  # A failed telemetry error stream cannot replace the build result.
     # Telemetry success/failure cannot convert the preceding build result.
     return args.build_exit_code
 

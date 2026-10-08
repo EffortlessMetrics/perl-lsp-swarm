@@ -406,6 +406,44 @@ class InventoryTests(unittest.TestCase):
             self.assertEqual(inventory.main(self.cli_args()), 101)
         self.assertIn("NOT_PROVEN", output.getvalue())
 
+
+    def test_cli_charge_includes_delay_before_arming_output_reserve(self):
+        now = [0.0]
+        original_budget = inventory.Budget
+        original_collect = inventory.collect
+        original_write = inventory._deadline_write
+        def bounded(seconds, spent):
+            return original_budget(seconds, spent, clock=lambda: now[0])
+        def at_eight_seconds(*args, **kwargs):
+            now[0] = 8.0
+            return original_collect(*args, **kwargs)
+        def delayed_write(budget):
+            now[0] += 0.75
+            return original_write(budget)
+        with mock.patch.object(inventory, "Budget", side_effect=bounded), \
+                mock.patch.object(inventory, "collect", side_effect=at_eight_seconds), \
+                mock.patch.object(inventory, "_deadline_write", side_effect=delayed_write):
+            self.assertEqual(inventory.main(self.cli_args()), 101)
+        report = json.loads((self.parent / "report.log").read_text())
+        self.assertEqual(report["charged_collection_seconds"], 9.75)
+        self.assertIn("caller must supervise", report["charge_scope"])
+
+    def test_cli_failed_error_stream_preserves_original_build_failure(self):
+        self.identity_file.unlink()
+        for error in (BrokenPipeError("closed pipe"), OSError("disk full"),
+                      UnicodeError("unsupported encoding"), ValueError("closed stream")):
+            with self.subTest(error=type(error).__name__):
+                failed = SimpleNamespace(write=mock.Mock(side_effect=error), flush=lambda: None)
+                with redirect_stderr(failed):
+                    self.assertEqual(inventory.main(self.cli_args()), 101)
+
+    def test_cli_zero_build_status_survives_failed_telemetry(self):
+        self.identity_file.unlink()
+        with redirect_stderr(io.StringIO()) as output:
+            self.assertEqual(inventory.main(self.cli_args(code=0)), 0)
+        self.assertIn("NOT_PROVEN", output.getvalue())
+        self.assertFalse((self.parent / "report.log").exists())
+
     def test_cli_enospc_output_preserves_original_build_failure(self):
         original_open = os.open
         def failed(path, *args, **kwargs):
