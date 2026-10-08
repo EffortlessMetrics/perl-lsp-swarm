@@ -1,0 +1,323 @@
+#!/usr/bin/env python3
+"""Literal-byte, failure and controlled-mutant tests for #17231."""
+from __future__ import annotations
+
+import importlib.util
+import io
+import json
+import os
+import stat
+import tempfile
+import unittest
+from contextlib import redirect_stderr
+from pathlib import Path
+from types import SimpleNamespace
+from unittest import mock
+
+SPEC = importlib.util.spec_from_file_location(
+    "pr_smoke_artifact_inventory", Path(__file__).with_name("pr_smoke_artifact_inventory.py"))
+inventory = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(inventory)
+
+
+class InventoryTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.parent = Path(self.tmp.name)
+        self.root = self.parent / "target"
+        self.root.mkdir()
+        self.exe = self.root / "test-bin"
+        self.alias = self.root / "test-bin-alias"
+        self.dep = self.root / "lib.rlib"
+        self.other = self.root / "sparse-unknown"
+        for path in (self.exe, self.dep, self.other):
+            path.write_bytes(b"x")
+        os.link(self.exe, self.alias)
+        self.identity = {
+            "source_sha": "a" * 40, "tree_sha": "b" * 40, "git_dirty": False,
+            "run_id": "37702955025", "run_attempt": 1,
+            "cache": {"class": "cold", "resolved_key": "fixture-cache"},
+            "profile": {"test_debug": "line-tables-only"},
+            "toolchain": "rustc fixture", "target_triple": "fixture-linux",
+            "command": ["cargo", "test", "--locked", "--tests", "-p", "fixture"],
+        }
+        self.identity_file = self.parent / "identity.json"
+        self.identity_file.write_text(json.dumps(self.identity))
+        self.capture = self.parent / "cargo.log"
+        self.write_capture()
+
+    def unit(self, path, test):
+        return {
+            "reason": "compiler-artifact", "package_id": "fixture#1.0",
+            "target": {"kind": ["test"] if test else ["lib"], "name": path.name},
+            "features": ["default", "wire"], "profile": {"test": test, "debuginfo": "line-tables-only"},
+            "filenames": [str(path)], "executable": str(path) if test else None, "fresh": False,
+        }
+
+    def write_capture(self, *, identity=None, terminal=True, extra=None):
+        rows = [
+            {"reason": "pr-smoke-artifact-binding", "identity": self.identity if identity is None else identity},
+            self.unit(self.exe, True), self.unit(self.dep, False),
+        ]
+        if extra:
+            rows.append(extra)
+        if terminal:
+            rows.append({"reason": "build-finished", "success": True})
+        self.capture.write_text("\n".join(json.dumps(row) for row in rows) + "\n")
+
+    def fake_stat(self, path, *args, **kwargs):
+        absolute = os.path.abspath(path)
+        if absolute in (str(self.exe), str(self.alias), str(self.dep), str(self.other)):
+            key, blocks, length = {
+                str(self.exe): (101, 8, 6000), str(self.alias): (101, 8, 6000),
+                str(self.dep): (102, 16, 10000), str(self.other): (103, 8, 5000000),
+            }[absolute]
+            return SimpleNamespace(st_mode=stat.S_IFREG | 0o600, st_dev=9, st_ino=key,
+                                   st_blocks=blocks, st_size=length, st_mtime_ns=1)
+        return self.real_stat(path, *args, **kwargs)
+
+    def measured(self, **kwargs):
+        self.real_stat = os.lstat
+        with mock.patch.object(inventory.os, "lstat", side_effect=self.fake_stat):
+            return inventory.collect(self.root, self.identity, artifacts=self.capture, **kwargs)
+
+    def assert_literal_partition(self):
+        result = self.measured()
+        self.assertEqual(result["regular_paths"], 4)
+        self.assertEqual(result["unique_regular_inodes"], 3)
+        self.assertEqual(result["complete_inode_allocated_bytes"], 16384)
+        self.assertEqual(result["observed_known_logical_bytes"], 5016000)
+        self.assertEqual(result["categories"]["test_executable"]["known_inode_allocated_bytes"], 4096)
+        self.assertEqual(result["categories"]["dependency_output"]["known_inode_allocated_bytes"], 8192)
+        self.assertEqual(result["categories"]["other"]["known_inode_allocated_bytes"], 4096)
+        self.assertTrue(result["artifact_attribution_complete"])
+        return result
+
+    def test_literal_partition_deduplicates_hardlink_and_counts_sparse_allocation(self):
+        self.assert_literal_partition()
+
+    def test_controlled_red_logical_size_is_not_allocated_bytes(self):
+        with mock.patch.object(inventory, "allocated_bytes", side_effect=lambda info: info.st_size):
+            with self.assertRaises(AssertionError):
+                self.assert_literal_partition()
+        print("CONTROLLED_RED: logical-size-as-allocation mutation rejected")
+
+    def test_controlled_red_per_path_counting_is_not_inode_accounting(self):
+        counter = iter(range(100))
+        with mock.patch.object(inventory, "inode_key", side_effect=lambda info: (info.st_dev, next(counter))):
+            with self.assertRaises(AssertionError):
+                self.assert_literal_partition()
+        print("CONTROLLED_RED: per-path inode mutation rejected")
+
+    def test_actual_host_hardlinks_have_one_inode_contribution(self):
+        result = inventory.collect(self.root, self.identity, artifacts=self.capture)
+        self.assertEqual(result["unique_regular_inodes"], 3)
+        info = os.stat(self.exe)
+        if hasattr(info, "st_blocks"):
+            expected = os.stat(self.exe).st_blocks * 512 + os.stat(self.dep).st_blocks * 512 + os.stat(self.other).st_blocks * 512
+            self.assertEqual(result["complete_inode_allocated_bytes"], expected)
+        else:
+            self.assertIsNone(result["complete_inode_allocated_bytes"])
+
+    def test_symlinked_directory_and_file_are_not_followed(self):
+        outside = self.parent / "outside"
+        outside.mkdir()
+        (outside / "large").write_bytes(b"outside")
+        os.symlink(outside, self.root / "linked-dir", target_is_directory=True)
+        os.symlink(self.exe, self.root / "linked-file")
+        result = self.measured()
+        self.assertEqual(result["symlinks_skipped"], 2)
+        self.assertEqual(result["regular_paths"], 4)
+        self.assertEqual(result["complete_inode_allocated_bytes"], 16384)
+
+    def test_symlinked_target_is_refused(self):
+        link = self.parent / "target-link"
+        os.symlink(self.root, link, target_is_directory=True)
+        result = inventory.collect(link, self.identity)
+        self.assertFalse(result["scan_complete"])
+        self.assertIsNone(result["complete_inode_allocated_bytes"])
+
+    def test_nonregular_fifo_is_not_opened(self):
+        fifo = self.root / "fifo"
+        fifo.write_bytes(b"placeholder")
+        self.real_stat = os.lstat
+        def probe(path, *args, **kwargs):
+            if os.path.abspath(path) == str(fifo):
+                return SimpleNamespace(st_mode=stat.S_IFIFO, st_dev=9, st_ino=104)
+            return self.fake_stat(path, *args, **kwargs)
+        with mock.patch.object(inventory.os, "lstat", side_effect=probe):
+            result = inventory.collect(self.root, self.identity, artifacts=self.capture)
+        self.assertEqual(result["nonregular_skipped"], 1)
+        self.assertEqual(result["complete_inode_allocated_bytes"], 16384)
+
+    def test_vanished_and_unreadable_entries_are_unknown_not_zero(self):
+        for error in (FileNotFoundError("vanished"), PermissionError("unreadable")):
+            with self.subTest(error=type(error).__name__):
+                self.real_stat = os.lstat
+                def probe(path, *args, **kwargs):
+                    if os.path.abspath(path) == str(self.dep):
+                        raise error
+                    return self.fake_stat(path, *args, **kwargs)
+                with mock.patch.object(inventory.os, "lstat", side_effect=probe):
+                    result = inventory.collect(self.root, self.identity, artifacts=self.capture)
+                self.assertIsNone(result["complete_inode_allocated_bytes"])
+                self.assertEqual(result["observed_known_inode_allocated_bytes"], 8192)
+                self.assertIn(type(error).__name__ + "_entry", result["uncertainty_counts"])
+
+    def test_unsupported_allocated_bytes_do_not_fall_back_to_logical_size(self):
+        self.real_stat = os.lstat
+        def probe(path, *args, **kwargs):
+            value = self.fake_stat(path, *args, **kwargs)
+            if os.path.abspath(path) == str(self.dep):
+                del value.st_blocks
+            return value
+        with mock.patch.object(inventory.os, "lstat", side_effect=probe):
+            result = inventory.collect(self.root, self.identity, artifacts=self.capture)
+        self.assertIsNone(result["complete_inode_allocated_bytes"])
+        self.assertEqual(result["observed_known_inode_allocated_bytes"], 8192)
+        self.assertIn("allocated_bytes_unsupported", result["uncertainty_counts"])
+
+    def test_changed_hardlink_observation_is_uncertain(self):
+        self.real_stat = os.lstat
+        def probe(path, *args, **kwargs):
+            value = self.fake_stat(path, *args, **kwargs)
+            if os.path.abspath(path) == str(self.alias):
+                value.st_size += 1
+            return value
+        with mock.patch.object(inventory.os, "lstat", side_effect=probe):
+            result = inventory.collect(self.root, self.identity, artifacts=self.capture)
+        self.assertIsNone(result["complete_inode_allocated_bytes"])
+        self.assertEqual(result["observed_known_inode_allocated_bytes"], 12288)
+
+    def test_missing_target_is_unknown_not_an_empty_success(self):
+        result = inventory.collect(self.parent / "gone", self.identity)
+        self.assertFalse(result["scan_complete"])
+        self.assertIsNone(result["complete_inode_allocated_bytes"])
+        self.assertEqual(result["status"], "partial")
+
+    def test_stale_capture_binding_does_not_attribute_outputs(self):
+        wrong = {**self.identity, "source_sha": "c" * 40}
+        self.write_capture(identity=wrong)
+        result = self.measured()
+        self.assertFalse(result["artifact_attribution_complete"])
+        self.assertEqual(result["identity"], self.identity)
+        self.assertEqual(result["categories"]["test_executable"]["inodes"], 0)
+        self.assertEqual(result["categories"]["other"]["known_inode_allocated_bytes"], 16384)
+
+    def test_missing_or_truncated_capture_is_not_qualified(self):
+        self.write_capture(terminal=False)
+        self.capture.write_text(self.capture.read_text() + '{"reason":')
+        result = self.measured()
+        self.assertFalse(result["artifact_attribution_complete"])
+        self.assertFalse(result["artifact_digest_complete"])
+        self.assertIn("artifact_json_invalid", result["uncertainty_counts"])
+        self.assertIn("artifact_terminal_absent", result["uncertainty_counts"])
+
+    def test_outside_target_artifact_path_is_uncertain(self):
+        self.write_capture(extra=self.unit(self.parent / "outside-bin", True))
+        result = self.measured()
+        self.assertFalse(result["artifact_attribution_complete"])
+        self.assertIn("artifact_path_outside_target", result["uncertainty_counts"])
+
+    def test_exact_identity_and_mixed_profiles_are_retained_without_compatibility_claim(self):
+        extra = self.unit(self.exe, False)
+        extra["profile"] = {"test": False, "debuginfo": 2}
+        extra["features"] = ["all-features"]
+        self.write_capture(extra=extra)
+        result = self.measured()
+        self.assertEqual(result["identity"], self.identity)
+        self.assertEqual(len(result["compiler_artifacts"]), 3)
+        self.assertEqual(result["compiler_artifacts"][2]["features"], ["all-features"])
+        self.assertEqual(result["compiler_artifacts"][2]["profile"]["debuginfo"], 2)
+        self.assertIn("no independent", result["identity_authority"])
+        self.assertIn("peak and savings NOT_PROVEN", result["observation"])
+
+    def test_compilation_success_does_not_qualify_test_execution(self):
+        result = self.measured()
+        self.assertTrue(result["cargo_build_success"])
+        self.assertNotIn("tests_passed", result)
+        self.assertNotIn("runtime_qualified", result)
+
+    def test_entry_limit_reports_partial_accounting(self):
+        result = self.measured(max_entries=1)
+        self.assertFalse(result["scan_complete"])
+        self.assertIsNone(result["complete_inode_allocated_bytes"])
+        self.assertIn("entry_limit", result["uncertainty_counts"])
+
+    def test_shared_budget_never_regrants_thirty_seconds(self):
+        now = [0.0]
+        clock = lambda: now[0]
+        first = inventory.Budget(30, clock=clock)
+        now[0] = 8.0
+        charged = first.charged()
+        self.assertEqual(charged, 9.0)
+        second = inventory.Budget(30, spent=charged, clock=clock)
+        self.assertEqual(second.remaining(), 21.0)
+        now[0] = 29.0
+        with self.assertRaises(inventory.BudgetExpired):
+            second.check()
+        result = self.measured(budget=second)
+        self.assertFalse(result["scan_complete"])
+        self.assertIsNone(result["complete_inode_allocated_bytes"])
+
+    def test_invalid_or_nonfinite_budget_is_refused(self):
+        for seconds, spent in ((31, 0), (float("nan"), 0), (30, 31), (30, -1)):
+            with self.subTest(seconds=seconds, spent=spent):
+                with self.assertRaises(ValueError):
+                    inventory.Budget(seconds, spent)
+
+    def test_output_bound_is_valid_uncertain_json(self):
+        data = inventory.encode_report({"identity": "x" * 10000, "build_exit_code": 101}, limit=128)
+        self.assertLessEqual(len(data), 128)
+        result = json.loads(data)
+        self.assertEqual(result["status"], "partial")
+        self.assertEqual(result["build_exit_code"], 101)
+        self.assertIsNone(result["complete_inode_allocated_bytes"])
+
+    def cli_args(self, code=101):
+        return ["--target-dir", str(self.root), "--identity-json", str(self.identity_file),
+                "--artifact-jsonl", str(self.capture), "--output", str(self.parent / "report.log"),
+                "--build-exit-code", str(code)]
+
+    def test_cli_preserves_original_build_failure_with_successful_inventory(self):
+        self.assertEqual(inventory.main(self.cli_args()), 101)
+        report = json.loads((self.parent / "report.log").read_text())
+        self.assertEqual(report["build_exit_code"], 101)
+        self.assertTrue(report["scan_complete"])
+
+    def test_cli_missing_identity_preserves_original_build_failure(self):
+        self.identity_file.unlink()
+        with redirect_stderr(io.StringIO()) as output:
+            self.assertEqual(inventory.main(self.cli_args()), 101)
+        self.assertIn("NOT_PROVEN", output.getvalue())
+
+    def test_cli_enospc_output_preserves_original_build_failure(self):
+        original_open = os.open
+        def failed(path, *args, **kwargs):
+            if str(path) == str(self.parent / "report.log"):
+                raise OSError(28, "No space left on device")
+            return original_open(path, *args, **kwargs)
+        with mock.patch.object(inventory.os, "open", side_effect=failed), redirect_stderr(io.StringIO()) as output:
+            self.assertEqual(inventory.main(self.cli_args()), 101)
+        self.assertIn("No space left on device", output.getvalue())
+
+    def test_cli_existing_output_is_not_overwritten(self):
+        report = self.parent / "report.log"
+        report.write_text("previous evidence")
+        with redirect_stderr(io.StringIO()):
+            self.assertEqual(inventory.main(self.cli_args()), 101)
+        self.assertEqual(report.read_text(), "previous evidence")
+
+    def test_cli_unsupported_hard_deadline_preserves_build_result(self):
+        with mock.patch.object(inventory.signal, "setitimer", side_effect=OSError("unsupported")), redirect_stderr(io.StringIO()):
+            self.assertEqual(inventory.main(self.cli_args()), 101)
+
+    def test_cli_exhausted_shared_budget_preserves_build_result(self):
+        with redirect_stderr(io.StringIO()) as output:
+            self.assertEqual(inventory.main(self.cli_args() + ["--spent-seconds", "30"]), 101)
+        self.assertIn("shared collection budget exhausted", output.getvalue())
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)
