@@ -9,16 +9,47 @@ mod dancer_navigation_tests {
     use super::TestResult;
     use crate::common::test_utils::{TestServerBuilder, semantic};
 
+    fn definition_locations(
+        response: &serde_json::Value,
+        uri: &str,
+        line: u32,
+        character: u32,
+    ) -> Result<Vec<lsp_types::Location>, Box<dyn std::error::Error>> {
+        let context = || format!("definition at {uri}:{line}:{character}; response={response}");
+        if response.get("error").is_some() {
+            return Err(format!("definition RPC failed; {}", context()).into());
+        }
+        let result = response
+            .get("result")
+            .ok_or_else(|| format!("definition RPC omitted its result; {}", context()))?;
+        let definition: Option<lsp_types::GotoDefinitionResponse> =
+            serde_json::from_value(result.clone()).map_err(|error| {
+                format!("invalid definition result ({error}); {}", context())
+            })?;
+        match definition {
+            None => Ok(Vec::new()),
+            Some(lsp_types::GotoDefinitionResponse::Scalar(location)) => Ok(vec![location]),
+            Some(lsp_types::GotoDefinitionResponse::Array(locations)) => Ok(locations),
+            Some(lsp_types::GotoDefinitionResponse::Link(_)) => Err(format!(
+                "definition links require client linkSupport, which this fixture omits; {}",
+                context()
+            )
+            .into()),
+        }
+    }
+
     fn goto_def(
         code: &str,
         uri: &str,
         needle: &str,
         target_line: usize,
-    ) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+    ) -> Result<(serde_json::Value, Vec<lsp_types::Location>), Box<dyn std::error::Error>> {
         let server = TestServerBuilder::new().build();
         server.open_document(uri, code);
         let (line, character) = semantic::find_pos(code, needle, target_line);
-        Ok(server.get_definition(uri, line, character))
+        let response = server.get_definition(uri, line, character);
+        let locations = definition_locations(&response, uri, line, character)?;
+        Ok((response, locations))
     }
 
     #[test]
@@ -27,12 +58,58 @@ mod dancer_navigation_tests {
             "use Dancer;\nget '/about' => 'show_about';\nsub show_about { return 'About'; }\n";
         let uri = "file:///dancer_route_target.pl";
 
-        let resp = goto_def(code, uri, "show_about", 1)?;
-        let (def_uri, def_line, _) = semantic::first_location(&resp)
-            .ok_or("Expected goto-definition to resolve the Dancer route target")?;
+        let (resp, locations) = goto_def(code, uri, "show_about", 1)?;
+        let location = locations.first().ok_or_else(|| {
+            format!("Expected goto-definition to resolve the Dancer route target; response={resp}")
+        })?;
 
-        assert_eq!(def_uri, uri, "Definition should stay in the same file");
-        assert_eq!(def_line, 2, "Definition should point to the named sub handler");
+        assert_eq!(location.uri.as_str(), uri, "Definition should stay in the same file");
+        assert_eq!(
+            location.range.start.line, 2,
+            "Definition should point to the named sub handler; response={resp}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn dancer_named_handler_references_do_not_promote_string_spellings() -> TestResult {
+        let code = concat!(
+            "use Dancer;\n",
+            "get '/about' => \\&show_about;\n",
+            "show_about();\n",
+            "get '/other' => 'show_about';\n",
+            "my $label = 'show_about';\n",
+            "get '/empty' => \\&missing_handler;\n",
+            "sub show_about { return 'About'; }\n",
+        );
+        let uri = "file:///dancer_handler_controls.pl";
+        let server = TestServerBuilder::new().build();
+        server.open_document(uri, code);
+
+        // Literal positions and declaration line are independent of the provider.
+        // The two positives also prevent empty/error navigation from satisfying
+        // the string and missing-handler controls.
+        for (line, character, expected_line, label) in [
+            (1, 18, Some(6), "named CodeRef"),
+            (2, 0, Some(6), "ordinary call"),
+            (3, 17, None, "quoted route spelling"),
+            (4, 14, None, "ordinary quoted spelling"),
+            (5, 18, None, "missing named CodeRef"),
+        ] {
+            let response = server.get_definition(uri, line, character);
+            let locations = definition_locations(&response, uri, line, character)?;
+            if let Some(expected_line) = expected_line {
+                assert_eq!(locations.len(), 1, "{label}: response={response}");
+                assert_eq!(locations[0].uri.as_str(), uri, "{label}: response={response}");
+                assert_eq!(
+                    locations[0].range.start.line, expected_line,
+                    "{label}: response={response}"
+                );
+            } else {
+                assert!(locations.is_empty(), "{label}: response={response}");
+            }
+        }
+        server.shutdown();
         Ok(())
     }
 
@@ -51,12 +128,18 @@ mod dancer_navigation_tests {
         let code = "use Dancer2;\nsub helper { return 1 }\nget '/status' => sub { helper() };\n";
         let uri = "file:///dancer2_inline_handler.pl";
 
-        let resp = goto_def(code, uri, "helper", 2)?;
-        let (def_uri, def_line, _) = semantic::first_location(&resp)
-            .ok_or("Expected goto-definition to resolve `helper` from the inline handler")?;
+        let (resp, locations) = goto_def(code, uri, "helper", 2)?;
+        let location = locations.first().ok_or_else(|| {
+            format!(
+                "Expected goto-definition to resolve `helper` from the inline handler; response={resp}"
+            )
+        })?;
 
-        assert_eq!(def_uri, uri, "Definition should stay in the same file");
-        assert_eq!(def_line, 1, "Definition should point to `sub helper`");
+        assert_eq!(location.uri.as_str(), uri, "Definition should stay in the same file");
+        assert_eq!(
+            location.range.start.line, 1,
+            "Definition should point to `sub helper`; response={resp}"
+        );
 
         // #8928: the legacy route-path Subroutine synthesis is retired for
         // admitted forms. Route navigation now comes from the canonical
@@ -67,10 +150,10 @@ mod dancer_navigation_tests {
         // (ux_scenario_69_dancer2_provider_cutover). In this unit server no
         // Dancer2 module is resolvable, so the route pattern must NOT
         // produce a framework navigation target.
-        let route_resp = goto_def(code, uri, "/status", 2)?;
+        let (route_resp, route_locations) = goto_def(code, uri, "/status", 2)?;
         assert!(
-            semantic::first_location(&route_resp).is_none(),
-            "no activation evidence: no framework route navigation (#8928)"
+            route_locations.is_empty(),
+            "no activation evidence: no framework route navigation (#8928); response={route_resp}"
         );
         Ok(())
     }
@@ -85,6 +168,7 @@ mod dancer_navigation_tests {
         server.open_document(uri, code);
         let (line, character) = semantic::find_pos(code, "/status", 1);
         let before = server.get_definition(uri, line, character);
+        let before_locations = definition_locations(&before, uri, line, character)?;
         // #8928: without a resolvable versioned Dancer2 module the
         // activation is not exact, so the framework route navigation is
         // absent even while `use Dancer2` is present (zero output without
@@ -92,8 +176,8 @@ mod dancer_navigation_tests {
         // over the skeleton fixture in perl-lsp-ux-tests
         // (ux_scenario_69_dancer2_provider_cutover).
         assert!(
-            semantic::first_location(&before).is_none(),
-            "no activation evidence: no framework route navigation while `use Dancer2` is present (#8928)"
+            before_locations.is_empty(),
+            "no activation evidence: no framework route navigation while `use Dancer2` is present (#8928); response={before}"
         );
 
         // Discriminating control: neither state may produce a framework
@@ -108,15 +192,18 @@ route_helper();
         server.change_document(uri, changed, 2);
         let (line, character) = semantic::find_pos(changed, "/status", 0);
         let after = server.get_definition(uri, line, character);
+        let after_locations = definition_locations(&after, uri, line, character)?;
         assert!(
-            semantic::first_location(&after).is_none(),
-            "removing `use Dancer2` must not leave any route navigation"
+            after_locations.is_empty(),
+            "removing `use Dancer2` must not leave any route navigation; response={after}"
         );
         let (helper_line, helper_char) = semantic::find_pos(changed, "route_helper();", 2);
         let helper_after = server.get_definition(uri, helper_line, helper_char);
+        let helper_locations =
+            definition_locations(&helper_after, uri, helper_line, helper_char)?;
         assert!(
-            semantic::first_location(&helper_after).is_some(),
-            "ordinary Perl navigation keeps working after the activation removal"
+            !helper_locations.is_empty(),
+            "ordinary Perl navigation keeps working after the activation removal; response={helper_after}"
         );
         server.shutdown();
         Ok(())
