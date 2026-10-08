@@ -229,6 +229,10 @@ def _artifacts(path, identity, root, budget, report):
                     report["compiler_artifacts"].append(retained)
                     executable = _absolute(item["executable"]) if item["executable"] else None
                     for filename in set(item["filenames"] + ([item["executable"]] if item["executable"] else [])):
+                        if filename != os.path.normpath(filename) or ".." in Path(filename).parts:
+                            _issue(report, "artifact_path_noncanonical", filename)
+                            malformed = True
+                            continue
                         absolute = _absolute(filename)
                         if not os.path.isabs(filename) or not _within(absolute, root):
                             _issue(report, "artifact_path_outside_target", filename)
@@ -300,6 +304,7 @@ def collect(target, identity, *, artifacts=None, budget=None, max_entries=MAX_EN
         "identity": identity,
         "identity_authority": "caller-declared; no independent executed-subject admission",
         "target_dir": root,
+        "declared_target_dir": os.fspath(target),
         "observation": "endpoint only; physical extents, peak and savings NOT_PROVEN",
         "consistency": "bounded walk; concurrent mutations outside observed checks NOT_PROVEN",
         "accounting_scope": "regular-file inodes only; directory/symlink/nonregular allocation excluded",
@@ -326,6 +331,9 @@ def collect(target, identity, *, artifacts=None, budget=None, max_entries=MAX_EN
     stack = []
     accounting_complete = True
     try:
+        if ".." in Path(target).parts:
+            _issue(report, "target_parent_component", os.fspath(target))
+            raise OSError("parent components in the target declaration refused")
         budget.check()
         stack.append(_scan_frame(_open_target(root, budget), root))
         while stack:

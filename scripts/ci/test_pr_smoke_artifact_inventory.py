@@ -341,6 +341,17 @@ class InventoryTests(unittest.TestCase):
         self.write_capture()
         self.assert_literal_partition()
 
+    def test_normal_relative_target_keeps_the_literal_allocated_partition(self):
+        self.real_stat = os.lstat
+        with mock.patch.object(inventory.os, "getcwd", return_value=str(self.parent)), \
+                mock.patch.object(inventory, "_entry_info",
+                                  side_effect=lambda fd, name, path: self.fake_stat(path)):
+            result = inventory.collect("target", self.identity, artifacts=self.capture)
+        self.assertTrue(result["scan_complete"])
+        self.assertTrue(result["artifact_attribution_complete"])
+        self.assertEqual(result["complete_inode_allocated_bytes"], 16384)
+        self.assertEqual(result["declared_target_dir"], "target")
+
     def test_relative_artifact_path_cannot_be_resolved_using_collector_cwd(self):
         extra = self.unit(Path("relative-bin"), True)
         self.write_capture(extra=extra)
