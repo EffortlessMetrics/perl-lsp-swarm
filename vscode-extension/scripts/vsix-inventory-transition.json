@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "owner_issue": 10307,
-  "reason": "Re-anchor the #10307 remediation UX transition onto main's #17333 wave-4 + #17041 proxy-aware transport baseline: the merged candidate composes main's +21572-byte bundle growth (1709937 -> 1731509) with this PR's binary-identity remediation UX for a measured out/extension.js of 1736217 (total 1921480); no members were added or removed",
-  "base_baseline_file_sha256": "6f23a8c37892a55b556ef3505fa064ddba164ba29e3801429e6c0893f5c35161",
-  "candidate_baseline_file_sha256": "08c38ce7363722e1c100902772b6f2410ed3c5113a47456c51115ee346ea93a2",
-  "base_inventory_sha256": "9169e50dced95244e40f4999b33738282226fe8efb56cf6968726b73315c3789",
-  "candidate_inventory_sha256": "471063cbaca00782af8cd09fab050998148eee1840f1b4a89c7cfdf115c2b2bb"
+  "owner_issue": 17470,
+  "reason": "Four security development dependency patches add exactly25 manifest bytes for the tinypool override; all other archive members and sizes are unchanged.",
+  "base_baseline_file_sha256": "08c38ce7363722e1c100902772b6f2410ed3c5113a47456c51115ee346ea93a2",
+  "candidate_baseline_file_sha256": "bb22f581f9e7c3664ac0abc2db43e8f865eeccf2e3883b4d01a53333db2e72fa",
+  "base_inventory_sha256": "471063cbaca00782af8cd09fab050998148eee1840f1b4a89c7cfdf115c2b2bb",
+  "candidate_inventory_sha256": "bcb2845ae6066a3b9937debe5e11ad41584824969295a154adb8a4f92d9c5b92"
 }
