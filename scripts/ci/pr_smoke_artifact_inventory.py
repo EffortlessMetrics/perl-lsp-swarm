@@ -28,6 +28,11 @@ MAX_UNIT_BYTES = 256 * 1024
 MAX_OUTPUT_BYTES = 1024 * 1024
 OUTPUT_RESERVE = 1.0
 CATEGORIES = ("test_executable", "executable", "dependency_output", "other", "mixed")
+SECURE_TRAVERSAL_SUPPORTED = (
+    hasattr(os, "O_NOFOLLOW") and hasattr(os, "O_DIRECTORY")
+    and os.open in os.supports_dir_fd and os.stat in os.supports_dir_fd
+    and os.stat in os.supports_follow_symlinks and os.scandir in os.supports_fd
+)
 
 
 class BudgetExpired(TimeoutError):
@@ -109,6 +114,27 @@ def _open_regular(path):
         raise
 
 
+def _identity_complete(value):
+    """Require named declarations; retain incomplete/unsupported values as given."""
+    if not isinstance(value, dict):
+        return False
+    def sha(name):
+        text = value.get(name)
+        return isinstance(text, str) and len(text) == 40 and all(c in "0123456789abcdef" for c in text)
+    cache = value.get("cache")
+    command = value.get("command")
+    return (sha("source_sha") and sha("tree_sha") and type(value.get("git_dirty")) is bool
+            and isinstance(value.get("run_id"), str) and bool(value["run_id"])
+            and type(value.get("run_attempt")) is int and value["run_attempt"] >= 1
+            and isinstance(cache, dict) and isinstance(cache.get("class"), str) and bool(cache["class"])
+            and isinstance(cache.get("resolved_key"), str) and bool(cache["resolved_key"])
+            and isinstance(value.get("profile"), dict) and bool(value["profile"])
+            and isinstance(value.get("toolchain"), str) and bool(value["toolchain"])
+            and isinstance(value.get("target_triple"), str) and bool(value["target_triple"])
+            and isinstance(command, list) and bool(command)
+            and all(isinstance(part, str) and bool(part) for part in command))
+
+
 def read_identity(path, budget):
     budget.check()
     with _open_regular(path) as stream:
@@ -162,12 +188,20 @@ def _artifacts(path, identity, root, budget, report):
                     else:
                         bound = True
                 elif reason == "build-finished":
+                    if not bound:
+                        _issue(report, "artifact_binding_order", path)
+                        malformed = True
+                        continue
                     if finished or type(item.get("success")) is not bool:
                         _issue(report, "artifact_terminal_invalid", path)
                         malformed = True
                     finished = True
                     report["cargo_build_success"] = item.get("success")
                 elif reason == "compiler-artifact":
+                    if not bound:
+                        _issue(report, "artifact_binding_order", path)
+                        malformed = True
+                        continue
                     keys = ("package_id", "target", "features", "profile", "filenames", "executable", "fresh")
                     if finished or not all(k in item for k in keys):
                         _issue(report, "artifact_record_invalid", path)
@@ -196,7 +230,7 @@ def _artifacts(path, identity, root, budget, report):
                     executable = _absolute(item["executable"]) if item["executable"] else None
                     for filename in set(item["filenames"] + ([item["executable"]] if item["executable"] else [])):
                         absolute = _absolute(filename)
-                        if not _within(absolute, root):
+                        if not os.path.isabs(filename) or not _within(absolute, root):
                             _issue(report, "artifact_path_outside_target", filename)
                             malformed = True
                             continue
@@ -212,9 +246,48 @@ def _artifacts(path, identity, root, budget, report):
         _issue(report, "artifact_binding_absent", path)
     if not finished:
         _issue(report, "artifact_terminal_absent", path)
-    report["artifact_attribution_complete"] = bound and finished and not malformed
+    report["artifact_attribution_complete"] = _identity_complete(identity) and bound and finished and not malformed
     # Unbound or incomplete capture cannot qualify dependency/executable attribution.
     return classes if report["artifact_attribution_complete"] else {}
+
+
+def _entry_info(directory_fd, name, display_path):
+    # display_path is only a report/classification identity, never a lookup.
+    return os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+
+
+def _open_target(root, budget):
+    """Anchor every ancestry component without following a replaced symlink."""
+    if not SECURE_TRAVERSAL_SUPPORTED:
+        raise OSError("descriptor-relative no-follow traversal unsupported")
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    parts = Path(root).parts
+    fd = os.open(parts[0], flags)
+    try:
+        for name in parts[1:]:
+            budget.check()
+            next_fd = os.open(name, flags, dir_fd=fd)
+            os.close(fd)
+            fd = next_fd
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def _scan_frame(fd, display_path):
+    try:
+        return os.scandir(fd), fd, display_path
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def _close_frame(frame):
+    try:
+        frame[0].close()
+    finally:
+        os.close(frame[1])
 
 
 def collect(target, identity, *, artifacts=None, budget=None, max_entries=MAX_ENTRIES):
@@ -228,6 +301,7 @@ def collect(target, identity, *, artifacts=None, budget=None, max_entries=MAX_EN
         "identity_authority": "caller-declared; no independent executed-subject admission",
         "target_dir": root,
         "observation": "endpoint only; physical extents, peak and savings NOT_PROVEN",
+        "consistency": "bounded walk; concurrent mutations outside observed checks NOT_PROVEN",
         "accounting_scope": "regular-file inodes only; directory/symlink/nonregular allocation excluded",
         "budget_seconds": budget.seconds,
         "prior_charged_seconds": budget.spent,
@@ -243,42 +317,54 @@ def collect(target, identity, *, artifacts=None, budget=None, max_entries=MAX_EN
         "nonregular_skipped": 0,
         "entries_visited": 0,
     }
-    if not isinstance(identity, dict):
-        _issue(report, "identity_absent")
+    if not _identity_complete(identity):
+        _issue(report, "identity_incomplete")
     classes = _artifacts(artifacts, identity, root, budget, report)
     inodes = {}
     stack = []
+    accounting_complete = True
     try:
         budget.check()
-        # Refuse a symlinked target or ancestor rather than traverse a new root.
-        for ancestor in reversed([Path(root), *Path(root).parents]):
-            budget.check()
-            if stat.S_ISLNK(os.lstat(ancestor).st_mode):
-                raise OSError("symlinked target ancestry refused")
-        if not stat.S_ISDIR(os.lstat(root).st_mode):
-            raise OSError("target is not a directory")
-        stack.append(os.scandir(root))
+        stack.append(_scan_frame(_open_target(root, budget), root))
         while stack:
             budget.check()
+            iterator, directory_fd, directory_path = stack[-1]
             try:
-                entry = next(stack[-1])
+                entry = next(iterator)
             except StopIteration:
-                stack.pop().close()
+                _close_frame(stack.pop())
                 continue
             if report["entries_visited"] >= max_entries:
+                accounting_complete = False
                 _issue(report, "entry_limit")
                 break
             report["entries_visited"] += 1
+            display_path = os.path.join(directory_path, entry.name)
             try:
-                info = os.lstat(entry.path)
+                info = _entry_info(directory_fd, entry.name, display_path)
                 if stat.S_ISLNK(info.st_mode):
                     report["symlinks_skipped"] += 1
                     continue
                 if stat.S_ISDIR(info.st_mode):
                     if len(stack) >= 128:
-                        _issue(report, "depth_limit", entry.path)
+                        accounting_complete = False
+                        _issue(report, "depth_limit", display_path)
                     else:
-                        stack.append(os.scandir(entry.path))
+                        fd = os.open(entry.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                                     dir_fd=directory_fd)
+                        try:
+                            opened = os.fstat(fd)
+                            if (inode_key(info) is None or inode_key(opened) is None
+                                    or inode_key(opened) != inode_key(info)):
+                                accounting_complete = False
+                                _issue(report, "directory_changed", display_path)
+                                continue
+                            frame_fd, fd = fd, None  # Frame owns/closes it even if scandir fails.
+                            frame = _scan_frame(frame_fd, display_path)
+                            stack.append(frame)
+                        finally:
+                            if fd is not None:
+                                os.close(fd)
                     continue
                 if not stat.S_ISREG(info.st_mode):
                     report["nonregular_skipped"] += 1
@@ -286,29 +372,34 @@ def collect(target, identity, *, artifacts=None, budget=None, max_entries=MAX_EN
                 report["regular_paths"] += 1
                 key = inode_key(info)
                 if key is None:
-                    _issue(report, "inode_identity_unsupported", entry.path)
+                    accounting_complete = False
+                    _issue(report, "inode_identity_unsupported", display_path)
                     continue
                 allocation = allocated_bytes(info)
                 if allocation is None:
-                    _issue(report, "allocated_bytes_unsupported", entry.path)
-                category = classes.get(_absolute(entry.path), {"other"})
+                    accounting_complete = False
+                    _issue(report, "allocated_bytes_unsupported", display_path)
+                category = classes.get(display_path, {"other"})
                 signature = (info.st_size, allocation, getattr(info, "st_mtime_ns", None))
                 if key in inodes:
                     previous = inodes[key]
                     previous["categories"].update(category)
                     if previous["signature"] != signature:
+                        accounting_complete = False
                         previous["racy"] = True
-                        _issue(report, "inode_changed", entry.path)
+                        _issue(report, "inode_changed", display_path)
                 else:
                     inodes[key] = {"signature": signature, "categories": set(category), "racy": False}
             except OSError as error:
-                _issue(report, type(error).__name__ + "_entry", entry.path)
+                accounting_complete = False
+                _issue(report, type(error).__name__ + "_entry", display_path)
         report["scan_complete"] = not stack
     except (OSError, BudgetExpired) as error:
+        accounting_complete = False
         _issue(report, type(error).__name__ + "_scan", root)
     finally:
-        for iterator in stack:
-            iterator.close()
+        for frame in stack:
+            _close_frame(frame)
     totals = {c: {"inodes": 0, "known_logical_bytes": 0, "known_inode_allocated_bytes": 0} for c in CATEGORIES}
     for observation in inodes.values():
         categories = observation["categories"]
@@ -327,10 +418,7 @@ def collect(target, identity, *, artifacts=None, budget=None, max_entries=MAX_EN
     report["unique_regular_inodes"] = len(inodes)
     report["observed_known_logical_bytes"] = sum(r["known_logical_bytes"] for r in totals.values())
     report["observed_known_inode_allocated_bytes"] = sum(r["known_inode_allocated_bytes"] for r in totals.values())
-    complete = report["scan_complete"] and not any(
-        k != "artifact_stream_absent" and k.startswith(("allocated_", "inode_", "Budget", "entry_", "depth_", "File", "Permission", "OSError"))
-        for k in report["uncertainty_counts"]
-    )
+    complete = report["scan_complete"] and accounting_complete
     report["complete_inode_allocated_bytes"] = report["observed_known_inode_allocated_bytes"] if complete else None
     report["collection_elapsed_before_output_seconds"] = budget.elapsed()
     report["charged_collection_seconds"] = budget.charged()
@@ -392,11 +480,10 @@ def main(argv=None):
             identity = read_identity(args.identity_json, budget)
             report = collect(args.target_dir, identity, artifacts=args.artifact_jsonl, budget=budget)
             report["build_exit_code"] = args.build_exit_code
-            data = encode_report(report)
             # Output is exclusive/current-run: do not overwrite a prior report
             # or follow a symlink. No parent creation or artifact cleanup.
-            budget.check()
-            with _deadline_write():
+            with _deadline_write(budget):
+                data = encode_report(report)
                 fd = os.open(args.output, os.O_WRONLY | os.O_CREAT | os.O_EXCL |
                              getattr(os, "O_NOFOLLOW", 0), 0o600)
                 with os.fdopen(fd, "wb") as stream:
@@ -409,10 +496,13 @@ def main(argv=None):
 
 
 @contextlib.contextmanager
-def _deadline_write():
+def _deadline_write(budget):
     # Reduce (never expand) the active deadline to the charged output reserve.
     before = signal.getitimer(signal.ITIMER_REAL)[0]
-    signal.setitimer(signal.ITIMER_REAL, min(before, OUTPUT_RESERVE))
+    remaining = budget.remaining()
+    if before <= 0 or remaining <= 0:
+        raise BudgetExpired("shared collection budget exhausted before output")
+    signal.setitimer(signal.ITIMER_REAL, min(before, remaining, OUTPUT_RESERVE))
     try:
         yield
     finally:

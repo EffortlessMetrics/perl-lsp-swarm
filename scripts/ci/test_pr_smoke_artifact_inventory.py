@@ -79,7 +79,7 @@ class InventoryTests(unittest.TestCase):
 
     def measured(self, **kwargs):
         self.real_stat = os.lstat
-        with mock.patch.object(inventory.os, "lstat", side_effect=self.fake_stat):
+        with mock.patch.object(inventory, "_entry_info", side_effect=lambda fd, name, path: self.fake_stat(path)):
             return inventory.collect(self.root, self.identity, artifacts=self.capture, **kwargs)
 
     def assert_literal_partition(self):
@@ -138,6 +138,49 @@ class InventoryTests(unittest.TestCase):
         self.assertFalse(result["scan_complete"])
         self.assertIsNone(result["complete_inode_allocated_bytes"])
 
+
+    def test_directory_swapped_to_outside_symlink_is_not_traversed(self):
+        victim = self.root / "victim"
+        victim.mkdir()
+        outside = self.parent / "outside"
+        outside.mkdir()
+        (outside / "must-not-count").write_bytes(b"outside")
+        original_open = os.open
+        def swapped(path, flags, *args, **kwargs):
+            if path == "victim" and "dir_fd" in kwargs:
+                victim.rmdir()
+                os.symlink(outside, victim, target_is_directory=True)
+            return original_open(path, flags, *args, **kwargs)
+        with mock.patch.object(inventory.os, "open", side_effect=swapped):
+            result = self.measured()
+        self.assertEqual(result["regular_paths"], 4)
+        self.assertEqual(result["observed_known_inode_allocated_bytes"], 16384)
+        self.assertIsNone(result["complete_inode_allocated_bytes"])
+        self.assertTrue(any(k.endswith("_entry") for k in result["uncertainty_counts"]))
+
+    def test_directory_replaced_between_stat_and_open_is_uncertain(self):
+        victim = self.root / "victim"
+        victim.mkdir()
+        original_open = os.open
+        def replaced(path, flags, *args, **kwargs):
+            if path == "victim" and "dir_fd" in kwargs:
+                victim.rename(self.parent / "original-victim")
+                victim.mkdir()
+                (victim / "new-output").write_bytes(b"new")
+            return original_open(path, flags, *args, **kwargs)
+        with mock.patch.object(inventory.os, "open", side_effect=replaced):
+            result = self.measured()
+        self.assertEqual(result["regular_paths"], 4)
+        self.assertIsNone(result["complete_inode_allocated_bytes"])
+        self.assertIn("directory_changed", result["uncertainty_counts"])
+
+    def test_unsupported_secure_traversal_is_unknown(self):
+        with mock.patch.object(inventory, "SECURE_TRAVERSAL_SUPPORTED", False):
+            result = self.measured()
+        self.assertFalse(result["scan_complete"])
+        self.assertIsNone(result["complete_inode_allocated_bytes"])
+        self.assertIn("OSError_scan", result["uncertainty_counts"])
+
     def test_nonregular_fifo_is_not_opened(self):
         fifo = self.root / "fifo"
         fifo.write_bytes(b"placeholder")
@@ -146,20 +189,21 @@ class InventoryTests(unittest.TestCase):
             if os.path.abspath(path) == str(fifo):
                 return SimpleNamespace(st_mode=stat.S_IFIFO, st_dev=9, st_ino=104)
             return self.fake_stat(path, *args, **kwargs)
-        with mock.patch.object(inventory.os, "lstat", side_effect=probe):
+        with mock.patch.object(inventory, "_entry_info", side_effect=lambda fd, name, path: probe(path)):
             result = inventory.collect(self.root, self.identity, artifacts=self.capture)
         self.assertEqual(result["nonregular_skipped"], 1)
         self.assertEqual(result["complete_inode_allocated_bytes"], 16384)
 
     def test_vanished_and_unreadable_entries_are_unknown_not_zero(self):
-        for error in (FileNotFoundError("vanished"), PermissionError("unreadable")):
+        for error in (FileNotFoundError("vanished"), PermissionError("unreadable"),
+                      NotADirectoryError("raced ancestor"), InterruptedError("interrupted")):
             with self.subTest(error=type(error).__name__):
                 self.real_stat = os.lstat
                 def probe(path, *args, **kwargs):
                     if os.path.abspath(path) == str(self.dep):
                         raise error
                     return self.fake_stat(path, *args, **kwargs)
-                with mock.patch.object(inventory.os, "lstat", side_effect=probe):
+                with mock.patch.object(inventory, "_entry_info", side_effect=lambda fd, name, path: probe(path)):
                     result = inventory.collect(self.root, self.identity, artifacts=self.capture)
                 self.assertIsNone(result["complete_inode_allocated_bytes"])
                 self.assertEqual(result["observed_known_inode_allocated_bytes"], 8192)
@@ -172,7 +216,7 @@ class InventoryTests(unittest.TestCase):
             if os.path.abspath(path) == str(self.dep):
                 del value.st_blocks
             return value
-        with mock.patch.object(inventory.os, "lstat", side_effect=probe):
+        with mock.patch.object(inventory, "_entry_info", side_effect=lambda fd, name, path: probe(path)):
             result = inventory.collect(self.root, self.identity, artifacts=self.capture)
         self.assertIsNone(result["complete_inode_allocated_bytes"])
         self.assertEqual(result["observed_known_inode_allocated_bytes"], 8192)
@@ -185,7 +229,7 @@ class InventoryTests(unittest.TestCase):
             if os.path.abspath(path) == str(self.alias):
                 value.st_size += 1
             return value
-        with mock.patch.object(inventory.os, "lstat", side_effect=probe):
+        with mock.patch.object(inventory, "_entry_info", side_effect=lambda fd, name, path: probe(path)):
             result = inventory.collect(self.root, self.identity, artifacts=self.capture)
         self.assertIsNone(result["complete_inode_allocated_bytes"])
         self.assertEqual(result["observed_known_inode_allocated_bytes"], 12288)
@@ -204,6 +248,31 @@ class InventoryTests(unittest.TestCase):
         self.assertEqual(result["identity"], self.identity)
         self.assertEqual(result["categories"]["test_executable"]["inodes"], 0)
         self.assertEqual(result["categories"]["other"]["known_inode_allocated_bytes"], 16384)
+
+
+    def test_late_matching_binding_cannot_qualify_prior_cargo_records(self):
+        rows = self.capture.read_text().splitlines()
+        self.capture.write_text("\n".join(rows[1:] + rows[:1]) + "\n")
+        result = self.measured()
+        self.assertFalse(result["artifact_attribution_complete"])
+        self.assertIn("artifact_binding_order", result["uncertainty_counts"])
+        self.assertEqual(result["categories"]["other"]["known_inode_allocated_bytes"], 16384)
+
+    def test_incomplete_identity_is_retained_and_cannot_qualify_attribution(self):
+        for identity in ({}, {**self.identity, "cache": {"class": "unknown", "resolved_key": None}}):
+            with self.subTest(identity=identity):
+                self.write_capture(identity=identity)
+                result = inventory.collect(self.root, identity, artifacts=self.capture)
+                self.assertEqual(result["identity"], identity)
+                self.assertFalse(result["artifact_attribution_complete"])
+                self.assertIn("identity_incomplete", result["uncertainty_counts"])
+
+    def test_relative_artifact_path_cannot_be_resolved_using_collector_cwd(self):
+        extra = self.unit(Path("relative-bin"), True)
+        self.write_capture(extra=extra)
+        result = self.measured()
+        self.assertFalse(result["artifact_attribution_complete"])
+        self.assertIn("artifact_path_outside_target", result["uncertainty_counts"])
 
     def test_missing_or_truncated_capture_is_not_qualified(self):
         self.write_capture(terminal=False)
@@ -245,6 +314,26 @@ class InventoryTests(unittest.TestCase):
         self.assertIsNone(result["complete_inode_allocated_bytes"])
         self.assertIn("entry_limit", result["uncertainty_counts"])
 
+
+    def test_capture_input_line_and_retained_identity_bounds_are_uncertain(self):
+        for name in ("MAX_INPUT_BYTES", "MAX_LINE_BYTES", "MAX_UNIT_BYTES"):
+            with self.subTest(bound=name), mock.patch.object(inventory, name, 1):
+                result = self.measured()
+                self.assertFalse(result["artifact_attribution_complete"])
+                self.assertEqual(result["categories"]["other"]["known_inode_allocated_bytes"], 16384)
+                self.assertTrue(any("limit" in k for k in result["uncertainty_counts"]))
+
+    def test_depth_limit_closes_walk_and_reports_unknown_total(self):
+        deepest = self.root
+        for _ in range(129):
+            deepest /= "d"
+            deepest.mkdir()
+        (deepest / "unvisited").write_bytes(b"must-not-count")
+        result = self.measured()
+        self.assertIsNone(result["complete_inode_allocated_bytes"])
+        self.assertIn("depth_limit", result["uncertainty_counts"])
+        self.assertEqual(result["regular_paths"], 4)
+
     def test_shared_budget_never_regrants_thirty_seconds(self):
         now = [0.0]
         clock = lambda: now[0]
@@ -285,6 +374,31 @@ class InventoryTests(unittest.TestCase):
         report = json.loads((self.parent / "report.log").read_text())
         self.assertEqual(report["build_exit_code"], 101)
         self.assertTrue(report["scan_complete"])
+
+
+    def test_cli_writes_partial_report_using_reserved_remainder(self):
+        now = [0.0]
+        original_budget = inventory.Budget
+        original_collect = inventory.collect
+        def bounded(seconds, spent):
+            return original_budget(seconds, spent, clock=lambda: now[0])
+        def at_reserve(*args, **kwargs):
+            now[0] = 29.25
+            return original_collect(*args, **kwargs)
+        with mock.patch.object(inventory, "Budget", side_effect=bounded), \
+                mock.patch.object(inventory, "collect", side_effect=at_reserve):
+            self.assertEqual(inventory.main(self.cli_args()), 101)
+        report = json.loads((self.parent / "report.log").read_text())
+        self.assertEqual(report["status"], "partial")
+        self.assertIsNone(report["complete_inode_allocated_bytes"])
+        self.assertIn("BudgetExpired_scan", report["uncertainty_counts"])
+        self.assertEqual(report["charged_collection_seconds"], 30.0)
+
+    def test_output_reserve_cannot_disable_an_expired_hard_timer(self):
+        with mock.patch.object(inventory.signal, "getitimer", return_value=(0.0, 0.0)):
+            with self.assertRaises(inventory.BudgetExpired):
+                with inventory._deadline_write(inventory.Budget()):
+                    self.fail("expired timer was disabled")
 
     def test_cli_missing_identity_preserves_original_build_failure(self):
         self.identity_file.unlink()
