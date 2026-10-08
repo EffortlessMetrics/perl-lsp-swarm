@@ -252,6 +252,9 @@ enum ReportFailure {
     /// Discovery or spawn itself failed. The message is already a
     /// user-facing one-line diagnosis with no hidden child output.
     Message(String),
+    /// A captured verdict and diagnostic detail. Cargo retains its existing
+    /// detail bound without changing the Perl/tool probe representation.
+    Detailed { summary: String, detail: String },
 }
 
 impl ReportFailure {
@@ -281,10 +284,11 @@ impl ReportFailure {
                 }
             }
             Self::Message(message) => message.clone(),
+            Self::Detailed { summary, .. } => summary.clone(),
         }
     }
 
-    /// The full machine-readable detail `--json` preserves.
+    /// The machine-readable detail `--json` preserves.
     fn detail(&self) -> String {
         match self {
             Self::VersionProbe { label, status, stderr } => {
@@ -297,13 +301,21 @@ impl ReportFailure {
                 detail
             }
             Self::Message(message) => message.clone(),
+            Self::Detailed { detail, .. } => detail.clone(),
+        }
+    }
+
+    fn with_bounded_detail(self, max_chars: usize) -> Self {
+        Self::Detailed {
+            summary: self.summary(),
+            detail: truncate_for_detail(&self.detail(), max_chars),
         }
     }
 }
 
-/// The `error` field keeps its JSON string shape and still carries the full
-/// stderr, but the status wording inside it is normalized exactly like the
-/// human line (#16525): consumers comparing the old doubled phrasing
+/// The `error` field keeps its JSON string shape and retains child stderr
+/// for diagnosis, subject to Cargo's existing detail bound. Status wording is
+/// normalized like the human line (#16525): consumers comparing the old doubled phrasing
 /// (`exited with status exit code: N`) see the new single clause.
 impl Serialize for ReportFailure {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
@@ -834,7 +846,7 @@ struct CargoToolchainReport {
     provenance: &'static str,
     meets_workspace_pin: Option<bool>,
     honors_toolchain_file: Option<bool>,
-    error: Option<String>,
+    error: Option<ReportFailure>,
     fix: Option<String>,
 }
 
@@ -2031,15 +2043,25 @@ fn shell_cargo_report_from_output(
                 (false, Ok(probe)) => {
                     failed_probe_cargo_report(flavor, probe.cargo_path, Ok(process_output))
                 }
-                (_, Err(parse_error)) => failed_probe_cargo_report(
-                    flavor,
-                    None,
-                    Err(format!(
-                        "shell cargo probe output was invalid: {parse_error}; exit status {}; stderr: {}",
-                        process_output.status,
-                        decode_shell_output(&process_output.stderr).trim()
-                    )),
-                ),
+                (_, Err(parse_error)) => {
+                    let status = probe_status_clause(&process_output.status);
+                    let stderr = decode_shell_output(&process_output.stderr);
+                    let mut detail =
+                        format!("shell cargo probe output was invalid: {parse_error}; {status}");
+                    if !stderr.trim().is_empty() {
+                        detail.push_str("; stderr: ");
+                        detail.push_str(stderr.trim());
+                    }
+                    // Even exit 0 can carry an invalid record. Keep the parse
+                    // diagnosis separate from a failed version probe, and point
+                    // to JSON because the parse reason is withheld here too.
+                    let summary = format!(
+                        "shell cargo probe output was invalid ({status}); re-run with --json added for probe detail"
+                    );
+                    let failure = ReportFailure::Detailed { summary, detail }
+                        .with_bounded_detail(DETAIL_MAX_CHARS);
+                    cargo_probe_error_report(flavor, None, failure)
+                }
             }
         }
         // The shell probe failed before emitting a complete record, so there
@@ -2057,17 +2079,25 @@ fn failed_probe_cargo_report(
     binary: Option<PathBuf>,
     output: ProbeOutput,
 ) -> CargoToolchainReport {
-    let detail = match output {
-        Ok(process_output) => truncate_for_detail(
-            &format!(
-                "probe exited with status {}; stderr: {}",
-                process_output.status,
-                decode_shell_output(&process_output.stderr).trim()
-            ),
-            DETAIL_MAX_CHARS,
-        ),
-        Err(spawn_error) => truncate_for_detail(&spawn_error, DETAIL_MAX_CHARS),
+    let failure = match output {
+        Ok(process_output) => ReportFailure::version_probe(
+            "cargo",
+            &process_output.status,
+            decode_shell_output(&process_output.stderr).as_bytes(),
+        )
+        .with_bounded_detail(DETAIL_MAX_CHARS),
+        Err(spawn_error) => {
+            ReportFailure::Message(truncate_for_detail(&spawn_error, DETAIL_MAX_CHARS))
+        }
     };
+    cargo_probe_error_report(flavor, binary, failure)
+}
+
+fn cargo_probe_error_report(
+    flavor: &'static str,
+    binary: Option<PathBuf>,
+    failure: ReportFailure,
+) -> CargoToolchainReport {
     CargoToolchainReport {
         flavor,
         status: STATUS_PROBE_ERROR,
@@ -2076,7 +2106,7 @@ fn failed_probe_cargo_report(
         provenance: PROVENANCE_UNKNOWN,
         meets_workspace_pin: None,
         honors_toolchain_file: None,
-        error: Some(detail),
+        error: Some(failure),
         fix: None,
     }
 }
@@ -2096,7 +2126,7 @@ fn finish_reachable_cargo_report_with_context(
         .and_then(|path| classify_cargo_provenance_with_context(path, context));
     let (status, meets_workspace_pin) = reachable_cargo_status(provenance, parsed_version);
     let error = if parsed_version.is_none() {
-        Some(cargo_version_probe_error(version_output))
+        Some(ReportFailure::Message(cargo_version_probe_error(version_output)))
     } else {
         None
     };
@@ -2147,7 +2177,7 @@ fn unreachable_cargo_report(flavor: &'static str, detail: &str) -> CargoToolchai
         provenance: PROVENANCE_UNKNOWN,
         meets_workspace_pin: None,
         honors_toolchain_file: None,
-        error: Some(detail.to_string()),
+        error: Some(ReportFailure::Message(detail.to_string())),
         fix: cargo_fix_line(flavor, STATUS_MISSING),
     }
 }
@@ -2372,7 +2402,7 @@ fn render_dev_environment_report(report: &DevEnvironmentReport, command_name: &s
             render_optional_bool(cargo.honors_toolchain_file)
         ));
         if let Some(error) = &cargo.error {
-            out.push_str(&format!("      error: {error}\n"));
+            out.push_str(&format!("      error: {}\n", error.summary()));
         }
         if let Some(fix) = &cargo.fix {
             out.push_str(&format!("      Fix: {fix}\n"));
@@ -4546,9 +4576,10 @@ mod tests {
             FLAVOR_WSL,
             Ok(synthetic_process_output(output.as_bytes(), b"", true)),
         );
+        let error = report.error.as_ref().map(ReportFailure::detail);
         if report.status != STATUS_MISSING
             || report.path.is_some()
-            || report.error.as_deref() != Some("cargo was not found in this shell")
+            || error.as_deref() != Some("cargo was not found in this shell")
             || report.fix.is_none()
         {
             return Err(
@@ -4602,9 +4633,10 @@ mod tests {
             FLAVOR_GIT_BASH,
             Ok(synthetic_process_output(output.as_bytes(), b"cargo failed", false)),
         );
+        let error = report.error.as_ref().map(ReportFailure::detail);
         if report.status != STATUS_PROBE_ERROR
             || report.path.as_deref() != Some("/usr/bin/cargo")
-            || !report.error.as_deref().is_some_and(|error| error.contains("cargo failed"))
+            || !error.as_deref().is_some_and(|error| error.contains("cargo failed"))
         {
             return Err(format!("failed shell record lost evidence: {report:?}").into());
         }
@@ -4617,12 +4649,10 @@ mod tests {
             FLAVOR_GIT_BASH,
             Ok(synthetic_process_output(b"", b"cargo command not found", false)),
         );
+        let error = report.error.as_ref().map(ReportFailure::detail);
         if report.status != STATUS_PROBE_ERROR
             || report.path.is_some()
-            || !report
-                .error
-                .as_deref()
-                .is_some_and(|error| error.contains("cargo command not found"))
+            || !error.as_deref().is_some_and(|error| error.contains("cargo command not found"))
         {
             return Err(format!("failed shell startup lost evidence: {report:?}").into());
         }
@@ -4636,11 +4666,16 @@ mod tests {
                 FLAVOR_GIT_BASH,
                 Ok(synthetic_process_output(b"unterminated", b"provider detail", success)),
             );
-            let error = report.error.as_deref().ok_or("malformed record lost its error")?;
+            let error = report.error.as_ref().ok_or("malformed record lost its error")?.detail();
+            #[cfg(unix)]
+            let failed_status = "signal: 1";
+            #[cfg(windows)]
+            let failed_status = "exit code 1";
+            let expected_status = if success { "exit code 0" } else { failed_status };
             if report.status != STATUS_PROBE_ERROR
                 || report.path.is_some()
                 || !error.contains("shell cargo probe omitted its NUL record terminator")
-                || !error.contains("exit status")
+                || !error.contains(expected_status)
                 || !error.contains("provider detail")
             {
                 return Err(format!("malformed record lost evidence: {report:?}").into());
