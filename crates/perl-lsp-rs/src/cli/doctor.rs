@@ -4206,7 +4206,6 @@ mod tests {
         std::process::Output { status, stdout: stdout.to_vec(), stderr: stderr.to_vec() }
     }
 
-
     // Literal exit codes are encoded as native wait statuses; unlike
     // synthetic_process_output(false), exit 29 is not signal 29 on Unix.
     fn cargo_exit_output(stdout: &[u8], stderr: &[u8], exit_code: u8) -> std::process::Output {
@@ -4257,7 +4256,9 @@ mod tests {
         let json = serde_json::to_value(&report)?;
         assert_eq!(
             json.pointer("/cargo_toolchains/0/error").and_then(serde_json::Value::as_str),
-            Some("cargo version probe exited with exit code 29; stderr: cargo-child-stderr-sentinel")
+            Some(
+                "cargo version probe exited with exit code 29; stderr: cargo-child-stderr-sentinel"
+            )
         );
         Ok(())
     }
@@ -4305,11 +4306,7 @@ mod tests {
                     .pointer("/cargo_toolchains/0/error")
                     .and_then(serde_json::Value::as_str)
                     .ok_or("Cargo parse failure must serialize as a JSON string")?;
-                let suffix = if stderr.is_empty() {
-                    ""
-                } else {
-                    "; stderr: shell-child-stderr-sentinel"
-                };
+                let suffix = if stderr.is_empty() { "" } else { "; stderr: shell-child-stderr-sentinel" };
                 assert_eq!(
                     detail,
                     format!(
@@ -4371,7 +4368,9 @@ mod tests {
         let json = serde_json::to_value(&report)?;
         assert_eq!(
             json.pointer("/cargo_toolchains/0/error").and_then(serde_json::Value::as_str),
-            Some("cargo version probe exited with exit code 29; stderr: shell-provider-utf16-sentinel")
+            Some(
+                "cargo version probe exited with exit code 29; stderr: shell-provider-utf16-sentinel"
+            )
         );
         Ok(())
     }
@@ -4390,7 +4389,10 @@ mod tests {
             assert!(cargo.version.is_none());
             assert!(cargo.fix.is_none());
             let report = environment_with_cargo(cargo);
-            assert!(render_dev_environment_report(&report, "perllsp").contains(&format!("error: {detail}\n")));
+            assert!(
+                render_dev_environment_report(&report, "perllsp")
+                    .contains(&format!("error: {detail}\n"))
+            );
             let json = serde_json::to_value(&report)?;
             assert_eq!(
                 json.pointer("/cargo_toolchains/0/error").and_then(serde_json::Value::as_str),
@@ -4421,10 +4423,7 @@ mod tests {
         let output = probe().map_err(|error| format!("failure fixture did not execute: {error}"))?;
         assert_eq!(output.status.code(), Some(29));
         let cargo = cargo_report_from_output(
-            FLAVOR_NATIVE_SHELL,
-            cargo_path.clone(),
-            Ok(output),
-            Some(temp.path()),
+            FLAVOR_NATIVE_SHELL, cargo_path.clone(), Ok(output), Some(temp.path()),
         );
         assert_eq!(cargo.status, STATUS_PROBE_ERROR);
         assert_eq!(cargo.path.as_deref(), cargo_path.to_str());
@@ -4437,7 +4436,9 @@ mod tests {
         let json = serde_json::to_value(&report)?;
         assert_eq!(
             json.pointer("/cargo_toolchains/0/error").and_then(serde_json::Value::as_str),
-            Some("cargo version probe exited with exit code 29; stderr: cargo-retry-fixture: repair local provider")
+            Some(
+                "cargo version probe exited with exit code 29; stderr: cargo-retry-fixture: repair local provider"
+            )
         );
 
         // Repair only the failed provider, then repeat the same command/path.
@@ -4445,7 +4446,8 @@ mod tests {
             &cargo_path,
             "#!/bin/sh\n[ \"$1\" = '--version' ] || exit 87\nprintf '%s\\n' 'cargo 1.95.0 (repaired fixture)'\n",
         )?;
-        let output = probe().map_err(|error| format!("repaired fixture did not execute: {error}"))?;
+        let output =
+            probe().map_err(|error| format!("repaired fixture did not execute: {error}"))?;
         assert_eq!(output.status.code(), Some(0));
         let cargo = cargo_report_from_output(
             FLAVOR_NATIVE_SHELL,
@@ -4464,6 +4466,41 @@ mod tests {
         assert!(!rendered.contains("cargo-retry-fixture"));
         let json = serde_json::to_value(&report)?;
         assert_eq!(json.pointer("/cargo_toolchains/0/error"), Some(&serde_json::Value::Null));
+        Ok(())
+    }
+
+    #[test]
+    fn cargo_probe_preserves_abnormal_process_status() -> TestResult {
+        #[cfg(unix)]
+        use std::os::unix::process::ExitStatusExt as _;
+        #[cfg(windows)]
+        use std::os::windows::process::ExitStatusExt as _;
+
+        #[cfg(unix)]
+        let (raw, expected, forbidden) = (15, "signal: 15", "exit code 0");
+        #[cfg(windows)]
+        let (raw, expected, forbidden) = (0xc0000142, "0xc0000142", "-1073741502");
+        let output = std::process::Output {
+            status: std::process::ExitStatus::from_raw(raw),
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+        };
+        let report = environment_with_cargo(cargo_report_from_output(
+            FLAVOR_NATIVE_SHELL,
+            PathBuf::from("resolved-cargo"),
+            Ok(output),
+            None,
+        ));
+        let rendered = render_dev_environment_report(&report, "perllsp");
+        assert!(rendered.contains(expected));
+        assert!(!rendered.contains(forbidden));
+        let json = serde_json::to_value(&report)?;
+        let detail = json
+            .pointer("/cargo_toolchains/0/error")
+            .and_then(serde_json::Value::as_str)
+            .ok_or("abnormal status detail must stay a string")?;
+        assert!(detail.contains(expected));
+        assert!(!detail.contains(forbidden));
         Ok(())
     }
 
