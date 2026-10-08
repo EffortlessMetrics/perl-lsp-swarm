@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "owner_issue": 17472,
-  "reason": "Joining remover-owned filesystem request completion changes only the generated extension bundle byte inventory.",
-  "base_baseline_file_sha256": "4b7015a4d9513bca24dabd2f163f3287d6390f2cf4cab2b4a67bc9ea38ee4f39",
-  "candidate_baseline_file_sha256": "833b67c30dfaaf09e39eb9759bbb6ff0c4545ab13ec593156457c89400af94e0",
-  "base_inventory_sha256": "6f8b14c43e8ac5316e0b05f6041d3c5ff5d9691270b3a221d8c439be9f47ed78",
-  "candidate_inventory_sha256": "a7ab35ff5bbc699e1b7c1dbdfe0784b1183c844a71db5c5463696adaddcb1573"
+  "owner_issue": 7807,
+  "reason": "Compose issue 7807 POD preview webview accessibility (+780 bundled entrypoint bytes, out/extension.js 1737414 to 1738194, re-measured from a rolldown build of the merged sources) with main's remover-owned filesystem request join ratchet (#17472) after merging origin/main at 78cc84178bd3",
+  "base_baseline_file_sha256": "833b67c30dfaaf09e39eb9759bbb6ff0c4545ab13ec593156457c89400af94e0",
+  "candidate_baseline_file_sha256": "acf7c726026749903ce9913f6e882fcc1128cbf78c03d9855fdd7940828e213e",
+  "base_inventory_sha256": "a7ab35ff5bbc699e1b7c1dbdfe0784b1183c844a71db5c5463696adaddcb1573",
+  "candidate_inventory_sha256": "a3b6f28fdfd7205697175e633e9c1dd0dfd0881df61a1d6b7e1955093e7d6d5b"
 }
