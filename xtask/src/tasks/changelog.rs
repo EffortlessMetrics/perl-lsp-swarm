@@ -2034,6 +2034,9 @@ changelog = "vscode-extension/CHANGELOG.md"
         std::fs::write(
             dir.join(CHANGIE_CONFIG),
             r#"
+changesDir: .changes
+unreleasedDir: unreleased
+changeFormat: '- {{.Body}}'
 projects:
   - key: product
   - key: vscode
