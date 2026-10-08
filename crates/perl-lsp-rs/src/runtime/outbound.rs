@@ -139,6 +139,33 @@ pub(crate) struct OutboundSender {
     completion: Arc<WriterCompletion>,
 }
 
+/// A background observer may publish a notification while the session lives,
+/// without keeping the outbound writer alive during server shutdown.
+pub(crate) struct WeakOutboundSender {
+    gate: std::sync::Weak<parking_lot::Mutex<Option<tokio::sync::mpsc::Sender<OutboundMessage>>>>,
+}
+
+impl WeakOutboundSender {
+    pub(crate) fn send_notification(&self, method: &str, params: Value) -> io::Result<()> {
+        if let Some(reason) = crate::protocol::method_direction::outbound_rejection(method) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("outbound notification `{method}` {reason}"),
+            ));
+        }
+        let gate = self
+            .gate
+            .upgrade()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::BrokenPipe, "outbound channel closed"))?;
+        let gate = gate.lock();
+        let tx = gate
+            .as_ref()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::BrokenPipe, "outbound channel closed"))?;
+        tx.try_send(OutboundMessage::Notification { method: method.to_string(), params })
+            .map_err(map_try_send_error)
+    }
+}
+
 #[derive(Default)]
 struct WriterCompletion {
     outcome: parking_lot::Mutex<Option<WriterTerminalOutcome>>,
@@ -196,6 +223,9 @@ fn map_try_send_error<T>(e: tokio::sync::mpsc::error::TrySendError<T>) -> io::Er
 }
 
 impl OutboundSender {
+    pub(crate) fn downgrade(&self) -> WeakOutboundSender {
+        WeakOutboundSender { gate: Arc::downgrade(&self.gate) }
+    }
     fn from_parts(
         tx: tokio::sync::mpsc::Sender<OutboundMessage>,
         completion: Arc<WriterCompletion>,
