@@ -25,6 +25,34 @@ new_non_rust_requires_review = true
 broad_globs_require_reason = true
 coverage_required_for_production_surfaces = true
 
+# Optional upstream-equivalent advisory capture admitted under #15304. Native cadence
+# and policy/allow.toml classification/promotion remain outside this adapter.
+[[allow]]
+id = "non-rust-cargo-allow-cadence-capture"
+path = "scripts/cargo_allow_cadence.py"
+kind = "ci_tooling"
+language = "python"
+surface = "tooling"
+classification = "tooling"
+owner = "release/ci"
+reason = "Standard-library advisory capture can execute an already qualified upstream producer without requiring a Rust build or changing native cadence authority."
+covered_by = ["python3 -m unittest scripts.tests.test_cargo_allow_cadence", "cargo xtask check-file-policy"]
+created = "2026-10-05"
+review_after = "2026-11-04"
+
+[[allow]]
+id = "non-rust-cargo-allow-cadence-capture-tests"
+path = "scripts/tests/test_cargo_allow_cadence.py"
+kind = "ci_tooling"
+language = "python"
+surface = "tooling"
+classification = "test"
+owner = "release/ci"
+reason = "Python CLI oracles verify byte-preserving bounded capture, wrong-producer refusal and no-op output preservation through the production entrypoint."
+covered_by = ["python3 -m unittest scripts.tests.test_cargo_allow_cadence", "cargo xtask check-file-policy"]
+created = "2026-10-05"
+review_after = "2026-11-04"
+
 # =============================================================================
 # Documentation
 # =============================================================================
@@ -630,6 +658,32 @@ covered_by = [
 ]
 created = "2026-08-04"
 review_after = "2026-11-04"
+
+[[allow]]
+id = "non-rust-vscode-installed-byte-observer-6056"
+path = "vscode-extension/src/test/installedArtifactObservation.ts"
+kind = "test_harness"
+language = "typescript"
+surface = "editor"
+classification = "test"
+owner = "editor/vscode"
+reason = "Node-only child harness reads canonical installed paths and actual bytes without a runtime product API."
+covered_by = ["node scripts/run-jest.js --runTestsByPath src/test/installedArtifactObservation.test.ts", "cargo xtask non-rust inventory --check"]
+created = "2026-09-29"
+review_after = "2027-03-29"
+
+[[allow]]
+id = "non-rust-vscode-installed-byte-tests-6056"
+path = "vscode-extension/src/test/installedArtifactObservation.test.ts"
+kind = "test_harness"
+language = "typescript"
+surface = "editor"
+classification = "test"
+owner = "editor/vscode"
+reason = "Focused filesystem fixtures discriminate wrong bytes, canonical containment escape and changed restart selection."
+covered_by = ["node scripts/run-jest.js --runTestsByPath src/test/installedArtifactObservation.test.ts", "cargo xtask non-rust inventory --check"]
+created = "2026-09-29"
+review_after = "2027-03-29"
 
 [[allow]]
 id = "non-rust-vscode-extension"
@@ -2869,6 +2923,58 @@ created = "2026-08-18"
 review_after = "2026-09-18"
 
 [[allow]]
+id = "non-rust-sublime-package-control-receipt-schema"
+path = "clients/sublime/sublime-package-control-receipt.v1.schema.json"
+kind = "release_metadata"
+language = "json"
+surface = "editor"
+classification = "documentation"
+owner = "editor/sublime"
+reason = "JSON Schema for the fail-closed Package Control public-install receipt (#8003)."
+covered_by = ["Sublime package contract", "python3 -m unittest discover -s clients/sublime/LSP-perllsp/tests -p test_*.py", "cargo xtask check-file-policy"]
+created = "2026-09-29"
+review_after = "2027-03-29"
+
+[[allow]]
+id = "non-rust-sublime-package-control-receipt-validator"
+path = "clients/sublime/validate_sublime_package_control_receipt.py"
+kind = "test"
+language = "python"
+surface = "editor"
+classification = "test"
+owner = "editor/sublime"
+reason = "Validates Package Control public-install receipts and rejects exact-source, custom-channel, listing-only, and blocked-subject overclaims (#8003)."
+covered_by = ["Sublime package contract", "python3 -m unittest discover -s clients/sublime/LSP-perllsp/tests -p test_*.py", "cargo xtask check-file-policy"]
+created = "2026-09-29"
+review_after = "2027-03-29"
+
+[[allow]]
+id = "non-rust-sublime-package-control-subject"
+path = "clients/sublime/package-control-subject.v1.json"
+kind = "release_metadata"
+language = "json"
+surface = "editor"
+classification = "documentation"
+owner = "editor/sublime"
+reason = "Current Package Control listing subject; remains blocked_pending_listing until the default channel is directly observable (#8003)."
+covered_by = ["Sublime package contract", "python3 -m unittest discover -s clients/sublime/LSP-perllsp/tests -p test_*.py", "cargo xtask check-file-policy"]
+created = "2026-09-29"
+review_after = "2027-03-29"
+
+[[allow]]
+id = "non-rust-sublime-package-control-receipt-test"
+path = "clients/sublime/LSP-perllsp/tests/test_package_control_receipt.py"
+kind = "test"
+language = "python"
+surface = "editor"
+classification = "test"
+owner = "editor/sublime"
+reason = "Discriminating contract tests for the Package Control public-install receipt law (#8003)."
+covered_by = ["Sublime package contract", "python3 -m unittest discover -s clients/sublime/LSP-perllsp/tests -p test_*.py", "cargo xtask check-file-policy"]
+created = "2026-09-29"
+review_after = "2027-03-29"
+
+[[allow]]
 id = "non-rust-sublime-dap-fixture"
 path = "clients/sublime/dap-fixture/debug_current.pl"
 kind = "test"
@@ -4315,6 +4421,38 @@ created = "2026-08-24"
 review_after = "2027-02-20"
 
 [[allow]]
+id = "non-rust-ripr-quality-bench-fixtures"
+glob = "benchmarks/ripr/**"
+kind = "test_fixture"
+language = "mixed"
+surface = "fixtures"
+classification = "test"
+owner = "ripr/facts-producer"
+reason = "Labeled Perl boundary/hostile fixtures (.pm/.t/.diff plus .expected.json) for the #17154 ripr quality benches (E2 boundary recall, E3 limitation honesty); consumed by perl-ripr-facts integration tests, never executed as build inputs."
+covered_by = [
+  "just bench-ripr-quality",
+]
+broad_glob_reason = "Bench fixtures span boundary shapes and hostile inputs per bench."
+created = "2026-10-04"
+review_after = "2027-04-04"
+
+[[allow]]
+id = "non-rust-ripr-e1-bench-fixtures"
+glob = "fixtures/ripr-gate/**"
+kind = "test_fixture"
+language = "mixed"
+surface = "fixtures"
+classification = "test"
+owner = "quality/ripr-gate"
+reason = "Labeled gate/classifier fixtures (receipt JSON, lane logs, expected decision/actions) for the #17154 E1 gap precision/recall bench; consumed by the xtask E1 integration test, never executed as build inputs."
+covered_by = [
+  "just bench-ripr-e1",
+]
+broad_glob_reason = "Bench fixtures span gate receipt shapes and lane-termination logs per case."
+created = "2026-10-04"
+review_after = "2027-04-04"
+
+[[allow]]
 id = "non-rust-distribution-kwalitee-catalog-v1"
 path = "crates/perl-release-readiness/distribution_kwalitee_catalog.v1.toml"
 kind = "config"
@@ -5654,6 +5792,59 @@ reason = "Synthetic FF01 #13855 round-trip and shape fixture with placeholder id
 covered_by = ["cargo test -p xtask --locked --bin xtask release_scope_v2", "cargo xtask check-file-policy"]
 created = "2026-09-20"
 review_after = "2026-12-20"
+
+[[allow]]
+id = "non-rust-cargo-admitted-entrypoint"
+path = "scripts/cargo-admitted"
+kind = "ci_tooling"
+language = "shell"
+surface = "tooling"
+classification = "tooling"
+owner = "tooling/agents"
+reason = "Portable shell bootstrap must refuse stale toolchains before invoking the cross-platform pre-build capacity gate; compiling a Rust gate first defeats admission."
+covered_by = ["CARGO_SAFE_UNDER_TEST=scripts/cargo-admitted bash scripts/tests/test-cargo-safe-toolchain-guard.sh"]
+created = "2026-10-01"
+review_after = "2027-01-01"
+
+[[allow]]
+id = "non-rust-cargo-admitted-gate"
+path = "scripts/cargo_admitted.py"
+kind = "ci_tooling"
+language = "python"
+surface = "tooling"
+classification = "tooling"
+owner = "tooling/agents"
+reason = "Standard-library cross-platform capacity/path/lease admission must run before Rust compilation and cannot require a Cargo build to protect storage."
+covered_by = ["python scripts/tests/test_cargo_admitted_storage.py"]
+created = "2026-10-01"
+review_after = "2027-01-01"
+
+[[allow]]
+id = "non-rust-cargo-admitted-proof"
+path = "scripts/tests/test_cargo_admitted_storage.py"
+kind = "ci_tooling"
+language = "python"
+surface = "tooling"
+classification = "test"
+owner = "tooling/agents"
+reason = "Lightweight Windows/POSIX path and process-termination fixtures exercise pre-build admission without compiling the repository."
+covered_by = ["python scripts/tests/test_cargo_admitted_storage.py"]
+created = "2026-10-01"
+review_after = "2027-01-01"
+
+[[allow]]
+id = "non-rust-cleanup-fetch-maintenance-proof"
+path = "scripts/tests/test_cleanup_fetch_maintenance.py"
+kind = "ci_tooling"
+language = "python"
+surface = "tooling"
+classification = "test"
+owner = "tooling/agents"
+reason = "Disposable real Git negative-control fixture proves fetch maintenance suppression preserves expiring registrations without Rust compilation."
+covered_by = ["python scripts/tests/test_cleanup_fetch_maintenance.py"]
+created = "2026-10-01"
+review_after = "2027-01-01"
+
 [[allow]]
 id = "non-rust-14406-admission-leaf"
 path = "scripts/ci/release_publication_admission.py"
@@ -5666,8 +5857,6 @@ reason = "Issue #14406 approved pure RC permission and exact-subject leaf; no pu
 covered_by = ["python -B -m unittest discover -s scripts/ci -p test_release_publication_admission.py"]
 created = "2026-09-20"
 review_after = "2026-12-20"
-
-
 
 [[allow]]
 id = "non-rust-14406-admission-tests"
@@ -5682,8 +5871,6 @@ covered_by = ["python -B -m unittest discover -s scripts/ci -p test_release_publ
 created = "2026-09-20"
 review_after = "2026-12-20"
 
-
-
 [[allow]]
 id = "non-rust-14406-admission-policy"
 path = "policy/release-publication-admission.json"
@@ -5697,8 +5884,6 @@ covered_by = ["python -B -m unittest discover -s scripts/ci -p test_release_publ
 created = "2026-09-20"
 review_after = "2026-12-20"
 
-
-
 [[allow]]
 id = "non-rust-14406-canonical-adapter-17"
 path = "scripts/ci/release_private_candidate.py"
@@ -5711,8 +5896,6 @@ reason = "Issue #14406 pinned canonical validator closure and private-byte adapt
 covered_by = ["python -B -m unittest discover -s scripts/ci -p test_release_private_candidate.py"]
 created = "2026-09-20"
 review_after = "2026-12-20"
-
-
 
 [[allow]]
 id = "non-rust-14406-canonical-adapter-18"

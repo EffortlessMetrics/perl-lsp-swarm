@@ -92,7 +92,12 @@ impl LocalSymbolTable {
     ///
     /// A bare `/.../` regex body is still scanned as code, because recognizing
     /// an unprefixed slash requires the regex-versus-division decision this
-    /// table exists to inform.
+    /// table exists to inform. One bounded exception guards the POD gate
+    /// (#17318): a line-initial POD directive directly after a code line whose
+    /// last code character is a bare `/` is never trusted, because no legal
+    /// division continues with a line-initial `=command` term. The guard
+    /// clears after one line, so a real POD opener can be delayed by at most
+    /// one line.
     ///
     /// # Cost
     ///
@@ -223,6 +228,14 @@ struct ScanState {
     awaiting_sub_name: bool,
     in_pod: bool,
     in_format: bool,
+    /// The previous code line ended with a bare `/` in code state, so this
+    /// line may sit inside a multiline bare regex body (`my $x = /` newline
+    /// `=cut` ...). The scan cannot decide regex-versus-division for an
+    /// unprefixed slash, but no legal division continues with a line-initial
+    /// `=command` term, so while this is set the POD gate refuses to open POD.
+    /// Every non-code line kind clears it, so a real POD opener can be delayed
+    /// by at most one line (#17318).
+    possible_bare_regex_body: bool,
     /// Cached result of [`format::last_format_terminator_line_start`]: `None`
     /// until a `format` opener first needs it, so input without one pays nothing.
     format_terminator_scan: Option<Option<usize>>,
@@ -321,6 +334,7 @@ fn scan_pass(input: &str, hints: &Declarations) -> Declarations {
             if pending.matches_terminator(line) {
                 state.pending_heredocs.pop_front();
             }
+            state.possible_bare_regex_body = false;
             line_start = next_line_start;
             continue;
         }
@@ -329,6 +343,7 @@ fn scan_pass(input: &str, hints: &Declarations) -> Declarations {
             if is_format_terminator(line) {
                 state.in_format = false;
             }
+            state.possible_bare_regex_body = false;
             line_start = next_line_start;
             continue;
         }
@@ -337,12 +352,20 @@ fn scan_pass(input: &str, hints: &Declarations) -> Declarations {
             if is_pod_cut(line) {
                 state.in_pod = false;
             }
+            state.possible_bare_regex_body = false;
             line_start = next_line_start;
             continue;
         }
 
-        if state.quote == QuoteState::Code && starts_pod(line) {
+        // A line-initial `=command` directly after a code line that ended with
+        // a bare `/` may be the body of a multiline bare regex (`my $r = /`
+        // newline `=cut`), and the scan cannot decide regex-versus-division
+        // for an unprefixed slash (#17318). No legal division continues with a
+        // line-initial `=command`, so refuse the opener and scan the line as
+        // code instead.
+        if state.quote == QuoteState::Code && !state.possible_bare_regex_body && starts_pod(line) {
             state.in_pod = true;
+            state.possible_bare_regex_body = false;
             line_start = next_line_start;
             continue;
         }
@@ -351,7 +374,17 @@ fn scan_pass(input: &str, hints: &Declarations) -> Declarations {
             break;
         }
 
-        scan_code_line(input, line_start, line, &mut state, &mut known_subs, &mut nullaries, hints);
+        let ends_with_bare_slash = scan_code_line(
+            input,
+            line_start,
+            line,
+            &mut state,
+            &mut known_subs,
+            &mut nullaries,
+            hints,
+        );
+        state.possible_bare_regex_body =
+            ends_with_bare_slash && state.quote == QuoteState::Code && state.quote_like.is_none();
         line_start = next_line_start;
     }
 
@@ -372,6 +405,15 @@ fn is_nullary_word(word: &str, nullaries: &HashSet<Box<str>>, hints: &Declaratio
     nullaries.contains(word) || hints.nullaries.contains(word)
 }
 
+/// Scan one line in code state and report whether its last code character is
+/// a bare `/`.
+///
+/// The report arms the caller's one-line `possible_bare_regex_body` guard, so
+/// it is `true` only for a `/` consumed as code — a closing quote-like
+/// delimiter (`m/foo/`) or a `/` inside a literal body never arms it — and
+/// horizontal whitespace after the slash keeps it armed so `my $x = / # delim`
+/// still reports the opener. A `#` ends the scan but preserves the report:
+/// code before a comment can end with a bare `/`.
 fn scan_code_line(
     input: &str,
     line_start: usize,
@@ -380,8 +422,9 @@ fn scan_code_line(
     known_subs: &mut HashSet<Box<str>>,
     nullaries: &mut HashSet<Box<str>>,
     hints: &Declarations,
-) {
+) -> bool {
     let mut offset = 0usize;
+    let mut trailing_bare_slash = false;
 
     while offset < line.len() {
         if state.quote_like.is_some() {
@@ -397,7 +440,7 @@ fn scan_code_line(
         if state.awaiting_sub_name {
             offset = skip_horizontal_whitespace(line, offset);
             if offset >= line.len() || line[offset..].starts_with('#') {
-                return;
+                return false;
             }
 
             if let Some((name, end)) = parse_qualified_name(line, offset) {
@@ -406,6 +449,7 @@ fn scan_code_line(
                     nullaries.insert(name.into());
                 }
                 state.awaiting_sub_name = false;
+                trailing_bare_slash = false;
                 offset = end;
                 continue;
             }
@@ -414,19 +458,21 @@ fn scan_code_line(
         }
 
         let Some(ch) = line[offset..].chars().next() else {
-            return;
+            return false;
         };
 
         if ch == '#' {
-            return;
+            return trailing_bare_slash;
         }
 
         if let Some(end) = start_quote_like(input, line_start, line, offset, state) {
+            trailing_bare_slash = false;
             offset = end;
             continue;
         }
 
         if ch == '\'' {
+            trailing_bare_slash = false;
             if apostrophe_is_package_separator(line, offset, known_subs, hints) {
                 offset += ch.len_utf8();
             } else {
@@ -436,11 +482,13 @@ fn scan_code_line(
             continue;
         }
         if ch == '"' {
+            trailing_bare_slash = false;
             state.quote = QuoteState::Double;
             offset += ch.len_utf8();
             continue;
         }
         if ch == '`' {
+            trailing_bare_slash = false;
             state.quote = QuoteState::Backtick;
             offset += ch.len_utf8();
             continue;
@@ -456,12 +504,14 @@ fn scan_code_line(
         if let Some(start) = heredoc_start
             && let Some((pending, end)) = parse_heredoc_opener(line, start)
         {
+            trailing_bare_slash = false;
             state.pending_heredocs.push_back(pending);
             offset = end;
             continue;
         }
 
         if line[offset..].starts_with("sub") && is_sub_keyword_boundary(line, offset) {
+            trailing_bare_slash = false;
             state.awaiting_sub_name = true;
             offset += "sub".len();
             continue;
@@ -477,11 +527,14 @@ fn scan_code_line(
             // The picture body starts on the next line; nothing after the `=`
             // on this line is code.
             state.in_format = true;
-            return;
+            return false;
         }
 
+        trailing_bare_slash = ch == '/' || (trailing_bare_slash && matches!(ch, ' ' | '\t'));
         offset += ch.len_utf8();
     }
+
+    trailing_bare_slash
 }
 
 fn scan_quoted_character(line: &str, offset: usize, state: &mut ScanState) -> usize {
@@ -854,11 +907,12 @@ fn heredoc_allowed_before(
     // argument (`print <<END`, unprototyped `foo <<END`). A nullary authority
     // instead completes a bare call: `sub foo ()` and `time` leave `<<` as the
     // left-shift operator (local Perl oracle, #16165). An explicit `&foo` call
-    // completes the same way on the pinned 5.38.2 oracle — it takes `@_` and
-    // leaves `<<` a shift, and binary `1 & foo` never names a call at all —
-    // so the ampersand never reopens a heredoc slot here (#16445 records the
-    // 5.42 divergence; the garbage-body oracle receipts pin this reading).
-    // Variable sigils name completed terms: `$print <<'END'` is left shift.
+    // bypasses that prototype, so `<<END` is a heredoc argument (perl 5.42 and
+    // lexer `preceding_bareword`, #16445). Immediate adjacency is the call
+    // sigil, matching the lexer; binary `1 & foo` and spaced `& foo` keep the
+    // shift reading. An unmatched `(` on the prefix keeps the lexer's
+    // parenthesized shift (`(&foo <<END)`). Variable sigils name completed
+    // terms: `$print <<'END'` is left shift.
     previous_word_and_sigil_before(line, offset).is_some_and(|(sigil, word)| {
         // A sigiled word is a completed term first: `$print <<'END'` and the
         // typeglob/last-index forms are left shifts, never heredoc
@@ -874,13 +928,33 @@ fn heredoc_allowed_before(
         // slice before the word carries the same trailing-space trim as the
         // helper, so spaced forms (`$object-> return`) are recognized as
         // method invocations as well (#16336).
-        let before_word = prefix[..prefix.len() - word.len()].trim_end_matches([' ', '\t']);
+        let immediately_before = &prefix[..prefix.len() - word.len()];
+        let before_word = immediately_before.trim_end_matches([' ', '\t']);
         let is_return_keyword = word == "return" && !before_word.ends_with("->");
+        // Adjacent `&foo` skips nullary prototype reasoning (perl 5.42 + lexer
+        // `preceding_bareword`). Inside parentheses the lexer still reads `<<`
+        // as a shift after a completed term (`try_heredoc` paren_depth), so an
+        // unmatched `(` on this prefix keeps the nullary/shift path.
+        let ampersand_call =
+            immediately_before.ends_with('&') && !prefix_has_unmatched_open_paren(prefix);
         is_return_keyword
+            || ampersand_call
             || (is_callable_word(word, known_subs, &hints.callables)
                 && !is_nullary_word(word, nullaries, hints)
                 && !is_nullary_builtin(word))
     })
+}
+
+fn prefix_has_unmatched_open_paren(prefix: &str) -> bool {
+    let mut depth = 0usize;
+    for ch in prefix.chars() {
+        match ch {
+            '(' => depth = depth.saturating_add(1),
+            ')' => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+    }
+    depth > 0
 }
 
 /// Recognize the immediate scalar-filehandle `print $handle LIST` term slot.
@@ -1095,22 +1169,70 @@ mod tests {
     }
 
     #[test]
-    fn ampersand_calls_keep_the_shift_reading_on_the_pinned_oracle() {
-        // perl 5.38.2 (this crate's pinned oracle) reads `<<` as a left shift
-        // after an explicit `&foo` call: the call completes by taking `@_`, so
-        // the following line is live code. Oracle receipts: a garbage body
-        // line is a syntax error under `&foo <<END` (heredoc denied) while
-        // `&foo(<<END)` consumes one (parenthesized form is the heredoc).
-        // The 5.42 divergence recorded in #16445 stays tracked there.
+    fn ampersand_call_bypasses_nullary_prototype_and_consumes_the_heredoc() {
+        // perl 5.42 + lexer `preceding_bareword` (#16445): `&foo` is a
+        // prototype-bypassing call, so `<<END` is a heredoc argument and the
+        // following declaration is body prose. Immediate adjacency is the
+        // call sigil; a space after `&` is not.
         assert_membership_and_slash(
-            "sub foo () { 1 }\nmy $x = &foo <<END;\nsub visible { }\nEND\n",
+            "sub foo () { 1 }\nmy $x = &foo <<END;\nsub phantom { }\nEND\nsub real { }\n",
+            &["real"],
+            &["phantom"],
+        );
+        // Parenthesized form is independently a heredoc via the `(` term
+        // introducer; it must keep consuming the body after the bypass lands.
+        assert_membership_and_slash(
+            "sub foo () { 1 }\nmy $x = &foo(<<END);\nsub phantom { }\nEND\nsub real { }\n",
+            &["real"],
+            &["phantom"],
+        );
+        // Opposite: bare nullary `foo <<END` still completes a term (#16165).
+        assert_membership_and_slash(
+            "sub foo () { 1 }\nmy $x = foo <<END;\nsub visible { }\nEND\n",
             &["visible"],
             &[],
         );
-        // A binary `&` before a nullary call never names a call: `1 & foo`
-        // completes a term and `<<END` is a shift there too.
+        // Opposite: binary AND is not a call sigil (`1 & foo` / spaced `& foo`).
         assert_membership_and_slash(
             "sub foo () { 2 }\nmy $x = 1 & foo <<END;\nsub visible { }\nEND\n",
+            &["visible"],
+            &[],
+        );
+        assert_membership_and_slash(
+            "sub foo () { 2 }\nmy $x = & foo <<END;\nsub visible { }\nEND\n",
+            &["visible"],
+            &[],
+        );
+        // `&time` is a prototype-bypassing call of the name, not the nullary
+        // builtin, and no-space `&foo<<END` still has an adjacent call sigil.
+        assert_membership_and_slash(
+            "my $x = &time <<END;\nsub phantom { }\nEND\nsub real { }\n",
+            &["real"],
+            &["phantom"],
+        );
+        assert_membership_and_slash(
+            "sub foo () { 1 }\nmy $x = &foo<<END;\nsub phantom { }\nEND\nsub real { }\n",
+            &["real"],
+            &["phantom"],
+        );
+        assert_membership_and_slash(
+            "sub Foo::bar () { 1 }\nmy $x = &Foo::bar <<END;\nsub phantom { }\nEND\nsub real { }\n",
+            &["real"],
+            &["phantom"],
+        );
+        // No-space `1&foo` still has an adjacent `&` on the word; the lexer
+        // voids it the same way and emits HeredocStart. Matching that reading
+        // is the #16445 contract, not perl 5.38.2's shift.
+        assert_membership_and_slash(
+            "sub foo () { 1 }\nmy $x = 1&foo <<END;\nsub phantom { }\nEND\nsub real { }\n",
+            &["real"],
+            &["phantom"],
+        );
+        // Inside parentheses the lexer keeps `<<` as a shift after a completed
+        // term (`try_heredoc` paren_depth). The `&` bypass must not hide those
+        // live declarations.
+        assert_membership_and_slash(
+            "sub foo () { 1 }\nmy $x = (&foo <<END);\nsub visible { }\nEND\n",
             &["visible"],
             &[],
         );
@@ -1209,6 +1331,64 @@ mod tests {
 
         assert!(table.is_known_sub("real"));
         assert!(!table.is_known_sub("documented"));
+    }
+
+    #[test]
+    fn pod_shaped_line_inside_bare_regex_body_does_not_open_pod() {
+        // #17318: the prepass cannot decide regex-versus-division for an
+        // unprefixed slash, so it refuses to trust a POD opener on the line
+        // directly after a code line ending with a bare `/`. The `=pod` there
+        // is pattern text, and `real` must stay on the table with its later
+        // slash taking the known-sub regex path.
+        assert_membership_and_slash("my $r = /\n=pod\n/;\nsub real { }\n", &["real"], &[]);
+    }
+
+    #[test]
+    fn cut_inside_bare_regex_body_keeps_the_table() {
+        // The #17318 repro verbatim. `starts_pod` on this base does not admit
+        // a stray `=cut` yet (that broadening rides #16607), so this pins the
+        // bare-regex body against the broadened-opener semantics too: once a
+        // stray `=cut` opens POD, this line must still be pattern text.
+        assert_membership_and_slash(
+            "my $r = /\n=cut\n/;\nsub real { }\nreal /x/;\n",
+            &["real"],
+            &[],
+        );
+    }
+
+    #[test]
+    fn slash_behind_trailing_comment_still_guards_the_next_line() {
+        // Horizontal whitespace and a comment after the opening slash do not
+        // disarm the guard: the regex body still starts on the next line.
+        assert_membership_and_slash("my $x = / # delim\n=pod\n/;\nsub real { }\n", &["real"], &[]);
+    }
+
+    #[test]
+    fn closing_quote_like_slash_does_not_arm_the_guard() {
+        // Control: the guard arms only from code-state scans. A quote-like
+        // that closes on its own line ends in quote-like consumption, so a
+        // POD opener on the next line is still trusted and `phantom` stays
+        // hidden. (`q/foo/` keeps the closing-slash path without putting a
+        // regex token in the fixture.) No `;` follows the closer: a stray
+        // `;` would clear a wrongly reported bare slash and mask a
+        // regression where the closing delimiter arms the guard.
+        assert_membership_and_slash(
+            "my $s = q/foo/\n=pod\nsub phantom { }\n=cut\nsub real { }\n",
+            &["real"],
+            &["phantom"],
+        );
+    }
+
+    #[test]
+    fn pod_opener_resumes_after_one_line_of_division_continuation() {
+        // Control: the guard is exactly one line wide. A division whose right
+        // operand follows on the next line clears the guard, so the POD opener
+        // after it is trusted again.
+        assert_membership_and_slash(
+            "my $avg = $total /\n$count;\n=pod\nsub phantom { }\n=cut\nsub real { }\n",
+            &["real"],
+            &["phantom"],
+        );
     }
 
     #[test]

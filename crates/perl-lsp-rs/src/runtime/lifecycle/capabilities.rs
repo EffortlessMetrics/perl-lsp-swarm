@@ -1085,6 +1085,8 @@ mod init_options_tests {
 #[cfg(test)]
 mod tests {
     #![expect(
+        clippy::expect_used,
+        clippy::panic,
         clippy::unwrap_used,
         reason = "tracked conversion debt: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3021"
     )]

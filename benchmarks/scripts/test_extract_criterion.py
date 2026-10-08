@@ -12,6 +12,12 @@ together, and never distinguished a stale prior-run "base" estimate from a
 fresh "new" one (#3979). Both on-disk layouts, and both failure fixtures
 (stale-only output, malformed estimate), are covered here so a regression
 in the parser is caught before it ships another vacuous-green benchmark job.
+
+A later sibling of the same bug stored every measurement under its bare
+bench name, so two groups sharing one param in one category silently
+overwrote each other (packet_build/large vs packet_fingerprint/large,
+#17170). Colliding entries are now stored under qualified ids while
+unique names keep bare keys; both shapes are pinned below.
 """
 
 import importlib.util
@@ -161,6 +167,54 @@ class FindCriterionResultsTests(unittest.TestCase):
             self.assertEqual(results, {})
             self.assertEqual(ids, set())
 
+    def test_packet_groups_share_large_without_data_loss(self) -> None:
+        # The RIPR packet suite (#17154): packet_build/{small,medium,large}
+        # plus packet_fingerprint/large. Both groups map to the "ripr"
+        # category, so the shared "large" param must be stored under
+        # qualified ids -- one silently overwrote the other before #17170.
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            criterion_root = base / "target" / "criterion"
+            _write_estimate(criterion_root, ("packet_build", "small", "new"), mean_ns=955_000)
+            _write_estimate(criterion_root, ("packet_build", "medium", "new"), mean_ns=10_300_000)
+            _write_estimate(criterion_root, ("packet_build", "large", "new"), mean_ns=51_000_000)
+            _write_estimate(
+                criterion_root, ("packet_fingerprint", "large", "new"), mean_ns=221_000
+            )
+
+            results, ids = extract_criterion.find_criterion_results(base)
+
+            self.assertIn("ripr", results)
+            ripr = {k: v for k, v in results["ripr"].items() if not k.startswith("_")}
+            self.assertEqual(
+                set(ripr),
+                {"small", "medium", "packet_build/large", "packet_fingerprint/large"},
+            )
+            self.assertEqual(ripr["packet_build/large"]["mean_ns"], 51_000_000)
+            self.assertEqual(ripr["packet_fingerprint/large"]["mean_ns"], 221_000)
+            self.assertEqual(
+                ids,
+                {
+                    "packet_build/small",
+                    "packet_build/medium",
+                    "packet_build/large",
+                    "packet_fingerprint/large",
+                },
+            )
+
+    def test_unique_bench_name_keeps_bare_key(self) -> None:
+        # No collision: keys stay bare so existing baselines and alert
+        # matching keep working byte-for-byte.
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            criterion_root = base / "target" / "criterion"
+            _write_estimate(criterion_root, ("packet_build", "small", "new"))
+
+            results, _ids = extract_criterion.find_criterion_results(base)
+
+            ripr = {k: v for k, v in results["ripr"].items() if not k.startswith("_")}
+            self.assertEqual(set(ripr), {"small"})
+
 
 class BenchmarkIdTests(unittest.TestCase):
     def test_ungrouped_id_is_bare_name(self) -> None:
@@ -258,6 +312,50 @@ class CliFailClosedTests(unittest.TestCase):
                 ["--strict", "--expect-id", "incremental update single file"],
             )
             self.assertEqual(strict.returncode, 0, strict.stderr)
+
+
+class CategorizeBenchmarkTests(unittest.TestCase):
+    """Pin categorize_benchmark's join-critical branches (#17380 review).
+
+    A miscategorized benchmark silently falls into the baseline-less
+    "other" bucket (or the wrong category), so its row reports MISSING
+    and regressions never reach alerts. Each branch below once dropped a
+    compared benchmark.
+    """
+
+    def test_document_insertions_siblings_both_join_lsp(self) -> None:
+        self.assertEqual(
+            extract_criterion.categorize_benchmark(
+                "document_insertions", "rope_insertion"
+            ),
+            "lsp",
+        )
+        self.assertEqual(
+            extract_criterion.categorize_benchmark(
+                "document_insertions", "string_insertion"
+            ),
+            "lsp",
+        )
+
+    def test_rope_name_match_still_joins_lsp_outside_group(self) -> None:
+        self.assertEqual(
+            extract_criterion.categorize_benchmark("other", "rope_insertion"),
+            "lsp",
+        )
+
+    def test_direct_scope_analysis_stays_parser(self) -> None:
+        self.assertEqual(
+            extract_criterion.categorize_benchmark("other", "scope_analysis"),
+            "parser",
+        )
+
+    def test_scope_siblings_stay_scope(self) -> None:
+        for name in ("scope_analysis_many_vars", "scope_analysis_strict_barewords"):
+            with self.subTest(name=name):
+                self.assertEqual(
+                    extract_criterion.categorize_benchmark("scope_benchmark", name),
+                    "scope",
+                )
 
 
 if __name__ == "__main__":

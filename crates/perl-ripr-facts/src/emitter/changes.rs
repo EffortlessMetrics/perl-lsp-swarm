@@ -21,7 +21,17 @@ struct DiffHunkRun {
 /// block of `+` lines, tracking the head-file line cursor from each
 /// `@@ -a,b +c,d @@` header. Removed (`-`) lines do not advance the head cursor;
 /// context lines do. Pure text parsing — no filesystem access, no subprocess.
-fn parse_diff_hunks(diff_text: &str) -> Vec<DiffHunkRun> {
+/// Parsed hunks plus whether the input carried recognizable unified-diff
+/// structure (a `diff --git ` header, any `+++ b/` file marker, or any parseable `@@`
+/// hunk header). A valid deletion-only / rename-only / mode-only diff yields
+/// zero runs *with* recognized structure — that is analyzed-but-empty, not
+/// unparseable (#17266 review).
+struct ParsedDiff {
+    runs: Vec<DiffHunkRun>,
+    recognized_structure: bool,
+}
+
+fn parse_diff_hunks(diff_text: &str) -> ParsedDiff {
     fn flush(run: &mut Option<DiffHunkRun>, runs: &mut Vec<DiffHunkRun>) {
         if let Some(finished) = run.take() {
             runs.push(finished);
@@ -32,20 +42,49 @@ fn parse_diff_hunks(diff_text: &str) -> Vec<DiffHunkRun> {
     let mut current_file: Option<String> = None;
     let mut head_line: u32 = 0;
     let mut run: Option<DiffHunkRun> = None;
+    let mut recognized_structure = false;
+    // True only between a parseable hunk header and the next file/header
+    // boundary. A rejected header leaves the parser outside any hunk so body
+    // lines are skipped until a valid header starts one (#17266 review).
+    let mut in_hunk = false;
 
     for line in diff_text.lines() {
+        if line.starts_with("diff --git ") {
+            // File-header preamble (incl. contentless rename/mode-only diffs):
+            // recognizable structure even with zero hunks.
+            flush(&mut run, &mut runs);
+            recognized_structure = true;
+            in_hunk = false;
+            continue;
+        }
         if let Some(rest) = line.strip_prefix("+++ b/") {
             flush(&mut run, &mut runs);
             current_file = Some(rest.trim().to_string());
+            recognized_structure = true;
+            in_hunk = false;
             continue;
         }
         if line.starts_with("+++") || line.starts_with("---") {
+            // Generic file markers (`--- a/f`, `+++ /dev/null`) and body lines
+            // whose content starts with `++`/`--` at column zero: flush but
+            // leave in_hunk alone so a colliding body line cannot silently
+            // drop the rest of a valid hunk. Genuine file boundaries reset
+            // via `diff --git` / `+++ b/` above.
             flush(&mut run, &mut runs);
             continue;
         }
         if let Some(header_rest) = line.strip_prefix("@@") {
             flush(&mut run, &mut runs);
-            head_line = parse_hunk_new_start(header_rest).unwrap_or(0);
+            if let Some(new_start) = parse_hunk_new_start(header_rest) {
+                head_line = new_start;
+                recognized_structure = true;
+                in_hunk = true;
+            } else {
+                // Rejected header: stay outside any hunk. The retained file
+                // path must not combine with a zeroed cursor into a line-zero
+                // run on the next added line.
+                in_hunk = false;
+            }
             continue;
         }
         if line.starts_with('\\') {
@@ -53,6 +92,9 @@ fn parse_diff_hunks(diff_text: &str) -> Vec<DiffHunkRun> {
             // present in neither file version. Do not flush the open run or
             // advance the head cursor (advancing it would shift every following
             // added line down by one).
+            continue;
+        }
+        if !in_hunk {
             continue;
         }
         if let Some(added) = line.strip_prefix('+') {
@@ -85,14 +127,38 @@ fn parse_diff_hunks(diff_text: &str) -> Vec<DiffHunkRun> {
         }
     }
     flush(&mut run, &mut runs);
-    runs
+    ParsedDiff { runs, recognized_structure }
 }
 
 /// From a hunk header body ` -a,b +c,d @@ ...`, return the new-file start line
-/// `c` as a 0-based line (`c - 1`). `None` if the `+c` token is unparseable.
+/// `c` as a 0-based line (`c - 1`). The full header shape is validated: two
+/// numeric range tokens (`-old`, `+new`) followed by the closing `@@`. `None`
+/// if any part is missing or unparseable, so a malformed header such as
+/// `@@ nonsense +5` never counts as recognized structure (#17266 review).
 fn parse_hunk_new_start(header_rest: &str) -> Option<u32> {
-    let plus = header_rest.split_whitespace().find(|tok| tok.starts_with('+'))?;
-    let start: u32 = plus.trim_start_matches('+').split(',').next()?.parse().ok()?;
+    let (range_part, _) = header_rest.split_once("@@")?;
+    let mut toks = range_part.split_whitespace();
+    let old_tok = toks.next()?;
+    let new_tok = toks.next()?;
+    if toks.next().is_some() {
+        return None;
+    }
+    parse_range_start(old_tok, '-')?;
+    parse_range_start(new_tok, '+')
+}
+
+/// Parse one hunk range token (`-a[,b]` / `+c[,d]`) into its 0-based start
+/// line. Both the start and the optional count must be all-digit numerics.
+fn parse_range_start(tok: &str, prefix: char) -> Option<u32> {
+    let body = tok.strip_prefix(prefix)?;
+    let mut parts = body.split(',');
+    let start: u32 = parts.next()?.parse().ok()?;
+    if let Some(count) = parts.next() {
+        let _count: u32 = count.parse().ok()?;
+    }
+    if parts.next().is_some() {
+        return None;
+    }
     Some(start.saturating_sub(1))
 }
 
@@ -134,22 +200,160 @@ fn find_enclosing_owner<'a>(
     best
 }
 
+/// Strip single-line double/single-quoted string literals from a Perl source
+/// line (#17358).
+///
+/// Each `"..."` / `'...'` literal (backslash escapes honored) is replaced with
+/// an empty `""` placeholder so keyword/substring scans cannot match tokens
+/// that are only string contents — e.g. `my $msg = "please return the form";`
+/// must not classify as `return_value`. An unterminated quote consumes to end
+/// of line (the single-line approximation of a multi-line string start).
+///
+/// A `'` between word characters (`[A-Za-z0-9_]`) is the legacy Perl package
+/// separator (`$main'flag`), not a literal opener, and is left alone. Only a
+/// `'` at line start or after a non-word char opens a literal. Closing
+/// behavior inside an open literal is unchanged.
+///
+/// Explicitly out of scope (still misclassifiable): heredocs, multi-line
+/// strings, `q{}`/`qq{}` and other quote-like operators, regex literals
+/// (`m//`, `s///`, `qr//`), and tokens in trailing comments.
+fn is_word_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || c == '_'
+}
+
+/// Byte ranges of single-line string literals in `line`, using the same
+/// opener/escape/separator rules as [`strip_single_line_string_literals`].
+/// Byte-exact (multi-byte chars keep their width) so callers can map
+/// positions back onto the original line.
+fn single_line_string_spans(line: &str) -> Vec<(usize, usize)> {
+    let chars: Vec<char> = line.chars().collect();
+    // Byte offset of each char index.
+    let mut byte_at: Vec<usize> = Vec::with_capacity(chars.len() + 1);
+    let mut b = 0;
+    for c in &chars {
+        byte_at.push(b);
+        b += c.len_utf8();
+    }
+    byte_at.push(b);
+    let mut spans = Vec::new();
+    let mut i = 0;
+    while i < chars.len() {
+        let quote = chars[i];
+        let opens_literal =
+            quote == '"' || (quote == '\'' && (i == 0 || !is_word_char(chars[i - 1])));
+        if opens_literal {
+            let start = byte_at[i];
+            i += 1;
+            while i < chars.len() {
+                if chars[i] == '\\' {
+                    i = i.saturating_add(2).min(chars.len());
+                } else if chars[i] == quote {
+                    i += 1;
+                    break;
+                } else {
+                    i += 1;
+                }
+            }
+            spans.push((start, byte_at[i]));
+        } else {
+            i += 1;
+        }
+    }
+    spans
+}
+
+/// Byte index of the first `needle` occurrence in `line` that starts outside
+/// any single-line string literal at a Perl keyword boundary, or `None`.
+/// Lets discriminator extraction preserve the detected keyword's position
+/// instead of matching text inside an earlier string (#17389 review). A
+/// match preceded by a word char or sigil (`$return`, `@die`), or followed by
+/// a word char (`returning`), is part of a longer name, not the keyword.
+/// A needle's trailing whitespace remains required by existing exception
+/// callers; the right boundary is checked at the keyword before that suffix.
+fn find_outside_strings(line: &str, needle: &str) -> Option<usize> {
+    let spans = single_line_string_spans(line);
+    let keyword_len = needle.trim_end().len();
+    let mut from = 0;
+    while let Some(rel) = line[from..].find(needle) {
+        let idx = from + rel;
+        let inside = spans.iter().any(|&(s, e)| idx >= s && idx < e);
+        let starts_at_keyword_boundary = match line[..idx].chars().next_back() {
+            None => true,
+            Some(c) => !is_word_char(c) && !matches!(c, '$' | '@' | '%'),
+        };
+        let ends_at_keyword_boundary =
+            line[idx + keyword_len..].chars().next().is_none_or(|c| !is_word_char(c));
+        if !inside && starts_at_keyword_boundary && ends_at_keyword_boundary {
+            return Some(idx);
+        }
+        // Advance one char (never splitting a multi-byte boundary).
+        from = line[idx..].chars().next().map_or(line.len(), |c| idx + c.len_utf8());
+    }
+    None
+}
+
+/// Select a bounded return occurrence with the existing start/space shape.
+/// Check shape and quote/keyword boundaries on the same occurrence, so a
+/// method or key name cannot borrow another occurrence's supported shape.
+fn find_return_outside_strings(line: &str) -> Option<usize> {
+    find_outside_strings(line, "return")
+        .filter(|&index| index == 0)
+        .or_else(|| find_outside_strings(line, "return "))
+}
+
+fn strip_single_line_string_literals(line: &str) -> String {
+    let chars: Vec<char> = line.chars().collect();
+    let mut out = String::with_capacity(line.len());
+    let mut i = 0;
+    while i < chars.len() {
+        let quote = chars[i];
+        let opens_literal =
+            quote == '"' || (quote == '\'' && (i == 0 || !is_word_char(chars[i - 1])));
+        if opens_literal {
+            out.push_str("\"\"");
+            i += 1;
+            while i < chars.len() {
+                if chars[i] == '\\' {
+                    i = i.saturating_add(2).min(chars.len());
+                } else if chars[i] == quote {
+                    i += 1;
+                    break;
+                } else {
+                    i += 1;
+                }
+            }
+        } else {
+            out.push(quote);
+            i += 1;
+        }
+    }
+    out
+}
+
 /// Pick a `behavior_hint` + discriminator for a hunk by scanning its added lines
 /// top-to-bottom; the first line matching a known pattern (predicate boundary →
 /// return value → exception path) wins. No match on any line → `"unknown"`.
 fn behavior_hint_for_hunk(lines: &[String]) -> (&'static str, String) {
     for line in lines {
         // A whole-line comment is never executable, so it must never yield a
-        // concrete behavior hint (e.g. `# return $x;` is not a return). This is
-        // a cheap, safe filter; false positives from `die`/`return` substrings
-        // *inside string literals* remain possible and are documented as a
-        // limitation (a robust fix needs tokenization, out of this slice's scope).
+        // concrete behavior hint (e.g. `# return $x;` is not a return).
         if line.trim_start().starts_with('#') {
             continue;
         }
-        let (hint, discriminator) = infer_behavior_and_discriminator(line);
+        // Strip single-line string literals for the hint DECISION only, so
+        // tokens inside them (e.g. `die` in `my $s = 'die hard';`) cannot
+        // drive the classification (#17358). The discriminator is extracted
+        // from the ORIGINAL line, so the observable keeps the real
+        // expression (`return "ok";` observes `"ok"`, not `""`): stripping
+        // is classification-only, never observable input. String-only-token
+        // lines still classify `unknown` (null observable). Guarantee
+        // covers `"..."` / `'...'` only; heredocs, multi-line strings, q{},
+        // regex literals, and trailing comments remain unhandled (see
+        // `strip_single_line_string_literals`).
+        let stripped = strip_single_line_string_literals(line);
+        let hint = detect_behavior_kind(&stripped);
         if hint != "unknown" {
-            return (hint, discriminator);
+            return (hint, extract_discriminator(hint, line));
         }
     }
     ("unknown", String::new())
@@ -182,6 +386,19 @@ fn strip_root_prefix<'a>(path: &'a str, root: &str) -> &'a str {
 /// the three syntactically-detectable ones (`predicate_boundary`,
 /// `return_value`, `exception_path`) are inferred; everything else is
 /// `"unknown"` and `missing_discriminator` is always `null` in this slice.
+/// The `diff-provenance-unverified` caveat, shared by the diff-supplied path
+/// (`emit_changes_from_diff`) and the no-diff path (`packet.rs`): base/head
+/// (and any diff) are caller-asserted and never verified against a repository.
+/// One constructor so the two sites cannot drift (#17258).
+pub(crate) fn diff_provenance_unverified_limitation() -> Value {
+    json!({
+        "limitation_id": "diff-provenance-unverified",
+        "kind": "unverified_provenance",
+        "message": "base/head/diff are caller-asserted and not verified against a repository; this packet does not confirm the supplied diff is the actual base->head diff.",
+        "evidence_refs": [],
+    })
+}
+
 pub(crate) fn emit_changes_from_diff(
     diff_text: &str,
     root: &str,
@@ -193,17 +410,26 @@ pub(crate) fn emit_changes_from_diff(
 
     // base/head/diff are caller-asserted; this crate never runs git to confirm
     // the supplied diff is the actual base→head diff. Always surface that.
-    limitations.push(json!({
-        "limitation_id": "diff-provenance-unverified",
-        "kind": "unverified_provenance",
-        "message": "base/head/diff are caller-asserted and not verified against a repository; this packet does not confirm the supplied diff is the actual base->head diff.",
-        "evidence_refs": [],
-    }));
+    limitations.push(diff_provenance_unverified_limitation());
 
     let known_files: std::collections::HashSet<&str> =
         files.iter().filter_map(|file| file["file_id"].as_str()).collect();
 
-    for hunk in parse_diff_hunks(diff_text) {
+    let parsed = parse_diff_hunks(diff_text);
+    if !diff_text.trim().is_empty() && !parsed.recognized_structure {
+        // Supplied-but-unparseable input: label it so no consumer reads the
+        // empty `changes[]` as "nothing changed" (#17248). A valid
+        // deletion-only diff has recognized structure with zero runs and
+        // must NOT land here.
+        limitations.push(json!({
+            "limitation_id": "diff-unparseable",
+            "kind": "unparseable_diff",
+            "message": "a diff was supplied but no unified-diff structure was recognized (expected `diff --git` headers, `+++ b/<path>` file markers, or `@@` hunk headers); `changes[]` means \"not analyzed\", not \"nothing changed\".",
+            "evidence_refs": [],
+        }));
+    }
+
+    for hunk in &parsed.runs {
         // git diff paths are repo-root-relative; file_ids are root-relative.
         let rel_path = strip_root_prefix(&hunk.file_path, root);
         let file_id = format!("file:{rel_path}");
@@ -282,7 +508,7 @@ pub(crate) fn emit_changes_from_diff(
         limitations.push(json!({
             "limitation_id": "change-behavior-hint-partial",
             "kind": "partial_inference",
-            "message": "only predicate_boundary / return_value / exception_path behavior_hints are inferred from added-line text; every other change resolves to \"unknown\", and missing_discriminator is always null in this slice. Whole-line comments are skipped, but a die/return/comparison token inside a string literal can still be misclassified (a robust fix needs tokenization).",
+            "message": "only predicate_boundary / return_value / exception_path behavior_hints are inferred from added-line text; every other change resolves to \"unknown\", and missing_discriminator is always null in this slice. Whole-line comments are skipped and single-line \"...\" / '...' literal contents cannot drive classification, but tokens inside heredocs, multi-line strings, q{}/qq{} and other quote-like operators, regex literals, or trailing comments are still scanned as code and can be misclassified.",
             "evidence_refs": [],
         }));
     }
@@ -295,7 +521,19 @@ pub(crate) fn emit_changes_from_diff(
 /// Conservative: only the three alpha-supported classes produce concrete
 /// discriminators. Everything else is "unknown" with an empty discriminator
 /// (ripr's strict-actionability fails closed on unknown).
+///
+/// Test-only seam: production classifies via [`detect_behavior_kind`] on the
+/// stripped line and extracts via [`extract_discriminator`] on the original.
+#[cfg(test)]
 fn infer_behavior_and_discriminator(line: &str) -> (&'static str, String) {
+    let kind = detect_behavior_kind(line);
+    (kind, extract_discriminator(kind, line))
+}
+
+/// Classify a changed Perl line into one of the three
+/// syntactically-detectable behavior kinds (or `"unknown"`). Detection only —
+/// no discriminator extraction.
+fn detect_behavior_kind(line: &str) -> &'static str {
     let trimmed = line.trim();
 
     // Predicate boundary: a LEADING conditional (if/unless/while/elsif at the
@@ -316,29 +554,54 @@ fn infer_behavior_and_discriminator(line: &str) -> (&'static str, String) {
             || trimmed.contains(">")
             || trimmed.contains("<"))
     {
-        // Extract the condition text as the discriminator.
-        let disc = extract_condition(trimmed).unwrap_or_else(|| trimmed.to_string());
-        return ("predicate_boundary", disc);
+        return "predicate_boundary";
     }
 
-    // Return value.
-    if trimmed.starts_with("return") || trimmed.contains("return ") {
-        let expr = trimmed
-            .strip_prefix("return")
-            .unwrap_or(trimmed)
-            .trim()
-            .trim_end_matches(';')
-            .to_string();
-        return ("return_value", expr);
+    // Return value. Retain the existing supported start/space shapes so the
+    // keyword scan cannot promote punctuation-only call or key names such as
+    // `$obj->return()` / `$obj->{return}` into new concrete hints.
+    if find_return_outside_strings(trimmed).is_some() {
+        return "return_value";
     }
 
     // Exception path.
     if trimmed.contains("die ") || trimmed.contains("croak ") || trimmed.contains("confess ") {
-        let msg = extract_die_message(trimmed).unwrap_or_else(|| "exception".to_string());
-        return ("exception_path", msg);
+        return "exception_path";
     }
 
-    ("unknown", String::new())
+    "unknown"
+}
+
+/// Extract the discriminator for an already-detected `kind` from `line`.
+/// Callers pass the ORIGINAL (unstripped) line so the observable keeps the
+/// real expression. `"unknown"` (or any unrecognized kind) yields an empty
+/// discriminator.
+fn extract_discriminator(kind: &str, line: &str) -> String {
+    let trimmed = line.trim();
+    match kind {
+        // Extract the condition text as the discriminator.
+        "predicate_boundary" => extract_condition(trimmed).unwrap_or_else(|| trimmed.to_string()),
+        // Slice from the detected keyword's position (outside strings) so a
+        // quoted keyword earlier in the line cannot supply the observable.
+        "return_value" => {
+            let from = find_return_outside_strings(trimmed).unwrap_or(0);
+            trimmed[from..]
+                .strip_prefix("return")
+                .unwrap_or(&trimmed[from..])
+                .trim()
+                .trim_end_matches(';')
+                .to_string()
+        }
+        "exception_path" => {
+            let from = ["die ", "croak ", "confess "]
+                .iter()
+                .filter_map(|kw| find_outside_strings(trimmed, kw))
+                .min()
+                .unwrap_or(0);
+            extract_die_message(&trimmed[from..]).unwrap_or_else(|| "exception".to_string())
+        }
+        _ => String::new(),
+    }
 }
 
 /// Extract the condition expression from a leading if/unless/while/elsif line.
@@ -578,6 +841,107 @@ mod tests {
     }
 
     #[test]
+    fn emit_changes_from_diff_garbage_diff_records_diff_unparseable() {
+        // Non-blank text with zero unified hunks: empty changes plus a
+        // `diff-unparseable` limitation — never a silent empty `changes[]`.
+        let files = vec![json!({ "file_id": "file:lib/My/App.pm" })];
+        let owners: Vec<Value> = Vec::new();
+        let (changes, limitations) = emit_changes_from_diff(
+            "this is not a diff\nno file markers here\n",
+            ".",
+            &files,
+            &owners,
+        );
+        assert!(changes.is_empty(), "garbage diff → no changes");
+        assert!(
+            limitations.iter().any(|l| l["limitation_id"] == "diff-unparseable"),
+            "must record a diff-unparseable limitation, got: {limitations:?}"
+        );
+    }
+
+    #[test]
+    fn emit_changes_from_diff_malformed_hunk_header_is_unparseable() {
+        // These look like hunk headers but fail full-header validation (no
+        // numeric `-old +new` pair closed by `@@`): none must count as
+        // recognized structure, so each input is still labeled
+        // `diff-unparseable` (#17266 review).
+        for header in
+            ["@@ not a hunk\n", "@@ nonsense +5\n", "@@ nonsense +5 @@\n", "@@ -5,3 +5,foo @@\n"]
+        {
+            let files = vec![json!({ "file_id": "file:lib/My/App.pm" })];
+            let owners: Vec<Value> = Vec::new();
+            let diff = format!("{header}+    return 1;\n");
+            let (changes, limitations) = emit_changes_from_diff(&diff, ".", &files, &owners);
+            assert!(changes.is_empty(), "malformed hunk header yields no changes: {header:?}");
+            assert!(
+                limitations.iter().any(|l| l["limitation_id"] == "diff-unparseable"),
+                "malformed @@ header must still be labeled unparseable ({header:?}), got: {limitations:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn emit_changes_from_diff_malformed_header_after_file_marker_emits_no_change() {
+        // A rejected hunk header must leave the parser outside any hunk: the
+        // retained file path plus a head_line reset to zero must not turn a
+        // following added line into a line-zero change attached to the wrong
+        // owner (#17266 review wave3). The package owner below spans 0..20, so
+        // the buggy line-zero run would attribute to it.
+        let (files, owners) = app_files_and_owners();
+        let diff = "+++ b/lib/My/App.pm\n@@ -5,3 +5,foo @@\n+    return 1;\n";
+        let (changes, _) = emit_changes_from_diff(diff, ".", &files, &owners);
+        assert!(changes.is_empty(), "rejected header must emit no change fact, got: {changes:?}");
+        // A later valid header re-enters a hunk: body lines are skipped only
+        // until a parseable header starts one.
+        let diff = "+++ b/lib/My/App.pm\n\
+             @@ -5,3 +5,foo @@\n\
+             +    bogus = 1;\n\
+             @@ -5,3 +5,4 @@\n\
+             sub discount {\n\
+                 my ($amount) = @_;\n\
+             +    return $amount / 2;\n\
+             }\n";
+        let (changes, _) = emit_changes_from_diff(diff, ".", &files, &owners);
+        assert_eq!(changes.len(), 1, "valid header after a rejected one still parses");
+        assert_eq!(changes[0]["owner_id"], "owner:lib/My/App.pm:sub:main::discount:60-140");
+    }
+
+    #[test]
+    fn emit_changes_from_diff_deletion_only_diff_is_not_unparseable() {
+        // A valid deletion-only diff has recognized structure with zero
+        // added-line runs: analyzed (nothing attributable), never labeled
+        // `diff-unparseable` (#17266 review).
+        let files = vec![json!({ "file_id": "file:lib/My/App.pm" })];
+        let owners: Vec<Value> = Vec::new();
+        let diff = "+++ b/lib/My/App.pm\n@@ -5,2 +5,1 @@\n sub discount {\n-    return $x;\n";
+        let (changes, limitations) = emit_changes_from_diff(diff, ".", &files, &owners);
+        assert!(changes.is_empty(), "deletion-only → no change facts");
+        assert!(
+            !limitations.iter().any(|l| l["limitation_id"] == "diff-unparseable"),
+            "valid deletion-only diff must not be labeled unparseable"
+        );
+    }
+
+    #[test]
+    fn emit_changes_from_diff_contentless_diffs_are_not_unparseable() {
+        // Rename-only / mode-only diffs carry `diff --git` structure with
+        // zero hunks: analyzed-but-empty, never `diff-unparseable`.
+        for diff in [
+            "diff --git a/old.pm b/new.pm\nsimilarity index 91%\nrename from old.pm\nrename to new.pm\n",
+            "diff --git a/f.pm b/f.pm\nold mode 100644\nnew mode 100755\n",
+        ] {
+            let files: Vec<Value> = Vec::new();
+            let owners: Vec<Value> = Vec::new();
+            let (changes, limitations) = emit_changes_from_diff(diff, ".", &files, &owners);
+            assert!(changes.is_empty(), "contentless diff → no change facts");
+            assert!(
+                !limitations.iter().any(|l| l["limitation_id"] == "diff-unparseable"),
+                "contentless diff must not be labeled unparseable: {diff:?}"
+            );
+        }
+    }
+
+    #[test]
     fn emit_changes_from_diff_is_deterministic_and_stable_across_reordering() {
         let (files, owners) = app_files_and_owners();
         let hunk_a = "@@ -5,2 +5,3 @@\n sub discount {\n+    return 1;\n";
@@ -640,6 +1004,252 @@ mod tests {
     }
 
     #[test]
+    fn behavior_hint_for_hunk_ignores_tokens_inside_string_literals() {
+        // #17358: tokens that appear only inside single-line string literals
+        // must not drive the classification.
+        assert_eq!(
+            behavior_hint_for_hunk(&["my $msg = \"please return the form\";".into()]).0,
+            "unknown"
+        );
+        assert_eq!(behavior_hint_for_hunk(&["my $s = 'die hard';".into()]).0, "unknown");
+        assert_eq!(behavior_hint_for_hunk(&["if ($label eq \"a>b\") {".into()]).0, "unknown");
+    }
+
+    #[test]
+    fn behavior_hint_for_hunk_string_stripping_keeps_real_statements() {
+        // Guards: stripping string contents must not hide genuine statements.
+        assert_eq!(behavior_hint_for_hunk(&["return \"ok\";".into()]).0, "return_value");
+        assert_eq!(behavior_hint_for_hunk(&["die \"bad\";".into()]).0, "exception_path");
+    }
+
+    #[test]
+    fn behavior_hint_for_hunk_skips_quoted_keywords_before_real_statement() {
+        // #17389 review: a quoted keyword earlier in the line must not supply
+        // the observable; extraction starts at the detected keyword's position.
+        let (kind, disc) =
+            behavior_hint_for_hunk(&["my $s = \"return die bogus\"; die \"real\";".into()]);
+        assert_eq!(kind, "exception_path");
+        assert!(disc.contains("real"), "observable must come from the real die: {disc}");
+        assert!(!disc.contains("bogus"), "observable must not come from the string: {disc}");
+        let (kind, disc) = behavior_hint_for_hunk(&["my $t = \"x return y\"; return $z;".into()]);
+        assert_eq!(kind, "return_value");
+        assert_eq!(disc, "$z");
+        // Keyword boundary: `$return` is a longer name, not the keyword.
+        let (kind, disc) = behavior_hint_for_hunk(&["my $return = 1; return $value;".into()]);
+        assert_eq!(kind, "return_value");
+        assert_eq!(disc, "$value");
+    }
+
+    #[test]
+    fn behavior_hint_for_hunk_return_names_are_not_keywords() {
+        for line in [
+            "returning();",
+            "return_value();",
+            "return0();",
+            "my $return = 1;",
+            "my @return = ();",
+            "my %return = ();",
+            "my $pre_return = 1;",
+        ] {
+            let (kind, disc) = behavior_hint_for_hunk(&[line.to_string()]);
+            assert_eq!(kind, "unknown", "name must not classify as a return: {line}");
+            assert!(disc.is_empty(), "unknown hint must have no observable: {line}: {disc}");
+        }
+    }
+
+    #[test]
+    fn behavior_hint_for_hunk_skips_return_names_before_real_statement() {
+        for line in [
+            "returning(); return $value;",
+            "return_value(); return $value;",
+            "my $return = 1; returning(); return $value;",
+            "my $s = \"🧵 return bogus\"; returning(); return $value;",
+        ] {
+            let (kind, disc) = behavior_hint_for_hunk(&[line.to_string()]);
+            assert_eq!(kind, "return_value", "real return must still classify: {line}");
+            assert_eq!(disc, "$value", "observable must start at the real return: {line}");
+        }
+    }
+
+    #[test]
+    fn behavior_hint_for_hunk_return_boundaries_preserve_original_expression() {
+        for (line, expected) in [
+            ("return($value);", "($value)"),
+            ("return\t$value;", "$value"),
+            ("returning(); return \"ok\";", "\"ok\""),
+            ("my $s = 'return bogus'; return \"a\\\"b\";", "\"a\\\"b\""),
+        ] {
+            let (kind, disc) = behavior_hint_for_hunk(&[line.to_string()]);
+            assert_eq!(kind, "return_value", "keyword boundary must retain real return: {line}");
+            assert_eq!(disc, expected, "observable must retain the original expression: {line}");
+        }
+    }
+
+    #[test]
+    fn behavior_hint_for_hunk_skips_return_name_on_earlier_line() {
+        let (kind, disc) =
+            behavior_hint_for_hunk(&["returning();".into(), "return $value;".into()]);
+        assert_eq!(kind, "return_value");
+        assert_eq!(disc, "$value", "a name-only earlier line must not win the hunk");
+    }
+
+    #[test]
+    fn behavior_hint_for_hunk_return_detection_does_not_expand_to_call_or_key_names() {
+        for line in ["my $value = $obj->{return};", "Foo::return();", "$obj->return();"] {
+            let (kind, disc) = behavior_hint_for_hunk(&[line.to_string()]);
+            assert_eq!(kind, "unknown", "a call or key name must stay unknown: {line}");
+            assert!(disc.is_empty(), "a call or key name must have no observable: {line}");
+        }
+        let (kind, disc) = behavior_hint_for_hunk(&["{ return $value; }".into()]);
+        assert_eq!(kind, "return_value", "a real return inside a block remains detectable");
+        assert_eq!(disc, "$value; }");
+    }
+
+    #[test]
+    fn behavior_hint_for_hunk_return_shape_belongs_to_selected_occurrence() {
+        for line in [
+            "returning(); $obj->return();",
+            "returning(); Foo::return();",
+            "returning(); my $value = $obj->{return};",
+        ] {
+            let (kind, disc) = behavior_hint_for_hunk(&[line.to_string()]);
+            assert_eq!(kind, "unknown", "unsupported occurrence must stay unknown: {line}");
+            assert!(disc.is_empty(), "unsupported occurrence has no observable: {line}");
+        }
+        for line in [
+            "$obj->return(); return $value;",
+            "Foo::return(); return $value;",
+            "returning(); $obj->return(); return $value;",
+            "my $s = \"\u{1f642} return bogus\"; $obj->return(); return $value;",
+        ] {
+            let (kind, disc) = behavior_hint_for_hunk(&[line.to_string()]);
+            assert_eq!(kind, "return_value", "later supported occurrence must classify: {line}");
+            assert_eq!(
+                disc, "$value",
+                "only the supported occurrence supplies the observable: {line}"
+            );
+        }
+    }
+
+    #[test]
+    fn emit_changes_from_diff_return_shape_belongs_to_selected_occurrence() {
+        let (files, owners) = app_files_and_owners();
+        for (line, expected_kind, expected_observable) in [
+            ("returning(); $obj->return();", "unknown", Value::Null),
+            ("returning(); Foo::return();", "unknown", Value::Null),
+            ("returning(); my $value = $obj->{return};", "unknown", Value::Null),
+            ("$obj->return(); return $value;", "return_value", json!("$value")),
+            ("Foo::return(); return $value;", "return_value", json!("$value")),
+            ("returning(); $obj->return(); return $value;", "return_value", json!("$value")),
+        ] {
+            let diff =
+                format!("+++ b/lib/My/App.pm\n@@ -5,2 +5,3 @@\n sub discount {{\n+    {line}\n");
+            let (changes, _) = emit_changes_from_diff(&diff, ".", &files, &owners);
+            assert_eq!(changes.len(), 1, "added line must reach a change fact: {line}");
+            assert_eq!(changes[0]["behavior_hint"], expected_kind, "packet hint: {line}");
+            assert_eq!(
+                changes[0]["changed_observable"], expected_observable,
+                "packet observable: {line}"
+            );
+        }
+    }
+
+    #[test]
+    fn emit_changes_from_diff_return_keyword_boundaries_reach_packet() {
+        let (files, owners) = app_files_and_owners();
+        for (line, expected_kind, expected_observable) in [
+            ("returning();", "unknown", Value::Null),
+            ("my $return = 1;", "unknown", Value::Null),
+            ("my $value = $obj->{return};", "unknown", Value::Null),
+            ("Foo::return();", "unknown", Value::Null),
+            ("$obj->return();", "unknown", Value::Null),
+            ("returning(); return $value;", "return_value", json!("$value")),
+            ("my $s = \"return bogus\"; return \"ok\";", "return_value", json!("\"ok\"")),
+        ] {
+            let diff =
+                format!("+++ b/lib/My/App.pm\n@@ -5,2 +5,3 @@\n sub discount {{\n+    {line}\n");
+            let (changes, _) = emit_changes_from_diff(&diff, ".", &files, &owners);
+            assert_eq!(changes.len(), 1, "each added line must reach a change fact: {line}");
+            assert_eq!(changes[0]["behavior_hint"], expected_kind, "packet hint: {line}");
+            assert_eq!(
+                changes[0]["changed_observable"], expected_observable,
+                "packet observable must come from the real keyword or stay null: {line}"
+            );
+        }
+    }
+
+    #[test]
+    fn behavior_hint_for_hunk_extracts_discriminator_from_original_line() {
+        // #17358 follow-up: stripping is classification-only. The observable
+        // comes from the ORIGINAL line, so literal-bearing statements keep
+        // their real (pre-repair) expression — never `""`/empty.
+        let (kind, disc) = behavior_hint_for_hunk(&["return \"ok\";".into()]);
+        assert_eq!(kind, "return_value");
+        assert_eq!(disc, "\"ok\"", "return observable keeps the literal: {disc}");
+
+        let (kind, disc) = behavior_hint_for_hunk(&["die \"boom\";".into()]);
+        assert_eq!(kind, "exception_path");
+        assert!(!disc.is_empty(), "die observable must be non-empty");
+        assert_eq!(
+            disc,
+            infer_behavior_and_discriminator("die \"boom\";").1,
+            "observable equals the pre-repair extraction"
+        );
+
+        // The golden `die "boom" if ...` fixture: extraction-from-original
+        // reproduces the exact pre-repair observable text.
+        let (kind, disc) = behavior_hint_for_hunk(&["die \"boom\" if $x < 0;".into()]);
+        assert_eq!(kind, "exception_path");
+        assert_eq!(disc, "boom\" if $x < 0");
+    }
+
+    #[test]
+    fn behavior_hint_for_hunk_apostrophe_separator_still_predicate_boundary() {
+        // Legacy `'` package separator must not open a string literal: the
+        // predicate survives stripping and still classifies (#17358 follow-up).
+        let line = "if ($main'flag > 0) {";
+        assert_eq!(
+            strip_single_line_string_literals(line),
+            line,
+            "apostrophe separator must pass through the stripper untouched"
+        );
+        let (kind, disc) = behavior_hint_for_hunk(&[line.to_string()]);
+        assert_eq!(kind, "predicate_boundary");
+        assert!(disc.contains("$main'flag > 0"), "condition keeps the separator: {disc}");
+    }
+
+    #[test]
+    fn strip_single_line_string_literals_honors_escapes() {
+        assert_eq!(strip_single_line_string_literals("return \"a\\\"b\";"), "return \"\";");
+        assert_eq!(strip_single_line_string_literals("my $s = 'it\\'s';"), "my $s = \"\";");
+        // Unterminated quote consumes to end of line.
+        assert_eq!(strip_single_line_string_literals("my $s = \"foo"), "my $s = \"\"");
+    }
+
+    #[test]
+    fn emit_changes_from_diff_string_only_token_yields_unknown_hint() {
+        // #17358 packet-level: a hunk whose only hint token sits inside a
+        // string literal still emits a change fact, but with an "unknown" hint.
+        let (files, owners) = app_files_and_owners();
+        let diff = "\
+--- a/lib/My/App.pm
++++ b/lib/My/App.pm
+@@ -5,3 +5,4 @@
+ sub discount {
+     my ($amount) = @_;
++    my $msg = \"please return the form\";
+ }
+";
+        let (changes, _) = emit_changes_from_diff(diff, ".", &files, &owners);
+        assert_eq!(changes.len(), 1, "string-only-token line still emits a change fact");
+        assert_eq!(changes[0]["behavior_hint"], "unknown");
+        assert!(
+            changes[0]["changed_observable"].is_null(),
+            "unknown hint must carry a null changed_observable"
+        );
+    }
+
+    #[test]
     fn strip_root_prefix_normalizes_subdir_paths() {
         assert_eq!(strip_root_prefix("crates/p/lib/A.pm", "crates/p"), "lib/A.pm");
         assert_eq!(strip_root_prefix("lib/A.pm", "."), "lib/A.pm");
@@ -695,7 +1305,7 @@ mod tests {
         // preceding line; it must not advance the head-file cursor.
         let with_marker =
             "+++ b/f.pm\n@@ -5,1 +5,2 @@\n-old\n\\ No newline at end of file\n+new1\n+new2\n";
-        let hunks = parse_diff_hunks(with_marker);
+        let hunks = parse_diff_hunks(with_marker).runs;
         assert_eq!(hunks.len(), 1, "one added-line run");
         // `+5` → 0-based 4; new1/new2 land at head lines 4 and 5, unshifted.
         assert_eq!(hunks[0].start_line, 4, "marker must not shift the head cursor");

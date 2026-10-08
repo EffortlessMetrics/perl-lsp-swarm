@@ -83,6 +83,11 @@ jobs:
           # existing host job gains one focused production-boundary lane
           # without expanding the OS matrix.
           PERL_LSP_REAL_CLIENT_SETTLEMENT: '1'
+          # The folder-configuration wire contract (#14447 pull ownership,
+          # unscoped answers from user scope only) must gate merges like the
+          # settlement lane does; it was opt-in only and red on main before
+          # being wired here (#17334).
+          PERL_LSP_FOLDER_CONFIG_HOST: '1'
         run: xvfb-run -a npm run test:integration
 
       - name: Package current extension for Windows published smoke

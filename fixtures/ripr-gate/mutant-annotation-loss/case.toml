@@ -1,0 +1,10 @@
+# E1 case manifest: lane-termination classifier mapping oracle.
+kind = "classifier"
+description = "Annotation-only teardown evidence lost with concluded steps; fails closed."
+mode = "api-evidence"
+mutant_verdict = "kill"
+mutation = "annotations.json missing from the API evidence"
+base_input = "base-annotations.json"
+base_expected_class = "infra-no-proof"
+also_expect = { annotations_read = "false" }
+inputs = ["steps.json"]

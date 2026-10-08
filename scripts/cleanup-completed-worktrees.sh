@@ -220,13 +220,17 @@ delete_branch() {
 }
 
 branch_landed_via_pr() {
-    local branch="$1" repo_slug
-    [[ -n "$branch" ]] || return 1
+    local branch="$1" head="$2" repo_slug
+    [[ -n "$branch" && -n "$head" ]] || return 1
     command -v gh >/dev/null 2>&1 || return 1
     repo_slug="$(origin_repo_slug)" || return 1
     [[ -n "$repo_slug" && "$repo_slug" == */* ]] || return 1
-    gh pr list --repo "$repo_slug" --head "$branch" --state merged --json number 2>/dev/null \
-        | grep -q '"number"'
+    # Tip-bound (#17404): a reused branch name can match a stale merged PR
+    # while HEAD carries new commits, so the name match alone proves nothing.
+    # Require a merged PR whose head is exactly the local tip; a gh failure or
+    # an unparseable answer is not landed.
+    gh pr list --repo "$repo_slug" --head "$branch" --state merged --json number,headRefOid 2>/dev/null \
+        | grep -q "\"headRefOid\":\"$head\""
 }
 
 # Stale origin refs make "unpushed" wrong in the dangerous direction, so refresh
@@ -244,7 +248,7 @@ REMOTE_STATE=fresh
 if $DRY_RUN; then
     REMOTE_STATE=stale
 else
-    git_out git -C "$REPO_ROOT" fetch --quiet origin "$BASE" 2>/dev/null ||
+    git_out git -c maintenance.auto=false -C "$REPO_ROOT" fetch --quiet origin "$BASE" 2>/dev/null ||
         { FETCH_OK=false; REMOTE_STATE=failed; }
 fi
 BASE_REF="origin/$BASE"
@@ -325,20 +329,20 @@ process_worktree() {
         emit "$name" "${branch:-(detached)}" "dirty" "KEEP"; KEPT=$((KEPT + 1)); return 0
     fi
 
-    local head landed
+    local head landed_ancestor landed_pr
     head="$(git_read -C "$path" rev-parse HEAD 2>/dev/null || echo "")"
     if [[ -z "$head" ]]; then
         emit "$name" "${branch:-(detached)}" "unreadable" "KEEP"; KEPT=$((KEPT + 1)); return 0
     fi
-    landed=false
-    git_read -C "$REPO_ROOT" merge-base --is-ancestor "$head" "$BASE_REF" 2>/dev/null && landed=true
-    if ! $landed && [[ "$detached" != "true" && -n "${branch:-}" ]]; then
-        branch_landed_via_pr "$branch" && landed=true
-    fi
+    landed_ancestor=false
+    git_read -C "$REPO_ROOT" merge-base --is-ancestor "$head" "$BASE_REF" 2>/dev/null && landed_ancestor=true
+    landed_pr=false
 
     # Detached HEAD: the old script skipped these permanently. Judge them.
+    # Detached tips never consult the PR-name path (no branch to match), so
+    # only proven ancestry removes them.
     if [[ "$detached" == "true" ]]; then
-        if $landed; then
+        if $landed_ancestor; then
             emit "$name" "(detached)" "landed" "REMOVE"
             if remove_worktree "$path"; then
                 REMOVED=$((REMOVED + 1))
@@ -351,7 +355,45 @@ process_worktree() {
         return 0
     fi
 
-    if $landed; then
+    # Proven ancestry in the base settles the worktree: HEAD exists on the base
+    # ref, so removing the directory cannot strand commits. This verdict does
+    # not consult the push count — a stale feature ref must not veto proof
+    # that HEAD is already in the base.
+    if $landed_ancestor; then
+        emit "$name" "$branch" "landed" "REMOVE"
+        if remove_worktree "$path"; then
+            delete_branch "$branch"
+            REMOVED=$((REMOVED + 1))
+        else
+            KEPT=$((KEPT + 1))
+        fi
+        return 0
+    fi
+
+    # Not in the base. A merged-PR name match is weak evidence on its own, so
+    # it must be tip-bound (see branch_landed_via_pr), and push state is
+    # judged before it is acted on (#17404): the name can match a stale merged
+    # PR while HEAD still carries commits that exist nowhere else, so any
+    # ahead commits veto removal.
+    if [[ -n "${branch:-}" ]]; then
+        branch_landed_via_pr "$branch" "$head" && landed_pr=true
+    fi
+    local has_remote=false
+    if git_read -C "$REPO_ROOT" rev-parse --verify --quiet "origin/$branch" >/dev/null; then
+        has_remote=true
+    fi
+    local ahead=0
+    # rev-list is purely local, so count against the last-known ref even when
+    # the fetch failed: a positive count still vetoes. A zero count with a
+    # failed fetch stays unproven and keeps its verdict below.
+    if $has_remote; then
+        ahead="$(git_read -C "$REPO_ROOT" rev-list --count "origin/$branch..$head" 2>/dev/null || echo 1)"
+    fi
+    if [[ "$ahead" -gt 0 ]]; then
+        emit "$name" "$branch" "unpushed:$ahead" "KEEP"; KEPT=$((KEPT + 1)); return 0
+    fi
+
+    if $landed_pr; then
         emit "$name" "$branch" "landed" "REMOVE"
         if remove_worktree "$path"; then
             delete_branch "$branch"
@@ -363,21 +405,16 @@ process_worktree() {
     fi
 
     # Not landed: is every commit already on the remote?
-    if ! git_read -C "$REPO_ROOT" rev-parse --verify --quiet "origin/$branch" >/dev/null; then
+    if ! $has_remote; then
         emit "$name" "$branch" "no-remote" "KEEP"; KEPT=$((KEPT + 1)); return 0
     fi
     if ! $FETCH_OK; then
         emit "$name" "$branch" "not-proven" "KEEP"; KEPT=$((KEPT + 1)); return 0
     fi
 
-    local ahead
-    ahead="$(git_read -C "$REPO_ROOT" rev-list --count "origin/$branch..$head" 2>/dev/null || echo 1)"
-    if [[ "$ahead" -gt 0 ]]; then
-        emit "$name" "$branch" "unpushed:$ahead" "KEEP"; KEPT=$((KEPT + 1)); return 0
-    fi
-
-    # Fully pushed. An open PR is not a reason to keep the directory: the branch,
-    # PR, and review all survive, and `git worktree add` restores it on demand.
+    # Fully pushed ($ahead is 0 here: a positive count returned above). An open
+    # PR is not a reason to keep the directory: the branch, PR, and review all
+    # survive, and `git worktree add` restores it on demand.
     emit "$name" "$branch" "pushed" "REMOVE"
     if remove_worktree "$path"; then
         REMOVED=$((REMOVED + 1))

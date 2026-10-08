@@ -8,6 +8,10 @@ cargo_safe := "./scripts/cargo-safe"
 default:
     @just --list
 
+# Optional explicit-date upstream cadence capture; no install or policy promotion (#15304).
+cargo-allow-cadence executable sha256 as_of root output_dir:
+    python3 scripts/cargo_allow_cadence.py --executable {{quote(executable)}} --expected-sha256 {{quote(sha256)}} --as-of {{quote(as_of)}} --root {{quote(root)}} --output-dir {{quote(output_dir)}}
+
 
 # Initialize bounded build/cache directories.
 devplane-init:
@@ -1894,6 +1898,23 @@ bench-index:
     @echo "📊 Running workspace index benchmarks..."
     @cargo xtask bench-run --category index --output benchmarks/results/latest.json
 
+# Run ripr-facts benchmarks only
+bench-ripr:
+    @echo "📊 Running ripr-facts benchmarks..."
+    @cargo xtask bench-run --category ripr --output benchmarks/results/latest.json
+
+# RIPR E-slate quality benches (#17154): boundary recall, limitation honesty,
+# fingerprint sensitivity, order invariance, guidance actionability.
+bench-ripr-quality:
+    @echo "📊 Running RIPR quality benches (E2/E3/D2/D3/A2)..."
+    ./scripts/cargo-admitted test -p perl-ripr-facts --test boundary_recall --test limitation_honesty --test fingerprint_sensitivity --test order_invariance --test guidance_actionability --locked
+
+# RIPR E1 gap precision/recall bench (#17154): new-gap gate FP/FN over the
+# fixtures/ripr-gate matrix plus lane-termination classifier mapping.
+bench-ripr-e1:
+    @echo "📊 Running RIPR E1 gap precision/recall bench..."
+    ./scripts/cargo-admitted test -p xtask --test ripr_e1_gap_precision_recall --locked
+
 # Format benchmark results as receipt
 bench-receipt:
     @echo "📋 Generating benchmark receipt..."
@@ -1929,6 +1950,13 @@ bench-alert-test:
     @echo "🧪 Running benchmark alert regression tests..."
     @cargo xtask bench-alert-test
 
+# Run benchmark runner harness tests (#17218 failure surfacing, #17219 parsing)
+bench-runner-test:
+    @echo "🧪 Running benchmark runner harness tests..."
+    @bash -n benchmarks/scripts/run-benchmarks.sh
+    bash benchmarks/scripts/test_run_benchmarks_parse.sh
+    bash benchmarks/scripts/test_run_benchmarks_failure.sh
+
 
 # Run all performance benchmarks and save baseline for 0.12.0
 perf-baseline:
@@ -1937,7 +1965,7 @@ perf-baseline:
     cargo bench -p perl-lexer --bench lexer_benchmarks --locked
     cargo bench -p perl-lsp-completion --bench completion_benchmark --locked
     cargo bench -p perl-lsp-navigation --bench navigation_benchmark --locked
-    cargo bench -p perl-workspace --bench workspace_index_benchmark --locked
+    cargo bench -p perl-workspace --features workspace --bench workspace_index_benchmark --locked
     cargo bench -p perl-lsp-rs --bench rope_performance_benchmark --locked
     cargo bench -p perl-lsp-tooling --bench cache_benchmark --locked
     @echo "Baseline complete. See docs/project/PERFORMANCE_BASELINES.md"
@@ -2400,6 +2428,12 @@ _api-ratchet-crates:
 # still diffs; a `Self`-looking substring inside a longer identifier (e.g.
 # `Selfish`) keeps its spelling via the boundary check.
 #
+# Fold the standard-library Arc re-export moved by nightly rustdoc (#17024).
+# Committed baselines keep alloc::sync::Arc; the canonical-form guard stays.
+# Exact type boundaries leave user-owned paths and different types visible.
+# Revisit the Arc rule because a matched delimiter may begin a nested Arc;
+# every replacement removes one relocated path, so the loop terminates.
+#
 # Usage: just _public-api-filter <raw-file> <filtered-file>
 [private]
 _public-api-filter raw out:
@@ -2421,6 +2455,9 @@ _public-api-filter raw out:
         | sed -E \
             -e 's#(^|[ <([&,=?])core::io::(write::|error::)?#\1std::io::#g' \
             -e 's#(^|[ <([&,=?])alloc::io::(buf_read::|read::)?#\1std::io::#g' \
+            -e ':arc_alias' \
+            -e 's#(^|[ <([&,=?])alloc::rcs::arc::Arc(<|::|[][ >(),&;=?]|$)#\1alloc::sync::Arc\2#g' \
+            -e 't arc_alias' \
         | awk -f scripts/ci/public_api_filter.awk \
         > "{{out}}" || true
 

@@ -280,16 +280,18 @@ fn check_pre_push_hook() {
     }
 
     let repo_root = git_output(&["rev-parse", "--show-toplevel"]);
-    let git_common_dir = git_output(&["rev-parse", "--git-common-dir"]);
-    let (repo_root, git_common_dir) = match (repo_root, git_common_dir) {
-        (Some(root), Some(common)) => (root, common),
+    // --git-path honors the installer's repo-local core.hooksPath, so this
+    // checks this tree's own hooks dir (#17414 rule C).
+    let hooks_dir = git_output(&["rev-parse", "--git-path", "hooks"]);
+    let (repo_root, hooks_dir) = match (repo_root, hooks_dir) {
+        (Some(root), Some(hooks)) => (root, hooks),
         _ => {
             warn("not in a git repository; cannot verify pre-push hook");
             return;
         }
     };
 
-    let hook_path = Path::new(&git_common_dir).join("hooks").join("pre-push");
+    let hook_path = Path::new(&hooks_dir).join("pre-push");
     let expected_hook = Path::new(&repo_root).join("hooks").join("pre-push");
 
     if !hook_path.is_file() {
@@ -331,7 +333,7 @@ fn check_pre_commit_hook() {
         return;
     }
 
-    let git_common_dir = match git_output(&["rev-parse", "--git-common-dir"]) {
+    let hooks_dir = match git_output(&["rev-parse", "--git-path", "hooks"]) {
         Some(dir) => dir,
         None => {
             warn("not in a git repository; cannot verify pre-commit hook");
@@ -339,7 +341,7 @@ fn check_pre_commit_hook() {
         }
     };
 
-    let hook_path = Path::new(&git_common_dir).join("hooks").join("pre-commit");
+    let hook_path = Path::new(&hooks_dir).join("pre-commit");
 
     if !hook_path.is_file() {
         warn(

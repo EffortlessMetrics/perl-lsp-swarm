@@ -99,6 +99,19 @@ const CARGO_STEPS: &[CargoStep] = &[
             "--nocapture",
         ],
     ),
+    (
+        "postfix hash-slice recovery",
+        &[
+            "test",
+            "--locked",
+            "-p",
+            "perl-parser-core",
+            "--test",
+            "postfix_hash_slice_tests",
+            "--",
+            "--nocapture",
+        ],
+    ),
 ];
 
 /// References scorecard census argv: replaces both old per-route counters with
@@ -239,7 +252,7 @@ pub struct RustSmallProofReceipt {
     pub result: ProofResult,
 }
 
-/// The full ordered step vocabulary: the six pinned cargo steps, then census,
+/// The full ordered step vocabulary: the seven pinned cargo steps, then census,
 /// replay, and diff hygiene. Built from the same constants the runtime uses, so
 /// a step added to `CARGO_STEPS` without a receipt entry is impossible.
 fn expected_steps() -> Vec<(String, Vec<String>)> {
@@ -1148,7 +1161,7 @@ tests::gamma: test
     fn lane_steps_are_pinned_in_order_and_identity() {
         // Mutation guard: any drift in the semantic proof floor (target names,
         // lock discipline, nocapture/threading identity) must fail here.
-        assert_eq!(CARGO_STEPS.len(), 6);
+        assert_eq!(CARGO_STEPS.len(), 7);
         assert_eq!(CARGO_STEPS[0], ("fetch locked inputs", &["fetch", "--locked"][..]));
         assert_eq!(
             CARGO_STEPS[1],
@@ -1215,6 +1228,22 @@ tests::gamma: test
                     "lsp_smoke",
                     "--",
                     "--test-threads=1",
+                    "--nocapture",
+                ][..]
+            )
+        );
+        assert_eq!(
+            CARGO_STEPS[6],
+            (
+                "postfix hash-slice recovery",
+                &[
+                    "test",
+                    "--locked",
+                    "-p",
+                    "perl-parser-core",
+                    "--test",
+                    "postfix_hash_slice_tests",
+                    "--",
                     "--nocapture",
                 ][..]
             )
@@ -2308,11 +2337,11 @@ tests::gamma: test
         // The point-tests above mutate fixed indices, so a regression that only
         // breaks certain positions — an off-by-one skipping the last step, or a
         // check that fires for `CARGO_STEPS` entries but silently misses the
-        // census/replay/diff-hygiene steps at 6/7/8 — could survive them. Each
+        // census/replay/diff-hygiene tail — could survive them. Each
         // mutation below is re-run at every index, which also documents that
         // these checks are position-independent.
         let count = expected_steps().len();
-        assert_eq!(count, 9, "the sweep must cover the whole lane");
+        assert_eq!(count, 10, "the sweep must cover the whole lane");
 
         for index in 0..count {
             let name = || receipt_step_name(index);

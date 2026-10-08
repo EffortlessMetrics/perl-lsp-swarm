@@ -2,10 +2,9 @@
 //!
 //! The availability matrix proves that a rejected pin cannot be rescued by a
 //! PATH interpreter. This companion test proves the positive direction with
-//! two distinct, deterministic pipe-probe controls: a fake ambient `perl` on
-//! PATH and a separately compiled pinned control. Both emit unique identities
-//! through the same probe seam, then the pin must win over PATH and retain its
-//! exact executable identity.
+//! two copies of the same pipe-usable interpreter at distinct paths: ambient
+//! `perl` on PATH and pinned `perl5`. The live debuggee reports `$^X`, which
+//! must identify the pinned path rather than the ambient path.
 
 #![expect(
     clippy::print_stderr,
@@ -49,12 +48,11 @@ impl Drop for EnvGuard {
 #[test]
 #[serial(dap_debuggee_environment)]
 fn live_debug_adapter_executes_the_pinned_interpreter_identity() -> Result<(), Box<dyn Error>> {
-    let Some(source_perl) = find_pipe_usable_path_perl()? else {
-        eprintln!(
-            "SKIP live_debug_adapter_executes_the_pinned_interpreter_identity: Perl unavailable"
-        );
-        return Ok(());
-    };
+    let source_perl = find_pipe_usable_path_perl()?.ok_or_else(|| {
+        std::io::Error::other(
+            "pinned identity proof requires a pipe-usable Perl interpreter that survives staging",
+        )
+    })?;
     let controls = tempfile::tempdir()?;
     if cfg!(windows) {
         let source_dir = source_perl.parent().ok_or("Perl path has no parent directory")?;
@@ -73,8 +71,7 @@ fn live_debug_adapter_executes_the_pinned_interpreter_identity() -> Result<(), B
         }
     }
     let ambient = controls.path().join(if cfg!(windows) { "perl.exe" } else { "perl" });
-    let pinned =
-        controls.path().join(if cfg!(windows) { "pinned-perl.exe" } else { "pinned-perl" });
+    let pinned = controls.path().join(if cfg!(windows) { "perl5.exe" } else { "perl5" });
     fs::copy(&source_perl, &ambient)?;
     fs::copy(&source_perl, &pinned)?;
 

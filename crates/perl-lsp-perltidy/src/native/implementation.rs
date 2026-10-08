@@ -22,6 +22,7 @@ pub use result::{
 };
 
 use crate::native::inferred_line_ending;
+use perl_parser_core::{ParseError, ParseStopCause};
 
 use result::utf16_len;
 
@@ -90,9 +91,15 @@ impl NativeFormatter {
             );
         });
 
-        // LCOV_EXCL_START — budget exhaustion on pathologically large/deeply-nested
-        // input; not reachable with the small sources used in formatter tests.
-        if output.terminated_early() {
+        // This definite syntax rejection stops parsing without recovery. It is
+        // still a source error; other terminal causes remain incomplete proof.
+        let terminal_syntax_error =
+            matches!(output.stop_cause(), Some(ParseStopCause::CatastrophicTermination))
+                && output
+                    .diagnostics
+                    .iter()
+                    .any(|error| matches!(error, ParseError::CStyleForContinueBlock { .. }));
+        if output.terminated_early() && !terminal_syntax_error {
             return Err(FormatDiagnostic::new(
                 PARSE_INCOMPLETE_CODE,
                 FormatDiagnosticSeverity::Warning,
@@ -100,7 +107,6 @@ impl NativeFormatter {
                 "native formatting not proven because parsing terminated early",
             ));
         }
-        // LCOV_EXCL_STOP
 
         if let Some(error) = output.diagnostics.first() {
             return Err(FormatDiagnostic::new(
@@ -347,6 +353,277 @@ pub(super) fn format_simple_line(line: &str, config: &FormatConfig) -> Option<St
         .or_else(|| format_simple_module_line(line, config))
         .or_else(|| format_simple_statement_line(line, config))
         .or_else(|| format_simple_lexical_line(line, config))
+}
+
+/// Whether `line` is a block boundary that the native block renderers own,
+/// rather than a statement the formatter failed to understand.
+///
+/// The renderers (`render_simple_block_doc`, `render_simple_continue_doc`,
+/// `render_simple_else_doc`, `render_simple_elsif_doc`) emit headers and tails
+/// on their own lines, and neither can be re-derived from one line: under
+/// `BracePlacement::NextLine` the opening brace moves to its own line, and a
+/// tail carries no header at all. So such a line is never a `format_simple_line`
+/// candidate, which made an already-rendered block classify as
+/// `Refused/UnsupportedSyntax` on a second pass even though the formatter had
+/// produced those exact bytes itself.
+///
+/// Recognition is structural rather than a copied rendering template, and
+/// claims only the shapes the renderers emit, under either `BracePlacement`:
+///
+/// - a tail, opening with a closing brace, optionally carrying a rendered
+///   `else`/`elsif`/`continue` clause or a trailing comment;
+/// - a lone opening brace, the `BracePlacement::NextLine` header form;
+/// - a condition or declaration header, admitted only where it *stops* where
+///   the block opens: at its own closing brace (`SameLine`), or at its
+///   condition's closing paren / declared name (`NextLine`).
+///
+/// That last condition is what keeps a braceless statement modifier such as
+/// `while ($x) print $y;` out: it opens with the same keyword but carries a
+/// body on the same line, so it ends at neither brace nor paren. Malformed
+/// boundaries are unaffected, because `classify` consults this only after a
+/// clean parse with no diagnostics.
+///
+/// A boundary shape is *necessary but not sufficient* for rendered form: a
+/// hand-written block reuses exactly the header and tail shapes the renderers
+/// emit, so line shape alone cannot claim it. The document-level evidence —
+/// every `}`-prefixed tail closing the block opened at the same indent, and
+/// every body line sitting one [`indent_unit`] deeper than its block — is
+/// established by the target walk in `outcome::target_has_only_supported_lines`,
+/// which consumes [`rendered_boundary_role`] for the admitted lines.
+pub(super) fn is_rendered_block_boundary_line(line: &str, config: &FormatConfig) -> bool {
+    use perl_parser_core::TokenKind;
+
+    let (body, _trailing_comment) = split_trailing_comment(line);
+    let body = body.trim();
+    if body.is_empty() {
+        return false;
+    }
+    let Some(tokens) = lex_rendered_line(body) else {
+        return false;
+    };
+    let (Some(first), Some(last)) = (tokens.first(), tokens.last()) else {
+        return false;
+    };
+
+    // Rendered tails: `}`, `} else {`, `} elsif (...) {`, `} continue {`, and
+    // their `BracePlacement::NextLine` forms, where the clause header loses
+    // its brace (`} else`, `} elsif (...)`, `} continue`) and the opening
+    // brace becomes its own line — and nothing else. A tail carrying tokens
+    // past the clause's opening brace (`} else { stmt; }`) is a shape no
+    // renderer emits, so it stays refused.
+    if first.kind() == TokenKind::RightBrace {
+        return match tokens.get(1).map(|token| token.kind()) {
+            // A bare closing brace; any trailing comment is already split off.
+            None => true,
+            Some(TokenKind::Else) | Some(TokenKind::Continue) => match tokens.len() {
+                // NextLine braces: the clause header ends the line.
+                2 => true,
+                // SameLine braces: the header carries its opening brace.
+                3 => last.kind() == TokenKind::LeftBrace,
+                _ => false,
+            },
+            Some(TokenKind::Elsif) => {
+                let header_end = match last.kind() {
+                    TokenKind::LeftBrace => tokens.len() - 1,
+                    TokenKind::RightParen => tokens.len(),
+                    _ => return false,
+                };
+                rendered_condition_header_is_supported(&tokens[2..header_end], config)
+            }
+            _ => false,
+        };
+    }
+    // `BracePlacement::NextLine` renders the opening brace on its own line.
+    if tokens.len() == 1 && first.kind() == TokenKind::LeftBrace {
+        return true;
+    }
+    // Rendered header: it must stop where the block opens, never carry a body.
+    // A bare `else` is the `ElsePlacement::SeparateLine` + `BracePlacement::
+    // NextLine` clause header and stops at itself.
+    let opens_the_block = matches!(last.kind(), TokenKind::LeftBrace | TokenKind::RightParen)
+        || (first.kind() == TokenKind::Sub && last.kind() == TokenKind::Identifier)
+        || (first.kind() == TokenKind::Else && tokens.len() == 1);
+    if !opens_the_block {
+        return false;
+    }
+    match first.kind() {
+        // A separately rendered clause header under `ElsePlacement::SeparateLine`:
+        // `else {` (SameLine braces) or `else` alone (NextLine braces).
+        TokenKind::Else => {
+            tokens.len() == 1 || (tokens.len() == 2 && last.kind() == TokenKind::LeftBrace)
+        }
+        TokenKind::Elsif => rendered_condition_header_is_supported(&tokens[1..], config),
+        // A declaration header claims nothing about an interior.
+        TokenKind::Sub => true,
+        // A condition header must carry a condition the renderer itself could
+        // have accepted: endpoint lexability alone would also admit
+        // multi-operator conditions `format_simple_condition_tokens` refuses.
+        TokenKind::If | TokenKind::Unless | TokenKind::While | TokenKind::Until => {
+            rendered_condition_header_is_supported(&tokens[1..], config)
+        }
+        // `for` is renderer-owned in two shapes, each with its own interior
+        // validator: the C-style three-clause header and the foreach-style
+        // iterator/list header (`foreach` only ever takes the latter).
+        TokenKind::For | TokenKind::Foreach => {
+            rendered_c_style_for_header_is_supported(&tokens, config)
+                || rendered_foreach_header_is_supported(&tokens, config)
+        }
+        _ => false,
+    }
+}
+
+/// Which sides of a block one admitted rendered boundary line sits on.
+///
+/// Shape facts only — this says nothing about rendered form (see
+/// [`is_rendered_block_boundary_line`]). The outcome admission walk uses the
+/// two flags to check the layout the renderers emit: a `closes_block` tail
+/// must match the indent of the block it closes, and an `opens_block` line
+/// opens a block whose body must sit one [`indent_unit`] deeper. Both flags
+/// are derived from the same comment-stripped body the admission arms
+/// validated, so a leading `}` or a trailing `{` here is exactly the token
+/// those arms already recognized.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct RenderedBoundaryRole {
+    /// The line starts with the closing brace of the block opened before it
+    /// (`}`, `} else {`, `} elsif (...) {`, `} continue`, ...).
+    pub closes_block: bool,
+    /// The line carries the opening brace of a block whose body follows it
+    /// (a lone `{`, or any same-line-brace header or clause tail).
+    pub opens_block: bool,
+}
+
+/// Classify the boundary role of a line that
+/// [`is_rendered_block_boundary_line`] already admitted.
+pub(super) fn rendered_boundary_role(line: &str) -> RenderedBoundaryRole {
+    let (body, _trailing_comment) = split_trailing_comment(line);
+    let body = body.trim();
+    RenderedBoundaryRole {
+        closes_block: body.starts_with('}'),
+        opens_block: body == "{" || body.ends_with('{'),
+    }
+}
+
+/// Whether `tokens` is one rendered condition header (`if (...) {`,
+/// `elsif (...) {`, or their `BracePlacement::NextLine` form without the
+/// brace), with a condition the simple-condition formatter accepts.
+fn rendered_condition_header_is_supported(
+    tokens: &[perl_parser_core::Token],
+    config: &FormatConfig,
+) -> bool {
+    use perl_parser_core::TokenKind;
+
+    let Some(TokenKind::LeftParen) = tokens.first().map(|token| token.kind()) else {
+        return false;
+    };
+    let Some((_, condition_end)) = format_simple_condition_tokens(tokens, 1, config) else {
+        return false;
+    };
+    match tokens.get(condition_end + 1) {
+        // `NextLine`: the header ends at the condition's closing paren.
+        None => true,
+        // `SameLine`: the closing paren is immediately followed by the brace.
+        Some(brace) => brace.kind() == TokenKind::LeftBrace && condition_end + 2 == tokens.len(),
+    }
+}
+
+/// Whether `tokens` is a rendered C-style `for` header (`for (init; cond;
+/// update) {`, or the `BracePlacement::NextLine` form without the brace),
+/// validated with the same clause formatters the renderer used.
+fn rendered_c_style_for_header_is_supported(
+    tokens: &[perl_parser_core::Token],
+    config: &FormatConfig,
+) -> bool {
+    use perl_parser_core::TokenKind;
+
+    let Some(TokenKind::For) = tokens.first().map(|token| token.kind()) else {
+        return false;
+    };
+    let Some(TokenKind::LeftParen) = tokens.get(1).map(|token| token.kind()) else {
+        return false;
+    };
+    let Some((first_semicolon, second_semicolon, header_end)) =
+        find_for_header_boundaries(tokens, 1)
+    else {
+        return false;
+    };
+    if format_simple_for_init_clause(tokens, 2, first_semicolon, config).is_none()
+        || format_simple_for_condition_clause(tokens, first_semicolon + 1, second_semicolon, config)
+            .is_none()
+        || format_simple_for_update_clause(tokens, second_semicolon + 1, header_end, config)
+            .is_none()
+    {
+        return false;
+    }
+    match tokens.get(header_end + 1) {
+        // `NextLine`: the header ends at the closing paren.
+        None => true,
+        // `SameLine`: the closing paren is immediately followed by the brace.
+        Some(brace) => brace.kind() == TokenKind::LeftBrace && header_end + 2 == tokens.len(),
+    }
+}
+
+/// Whether `tokens` is a rendered foreach-style header (`for my $x (@list) {`,
+/// `for (@list) {`, `foreach ...`, or the `BracePlacement::NextLine` form
+/// without the brace), validated with the same iterator and list formatters
+/// the renderer used.
+fn rendered_foreach_header_is_supported(
+    tokens: &[perl_parser_core::Token],
+    config: &FormatConfig,
+) -> bool {
+    use perl_parser_core::TokenKind;
+
+    let Some(first_kind) = tokens.first().map(|token| token.kind()) else {
+        return false;
+    };
+    if !matches!(first_kind, TokenKind::For | TokenKind::Foreach) {
+        return false;
+    }
+    let Some(second_kind) = tokens.get(1).map(|token| token.kind()) else {
+        return false;
+    };
+    let variable_index = if matches!(second_kind, TokenKind::My | TokenKind::Our | TokenKind::State)
+    {
+        2
+    } else {
+        1
+    };
+    // The renderer always names an iterator variable, lexically declared or not.
+    let Some((_, after_variable)) = format_variable_tokens(tokens, variable_index) else {
+        return false;
+    };
+    let Some(TokenKind::LeftParen) = tokens.get(after_variable).map(|token| token.kind()) else {
+        return false;
+    };
+    let list_start = after_variable + 1;
+    let Some(list_close) = tokens[list_start..]
+        .iter()
+        .position(|token| token.kind() == TokenKind::RightParen)
+        .map(|offset| list_start + offset)
+    else {
+        return false;
+    };
+    if format_simple_expression_tokens(tokens, list_start, list_close, config, 0).is_none() {
+        return false;
+    }
+    match tokens.get(list_close + 1) {
+        // `NextLine`: the header ends at the list's closing paren.
+        None => true,
+        // `SameLine`: the closing paren is immediately followed by the brace.
+        Some(brace) => brace.kind() == TokenKind::LeftBrace && list_close + 2 == tokens.len(),
+    }
+}
+
+/// Collect one line's non-EOF tokens, or None when the line does not lex.
+fn lex_rendered_line(body: &str) -> Option<Vec<perl_parser_core::Token>> {
+    let mut stream = perl_parser_core::TokenStream::new(body);
+    let mut tokens = Vec::new();
+    loop {
+        let token = stream.next().ok()?;
+        if token.kind() == perl_parser_core::TokenKind::Eof {
+            return Some(tokens);
+        }
+        tokens.push(token);
+    }
 }
 
 fn format_simple_module_line(line: &str, config: &FormatConfig) -> Option<String> {
@@ -1726,7 +2003,10 @@ fn simple_binary_operator_text(token: &perl_parser_core::Token) -> Option<&str> 
     .then_some(token.text.as_ref())
 }
 
-fn indent_unit(config: &FormatConfig) -> String {
+/// One body-nesting level as the renderers emit it: `push_simple_block_body_docs`
+/// indents every body line at `indent + indent_unit`, so this is also the
+/// document-level unit the outcome admission's rendered-form walk checks for.
+pub(super) fn indent_unit(config: &FormatConfig) -> String {
     if config.use_tabs { "\t".to_string() } else { " ".repeat(config.indent_width as usize) }
 }
 
