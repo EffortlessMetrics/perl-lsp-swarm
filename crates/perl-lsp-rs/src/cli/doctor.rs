@@ -3860,7 +3860,7 @@ mod tests {
         assert_eq!(report.status, STATUS_PROBE_ERROR);
         assert_eq!(report.meets_workspace_pin, None);
         assert_eq!(report.fix, None);
-        let error = report.error.ok_or("unparseable cargo error")?;
+        let error = report.error.ok_or("unparseable cargo error")?.detail();
         assert!(error.contains("unparseable version banner"));
         assert!(error.contains("cargo development-build"));
         assert!(error.chars().count() <= DETAIL_MAX_CHARS + 80);
