@@ -23,9 +23,8 @@ mod dancer_navigation_tests {
             .get("result")
             .ok_or_else(|| format!("definition RPC omitted its result; {}", context()))?;
         let definition: Option<lsp_types::GotoDefinitionResponse> =
-            serde_json::from_value(result.clone()).map_err(|error| {
-                format!("invalid definition result ({error}); {}", context())
-            })?;
+            serde_json::from_value(result.clone())
+                .map_err(|error| format!("invalid definition result ({error}); {}", context()))?;
         match definition {
             None => Ok(Vec::new()),
             Some(lsp_types::GotoDefinitionResponse::Scalar(location)) => Ok(vec![location]),
@@ -199,8 +198,7 @@ route_helper();
         );
         let (helper_line, helper_char) = semantic::find_pos(changed, "route_helper();", 2);
         let helper_after = server.get_definition(uri, helper_line, helper_char);
-        let helper_locations =
-            definition_locations(&helper_after, uri, helper_line, helper_char)?;
+        let helper_locations = definition_locations(&helper_after, uri, helper_line, helper_char)?;
         assert!(
             !helper_locations.is_empty(),
             "ordinary Perl navigation keeps working after the activation removal; response={helper_after}"
