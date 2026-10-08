@@ -2367,14 +2367,24 @@ fn run_single_gate(
         Ok(execution) => {
             let status = if execution.timed_out {
                 "timeout".to_string()
-            } else if execution.exit_code == 0 {
+            } else if execution.exit_code == 0
+                && (!requires_test_execution(command)
+                    || execution
+                        .test_execution_reached_attempts
+                        .last()
+                        .is_some_and(|evidence| evidence.test_execution_reached == Some(true)))
+            {
                 "pass".to_string()
             } else {
                 "fail".to_string()
             };
 
             // Extract output summary (last 10 lines or error message)
-            let output_summary = extract_output_summary(&execution.stdout, 10);
+            let output_summary = if status == "fail" && execution.exit_code == 0 {
+                "Cargo test exited successfully without evidence of test execution".to_string()
+            } else {
+                extract_output_summary(&execution.stdout, 10)
+            };
 
             // Parse metrics if this is a test gate. Whether the test binary
             // was reached (#11797) is orthogonal to whether the summary was
@@ -2704,7 +2714,12 @@ pub(crate) fn run_shell_command_with_timeout_in(
         .with_context(|| format!("Failed to clone log file handle: {}", log_path.display()))
         .map_err(|report| GateShellError { report, child_started })?;
 
-    let mut process = shell_command_process(command, timeout_secs);
+    let (launch_command, binary) = routed_test_command(command, current_dir)
+        .map_err(|report| GateShellError { report, child_started })?;
+    let mut process = shell_command_process(&launch_command, timeout_secs);
+    if let Some(binary) = binary {
+        process.env("PERL_LSP_BIN", binary);
+    }
     if let Some(dir) = current_dir {
         process.current_dir(dir);
     }
@@ -2823,6 +2838,40 @@ fn read_gate_output(log_path: &Path) -> String {
         metadata.len(),
         tail
     )
+}
+
+/// Compilation-only Cargo tests deliberately do not execute a test binary.
+fn requires_test_execution(command: &str) -> bool {
+    is_cargo_test_command(command)
+        && !command
+            .split("&&")
+            .last()
+            .unwrap_or(command)
+            .split_whitespace()
+            .any(|arg| arg == "--no-run")
+}
+
+/// Preserve the policy's selected suite while removing POSIX-only env syntax.
+/// The admitted Cargo target is also the binary build's output directory.
+fn routed_test_command(
+    command: &str,
+    current_dir: Option<&Path>,
+) -> Result<(String, Option<PathBuf>)> {
+    const PREFIX: &str =
+        "cargo build -p perllsp --locked && env PERL_LSP_BIN=\"$PWD/target/debug/perllsp\" ";
+    let Some(test) = command.strip_prefix(PREFIX) else {
+        return Ok((command.to_string(), None));
+    };
+    if !test.starts_with("cargo test ") {
+        bail!("Routed test gate must retain its Cargo test invocation");
+    }
+    let root = current_dir.map(Path::to_path_buf).map(Ok).unwrap_or_else(std::env::current_dir)?;
+    let target = std::env::var_os("CARGO_TARGET_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("target"));
+    let target = if target.is_absolute() { target } else { root.join(target) };
+    let binary = target.join("debug").join(format!("perllsp{}", std::env::consts::EXE_SUFFIX));
+    Ok((format!("cargo build -p perllsp --locked && {test}"), Some(binary)))
 }
 
 #[cfg(windows)]
@@ -3791,6 +3840,125 @@ mod tests {
             first_failure: None,
             command_started: status != "skip",
         }
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn routed_windows_gate_executes_selected_suite_and_rejects_false_success() -> Result<()> {
+        let temp = tempdir()?;
+        let tool = temp.path().join("cargo.cmd");
+        // Only selected, non-sensitive evidence is printed by this fake Cargo.
+        std::fs::write(
+            &tool,
+            "@echo off\r\nif \"%1\"==\"build\" if exist \"%~dp0build-fail\" exit /b 19\r\nif \"%1\"==\"build\" exit /b 0\r\nif \"%4\"==\"noexec\" exit /b 0\r\nif \"%4\"==\"failure\" exit /b 17\r\nif \"%4\"==\"cancel\" ping -n 20 127.0.0.1 >nul\r\necho running 1 test\r\necho SELECTED=%*\r\necho BINARY=%PERL_LSP_BIN%\r\necho test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured\r\n",
+        )?;
+        let mut paths = vec![temp.path().to_path_buf()];
+        // Hooks prepend Git for Windows' POSIX tools. Reproduce that prerequisite
+        // explicitly without inheriting any other hook environment variables.
+        let git = crate::git_environment::command().arg("--exec-path").output()?;
+        assert!(git.status.success());
+        let git_exec = std::path::PathBuf::from(String::from_utf8(git.stdout)?.trim());
+        let git_root = git_exec
+            .ancestors()
+            .nth(3)
+            .ok_or_else(|| color_eyre::eyre::eyre!("Git for Windows executable layout"))?;
+        let posix_tools = git_root.join("usr").join("bin");
+        assert!(posix_tools.join("env.exe").is_file(), "old launcher requires env(1)");
+        paths.push(posix_tools);
+        paths.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()));
+        let output = std::process::Command::new(std::env::current_exe()?)
+            .args(["--exact", "tasks::gates::tests::routed_windows_gate_child", "--nocapture"])
+            .env("XTASK_ROUTED_CHILD", temp.path())
+            .env("PATH", std::env::join_paths(paths)?)
+            .env("CARGO_TARGET_DIR", temp.path().join("private target"))
+            .output()?;
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn routed_windows_gate_child() -> Result<()> {
+        let Some(root) = std::env::var_os("XTASK_ROUTED_CHILD") else { return Ok(()) };
+        let root = std::path::PathBuf::from(root);
+        const PREFIX: &str = "cargo build -p perllsp --locked && env PERL_LSP_BIN=\"$PWD/target/debug/perllsp\" cargo test --locked --tests ";
+        for (mode, status, exit) in
+            [("selected", "pass", 0), ("noexec", "fail", 0), ("failure", "fail", 17)]
+        {
+            let command = format!("{PREFIX}{mode}");
+            let gate = pr_gate(mode, GatePlanningRole::AlwaysOn, &command);
+            let policy = policy_with_gates(vec![gate.clone()]);
+            let result =
+                run_single_gate(&gate, &policy, &root, &GateRunnerConfig::default(), None)?;
+            assert_eq!(result.status, status);
+            assert_eq!(result.exit_code, Some(exit));
+            assert_eq!(
+                result.metrics.as_ref().and_then(|m| m.test_execution_reached),
+                Some(mode == "selected")
+            );
+            if mode == "selected" {
+                let log = std::fs::read_to_string(root.join("selected.log"))?;
+                assert!(log.contains("SELECTED=test --locked --tests selected"));
+                let expected = root.join("private target").join("debug").join("perllsp.exe");
+                assert!(log.contains(&format!("BINARY={}", expected.display())));
+            }
+        }
+        std::fs::write(root.join("build-fail"), "build failure control")?;
+        let gate =
+            pr_gate("build-failure", GatePlanningRole::AlwaysOn, &format!("{PREFIX}selected"));
+        let policy = policy_with_gates(vec![gate.clone()]);
+        let failed_build =
+            run_single_gate(&gate, &policy, &root, &GateRunnerConfig::default(), None)?;
+        assert_eq!(failed_build.status, "fail");
+        assert_eq!(failed_build.exit_code, Some(19));
+        assert_eq!(
+            failed_build.metrics.as_ref().and_then(|m| m.test_execution_reached),
+            Some(false)
+        );
+        std::fs::remove_file(root.join("build-fail"))?;
+        let cancelled = super::run_shell_command_with_timeout_in(
+            &format!("{PREFIX}cancel"),
+            &root.join("cancel.log"),
+            1,
+            None,
+        )
+        .map_err(|error| error.report)?;
+        assert!(cancelled.timed_out);
+        assert_eq!(cancelled.exit_code, 124);
+        assert!(
+            !super::log_reaches_test_execution(
+                &format!("{PREFIX}cancel"),
+                &root.join("cancel.log")
+            )?
+            .unwrap_or(false)
+        );
+        // Exercise the old launcher with a cleared environment: it returns zero
+        // without reaching fake Cargo, but no user environment values are retained.
+        let old = super::shell_command_process(&format!("{PREFIX}selected"), 10)
+            .env_clear()
+            .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+            .env("SystemRoot", std::env::var_os("SystemRoot").unwrap_or_default())
+            .env("PATHEXT", ".COM;.EXE;.BAT;.CMD")
+            .output()?;
+        assert!(old.status.success());
+        assert!(!String::from_utf8_lossy(&old.stdout).lines().any(|line| line == "running 1 test"));
+        assert!(
+            String::from_utf8_lossy(&old.stdout).contains("cargo test --locked --tests selected")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn runtime_evidence_exempts_only_compilation_only_commands() {
+        assert!(super::requires_test_execution("cargo build && env KEY=value cargo test --tests"));
+        assert!(!super::requires_test_execution("cargo test --tests --no-run"));
+        assert!(!super::requires_test_execution("cargo check --tests"));
+        assert!(super::requires_test_execution("cargo test --no-run && cargo test --tests"));
     }
 
     fn pr_gate(name: &str, role: GatePlanningRole, command: &str) -> GateDefinition {
