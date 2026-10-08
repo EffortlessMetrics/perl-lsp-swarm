@@ -131,6 +131,8 @@ on:
       - 'scripts/lib/cargo-toolchain-guard.sh'
       - 'scripts/*.sh'
       - 'scripts/cargo-safe'
+      - 'scripts/run-prepared-xtask.py'
+      - 'scripts/tests/test_run_prepared_xtask.py'
       - 'scripts/fuzz-bounded'
       - '.github/run_all_tests.sh'
       - 'scripts/tests/test-cargo-toolchain-guard.sh'
@@ -158,6 +160,28 @@ permissions:
   contents: read
 
 jobs:
+  prepared-xtask-runner-self-test:
+    name: Prepared xtask runner (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2022]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - name: Setup Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: '3.11'
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
+        with:
+          toolchain: '1.95.0'
+      - name: Prove configuration refusal and Windows nested Cargo handoff
+        run: python -m unittest discover -s scripts/tests -p test_run_prepared_xtask.py -v
+
   publish-dry-run-self-test:
     name: Publish dry-run gate self-test
     runs-on: ubuntu-24.04

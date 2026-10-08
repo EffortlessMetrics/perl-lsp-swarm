@@ -54,6 +54,18 @@ if command -v sccache >/dev/null 2>&1; then
   export SCCACHE_BASEDIRS="${SCCACHE_BASEDIRS:-$worktree_parent}"
 fi
 
+# Cargo's output must remain replaceable while Windows gates rebuild xtask.
+# A command-local runner preserves Cargo's executable selection/runtime env;
+# Cargo releases its build lock before invoking the runner. The enclosing
+# admitted command retains its lease/job for the complete descendant lifetime.
+if [ "${OS:-}" = "Windows_NT" ] && [ "${1:-}" = "xtask" ] && [ "${2:-}" = "gates" ]; then
+  runner_config=$(python3 "$(dirname -- "${BASH_SOURCE[0]}")/run-prepared-xtask.py" --runner-config)
+  shift
+  check_disk "$devplane"
+  # The original xtask alias did not hold a flock across nested Cargo.
+  exec cargo run --package xtask --config "$runner_config" -- "$@"
+fi
+
 heavy="${1:-}"
 
 case "$heavy" in
