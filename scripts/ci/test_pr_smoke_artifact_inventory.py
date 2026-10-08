@@ -302,6 +302,45 @@ class InventoryTests(unittest.TestCase):
                 self.assertFalse(result["artifact_attribution_complete"])
                 self.assertIn("identity_incomplete", result["uncertainty_counts"])
 
+
+    def test_parent_or_dot_components_in_artifact_filenames_cannot_fake_observation(self):
+        for declared in (str(self.root / "missing" / ".." / "test-bin"), str(self.exe) + "/."):
+            with self.subTest(declared=declared):
+                self.assertFalse(os.path.exists(declared))
+                extra = self.unit(self.exe, True)
+                extra["filenames"] = [declared]
+                self.write_capture(extra=extra)
+                result = self.measured()
+                self.assertFalse(result["artifact_attribution_complete"])
+                self.assertIn("artifact_path_noncanonical", result["uncertainty_counts"])
+                self.assertEqual(result["observed_known_inode_allocated_bytes"], 16384)
+
+    def test_parent_or_dot_components_in_executable_cannot_fake_observation(self):
+        for declared in (str(self.root / "missing" / ".." / "test-bin"), str(self.exe) + "/."):
+            with self.subTest(declared=declared):
+                self.assertFalse(os.path.exists(declared))
+                extra = self.unit(self.exe, True)
+                extra["executable"] = declared
+                self.write_capture(extra=extra)
+                result = self.measured()
+                self.assertFalse(result["artifact_attribution_complete"])
+                self.assertIn("artifact_path_noncanonical", result["uncertainty_counts"])
+
+    def test_parent_components_in_target_declaration_cannot_fake_a_present_target(self):
+        declared = str(self.root / "missing" / "..")
+        self.assertFalse(os.path.exists(declared))
+        result = inventory.collect(declared, self.identity, artifacts=self.capture)
+        self.assertFalse(result["scan_complete"])
+        self.assertIsNone(result["complete_inode_allocated_bytes"])
+        self.assertEqual(result["declared_target_dir"], declared)
+
+    def test_dot_characters_in_filename_are_allowed_without_parent_components(self):
+        renamed = self.root / "test..bin"
+        self.exe.rename(renamed)
+        self.exe = renamed
+        self.write_capture()
+        self.assert_literal_partition()
+
     def test_relative_artifact_path_cannot_be_resolved_using_collector_cwd(self):
         extra = self.unit(Path("relative-bin"), True)
         self.write_capture(extra=extra)
