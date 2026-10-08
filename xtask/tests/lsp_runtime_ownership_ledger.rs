@@ -350,6 +350,13 @@ const MODULES: &[ModuleRow] = &[
         "#8129"
     ),
     module_row!(
+        "watched_delete_republish_tests",
+        PerlApplication,
+        "perl-lsp-rs",
+        "retain as cfg(test) falsifiers of external-mutation diagnostic republish beside its subject",
+        "#17332"
+    ),
+    module_row!(
         "window",
         ApplicationPolicy,
         "PerlLspAdapter over generic client",
