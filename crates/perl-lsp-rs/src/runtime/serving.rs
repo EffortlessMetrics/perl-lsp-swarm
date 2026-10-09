@@ -93,6 +93,14 @@ impl LspServer {
                 request = rx.recv() => request,
             };
             let Some(request) = request else { break };
+            self.emit_document_symbol_lifecycle_probe(
+                "ingress",
+                &request.method,
+                request.params.as_ref(),
+                request.id.as_ref(),
+                None,
+                None,
+            );
             let method = request.method.clone();
             tracing::trace!(method = %method, "Received request");
 

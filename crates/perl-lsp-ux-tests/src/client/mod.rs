@@ -21,7 +21,9 @@ use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+mod document_symbol_write_probe;
 pub mod server_request_script;
+use document_symbol_write_probe::{ObservedWriter, WriteProbe};
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(100);
 const SHUTDOWN_RUNNING: u8 = 0;
@@ -153,6 +155,7 @@ pub struct CapabilityViolation {
 pub struct UxClient {
     child: Mutex<Child>,
     stdin: Arc<Mutex<Option<ChildStdin>>>,
+    write_probe: Option<Arc<WriteProbe>>,
     initialize_result: Value,
     /// The single observation substrate: buffered events, buffered responses,
     /// and the typed reason the server's output stream ended. Every wait in the
@@ -218,6 +221,16 @@ impl UxClient {
             .take()
             .ok_or_else(|| anyhow!("perl-lsp stdin not available after spawn"))?;
         let stdin = Arc::new(Mutex::new(Some(stdin)));
+        // Only explicitly opted-in unscripted probe children are observed.
+        let write_probe = (scripted_requests.is_none()
+            && config
+                .extra_env
+                .iter()
+                .rev()
+                .find(|(key, _)| key == "PERL_LSP_DOCUMENT_SYMBOL_PROBE")
+                .and_then(|(_, value)| value.as_deref())
+                == Some("1"))
+        .then(|| Arc::new(WriteProbe::new(child.id())));
         let stdout = child
             .stdout
             .take()
@@ -256,6 +269,7 @@ impl UxClient {
         // instead of both surfacing as an unexplained timeout.
         let reader_inbox = inbox.clone();
         let stdin_for_reader = Arc::clone(&stdin);
+        let write_probe_for_reader = write_probe.clone();
         let server_requests_for_reader = Arc::clone(&server_requests);
         let capability_violations_for_reader = Arc::clone(&capability_violations);
         let answering_capabilities_for_reader = answering_capabilities.clone();
@@ -270,7 +284,8 @@ impl UxClient {
                 let observer: Option<ServerRequestObserver> = observer;
                 // The answering loop writes through the shared optional stdin
                 // handle, failing closed once that handle has been taken over.
-                let stdin_writer = Mutex::new(SharedStdinWriter(stdin_for_reader));
+                let stdin_writer =
+                    SharedStdinWriter { stdin: stdin_for_reader, probe: write_probe_for_reader };
                 loop {
                     match read_and_route(
                         &mut reader,
@@ -292,6 +307,8 @@ impl UxClient {
         // ── stderr drain thread ───────────────────────────────────────────────
         let echo = config.echo_stderr;
         let stderr_clone = stderr_lines.clone();
+        #[cfg(test)]
+        let stderr_inbox = inbox.clone();
         let _stderr_thread = std::thread::Builder::new()
             .name("ux-lsp-stderr".into())
             .spawn(move || {
@@ -299,6 +316,9 @@ impl UxClient {
                 for l in reader.lines().map_while(Result::ok) {
                     if let Ok(mut guard) = stderr_clone.lock() {
                         guard.push(l.clone());
+                        drop(guard);
+                        #[cfg(test)]
+                        stderr_inbox.observe_stderr();
                     }
                     if echo {
                         eprintln!("[perl-lsp stderr] {}", l);
@@ -315,6 +335,7 @@ impl UxClient {
         let client = Self {
             child: Mutex::new(child),
             stdin,
+            write_probe,
             initialize_result: Value::Null,
             inbox,
             server_requests,
@@ -530,6 +551,15 @@ impl UxClient {
         self.stderr_lines.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
+    /// Bounded write ranges from explicitly opted-in unscripted probe children.
+    /// Raw bytes, arbitrary methods, string IDs and error details are omitted.
+    pub fn document_symbol_client_write_probes(&self) -> Value {
+        self.write_probe.as_ref().map_or_else(
+            || json!({ "records": [], "enabled": false, "complete": true }),
+            |probe| probe.snapshot(),
+        )
+    }
+
     /// Wait for all scripted server requests to be observed and answered.
     pub fn wait_for_script(&self, timeout: Duration) -> Result<Vec<ObservedServerRequest>> {
         self.script
@@ -676,7 +706,7 @@ impl UxClient {
     fn send_raw(&self, msg: &Value) -> Result<()> {
         let mut stdin = self.stdin.lock().unwrap_or_else(|e| e.into_inner());
         let stdin = stdin.as_mut().ok_or_else(|| anyhow!("LSP client stdin is already closed"))?;
-        write_framed_to(stdin, msg)
+        write_framed_to_with_probe(stdin, msg, self.write_probe.as_deref(), "foreground")
     }
 
     /// Explain a wait outcome, folding in the child's real exit status.
@@ -771,7 +801,11 @@ impl Drop for UxClient {
 
         let shutdown_state = self.shutdown_state.load(Ordering::SeqCst);
         let mut stdin = self.stdin.lock().unwrap_or_else(|error| error.into_inner());
-        finish_stdin(&mut stdin, shutdown_state == SHUTDOWN_RUNNING);
+        finish_stdin_with_probe(
+            &mut stdin,
+            shutdown_state == SHUTDOWN_RUNNING,
+            self.write_probe.as_deref(),
+        );
         if shutdown_state == SHUTDOWN_COMPLETE {
             return;
         }
@@ -851,24 +885,48 @@ fn reap_or_kill(child: &mut Child) {
 ///
 /// Closing must happen after the write: the frames are what let the server
 /// exit on its own terms, and an early close turns that into an EOF kill.
+#[cfg(test)]
 fn finish_stdin<W: Write>(slot: &mut Option<W>, send_shutdown: bool) {
+    finish_stdin_with_probe(slot, send_shutdown, None);
+}
+
+fn finish_stdin_with_probe<W: Write>(
+    slot: &mut Option<W>,
+    send_shutdown: bool,
+    probe: Option<&WriteProbe>,
+) {
     if send_shutdown && let Some(stdin) = slot.as_mut() {
         for message in [
             json!({"jsonrpc": "2.0", "id": 999998, "method": "shutdown", "params": {}}),
             json!({"jsonrpc": "2.0", "method": "exit"}),
         ] {
-            let _ = write_framed_to(stdin, &message);
+            let _ = write_framed_to_with_probe(stdin, &message, probe, "teardown");
         }
     }
     slot.take();
 }
 
 fn write_framed_to<W: Write>(stdin: &mut W, message: &Value) -> Result<()> {
+    write_framed_to_with_probe(stdin, message, None, "other")
+}
+
+fn write_framed_to_with_probe<W: Write>(
+    stdin: &mut W,
+    message: &Value,
+    probe: Option<&WriteProbe>,
+    origin: &'static str,
+) -> Result<()> {
     let body = message.to_string();
     let header = format!("Content-Length: {}\r\n\r\n", body.len());
-    stdin.write_all(header.as_bytes()).context("Failed to write LSP header to stdin")?;
-    stdin.write_all(body.as_bytes()).context("Failed to write LSP body to stdin")?;
-    stdin.flush().context("Failed to flush LSP stdin")
+    let frame = probe.map(|probe| probe.frame(origin, Some(message), Some(body.len())));
+    let mut writer =
+        ObservedWriter { writer: stdin, probe, frame: frame.as_ref(), phase: "header" };
+    writer.write_all(header.as_bytes()).context("Failed to write LSP header to stdin")?;
+    #[cfg(test)]
+    document_symbol_write_controls::after_frame_header()?;
+    writer.phase = "body";
+    writer.write_all(body.as_bytes()).context("Failed to write LSP body to stdin")?;
+    writer.flush().context("Failed to flush LSP stdin")
 }
 
 /// The outcome of reading one LSP frame.
@@ -978,7 +1036,7 @@ fn read_one_frame(reader: &mut impl BufRead) -> FrameRead {
 /// failure that the caller must record as a transport failure.
 fn read_and_route<R, W>(
     reader: &mut R,
-    stdin: &Mutex<W>,
+    stdin: &W,
     inbox: &Inbox,
     server_requests: &Mutex<Vec<Value>>,
     capability_violations: &Mutex<Vec<CapabilityViolation>>,
@@ -987,7 +1045,7 @@ fn read_and_route<R, W>(
 ) -> Result<bool, String>
 where
     R: BufRead,
-    W: Write,
+    W: FrameWriter,
 {
     let message = match read_one_frame(reader) {
         FrameRead::Message(message) => message,
@@ -1011,7 +1069,7 @@ where
 /// everything else is buffered as an observable event.
 fn route_message<W>(
     message: &Value,
-    stdin: &Mutex<W>,
+    stdin: &W,
     inbox: &Inbox,
     server_requests: &Mutex<Vec<Value>>,
     capability_violations: &Mutex<Vec<CapabilityViolation>>,
@@ -1019,7 +1077,7 @@ fn route_message<W>(
     observer: Option<&ServerRequestObserver>,
 ) -> Result<(), String>
 where
-    W: Write,
+    W: FrameWriter,
 {
     if let Some(observer) = observer {
         observer.observe(message);
@@ -1047,8 +1105,7 @@ where
             let method =
                 message.get("method").and_then(Value::as_str).unwrap_or("<missing>").to_owned();
             let id = message.get("id").cloned().unwrap_or(Value::Null);
-            let mut stdin = stdin.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            write_framed_to(&mut *stdin, &decision.response).map_err(|error| {
+            stdin.write_frame(&decision.response).map_err(|error| {
                 format!("failed to answer server request method={method} id={id}: {error:#}")
             })?;
         }
@@ -1058,28 +1115,807 @@ where
     Ok(())
 }
 
-/// A `Write` adapter over the shared optional stdin handle.
-///
-/// Each write re-locks and fails closed if the handle was already taken over,
-/// so a scripted or finished client can never hand the answering loop a stale
-/// writer.
-struct SharedStdinWriter(Arc<Mutex<Option<ChildStdin>>>);
+/// A frame is the unit of synchronization with every other stdin writer.
+trait FrameWriter {
+    fn write_frame(&self, message: &Value) -> Result<()>;
+}
 
-impl Write for SharedStdinWriter {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        let mut guard = self.0.lock().unwrap_or_else(|error| error.into_inner());
-        let stdin = guard
+/// Default replies hold the same lock as foreground requests through flush.
+struct SharedStdinWriter<W = ChildStdin> {
+    stdin: Arc<Mutex<Option<W>>>,
+    probe: Option<Arc<WriteProbe>>,
+}
+
+impl<W: Write> FrameWriter for SharedStdinWriter<W> {
+    fn write_frame(&self, message: &Value) -> Result<()> {
+        let mut guard = self.stdin.lock().unwrap_or_else(|error| error.into_inner());
+        write_framed_to_with_probe(
+            &mut LockedStdin(&mut guard),
+            message,
+            self.probe.as_deref(),
+            "auto_answer",
+        )
+    }
+}
+
+/// Preserve the original closed-handle error and physical-write observation.
+struct LockedStdin<'a, W>(&'a mut Option<W>);
+
+impl<W: Write> Write for LockedStdin<'_, W> {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0
             .as_mut()
-            .ok_or_else(|| std::io::Error::other("LSP client stdin is already closed"))?;
-        stdin.write(buf)
+            .ok_or_else(|| std::io::Error::other("LSP client stdin is already closed"))?
+            .write(bytes)
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
-        let mut guard = self.0.lock().unwrap_or_else(|error| error.into_inner());
-        match guard.as_mut() {
-            Some(stdin) => stdin.flush(),
-            None => Err(std::io::Error::other("LSP client stdin is already closed")),
+        self.0
+            .as_mut()
+            .ok_or_else(|| std::io::Error::other("LSP client stdin is already closed"))?
+            .flush()
+    }
+}
+
+#[cfg(test)]
+impl<W: Write> FrameWriter for Mutex<W> {
+    fn write_frame(&self, message: &Value) -> Result<()> {
+        write_framed_to(&mut *self.lock().unwrap_or_else(|error| error.into_inner()), message)
+    }
+}
+
+#[cfg(test)]
+mod document_symbol_write_controls {
+    use super::*;
+    use document_symbol_write_probe::Frame as WriteProbeFrame;
+
+    thread_local! {
+        // A one-shot boundary on the routing thread, compiled out of the client.
+        static HEADER_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce() -> Result<()>>>> =
+            std::cell::RefCell::new(None);
+    }
+
+    pub(super) fn after_frame_header() -> Result<()> {
+        let hook = HEADER_HOOK.with(|slot| slot.borrow_mut().take());
+        if let Some(hook) = hook {
+            hook()?;
         }
+        Ok(())
+    }
+
+    /// Force a real competing writer to try the shared lock after the reply
+    /// header. The predecessor admits its frame there; the atomic path blocks
+    /// it until the entire reply and flush have finished. No scheduling sleeps.
+    fn compete_after_header<W: Write + Send + 'static>(
+        stdin: Arc<Mutex<Option<W>>>,
+        probe: Option<Arc<WriteProbe>>,
+        message: Value,
+        reply: impl FnOnce() -> Result<()>,
+    ) -> (Result<()>, Result<bool>) {
+        use std::sync::{TryLockError, mpsc};
+        let (header_tx, header_rx) = mpsc::channel();
+        let (attempt_tx, attempt_rx) = mpsc::channel();
+        let (complete_tx, complete_rx) = mpsc::channel();
+        let worker = std::thread::spawn(move || -> Result<bool> {
+            header_rx.recv_timeout(Duration::from_secs(5)).context("missing reply header")?;
+            let attempt = stdin.try_lock();
+            match attempt {
+                Ok(mut guard) => {
+                    write_framed_to_with_probe(
+                        &mut LockedStdin(&mut guard),
+                        &message,
+                        probe.as_deref(),
+                        "foreground",
+                    )?;
+                    attempt_tx.send(false).context("reply boundary no longer listening")?;
+                    Ok(false)
+                }
+                Err(TryLockError::WouldBlock) => {
+                    attempt_tx.send(true).context("reply boundary no longer listening")?;
+                    complete_rx
+                        .recv_timeout(Duration::from_secs(5))
+                        .context("reply did not complete")?;
+                    let mut guard = stdin.lock().unwrap_or_else(|error| error.into_inner());
+                    write_framed_to_with_probe(
+                        &mut LockedStdin(&mut guard),
+                        &message,
+                        probe.as_deref(),
+                        "foreground",
+                    )?;
+                    Ok(true)
+                }
+                Err(TryLockError::Poisoned(_)) => Err(anyhow!("competing stdin lock poisoned")),
+            }
+        });
+        struct BoundaryGuard(std::sync::mpsc::Sender<()>);
+        impl Drop for BoundaryGuard {
+            fn drop(&mut self) {
+                HEADER_HOOK.with(|slot| {
+                    slot.borrow_mut().take();
+                });
+                let _ = self.0.send(());
+            }
+        }
+        HEADER_HOOK.with(|slot| {
+            assert!(slot.borrow().is_none(), "nested reply boundary control");
+            *slot.borrow_mut() = Some(Box::new(move || {
+                header_tx.send(()).context("competing writer disappeared")?;
+                attempt_rx
+                    .recv_timeout(Duration::from_secs(5))
+                    .context("no competing lock attempt")?;
+                Ok(())
+            }));
+        });
+        let guard = BoundaryGuard(complete_tx);
+        let outcome = reply();
+        drop(guard);
+        let competing = worker
+            .join()
+            .map_err(|_| anyhow!("competing writer panicked"))
+            .and_then(|result| result);
+        (outcome, competing)
+    }
+
+    // Frozen predecessor: retain the actual RED mechanism without putting its
+    // per-write locking back into the default client.
+    struct SplitLockStdinWriter<W> {
+        stdin: Arc<Mutex<Option<W>>>,
+        probe: Option<Arc<WriteProbe>>,
+        frame: Option<WriteProbeFrame>,
+        header_remaining: usize,
+    }
+
+    impl<W: Write> Write for SplitLockStdinWriter<W> {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            let mut guard = self.stdin.lock().unwrap_or_else(|error| error.into_inner());
+            if self.frame.is_none()
+                && let Some(probe) = &self.probe
+            {
+                // Generated headers are observed without retaining their text.
+                let body_bytes = std::str::from_utf8(buf)
+                    .ok()
+                    .and_then(|header| header.strip_prefix("Content-Length: "))
+                    .and_then(|length| length.trim().parse::<usize>().ok());
+                self.frame = Some(probe.frame("auto_answer", None, body_bytes));
+                self.header_remaining = buf.len();
+            }
+            let result = match guard.as_mut() {
+                Some(stdin) => stdin.write(buf),
+                None => Err(std::io::Error::other("LSP client stdin is already closed")),
+            };
+            if let (Some(probe), Some(frame)) = (&self.probe, &self.frame) {
+                probe.record(
+                    frame,
+                    if self.header_remaining > 0 { "header" } else { "body" },
+                    &result,
+                );
+                if let Ok(accepted) = &result {
+                    self.header_remaining = self.header_remaining.saturating_sub(*accepted);
+                }
+            }
+            result
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            let mut guard = self.stdin.lock().unwrap_or_else(|error| error.into_inner());
+            let result = match guard.as_mut() {
+                Some(stdin) => stdin.flush(),
+                None => Err(std::io::Error::other("LSP client stdin is already closed")),
+            };
+            if let (Some(probe), Some(frame)) = (&self.probe, &self.frame) {
+                probe.record(
+                    frame,
+                    "flush",
+                    &result.as_ref().map(|_| 0).map_err(|error| std::io::Error::from(error.kind())),
+                );
+            }
+            self.frame = None;
+            self.header_remaining = 0;
+            result
+        }
+    }
+
+    struct InsertAtBoundary<W> {
+        adapter: SplitLockStdinWriter<W>,
+        insert: Option<Value>,
+        after_flush: bool,
+    }
+
+    impl<W: Write> InsertAtBoundary<W> {
+        fn insert(&mut self) -> std::io::Result<()> {
+            if let Some(message) = self.insert.take() {
+                let mut guard = self.adapter.stdin.lock().unwrap_or_else(|e| e.into_inner());
+                let target = guard.as_mut().ok_or_else(|| std::io::Error::other("closed"))?;
+                write_framed_to_with_probe(
+                    target,
+                    &message,
+                    self.adapter.probe.as_deref(),
+                    "foreground",
+                )
+                .map_err(std::io::Error::other)?;
+            }
+            Ok(())
+        }
+    }
+
+    impl<W: Write> Write for InsertAtBoundary<W> {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            let accepted = self.adapter.write(bytes)?;
+            // The actual lock is released, and short headers have completed.
+            if !self.after_flush && self.adapter.header_remaining == 0 {
+                self.insert()?;
+            }
+            Ok(accepted)
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            self.adapter.flush()?;
+            if self.after_flush {
+                self.insert()?;
+            }
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn competing_frame_is_admitted_by_predecessor_but_blocked_by_atomic_reply() -> Result<()> {
+        let reply = json!({ "jsonrpc": "2.0", "id": "synthetic-server-id", "result": [] });
+        let open = json!({ "jsonrpc": "2.0", "method": "textDocument/didOpen", "params": {
+            "textDocument": { "uri": "file:///fixture.pm", "version": 1, "text": "sub alpha {}\n" }
+        }});
+        for atomic in [false, true] {
+            let probe = Arc::new(WriteProbe::new(55));
+            let stdin = Arc::new(Mutex::new(Some(Vec::new())));
+            let (outcome, competing) = compete_after_header(
+                Arc::clone(&stdin),
+                Some(Arc::clone(&probe)),
+                open.clone(),
+                || {
+                    if atomic {
+                        SharedStdinWriter {
+                            stdin: Arc::clone(&stdin),
+                            probe: Some(Arc::clone(&probe)),
+                        }
+                        .write_frame(&reply)
+                    } else {
+                        Mutex::new(SplitLockStdinWriter {
+                            stdin: Arc::clone(&stdin),
+                            probe: Some(Arc::clone(&probe)),
+                            frame: None,
+                            header_remaining: 0,
+                        })
+                        .write_frame(&reply)
+                    }
+                },
+            );
+            outcome?;
+            assert_eq!(competing?, atomic, "the competing lock attempt must discriminate the fix");
+            let mut expected =
+                format!("Content-Length: {}\r\n\r\n", reply.to_string().len()).into_bytes();
+            if atomic {
+                expected.extend(reply.to_string().as_bytes());
+            }
+            write_framed_to(&mut expected, &open)?;
+            if !atomic {
+                expected.extend(reply.to_string().as_bytes());
+            }
+            let bytes = stdin
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone()
+                .context("closed fixture")?;
+            assert_eq!(bytes, expected);
+            let mut reader = std::io::Cursor::new(&bytes);
+            if atomic {
+                assert!(
+                    matches!(read_one_frame(&mut reader), FrameRead::Message(value) if value == reply)
+                );
+                assert!(
+                    matches!(read_one_frame(&mut reader), FrameRead::Message(value) if value == open)
+                );
+                assert!(matches!(read_one_frame(&mut reader), FrameRead::EndOfStream));
+            } else {
+                assert!(
+                    matches!(read_one_frame(&mut reader), FrameRead::Failed(_)),
+                    "mixed JSON must fail"
+                );
+            }
+            let capture = probe.snapshot();
+            assert_eq!(capture["complete"], true);
+            assert_eq!(capture["omitted_records"], 0);
+            let records = capture["records"].as_array().context("missing physical writes")?;
+            assert_eq!(records.len(), 6);
+            let phases = if atomic {
+                ["header", "body", "flush", "header", "body", "flush"]
+            } else {
+                ["header", "header", "body", "flush", "body", "flush"]
+            };
+            let tokens = if atomic { [1, 1, 1, 2, 2, 2] } else { [1, 2, 2, 2, 1, 1] };
+            let mut offset = 0;
+            for (index, record) in records.iter().enumerate() {
+                assert_eq!(record["write_sequence"], index + 1);
+                assert_eq!(record["phase"], phases[index]);
+                assert_eq!(record["frame_token"], tokens[index]);
+                assert_eq!(record["stream_start"], offset);
+                offset += number(record, "accepted_bytes")?;
+                assert_eq!(record["stream_end"], offset);
+                assert_eq!(record["outcome"], "ok");
+            }
+            assert_eq!(offset, expected.len() as u64);
+            assert!(!capture.to_string().contains("synthetic-server-id"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn atomic_reply_preserves_closed_handle_error_and_capture() -> Result<()> {
+        let probe = Arc::new(WriteProbe::new(55));
+        let writer = SharedStdinWriter::<Vec<u8>> {
+            stdin: Arc::new(Mutex::new(None)),
+            probe: Some(Arc::clone(&probe)),
+        };
+        let error = writer
+            .write_frame(&json!({ "id": 9, "result": [] }))
+            .err()
+            .context("closed stdin must fail")?;
+        assert_eq!(error.to_string(), "Failed to write LSP header to stdin");
+        assert!(format!("{error:#}").contains("LSP client stdin is already closed"));
+        let capture = probe.snapshot();
+        assert_eq!(capture["records"].as_array().map(Vec::len), Some(1));
+        assert_eq!(capture["records"][0]["phase"], "header");
+        assert_eq!(capture["records"][0]["outcome"], "io_error");
+        assert_eq!(capture["records"][0]["io_error_kind"], "Other");
+        assert_eq!(capture["records"][0]["accepted_bytes"], 0);
+        assert_eq!(capture["records"][0]["frame"]["numeric_id"], 9);
+        Ok(())
+    }
+
+    #[test]
+    fn split_lock_adapter_records_a_frame_inserted_after_reply_header() -> Result<()> {
+        let reply = json!({ "jsonrpc": "2.0", "id": "synthetic-server-id", "result": [] });
+        let open = json!({ "jsonrpc": "2.0", "method": "textDocument/didOpen", "params": {
+            "textDocument": { "uri": "file:///fixture.pm", "version": 1, "text": "sub alpha {}\n" }
+        }});
+        let probe = Arc::new(WriteProbe::new(55));
+        let stdin = Arc::new(Mutex::new(Some(Vec::new())));
+        let mut writer = InsertAtBoundary {
+            adapter: SplitLockStdinWriter {
+                stdin: Arc::clone(&stdin),
+                probe: Some(Arc::clone(&probe)),
+                frame: None,
+                header_remaining: 0,
+            },
+            insert: Some(open.clone()),
+            after_flush: false,
+        };
+        write_framed_to(&mut writer, &reply)?;
+        let mut expected =
+            format!("Content-Length: {}\r\n\r\n", reply.to_string().len()).into_bytes();
+        write_framed_to(&mut expected, &open)?;
+        expected.extend(reply.to_string().as_bytes());
+        assert_eq!(stdin.lock().unwrap_or_else(|e| e.into_inner()).as_ref(), Some(&expected));
+        let receipt = probe.snapshot();
+        assert_eq!(receipt["records"].as_array().map(Vec::len), Some(6));
+        let phases = ["header", "header", "body", "flush", "body", "flush"];
+        let origins =
+            ["auto_answer", "foreground", "foreground", "foreground", "auto_answer", "auto_answer"];
+        let accepted_bytes = [
+            format!("Content-Length: {}\r\n\r\n", reply.to_string().len()).len(),
+            format!("Content-Length: {}\r\n\r\n", open.to_string().len()).len(),
+            open.to_string().len(),
+            0,
+            reply.to_string().len(),
+            0,
+        ];
+        let tokens = [1, 2, 2, 2, 1, 1];
+        let mut offset = 0;
+        for (index, (phase, origin)) in phases.into_iter().zip(origins).enumerate() {
+            let record = &receipt["records"][index];
+            assert_eq!(record["write_sequence"], index + 1);
+            assert_eq!(record["phase"], phase);
+            assert_eq!(record["frame"]["origin"], origin);
+            assert_eq!(record["frame_token"], tokens[index]);
+            assert_eq!(record["accepted_bytes"], accepted_bytes[index]);
+            assert_eq!(record["stream_start"], offset);
+            offset +=
+                record["accepted_bytes"].as_u64().ok_or_else(|| anyhow!("missing byte count"))?;
+            assert_eq!(record["stream_end"], offset);
+        }
+        assert_eq!(offset, expected.len() as u64);
+        assert!(!receipt.to_string().contains("synthetic-server-id"));
+        Ok(())
+    }
+
+    fn server_probes(client: &UxClient, response: Option<&Value>) -> Vec<Value> {
+        let collect = || -> Vec<Value> {
+            client
+                .peek_stderr_lines()
+                .iter()
+                .filter_map(|line| {
+                    let start = line.find('{')?;
+                    let record: Value = serde_json::from_str(&line[start..]).ok()?;
+                    record["kind"]
+                        .as_str()
+                        .is_some_and(|kind| kind.starts_with("document_symbol_"))
+                        .then_some(record)
+                })
+                .collect()
+        };
+        let Some(response) = response else {
+            return collect();
+        };
+        // Stderr publication advances the existing inbox sequence. Its wait
+        // detects arrivals during predicate evaluation without polling or RPC retries.
+        client
+            .inbox
+            .wait_for(Duration::from_secs(1), |_| {
+                let records = collect();
+                records
+                    .iter()
+                    .any(|record| {
+                        record["kind"] == "document_symbol_branch_probe"
+                            && response.get("id") == record.get("request_id")
+                    })
+                    .then_some(records)
+            })
+            .unwrap_or_else(|_| collect())
+    }
+
+    fn number(value: &Value, key: &str) -> Result<u64> {
+        value[key].as_u64().with_context(|| format!("missing numeric {key}"))
+    }
+
+    fn assert_scheduled_capture(
+        writes: &Value,
+        before: usize,
+        server: &[Value],
+        response: &Value,
+        after_flush: bool,
+        pid: u32,
+    ) -> Result<()> {
+        assert_eq!(writes["enabled"], true);
+        assert_eq!(writes["complete"], true);
+        assert_eq!(writes["omitted_records"], 0);
+        let all = writes["records"].as_array().context("missing physical write ranges")?;
+        let mut offset = 0;
+        for (index, record) in all.iter().enumerate() {
+            assert_eq!(record["server_pid"], pid);
+            assert_eq!(number(record, "write_sequence")?, index as u64 + 1);
+            assert_eq!(number(record, "stream_start")?, offset);
+            offset += number(record, "accepted_bytes")?;
+            assert_eq!(number(record, "stream_end")?, offset);
+            assert_eq!(record["outcome"], "ok");
+        }
+        let measured = all.get(before..).context("missing scheduled write interval")?;
+        let mut tokens = Vec::new();
+        for record in measured {
+            let token = number(record, "frame_token")?;
+            if !tokens.contains(&token) {
+                tokens.push(token);
+            }
+        }
+        assert_eq!(tokens.len(), 3, "unexpected writer/frame makes the scheduled witness unproven");
+        let frames: Vec<Vec<&Value>> = tokens
+            .iter()
+            .map(|token| measured.iter().filter(|record| record["frame_token"] == *token).collect())
+            .collect();
+        let reply = &frames[0];
+        let open = &frames[1];
+        let query = &frames[2];
+        assert_eq!(reply[0]["frame"]["origin"], "auto_answer");
+        assert_eq!(open[0]["frame"]["method_class"], "did_open");
+        assert_eq!(open[0]["frame"]["text_bytes"], 119);
+        assert_eq!(query[0]["frame"]["numeric_id"], response["id"]);
+        assert_eq!(query[0]["frame"]["method_class"], "document_symbol");
+        for frame in &frames {
+            let body_bytes = number(&frame[0]["frame"], "body_bytes")?;
+            let mut header = 0;
+            let mut body = 0;
+            for record in frame {
+                match record["phase"].as_str() {
+                    Some("header") => header += number(record, "accepted_bytes")?,
+                    Some("body") => body += number(record, "accepted_bytes")?,
+                    Some("flush") => assert_eq!(number(record, "accepted_bytes")?, 0),
+                    _ => anyhow::bail!("unknown scheduled write phase"),
+                }
+            }
+            assert_eq!(header, format!("Content-Length: {body_bytes}\r\n\r\n").len() as u64);
+            assert_eq!(body, body_bytes);
+            assert_eq!(frame.last().context("missing frame flush")?["phase"], "flush");
+        }
+        let start = |frame: &[&Value]| number(frame[0], "stream_start");
+        let end =
+            |frame: &[&Value]| number(frame.last().context("missing frame end")?, "stream_end");
+        let transport: Vec<_> = server
+            .iter()
+            .filter(|record| record["kind"] == "document_symbol_transport_probe")
+            .collect();
+        assert!(!transport.is_empty());
+        let mut read_end = 0;
+        for (index, record) in transport.iter().enumerate() {
+            assert_eq!(record["server_pid"], pid);
+            assert_eq!(number(record, "event_sequence")?, index as u64 + 1);
+            assert_ne!(record["stage"], "record_limit_exceeded");
+            if record["stage"] == "stream_read" {
+                assert_eq!(number(&record["metadata"], "stream_start")?, read_end);
+                read_end += number(&record["metadata"], "accepted_bytes")?;
+                assert_eq!(number(&record["metadata"], "stream_end")?, read_end);
+            }
+        }
+        assert!(read_end >= end(query)?, "server read prefix must cover the query");
+        let extracted = |from: u64, to: u64| -> Result<&Value> {
+            transport
+                .iter()
+                .find(|record| {
+                    record["stage"] == "body_extracted"
+                        && record["metadata"]["stream_start"] == from
+                        && record["metadata"]["stream_end"] == to
+                })
+                .copied()
+                .context("missing matching actual server extraction span")
+        };
+        let decoded = |extraction: &Value, class: &str| -> Result<()> {
+            let sequence = &extraction["metadata"]["frame_sequence"];
+            assert!(transport.iter().any(|record| record["stage"] == "decoded_body"
+                && &record["metadata"]["frame_sequence"] == sequence
+                && record["metadata"]["outcome"] == "accepted"
+                && record["metadata"]["method_class"] == class));
+            Ok(())
+        };
+        let query_start = start(query)?;
+        let query_extraction = extracted(query_start, end(query)?)?;
+        decoded(query_extraction, "document_symbol")?;
+        assert!(transport.iter().any(|record| record["stage"] == "decoded_body"
+            && record["metadata"]["frame_sequence"]
+                == query_extraction["metadata"]["frame_sequence"]
+            && record["metadata"]["numeric_id"] == response["id"]));
+        if after_flush {
+            assert_eq!(end(reply)?, start(open)?);
+            assert_eq!(end(open)?, start(query)?);
+            decoded(extracted(start(reply)?, end(reply)?)?, "client_response")?;
+            decoded(extracted(start(open)?, end(open)?)?, "did_open")?;
+        } else {
+            let reply_body = reply
+                .iter()
+                .find(|record| record["phase"] == "body")
+                .context("missing reply body write")?;
+            assert_eq!(end(open)?, number(reply_body, "stream_start")?);
+            assert_eq!(end(reply)?, start(query)?);
+            let corrupt_end = start(reply)?
+                + number(&reply[0]["frame"], "body_bytes")?
+                + reply.iter().filter(|record| record["phase"] == "header").try_fold(
+                    0,
+                    |bytes, record| -> Result<u64> {
+                        Ok(bytes + number(record, "accepted_bytes")?)
+                    },
+                )?;
+            let corrupt = extracted(start(reply)?, corrupt_end)?;
+            assert!(transport.iter().any(|record| record["stage"] == "decoded_body"
+                && record["metadata"]["frame_sequence"] == corrupt["metadata"]["frame_sequence"]
+                && record["metadata"]["outcome"] == "rejected"
+                && record["metadata"]["rejection_stage"] == "json"));
+            assert!(transport.iter().any(|record| record["stage"] == "prefix_discarded"
+                && record["metadata"]["stream_start"] == corrupt_end
+                && record["metadata"]["stream_end"] == query_start));
+            assert!(!transport.iter().any(|record| record["stage"] == "decoded_body"
+                && record["metadata"]["method_class"] == "did_open"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn retained_split_lock_loses_open_then_atomic_default_preserves_it_in_real_child() -> Result<()>
+    {
+        if !crate::binary_available() {
+            return Ok(());
+        }
+        const SOURCE: &str = "package Latency::Symbols;\nuse strict;\nuse warnings;\n\nsub alpha {\n    return 1;\n}\n\nsub beta {\n    return alpha();\n}\n\n1;\n";
+        assert_eq!(SOURCE.len(), 119);
+        let config = ScenarioConfig {
+            timeout: Duration::from_secs(60),
+            path_restriction: None,
+            echo_stderr: false,
+            extra_env: vec![
+                ("PERL_LSP_E2E".into(), Some("1".into())),
+                ("PERL_LSP_DIAGNOSTIC_DEBOUNCE_MS".into(), Some("0".into())),
+                ("PERL_LSP_DIAGNOSTIC_MODE".into(), Some("syntax-only".into())),
+                ("PERL_LSP_EAGER_WORKSPACE_INDEXING".into(), Some("false".into())),
+                ("PERL_LSP_FILE_WATCHERS".into(), Some("false".into())),
+                ("PERL_LSP_QUIET".into(), Some("1".into())),
+                ("PERL_LSP_DOCUMENT_SYMBOL_PROBE".into(), Some("1".into())),
+                ("PERL_LSP_LOG".into(), Some("warn,document_symbol_probe=debug".into())),
+                ("RUST_LOG".into(), None),
+                ("NO_COLOR".into(), Some("1".into())),
+            ],
+            client_capability_overrides: json!({ "workspace": { "configuration": true } }),
+            ..ScenarioConfig::default()
+        };
+        let capabilities = build_client_capabilities(&config);
+        let harness = crate::UxHarness::new(config)?;
+        let pid = harness.client.child.lock().unwrap_or_else(|e| e.into_inner()).id();
+        // Buffer only: no disk fixture or ordinary didOpen can prepopulate it.
+        let uri = harness.workspace.uri("ForcedSymbols.pm");
+        let params = json!({ "textDocument": { "uri": uri } });
+        let baseline = harness.client.request(
+            "textDocument/documentSymbol",
+            params.clone(),
+            Duration::from_secs(60),
+        )?;
+        assert_eq!(baseline.get("result"), Some(&json!([])));
+        for after_flush in [false, true] {
+            let before = harness.client.document_symbol_client_write_probes()["records"]
+                .as_array()
+                .context("missing enabled write probe")?
+                .len();
+            let open = json!({ "jsonrpc": "2.0", "method": "textDocument/didOpen", "params": {
+                "textDocument": { "uri": uri, "languageId": "perl", "version": 1, "text": SOURCE }
+            }});
+            let writer = Mutex::new(InsertAtBoundary {
+                adapter: SplitLockStdinWriter {
+                    stdin: Arc::clone(&harness.client.stdin),
+                    probe: harness.client.write_probe.clone(),
+                    frame: None,
+                    header_remaining: 0,
+                },
+                insert: Some(open),
+                after_flush,
+            });
+            // A nonnumeric synthetic ID cannot match real pending configuration.
+            let outcome = route_message(&json!({ "jsonrpc": "2.0", "id": "synthetic-forced-17020", "method": "workspace/configuration", "params": { "items": [] } }),
+                &writer, &harness.client.inbox, &harness.client.server_requests, &harness.client.capability_violations, Some(&capabilities), None)
+                .map_err(anyhow::Error::msg)
+                .and_then(|()| harness.client.request("textDocument/documentSymbol", params.clone(), Duration::from_secs(60)));
+            let server = server_probes(&harness.client, outcome.as_ref().ok());
+            let writes = harness.client.document_symbol_client_write_probes();
+            let receipt = json!({ "kind": "document_symbol_forced_boundary_control", "synthetic_schedule": true,
+                "writer_path": "retained_split_lock_predecessor",
+                "phase": if after_flush { "after_complete_flush" } else { "after_complete_header" },
+                "server_pid": pid, "response_received": outcome.is_ok(), "response": outcome.as_ref().ok(),
+                "failure_class": outcome.as_ref().err().map(|_| "control_io_or_rpc_failure"),
+                "client_write_probes": writes, "server_probes": server });
+            let mut output = std::io::stderr().lock();
+            serde_json::to_writer(&mut output, &receipt)?;
+            output.write_all(b"\n")?;
+            drop(output);
+            let response = outcome?;
+            assert!(
+                response.get("error").is_none(),
+                "control must return a successful actual response"
+            );
+            assert_scheduled_capture(&writes, before, &server, &response, after_flush, pid)?;
+            let branch = server
+                .iter()
+                .find(|record| {
+                    record["kind"] == "document_symbol_branch_probe"
+                        && record["request_id"] == response["id"]
+                })
+                .context("missing correlated actual branch")?;
+            if after_flush {
+                assert_eq!(branch["branch"], "ast");
+                assert_eq!(branch["document_present"], true);
+                assert_eq!(branch["text_bytes"], 119);
+                assert!(
+                    server.iter().any(|record| record["stage"] == "did_open_inserted_parsed"
+                        && record["incoming_text_bytes"] == 119
+                        && record["document_present"] == true
+                        && record["server_pid"] == pid),
+                    "missing actual accepted fixture insertion"
+                );
+                let result = response
+                    .get("result")
+                    .and_then(Value::as_array)
+                    .context("missing actual symbol result")?;
+                assert!(crate::document_symbol_names(result).contains(&"alpha"));
+            } else {
+                assert_eq!(response.get("result"), Some(&json!([])));
+                assert_eq!(branch["branch"], "not_open");
+                assert_eq!(branch["document_present"], false);
+                assert!(
+                    !server.iter().any(|record| record["method"] == "textDocument/didOpen"
+                        && record["incoming_text_bytes"] == 119),
+                    "forced lost frame must not enter serving lifecycle"
+                );
+            }
+        }
+        // A fresh buffer keeps the fixed default's GREEN independent of the
+        // predecessor's successful flush control in the same real process.
+        let uri = harness.workspace.uri("AtomicSymbols.pm");
+        let params = json!({ "textDocument": { "uri": uri } });
+        let baseline = harness.client.request(
+            "textDocument/documentSymbol",
+            params.clone(),
+            Duration::from_secs(60),
+        )?;
+        assert_eq!(baseline.get("result"), Some(&json!([])));
+        let before = harness.client.document_symbol_client_write_probes()["records"]
+            .as_array()
+            .context("missing enabled write probe")?
+            .len();
+        let open = json!({ "jsonrpc": "2.0", "method": "textDocument/didOpen", "params": {
+            "textDocument": { "uri": uri, "languageId": "perl", "version": 1, "text": SOURCE }
+        }});
+        let writer = SharedStdinWriter {
+            stdin: Arc::clone(&harness.client.stdin),
+            probe: harness.client.write_probe.clone(),
+        };
+        let (reply, competing) = compete_after_header(
+            Arc::clone(&harness.client.stdin),
+            harness.client.write_probe.clone(),
+            open,
+            || {
+                route_message(
+                    &json!({ "jsonrpc": "2.0", "id": "synthetic-atomic-17020", "method": "workspace/configuration", "params": { "items": [] } }),
+                    &writer, &harness.client.inbox, &harness.client.server_requests,
+                    &harness.client.capability_violations, Some(&capabilities), None,
+                ).map_err(anyhow::Error::msg)
+            },
+        );
+        let competitor_blocked = competing.as_ref().ok().copied();
+        let outcome = reply.and_then(|()| competing.map(|_| ())).and_then(|()| {
+            harness.client.request("textDocument/documentSymbol", params, Duration::from_secs(60))
+        });
+        let server = server_probes(&harness.client, outcome.as_ref().ok());
+        let writes = harness.client.document_symbol_client_write_probes();
+        // Publish evidence before assertions, including a missing/failed attempt.
+        let receipt = json!({ "kind": "document_symbol_atomic_reply_control", "synthetic_schedule": true,
+            "writer_path": "current_default", "phase": "competing_write_after_complete_header",
+            "competing_lock_blocked": competitor_blocked,
+            "server_pid": pid, "response_received": outcome.is_ok(), "response": outcome.as_ref().ok(),
+            "failure_class": outcome.as_ref().err().map(|_| "control_io_or_rpc_failure"),
+            "client_write_probes": writes, "server_probes": server });
+        let mut output = std::io::stderr().lock();
+        serde_json::to_writer(&mut output, &receipt)?;
+        output.write_all(b"\n")?;
+        drop(output);
+        let response = outcome?;
+        assert_eq!(
+            competitor_blocked,
+            Some(true),
+            "foreground frame must be blocked at the reply header"
+        );
+        assert!(
+            response.get("error").is_none(),
+            "fixed control must return a successful actual response"
+        );
+        assert_scheduled_capture(&writes, before, &server, &response, true, pid)?;
+        let branch = server
+            .iter()
+            .find(|record| {
+                record["kind"] == "document_symbol_branch_probe"
+                    && record["request_id"] == response["id"]
+            })
+            .context("missing correlated fixed actual branch")?;
+        assert_eq!(branch["branch"], "ast");
+        assert_eq!(branch["document_present"], true);
+        assert_eq!(branch["text_bytes"], 119);
+        let query = server
+            .iter()
+            .find(|record| {
+                record["kind"] == "document_symbol_lifecycle_probe"
+                    && record["stage"] == "read_admitted"
+                    && record["method"] == "textDocument/documentSymbol"
+                    && record["request_id"] == response["id"]
+                    && record["server_pid"] == pid
+            })
+            .context("missing fixed query admission")?;
+        let query_hash = query["uri_hash"].as_str().context("missing fixed query URI hash")?;
+        let digest = query_hash.strip_prefix("sha256:").context("untyped fixed query URI hash")?;
+        assert_eq!(digest.len(), 64);
+        assert!(digest.bytes().all(|byte| byte.is_ascii_hexdigit()));
+        assert!(
+            server.iter().any(|record| record["stage"] == "did_open_inserted_parsed"
+                && record["incoming_text_bytes"] == 119
+                && record["document_present"] == true
+                && record["server_pid"] == pid
+                && record["uri_bytes"] == uri.len()
+                && record["uri_hash"].as_str() == Some(query_hash)),
+            "missing actual accepted fixed fixture insertion"
+        );
+        let symbols = response
+            .get("result")
+            .and_then(Value::as_array)
+            .context("missing fixed symbol result")?;
+        assert!(crate::document_symbol_names(symbols).contains(&"alpha"));
+        Ok(())
     }
 }
 
@@ -1904,7 +2740,7 @@ mod server_request_tests {
             let message = first_frame(&mut reader)?;
             route_message(
                 &message,
-                &stdin,
+                stdin.as_ref(),
                 &inbox,
                 &server_requests,
                 &violations,
@@ -1964,7 +2800,7 @@ mod server_request_tests {
 
         let failure = route_message(
             &request,
-            &stdin,
+            stdin.as_ref(),
             &inbox,
             &server_requests,
             &violations,

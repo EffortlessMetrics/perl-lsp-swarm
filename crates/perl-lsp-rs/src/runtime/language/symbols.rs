@@ -16,6 +16,105 @@ use crate::state::document_symbol_cap;
 use std::cell::Cell;
 use std::sync::OnceLock;
 
+#[derive(Default)]
+struct DocumentSymbolProbeCounts {
+    projection: Option<usize>,
+    fact_traces: Option<usize>,
+    pre_cap: usize,
+    result: usize,
+}
+
+const DOCUMENT_SYMBOL_PROBE_HASH_LIMIT_BYTES: usize = 64 * 1024;
+const DOCUMENT_SYMBOL_PROBE_ID_LIMIT_BYTES: usize = 256;
+const DOCUMENT_SYMBOL_PROBE_URI_LIMIT_BYTES: usize = 4096;
+
+fn document_symbol_probe_request_id(id: Option<&Value>) -> (Option<&Value>, Option<usize>) {
+    let bytes = id.and_then(Value::as_str).map(str::len);
+    (id.filter(|id| id.is_null() || id.is_number()), bytes)
+}
+
+fn document_symbol_probe_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        std::env::var("PERL_LSP_DOCUMENT_SYMBOL_PROBE").is_ok_and(|value| value == "1")
+    })
+}
+
+/// Explicitly opted-in observation of the actual documentSymbol return branch.
+/// Ordinary requests, including global debug logging, avoid snapshot/hash work.
+/// Fingerprints are content-derived; client string IDs are omitted.
+/// Raw client text, source text and URIs are not captured by the receipt.
+fn emit_document_symbol_probe(
+    request_id: Option<&Value>,
+    branch: &str,
+    doc: Option<&crate::state::DocumentState>,
+    counts: DocumentSymbolProbeCounts,
+    cap: usize,
+) {
+    if !LspServer::document_symbol_probe_active() {
+        return;
+    }
+    let request_id_was_present = request_id.is_some();
+    let request_id_type = request_id.map(|id| match id {
+        Value::Null => "null",
+        Value::Number(_) => "number",
+        Value::String(_) => "string",
+        _ => "unsupported",
+    });
+    let (request_id, request_id_bytes) = document_symbol_probe_request_id(request_id);
+    let request_id_omission_reason = match request_id_type {
+        Some("string")
+            if request_id_bytes
+                .is_some_and(|bytes| bytes > DOCUMENT_SYMBOL_PROBE_ID_LIMIT_BYTES) =>
+        {
+            Some("byte_limit")
+        }
+        Some("string") => Some("client_text"),
+        Some("unsupported") => Some("unsupported_type"),
+        _ => None,
+    };
+    let current = doc.and_then(|doc| doc.current_parsed());
+    let latest = doc.and_then(|doc| doc.latest_parsed());
+    let statements =
+        current.as_ref().and_then(|snapshot| snapshot.ast()).and_then(|ast| match &ast.kind {
+            perl_parser::ast::NodeKind::Program { statements } => Some(statements.len()),
+            _ => None,
+        });
+    let receipt = json!({
+        "kind": "document_symbol_branch_probe",
+        "request_id": request_id,
+        "request_id_type": request_id_type,
+        "request_id_omitted": request_id_was_present && request_id.is_none(),
+        "request_id_omission_reason": request_id_omission_reason,
+        "request_id_string_bytes": request_id_bytes,
+        "request_id_limit_bytes": DOCUMENT_SYMBOL_PROBE_ID_LIMIT_BYTES,
+        "request_id_omitted_byte_limit": request_id_bytes.is_some_and(|bytes| bytes > DOCUMENT_SYMBOL_PROBE_ID_LIMIT_BYTES),
+        "branch": branch,
+        "document_present": doc.is_some(),
+        "full_sync_required": doc.map(|doc| doc.full_sync_required()),
+        "document_version": doc.map(|doc| doc.version),
+        "document_generation": doc.map(|doc| doc.current_generation()),
+        "snapshot_generation": current.as_ref().map(|snapshot| snapshot.generation()),
+        "latest_snapshot_generation": latest.as_ref().map(|snapshot| snapshot.generation()),
+        "text_bytes": doc.map(|doc| doc.text.len()),
+        "text_hash": doc.filter(|doc| doc.text.len() <= DOCUMENT_SYMBOL_PROBE_HASH_LIMIT_BYTES)
+            .map(|doc| perl_lsp_rs_core::tooling::perl_critic::hash_content(&doc.text)),
+        "text_hash_limit_bytes": DOCUMENT_SYMBOL_PROBE_HASH_LIMIT_BYTES,
+        "text_hash_omitted_byte_limit": doc.map(|doc| doc.text.len() > DOCUMENT_SYMBOL_PROBE_HASH_LIMIT_BYTES),
+        "snapshot_content_hash": current.as_ref().map(|snapshot| snapshot.content_hash()),
+        "ast_present": current.as_ref().is_some_and(|snapshot| snapshot.ast().is_some()),
+        "root_statement_count": statements,
+        "parse_error_count": current.as_ref().map(|snapshot| snapshot.parse_errors().len()),
+        "degradation_tier": current.as_ref().map(|snapshot| format!("{:?}", snapshot.degradation_tier())),
+        "projection_count": counts.projection,
+        "fact_trace_count": counts.fact_traces,
+        "pre_cap_count": counts.pre_cap,
+        "result_count": counts.result,
+        "cap": cap,
+    });
+    tracing::debug!(target: "document_symbol_probe", "{receipt}");
+}
+
 #[cfg(test)]
 #[derive(Clone, Copy)]
 enum FoldingRangeTestFault {
@@ -118,6 +217,72 @@ fn pod_section_symbols(source: &str) -> Vec<Value> {
 }
 
 impl LspServer {
+    pub(crate) fn document_symbol_probe_active() -> bool {
+        document_symbol_probe_enabled()
+            && tracing::enabled!(target: "document_symbol_probe", tracing::Level::DEBUG)
+    }
+
+    /// Bounded opt-in observation of actual ingress/admission/didOpen state.
+    /// URI digests are content-derived; raw URI, source and string IDs are omitted.
+    pub(crate) fn emit_document_symbol_lifecycle_probe(
+        &self,
+        stage: &str,
+        method: &str,
+        params: Option<&Value>,
+        request_id: Option<&JsonRpcId>,
+        mutation_sequence: Option<u64>,
+        error_code: Option<i32>,
+    ) {
+        if !matches!(method, "textDocument/didOpen" | "textDocument/documentSymbol")
+            || !Self::document_symbol_probe_active()
+        {
+            return;
+        }
+        let uri =
+            params.and_then(|params| params.pointer("/textDocument/uri")).and_then(Value::as_str);
+        let bounded_uri = uri.filter(|uri| uri.len() <= DOCUMENT_SYMBOL_PROBE_URI_LIMIT_BYTES);
+        let normalized = bounded_uri.map(|uri| self.normalize_uri_key(uri));
+        let numeric_id = request_id.and_then(|id| match id {
+            JsonRpcId::Integer(value) => Some(*value),
+            _ => None,
+        });
+        let documents = self.documents.lock();
+        let document = normalized
+            .as_ref()
+            .and_then(|key| documents.get(key))
+            .or_else(|| bounded_uri.and_then(|uri| documents.get(uri)));
+        let receipt = json!({
+            "kind": "document_symbol_lifecycle_probe",
+            "stage": stage,
+            "method": method,
+            "server_pid": std::process::id(),
+            "initialization_accepted": self.initialization_accepted(),
+            "initialized": self.initialized.load(std::sync::atomic::Ordering::Acquire),
+            "shutdown_received": self.shutdown_received.load(std::sync::atomic::Ordering::Acquire),
+            "request_id": numeric_id,
+            "request_id_omitted": request_id.is_some() && numeric_id.is_none(),
+            "mutation_sequence": mutation_sequence,
+            "error_code": error_code,
+            "uri_bytes": uri.map(str::len),
+            "uri_hash_limit_bytes": DOCUMENT_SYMBOL_PROBE_URI_LIMIT_BYTES,
+            "uri_hash_omitted_byte_limit": uri.is_some_and(|uri| uri.len() > DOCUMENT_SYMBOL_PROBE_URI_LIMIT_BYTES),
+            "uri_hash": bounded_uri.map(|uri| perl_lsp_rs_core::hashing::sha256_hex(uri.as_bytes())),
+            "normalized_uri_hash": normalized.as_ref()
+                .filter(|uri| uri.len() <= DOCUMENT_SYMBOL_PROBE_URI_LIMIT_BYTES)
+                .map(|uri| perl_lsp_rs_core::hashing::sha256_hex(uri.as_bytes())),
+            "incoming_text_bytes": params.and_then(|params| params.pointer("/textDocument/text"))
+                .and_then(Value::as_str).map(str::len),
+            "incoming_version": params.and_then(|params| params.pointer("/textDocument/version"))
+                .and_then(Value::as_i64),
+            "document_count": documents.len(),
+            "document_present": document.is_some(),
+            "document_generation": document.map(|doc| doc.current_generation()),
+            "document_version": document.map(|doc| doc.version),
+        });
+        drop(documents);
+        tracing::debug!(target: "document_symbol_probe", "{receipt}");
+    }
+
     /// Canonical Dancer2 route/hook document symbols (#8928).
     ///
     /// Returns labeled `[Dancer2 route]` / `[Dancer2 hook]` entries anchored
@@ -203,13 +368,22 @@ impl LspServer {
             }
         }
 
-        self.handle_document_symbol(params)
+        self.handle_document_symbol_with_probe(params, request_id)
     }
 
     /// Handle textDocument/documentSymbol request
+    #[cfg(any(test, feature = "expose_lsp_test_api"))]
     pub(crate) fn handle_document_symbol(
         &self,
         params: Option<Value>,
+    ) -> Result<Option<Value>, JsonRpcError> {
+        self.handle_document_symbol_with_probe(params, None)
+    }
+
+    fn handle_document_symbol_with_probe(
+        &self,
+        params: Option<Value>,
+        request_id: Option<&Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
         // Gate unadvertised feature
         if !self.advertised_features.lock().document_symbol {
@@ -249,6 +423,13 @@ impl LspServer {
                 // for synchronized pending-parse gaps, and must not scan
                 // predecessor text while `full_sync_required` is set.
                 if doc.text_for_user_answers().is_none() {
+                    emit_document_symbol_probe(
+                        request_id,
+                        "full_sync_required",
+                        Some(doc),
+                        DocumentSymbolProbeCounts::default(),
+                        cap,
+                    );
                     return Ok(Some(json!([])));
                 }
                 let parsed = doc.current_parsed();
@@ -261,6 +442,8 @@ impl LspServer {
                             ast,
                             &doc.text,
                         );
+                    let projection_count = live_result.symbols.len();
+                    let fact_trace_count = live_result.fact_traces.len();
 
                     // Merge Test2/Test::More subtests into their lexically
                     // enclosing outline scopes (#1792): each subtest nests under
@@ -285,6 +468,7 @@ impl LspServer {
 
                     // Canonical Dancer2 route/hook entries (#8928).
                     document_symbols.extend(dancer2_symbols);
+                    let pre_cap_count = document_symbols.len();
 
                     // Apply cap to document symbols
                     if document_symbols.len() > cap {
@@ -296,6 +480,19 @@ impl LspServer {
                         document_symbols.truncate(cap);
                     }
 
+                    emit_document_symbol_probe(
+                        request_id,
+                        "ast",
+                        Some(doc),
+                        DocumentSymbolProbeCounts {
+                            projection: Some(projection_count),
+                            fact_traces: Some(fact_trace_count),
+                            pre_cap: pre_cap_count,
+                            result: document_symbols.len(),
+                        },
+                        cap,
+                    );
+
                     return Ok(Some(json!(document_symbols)));
                 } else {
                     // Fallback: Extract symbols via regex when parse fails
@@ -303,6 +500,7 @@ impl LspServer {
                     let mut symbols = self.extract_symbols_fallback(&doc.text);
                     // Append POD section symbols from a direct line scan
                     symbols.extend(pod_section_symbols(&doc.text));
+                    let pre_cap_count = symbols.len();
                     // Apply cap to fallback symbols
                     if symbols.len() > cap {
                         tracing::debug!(
@@ -313,11 +511,37 @@ impl LspServer {
                         symbols.truncate(cap);
                     }
                     tracing::debug!(count = symbols.len(), "Returning fallback symbols");
+                    emit_document_symbol_probe(
+                        request_id,
+                        "regex_fallback",
+                        Some(doc),
+                        DocumentSymbolProbeCounts {
+                            pre_cap: pre_cap_count,
+                            result: symbols.len(),
+                            ..DocumentSymbolProbeCounts::default()
+                        },
+                        cap,
+                    );
                     return Ok(Some(json!(symbols)));
                 }
             }
+            emit_document_symbol_probe(
+                request_id,
+                "not_open",
+                None,
+                DocumentSymbolProbeCounts::default(),
+                cap,
+            );
+            return Ok(Some(json!([])));
         }
 
+        emit_document_symbol_probe(
+            request_id,
+            "missing_params",
+            None,
+            DocumentSymbolProbeCounts::default(),
+            cap,
+        );
         Ok(Some(json!([])))
     }
 
@@ -769,6 +993,170 @@ mod tests {
         CONTENT_MODIFIED, INTERNAL_ERROR, INVALID_PARAMS, JsonRpcId, JsonRpcRequest,
         JsonRpcResponse, METHOD_NOT_FOUND, REQUEST_FAILED,
     };
+
+    #[test]
+    fn emit_document_symbol_probe_boundary_discriminator_reports_byte_limit_only_above_256()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Each child has a fresh production OnceLock; the test process's global
+        // environment is never mutated. A receipt rules out a zero-test filter.
+        for value in [None, Some("true"), Some("1")] {
+            let mut child = std::process::Command::new(std::env::current_exe()?);
+            child
+                .args([
+                    "--exact",
+                    "runtime::language::symbols::tests::document_symbol_probe_enabled_call_presence_observer",
+                    "--nocapture",
+                ])
+                .env("PERL_LSP_SYMBOL_PROBE_NATIVE_CONTROL", "1")
+                .env_remove("PERL_LSP_DOCUMENT_SYMBOL_PROBE");
+            if let Some(value) = value {
+                child.env("PERL_LSP_DOCUMENT_SYMBOL_PROBE", value);
+            }
+            let output = child.output()?;
+            assert!(
+                output.status.success(),
+                "isolated probe control failed: {}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let stdout = String::from_utf8(output.stdout)?;
+            let receipt = stdout
+                .lines()
+                .filter_map(|line| {
+                    let start = line.find('{')?;
+                    serde_json::from_str::<Value>(&line[start..]).ok()
+                })
+                .find(|record| record["kind"] == "document_symbol_probe_native_control")
+                .ok_or("isolated probe control did not execute")?;
+            assert_eq!(receipt["enabled"], value == Some("1"));
+            assert_eq!(receipt["emitted_records"], if value == Some("1") { 5 } else { 0 });
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn document_symbol_probe_enabled_call_presence_observer()
+    -> Result<(), Box<dyn std::error::Error>> {
+        if std::env::var("PERL_LSP_SYMBOL_PROBE_NATIVE_CONTROL").as_deref() != Ok("1") {
+            return Ok(());
+        }
+        let expected_enabled =
+            std::env::var("PERL_LSP_DOCUMENT_SYMBOL_PROBE").as_deref() == Ok("1");
+        // Reach the actual OnceLock::new/get_or_init/env read owner directly.
+        assert_eq!(document_symbol_probe_enabled(), expected_enabled);
+        assert_eq!(document_symbol_probe_enabled(), expected_enabled);
+        let ids = [
+            json!("probe-secret-token"),
+            json!("x".repeat(256)),
+            json!("y".repeat(257)),
+            json!("\u{00e9}".repeat(129)),
+            json!(42),
+        ];
+        let output = crate::runtime::outbound::tests::capture_tracing_records(|| {
+            for id in &ids {
+                emit_document_symbol_probe(
+                    Some(id),
+                    "budget_control",
+                    None,
+                    DocumentSymbolProbeCounts::default(),
+                    500,
+                );
+            }
+        });
+        assert!(!output.contains("probe-secret-token"));
+        let records: Vec<Value> = output
+            .lines()
+            .filter_map(|line| {
+                let start = line.find('{')?;
+                serde_json::from_str::<Value>(&line[start..]).ok()
+            })
+            .filter(|record| record["kind"] == "document_symbol_branch_probe")
+            .collect();
+        if expected_enabled {
+            assert_eq!(records.len(), 5, "actual emitter must retain every control");
+            for (index, (bytes, reason, over_limit)) in [
+                (18, "client_text", false),
+                (256, "client_text", false),
+                (257, "byte_limit", true),
+                (258, "byte_limit", true),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let record = &records[index];
+                assert_eq!(record["request_id"], Value::Null);
+                assert_eq!(record["request_id_omitted"], true);
+                assert_eq!(record["request_id_type"], "string");
+                assert_eq!(record["request_id_string_bytes"], bytes);
+                assert_eq!(record["request_id_limit_bytes"], 256);
+                assert_eq!(
+                    record["request_id_omission_reason"], reason,
+                    "input that hits the boundary: bytes > DOCUMENT_SYMBOL_PROBE_ID_LIMIT_BYTES"
+                );
+                assert_eq!(record["request_id_omitted_byte_limit"], over_limit);
+            }
+            assert_eq!(records[4]["request_id"], 42);
+            assert_eq!(records[4]["request_id_omitted"], false);
+            assert_eq!(records[4]["request_id_type"], "number");
+            assert_eq!(records[4]["request_id_omission_reason"], Value::Null);
+            assert_eq!(records[4]["request_id_string_bytes"], Value::Null);
+            assert_eq!(records[4]["request_id_omitted_byte_limit"], false);
+        } else {
+            assert!(records.is_empty(), "global TRACE cannot enable an unopted probe");
+        }
+        println!(
+            "{}",
+            json!({"kind": "document_symbol_probe_native_control",
+            "enabled": expected_enabled, "emitted_records": records.len()})
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn document_symbol_probe_id_budget_omits_client_text_and_preserves_numeric_identity() {
+        let numeric = json!(42);
+        assert_eq!(document_symbol_probe_request_id(Some(&numeric)), (Some(&numeric), None));
+        let secret = json!("probe-secret-token");
+        let (projected, bytes) = document_symbol_probe_request_id(Some(&secret));
+        assert_eq!(bytes, Some(18));
+        assert_eq!(projected, None, "even short client text must be omitted");
+        assert_eq!(document_symbol_probe_request_id(Some(&json!("42"))), (None, Some(2)));
+        let null = Value::Null;
+        assert_eq!(document_symbol_probe_request_id(Some(&null)), (Some(&null), None));
+        let at_limit = json!("x".repeat(256));
+        let (projected, bytes) = document_symbol_probe_request_id(Some(&at_limit));
+        assert_eq!(bytes, Some(256));
+        assert_eq!(projected, None);
+        let over_limit = json!("é".repeat(129));
+        assert_eq!(document_symbol_probe_request_id(Some(&over_limit)), (None, Some(258)));
+        // Omission affects the receipt only; the original response ID survives.
+        assert_eq!(over_limit.as_str().map(str::len), Some(258));
+        let compound = json!({"invalid_id": "x".repeat(257)});
+        assert_eq!(document_symbol_probe_request_id(Some(&compound)), (None, None));
+    }
+
+    #[test]
+    fn document_symbol_probe_preserves_secret_and_oversized_string_wire_ids()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = initialized_folding_range_server();
+        let uri = "file:///17020-string-id-control.pl";
+        server.test_apply_did_open(uri, "sub alpha {}\n", 1)?;
+        for id in ["probe-secret-token".to_string(), "é".repeat(129)] {
+            let response = server
+                .handle_request(JsonRpcRequest {
+                    _jsonrpc: "2.0".to_string(),
+                    id: Some(JsonRpcId::String(id.clone())),
+                    method: "textDocument/documentSymbol".to_string(),
+                    params: Some(json!({ "textDocument": { "uri": uri } })),
+                })
+                .ok_or("string-ID request must produce a response")?;
+            assert_eq!(response.id, Some(JsonRpcId::String(id)));
+            assert!(response.error.is_none(), "string-ID request must succeed");
+            let names = document_symbol_names(response.result.as_ref().ok_or("symbol result")?)?;
+            assert!(names.iter().any(|name| name == "alpha"), "string-ID result must retain alpha");
+        }
+        Ok(())
+    }
 
     #[test]
     fn push_multiline_folding_range_boundary_discriminator_end_line_gt_start_line_rejects_equal_input()
@@ -1228,6 +1616,31 @@ mod tests {
         }
         walk(value, &mut names);
         Ok(names)
+    }
+
+    #[test]
+    fn document_symbol_pending_parse_uses_current_text_regex_control()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        let uri = "file:///17020-pending-parse-control.pl";
+        server.test_apply_did_open(uri, "sub predecessor {}\n", 1)?;
+        {
+            let mut documents = server.documents.lock();
+            let doc = server.get_document_mut(&mut documents, uri).ok_or("opened control")?;
+            doc.update_content("sub alpha {}\n", 2);
+            assert!(doc.current_parsed().is_none(), "control must enter the pending-parse path");
+            assert!(!doc.full_sync_required(), "control must retain synchronized current text");
+        }
+        let result = server
+            .handle_document_symbol(Some(json!({ "textDocument": { "uri": uri } })))?
+            .ok_or("pending-parse documentSymbol result")?;
+        let names = document_symbol_names(&result)?;
+        assert!(names.iter().any(|name| name == "alpha"), "current source must answer: {result}");
+        assert!(
+            !names.iter().any(|name| name == "predecessor"),
+            "stale AST symbols must not answer the current source: {result}"
+        );
+        Ok(())
     }
 
     #[test]
