@@ -119,6 +119,13 @@ fn missing_publication_role_sentence_is_rejected() {
 }
 
 #[test]
+fn reversed_public_ingress_statement_is_rejected() {
+    rejects_when(PROTOCOL, |text| {
+        text.replace("against `perl-lsp/master`", "against `perl-lsp-swarm/main`")
+    });
+}
+
+#[test]
 fn contradictory_authority_labels_are_rejected() {
     rejects_when(PROTOCOL, |text| {
         text.replace("| Active development |", "| Temporary role |")
@@ -191,7 +198,8 @@ fn real_repository_authority_still_projects() {
     assert_eq!(static_topology.development_default_branch, "main");
     assert_eq!(static_topology.publication_repository, "EffortlessMetrics/perl-lsp");
     assert_eq!(static_topology.publication_branch, "master");
-    assert_eq!(static_topology.issue_repository, static_topology.development_repository);
+    assert_eq!(static_topology.issue_repository, static_topology.publication_repository);
+    assert_eq!(static_topology.pull_request_repository, static_topology.publication_repository);
     assert_eq!(
         static_topology.primary_channels,
         ["github_release", "crates_io", "vscode_marketplace", "open_vsx"]

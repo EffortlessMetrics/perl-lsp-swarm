@@ -224,12 +224,18 @@ Start with the [short documentation route map](docs/README.md). Use the
 
 ## Development and publication
 
-This checkout is the active development repository.
+This checkout is the active high-throughput development repository.
 
 | Context | Repository and branch | Use it for |
 | --- | --- | --- |
-| Development | `EffortlessMetrics/perl-lsp-swarm` / `main` | ordinary source work, issues, pull requests, tests, and development evidence |
-| Publication | `EffortlessMetrics/perl-lsp` / `master` | public release lineage, published artifacts, and release-facing support |
+| Internal development authority | `EffortlessMetrics/perl-lsp-swarm` / `main` | maintainer/agent product work, tests, proof, and release preparation |
+| Public contribution and publication | `EffortlessMetrics/perl-lsp` / `master` | external issues and pull requests, public release lineage, published artifacts, and release-facing support |
+
+External contributors should open issues and pull requests against `perl-lsp/master`, not
+against swarm. Before integrating a shared-product public PR, maintainers first reconcile
+accepted swarm state into the public repository; after merge, the shared-product effect is
+reconciled back into swarm. This keeps one product-development authority while preserving a
+normal public contribution surface.
 
 A merge to `perl-lsp-swarm/main` is development state, not public availability. Public
 install and release links above remain on `perl-lsp`; swarm changes reach those surfaces
@@ -256,15 +262,17 @@ Current development routes:
 
 ## Contributing
 
-Clone `perl-lsp-swarm` and open ordinary development issues and pull requests here:
+External contributors should clone or fork the public repository and open pull requests
+there:
 
 ```bash
-git clone https://github.com/EffortlessMetrics/perl-lsp-swarm.git
-cd perl-lsp-swarm
+git clone https://github.com/EffortlessMetrics/perl-lsp.git
+cd perl-lsp
 ```
 
-See [CONTRIBUTING.md](CONTRIBUTING.md). AI implementation agents should read
-[AGENTS.md](AGENTS.md) first.
+Authorized maintainers and swarm agents continue to use this checkout for internal product
+development and proof. See [CONTRIBUTING.md](CONTRIBUTING.md). AI implementation agents
+should read [AGENTS.md](AGENTS.md) first.
 
 ## Security
 
