@@ -2160,4 +2160,168 @@ use Overlay::OpenDoc;
 
         Ok(())
     }
+
+    // --- PL701 report truthfulness for external PERL5LIB roots (#17362) ---
+
+    /// Serializes process-env mutation of `PERL5LIB` across tests.
+    static PERL5LIB_TEST_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Sets `PERL5LIB` for the duration of one test and restores the captured
+    /// value on drop. The module-resolution seam reads the env var directly,
+    /// so the mutation must be serialized and undone.
+    struct Perl5LibTestEnvGuard {
+        previous: Option<std::ffi::OsString>,
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl Perl5LibTestEnvGuard {
+        // `std::env::set_var` is unsafe in Rust 2024; the static mutex
+        // serializes env mutation across tests and `Drop` restores it.
+        #[allow(unsafe_code)]
+        fn set_perl5lib(value: &str) -> Result<Self, Box<dyn std::error::Error>> {
+            let lock = PERL5LIB_TEST_ENV_LOCK
+                .lock()
+                .map_err(|_| std::io::Error::other("PERL5LIB test env lock poisoned"))?;
+            let previous = std::env::var_os("PERL5LIB");
+            unsafe { std::env::set_var("PERL5LIB", value) };
+            Ok(Self { previous, _lock: lock })
+        }
+    }
+
+    impl Drop for Perl5LibTestEnvGuard {
+        #[allow(unsafe_code)]
+        fn drop(&mut self) {
+            match &self.previous {
+                Some(value) => unsafe { std::env::set_var("PERL5LIB", value) },
+                None => unsafe { std::env::remove_var("PERL5LIB") },
+            }
+        }
+    }
+
+    /// Fixture for the PL701-truthfulness seam: one registered workspace
+    /// folder plus a separate external (absolute, outside-workspace) PERL5LIB
+    /// root. Returns the server, the document URI/text of a file that `use`s
+    /// `Local::Widget`, and the external root path.
+    fn pl701_perl5lib_fixture(
+        temp: &Path,
+    ) -> Result<(LspServer, String, &'static str, PathBuf), Box<dyn std::error::Error>> {
+        let workspace = temp.join("workspace");
+        let external = temp.join("poslib");
+        fs::create_dir_all(&workspace)?;
+        fs::create_dir_all(&external)?;
+
+        let doc_uri = Url::from_file_path(workspace.join("comp.pl"))
+            .map_err(|_| "failed to create doc uri")?
+            .to_string();
+        let doc_text = "package Demo;\nuse strict;\nuse warnings;\nuse Local::Widget;\n\nmy $w = Local::Widget->new;\n";
+
+        let server = LspServer::new();
+        {
+            let mut folders = server.workspace_folders.lock();
+            folders.push(
+                WorkspaceFolderState::new(
+                    Url::from_directory_path(&workspace)
+                        .map_err(|_| "failed to create workspace uri")?
+                        .to_string(),
+                )
+                .with_path(workspace)
+                .with_effective_workspace_config(
+                    perl_lsp_rs_core::config::WorkspaceConfig::default(),
+                ),
+            );
+        }
+
+        Ok((server, doc_uri, doc_text, external))
+    }
+
+    /// Issue #17362 reported PL701 "Searched @INC" naming an external absolute
+    /// PERL5LIB root that module resolution never searched. On current main the
+    /// resolver searches `Perl5LibEnv` roots literally, so the report is only
+    /// truthful while this end-to-end seam holds: when the external root
+    /// contains the module, the exact resolver seam the PL701 provider consults
+    /// must find it there (no PL701), and the report surface must name that
+    /// same root with its `PERL5LIB` label.
+    #[test]
+    fn external_perl5lib_root_with_module_is_searched_and_named_by_the_pl701_report() -> TestResult
+    {
+        let temp = tempfile::tempdir()?;
+        let (server, doc_uri, doc_text, external) = pl701_perl5lib_fixture(temp.path())?;
+        let module = external.join("Local").join("Widget.pm");
+        fs::create_dir_all(module.parent().ok_or("missing module parent")?)?;
+        fs::write(&module, "package Local::Widget; sub ping { 1 } 1;")?;
+
+        let _guard = Perl5LibTestEnvGuard::set_perl5lib(&external.to_string_lossy())?;
+
+        let resolved = server.resolve_module_to_path_with_doc_at_offset(
+            "Local::Widget",
+            Some(doc_text),
+            Some(&doc_uri),
+            Some(0),
+        );
+        let expected_uri = Url::from_file_path(&module)
+            .map_err(|_| "failed to create expected module uri")?
+            .to_string();
+        assert_eq!(
+            resolved.as_deref(),
+            Some(expected_uri.as_str()),
+            "external absolute PERL5LIB root containing the module must be searched \
+             (no PL701 may fire for it)"
+        );
+
+        let context = server
+            .effective_inc_context_for_doc(Some(&doc_uri), Some(doc_text), None)
+            .ok_or("expected effective @INC context")?;
+        let display = context.search_display_paths();
+        let perl5lib_entries: Vec<_> =
+            display.iter().filter(|entry| entry.source == "PERL5LIB").collect();
+        assert_eq!(
+            perl5lib_entries.len(),
+            1,
+            "exactly one PERL5LIB report entry expected, got: {display:?}"
+        );
+        assert_eq!(
+            perl5lib_entries[0].path,
+            external.to_string_lossy(),
+            "the PL701 report must name the same external PERL5LIB root the resolver searched"
+        );
+        Ok(())
+    }
+
+    /// Control for the same contract: when the external PERL5LIB root does not
+    /// contain the module, the resolver really probes it (returns `None`, so
+    /// PL701 fires), and the report truthfully names that probed root — matching
+    /// perl's own "@INC entries checked" convention. A root listed under
+    /// "Searched @INC" that found nothing is a root that was probed, not one
+    /// that was skipped.
+    #[test]
+    fn missing_module_in_external_perl5lib_root_still_names_that_probed_root() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let (server, doc_uri, doc_text, external) = pl701_perl5lib_fixture(temp.path())?;
+
+        let _guard = Perl5LibTestEnvGuard::set_perl5lib(&external.to_string_lossy())?;
+
+        let resolved = server.resolve_module_to_path_with_doc_at_offset(
+            "Local::Widget",
+            Some(doc_text),
+            Some(&doc_uri),
+            Some(0),
+        );
+        assert!(
+            resolved.is_none(),
+            "module absent from every root must not resolve (PL701 fires): {resolved:?}"
+        );
+
+        let context = server
+            .effective_inc_context_for_doc(Some(&doc_uri), Some(doc_text), None)
+            .ok_or("expected effective @INC context")?;
+        let display = context.search_display_paths();
+        assert!(
+            display
+                .iter()
+                .any(|entry| entry.source == "PERL5LIB"
+                    && entry.path == external.to_string_lossy()),
+            "the probed external PERL5LIB root must appear in the searched-roots report, got: {display:?}"
+        );
+        Ok(())
+    }
 }
