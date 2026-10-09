@@ -1,3 +1,5 @@
+use perl_lsp_ux_tests::cargo_failure;
+
 use super::FirstFailure;
 
 /// Parse the first failing test name, panic site, and message from `cargo test` stdout.
@@ -12,54 +14,36 @@ use super::FirstFailure;
 /// * Panic site — `panicked at '<file>:<line>:<col>:'` (Rust <1.73 style) or
 ///   `panicked at <file>:<line>:<col>:` (Rust ≥1.73 style)
 /// * Message — the first non-empty line that follows the `panicked at` line
+///
+/// The bytes are read by [`cargo_failure`], which the UX regression receipt also
+/// uses, so the two surfaces cannot drift apart on the same cargo output (#16907).
+/// What is decided here is the gate's own: the *first* failure, `file:line` for the
+/// receipt's `site` field, and the message that follows it.
 pub fn parse_first_failure(output: &str, exit_code: i32) -> Option<FirstFailure> {
-    let mut test_name: Option<String> = None;
+    let lines: Vec<&str> = output.lines().collect();
+
+    // The `... FAILED` result line wins over the `---- ... stdout ----` header,
+    // because it appears first in cargo's report. The header is a whole-log
+    // scan rather than a per-line one, so it costs one pass and only runs when
+    // no result line named a failure.
+    let test_name = lines
+        .iter()
+        .find_map(|line| cargo_failure::failed_test_name(line).map(str::to_string))
+        .or_else(|| {
+            cargo_failure::failure_block_spans(output).into_iter().next().map(|block| block.name)
+        });
+
     let mut site: Option<String> = None;
     let mut message: Option<String> = None;
 
-    let lines: Vec<&str> = output.lines().collect();
-
-    for line in &lines {
-        let trimmed = line.trim();
-        if trimmed.starts_with("test ") && trimmed.ends_with("... FAILED") {
-            let inner = trimmed
-                .strip_prefix("test ")
-                .and_then(|s| s.strip_suffix("... FAILED"))
-                .map(str::trim);
-            if let Some(name) = inner
-                && !name.is_empty()
-            {
-                test_name = Some(name.to_string());
-                break;
-            }
-        }
-        if test_name.is_none() && trimmed.starts_with("---- ") && trimmed.ends_with(" stdout ----")
-        {
-            let inner = trimmed
-                .strip_prefix("---- ")
-                .and_then(|s| s.strip_suffix(" stdout ----"))
-                .map(str::trim);
-            if let Some(name) = inner
-                && !name.is_empty()
-            {
-                test_name = Some(name.to_string());
-            }
-        }
-    }
-
     for (idx, line) in lines.iter().enumerate() {
-        let trimmed = line.trim();
-        if let Some(panic_pos) = trimmed.find("panicked at ") {
-            let rest = &trimmed[panic_pos + "panicked at ".len()..];
-
-            site = parse_panic_site_new_style(rest).or_else(|| parse_panic_site_old_style(rest));
-            message = lines[idx + 1..]
-                .iter()
-                .find(|l| !l.trim().is_empty())
-                .map(|l| l.trim().to_string());
-
-            break;
+        if !line.contains("panicked at ") {
+            continue;
         }
+        site = cargo_failure::panic_location(line).map(|location| location.line_only());
+        message =
+            lines[idx + 1..].iter().find(|l| !l.trim().is_empty()).map(|l| l.trim().to_string());
+        break;
     }
 
     if test_name.is_some() || site.is_some() {
@@ -67,34 +51,6 @@ pub fn parse_first_failure(output: &str, exit_code: i32) -> Option<FirstFailure>
     } else {
         None
     }
-}
-
-fn parse_panic_site_new_style(rest: &str) -> Option<String> {
-    let rest = rest.trim_end_matches(':');
-    let parts: Vec<&str> = rest.splitn(4, ':').collect();
-    match parts.len() {
-        2.. => {
-            let (path_part, line_part) = if parts[0].len() == 1
-                && parts[0].chars().next().is_some_and(|c| c.is_ascii_alphabetic())
-                && parts.len() >= 3
-            {
-                (format!("{}:{}", parts[0], parts[1]), parts[2])
-            } else {
-                (parts[0].to_string(), parts[1])
-            };
-            if line_part.parse::<u64>().is_ok() && !path_part.is_empty() {
-                return Some(format!("{}:{}", path_part, line_part));
-            }
-            None
-        }
-        _ => None,
-    }
-}
-
-fn parse_panic_site_old_style(rest: &str) -> Option<String> {
-    let loc_start = rest.rfind("', ").map(|i| i + 3)?;
-    let loc = &rest[loc_start..];
-    parse_panic_site_new_style(loc)
 }
 
 /// Check whether a gate command is a `cargo test`-class command.
@@ -143,7 +99,132 @@ mod tests {
     use color_eyre::eyre::Result;
     use std::fs;
 
+    use super::parse_first_failure;
+    use perl_tdd_support::must_some_with;
+
     const CARGO_TEST_COMMAND: &str = "cargo test -p xtask --locked";
+
+    /// A doctest's name is `<file> - <path> (line N)`, so it contains spaces.
+    /// Cargo prints that same spaced name on the result line and on the block
+    /// header, so the two surfaces must recover the identical string (#16907).
+    const DOCTEST_LOG: &str = r#"
+running 1 test
+test src/lib.rs - item::path (line 12) ... FAILED
+
+failures:
+
+---- src/lib.rs - item::path (line 12) stdout ----
+thread 'item::path' panicked at src/lib.rs:12:9:
+assertion `left == right` failed
+
+failures:
+    src/lib.rs - item::path (line 12)
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+"#;
+
+    const DOCTEST_NAME: &str = "src/lib.rs - item::path (line 12)";
+
+    #[test]
+    fn doctest_failure_is_reported_under_its_whole_spaced_name() {
+        let failure = must_some_with(
+            parse_first_failure(DOCTEST_LOG, 101),
+            "a failing doctest must produce a first failure, not a clean run",
+        );
+        assert_eq!(
+            failure.test.as_deref(),
+            Some(DOCTEST_NAME),
+            "truncating at the first space names a test that did not fail"
+        );
+        assert_eq!(
+            failure.site.as_deref(),
+            Some("src/lib.rs:12"),
+            "the gate has always reported file:line"
+        );
+    }
+
+    /// The drift this PR removes is a *disagreement between two surfaces*, so
+    /// the guard has to put both surfaces in one test. `xtask` is the only
+    /// crate that can see both, which is the whole reason this test lives here.
+    ///
+    /// It runs the real receipt over the same bytes and compares its two
+    /// named fields against the gate's. A test that only called the shared
+    /// reader would pass even if one consumer stopped using it.
+    #[test]
+    fn gate_and_receipt_agree_on_the_same_log() -> anyhow::Result<()> {
+        let log = std::env::temp_dir().join("xtask-first-failure-agreement.log");
+        std::fs::write(&log, DOCTEST_LOG)?;
+
+        let receipt = perl_lsp_ux_tests::regression_receipt::run(
+            perl_lsp_ux_tests::regression_receipt::UxRegressionReceiptConfig {
+                input: log.clone(),
+                receipt: None,
+                sha: Some("agreement".to_string()),
+                exit_status_file: None,
+            },
+        )?;
+        let receipt_json: serde_json::Value = match &receipt {
+            perl_lsp_ux_tests::regression_receipt::UxRegressionReceiptOutput::Payload(text) => {
+                serde_json::from_str(text)?
+            }
+            perl_lsp_ux_tests::regression_receipt::UxRegressionReceiptOutput::Written(path) => {
+                serde_json::from_str(&std::fs::read_to_string(path)?)?
+            }
+        };
+        let _ = std::fs::remove_file(&log);
+
+        let failure =
+            must_some_with(parse_first_failure(DOCTEST_LOG, 101), "a first failure exists");
+
+        assert_eq!(
+            receipt_json["first_failing_test"].as_str(),
+            failure.test.as_deref(),
+            "the receipt and the gate must name the same failing test"
+        );
+        let gate_site = failure.site.as_deref().unwrap_or_default();
+        let receipt_site = receipt_json["panic_location"].as_str().unwrap_or_default();
+        assert_eq!(
+            gate_site,
+            receipt_site.rsplit_once(':').map(|(head, _)| head).unwrap_or(receipt_site),
+            "the gate's file:line must be the receipt's file:line:column, minus the column"
+        );
+        assert_eq!(gate_site, "src/lib.rs:12", "and neither may be silently absent");
+        Ok(())
+    }
+
+    /// The `... FAILED` result line is absent here, so the name comes from the
+    /// block header. Cargo prints headers in failure order, and this alignment
+    /// with that order is a disclosed behaviour change, so it is pinned rather
+    /// than left to whichever header the old loop happened to end on.
+    #[test]
+    fn a_header_only_log_names_the_first_failing_block() {
+        let log = "failures:\n\n---- first::test stdout ----\nboom\n---- second::test stdout ----\nboom\n";
+        let failure =
+            must_some_with(parse_first_failure(log, 101), "a block header names a failing test");
+        assert_eq!(
+            failure.test.as_deref(),
+            Some("first::test"),
+            "headers are printed in failure order, so the first is the first failure"
+        );
+    }
+
+    /// The gate reports whatever `path:line` a panic printed. The receipt has a
+    /// stricter path grammar, and applying the receipt's rule in the shared
+    /// reader would narrow the gate's evidence — `ci_explain` classifies on
+    /// `site.is_some()`, so a refused path turns a code regression into
+    /// `unknown`.
+    #[test]
+    fn the_gate_still_reports_a_path_the_receipt_would_refuse() {
+        let failure = must_some_with(
+            parse_first_failure("thread 'x' panicked at 9lives/src/lib.rs:42:8:", 101),
+            "a panic line names a site",
+        );
+        assert_eq!(
+            failure.site.as_deref(),
+            Some("9lives/src/lib.rs:42"),
+            "sharing the parse must not narrow what the gate accepts"
+        );
+    }
 
     #[test]
     fn invalid_utf8_line_does_not_hide_a_later_libtest_marker() -> Result<()> {
