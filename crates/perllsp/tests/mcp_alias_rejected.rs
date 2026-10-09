@@ -6,6 +6,7 @@ fn run_perllsp(args: &[&str]) -> Result<std::process::Output, Box<dyn std::error
     Ok(output)
 }
 
+#[track_caller]
 fn assert_mcp_recovery_guidance(text: &str) {
     assert!(text.contains("not available in this version"), "missing version status: {text}");
     assert!(text.contains("Claude Code LSP plugin"), "missing alternative protocol: {text}");
