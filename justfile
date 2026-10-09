@@ -983,6 +983,7 @@ ci-gate:
     just ci-print-in-lib-ratchet && \
     just ci-regex-static-ratchet && \
     just ci-must-context && \
+    just ci-no-verify-recover && \
     just ci-forbid-fatal && \
     just ci-test-lib && \
     just check-all-targets && \
@@ -1157,6 +1158,12 @@ ci-must-context:
     @echo "🧾 Checking must* migrations preserve assertion context..."
     @cargo xtask ci-hygiene check-must-context
     @echo "✅ No assertion context dropped by a must* migration"
+
+# No-verify re-cover: the pushed range must not carry a placeholder git identity (#17430)
+ci-no-verify-recover:
+    @echo "🪝 Re-running the commit-attribution hook policy over the pushed range..."
+    @cargo xtask ci-hygiene check-no-verify-recover
+    @echo "✅ No placeholder git identity in the pushed range"
 
 # Print-macro ratchet: no raw println!/eprintln! in library source (use tracing)
 ci-print-in-lib-ratchet:
