@@ -2895,11 +2895,15 @@ fn current_document_package_facts(
     let Ok(ast) = parser.parse() else {
         return (HashMap::new(), HashMap::new());
     };
-    let models = perl_semantic_analyzer::class_model::ClassModelBuilder::new()
-        .build(&ast)
-        .into_iter()
-        .map(|model| (model.name.clone(), model))
-        .collect();
+    // One model per package name across every `package` segment in the buffer:
+    // a later silent reopen must not hide the roles an earlier segment composed.
+    // The merge rules stay single-owned by the semantic analyzer.
+    let models = perl_semantic_analyzer::class_model::merge_reopened_class_models(
+        &perl_semantic_analyzer::class_model::ClassModelBuilder::new().build(&ast),
+    )
+    .into_iter()
+    .map(|model| (model.name.clone(), model))
+    .collect();
     (models, current_document_methods_from_ast(&ast, source))
 }
 
@@ -3458,6 +3462,76 @@ sub kept { 2 }
         assert!(
             names.contains(&"base_method"),
             "header-only buffer without document identity must keep the persisted chain (#16809), got {names:?}"
+        );
+    }
+}
+
+/// Collector-level proof that a reopened consumer package keeps only its own
+/// ancestry and roles (#16853).
+#[cfg(test)]
+mod reopened_consumer_source_facts_tests {
+    use super::*;
+
+    const SILENT_REOPEN: &str = "package Printable;\nuse Moo::Role;\nsub stringify { 1 }\n\
+         \npackage User;\nuse Moo;\nwith 'Printable';\nsub own_method { 1 }\n\
+         \npackage User;\nsub extra_method { 2 }\n";
+
+    const EXPLICIT_REOPEN: &str = "package Printable;\nuse Moo::Role;\nsub stringify { 1 }\n\
+         \npackage OtherRole;\nuse Moo::Role;\nsub other_method { 1 }\n\
+         \npackage User;\nuse Moo;\nwith 'Printable';\n\
+         \npackage User;\nuse Moo;\nwith 'OtherRole';\n";
+
+    fn collected(source: &str, package: &str) -> Vec<String> {
+        // No document identity in this fixture: an empty index makes the
+        // same-document freshness gate inert either way (#17084 seam shape).
+        collect_all_package_members_with_source(&WorkspaceIndex::new(), package, source, "")
+            .into_iter()
+            .map(|symbol| symbol.name)
+            .collect()
+    }
+
+    #[test]
+    fn silent_reopen_keeps_role_and_both_segments_methods() {
+        let names = collected(SILENT_REOPEN, "User");
+        assert!(
+            names.contains(&"stringify".to_string()),
+            "a reopen that declares no ancestry must keep the composed role; got {names:?}"
+        );
+        assert!(
+            names.contains(&"own_method".to_string())
+                && names.contains(&"extra_method".to_string()),
+            "both reopened segments' own methods must survive; got {names:?}"
+        );
+    }
+
+    #[test]
+    fn explicit_ancestry_reopen_replaces_rather_than_unions() {
+        let names = collected(EXPLICIT_REOPEN, "User");
+        assert!(
+            names.contains(&"other_method".to_string()),
+            "the latest explicit role must be offered; got {names:?}"
+        );
+        assert!(
+            !names.contains(&"stringify".to_string()),
+            "a later explicit ancestry declaration must supersede, not union, the earlier role; \
+             got {names:?}"
+        );
+    }
+
+    #[test]
+    fn retained_reopen_ancestry_stays_bound_to_its_own_package() {
+        let source = "package Printable;\nuse Moo::Role;\nsub stringify { 1 }\n\
+             \npackage User;\nuse Moo;\nwith 'Printable';\n\
+             \npackage User;\nsub extra_method { 2 }\n\
+             \npackage Sibling;\nuse Moo;\nsub sibling_method { 1 }\n";
+        let names = collected(source, "Sibling");
+        assert!(
+            !names.contains(&"stringify".to_string()),
+            "a sibling package must not inherit the reopened consumer's role; got {names:?}"
+        );
+        assert!(
+            names.contains(&"sibling_method".to_string()),
+            "the sibling's own method must still be offered; got {names:?}"
         );
     }
 }
