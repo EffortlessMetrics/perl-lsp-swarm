@@ -42,13 +42,39 @@ pub(super) enum ReferenceWordKind {
     Other,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-struct LocationId<'a> {
-    uri: &'a str,
+/// Range identity under the canonical URI key (`perl_uri::uri_key`, which
+/// lowercases Windows drive letters — the same identity
+/// `LspServer::normalize_uri_key` gives documents and call-hierarchy tier
+/// dedup uses, #17368).
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct CanonicalLocationId {
+    uri: String,
     start_line: u64,
     start_character: u64,
     end_line: u64,
     end_character: u64,
+}
+
+/// Start identity of an occurrence: one canonical URI plus one start
+/// position. Producers describe one occurrence at two granularities — the
+/// workspace index's call-expression span and the text scan's name-token
+/// span share a start and differ only in end (#17242) — and no two genuine
+/// occurrences share a start position.
+#[derive(Clone, PartialEq, Eq)]
+struct OccurrenceStartId {
+    uri: String,
+    start_line: u64,
+    start_character: u64,
+}
+
+fn canonical_location_id(location: &Value) -> Option<CanonicalLocationId> {
+    Some(CanonicalLocationId {
+        uri: perl_uri::uri_key(location.get("uri")?.as_str()?),
+        start_line: location.pointer("/range/start/line")?.as_u64()?,
+        start_character: location.pointer("/range/start/character")?.as_u64()?,
+        end_line: location.pointer("/range/end/line")?.as_u64()?,
+        end_character: location.pointer("/range/end/character")?.as_u64()?,
+    })
 }
 
 /// Strip a leading sigil from the needle so word-boundary search can run on the
@@ -209,13 +235,45 @@ where
     finalize_reference_locations(out, cap)
 }
 
-/// Collapse identical `(uri, range)` locations, independent of JSON key order.
+/// Collapse occurrence-identity duplicates, then identical ranges, on one
+/// canonical URI identity.
+///
+/// Two duplicate shapes survive raw `(uri, range)` equality (#17242):
+///
+/// 1. Producers spell one file's URI differently — the workspace index via
+///    `fs_path_to_uri` keeps the on-disk drive case, the open-document tier
+///    keys documents through `perl_uri::uri_key`, which lowercases Windows
+///    drive letters — so the same entry answers twice under `F:` and `f:`.
+/// 2. One occurrence, two granularities — the index's call-expression span
+///    (`cross_target(1)`) and the text scan's name-token span
+///    (`cross_target`) share a start and differ only in end.
+///
+/// The sort/dedup below keys on the canonical URI for both, then keeps the
+/// narrowest range per (canonical URI, start) — the name token, never a
+/// distinct occurrence.
 pub(super) fn dedupe_reference_locations(locations: &mut Vec<Value>) {
-    locations.sort_by(|left, right| location_id(left).cmp(&location_id(right)));
-    locations.dedup_by(|left, right| match (location_id(left), location_id(right)) {
-        (Some(left_id), Some(right_id)) => left_id == right_id,
-        _ => false,
+    locations.sort_by_key(canonical_location_id);
+    locations.dedup_by(|left, right| {
+        match (canonical_location_id(left), canonical_location_id(right)) {
+            (Some(left_id), Some(right_id)) => left_id == right_id,
+            _ => false,
+        }
     });
+    let mut collapsed: Vec<Value> = Vec::with_capacity(locations.len());
+    let mut seen_start: Option<OccurrenceStartId> = None;
+    for location in locations.drain(..) {
+        let start_id = canonical_location_id(&location).map(|id| OccurrenceStartId {
+            uri: id.uri,
+            start_line: id.start_line,
+            start_character: id.start_character,
+        });
+        if start_id.is_some() && start_id == seen_start {
+            continue;
+        }
+        seen_start = start_id;
+        collapsed.push(location);
+    }
+    *locations = collapsed;
 }
 
 /// Deduplicate, then enforce the result cap so duplicates cannot consume it.
@@ -235,14 +293,79 @@ fn location_value(uri: &str, line: usize, start_utf16: usize, end_utf16: usize) 
     })
 }
 
-fn location_id(location: &Value) -> Option<LocationId<'_>> {
-    Some(LocationId {
-        uri: location.get("uri")?.as_str()?,
-        start_line: location.pointer("/range/start/line")?.as_u64()?,
-        start_character: location.pointer("/range/start/character")?.as_u64()?,
-        end_line: location.pointer("/range/end/line")?.as_u64()?,
-        end_character: location.pointer("/range/end/character")?.as_u64()?,
-    })
+/// Shrink an index declaration entry to its name token.
+///
+/// The workspace index stores a declaration as its whole defining span
+/// (`sub cross_target { ... }`, `package Animal;`), while the open-document
+/// text tier emits the declaration's name token. Both describe one site, but
+/// their ranges differ, so tier-level dedup cannot see them as one (#17242).
+/// When the declaring document is open, locate the queried name on the
+/// declaration's first line — identifier-bounded, at or after the span start
+/// — and narrow the entry to that token span. Both tiers then share one
+/// location identity and the existing exact dedup collapses them. A span
+/// that already is token-sized, a document that is not open, or a name that
+/// cannot be located keeps the index span untouched.
+///
+/// `sigil` extends the narrowed span over a leading `$`/`@`/`%` so a
+/// variable declaration entry matches the text tier's sigil-inclusive
+/// emitted range (`emitted_match_byte_range`) instead of sitting one column
+/// off it.
+pub(super) fn shrink_declaration_span_to_name_span(
+    def: &mut crate::workspace_index::Location,
+    docs: &[(&str, &str)],
+    needle: &str,
+    sigil: Option<char>,
+) {
+    let sigiled_needle = match sigil {
+        Some(sigil @ ('$' | '@' | '%')) => format!("{sigil}{needle}"),
+        _ => needle.to_owned(),
+    };
+    if sigiled_needle.is_empty() {
+        return;
+    }
+    let needle = sigiled_needle.as_str();
+    // Match the declaring document on the canonical URI key: the index spells
+    // URIs with the on-disk drive case while the documents map keys them
+    // through `perl_uri::uri_key` (lowercased drive letter) (#17242).
+    let def_key = perl_uri::uri_key(&def.uri);
+    let Some((_, doc_text)) = docs.iter().find(|(uri, _)| perl_uri::uri_key(uri) == def_key) else {
+        return;
+    };
+    let Some(decl_line_text) = doc_text
+        .lines()
+        .enumerate()
+        .find(|(index, _)| *index == def.range.start.line as usize)
+        .map(|(_, line)| line)
+    else {
+        return;
+    };
+    let line_bytes = decl_line_text.as_bytes();
+    let needle_bytes = needle.as_bytes();
+    let start_col = def.range.start.column as usize;
+    let is_ident = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+    if start_col > line_bytes.len() {
+        return;
+    }
+    let mut search_from = start_col;
+    while search_from + needle_bytes.len() <= line_bytes.len() {
+        let Some(found) =
+            decl_line_text[search_from..].find(needle).map(|found| search_from + found)
+        else {
+            return;
+        };
+        let end_at = found + needle_bytes.len();
+        let left_ok = found == 0 || !is_ident(line_bytes[found - 1]);
+        let right_ok = end_at >= line_bytes.len() || !is_ident(line_bytes[end_at]);
+        if left_ok && right_ok {
+            def.range.start.byte += found - start_col;
+            def.range.start.column = found as u32;
+            def.range.end.line = def.range.start.line;
+            def.range.end.byte = def.range.start.byte + needle_bytes.len();
+            def.range.end.column = end_at as u32;
+            return;
+        }
+        search_from = found + 1;
+    }
 }
 
 fn valid_span(line: &str, match_start: usize, match_end: usize) -> bool {
@@ -757,6 +880,161 @@ mod tests {
         let out = finalize_reference_locations(locations.split_off(0), 10);
         if out.len() != 2 {
             return Err(format!("expected 2 unique ranges, got {}", out.len()).into());
+        }
+        Ok(())
+    }
+
+    /// #17242 shape 2: one occurrence described at two granularities — the
+    /// index's call-expression span and the text scan's name token share a
+    /// start — answers once, keeping the name token.
+    #[test]
+    fn same_start_call_span_and_name_token_collapse_to_the_name_token() -> Result<(), Box<dyn Error>>
+    {
+        let locations = vec![
+            json!({
+                "uri": "file:///a.pl",
+                "range": {
+                    "start": {"line": 4, "character": 8},
+                    "end": {"line": 4, "character": 23},
+                },
+            }),
+            json!({
+                "uri": "file:///a.pl",
+                "range": {
+                    "start": {"line": 4, "character": 8},
+                    "end": {"line": 4, "character": 20},
+                },
+            }),
+        ];
+        let out = finalize_reference_locations(locations, 10);
+        if out.len() != 1 {
+            return Err(format!("one occurrence must answer once, got {out:?}").into());
+        }
+        let end = out[0]["range"]["end"]["character"].as_u64().ok_or("missing end")?;
+        if end != 20 {
+            return Err(format!("the narrowest (name-token) range must survive: {out:?}").into());
+        }
+        Ok(())
+    }
+
+    /// #17242 shape 1b: the index spells the drive letter as stored on disk,
+    /// the open-document tier keys it lowercased; the same range under both
+    /// spellings is one entry.
+    #[test]
+    fn canonical_uri_key_collapses_drive_case_duplicates() -> Result<(), Box<dyn Error>> {
+        let locations = vec![
+            json!({
+                "uri": "file:///F:/dir/a.pl",
+                "range": {
+                    "start": {"line": 4, "character": 4},
+                    "end": {"line": 4, "character": 16},
+                },
+            }),
+            json!({
+                "uri": "file:///f:/dir/a.pl",
+                "range": {
+                    "start": {"line": 4, "character": 4},
+                    "end": {"line": 4, "character": 16},
+                },
+            }),
+        ];
+        let out = finalize_reference_locations(locations, 10);
+        if out.len() != 1 {
+            return Err(format!("drive-case spellings are one location, got {out:?}").into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn shrink_declaration_span_narrows_to_the_queried_name_token() -> Result<(), Box<dyn Error>> {
+        let doc_text = "#!/usr/bin/perl\nuse strict;\nuse warnings;\n\nsub cross_target {\n    my ($x) = @_;\n    return $x + 1;\n}\n\n1;\n";
+        let mut def = crate::workspace_index::Location {
+            uri: "file:///F:/dir/xlib.pl".to_owned(),
+            range: perl_workspace::position::Range {
+                start: perl_workspace::position::Position { byte: 43, line: 4, column: 0 },
+                end: perl_workspace::position::Position { byte: 100, line: 7, column: 1 },
+            },
+        };
+        shrink_declaration_span_to_name_span(
+            &mut def,
+            &[("file:///f:/dir/xlib.pl", doc_text)],
+            "cross_target",
+            None,
+        );
+        if def.range.start.line != 4
+            || def.range.start.column != 4
+            || def.range.end.line != 4
+            || def.range.end.column != 16
+        {
+            return Err(format!("declaration must narrow to its name token: {def:?}").into());
+        }
+        Ok(())
+    }
+
+    /// A variable declaration entry narrows to the sigil-inclusive token so it
+    /// matches the text tier's emitted range exactly (`$plugins`, not
+    /// `plugins`) — one column off would defeat the exact dedup (#17242).
+    #[test]
+    fn shrink_includes_the_leading_sigil_for_variable_declarations() -> Result<(), Box<dyn Error>> {
+        let doc_text = "#!/usr/bin/perl
+use strict;
+
+sub setup {
+    my $plugins = $self->plugins;
+    return $plugins;
+}
+";
+        let mut def = crate::workspace_index::Location {
+            uri: "file:///F:/dir/M.pm".to_owned(),
+            range: perl_workspace::position::Range {
+                start: perl_workspace::position::Position { byte: 45, line: 4, column: 0 },
+                end: perl_workspace::position::Position { byte: 78, line: 4, column: 33 },
+            },
+        };
+        shrink_declaration_span_to_name_span(
+            &mut def,
+            &[("file:///f:/dir/M.pm", doc_text)],
+            "plugins",
+            Some('$'),
+        );
+        if def.range.start.line != 4
+            || def.range.start.column != 7
+            || def.range.end.line != 4
+            || def.range.end.column != 15
+        {
+            return Err(format!("variable declaration must narrow to `$plugins`: {def:?}").into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn shrink_keeps_the_span_without_an_open_document_or_a_standalone_name()
+    -> Result<(), Box<dyn Error>> {
+        let doc_text = "#!/usr/bin/perl\nuse strict;\nuse warnings;\n\nsub cross_targeted {\n    return 1;\n}\n";
+        let untouched = crate::workspace_index::Location {
+            uri: "file:///F:/dir/xlib.pl".to_owned(),
+            range: perl_workspace::position::Range {
+                start: perl_workspace::position::Position { byte: 43, line: 4, column: 0 },
+                end: perl_workspace::position::Position { byte: 80, line: 6, column: 1 },
+            },
+        };
+        // The declaring document is not open: the index span stays.
+        let mut absent = untouched.clone();
+        shrink_declaration_span_to_name_span(&mut absent, &[], "cross_target", None);
+        if absent != untouched {
+            return Err("an unopened declaration document must keep the index span".into());
+        }
+        // The needle only occurs inside a longer identifier on the line: no
+        // token boundary, no shrink.
+        let mut partial = untouched.clone();
+        shrink_declaration_span_to_name_span(
+            &mut partial,
+            &[("file:///f:/dir/xlib.pl", doc_text)],
+            "cross",
+            None,
+        );
+        if partial != untouched {
+            return Err("a partial-identifier needle must not shrink the span".into());
         }
         Ok(())
     }
