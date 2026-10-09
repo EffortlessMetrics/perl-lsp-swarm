@@ -1,0 +1,75 @@
+{
+  "commit": "b4fd1c7e54",
+  "corpus": {
+    "entry_file": "lib/Mojolicious.pm",
+    "file_count": 13,
+    "fixture": "mojolicious_skeleton",
+    "source_line_count": 791
+  },
+  "kind": "lsp_memory_startup",
+  "lanes": {
+    "server_rss_memory": {
+      "availability": "measured",
+      "checkpoints_kb": {
+        "after_index_ready": 21100,
+        "after_initialize": 14404,
+        "after_workspace_symbols": 21280
+      },
+      "peak_rss_kb": 23780,
+      "soak": {
+        "first_sample_kb": 23084,
+        "growth_slope_kb_per_message": 0.9432167832167833,
+        "last_sample_kb": 23780,
+        "messages": 600,
+        "rss_samples": 12,
+        "rss_samples_missed": 0,
+        "sample_every_messages": 50
+      }
+    },
+    "server_startup_to_ready": {
+      "initialize_to_first_diagnostics_ms": {
+        "p50_ms": 269,
+        "p95_ms": 278,
+        "p99_ms": 278,
+        "samples": 15
+      },
+      "samples": 15,
+      "spawn_to_initialize_response_ms": {
+        "p50_ms": 59,
+        "p95_ms": 69,
+        "p99_ms": 69,
+        "samples": 15
+      },
+      "spawn_to_ready_ms": {
+        "p50_ms": 330,
+        "p95_ms": 336,
+        "p99_ms": 336,
+        "samples": 15
+      }
+    }
+  },
+  "measured_at": "2026-10-09T23:14:11Z",
+  "runtime": {
+    "binary": "F:/code/Rust2/plrs-bench-mem/target/release/perllsp",
+    "binary_profile": "release",
+    "index_ready": true,
+    "rss_metric": "child process RSS/working set, best-effort KB (VmRSS on Linux, Get-Process WorkingSet64 on Windows)",
+    "workspace_env": "PERL_LSP_WORKSPACE=1 (fixture_scenario_config)"
+  },
+  "sampling": {
+    "cycle_count": 100,
+    "mixed_cycle": [
+      "hover",
+      "completion",
+      "definition",
+      "documentSymbol",
+      "workspace_symbol",
+      "did_change_full"
+    ],
+    "rss_sample_every_messages": 50,
+    "soak_messages": 600,
+    "startup_spawn_samples": 15
+  },
+  "schema_version": 1,
+  "timing_policy": "arrival is the assertion; the 30s diagnostics budget and 60s request timeout are wedge detectors only; numeric claims live only in this ignored nightly receipt and wallclock belongs on benchmark hardware (ux_latency_raw_rpc.rs timing policy, #17159)"
+}
