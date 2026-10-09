@@ -102,6 +102,10 @@ GATE_TO_LANE_MAP: dict[str, dict[str, Any]] = {
     # explicit so gate-policy additions cannot silently leave the
     # policy/economics mapping incomplete.
     "must_context_check": {"lanes": ["merge_gate_shards"]},
+    # The change-scope guard (#17429, T6 Option 2) runs in the required
+    # merge-gate policy shard beside its must-context sibling, so it shares
+    # that shard's economics.
+    "change_scope_check": {"lanes": ["merge_gate_shards"]},
     # Always-running required existence check for docs/agents contract
     # workflows (#14628). Lives in the policy shard so deleting one of those
     # path-filtered workflows cannot silently stop enforcement.

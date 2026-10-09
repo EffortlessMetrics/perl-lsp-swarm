@@ -1872,6 +1872,31 @@ gates:
       - policy
       - tests
 
+  - name: change_scope_check
+    tier: merge_gate
+    # REQUIRED on landing (#17429, T6 Option 2). Unlike must_context_check,
+    # this gate cannot false-positive on a change that never opted in: with no
+    # `.agents/change-scope` declaration in the worktree — or a declaration
+    # byte-identical to its base blob — the check exits 0 reporting "not
+    # evaluated". Only a change that declares a scope is constrained by it, and
+    # the declarer controls the declaration, so landing this gate required
+    # breaks no existing PR. The voluntary-adoption caveat is recorded in the
+    # T6 trap verdict, not hidden.
+    description: "Fail changes that touch files outside their declared .agents/change-scope"
+    required: true
+    command: cargo xtask ci-hygiene check-change-scope
+    # Matches must_context_check, the sibling diff-vs-base `cargo xtask
+    # ci-hygiene ...` gate in this shard: the cost is the cargo invocation,
+    # not the `git diff --name-only` scan itself.
+    timeout_seconds: 300
+    retry_count: 0
+    budgets:
+      max_duration_ms: 240000
+    quarantine: false
+    tags:
+      - policy
+      - scope
+
   # #13774: before this route existed, nothing in the repository ever ran
   # `cargo test --doc` — not a gate, not a workflow, not a `justfile` recipe.
   # Every `compile_fail` doctest was therefore documentation that looked like
@@ -2778,6 +2803,7 @@ workflow_integration:
 
         - unsafe_prod_check
         - code_action_generation_ledger
+        - change_scope_check
       # `compile_all_targets` is not listed here since #15638: the meta shard
       # no longer executes it (the required `Compile All Targets (bit-rot
       # guard)` job owns the property), and this mapping must not claim

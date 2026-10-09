@@ -1,4 +1,5 @@
 pub(crate) mod badges;
+pub(crate) mod change_scope;
 pub(crate) mod doc_drift;
 pub(crate) mod doc_links;
 pub(crate) mod doc_paths;
