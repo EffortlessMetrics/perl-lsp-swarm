@@ -1872,6 +1872,34 @@ gates:
       - policy
       - tests
 
+  # REQUIRED on landing (#17405). Before this gate, nothing executable stopped
+  # a change from deleting a failing test file or hollowing its assertions to
+  # fake green: the ignored-count ratchet has no required-tier caller and
+  # counts only `#[ignore]`, not removal. An advisory burn-in would leave that
+  # hole open by design, so this lands blocking. The false-positive controls
+  # are structural rather than temporal: counts run on comment/string-stripped
+  # code (doc-example churn never flags), unwrap/todo removal is out of
+  # subject, renames compare across the move, and any legitimate removal is
+  # excused by a linked `TEST-DELETION-JUSTIFIED(#issue)` marker introduced by
+  # the change itself. The baseline is base-pinned (`git show` on the
+  # merge-base SHA); see `crates/perl-ci-hygiene/src/commands/test_deletion.rs`.
+  - name: test_deletion_gate
+    tier: merge_gate
+    description: "Fail changes that delete test files/cases or hollow assertions without a linked TEST-DELETION-JUSTIFIED(#issue) marker"
+    required: true
+    command: cargo xtask ci-hygiene check-test-deletion
+    # Matches must_context_check, the sibling `cargo xtask ci-hygiene ...`
+    # gate in this shard: the cost is the cargo invocation, not the scan.
+    timeout_seconds: 300
+    retry_count: 0
+    budgets:
+      max_duration_ms: 240000
+    quarantine: false
+    tags:
+      - policy
+      - tests
+      - ratchet
+
   # #13774: before this route existed, nothing in the repository ever ran
   # `cargo test --doc` — not a gate, not a workflow, not a `justfile` recipe.
   # Every `compile_fail` doctest was therefore documentation that looked like
@@ -2805,6 +2833,10 @@ workflow_integration:
 # Track significant changes to this policy.
 
 version_history:
+  - version: "1.4.0"
+    date: "2026-10-06"
+    changes:
+      - "Add test_deletion_gate merge_gate entry (#17405): fail changes that delete test files/cases or hollow assertions without a linked TEST-DELETION-JUSTIFIED(#issue) marker. Lands required (no advisory burn-in) because an advisory gate would leave the delete-the-test hole open by design; false-positive controls are structural (comment/string-stripped counts, unwrap/todo out of subject, rename-aware, marker remedy). Baseline is base-pinned via git show on the merge-base SHA."
   - version: "1.3.0"
     date: "2026-09-14"
     changes:

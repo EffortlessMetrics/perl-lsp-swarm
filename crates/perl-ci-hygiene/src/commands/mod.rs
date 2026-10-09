@@ -9,4 +9,5 @@ pub(crate) mod panic_test;
 pub(crate) mod print_in_lib;
 pub(crate) mod regex_static;
 pub(crate) mod serial_test;
+pub(crate) mod test_deletion;
 pub(crate) mod todos;
