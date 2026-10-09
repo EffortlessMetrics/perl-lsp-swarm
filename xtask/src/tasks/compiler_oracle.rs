@@ -248,15 +248,24 @@ for my $sub (qw(Oracle::Demo::proto)) {
         command: &mut Command,
         timeout: Duration,
         operation: &str,
-        mut poll: impl FnMut(&mut Child) -> std::io::Result<Option<ExitStatus>>,
+        poll: impl FnMut(&mut Child) -> std::io::Result<Option<ExitStatus>>,
     ) -> Result<Output> {
-        let mut child = command
+        let child = command
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
             .with_context(|| format!("spawn {operation}"))?;
         let started = Instant::now();
+        run_bounded_child_with_poll(child, started, timeout, operation, poll)
+    }
 
+    fn run_bounded_child_with_poll(
+        mut child: Child,
+        started: Instant,
+        timeout: Duration,
+        operation: &str,
+        mut poll: impl FnMut(&mut Child) -> std::io::Result<Option<ExitStatus>>,
+    ) -> Result<Output> {
         loop {
             let status = match poll(&mut child) {
                 Ok(status) => status,
@@ -409,11 +418,9 @@ for my $sub (qw(Oracle::Demo::proto)) {
     }
 
     #[test]
-    fn compiler_oracle_timeout_is_bounded_and_retains_stderr() -> Result<()> {
+    fn compiler_oracle_timeout_bounds_cold_child_startup() -> Result<()> {
         let mut command = isolated_perl_command();
-        command.arg("-e").arg(
-            r#"print STDERR "compiler-oracle-timeout-sentinel\n"; select undef, undef, undef, 5;"#,
-        );
+        command.arg("-e").arg("select undef, undef, undef, 5;");
 
         let started = Instant::now();
         let error = run_bounded_command(
@@ -429,6 +436,84 @@ for my $sub (qw(Oracle::Demo::proto)) {
         // the full five-second sleep, so any ceiling below that still detects a
         // missing deadline. Four seconds leaves room for a stalled CI worker
         // instead of flaking on scheduler pauses.
+        assert!(
+            started.elapsed() < Duration::from_secs(4),
+            "timeout should return before the full five-second sleep"
+        );
+        assert!(
+            message.contains("timed out after 250 ms"),
+            "timeout should remain explicit: {message}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn compiler_oracle_timeout_is_bounded_and_retains_stderr() -> Result<()> {
+        let fixture = tempfile::tempdir().context("create stderr readiness fixture")?;
+        let ready = fixture.path().join("stderr-ready");
+        let mut command = isolated_perl_command();
+        command
+            .arg("-e")
+            .arg(
+                r#"use IO::Handle;
+               print STDERR "compiler-oracle-timeout-sentinel\n";
+               STDERR->flush or die "flush sentinel: $!";
+               open my $ready, '>', $ARGV[0] or die "open readiness: $!";
+               print {$ready} "ready" or die "write readiness: $!";
+               close $ready or die "close readiness: $!";
+               select undef, undef, undef, 5;"#,
+            )
+            .arg(&ready);
+        let mut child = command
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .context("spawn stderr readiness falsifier")?;
+        let startup = Instant::now();
+        loop {
+            if ready.exists() {
+                break;
+            }
+            match child.try_wait() {
+                Ok(Some(_)) => {
+                    let output = child.wait_with_output().context("reap failed readiness probe")?;
+                    bail!(
+                        "probe exited before flushed-stderr readiness: {}",
+                        String::from_utf8_lossy(&output.stderr)
+                    );
+                }
+                Err(error) => {
+                    return Err(cleanup_after_poll_error(child, error, "stderr readiness"));
+                }
+                Ok(None) => {}
+            }
+            if startup.elapsed() >= Duration::from_secs(4) {
+                return Err(cleanup_after_poll_error(
+                    child,
+                    std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        "stderr readiness exceeded 4s",
+                    ),
+                    "stderr readiness",
+                ));
+            }
+            thread::sleep(ORACLE_POLL_INTERVAL);
+        }
+
+        // Readiness follows an explicit stderr flush. The retention control now
+        // measures the shared runtime timeout independently of Perl startup.
+        // The separate cold-child control retains the production spawn deadline.
+        let started = Instant::now();
+        let error = run_bounded_child_with_poll(
+            child,
+            started,
+            Duration::from_millis(250),
+            "compiler-oracle timeout falsifier",
+            |child| child.try_wait(),
+        )
+        .err()
+        .context("ready sleeping probe should exceed the deadline")?;
+        let message = format!("{error:#}");
         assert!(
             started.elapsed() < Duration::from_secs(4),
             "timeout should return before the full five-second sleep"
