@@ -65,12 +65,13 @@ void test('the setup action verifies the authority before npm ci', () => {
   assert.match(inputs, /install-dependencies:[\s\S]*default: ['"]true['"]/);
 });
 
-void test('the dependency-free adapter opts out only of npm ci', () => {
+void test('the prebuilt payload adapter installs locked dependencies for mapped packaging tests', () => {
   const source = readWorkflow('vscode-prebuilt-payload-adapter.yml');
   assert.match(source, /uses: \.\/\.github\/actions\/setup-vscode-toolchain/);
-  assert.match(source, /install-dependencies: ['"]false['"]/);
+  assert.match(source, /install-dependencies: ['"]true['"]/);
   assert.doesNotMatch(source, /actions\/setup-node@/);
   assert.match(source, /python3 -m unittest scripts\.test_prepare_vsix_prebuilt_payload -v/);
+  assert.match(source, /node --test scripts\/check-vsix-prebuilt-payload\.test\.js/);
 });
 
 void test('current-source smoke does not reinstall dependencies after setup', () => {
