@@ -730,12 +730,13 @@ fn count_changed_lines(source: &str, formatted: &str) -> usize {
 
 fn config_fingerprint(config: &FormatConfig) -> String {
     let canonical = format!(
-        "format-config-v1|mode={}|line_width={}|indent_width={}|use_tabs={}|final_newline={}|trailing_comma={}|brace_placement={}|else_placement={}|keyword_spacing={}",
+        "format-config-v1|mode={}|line_width={}|indent_width={}|use_tabs={}|final_newline={}|trim_trailing_whitespace={}|trailing_comma={}|brace_placement={}|else_placement={}|keyword_spacing={}",
         formatter_mode_name(config.mode),
         config.line_width,
         config.indent_width,
         config.use_tabs,
         final_newline_name(config.final_newline),
+        config.trim_trailing_whitespace,
         trailing_comma_name(config.trailing_comma),
         brace_placement_name(config.brace_placement),
         else_placement_name(config.else_placement),
@@ -800,6 +801,7 @@ const fn final_newline_name(value: FinalNewline) -> &'static str {
         FinalNewline::Preserve => "preserve",
         FinalNewline::Insert => "insert",
         FinalNewline::Trim => "trim",
+        FinalNewline::TrimThenInsert => "trim-then-insert",
     }
 }
 
