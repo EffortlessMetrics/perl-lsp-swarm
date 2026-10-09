@@ -11,8 +11,11 @@ fn assert_mcp_recovery_guidance(text: &str) {
     assert!(text.contains("not available in this version"), "missing version status: {text}");
     assert!(text.contains("Claude Code LSP plugin"), "missing alternative protocol: {text}");
     assert!(
-        text.contains("For the Claude Code LSP plugin, run `perllsp setup claude`."),
-        "missing LSP-plugin setup route: {text}"
+        text.contains(concat!(
+            "For the Claude Code LSP plugin, run `perllsp setup claude` ",
+            "only after public promotion and current verification of its public package."
+        )),
+        "missing qualified LSP-plugin setup route: {text}"
     );
     assert!(
         text.contains("For read-only diagnosis, run `perllsp doctor --client claude`."),

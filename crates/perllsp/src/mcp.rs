@@ -16,13 +16,13 @@ Status:\n\
   The native MCP adapter is not available in this version.\n\
   This command never starts the LSP runtime.\n\n\
 Recovery:\n\
-  For the Claude Code LSP plugin, run `perllsp setup claude`.\n\
+  For the Claude Code LSP plugin, run `perllsp setup claude` only after public promotion and current verification of its public package.\n\
   For read-only diagnosis, run `perllsp doctor --client claude`.\n";
 const MCP_UNAVAILABLE: &str = concat!(
     "`perllsp mcp --stdio` is reserved for the native MCP adapter, ",
     "which is not available in this version.\n",
     "No MCP server was started.\n",
-    "For the Claude Code LSP plugin, run `perllsp setup claude`.\n",
+    "For the Claude Code LSP plugin, run `perllsp setup claude` only after public promotion and current verification of its public package.\n",
     "For read-only diagnosis, run `perllsp doctor --client claude`.\n",
 );
 
