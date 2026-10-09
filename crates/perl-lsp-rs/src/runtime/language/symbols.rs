@@ -29,6 +29,11 @@ enum FoldingRangeTestFault {
 thread_local! {
     static FOLDING_RANGE_TEST_FAULT: Cell<Option<FoldingRangeTestFault>> =
         const { Cell::new(None) };
+    // Observe the actual scanner input, not the capture operation. A test
+    // retains the document Arc independently so a full-source copy cannot
+    // reuse its address. Never dereferenced or emitted in production.
+    static FOLDING_RANGE_TEST_SOURCE: Cell<Option<(*const u8, usize)>> =
+        const { Cell::new(None) };
 }
 
 #[cfg(test)]
@@ -381,8 +386,8 @@ impl LspServer {
             let documents = self.documents_guard();
             match self.get_document(&documents, uri) {
                 Some(doc) => match doc.text_for_user_answers() {
-                    // Clone the Arc (O(1)) under the lock; the full string
-                    // copy happens after release, keeping the lock hold short.
+                    // Clone the Arc (O(1)) under the lock, then borrow its
+                    // immutable source after release without a full text copy.
                     // The latest_parsed fallback is gated on the snapshot's
                     // content hash matching the current text: a stale AST's
                     // offsets paired with shifted text would fold the wrong
@@ -404,9 +409,10 @@ impl LspServer {
                 None => return Ok(Some(json!([]))),
             }
         };
-        let text = text.to_string();
-
-        let doc_text = &text;
+        // Keep the captured Arc alive while every scanner borrows its buffer.
+        let doc_text: &str = &text;
+        #[cfg(test)]
+        FOLDING_RANGE_TEST_SOURCE.with(|cell| cell.set(Some((doc_text.as_ptr(), doc_text.len()))));
         let mut lsp_ranges = Vec::new();
 
         // Add text-based data section folding
@@ -891,6 +897,116 @@ mod tests {
                 && range.get("endLine").and_then(Value::as_u64).is_some_and(|end| end > 0)
         }));
 
+        Ok(())
+    }
+
+    fn folding_source_arc(
+        server: &LspServer,
+        uri: &str,
+    ) -> Result<std::sync::Arc<str>, Box<dyn std::error::Error>> {
+        let documents = server.documents_guard();
+        let doc = server.get_document(&documents, uri).ok_or("folding source document")?;
+        Ok(std::sync::Arc::clone(&doc.text_arc))
+    }
+
+    fn assert_folding_source_shared(source: &str) {
+        assert_eq!(
+            FOLDING_RANGE_TEST_SOURCE.with(Cell::take),
+            Some((source.as_ptr(), source.len())),
+            "folding scans must borrow the document buffer without copying its bytes"
+        );
+    }
+
+    #[test]
+    fn folding_range_borrows_source_for_repeated_ast_requests()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        let uri = "file:///folding-source-ast.pl";
+        let source = "sub full {\n    my $value = '😀';\n    return $value;\n}\n";
+        server.test_apply_did_open(uri, source, 1)?;
+        let shared = folding_source_arc(&server, uri)?;
+        {
+            let documents = server.documents_guard();
+            let doc = server.get_document(&documents, uri).ok_or("parsed folding document")?;
+            assert!(
+                doc.latest_parsed().is_some_and(|snapshot| snapshot.ast().is_some()),
+                "fixture must exercise AST-backed folding"
+            );
+        }
+
+        // Equal content is insufficient: this deliberately copied source must
+        // fail the buffer-identity oracle while the independent Arc is alive.
+        let copied = shared.to_string();
+        assert_eq!(copied.as_str(), shared.as_ref());
+        assert_ne!(copied.as_ptr(), shared.as_ptr());
+
+        for _ in 0..2 {
+            FOLDING_RANGE_TEST_SOURCE.with(|cell| cell.set(None));
+            let result = server.handle_folding_range(Some(json!({
+                "textDocument": { "uri": uri }
+            })))?;
+            assert_eq!(result, Some(json!([{ "startLine": 0, "endLine": 2 }])));
+            assert_folding_source_shared(&shared);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn folding_range_borrows_current_fallback_source_and_refuses_desync()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        let uri = "file:///folding-source-fallback.pl";
+        let source = "=pod\r\n😀\r\n=cut\r\nmy $broken = ;\r\n";
+        let doc = crate::state::DocumentState::new(source, 1);
+        assert!(doc.latest_parsed().is_none(), "fixture must exercise text fallback");
+        server.documents_guard().insert(server.normalize_uri_key(uri), doc);
+        let predecessor = folding_source_arc(&server, uri)?;
+
+        FOLDING_RANGE_TEST_SOURCE.with(|cell| cell.set(None));
+        let first = server.handle_folding_range(Some(json!({
+            "textDocument": { "uri": uri }
+        })))?;
+        assert_eq!(first, Some(json!([{ "startLine": 0, "endLine": 2, "kind": "comment" }])));
+        assert_folding_source_shared(&predecessor);
+
+        {
+            let mut documents = server.documents_guard();
+            let doc =
+                server.get_document_mut(&mut documents, uri).ok_or("editable folding document")?;
+            doc.update_content("my $broken = ;\n=pod\n文 😀\nmore\n=cut\n", 2);
+            assert!(doc.current_parsed().is_none(), "edited fixture must still use text fallback");
+        }
+        let current = folding_source_arc(&server, uri)?;
+        assert_ne!(predecessor.as_ptr(), current.as_ptr());
+        FOLDING_RANGE_TEST_SOURCE.with(|cell| cell.set(None));
+        let edited = server.handle_folding_range(Some(json!({
+            "textDocument": { "uri": uri, "version": 2 }
+        })))?;
+        assert_eq!(edited, Some(json!([{ "startLine": 1, "endLine": 4, "kind": "comment" }])));
+        assert_folding_source_shared(&current);
+
+        FOLDING_RANGE_TEST_SOURCE.with(|cell| cell.set(None));
+        let stale = server.handle_folding_range(Some(json!({
+            "textDocument": { "uri": uri, "version": 1 }
+        })));
+        assert!(matches!(stale, Err(error) if error.code == CONTENT_MODIFIED));
+        assert_eq!(FOLDING_RANGE_TEST_SOURCE.with(Cell::take), None);
+
+        {
+            let mut documents = server.documents_guard();
+            let doc =
+                server.get_document_mut(&mut documents, uri).ok_or("desync folding document")?;
+            doc.mark_full_sync_required();
+        }
+        let unavailable = server.handle_folding_range(Some(json!({
+            "textDocument": { "uri": uri }
+        })))?;
+        assert_eq!(unavailable, Some(json!([])));
+        assert_eq!(
+            FOLDING_RANGE_TEST_SOURCE.with(Cell::take),
+            None,
+            "full-sync refusal must happen before scanning predecessor source"
+        );
         Ok(())
     }
 
