@@ -394,13 +394,17 @@ def superseding_review_reason(reviews: Iterable[Review], selected: Review) -> st
             continue
         if not has_cumulative_review_sections(review.body):
             continue
+        submitted_at = review_time(review)
+        # Only a proved earlier instant makes identity defects irrelevant. Unknown
+        # ordering remains an instrument failure, not permission to reuse green.
+        if submitted_at < selected_at:
+            continue
         if not review.login or review.user_type != "User" or review.state.upper() not in {
             "COMMENTED", "APPROVED", "CHANGES_REQUESTED"
         } or not OID_RE.fullmatch(review.commit_oid):
             raise CurrentnessError("cumulative review has incomplete author/state/subject identity")
-        submitted_at = review_time(review)
         result = declared_review_result(review.body)
-        if submitted_at >= selected_at and result != MARKER_RESULT:
+        if result != MARKER_RESULT:
             barriers.append((submitted_at, result.lower() if result else "ambiguous"))
     if not barriers:
         return None

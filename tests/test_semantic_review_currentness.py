@@ -488,6 +488,26 @@ class LaterCumulativeReviewTests(unittest.TestCase):
         value = self.verdict(self.record(), self.record("CHANGES_REQUIRED", 2), forged)
         self.assertEqual("NOT_PROVEN", value["classification"])
 
+    def test_proven_older_invalid_identity_does_not_block_later_valid_review(self):
+        for override in ({"login": ""}, {"user_type": ""}, {"user_type": "Ghost"},
+                         {"commit_oid": "not-a-sha"}, {"state": "UNKNOWN"}):
+            with self.subTest(override=override):
+                historical = self.record("CHANGES_REQUIRED", 1, **override)
+                current = self.record(second=2)
+                self.assertEqual("REVIEW_CURRENT", self.verdict(historical, current)["classification"])
+
+    def test_equal_time_invalid_identity_still_fails_closed(self):
+        for override in ({"login": ""}, {"user_type": "Ghost"}, {"commit_oid": "bad"}):
+            with self.subTest(override=override):
+                with self.assertRaises(self.checker.CurrentnessError):
+                    self.verdict(self.record(), self.record("CHANGES_REQUIRED", **override))
+
+    def test_unorderable_historical_claim_is_not_proven_older(self):
+        # A timestamp failure cannot establish the old-record exemption.
+        historical = self.record("CHANGES_REQUIRED", submitted_at="not-a-timestamp")
+        with self.assertRaises(self.checker.CurrentnessError):
+            self.verdict(historical, self.record(second=2))
+
     def test_no_review_stays_not_proven(self):
         self.assertEqual("NOT_PROVEN", self.verdict()["classification"])
 
