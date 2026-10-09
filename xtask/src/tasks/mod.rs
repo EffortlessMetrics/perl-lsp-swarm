@@ -150,6 +150,7 @@ pub mod perl_corpus_train;
 pub mod perl_kwalitee;
 pub mod policy_cadence;
 pub mod populate_book;
+pub mod position_fixtures;
 pub mod pr;
 pub mod pr_close_proof;
 pub mod pr_ledger;
