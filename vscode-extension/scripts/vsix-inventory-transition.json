@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "owner_issue": 17200,
-  "reason": "adding the installed receipt assembler controls to test:receipt-summary grows packaged package.json by exactly 46 bytes; all 30 package members and every other byte limit remain unchanged",
-  "base_baseline_file_sha256": "8c5ba0a97559679ec4f2e33d6f5978dcf3c41c828b0afdd521e700997cbb0857",
-  "candidate_baseline_file_sha256": "ed73e4ac567f36d73e987ffda907a272e2e35afcef0cb1640eabb636300b6291",
-  "base_inventory_sha256": "85107aba396d47f6dadc11056330aa8f45e1e59452e32a1fd8dad533283540c2",
-  "candidate_inventory_sha256": "eca87de013c378aed31924190eaf783fb691e3b850fa8eb99c1eeb93efef4f6f"
+  "owner_issue": 17472,
+  "reason": "Joining remover-owned filesystem request completion changes only the generated extension bundle byte inventory.",
+  "base_baseline_file_sha256": "4b7015a4d9513bca24dabd2f163f3287d6390f2cf4cab2b4a67bc9ea38ee4f39",
+  "candidate_baseline_file_sha256": "833b67c30dfaaf09e39eb9759bbb6ff0c4545ab13ec593156457c89400af94e0",
+  "base_inventory_sha256": "6f8b14c43e8ac5316e0b05f6041d3c5ff5d9691270b3a221d8c439be9f47ed78",
+  "candidate_inventory_sha256": "a7ab35ff5bbc699e1b7c1dbdfe0784b1183c844a71db5c5463696adaddcb1573"
 }
