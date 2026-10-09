@@ -11,8 +11,10 @@ on:
     # Deliberately exclude `labeled` / `unlabeled` — labels are navigation and
     # classification metadata, not CI authority. `ready_for_review` and
     # `converted_to_draft` are kept because they change the draft-pr-check guard
-    # behavior and must trigger CI.
-    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
+    # behavior and must trigger CI. `edited` is kept because the required
+    # secret_scan gate scans the PR title and body: without it, editing either
+    # after a green run would leave a pasted credential unscanned (#17428).
+    types: [opened, synchronize, reopened, edited, ready_for_review, converted_to_draft]
   merge_group: {}
   push:
     branches: [ main, master ]
@@ -1212,7 +1214,7 @@ jobs:
             # The cheapest control remains first for fast diagnosis, but the
             # shard runner now records every independent member before it
             # returns the aggregate failure verdict.
-            gates: docs_agents_contract_workflows unsafe_prod_check msrv_authority_sync compiler_concept_ledger compiler_proof_policy compiler_concept_proof compiler_performance_receipt_contract kubernetes_dap_profiles postfix_capability_closure release_trust_invariants docs_build adr_link_check non_rust_inventory_check completion_candidate_ledger must_context_check lint_policy v2_bundle_sync nested_lock_check doctest_contract_proof doctest_enforcement version_sync agent_ledgers_validate code_action_generation_ledger
+            gates: docs_agents_contract_workflows unsafe_prod_check msrv_authority_sync compiler_concept_ledger compiler_proof_policy compiler_concept_proof compiler_performance_receipt_contract kubernetes_dap_profiles postfix_capability_closure release_trust_invariants docs_build adr_link_check non_rust_inventory_check completion_candidate_ledger must_context_check lint_policy v2_bundle_sync nested_lock_check doctest_contract_proof doctest_enforcement version_sync agent_ledgers_validate code_action_generation_ledger secret_scan
     permissions:
       contents: read
     # Run on every PR push and on push to main/master
