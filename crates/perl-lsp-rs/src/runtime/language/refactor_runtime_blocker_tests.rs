@@ -1732,8 +1732,8 @@ my $bar = Bar::process_data();
         .ok_or("missing package-qualified open-document rename result")?;
 
     let edit_count = workspace_edit_change_count(&rename_result)?;
-    assert!(
-        edit_count >= 3,
+    assert_eq!(
+        edit_count, 3,
         "package rename should edit the declaration and qualified open-document call sites: {rename_result}"
     );
 
@@ -1744,13 +1744,55 @@ my $bar = Bar::process_data();
         foo_texts.contains(&"process_records"),
         "Foo declaration edit should carry the new name: {rename_result}"
     );
-    assert!(
-        main_texts.iter().filter(|text| **text == "process_records").count() >= 2,
+    assert_eq!(
+        main_texts.iter().filter(|text| **text == "process_records").count(),
+        2,
         "main.pl should carry the renamed Foo call-site token: {rename_result}"
     );
     assert!(
         bar_texts.is_empty(),
         "Bar.pm must not be edited when renaming Foo::process_data: {rename_result}"
+    );
+
+    let mut actual_edit = rename_result.clone();
+    for edits in actual_edit
+        .get_mut("changes")
+        .and_then(Value::as_object_mut)
+        .ok_or("missing package rename changes")?
+        .values_mut()
+    {
+        edits
+            .as_array_mut()
+            .ok_or("package rename changes must be edit arrays")?
+            .sort_by_key(Value::to_string);
+    }
+    assert_eq!(
+        actual_edit,
+        json!({
+            "changes": {
+                "file:///workspace/lib/Foo.pm": [{
+                    "range": {
+                        "start": {"line": 4, "character": 4},
+                        "end": {"line": 4, "character": 16}
+                    },
+                    "newText": "process_records"
+                }],
+                "file:///workspace/main.pl": [{
+                    "range": {
+                        "start": {"line": 6, "character": 15},
+                        "end": {"line": 6, "character": 27}
+                    },
+                    "newText": "process_records"
+                }, {
+                    "range": {
+                        "start": {"line": 7, "character": 16},
+                        "end": {"line": 7, "character": 28}
+                    },
+                    "newText": "process_records"
+                }]
+            }
+        }),
+        "only Foo's declaration and qualified call tokens may be edited"
     );
 
     let explanation = explain_provider_decision(&server, "rename")?;

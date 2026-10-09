@@ -408,3 +408,120 @@ fn test_references_capability_advertised() -> TestResult {
 
     Ok(())
 }
+
+/// Real JSON-RPC references retain distinct calls and exclude non-call spellings.
+#[cfg(feature = "workspace")]
+#[test]
+fn test_unresolved_references_return_each_name_token_once() -> TestResult {
+    let doc = concat!(
+        "package main;\n",
+        "ghost_call(); ghost_call(1);\n",
+        "my $x = ghost_call();\n",
+        "my $h = { ghost_call => 1 };\n",
+        "# ghost_call()\n",
+        "my $s = 'ghost_call()';\n",
+        "ghost_callable();\n",
+        "main::ghost_call();\n",
+        "&ghost_call(1);\n",
+        "&main::ghost_call();\n",
+        "my $u = '🙂'; ghost_call();\n",
+        "sub refs_ready_marker {}\n",
+    );
+    // The marker exists only in the opened buffer, never in the disk seed.
+    let (mut harness, workspace) = LspHarness::with_workspace(&[("ghost.pl", "package main;\n")])?;
+    let uri = workspace.uri("ghost.pl");
+    harness.open_document(&uri, doc)?;
+    let ready = harness.wait_for_notification(
+        "perl-lsp/active-document-ready",
+        std::time::Duration::from_secs(10),
+    )?;
+    assert_eq!(ready["uri"], json!(uri));
+    assert_eq!(ready["generation"], json!(1));
+    harness.wait_for_symbol("refs_ready_marker", Some(&uri), std::time::Duration::from_secs(10))?;
+
+    let mut expected = vec![
+        json!({
+            "uri": uri,
+            "range": {
+                "start": {"line": 1, "character": 0},
+                "end": {"line": 1, "character": 10}
+            }
+        }),
+        json!({
+            "uri": uri,
+            "range": {
+                "start": {"line": 1, "character": 14},
+                "end": {"line": 1, "character": 24}
+            }
+        }),
+        json!({
+            "uri": uri,
+            "range": {
+                "start": {"line": 2, "character": 8},
+                "end": {"line": 2, "character": 18}
+            }
+        }),
+        json!({
+            "uri": uri,
+            "range": {
+                "start": {"line": 7, "character": 6},
+                "end": {"line": 7, "character": 16}
+            }
+        }),
+        json!({
+            "uri": uri,
+            "range": {
+                "start": {"line": 8, "character": 1},
+                "end": {"line": 8, "character": 11}
+            }
+        }),
+        json!({
+            "uri": uri,
+            "range": {
+                "start": {"line": 9, "character": 7},
+                "end": {"line": 9, "character": 17}
+            }
+        }),
+        json!({
+            "uri": uri,
+            "range": {
+                "start": {"line": 10, "character": 14},
+                "end": {"line": 10, "character": 24}
+            }
+        }),
+    ];
+    expected.sort_by_key(|location| location.to_string());
+
+    for include_declaration in [false, true] {
+        let result = harness.request(
+            "textDocument/references",
+            json!({
+                "textDocument": {"uri": uri},
+                "position": {"line": 1, "character": 2},
+                "context": {"includeDeclaration": include_declaration}
+            }),
+        )?;
+        // Parser-core readiness is separate from workspace-index currency.
+        // The live receipt must prove this request consulted both producers.
+        let explanation = harness.request(
+            "workspace/executeCommand",
+            json!({
+                "command": "perl.explainProviderDecision",
+                "arguments": [{"provider": "references"}]
+            }),
+        )?;
+        let receipt = explanation.get("request_receipt").ok_or("missing references receipt")?;
+        assert_eq!(receipt["index_state"], json!("full"));
+        assert_eq!(receipt["answering_tier"], json!("workspace_mixed"));
+        assert!(receipt["index_result_count"].as_u64().is_some_and(|count| count > 0));
+        assert!(receipt["text_result_count"].as_u64().is_some_and(|count| count > 0));
+        let mut actual = result.as_array().ok_or("references must be a non-null array")?.clone();
+        actual.sort_by_key(|location| location.to_string());
+        assert_eq!(
+            actual, expected,
+            "same-line calls must remain distinct and only name tokens may be returned"
+        );
+    }
+
+    Ok(())
+}

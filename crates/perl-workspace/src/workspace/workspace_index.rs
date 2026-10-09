@@ -6222,6 +6222,31 @@ impl IndexVisitor {
         }
     }
 
+    /// Give live call references the bare callee token shared with text search.
+    fn call_reference_range(&mut self, node: &Node, name: &str) -> Range {
+        if matches!(name, "->()" | "&{}" | "field") {
+            return self.node_to_range(node);
+        }
+        let Some(call_source) = self.document.text().get(node.location.start..node.location.end)
+        else {
+            return self.node_to_range(node);
+        };
+        let name_source = call_source.strip_prefix('&').unwrap_or(call_source).trim_start();
+        let bare_name = name.rsplit("::").next().unwrap_or(name);
+        // Preserve existing ranges when the parser name is not a literal source prefix.
+        if bare_name.is_empty() || name_source.get(..name.len()) != Some(name) {
+            return self.node_to_range(node);
+        }
+        let end = node.location.start + call_source.len() - name_source.len() + name.len();
+        let start = end - bare_name.len();
+        let ((start_line, start_col), (end_line, end_col)) =
+            self.document.line_index.range(start, end);
+        Range {
+            start: Position { byte: start, line: start_line, column: start_col },
+            end: Position { byte: end, line: end_line, column: end_col },
+        }
+    }
+
     /// **Production reference walk (perl-lsp-swarm#1711-B cutover).**
     /// Unified reference walk: produces BOTH the legacy [`FileIndex`]
     /// reference/dependency projection AND the canonical `Vec<SymbolRef>`
@@ -6435,7 +6460,7 @@ impl IndexVisitor {
 
             NodeKind::FunctionCall { name, args, .. } | NodeKind::AmperCall { name, args, .. } => {
                 let func_name = name.clone();
-                let location = self.node_to_range(node);
+                let location = self.call_reference_range(node, name);
 
                 let (pkg, bare_name) = if let Some(idx) = func_name.rfind("::") {
                     (&func_name[..idx], &func_name[idx + 2..])
@@ -8338,6 +8363,52 @@ sub test {
 
         let refs = index.find_references("$x");
         assert!(refs.len() >= 2); // Definition + at least one usage
+    }
+
+    #[test]
+    fn test_call_reference_ranges_preserve_callee_offsets() {
+        let index = WorkspaceIndex::new();
+        let uri = "file:///call-offsets.pl";
+        let code = concat!(
+            "package main;\n",
+            "ghost_call(); ghost_call(1);\n",
+            "my $x = ghost_call();\n",
+            "main::ghost_call();\n",
+            "&ghost_call(1);\n",
+            "&main::ghost_call();\n",
+            "my $u = '🙂'; ghost_call();\n",
+        );
+        must(index.index_file(must(url::Url::parse(uri)), code.to_string()));
+        let key = SymbolKey {
+            pkg: Arc::from("main"),
+            name: Arc::from("ghost_call"),
+            sigil: None,
+            kind: SymKind::Sub,
+        };
+        let mut actual: Vec<_> = index
+            .find_refs(&key)
+            .into_iter()
+            .map(|location| {
+                (
+                    location.uri,
+                    location.range.start.line,
+                    location.range.start.column,
+                    location.range.end.line,
+                    location.range.end.column,
+                )
+            })
+            .collect();
+        actual.sort();
+        let expected = vec![
+            (uri.to_string(), 1, 0, 1, 10),
+            (uri.to_string(), 1, 14, 1, 24),
+            (uri.to_string(), 2, 8, 2, 18),
+            (uri.to_string(), 3, 6, 3, 16),
+            (uri.to_string(), 4, 1, 4, 11),
+            (uri.to_string(), 5, 7, 5, 17),
+            (uri.to_string(), 6, 14, 6, 24),
+        ];
+        assert_eq!(actual, expected, "the live index must emit only callee tokens in UTF-16");
     }
 
     #[test]
