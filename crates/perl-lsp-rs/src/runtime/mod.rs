@@ -20,6 +20,7 @@ mod diagnostics_sink;
 mod dispatch;
 mod document_access;
 mod document_symbols_sink;
+mod exit_policy;
 /// File discovery abstraction for workspace scanning
 pub mod file_discovery;
 /// File watcher change debouncer for bulk operation handling
@@ -195,6 +196,14 @@ pub struct LspServer {
         Mutex<Option<lifecycle::position_encoding::PositionEncodingSessionContext>>,
     /// Whether shutdown was received (for LSP-compliant exit handling)
     shutdown_received: AtomicBool,
+    /// What an `exit` notification ends: the process (stdio default) or only
+    /// this connection (socket mode, #17331). Set once at construction.
+    exit_policy: exit_policy::ExitPolicy,
+    /// Woken when `exit` should end this connection's serve loop without
+    /// terminating the process (socket mode, #17331). `notify_one` stores a
+    /// permit, so a notify that races an ingress loop not yet parked on the
+    /// select arm is never lost.
+    connection_exit: Arc<tokio::sync::Notify>,
     /// Pending `window/logMessage` text to emit once the client has sent the
     /// `initialized` notification (notifications must not be sent before the
     /// initialize response is delivered). Currently used for the JetBrains

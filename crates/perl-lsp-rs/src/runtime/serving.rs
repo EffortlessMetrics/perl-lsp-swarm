@@ -10,8 +10,14 @@ use super::{
     io, log_response, scheduler,
 };
 use crate::protocol::JsonRpcId;
+use std::time::Duration;
 
 const CANCELLED_SET_CAP: usize = 256;
+
+/// Bounded wait for the outbound writer to settle before a socket frontend
+/// closes the peer socket. Matches the `exit` path's settlement budget
+/// (`dispatch::lifecycle::OUTBOUND_SETTLEMENT_TIMEOUT`).
+const PEER_CLOSE_SETTLEMENT_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[allow(dead_code)]
 impl LspServer {
@@ -90,6 +96,16 @@ impl LspServer {
                     response_delivery_failed = true;
                     break;
                 }
+                // Per-connection `exit` (#17331): the socket frontend's exit
+                // handler ends this session only, so the process keeps
+                // accepting and serving other connections. Only the exit
+                // handler fires this, and only under `ExitPolicy::
+                // EndConnection`; under `TerminateProcess` the process is
+                // gone before any notify could matter.
+                _ = self.connection_exit_notified() => {
+                    tracing::info!("connection exit received; ending this session, server keeps serving");
+                    break;
+                }
                 request = rx.recv() => request,
             };
             let Some(request) = request else { break };
@@ -141,6 +157,32 @@ impl LspServer {
     /// frontends use this to close the peer while scheduler cleanup proceeds.
     pub(crate) async fn response_delivery_failure_notified(&self) {
         self.outbound.response_failure_notified().await;
+    }
+
+    /// Settle the outbound writer before a socket frontend closes the peer
+    /// socket. `serve_async` drains scheduler workers but does not wait for
+    /// the dedicated outbound writer thread, so responses already accepted
+    /// from those workers can still be queued when the serve loop ends.
+    /// Bounded like the `exit` settlement; a timeout leaves the writer
+    /// unsettled and is reported as such, and the peer close proceeds anyway
+    /// so a wedged writer cannot hold the dead session open.
+    pub(crate) fn settle_outbound_for_teardown(&self) {
+        let settlement = self.outbound.close_and_wait(PEER_CLOSE_SETTLEMENT_TIMEOUT);
+        match settlement.as_ref() {
+            Some(outcome) => outcome.report_settlement(),
+            None => tracing::warn!("outbound writer did not settle before peer close"),
+        }
+    }
+
+    /// End this connection's serve loop after a protocol-clean `exit`
+    /// (#17331). Fired only under `ExitPolicy::EndConnection`, after the
+    /// outbound writer has settled.
+    pub(crate) fn notify_connection_exit(&self) {
+        self.connection_exit.notify_one();
+    }
+
+    async fn connection_exit_notified(&self) {
+        self.connection_exit.notified().await;
     }
 
     pub(crate) fn response_delivery_failed(&self) -> bool {
