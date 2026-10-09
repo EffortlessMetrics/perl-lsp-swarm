@@ -17,6 +17,7 @@ import os
 import re
 import subprocess
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable, Mapping, NamedTuple, Optional
 
@@ -50,7 +51,7 @@ RESULT_SECTION_RE = re.compile(
 ANY_SECTION_RE = re.compile(r"^[ \t]*##[ \t]", re.MULTILINE)
 RESULT_ITEM_RE = re.compile(r"^[ \t]*[-*][ \t]*([A-Z_]+)\b", re.MULTILINE)
 # Stdout JSON payload version. The marker envelope (`semantic-review:v1`) and the
-# stdout JSON payload are two distinct wire surfaces: the marker is parsed by the
+# stdout payload are two distinct wire surfaces: the marker is parsed by the
 # campaign review pipeline, the stdout payload is parsed by upstream operators
 # and gates. Pin the payload version explicitly so a shape bump (e.g. a new
 # `finalised_at` key) is observable at the consumer side rather than silent.
@@ -300,10 +301,16 @@ def declared_review_result(body: str) -> Optional[str]:
     return declared[0]
 
 
+def has_cumulative_review_sections(body: str) -> bool:
+    """Use the same reader-visible section boundary for positive and adverse reviews."""
+    headings = {line.strip() for line in outside_fences(body).splitlines()}
+    return all(section in headings for section in REQUIRED_SECTIONS) and bool(
+        {"## Findings", "## No material findings"}.intersection(headings)
+    )
+
+
 def parse_marker(body: str, expected_pr: int, review_commit: str) -> Optional[Marker]:
-    if not all(section in body for section in REQUIRED_SECTIONS):
-        return None
-    if "## Findings" not in body and "## No material findings" not in body:
+    if not has_cumulative_review_sections(body):
         return None
     if declared_review_result(body) != MARKER_RESULT:
         return None
@@ -344,14 +351,67 @@ def latest_valid_review(
 ) -> tuple[Review, Marker] | None:
     candidates: list[tuple[Review, Marker]] = []
     for review in reviews:
-        if review.user_type.lower() == "bot" or review.state.upper() == "DISMISSED":
+        if review.user_type.lower() == "bot" or review.state.upper() not in {
+            "COMMENTED", "APPROVED", "CHANGES_REQUESTED"
+        }:
             continue
         marker = parse_marker(review.body, expected_pr, review.commit_oid)
         if marker is not None:
             candidates.append((review, marker))
     if not candidates:
         return None
-    return max(candidates, key=lambda pair: pair[0].submitted_at)
+    return max(candidates, key=lambda pair: review_time(pair[0]))
+
+
+def review_time(review: Review) -> datetime:
+    """Compare actual submitted instants; absent ordering evidence is not green."""
+    try:
+        instant = datetime.fromisoformat(review.submitted_at.replace("Z", "+00:00"))
+    except ValueError as error:
+        raise CurrentnessError("cumulative review has invalid submitted_at") from error
+    if instant.tzinfo is None:
+        raise CurrentnessError("cumulative review submitted_at has no timezone")
+    return instant
+
+
+def superseding_review_reason(reviews: Iterable[Review], selected: Review) -> str | None:
+    """A later cumulative COMMENT verdict can withdraw an earlier clean marker.
+
+    The v1 marker still only authorizes REVIEW_CURRENT. Adverse outcomes need no
+    green marker to invalidate that authorization (#15010). Ordinary commentary
+    and quoted templates are not cumulative review declarations. Native threads
+    and change-request reviews remain independently governed by convergence.
+
+    Equal timestamps cannot establish that green came last, so a conflicting
+    declaration at the same instant blocks. A later valid cumulative rereview
+    can restore eligibility; its truth and finding dispositions remain review
+    obligations, not facts this reducer can manufacture.
+    """
+    selected_at = review_time(selected)
+    barriers: list[tuple[datetime, str]] = []
+    for review in reviews:
+        if review.user_type.lower() == "bot" or review.state.upper() in {"DISMISSED", "PENDING"}:
+            continue
+        if not has_cumulative_review_sections(review.body):
+            continue
+        submitted_at = review_time(review)
+        # Only a proved earlier instant makes identity defects irrelevant. Unknown
+        # ordering remains an instrument failure, not permission to reuse green.
+        if submitted_at < selected_at:
+            continue
+        if not review.login or review.user_type != "User" or review.state.upper() not in {
+            "COMMENTED", "APPROVED", "CHANGES_REQUESTED"
+        } or not OID_RE.fullmatch(review.commit_oid):
+            raise CurrentnessError("cumulative review has incomplete author/state/subject identity")
+        result = declared_review_result(review.body)
+        if result != MARKER_RESULT:
+            barriers.append((submitted_at, result.lower() if result else "ambiguous"))
+    if not barriers:
+        return None
+    newest = max(instant for instant, _ in barriers)
+    outcomes = {result for instant, result in barriers if instant == newest}
+    suffix = next(iter(outcomes)) if len(outcomes) == 1 else "ambiguous"
+    return "later_cumulative_review_" + suffix
 
 
 def fenced_blocks(text: str) -> list[str]:
@@ -427,8 +487,8 @@ def neutral_followup(root: Path, reviewed_head: str, current_head: str) -> tuple
         return False, "post-review change is not in a whitespace-insensitive prose file"
 
     # A prose extension does not make the whole file whitespace-insensitive. Fenced
-    # blocks in these files carry commands and configuration, where inserting or
-    # removing a space changes what runs, so they are compared byte-for-byte.
+    # blocks in these files carry commands and configuration, where they are
+    # compared byte-for-byte.
     for path in paths:
         if fenced_blocks(blob_text(root, reviewed_head, path)) != fenced_blocks(
             blob_text(root, current_head, path)
@@ -464,6 +524,7 @@ def evaluate(
     reviews: Iterable[Review],
 ) -> dict[str, Any]:
     ensure_commit(root, current_head)
+    reviews = tuple(reviews)
     selected = latest_valid_review(reviews, pr)
     if selected is None:
         return {
@@ -475,6 +536,17 @@ def evaluate(
             "carried_forward": False,
         }
     review, marker = selected
+    barrier = superseding_review_reason(reviews, review)
+    if barrier is not None:
+        return {
+            "classification": "NOT_PROVEN",
+            "reason": barrier,
+            "pr": pr,
+            "current_head": current_head,
+            "reviewed_head": marker.head,
+            "reviewer": review.login,
+            "carried_forward": False,
+        }
     actual_digest = subject_digest(root, marker.merge_base, marker.head)
     if actual_digest != marker.subject_sha256:
         return {
