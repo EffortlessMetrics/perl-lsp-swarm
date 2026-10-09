@@ -34,9 +34,8 @@
 #      later during artifact upload.
 #   2. Infra termination requires positive platform teardown evidence
 #      produced by the runner itself, not by the analyzed workload. Log mode
-#      (same marker set as the landed #12771 classifier):
+#      (exit 143 remains diagnostic because the workload can emit it):
 #        "The runner has received a shutdown signal"
-#        "Process completed with exit code 143."
 #        "The operation was canceled."
 #      API-evidence mode adds the annotation-only marker the log never gets
 #      to print, and the steps-state shape of an eviction that killed the
@@ -126,7 +125,8 @@ emit_verdict() {
     # truncation point, so it must never produce infra-no-proof even when a
     # teardown marker sits inside the scanned prefix.
     class="ripr-failure"
-  elif [ "$shut_hits" -gt 0 ] || [ "$term143_hits" -gt 0 ] || [ "$cancel_hits" -gt 0 ]; then
+  elif [ "$shut_hits" -gt 0 ] || [ "$cancel_hits" -gt 0 ]; then
+    # Exit 143 alone is not runner-teardown evidence; retain its counter.
     # Boundary rule 3: positive runner-teardown evidence only.
     class="infra-no-proof"
   else
@@ -237,8 +237,9 @@ emit_api_verdict() {
     # never eligible for the bounded infra retry. A failed receipt-capable
     # step without a scanned receipt has already failed closed above.
     class="configured-timeout-no-proof"
-  elif [ "$shut_hits" -gt 0 ] || [ "$term143_hits" -gt 0 ] || [ "$cancel_hits" -gt 0 ] || [ "$lost_hits" -gt 0 ]; then
-    # Boundary rule 2a: positive teardown annotations only.
+  elif [ "$shut_hits" -gt 0 ] || [ "$cancel_hits" -gt 0 ] || [ "$lost_hits" -gt 0 ]; then
+    # Boundary rule 2a: positive teardown annotations only. Exit 143 is
+    # diagnostic: RIPR itself can SIGTERM its child at the guidance bound.
     class="infra-no-proof"
   elif [ "$stuck_hits" -gt 0 ] && [ "$job_conclusion" = "failure" ]; then
     # Boundary rule 2b: the lane failed while a step it had started never
