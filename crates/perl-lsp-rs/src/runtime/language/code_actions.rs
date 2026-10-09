@@ -3561,8 +3561,10 @@ my $x = 1 + 2;
     // discrimination until #6970's remediation envelope changes fix payloads.
 
     /// Document tripping `native.security.backtick_exec` plus a Safe-fix control
-    /// row (`native.testing.require_use_strict`) that becomes a critic quickfix.
-    const PARITY_DOC: &str = "my $out = `ls -la`;\nprint 1;\n";
+    /// row (`native.common.unreachable_code`) that becomes a critic quickfix.
+    /// Explicit pragmas keep this native-only control independent of the
+    /// merged pragma identities and their ordinary core actions.
+    const PARITY_DOC: &str = "use strict;\nuse warnings;\nmy $out = `ls -la`;\nprint $out;\nsub helper {\nreturn 1;\nprint \"dead\";\n}\n";
 
     fn critic_quickfix_codes(actions: &[Value]) -> Vec<String> {
         actions
@@ -3599,7 +3601,7 @@ my $x = 1 + 2;
         );
 
         assert!(
-            codes.iter().any(|code| code == "native.testing.require_use_strict"),
+            codes.iter().any(|code| code == "native.common.unreachable_code"),
             "baseline proves the critic quickfix pipeline runs on this document: {codes:?}"
         );
         Ok(())
@@ -3640,7 +3642,7 @@ my $x = 1 + 2;
             );
         }
         assert!(
-            codes.iter().any(|code| code == "native.testing.require_use_strict"),
+            codes.iter().any(|code| code == "native.common.unreachable_code"),
             "excluding PL601 must leave unrelated critic quickfixes alone: {codes:?}"
         );
         Ok(())
@@ -3674,7 +3676,7 @@ my $x = 1 + 2;
         );
 
         assert!(
-            !codes.iter().any(|code| code == "native.testing.require_use_strict"),
+            !codes.iter().any(|code| code == "native.common.unreachable_code"),
             "threshold 5 must gate Harsh critic quickfixes off like the diagnostics plane: \
              {codes:?}"
         );

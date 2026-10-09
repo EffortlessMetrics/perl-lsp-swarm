@@ -81,6 +81,18 @@ impl<'a> CriticObservedIdentity<'a> {
 }
 
 impl CriticObservedIdentity<'static> {
+    /// Built-in PL100 missing file-level `strict` pragma.
+    #[must_use]
+    pub(crate) const fn built_in_missing_strict() -> CriticObservedIdentity<'static> {
+        Self::reviewed(CriticFindingOrigin::BuiltInDiagnostic, "PL100", CriticFindingShape::General)
+    }
+
+    /// Built-in PL101 missing file-level `warnings` pragma.
+    #[must_use]
+    pub(crate) const fn built_in_missing_warnings() -> CriticObservedIdentity<'static> {
+        Self::reviewed(CriticFindingOrigin::BuiltInDiagnostic, "PL101", CriticFindingShape::General)
+    }
+
     /// Built-in PL404 finding comparing against an explicit literal `undef`.
     #[must_use]
     pub const fn built_in_literal_undef_comparison() -> CriticObservedIdentity<'static> {
