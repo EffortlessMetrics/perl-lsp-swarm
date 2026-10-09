@@ -38,9 +38,13 @@ impl Checkpointable for PerlLexer<'_> {
             logical_source,
             generation,
             content_digest: _,
+            trivia_tokens,
         } = self;
         let _ = input_bytes;
         let _ = scan_limit;
+        // Trivia is operation-local accumulation (#17295), not replay state:
+        // named here only to keep the projection exhaustive, never captured.
+        let _ = trivia_tokens;
 
         let context = if matches!(mode, LexerMode::InFormatBody) {
             CheckpointContext::Format {
@@ -162,6 +166,11 @@ impl Checkpointable for PerlLexer<'_> {
         });
         self.eof_emitted = replay.eof_emitted;
         self.scan_limit = None;
+        // Trivia recorded before the checkpoint is dropped (#17295): the
+        // resumed lexer re-lexes from the restored position and re-records
+        // whatever it skips from there, so keeping the old entries would
+        // double them in the drained stream.
+        self.trivia_tokens.clear();
         if matches!(replay.context, CheckpointContext::Format { .. }) {
             self.mode = LexerMode::InFormatBody;
         }

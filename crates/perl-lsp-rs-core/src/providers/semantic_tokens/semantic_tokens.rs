@@ -1207,6 +1207,34 @@ pub fn collect_semantic_tokens_controlled(
         ));
     }
 
+    // 1b) Trivia side channel (#17295): the lexer never places `Comment`/`Pod`
+    // in the main token stream, yet the legend advertises `comment` (index 15)
+    // and the `documentation` modifier (bit 8). Drain the spans the lexer
+    // recorded while skipping and paint them like any other lexer token; the
+    // finalize sort re-establishes source order, and overlapping overlays are
+    // resolved by the usual longer-wins rule.
+    for trivia in lexer.take_trivia_tokens() {
+        let modifiers = match trivia.token_type {
+            TokenType::Comment(_) => 0,
+            // POD documentation blocks carry the `documentation` modifier
+            // (legend bit 8 = 256), distinguishing them from `#` comments.
+            TokenType::Pod => 256,
+            // The side channel only records comments and POD.
+            _ => continue,
+        };
+        controlled_value!(traversal.admit_work());
+        controlled_value!(push_line_contained_segments(
+            text,
+            trivia.start,
+            trivia.end,
+            to_pos16,
+            kind_idx(&leg, "comment"),
+            modifiers,
+            &mut lexer_tokens,
+            &mut traversal,
+        ));
+    }
+
     let const_fast_enabled = controlled_value!(ast_uses_const_fast(ast, &mut traversal));
     let readonly_enabled = controlled_value!(ast_uses_readonly(ast, &mut traversal));
 
@@ -1982,6 +2010,18 @@ mod tests {
     /// Shared by the heredoc-injection tests so boundary and recovery cases read
     /// one production projection instead of each rebuilding a private decoder.
     fn painted_tokens(source: &str, kind: &str) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+        Ok(painted_tokens_with_modifiers(source, kind)?.into_iter().map(|(text, _)| text).collect())
+    }
+
+    /// Decode `(source text, modifiers)` for every token painted with `kind`.
+    ///
+    /// Companion to [`painted_tokens`] for claims about modifier reachability:
+    /// the trivia side channel (#17295) paints `comment` tokens, and POD spans
+    /// must arrive carrying the `documentation` modifier (legend bit 8).
+    fn painted_tokens_with_modifiers(
+        source: &str,
+        kind: &str,
+    ) -> Result<Vec<(String, u32)>, Box<dyn std::error::Error>> {
         let mut parser = Parser::new(source);
         let ast = parser.parse()?;
         let kind = *legend().map.get(kind).ok_or("semantic-token kind missing")?;
@@ -1989,7 +2029,7 @@ mod tests {
         let mut line = 0u32;
         let mut column = 0u32;
         let mut result = Vec::new();
-        for [delta_line, delta_column, length, token_type, _modifiers] in
+        for [delta_line, delta_column, length, token_type, modifiers] in
             collect_semantic_tokens(&ast, source, &|offset| pos16(source, offset))
         {
             if delta_line == 0 {
@@ -2007,7 +2047,7 @@ mod tests {
                 let utf16: Vec<u16> = source_line.encode_utf16().collect();
                 let end = (column as usize).saturating_add(length as usize);
                 let slice = utf16.get(column as usize..end).ok_or("token range out of bounds")?;
-                result.push(String::from_utf16(slice)?);
+                result.push((String::from_utf16(slice)?, modifiers));
             }
         }
         Ok(result)
@@ -3879,6 +3919,54 @@ print "ok" foreach @ys;
         anyhow::ensure!(
             segments_of("ab\r\ncd", 2, 3)?.is_empty(),
             "terminator-only intersection must not emit a token"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn comment_heavy_source_paints_comment_tokens_in_full_collection()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Coverage proof for #17295: a shebang, a standalone comment, and a
+        // trailing comment must yield `comment` tokens through the same
+        // collector that backs `textDocument/semanticTokens/full`.
+        let source = "#!/usr/bin/perl\nuse strict;\n# leading comment\nmy $x = 1; # trailing\n";
+
+        let comments = painted_tokens_with_modifiers(source, "comment")?;
+
+        assert_eq!(
+            comments.iter().map(|(text, _)| text.as_str()).collect::<Vec<_>>(),
+            ["#!/usr/bin/perl", "# leading comment", "# trailing"],
+            "shebang and both # comments must be painted"
+        );
+        assert!(
+            comments.iter().all(|(_, modifiers)| *modifiers == 0),
+            "`#` comments carry no modifiers: {comments:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn pod_block_paints_comment_tokens_with_documentation_modifier()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Legend-conformance row for #17295: the advertised legend puts
+        // `comment` at type index 15 and `documentation` at modifier bit 8,
+        // and the collector must actually emit (comment, bit 8) for POD so the
+        // modifier is reachable rather than merely advertised.
+        let source = "=pod\nGarden::Plant docs\n=cut\nmy $x = 1;\n";
+        let legend = legend();
+        assert_eq!(legend.token_types.get(15).map(String::as_str), Some("comment"));
+        assert_eq!(legend.modifiers.get(8).map(String::as_str), Some("documentation"));
+
+        let comments = painted_tokens_with_modifiers(source, "comment")?;
+
+        assert_eq!(
+            comments.iter().map(|(text, _)| text.as_str()).collect::<Vec<_>>(),
+            ["=pod", "Garden::Plant docs", "=cut"],
+            "every POD line must paint as a comment segment"
+        );
+        assert!(
+            comments.iter().all(|(_, modifiers)| *modifiers == 256),
+            "POD tokens must carry exactly the documentation modifier (bit 8 = 256): {comments:?}"
         );
         Ok(())
     }
