@@ -1,0 +1,322 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/EffortlessMetrics/perl-lsp-swarm/schemas/readiness_rehearsal.v1.schema.json",
+  "title": "readiness_rehearsal.v1",
+  "description": "Versioned no-publish distribution rehearsal receipt (#16785). JSON and human output are projections of one typed result. Semantic identity excludes timestamps, temporary absolute paths, and runner noise. Downstream leaves populate generic stages without schema forks. Public channels are never mutated here.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "repository",
+    "candidate_id",
+    "package_version",
+    "extension_version",
+    "stages",
+    "cleanup",
+    "mutations",
+    "limitations",
+    "owning_issues",
+    "published_channels",
+    "release_cut",
+    "status",
+    "receipt_digest"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "readiness_rehearsal.v1"
+    },
+    "repository": {
+      "$ref": "#/$defs/repository"
+    },
+    "candidate_id": {
+      "$ref": "#/$defs/bounded_id"
+    },
+    "package_version": {
+      "$ref": "#/$defs/bounded_id"
+    },
+    "extension_version": {
+      "$ref": "#/$defs/bounded_id"
+    },
+    "stages": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/stage"
+      }
+    },
+    "cleanup": {
+      "$ref": "#/$defs/cleanup"
+    },
+    "mutations": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/mutation"
+      }
+    },
+    "limitations": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/note"
+      }
+    },
+    "owning_issues": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/issue_ref"
+      }
+    },
+    "published_channels": {
+      "type": "array",
+      "maxItems": 0,
+      "items": false,
+      "description": "Must remain empty. This receipt never authorizes a public channel."
+    },
+    "release_cut": {
+      "const": false
+    },
+    "status": {
+      "$ref": "#/$defs/status"
+    },
+    "receipt_digest": {
+      "$ref": "#/$defs/sha256",
+      "description": "Domain-separated SHA-256 over canonical JSON excluding this field. Observation time and temporary absolute paths are not inputs."
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "git_sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "bounded_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:@+-]*$"
+    },
+    "note": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512
+    },
+    "issue_ref": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^#[1-9][0-9]*$"
+    },
+    "status": {
+      "type": "string",
+      "enum": ["pass", "limited", "failed", "not_proven"]
+    },
+    "identity_kind": {
+      "type": "string",
+      "enum": ["source_revision", "artifact_bytes", "installed_subject", "instrument"]
+    },
+    "path_role": {
+      "type": "string",
+      "enum": [
+        "staged_install",
+        "vsix_bundled_server",
+        "archive_extracted",
+        "workspace_target",
+        "unmanaged"
+      ]
+    },
+    "repository": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["head_sha", "kind", "tree_status", "lockfiles", "toolchains"],
+      "properties": {
+        "head_sha": {
+          "$ref": "#/$defs/git_sha"
+        },
+        "kind": {
+          "const": "source_revision"
+        },
+        "tree_status": {
+          "type": "string",
+          "enum": ["clean", "dirty", "not_proven"]
+        },
+        "lockfiles": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["cargo_lock", "npm_lock"],
+          "properties": {
+            "cargo_lock": { "$ref": "#/$defs/sha256" },
+            "npm_lock": { "$ref": "#/$defs/sha256" }
+          }
+        },
+        "toolchains": {
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        }
+      }
+    },
+    "stage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "mandatory",
+        "status",
+        "instrument",
+        "artifacts",
+        "installed",
+        "limitations",
+        "owning_issues"
+      ],
+      "properties": {
+        "id": { "$ref": "#/$defs/bounded_id" },
+        "mandatory": { "type": "boolean" },
+        "status": { "$ref": "#/$defs/status" },
+        "instrument": { "$ref": "#/$defs/instrument" },
+        "artifacts": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/artifact" }
+        },
+        "installed": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/installed" }
+        },
+        "limitations": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/note" }
+        },
+        "owning_issues": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/issue_ref" }
+        }
+      }
+    },
+    "instrument": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["role", "identity", "kind", "availability", "outcome"],
+      "properties": {
+        "role": { "$ref": "#/$defs/bounded_id" },
+        "identity": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "kind": { "const": "instrument" },
+        "availability": {
+          "type": "string",
+          "enum": ["available", "unavailable", "not_proven"]
+        },
+        "outcome": {
+          "type": "string",
+          "enum": ["completed", "cancelled", "timed_out", "skipped", "malformed", "stale"]
+        },
+        "exit_code": {
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "maximum": 255
+        }
+      }
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["role", "name", "kind", "digest", "size", "candidate_id", "source_sha"],
+      "properties": {
+        "role": { "$ref": "#/$defs/bounded_id" },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*\\\\)[A-Za-z0-9._/-]+$"
+        },
+        "kind": { "const": "artifact_bytes" },
+        "digest": { "$ref": "#/$defs/sha256" },
+        "size": { "type": "integer", "minimum": 0 },
+        "candidate_id": { "$ref": "#/$defs/bounded_id" },
+        "source_sha": { "$ref": "#/$defs/git_sha" },
+        "members": {
+          "type": "array",
+          "description": "Presence of this field, not artifact.role, identifies an archive. Empty member lists are rejected. ArchiveExtracted installed digests must match a member.",
+          "items": { "$ref": "#/$defs/archive_member" }
+        },
+        "declared_server_identity": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        }
+      }
+    },
+    "archive_member": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "digest", "size"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*\\\\)[A-Za-z0-9._/-]+$"
+        },
+        "digest": { "$ref": "#/$defs/sha256" },
+        "size": { "type": "integer", "minimum": 0 },
+        "checksum": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "installed": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["role", "kind", "identity", "digest", "path_role"],
+      "properties": {
+        "role": { "$ref": "#/$defs/bounded_id" },
+        "kind": { "const": "installed_subject" },
+        "identity": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "digest": { "$ref": "#/$defs/sha256" },
+        "path_role": { "$ref": "#/$defs/path_role" }
+      }
+    },
+    "cleanup": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["disposition", "status"],
+      "properties": {
+        "disposition": {
+          "type": "string",
+          "enum": ["cleaned", "failed", "skipped", "not_proven"]
+        },
+        "status": { "$ref": "#/$defs/status" }
+      }
+    },
+    "mutation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "attempted"],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "tag",
+            "release",
+            "registry",
+            "marketplace",
+            "container",
+            "secret",
+            "remote_branch"
+          ]
+        },
+        "attempted": { "const": true }
+      }
+    }
+  }
+}
