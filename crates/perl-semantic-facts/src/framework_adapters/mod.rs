@@ -28,5 +28,8 @@ pub mod mojolicious;
 /// Checked Moose and Moose::Role activation detection (#7788).
 pub mod moose;
 
+/// Literal Function::Parameters and Method::Signatures declaration facts (#16808).
+pub mod signature_keywords;
+
 /// Version-bound DBIx::QuickORM API return and preserving-method contract (#13374).
 pub mod quickorm_api;
