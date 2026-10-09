@@ -20,6 +20,11 @@
 //! let limits = LspLimits::default();
 //! let results = my_query().take(limits.references_result_cap);
 //! ```
+//!
+//! The crate-private [`accepted`] view is the generation-bound contract for
+//! #16840 / #10917. It does not replace [`LSP_LIMITS`] in this slice.
+
+pub(crate) mod accepted;
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
