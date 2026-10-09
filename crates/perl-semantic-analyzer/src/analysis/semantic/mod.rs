@@ -2488,6 +2488,196 @@ my %config = (key => "value");
     }
 
     // -----------------------------------------------------------------------
+    // Foreach iterator indexing (issue #17297)
+    // -----------------------------------------------------------------------
+
+    /// `for my $item (LIST)` binds `$item` in the loop-body scope like any
+    /// other lexical: both the declaration site and use sites must resolve to
+    /// the loop-variable symbol, not fall through to the enclosing sub.
+    #[test]
+    fn test_foreach_my_iterator_is_indexed() -> Result<(), Box<dyn std::error::Error>> {
+        let code = r#"sub fold {
+    my ($items, $initial) = @_;
+    my $acc = $initial;
+    for my $item (@$items) {
+        $acc = $acc . $item;
+    }
+    return $acc;
+}
+"#;
+        let mut parser = Parser::new(code);
+        let ast = parser.parse()?;
+        let analyzer = SemanticAnalyzer::analyze_with_source(&ast, code);
+
+        // Declaration site: the smallest symbol at the iterator token is the
+        // loop variable itself. (`"$item ("` targets the iterator, not the
+        // `$items` parameter.)
+        let decl_pos = code.find("$item (").ok_or("iterator declaration not found")? + 2;
+        let decl = analyzer.find_definition(decl_pos).ok_or("iterator decl unresolved")?;
+        assert!(
+            decl.kind.is_variable(),
+            "iterator declaration must resolve to a variable, got kind {:?}",
+            decl.kind
+        );
+        assert_eq!(decl.name, "item", "iterator must bind `$item`");
+
+        // Use site inside the loop body: the reference resolves to the same
+        // loop-scoped symbol.
+        let use_pos = code.rfind("$item;").ok_or("iterator use not found")? + 2;
+        let used = analyzer.find_definition(use_pos).ok_or("iterator use unresolved")?;
+        assert_eq!(
+            used.location, decl.location,
+            "use of `$item` in the loop body must resolve to the loop-variable declaration"
+        );
+
+        // Control: an ordinary `my` in the same sub keeps resolving.
+        let acc_pos = code.find("$acc").ok_or("$acc not found")? + 2;
+        let acc = analyzer.find_definition(acc_pos).ok_or("$acc unresolved")?;
+        assert!(acc.kind.is_variable(), "ordinary `my` must stay a variable");
+        Ok(())
+    }
+
+    /// Bare `for $x (LIST)` keeps its implicit-declaration binding: the loop
+    /// variable is still a variable symbol in the loop scope.
+    #[test]
+    fn test_foreach_bare_iterator_stays_indexed() -> Result<(), Box<dyn std::error::Error>> {
+        let code = r#"sub total {
+    my $sum = 0;
+    for $n (1, 2, 3) {
+        $sum = $sum + $n;
+    }
+    return $sum;
+}
+"#;
+        let mut parser = Parser::new(code);
+        let ast = parser.parse()?;
+        let analyzer = SemanticAnalyzer::analyze_with_source(&ast, code);
+
+        let decl_pos = code.find("$n").ok_or("bare iterator not found")? + 2;
+        let decl = analyzer.find_definition(decl_pos).ok_or("bare iterator unresolved")?;
+        assert!(
+            decl.kind.is_variable(),
+            "bare iterator must resolve to a variable, got kind {:?}",
+            decl.kind
+        );
+        assert_eq!(decl.name, "n");
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------------
+    // POD block selection for hover docs (issue #17298)
+    // -----------------------------------------------------------------------
+
+    /// Hover documentation for a sub is the POD block immediately preceding
+    /// it — not every block from the first `=head1` onward, and not the
+    /// source of intermediate subs (#17298). Block directives are rendered
+    /// or dropped rather than passed through raw.
+    #[test]
+    fn test_sub_docs_attach_only_the_preceding_pod_block() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let code = r#"=head1 NAME
+
+Widget::Fixture - a small fixture package for hover testing.
+
+=head1 DESCRIPTION
+
+This module exists to exercise POD selection.
+
+=cut
+
+=head2 new
+
+Constructor. Takes a name.
+
+=cut
+
+sub new {
+    my ($class, %opts) = @_;
+    return bless {}, $class;
+}
+
+=head2 add_widgets
+
+Adds a number of widgets to the garden.
+
+=cut
+
+sub add_widgets {
+    return 1;
+}
+"#;
+        let mut parser = Parser::new(code);
+        let ast = parser.parse()?;
+        let analyzer = SemanticAnalyzer::analyze_with_source(&ast, code);
+
+        let sub_symbols =
+            analyzer.symbol_table().find_symbol("add_widgets", 0, SymbolKind::Subroutine);
+        assert!(!sub_symbols.is_empty(), "sub add_widgets not found");
+        let hover = analyzer.hover_at(sub_symbols[0].location).ok_or("hover not found")?;
+        let doc = hover.documentation.as_deref().ok_or("documentation not attached")?;
+
+        // The immediately-preceding block's text is attached.
+        assert!(
+            doc.contains("Adds a number of widgets"),
+            "the preceding =head2 block must be attached, got: {doc}"
+        );
+        // Nothing from earlier blocks or intermediate subs.
+        assert!(
+            !doc.contains("a small fixture package"),
+            "the NAME section leaked into the sub's docs, got: {doc}"
+        );
+        assert!(
+            !doc.contains("exercise POD selection"),
+            "the DESCRIPTION section leaked into the sub's docs, got: {doc}"
+        );
+        assert!(
+            !doc.contains("Constructor"),
+            "the `new` section leaked into the sub's docs, got: {doc}"
+        );
+        assert!(
+            !doc.contains("bless"),
+            "the `sub new` source leaked into the sub's docs, got: {doc}"
+        );
+        // No raw block directives.
+        assert!(!doc.contains("=head"), "raw =head directive leaked, got: {doc}");
+        assert!(!doc.contains("=cut"), "raw =cut directive leaked, got: {doc}");
+        Ok(())
+    }
+
+    /// A POD block with code between it and the sub does not attach: only
+    /// the block *immediately* preceding the declaration is documentation.
+    #[test]
+    fn test_pod_block_with_code_after_does_not_attach() -> Result<(), Box<dyn std::error::Error>> {
+        let code = r#"=head1 STALE
+
+Old documentation for something else.
+
+=cut
+
+my $setup = 1;
+
+sub later_sub {
+    return 2;
+}
+"#;
+        let mut parser = Parser::new(code);
+        let ast = parser.parse()?;
+        let analyzer = SemanticAnalyzer::analyze_with_source(&ast, code);
+
+        let sub_symbols =
+            analyzer.symbol_table().find_symbol("later_sub", 0, SymbolKind::Subroutine);
+        assert!(!sub_symbols.is_empty(), "sub later_sub not found");
+        let hover = analyzer.hover_at(sub_symbols[0].location).ok_or("hover not found")?;
+        if let Some(doc) = hover.documentation.as_deref() {
+            assert!(
+                !doc.contains("Old documentation"),
+                "stale POD block with code after it must not attach, got: {doc}"
+            );
+        }
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------------
     // Subroutine signature hover tests (issue #2353)
     // -----------------------------------------------------------------------
 

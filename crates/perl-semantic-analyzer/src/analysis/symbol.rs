@@ -887,9 +887,44 @@ impl SymbolExtractor {
             NodeKind::Foreach { variable, list, body, continue_block: _ } => {
                 self.table.push_scope(ScopeKind::Block, node.location);
 
-                // The loop variable is implicitly declared
-                self.handle_variable_declaration("my", variable, &[], variable.location, None);
-                self.visit_node(list);
+                match &variable.kind {
+                    // `for my $x (LIST) { ... }`: the parser wraps the iterator
+                    // in a VariableDeclaration node (`parse_foreach_style_for`).
+                    // Visit it as the declaration it is so the loop variable is
+                    // indexed like any other lexical; passing the wrapper to
+                    // `handle_variable_declaration` used to no-op there (it
+                    // only accepts a bare Variable node), leaving the loop
+                    // variable unindexed so hover/definition answered with the
+                    // enclosing sub's card (#17297). Order mirrors the scope
+                    // analyzer's enteriter semantics: `our` is a compile-time
+                    // package alias visible to LIST itself, while lexical
+                    // `my`/`state` stay hidden until after it, so a same-named
+                    // variable in LIST resolves to the outer binding under
+                    // `for my $x ($x)`.
+                    NodeKind::VariableDeclaration { declarator, .. }
+                    | NodeKind::VariableListDeclaration { declarator, .. } => {
+                        if declarator == "our" {
+                            self.visit_node(variable);
+                            self.visit_node(list);
+                        } else {
+                            self.visit_node(list);
+                            self.visit_node(variable);
+                        }
+                    }
+                    // Bare `for $x (LIST)` and the synthesized implicit `$_`
+                    // are implicitly declared `my` in the loop scope, before
+                    // the list (the alias is visible to LIST).
+                    _ => {
+                        self.handle_variable_declaration(
+                            "my",
+                            variable,
+                            &[],
+                            variable.location,
+                            None,
+                        );
+                        self.visit_node(list);
+                    }
+                }
                 self.visit_node(body);
 
                 self.table.pop_scope();
