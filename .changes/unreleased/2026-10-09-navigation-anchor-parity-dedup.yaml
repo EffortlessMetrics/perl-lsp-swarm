@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: "textDocument/references now resolves a `package` declaration cursor to the same symbol identity as a usage cursor (find-references on `package Animal;` returns the full cross-file usage set instead of only the declaration), collapses cross-file duplicate locations (call-expression vs name-token spans, declaration span vs name token, and Windows drive-case URI spellings) so one occurrence answers once, and goto-definition on a hash-key word inside a method call resolves to the exact-name sub of the receiver's package or stays honestly empty instead of jumping to the constructor."
+time: 2026-10-09T00:00:00Z
+custom:
+  PR: "17157"
+  Slug: navigation-anchor-parity-dedup
+  Breaking: "no"
