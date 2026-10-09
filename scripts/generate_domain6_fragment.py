@@ -2721,8 +2721,9 @@ SEEDS = {
             "usage and scripts/install.sh routed MINGW/MSYS/CYGWIN users "
             "to the exact command known to 404; the scan widens from "
             "1283 to 1604 files",
-            "new FORBIDDEN_PATTERNS entry 'install.ps1 | iex' carrying "
-            "the #5461/#4348 reason; only the executable piped form is "
+            "new FORBIDDEN_PATTERNS entry for the install.ps1 piped-to-iex "
+            "one-liner carrying the #5461/#4348 reason; only the executable "
+            "piped form is "
             "forbidden, prose explaining the breakage stays clean "
             "(test-pinned), and installer_scripts_are_in_scan_scope pins "
             "all three paths so a scan-root edit cannot drop the "

@@ -252,6 +252,17 @@ class Domain6FragmentTest(unittest.TestCase):
         for marker in ("domain6-fragment.v1.yaml", "AppData", "/tmp/domain6"):
             self.assertNotIn(marker, text)
 
+    def test_artifact_does_not_quote_piped_install_ps1(self) -> None:
+        # #16559: the closeout may name the #5461/#4348 ban without reproducing
+        # the executable `install.ps1 | iex` form the install-surface check
+        # forbids on active surfaces.
+        text = ARTIFACT.read_text(encoding="utf-8")
+        self.assertNotIn(
+            "install.ps1 | iex",
+            text,
+            "closeout quotes the forbidden piped install.ps1 form",
+        )
+
     def test_digest_valid(self) -> None:
         payload = dict(self.doc)
         digest = payload.pop("coverage")["digest"]
