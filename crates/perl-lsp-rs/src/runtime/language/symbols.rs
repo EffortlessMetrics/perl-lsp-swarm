@@ -386,8 +386,8 @@ impl LspServer {
             let documents = self.documents_guard();
             match self.get_document(&documents, uri) {
                 Some(doc) => match doc.text_for_user_answers() {
-                    // Clone the Arc (O(1)) under the lock; the full string
-                    // copy happens after release, keeping the lock hold short.
+                    // Clone the Arc (O(1)) under the lock, then borrow its
+                    // immutable source after release without a full text copy.
                     // The latest_parsed fallback is gated on the snapshot's
                     // content hash matching the current text: a stale AST's
                     // offsets paired with shifted text would fold the wrong
@@ -409,9 +409,8 @@ impl LspServer {
                 None => return Ok(Some(json!([]))),
             }
         };
-        let text = text.to_string();
-
-        let doc_text = &text;
+        // Keep the captured Arc alive while every scanner borrows its buffer.
+        let doc_text: &str = &text;
         #[cfg(test)]
         FOLDING_RANGE_TEST_SOURCE.with(|cell| cell.set(Some((doc_text.as_ptr(), doc_text.len()))));
         let mut lsp_ranges = Vec::new();
@@ -972,7 +971,8 @@ mod tests {
 
         {
             let mut documents = server.documents_guard();
-            let doc = server.get_document_mut(&mut documents, uri).ok_or("editable folding document")?;
+            let doc =
+                server.get_document_mut(&mut documents, uri).ok_or("editable folding document")?;
             doc.update_content("my $broken = ;\n=pod\n文 😀\nmore\n=cut\n", 2);
             assert!(doc.current_parsed().is_none(), "edited fixture must still use text fallback");
         }
@@ -994,7 +994,8 @@ mod tests {
 
         {
             let mut documents = server.documents_guard();
-            let doc = server.get_document_mut(&mut documents, uri).ok_or("desync folding document")?;
+            let doc =
+                server.get_document_mut(&mut documents, uri).ok_or("desync folding document")?;
             doc.mark_full_sync_required();
         }
         let unavailable = server.handle_folding_range(Some(json!({
