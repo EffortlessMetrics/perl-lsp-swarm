@@ -7,12 +7,15 @@ fn run_perllsp(args: &[&str]) -> Result<std::process::Output, Box<dyn std::error
 }
 
 fn assert_mcp_recovery_guidance(text: &str) {
-    assert!(text.contains("not available in this version"), "missing release-facing status: {text}");
-    assert!(text.contains("Claude Code LSP plugin"), "missing explicit alternative protocol: {text}");
-    assert!(text.contains("perllsp setup claude"), "missing setup command: {text}");
+    assert!(text.contains("not available in this version"), "missing version status: {text}");
+    assert!(text.contains("Claude Code LSP plugin"), "missing alternative protocol: {text}");
     assert!(
-        text.contains("perllsp doctor --client claude"),
-        "missing read-only diagnosis command: {text}"
+        text.contains("For the Claude Code LSP plugin, run `perllsp setup claude`."),
+        "missing LSP-plugin setup route: {text}"
+    );
+    assert!(
+        text.contains("For read-only diagnosis, run `perllsp doctor --client claude`."),
+        "missing read-only diagnosis route: {text}"
     );
     assert!(!text.contains("in this candidate"), "internal build terminology leaked: {text}");
 }
