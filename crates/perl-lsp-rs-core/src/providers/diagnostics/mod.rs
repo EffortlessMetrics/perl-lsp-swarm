@@ -92,3 +92,6 @@ pub use lints::version_compat;
 // Re-export dead code detection (when not targeting WASM)
 #[cfg(not(target_arch = "wasm32"))]
 pub use dead_code::detect_dead_code;
+pub use dead_code::{
+    DEAD_CODE_CATEGORY, DEAD_CODE_IDENTITIES, DeadCodeIdentity, identity_for_code,
+};

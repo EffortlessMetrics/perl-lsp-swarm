@@ -37,6 +37,12 @@ struct NativeCriticActionSubject {
     /// Producer-declared core overlap observations (#11918) over this exact
     /// generation — the same set push and pull hand the service.
     overlap_observations: Vec<perl_lsp_rs_core::tooling::perl_critic::BuiltInCriticObservation>,
+    /// The core diagnostic rows collected for this action round (#17241). The
+    /// transport-coincidence collapse (#5088) removes a native fact that shares
+    /// `(range, severity)` with one of these built-in rows on push and pull, so
+    /// the action transport must embed the same surviving identity or a client
+    /// cannot associate the fix with its published diagnostic.
+    core_diagnostics: Vec<crate::features::diagnostics::Diagnostic>,
 }
 
 /// Native quick-fix effects staged from one sealed diagnostic subject. Nothing
@@ -871,6 +877,7 @@ impl LspServer {
                     perl_lsp_rs_core::providers::diagnostics::critic_overlap_observations(
                         &diagnostics,
                     ),
+                core_diagnostics: diagnostics.clone(),
             });
 
             // Get quick-fixes from the V2 provider (diagnostic-based)
@@ -1396,6 +1403,52 @@ impl LspServer {
             let mut changes = HashMap::new();
             changes.insert(uri.to_string(), edits);
 
+            // #17241: push and pull collapse this native fact into its
+            // built-in twin at equal (range, severity) (#5088). Embed the
+            // twin's published identity so a client can associate the fix
+            // with the diagnostic it resolves; a fact no core row owns keeps
+            // the native spelling. The reviewed alias is authoritative when
+            // several collapse-eligible core rows share the insertion range
+            // (require-use-strict and require-use-warnings both stage at the
+            // pragma insertion point); the coincidence predicate covers the
+            // remaining transport-level overlap exactly as the transports
+            // resolve it.
+            let internal_severity =
+                crate::runtime::diagnostics::critic_severity_to_internal(normalized.severity());
+            let reviewed_alias_code = perl_lsp_rs_core::tooling::perl_critic::CriticIdentityRegistry
+                ::unambiguous_builtin_alias_code(normalized.public_code());
+            let core_twin = reviewed_alias_code
+                .and_then(|twin_code| {
+                    subject.core_diagnostics.iter().find(|core| {
+                        core.code.as_deref() == Some(twin_code)
+                            && core.range
+                                == (normalized.range().start.byte, normalized.range().end.byte)
+                            && core.severity == internal_severity
+                    })
+                })
+                .or_else(|| {
+                    subject.core_diagnostics.iter().find(|core| {
+                        core.range == (normalized.range().start.byte, normalized.range().end.byte)
+                            && core.severity == internal_severity
+                            && crate::features::diagnostics::overlap::codes_collapse_pair(
+                                core.code.as_deref(),
+                                Some(normalized.public_code()),
+                            )
+                    })
+                });
+            let (embedded_code, embedded_message) = match core_twin {
+                Some(core) => {
+                    let message = match core.suggestion.as_ref() {
+                        Some(suggestion) => {
+                            format!("{}\nSuggestion: {suggestion}", core.message)
+                        }
+                        None => core.message.clone(),
+                    };
+                    (core.code.clone().unwrap_or_default(), message)
+                }
+                None => (normalized.public_code().to_string(), normalized.user_visible_message()),
+            };
+
             actions.push(json!({
                 "title": fix.title.clone(),
                 "kind": "quickfix",
@@ -1405,9 +1458,9 @@ impl LspServer {
                         "end": {"line": end_line, "character": end_char},
                     },
                     "severity": normalized.severity().to_diagnostic_severity(),
-                    "code": normalized.public_code(),
+                    "code": embedded_code,
                     "source": "perl-lsp",
-                    "message": normalized.user_visible_message(),
+                    "message": embedded_message,
                 }],
                 "edit": {
                     "changes": changes,
@@ -1797,6 +1850,7 @@ print $x;
             accepted_snapshot,
             topology_generation,
             overlap_observations: Vec::new(),
+            core_diagnostics: Vec::new(),
         }
     }
 
@@ -3574,6 +3628,16 @@ my $x = 1 + 2;
             .collect()
     }
 
+    /// The wire identity of the strict control row. Since the transport
+    /// collapse (#5088, #17241) retires twin-covered native spellings on every
+    /// surface, the quickfix embeds the published built-in twin, resolved
+    /// through the owning identity registry.
+    fn strict_control_code() -> &'static str {
+        perl_lsp_rs_core::tooling::perl_critic::CriticIdentityRegistry::
+unambiguous_builtin_alias_code("native.testing.require_use_strict")
+            .expect("require_use_strict has exactly one reviewed built-in alias")
+    }
+
     #[test]
     fn code_action_critic_baseline_offers_safe_fix_quickfix_for_control_row()
     -> Result<(), Box<dyn std::error::Error>> {
@@ -3599,7 +3663,7 @@ my $x = 1 + 2;
         );
 
         assert!(
-            codes.iter().any(|code| code == "native.testing.require_use_strict"),
+            codes.iter().any(|code| code == strict_control_code()),
             "baseline proves the critic quickfix pipeline runs on this document: {codes:?}"
         );
         Ok(())
@@ -3640,7 +3704,7 @@ my $x = 1 + 2;
             );
         }
         assert!(
-            codes.iter().any(|code| code == "native.testing.require_use_strict"),
+            codes.iter().any(|code| code == strict_control_code()),
             "excluding PL601 must leave unrelated critic quickfixes alone: {codes:?}"
         );
         Ok(())
