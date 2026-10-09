@@ -727,6 +727,9 @@ jobs:
       - name: Run ripr termination classifier + bounded-retry self-test
         run: bash scripts/tests/test-classify-ripr-lane-termination.sh
 
+      - name: Run offline RIPR runner-inventory routing controls
+        run: python3 scripts/tests/test_ripr_runner_route.py
+
       - name: Run exact RIPR automatic-retry workflow controls
         run: python3 scripts/tests/test_ripr_infra_retry.py
 

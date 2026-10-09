@@ -225,54 +225,106 @@ jobs:
           fi
 
           response="$(mktemp)"
-          status="$(curl -sS -w '%{http_code}' -o "$response" \
-            -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer $GH_TOKEN" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            "https://api.github.com/orgs/$ORG/actions/runners?per_page=100" || true)"
+          trap 'rm -f "$response"' EXIT
 
-          if [ "$status" != "200" ]; then
-            echo "::warning::runner API returned HTTP $status; falling back to GitHub-hosted"
+          # Keep the existing 600s startup probe, including its zero-window
+          # test override. The initial snapshot still gets at most 60s when
+          # probing is disabled; subsequent snapshots share the probe deadline.
+          probe_window="${RIPR_ROUTER_PROBE_SECONDS:-600}"
+          probe_deadline=$(( $(date +%s) + probe_window ))
+
+          read_inventory() {
+            local deadline="$1" page=1 total="" page_total page_length
+            local remaining request_timeout status eligible_count
+            online_rust_standard=0
+            while true; do
+              remaining=$(( deadline - $(date +%s) ))
+              if [ "$remaining" -le 0 ]; then
+                echo "::warning::runner inventory read exceeded its bounded snapshot deadline"
+                return 1
+              fi
+              request_timeout="$remaining"
+              if [ "$request_timeout" -gt 30 ]; then request_timeout=30; fi
+              # Do not reuse a prior page after transport or HTTP failure.
+              # Never print the token or response body on the uncertainty path.
+              if ! status="$(curl -sS --connect-timeout 5 --max-time "$request_timeout" \
+                -w '%{http_code}' -o "$response" \
+                -H "Accept: application/vnd.github+json" \
+                -H "Authorization: Bearer $GH_TOKEN" \
+                -H "X-GitHub-Api-Version: 2022-11-28" \
+                "https://api.github.com/orgs/$ORG/actions/runners?per_page=100&page=$page")"; then
+                echo "::warning::runner inventory request failed; falling back to GitHub-hosted"
+                return 1
+              fi
+              if [ "$status" != "200" ]; then
+                echo "::warning::runner API returned HTTP $status; falling back to GitHub-hosted"
+                return 1
+              fi
+              # An HTTP 200 error object or malformed row is not evidence of
+              # absent capacity. Validate every page before counting members.
+              if ! jq -se '
+                length == 1 and (.[0] | type == "object" and
+                (.total_count | type == "number" and . >= 0 and . <= 2147483647 and . == floor) and
+                (.runners | type == "array" and length <= 100 and all(.[];
+                  (.status | type == "string") and
+                  (.labels | type == "array" and all(.[]; .name | type == "string")))))
+              ' "$response" >/dev/null 2>&1; then
+                echo "::warning::runner inventory response shape is invalid; falling back to GitHub-hosted"
+                return 1
+              fi
+              page_total="$(jq -r '.total_count | floor' "$response")"
+              page_length="$(jq '.runners | length' "$response")"
+              if [ -z "$total" ]; then total="$page_total"; fi
+              # A changing count or short page is an incomplete inventory;
+              # even an eligible member on an earlier page cannot qualify it.
+              local expected_length=$(( total - (page - 1) * 100 ))
+              if [ "$expected_length" -gt 100 ]; then expected_length=100; fi
+              if [ "$page_total" != "$total" ] || [ "$page_length" -ne "$expected_length" ]; then
+                echo "::warning::runner inventory pagination is incomplete or changed; falling back to GitHub-hosted"
+                return 1
+              fi
+              eligible_count="$(jq '
+                [ .runners[]
+                  | select(.status == "online")
+                  | [.labels[].name | ascii_downcase] as $have
+                  | select(($have | index("em-ci")) and
+                           ($have | index("rust-standard")) and
+                           ($have | index("trusted-pr")))
+                ] | length
+              ' "$response")"
+              online_rust_standard=$(( online_rust_standard + eligible_count ))
+              if [ "$((page * 100))" -ge "$total" ]; then return 0; fi
+              page=$(( page + 1 ))
+            done
+          }
+
+          # One snapshot is limited to 60s; pagination and subsequent probes
+          # cannot extend the normal startup window. Busy online members still
+          # count: GitHub schedules and queues within the capability pool.
+          snapshot_deadline=$(( $(date +%s) + 60 ))
+          if [ "$probe_window" -gt 0 ] && [ "$snapshot_deadline" -gt "$probe_deadline" ]; then
+            snapshot_deadline="$probe_deadline"
+          fi
+          if ! read_inventory "$snapshot_deadline"; then
             emit "github" "runner_api_failed" "true"
             exit 0
           fi
+          echo "online_rust_standard=$online_rust_standard"
 
-          online_capability_count() {
-            local capability_label="$1"
-            jq --arg capability_label "$capability_label" '
-              [ .runners[]?
-                | select(.status == "online")
-                | ([.labels[].name | ascii_downcase] // []) as $have
-                | select(
-                    ($have | index("em-ci")) and
-                    ($have | index($capability_label)) and
-                    ($have | index("trusted-pr"))
-                  )
-              ] | length
-            ' "$response"
-          }
-
-          # Capability-pool routing (em-ci contract): the workflow asks whether
-          # the CURRENT fleet has rust-standard capacity online. It never names
-          # a physical host and never inspects busy state -- GitHub schedules
-          # within the capability pool and queues behind busy runners itself.
-          # If no rust-standard capacity is online within the probe window, the
-          # router says so honestly (no capacity satisfies the pool) and falls
-          # back to GitHub-hosted instead of inventing a machine (#15889).
-          online_rust_standard="$(online_capability_count "rust-standard")"
-
-          echo "online_rust_standard=${online_rust_standard:-0}"
-
-          # Bounded probe window: give transient runner startups a fair chance
-          # without holding the required gate hostage to an absent fleet.
-          # RIPR_ROUTER_PROBE_SECONDS is a test override (the contract tests
-          # set it to 0 so no-capacity fixtures return immediately); CI uses
-          # the default 600s window.
-          probe_window="${RIPR_ROUTER_PROBE_SECONDS:-600}"
-          probe_deadline=$(( $(date +%s) + probe_window ))
-          while [ "${online_rust_standard:-0}" -eq 0 ] && [ "$(date +%s)" -lt "$probe_deadline" ]; do
-            sleep 30
-            online_rust_standard="$(online_capability_count "rust-standard")"
+          while [ "$online_rust_standard" -eq 0 ]; do
+            remaining=$(( probe_deadline - $(date +%s) ))
+            if [ "$remaining" -le 0 ]; then break; fi
+            sleep_seconds=30
+            if [ "$remaining" -lt "$sleep_seconds" ]; then sleep_seconds="$remaining"; fi
+            sleep "$sleep_seconds"
+            if [ "$(date +%s)" -ge "$probe_deadline" ]; then break; fi
+            snapshot_deadline=$(( $(date +%s) + 60 ))
+            if [ "$snapshot_deadline" -gt "$probe_deadline" ]; then snapshot_deadline="$probe_deadline"; fi
+            if ! read_inventory "$snapshot_deadline"; then
+              emit "github" "runner_api_failed" "true"
+              exit 0
+            fi
+            echo "online_rust_standard=$online_rust_standard"
           done
 
           if [ "${online_rust_standard:-0}" -gt 0 ]; then

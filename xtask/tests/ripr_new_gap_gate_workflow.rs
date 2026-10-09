@@ -610,15 +610,15 @@ fn runner_response(fixture: &str) -> Result<&'static str> {
         // Busy state is irrelevant to routing -- GitHub queues within the
         // capability pool -- so both count as capacity.
         "ready" => Ok(
-            r#"{"runners":[{"id":53001,"name":"rust-standard-busy","status":"online","busy":true,"labels":[{"name":"EM-CI"},{"name":"Rust-Standard"},{"name":"trusted-pr"}]},{"id":43001,"name":"rust-standard-idle","status":"online","busy":false,"labels":[{"name":"em-ci"},{"name":"rust-standard"},{"name":"trusted-pr"}]},{"id":53003,"name":"wrong-capability","status":"online","busy":false,"labels":[{"name":"em-ci"},{"name":"rust-light"},{"name":"trusted-pr"}]},{"id":53004,"name":"rust-standard-offline","status":"offline","busy":false,"labels":[{"name":"em-ci"},{"name":"rust-standard"},{"name":"trusted-pr"}]}]}"#,
+            r#"{"total_count":4,"runners":[{"id":53001,"name":"rust-standard-busy","status":"online","busy":true,"labels":[{"name":"EM-CI"},{"name":"Rust-Standard"},{"name":"trusted-pr"}]},{"id":43001,"name":"rust-standard-idle","status":"online","busy":false,"labels":[{"name":"em-ci"},{"name":"rust-standard"},{"name":"trusted-pr"}]},{"id":53003,"name":"wrong-capability","status":"online","busy":false,"labels":[{"name":"em-ci"},{"name":"rust-light"},{"name":"trusted-pr"}]},{"id":53004,"name":"rust-standard-offline","status":"offline","busy":false,"labels":[{"name":"em-ci"},{"name":"rust-standard"},{"name":"trusted-pr"}]}]}"#,
         ),
         "busy-only" => Ok(
-            r#"{"runners":[{"id":53001,"name":"rust-standard-busy","status":"online","busy":true,"labels":[{"name":"em-ci"},{"name":"rust-standard"},{"name":"trusted-pr"}]}]}"#,
+            r#"{"total_count":1,"runners":[{"id":53001,"name":"rust-standard-busy","status":"online","busy":true,"labels":[{"name":"em-ci"},{"name":"rust-standard"},{"name":"trusted-pr"}]}]}"#,
         ),
         "missing-label-only" => Ok(
-            r#"{"runners":[{"id":53003,"name":"wrong-capability","status":"online","busy":false,"labels":[{"name":"em-ci"},{"name":"rust-light"}]}]}"#,
+            r#"{"total_count":1,"runners":[{"id":53003,"name":"wrong-capability","status":"online","busy":false,"labels":[{"name":"em-ci"},{"name":"rust-light"}]}]}"#,
         ),
-        "empty" => Ok(r#"{"runners":[]}"#),
+        "empty" => Ok(r#"{"total_count":0,"runners":[]}"#),
         _ => bail!("unknown runner fixture: {fixture}"),
     }
 }
@@ -658,6 +658,8 @@ curl() {
   while [ "$#" -gt 0 ]; do
     case "$1" in
       -sS) shift ;;
+      --connect-timeout) [ "$2" = "5" ] || return 1; shift 2 ;;
+      --max-time) [ "$2" -gt 0 ] && [ "$2" -le 30 ] || return 1; shift 2 ;;
       -w) status_format="$2"; shift 2 ;;
       -o) output="$2"; shift 2 ;;
       -H)
@@ -675,7 +677,7 @@ curl() {
   done
   [ "$status_format" = "%{http_code}" ] || return 1
   [ "$output" != "" ] || return 1
-  [ "$endpoint" = "https://api.github.com/orgs/$ORG/actions/runners?per_page=100" ] || {
+  [ "$endpoint" = "https://api.github.com/orgs/$ORG/actions/runners?per_page=100&page=1" ] || {
     printf 'unexpected curl endpoint: %s\n' "$endpoint" >&2
     return 1
   }
