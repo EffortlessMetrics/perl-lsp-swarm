@@ -2060,6 +2060,24 @@ jobs:
       - name: Compile all targets (catches integration-test + bench bit-rot)
         run: just check-all-targets
 
+      # #17349: routed xtask library failures can prevent this integration
+      # target from executing. Run its 15 retained tests independently here;
+      # require the real workflow assertion and both positive/negative controls.
+      - name: PR-fast watchdog contract (required merge surface)
+        run: |
+          set -o pipefail
+          cargo test -p xtask --test gates_1469_pr_required_static_checks --locked -- \
+            --test-threads=1 --color never | tee "$RUNNER_TEMP/pr-fast-watchdog-contract.log"
+          # Reject zero matches, ignored/filtered tests, and missing target controls.
+          grep -Eq '^test result: ok\. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in ' \
+            "$RUNNER_TEMP/pr-fast-watchdog-contract.log"
+          for test_name in \
+            ci_workflow_runs_unit_routed_full_in_pr_smoke \
+            pr_fast_watchdog_accepts_direct_and_heredoc_runners \
+            pr_fast_watchdog_rejects_untimed_or_status_losing_runners; do
+            grep -Fx "test $test_name ... ok" "$RUNNER_TEMP/pr-fast-watchdog-contract.log"
+          done
+
       # The frozen legacy parity authority is a required merge surface. Keep
       # both integration targets here because compile-all-targets alone cannot
       # execute their assertions, and the routed pr-fast lane is advisory.
@@ -2169,6 +2187,20 @@ jobs:
       # the same required merge surface.
       - name: ripr-liveness dedup paginate contract (required merge surface)
         run: cargo test -p xtask --test issue_16133_ripr_liveness_dedup_paginate --locked -- --nocapture
+
+      # #17182: these four ripr contract suites pin Gap Gate retrieval,
+      # classifier, retry/preflight, version-badge, CLI-policy, and seam-proof
+      # behavior, but no workflow executed them — PR #16989 stayed green with
+      # two stale pins in the gate file. Same reasoning as the contracts
+      # above, so they belong on the same required merge surface.
+      - name: ripr gap-gate workflow contract (required merge surface)
+        run: cargo test -p xtask --test ripr_new_gap_gate_workflow --locked -- --nocapture
+      - name: ripr version badge contract (required merge surface)
+        run: cargo test -p xtask --test badge_ripr_version_contract --locked -- --nocapture
+      - name: ripr gap CLI policy contract (required merge surface)
+        run: cargo test -p xtask --test quality_gate_ripr_new_gap_cli_policy --locked -- --nocapture
+      - name: ripr seam-proof observation contract (required merge surface)
+        run: cargo test -p xtask --test ripr_seam_proof_contributor_observation --locked -- --nocapture
 
       # #13295: standalone semantic conformance corpus — oracle, mutation bank,
       # and CLI command wiring. These tests span corpus authoring rules,

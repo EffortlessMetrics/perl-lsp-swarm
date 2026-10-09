@@ -8,6 +8,7 @@ import io
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import tempfile
 import unittest
@@ -92,15 +93,22 @@ class ConsumerPacket(unittest.TestCase):
         return {"sha": cls.git("rev-parse", revision + "^{tree}").decode().strip(),
                 "truncated": False, "tree": entries}
 
-    def collect(self, **overrides):
+    def collect(self, supported_trees=None, **overrides):
         args = dict(repo=self.repo, evaluated=self.evaluated, base=self.base, head=self.head,
                     expected_tree=self.tree, evaluated_snapshot=self.e_path, base_snapshot=self.b_path)
         args.update(overrides)
         # Toy source bodies test collection mechanics, not the real analyzer recipe.
         # The real frozen profile is exercised by a separately retained native packet.
         with patch.dict(PACKET.KNOWN_BLOBS, self.profile, clear=True), \
-                patch.object(PACKET, "KNOWN_EVALUATED_TREE", self.tree, create=True):
+                patch.object(PACKET, "KNOWN_EVALUATED_TREES",
+                             supported_trees if supported_trees is not None else {self.tree}):
             return PACKET.collect(**args)
+
+    def test_documented_cli_subjects_match_production_profiles(self):
+        guide = (ROOT / "docs/ci/RIPR_CONSUMER_QUALIFICATION.md").read_text(encoding="utf-8")
+        trees = re.findall(r"--expected-tree ([0-9a-f]{40})", guide)
+        self.assertEqual(len(trees), 2)
+        self.assertEqual(set(trees), PACKET.KNOWN_EVALUATED_TREES)
 
     def test_complete_packet_is_nonadmitting_and_preserves_unknowns(self):
         packet = self.collect()
@@ -202,6 +210,42 @@ class ConsumerPacket(unittest.TestCase):
                     path.write_bytes(original)
                     self.git("add", "--", name)
 
+    def test_second_reviewed_tree_preserves_distinct_subject_and_unknowns(self):
+        original_packet = self.collect()
+        path = self.repo / "a.rs"
+        original = path.read_bytes()
+        try:
+            path.write_bytes(original + b"different consumer workload\n")
+            self.git("add", "--", "a.rs")
+            second_tree = self.git("write-tree").decode().strip()
+            second_e = self.git("commit-tree", second_tree, "-p", self.base,
+                                "-p", self.head, "-m", "reviewed second consumer").decode().strip()
+            snapshot_path = Path(self.temp.name) / "second-profile.json"
+            snapshot_path.write_text(json.dumps(self.snapshot(second_e)), encoding="utf-8")
+            packet = self.collect(supported_trees={self.tree, second_tree}, evaluated=second_e,
+                                  expected_tree=second_tree, evaluated_snapshot=snapshot_path)
+            path.write_bytes(original + b"unreviewed consumer workload\n")
+            self.git("add", "--", "a.rs")
+            third_tree = self.git("write-tree").decode().strip()
+            third_e = self.git("commit-tree", third_tree, "-p", self.base,
+                               "-p", self.head, "-m", "unreviewed third consumer").decode().strip()
+            snapshot_path.write_text(json.dumps(self.snapshot(third_e)), encoding="utf-8")
+            with self.assertRaisesRegex(PACKET.PacketError, "unsupported consumer evaluated tree"):
+                self.collect(supported_trees={self.tree, second_tree}, evaluated=third_e,
+                             expected_tree=third_tree, evaluated_snapshot=snapshot_path)
+        finally:
+            path.write_bytes(original)
+            self.git("add", "--", "a.rs")
+        self.assertNotEqual(packet["subject"]["evaluated_head"], original_packet["subject"]["evaluated_head"])
+        self.assertEqual(packet["subject"]["tree"], second_tree)
+        self.assertEqual(packet["source_profile"]["evaluated_tree"], second_tree)
+        self.assertEqual(packet["subject"]["ordered_parents"], [self.base, self.head])
+        self.assertNotEqual(packet["evaluated_inventory"]["git_identity_manifest_sha256"],
+                            original_packet["evaluated_inventory"]["git_identity_manifest_sha256"])
+        self.assertEqual(packet["qualification"], "NOT_PROVEN")
+        self.assertEqual(packet["admission_effect"], "none")
+        self.assertEqual(set(packet["required_runtime_evidence"].values()), {"NOT_PROVEN"})
+
     def test_workflow_object_content_is_verified(self):
         original = PACKET.read_object
         def wrong(repo, kind, identity):
@@ -232,7 +276,7 @@ class ConsumerPacket(unittest.TestCase):
                 "--evaluated-tree-json", str(self.e_path), "--base-tree-json", str(self.b_path)]
         out, err = io.StringIO(), io.StringIO()
         with patch.dict(PACKET.KNOWN_BLOBS, self.profile, clear=True), \
-                patch.object(PACKET, "KNOWN_EVALUATED_TREE", self.tree, create=True), contextlib.redirect_stdout(out):
+                patch.object(PACKET, "KNOWN_EVALUATED_TREES", {self.tree}), contextlib.redirect_stdout(out):
             self.assertEqual(PACKET.main(argv), 0)
         self.assertEqual(json.loads(out.getvalue())["admission_effect"], "none")
         out = io.StringIO()

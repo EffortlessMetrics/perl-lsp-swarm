@@ -22,6 +22,7 @@ pub use result::{
 };
 
 use crate::native::inferred_line_ending;
+use perl_parser_core::{ParseError, ParseStopCause};
 
 use result::utf16_len;
 
@@ -90,9 +91,15 @@ impl NativeFormatter {
             );
         });
 
-        // LCOV_EXCL_START — budget exhaustion on pathologically large/deeply-nested
-        // input; not reachable with the small sources used in formatter tests.
-        if output.terminated_early() {
+        // This definite syntax rejection stops parsing without recovery. It is
+        // still a source error; other terminal causes remain incomplete proof.
+        let terminal_syntax_error =
+            matches!(output.stop_cause(), Some(ParseStopCause::CatastrophicTermination))
+                && output
+                    .diagnostics
+                    .iter()
+                    .any(|error| matches!(error, ParseError::CStyleForContinueBlock { .. }));
+        if output.terminated_early() && !terminal_syntax_error {
             return Err(FormatDiagnostic::new(
                 PARSE_INCOMPLETE_CODE,
                 FormatDiagnosticSeverity::Warning,
@@ -100,7 +107,6 @@ impl NativeFormatter {
                 "native formatting not proven because parsing terminated early",
             ));
         }
-        // LCOV_EXCL_STOP
 
         if let Some(error) = output.diagnostics.first() {
             return Err(FormatDiagnostic::new(

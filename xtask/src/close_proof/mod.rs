@@ -26,6 +26,12 @@
 //! typed map conversion. Documents and tagged variant payloads reject unknown
 //! fields, including unit states. Strict wire decoding establishes an
 //! unambiguous representation, never independent completion evidence.
+//!
+//! The additive `issue_contract_identity.v1` and `issue_close_proof_binding.v1`
+//! envelopes retain strict v1 documents and bind full declared policy material.
+//! Their successful comparison remains representation-only: current sources,
+//! ruling/adoption authority, evidence admission and verdict derivation require
+//! independent owners. Legacy documents are never automatically upgraded.
 
 pub mod contract;
 pub mod corpus;
@@ -36,7 +42,7 @@ mod wire;
 #[cfg(test)]
 mod tests;
 
-pub use contract::{IssueContract, compute_denominator_digest};
+pub use contract::{ContractIdentityEnvelope, IssueContract, compute_denominator_digest};
 pub use corpus::{
     CORPUS_MANIFEST_SCHEMA_V1, CorpusManifest, FIXTURE_SCHEMA_V1, FixtureCase, FixtureDocument,
     FixtureProvenance, ManifestEntry, load_corpus_manifest, verify_corpus,
@@ -51,7 +57,12 @@ pub use model::{
     NegativeControlRow, PacketBinding, PrScopeOutcome, ProofLevel, RowDispositionValue,
     RulingIdentity, TransferPolicy,
 };
+pub use model::{
+    CONTRACT_IDENTITY_SCHEMA_V1, ChildRelationDeclaration, ContractIdentityContext,
+    FULL_PACKET_BINDING_SCHEMA_V1, FullBoundPacket, RulingDeclaration, SourceIdentity,
+};
 pub use packet::validate_packet_against_contract;
+pub use packet::{FullBindingMatch, validate_packet_full_binding};
 
 /// Validation failures are classified so callers can distinguish mis-typed
 /// documents from semantic integrity violations and stale bindings.

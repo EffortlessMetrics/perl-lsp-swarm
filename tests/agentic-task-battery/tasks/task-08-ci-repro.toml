@@ -1,0 +1,74 @@
+# agentic_task_battery.v1 — Task 8: Reproduce a CI failure locally
+# Source: recovered usability-battery design, Task 8.
+# Live-CI task: all steps are MANUAL with exact verification commands.
+# The runner never re-triggers CI, pushes empty commits, or rebases.
+
+schema_version = "agentic_task_battery.v1"
+task_id = "task-08-ci-repro"
+title = "Reproduce a CI failure locally"
+goal = "Identify the exact failed check and the commit it evaluated, map it to its local equivalent, reproduce the same failure signature locally, and attribute it per the PR-template rules. Do not push empty commits or re-trigger CI as the 'fix'."
+starting_state = "Clean tree on the PR head SHA; grader supplies a failed check name + run URL + log excerpt."
+instruction = "Identify the exact check and the commit it evaluated. Map it to its local equivalent (`just pr-fast`, `just ci-gate`, or the label-gated job's documented command). Reproduce the same failure signature locally. Attribute it per the PR-template rules (broken vs missing vs cancelled/instrument-failed; candidate vs base requires the same signature at the merge base). Do not push empty commits or re-trigger CI as the 'fix'."
+max_duration = "30 min"
+pass_threshold = 6
+max_points = 10
+failure_mode = "Treating a cancelled or instrument-failed run as a code defect (or vice versa: assuming a later green run on an unrelated push clears a genuinely failed seam)."
+automation = "manual-only"
+
+allowed_commands = [
+  "gh run view <run-id> --json name,headSha,conclusion,url",
+  "gh run view <run-id> --log-failed",
+  "git merge-base HEAD origin/main",
+  "just pr-fast",
+  "just ci-gate",
+]
+
+[params]
+  "check-name" = "Failed check name supplied by the grader"
+  "run-url" = "Failed run URL supplied by the grader"
+
+# Local-equivalent mapping: check-name pattern -> local command.
+[local_equivalents]
+  "pr-fast" = "just pr-fast (from Git Bash on Windows)"
+  "merge-gate" = "just ci-gate (from Git Bash on Windows; canonical: nix develop -c just ci-gate)"
+  "default" = "The label-gated job's documented command from its workflow file under .github/workflows/"
+
+[[rubric]]
+  step_id = "t8-s1"
+  description = "Names check + evaluated commit SHA (not \"latest\")"
+  points = 2
+  mode = "manual"
+  verify = "gh run view <run-id> --json name,headSha,conclusion,url,jobs --jq '{sha: .headSha, failed: [.jobs[] | select(.conclusion == \"failure\") | .name]}'"
+  evidence = "Check name matched to a failed job (not just the workflow run) + headSha quoted from the run (state the SHA, not \"latest\"); retain that job's log."
+
+[[rubric]]
+  step_id = "t8-s2"
+  description = "Selects the correct local equivalent command"
+  points = 2
+  mode = "manual"
+  verify = "Look up the check in the spec local_equivalents table (else its workflow file under .github/workflows/) and state the chosen local command."
+  evidence = "Named local command + the mapping source (spec table entry or workflow file path)."
+
+[[rubric]]
+  step_id = "t8-s3"
+  description = "Reproduces the same failure signature locally (quoted)"
+  points = 3
+  mode = "manual"
+  verify = "Run the local equivalent from a clean tree on the PR head SHA; on Windows run `just` recipes from Git Bash."
+  evidence = "Local failure output quoted beside the CI log excerpt, with the matching signature highlighted."
+
+[[rubric]]
+  step_id = "t8-s4"
+  description = "Correct attribution with stated evidence (incl. merge-base comparison when blaming base)"
+  points = 2
+  mode = "manual"
+  verify = "Classify per the PR template (broken vs missing vs cancelled/instrument-failed); when blaming base, show the same signature at the merge base: `git merge-base HEAD origin/main` then re-run the local equivalent there."
+  evidence = "Attribution + the evidence for it (merge-base SHA and its result when blaming base)."
+
+[[rubric]]
+  step_id = "t8-s5"
+  description = "No CI re-trigger / empty commit / rebase offered as verification"
+  points = 1
+  mode = "manual"
+  verify = "git log --oneline -3 && git status --short"
+  evidence = "No empty/re-trigger commits; verification came from the local reproduction, not a new CI run."
