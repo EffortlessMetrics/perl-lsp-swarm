@@ -16,6 +16,13 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# The suite is hermetic: an inherited GIT_DIR, GIT_WORK_TREE, or GIT_INDEX_FILE
+# would point every real-git fixture command — and the script under test — at a
+# caller's repository instead of the disposable fixture. Drop them up front so
+# fixture creation, the negative-control prune, and both sweep invocations
+# select repositories by path alone.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
+
 pass() {
   printf 'PASS %s\n' "$1"
   PASS=$((PASS + 1))
@@ -873,7 +880,9 @@ test_real_repository_dry_run_writes_nothing() {
     mkdir -p sub
     printf 'content\n' > sub/file.txt
     git add .
-    git commit -qm init
+    # Disposable commit: host hooks and signing configuration must not be able
+    # to fail fixture setup.
+    git -c commit.gpgsign=false commit --no-verify -qm init
     git worktree add -q ../wt-live -b live
     # A past mtime, not `touch`: a just-touched file is "racily clean" and git
     # deliberately declines to cache its stat data, so the write never fires and
@@ -885,7 +894,12 @@ test_real_repository_dry_run_writes_nothing() {
   }
 
   before="$(real_git_snapshot "${root}/repo")"
-  ( cd "${root}/repo" && CLEANUP_BASE_BRANCH=main bash "$IMPL" --dry-run ) >/dev/null 2>&1 || true
+  local output
+  if ! output="$( cd "${root}/repo" && CLEANUP_BASE_BRANCH=main bash "$IMPL" --dry-run 2>&1 )"; then
+    fail "$label (script failed)"
+    printf '%s\n' "$output"
+    return 0
+  fi
   after="$(real_git_snapshot "${root}/repo")"
 
   if [[ "$before" == "$after" ]]; then
@@ -893,6 +907,125 @@ test_real_repository_dry_run_writes_nothing() {
   else
     fail "$label"
     diff <(printf '%s\n' "$before") <(printf '%s\n' "$after") || true
+  fi
+}
+
+# A missing checkout can still exist at a path this OS cannot resolve. Use real
+# Git administrative records: the old unconditional prune erased such records
+# before the script could report them. Both fixtures are disposable. The
+# optional second argument shortens gc.worktreePruneExpire; only the negative
+# control passes it (see test_unreachable_real_registration_survives_both_modes).
+new_unreachable_real_worktree() {
+  local root="$1" prune_expire="${2:-}"
+  mkdir -p "$root" || return 1
+  git init -q -b main "${root}/repo" || return 1
+  git init -q --bare "${root}/origin.git" || return 1
+  git -C "${root}/repo" config user.email cleanup-test@example.invalid || return 1
+  git -C "${root}/repo" config user.name "cleanup test" || return 1
+  # The real-mode sweep fetches, and that fetch can trigger Git auto-maintenance
+  # whose worktree prune honors gc.worktreePruneExpire (fetch.autoGc=false does
+  # not suppress it). Pin maintenance off so the verdict depends on the script
+  # under test, not on the host's inherited gc or maintenance configuration.
+  git -C "${root}/repo" config maintenance.auto false || return 1
+  if [[ -n "$prune_expire" ]]; then
+    # Only the negative control shortens the prune expiry: its bare
+    # `git worktree prune` must remove a fresh registration to mirror the
+    # pre-fix primitive. In the retention fixture this config would let the
+    # sweep's own fetch-driven auto-maintenance erase the registration before
+    # the sweep lists it (observed on Git for Windows).
+    git -C "${root}/repo" config gc.worktreePruneExpire "$prune_expire" || return 1
+  fi
+  printf 'preserved\n' > "${root}/repo/file.txt" || return 1
+  git -C "${root}/repo" add file.txt || return 1
+  # Disposable commit and push: host hooks and signing configuration (e.g.
+  # commit.gpgSign=true with no noninteractive signer) must not be able to fail
+  # fixture setup.
+  git -C "${root}/repo" -c commit.gpgsign=false commit --no-verify -qm init || return 1
+  git -C "${root}/repo" remote add origin "${root}/origin.git" || return 1
+  git -C "${root}/repo" push -q --no-verify -u origin main || return 1
+  git -C "${root}/repo" worktree add -q "${root}/wt-live" -b fixture || return 1
+  mv "${root}/wt-live" "${root}/wt-preserved" || return 1
+}
+
+real_worktree_registered() {
+  local repo="$1"
+  git --no-optional-locks -C "$repo" worktree list --porcelain |
+    grep -qF 'branch refs/heads/fixture'
+}
+
+# Match the literal porcelain attribute, not its explanation: Git marks the
+# explanation for translation (worktree.c), so matching the English text would
+# fail the fixture check on a translated locale.
+real_worktree_prunable() {
+  git --no-optional-locks -C "$1" worktree list --porcelain |
+    grep -qE '^prunable([[:space:]]|$)'
+}
+
+real_worktree_admin_snapshot() {
+  find "$1/.git/worktrees" -type f -exec sha256sum {} \; | sort
+}
+
+test_unreachable_real_registration_survives_both_modes() {
+  local root="${TMPDIR_BASE}/unreachable-real" old="${TMPDIR_BASE}/prune-control"
+  local output before after admin_before source_before
+  if ! new_unreachable_real_worktree "$root" ||
+     ! new_unreachable_real_worktree "$old" now; then
+    fail "disposable unreachable-worktree fixtures initialize"
+    return 0
+  fi
+  if real_worktree_registered "${root}/repo" &&
+     real_worktree_registered "${old}/repo" &&
+     real_worktree_prunable "${root}/repo" &&
+     real_worktree_prunable "${old}/repo" &&
+     [[ -f "${root}/wt-preserved/file.txt" ]]; then
+    pass "unreachable fixture starts registered with source preserved"
+  else
+    fail "unreachable fixture starts registered with source preserved"
+    return 0
+  fi
+
+  # Negative control: the pre-fix primitive really loses the administrative
+  # entry in this fixture. The fixture's prune-expiry config makes this the
+  # same bare command used by the unsafe older checkout's --dry-run.
+  git -C "${old}/repo" worktree prune
+  if ! real_worktree_registered "${old}/repo" &&
+     [[ -f "${old}/wt-preserved/file.txt" ]]; then
+    pass "old global prune loses registration while source survives"
+  else
+    fail "old global prune loses registration while source survives"
+  fi
+
+  before="$(real_git_snapshot "${root}/repo")"
+  source_before="$(sha256sum "${root}/wt-preserved/file.txt")"
+  if output="$(cd "${root}/repo" && bash "$IMPL" --dry-run 2>&1)"; then
+    pass "real unreachable dry run exits successfully"
+  else
+    fail "real unreachable dry run exits successfully"
+    printf '%s\n' "$output"
+  fi
+  assert_contains "real unreachable dry run reports review" "$output" "REVIEW"
+  after="$(real_git_snapshot "${root}/repo")"
+  if [[ "$before" == "$after" ]] && real_worktree_registered "${root}/repo" &&
+     [[ "$source_before" == "$(sha256sum "${root}/wt-preserved/file.txt")" ]]; then
+    pass "real unreachable dry run retains byte-identical registration and source"
+  else
+    fail "real unreachable dry run retains byte-identical registration and source"
+  fi
+
+  admin_before="$(real_worktree_admin_snapshot "${root}/repo")"
+  if output="$(cd "${root}/repo" && bash "$IMPL" 2>&1)"; then
+    pass "real unreachable cleanup exits successfully"
+  else
+    fail "real unreachable cleanup exits successfully"
+    printf '%s\n' "$output"
+  fi
+  assert_contains "real unreachable cleanup reports review" "$output" "REVIEW"
+  if real_worktree_registered "${root}/repo" &&
+     [[ "$admin_before" == "$(real_worktree_admin_snapshot "${root}/repo")" ]] &&
+     [[ "$source_before" == "$(sha256sum "${root}/wt-preserved/file.txt")" ]]; then
+    pass "real unreachable cleanup keeps registration and source byte-identical"
+  else
+    fail "real unreachable cleanup keeps registration and source byte-identical"
   fi
 }
 
@@ -949,6 +1082,7 @@ test_dry_run_message_claims_only_what_it_proves
 test_successful_sweeps_exit_zero
 test_json_projection_carries_the_inspection_axes
 test_real_repository_dry_run_writes_nothing
+test_unreachable_real_registration_survives_both_modes
 
 TOTAL=$((PASS + FAIL))
 echo ""
