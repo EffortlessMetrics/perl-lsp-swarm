@@ -693,7 +693,11 @@ fn git_output(args: &[&str]) -> Option<String> {
 }
 
 /// Produce an ISO-8601 timestamp from the current system time.
-fn iso8601_now() -> String {
+///
+/// Public so receipt writers outside this module (the #17159 memory/startup
+/// benchmark) reuse the exact `YYYY-MM-DDTHH:MM:SSZ` format recorded by
+/// [`UxRunRecorder`] instead of growing a second timestamp implementation.
+pub fn iso8601_now() -> String {
     let now = SystemTime::now();
     let duration = now.duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default();
     let secs = duration.as_secs();

@@ -77,7 +77,8 @@ pub use project_fixture::{
 };
 pub use recorder::{
     AssertionBasis, AssertionCounts, OperationTiming, RunIdentity, UxCheckFailure, UxRunRecorder,
-    UxScenarioRunReceipt, UxScenarioSkip, run_ux_scenario, run_ux_scenario_with_evidence_class,
+    UxScenarioRunReceipt, UxScenarioSkip, iso8601_now, run_ux_scenario,
+    run_ux_scenario_with_evidence_class,
 };
 pub use scorecard::{
     EditorUxScorecard, ScenarioScore, aggregate_editor_ux_scorecard,

@@ -1303,6 +1303,21 @@ ux-tests-full:
         cargo test -p perl-lsp-ux-tests --features integration-test -- --test-threads=1
     @echo "UX tests (full) passed"
 
+# Memory ceiling + startup-to-ready bench receipts over the mojolicious
+# fixture (#17159 matrix rows 3-4: server_startup_to_ready + server_rss_memory;
+# memory lane also tracks #10015). Builds the release server, then runs the
+# single ignored receipt test, which writes .ci/metrics/lsp_memory_startup.json.
+# Nightly-scale (~2 min): 15 cold spawns plus a 600-message RSS soak.
+ux-bench-memory-startup:
+    @echo "Running memory + startup-to-ready bench receipts..."
+    @env -u RUSTC_WRAPPER CARGO_BUILD_JOBS=1 \
+        cargo build --release -p perllsp
+    @env -u RUSTC_WRAPPER RUST_TEST_THREADS=1 CARGO_BUILD_JOBS=1 \
+        PERL_LSP_BIN={{justfile_directory()}}/target/release/perllsp \
+        PERL_LSP_UX_REQUIRE_BINARY=1 \
+        cargo test -p perl-lsp-ux-tests --test lsp_memory_startup -- --test-threads=1 --ignored --nocapture
+    @echo "Memory + startup bench receipts written"
+
 # @INC consumer-consistency conformance harness.
 # Verifies that goto-definition, hover, and PL701 diagnostic agree on module resolution
 # across 5 resolution modes: relative includePaths, lexical use lib, no lib cancellation,
