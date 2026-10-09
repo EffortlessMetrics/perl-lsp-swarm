@@ -88,6 +88,8 @@ on:
       - 'scripts/ci/test_evaluate_ci_gate.py'
       - 'scripts/ci/pr_smoke_disk_guard.py'
       - 'scripts/ci/test_pr_smoke_disk_guard.py'
+      - 'scripts/ci/pr_smoke_artifact_inventory.py'
+      - 'scripts/ci/test_pr_smoke_artifact_inventory.py'
       - 'scripts/ci/verify_gate_receipt_freshness.py'
       - 'scripts/ci/test_verify_gate_receipt_freshness.py'
       # PR-fast failing-gate reporter (#15492): it decides which gates reach the
@@ -409,6 +411,9 @@ jobs:
 
       - name: Run PR smoke disk-guard oracle tests (#15400/A2)
         run: python3 -m unittest scripts.ci.test_pr_smoke_disk_guard
+
+      - name: Run PR Smoke artifact inventory tests (#17231)
+        run: python3 -m unittest -v scripts.ci.test_pr_smoke_artifact_inventory
 
       - name: Run gate receipt freshness oracle tests (#15400/A2)
         run: python3 -m unittest scripts.ci.test_verify_gate_receipt_freshness
