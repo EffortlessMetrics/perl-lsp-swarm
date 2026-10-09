@@ -4188,6 +4188,29 @@ enum FeaturesCommand {
     /// Run feature catalog invariant checks
     Invariants,
 
+    /// Inspect catalog source selection and identity (#9201).
+    Check {
+        /// `workspace`, `package`, or `override`. Omit to check workspace plus
+        /// every declared package fallback.
+        #[arg(long)]
+        mode: Option<String>,
+        /// Cargo package name for `--mode package`.
+        #[arg(long)]
+        package: Option<String>,
+        /// Package manifest directory for `--mode package`.
+        #[arg(long)]
+        manifest_dir: Option<PathBuf>,
+        /// Explicit test/tooling catalog for `--mode override`.
+        #[arg(long = "override")]
+        override_path: Option<PathBuf>,
+        /// Authority `features.toml` used for stale/wrong-projection compare.
+        #[arg(long)]
+        authority: Option<PathBuf>,
+        /// Workspace root (defaults to the repository root).
+        #[arg(long)]
+        root: Option<PathBuf>,
+    },
+
     /// Generate compliance report
     Report,
 
@@ -7200,6 +7223,14 @@ fn run_cli(cli: Cli) -> Result<()> {
             FeaturesCommand::SyncDocs => features::sync_docs(),
             FeaturesCommand::Verify => features::verify(),
             FeaturesCommand::Invariants => features::invariants(),
+            FeaturesCommand::Check {
+                mode,
+                package,
+                manifest_dir,
+                override_path,
+                authority,
+                root,
+            } => features::check(mode, package, manifest_dir, override_path, authority, root),
             FeaturesCommand::Report => features::report(),
             FeaturesCommand::RegenVendored => features::regen_vendored(),
         },
