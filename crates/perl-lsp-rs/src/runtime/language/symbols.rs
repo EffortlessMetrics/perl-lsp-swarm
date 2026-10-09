@@ -450,21 +450,31 @@ impl LspServer {
                 // Calculate actual line numbers from document content
                 let start_line = offset_to_line(doc_text, range.start_offset);
                 let end_line = offset_to_line(doc_text, range.end_offset);
-                let lsp_end_line = match lsp_inclusive_multiline_end_line(start_line, end_line) {
-                    Some(end) => Some(end),
-                    None => {
-                        // A span rejected by the inclusive filter may still
-                        // genuinely cover multiple lines when its end offset
-                        // sits at the start of its last line (heredoc bodies
-                        // end at content, not at line starts). Count the
-                        // newlines inside the span: any newline means real
-                        // multiline content that must not be dropped
-                        // (#15430 residue).
-                        let newlines = doc_text
-                            .get(range.start_offset..range.end_offset)
-                            .map(|span| span.matches('\n').count())
-                            .unwrap_or(0);
-                        (newlines >= 1).then_some(start_line + newlines)
+                let lsp_end_line = if range.end_offset_on_content_line {
+                    // Content-terminated spans (heredoc bodies) end at the
+                    // last content byte of their final body line, so the
+                    // line containing the end offset is already the
+                    // inclusive last folded line; decrementing it left the
+                    // last body line unfolded for every body of 3+ lines
+                    // (#17299).
+                    lsp_inclusive_content_end_line(start_line, end_line)
+                } else {
+                    match lsp_inclusive_multiline_end_line(start_line, end_line) {
+                        Some(end) => Some(end),
+                        None => {
+                            // A delimiter-terminated span rejected by the
+                            // inclusive filter may still genuinely cover
+                            // multiple lines (e.g. a closing delimiter that
+                            // shares its line with content). Count the
+                            // newlines inside the span: any newline means
+                            // real multiline content that must not be
+                            // dropped (#15430 residue).
+                            let newlines = doc_text
+                                .get(range.start_offset..range.end_offset)
+                                .map(|span| span.matches('\n').count())
+                                .unwrap_or(0);
+                            (newlines >= 1).then_some(start_line + newlines)
+                        }
                     }
                 };
                 if let Some(lsp_end_line) = lsp_end_line {
@@ -668,9 +678,21 @@ fn push_multiline_folding_range<T>(
     }
 }
 
+/// Inclusive LSP end line for a delimiter-terminated span whose end offset
+/// lands on a closing line (`}` of a block): closing lines stay visible in
+/// editors, so the raw end line steps back one. Spans that collapse onto
+/// their start line return `None` and may fall back to newline counting.
 fn lsp_inclusive_multiline_end_line(start_line: usize, raw_end_line: usize) -> Option<usize> {
     let lsp_end_line = raw_end_line.saturating_sub(1);
     (lsp_end_line > start_line).then_some(lsp_end_line)
+}
+
+/// Inclusive LSP end line for a content-terminated span whose end offset
+/// lands at the last content byte of its final line (heredoc bodies):
+/// the raw end line is already the last folded line and is kept as-is,
+/// while single-line spans drop out of the multiline-only filter (#17299).
+fn lsp_inclusive_content_end_line(start_line: usize, raw_end_line: usize) -> Option<usize> {
+    (raw_end_line > start_line).then_some(raw_end_line)
 }
 
 impl LspServer {
@@ -810,6 +832,28 @@ mod tests {
         );
     }
 
+    #[test]
+    fn lsp_inclusive_content_end_line_boundary_discriminator_raw_end_line_gt_start_line_rejects_single_line_span()
+     {
+        assert_eq!(lsp_inclusive_content_end_line(4, 4), None);
+        assert_eq!(lsp_inclusive_content_end_line(4, 0), None);
+    }
+
+    #[test]
+    fn lsp_inclusive_content_end_line_boundary_discriminator_input_that_hits_the_boundary_raw_end_line_gt_start_line_keeps_raw_end_line()
+     {
+        assert_eq!(
+            lsp_inclusive_content_end_line(4, 5),
+            Some(5),
+            "input that hits the boundary: raw_end_line > start_line"
+        );
+        assert_eq!(
+            lsp_inclusive_content_end_line(4, 6),
+            Some(6),
+            "input that hits the boundary: raw_end_line > start_line"
+        );
+    }
+
     fn folding_ranges_for_source(source: &str) -> Result<Vec<Value>, JsonRpcError> {
         let server = LspServer::new();
         let uri = "file:///folding-observer.pl";
@@ -864,6 +908,47 @@ mod tests {
             }),
             "heredoc folding output must contain only valid multiline ranges: {ranges:?}"
         );
+
+        Ok(())
+    }
+
+    #[test]
+    fn handle_folding_range_heredoc_body_length_sweep_covers_last_body_line()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Bodies of 2, 3, and 4 lines in one document: every fold must cover
+        // the whole body with the terminator line left visible, regardless of
+        // body length (#17299: 3+ line bodies folded one line short while
+        // 2-line bodies were correct, because the two lengths took different
+        // endLine conversion paths).
+        let source = concat!(
+            "my $a = <<'A';\n", // line 0  (declaration)
+            "a1\n",             // line 1  (body start)
+            "a2\n",             // line 2  (body end)
+            "A\n",              // line 3  (terminator)
+            "my $b = <<'B';\n", // line 4  (declaration)
+            "b1\n",             // line 5  (body start)
+            "b2\n",             // line 6
+            "b3\n",             // line 7  (body end)
+            "B\n",              // line 8  (terminator)
+            "my $c = <<'C';\n", // line 9  (declaration)
+            "c1\n",             // line 10 (body start)
+            "c2\n",             // line 11
+            "c3\n",             // line 12
+            "c4\n",             // line 13 (body end)
+            "C\n",              // line 14 (terminator)
+        );
+        let ranges = folding_ranges_for_source(source)?;
+
+        for (start, end) in [(1, 2), (5, 7), (10, 13)] {
+            assert!(
+                ranges.iter().any(|range| {
+                    range.get("kind") == Some(&json!("region"))
+                        && range.get("startLine") == Some(&json!(start))
+                        && range.get("endLine") == Some(&json!(end))
+                }),
+                "heredoc body must fold as [{start}..{end}] (terminator visible): {ranges:?}"
+            );
+        }
 
         Ok(())
     }
