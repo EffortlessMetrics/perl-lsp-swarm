@@ -7,7 +7,7 @@ use super::super::diagnostics_sink::DiagnosticSubject;
 use super::super::{
     CodeActionsProvider, CodeActionsProviderV2, DiagnosticsProvider, EnhancedCodeActionsProvider,
     GLOBAL_CANCELLATION_REGISTRY, HashMap, InternalCodeActionKind, InternalCodeActionKindV2,
-    JsonRpcError, JsonRpcId, LspServer, PerlLspCancellationToken, TestGenerator, Value, json,
+    JsonRpcError, JsonRpcId, LspServer, PerlLspCancellationToken, Value, json,
 };
 
 /// One immutable accepted subject for a native critic code-action run (#9062).
@@ -60,64 +60,6 @@ use super::misc::{
 use crate::cancellation::RequestCleanupGuard;
 use crate::protocol::command::Command;
 use crate::protocol::{REQUEST_CANCELLED, req_range, req_uri};
-use std::sync::LazyLock;
-
-/// Authored pattern for "global-variable assignment at the start of a line".
-///
-/// Named so the detector, its failure diagnostic, and the tests that pin its
-/// behavior all reference one source of truth.
-const GLOBAL_VAR_ASSIGNMENT_PATTERN: &str = r"(?m)^(\$|\@|\%)[a-zA-Z_]\w*\s*=";
-
-/// Detector backing the optional `Convert globals to 'my' declarations` action.
-///
-/// The pattern is authored by this program, so a compile failure would be a
-/// source regression rather than expected runtime input. It is still built
-/// inside a long-lived language server, where a fatal initializer would take
-/// the whole process down with it, so initialization is non-fatal: on failure
-/// the detector is unavailable, the single optional action it gates is
-/// withheld, and every other code action still returns.
-static GLOBAL_VAR_ASSIGNMENT_RE: LazyLock<Option<regex::Regex>> = LazyLock::new(|| {
-    match regex::Regex::new(GLOBAL_VAR_ASSIGNMENT_PATTERN) {
-        Ok(regex) => Some(regex),
-        Err(error) => {
-            // Bounded: `LazyLock` initializes once, so this reports the defect
-            // a single time for the life of the process rather than per request.
-            tracing::error!(
-                pattern = GLOBAL_VAR_ASSIGNMENT_PATTERN,
-                %error,
-                "global-assignment detector unavailable; withholding the \
-                 \"Convert globals to 'my' declarations\" code action"
-            );
-            None
-        }
-    }
-});
-
-#[cfg(test)]
-thread_local! {
-    /// Test-only switch simulating a detector whose static pattern failed to
-    /// compile. Production builds contain no such switch.
-    static FORCE_GLOBAL_VAR_DETECTOR_UNAVAILABLE: std::cell::Cell<bool> =
-        const { std::cell::Cell::new(false) };
-}
-
-/// The compiled detector, or `None` when the static instrument is unavailable.
-fn global_var_assignment_detector() -> Option<&'static regex::Regex> {
-    #[cfg(test)]
-    if FORCE_GLOBAL_VAR_DETECTOR_UNAVAILABLE.with(std::cell::Cell::get) {
-        return None;
-    }
-    GLOBAL_VAR_ASSIGNMENT_RE.as_ref()
-}
-
-/// Whether `text` contains a global-variable assignment that the optional
-/// "convert to `my`" refactor would target.
-///
-/// An unavailable detector withholds the action rather than guessing: answering
-/// `false` keeps the server responsive and never offers a malformed refactor.
-fn offers_convert_globals_to_my(text: &str) -> bool {
-    global_var_assignment_detector().is_some_and(|regex| regex.is_match(text))
-}
 
 const CODE_ACTION_TAG_LLM_GENERATED: i64 = 1;
 
@@ -1011,10 +953,6 @@ impl LspServer {
             let enhanced_actions =
                 enhanced_provider.get_enhanced_refactoring_actions(ast, (start_offset, end_offset));
 
-            // Add test generation actions
-            let test_generator = TestGenerator::new("Test::More");
-            let subroutines = test_generator.find_subroutines(ast);
-
             for action in enhanced_actions {
                 // LSP 3.16 §3.16.2: refactor.extract requires a non-empty
                 // selection. When the cursor position is a zero-width range we
@@ -1085,26 +1023,6 @@ impl LspServer {
                 end_offset,
             );
 
-            // Add test generation actions for subroutines in range
-            for sub_info in subroutines {
-                // Check if cursor is near this subroutine
-                let test_code = test_generator.generate_test(&sub_info.name, sub_info.param_count);
-                code_actions.push(json!({
-                    "title": format!("Generate test for '{}'", sub_info.name),
-                    "kind": "source",
-                    "command": Command::presented(
-                        "Generate test",
-                        "perl.generateTest",
-                        "Insert a Test::More skeleton for this subroutine",
-                        Some(vec![json!({
-                            "uri": uri,
-                            "name": sub_info.name,
-                            "test": test_code
-                        })]),
-                    ),
-                }));
-            }
-
             Ok(Some(self.finalize_staged_code_action_response(
                 base_subject,
                 staged_native_actions,
@@ -1163,32 +1081,6 @@ impl LspServer {
                     uri,
                     doc.version,
                 );
-            }
-
-            // Always offer debug actions for files with issues
-            code_actions.push(json!({
-                "title": "Add debug print",
-                "kind": "refactor.rewrite",
-                "command": Command::presented(
-                    "Add debug print",
-                    "perl.addDebugPrint",
-                    "Insert a STDERR debug print in this document",
-                    Some(vec![json!({ "uri": uri })]),
-                ),
-            }));
-
-            // Check for global variables that could use 'my' declarations
-            if offers_convert_globals_to_my(&doc.text) {
-                code_actions.push(json!({
-                    "title": "Convert globals to 'my' declarations",
-                    "kind": "refactor.rewrite",
-                    "command": Command::presented(
-                        "Convert to my declarations",
-                        "perl.convertToMyDeclarations",
-                        "Rewrite file-scope globals as lexical my declarations",
-                        Some(vec![json!({ "uri": uri })]),
-                    ),
-                }));
             }
 
             self.maybe_push_disabled_extract_placeholder(
@@ -2466,106 +2358,126 @@ print $x;
         Ok(())
     }
 
-    fn command_object<'a>(
-        actions: &'a [Value],
-        command_id: &str,
-    ) -> Result<&'a Value, Box<dyn std::error::Error>> {
-        actions
-            .iter()
-            .find_map(|action| {
-                let command = action.get("command")?;
-                (command.get("command").and_then(Value::as_str) == Some(command_id))
-                    .then_some(command)
-            })
-            .ok_or_else(|| format!("missing command {command_id} in {actions:#?}").into())
+    /// #17304 regression guard: the commands a code action may offer.
+    ///
+    /// A command is offerable when some component can actually execute it:
+    /// either the server registers it for `workspace/executeCommand` (the
+    /// canonical advertised set in
+    /// `perl_lsp_rs_core::protocol::capabilities`, mirrored by the
+    /// execute-command dispatch) or a client-side contract owns it
+    /// (`perl-lsp.explainDiagnostic` is registered by the bundled VS Code
+    /// extension). #17304 removed the last executor-less offers
+    /// (`perl.generateTest`, `perl.addDebugPrint`,
+    /// `perl.convertToMyDeclarations`) — an offered-but-unexecutable command
+    /// surfaces as `-32601 Unknown command` the moment the user clicks the
+    /// lightbulb entry. This contract keeps that class closed.
+    fn executable_code_action_commands() -> std::collections::BTreeSet<String> {
+        let mut executable: std::collections::BTreeSet<String> =
+            perl_lsp_rs_core::protocol::capabilities::get_supported_commands()
+                .into_iter()
+                .collect();
+        // Executed by the bundled editor extension, not by the server.
+        executable.insert("perl-lsp.explainDiagnostic".to_string());
+        executable
     }
 
-    fn assert_presented_command(command: &Value, title: &str, command_id: &str, tooltip: &str) {
-        assert_eq!(command.get("title").and_then(Value::as_str), Some(title));
-        assert_eq!(command.get("command").and_then(Value::as_str), Some(command_id));
-        assert_eq!(command.get("tooltip").and_then(Value::as_str), Some(tooltip));
-        assert_ne!(
-            tooltip, title,
-            "tooltip must add information beyond the command title: {command}"
-        );
+    fn assert_offered_code_action_commands_are_executable(
+        actions: &[Value],
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let executable = executable_code_action_commands();
+        for action in actions {
+            let Some(command) = action.get("command") else {
+                continue;
+            };
+            let Some(id) = command.get("command").and_then(Value::as_str) else {
+                continue;
+            };
+            let title = action.get("title").and_then(Value::as_str).unwrap_or("<untitled>");
+            assert!(
+                executable.contains(id),
+                "code action {title:?} offers command {id:?} that no component registers; \
+                 executing it fails with -32601 Unknown command (#17304): {command}"
+            );
+            let tooltip = command.get("tooltip").and_then(Value::as_str).unwrap_or_default();
+            assert!(
+                !tooltip.is_empty() && tooltip != title,
+                "LSP 3.18 Command.tooltip must be present and add information: {command}"
+            );
+        }
+        Ok(())
     }
 
-    #[test]
-    fn generate_test_command_carries_lsp_318_tooltip_without_replacing_identity()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let server = LspServer::new();
-        let uri = "file:///generate-test.pl";
-        open_test_document(&server, uri, "sub calculate {\n    return 1;\n}\n");
+    fn assert_no_dead_code_action_commands(actions: &[Value]) {
+        for dead in ["perl.generateTest", "perl.addDebugPrint", "perl.convertToMyDeclarations"] {
+            assert!(
+                !actions.iter().any(|action| {
+                    action
+                        .get("command")
+                        .and_then(|command| command.get("command"))
+                        .and_then(Value::as_str)
+                        == Some(dead)
+                }),
+                "{dead} is registered nowhere and must not be offered (#17304): {actions:#?}"
+            );
+        }
+    }
 
+    fn code_actions_response(
+        server: &LspServer,
+        uri: &str,
+        range: Value,
+    ) -> Result<Vec<Value>, Box<dyn std::error::Error>> {
         let response = server.handle_code_action(Some(json!({
             "textDocument": { "uri": uri },
-            "range": {
-                "start": { "line": 0, "character": 0 },
-                "end": { "line": 2, "character": 1 }
-            },
+            "range": range,
             "context": { "diagnostics": [] }
         })))?;
-        let actions = response
+        response
             .ok_or("missing code action response")?
             .as_array()
             .cloned()
-            .ok_or("code action response must be an array")?;
-        let command = command_object(&actions, "perl.generateTest")?;
-        assert_presented_command(
-            command,
-            "Generate test",
-            "perl.generateTest",
-            "Insert a Test::More skeleton for this subroutine",
-        );
-        assert_eq!(command.pointer("/arguments/0/name").and_then(Value::as_str), Some("calculate"));
-        assert!(
-            command
-                .pointer("/arguments/0/test")
-                .and_then(Value::as_str)
-                .is_some_and(|test| !test.is_empty()),
-            "generate-test arguments must keep the generated skeleton: {command}"
-        );
+            .ok_or_else(|| "code action response must be an array".into())
+    }
+
+    #[test]
+    fn offered_commands_are_executable_on_the_ast_branch() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let server = LspServer::new();
+        let uri = "file:///executable-commands-ast.pl";
+        open_test_document(&server, uri, "sub calculate {\n    return 1;\n}\n");
+
+        let actions = code_actions_response(
+            &server,
+            uri,
+            json!({
+                "start": { "line": 0, "character": 0 },
+                "end": { "line": 2, "character": 1 }
+            }),
+        )?;
+
+        assert_offered_code_action_commands_are_executable(&actions)?;
+        assert_no_dead_code_action_commands(&actions);
         Ok(())
     }
 
     #[test]
-    fn pending_parse_commands_carry_lsp_318_tooltips_without_replacing_identity()
+    fn offered_commands_are_executable_on_the_pending_parse_branch()
     -> Result<(), Box<dyn std::error::Error>> {
         let server = LspServer::new();
-        let uri = "file:///pending-parse-commands.pl";
+        let uri = "file:///executable-commands-pending-parse.pl";
         open_with_pending_parse(&server, uri)?;
 
-        let response = server.handle_code_action(Some(json!({
-            "textDocument": { "uri": uri },
-            "range": {
+        let actions = code_actions_response(
+            &server,
+            uri,
+            json!({
                 "start": { "line": 0, "character": 0 },
                 "end": { "line": 0, "character": 0 }
-            },
-            "context": { "diagnostics": [] }
-        })))?;
-        let actions = response
-            .ok_or("missing code action response")?
-            .as_array()
-            .cloned()
-            .ok_or("code action response must be an array")?;
+            }),
+        )?;
 
-        let debug = command_object(&actions, "perl.addDebugPrint")?;
-        assert_presented_command(
-            debug,
-            "Add debug print",
-            "perl.addDebugPrint",
-            "Insert a STDERR debug print in this document",
-        );
-        assert_eq!(debug.pointer("/arguments/0/uri").and_then(Value::as_str), Some(uri));
-
-        let convert = command_object(&actions, "perl.convertToMyDeclarations")?;
-        assert_presented_command(
-            convert,
-            "Convert to my declarations",
-            "perl.convertToMyDeclarations",
-            "Rewrite file-scope globals as lexical my declarations",
-        );
-        assert_eq!(convert.pointer("/arguments/0/uri").and_then(Value::as_str), Some(uri));
+        assert_offered_code_action_commands_are_executable(&actions)?;
+        assert_no_dead_code_action_commands(&actions);
         Ok(())
     }
 
@@ -3681,117 +3593,14 @@ my $x = 1 + 2;
         Ok(())
     }
 
-    // ---- #13689: non-fatal global-assignment detector ----------------------
-
-    /// RAII switch simulating a detector whose static pattern failed to
-    /// compile, so a panicking assertion cannot leak the forced state into
-    /// another test sharing the thread.
-    struct ForcedDetectorFailure;
-
-    impl ForcedDetectorFailure {
-        fn engage() -> Self {
-            FORCE_GLOBAL_VAR_DETECTOR_UNAVAILABLE.with(|forced| forced.set(true));
-            Self
-        }
-    }
-
-    impl Drop for ForcedDetectorFailure {
-        fn drop(&mut self) {
-            FORCE_GLOBAL_VAR_DETECTOR_UNAVAILABLE.with(|forced| forced.set(false));
-        }
-    }
-
-    #[test]
-    fn global_assignment_detector_matches_every_sigil_at_line_start() {
-        for text in ["$name = 1;\n", "@name = ();\n", "%name = ();\n"] {
-            assert!(
-                offers_convert_globals_to_my(text),
-                "{text:?} is a line-start global assignment"
-            );
-        }
-    }
-
-    #[test]
-    fn global_assignment_detector_requires_an_ascii_leading_identifier_character() {
-        assert!(offers_convert_globals_to_my("$_name = 1;\n"));
-        assert!(offers_convert_globals_to_my("$Name = 1;\n"));
-        // The first identifier character is `[a-zA-Z_]`, so a digit or a
-        // non-ASCII letter leaves the line outside the match.
-        assert!(!offers_convert_globals_to_my("$1name = 1;\n"));
-        assert!(!offers_convert_globals_to_my("$\u{00F1}ame = 1;\n"));
-    }
-
-    #[test]
-    fn global_assignment_detector_pins_unicode_word_tail_and_whitespace() {
-        // `\w` is Unicode-aware in the `regex` crate, so a non-ASCII tail
-        // matches. Pinned rather than assumed: a pure ASCII scanner would
-        // silently narrow this.
-        assert!(offers_convert_globals_to_my("$na\u{00EF}ve = 1;\n"));
-        // `\s` is Unicode-aware too; U+00A0 NO-BREAK SPACE still separates the
-        // name from `=`.
-        assert!(offers_convert_globals_to_my("$name\u{00A0}= 1;\n"));
-    }
-
-    #[test]
-    fn global_assignment_detector_requires_a_line_start_anchor() {
-        // `(?m)` anchors at any line start, not only the start of input.
-        assert!(offers_convert_globals_to_my("use strict;\n$name = 1;\n"));
-        // Indented assignments stay outside the current disposition.
-        assert!(!offers_convert_globals_to_my("    $name = 1;\n"));
-        assert!(!offers_convert_globals_to_my("\t$name = 1;\n"));
-    }
-
-    #[test]
-    fn global_assignment_detector_boundaries_do_not_widen_in_this_repair() {
-        // Commented and embedded occurrences are not at a line start.
-        assert!(!offers_convert_globals_to_my("# $name = 1;\n"));
-        assert!(!offers_convert_globals_to_my("my $copy = \"$name = 1\";\n"));
-        // A `my`-declared local does not start the line with a sigil.
-        assert!(!offers_convert_globals_to_my("my $name = 1;\n"));
-        // A sigil with no assignment is not a match.
-        assert!(!offers_convert_globals_to_my("$name;\n"));
-        // Known current false positive, retained deliberately: `\s*=` is
-        // satisfied by the first `=` of a comparison. This repair preserves the
-        // existing disposition instead of narrowing it.
-        assert!(offers_convert_globals_to_my("$name == 1;\n"));
-    }
-
-    #[test]
-    fn global_assignment_detector_is_available_by_default() {
-        assert!(global_var_assignment_detector().is_some());
-        assert!(offers_convert_globals_to_my("$name = 1;\n"));
-    }
-
-    #[test]
-    fn an_unavailable_detector_withholds_the_convert_globals_action() {
-        let _forced = ForcedDetectorFailure::engage();
-        assert!(global_var_assignment_detector().is_none());
-        assert!(
-            !offers_convert_globals_to_my("$name = 1;\n"),
-            "an unavailable detector must withhold the action, never guess"
-        );
-    }
-
-    #[test]
-    fn forced_detector_failure_is_released_on_drop() {
-        {
-            let _forced = ForcedDetectorFailure::engage();
-            assert!(!offers_convert_globals_to_my("$name = 1;\n"));
-        }
-        assert!(
-            offers_convert_globals_to_my("$name = 1;\n"),
-            "the forced-failure switch must not outlive its guard"
-        );
-    }
-
-    /// Source carrying a line-start global assignment.
+    /// Source that parses to no AST-quickfix subject and lacks strict/warnings,
+    /// so the pending-parse branch still has its quickfix to offer.
     const GLOBAL_ASSIGNMENT_DOC: &str = "$global = 1;\n";
 
-    /// Open `uri` and leave it in the pending-parse gap, which is the branch
-    /// that offers the optional "Convert globals" action.
+    /// Open `uri` and leave it in the pending-parse gap, which is
+    /// `handle_code_action`'s no-current-AST path.
     ///
-    /// The action lives on `handle_code_action`'s no-current-AST path. That
-    /// path cannot be reached by feeding malformed source through a normal
+    /// That path cannot be reached by feeding malformed source through a normal
     /// `didOpen`: the v3 parser recovers, so broken input still yields an AST
     /// (documented on `state::document`'s `minimal_snapshot_for`, from the
     /// #3760 review, where guarding on `ast().is_none()` after a real parse was
@@ -3826,22 +3635,6 @@ my $x = 1 + 2;
             .iter()
             .filter_map(|action| action.get("title").and_then(Value::as_str).map(str::to_owned))
             .collect())
-    }
-
-    #[test]
-    fn available_detector_offers_the_convert_globals_action()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let server = LspServer::new();
-        let uri = "file:///global_assignment_baseline.pl";
-        open_with_pending_parse(&server, uri)?;
-
-        let titles = code_action_titles(&server, uri)?;
-
-        assert!(
-            titles.iter().any(|title| title == "Convert globals to 'my' declarations"),
-            "baseline proves this document reaches the branch under test: {titles:?}"
-        );
-        Ok(())
     }
 
     fn ranged_violation(uri: &str, version: i32) -> Value {
@@ -3946,30 +3739,9 @@ my $x = 1 + 2;
         open_with_pending_parse(&server, pending_uri)?;
         let pending_titles = code_action_titles(&server, pending_uri)?;
         assert!(
-            pending_titles.iter().any(|title| title == "Convert globals to 'my' declarations"),
-            "synchronized AST-less fallback must still offer convert-globals: {pending_titles:?}"
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn code_actions_survive_an_unavailable_global_assignment_detector()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let _forced = ForcedDetectorFailure::engage();
-        let server = LspServer::new();
-        let uri = "file:///global_assignment_detector_down.pl";
-        open_with_pending_parse(&server, uri)?;
-
-        // The request completes rather than terminating the server.
-        let titles = code_action_titles(&server, uri)?;
-
-        assert!(
-            !titles.iter().any(|title| title == "Convert globals to 'my' declarations"),
-            "an unavailable detector must withhold only its own action: {titles:?}"
-        );
-        assert!(
-            titles.iter().any(|title| title == "Add debug print"),
-            "unrelated code actions must still be returned: {titles:?}"
+            pending_titles.iter().any(|title| title.contains("strict")),
+            "synchronized AST-less fallback must still return its quickfix actions: \
+             {pending_titles:?}"
         );
         Ok(())
     }

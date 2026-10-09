@@ -497,7 +497,7 @@ sub calculate {
 
 #[cfg(feature = "lsp-extras")]
 #[test]
-fn test_test_generation_actions_present() -> TestResult {
+fn test_no_unexecutable_command_actions_are_offered() -> TestResult {
     let (mut harness, workspace) = create_test_server()?;
 
     // Request code actions for the calculate subroutine
@@ -516,29 +516,24 @@ fn test_test_generation_actions_present() -> TestResult {
     {
         let actions = result.as_array().ok_or("Should return action array")?;
 
-        // Find test generation action
-        let test_action = actions
-            .iter()
-            .find(|a| a["title"].as_str().is_some_and(|t| t.contains("Generate test")));
+        // #17304: every offered command must be executable. `perl.generateTest`
+        // had no dispatch arm, no executeCommandProvider advertisement, and no
+        // extension registration, so clicking the offered action always failed
+        // with -32601 Unknown command. The offer was removed; the other code
+        // actions are unaffected.
+        let offered_commands: Vec<&str> =
+            actions.iter().filter_map(|a| a["command"]["command"].as_str()).collect();
 
-        assert!(test_action.is_some(), "Should have test generation action");
-
-        // Verify it has the right command
-        let action = test_action.ok_or("Should have test generation action")?;
-        assert_eq!(
-            action["command"]["command"].as_str(),
-            Some("perl.generateTest"),
-            "Should use perl.generateTest command"
+        assert!(
+            !offered_commands.contains(&"perl.generateTest"),
+            "perl.generateTest is registered nowhere and must not be offered: {actions:?}"
         );
-
-        // Verify arguments include test code
-        let args = &action["command"]["arguments"];
-        let args_array = args.as_array().ok_or("Should have arguments")?;
-        assert!(!args_array.is_empty(), "Should have test generation arguments");
-
-        let first_arg = &args_array[0];
-        assert!(first_arg["name"].is_string(), "Should include subroutine name");
-        assert!(first_arg["test"].is_string(), "Should include generated test code");
+        assert!(
+            !actions
+                .iter()
+                .any(|a| a["title"].as_str().is_some_and(|t| t.contains("Generate test"))),
+            "Generate-test actions must not be offered: {actions:?}"
+        );
     }
     Ok(())
 }
