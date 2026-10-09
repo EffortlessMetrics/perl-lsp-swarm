@@ -518,6 +518,33 @@ class NegativeControlTests(unittest.TestCase):
             self.assertIn("master-as-default-branch", _ids(_findings(tmp)))
 
 
+    def test_public_master_is_allowed_when_repository_qualified(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            tmp = Path(temp)
+            _clone_surfaces(tmp)
+            _rewrite(
+                tmp,
+                MANAGEMENT_GUIDE,
+                lambda text: text
+                + "\n\nExternal pull requests target `perl-lsp/master`.\n"
+                + "gh pr create --repo EffortlessMetrics/perl-lsp --base master\n",
+            )
+            self.assertNotIn("master-as-default-branch", _ids(_findings(tmp)))
+
+    def test_qualified_public_branch_does_not_excuse_nearby_swarm_master(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            tmp = Path(temp)
+            _clone_surfaces(tmp)
+            _rewrite(
+                tmp,
+                MANAGEMENT_GUIDE,
+                lambda text: text
+                + "\n\nExternal pull requests target `perl-lsp/master`.\n"
+                + "Swarm work targets `master`.\n",
+            )
+            self.assertIn("master-as-default-branch", _ids(_findings(tmp)))
+
+
 class CooldownTests(unittest.TestCase):
     def test_each_ecosystem_refuses_missing_or_wrong_cooldown(self) -> None:
         original = (ROOT / CONFIG_PATH).read_text(encoding="utf-8")
