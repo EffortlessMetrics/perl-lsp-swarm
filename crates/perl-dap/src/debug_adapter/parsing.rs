@@ -39,6 +39,119 @@ impl DebugAdapter {
         normalized.trim().to_string()
     }
 
+    /// Normalize one debugger output line for `x`-dump parsing.
+    ///
+    /// Like [`Self::normalize_debugger_output_line`] it strips ANSI escapes
+    /// and `DB<N>` prompt tokens, but it preserves leading indentation: indent
+    /// depth is the only signal separating a dump's top-level elements from
+    /// the nested referent contents indented beneath them. Prompt tokens only
+    /// ever prefix the top-level dump line, so a prompted line loses its
+    /// remaining leading whitespace with them.
+    pub(super) fn normalize_x_dump_line(line: &str) -> String {
+        let mut normalized = if let Some(re) = ansi_escape_re() {
+            re.replace_all(line, "").into_owned()
+        } else {
+            line.to_string()
+        };
+
+        let mut had_prompt = false;
+        while let Some(prompt_start) = normalized.find("DB<")
+            && let Some(prompt_end) = normalized[prompt_start..].find('>')
+        {
+            had_prompt = true;
+            let content_start = prompt_start + prompt_end + 1;
+            normalized = normalized[content_start..].to_string();
+        }
+        if had_prompt {
+            normalized = normalized.trim_start().to_string();
+        }
+
+        normalized.trim_end().to_string()
+    }
+
+    /// Decompose one normalized `x`-dump line into `(indent, ordinal, payload)`.
+    ///
+    /// perl5db renders array/list elements as `<ordinal><two spaces><payload>`
+    /// and nested hash entries as `<indent>'key' => payload`. Returns `None`
+    /// for any other line shape so callers can reject non-dump output.
+    fn x_dump_line_parts(text: &str) -> Option<(usize, Option<u64>, String)> {
+        let indent = text.len() - text.trim_start_matches(' ').len();
+        let rest = &text[indent..];
+
+        if let Some(payload) = rest.strip_prefix('\'').and_then(|after_open| {
+            let close = after_open.find('\'')?;
+            after_open[close + 1..].strip_prefix(" => ")
+        }) {
+            return Some((indent, None, payload.to_string()));
+        }
+
+        let digits_end = rest.find(|character: char| !character.is_ascii_digit())?;
+        if digits_end == 0 || !rest[digits_end..].starts_with("  ") {
+            return None;
+        }
+        let ordinal = rest[..digits_end].parse::<u64>().ok()?;
+        Some((indent, Some(ordinal), rest[digits_end + 2..].to_string()))
+    }
+
+    /// Reshape perl5db `x`-command dump lines into the single logical value
+    /// text the evaluate response should present, with a coarse type name.
+    ///
+    /// perl5db's `x` renders its result as a numbered dump: one
+    /// `<ordinal><two spaces><payload>` line per top-level element, with a
+    /// nested referent's contents on indented follow-up lines. Presenting
+    /// those lines verbatim made every scalar evaluate to an ordinal-prefixed
+    /// string (`0  5` for `$a + $b`) and multi-element dumps collapse to their
+    /// final dump line (`2  3` for `(1, 2, 3)`) (#17244).
+    ///
+    /// The reshape handles the unambiguous dump shape: a single element keeps
+    /// its exact perl5db payload (`5`, `'hello'`, `undef`), and a flat
+    /// multi-element dump joins as a parenthesized list (`(1, 2, 3)`).
+    ///
+    /// Framed input arrives through `normalize_debugger_output_line`, which
+    /// trims indentation, so a dump containing nested referent contents is
+    /// structurally indistinguishable from a flat dump of the same line
+    /// sequence (`x [1, 2]` and `x ([1], [2])` frame identically up to their
+    /// ambiguous tail). A multi-line string value is equally ambiguous:
+    /// perl5db prints embedded newlines literally, so the payload's
+    /// continuation lines arrive looking exactly like further dump elements
+    /// (`0  'foo` / `1  bar'`). Rather than guess and fabricate a value, the
+    /// reshape accepts only dumps whose every line is a strictly sequential
+    /// top-level ordinal (`0, 1, 2, …`) at indent zero whose payload closes
+    /// every quote it opens; any other shape declines, and the generic
+    /// evaluate parse paths keep handling the output exactly as before
+    /// (#5086 keeps address-preserving reference rendering a follow-up).
+    pub(super) fn parse_evaluate_result_from_x_dump(lines: &[String]) -> Option<(String, String)> {
+        let mut top_level: Vec<String> = Vec::new();
+        for line in lines {
+            let normalized = Self::normalize_x_dump_line(line);
+            if normalized.trim().is_empty() {
+                continue;
+            }
+            let (indent, ordinal, payload) = Self::x_dump_line_parts(&normalized)?;
+            // A dump with nested (indented) referent contents or hash entries
+            // is not unambiguously reshapable once trimmed; decline it whole.
+            if indent > 0 || ordinal != Some(top_level.len() as u64) {
+                return None;
+            }
+            // An odd number of quotes means the payload's string continues on
+            // the next output line; the following lines would be continuations
+            // masquerading as further elements.
+            if payload.matches('\'').count() % 2 == 1 {
+                return None;
+            }
+            top_level.push(payload);
+        }
+
+        match top_level.len() {
+            0 => None,
+            1 => {
+                let payload = &top_level[0];
+                Some((payload.clone(), Self::infer_debugger_value_type(payload)))
+            }
+            _ => Some((format!("({})", top_level.join(", ")), "array".to_string())),
+        }
+    }
+
     /// Infer a coarse DAP value type from literal-like debugger output.
     pub(super) fn infer_debugger_value_type(text: &str) -> String {
         if text == "undef" {
@@ -666,6 +779,132 @@ mod tests {
             )
             .is_none()
         );
+    }
+
+    /// perl5db's `x` renders a scalar as `0  <payload>`; the evaluate response
+    /// must present the payload, not the dump ordinal prefix (#17244).
+    #[test]
+    pub(super) fn x_dump_scalar_strips_ordinal_prefix() {
+        let lines = vec!["0  5".to_string()];
+        assert_eq!(
+            DebugAdapter::parse_evaluate_result_from_x_dump(&lines),
+            Some(("5".to_string(), "integer".to_string()))
+        );
+
+        // Live framed shape: the debugger prompt rides the first dump line.
+        let prompted = vec!["  DB<29> 0  1024".to_string()];
+        assert_eq!(
+            DebugAdapter::parse_evaluate_result_from_x_dump(&prompted),
+            Some(("1024".to_string(), "integer".to_string()))
+        );
+    }
+
+    /// A multi-element `x` dump must join into one faithful list rendering,
+    /// not collapse to its final dump line (`2  3` for `(1,2,3)`) (#17244).
+    #[test]
+    pub(super) fn x_dump_list_joins_top_level_elements() {
+        let lines = vec!["0  1".to_string(), "1  2".to_string(), "2  3".to_string()];
+        assert_eq!(
+            DebugAdapter::parse_evaluate_result_from_x_dump(&lines),
+            Some(("(1, 2, 3)".to_string(), "array".to_string()))
+        );
+
+        let prompted = vec!["  DB<3> 0  1".to_string(), "1  2".to_string(), "2  3".to_string()];
+        assert_eq!(
+            DebugAdapter::parse_evaluate_result_from_x_dump(&prompted),
+            Some(("(1, 2, 3)".to_string(), "array".to_string()))
+        );
+    }
+
+    /// A dump carrying nested referent contents cannot be reshaped from
+    /// framed input: `normalize_debugger_output_line` trims indentation, so
+    /// `x [1, 2]` and `x ([1], [2])` frame identically up to their ambiguous
+    /// tail. The reshape declines the whole dump and the generic parse paths
+    /// keep the pre-#17244 behavior instead of fabricating a value (#17244).
+    #[test]
+    pub(super) fn x_dump_declines_nested_referent_contents() {
+        // Framed shape: indentation already trimmed upstream.
+        let arrayref =
+            vec!["0  ARRAY(0x2035db81a48)".to_string(), "0  1".to_string(), "1  2".to_string()];
+        assert_eq!(DebugAdapter::parse_evaluate_result_from_x_dump(&arrayref), None);
+
+        // Nested hash entries ('key' => payload) are referent contents too.
+        let hashref = vec!["0  HASH(0x1b7481614e8)".to_string(), "'a' => 1".to_string()];
+        assert_eq!(DebugAdapter::parse_evaluate_result_from_x_dump(&hashref), None);
+
+        // Raw shape with indent preserved: nested lines decline as well.
+        let indented =
+            vec!["0  ARRAY(0x557f8a9c)".to_string(), "   0  1".to_string(), "   1  2".to_string()];
+        assert_eq!(DebugAdapter::parse_evaluate_result_from_x_dump(&indented), None);
+    }
+
+    /// perl5db prints embedded newlines literally, so a multi-line string
+    /// value's continuation lines arrive looking exactly like further dump
+    /// elements (`0  'foo` / `1  bar'`). An unterminated quote declines the
+    /// reshape so the string is never fabricated into an array (#17244).
+    #[test]
+    pub(super) fn x_dump_declines_multiline_string_payloads() {
+        // Live shape of `x $ml` for $ml = "foo\n1  bar" (perl5db 1.82).
+        let multiline = vec!["0  'foo".to_string(), "1  bar'".to_string()];
+        assert_eq!(DebugAdapter::parse_evaluate_result_from_x_dump(&multiline), None);
+
+        // A multi-line element inside a list declines too.
+        let list_with_multiline =
+            vec!["0  'foo".to_string(), "1  bar'".to_string(), "2  5".to_string()];
+        assert_eq!(DebugAdapter::parse_evaluate_result_from_x_dump(&list_with_multiline), None);
+    }
+
+    /// Quoted string payloads keep their exact perl5db rendering; `undef` and
+    /// floats keep their coarse types after the prefix strip (#17244).
+    #[test]
+    pub(super) fn x_dump_payload_types_follow_stripped_text() {
+        let quoted = vec!["0  'hello'".to_string()];
+        assert_eq!(
+            DebugAdapter::parse_evaluate_result_from_x_dump(&quoted),
+            Some(("'hello'".to_string(), "string".to_string()))
+        );
+
+        let undef = vec!["0  undef".to_string()];
+        assert_eq!(
+            DebugAdapter::parse_evaluate_result_from_x_dump(&undef),
+            Some(("undef".to_string(), "undef".to_string()))
+        );
+
+        let float = vec!["0  3.14".to_string()];
+        assert_eq!(
+            DebugAdapter::parse_evaluate_result_from_x_dump(&float),
+            Some(("3.14".to_string(), "number".to_string()))
+        );
+    }
+
+    /// Lines that are not an `x` dump must leave the reshape so the generic
+    /// evaluate parse paths keep handling them unchanged (#17244).
+    #[test]
+    pub(super) fn x_dump_reshape_rejects_non_dump_lines() {
+        // Bare literal (the pre-#17244 correlated-literal shape).
+        let bare = vec!["42".to_string()];
+        assert_eq!(DebugAdapter::parse_evaluate_result_from_x_dump(&bare), None);
+
+        // perl5db renders empty structures without an ordinal.
+        let empty = vec!["   empty array".to_string()];
+        assert_eq!(DebugAdapter::parse_evaluate_result_from_x_dump(&empty), None);
+
+        // Assignment-shaped read-back output belongs to the `p` path.
+        let assignment = vec!["$x = 5".to_string()];
+        assert_eq!(DebugAdapter::parse_evaluate_result_from_x_dump(&assignment), None);
+
+        // A dump always opens at ordinal 0.
+        let shifted = vec!["1  2".to_string(), "2  3".to_string()];
+        assert_eq!(DebugAdapter::parse_evaluate_result_from_x_dump(&shifted), None);
+
+        // A non-sequential top-level ordinal is not an `x` dump.
+        let gap = vec!["0  1".to_string(), "5  2".to_string()];
+        assert_eq!(DebugAdapter::parse_evaluate_result_from_x_dump(&gap), None);
+
+        // Prompt-only or empty frames carry no result.
+        assert_eq!(DebugAdapter::parse_evaluate_result_from_x_dump(&[]), None);
+        let prompts = vec!["  DB<3>".to_string(), "".to_string()];
+        assert_eq!(DebugAdapter::parse_evaluate_result_from_x_dump(&prompts), None);
     }
 
     /// `setVariable` / `setExpression` send `p {name} = {value}` then `p {name}` and read

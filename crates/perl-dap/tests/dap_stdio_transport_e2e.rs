@@ -619,7 +619,9 @@ fn native_stdio_cancel_reaches_blocked_evaluate_and_recovers() -> Result<()> {
         .get("result")
         .and_then(Value::as_str)
         .ok_or_else(|| anyhow!("baseline evaluate result was not a string: {baseline:?}"))?;
-    if baseline_result.split_whitespace().collect::<Vec<_>>() != ["0", "42"] {
+    // #17244: the evaluate result is the value itself (`42`), not perl5db's
+    // ordinal-prefixed `x`-dump text (`0  42`).
+    if baseline_result.split_whitespace().collect::<Vec<_>>() != ["42"] {
         return Err(anyhow!("baseline evaluate did not produce 42: {baseline:?}"));
     }
 
@@ -674,7 +676,7 @@ fn native_stdio_cancel_reaches_blocked_evaluate_and_recovers() -> Result<()> {
         .and_then(Value::as_str)
         .ok_or_else(|| anyhow!("follow-up evaluate result was not a string: {follow_up:?}"))?;
     if follow_up_result != baseline_result
-        || follow_up_result.split_whitespace().collect::<Vec<_>>() != ["0", "42"]
+        || follow_up_result.split_whitespace().collect::<Vec<_>>() != ["42"]
     {
         return Err(anyhow!(
             "follow-up evaluate was contaminated by cancelled output: {follow_up:?}"
