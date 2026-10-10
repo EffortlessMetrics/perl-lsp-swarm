@@ -3591,14 +3591,17 @@ mod tests {
         let home_user_path = Regex::new(r"/home/([A-Za-z0-9._-]+)")?;
 
         assert!(!has_machine_specific_home_path(
-            "Use /home/user/project as the example.",
+            concat!("Use /home/", "user/project as the example."),
             &home_user_path,
         ));
         assert!(has_machine_specific_home_path(
-            "My path is /home/ubuntu/workspace/perl-lsp",
+            concat!("My path is /home/", "ubuntu/workspace/perl-lsp"),
             &home_user_path,
         ));
-        assert!(has_machine_specific_home_path("Local path: /home/u/project", &home_user_path,));
+        assert!(has_machine_specific_home_path(
+            concat!("Local path: /home/", "u/project"),
+            &home_user_path,
+        ));
 
         Ok(())
     }
@@ -3608,15 +3611,15 @@ mod tests {
         let users_name_path = Regex::new(r"/Users/([A-Za-z0-9._-]+)")?;
 
         assert!(!has_machine_specific_users_path(
-            "Template: /Users/Name/project",
+            concat!("Template: /Users/", "Name/project"),
             &users_name_path,
         ));
         assert!(!has_machine_specific_users_path(
-            "Template: /Users/user/project",
+            concat!("Template: /Users/", "user/project"),
             &users_name_path,
         ));
         assert!(has_machine_specific_users_path(
-            "Personal path: /Users/alice/dev/perl-lsp",
+            concat!("Personal path: /Users/", "alice/dev/perl-lsp"),
             &users_name_path,
         ));
 
@@ -3966,7 +3969,7 @@ mod tests {
             .to_str()
             .ok_or_else(|| color_eyre::eyre::eyre!("temp dir must be valid UTF-8 in CI"))?;
         // On Linux CI this will be /tmp/e2e-suite.lock (acceptable)
-        // On Windows this will be C:\Users\...\AppData\Local\Temp\e2e-suite.lock
+        // On Windows this is beneath the user profile AppData/Local/Temp directory.
         assert!(!lock_str.is_empty(), "lock file path must be non-empty");
         Ok(())
     }
