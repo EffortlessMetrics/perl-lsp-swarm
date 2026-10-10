@@ -2176,7 +2176,26 @@ fn symbol_at_cursor_internal(
             if !source_text.is_empty()
                 && !method_call_cursor_names_call(source_text, node, object, method, offset)
             {
-                return None;
+                // A cursor on a qualified receiver (`Foo::Bar` in
+                // `Foo::Bar->baz()`) sits on one qualified name whose
+                // components the workspace tiers classify themselves:
+                // references suppresses a prefix cursor (#1849) and definition
+                // resolves the final component to the package. Returning
+                // `None` here would leave that cursor unclassified, skip those
+                // guards, and collapse the request to the same-file analyzer,
+                // which still attributes the whole call node to the method and
+                // reports it for a receiver cursor. Falling through keeps the
+                // key the downstream guards expect; argument words still
+                // return `None`.
+                let cursor_on_qualified_receiver = offset >= object.location.start
+                    && offset <= object.location.end
+                    && match &object.kind {
+                        NodeKind::Identifier { name } => name.contains("::"),
+                        _ => false,
+                    };
+                if !cursor_on_qualified_receiver {
+                    return None;
+                }
             }
             let mut receiver_packages = std::collections::HashMap::new();
             record_receiver_assignment(ast, offset, current_pkg, &mut receiver_packages);
