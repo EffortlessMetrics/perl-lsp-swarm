@@ -1,0 +1,1910 @@
+//! CI scope classifier — `cargo xtask ci-scope`
+//!
+//! Computes:
+//! 1. Changed files via `git diff --name-only <base>...HEAD`
+//! 2. Maps files to crates via cargo metadata
+//! 3. Computes reverse-dependency closure from the dep graph
+//! 4. Applies architectural wideners (parser → LSP/DAP, etc.)
+//! 5. Detects risk tags via path-prefix + keyword scan
+//! 6. Emits a schema_version=2 JSON feedback plan with selected lanes
+//!
+//! Output is deterministic given the same diff + cargo metadata.
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
+
+use color_eyre::eyre::{Context, Result, eyre};
+use duct::cmd;
+use serde::{Deserialize, Serialize};
+
+use crate::change_set::{self, ArtifactIdentity};
+use crate::ci_subject;
+
+// ---------------------------------------------------------------------------
+// Public output types (schema_version 2)
+// ---------------------------------------------------------------------------
+
+/// A directly-changed crate.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+pub struct DirectCrate {
+    /// Cargo package name.
+    pub name: String,
+    /// Selection reason retained in the receipt.
+    pub reason: String,
+}
+
+/// A crate in the reverse-dependency closure.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+pub struct RevDepCrate {
+    /// Cargo package name.
+    pub name: String,
+    /// Selection reason retained in the receipt.
+    pub reason: String,
+}
+
+/// A crate pulled in by an architectural widener.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ArchWidener {
+    /// Cargo package name.
+    pub name: String,
+    /// Rule.
+    pub rule: String,
+}
+
+/// A selected standard CI lane with its reason and scope.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LaneEntry {
+    /// Selected CI lane identifier.
+    pub lane: String,
+    /// Cargo packages selected for this lane.
+    pub scope: Vec<String>,
+    /// Selection reason retained in the receipt.
+    pub reason: String,
+}
+
+/// A selected heavy CI lane (mutation, fuzz) promoted by risk tags.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HeavyLaneEntry {
+    /// Selected CI lane identifier.
+    pub lane: String,
+    /// Selection reason retained in the receipt.
+    pub reason: String,
+}
+
+/// Decision payload for lane-selection metadata that is not yet enforced.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct LaneDecision {
+    /// Whether the lane is selected.
+    pub selected: bool,
+    /// Requested lane profile.
+    pub profile: String,
+    /// Deterministic selection reasons.
+    pub reasons: Vec<String>,
+}
+
+/// Additional lane decisions emitted for consumers that need boolean selection
+/// plus provenance/reasons.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct LaneDecisions {
+    /// Parser-ratchet selection and provenance.
+    pub parser_ratchet: LaneDecision,
+}
+
+/// Platform override flags.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct PlatformOverrides {
+    /// Whether changed paths require the Windows lane.
+    pub windows_runner: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    /// Exact package subset for the Windows lane.
+    pub windows_test_crates: Vec<String>,
+}
+
+/// The full scope classifier output (schema_version 2).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScopeOutput {
+    /// Version of the serialized receipt schema.
+    pub schema_version: u32,
+    /// Resolved base identity.
+    pub base: String,
+    /// Exact selected checkout commit.
+    pub head_sha: String,
+    /// Resolved changed paths in deterministic order.
+    pub changed_files: Vec<String>,
+    /// Changed-input classification.
+    pub diff_class: String,
+    /// Packages directly changed by the subject.
+    pub direct_crates: Vec<DirectCrate>,
+    /// Packages depending transitively on the directly changed packages.
+    pub reverse_dep_closure: Vec<RevDepCrate>,
+    /// Additional packages required by architectural rules.
+    pub architecture_wideners: Vec<ArchWidener>,
+    /// Detected risk categories.
+    pub risk_tags: Vec<String>,
+    /// Platform selection derived from changed paths.
+    pub platform_overrides: PlatformOverrides,
+    /// Selected standard CI lanes.
+    pub selected_lanes: Vec<LaneEntry>,
+    /// Selected heavy CI lanes.
+    pub selected_heavy_lanes: Vec<HeavyLaneEntry>,
+    /// Additional typed lane decisions.
+    pub lanes: LaneDecisions,
+    /// Selection explanations keyed by lane.
+    pub explanations: BTreeMap<String, String>,
+}
+
+// ---------------------------------------------------------------------------
+// Diff classification
+// ---------------------------------------------------------------------------
+
+/// Prose-only extensions (never trigger CI lanes).
+const PROSE_EXTENSIONS: &[&str] = &[".md", ".txt", ".rst", ".adoc", ".org"];
+
+/// Docs-as-code extensions (may trigger validate-title / doc-build only).
+const DOCS_AS_CODE_EXTENSIONS: &[&str] =
+    &[".toml", ".yaml", ".yml", ".json", ".kdl", ".ron", ".jsonc"];
+
+/// CI config paths/prefixes.
+const CI_CONFIG_PATHS: &[&str] = &[".github/workflows/", ".ci/", "justfile", "Makefile"];
+
+/// Classify a list of changed file paths into a diff_class string.
+///
+/// Classes: `prose_only`, `docs_as_code`, `ci_config`, `code`, `mixed`.
+pub fn classify_diff(files: &[String]) -> String {
+    if files.is_empty() {
+        return "prose_only".to_string();
+    }
+
+    let mut has_prose = false;
+    let mut has_docs_as_code = false;
+    let mut has_ci_config = false;
+    let mut has_code = false;
+
+    for file in files {
+        if is_prose_file(file) {
+            has_prose = true;
+        } else if is_ci_config_file(file) {
+            has_ci_config = true;
+        } else if is_docs_as_code_file(file) {
+            has_docs_as_code = true;
+        } else {
+            // Assume Rust source / other code
+            has_code = true;
+        }
+    }
+
+    let class_count =
+        [has_prose, has_docs_as_code, has_ci_config, has_code].iter().filter(|&&b| b).count();
+
+    if class_count > 1 {
+        return "mixed".to_string();
+    }
+    if has_ci_config {
+        return "ci_config".to_string();
+    }
+    if has_docs_as_code {
+        return "docs_as_code".to_string();
+    }
+    if has_prose {
+        return "prose_only".to_string();
+    }
+    "code".to_string()
+}
+
+fn is_prose_file(file: &str) -> bool {
+    PROSE_EXTENSIONS.iter().any(|ext| file.ends_with(ext))
+        || file.starts_with("docs/")
+        || file.starts_with(".github/ISSUE_TEMPLATE/")
+        || file == "LICENSE"
+        || file == "CHANGELOG"
+}
+
+fn is_ci_config_file(file: &str) -> bool {
+    CI_CONFIG_PATHS.iter().any(|prefix| file.starts_with(prefix) || file == *prefix)
+        || file.ends_with(".sh")
+        || file.starts_with("scripts/")
+        || file.starts_with("hooks/")
+}
+
+/// Returns whether a changed path exercises a Windows-sensitive code path.
+///
+/// This is intentionally path-based. `ci-scope` must remain a cheap, stable
+/// planner and does not read arbitrary file contents while classifying a diff.
+/// The selected paths are the repository's known portability seams: shell
+/// hooks/scripts, the `perl-ci-hygiene` process-helper seam, the
+/// `perl-dap` reload module (which owns the bounded debugger availability
+/// probe reported from Windows in #15099), URI and workspace-index code, and
+/// explicitly named Windows implementations. The Unix-only release-artifact
+/// integration target is one deliberate exception: it is included solely for
+/// Windows compile admission, while its Bash/chmod behavior remains
+/// Unix-owned and is not claimed as Windows runtime coverage.
+pub fn requires_windows_runner(files: &[String]) -> bool {
+    files.iter().any(|file| {
+        let normalized = file.replace('\\', "/").to_ascii_lowercase();
+        is_powershell_completion_path(&normalized)
+            || normalized == "hooks/pre-push"
+            || normalized.starts_with("hooks/")
+            || (normalized.starts_with("scripts/") && normalized.ends_with(".sh"))
+            || normalized == "crates/perl-ci-hygiene/src/process.rs"
+            || normalized.starts_with("crates/perl-ci-hygiene/src/process/")
+            // The `perl-dap` reload module owns `probe_with_deadline`
+            // (`runtime.rs`) and the bounded probe decision
+            // (`Usable` / `Refused` / `TimedOut` / `InstrumentFailed`).
+            // It is the seam that was reported hanging on Windows in
+            // #15099 and was bounded on Linux only (#15529); promoting
+            // it here gives the Windows runner a path to actually
+            // exercise the bound and prove it terminates its probe child.
+            || normalized.starts_with("crates/perl-dap/src/reload/")
+            || normalized == "crates/perl-dap/src/reload.rs"
+            // Windows directory identity and its replacement witness live
+            // in this shared file; select the exact seam, not its module.
+            || normalized == "crates/perl-dap/src/security/launch_authority.rs"
+            || normalized.starts_with("crates/perl-uri/")
+            || normalized.contains("workspace-index")
+            || normalized.contains("workspace_index")
+            || normalized.contains("/windows/")
+            || normalized.ends_with("_windows.rs")
+            || normalized.ends_with("windows.rs")
+            // This integration target imports `std::os::unix` and drives a
+            // Bash/chmod smoke script. Its crate-root cfg keeps the target
+            // empty on Windows, but the target still needs Windows compile
+            // admission so the platform boundary cannot silently bit-rot.
+            || normalized == "xtask/tests/release_artifact_size_smoke_script.rs"
+    })
+}
+
+fn is_powershell_completion_path(file: &str) -> bool {
+    let normalized = file.replace('\\', "/").to_ascii_lowercase();
+    matches!(
+        normalized.as_str(),
+        "crates/perllsp/src/main.rs"
+            | "crates/perl-lsp-rs/src/cli.rs"
+            | "crates/perllsp/tests/powershell_completion.rs"
+            | "crates/perllsp/tests/fixtures/powershell_completion_probe.ps1"
+    ) || normalized.starts_with("crates/perl-lsp-rs-core/src/runtime/launcher/")
+}
+
+fn is_docs_as_code_file(file: &str) -> bool {
+    DOCS_AS_CODE_EXTENSIONS.iter().any(|ext| file.ends_with(ext))
+        && !is_prose_file(file)
+        && !is_ci_config_file(file)
+}
+
+fn parser_ratchet_decision(files: &[String], risk_tags: &[String]) -> LaneDecision {
+    let mut reasons: Vec<String> = files
+        .iter()
+        .filter(|file| is_parser_ratchet_path(file))
+        .map(|file| format!("changed_path:{file}"))
+        .collect();
+
+    if risk_tags.contains(&RISK_TAG_PARSER_RECOVERY.to_string()) {
+        reasons.push("risk_tag:parser-recovery".to_string());
+    }
+
+    LaneDecision { selected: !reasons.is_empty(), profile: "pr".to_string(), reasons }
+}
+
+fn is_parser_ratchet_path(file: &str) -> bool {
+    file.starts_with("crates/perl-token/")
+        || file.starts_with("crates/perl-lexer/")
+        || file.starts_with("crates/perl-parser-core/")
+        || file.starts_with("crates/perl-parser/")
+        || file.starts_with("crates/perl-position-tracking/")
+        || file.starts_with("crates/perl-line-index/")
+        || file.starts_with("crates/tree-sitter-perl-rs/")
+        || file.starts_with("crates/tree-sitter-perl-c/")
+        || file.starts_with("crates/perl-corpus/")
+        || file.starts_with("tests/parser/")
+        || file.starts_with("tests/perl-corpus/")
+        || file == ".ci/common-corpus-manifest.txt"
+        || file.starts_with("docs/project/status/parser")
+        || file == "xtask/src/tasks/ci_scope.rs"
+        || file == "crates/perl-ci-hygiene/src/ci_scope.rs"
+        || file == "xtask/src/tasks/gates.rs"
+        || (file.starts_with("xtask/src/tasks/")
+            && (file.contains("parser") || file.contains("corpus") || file.contains("ratchet")))
+        || file == ".ci/gate-policy.yaml"
+        || file == ".ci/GATE_REGISTRY.toml"
+        || file.starts_with(".ci/scope.d/")
+        || file.starts_with(".ci/gates.d/")
+        || file.starts_with(".github/workflows/")
+        || matches!(file, "Cargo.toml" | "Cargo.lock")
+}
+
+// ---------------------------------------------------------------------------
+// Risk tag detection
+// ---------------------------------------------------------------------------
+
+/// Risk tag constants.
+pub const RISK_TAG_CONCURRENCY: &str = "concurrency";
+/// Const risk tag parser recovery.
+pub const RISK_TAG_PARSER_RECOVERY: &str = "parser_recovery";
+/// Const risk tag offset math.
+pub const RISK_TAG_OFFSET_MATH: &str = "offset_math";
+/// Const risk tag path normalization.
+pub const RISK_TAG_PATH_NORMALIZATION: &str = "path_normalization";
+/// Const risk tag perf hot path.
+pub const RISK_TAG_PERF_HOT_PATH: &str = "perf_hot_path";
+/// Const risk tag public api.
+pub const RISK_TAG_PUBLIC_API: &str = "public_api";
+/// Const risk tag dep change.
+pub const RISK_TAG_DEP_CHANGE: &str = "dep_change";
+/// Const risk tag security surface.
+pub const RISK_TAG_SECURITY_SURFACE: &str = "security_surface";
+
+/// Public API facade crates (changing these → public_api risk tag).
+const PUBLIC_API_CRATES: &[&str] =
+    &["perl-parser", "perl-lsp-rs", "perl-dap", "perl-uri", "perl-lsp"];
+
+/// Benchmarks directory (files referenced by benchmarks → perf_hot_path).
+const BENCH_PATH_PREFIXES: &[&str] = &["benchmarks/", "benches/", "criterion/"];
+
+/// Detect risk tags from a list of changed file paths and optionally their content.
+///
+/// This uses path-prefix heuristics only (no file reading), which is fast and
+/// deterministic. Content-based keyword scanning can be added later.
+pub fn detect_risk_tags(files: &[String], direct_crate_names: &[&str]) -> Vec<String> {
+    let mut tags: BTreeSet<String> = BTreeSet::new();
+
+    for file in files {
+        // dep_change — Cargo manifests / lock file
+        if file == "Cargo.toml"
+            || file == "Cargo.lock"
+            || file.ends_with("/Cargo.toml")
+            || file.ends_with("/Cargo.lock")
+        {
+            tags.insert(RISK_TAG_DEP_CHANGE.to_string());
+        }
+
+        // parser_recovery — recovery/ dir or expressions/ dir under parser
+        if file.contains("/recovery/")
+            || file.contains("/expressions/")
+            || (file.contains("perl-parser") && file.contains("recovery"))
+        {
+            tags.insert(RISK_TAG_PARSER_RECOVERY.to_string());
+        }
+
+        // offset_math — UTF-8 / column / line conversion files
+        if file.contains("position")
+            || file.contains("offset")
+            || file.contains("utf")
+            || file.contains("column")
+        {
+            tags.insert(RISK_TAG_OFFSET_MATH.to_string());
+        }
+
+        // path_normalization — URI / workspace-folder / file-URI parsing
+        if file.contains("uri") || file.contains("workspace-folder") || file.contains("file_uri") {
+            tags.insert(RISK_TAG_PATH_NORMALIZATION.to_string());
+        }
+
+        // perf_hot_path — files in benchmark directories
+        if BENCH_PATH_PREFIXES.iter().any(|prefix| file.starts_with(prefix)) {
+            tags.insert(RISK_TAG_PERF_HOT_PATH.to_string());
+        }
+
+        // security_surface — auth, eval, shell exec, deserialization
+        if file.contains("auth")
+            || file.contains("eval")
+            || file.contains("exec")
+            || file.contains("deserializ")
+            || file.contains("shell")
+        {
+            tags.insert(RISK_TAG_SECURITY_SURFACE.to_string());
+        }
+
+        // concurrency — files with async/Arc/Mutex/RwLock (heuristic: just check path tokens)
+        if file.contains("async")
+            || file.contains("concurrent")
+            || file.contains("thread")
+            || file.contains("mutex")
+            || file.contains("rwlock")
+            || file.contains("arc")
+        {
+            tags.insert(RISK_TAG_CONCURRENCY.to_string());
+        }
+    }
+
+    // public_api — direct changes to facade crates
+    for crate_name in direct_crate_names {
+        if PUBLIC_API_CRATES.iter().any(|facade| crate_name == facade) {
+            tags.insert(RISK_TAG_PUBLIC_API.to_string());
+        }
+    }
+
+    tags.into_iter().collect()
+}
+
+// ---------------------------------------------------------------------------
+// Architectural widener rules (const, for testability)
+// ---------------------------------------------------------------------------
+
+/// A single widener rule: when any of the `trigger_prefixes` crates change,
+/// add `targets` to the widened set with the given `rule` description.
+pub struct WidenerRule {
+    /// Crate name prefixes that trigger this rule (exact match or prefix match).
+    pub trigger_prefixes: &'static [&'static str],
+    /// Crates to add to the widened set.
+    pub targets: &'static [&'static str],
+    /// Human-readable rule description (appears in architecture_wideners[].rule).
+    pub rule: &'static str,
+    /// Lane to select when this rule fires.
+    pub lanes: &'static [&'static str],
+    /// Lane reason tag.
+    pub lane_reason: &'static str,
+}
+
+/// All architectural widener rules. The order matters for lane generation
+/// (earlier rules fire first), but deduplication ensures idempotent output.
+pub static WIDENER_RULES: &[WidenerRule] = &[
+    // Rule 1: parser / lexer / parser-core → semantic, workspace, LSP, DAP
+    WidenerRule {
+        trigger_prefixes: &["perl-parser", "perl-lexer", "perl-parser-core"],
+        targets: &["perl-semantic-analyzer", "perl-workspace", "perl-lsp-rs", "perl-dap"],
+        rule: "parser → DAP downstream smoke",
+        lanes: &["lsp_smoke"],
+        lane_reason: "architectural_widener",
+    },
+    // Rule 2: semantic-analyzer / workspace → LSP providers
+    WidenerRule {
+        trigger_prefixes: &["perl-semantic-analyzer", "perl-workspace"],
+        targets: &["perl-lsp-rs-core", "perl-lsp-rs"],
+        rule: "semantic → LSP definition/references/rename",
+        lanes: &["lsp_providers"],
+        lane_reason: "architectural_widener",
+    },
+    // Rule 3: LSP/DAP crates + features.toml → UX regression
+    WidenerRule {
+        trigger_prefixes: &["perl-lsp-", "perl-dap"],
+        targets: &["perl-lsp-rs"],
+        rule: "lsp/dap change → UX regression",
+        lanes: &["ux_regression"],
+        lane_reason: "architectural_widener",
+    },
+];
+
+// ---------------------------------------------------------------------------
+// Heavy-lane promotion from risk tags
+// ---------------------------------------------------------------------------
+
+/// Returns heavy lanes promoted by the given set of risk tags.
+pub fn heavy_lanes_from_risk_tags(
+    risk_tags: &[String],
+    direct_crates: &[DirectCrate],
+) -> Vec<HeavyLaneEntry> {
+    let mut heavy: Vec<HeavyLaneEntry> = Vec::new();
+
+    let mut add_lane = |lane: &str, reason: String| {
+        if !heavy.iter().any(|entry| entry.lane == lane) {
+            heavy.push(HeavyLaneEntry { lane: lane.to_string(), reason });
+        }
+    };
+
+    if risk_tags.contains(&RISK_TAG_PARSER_RECOVERY.to_string()) {
+        add_lane("bounded_parser_fuzz", format!("risk_tag: {RISK_TAG_PARSER_RECOVERY}"));
+    }
+    if risk_tags.contains(&RISK_TAG_CONCURRENCY.to_string()) {
+        add_lane("thread_sanitizer", format!("risk_tag: {RISK_TAG_CONCURRENCY}"));
+    }
+    if risk_tags.contains(&RISK_TAG_PERF_HOT_PATH.to_string()) {
+        add_lane("perf_regression", format!("risk_tag: {RISK_TAG_PERF_HOT_PATH}"));
+    }
+    if risk_tags.contains(&RISK_TAG_SECURITY_SURFACE.to_string()) {
+        add_lane("security_audit", format!("risk_tag: {RISK_TAG_SECURITY_SURFACE}"));
+    }
+
+    // mutation_diff: default lane for any code diff (direct crate changes)
+    if !direct_crates.is_empty() {
+        let scope: Vec<String> = direct_crates.iter().map(|c| c.name.clone()).collect();
+        add_lane("mutation_diff", format!("code_diff_default (crates: {})", scope.join(", ")));
+    }
+
+    heavy
+}
+
+// ---------------------------------------------------------------------------
+// File-to-crate resolution helpers
+// ---------------------------------------------------------------------------
+
+/// Returns true if the changed files include workspace root files that trigger
+/// the full-workspace scope (Cargo.toml, Cargo.lock, workflow files, hooks, justfile).
+fn is_workspace_root_change(files: &[String]) -> bool {
+    files.iter().any(|f| {
+        matches!(f.as_str(), "Cargo.toml" | "Cargo.lock" | "justfile")
+            || f.starts_with(".github/workflows/")
+            || f.starts_with("hooks/")
+    })
+}
+
+/// Returns true if the changed files include `features.toml`.
+fn has_features_toml_change(files: &[String]) -> bool {
+    files.iter().any(|f| f == "features.toml")
+}
+
+/// Repository inputs that xtask's policy guards assert over, but which are not
+/// xtask source.
+///
+/// `crates_from_files` selects a crate from the *directory a file lives in*, so
+/// these route to `perllsp`, `perl-lsp-rs`, or nothing at all — never to xtask.
+/// That matters because `unit_routed_full` is scope-aware (`{package_args}`),
+/// so a PR changing only one of these would skip the very guard that exists to
+/// catch it: the binstall metadata in `crates/*/Cargo.toml` is only meaningful
+/// against the packaging step in `release.yml`, and the test asserting they
+/// agree lives in xtask (#5036).
+///
+/// Kept deliberately narrow. Every path here costs an extra crate in the routed
+/// test scope, so this is not the place for "xtask might care about it" — only
+/// inputs an xtask test reads and asserts on.
+fn is_xtask_policy_guarded_input(file: &str) -> bool {
+    // Workflow contracts asserted by xtask integration tests.
+    matches!(
+        file,
+        ".github/workflows/release.yml"
+            | ".github/workflows/post-merge-status.yml"
+            | ".github/workflows/badge-endpoints.yml"
+            | ".github/workflows/ripr.yml"
+            // Four xtask integration suites (vim_host_runner_contract,
+            // vim_host_diagnostics_contract, vim_host_freshness_contract,
+            // vim_host_save_format_contract) read this workflow and assert its
+            // trigger surface and step contract. Without this route a PR
+            // editing only the lane skipped every guard written to catch it —
+            // observed on this branch: a trigger change silently broke
+            // `hermetic_host_ci_triggers_on_the_production_formatter_crate`
+            // and CI stayed green because xtask was never in scope.
+            | ".github/workflows/vim-hermetic-host.yml"
+    )
+        // The gate policy is the gate owner's source: its declaration order is
+        // execution order (short-circuit focused gates, #13698/#14409), and the
+        // pinning proof `focused_control_plane_gates_precede_unit_routed_full_
+        // and_pin_the_backstop` lives in xtask's bin target. Without this
+        // routing, a gate-policy-only PR would skip both focused owner gates
+        // and the very proof that pins the policy's shape (#14409 review).
+        || file == ".ci/gate-policy.yaml"
+        // The required-context ledger is asserted by
+        // `xtask/tests/required_context_binding_contract.rs` (#15348): a
+        // required row's producer binding (`ruleset_integration_id`,
+        // workflow + job identity) is only meaningful against the ledger
+        // file. Without this routing, a ledger-only PR would skip xtask's
+        // `tests/` suite under scope-aware `unit_routed_full` and a deleted
+        // binding would sail through every required check green (#15995
+        // review).
+        || file == ".ci/policies/required-checks.toml"
+        // Publishable-crate manifests: binstall metadata, publish metadata, and
+        // version-sync are all xtask-owned assertions over these files.
+        || (file.starts_with("crates/") && file.ends_with("/Cargo.toml"))
+        // The lane-termination classifier is asserted by xtask's E1
+        // correctness harness and P3 scale bench (#17154): both execute the
+        // script and pin its counters. Without this routing, a script-only
+        // PR would skip the guards written to catch it (#17345 review).
+        || file == "scripts/ci/classify-ripr-lane-termination"
+}
+
+/// Extract unique crate names from cargo metadata JSON for crate dirs in the changed files.
+fn crates_from_files(
+    files: &[String],
+    metadata: &serde_json::Value,
+    workspace_root: &str,
+) -> Result<BTreeSet<String>> {
+    let mut crate_dirs = BTreeSet::new();
+    for file in files {
+        let parts: Vec<&str> = file.splitn(3, '/').collect();
+        if parts.len() >= 2 && parts[0] == "crates" && !parts[1].is_empty() {
+            crate_dirs.insert(format!("crates/{}", parts[1]));
+        } else if file == "xtask/Cargo.toml" || file.starts_with("xtask/") {
+            crate_dirs.insert("xtask".to_string());
+        }
+
+        // Not an `else`: a guarded input can also belong to another crate.
+        // `crates/perllsp/Cargo.toml` selects `perllsp` above *and* xtask here.
+        if is_xtask_policy_guarded_input(file) {
+            crate_dirs.insert("xtask".to_string());
+        }
+    }
+
+    if crate_dirs.is_empty() {
+        return Ok(BTreeSet::new());
+    }
+
+    let packages = metadata
+        .get("packages")
+        .and_then(|p| p.as_array())
+        .ok_or_else(|| eyre!("cargo metadata missing 'packages' array"))?;
+
+    let root_normalized = workspace_root.replace('\\', "/");
+    let mut names = BTreeSet::new();
+
+    for package in packages {
+        let manifest_path = match package.get("manifest_path").and_then(|v| v.as_str()) {
+            Some(p) => p,
+            None => continue,
+        };
+        let pkg_name = match package.get("name").and_then(|v| v.as_str()) {
+            Some(n) => n,
+            None => continue,
+        };
+
+        let manifest_normalized = manifest_path.replace('\\', "/");
+        let relative = manifest_normalized
+            .strip_prefix(root_normalized.as_str())
+            .and_then(|p| p.strip_prefix('/'))
+            .and_then(|p| p.strip_suffix("/Cargo.toml"));
+
+        if let Some(rel_dir) = relative
+            && crate_dirs.contains(rel_dir)
+        {
+            names.insert(pkg_name.to_string());
+        }
+    }
+
+    Ok(names)
+}
+
+// ---------------------------------------------------------------------------
+// Reverse-dependency closure
+// ---------------------------------------------------------------------------
+
+/// Build a reverse-dependency map: package_name → set of packages that depend on it.
+#[doc(hidden)]
+pub fn build_reverse_dep_map(metadata: &serde_json::Value) -> BTreeMap<String, BTreeSet<String>> {
+    let mut rev_deps: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+
+    let nodes = match metadata.pointer("/resolve/nodes").and_then(|n| n.as_array()) {
+        Some(n) => n,
+        None => return rev_deps,
+    };
+
+    // Build id → name map first
+    let mut id_to_name: BTreeMap<String, String> = BTreeMap::new();
+    if let Some(pkgs) = metadata.get("packages").and_then(|p| p.as_array()) {
+        for pkg in pkgs {
+            let id = pkg.get("id").and_then(|v| v.as_str()).unwrap_or("");
+            let name = pkg.get("name").and_then(|v| v.as_str()).unwrap_or("");
+            if !id.is_empty() && !name.is_empty() {
+                id_to_name.insert(id.to_string(), name.to_string());
+            }
+        }
+    }
+
+    for node in nodes {
+        let node_id = node.get("id").and_then(|v| v.as_str()).unwrap_or("");
+        let node_name = match id_to_name.get(node_id) {
+            Some(n) => n.clone(),
+            None => node_id.split(':').next().unwrap_or(node_id).to_string(),
+        };
+
+        if let Some(deps) = node.get("deps").and_then(|d| d.as_array()) {
+            for dep in deps {
+                let dep_pkg_id = dep.get("pkg").and_then(|v| v.as_str()).unwrap_or("");
+                let dep_name = match id_to_name.get(dep_pkg_id) {
+                    Some(n) => n.clone(),
+                    None => dep_pkg_id.split(':').next().unwrap_or(dep_pkg_id).to_string(),
+                };
+                if !dep_name.is_empty() {
+                    rev_deps.entry(dep_name).or_default().insert(node_name.clone());
+                }
+            }
+        }
+    }
+
+    rev_deps
+}
+
+/// Compute the full reverse-dependency closure for a set of changed crate names.
+/// Returns only workspace-internal crates (those present in packages).
+#[doc(hidden)]
+pub fn reverse_dep_closure(
+    changed: &BTreeSet<String>,
+    rev_deps: &BTreeMap<String, BTreeSet<String>>,
+    all_package_names: &BTreeSet<String>,
+) -> BTreeSet<String> {
+    let mut closure = BTreeSet::new();
+    let mut queue: Vec<String> = changed.iter().cloned().collect();
+
+    while let Some(crate_name) = queue.pop() {
+        if let Some(dependents) = rev_deps.get(&crate_name) {
+            for dep in dependents {
+                if all_package_names.contains(dep) && !closure.contains(dep) {
+                    closure.insert(dep.clone());
+                    queue.push(dep.clone());
+                }
+            }
+        }
+    }
+
+    closure
+}
+
+// ---------------------------------------------------------------------------
+// Main public API (testable without live git/cargo)
+// ---------------------------------------------------------------------------
+
+/// Classify a list of changed files against cargo metadata JSON.
+///
+/// Returns a schema_version 2 `ScopeOutput`. `workspace_root` is the absolute
+/// path prefix used in manifest_path fields (e.g. `"/path/to/project"`).
+/// In tests, pass a fake root like `"/workspace"`.
+pub fn classify_files(
+    files: &[String],
+    metadata: &serde_json::Value,
+    workspace_root: &str,
+) -> Result<ScopeOutput> {
+    let diff_class = classify_diff(files);
+
+    // Empty diff or prose-only → empty output (no lanes)
+    if files.is_empty() || diff_class == "prose_only" {
+        let parser_ratchet = parser_ratchet_decision(files, &[]);
+        return Ok(ScopeOutput {
+            schema_version: 2,
+            base: String::new(),
+            head_sha: String::new(),
+            changed_files: files.to_vec(),
+            diff_class,
+            direct_crates: vec![],
+            reverse_dep_closure: vec![],
+            architecture_wideners: vec![],
+            risk_tags: vec![],
+            platform_overrides: PlatformOverrides::default(),
+            selected_lanes: vec![],
+            selected_heavy_lanes: vec![],
+            lanes: LaneDecisions { parser_ratchet },
+            explanations: BTreeMap::new(),
+        });
+    }
+
+    let mut lanes: Vec<LaneEntry> = vec![];
+    let mut explanations: BTreeMap<String, String> = BTreeMap::new();
+
+    // Collect all package names for reverse-dep filtering
+    let all_package_names: BTreeSet<String> = metadata
+        .get("packages")
+        .and_then(|p| p.as_array())
+        .map(|pkgs| {
+            pkgs.iter()
+                .filter_map(|pkg| pkg.get("name").and_then(|v| v.as_str()).map(|s| s.to_string()))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    // Map changed files → direct crate names
+    let directly_changed_set = crates_from_files(files, metadata, workspace_root)?;
+    let direct_crates: Vec<DirectCrate> = directly_changed_set
+        .iter()
+        .map(|name| DirectCrate { name: name.clone(), reason: "direct".to_string() })
+        .collect();
+
+    // Build reverse-dep map and compute closure
+    let rev_deps = build_reverse_dep_map(metadata);
+    let rev_dep_set = reverse_dep_closure(&directly_changed_set, &rev_deps, &all_package_names);
+    let reverse_dep_closure_vec: Vec<RevDepCrate> = rev_dep_set
+        .iter()
+        .filter(|name| !directly_changed_set.contains(*name))
+        .map(|name| RevDepCrate {
+            name: name.clone(),
+            reason: format!(
+                "reverse-dep of {}",
+                directly_changed_set.iter().cloned().collect::<Vec<_>>().join(", ")
+            ),
+        })
+        .collect();
+
+    // Risk tag detection
+    let direct_names: Vec<&str> = direct_crates.iter().map(|c| c.name.as_str()).collect();
+    let risk_tags = detect_risk_tags(files, &direct_names);
+
+    // Apply architectural wideners
+    let (arch_wideners, widener_lanes, widener_explanations) = apply_wideners_v2(&direct_crates)?;
+    lanes.extend(widener_lanes);
+    explanations.extend(widener_explanations);
+
+    // Workspace-root changes: trigger infra lanes
+    if is_workspace_root_change(files) {
+        for lane_name in &["publish", "security", "ci_policy"] {
+            lanes.push(LaneEntry {
+                lane: lane_name.to_string(),
+                reason: "workspace_root".to_string(),
+                scope: vec![],
+            });
+        }
+        explanations.insert(
+            "publish".to_string(),
+            "Workspace root files (Cargo.toml/Lock, workflows, hooks) trigger publish + security + CI-policy checks".to_string(),
+        );
+    }
+
+    // features.toml change: UX regression lane
+    if has_features_toml_change(files) {
+        let already = lanes.iter().any(|l| l.lane == "ux_regression");
+        if !already {
+            lanes.push(LaneEntry {
+                lane: "ux_regression".to_string(),
+                reason: "features_toml".to_string(),
+                scope: vec!["perl-lsp-rs".to_string()],
+            });
+        }
+        explanations.insert(
+            "ux_regression".to_string(),
+            "features.toml change triggers UX regression check (per #4706)".to_string(),
+        );
+    }
+
+    // Scoped lanes for all changed crates (direct + rev-dep)
+    let all_scope: Vec<String> = {
+        let mut s: Vec<String> = direct_crates.iter().map(|c| c.name.clone()).collect();
+        for c in &reverse_dep_closure_vec {
+            if !s.contains(&c.name) {
+                s.push(c.name.clone());
+            }
+        }
+        s.sort();
+        s
+    };
+
+    if !all_scope.is_empty() {
+        lanes.push(LaneEntry {
+            lane: "clippy_scoped".to_string(),
+            scope: all_scope.clone(),
+            reason: "direct".to_string(),
+        });
+        lanes.push(LaneEntry {
+            lane: "test_scoped".to_string(),
+            scope: all_scope.clone(),
+            reason: "direct".to_string(),
+        });
+    }
+
+    // mutation_diff default lane for code changes
+    let heavy_lanes = heavy_lanes_from_risk_tags(&risk_tags, &direct_crates);
+
+    let windows_runner = requires_windows_runner(files);
+    if windows_runner {
+        explanations.insert(
+            "windows_runner".to_string(),
+            "changed path exercises a Windows-sensitive portability seam".to_string(),
+        );
+    }
+    let windows_test_crates = if windows_runner {
+        let mut crates: Vec<String> = direct_crates.iter().map(|c| c.name.clone()).collect();
+        if crates.is_empty() {
+            // #15405: add `perl-dap` to the default Windows smoke set so
+            // every Windows-bound PR surfaces the deterministic Windows-
+            // local failures (admitted_debugger_alias symlink privilege,
+            // live_perl_debuggee_reload perl5db stall — #15395 slices B1
+            // and B2 own the fixes) as visible check runs rather than
+            // letting them silently bit-rot on the floor. The set is
+            // advisory: promotion to required belongs to the owner once
+            // B1/B2 land.
+            crates.extend([
+                "perl-uri".to_string(),
+                "perl-workspace".to_string(),
+                "perl-dap".to_string(),
+            ]);
+        }
+        // The public-binary completion probe lives in perllsp even when
+        // only its shared CLI/template changes in a different crate.
+        if files.iter().any(|file| is_powershell_completion_path(file)) {
+            crates.push("perllsp".to_string());
+        }
+        crates.sort();
+        crates.dedup();
+        crates
+    } else {
+        vec![]
+    };
+    let platform_overrides = PlatformOverrides { windows_runner, windows_test_crates };
+    let parser_ratchet = parser_ratchet_decision(files, &risk_tags);
+
+    Ok(ScopeOutput {
+        schema_version: 2,
+        base: String::new(),
+        head_sha: String::new(),
+        changed_files: files.to_vec(),
+        diff_class,
+        direct_crates,
+        reverse_dep_closure: reverse_dep_closure_vec,
+        architecture_wideners: arch_wideners,
+        risk_tags,
+        platform_overrides,
+        selected_lanes: lanes,
+        selected_heavy_lanes: heavy_lanes,
+        lanes: LaneDecisions { parser_ratchet },
+        explanations,
+    })
+}
+
+/// Apply architectural widening rules to a set of directly-changed crates.
+///
+/// Returns (wideners, lanes, explanations) for insertion into the output.
+pub fn apply_wideners_v2(
+    direct_crates: &[DirectCrate],
+) -> Result<(Vec<ArchWidener>, Vec<LaneEntry>, BTreeMap<String, String>)> {
+    let mut widened: BTreeMap<String, String> = BTreeMap::new();
+    let mut lanes: Vec<LaneEntry> = Vec::new();
+    let mut explanations: BTreeMap<String, String> = BTreeMap::new();
+    let mut seen_lanes: BTreeSet<String> = BTreeSet::new();
+
+    for rule in WIDENER_RULES {
+        let triggered = direct_crates.iter().any(|c| {
+            rule.trigger_prefixes
+                .iter()
+                .any(|prefix| c.name == *prefix || c.name.starts_with(prefix))
+        });
+
+        if triggered {
+            for target in rule.targets {
+                widened.entry(target.to_string()).or_insert_with(|| rule.rule.to_string());
+            }
+
+            for lane_name in rule.lanes {
+                if !seen_lanes.contains(*lane_name) {
+                    seen_lanes.insert(lane_name.to_string());
+                    let scope: Vec<String> = rule.targets.iter().map(|s| s.to_string()).collect();
+                    lanes.push(LaneEntry {
+                        lane: lane_name.to_string(),
+                        scope,
+                        reason: rule.lane_reason.to_string(),
+                    });
+                    explanations.insert(
+                        lane_name.to_string(),
+                        format!("Architectural rule: {}", rule.rule),
+                    );
+                }
+            }
+        }
+    }
+
+    let arch_wideners: Vec<ArchWidener> =
+        widened.into_iter().map(|(name, rule)| ArchWidener { name, rule }).collect();
+
+    Ok((arch_wideners, lanes, explanations))
+}
+
+// ---------------------------------------------------------------------------
+// CLI config + entry point
+// ---------------------------------------------------------------------------
+
+/// Configuration for the `ci-scope` subcommand.
+pub struct CiScopeConfig {
+    /// Base git ref to diff against (e.g. "origin/main" or "auto").
+    pub base: String,
+    /// Optional immutable event subject receipt. CI callers use this instead
+    /// of rediscovering the base/head from mutable refs.
+    pub subject: Option<PathBuf>,
+    /// Repository root override for hermetic integration fixtures.
+    pub root: Option<PathBuf>,
+    /// Output format: "json" or "text".
+    pub format: String,
+}
+
+/// Shared CLI entry point consumed by the lightweight runner and xtask delegate.
+///
+/// Base resolution and the changed-path diff are delegated to the shared
+/// `change_set::resolve_change_set` resolver (#3985 Slice 2) rather than a
+/// private copy of the main-first candidate chain + three-dot/two-dot diff.
+/// `classify_files`/`ScopeOutput` below remain the untouched classification
+/// brain — this function only supplies their `changed_files` input.
+#[expect(
+    clippy::print_stdout,
+    reason = "Shared CLI output preserves legacy xtask write-failure behavior; the classifier itself does not print."
+)]
+pub fn run(config: CiScopeConfig) -> Result<()> {
+    let root = match config.root {
+        Some(root) => root,
+        None => {
+            std::env::current_dir().context("Failed to resolve current repository directory")?
+        }
+    };
+    let output = match config.subject {
+        Some(path) => scope_from_subject(&root, &path)?,
+        None => scope_from_range(&root, &config.base, "HEAD")?,
+    };
+
+    match config.format.as_str() {
+        "json" => {
+            let json = serde_json::to_string_pretty(&output)
+                .context("Failed to serialize scope output to JSON")?;
+            println!("{json}");
+        }
+        _ => {
+            print_text_summary(&output);
+        }
+    }
+
+    Ok(())
+}
+
+#[doc(hidden)]
+pub fn scope_from_subject(root: &Path, path: &Path) -> Result<ScopeOutput> {
+    let subject = ci_subject::load_and_resolve(path, root)?;
+    classify_resolved_paths(
+        root,
+        subject.receipt.base_sha,
+        subject.receipt.head_sha,
+        subject.changed_paths,
+        true,
+    )
+}
+
+#[doc(hidden)]
+pub fn scope_from_range(root: &Path, base: &str, head: &str) -> Result<ScopeOutput> {
+    let identity = ArtifactIdentity::CommitRange { base: base.to_string(), head: head.to_string() };
+    let resolved = change_set::resolve_change_set(identity, root)?;
+    let base_identity = match resolved.identity {
+        ArtifactIdentity::CommitRange { base, .. } => base,
+        ArtifactIdentity::StagedTree { .. } => {
+            return Err(eyre!(
+                "resolve_change_set returned a StagedTree identity for a CommitRange input"
+            ));
+        }
+    };
+    let head_sha = resolved
+        .head_sha
+        .ok_or_else(|| eyre!("resolve_change_set did not resolve a head SHA for CommitRange"))?;
+    classify_resolved_paths(root, base_identity, head_sha, resolved.changed_paths, false)
+}
+
+fn classify_resolved_paths(
+    root: &Path,
+    base: String,
+    head_sha: String,
+    changed_files: Vec<String>,
+    immutable_subject: bool,
+) -> Result<ScopeOutput> {
+    let metadata = load_metadata(root)?;
+    let workspace_root = root.to_string_lossy().replace('\\', "/");
+    let mut output = classify_files(&changed_files, &metadata, &workspace_root)?;
+    output.base = base;
+    output.head_sha = head_sha;
+    output.changed_files = changed_files;
+    if immutable_subject {
+        validate_subject_classification(&output)?;
+    }
+    Ok(output)
+}
+
+fn validate_subject_classification(output: &ScopeOutput) -> Result<()> {
+    if output.changed_files.iter().any(|path| path.ends_with(".rs"))
+        && output.diff_class == "prose_only"
+    {
+        return Err(eyre!(
+            "immutable CI subject contradiction: governed Rust input classified prose_only"
+        ));
+    }
+    if output.changed_files.is_empty() || output.diff_class == "prose_only" {
+        return Ok(());
+    }
+    let requires_governed_projection = output
+        .changed_files
+        .iter()
+        .any(|path| path.ends_with(".rs") || matches!(path.as_str(), "Cargo.toml" | "Cargo.lock"));
+    if !requires_governed_projection {
+        return Ok(());
+    }
+    let has_packages = !output.direct_crates.is_empty()
+        || !output.reverse_dep_closure.is_empty()
+        || !output.architecture_wideners.is_empty();
+    if !has_packages && output.selected_lanes.is_empty() {
+        return Err(eyre!(
+            "immutable CI subject has governed Rust or root Cargo inputs but no package or typed policy lane"
+        ));
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Cargo helpers for the live CLI path
+// ---------------------------------------------------------------------------
+//
+// Base-ref resolution and the changed-path diff used to be duplicated here
+// (`resolve_base_ref`/`git_ref_exists`/`get_head_sha`/`get_changed_files`).
+// #3985 Slice 2 repointed `run()` above onto the shared
+// `change_set::resolve_change_set` resolver and removed the duplicates —
+// see `crates/perl-ci-hygiene/src/change_set.rs` for the single base-resolver +
+// single `git diff` they now share with `gates::compute_scope_output` and
+// `targeted_checks::run`.
+
+#[doc(hidden)]
+pub fn load_metadata(root: &Path) -> Result<serde_json::Value> {
+    let output = cmd("cargo", &["metadata", "--format-version", "1"])
+        .dir(root)
+        .stdout_capture()
+        .stderr_capture()
+        .run()
+        .context("Failed to run cargo metadata")?;
+
+    let stdout =
+        String::from_utf8(output.stdout).context("cargo metadata output was not valid UTF-8")?;
+    serde_json::from_str(&stdout).context("Failed to parse cargo metadata JSON")
+}
+
+// ---------------------------------------------------------------------------
+// Text output
+// ---------------------------------------------------------------------------
+
+#[expect(
+    clippy::print_stdout,
+    reason = "Shared CLI output preserves legacy xtask write-failure behavior; the classifier itself does not print."
+)]
+fn print_text_summary(output: &ScopeOutput) {
+    println!("=== CI Scope Classifier (schema v{}) ===", output.schema_version);
+    println!("Base:       {}", output.base);
+    println!("HEAD SHA:   {}", output.head_sha);
+    println!("Diff class: {}", output.diff_class);
+    println!("Changed files: {}", output.changed_files.len());
+
+    if output.direct_crates.is_empty() {
+        println!("Direct crates: (none)");
+    } else {
+        println!("Direct crates:");
+        for c in &output.direct_crates {
+            println!("  [{}] {}", c.reason, c.name);
+        }
+    }
+
+    if !output.reverse_dep_closure.is_empty() {
+        println!("Reverse-dep closure:");
+        for c in &output.reverse_dep_closure {
+            println!("  {}", c.name);
+        }
+    }
+
+    if !output.architecture_wideners.is_empty() {
+        println!("Architecture wideners:");
+        for w in &output.architecture_wideners {
+            println!("  {} — {}", w.name, w.rule);
+        }
+    }
+
+    if !output.risk_tags.is_empty() {
+        println!("Risk tags: {}", output.risk_tags.join(", "));
+    }
+
+    if output.selected_lanes.is_empty() {
+        println!("Selected lanes: (none)");
+    } else {
+        println!("Selected lanes:");
+        for l in &output.selected_lanes {
+            println!("  [{}] {} — {:?}", l.reason, l.lane, l.scope);
+        }
+    }
+
+    if !output.selected_heavy_lanes.is_empty() {
+        println!("Heavy lanes:");
+        for l in &output.selected_heavy_lanes {
+            println!("  {} — {}", l.lane, l.reason);
+        }
+    }
+
+    println!(
+        "Parser ratchet lane: {} ({})",
+        output.lanes.parser_ratchet.selected, output.lanes.parser_ratchet.profile
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Unit tests (inline)
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fake_metadata(packages: &[(&str, &str)]) -> serde_json::Value {
+        let pkg_array: Vec<serde_json::Value> = packages
+            .iter()
+            .map(|(name, rel_dir)| {
+                serde_json::json!({
+                    "id": format!("{} 0.1.0", name),
+                    "name": name,
+                    "manifest_path": format!("/workspace/{}/Cargo.toml", rel_dir),
+                    "dependencies": []
+                })
+            })
+            .collect();
+
+        serde_json::json!({
+            "packages": pkg_array,
+            "resolve": {
+                "nodes": packages.iter().map(|(name, _)| {
+                    serde_json::json!({
+                        "id": format!("{} 0.1.0", name),
+                        "deps": []
+                    })
+                }).collect::<Vec<_>>()
+            },
+            "workspace_root": "/workspace"
+        })
+    }
+
+    // --- diff_class tests ---
+
+    #[test]
+    fn test_classify_diff_prose_only() {
+        let files = vec!["docs/reference/STABILITY.md".to_string(), "README.md".to_string()];
+        assert_eq!(classify_diff(&files), "prose_only");
+    }
+
+    #[test]
+    fn test_classify_diff_empty_is_prose_only() {
+        assert_eq!(classify_diff(&[]), "prose_only");
+    }
+
+    #[test]
+    fn test_classify_diff_code() {
+        let files = vec!["crates/perl-parser/src/lib.rs".to_string()];
+        assert_eq!(classify_diff(&files), "code");
+    }
+
+    #[test]
+    fn test_classify_diff_ci_config() {
+        let files = vec![".github/workflows/ci.yml".to_string()];
+        assert_eq!(classify_diff(&files), "ci_config");
+    }
+
+    #[test]
+    fn test_classify_diff_mixed_code_and_docs() {
+        let files = vec![
+            "crates/perl-parser/src/lib.rs".to_string(),
+            "docs/reference/STABILITY.md".to_string(),
+        ];
+        assert_eq!(classify_diff(&files), "mixed");
+    }
+
+    #[test]
+    fn windows_runner_matches_known_portability_seams() {
+        for file in [
+            "hooks/pre-push",
+            "scripts/check-shell.sh",
+            "crates/perl-ci-hygiene/src/process.rs",
+            "crates/perl-ci-hygiene/src/process/tests.rs",
+            "crates/perl-dap/src/reload/mod.rs",
+            "crates/perl-dap/src/reload/runtime.rs",
+            "crates/perl-dap/src/reload/measurement.rs",
+            "crates/perl-dap/src/security/launch_authority.rs",
+            "crates/perl-uri/src/fs.rs",
+            "crates/perl-workspace/src/workspace-index.rs",
+            "crates/perl-workspace/src/platform/windows.rs",
+            "xtask/tests/release_artifact_size_smoke_script.rs",
+            "crates/perllsp/src/main.rs",
+            "crates/perl-lsp-rs/src/cli.rs",
+            "crates/perl-lsp-rs-core/src/runtime/launcher/mod.rs",
+            "crates/perllsp/tests/powershell_completion.rs",
+            "crates/perllsp/tests/fixtures/powershell_completion_probe.ps1",
+        ] {
+            assert!(
+                requires_windows_runner(&[file.to_string()]),
+                "{file} should select the Windows runner"
+            );
+        }
+    }
+
+    #[test]
+    fn windows_runner_ignores_unrelated_paths_and_non_shell_scripts() {
+        let files = [
+            "docs/windows.md".to_string(),
+            "scripts/check-shell.py".to_string(),
+            "crates/perl-parser/src/lib.rs".to_string(),
+            // Other perl-dap security siblings are outside the exact
+            // identity seam and should not select a Windows runner.
+            "crates/perl-dap/src/lib.rs".to_string(),
+            "crates/perl-dap/src/debug_adapter/protocol.rs".to_string(),
+            "crates/perl-dap/src/security/mod.rs".to_string(),
+        ];
+        assert!(!requires_windows_runner(&files));
+    }
+
+    // --- risk tag tests ---
+
+    #[test]
+    fn test_risk_tag_parser_recovery() {
+        let files = vec!["crates/perl-parser/src/expressions/recovery.rs".to_string()];
+        let tags = detect_risk_tags(&files, &[]);
+        assert!(
+            tags.contains(&RISK_TAG_PARSER_RECOVERY.to_string()),
+            "should detect parser_recovery"
+        );
+    }
+
+    #[test]
+    fn test_risk_tag_dep_change_cargo_toml() {
+        let files = vec!["Cargo.toml".to_string()];
+        let tags = detect_risk_tags(&files, &[]);
+        assert!(tags.contains(&RISK_TAG_DEP_CHANGE.to_string()));
+    }
+
+    #[test]
+    fn test_risk_tag_public_api() {
+        let tags = detect_risk_tags(&[], &["perl-parser"]);
+        assert!(tags.contains(&RISK_TAG_PUBLIC_API.to_string()));
+    }
+
+    #[test]
+    fn test_risk_tag_none_for_unrelated() {
+        let files = vec!["crates/perl-parser/src/stmt.rs".to_string()];
+        let tags = detect_risk_tags(&files, &["perl-parser"]);
+        // public_api will be set, but no other tags
+        assert!(tags.contains(&RISK_TAG_PUBLIC_API.to_string()));
+        assert!(!tags.contains(&RISK_TAG_PARSER_RECOVERY.to_string()));
+        assert!(!tags.contains(&RISK_TAG_DEP_CHANGE.to_string()));
+    }
+
+    #[test]
+    fn test_risk_tags_cover_each_path_family() {
+        let cases = [
+            ("crates/app/src/async_worker.rs", RISK_TAG_CONCURRENCY),
+            ("crates/app/src/position.rs", RISK_TAG_OFFSET_MATH),
+            ("crates/app/src/uri.rs", RISK_TAG_PATH_NORMALIZATION),
+            ("benches/parser.rs", RISK_TAG_PERF_HOT_PATH),
+            ("crates/app/src/eval.rs", RISK_TAG_SECURITY_SURFACE),
+        ];
+
+        for (path, expected) in cases {
+            let tags = detect_risk_tags(&[path.to_string()], &[]);
+            assert!(tags.contains(&expected.to_string()), "{path} should select {expected}");
+        }
+    }
+
+    // --- crates_from_files tests ---
+
+    #[test]
+    fn test_crates_from_files_basic() -> Result<()> {
+        let files = vec!["crates/perl-parser/src/lib.rs".to_string()];
+        let metadata = fake_metadata(&[("perl-parser", "crates/perl-parser")]);
+        let crates = crates_from_files(&files, &metadata, "/workspace")?;
+        assert!(crates.contains("perl-parser"));
+        assert_eq!(crates.len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn test_crates_from_files_empty() -> Result<()> {
+        let files: Vec<String> = vec![];
+        let metadata = fake_metadata(&[("perl-parser", "crates/perl-parser")]);
+        let crates = crates_from_files(&files, &metadata, "/workspace")?;
+        assert!(crates.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn test_crates_from_files_maps_xtask_workspace_member() -> Result<()> {
+        let files = vec!["xtask/src/tasks/gates.rs".to_string()];
+        let metadata = fake_metadata(&[("xtask", "xtask")]);
+        let crates = crates_from_files(&files, &metadata, "/workspace")?;
+        assert!(crates.contains("xtask"));
+        assert_eq!(crates.len(), 1);
+        Ok(())
+    }
+
+    // --- xtask policy-guarded inputs (#5036) ---
+    //
+    // `unit_routed_full` is scope-aware, so a guard only runs when its crate is
+    // selected. The binstall tests in `release_artifact_check` read
+    // `release.yml` and the publishable manifests — none of which are xtask
+    // source — so without these rules a PR changing exactly the guarded input
+    // skips the guard that exists to catch it.
+
+    #[test]
+    fn hermetic_vim_workflow_change_selects_xtask() -> Result<()> {
+        let files = vec![".github/workflows/vim-hermetic-host.yml".to_string()];
+        let metadata = fake_metadata(&[("xtask", "xtask")]);
+        let crates = crates_from_files(&files, &metadata, "/workspace")?;
+        assert!(
+            crates.contains("xtask"),
+            "changing the hermetic Vim lane must route to the contract tests that assert on it"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn required_checks_ledger_change_selects_xtask() -> Result<()> {
+        // #15348 / #15995 review: the required-context binding contract test
+        // reads `.ci/policies/required-checks.toml`. A ledger-only PR must
+        // route xtask into scope or a deleted producer binding sails through
+        // every required check green.
+        let files = vec![".ci/policies/required-checks.toml".to_string()];
+        let metadata = fake_metadata(&[("xtask", "xtask")]);
+        let crates = crates_from_files(&files, &metadata, "/workspace")?;
+        assert!(
+            crates.contains("xtask"),
+            "changing the required-checks ledger must route to the contract test that asserts on it"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn release_workflow_change_selects_xtask() -> Result<()> {
+        let files = vec![".github/workflows/release.yml".to_string()];
+        let metadata = fake_metadata(&[("xtask", "xtask")]);
+        let crates = crates_from_files(&files, &metadata, "/workspace")?;
+        assert!(
+            crates.contains("xtask"),
+            "changing the packaging step must route to the guard that asserts on it"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn classifier_script_change_selects_xtask() -> Result<()> {
+        // #17345 review: E1's correctness harness and the P3 scale bench
+        // execute `scripts/ci/classify-ripr-lane-termination` and pin its
+        // counters. A script-only PR must route xtask into scope or a
+        // classifier regression sails through every required check green.
+        let files = vec!["scripts/ci/classify-ripr-lane-termination".to_string()];
+        let metadata = fake_metadata(&[("xtask", "xtask")]);
+        let crates = crates_from_files(&files, &metadata, "/workspace")?;
+        assert!(
+            crates.contains("xtask"),
+            "changing the classifier script must route to the E1/P3 guards that assert on it"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn workflow_contract_inputs_select_xtask() -> Result<()> {
+        let metadata = fake_metadata(&[("xtask", "xtask")]);
+        for workflow in [
+            ".github/workflows/post-merge-status.yml",
+            ".github/workflows/badge-endpoints.yml",
+            ".github/workflows/ripr.yml",
+        ] {
+            let crates = crates_from_files(&[workflow.to_string()], &metadata, "/workspace")?;
+            assert!(
+                crates.contains("xtask"),
+                "changing {workflow} must route to the xtask contract that reads it"
+            );
+        }
+        Ok(())
+    }
+
+    /// A gate-policy-only diff must select xtask (#14409 review of #13698):
+    /// the focused owner gates are `rust_package_scoped` on xtask, and the
+    /// pinning proof for the policy's declaration order/commands lives in the
+    /// xtask bin target. Without this routing, gate-policy drift would bypass
+    /// both on exactly the PRs that move the policy.
+    #[test]
+    fn gate_policy_change_selects_xtask() -> Result<()> {
+        let files = vec![".ci/gate-policy.yaml".to_string()];
+        let metadata = fake_metadata(&[("xtask", "xtask")]);
+        let crates = crates_from_files(&files, &metadata, "/workspace")?;
+        assert!(
+            crates.contains("xtask"),
+            "changing .ci/gate-policy.yaml must route to the gate owner whose \
+             pinning proof asserts on it"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn publishable_manifest_change_selects_both_its_crate_and_xtask() -> Result<()> {
+        let files = vec!["crates/perllsp/Cargo.toml".to_string()];
+        let metadata = fake_metadata(&[("perllsp", "crates/perllsp"), ("xtask", "xtask")]);
+        let crates = crates_from_files(&files, &metadata, "/workspace")?;
+        // The manifest's own crate must still be selected — the xtask rule adds
+        // to the scope, it does not redirect it.
+        assert!(crates.contains("perllsp"), "manifest's own crate must stay selected");
+        assert!(crates.contains("xtask"), "binstall/version-sync guards live in xtask");
+        Ok(())
+    }
+
+    #[test]
+    fn unrelated_workflow_change_does_not_select_xtask() -> Result<()> {
+        // The rule is deliberately narrow: every extra path costs a crate in
+        // the routed test scope. Only workflows read by xtask contracts are guarded.
+        let files = vec![".github/workflows/docs-deploy.yml".to_string()];
+        let metadata = fake_metadata(&[("xtask", "xtask")]);
+        let crates = crates_from_files(&files, &metadata, "/workspace")?;
+        assert!(!crates.contains("xtask"), "unrelated workflows must not widen the routed scope");
+        Ok(())
+    }
+
+    #[test]
+    fn crate_source_change_does_not_select_xtask() -> Result<()> {
+        // Guards against the rule degenerating into "any crates/ path".
+        let files = vec!["crates/perllsp/src/main.rs".to_string()];
+        let metadata = fake_metadata(&[("perllsp", "crates/perllsp"), ("xtask", "xtask")]);
+        let crates = crates_from_files(&files, &metadata, "/workspace")?;
+        assert!(crates.contains("perllsp"));
+        assert!(!crates.contains("xtask"), "only manifests carry xtask-asserted policy");
+        Ok(())
+    }
+
+    // --- reverse dep tests ---
+
+    #[test]
+    fn test_build_reverse_dep_map_basic() {
+        let metadata = serde_json::json!({
+            "packages": [
+                {"id": "perl-parser 0.1.0", "name": "perl-parser", "manifest_path": "/w/crates/perl-parser/Cargo.toml"},
+                {"id": "perl-lsp-rs 0.1.0", "name": "perl-lsp-rs", "manifest_path": "/w/crates/perl-lsp-rs/Cargo.toml"}
+            ],
+            "resolve": {
+                "nodes": [
+                    {"id": "perl-parser 0.1.0", "deps": []},
+                    {
+                        "id": "perl-lsp-rs 0.1.0",
+                        "deps": [{"pkg": "perl-parser 0.1.0", "name": "perl_parser", "dep_kinds": []}]
+                    }
+                ]
+            }
+        });
+        let rev = build_reverse_dep_map(&metadata);
+        let dependents = rev.get("perl-parser");
+        assert!(dependents.is_some(), "perl-parser should have reverse deps");
+        assert!(
+            dependents.is_some_and(|d| d.contains("perl-lsp-rs")),
+            "perl-parser dependents should include perl-lsp-rs"
+        );
+    }
+
+    #[test]
+    fn test_reverse_dep_closure_transitive() {
+        let metadata = serde_json::json!({
+            "packages": [
+                {"id": "A 0.1.0", "name": "A", "manifest_path": "/w/crates/a/Cargo.toml"},
+                {"id": "B 0.1.0", "name": "B", "manifest_path": "/w/crates/b/Cargo.toml"},
+                {"id": "C 0.1.0", "name": "C", "manifest_path": "/w/crates/c/Cargo.toml"}
+            ],
+            "resolve": {
+                "nodes": [
+                    {"id": "A 0.1.0", "deps": []},
+                    {"id": "B 0.1.0", "deps": [{"pkg": "A 0.1.0", "name": "a"}]},
+                    {"id": "C 0.1.0", "deps": [{"pkg": "B 0.1.0", "name": "b"}]}
+                ]
+            }
+        });
+        let rev = build_reverse_dep_map(&metadata);
+        let all_names: BTreeSet<String> = ["A", "B", "C"].iter().map(|s| s.to_string()).collect();
+        let changed: BTreeSet<String> = ["A".to_string()].into();
+        let closure = reverse_dep_closure(&changed, &rev, &all_names);
+        assert!(closure.contains("B"), "B should be in closure");
+        assert!(closure.contains("C"), "C should be in closure");
+        assert!(!closure.contains("A"), "A itself should not be in the rev-dep closure");
+    }
+
+    // --- widener tests ---
+
+    #[test]
+    fn test_apply_wideners_v2_no_match() -> Result<()> {
+        let changed = vec![DirectCrate {
+            name: "some-unrelated-crate".to_string(),
+            reason: "direct".to_string(),
+        }];
+        let (wideners, lanes, _) = apply_wideners_v2(&changed)?;
+        assert!(wideners.is_empty());
+        assert!(lanes.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn test_apply_wideners_v2_dedup() -> Result<()> {
+        let changed = vec![
+            DirectCrate { name: "perl-parser".to_string(), reason: "direct".to_string() },
+            DirectCrate { name: "perl-lexer".to_string(), reason: "direct".to_string() },
+        ];
+        let (wideners, _, _) = apply_wideners_v2(&changed)?;
+        let count = wideners.iter().filter(|w| w.name == "perl-lsp-rs").count();
+        assert_eq!(count, 1, "perl-lsp-rs should appear exactly once");
+        Ok(())
+    }
+
+    #[test]
+    fn test_apply_wideners_v2_parser_triggers_lsp_smoke() -> Result<()> {
+        let changed =
+            vec![DirectCrate { name: "perl-parser".to_string(), reason: "direct".to_string() }];
+        let (_, lanes, explanations) = apply_wideners_v2(&changed)?;
+        assert!(
+            lanes.iter().any(|l| l.lane == "lsp_smoke"),
+            "parser change should add lsp_smoke lane"
+        );
+        assert!(explanations.contains_key("lsp_smoke"), "lsp_smoke should have an explanation");
+        Ok(())
+    }
+
+    // --- classify_files integration tests ---
+
+    #[test]
+    fn test_classify_files_empty_diff() -> Result<()> {
+        let metadata = fake_metadata(&[("perl-parser", "crates/perl-parser")]);
+        let output = classify_files(&[], &metadata, "/workspace")?;
+        assert_eq!(output.schema_version, 2);
+        assert_eq!(output.diff_class, "prose_only");
+        assert!(output.selected_lanes.is_empty());
+        assert!(output.selected_heavy_lanes.is_empty());
+        assert!(!output.lanes.parser_ratchet.selected);
+        Ok(())
+    }
+
+    #[test]
+    fn test_classify_files_docs_only() -> Result<()> {
+        let metadata = fake_metadata(&[("perl-parser", "crates/perl-parser")]);
+        let files = vec!["docs/reference/STABILITY.md".to_string(), "README.md".to_string()];
+        let output = classify_files(&files, &metadata, "/workspace")?;
+        assert_eq!(output.diff_class, "prose_only");
+        assert!(output.selected_lanes.is_empty(), "docs-only should have no lanes");
+        assert!(
+            !output.lanes.parser_ratchet.selected,
+            "non-parser docs should not select parser ratchet"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_classify_files_parser_path_selects_parser_ratchet_lane() -> Result<()> {
+        let metadata = fake_metadata(&[("perl-parser-core", "crates/perl-parser-core")]);
+        let files = vec!["crates/perl-parser-core/src/recovery.rs".to_string()];
+        let output = classify_files(&files, &metadata, "/workspace")?;
+        assert!(
+            output.lanes.parser_ratchet.selected,
+            "parser path should select parser ratchet lane"
+        );
+        assert_eq!(output.lanes.parser_ratchet.profile, "pr");
+        assert!(
+            output
+                .lanes
+                .parser_ratchet
+                .reasons
+                .contains(&"changed_path:crates/perl-parser-core/src/recovery.rs".to_string()),
+            "path reason should be included"
+        );
+        assert!(
+            output.lanes.parser_ratchet.reasons.contains(&"risk_tag:parser-recovery".to_string()),
+            "parser-recovery risk tag reason should be included"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn shared_scope_owner_keeps_parser_ratchet_coverage() -> Result<()> {
+        let metadata = fake_metadata(&[("perl-ci-hygiene", "crates/perl-ci-hygiene")]);
+        for path in ["xtask/src/tasks/ci_scope.rs", "crates/perl-ci-hygiene/src/ci_scope.rs"] {
+            let output = classify_files(&[path.to_string()], &metadata, "/workspace")?;
+            assert!(output.lanes.parser_ratchet.selected, "classifier owner must select: {path}");
+        }
+        let output = classify_files(
+            &["crates/perl-ci-hygiene/src/version_sync.rs".to_string()],
+            &metadata,
+            "/workspace",
+        )?;
+        assert!(!output.lanes.parser_ratchet.selected, "unrelated hygiene helpers stay narrow");
+        Ok(())
+    }
+
+    #[test]
+    fn test_classify_files_meta_change_selects_parser_ratchet_lane() -> Result<()> {
+        let metadata = fake_metadata(&[("perl-parser", "crates/perl-parser")]);
+        let files = vec!["xtask/src/tasks/ci_scope.rs".to_string()];
+        let output = classify_files(&files, &metadata, "/workspace")?;
+        assert!(
+            output.lanes.parser_ratchet.selected,
+            "meta/control-plane path should select parser ratchet lane"
+        );
+        assert!(
+            output
+                .lanes
+                .parser_ratchet
+                .reasons
+                .contains(&"changed_path:xtask/src/tasks/ci_scope.rs".to_string()),
+            "meta change reason should be included"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_classify_files_code_diff_has_mutation_diff() -> Result<()> {
+        let metadata = fake_metadata(&[("perl-parser", "crates/perl-parser")]);
+        let files = vec!["crates/perl-parser/src/lib.rs".to_string()];
+        let output = classify_files(&files, &metadata, "/workspace")?;
+        assert_eq!(output.diff_class, "code");
+        assert!(
+            output.selected_heavy_lanes.iter().any(|l| l.lane == "mutation_diff"),
+            "code diff should include mutation_diff heavy lane"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn classify_files_emits_windows_platform_override_and_explanation() -> Result<()> {
+        let metadata = fake_metadata(&[("perl-uri", "crates/perl-uri")]);
+        let files = vec!["crates/perl-uri/src/uri.rs".to_string()];
+        let output = classify_files(&files, &metadata, "/workspace")?;
+        assert!(output.platform_overrides.windows_runner);
+        assert_eq!(output.platform_overrides.windows_test_crates, vec!["perl-uri"]);
+        assert!(output.explanations.contains_key("windows_runner"));
+        Ok(())
+    }
+
+    #[test]
+    fn classify_files_does_not_widen_unrelated_code_to_windows() -> Result<()> {
+        let metadata = fake_metadata(&[("perl-parser", "crates/perl-parser")]);
+        let files = vec!["crates/perl-parser/src/lib.rs".to_string()];
+        let output = classify_files(&files, &metadata, "/workspace")?;
+        assert!(!output.platform_overrides.windows_runner);
+        assert!(output.platform_overrides.windows_test_crates.is_empty());
+        assert!(!output.explanations.contains_key("windows_runner"));
+        Ok(())
+    }
+
+    #[test]
+    fn classify_powershell_completion_paths_select_public_binary_on_windows() -> Result<()> {
+        let metadata = fake_metadata(&[
+            ("perllsp", "crates/perllsp"),
+            ("perl-lsp-rs", "crates/perl-lsp-rs"),
+            ("perl-lsp-rs-core", "crates/perl-lsp-rs-core"),
+        ]);
+        for (file, expected) in [
+            ("crates/perllsp/src/main.rs", vec!["perllsp"]),
+            ("crates/perl-lsp-rs/src/cli.rs", vec!["perl-lsp-rs", "perllsp"]),
+            (
+                "crates/perl-lsp-rs-core/src/runtime/launcher/mod.rs",
+                vec!["perl-lsp-rs-core", "perllsp"],
+            ),
+            ("crates/perllsp/tests/powershell_completion.rs", vec!["perllsp"]),
+            ("crates/perllsp/tests/fixtures/powershell_completion_probe.ps1", vec!["perllsp"]),
+        ] {
+            let output = classify_files(&[file.to_string()], &metadata, "/workspace")?;
+            assert!(output.platform_overrides.windows_runner, "{file} must execute on Windows");
+            assert_eq!(output.platform_overrides.windows_test_crates, expected, "{file}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn classify_process_helper_sources_select_ci_hygiene_for_windows_smoke() -> Result<()> {
+        let metadata = fake_metadata(&[("perl-ci-hygiene", "crates/perl-ci-hygiene")]);
+        let files = vec!["crates/perl-ci-hygiene/src/process/tests.rs".to_string()];
+        let output = classify_files(&files, &metadata, "/workspace")?;
+
+        assert!(output.platform_overrides.windows_runner);
+        assert_eq!(output.platform_overrides.windows_test_crates, vec!["perl-ci-hygiene"]);
+        assert_eq!(
+            output.direct_crates.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
+            ["perl-ci-hygiene"]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn classify_ci_hygiene_sibling_sources_do_not_widen_process_routing() -> Result<()> {
+        let metadata = fake_metadata(&[("perl-ci-hygiene", "crates/perl-ci-hygiene")]);
+        let files = vec!["crates/perl-ci-hygiene/src/main.rs".to_string()];
+        let output = classify_files(&files, &metadata, "/workspace")?;
+
+        assert!(!output.platform_overrides.windows_runner);
+        assert!(output.platform_overrides.windows_test_crates.is_empty());
+        Ok(())
+    }
+
+    /// #15405: when the Windows runner is triggered by a path outside any
+    /// crate (e.g. a shell hook change) the default fallback `windows_test_
+    /// crates` set must include `perl-dap` so the deterministic Windows-local
+    /// failures observed by #15395 (admitted_debugger_alias symlink privilege,
+    /// live_perl_debuggee_reload perl5db stall) reach the advisory Windows
+    /// smoke on every Windows-bound PR rather than only when the change
+    /// happens to touch `crates/perl-dap/**` directly. Slices B1 and B2 own
+    /// the fixes; this lane owns the observation. Promotion to required is
+    /// the owner's call once those slices land.
+    #[test]
+    fn classify_files_fallback_includes_perl_dap_when_windows_runner_triggers_without_direct_crates()
+    -> Result<()> {
+        // `hooks/pre-push` selects the Windows runner but is not under
+        // `crates/`, so `direct_crates` will be empty and the fallback list
+        // is what `windows_test_crates` reads from.
+        let metadata = fake_metadata(&[("perl-dap", "crates/perl-dap")]);
+        let files = vec!["hooks/pre-push".to_string()];
+        let output = classify_files(&files, &metadata, "/workspace")?;
+
+        assert!(
+            output.platform_overrides.windows_runner,
+            "hooks/pre-push should trigger the Windows runner"
+        );
+        assert!(
+            output.direct_crates.is_empty(),
+            "no crate is touched, so direct_crates must be empty for the fallback path"
+        );
+        let crates = &output.platform_overrides.windows_test_crates;
+        // Exact set (the fallback list is sorted and deduped at construction):
+        // perl-dap must be present, and nothing may silently join or leave.
+        assert_eq!(
+            crates,
+            &vec!["perl-dap".to_string(), "perl-uri".to_string(), "perl-workspace".to_string(),],
+            "fallback windows_test_crates drifted, got {crates:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_classify_files_parser_recovery_file_triggers_fuzz() -> Result<()> {
+        let metadata = fake_metadata(&[("perl-parser", "crates/perl-parser")]);
+        let files = vec!["crates/perl-parser/src/expressions/recovery.rs".to_string()];
+        let output = classify_files(&files, &metadata, "/workspace")?;
+        assert!(
+            output.risk_tags.contains(&RISK_TAG_PARSER_RECOVERY.to_string()),
+            "recovery file should trigger parser_recovery tag"
+        );
+        assert!(
+            output.selected_heavy_lanes.iter().any(|l| l.lane == "bounded_parser_fuzz"),
+            "parser_recovery tag should promote bounded_parser_fuzz"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_classify_files_cargo_toml_triggers_dep_change() -> Result<()> {
+        let metadata = fake_metadata(&[("perl-parser", "crates/perl-parser")]);
+        let files = vec!["Cargo.toml".to_string()];
+        let output = classify_files(&files, &metadata, "/workspace")?;
+        assert!(output.risk_tags.contains(&RISK_TAG_DEP_CHANGE.to_string()));
+        assert!(output.selected_lanes.iter().any(|l| l.lane == "publish"));
+        assert!(output.selected_lanes.iter().any(|l| l.lane == "security"));
+        Ok(())
+    }
+
+    #[test]
+    fn immutable_subject_accepts_non_cargo_input_without_governed_projection() -> Result<()> {
+        let metadata = fake_metadata(&[("perl-parser", "crates/perl-parser")]);
+        let files = vec!["scripts/standalone.py".to_string()];
+        let mut output = classify_files(&files, &metadata, "/workspace")?;
+        output.changed_files = files;
+
+        assert!(output.direct_crates.is_empty());
+        assert!(output.selected_lanes.is_empty());
+        validate_subject_classification(&output)
+    }
+
+    #[test]
+    fn immutable_subject_rejects_unprojected_rust_input() -> Result<()> {
+        let metadata = fake_metadata(&[("perl-parser", "crates/perl-parser")]);
+        let files = vec!["src/orphan.rs".to_string()];
+        let mut output = classify_files(&files, &metadata, "/workspace")?;
+        output.changed_files = files;
+
+        assert!(output.direct_crates.is_empty());
+        assert!(output.selected_lanes.is_empty());
+        assert!(validate_subject_classification(&output).is_err());
+        Ok(())
+    }
+
+    // --- heavy_lanes_from_risk_tags tests ---
+
+    #[test]
+    fn test_heavy_lanes_mutation_diff_default() {
+        let direct =
+            vec![DirectCrate { name: "perl-parser".to_string(), reason: "direct".to_string() }];
+        let heavy = heavy_lanes_from_risk_tags(&[], &direct);
+        assert!(
+            heavy.iter().any(|l| l.lane == "mutation_diff"),
+            "should include mutation_diff by default"
+        );
+    }
+
+    #[test]
+    fn test_heavy_lanes_empty_when_no_direct_crates() {
+        let heavy = heavy_lanes_from_risk_tags(&[], &[]);
+        assert!(
+            !heavy.iter().any(|l| l.lane == "mutation_diff"),
+            "no direct crates = no mutation_diff"
+        );
+    }
+
+    #[test]
+    fn test_heavy_lanes_are_deduplicated_and_risk_driven() {
+        let tags = vec![
+            RISK_TAG_PARSER_RECOVERY.to_string(),
+            RISK_TAG_CONCURRENCY.to_string(),
+            RISK_TAG_PERF_HOT_PATH.to_string(),
+            RISK_TAG_SECURITY_SURFACE.to_string(),
+        ];
+        let heavy = heavy_lanes_from_risk_tags(
+            &tags,
+            &[DirectCrate { name: "perl-parser".to_string(), reason: "direct".to_string() }],
+        );
+
+        let lanes: BTreeSet<_> = heavy.iter().map(|entry| entry.lane.as_str()).collect();
+        assert_eq!(lanes.len(), heavy.len(), "promoted lanes must be unique");
+        assert!(lanes.contains("bounded_parser_fuzz"));
+        assert!(lanes.contains("thread_sanitizer"));
+        assert!(lanes.contains("security_audit"));
+        assert!(lanes.contains("perf_regression"));
+        assert!(lanes.contains("mutation_diff"));
+        assert!(heavy.iter().all(|entry| !entry.reason.is_empty()));
+    }
+}
