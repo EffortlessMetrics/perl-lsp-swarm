@@ -1,5 +1,6 @@
 import { strict as assert } from 'node:assert';
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -14,6 +15,274 @@ import {
   retryPublishedInstall,
 } from './runPublishedSmoke';
 import { assertSmokeSelector, run as runPublishedSuite } from './suite';
+
+interface PublishedChildObservation {
+  ownedDirectories: string[];
+  snapshotPath?: string;
+  snapshotExclusive?: boolean;
+  downloadedPath?: string;
+  downloadedBytesAtInstall?: string;
+  installTargets: string[];
+  installedBytes: string[];
+  runners: { kind: string; digest?: string }[];
+  waits: number[];
+}
+
+// Exercise private main and its real retry callback, rather than an exported
+// snapshot helper. Only external host acquisition, CLI spawn and runners are fake.
+function withPublishedChild(
+  scenario: string,
+  trust: 'disabled' | 'untrusted',
+  check: (
+    result: ReturnType<typeof spawnSync>,
+    observation: PublishedChildObservation,
+    paths: { original: string; profile: string; extensions: string; workspace: string },
+  ) => void,
+  source: 'vsix' | 'open-vsx' | 'marketplace' = 'vsix',
+): void {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'published-vsix-attribution-'));
+  const original = path.join(root, 'candidate.vsix');
+  const profile = path.join(root, 'shared-profile');
+  const extensions = path.join(root, 'shared-extensions');
+  const workspace = path.join(root, 'caller-workspace');
+  const observationPath = path.join(root, 'observation.json');
+  const preload = path.join(root, 'preload.cjs');
+  for (const directory of [profile, extensions, workspace]) {
+    fs.mkdirSync(directory);
+    fs.writeFileSync(path.join(directory, 'caller-owned'), 'preserve');
+  }
+  fs.writeFileSync(original, 'archive A');
+  fs.writeFileSync(
+    preload,
+    `
+const fs = require('node:fs');
+const path = require('node:path');
+const Module = require('node:module');
+const { PassThrough } = require('node:stream');
+const { EventEmitter } = require('node:events');
+const scenario = process.env.TEST_SCENARIO;
+const original = process.env.TEST_ORIGINAL;
+const observation = { ownedDirectories: [], installTargets: [], installedBytes: [], runners: [], waits: [] };
+const write = fs.writeFileSync;
+const mkdirTemp = fs.mkdtempSync;
+const createWriteStream = fs.createWriteStream;
+const change = target => {
+  if (scenario.startsWith('delete-')) fs.rmSync(target, { force: true });
+  else write(target, 'archive B');
+};
+fs.mkdtempSync = (...args) => {
+  const directory = mkdirTemp(...args);
+  observation.ownedDirectories.push(directory);
+  return directory;
+};
+fs.createWriteStream = (destination, ...args) => {
+  observation.downloadedPath = destination;
+  return createWriteStream(destination, ...args);
+};
+fs.writeFileSync = (destination, ...args) => {
+  const result = write(destination, ...args);
+  if (String(destination).endsWith('.vsix') && destination !== original) {
+    observation.snapshotPath = destination;
+    observation.snapshotExclusive = args[1]?.flag === 'wx';
+    if (scenario === 'replace-original') write(original, 'archive B');
+    if (scenario === 'delete-original') fs.rmSync(original);
+  }
+  return result;
+};
+global.setTimeout = (callback, milliseconds, ...args) => {
+  observation.waits.push(milliseconds);
+  if (scenario.endsWith('between-retries')) change(observation.installTargets.at(-1));
+  queueMicrotask(() => callback(...args));
+  return { unref() {} };
+};
+require('node:child_process').spawnSync = (_command, args) => {
+  const target = args[args.indexOf('--install-extension') + 1];
+  observation.installTargets.push(target);
+  if (fs.existsSync(target)) observation.installedBytes.push(fs.readFileSync(target, 'utf8'));
+  if (observation.downloadedPath) {
+    observation.downloadedBytesAtInstall = fs.readFileSync(observation.downloadedPath, 'utf8');
+  }
+  if (scenario === 'replace-original') write(original, 'archive B');
+  if (scenario === 'delete-original' && fs.existsSync(original)) fs.rmSync(original);
+  if (scenario.endsWith('during-install')) change(target);
+  if (scenario === 'installer-failure') return { status: 127, stderr: 'missing installer' };
+  if ((scenario.endsWith('between-retries') || scenario === 'transient-retry') && observation.installTargets.length === 1) {
+    return { status: 1, stderr: 'extension install lock is busy' };
+  }
+  return { status: 0 };
+};
+const runner = kind => async options => {
+  observation.runners.push({ kind, digest: options.extensionTestsEnv.PERL_LSP_VSIX_SHA256 });
+  if (scenario === 'runner-failure') throw new Error('fixture runner failure');
+};
+const load = Module._load;
+Module._load = function(request, ...args) {
+  if (request === '@vscode/test-electron') return {
+    downloadAndUnzipVSCode: async () => '/fake/vscode',
+    resolveCliArgsFromVSCodeExecutablePath: () => {
+      if (scenario.endsWith('before-install')) change(observation.snapshotPath || original);
+      return ['/fake/code'];
+    },
+    runTests: runner('trusted'),
+  };
+  if (request === '../runVsCodeTests') return { runWithoutForcedWorkspaceTrust: runner('untrusted') };
+  return load.call(this, request, ...args);
+};
+require('node:https').get = (_url, callback) => {
+  const request = new EventEmitter();
+  request.setTimeout = () => request;
+  queueMicrotask(() => {
+    const response = new PassThrough();
+    response.statusCode = 200;
+    response.headers = {};
+    callback(response);
+    response.end('archive A');
+  });
+  return request;
+};
+process.once('exit', () => write(process.env.TEST_OBSERVATION, JSON.stringify(observation)));
+`,
+  );
+  try {
+    // Isolate selectors and candidate identities from the test caller's environment.
+    const env: NodeJS.ProcessEnv = Object.fromEntries(
+      Object.entries(process.env).filter(([key]) => !key.startsWith('PERL_LSP_')),
+    );
+    Object.assign(env, {
+      TEST_SCENARIO: scenario,
+      TEST_ORIGINAL: original,
+      TEST_OBSERVATION: observationPath,
+      PERL_LSP_PUBLISHED_EXTENSION_SOURCE: source,
+      PERL_LSP_PUBLISHED_EXTENSION_VERSION: source === 'marketplace' ? '' : '0.17.0',
+      PERL_LSP_PUBLISHED_VSIX_PATH: original,
+      PERL_LSP_SMOKE_WORKSPACE: workspace,
+      PERL_LSP_SMOKE_USER_DATA_DIR: profile,
+      PERL_LSP_SMOKE_EXTENSIONS_DIR: extensions,
+      PERL_LSP_SMOKE_RECEIPTS_DIR: path.join(root, 'receipts'),
+      PERL_LSP_SMOKE_WORKSPACE_TRUST: trust,
+      npm_config_user_agent: 'npm/11.18.0',
+      // A stale ambient digest must be replaced or removed by main.
+      PERL_LSP_VSIX_SHA256: 'stale digest',
+    });
+    const result = spawnSync(
+      process.execPath,
+      ['--require', preload, path.join(__dirname, 'runPublishedSmoke.js')],
+      { cwd: path.resolve(__dirname, '../../..'), env, encoding: 'utf8', timeout: 10_000 },
+    );
+    assert.ifError(result.error);
+    const observation = JSON.parse(
+      fs.readFileSync(observationPath, 'utf8'),
+    ) as PublishedChildObservation;
+    check(result, observation, { original, profile, extensions, workspace });
+    if (observation.snapshotPath) {
+      assert.equal(observation.snapshotExclusive, true);
+      assert.ok(observation.ownedDirectories.includes(path.dirname(observation.snapshotPath)));
+      assert.ok(
+        observation.ownedDirectories.includes(path.dirname(path.dirname(observation.snapshotPath))),
+      );
+    }
+    for (const directory of observation.ownedDirectories)
+      assert.equal(fs.existsSync(directory), false, directory);
+    for (const directory of [profile, extensions, workspace]) {
+      assert.equal(fs.readFileSync(path.join(directory, 'caller-owned'), 'utf8'), 'preserve');
+    }
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+const archiveADigest = createHash('sha256').update('archive A').digest('hex');
+for (const trust of ['disabled', 'untrusted'] as const) {
+  for (const scenario of ['unchanged', 'replace-original', 'delete-original', 'transient-retry']) {
+    void test(`compiled ${trust} smoke binds captured VSIX bytes: ${scenario}`, () => {
+      withPublishedChild(scenario, trust, (result, observation, { original }) => {
+        assert.equal(result.status, 0, String(result.stderr));
+        assert.equal(observation.installTargets.length, scenario === 'transient-retry' ? 2 : 1);
+        assert.deepEqual(observation.runners, [
+          { kind: trust === 'untrusted' ? 'untrusted' : 'trusted', digest: archiveADigest },
+        ]);
+        assert.ok(observation.snapshotPath, 'installer must consume an invocation-owned snapshot');
+        for (const target of observation.installTargets) {
+          assert.equal(target, observation.snapshotPath);
+          assert.notEqual(target, original);
+          assert.equal(path.basename(target), path.basename(original));
+        }
+        assert.deepEqual(
+          observation.installedBytes,
+          observation.installTargets.map(() => 'archive A'),
+        );
+        assert.deepEqual(observation.waits, scenario === 'transient-retry' ? [20_000] : []);
+        if (scenario === 'replace-original')
+          assert.equal(fs.readFileSync(original, 'utf8'), 'archive B');
+        else assert.equal(fs.existsSync(original), scenario !== 'delete-original');
+      });
+    });
+  }
+  for (const phase of ['before-install', 'during-install', 'between-retries']) {
+    for (const mutation of ['corrupt', 'delete']) {
+      void test(`compiled ${trust} smoke refuses snapshot ${mutation} ${phase}`, () => {
+        withPublishedChild(`${mutation}-${phase}`, trust, (result, observation, { original }) => {
+          assert.equal(result.status, 1, String(result.stderr));
+          assert.match(String(result.stderr), /VSIX snapshot/);
+          assert.equal(observation.installTargets.length, phase === 'before-install' ? 0 : 1);
+          assert.deepEqual(observation.runners, []);
+          assert.deepEqual(observation.waits, phase === 'between-retries' ? [20_000] : []);
+          assert.equal(fs.readFileSync(original, 'utf8'), 'archive A');
+        });
+      });
+    }
+  }
+  for (const failure of ['installer-failure', 'runner-failure']) {
+    void test(`compiled ${trust} smoke cleans only owned files after ${failure}`, () => {
+      withPublishedChild(failure, trust, (result, observation, { original }) => {
+        assert.equal(result.status, 1, String(result.stderr));
+        assert.equal(observation.installTargets.length, 1);
+        assert.equal(observation.runners.length, failure === 'installer-failure' ? 0 : 1);
+        assert.equal(fs.readFileSync(original, 'utf8'), 'archive A');
+      });
+    });
+  }
+}
+
+void test('compiled Open VSX smoke snapshots without overwriting the downloaded archive', () => {
+  withPublishedChild(
+    'unchanged',
+    'disabled',
+    (result, observation) => {
+      assert.equal(result.status, 0, String(result.stderr));
+      assert.ok(observation.downloadedPath);
+      assert.ok(observation.snapshotPath);
+      assert.notEqual(observation.snapshotPath, observation.downloadedPath);
+      assert.equal(
+        path.dirname(path.dirname(observation.snapshotPath)),
+        path.dirname(observation.downloadedPath),
+      );
+      assert.equal(
+        path.basename(observation.snapshotPath),
+        path.basename(observation.downloadedPath),
+      );
+      assert.equal(observation.downloadedBytesAtInstall, 'archive A');
+      assert.deepEqual(observation.installedBytes, ['archive A']);
+      assert.deepEqual(observation.runners, [{ kind: 'trusted', digest: archiveADigest }]);
+    },
+    'open-vsx',
+  );
+});
+
+void test('compiled unbound Marketplace smoke installs the ID and clears an ambient digest', () => {
+  withPublishedChild(
+    'unchanged',
+    'disabled',
+    (result, observation, { original }) => {
+      assert.equal(result.status, 0, String(result.stderr));
+      assert.deepEqual(observation.installTargets, ['EffortlessMetrics.perl-lsp-rs']);
+      assert.equal(observation.snapshotPath, undefined);
+      assert.deepEqual(observation.runners, [{ kind: 'trusted' }]);
+      assert.equal(fs.readFileSync(original, 'utf8'), 'archive A');
+    },
+    'marketplace',
+  );
+});
 
 void test('current-source installed smoke selects the staged bundled server', () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'published-bundled-selection-'));
