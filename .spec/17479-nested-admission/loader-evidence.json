@@ -1,0 +1,48 @@
+{
+  "base": "af6807f79a2b98df1305724cc48c23db66943db9",
+  "production_sha256": "88bdd1684cea3a388f7f7a1a5d96bd0c41019b7569f0c9ce516539441033b316",
+  "tests_sha256": "9cd60b40334bc34dce3f45e01ac6a97fea3ca16d4b4f9fbeeecfbc0c7cb95c7f",
+  "tests": {
+    "focused": 34,
+    "combined": 144,
+    "passed": 143,
+    "skipped": 1,
+    "seconds": 5.87,
+    "skip": "opt-in product storage build"
+  },
+  "mutants": {
+    "count": 6,
+    "semantic_failures": 6,
+    "instrument_errors": 0
+  },
+  "reviews": {
+    "authority": "clear at frozen production hash",
+    "prerequisite": "CANDIDATE_READY at frozen production hash"
+  },
+  "native_probe": {
+    "toolchain": "1.95.0-x86_64-unknown-linux-gnu",
+    "fixtures": 2,
+    "compile_seconds_each": 0.15,
+    "warm_repeat_seconds": 0,
+    "ancestry": "Cargo exec replacement -> direct-owner xtask -> Python",
+    "normalized": true,
+    "product_build": false
+  },
+  "consumer_capture": {
+    "source": "d1ae5de34133509a28f9f7f8aa2b9052b0fb4039",
+    "provenance": "parent delegation reports independently reviewed retained-bootstrap capture; not rerun in this lane",
+    "fresh_artifacts": 369,
+    "compiling_lines": 0,
+    "seconds": 1.256,
+    "shape": "Linux native Cargo-run ordinary debug only"
+  },
+  "archive": "/workspace/clippy-publication-proof/loader-repair",
+  "limitations": [
+    "no consumer product execution",
+    "no Cargo-test/general loader composition",
+    "no immutable artifact/source provenance",
+    "no aggregate growth/RAM qualification",
+    "no other profile/target/platform support",
+    "no hosted activation"
+  ]
+}

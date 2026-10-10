@@ -94,6 +94,85 @@ class NestedTests(unittest.TestCase):
         self.assertEqual(tuple(saved['marker_identity']),observed['original'])
         self.assertNotEqual(tuple(saved['marker_identity']),observed['replacement'])
         self.assertTrue(self.lock.is_dir())
+    def loader_fixture(self):
+        toolroot=Path(self.tool['root']);self.tool['host']='x86_64-unknown-linux-gnu'
+        dirs=[self.paths['target']/'debug',self.paths['build']/'debug/deps',toolroot/'lib/rustlib'/self.tool['host']/'lib']
+        for d in dirs:d.mkdir(parents=True,exist_ok=True)
+        self.plan['cargo_runtime']={'profile':'debug','loader_paths':list(map(str,dirs)),'executable':str(self.paths['target']/'debug/xtask')}
+        self.save();self.env['LD_LIBRARY_PATH']=':'.join(map(str,dirs))
+        return dirs
+    def test_cargo_runtime_loader_normalized_after_validation(self):
+        self.loader_fixture()
+        with patch.object(a,'nested_runtime_ancestry',create=True) as origin:
+            try:
+                _,env,_=self.command('parser-build')
+            except a.Denied as error:
+                self.fail('legitimate Cargo runtime loader refused: '+str(error))
+        origin.assert_called_once();self.assertNotIn('LD_LIBRARY_PATH',env)
+        self.assertIn('LD_LIBRARY_PATH',self.env)
+    def test_loader_exact_order_and_no_broad_subtree(self):
+        dirs=self.loader_fixture();good=self.env['LD_LIBRARY_PATH']
+        for bad in ['',good+':',':'+good,good+':/tmp',':'.join(map(str,reversed(dirs))),good.replace('/debug:', '/release:'),good.replace('/debug/deps:', '/debug/arbitrary:'),good+':'+str(dirs[0]),good.replace('/debug:', '/debug/../debug:')]:
+            with self.subTest(value=bad),patch.object(a,'nested_runtime_ancestry'),self.assertRaises(a.Denied):
+                self.env['LD_LIBRARY_PATH']=bad;self.command('parser-build')
+        self.env['LD_LIBRARY_PATH']=good
+        with patch.object(a,'nested_runtime_ancestry',side_effect=a.Denied('wrong origin')),self.assertRaises(a.Denied):self.command('parser-build')
+        self.plan.pop('cargo_runtime');self.save()
+        with self.assertRaises(a.Denied):self.command('parser-build')
+    def test_loader_other_injections_and_stale_subject_still_refuse(self):
+        self.loader_fixture()
+        with patch.object(a,'nested_runtime_ancestry'):
+            for key in ['LD_PRELOAD','LD_AUDIT','DYLD_LIBRARY_PATH']:
+                self.env[key]='/tmp/evil'
+                with self.assertRaises(a.Denied):self.command('parser-build')
+                self.env.pop(key)
+            with patch.object(a,'nested_source',return_value={'head':'changed'}),self.assertRaises(a.Denied):self.command('parser-build')
+            with patch.object(a,'revalidate_clippy_toolchain',side_effect=a.Denied('changed')),self.assertRaises(a.Denied):self.command('parser-build')
+    def test_loader_initial_ambient_rejection_preserved(self):
+        self.loader_fixture()
+        with self.assertRaises(a.Denied):a.clippy_environment({'LD_LIBRARY_PATH':self.env['LD_LIBRARY_PATH']})
+        request=self.root/'plan-request';request.write_text(json.dumps(self.plan['request']))
+        with self.assertRaises(a.Denied):a.nested_plan(str(request),{'LD_LIBRARY_PATH':self.env['LD_LIBRARY_PATH']},self.worktree,self.paths)
+    def test_runtime_contract_only_exact_debug_xtask_bootstrap(self):
+        self.loader_fixture()
+        for prefix in [['build','-p','xtask','--locked'],['run','-p','xtask','--bin','xtask','--locked','--release'],['run','-p','xtask','--bin','xtask','--locked','--profile','agent'],['run','-p','other','--bin','xtask','--locked'],['run','-p','xtask','--bin','xtask','--locked','--target','x86_64-unknown-linux-gnu']]:
+            self.assertIsNone(a.nested_runtime_contract(prefix+['--','gates'],self.paths,self.tool))
+
+    def test_loader_validated_before_git_and_git_env_is_normalized(self):
+        self.loader_fixture()
+        with patch.object(a,'nested_runtime_ancestry'),patch.object(a,'resource_plan',return_value=(self.worktree,self.slot,self.paths)) as resource,patch.object(a,'nested_source',return_value={'head':'fixture'}) as source:
+            self.command('parser-build')
+        self.assertNotIn('LD_LIBRARY_PATH',source.call_args.args[1])
+        self.assertNotIn('LD_LIBRARY_PATH',resource.call_args.args[0])
+        self.env['LD_LIBRARY_PATH']+='/evil'
+        with patch.object(a,'nested_source') as source,patch.object(a,'resource_plan') as resource,self.assertRaises(a.Denied):self.command('parser-build')
+        source.assert_not_called();resource.assert_not_called()
+    def test_loader_linked_directory_refuses(self):
+        dirs=self.loader_fixture();dirs[1].rmdir();dirs[1].symlink_to(dirs[0],target_is_directory=True)
+        with patch.object(a,'nested_runtime_ancestry'),self.assertRaises(a.Denied):self.command('parser-build')
+    def test_runtime_ancestry_requires_order_identity_and_owner_boundary(self):
+        self.loader_fixture();runtime=self.plan['cargo_runtime'];owner={'pid':100,'parent':1,'start':'1'}
+        xtask=Path(runtime['executable']);xtask.write_text('xtask')
+        facts={10:{'pid':10,'parent':20,'start':'10'},20:{'pid':20,'parent':100,'start':'20'},30:{'pid':30,'parent':100,'start':'30'},100:owner}
+        links={10:'/usr/bin/python3',20:str(xtask),30:self.tool['subjects']['cargo']['path']}
+        real_stat=Path.stat
+        def proc_stat(p,*args,**kwargs):
+            if str(p).startswith('/proc/') and p.name=='exe':return real_stat(Path(links[int(p.parent.name)]))
+            return real_stat(p,*args,**kwargs)
+        with patch.object(a.os,'getpid',return_value=10),patch.object(a,'process_fact',side_effect=lambda pid:facts[pid]),patch.object(a.os,'readlink',side_effect=lambda p:links[int(p.parent.name)]),patch.object(Path,'stat',proc_stat):
+            a.nested_runtime_ancestry(owner,runtime)
+            for pid in [20]:
+                old=links[pid];links[pid]='/usr/bin/python3'
+                with self.assertRaises(a.Denied):a.nested_runtime_ancestry(owner,runtime)
+                links[pid]=old
+            with self.assertRaises(a.Denied):a.nested_runtime_ancestry(facts[20],runtime)
+            facts[20]['parent']=30
+            with self.assertRaises(a.Denied):a.nested_runtime_ancestry(owner,runtime)
+            facts[20]['parent']=100
+            def changed_stat(p,*args,**kw):
+                return type('S',(),{'st_dev':-1,'st_ino':-1})() if str(p)=='/proc/20/exe' else proc_stat(p,*args,**kw)
+            with patch.object(Path,'stat',changed_stat),self.assertRaises(a.Denied):a.nested_runtime_ancestry(owner,runtime)
+
     def test_exact_fixed_contract_and_lints(self):
         for row,args in EXPECTED.items():
             with self.subTest(row=row):

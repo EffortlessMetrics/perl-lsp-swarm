@@ -513,11 +513,11 @@ def bounded_json(path):
     return data, subject
 
 
-def nested_source(worktree):
+def nested_source(worktree, env=None):
     # Exact committed Git subject, not a claim of hermetic build-script inputs.
     def git(*args):
         return subprocess.check_output(["git", "-C", str(worktree), *args], text=True,
-                                       env={k: v for k, v in os.environ.items() if not k.startswith("GIT_")}).strip()
+                                       env={k: v for k, v in (os.environ if env is None else env).items() if not k.startswith("GIT_")}).strip()
     if git("status", "--porcelain", "--untracked-files=all"):
         raise Denied("nested plan requires a clean exact committed source")
     return {"head": git("rev-parse", "HEAD"), "lock": file_subject(worktree / "Cargo.lock")}
@@ -648,6 +648,56 @@ def nested_descendant(owner):
     raise Denied("nested caller is not in the live owner's ancestry")
 
 
+def nested_runtime_contract(args, paths, toolchain):
+    # Only the observed native debug xtask bootstrap has a loader protocol.
+    # Cargo's general build-script link-search extension remains unsupported.
+    prefix = args[:args.index("--")] if "--" in args else args
+    if prefix not in (["run", "-p", "xtask", "--bin", "xtask", "--locked"],
+                      ["run", "-p", "xtask", "--bin", "xtask", "--locked", "--offline"]):
+        return None
+    return {"profile": "debug", "executable": str(paths["target"] / "debug/xtask"),
+            "loader_paths": [str(paths["target"] / "debug"),
+                             str(paths["build"] / "debug/deps"),
+                             str(Path(toolchain["root"]) / "lib/rustlib" / toolchain["host"] / "lib")]}
+
+
+def nested_runtime_ancestry(owner, runtime):
+    # Native Linux cargo run execs xtask in the original product-root process.
+    # Require that exact executable as a direct child of the existing owner,
+    # rather than inventing a live Cargo ancestor after exec replacement.
+    current = process_fact(os.getpid())
+    for _ in range(128):
+        if current == owner:
+            break
+        executable = Path('/proc') / str(current["pid"]) / 'exe'
+        selected = runtime["executable"]
+        if os.readlink(executable) == selected:
+            expected = native_path(selected).stat()
+            running = executable.stat()
+            if (expected.st_dev, expected.st_ino) != (running.st_dev, running.st_ino):
+                raise Denied("nested Cargo runtime executable identity changed")
+            if current["parent"] == owner["pid"] and process_fact(current["parent"]) == owner:
+                return
+        if current["parent"] <= 1:
+            break
+        current = process_fact(current["parent"])
+    raise Denied("nested loader lacks the bound direct-owner xtask runtime ancestry")
+
+
+def nested_runtime_loader(env, plan, receipt, paths):
+    if "LD_LIBRARY_PATH" not in env:
+        return
+    runtime = plan.get("cargo_runtime")
+    expected = nested_runtime_contract(["run", "-p", "xtask", "--bin", "xtask", "--locked"], paths, plan["toolchain"])
+    if runtime != expected or env["LD_LIBRARY_PATH"] != ":".join(expected["loader_paths"]):
+        raise Denied("nested Cargo runtime loader list is not the bound exact protocol")
+    for value in expected["loader_paths"]:
+        path = native_path(value)
+        if str(path) != value or not path.is_dir():
+            raise Denied("nested Cargo runtime loader path changed")
+    nested_runtime_ancestry(receipt["owner_process"], runtime)
+
+
 def nested_command(row, env=None):
     """Render one bound leaf; no resource-bearing spawn or lease transition.
 
@@ -664,22 +714,33 @@ def nested_command(row, env=None):
         if subject != receipt["nested_snapshot"] or snapshot["descriptor"] != {k: v for k, v in receipt.items() if k != "nested_snapshot"}:
             raise Denied("nested descriptor/snapshot mismatch")
         nested_descendant(receipt["owner_process"])
-        worktree, slot, paths = resource_plan(env)
-        if str(worktree) != receipt["worktree"] or {k: str(v) for k,v in paths.items()} != receipt["resources"]:
-            raise Denied("nested canonical resources changed")
-        lock, marker = Path(receipt["lease"]), Path(receipt["lease_marker"])
-        if (lock != slot / "cargo-active" or marker.parent != lock
+        plan = snapshot["plan"]
+        lock, marker = native_path(receipt["lease"]), native_path(receipt["lease_marker"])
+        if (marker.parent != lock
                 or directory_identity(lock) != tuple(receipt["lease_identity"])
                 or directory_identity(marker) != tuple(receipt["marker_identity"])):
             raise Denied("nested original lease/marker identity changed")
+        clippy_environment({k: v for k, v in env.items() if k.startswith(("LD_", "DYLD_")) and k != "LD_LIBRARY_PATH"})
+        revalidate_clippy_toolchain(plan["toolchain"])
+        bound_paths = {k: native_path(v) for k, v in receipt["resources"].items()}
+        nested_runtime_loader(env, plan, receipt, bound_paths)
+        validation_env = dict(env)
+        validation_env.pop("LD_LIBRARY_PATH", None)
+        worktree, slot, paths = resource_plan(validation_env)
+        if str(worktree) != receipt["worktree"] or {k: str(v) for k,v in paths.items()} != receipt["resources"]:
+            raise Denied("nested canonical resources changed")
+        if lock != slot / "cargo-active":
+            raise Denied("nested canonical lease changed")
         for key, variable in (("target", "CARGO_TARGET_DIR"), ("build", "CARGO_BUILD_BUILD_DIR"),
                               ("cargo_home", "CARGO_HOME"), ("temp", "TMPDIR"), ("temp", "TEMP"), ("temp", "TMP")):
             if env.get(variable) != str(paths[key]):
                 raise Denied("nested environment/resource mismatch: " + variable)
         if env.get("CARGO_BUILD_JOBS") != str(receipt["scope"]["jobs"]) or env.get("CARGO_INCREMENTAL") != "0" or env.get("RUSTUP_AUTO_INSTALL") != "0":
             raise Denied("nested resource control changed")
-        plan = snapshot["plan"]
         selectors = dict(env)
+        # Validate below, after the original owner and executable checks.
+        # Only this one Cargo-generated variable can cross the runtime seam.
+        selectors.pop("LD_LIBRARY_PATH", None)
         for name in compiler_environment(env):
             selectors.pop(name, None)
         for name, key in (("CARGO", "cargo"), ("RUSTC", "rustc"), ("RUSTDOC", "rustdoc")):
@@ -691,9 +752,9 @@ def nested_command(row, env=None):
             raise Denied("nested compiler wrapper changed")
         if row not in plan["request"]["rows"] or row not in NESTED_COMMANDS:
             raise Denied("nested operation is not a member of the admitted plan")
-        if nested_source(worktree) != plan["source"] or file_subject(Path(__file__)) != plan["renderer"]:
+        # Even read-only Git must not inherit a runtime loader projection.
+        if nested_source(worktree, validation_env) != plan["source"] or file_subject(Path(__file__)) != plan["renderer"]:
             raise Denied("nested source/renderer changed")
-        revalidate_clippy_toolchain(plan["toolchain"])
         if nested_configuration(worktree, paths) != plan["configuration"]:
             raise Denied("nested Cargo/Clippy configuration changed")
         expected = dict(plan["compiler_environment"])
@@ -711,6 +772,7 @@ def nested_command(row, env=None):
             raise Denied("nested rustup selector changed")
         if actual != plan["compiler_environment"] and actual != expected:
             raise Denied("nested compiler/profile environment changed")
+        env.pop("LD_LIBRARY_PATH", None)
         env.update(expected)
         return render_nested(row, env, worktree, paths, plan["toolchain"])
     except (KeyError, TypeError, ValueError, OSError) as error:
@@ -1046,6 +1108,7 @@ def main(args=None):
         if nested is not None:
             if clippy or Path.cwd().resolve() != worktree:
                 raise Denied("nested owner requires a builtin operation at workspace root")
+            nested["cargo_runtime"] = nested_runtime_contract(args, paths, nested["toolchain"])
             scope["nested_plan_sha256"] = hashlib.sha256(json.dumps(nested, sort_keys=True).encode()).hexdigest()
             toolchain = nested["toolchain"]
         if clippy:
