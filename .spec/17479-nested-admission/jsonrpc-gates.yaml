@@ -1,0 +1,18 @@
+# Manual unactivated qualification; canonical gate policy is unchanged.
+schema_version: 1
+global:
+  default_timeout_seconds: 3600
+tiers:
+  merge_gate:
+    description: Exact JSON-RPC generated closure and two compiler measurements
+    target_duration_seconds: 3600
+    enforcement: required
+gates:
+  - name: jsonrpc_owning
+    tier: merge_gate
+    description: Two original integration tests under one finite admission
+    required: true
+    command: python3 -I scripts/ci/jsonrpc_prepare.py --test
+    timeout_seconds: 3600
+    retry_count: 0
+    tags: [test, compiler-fixture, narrow-qualification]

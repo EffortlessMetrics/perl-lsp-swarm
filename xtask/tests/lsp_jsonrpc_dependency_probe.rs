@@ -69,6 +69,14 @@ fn rust_path(path: &Path) -> String {
 }
 
 fn write_probe(probe_root: &Path, source: &str) -> io::Result<()> {
+    if admitted_roots()?.is_some() {
+        if fs::read_to_string(probe_root.join("Cargo.toml"))? != PROBE_MANIFEST
+            || fs::read_to_string(probe_root.join("src/lib.rs"))? != source
+        {
+            return Err(io::Error::other("admitted JSON-RPC input differs from exact probe"));
+        }
+        return Ok(());
+    }
     fs::create_dir_all(probe_root.join("src"))?;
     fs::write(probe_root.join("Cargo.toml"), PROBE_MANIFEST)?;
     fs::write(probe_root.join("src/lib.rs"), source)?;
@@ -83,6 +91,9 @@ fn cargo_command(probe_root: &Path) -> Command {
 }
 
 fn generate_probe_lock(probe_root: &Path) -> io::Result<Output> {
+    if admitted_roots()?.is_some() {
+        return admitted_phase("lock");
+    }
     cargo_command(probe_root)
         .arg("generate-lockfile")
         .arg("--offline")
@@ -92,6 +103,16 @@ fn generate_probe_lock(probe_root: &Path) -> io::Result<Output> {
 }
 
 fn check_probe(probe_root: &Path) -> io::Result<Output> {
+    if let Some(root) = admitted_roots()? {
+        let mode = if probe_root == root.join("neutral") {
+            "neutral"
+        } else if probe_root == root.join("rejected") {
+            "rejected"
+        } else {
+            return Err(io::Error::other("unknown admitted JSON-RPC probe directory"));
+        };
+        return admitted_phase(mode);
+    }
     cargo_command(probe_root)
         .arg("check")
         .arg("--quiet")
@@ -102,6 +123,39 @@ fn check_probe(probe_root: &Path) -> io::Result<Output> {
         .arg("--target-dir")
         .arg(probe_root.join("target"))
         .output()
+}
+
+fn admitted_roots() -> io::Result<Option<PathBuf>> {
+    let owner = std::env::var_os("CARGO_ADMITTED_RESOURCES");
+    let python = std::env::var_os("CARGO_ADMITTED_JSONRPC_PYTHON");
+    let root = std::env::var_os("CARGO_ADMITTED_JSONRPC_ROOT");
+    if owner.is_none() && python.is_none() && root.is_none() {
+        return Ok(None);
+    }
+    if owner.is_none() || python.is_none() || root.is_none() {
+        return Err(io::Error::other(
+            "partial JSON-RPC admission forbids developer Cargo fallback",
+        ));
+    }
+    Ok(root.map(PathBuf::from))
+}
+
+fn admitted_phase(mode: &str) -> io::Result<Output> {
+    let python = std::env::var_os("CARGO_ADMITTED_JSONRPC_PYTHON")
+        .ok_or_else(|| io::Error::other("missing bound JSON-RPC interpreter"))?;
+    let output = Command::new(python)
+        .arg("-I")
+        .arg(repo_root().join("scripts/ci/jsonrpc_prepare.py"))
+        .args(["--phase", mode])
+        .output()?;
+    // 75 is an adapter refusal, never the negative compiler proposition.
+    if output.status.code() == Some(75) {
+        return Err(io::Error::other(format!(
+            "JSON-RPC instrument refusal:\n{}",
+            output_text(&output)
+        )));
+    }
+    Ok(output)
 }
 
 fn output_text(output: &Output) -> String {
@@ -322,12 +376,15 @@ fn jsonrpc_model_is_dependency_closed_and_rejects_indirect_perl_taxonomy()
     }
 
     let probe = tempfile::tempdir()?;
+    let admitted = admitted_roots()?;
+    let neutral_root = admitted.as_ref().map(|root| root.join("neutral"));
+    let neutral_root = neutral_root.as_deref().unwrap_or(probe.path());
     let model_path = rust_path(&model);
     let neutral_source =
         format!("#![deny(warnings)]\n\n#[path = \"{model_path}\"]\npub mod jsonrpc;\n");
-    write_probe(probe.path(), &neutral_source)?;
+    write_probe(neutral_root, &neutral_source)?;
 
-    let generated = generate_probe_lock(probe.path())?;
+    let generated = generate_probe_lock(neutral_root)?;
     if !generated.status.success() {
         return Err(io::Error::other(format!(
             "could not resolve the isolated offline probe lock:\n{}",
@@ -335,11 +392,11 @@ fn jsonrpc_model_is_dependency_closed_and_rejects_indirect_perl_taxonomy()
         ))
         .into());
     }
-    let lock_path = probe.path().join("Cargo.lock");
+    let lock_path = neutral_root.join("Cargo.lock");
     let lock = fs::read_to_string(&lock_path)?;
     validate_probe_lock(&lock).map_err(io::Error::other)?;
 
-    let neutral = check_probe(probe.path())?;
+    let neutral = check_probe(neutral_root)?;
     if !neutral.status.success() {
         return Err(io::Error::other(format!(
             "the real JSON-RPC model did not compile with the reviewed registry dependency closure:\n{}",
@@ -367,9 +424,11 @@ impl protocol::ErrorClass for JsonRpcError {{
 }}
 "#
     );
-    write_probe(probe.path(), &indirect_taxonomy)?;
+    let rejected_root = admitted.as_ref().map(|root| root.join("rejected"));
+    let rejected_root = rejected_root.as_deref().unwrap_or(probe.path());
+    write_probe(rejected_root, &indirect_taxonomy)?;
 
-    let rejected = check_probe(probe.path())?;
+    let rejected = check_probe(rejected_root)?;
     if rejected.status.success() {
         return Err(io::Error::other(
             "an indirect crate::protocol re-export restored Perl ErrorClass inside the neutral probe",

@@ -34,6 +34,12 @@ print(json.dumps({'result':result}),flush=True)
 FAKE = '''import json,os,signal,sys,time
 from pathlib import Path
 root=Path(os.environ['FIXTURE_ROOT']);status=int(os.environ['FIXTURE_STATUS'])
+if os.environ['FIXTURE_MODE']=='terminal':
+ tty_error=None
+ try:
+  with open('/dev/tty','rb'):pass
+ except OSError as error:tty_error=error.errno
+ (root/'terminal').write_text(json.dumps({'tty_open':tty_error is None,'tty_error':tty_error,'session':os.getsid(0),'parent_session':os.getsid(os.getppid()),'group':os.getpgrp(),'parent_group':os.getpgid(os.getppid())}))
 if os.fork()==0:
  os.setsid()
  for fd in (0,1,2):os.close(fd)
@@ -51,27 +57,59 @@ os._exit(status)
 
 @unittest.skipUnless(sys.platform == 'linux', 'Linux ownership only')
 class BuiltinNativeTreeTests(unittest.TestCase):
-    def fixture(self, mode='normal', status=0):
+    def fixture(self, mode='normal', status=0, terminal=False):
         with tempfile.TemporaryDirectory(prefix='builtin-tree-control-') as name:
             root=Path(name);(root/'bin').mkdir()
             cargo=root/'bin/cargo'
             cargo.write_text('#!'+sys.executable+'\n'+FAKE);cargo.chmod(0o700)
             outer=PRELUDE+'''
+import signal
 tree=owner.ClippyTree();root=Path(sys.argv[2]);mode=sys.argv[3]
+sentinel=None
+if sys.argv[6]=='terminal':
+ sentinel=subprocess.Popen([sys.executable,'-c','import time;time.sleep(4)'])
+ tree.track(sentinel.pid,sentinel)
 p=subprocess.Popen([sys.executable,'-c',sys.argv[5],sys.argv[1],str(root),mode,sys.argv[4]],stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
 tree.track(p.pid,p)
 stdout,stderr=p.communicate(timeout=5)
 assert p.returncode==0,(stdout,stderr)
 result=json.loads(stdout.splitlines()[-1])
-result['early_release']=(root/'helper-live').exists() and not (root/'helper-end').exists() and not (root/'slot/cargo-active').exists()
+if mode!='cancel':
+ result['early_release']=(root/'helper-live').exists() and not (root/'helper-end').exists() and not (root/'slot/cargo-active').exists()
 result['lease_retained']=(root/'slot/cargo-active').exists()
 result['stderr']=stderr
+if mode=='terminal':result['terminal']=json.loads((root/'terminal').read_text())
+if sentinel is not None:
+ result['caller_group_survived']=sentinel.poll() is None
+ signal.pidfd_send_signal(tree.handles[sentinel.pid][0],signal.SIGTERM)
 settlement=tree.finish(timeout=2)
 assert settlement['tree_settled'],settlement
-result['helper_end']=(root/'helper-end').read_text()
+if mode!='cancel':
+ result['helper_end']=(root/'helper-end').read_text()
+else:
+ result['settlement']=next(json.loads(line.split(': ',1)[1]) for line in stderr.splitlines() if line.startswith('cargo-admitted Cargo settlement: '))
+ result['resources']=next(json.loads(line.split(': ',1)[1]) for line in stderr.splitlines() if line.startswith('cargo-admitted resources: '))
+ result['marker_retained']=os.path.lexists(result['settlement']['lease_marker'])
 print(json.dumps(result))
 '''
-            p=subprocess.run([sys.executable,'-c',outer,str(OWNER),str(root),mode,str(status),CHILD],capture_output=True,text=True,timeout=8)
+            # The sentinel shares the controlling group but is outside the inner
+            # admitted owner's descendants; cancellation must leave it alive.
+            terminal=terminal or mode=='terminal'
+            command=[sys.executable,'-c',outer,str(OWNER),str(root),mode,str(status),CHILD,
+                     'terminal' if terminal else 'ordinary']
+            if terminal:
+                import fcntl,pty,termios
+                master,slave=pty.openpty()
+                def controlling_terminal():
+                    os.setsid()
+                    fcntl.ioctl(0,termios.TIOCSCTTY,0)
+                try:
+                    p=subprocess.run(command,stdin=slave,stdout=subprocess.PIPE,stderr=subprocess.PIPE,
+                                     text=True,timeout=8,preexec_fn=controlling_terminal)
+                finally:
+                    os.close(slave);os.close(master)
+            else:
+                p=subprocess.run(command,capture_output=True,text=True,timeout=8)
             self.assertEqual(p.returncode,0,p.stderr+p.stdout)
             return json.loads(p.stdout.splitlines()[-1])
 
@@ -96,9 +134,32 @@ print(json.dumps(result))
         row=self.fixture(mode='cancel')
         self.assertEqual(row['result'],130)
         self.assertFalse(row['lease_retained'])
-        self.assertFalse(row['early_release'])
+        # Cancellation may kill the helper before it writes its completion file.
+        # Only kernel closure and release of the admitted lease establish success.
+        settlement=row['settlement']
+        self.assertTrue(settlement['cancelled'])
+        self.assertTrue(settlement['tree_settled'])
+        self.assertEqual(settlement['proof'],'kernel ECHILD (__WALL)')
+        self.assertTrue(settlement['lease_released'])
+        for key in ('lease_identity','lease_marker','marker_identity'):
+            self.assertEqual(settlement[key],row['resources'][key])
+        self.assertFalse(row['marker_retained'])
+
+    def test_builtin_preserves_controlling_terminal_and_caller_session(self):
+        row=self.fixture(mode='terminal')
+        self.assertEqual(row['result'],0)
+        self.assertFalse(row['lease_retained'])
+        self.assertTrue(row['terminal']['tty_open'],row['terminal'])
+        self.assertEqual(row['terminal']['session'],row['terminal']['parent_session'])
+        self.assertEqual(row['terminal']['group'],row['terminal']['parent_group'])
         self.assertEqual(row['helper_end'],'lease-present')
-        self.assertIn('"cancelled": true',row['stderr'])
+
+    def test_terminal_cancellation_preserves_shared_caller_group(self):
+        row=self.fixture(mode='cancel',terminal=True)
+        self.assertEqual(row['result'],130)
+        self.assertTrue(row['caller_group_survived'])
+        self.assertTrue(row['settlement']['tree_settled'])
+        self.assertTrue(row['settlement']['lease_released'])
 
 
 @unittest.skipUnless(sys.platform == 'linux', 'Linux route controls')
@@ -137,6 +198,31 @@ class BuiltinAdmissionControls(unittest.TestCase):
                 self.assertEqual(launch.call_args.kwargs,{'operation':'Cargo'})
                 self.assertEqual(launch.call_args.args[0][0],'cargo')
                 legacy.assert_not_called()
+
+    def test_builtin_spawn_cancellation_binds_before_unwind_without_group_signal(self):
+        import contextlib,io,signal
+        from unittest.mock import Mock,patch
+        handlers={};output=io.StringIO();process=Mock(pid=98765,returncode=None)
+        def install(signum,handler):
+            old=handlers.get(signum,'old');handlers[signum]=handler;return old
+        def spawn(*args,**kwargs):
+            self.assertFalse(kwargs['start_new_session'])
+            handlers[signal.SIGTERM](signal.SIGTERM,None)
+            self.guard.track.assert_not_called()
+            return process
+        with patch.object(self.safe.subprocess,'Popen',side_effect=spawn), \
+             patch.object(self.safe.signal,'signal',side_effect=install), \
+             patch.object(self.safe.os,'killpg') as group_signal, \
+             patch.object(self.safe.signal,'pidfd_send_signal') as descriptor_signal, \
+             contextlib.redirect_stderr(output),self.assertRaises(KeyboardInterrupt):
+            self.safe.call_clippy(['fixture'],{},self.root/'lease',self.guard,operation='Cargo')
+        self.guard.track.assert_called_once_with(process.pid,process)
+        group_signal.assert_not_called();descriptor_signal.assert_not_called()
+        process.wait.assert_not_called()
+        receipt=json.loads(output.getvalue().split(': ',1)[1])
+        self.assertTrue(receipt['session_inherited'])
+        self.assertEqual(receipt['process_group'],os.getpgrp())
+        self.assertEqual(handlers[signal.SIGTERM],'old')
 
     def test_unknown_closure_retains_and_overrides_product_success(self):
         result,output,_,_,_=self.invoke(settled=False)

@@ -1,0 +1,16 @@
+#![allow(dead_code)]
+
+#[path = "@MODEL@"]
+mod jsonrpc;
+
+mod protocol {
+    pub use perl_parser_core::{ErrorCategory, ErrorClass};
+}
+
+use jsonrpc::JsonRpcError;
+
+impl protocol::ErrorClass for JsonRpcError {
+    fn error_class(&self) -> protocol::ErrorCategory {
+        protocol::ErrorCategory::Bug
+    }
+}

@@ -119,6 +119,7 @@ def owning_test(env=None, invoke=subprocess.run, fixture_row=None, test_row=None
         owner.LOCK_UNION_TEST_ROW: (owner.LOCK_UNION_ROW, owner.LOCK_UNION_TEST, "lock-union-owning"),
         owner.PREPARATION_CONTROL_ROW: (owner.LOCK_UNION_ROW, owner.PREPARATION_CONTROL_TEST, "preparation-control-owning"),
         owner.LOCK_PARTITION_TEST_ROW: (owner.LOCK_FIXTURE_ROWS, owner.LOCK_PARTITION_TESTS, "lock-remaining-owning"),
+        owner.JSONRPC_TEST_ROW: (owner.JSONRPC_LOCK_ROW, owner.JSONRPC_TESTS, "jsonrpc-owning"),
     }
     if selections.get(test_row) != (fixture_row, test_name, copy_prefix):
         raise owner.Denied("unsupported owning-test selection")
@@ -142,6 +143,10 @@ def owning_test(env=None, invoke=subprocess.run, fixture_row=None, test_row=None
             or len([line for line in lines if line.startswith("test result:")]) != 1
             or not any(re.fullmatch(rf"test result: ok\. {count} passed; 0 failed; 0 ignored; 0 measured; [0-9]+ filtered out; finished in [0-9]+(?:\.[0-9]+)?s", line) for line in lines)):
         raise owner.Denied("missing exact current owning fixture-test pass")
+    if test_row == owner.JSONRPC_TEST_ROW:
+        descriptor = json.loads(env["CARGO_ADMITTED_RESOURCES"])
+        snapshot, _ = owner.bounded_json(descriptor["nested_snapshot"]["path"])
+        owner.jsonrpc_measurements(snapshot["plan"], descriptor)
     capture_owning_artifact(result.stdout, env, test_row, test_name, copy_prefix)
     return 0
 
@@ -158,10 +163,15 @@ def capture_owning_artifact(stdout, env, test_row=None, test_name=None,
             (owner.DISALLOWED_TEST_ROW, owner.DISALLOWED_TEST, "disallowed-fields-owning"),
             (owner.LOCK_UNION_TEST_ROW, owner.LOCK_UNION_TEST, "lock-union-owning"),
             (owner.PREPARATION_CONTROL_ROW, owner.PREPARATION_CONTROL_TEST, "preparation-control-owning"),
-            (owner.LOCK_PARTITION_TEST_ROW, owner.LOCK_PARTITION_TESTS, "lock-remaining-owning")):
+            (owner.LOCK_PARTITION_TEST_ROW, owner.LOCK_PARTITION_TESTS, "lock-remaining-owning"),
+            (owner.JSONRPC_TEST_ROW, owner.JSONRPC_TESTS, "jsonrpc-owning")):
         raise owner.Denied("unsupported owning-artifact selection")
     snapshot, _ = owner.bounded_json(descriptor["nested_snapshot"]["path"])
     worktree = Path(descriptor["worktree"])
+    integration = test_row == owner.JSONRPC_TEST_ROW
+    target_name = "lsp_jsonrpc_dependency_probe" if integration else "xtask"
+    target_kind = ["test"] if integration else ["bin"]
+    target_source = worktree / ("xtask/tests/lsp_jsonrpc_dependency_probe.rs" if integration else "xtask/src/main.rs")
     matches, terminals = [], []
     for line in stdout.splitlines():
         if not line.startswith('{'):
@@ -174,9 +184,9 @@ def capture_owning_artifact(stdout, env, test_row=None, test_name=None,
         target, profile = event.get('target'), event.get('profile')
         if (event.get('reason') == 'compiler-artifact'
                 and event.get('manifest_path') == str(worktree/'xtask/Cargo.toml')
-                and isinstance(target,dict) and target.get('name') == 'xtask'
-                and target.get('kind') == ['bin']
-                and target.get('src_path') == str(worktree/'xtask/src/main.rs')
+                and isinstance(target,dict) and target.get('name') == target_name
+                and target.get('kind') == target_kind
+                and target.get('src_path') == str(target_source)
                 and isinstance(profile,dict) and profile.get('test') is True):
             matches.append(event)
     if len(matches) != 1 or terminals != [True]:
@@ -184,7 +194,7 @@ def capture_owning_artifact(stdout, env, test_row=None, test_name=None,
     event = matches[0]
     path = owner.native_path(event['executable'])
     if (path.parent != Path(descriptor['resources']['build'])/'debug/deps'
-            or not path.name.startswith('xtask-') or str(path) not in event.get('filenames', [])
+            or not path.name.startswith(target_name + '-') or str(path) not in event.get('filenames', [])
             or not os.access(path, os.X_OK)):
         raise owner.Denied("owning harness has wrong executable/root")
     owner.nested_command(test_row, env)

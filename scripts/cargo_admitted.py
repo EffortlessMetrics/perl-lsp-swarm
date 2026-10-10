@@ -412,6 +412,9 @@ def call_clippy(command, env, lock, tree=None, operation="Clippy"):
     # but never infer whole-tree settlement from this leader's exit. The caller
     # retains its lease until the optional owned kernel tree scope proves closure.
     process = None
+    detached = operation == "Clippy"
+    if not detached and tree is None:
+        raise Denied("builtin Cargo requires its bound native owner")
     published = False
     pending = []
     previous = {}
@@ -424,18 +427,22 @@ def call_clippy(command, env, lock, tree=None, operation="Clippy"):
         # signal a group using an unbound/reusable numeric ID.
         if process.returncode is None:
             try:
-                os.killpg(process.pid, signal.SIGTERM)
+                if detached:
+                    os.killpg(process.pid, signal.SIGTERM)
+                # Builtin Cargo shares its caller's group: unwind into the
+                # existing tree owner, which signals only bound, waitable pidfds.
             except ProcessLookupError:
                 pass
         raise KeyboardInterrupt(operation + " cancelled; lease retained for native owner verification")
     try:
         for signum in (signal.SIGINT, signal.SIGTERM):
             previous[signum] = signal.signal(signum, cancelled)
-        process = subprocess.Popen(command, env=env, start_new_session=True)
+        process = subprocess.Popen(command, env=env, start_new_session=detached)
         if tree is not None:
             tree.track(process.pid, process)
         print("cargo-admitted " + operation + " launch: " + json.dumps({"pid": process.pid,
-              "process_group": process.pid, "lease": str(lock), "host": socket.gethostname(),
+              "process_group": process.pid if detached else os.getpgrp(),
+              "session_inherited": not detached, "lease": str(lock), "host": socket.gethostname(),
               "terminality": "awaiting owner verification"}), file=sys.stderr, flush=True)
         published = True
         if pending:
@@ -483,7 +490,19 @@ LOCK_PARTITION_TESTS = tuple("tasks::check_lint_policy::tests::lock_partition::"
 ))
 PREPARATION_CONTROL_ROW = "xtask-preparation-control-test"
 PREPARATION_CONTROL_TEST = "tasks::gates::tests::failed_preparation_prevents_runtime_in_every_tier_and_keeps_backstops"
+JSONRPC_LOCK_ROW = "xtask-jsonrpc-lock"
+JSONRPC_NEUTRAL_ROW = "xtask-jsonrpc-neutral"
+JSONRPC_REJECTED_ROW = "xtask-jsonrpc-rejected"
+JSONRPC_FIXTURE_ROWS = (JSONRPC_LOCK_ROW, JSONRPC_NEUTRAL_ROW, JSONRPC_REJECTED_ROW)
+JSONRPC_TEST_ROW = "xtask-jsonrpc-test"
+JSONRPC_TESTS = ("jsonrpc_model_is_dependency_closed_and_rejects_indirect_perl_taxonomy",
+                "probe_lock_rejects_path_git_and_unreviewed_registry_sources")
 NESTED_COMMANDS = {
+    JSONRPC_LOCK_ROW: ("generate-lockfile", "--offline", "--manifest-path", "@manifest@"),
+    JSONRPC_NEUTRAL_ROW: ("check", "--quiet", "--locked", "--offline", "--manifest-path", "@manifest@"),
+    JSONRPC_REJECTED_ROW: ("check", "--quiet", "--locked", "--offline", "--manifest-path", "@manifest@"),
+    JSONRPC_TEST_ROW: ("test", "-p", "xtask", "--test", "lsp_jsonrpc_dependency_probe", "--locked", "--message-format=json",
+                      "--", "--exact", *JSONRPC_TESTS, "--test-threads=1", "--color", "never"),
     PREPARATION_CONTROL_ROW: ("test", "-p", "xtask", "--bin", "xtask", "--locked", "--message-format=json", PREPARATION_CONTROL_TEST,
                             "--", "--exact", "--test-threads=1", "--color", "never"),
     LOCK_UNION_ROW: ("clippy", "--offline", "--quiet", "--lib", "--no-deps", "--message-format=json", "--", "--force-warn", "let_underscore_lock", "--force-warn", "clippy::let_underscore_lock"),
@@ -631,7 +650,14 @@ def nested_plan(filename, env, worktree, paths):
         if any(row not in data["rows"] for row in required):
             raise Denied("owning lock-union test requires its finite fixture row")
         lock_fixture = lock_union_fixture(worktree, paths)
+    rpc_fixture = None
+    if any(row in data["rows"] for row in (*JSONRPC_FIXTURE_ROWS, JSONRPC_TEST_ROW)):
+        if any(row not in data["rows"] for row in JSONRPC_FIXTURE_ROWS):
+            raise Denied("JSON-RPC measurement requires all three finite phase members")
+        rpc_fixture = jsonrpc_fixture(worktree, paths)
     extra = tuple(Path(f["cwd"]) for f in (fixture, lock_fixture) if f)
+    if rpc_fixture:
+        extra += tuple(Path(rpc_fixture["directories"][mode]["path"]) for mode in ("neutral", "rejected"))
     plan = {"request": data, "request_subject": request_subject,
             "source": nested_source(worktree), "toolchain": toolchain,
             "configuration": nested_configuration(worktree, paths, extra),
@@ -641,6 +667,8 @@ def nested_plan(filename, env, worktree, paths):
         plan["disallowed_fields_fixture"] = fixture
     if lock_fixture:
         plan["lock_union_fixture"] = lock_fixture
+    if rpc_fixture:
+        plan["jsonrpc_fixture"] = rpc_fixture
     return plan
 
 
@@ -718,6 +746,89 @@ def fixed_fixture(worktree, paths, label, adapter):
     return {"cwd": str(root), "directories": directories, "files": files,
             "adapter": file_subject(worktree / "scripts/ci" / adapter),
             "python": file_subject(Path(sys.executable).resolve(strict=True))}
+
+
+def jsonrpc_fixture(worktree, paths):
+    """Fixed inputs; generated locks are outputs until their measured transition."""
+    root = native_path(str(paths["temp"] / "jsonrpc-17479"))
+    template = worktree / ".spec/17479-nested-admission/jsonrpc-fixture"
+    model = file_subject(worktree / "crates/perl-lsp-rs-core/src/protocol/jsonrpc.rs")
+    model_path = model["path"].replace("\\", "\\\\").replace('"', '\\"')
+    files, directories = {}, {}
+    for mode in ("neutral", "rejected"):
+        for name, source in (("Cargo.toml", "Cargo.toml"), ("src/lib.rs", mode + ".rs.in")):
+            original = file_subject(template / source)
+            if original["file_identity"][2] > BUDGET_FILE_LIMIT:
+                raise Denied("JSON-RPC template exceeds bounded input")
+            data = (template / source).read_text().replace("@MODEL@", model_path).encode()
+            actual = file_subject(root / mode / name)
+            if file_subject(template / source) != original or actual["sha256"] != hashlib.sha256(data).hexdigest():
+                raise Denied("JSON-RPC fixed source/manifest differs")
+            files[mode + "/" + name] = {"template": original, "generated": actual}
+    for name in ("neutral", "rejected", "target", "build"):
+        path = native_path(str(root / name))
+        directories[name] = {"path": str(path), "identity": list(directory_identity(path))}
+    return {"cwd": str(root), "directories": directories, "files": files, "model": model,
+            "adapter": file_subject(worktree / "scripts/ci/jsonrpc_prepare.py"),
+            "support_adapter": file_subject(worktree / "scripts/ci/disallowed_fields_prepare.py"),
+            "owning_test": file_subject(worktree / "xtask/tests/lsp_jsonrpc_dependency_probe.rs"),
+            "python": file_subject(Path(sys.executable).resolve(strict=True))}
+
+
+def jsonrpc_generated_locks(plan, receipt, fixture):
+    path = Path(fixture["cwd"]) / ("lock-generation-" + str(receipt["pid"]) + ".json")
+    generated, _ = bounded_json(path)
+    if (generated.get("schema_version") != 1 or generated.get("row") != JSONRPC_LOCK_ROW
+            or generated.get("exit_code") != 0 or generated.get("generated_by_native_command") is not True
+            or generated.get("diagnostic_validation") != {"passed": True, "error": None}
+            or generated.get("tested_source") != plan["source"]["head"]
+            or generated.get("snapshot") != receipt["nested_snapshot"]):
+        raise Denied("missing current measured JSON-RPC lock generation")
+    for key in ("owner_process", "lease_identity", "marker_identity"):
+        if generated.get(key) != receipt[key]:
+            raise Denied("JSON-RPC lock generation has a different original owner")
+    if (generated.get("argv") != jsonrpc_expected_command(JSONRPC_LOCK_ROW, plan, receipt, fixture)
+            or generated.get("cwd") != fixture["directories"]["neutral"]["path"]):
+        raise Denied("JSON-RPC lock generation used another command/cwd")
+    for mode in ("neutral", "rejected"):
+        if generated["locks"][mode] != file_subject(Path(fixture["directories"][mode]["path"]) / "Cargo.lock"):
+            raise Denied("generated JSON-RPC lock changed before check")
+    if generated["locks"]["neutral"]["sha256"] != generated["locks"]["rejected"]["sha256"]:
+        raise Denied("negative JSON-RPC probe uses another dependency closure")
+
+
+def jsonrpc_phase_record(plan, receipt, fixture, mode):
+    record, _ = bounded_json(Path(fixture["cwd"]) / ("native-" + mode + "-" + str(receipt["pid"]) + ".json"))
+    row = JSONRPC_NEUTRAL_ROW if mode == "neutral" else JSONRPC_REJECTED_ROW
+    if (record.get("phase") != mode or record.get("row") != row
+            or record.get("tested_source") != plan["source"]["head"]
+            or record.get("snapshot") != receipt["nested_snapshot"]
+            or record.get("diagnostic_validation") != {"passed": True, "error": None}
+            or (record.get("exit_code") != 0 if mode == "neutral" else record.get("exit_code") != 101)):
+        raise Denied("missing current successful JSON-RPC phase measurement")
+    for key in ("owner_process", "lease_identity", "marker_identity"):
+        if record.get(key) != receipt[key]:
+            raise Denied("JSON-RPC phase has another original owner")
+    if (record.get("argv") != jsonrpc_expected_command(row, plan, receipt, fixture)
+            or record.get("cwd") != fixture["directories"][mode]["path"]):
+        raise Denied("JSON-RPC phase used another command/cwd")
+    return record
+
+
+def jsonrpc_expected_command(row, plan, receipt, fixture):
+    paths = {name: Path(path) for name, path in receipt["resources"].items()}
+    env = {**plan["compiler_environment"], "CARGO_BUILD_JOBS": str(receipt["scope"]["jobs"])}
+    return render_nested(row, env, Path(receipt["worktree"]), paths, plan["toolchain"], fixture)[0]
+
+
+def jsonrpc_measurements(plan, receipt):
+    try:
+        fixture = plan["jsonrpc_fixture"]
+        jsonrpc_generated_locks(plan, receipt, fixture)
+        for mode in ("neutral", "rejected"):
+            jsonrpc_phase_record(plan, receipt, fixture, mode)
+    except (OSError, KeyError, ValueError, TypeError) as error:
+        raise Denied("missing or invalid current JSON-RPC phase evidence") from error
 
 
 def nested_configuration(worktree, paths, extra_directories=()):
@@ -891,7 +1002,20 @@ def nested_command(row, env=None):
             raise Denied("lock-union fixture inputs/cwd/output roots changed")
         if row in (*LOCK_FIXTURE_ROWS, LOCK_UNION_TEST_ROW, LOCK_PARTITION_TEST_ROW) and lock_fixture is None:
             raise Denied("lock-union fixture is not bound to this workload")
+        rpc_fixture = plan.get("jsonrpc_fixture")
+        if rpc_fixture is not None and jsonrpc_fixture(worktree, paths) != rpc_fixture:
+            raise Denied("JSON-RPC source/manifest/cwd/output roots changed")
+        if row in (*JSONRPC_FIXTURE_ROWS, JSONRPC_TEST_ROW) and rpc_fixture is None:
+            raise Denied("JSON-RPC fixture is not bound to this workload")
+        if row == JSONRPC_TEST_ROW and any(member not in plan["request"]["rows"] for member in JSONRPC_FIXTURE_ROWS):
+            raise Denied("JSON-RPC owning test lacks a finite phase member")
+        if row in (JSONRPC_NEUTRAL_ROW, JSONRPC_REJECTED_ROW):
+            jsonrpc_generated_locks(plan, receipt, rpc_fixture)
+        if row == JSONRPC_REJECTED_ROW:
+            jsonrpc_phase_record(plan, receipt, rpc_fixture, "neutral")
         extra = tuple(Path(f["cwd"]) for f in (fixture, lock_fixture) if f)
+        if rpc_fixture:
+            extra += tuple(Path(rpc_fixture["directories"][mode]["path"]) for mode in ("neutral", "rejected"))
         if nested_configuration(worktree, paths, extra) != plan["configuration"]:
             raise Denied("nested Cargo/Clippy configuration changed")
         expected = dict(plan["compiler_environment"])
@@ -912,6 +1036,8 @@ def nested_command(row, env=None):
         env.pop("LD_LIBRARY_PATH", None)
         env.update(expected)
         selected_fixture = lock_fixture if row in (*LOCK_FIXTURE_ROWS, LOCK_UNION_TEST_ROW, LOCK_PARTITION_TEST_ROW) else fixture
+        if row in (*JSONRPC_FIXTURE_ROWS, JSONRPC_TEST_ROW):
+            selected_fixture = rpc_fixture
         return render_nested(row, env, worktree, paths, plan["toolchain"], selected_fixture)
     except (KeyError, TypeError, ValueError, OSError) as error:
         raise Denied("invalid/stale nested handoff: " + str(error)) from error
@@ -945,6 +1071,11 @@ def render_nested(row, env, worktree, paths, toolchain, fixture=None):
     if row in (DISALLOWED_FIXTURE_ROW, *LOCK_FIXTURE_ROWS):
         cwd = Path(fixture["cwd"])
         paths = {**paths, **{name: Path(fixture["directories"][name]["path"]) for name in ("target", "build")}}
+    if row in JSONRPC_FIXTURE_ROWS:
+        mode = "rejected" if row == JSONRPC_REJECTED_ROW else "neutral"
+        cwd = Path(fixture["directories"][mode]["path"])
+        args = [str(cwd / "Cargo.toml") if arg == "@manifest@" else arg for arg in args]
+        paths = {**paths, **{name: Path(fixture["directories"][name]["path"]) for name in ("target", "build")}}
     exact = toolchain["subjects"]
     controlled = {"CARGO": exact["cargo"]["path"], "RUSTC": exact["rustc"]["path"],
                   "RUSTDOC": exact["rustdoc"]["path"], "RUSTC_WRAPPER": "", "RUSTC_WORKSPACE_WRAPPER": "",
@@ -961,6 +1092,9 @@ def render_nested(row, env, worktree, paths, toolchain, fixture=None):
         controlled["CARGO_ADMITTED_FIXTURE_PYTHON"] = fixture["python"]["path"]
     if row in (LOCK_UNION_TEST_ROW, LOCK_PARTITION_TEST_ROW):
         controlled["CARGO_ADMITTED_LOCK_PYTHON"] = fixture["python"]["path"]
+    if row == JSONRPC_TEST_ROW:
+        controlled["CARGO_ADMITTED_JSONRPC_PYTHON"] = fixture["python"]["path"]
+        controlled["CARGO_ADMITTED_JSONRPC_ROOT"] = fixture["cwd"]
     env.update(controlled)
     command = [exact["cargo"]["path"]]
     for name, value in controlled.items():
@@ -968,7 +1102,7 @@ def render_nested(row, env, worktree, paths, toolchain, fixture=None):
             command += ["--config", "env." + name + "." + field + "=" + setting]
     command += ["--config", "unstable.unstable-options=false", "--config", "build.build-dir=" + json.dumps(str(paths["build"])),
                 "--config", 'build.rustc-wrapper=""', "--config", 'build.rustc-workspace-wrapper=""', args[0]]
-    if args[0] not in ("metadata", "tree"):
+    if args[0] not in ("metadata", "tree", "generate-lockfile"):
         command += ["--target-dir", str(paths["target"])]
     command += args[1:]
     if args[0] == "clippy":

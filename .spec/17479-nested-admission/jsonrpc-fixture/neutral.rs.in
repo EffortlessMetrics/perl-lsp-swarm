@@ -1,0 +1,4 @@
+#![deny(warnings)]
+
+#[path = "@MODEL@"]
+pub mod jsonrpc;
