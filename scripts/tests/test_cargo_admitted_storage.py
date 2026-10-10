@@ -361,7 +361,12 @@ class AdmissionTests(unittest.TestCase):
             redirected = dict(env, **selectors)
             # Real negative control: Git's view is no longer Cargo's CWD.
             result = subprocess.check_output(["git", "rev-parse", "--show-toplevel"], env=redirected)
-            self.assertEqual(result, git_output(other.resolve()))
+            if os.name == "nt":
+                # Git spells native Windows separators with forward slashes.
+                self.assertTrue(result.endswith(b"\n"))
+                self.assertEqual(Path(os.fsdecode(result[:-1])).resolve(), other.resolve())
+            else:
+                self.assertEqual(result, git_output(other.resolve()))
             for selection in (selectors, *({name: selected} for name, value in selectors.items() for selected in (value, ""))):
                 with patch.dict(os.environ, dict(env, **selection), clear=True), \
                      patch.object(safe, "check_capacity", return_value={"fixture": "identity-only"}) as capacity, \
@@ -414,7 +419,8 @@ class AdmissionTests(unittest.TestCase):
 
     def test_legacy_resources_and_common_lease_are_preserved(self):
         worktree, common = str(self.root / "repo"), str(self.root / "repo.git")
-        env = dict(self.env, DEVPLANE=str(self.root / "plane"), CARGO_HOME=str(self.root / "cargo"))
+        env = dict(self.env, DEVPLANE=str(self.root / "plane"), CARGO_HOME=str(self.root / "cargo"),
+                   HOME=str(self.root), USERPROFILE=str(self.root))
         with patch.object(safe.subprocess, "check_output", side_effect=[git_output(worktree), git_output(common)]):
             _, slot, paths = safe.resource_plan(env)
         for name in ("target", "build"):
