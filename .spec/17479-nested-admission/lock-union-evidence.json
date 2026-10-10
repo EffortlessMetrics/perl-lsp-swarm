@@ -1,0 +1,850 @@
+{
+  "schema_version": 1,
+  "tested_source": "d7791bfc6150e52d6ca6c8f79807985964bb956b",
+  "stages": {
+    "direct-1": {
+      "tested_source": "41d454379937298dd22e748ab886ac0a9d3bc7df",
+      "executed_test_denominator": 0,
+      "named_results": [],
+      "diagnostics": [],
+      "cached_diagnostic_replay": false,
+      "measurement": {
+        "stage": "direct",
+        "source": "41d454379937298dd22e748ab886ac0a9d3bc7df",
+        "cwd": "/workspace/perl-lsp-17479-nested",
+        "outer_argv": [
+          "run",
+          "-p",
+          "xtask",
+          "--bin",
+          "xtask",
+          "--locked",
+          "--",
+          "gates",
+          "--tier",
+          "merge-gate",
+          "--gate",
+          "lock_union_direct",
+          "--gate-policy",
+          ".spec/17479-nested-admission/lock-union-gates.yaml",
+          "--receipt",
+          "--receipt-path",
+          "/workspace/perl-lsp-17479-nested/target/receipts/lock-union-direct.json"
+        ],
+        "scope": {
+          "hostname": "bf4c09722087",
+          "platform": "linux",
+          "working_directory": "/workspace/perl-lsp-17479-nested",
+          "worktree": "/workspace/perl-lsp-17479-nested",
+          "operation": "run",
+          "cargo_argv_sha256": "e157d34c4d758037e99233f274d02952e216dc529b26a0ef2adea498fd120ed0",
+          "resources": {
+            "target": "/workspace/.devplane-17479/bf4c09722087-linux-727b814873041b4a/worktrees/ca8a330a66f6d236fa1e8d7f63aed3c09474f0bcc618a13452eb2d5faca8978e/target",
+            "build": "/workspace/.devplane-17479/bf4c09722087-linux-727b814873041b4a/worktrees/ca8a330a66f6d236fa1e8d7f63aed3c09474f0bcc618a13452eb2d5faca8978e/build",
+            "cargo_home": "/workspace/.cloud-tools/cargo",
+            "temp": "/workspace/perl-lsp-17479-nested/target/receipts"
+          },
+          "jobs": 1,
+          "build_environment_sha256": "715891adfc627d31e0ee3f9daa3550a1cfdde6b6aaeaefbecda936f92f7d6530",
+          "nested_plan_sha256": "70db39fa27d06ca6dbf7f11baf0e5b7376c05957d2fef3ec3a73ad99e1442c26"
+        },
+        "no_competing_compilers": true,
+        "initial_free": 26593398784,
+        "initial_memory_events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\n",
+        "growth_estimated_not_verified": true,
+        "disk_cancel_below": 10737418240,
+        "memory_cancel_at": 15032385536,
+        "wall_cancel_seconds": 5400,
+        "observer_error": null,
+        "exit_code": 1,
+        "elapsed_seconds": 666.2119847020003,
+        "cancel_reason": null,
+        "aggregate_sampled_peak_memory": 9552027648,
+        "min_free_bytes": 26378145792,
+        "observed_volume_growth": 215252992,
+        "final_memory_events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\n"
+      },
+      "owner_settlement": {
+        "tree_settled": true,
+        "proof": "kernel ECHILD (__WALL)",
+        "cancelled": false,
+        "termination_requested": false,
+        "reaped_descendants": [],
+        "owned_child_table_available": false,
+        "errors": [],
+        "pending_bound_pids": [],
+        "reason": "all owned descendants reaped",
+        "lease": "/workspace/.devplane-17479/bf4c09722087-linux-727b814873041b4a/cargo-active",
+        "lease_identity": [
+          27,
+          1458537
+        ],
+        "lease_marker": "/workspace/.devplane-17479/bf4c09722087-linux-727b814873041b4a/cargo-active/owner-b180f44dadf04dae85ac77c21eb43cee",
+        "lease_released": true
+      },
+      "original_owner": {
+        "pid": 34639,
+        "lease_identity": [
+          27,
+          1458537
+        ],
+        "marker_identity": [
+          27,
+          1458538
+        ]
+      },
+      "snapshot_sha256": "e731314676e61292576b3f96cc6c7b0acac6df2e053bba53f44957174ea0e730",
+      "snapshot_copy_under_live_owner": true,
+      "gate_duration_ms": 2213,
+      "gate_receipt_present": true,
+      "artifact_evidence": null,
+      "evidence_manifest": {
+        "bytes": 2048,
+        "sha256": "e86f36adc79c69fba8846618177dd0fba9196291e78163a65498c52e618c23d3"
+      },
+      "evidence_files": {
+        "admission.json": {
+          "bytes": 1795,
+          "sha256": "c70b6c7fc809355a991c8e2e601d2932a449f62f051d1b14d7f0767f95e32f41"
+        },
+        "budget.json": {
+          "bytes": 1602,
+          "sha256": "eade3d2fec55df355fde9ab12589dd2b7d76bfcde34d7d4df604f76c41cf6def"
+        },
+        "captured-nested-snapshot.json": {
+          "bytes": 13271,
+          "sha256": "e731314676e61292576b3f96cc6c7b0acac6df2e053bba53f44957174ea0e730"
+        },
+        "captured-resources.json": {
+          "bytes": 4988,
+          "sha256": "c92aca08f7d909d1d9d07cf18a97df7537f2a69015f1b921166debe787580de7"
+        },
+        "cargo-rewritten.lock": {
+          "bytes": 2437,
+          "sha256": "ff2a47a9ba4466ff072f8b5c2e61193fc9d3dee0c659a1eb27612f1bc309a5d3"
+        },
+        "default-preflight.log": {
+          "bytes": 1772,
+          "sha256": "bb63cc283a44e5e96bf442b42b43fcca05b1d75e74b8f419dbc7582591f1b094"
+        },
+        "gate-receipt.json": {
+          "bytes": 2461,
+          "sha256": "9e9d2a626701eace9ff0d639a05793d3ab214e1d3e799b384dc2a41bb305d46a"
+        },
+        "gate.log": {
+          "bytes": 93,
+          "sha256": "42dbfce35d8a5814c772b7565f140bf0e79927752d8a04be4a44456d474413f3"
+        },
+        "result.json": {
+          "bytes": 2111,
+          "sha256": "109b9fedee82b30659afb6d91977841c4147600fa149c200d5145b823263523c"
+        },
+        "samples.jsonl": {
+          "bytes": 38662,
+          "sha256": "9dfd1096d95aa32b6504f4a22f6beb9ee5c44daa6c9734c945040cb342416089"
+        },
+        "scoped-preflight.log": {
+          "bytes": 3481,
+          "sha256": "c2b3fc076672c230bf32fd86dde9ec271617b4e7e8533e68d43d28a679cbbc90"
+        },
+        "snapshot-copy-evidence.json": {
+          "bytes": 268,
+          "sha256": "d440743d9cbb1045e7723a89c6e0de983711ba5d14fec119dbafccb695ebb5aa"
+        },
+        "stderr.log": {
+          "bytes": 211448,
+          "sha256": "a1f216071d12867c1e475e093218b536379a4af4aee9508f5b872c071a68cb69"
+        },
+        "stdout.log": {
+          "bytes": 727,
+          "sha256": "d44fcc8a1cf3065e0bdc38065d08da48f39b2ad2d63dedfae9575ac8c5800f5d"
+        }
+      }
+    },
+    "direct-2": {
+      "tested_source": "d7791bfc6150e52d6ca6c8f79807985964bb956b",
+      "executed_test_denominator": 0,
+      "named_results": [],
+      "diagnostics": [
+        {
+          "lint": "clippy::let_underscore_lock",
+          "level": "warning",
+          "line": 10,
+          "source_text": "    let _ = dropped_pl_mutex.lock();"
+        },
+        {
+          "lint": "clippy::let_underscore_lock",
+          "level": "warning",
+          "line": 11,
+          "source_text": "    let _ = dropped_pl_rwlock.write();"
+        },
+        {
+          "lint": "let_underscore_lock",
+          "level": "warning",
+          "line": 5,
+          "source_text": "    let _ = dropped_std_mutex.lock();"
+        },
+        {
+          "lint": "let_underscore_lock",
+          "level": "warning",
+          "line": 6,
+          "source_text": "    let _ = dropped_std_rwlock.read();"
+        }
+      ],
+      "cached_diagnostic_replay": true,
+      "measurement": {
+        "stage": "direct",
+        "source": "d7791bfc6150e52d6ca6c8f79807985964bb956b",
+        "cwd": "/workspace/perl-lsp-17479-nested",
+        "outer_argv": [
+          "run",
+          "-p",
+          "xtask",
+          "--bin",
+          "xtask",
+          "--locked",
+          "--",
+          "gates",
+          "--tier",
+          "merge-gate",
+          "--gate",
+          "lock_union_direct",
+          "--gate-policy",
+          ".spec/17479-nested-admission/lock-union-gates.yaml",
+          "--receipt",
+          "--receipt-path",
+          "/workspace/perl-lsp-17479-nested/target/receipts/lock-union-direct.json"
+        ],
+        "scope": {
+          "hostname": "bf4c09722087",
+          "platform": "linux",
+          "working_directory": "/workspace/perl-lsp-17479-nested",
+          "worktree": "/workspace/perl-lsp-17479-nested",
+          "operation": "run",
+          "cargo_argv_sha256": "e157d34c4d758037e99233f274d02952e216dc529b26a0ef2adea498fd120ed0",
+          "resources": {
+            "target": "/workspace/.devplane-17479/bf4c09722087-linux-727b814873041b4a/worktrees/ca8a330a66f6d236fa1e8d7f63aed3c09474f0bcc618a13452eb2d5faca8978e/target",
+            "build": "/workspace/.devplane-17479/bf4c09722087-linux-727b814873041b4a/worktrees/ca8a330a66f6d236fa1e8d7f63aed3c09474f0bcc618a13452eb2d5faca8978e/build",
+            "cargo_home": "/workspace/.cloud-tools/cargo",
+            "temp": "/workspace/perl-lsp-17479-nested/target/receipts"
+          },
+          "jobs": 1,
+          "build_environment_sha256": "715891adfc627d31e0ee3f9daa3550a1cfdde6b6aaeaefbecda936f92f7d6530",
+          "nested_plan_sha256": "f6f57025df38f0dd8ad529853e155faae816a84f7d7677dfbf69dfa6e07b3cf0"
+        },
+        "no_competing_compilers": true,
+        "initial_free": 26579570688,
+        "initial_memory_events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\n",
+        "growth_estimated_not_verified": true,
+        "disk_cancel_below": 10737418240,
+        "memory_cancel_at": 15032385536,
+        "wall_cancel_seconds": 5400,
+        "observer_error": null,
+        "exit_code": 0,
+        "elapsed_seconds": 4.00144556899977,
+        "cancel_reason": null,
+        "aggregate_sampled_peak_memory": 6158557184,
+        "min_free_bytes": 26579521536,
+        "observed_volume_growth": 49152,
+        "final_memory_events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\n"
+      },
+      "owner_settlement": {
+        "tree_settled": true,
+        "proof": "kernel ECHILD (__WALL)",
+        "cancelled": false,
+        "termination_requested": false,
+        "reaped_descendants": [],
+        "owned_child_table_available": false,
+        "errors": [],
+        "pending_bound_pids": [],
+        "reason": "all owned descendants reaped",
+        "lease": "/workspace/.devplane-17479/bf4c09722087-linux-727b814873041b4a/cargo-active",
+        "lease_identity": [
+          27,
+          1573170
+        ],
+        "lease_marker": "/workspace/.devplane-17479/bf4c09722087-linux-727b814873041b4a/cargo-active/owner-0b4129b6971747569438e15836aa9d4d",
+        "lease_released": true
+      },
+      "original_owner": {
+        "pid": 36157,
+        "lease_identity": [
+          27,
+          1573170
+        ],
+        "marker_identity": [
+          27,
+          1573171
+        ]
+      },
+      "snapshot_sha256": "2db6cf7255d6062d628e92870e9363000d9a42c1018e88b57fbac5cef6c0342a",
+      "snapshot_copy_under_live_owner": false,
+      "gate_duration_ms": 1005,
+      "gate_receipt_present": true,
+      "artifact_evidence": null,
+      "evidence_manifest": {
+        "bytes": 1762,
+        "sha256": "dd1c52ab8b32e514e76e749b9e1a31f8210869f63f23a5b633d27b6b2ae9cfed"
+      },
+      "evidence_files": {
+        "admission.json": {
+          "bytes": 1795,
+          "sha256": "d336689624f49fefc95b5aa346667cd540f12602f8a69a854804683be52c9e0e"
+        },
+        "budget.json": {
+          "bytes": 1602,
+          "sha256": "16853e7258bda258f102a0a4d29e2d0ee5f752cf8691109d48122c9ced4441ac"
+        },
+        "captured-nested-snapshot.json": {
+          "bytes": 13271,
+          "sha256": "2db6cf7255d6062d628e92870e9363000d9a42c1018e88b57fbac5cef6c0342a"
+        },
+        "captured-resources.json": {
+          "bytes": 4988,
+          "sha256": "317e85ef631ce7d33fb7501d2183a971b8599c8230739d9b64d895b6b5bfc584"
+        },
+        "default-preflight.log": {
+          "bytes": 1772,
+          "sha256": "d213308fec635b45aba06a33a9e2714ec8a85cbdfd798acdc14e07ba2fdc6759"
+        },
+        "gate-receipt.json": {
+          "bytes": 17195,
+          "sha256": "e314331f2d41a68bc47413eb82a4744c4ab5c8416bb994dfae77cf06fcb18efc"
+        },
+        "gate.log": {
+          "bytes": 18472,
+          "sha256": "91bc4ff17bd257ec66eced648be4c12ef3563c70522133e499d074b534c08723"
+        },
+        "result.json": {
+          "bytes": 2106,
+          "sha256": "a2a80e850f776947b0e9a76322f347fc66ba128475c2b372d16852331d0e6a04"
+        },
+        "samples.jsonl": {
+          "bytes": 342,
+          "sha256": "9877b080b25c9a0aa0b4495f3673661f4ac2031d306379e72d2fc63b9349c9b5"
+        },
+        "scoped-preflight.log": {
+          "bytes": 3481,
+          "sha256": "091f3eb6594ef99c445995f09b8177883d28bd6c59552d0d2b2d2f9faaaa7abb"
+        },
+        "stderr.log": {
+          "bytes": 206173,
+          "sha256": "b8f9c3133b7ef3adc8e3be9cbf0d407bc3ec546e0e9dcce53efca7747daf2159"
+        },
+        "stdout.log": {
+          "bytes": 673,
+          "sha256": "fa6088d16bd7218e2e0f2e42dff08c044b344e916c0f3dd9bc8e1cab6b54e3ec"
+        }
+      }
+    },
+    "owning-2": {
+      "tested_source": "d7791bfc6150e52d6ca6c8f79807985964bb956b",
+      "executed_test_denominator": 1,
+      "named_results": [
+        {
+          "test": "tasks::check_lint_policy::tests::lock_partition::the_two_rows_jointly_cover_every_borrowed_guard_discard",
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0,
+          "filtered_out": 4791,
+          "runtime_seconds": 0.96
+        }
+      ],
+      "diagnostics": [],
+      "cached_diagnostic_replay": false,
+      "measurement": {
+        "stage": "owning",
+        "source": "d7791bfc6150e52d6ca6c8f79807985964bb956b",
+        "cwd": "/workspace/perl-lsp-17479-nested",
+        "outer_argv": [
+          "run",
+          "-p",
+          "xtask",
+          "--bin",
+          "xtask",
+          "--locked",
+          "--",
+          "gates",
+          "--tier",
+          "merge-gate",
+          "--gate",
+          "lock_union_owning",
+          "--gate-policy",
+          ".spec/17479-nested-admission/lock-union-gates.yaml",
+          "--receipt",
+          "--receipt-path",
+          "/workspace/perl-lsp-17479-nested/target/receipts/lock-union-owning.json"
+        ],
+        "scope": {
+          "hostname": "bf4c09722087",
+          "platform": "linux",
+          "working_directory": "/workspace/perl-lsp-17479-nested",
+          "worktree": "/workspace/perl-lsp-17479-nested",
+          "operation": "run",
+          "cargo_argv_sha256": "11bc42b0b9dd34c80c687d304e22ef25231525c431906876a22464af9a78cf07",
+          "resources": {
+            "target": "/workspace/.devplane-17479/bf4c09722087-linux-727b814873041b4a/worktrees/ca8a330a66f6d236fa1e8d7f63aed3c09474f0bcc618a13452eb2d5faca8978e/target",
+            "build": "/workspace/.devplane-17479/bf4c09722087-linux-727b814873041b4a/worktrees/ca8a330a66f6d236fa1e8d7f63aed3c09474f0bcc618a13452eb2d5faca8978e/build",
+            "cargo_home": "/workspace/.cloud-tools/cargo",
+            "temp": "/workspace/perl-lsp-17479-nested/target/receipts"
+          },
+          "jobs": 1,
+          "build_environment_sha256": "715891adfc627d31e0ee3f9daa3550a1cfdde6b6aaeaefbecda936f92f7d6530",
+          "nested_plan_sha256": "3559a7b9c3c0e2fb6514beae15836b31f71e38152687d5795ee672d68f9627bd"
+        },
+        "no_competing_compilers": true,
+        "initial_free": 26579517440,
+        "initial_memory_events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\n",
+        "growth_estimated_not_verified": true,
+        "disk_cancel_below": 10737418240,
+        "memory_cancel_at": 15032385536,
+        "wall_cancel_seconds": 5400,
+        "observer_error": null,
+        "exit_code": 0,
+        "elapsed_seconds": 838.2529659510001,
+        "cancel_reason": null,
+        "aggregate_sampled_peak_memory": 10931298304,
+        "min_free_bytes": 26197516288,
+        "observed_volume_growth": 382001152,
+        "final_memory_events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\n"
+      },
+      "owner_settlement": {
+        "tree_settled": true,
+        "proof": "kernel ECHILD (__WALL)",
+        "cancelled": false,
+        "termination_requested": false,
+        "reaped_descendants": [],
+        "owned_child_table_available": false,
+        "errors": [],
+        "pending_bound_pids": [],
+        "reason": "all owned descendants reaped",
+        "lease": "/workspace/.devplane-17479/bf4c09722087-linux-727b814873041b4a/cargo-active",
+        "lease_identity": [
+          27,
+          1458264
+        ],
+        "lease_marker": "/workspace/.devplane-17479/bf4c09722087-linux-727b814873041b4a/cargo-active/owner-2ee8d39f3a8a48bcabaced000bf98391",
+        "lease_released": true
+      },
+      "original_owner": {
+        "pid": 36421,
+        "lease_identity": [
+          27,
+          1458264
+        ],
+        "marker_identity": [
+          27,
+          1458563
+        ]
+      },
+      "snapshot_sha256": "53537c73d8196763137969d0269089e5ac9edfc08e3533cb1b006450a85c4ccf",
+      "snapshot_copy_under_live_owner": true,
+      "gate_duration_ms": 835915,
+      "gate_receipt_present": true,
+      "artifact_evidence": {
+        "schema_version": 1,
+        "tested_source": "d7791bfc6150e52d6ca6c8f79807985964bb956b",
+        "toolchain_pin": "1.95.0",
+        "artifact": {
+          "path": "/workspace/.devplane-17479/bf4c09722087-linux-727b814873041b4a/worktrees/ca8a330a66f6d236fa1e8d7f63aed3c09474f0bcc618a13452eb2d5faca8978e/build/debug/deps/xtask-50f6fb483a63b005",
+          "file_identity": [
+            27,
+            1458749,
+            378816488,
+            1791636884400899798,
+            1791636884432898333
+          ],
+          "sha256": "cba366bdbb19caa89b61af943dbbcb15adf8b34974a0500f3030d924d90ab2de"
+        },
+        "copy": {
+          "path": "/workspace/perl-lsp-17479-nested/target/receipts/lock-union-owning-36526",
+          "file_identity": [
+            27,
+            1458751,
+            378816488,
+            1791636886816789222,
+            1791636887396755951
+          ],
+          "sha256": "cba366bdbb19caa89b61af943dbbcb15adf8b34974a0500f3030d924d90ab2de"
+        },
+        "cargo_artifact": {
+          "reason": "compiler-artifact",
+          "package_id": "path+file:///workspace/perl-lsp-17479-nested/xtask#0.17.0",
+          "manifest_path": "/workspace/perl-lsp-17479-nested/xtask/Cargo.toml",
+          "target": {
+            "kind": [
+              "bin"
+            ],
+            "crate_types": [
+              "bin"
+            ],
+            "name": "xtask",
+            "src_path": "/workspace/perl-lsp-17479-nested/xtask/src/main.rs",
+            "edition": "2024",
+            "doc": true,
+            "doctest": false,
+            "test": true
+          },
+          "profile": {
+            "opt_level": "1",
+            "debuginfo": "line-tables-only",
+            "debug_assertions": true,
+            "overflow_checks": true,
+            "test": true
+          },
+          "features": [],
+          "filenames": [
+            "/workspace/.devplane-17479/bf4c09722087-linux-727b814873041b4a/worktrees/ca8a330a66f6d236fa1e8d7f63aed3c09474f0bcc618a13452eb2d5faca8978e/build/debug/deps/xtask-50f6fb483a63b005"
+          ],
+          "executable": "/workspace/.devplane-17479/bf4c09722087-linux-727b814873041b4a/worktrees/ca8a330a66f6d236fa1e8d7f63aed3c09474f0bcc618a13452eb2d5faca8978e/build/debug/deps/xtask-50f6fb483a63b005",
+          "fresh": false
+        },
+        "snapshot": {
+          "path": "/workspace/.devplane-17479/bf4c09722087-linux-727b814873041b4a/nested-plan-owner-2ee8d39f3a8a48bcabaced000bf98391.json",
+          "file_identity": [
+            27,
+            1458610,
+            13375,
+            1791636051475573446,
+            1791636051475573446
+          ],
+          "sha256": "53537c73d8196763137969d0269089e5ac9edfc08e3533cb1b006450a85c4ccf"
+        },
+        "owner_process": {
+          "pid": 36421,
+          "parent": 36346,
+          "start": "2918865"
+        },
+        "lease": "/workspace/.devplane-17479/bf4c09722087-linux-727b814873041b4a/cargo-active",
+        "lease_identity": [
+          27,
+          1458264
+        ],
+        "lease_marker": "/workspace/.devplane-17479/bf4c09722087-linux-727b814873041b4a/cargo-active/owner-2ee8d39f3a8a48bcabaced000bf98391",
+        "marker_identity": [
+          27,
+          1458563
+        ],
+        "copied_under_original_live_owner": true,
+        "named_test": "tasks::check_lint_policy::tests::lock_partition::the_two_rows_jointly_cover_every_borrowed_guard_discard"
+      },
+      "evidence_manifest": {
+        "bytes": 2063,
+        "sha256": "bfaa9f519e05e2972bbfd25aab00fa7013e9fe61e52c6adfd5909b25294de9d9"
+      },
+      "evidence_files": {
+        "admission.json": {
+          "bytes": 1795,
+          "sha256": "6ab9c6583372cfbb06999e38e22a5952ee17afc17bc646ad9c4450471e0ccbc0"
+        },
+        "budget.json": {
+          "bytes": 1688,
+          "sha256": "d21c157ed6a6b8c3d437d99564b86f3f1d6540babc50cc56a811281a511bddd0"
+        },
+        "captured-nested-snapshot.json": {
+          "bytes": 13375,
+          "sha256": "53537c73d8196763137969d0269089e5ac9edfc08e3533cb1b006450a85c4ccf"
+        },
+        "captured-resources.json": {
+          "bytes": 5069,
+          "sha256": "b9695636d1df47021d1be8bdd5d040ac4e42fbfe5cc1fde2b51fb16c06801e76"
+        },
+        "default-preflight.log": {
+          "bytes": 1772,
+          "sha256": "ccb47438d4c4f40184ef293aa7fe5c7932aa62d41e0a6158366cba84daf75be2"
+        },
+        "gate-receipt.json": {
+          "bytes": 2899,
+          "sha256": "e19edfe85ce6eeeb55d312a7398d3820b088d05cbe0fd30ea62372a7ed34011f"
+        },
+        "gate.log": {
+          "bytes": 1682758,
+          "sha256": "462242a5fa8e3e3976f7308b9cd4017a2d9cdb41ffc64bcfbdc730028419d12f"
+        },
+        "owning-artifact-evidence.json": {
+          "bytes": 2506,
+          "sha256": "94a89dd31f320382f9230f3e4fb75f56db941479c280f618bad80b7bb18020f7"
+        },
+        "result.json": {
+          "bytes": 2112,
+          "sha256": "1d9af25161703831350fd833377efc42fdf85e68c42cc42ca2d94e04a2ad43f5"
+        },
+        "samples.jsonl": {
+          "bytes": 48788,
+          "sha256": "18146c4f1d0f02f788bfe28bd3b54804b164081056a5fde8104ff009d47c47a7"
+        },
+        "scoped-preflight.log": {
+          "bytes": 3562,
+          "sha256": "2e1e9b93e6d15c30a4d7dfa9f2612e73900a9a1f234585ebd532d0686e89c378"
+        },
+        "snapshot-copy-evidence.json": {
+          "bytes": 268,
+          "sha256": "571f74de8a41de19d3cc1c1ed0a2af456f32beede91a5f917a4fecbf1bd08f27"
+        },
+        "stderr.log": {
+          "bytes": 206254,
+          "sha256": "31845ab60344b6873f917d2a281ad7e2165a4742a756b1c89182c5b27fb966da"
+        },
+        "stdout.log": {
+          "bytes": 2458,
+          "sha256": "c5f00e1e048a190ce8507a76b4d076c6a27682d48e38a02c9ed6de9bb126c197"
+        }
+      }
+    },
+    "control-2": {
+      "tested_source": "d7791bfc6150e52d6ca6c8f79807985964bb956b",
+      "executed_test_denominator": 0,
+      "named_results": [],
+      "diagnostics": [],
+      "cached_diagnostic_replay": false,
+      "measurement": {
+        "stage": "control",
+        "source": "d7791bfc6150e52d6ca6c8f79807985964bb956b",
+        "cwd": "/workspace/perl-lsp-17479-nested",
+        "outer_argv": [
+          "run",
+          "-p",
+          "xtask",
+          "--bin",
+          "xtask",
+          "--locked",
+          "--",
+          "gates",
+          "--tier",
+          "merge-gate",
+          "--gate",
+          "lock_union_control",
+          "--gate-policy",
+          ".spec/17479-nested-admission/lock-union-gates.yaml",
+          "--receipt",
+          "--receipt-path",
+          "/workspace/perl-lsp-17479-nested/target/receipts/lock-union-control.json"
+        ],
+        "scope": {
+          "hostname": "bf4c09722087",
+          "platform": "linux",
+          "working_directory": "/workspace/perl-lsp-17479-nested",
+          "worktree": "/workspace/perl-lsp-17479-nested",
+          "operation": "run",
+          "cargo_argv_sha256": "d0200657d2b88142ba671aee5ec3d36520259c14c9f0b9f3933ca478fdd49a9c",
+          "resources": {
+            "target": "/workspace/.devplane-17479/bf4c09722087-linux-727b814873041b4a/worktrees/ca8a330a66f6d236fa1e8d7f63aed3c09474f0bcc618a13452eb2d5faca8978e/target",
+            "build": "/workspace/.devplane-17479/bf4c09722087-linux-727b814873041b4a/worktrees/ca8a330a66f6d236fa1e8d7f63aed3c09474f0bcc618a13452eb2d5faca8978e/build",
+            "cargo_home": "/workspace/.cloud-tools/cargo",
+            "temp": "/workspace/perl-lsp-17479-nested/target/receipts"
+          },
+          "jobs": 1,
+          "build_environment_sha256": "715891adfc627d31e0ee3f9daa3550a1cfdde6b6aaeaefbecda936f92f7d6530",
+          "nested_plan_sha256": "c20a104ac88bf8dda1143415e4a8bc6fece3bf08f7c8b74401093ba1629ac2d6"
+        },
+        "no_competing_compilers": true,
+        "initial_free": 26197516288,
+        "initial_memory_events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\n",
+        "growth_estimated_not_verified": true,
+        "disk_cancel_below": 10737418240,
+        "memory_cancel_at": 15032385536,
+        "wall_cancel_seconds": 5400,
+        "observer_error": null,
+        "exit_code": 130,
+        "elapsed_seconds": 6.007085123001161,
+        "cancel_reason": "unexpected compiler work on verified warm control: [37585]",
+        "aggregate_sampled_peak_memory": 6718849024,
+        "min_free_bytes": 26197516288,
+        "observed_volume_growth": 0,
+        "final_memory_events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\n"
+      },
+      "owner_settlement": {
+        "tree_settled": true,
+        "proof": "kernel ECHILD (__WALL)",
+        "cancelled": true,
+        "termination_requested": true,
+        "reaped_descendants": [
+          {
+            "pid": 37465,
+            "exit_code": -15
+          },
+          {
+            "pid": 37585,
+            "exit_code": -15
+          }
+        ],
+        "owned_child_table_available": false,
+        "errors": [],
+        "pending_bound_pids": [],
+        "reason": "all owned descendants reaped",
+        "lease": "/workspace/.devplane-17479/bf4c09722087-linux-727b814873041b4a/cargo-active",
+        "lease_identity": [
+          27,
+          1458264
+        ],
+        "lease_marker": "/workspace/.devplane-17479/bf4c09722087-linux-727b814873041b4a/cargo-active/owner-15106f7032004624a942beb066ba87e2",
+        "lease_released": true
+      },
+      "original_owner": {
+        "pid": 37413,
+        "lease_identity": [
+          27,
+          1458264
+        ],
+        "marker_identity": [
+          27,
+          1458445
+        ]
+      },
+      "snapshot_sha256": "4702c345c06f2f541b754df47fe785ac65a6bcb741a5eed4e2d7f188c6be52d0",
+      "snapshot_copy_under_live_owner": false,
+      "gate_duration_ms": null,
+      "gate_receipt_present": false,
+      "artifact_evidence": null,
+      "evidence_manifest": {
+        "bytes": 1629,
+        "sha256": "30846ca81bb0a0a2366af2de5b5050ab344303770e1566d1ffd4be1732abdf93"
+      },
+      "evidence_files": {
+        "admission.json": {
+          "bytes": 1798,
+          "sha256": "0a5820eb432497de697ee10eaba6c2fa7473fca8e7e3a3002cb7ce441f356c6c"
+        },
+        "budget.json": {
+          "bytes": 1921,
+          "sha256": "5287912dd4bfe7cc708b24c73c3bbcceaa7183cbc584fd30d81407964cee5f1b"
+        },
+        "captured-nested-snapshot.json": {
+          "bytes": 13625,
+          "sha256": "4702c345c06f2f541b754df47fe785ac65a6bcb741a5eed4e2d7f188c6be52d0"
+        },
+        "captured-resources.json": {
+          "bytes": 5307,
+          "sha256": "69dc05df5ffee887a7fb41c577dfa952d1a1ab3cc2bd3ab1d5e80c48b63b8f06"
+        },
+        "default-preflight.log": {
+          "bytes": 1772,
+          "sha256": "2ad1c8208e8fc1bb759bf1669a983f332464d429e132ad56bf4e8a0577d273e1"
+        },
+        "observer-source.py": {
+          "bytes": 6908,
+          "sha256": "c8df1a748d63400c47b4a71dd169b739f9f1259a6a6d5270a5f93669ad3ba996"
+        },
+        "result.json": {
+          "bytes": 2164,
+          "sha256": "ae998950cac068f3516429c2c3125c86937de349f296c98d56d4242eb941fcad"
+        },
+        "samples.jsonl": {
+          "bytes": 456,
+          "sha256": "4b293d0dcfc6a890a6d5af79684408b7cc3829fa05c0ca8d5f0e65d059b7cb10"
+        },
+        "scoped-preflight.log": {
+          "bytes": 3800,
+          "sha256": "97b8795d967c4e0dcd2d30b5a09df17df86a1a7c3b6b776818baee1610a5d0be"
+        },
+        "stderr.log": {
+          "bytes": 5905,
+          "sha256": "b763d3945683d582fbe2df804416bf46eb3eb4eaa3195ea0a957ceccd606d1ea"
+        },
+        "stdout.log": {
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      }
+    }
+  },
+  "cheap_proof": {
+    "final_source": "d7791bfc6150e52d6ca6c8f79807985964bb956b",
+    "owner_suite": {
+      "run": 170,
+      "passed": 169,
+      "skipped": 1,
+      "skip": "opt-in product-build"
+    },
+    "lock_controls": 14,
+    "prior_fixture_controls": 17,
+    "nested_controls": 35,
+    "initial_catalog_red_assertion_failures": 2,
+    "preparation_control_catalog_red_assertion_failures": 1,
+    "native_serialization_red_assertion_failures": 1,
+    "instrumentation_errors_in_red_and_mutants": 0,
+    "semantic_mutants": [
+      {
+        "mutant": "accept-instrument-failure",
+        "rejected_by_assertion": true,
+        "exit_code": 1,
+        "instrumentation_errors": 0
+      },
+      {
+        "mutant": "omit-positive-liveness",
+        "rejected_by_assertion": true,
+        "exit_code": 1,
+        "instrumentation_errors": 0
+      },
+      {
+        "mutant": "discard-actual-lint-ownership",
+        "rejected_by_assertion": true,
+        "exit_code": 1,
+        "instrumentation_errors": 0
+      },
+      {
+        "mutant": "ignore-held-site-warning",
+        "rejected_by_assertion": true,
+        "exit_code": 1,
+        "instrumentation_errors": 0
+      },
+      {
+        "mutant": "omit-successful-terminal",
+        "rejected_by_assertion": true,
+        "exit_code": 1,
+        "instrumentation_errors": 0
+      },
+      {
+        "mutant": "drop-lock-input-revalidation",
+        "rejected_by_assertion": true,
+        "exit_code": 1,
+        "instrumentation_errors": 0
+      }
+    ],
+    "mutant_source": "41d454379937298dd22e748ab886ac0a9d3bc7df",
+    "canonical_repair_changes_only_template_and_regression": true
+  },
+  "supporting_files": {
+    "lock-format-red.log": {
+      "bytes": 3783,
+      "sha256": "fd6a26988085a6d424d73850450c50efe73642c4f4205016aa490e28f0b099a3"
+    },
+    "lock-format-green.log": {
+      "bytes": 51340,
+      "sha256": "c71cc6a0f4c23cece42e422a978da9570fdaad5d9b400947b57ce5451be0cc4d"
+    },
+    "lock-format-repair-evidence.json": {
+      "bytes": 301,
+      "sha256": "c4ace5320a01df93e89bfaecdcc94b6633a405bdbe209456c75be379b35c7bd0"
+    },
+    "lock-mutants/results.json": {
+      "bytes": 839,
+      "sha256": "d60b4ee47fef8bd7449a7da01684d4c9d30a5bd3aafdce1d4f0ab2a3117a5e74"
+    },
+    "lock-source-push-audit.json": {
+      "bytes": 54131,
+      "sha256": "9ec8042d9f33c25a84ac06fddf32f9bee473aaf7fb3086e5c67c35a42ef14e9d"
+    },
+    "lock-repair-push-audit.json": {
+      "bytes": 402,
+      "sha256": "1aa4a8b7645babd6f197a198e9a698e2b779dbf17f7550742f0b07bb530f6e6c"
+    }
+  },
+  "limitations": [
+    "Direct2 cached Cargo diagnostic replay; no new compiler work or executed tests",
+    "One exact owning union test; 4791 filtered tests not executed",
+    "Control2 cancelled unexpected bootstrap compile before gate; zero tests and no gate receipt",
+    "Direct2/control2 snapshot copies made after settlement; own2 live snapshot and harness capture verified",
+    "Sampled aggregate memory/volume not upper bounds or cold sizing",
+    "Five other lock measurements and remaining native obligations excluded",
+    "No full workspace/Windows/macOS/hosted activation/current-main composition claim"
+  ],
+  "fresh_main_at_evidence_publication": {
+    "sha": "20074ba2b70e8b96252b52b827bd7df464639326",
+    "change_since_experiment_main": [
+      "ci/panic_test_identities.json"
+    ],
+    "restacked": false,
+    "composition_qualified": false
+  }
+}

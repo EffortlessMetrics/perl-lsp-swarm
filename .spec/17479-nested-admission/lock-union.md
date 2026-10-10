@@ -55,8 +55,10 @@ NOT_PROVEN. A later warm control estimate is allowed only after current native
 artifact/inputs/profile/tool identity establish reuse; it is not based on the
 earlier 6.4 GiB bootstrap observation.
 
-Actual native direct/owning/control qualification remains NOT_PROVEN until
-executed. Keep each stage's diagnostic/test denominator and original-owner
+Actual native direct and owning qualification on `d7791bfc` are recorded in
+[lock-union-results.md](lock-union-results.md). The optional control was cancelled
+when bootstrap compilation invalidated its warm-reuse premise and remains
+NOT_PROVEN. Keep each stage's diagnostic/test denominator and original-owner
 closure separate. Earlier b2 resolver and 4c/a33 fixture proofs and failed
 attempts are retained unchanged. Full canonical preparation/runtime, other five
 measurements, Windows/macOS, cold sizing and hosted activation are excluded.
