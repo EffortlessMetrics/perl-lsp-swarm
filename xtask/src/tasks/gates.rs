@@ -39,6 +39,8 @@ use crate::utils::project_root;
 
 pub mod disposition;
 mod first_failure;
+#[cfg(any(windows, test))]
+mod native_command;
 mod planning_types;
 pub mod route_profile;
 mod routed_preparation;
@@ -2778,50 +2780,69 @@ pub(crate) fn run_shell_command_with_timeout_in(
         .with_context(|| format!("Failed to clone log file handle: {}", log_path.display()))
         .map_err(|report| GateShellError { report, child_started })?;
 
-    let mut process = shell_command_process(command, timeout_secs);
-    if let Some(dir) = current_dir {
-        process.current_dir(dir);
-    }
-    let mut child = process
-        .stdout(Stdio::from(log_file))
-        .stderr(Stdio::from(log_file_err))
-        .spawn()
-        .with_context(|| format!("Failed to spawn gate command: {command}"))
-        .map_err(|report| GateShellError { report, child_started })?;
-
-    // From here on the child exists: any failure is post-start.
-    let child_started = true;
+    let cwd = current_dir
+        .map(Path::to_path_buf)
+        .map_or_else(std::env::current_dir, Ok)
+        .map_err(|report| GateShellError { report: report.into(), child_started })?;
+    // POSIX keeps its supported Bash grammar. Windows refuses unsupported
+    // shell syntax instead of interpreting POSIX policy strings through cmd.
+    #[cfg(windows)]
+    let processes = native_command::processes(command, &cwd)
+        .map_err(|report| GateShellError { report: eyre!(report), child_started })?;
+    #[cfg(not(windows))]
+    let processes = vec![shell_command_process(command, timeout_secs)];
     let start = Instant::now();
     let mut last_heartbeat = start;
     let timeout = shell_command_watchdog_timeout(timeout_secs);
-
-    // Poll until the process exits or the deadline elapses.
-    // Capture exit_code inside the loop so the timed-out branch never calls
-    // wait() a second time (which would be a double-wait and returns an error
-    // on Windows). Synthetic exit code 124 follows the GNU timeout(1) convention.
-    let (watchdog_timed_out, exit_code) = loop {
-        if let Some(status) = child
-            .try_wait()
-            .context("Failed waiting on gate process")
-            .map_err(|report| GateShellError { report, child_started })?
-        {
-            break (false, status.code().unwrap_or(-1));
-        }
+    let mut child_started = false;
+    let mut terminal = (false, 0);
+    for (index, mut process) in processes.into_iter().enumerate() {
         if start.elapsed() >= timeout {
-            terminate_shell_command(&mut child);
-            child.wait().ok();
-            break (true, 124_i32);
+            terminal = (true, 124);
+            break;
         }
-        if last_heartbeat.elapsed() >= Duration::from_secs(30) {
-            println!(
-                "gate command still running elapsed_ms={} timeout_seconds={}",
-                start.elapsed().as_millis(),
-                timeout_secs
-            );
-            last_heartbeat = Instant::now();
+        process.current_dir(&cwd);
+        let stdout = log_file
+            .try_clone()
+            .map_err(|report| GateShellError { report: report.into(), child_started })?;
+        let stderr = log_file_err
+            .try_clone()
+            .map_err(|report| GateShellError { report: report.into(), child_started })?;
+        let mut child = process
+            .stdout(Stdio::from(stdout))
+            .stderr(Stdio::from(stderr))
+            .spawn()
+            .with_context(|| format!("Failed to spawn gate command step {}: {command}", index + 1))
+            .map_err(|report| GateShellError { report, child_started })?;
+        child_started = true;
+        terminal = loop {
+            if let Some(status) = child
+                .try_wait()
+                .context("Failed waiting on gate process")
+                .map_err(|report| GateShellError { report, child_started })?
+            {
+                break (false, status.code().unwrap_or(-1));
+            }
+            if start.elapsed() >= timeout {
+                terminate_shell_command(&mut child);
+                child.wait().ok();
+                break (true, 124);
+            }
+            if last_heartbeat.elapsed() >= Duration::from_secs(30) {
+                println!(
+                    "gate command still running elapsed_ms={} timeout_seconds={}",
+                    start.elapsed().as_millis(),
+                    timeout_secs
+                );
+                last_heartbeat = Instant::now();
+            }
+            thread::sleep(Duration::from_millis(100));
+        };
+        if terminal.0 || terminal.1 != 0 {
+            break;
         }
-        thread::sleep(Duration::from_millis(100));
-    };
+    }
+    let (watchdog_timed_out, exit_code) = terminal;
 
     let timed_out = watchdog_timed_out || exit_code == 124;
     println!(
@@ -2882,13 +2903,6 @@ fn read_gate_output(log_path: &Path) -> String {
     )
 }
 
-#[cfg(windows)]
-fn shell_command_process(command: &str, _timeout_secs: u64) -> Command {
-    let mut cmd = Command::new("cmd");
-    cmd.args(["/C", command]);
-    cmd
-}
-
 #[cfg(not(windows))]
 fn shell_command_process(command: &str, timeout_secs: u64) -> Command {
     use std::os::unix::process::CommandExt;
@@ -2910,7 +2924,7 @@ fn shell_command_process(command: &str, timeout_secs: u64) -> Command {
 
 #[cfg(windows)]
 fn terminate_shell_command(child: &mut Child) {
-    // Kill the whole tree: the gate command runs under `cmd /C`, whose
+    // Kill the whole tree: the native gate command may spawn children whose
     // cargo/rustc grandchildren survive a plain kill() of the shell and keep
     // holding target/ locks a retry attempt would then contend with
     // (#11825 review). taskkill /T walks the descendants; /F forces.
@@ -5503,6 +5517,147 @@ gates:
         assert_eq!(
             selected_gate_names(&plan),
             vec!["fmt", "clippy_full", "nightly_corpus", "release_build"]
+        );
+        Ok(())
+    }
+
+    // Native launcher regressions (#17482). The child is this real libtest
+    // executable; fixture configuration is only in Command's child environment.
+    #[test]
+    #[ignore = "subprocess fixture, selected explicitly by native launcher tests"]
+    fn native_child_fixture() -> color_eyre::eyre::Result<()> {
+        if let Some(record) = std::env::var_os("NATIVE_GATE_RECORD") {
+            fs::write(
+                record,
+                format!(
+                    "{:?}\n{:?}",
+                    std::env::var_os("NATIVE_GATE_VALUE"),
+                    std::env::args().collect::<Vec<_>>()
+                ),
+            )?;
+        }
+        if std::env::var_os("NATIVE_GATE_DELAY").is_some() {
+            let mut child = Command::new("ping").args(["-n", "6", "127.0.0.1"]).spawn()?;
+            if let Some(record) = std::env::var_os("NATIVE_GATE_RECORD") {
+                fs::write(PathBuf::from(record).with_extension("pid"), child.id().to_string())?;
+            }
+            std::thread::sleep(std::time::Duration::from_secs(4));
+            child.wait()?;
+        }
+        if std::env::var_os("NATIVE_GATE_FAIL").is_some() {
+            return Err(color_eyre::eyre::eyre!("requested fixture failure"));
+        }
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    fn native_fixture_command(dir: &Path) -> color_eyre::eyre::Result<(String, PathBuf)> {
+        let executable = dir.join("native child & percent% bang!.exe");
+        fs::copy(std::env::current_exe()?, &executable)?;
+        let record = dir.join("child record.txt");
+        let executable = shlex::try_quote(
+            executable.to_str().ok_or_else(|| color_eyre::eyre::eyre!("fixture path UTF-8"))?,
+        )?;
+        let assignment = format!("NATIVE_GATE_RECORD={}", record.display());
+        let record_arg = shlex::try_quote(&assignment)?;
+        let module = module_path!().split_once("::").map_or(module_path!(), |(_, path)| path);
+        let test_name = format!("{module}::native_child_fixture");
+        Ok((
+            format!(
+                "env {record_arg} NATIVE_GATE_VALUE='literal & % ! $HOME' {executable} --exact {test_name} --ignored --nocapture --skip 'literal && argument'"
+            ),
+            record,
+        ))
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn native_launcher_preserves_spaces_argv_and_child_environment() -> color_eyre::eyre::Result<()>
+    {
+        let tmp = tempdir()?;
+        let (command, record) = native_fixture_command(tmp.path())?;
+        let log = tmp.path().join("pass.log");
+        // A stale pass-like log must be truncated by this invocation.
+        fs::write(&log, "stale report: test result: ok. 99 passed")?;
+        let result =
+            super::run_shell_command_with_timeout_in(&command, &log, 30, Some(tmp.path()))?;
+        assert_eq!(result.exit_code, 0);
+        let report = fs::read_to_string(record)?;
+        assert!(report.contains("literal & % ! $HOME"), "{report}");
+        assert!(report.contains("literal && argument"), "{report}");
+        assert!(result.stdout.contains("1 passed"), "{}", result.stdout);
+        assert!(!result.stdout.contains("stale report"));
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn native_launcher_prerequisite_failure_prevents_runtime() -> color_eyre::eyre::Result<()> {
+        let tmp = tempdir()?;
+        let (command, record) = native_fixture_command(tmp.path())?;
+        let command = format!("exit 42 && {command}");
+        let result = run_shell_command_with_timeout(&command, &tmp.path().join("failure.log"), 30)?;
+        assert_eq!(result.exit_code, 42);
+        assert!(!record.exists());
+        assert!(!result.stdout.contains("test result:"));
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn native_launcher_final_test_failure_and_later_spawn_error_are_preserved()
+    -> color_eyre::eyre::Result<()> {
+        let tmp = tempdir()?;
+        let (command, record) = native_fixture_command(tmp.path())?;
+        let failing = command.replacen("env ", "env NATIVE_GATE_FAIL=1 ", 1);
+        let result = run_shell_command_with_timeout(
+            &format!("exit 0 && {failing}"),
+            &tmp.path().join("test-fail.log"),
+            30,
+        )?;
+        assert_ne!(result.exit_code, 0);
+        assert!(result.stdout.contains("1 failed"));
+        assert!(record.exists());
+        let error = super::run_shell_command_with_timeout_in(
+            &format!("{command} && __native_gate_missing_17482__"),
+            &tmp.path().join("spawn-fail.log"),
+            30,
+            Some(tmp.path()),
+        );
+        let Err(error) = error else {
+            return Err(color_eyre::eyre::eyre!("missing child launched"));
+        };
+        assert!(error.child_started);
+        assert!(fs::read_to_string(tmp.path().join("spawn-fail.log"))?.contains("1 passed"));
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn native_launcher_chain_deadline_settles_descendants() -> color_eyre::eyre::Result<()> {
+        let tmp = tempdir()?;
+        let (command, record) = native_fixture_command(tmp.path())?;
+        let delay = command.replacen("env ", "env NATIVE_GATE_DELAY=1 ", 1);
+        let start = std::time::Instant::now();
+        let result = run_shell_command_with_timeout(
+            &format!("ping -n 2 127.0.0.1 && {delay}"),
+            &tmp.path().join("timeout.log"),
+            2,
+        )?;
+        assert!(result.timed_out);
+        assert_eq!(result.exit_code, 124);
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(4),
+            "timeout reset for a later step"
+        );
+        let pid = fs::read_to_string(record.with_extension("pid"))?;
+        let listing = Command::new("tasklist")
+            .args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV"])
+            .output()?;
+        assert!(listing.status.success());
+        assert!(
+            !String::from_utf8_lossy(&listing.stdout).contains("ping.exe"),
+            "descendant {pid} survived"
         );
         Ok(())
     }
