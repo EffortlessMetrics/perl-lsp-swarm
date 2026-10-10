@@ -1,0 +1,297 @@
+{
+  "schema_version": "gates.v1",
+  "metadata": {
+    "timestamp": "2026-10-10T16:07:43Z",
+    "git_sha": "1f973039d812fe080abddc44e461112d7b95a6fa",
+    "git_sha_short": "1f97303",
+    "git_branch": "frozen-selection-proof",
+    "git_dirty": true,
+    "toolchain": {
+      "rustc_version": "rustc 1.95.0 (59807616e 2026-04-14)",
+      "rustc_semver": "1.95.0",
+      "cargo_version": "cargo 1.95.0 (f2d3ce0bd 2026-03-21)"
+    },
+    "platform": {
+      "os": "linux",
+      "os_version": "6.18.44",
+      "arch": "x86_64",
+      "cpu_cores": 4,
+      "memory_gb": 17.58588409423828,
+      "is_wsl": false
+    },
+    "environment": {
+      "type": "local",
+      "nix_shell": false
+    },
+    "trigger": "manual"
+  },
+  "gates": [
+    {
+      "gate_name": "staged_tree_identity",
+      "tier": "commit",
+      "status": "pass",
+      "required": true,
+      "duration_ms": 6,
+      "command": "cargo xtask commit-check staged_tree_identity",
+      "output_summary": "ADVISORY: staged tree 061e3348168287a758ab0d926eb336846e43b077 — 43 file(s) staged relative to HEAD\nwhy: wiring proof for the commit-tier substrate (issue #3786-A): confirms --staged resolves the exact git write-tree identity and threads it through the receipt, independent of any real hygiene check\naffected: .ci/risk-tags.yaml, .ci/scope.d/parser-ratchet.toml, .github/workflows/ci-gate-self-tests.yml, .github/workflows/ci.yml, Cargo.lock, crates/perl-ci-hygiene/Cargo.toml, crates/perl-ci-hygiene/src/change_set.rs, crates/perl-ci-hygiene/src/ci_scope.rs, crates/perl-ci-hygiene/src/ci_subject.rs, crates/perl-ci-hygiene/src/cli.rs, crates/perl-ci-hygiene/src/git_hooks.rs, crates/perl-ci-hygiene/src/lib.rs, crates/perl-ci-hygiene/src/main.rs, crates/perl-ci-hygiene/src/package_resolver.rs, crates/perl-ci-hygiene/src/staged.rs, crates/perl-ci-hygiene/tests/change_set_cli.rs, crates/perl-ci-hygiene/tests/package_resolver_cli.rs, docs/ci/parser-ratchet-scope.md, docs/contributing/FIRST_PR.md, hooks/pre-push, justfile, scripts/README.md, scripts/check-githooks.sh, scripts/ci/bootstrap-selection.sh, scripts/ci/check_selection_graph.py, scripts/ci/test_selection_bootstrap.py, scripts/ci/test_selection_cli.py, scripts/ci/test_selection_owner.py, scripts/githooks-bootstrap.sh, scripts/install-githooks.sh, scripts/tests/test-install-githooks-wrapper.sh, scripts/tests/test-pre-push-launchers.py, scripts/worktree-manager.py, xtask/src/bin/workspace_doctor_inventory/sources.rs, xtask/src/tasks/change_set.rs, xtask/src/tasks/ci_hygiene.rs, xtask/src/tasks/ci_scope.rs, xtask/src/tasks/ci_subject.rs, xtask/src/tasks/devex_doctor.rs, xtask/src/tasks/mod.rs, xtask/src/tasks/targeted_checks.rs, xtask/tests/fixtures/ci-scope/parser-ratchet/shared-ci-scope-change.json, xtask/tests/workspace_doctor_inventory/support.rs\nrerun: cargo xtask gates --tier commit --staged --gate staged_tree_identity\nwhat remains: none — the nine structural checks (issue #3786-B) run alongside this one, not instead of it\n\nCOMMIT_CHECK_REPORT_JSON:{\"check\":\"staged_tree_identity\",\"posture\":\"ADVISORY\",\"result\":\"staged tree 061e3348168287a758ab0d926eb336846e43b077 — 43 file(s) staged relative to HEAD\",\"why\":\"wiring proof for the commit-tier substrate (issue #3786-A): confirms --staged resolves the exact git write-tree identity and threads it through the receipt, independent of any real hygiene check\",\"affected\":[\".ci/risk-tags.yaml\",\".ci/scope.d/parser-ratchet.toml\",\".github/workflows/ci-gate-self-tests.yml\",\".github/workflows/ci.yml\",\"Cargo.lock\",\"crates/perl-ci-hygiene/Cargo.toml\",\"crates/perl-ci-hygiene/src/change_set.rs\",\"crates/perl-ci-hygiene/src/ci_scope.rs\",\"crates/perl-ci-hygiene/src/ci_subject.rs\",\"crates/perl-ci-hygiene/src/cli.rs\",\"crates/perl-ci-hygiene/src/git_hooks.rs\",\"crates/perl-ci-hygiene/src/lib.rs\",\"crates/perl-ci-hygiene/src/main.rs\",\"crates/perl-ci-hygiene/src/package_resolver.rs\",\"crates/perl-ci-hygiene/src/staged.rs\",\"crates/perl-ci-hygiene/tests/change_set_cli.rs\",\"crates/perl-ci-hygiene/tests/package_resolver_cli.rs\",\"docs/ci/parser-ratchet-scope.md\",\"docs/contributing/FIRST_PR.md\",\"hooks/pre-push\",\"justfile\",\"scripts/README.md\",\"scripts/check-githooks.sh\",\"scripts/ci/bootstrap-selection.sh\",\"scripts/ci/check_selection_graph.py\",\"scripts/ci/test_selection_bootstrap.py\",\"scripts/ci/test_selection_cli.py\",\"scripts/ci/test_selection_owner.py\",\"scripts/githooks-bootstrap.sh\",\"scripts/install-githooks.sh\",\"scripts/tests/test-install-githooks-wrapper.sh\",\"scripts/tests/test-pre-push-launchers.py\",\"scripts/worktree-manager.py\",\"xtask/src/bin/workspace_doctor_inventory/sources.rs\",\"xtask/src/tasks/change_set.rs\",\"xtask/src/tasks/ci_hygiene.rs\",\"xtask/src/tasks/ci_scope.rs\",\"xtask/src/tasks/ci_subject.rs\",\"xtask/src/tasks/devex_doctor.rs\",\"xtask/src/tasks/mod.rs\",\"xtask/src/tasks/targeted_checks.rs\",\"xtask/tests/fixtures/ci-scope/parser-ratchet/shared-ci-scope-change.json\",\"xtask/tests/workspace_doctor_inventory/support.rs\"],\"rerun\":\"cargo xtask gates --tier commit --staged --gate staged_tree_identity\",\"what_remains\":\"none — the nine structural checks (issue #3786-B) run alongside this one, not instead of it\"}",
+      "log_path": "logs/staged_tree_identity.log"
+    },
+    {
+      "gate_name": "whitespace_check",
+      "tier": "commit",
+      "status": "pass",
+      "required": true,
+      "duration_ms": 17,
+      "command": "cargo xtask commit-check whitespace_check",
+      "output_summary": "no whitespace/conflict-marker issues in the staged diff",
+      "log_path": "logs/whitespace_check.log"
+    },
+    {
+      "gate_name": "conflict_markers_staged",
+      "tier": "commit",
+      "status": "pass",
+      "required": true,
+      "duration_ms": 220,
+      "command": "cargo xtask commit-check conflict_markers_staged",
+      "output_summary": "no conflict markers in staged files",
+      "log_path": "logs/conflict_markers_staged.log"
+    },
+    {
+      "gate_name": "staged_exec_mode_policy",
+      "tier": "commit",
+      "status": "pass",
+      "required": true,
+      "duration_ms": 28,
+      "command": "cargo xtask commit-check staged_exec_mode_policy",
+      "output_summary": "staged executable-bit policy holds",
+      "log_path": "logs/staged_exec_mode_policy.log"
+    },
+    {
+      "gate_name": "staged_config_syntax",
+      "tier": "commit",
+      "status": "pass",
+      "required": true,
+      "duration_ms": 42,
+      "command": "cargo xtask commit-check staged_config_syntax",
+      "output_summary": "staged JSON/YAML/TOML files parse cleanly",
+      "log_path": "logs/staged_config_syntax.log"
+    },
+    {
+      "gate_name": "forbidden_machine_paths",
+      "tier": "commit",
+      "status": "fail",
+      "required": true,
+      "duration_ms": 222,
+      "command": "cargo xtask commit-check forbidden_machine_paths",
+      "output_summary": "BLOCKED: 7 staged line(s) contain a machine-specific absolute path\nwhy: an absolute path tied to one machine/user (a Windows user profile, a POSIX home dir) breaks on every other machine and often leaks a local username\naffected: crates/perl-ci-hygiene/src/main.rs:3594: /home/user/, crates/perl-ci-hygiene/src/main.rs:3598: /home/ubuntu/, crates/perl-ci-hygiene/src/main.rs:3601: /home/u/, crates/perl-ci-hygiene/src/main.rs:3611: /Users/Name/, crates/perl-ci-hygiene/src/main.rs:3615: /Users/user/, crates/perl-ci-hygiene/src/main.rs:3619: /Users/alice/, crates/perl-ci-hygiene/src/main.rs:3969: C:\\Users\\...\\\nfix: replace the absolute path with a repo-relative path or an environment-derived one, then re-stage\nrerun: cargo xtask gates --tier commit --staged --gate forbidden_machine_paths\nwhat remains: docs/ and *.md are excluded — placeholder paths in examples are common there\n\nCOMMIT_CHECK_REPORT_JSON:{\"check\":\"forbidden_machine_paths\",\"posture\":\"BLOCKED\",\"result\":\"7 staged line(s) contain a machine-specific absolute path\",\"why\":\"an absolute path tied to one machine/user (a Windows user profile, a POSIX home dir) breaks on every other machine and often leaks a local username\",\"affected\":[\"crates/perl-ci-hygiene/src/main.rs:3594: /home/user/\",\"crates/perl-ci-hygiene/src/main.rs:3598: /home/ubuntu/\",\"crates/perl-ci-hygiene/src/main.rs:3601: /home/u/\",\"crates/perl-ci-hygiene/src/main.rs:3611: /Users/Name/\",\"crates/perl-ci-hygiene/src/main.rs:3615: /Users/user/\",\"crates/perl-ci-hygiene/src/main.rs:3619: /Users/alice/\",\"crates/perl-ci-hygiene/src/main.rs:3969: C:\\\\Users\\\\...\\\\\"],\"fix\":\"replace the absolute path with a repo-relative path or an environment-derived one, then re-stage\",\"rerun\":\"cargo xtask gates --tier commit --staged --gate forbidden_machine_paths\",\"what_remains\":\"docs/ and *.md are excluded — placeholder paths in examples are common there\"}",
+      "log_path": "logs/forbidden_machine_paths.log"
+    },
+    {
+      "gate_name": "staged_oversized_or_binary",
+      "tier": "commit",
+      "status": "pass",
+      "required": true,
+      "duration_ms": 93,
+      "command": "cargo xtask commit-check staged_oversized_or_binary",
+      "output_summary": "no oversized or disallowed-binary staged files",
+      "log_path": "logs/staged_oversized_or_binary.log"
+    },
+    {
+      "gate_name": "changie_fragment_staged",
+      "tier": "commit",
+      "status": "pass",
+      "required": true,
+      "duration_ms": 10,
+      "command": "cargo xtask commit-check changie_fragment_staged",
+      "output_summary": "no staged Changie inputs changed",
+      "log_path": "logs/changie_fragment_staged.log"
+    },
+    {
+      "gate_name": "rustfmt_staged",
+      "tier": "commit",
+      "status": "pass",
+      "required": true,
+      "duration_ms": 574,
+      "command": "cargo xtask commit-check rustfmt_staged",
+      "output_summary": "20 staged Rust file(s) are formatted",
+      "log_path": "logs/rustfmt_staged.log"
+    },
+    {
+      "gate_name": "from_raw_staged",
+      "tier": "commit",
+      "status": "pass",
+      "required": true,
+      "duration_ms": 112,
+      "command": "cargo xtask commit-check from_raw_staged",
+      "output_summary": "no disallowed ExitStatus::from_raw() usage in staged files",
+      "log_path": "logs/from_raw_staged.log"
+    }
+  ],
+  "summary": {
+    "total_gates": 10,
+    "passed": 9,
+    "failed": 1,
+    "skipped": 0,
+    "total_duration_ms": 1504,
+    "tier_results": {
+      "commit": {
+        "total": 10,
+        "passed": 9,
+        "failed": 1,
+        "skipped": 0,
+        "duration_ms": 1324
+      }
+    },
+    "overall_status": "fail",
+    "blocking_failures": [
+      "forbidden_machine_paths"
+    ]
+  },
+  "agent_receipt": {
+    "sha": "1f973039d812fe080abddc44e461112d7b95a6fa",
+    "is_latest": true,
+    "tier": "commit",
+    "scope": {
+      "direct_crates": [],
+      "reverse_deps": [],
+      "risk_tags": []
+    },
+    "selected_lanes": [],
+    "failures": [
+      {
+        "lane": "forbidden_machine_paths",
+        "summary": "7 staged line(s) contain a machine-specific absolute path — an absolute path tied to one machine/user (a Windows user profile, a POSIX home dir) breaks on every other machine and often leaks a local username",
+        "repro": "cargo xtask gates --tier commit --staged --gate forbidden_machine_paths",
+        "posture": "BLOCKED",
+        "affected": [
+          "crates/perl-ci-hygiene/src/main.rs:3594: /home/user/",
+          "crates/perl-ci-hygiene/src/main.rs:3598: /home/ubuntu/",
+          "crates/perl-ci-hygiene/src/main.rs:3601: /home/u/",
+          "crates/perl-ci-hygiene/src/main.rs:3611: /Users/Name/",
+          "crates/perl-ci-hygiene/src/main.rs:3615: /Users/user/",
+          "crates/perl-ci-hygiene/src/main.rs:3619: /Users/alice/",
+          "crates/perl-ci-hygiene/src/main.rs:3969: C:\\Users\\...\\"
+        ],
+        "fix": "replace the absolute path with a repo-relative path or an environment-derived one, then re-stage"
+      }
+    ],
+    "suggested_next_actions": [
+      "Reproduce and fix gate 'forbidden_machine_paths' locally, then rerun: cargo xtask gates --tier commit --staged --gate forbidden_machine_paths"
+    ],
+    "plan": {
+      "base": "HEAD~1",
+      "scope_ok": true,
+      "fallback_used": false,
+      "package_args": [],
+      "selected": [
+        {
+          "name": "staged_tree_identity",
+          "role": "static",
+          "reason": "selected by static policy filter"
+        },
+        {
+          "name": "whitespace_check",
+          "role": "static",
+          "reason": "selected by static policy filter"
+        },
+        {
+          "name": "conflict_markers_staged",
+          "role": "static",
+          "reason": "selected by static policy filter"
+        },
+        {
+          "name": "staged_exec_mode_policy",
+          "role": "static",
+          "reason": "selected by static policy filter"
+        },
+        {
+          "name": "staged_config_syntax",
+          "role": "static",
+          "reason": "selected by static policy filter"
+        },
+        {
+          "name": "forbidden_machine_paths",
+          "role": "static",
+          "reason": "selected by static policy filter"
+        },
+        {
+          "name": "staged_oversized_or_binary",
+          "role": "static",
+          "reason": "selected by static policy filter"
+        },
+        {
+          "name": "changie_fragment_staged",
+          "role": "static",
+          "reason": "selected by static policy filter"
+        },
+        {
+          "name": "rustfmt_staged",
+          "role": "static",
+          "reason": "selected by static policy filter"
+        },
+        {
+          "name": "from_raw_staged",
+          "role": "static",
+          "reason": "selected by static policy filter"
+        }
+      ],
+      "skipped": []
+    },
+    "staged_tree_oid": "061e3348168287a758ab0d926eb336846e43b077",
+    "advisories": [
+      {
+        "lane": "staged_tree_identity",
+        "posture": "ADVISORY",
+        "summary": "staged tree 061e3348168287a758ab0d926eb336846e43b077 — 43 file(s) staged relative to HEAD",
+        "why": "wiring proof for the commit-tier substrate (issue #3786-A): confirms --staged resolves the exact git write-tree identity and threads it through the receipt, independent of any real hygiene check",
+        "affected": [
+          ".ci/risk-tags.yaml",
+          ".ci/scope.d/parser-ratchet.toml",
+          ".github/workflows/ci-gate-self-tests.yml",
+          ".github/workflows/ci.yml",
+          "Cargo.lock",
+          "crates/perl-ci-hygiene/Cargo.toml",
+          "crates/perl-ci-hygiene/src/change_set.rs",
+          "crates/perl-ci-hygiene/src/ci_scope.rs",
+          "crates/perl-ci-hygiene/src/ci_subject.rs",
+          "crates/perl-ci-hygiene/src/cli.rs",
+          "crates/perl-ci-hygiene/src/git_hooks.rs",
+          "crates/perl-ci-hygiene/src/lib.rs",
+          "crates/perl-ci-hygiene/src/main.rs",
+          "crates/perl-ci-hygiene/src/package_resolver.rs",
+          "crates/perl-ci-hygiene/src/staged.rs",
+          "crates/perl-ci-hygiene/tests/change_set_cli.rs",
+          "crates/perl-ci-hygiene/tests/package_resolver_cli.rs",
+          "docs/ci/parser-ratchet-scope.md",
+          "docs/contributing/FIRST_PR.md",
+          "hooks/pre-push",
+          "justfile",
+          "scripts/README.md",
+          "scripts/check-githooks.sh",
+          "scripts/ci/bootstrap-selection.sh",
+          "scripts/ci/check_selection_graph.py",
+          "scripts/ci/test_selection_bootstrap.py",
+          "scripts/ci/test_selection_cli.py",
+          "scripts/ci/test_selection_owner.py",
+          "scripts/githooks-bootstrap.sh",
+          "scripts/install-githooks.sh",
+          "scripts/tests/test-install-githooks-wrapper.sh",
+          "scripts/tests/test-pre-push-launchers.py",
+          "scripts/worktree-manager.py",
+          "xtask/src/bin/workspace_doctor_inventory/sources.rs",
+          "xtask/src/tasks/change_set.rs",
+          "xtask/src/tasks/ci_hygiene.rs",
+          "xtask/src/tasks/ci_scope.rs",
+          "xtask/src/tasks/ci_subject.rs",
+          "xtask/src/tasks/devex_doctor.rs",
+          "xtask/src/tasks/mod.rs",
+          "xtask/src/tasks/targeted_checks.rs",
+          "xtask/tests/fixtures/ci-scope/parser-ratchet/shared-ci-scope-change.json",
+          "xtask/tests/workspace_doctor_inventory/support.rs"
+        ],
+        "rerun": "cargo xtask gates --tier commit --staged --gate staged_tree_identity",
+        "what_remains": "none — the nine structural checks (issue #3786-B) run alongside this one, not instead of it"
+      }
+    ]
+  }
+}

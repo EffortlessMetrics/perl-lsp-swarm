@@ -1,0 +1,585 @@
+{
+  "source_sha": "71a69a477665e98dd11d1be163a4d08cea51ef64",
+  "helper_corrected_sha": "7432f164ca08f5802b9f246ded384a6f1066411d",
+  "old_child_sha": "ce99f24f7df1f8561ecd28cda57b055094d2920a",
+  "main_sha": "1f973039d812fe080abddc44e461112d7b95a6fa",
+  "helper_proof": "635886a79c7c71e5513defa1f90b0a483e8c0f45/.spec/17480-current-main/linux-residuals",
+  "selection_paths": [
+    ".ci/risk-tags.yaml",
+    ".ci/scope.d/parser-ratchet.toml",
+    ".github/workflows/ci.yml",
+    "Cargo.lock",
+    "crates/perl-ci-hygiene/Cargo.toml",
+    "crates/perl-ci-hygiene/src/ci_scope.rs",
+    "crates/perl-ci-hygiene/src/ci_subject.rs",
+    "crates/perl-ci-hygiene/src/cli.rs",
+    "crates/perl-ci-hygiene/src/lib.rs",
+    "crates/perl-ci-hygiene/src/main.rs",
+    "docs/ci/parser-ratchet-scope.md",
+    "scripts/ci/bootstrap-selection.sh",
+    "scripts/ci/check_selection_graph.py",
+    "scripts/ci/test_selection_bootstrap.py",
+    "scripts/ci/test_selection_cli.py",
+    "scripts/ci/test_selection_owner.py",
+    "xtask/src/tasks/ci_scope.rs",
+    "xtask/src/tasks/ci_subject.rs",
+    "xtask/tests/fixtures/ci-scope/parser-ratchet/shared-ci-scope-change.json"
+  ],
+  "minimal_correction": "Consumed helper actual one-file correction through nonrewriting merge: six concat expressions preserve detector fixture strings; one comment changed. All7 red locations are inherited main.rs fixtures, not additional selection literals. No redundant child edit needed.",
+  "identity": {
+    "source": "71a69a477665e98dd11d1be163a4d08cea51ef64",
+    "xtask_gate_and_adapter_compilation": "936059d5013c84fb651bda6d34ae472f63e947d9; controlled paths unchanged",
+    "production_main_prefix_equal": true,
+    "test_token_sequence_equal_after_compile_time_concat_expansion_and_comment_removal": true,
+    "correction_source": "7432f164ca08f5802b9f246ded384a6f1066411d",
+    "child_path_count": 19,
+    "no_new_Rust_build": true,
+    "no_718_test_replay": true
+  },
+  "original_red": {
+    "candidate": "ce99f24f7df1f8561ecd28cda57b055094d2920a",
+    "base": "1f973039d812fe080abddc44e461112d7b95a6fa",
+    "index_tree": "061e3348168287a758ab0d926eb336846e43b077",
+    "changed_paths": [
+      ".ci/risk-tags.yaml",
+      ".ci/scope.d/parser-ratchet.toml",
+      ".github/workflows/ci-gate-self-tests.yml",
+      ".github/workflows/ci.yml",
+      "Cargo.lock",
+      "crates/perl-ci-hygiene/Cargo.toml",
+      "crates/perl-ci-hygiene/src/change_set.rs",
+      "crates/perl-ci-hygiene/src/ci_scope.rs",
+      "crates/perl-ci-hygiene/src/ci_subject.rs",
+      "crates/perl-ci-hygiene/src/cli.rs",
+      "crates/perl-ci-hygiene/src/git_hooks.rs",
+      "crates/perl-ci-hygiene/src/lib.rs",
+      "crates/perl-ci-hygiene/src/main.rs",
+      "crates/perl-ci-hygiene/src/package_resolver.rs",
+      "crates/perl-ci-hygiene/src/staged.rs",
+      "crates/perl-ci-hygiene/tests/change_set_cli.rs",
+      "crates/perl-ci-hygiene/tests/package_resolver_cli.rs",
+      "docs/ci/parser-ratchet-scope.md",
+      "docs/contributing/FIRST_PR.md",
+      "hooks/pre-push",
+      "justfile",
+      "scripts/README.md",
+      "scripts/check-githooks.sh",
+      "scripts/ci/bootstrap-selection.sh",
+      "scripts/ci/check_selection_graph.py",
+      "scripts/ci/test_selection_bootstrap.py",
+      "scripts/ci/test_selection_cli.py",
+      "scripts/ci/test_selection_owner.py",
+      "scripts/githooks-bootstrap.sh",
+      "scripts/install-githooks.sh",
+      "scripts/tests/test-install-githooks-wrapper.sh",
+      "scripts/tests/test-pre-push-launchers.py",
+      "scripts/worktree-manager.py",
+      "xtask/src/bin/workspace_doctor_inventory/sources.rs",
+      "xtask/src/tasks/change_set.rs",
+      "xtask/src/tasks/ci_hygiene.rs",
+      "xtask/src/tasks/ci_scope.rs",
+      "xtask/src/tasks/ci_subject.rs",
+      "xtask/src/tasks/devex_doctor.rs",
+      "xtask/src/tasks/mod.rs",
+      "xtask/src/tasks/targeted_checks.rs",
+      "xtask/tests/fixtures/ci-scope/parser-ratchet/shared-ci-scope-change.json",
+      "xtask/tests/workspace_doctor_inventory/support.rs"
+    ],
+    "argv": [
+      "/workspace/selection-17485-evidence/parity/xtask-proof",
+      "gates",
+      "--tier",
+      "commit",
+      "--staged",
+      "--receipt",
+      "--receipt-path",
+      "/workspace/selection-17485-evidence/hook-residuals/red-original-receipt.json"
+    ],
+    "exit": 1,
+    "seconds": 1.8705574729997352,
+    "xtask_sha256": "8ad9284d86859b570744219f28b51c426aaf95b1496f4c15971dc6ec9ec2e7a8",
+    "summary": {
+      "total_gates": 10,
+      "passed": 9,
+      "failed": 1,
+      "skipped": 0,
+      "total_duration_ms": 1504,
+      "tier_results": {
+        "commit": {
+          "total": 10,
+          "passed": 9,
+          "failed": 1,
+          "skipped": 0,
+          "duration_ms": 1324
+        }
+      },
+      "overall_status": "fail",
+      "blocking_failures": [
+        "forbidden_machine_paths"
+      ]
+    },
+    "seven_fixture_failures": [
+      "crates/perl-ci-hygiene/src/main.rs:3594: /home/user/",
+      "crates/perl-ci-hygiene/src/main.rs:3598: /home/ubuntu/",
+      "crates/perl-ci-hygiene/src/main.rs:3601: /home/u/",
+      "crates/perl-ci-hygiene/src/main.rs:3611: /Users/Name/",
+      "crates/perl-ci-hygiene/src/main.rs:3615: /Users/user/",
+      "crates/perl-ci-hygiene/src/main.rs:3619: /Users/alice/",
+      "crates/perl-ci-hygiene/src/main.rs:3969: C:\\Users\\...\\"
+    ],
+    "settlement": {
+      "tree_settled": true,
+      "proof": "kernel ECHILD (__WALL)",
+      "cancelled": false,
+      "termination_requested": false,
+      "reaped_descendants": [],
+      "owned_child_table_available": false,
+      "errors": [],
+      "pending_bound_pids": [],
+      "reason": "all owned descendants reaped"
+    }
+  },
+  "corrected_green": {
+    "candidate": "71a69a477665e98dd11d1be163a4d08cea51ef64",
+    "base": "1f973039d812fe080abddc44e461112d7b95a6fa",
+    "index_tree": "e002efa426fcb4191aea05132fe51b9037cf07e6",
+    "changed_paths": [
+      ".ci/risk-tags.yaml",
+      ".ci/scope.d/parser-ratchet.toml",
+      ".github/workflows/ci-gate-self-tests.yml",
+      ".github/workflows/ci.yml",
+      "Cargo.lock",
+      "crates/perl-ci-hygiene/Cargo.toml",
+      "crates/perl-ci-hygiene/src/change_set.rs",
+      "crates/perl-ci-hygiene/src/ci_scope.rs",
+      "crates/perl-ci-hygiene/src/ci_subject.rs",
+      "crates/perl-ci-hygiene/src/cli.rs",
+      "crates/perl-ci-hygiene/src/git_hooks.rs",
+      "crates/perl-ci-hygiene/src/lib.rs",
+      "crates/perl-ci-hygiene/src/main.rs",
+      "crates/perl-ci-hygiene/src/package_resolver.rs",
+      "crates/perl-ci-hygiene/src/staged.rs",
+      "crates/perl-ci-hygiene/tests/change_set_cli.rs",
+      "crates/perl-ci-hygiene/tests/package_resolver_cli.rs",
+      "docs/ci/parser-ratchet-scope.md",
+      "docs/contributing/FIRST_PR.md",
+      "hooks/pre-push",
+      "justfile",
+      "scripts/README.md",
+      "scripts/check-githooks.sh",
+      "scripts/ci/bootstrap-selection.sh",
+      "scripts/ci/check_selection_graph.py",
+      "scripts/ci/test_selection_bootstrap.py",
+      "scripts/ci/test_selection_cli.py",
+      "scripts/ci/test_selection_owner.py",
+      "scripts/githooks-bootstrap.sh",
+      "scripts/install-githooks.sh",
+      "scripts/tests/test-install-githooks-wrapper.sh",
+      "scripts/tests/test-pre-push-launchers.py",
+      "scripts/worktree-manager.py",
+      "xtask/src/bin/workspace_doctor_inventory/sources.rs",
+      "xtask/src/tasks/change_set.rs",
+      "xtask/src/tasks/ci_hygiene.rs",
+      "xtask/src/tasks/ci_scope.rs",
+      "xtask/src/tasks/ci_subject.rs",
+      "xtask/src/tasks/devex_doctor.rs",
+      "xtask/src/tasks/mod.rs",
+      "xtask/src/tasks/targeted_checks.rs",
+      "xtask/tests/fixtures/ci-scope/parser-ratchet/shared-ci-scope-change.json",
+      "xtask/tests/workspace_doctor_inventory/support.rs"
+    ],
+    "argv": [
+      "/workspace/selection-17485-evidence/parity/xtask-proof",
+      "gates",
+      "--tier",
+      "commit",
+      "--staged",
+      "--receipt",
+      "--receipt-path",
+      "/workspace/selection-17485-evidence/hook-residuals/green-corrected-receipt.json"
+    ],
+    "exit": 0,
+    "seconds": 1.7249317850000807,
+    "xtask_sha256": "8ad9284d86859b570744219f28b51c426aaf95b1496f4c15971dc6ec9ec2e7a8",
+    "summary": {
+      "total_gates": 10,
+      "passed": 10,
+      "failed": 0,
+      "skipped": 0,
+      "total_duration_ms": 1394,
+      "tier_results": {
+        "commit": {
+          "total": 10,
+          "passed": 10,
+          "failed": 0,
+          "skipped": 0,
+          "duration_ms": 1311
+        }
+      },
+      "overall_status": "pass"
+    },
+    "settlement": {
+      "tree_settled": true,
+      "proof": "kernel ECHILD (__WALL)",
+      "cancelled": false,
+      "termination_requested": false,
+      "reaped_descendants": [],
+      "owned_child_table_available": false,
+      "errors": [],
+      "pending_bound_pids": [],
+      "reason": "all owned descendants reaped"
+    }
+  },
+  "authoritative_conflict_falsifier": {
+    "candidate": "71a69a477665e98dd11d1be163a4d08cea51ef64",
+    "base": "1f973039d812fe080abddc44e461112d7b95a6fa",
+    "index_tree": "1e833efff943f057e7cf27505cb0a5b1c542325b",
+    "changed_paths": [
+      ".ci/risk-tags.yaml",
+      ".ci/scope.d/parser-ratchet.toml",
+      ".github/workflows/ci-gate-self-tests.yml",
+      ".github/workflows/ci.yml",
+      "Cargo.lock",
+      "crates/perl-ci-hygiene/Cargo.toml",
+      "crates/perl-ci-hygiene/src/change_set.rs",
+      "crates/perl-ci-hygiene/src/ci_scope.rs",
+      "crates/perl-ci-hygiene/src/ci_subject.rs",
+      "crates/perl-ci-hygiene/src/cli.rs",
+      "crates/perl-ci-hygiene/src/git_hooks.rs",
+      "crates/perl-ci-hygiene/src/lib.rs",
+      "crates/perl-ci-hygiene/src/main.rs",
+      "crates/perl-ci-hygiene/src/package_resolver.rs",
+      "crates/perl-ci-hygiene/src/staged.rs",
+      "crates/perl-ci-hygiene/tests/change_set_cli.rs",
+      "crates/perl-ci-hygiene/tests/package_resolver_cli.rs",
+      "docs/ci/parser-ratchet-scope.md",
+      "docs/contributing/FIRST_PR.md",
+      "hooks/pre-push",
+      "justfile",
+      "proof-conflict.rs",
+      "scripts/README.md",
+      "scripts/check-githooks.sh",
+      "scripts/ci/bootstrap-selection.sh",
+      "scripts/ci/check_selection_graph.py",
+      "scripts/ci/test_selection_bootstrap.py",
+      "scripts/ci/test_selection_cli.py",
+      "scripts/ci/test_selection_owner.py",
+      "scripts/githooks-bootstrap.sh",
+      "scripts/install-githooks.sh",
+      "scripts/tests/test-install-githooks-wrapper.sh",
+      "scripts/tests/test-pre-push-launchers.py",
+      "scripts/worktree-manager.py",
+      "xtask/src/bin/workspace_doctor_inventory/sources.rs",
+      "xtask/src/tasks/change_set.rs",
+      "xtask/src/tasks/ci_hygiene.rs",
+      "xtask/src/tasks/ci_scope.rs",
+      "xtask/src/tasks/ci_subject.rs",
+      "xtask/src/tasks/devex_doctor.rs",
+      "xtask/src/tasks/mod.rs",
+      "xtask/src/tasks/targeted_checks.rs",
+      "xtask/tests/fixtures/ci-scope/parser-ratchet/shared-ci-scope-change.json",
+      "xtask/tests/workspace_doctor_inventory/support.rs"
+    ],
+    "argv": [
+      "/workspace/selection-17485-evidence/parity/xtask-proof",
+      "gates",
+      "--tier",
+      "commit",
+      "--staged",
+      "--receipt",
+      "--receipt-path",
+      "/workspace/selection-17485-evidence/hook-residuals/green-conflict-negative-receipt.json"
+    ],
+    "exit": 1,
+    "seconds": 1.469806257000073,
+    "xtask_sha256": "8ad9284d86859b570744219f28b51c426aaf95b1496f4c15971dc6ec9ec2e7a8",
+    "summary": {
+      "total_gates": 10,
+      "passed": 8,
+      "failed": 2,
+      "skipped": 0,
+      "total_duration_ms": 1411,
+      "tier_results": {
+        "commit": {
+          "total": 10,
+          "passed": 8,
+          "failed": 2,
+          "skipped": 0,
+          "duration_ms": 1339
+        }
+      },
+      "overall_status": "fail",
+      "blocking_failures": [
+        "whitespace_check",
+        "conflict_markers_staged"
+      ]
+    },
+    "settlement": {
+      "tree_settled": true,
+      "proof": "kernel ECHILD (__WALL)",
+      "cancelled": false,
+      "termination_requested": false,
+      "reaped_descendants": [],
+      "owned_child_table_available": false,
+      "errors": [],
+      "pending_bound_pids": [],
+      "reason": "all owned descendants reaped"
+    }
+  },
+  "fresh_actual_adapter_pair": {
+    "source_sha": "71a69a477665e98dd11d1be163a4d08cea51ef64",
+    "argv": [
+      "python3",
+      "scripts/ci/test_selection_cli.py",
+      "--runner",
+      "/workspace/selection-17485-evidence/current-main-run/perl-ci-hygiene-proof",
+      "--compare-runner",
+      "/workspace/selection-17485-evidence/parity/xtask-proof",
+      "--caller-root",
+      "/workspace/perl-ci-selection-17485-parity"
+    ],
+    "exit": 0,
+    "seconds": 2.3225167239997973,
+    "settlement": {
+      "tree_settled": true,
+      "proof": "kernel ECHILD (__WALL)",
+      "cancelled": false,
+      "termination_requested": false,
+      "reaped_descendants": [
+        {
+          "pid": 13660,
+          "exit_code": 0
+        },
+        {
+          "pid": 13665,
+          "exit_code": 0
+        },
+        {
+          "pid": 13728,
+          "exit_code": 0
+        },
+        {
+          "pid": 13774,
+          "exit_code": 0
+        },
+        {
+          "pid": 13779,
+          "exit_code": 0
+        },
+        {
+          "pid": 13889,
+          "exit_code": 0
+        },
+        {
+          "pid": 13894,
+          "exit_code": 0
+        },
+        {
+          "pid": 14004,
+          "exit_code": 0
+        },
+        {
+          "pid": 14114,
+          "exit_code": 0
+        },
+        {
+          "pid": 14128,
+          "exit_code": 0
+        },
+        {
+          "pid": 14133,
+          "exit_code": 0
+        },
+        {
+          "pid": 14216,
+          "exit_code": 0
+        },
+        {
+          "pid": 14221,
+          "exit_code": 0
+        },
+        {
+          "pid": 14233,
+          "exit_code": 0
+        },
+        {
+          "pid": 14238,
+          "exit_code": 0
+        },
+        {
+          "pid": 14301,
+          "exit_code": 0
+        },
+        {
+          "pid": 14306,
+          "exit_code": 0
+        },
+        {
+          "pid": 14416,
+          "exit_code": 0
+        },
+        {
+          "pid": 14421,
+          "exit_code": 0
+        },
+        {
+          "pid": 14506,
+          "exit_code": 0
+        },
+        {
+          "pid": 14511,
+          "exit_code": 0
+        },
+        {
+          "pid": 14561,
+          "exit_code": 0
+        },
+        {
+          "pid": 14566,
+          "exit_code": 0
+        },
+        {
+          "pid": 14624,
+          "exit_code": 0
+        },
+        {
+          "pid": 14629,
+          "exit_code": 0
+        },
+        {
+          "pid": 14739,
+          "exit_code": 0
+        },
+        {
+          "pid": 14744,
+          "exit_code": 0
+        }
+      ],
+      "owned_child_table_available": false,
+      "errors": [],
+      "pending_bound_pids": [],
+      "reason": "all owned descendants reaped"
+    },
+    "fixture": "Pure Git checkout at immutable xtask compile-time root; HEAD, index and source are candidate71. No Cargo build or output slot reuse.",
+    "immutable_binaries": {
+      "/workspace/selection-17485-evidence/current-main-run/perl-ci-hygiene-proof": "18a0aa7ef070a3fccfd4cbee56064128670baf4051490a71b70dda150200a3e2",
+      "/workspace/selection-17485-evidence/parity/xtask-proof": "8ad9284d86859b570744219f28b51c426aaf95b1496f4c15971dc6ec9ec2e7a8"
+    }
+  },
+  "prior_proof_reuse": {
+    "718_tests": "No replay: ce99 source-local 213lib432binary73integration preserved; only6 fixture token spellings +comment changed. Helper corrected-source2focused tests and20.02s strictClippy clean support composition. Productionmainprefix and compile-time-expanded test token sequence identical; library and xtask inputs unchanged.",
+    "six_wrong_callers": "Unchanged source/oracle: oldparity controls-result.json; semantic/error/receipt/exit discriminators preserved.",
+    "dependency_graph": "Manifests/lock/library unchanged:80/1 vs299/33 focusedgraph,87prior alltargetcompilerIDs; no Rustbuild in this pass."
+  },
+  "proof_instrument_corrections": [
+    "Firstgreenused symbolicHEAD insidefixture and selectedemptybase tree; discardedvacuous-symbolic-head artifacts preserved and excluded from qualification. Binding now resolvesactualsourceSHA beforefixture and asserts43paths/44negative, exact write-tree andreceiptidentity.",
+    "Initialadapterpair passed15 but receipt construction usedwrong argv indices. Explicitbinary variables fixed; repeated15pass with complete positiveownerreceipt; initiallogs retained."
+  ],
+  "scope_limits": [
+    "Ten canonical commit-engine checks invoked inprocess on frozen nonempty index; no full installedshellhook/prepush qualification.",
+    "staged_tree_identity posture isADVISORY; nine structural checks passed actualpositive subject.",
+    "Conflictnegative rustfmt statuspass wrapper includesNOTPROVEN instrument message; not a formatting pass. Conflict check independently fails actualindex-only markers.",
+    "Immutable preservedxtask production/gate/adapter/library compile inputs matchcandidate; pureGitfixture atitsactualcompiledroot, noCargo builds/old output slot reuse.",
+    "NativeWindows, canonical scoped xtask lint admission/routed pr-fast preparation, full routed gates, hostedCI and integration readiness remain outside this proof.",
+    "No PR/Ready/merge or expensiveCI dispatch."
+  ],
+  "independent_review": "Clean exact71 source/finalchallenge/frozencommit-engine and15/15pair proof. Verified unchanged owningxtask/lib/adapter inputs, fixturevalue preservation, exact43/44index identities andkernel closure; no materialfindings. Negativeformatter NOTPROVEN anddiscardedemptytree/instrument attempt disclosed; noinstalledhook/prepush/Windows/hostedclaim.",
+  "files": {
+    "adapter-pair-result.json": {
+      "local_path": "/workspace/selection-17485-evidence/hook-residuals/adapter-pair-result.json",
+      "sha256": "5ee6ad6e17a3af1e0b4fb9056819a6baadd5154e12f544b309ed9db4238cbf22"
+    },
+    "adapter-pair.stderr": {
+      "local_path": "/workspace/selection-17485-evidence/hook-residuals/adapter-pair.stderr",
+      "sha256": "95a0ab82a3de911905a5a5b62ae2ff3e00b1c853948deb4f71cb1cb8133b5a4d"
+    },
+    "adapter-pair.stdout": {
+      "local_path": "/workspace/selection-17485-evidence/hook-residuals/adapter-pair.stdout",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "discarded-vacuous-symbolic-head-receipt.json": {
+      "local_path": "/workspace/selection-17485-evidence/hook-residuals/discarded-vacuous-symbolic-head-receipt.json",
+      "sha256": "910a52b0df1c00509a73c7e40985875c931b629127d97de8413255185c46ae9b"
+    },
+    "discarded-vacuous-symbolic-head-result.json": {
+      "local_path": "/workspace/selection-17485-evidence/hook-residuals/discarded-vacuous-symbolic-head-result.json",
+      "sha256": "86a3a3ab26d681b516f32fbaff257eaeb17e0d81a4ea08470bbfd594ccc0d825"
+    },
+    "discarded-vacuous-symbolic-head.stderr": {
+      "local_path": "/workspace/selection-17485-evidence/hook-residuals/discarded-vacuous-symbolic-head.stderr",
+      "sha256": "a4a48caa13fd53feff6f50b250932773e8157cc3b1324e864a28ce037645d42b"
+    },
+    "discarded-vacuous-symbolic-head.stdout": {
+      "local_path": "/workspace/selection-17485-evidence/hook-residuals/discarded-vacuous-symbolic-head.stdout",
+      "sha256": "724586d57121b6ea2f992344a9746dad0aa05bb3c75fb2f55ae874893ee398b4"
+    },
+    "green-conflict-negative-receipt.json": {
+      "local_path": "/workspace/selection-17485-evidence/hook-residuals/green-conflict-negative-receipt.json",
+      "sha256": "caec894f43bf677610a79c91a1040c62c76aa76828a8e371dc81636ce9213894"
+    },
+    "green-conflict-negative-result.json": {
+      "local_path": "/workspace/selection-17485-evidence/hook-residuals/green-conflict-negative-result.json",
+      "sha256": "eb9020400c3532ab5a70e5fa45bb0bdfa6ad5da8919ef2c6b43b12234dca33be"
+    },
+    "green-conflict-negative.stderr": {
+      "local_path": "/workspace/selection-17485-evidence/hook-residuals/green-conflict-negative.stderr",
+      "sha256": "30be9b581ae3cad0cb4ed3a52af10083889013f278f85b68e70af90ee9998080"
+    },
+    "green-conflict-negative.stdout": {
+      "local_path": "/workspace/selection-17485-evidence/hook-residuals/green-conflict-negative.stdout",
+      "sha256": "9bd8b847ed18fc72f18eac2c53143a51a2408466d8540d56d6764ca46fcf1fe3"
+    },
+    "green-corrected-receipt.json": {
+      "local_path": "/workspace/selection-17485-evidence/hook-residuals/green-corrected-receipt.json",
+      "sha256": "c0e4a33890427503ff62686067458d0376fc55c3126f0f942a6009fb4eff9fb1"
+    },
+    "green-corrected-result.json": {
+      "local_path": "/workspace/selection-17485-evidence/hook-residuals/green-corrected-result.json",
+      "sha256": "79efc069e23bcb7a8eaa0eb3ed51dbc5aa5f404aa53a81190c38b948edf30b1e"
+    },
+    "green-corrected.stderr": {
+      "local_path": "/workspace/selection-17485-evidence/hook-residuals/green-corrected.stderr",
+      "sha256": "a4a48caa13fd53feff6f50b250932773e8157cc3b1324e864a28ce037645d42b"
+    },
+    "green-corrected.stdout": {
+      "local_path": "/workspace/selection-17485-evidence/hook-residuals/green-corrected.stdout",
+      "sha256": "fbeb4dea4f09fc033e4dd25e95a6eaab090cc6274d30b3fcb9093aeae6448b22"
+    },
+    "identity.json": {
+      "local_path": "/workspace/selection-17485-evidence/hook-residuals/identity.json",
+      "sha256": "883fce1d53748c2b1966457a7290fcd1f5eec845cc9d4374132292cbf3042629"
+    },
+    "initial-record-binding-adapter-pair.stderr": {
+      "local_path": "/workspace/selection-17485-evidence/hook-residuals/initial-record-binding-adapter-pair.stderr",
+      "sha256": "8c4e597de169ddd25de0811d5a07f11330ea4c3024a8c602a018fcc0c295db73"
+    },
+    "initial-record-binding-adapter-pair.stdout": {
+      "local_path": "/workspace/selection-17485-evidence/hook-residuals/initial-record-binding-adapter-pair.stdout",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "red-original-receipt.json": {
+      "local_path": "/workspace/selection-17485-evidence/hook-residuals/red-original-receipt.json",
+      "sha256": "4411556ec27db2a840b1c6551687c974e4acc6f83e3db9d2c8ce80b49846335a"
+    },
+    "red-original-result.json": {
+      "local_path": "/workspace/selection-17485-evidence/hook-residuals/red-original-result.json",
+      "sha256": "19bb70ad4fcd08886b03133009b63fd3a86f695ea6a3838fcd50a296727270e5"
+    },
+    "red-original.stderr": {
+      "local_path": "/workspace/selection-17485-evidence/hook-residuals/red-original.stderr",
+      "sha256": "f8882a4f0170296c884e5b78aeb902c5b60c277632aa3ae41c5e8f451d83fec6"
+    },
+    "red-original.stdout": {
+      "local_path": "/workspace/selection-17485-evidence/hook-residuals/red-original.stdout",
+      "sha256": "dd4cdbe16abfa7b485d818c44b79b04e363e0ff582d4a4ec389e00e1d9494532"
+    },
+    "frozen_selection_gates.py": {
+      "local_path": "/workspace/selection-17485-evidence/frozen_selection_gates.py",
+      "sha256": "ab02b9e8c516d9a17c0dd02d90f3ce85afa6fe4c5861527fd0ddc31008dad7a3"
+    },
+    "hook_adapter_pair.py": {
+      "local_path": "/workspace/selection-17485-evidence/hook_adapter_pair.py",
+      "sha256": "3d4e09d84143b7df876ab621d97bd602926727dc6643ee0b79fa464e9b8f07c2"
+    }
+  }
+}
