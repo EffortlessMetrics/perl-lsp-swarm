@@ -11,8 +11,8 @@ use std::error::Error;
 use perl_parser_core::{
     Parser,
     hir::{
-        AccessMode, AssignMode, BinaryOp, DeclStorageClass, HirBody, HirExpr, HirStmt,
-        VariableKind, lower_ast, lower_body,
+        AccessMode, AssignMode, BinaryOp, DeclStorageClass, HirBody, HirExpr, HirStmt, VariableKind,
+        lower_ast, lower_body,
     },
 };
 
@@ -132,8 +132,7 @@ fn return_statement_retains_its_value() -> TestResult {
 #[test]
 fn try_statement_retains_regions_instead_of_a_call_shell() -> TestResult {
     let body = lowered("try { $x = 1; } catch ($e) { $x = 2; }")?;
-    let HirExpr::Try { body: try_body, catch_handlers, .. } = first_expression(&body)?
-    else {
+    let HirExpr::Try { body: try_body, catch_handlers, .. } = first_expression(&body)? else {
         return Err("try statement regressed to an opaque/call shell".into());
     };
     assert_eq!(body.block(*try_body).ok_or("missing try block")?.stmts.len(), 1);
@@ -168,13 +167,11 @@ fn binary_initializer_preserves_add_and_operand_order() -> TestResult {
 #[test]
 fn declaration_retains_name_simple_assignment_and_binding() -> TestResult {
     let body = lowered("my $x = $y;")?;
-    let HirStmt::Let { name, binding: Some(binding), .. } = first_statement(&body)?
-    else {
+    let HirStmt::Let { name, binding: Some(binding), .. } = first_statement(&body)? else {
         return Err("declaration lost its binding".into());
     };
     assert_eq!(name, "x");
-    let HirExpr::Assign { lhs, mode: AssignMode::Simple, .. } = initializer(&body)?
-    else {
+    let HirExpr::Assign { lhs, mode: AssignMode::Simple, .. } = initializer(&body)? else {
         return Err("declaration lost its simple assignment".into());
     };
     assert!(matches!(

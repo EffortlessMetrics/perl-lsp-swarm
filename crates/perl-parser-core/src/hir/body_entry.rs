@@ -86,8 +86,7 @@ mod tests {
         assert_eq!(Some(&body), file.root_body());
         let block = body.block(body.root_block).ok_or("missing root block")?;
         let declaration = block.stmts.first().ok_or("missing declaration")?;
-        let Some(HirStmt::Let { binding: Some(binding), .. }) = body.stmt(*declaration)
-        else {
+        let Some(HirStmt::Let { binding: Some(binding), .. }) = body.stmt(*declaration) else {
             return Err("declaration has no canonical binding".into());
         };
         let occurrences: Vec<_> = body
@@ -99,9 +98,11 @@ mod tests {
             })
             .collect();
         assert_eq!(occurrences.len(), 2);
-        assert!(occurrences.iter().all(|var| {
-            var.binding == Some(*binding) && var.kind == VariableKind::Lexical
-        }));
+        assert!(
+            occurrences
+                .iter()
+                .all(|var| var.binding == Some(*binding) && var.kind == VariableKind::Lexical)
+        );
         assert_eq!(occurrences[0].access, AccessMode::Write);
         assert_eq!(occurrences[1].access, AccessMode::Read);
         assert_eq!(body.source_map, file.root_body().ok_or("missing canonical root")?.source_map);
