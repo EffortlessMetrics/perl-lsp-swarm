@@ -308,7 +308,7 @@ class NestedTests(unittest.TestCase):
         for row in a.NESTED_COMMANDS:
             # Dynamic generated-lock prerequisites are independently exercised
             # by literal JSON-RPC and parser occupancy preparation controls.
-            if row in ('xtask-jsonrpc-lock','xtask-jsonrpc-neutral','xtask-jsonrpc-rejected','xtask-jsonrpc-test','parser-collapsible-if-measure','parser-collapsible-if-test','routed-runtime'):continue
+            if row in ('xtask-jsonrpc-lock','xtask-jsonrpc-neutral','xtask-jsonrpc-rejected','xtask-jsonrpc-test','parser-collapsible-if-measure','parser-collapsible-if-test','routed-runtime',a.HELPER_RUNTIME):continue
             with self.subTest(row=row):
                 cmd,env,cwd=self.command(row)
                 selected=lock_fixture if row in ('xtask-lock-union-fixture','xtask-lock-rustc-fixture','xtask-lock-clippy-fixture','xtask-lock-must-use-fixture','xtask-lock-sweep-fixture') else fixture

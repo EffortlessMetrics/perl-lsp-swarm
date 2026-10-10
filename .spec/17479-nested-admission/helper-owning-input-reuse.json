@@ -1,0 +1,262 @@
+{
+  "schema_version": 1,
+  "current_source_parent": "b5955c0cbb73f4a7da7312ef4393ba51a4366192",
+  "helper_source": "7432f164ca08f5802b9f246ded384a6f1066411d",
+  "selection_source": "71a69a477665e98dd11d1be163a4d08cea51ef64",
+  "proof_ceiling": "exact byte/AST owning-input comparison against prior native proofs; not current aggregate gate/native replay or permission to adopt released-owner measurements",
+  "slices": [
+    {
+      "slice": "disallowed",
+      "qualified_source": "a33a353a91fdf52c4dc6dada8e4248fb9a08fe7e",
+      "named_tests_previously_passed": 1,
+      "comparisons": [
+        {
+          "kind": "owning_named_function",
+          "name": "configured_field_is_rejected_by_clippy",
+          "previous_sha256": "463f7f3d3f7a7599094a9ae9f272631414994ee6e0135b1a53ca221828d49f97",
+          "current_sha256": "463f7f3d3f7a7599094a9ae9f272631414994ee6e0135b1a53ca221828d49f97",
+          "equal": true
+        },
+        {
+          "kind": "fixture_input",
+          "path": ".spec/17479-nested-admission/disallowed-fields-fixture/Cargo.lock",
+          "previous_sha256": "110500e75e68b333cf5c6524800c81dbcaa908ab6099d93f6f5ea797617191f2",
+          "current_sha256": "110500e75e68b333cf5c6524800c81dbcaa908ab6099d93f6f5ea797617191f2",
+          "equal": true
+        },
+        {
+          "kind": "fixture_input",
+          "path": ".spec/17479-nested-admission/disallowed-fields-fixture/Cargo.toml",
+          "previous_sha256": "27e27e7d9d3bcb8f14109bf1dba128d859e43e138525323c5f21789b74679818",
+          "current_sha256": "27e27e7d9d3bcb8f14109bf1dba128d859e43e138525323c5f21789b74679818",
+          "equal": true
+        },
+        {
+          "kind": "fixture_input",
+          "path": ".spec/17479-nested-admission/disallowed-fields-fixture/clippy.toml",
+          "previous_sha256": "2a1df631946a1852472e5a0cbe9be9a9c1ea8d7a8104c2eb9edb6e2d4b5ffafd",
+          "current_sha256": "2a1df631946a1852472e5a0cbe9be9a9c1ea8d7a8104c2eb9edb6e2d4b5ffafd",
+          "equal": true
+        },
+        {
+          "kind": "fixture_input",
+          "path": ".spec/17479-nested-admission/disallowed-fields-fixture/src/lib.rs",
+          "previous_sha256": "cf20649b3527363530653517497fc3a4dfe55c04b639ee66f6691aa9954481f4",
+          "current_sha256": "cf20649b3527363530653517497fc3a4dfe55c04b639ee66f6691aa9954481f4",
+          "equal": true
+        },
+        {
+          "kind": "whole_adapter",
+          "path": "scripts/ci/disallowed_fields_prepare.py",
+          "previous_sha256": "86af154250523b49d7dabd4a9aa9c3be2bdb0c0e3e678c1ad31bb608ec101645",
+          "current_sha256": "52ee91625d507726bd02be5b161bd724440d96dac8946586358d30d33962ffd7",
+          "equal": false,
+          "qualification": "projection changed; previous renderer/owner record not current and cannot be adopted"
+        },
+        {
+          "kind": "diagnostic_oracle_ast",
+          "previous_sha256": "30bff7acb036611aa1092d6113913ca43edb06146e66e8d162819b43a1862917",
+          "current_sha256": "30bff7acb036611aa1092d6113913ca43edb06146e66e8d162819b43a1862917",
+          "equal": true
+        }
+      ]
+    },
+    {
+      "slice": "lock-union",
+      "qualified_source": "d7791bfc6150e52d6ca6c8f79807985964bb956b",
+      "named_tests_previously_passed": 1,
+      "comparisons": [
+        {
+          "kind": "owning_named_function",
+          "name": "the_two_rows_jointly_cover_every_borrowed_guard_discard",
+          "previous_sha256": "f91d6251c3ff0a3ce30329d77309e0871e6897c82379536d802d42ffe8a39f4f",
+          "current_sha256": "f91d6251c3ff0a3ce30329d77309e0871e6897c82379536d802d42ffe8a39f4f",
+          "equal": true
+        },
+        {
+          "kind": "fixture_input",
+          "path": ".spec/17479-nested-admission/lock-union-fixture/Cargo.lock",
+          "previous_sha256": "ff2a47a9ba4466ff072f8b5c2e61193fc9d3dee0c659a1eb27612f1bc309a5d3",
+          "current_sha256": "ff2a47a9ba4466ff072f8b5c2e61193fc9d3dee0c659a1eb27612f1bc309a5d3",
+          "equal": true
+        },
+        {
+          "kind": "fixture_input",
+          "path": ".spec/17479-nested-admission/lock-union-fixture/Cargo.toml",
+          "previous_sha256": "b0eb21e8331b3229c4d6569deab192fca0f8a933685b7326fbe30d47e86c6aba",
+          "current_sha256": "b0eb21e8331b3229c4d6569deab192fca0f8a933685b7326fbe30d47e86c6aba",
+          "equal": true
+        },
+        {
+          "kind": "fixture_input",
+          "path": ".spec/17479-nested-admission/lock-union-fixture/clippy.toml",
+          "previous_sha256": "b5c81f701d0f6613d553e9d074aa55a268a212f6723c3b145803e1cd6be238bc",
+          "current_sha256": "b5c81f701d0f6613d553e9d074aa55a268a212f6723c3b145803e1cd6be238bc",
+          "equal": true
+        },
+        {
+          "kind": "fixture_input",
+          "path": ".spec/17479-nested-admission/lock-union-fixture/src/lib.rs",
+          "previous_sha256": "800cf7a514fcf181cbabc3caf796c31e4094206ec339032563f7c59c56a73133",
+          "current_sha256": "800cf7a514fcf181cbabc3caf796c31e4094206ec339032563f7c59c56a73133",
+          "equal": true
+        },
+        {
+          "kind": "whole_adapter",
+          "path": "scripts/ci/lock_union_prepare.py",
+          "previous_sha256": "02a687410b6fe97b2ba1bd7dac1f9ad4b7150530c21d68ebfa1a7bc553d6abf1",
+          "current_sha256": "e9d1d0d873c5d47ab0704529c556e22c723fe9aa13e11901b8b30878483a0406",
+          "equal": false,
+          "qualification": "projection changed; previous renderer/owner record not current and cannot be adopted"
+        },
+        {
+          "kind": "diagnostic_oracle_ast",
+          "previous_sha256": "6f40f3819b720ae2f3574932cd3b0c3818d9e55bb2586272634c4e5ebc175dee",
+          "current_sha256": "843c8123dc48a29257cb88685c799e6887e0de2b54a4bf4c2137d4c7c034b974",
+          "equal": false
+        }
+      ]
+    },
+    {
+      "slice": "lock-remaining",
+      "qualified_source": "755d1bc95a714d773ff4e85da1ab7c0afc956471",
+      "named_tests_previously_passed": 5,
+      "comparisons": [
+        {
+          "kind": "owning_named_function",
+          "name": "clippy_row_covers_parking_lot_guards_and_not_standard_library",
+          "previous_sha256": "5dc9918a0c6a46ed4d26a5ed4eca979d86e1a3c01e2022d2008243e3239f542f",
+          "current_sha256": "5dc9918a0c6a46ed4d26a5ed4eca979d86e1a3c01e2022d2008243e3239f542f",
+          "equal": true
+        },
+        {
+          "kind": "owning_named_function",
+          "name": "discards_outside_the_governed_forms_are_covered_by_neither_row",
+          "previous_sha256": "b1a4413367f35fd324af240182b810e963880e4d6b67adea68c562b29fa02423",
+          "current_sha256": "b1a4413367f35fd324af240182b810e963880e4d6b67adea68c562b29fa02423",
+          "equal": true
+        },
+        {
+          "kind": "owning_named_function",
+          "name": "explicit_drop_discards_are_covered_by_no_clippy_lint_at_any_level",
+          "previous_sha256": "be1cd75c3eed99458f37fd714ac033697dd869fe817591ba313203d52fa9b598",
+          "current_sha256": "be1cd75c3eed99458f37fd714ac033697dd869fe817591ba313203d52fa9b598",
+          "equal": true
+        },
+        {
+          "kind": "owning_named_function",
+          "name": "let_underscore_must_use_owns_owned_and_mapped_guard_discards",
+          "previous_sha256": "f0096bd0dbd2cf2a16abe46c6de169b2c78f2db8cd904edcb43a41b32248862e",
+          "current_sha256": "f0096bd0dbd2cf2a16abe46c6de169b2c78f2db8cd904edcb43a41b32248862e",
+          "equal": true
+        },
+        {
+          "kind": "owning_named_function",
+          "name": "rustc_row_covers_standard_library_guards_and_not_parking_lot",
+          "previous_sha256": "19d489122752fe6c7f9779446fb1fae9692e433e5f5f8849895fb874082f70fb",
+          "current_sha256": "19d489122752fe6c7f9779446fb1fae9692e433e5f5f8849895fb874082f70fb",
+          "equal": true
+        },
+        {
+          "kind": "fixture_input",
+          "path": ".spec/17479-nested-admission/lock-union-fixture/Cargo.lock",
+          "previous_sha256": "ff2a47a9ba4466ff072f8b5c2e61193fc9d3dee0c659a1eb27612f1bc309a5d3",
+          "current_sha256": "ff2a47a9ba4466ff072f8b5c2e61193fc9d3dee0c659a1eb27612f1bc309a5d3",
+          "equal": true
+        },
+        {
+          "kind": "fixture_input",
+          "path": ".spec/17479-nested-admission/lock-union-fixture/Cargo.toml",
+          "previous_sha256": "b0eb21e8331b3229c4d6569deab192fca0f8a933685b7326fbe30d47e86c6aba",
+          "current_sha256": "b0eb21e8331b3229c4d6569deab192fca0f8a933685b7326fbe30d47e86c6aba",
+          "equal": true
+        },
+        {
+          "kind": "fixture_input",
+          "path": ".spec/17479-nested-admission/lock-union-fixture/clippy.toml",
+          "previous_sha256": "b5c81f701d0f6613d553e9d074aa55a268a212f6723c3b145803e1cd6be238bc",
+          "current_sha256": "b5c81f701d0f6613d553e9d074aa55a268a212f6723c3b145803e1cd6be238bc",
+          "equal": true
+        },
+        {
+          "kind": "fixture_input",
+          "path": ".spec/17479-nested-admission/lock-union-fixture/src/lib.rs",
+          "previous_sha256": "800cf7a514fcf181cbabc3caf796c31e4094206ec339032563f7c59c56a73133",
+          "current_sha256": "800cf7a514fcf181cbabc3caf796c31e4094206ec339032563f7c59c56a73133",
+          "equal": true
+        },
+        {
+          "kind": "whole_adapter",
+          "path": "scripts/ci/lock_union_prepare.py",
+          "previous_sha256": "ef4423a943848b0fb2fbcccddfe3f4ab3751e7d999af22693979746efb971d50",
+          "current_sha256": "e9d1d0d873c5d47ab0704529c556e22c723fe9aa13e11901b8b30878483a0406",
+          "equal": false,
+          "qualification": "projection changed; previous renderer/owner record not current and cannot be adopted"
+        },
+        {
+          "kind": "diagnostic_oracle_ast",
+          "previous_sha256": "843c8123dc48a29257cb88685c799e6887e0de2b54a4bf4c2137d4c7c034b974",
+          "current_sha256": "843c8123dc48a29257cb88685c799e6887e0de2b54a4bf4c2137d4c7c034b974",
+          "equal": true
+        }
+      ]
+    },
+    {
+      "slice": "jsonrpc",
+      "qualified_source": "17b67e88d989de813a4d5b535a6f35bdba72a327",
+      "named_tests_previously_passed": 2,
+      "comparisons": [
+        {
+          "kind": "owning_named_function",
+          "name": "jsonrpc_model_is_dependency_closed_and_rejects_indirect_perl_taxonomy",
+          "previous_sha256": "cf43b6794abf3962242652e02ecfe50e7ac5eed4a37f624f14985e9072e38782",
+          "current_sha256": "cf43b6794abf3962242652e02ecfe50e7ac5eed4a37f624f14985e9072e38782",
+          "equal": true
+        },
+        {
+          "kind": "owning_named_function",
+          "name": "probe_lock_rejects_path_git_and_unreviewed_registry_sources",
+          "previous_sha256": "cf9645c82dcf3efac33e5c13f6a11123b1ee6d26a6c3af05bda7f0024a31b478",
+          "current_sha256": "cf9645c82dcf3efac33e5c13f6a11123b1ee6d26a6c3af05bda7f0024a31b478",
+          "equal": true
+        },
+        {
+          "kind": "fixture_input",
+          "path": ".spec/17479-nested-admission/jsonrpc-fixture/Cargo.toml",
+          "previous_sha256": "a7c830b1586713af534229e2642fb308ba73a23b7697397bc5d0719a8b5c6b3d",
+          "current_sha256": "a7c830b1586713af534229e2642fb308ba73a23b7697397bc5d0719a8b5c6b3d",
+          "equal": true
+        },
+        {
+          "kind": "fixture_input",
+          "path": ".spec/17479-nested-admission/jsonrpc-fixture/neutral.rs.in",
+          "previous_sha256": "8d57a34eb9b14c216e7118e13c8b003de9bb762f1d3c07f4ca529bba15921318",
+          "current_sha256": "8d57a34eb9b14c216e7118e13c8b003de9bb762f1d3c07f4ca529bba15921318",
+          "equal": true
+        },
+        {
+          "kind": "fixture_input",
+          "path": ".spec/17479-nested-admission/jsonrpc-fixture/rejected.rs.in",
+          "previous_sha256": "6f5ccc009c9fe3b3c9b2e6ae26cd04d3610273a02be3be89fcf75f71188fbd24",
+          "current_sha256": "6f5ccc009c9fe3b3c9b2e6ae26cd04d3610273a02be3be89fcf75f71188fbd24",
+          "equal": true
+        },
+        {
+          "kind": "whole_adapter",
+          "path": "scripts/ci/jsonrpc_prepare.py",
+          "previous_sha256": "c1377c0e2277cfcbd0c77901630fb7be294502a2ffa0232c70d735bb841f5d77",
+          "current_sha256": "a92b7623945b5f7889b6e76cb5d9882941c85e64b486d5b58537880e5fb230cd",
+          "equal": false,
+          "qualification": "projection changed; previous renderer/owner record not current and cannot be adopted"
+        },
+        {
+          "kind": "neutral_protocol_model",
+          "path": "crates/perl-lsp-rs-core/src/protocol/jsonrpc.rs",
+          "previous_sha256": "40f262fb7497b7d95ac4426bf7e385e68cd4966d8b0394ba25fcd837bbebcc5b",
+          "current_sha256": "40f262fb7497b7d95ac4426bf7e385e68cd4966d8b0394ba25fcd837bbebcc5b",
+          "equal": true
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,18 @@
+# Manual, unactivated; composition and capacity blockers apply.
+schema_version: 1
+global:
+  default_timeout_seconds: 1500
+tiers:
+  merge_gate:
+    description: Exact two-package helper owning runtime
+    target_duration_seconds: 1500
+    enforcement: required
+gates:
+  - name: helper_routed_owning
+    tier: merge_gate
+    description: Product artifact handoff, nine prepared measurements, original helper harnesses
+    required: true
+    command: python3 -I scripts/ci/perllsp_workspace_prepare.py --helper-runtime
+    timeout_seconds: 1500
+    retry_count: 0
+    tags: [test, narrow-qualification]

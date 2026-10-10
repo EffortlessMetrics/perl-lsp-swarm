@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "rows": [
+    "perllsp-build",
+    "helper-routed-runtime",
+    "xtask-disallowed-fields-fixture",
+    "xtask-lock-union-fixture",
+    "xtask-lock-rustc-fixture",
+    "xtask-lock-clippy-fixture",
+    "xtask-lock-must-use-fixture",
+    "xtask-lock-sweep-fixture",
+    "xtask-jsonrpc-lock",
+    "xtask-jsonrpc-neutral",
+    "xtask-jsonrpc-rejected"
+  ]
+}

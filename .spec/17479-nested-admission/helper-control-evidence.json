@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "proof_kind": "Python finite-contract controls and capacity preflight; no native Cargo/harness execution",
+  "logs": [
+    {
+      "path": "helper-all-controls-final.log",
+      "sha256": "856b2fb76c9d55bf179bf78db62ba10fe905246b49ceffb267659f52fa4fd80c",
+      "tests_run": 226,
+      "tests_passed": 225,
+      "tests_skipped": 1,
+      "scope": "Before addition of four transitive release workflow hashes; same helper implementation"
+    },
+    {
+      "path": "helper-route-controls-bound-workflows.log",
+      "sha256": "0c9cad54355d7e44ac6caf7fb6f4068b601409f09bff2483a17ff6135410720a",
+      "tests_run": 9,
+      "tests_passed": 9,
+      "tests_skipped": 0,
+      "scope": "Final 1075-subject helper map; synthetic original-owner/raw replay controls"
+    },
+    {
+      "path": "helper-perllsp-controls-current.log",
+      "sha256": "bb03fc87de776390c8428f25c4d2c1c1ba1eb73854009312b83dc7e86f29aeef",
+      "tests_run": 30,
+      "tests_passed": 30,
+      "tests_skipped": 0,
+      "scope": "Product adapter mode/artifact handoff controls"
+    },
+    {
+      "path": "helper-product-default-preflight.log",
+      "sha256": "672160b16d027395fffdc9baa2d32c46473bbd73de731f8834162ca177b09684",
+      "tests_run": null,
+      "tests_passed": null,
+      "tests_skipped": null,
+      "scope": "Default headroom refusal; exit75, lease false; no Cargo"
+    }
+  ],
+  "subjects": {
+    "scripts/cargo_admitted.py": "2b3be9e327585218942bb55ed63302e32bfc7995325547d284717df54a1d5fe3",
+    "scripts/ci/perllsp_workspace_prepare.py": "b9c9132ac990c1f5f4ed0dbfd1029491eeb51046116a763dcb7d6113c0d0b022",
+    "scripts/ci/routed_nested_prepare.py": "4797f83e4ed07d3933367c34a0957b77eeca1d091eb10c8f950bc209d58772cf",
+    "scripts/tests/test_cargo_admitted_helper_route.py": "a8e8a0d1d9582e3bcc64b60cdf95251f22fb39752747ed09fff447ce1cf41a4e",
+    ".spec/17479-nested-admission/helper-source-map.json": "6cbd2fdd6f9b825c4c9aecdcce3d86494bee3c6226a7798ffe4b202f513ae382"
+  },
+  "independent_review": "No additional finding; four extracted release workflows current bytes match;1075 subjects; two composition targets still refuse",
+  "remaining_blockers": [
+    "two missing helper-owned composition targets",
+    "current native artifact and CLI bridge",
+    "aggregate resource growth budget",
+    "runtime fixture output confinement"
+  ]
+}

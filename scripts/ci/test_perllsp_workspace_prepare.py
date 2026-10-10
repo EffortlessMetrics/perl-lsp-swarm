@@ -199,7 +199,7 @@ class HandoffControls(unittest.TestCase):
                           side_effect=fixture.a.Denied('unknown dynamic compiler obligation')) as preflight:
             with self.assertRaisesRegex(fixture.a.Denied, 'unknown dynamic'):
                 adapter.run('--runtime', self.env, invoke)
-        preflight.assert_called_once_with(self.env)
+        preflight.assert_called_once_with(self.env, "routed-runtime")
         self.assertEqual(calls, [])
 
     def test_runtime_failed_preparation_cannot_launch_routed_tests(self):

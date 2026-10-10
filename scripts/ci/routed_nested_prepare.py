@@ -24,15 +24,19 @@ def context(env):
     snapshot, _ = owner.bounded_json(descriptor['nested_snapshot']['path'])
     plan = snapshot['plan']
     binding = plan['routed_preparation']
-    if owner.routed_preparation_binding(Path(descriptor['worktree'])) != binding:
+    if owner.routed_preparation_binding(Path(descriptor['worktree']), binding["runtime_row"]) != binding:
         raise owner.Denied('routed source/mapping/interpreter binding changed')
     return descriptor, plan
 
 
-def preflight(env):
+def preflight(env, expected_runtime=None):
     owner.nested_command('perllsp-build', env)
     descriptor, plan = context(env)
-    required = {*ROWS, owner.PARSER_OCCUPANCY_TEST_ROW, 'routed-runtime', 'perllsp-build'}
+    runtime = plan['routed_preparation']['runtime_row']
+    if expected_runtime is not None and runtime != expected_runtime:
+        raise owner.Denied('requested runtime differs from finite preparation binding')
+    required = {*owner.ROUTED_FIXTURE_ROWS, runtime, 'perllsp-build'}
+    if runtime == 'routed-runtime':required.update((owner.PARSER_OCCUPANCY_ROW, owner.PARSER_OCCUPANCY_TEST_ROW))
     if not required.issubset(plan['request']['rows']):
         raise owner.Denied('routed runtime lacks a finite prerequisite row')
     owner.routed_mapping(plan)
@@ -76,6 +80,11 @@ def prepare(env=None, invoke=subprocess.run):
         with path.open('x',encoding='utf-8') as output:json.dump(record,output)
         owner.nested_command(row, env)
         subjects[row] = owner.file_subject(path)
+    env[owner.ROUTED_MEASUREMENTS] = json.dumps(subjects,sort_keys=True)
+    runtime = plan['routed_preparation']['runtime_row']
+    if runtime == owner.HELPER_RUNTIME:
+        owner.nested_command(runtime,env)
+        return env
     # Occupancy already has its actual native raw-record/frozen-reader protocol.
     if occupancy.measure(env, invoke) != 0:
         raise owner.Denied('failed actual occupancy preparation blocks runtime')

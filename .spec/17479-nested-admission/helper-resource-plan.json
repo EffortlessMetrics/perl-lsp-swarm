@@ -1,0 +1,20 @@
+{
+  "worktree": "/workspace/perl-lsp-17479-nested",
+  "slot": "/workspace/.devplane-17479/bf4c09722087-linux-727b814873041b4a",
+  "resources": {
+    "target": "/workspace/.devplane-17479/bf4c09722087-linux-727b814873041b4a/worktrees/ca8a330a66f6d236fa1e8d7f63aed3c09474f0bcc618a13452eb2d5faca8978e/target",
+    "build": "/workspace/.devplane-17479/bf4c09722087-linux-727b814873041b4a/worktrees/ca8a330a66f6d236fa1e8d7f63aed3c09474f0bcc618a13452eb2d5faca8978e/build",
+    "cargo_home": "/workspace/.cloud-tools/cargo",
+    "temp": "/workspace/.devplane-17479/bf4c09722087-linux-727b814873041b4a/worktrees/ca8a330a66f6d236fa1e8d7f63aed3c09474f0bcc618a13452eb2d5faca8978e/temp"
+  },
+  "jobs": 2,
+  "incremental": 0,
+  "product_budget_only": {
+    "expected_growth_bytes": 8589934592,
+    "reserve_bytes": 8589934592,
+    "basis_verified": false,
+    "basis": "parent exact perllsp graph190packages29repo; same declared sources; warm estimate is not proven for this namespace and not aggregate277budget"
+  },
+  "aggregate_helper_budget": null,
+  "full_route_disposition": "BLOCKED pending current composition, scoped complete cache/artifact/link-copy/temp census and runtime fixture confinement; default40GiB unchanged"
+}

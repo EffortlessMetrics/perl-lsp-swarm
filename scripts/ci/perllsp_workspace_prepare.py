@@ -20,7 +20,7 @@ import routed_nested_prepare
 HANDOFF = "CARGO_ADMITTED_PERLLSP_HANDOFF"
 PYTHON = "CARGO_ADMITTED_PYTHON"
 LIMIT = 64 * 1024 * 1024
-MODES = {"--compile": ("routed-compile",), "--runtime": ("routed-runtime",),
+MODES = {"--helper-compile": ("helper-routed-compile",), "--helper-runtime": (owner.HELPER_RUNTIME,), "--compile": ("routed-compile",), "--runtime": ("routed-runtime",),
          "--qualify": ("perllsp-handoff-support", "perllsp-handoff-common")}
 SELECTED_TESTS = {"perllsp-handoff-support": "health_prints_ok",
                   "perllsp-handoff-common": "lsp_server_version_matches_crate_version"}
@@ -154,12 +154,12 @@ def run(mode, env=None, invoke=subprocess.run):
     if mode not in MODES:
         raise owner.Denied("unknown perllsp preparation mode")
     rows = MODES[mode]
-    if mode == "--runtime":
+    if mode in ("--runtime", "--helper-runtime"):
         # Existing canonical adapter, not policy activation. An unknown
         # dynamic edge or missing finite prerequisite refuses before builds.
-        routed_nested_prepare.preflight(env)
+        routed_nested_prepare.preflight(env, rows[0])
     for row in ("perllsp-build", *rows):
-        if mode == "--runtime" and row == "routed-runtime":
+        if mode in ("--runtime", "--helper-runtime") and row in ("routed-runtime", owner.HELPER_RUNTIME):
             continue  # Needs actual measurements, rendered only after prep.
         owner.nested_command(row, env)  # whole-mode admission before any build
     command, child, cwd = owner.nested_command("perllsp-build", env)
@@ -170,7 +170,7 @@ def run(mode, env=None, invoke=subprocess.run):
     if output.returncode:
         return output.returncode if output.returncode > 0 else 1
     child = capture(output.stdout, env)
-    if mode == "--runtime":
+    if mode in ("--runtime", "--helper-runtime"):
         child = routed_nested_prepare.prepare(child, invoke)
     for row in rows:
         command, child, cwd = owner.nested_command(row, child)
@@ -201,7 +201,7 @@ if __name__ == "__main__":
         elif len(args) == 1 and args[0] in MODES:
             sys.exit(run(args[0]))
         else:
-            raise owner.Denied("expected --compile, --runtime, --qualify or --resolve PROFILE")
+            raise owner.Denied("expected --compile/--runtime, --helper-compile/--helper-runtime, --qualify or --resolve PROFILE")
     except (owner.Denied, KeyError, TypeError, ValueError, OSError) as error:
         print("perllsp preparation refused: " + str(error), file=sys.stderr)
         sys.exit(1)

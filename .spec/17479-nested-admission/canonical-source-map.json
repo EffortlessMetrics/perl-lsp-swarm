@@ -471,6 +471,25 @@
       "perllsp",
       "-p",
       "xtask"
+    ],
+    "helper-routed-compile": [
+      "test",
+      "--locked",
+      "--tests",
+      "-p",
+      "perl-ci-hygiene",
+      "-p",
+      "xtask",
+      "--no-run"
+    ],
+    "helper-routed-runtime": [
+      "test",
+      "--locked",
+      "--tests",
+      "-p",
+      "perl-ci-hygiene",
+      "-p",
+      "xtask"
     ]
   },
   "compiler_looking_source_subjects": {

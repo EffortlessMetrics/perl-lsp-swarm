@@ -502,6 +502,27 @@ PARSER_OCCUPANCY_ROW = "parser-collapsible-if-measure"
 PARSER_OCCUPANCY_TEST_ROW = "parser-collapsible-if-test"
 ROUTED_MEASUREMENTS = "CARGO_ADMITTED_ROUTED_MEASUREMENTS"
 ROUTED_FIXTURE_ROWS = (DISALLOWED_FIXTURE_ROW, *LOCK_FIXTURE_ROWS, *JSONRPC_FIXTURE_ROWS)
+HELPER_PACKAGES = ("perl-ci-hygiene", "xtask")
+HELPER_RUNTIME = "helper-routed-runtime"
+HELPER_TRANSITIVE_INPUTS = (
+    "scripts/check-zed-upstream-submission-packet.sh", "scripts/reviews/disposition",
+    "scripts/reviews/threads", "scripts/ci/classify-ripr-lane-termination",
+    "scripts/ci/scope_cache_key.py", "scripts/ci/release_artifact_size_smoke.sh",
+    "scripts/ci/release_artifact_size_stage.sh", "crates/perl-ci-hygiene/src/git_hooks.rs",
+    ".github/workflows/ci.yml", ".github/workflows/release.yml",
+    ".github/workflows/release-orchestration.yml",
+    ".github/workflows/publish-crates.yml", ".github/workflows/publish-extension.yml",
+    ".github/workflows/docker-publish.yml",
+    "scripts/release_terminal_manifest.py", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml",
+    "xtask/Cargo.toml", "crates/perl-ci-hygiene/Cargo.toml",
+    "scripts/zed_public_asset_receipts.py", "scripts/zed_dap_asset_receipts.py",
+    "scripts/zed_exact_source_prepare.py", "scripts/zed_exact_source_launch.py",
+    "scripts/zed_exact_source_finalize.py", "scripts/lite_xl_public_replay.py",
+    "scripts/ux/validate_vim_first_class_profile.py",
+    "xtask/tests/fixtures/ci-route-plan/generate_golden.py",
+)
+HELPER_TRANSITIVE_DIRS = ("scripts/zed_host", "scripts/zed_assets", "scripts/lite_xl_replay",
+                          "crates/perl-tdd-support/src", "crates/perl-test-must/src")
 ROUTED_SOURCE_PATTERN = r'Command::new\([^\n]*("cargo"|\bcargo\b|env!\("CARGO"\))|cmd\("cargo"|exec[^\n]*"cargo"'
 PARSER_OCCUPANCY_TESTS = (
     'cfg_attr_allow_fixture_is_detected',
@@ -567,6 +588,9 @@ for _name in ("cross_file_goto_definition_tests", "navigation_regression_tests")
                                             "--", "--test-threads=1", "--color", "never")
 for _name, _suffix in (("routed-compile", ("--no-run",)), ("routed-runtime", ())):
     NESTED_COMMANDS[_name] = ("test", "--locked", "--tests", *sum((("-p", p) for p in NESTED_PACKAGES), ()), *_suffix)
+
+for _name, _suffix in (("helper-routed-compile", ("--no-run",)), (HELPER_RUNTIME, ())):
+    NESTED_COMMANDS[_name] = ("test", "--locked", "--tests", *sum((("-p", p) for p in HELPER_PACKAGES), ()), *_suffix)
 
 
 def bounded_json(path, limit=None):
@@ -702,8 +726,12 @@ def nested_plan(filename, env, worktree, paths):
         plan["jsonrpc_fixture"] = rpc_fixture
     if occupancy:
         plan["parser_occupancy"] = occupancy
-    if "routed-runtime" in data["rows"]:
-        plan["routed_preparation"] = routed_preparation_binding(worktree)
+    runtime_rows = [row for row in ("routed-runtime", HELPER_RUNTIME) if row in data["rows"]]
+    if len(runtime_rows) > 1:
+        raise Denied("one exact routed runtime per preparation owner")
+    if runtime_rows:
+        plan["routed_preparation"] = routed_preparation_binding(worktree, runtime_rows[0])
+        routed_mapping(plan)  # Refuse incomplete closure before root Cargo/bootstrap admission.
     return plan
 
 
@@ -790,18 +818,33 @@ def parser_occupancy_binding(worktree):
             "python": file_subject(Path(sys.executable).resolve(strict=True))}
 
 
-def routed_preparation_binding(worktree):
-    return {"adapter": file_subject(worktree / "scripts/ci/routed_nested_prepare.py"),
-            "mapping": file_subject(worktree / ".spec/17479-nested-admission/canonical-source-map.json"),
+def routed_preparation_binding(worktree, row="routed-runtime"):
+    if row not in ("routed-runtime", HELPER_RUNTIME):
+        raise Denied("unknown finite routed runtime")
+    mapping = "helper-source-map.json" if row == HELPER_RUNTIME else "canonical-source-map.json"
+    return {"runtime_row": row, "adapter": file_subject(worktree / "scripts/ci/routed_nested_prepare.py"),
+            "mapping": file_subject(worktree / ".spec/17479-nested-admission" / mapping),
             "python": file_subject(Path(sys.executable).resolve(strict=True))}
 
 
+def helper_reviewed_subjects(worktree):
+    roots = [worktree / "xtask" / part for part in ("src", "tests")]
+    roots += [worktree / "crates/perl-ci-hygiene" / part for part in ("src", "tests")]
+    roots += [worktree / rel for rel in HELPER_TRANSITIVE_DIRS]
+    paths = {path for root in roots for path in root.rglob("*")
+             if path.is_file() and path.suffix in (".rs", ".py", ".sh", ".json", ".toml", ".yml", ".yaml")}
+    paths.update(worktree / rel for rel in HELPER_TRANSITIVE_INPUTS)
+    return {str(path.relative_to(worktree)): file_subject(path)["sha256"] for path in sorted(paths)}
+
+
 def routed_mapping(plan):
-    mapping, subject = bounded_json(plan["routed_preparation"]["mapping"]["path"])
+    row = plan["routed_preparation"]["runtime_row"]
+    helper = row == HELPER_RUNTIME
+    mapping, subject = bounded_json(plan["routed_preparation"]["mapping"]["path"], limit=1024*1024)
     if (subject != plan["routed_preparation"]["mapping"]
             or type(mapping.get("schema_version")) is not int or mapping["schema_version"] != 1
-            or mapping.get("packages") != list(NESTED_PACKAGES)
-            or mapping.get("fixture_rows") != [*ROUTED_FIXTURE_ROWS, PARSER_OCCUPANCY_ROW]
+            or mapping.get("packages") != list(HELPER_PACKAGES if helper else NESTED_PACKAGES)
+            or mapping.get("fixture_rows") != [*ROUTED_FIXTURE_ROWS, *((PARSER_OCCUPANCY_ROW,) if not helper else ())]
             or mapping.get("row_commands") != {row:list(args) for row,args in NESTED_COMMANDS.items()}
             or mapping.get("source_scan_pattern") != ROUTED_SOURCE_PATTERN
             or any(not isinstance(mapping.get(key), list) or any(not isinstance(x,str) for x in mapping[key])
@@ -809,13 +852,24 @@ def routed_mapping(plan):
         raise Denied("missing/changed finite source/command mapping")
     worktree = Path(plan["routed_preparation"]["mapping"]["path"]).parents[2]
     roots = [worktree / "xtask" / part for part in ("src", "tests")]
-    roots += [worktree / "crates" / package / part for package in NESTED_PACKAGES
+    roots += [worktree / "crates" / package / part for package in (HELPER_PACKAGES if helper else NESTED_PACKAGES)
               if package != "xtask" for part in ("src", "tests")]
     observed = {str(path.relative_to(worktree)): file_subject(path)["sha256"]
                 for root in roots for path in root.rglob("*.rs")
                 if re.search(ROUTED_SOURCE_PATTERN, path.read_text())}
     if not observed or mapping.get("compiler_looking_source_subjects") != observed:
         raise Denied("new/changed/unmapped compiler-looking source requires classification")
+    if helper:
+        targets = mapping.get("declared_targets")
+        if (not isinstance(targets, dict) or set(targets) != set(HELPER_PACKAGES)
+                or sum(len(targets[p]) for p in HELPER_PACKAGES) != 277
+                or any(not isinstance(target,dict) or target.get("src_path") not in mapping.get("reviewed_source_subjects", {})
+                       for package in HELPER_PACKAGES for target in targets[package])):
+            raise Denied("missing finite helper composition target/source")
+    if helper and (mapping.get("reviewed_source_subjects") != helper_reviewed_subjects(worktree)
+                   or mapping.get("excluded_dynamic_group_count") != 6
+                   or mapping.get("runtime_row") != HELPER_RUNTIME):
+        raise Denied("new/changed/unbound finite helper source or transitive input")
     if mapping["unknown_dynamic"] or mapping["missing_active_rows"]:
         raise Denied("unclassified/missing dynamic compiler obligation blocks routed runtime: "
                      + json.dumps({key:mapping[key] for key in ("unknown_dynamic", "missing_active_rows")}))
@@ -1145,7 +1199,7 @@ def nested_command(row, env=None):
         if occupancy is not None and parser_occupancy_binding(worktree) != occupancy:
             raise Denied("parser occupancy source/adapter changed")
         routed = plan.get("routed_preparation")
-        if routed is not None and routed_preparation_binding(worktree) != routed:
+        if routed is not None and routed_preparation_binding(worktree, routed["runtime_row"]) != routed:
             raise Denied("routed preparation source/mapping/interpreter changed")
         if row in (PARSER_OCCUPANCY_ROW, PARSER_OCCUPANCY_TEST_ROW) and occupancy is None:
             raise Denied("parser occupancy measurement is not bound")
@@ -1185,15 +1239,16 @@ def nested_command(row, env=None):
             raise Denied("nested rustup selector changed")
         if actual != plan["compiler_environment"] and actual != expected:
             raise Denied("nested compiler/profile environment changed")
-        if row == "routed-runtime":
-            if routed is None:
+        if row in ("routed-runtime", HELPER_RUNTIME):
+            if routed is None or routed["runtime_row"] != row:
                 raise Denied("routed runtime has no bound preparation/projection")
             routed_mapping(plan)
             for member in ROUTED_FIXTURE_ROWS:
                 routed_phase_record(plan, receipt, member, env)
-            measured, subject = parser_occupancy_measurement(plan, receipt)
-            if measured["exit_code"] != 0 or json.loads(env["CARGO_ADMITTED_OCCUPANCY_MEASUREMENT"]) != subject:
-                raise Denied("routed runtime needs frozen successful occupancy preparation")
+            if row == "routed-runtime":
+                measured, subject = parser_occupancy_measurement(plan, receipt)
+                if measured["exit_code"] != 0 or json.loads(env["CARGO_ADMITTED_OCCUPANCY_MEASUREMENT"]) != subject:
+                    raise Denied("routed runtime needs frozen successful occupancy preparation")
         env.pop("LD_LIBRARY_PATH", None)
         env.update(expected)
         selected_fixture = lock_fixture if row in (*LOCK_FIXTURE_ROWS, LOCK_UNION_TEST_ROW, LOCK_PARTITION_TEST_ROW) else fixture
@@ -1201,7 +1256,7 @@ def nested_command(row, env=None):
             selected_fixture = rpc_fixture
         if row in (PARSER_OCCUPANCY_ROW, PARSER_OCCUPANCY_TEST_ROW):
             selected_fixture = occupancy
-        if row == "routed-runtime":
+        if row in ("routed-runtime", HELPER_RUNTIME):
             selected_fixture = {"fields": fixture, "locks": lock_fixture, "rpc": rpc_fixture,
                                 "occupancy": occupancy, "routed": routed}
         return render_nested(row, env, worktree, paths, plan["toolchain"], selected_fixture)
@@ -1266,13 +1321,14 @@ def render_nested(row, env, worktree, paths, toolchain, fixture=None):
         record = Path(paths["temp"]) / ("parser-occupancy-measurement-" + str(descriptor["pid"]) + ".json")
         controlled["CARGO_ADMITTED_OCCUPANCY_PYTHON"] = fixture["python"]["path"]
         controlled["CARGO_ADMITTED_OCCUPANCY_MEASUREMENT"] = json.dumps(file_subject(record), sort_keys=True)
-    if row == "routed-runtime":
+    if row in ("routed-runtime", HELPER_RUNTIME):
         controlled.update({ROUTED_MEASUREMENTS: env[ROUTED_MEASUREMENTS],
             "CARGO_ADMITTED_FIXTURE_PYTHON": fixture["fields"]["python"]["path"],
             "CARGO_ADMITTED_LOCK_PYTHON": fixture["locks"]["python"]["path"],
             "CARGO_ADMITTED_JSONRPC_PYTHON": fixture["rpc"]["python"]["path"],
-            "CARGO_ADMITTED_JSONRPC_ROOT": fixture["rpc"]["cwd"],
-            "CARGO_ADMITTED_OCCUPANCY_PYTHON": fixture["occupancy"]["python"]["path"],
+            "CARGO_ADMITTED_JSONRPC_ROOT": fixture["rpc"]["cwd"]})
+    if row == "routed-runtime":
+        controlled.update({"CARGO_ADMITTED_OCCUPANCY_PYTHON": fixture["occupancy"]["python"]["path"],
             "CARGO_ADMITTED_OCCUPANCY_MEASUREMENT": env["CARGO_ADMITTED_OCCUPANCY_MEASUREMENT"]})
     env.update(controlled)
     command = [exact["cargo"]["path"]]
