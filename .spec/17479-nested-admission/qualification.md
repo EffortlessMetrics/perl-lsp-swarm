@@ -22,6 +22,11 @@ as behavioral tests. Both resolver families validate the current artifact and
 live owner without invoking Cargo. There are four Cargo invocations including
 the outer bootstrap, not four necessarily cold compilations.
 
+The later [scoped native result](qualification-results.md) records a successful
+warm execution of exactly these two consumers on an immutable source revision,
+with actual artifact, resource and owner-settlement evidence. Its two-test
+denominator is separate from generic gate-receipt metrics and canonical coverage.
+
 ## Linux operator command
 
 Use a clean committed worktree and the installed native pinned toolchain. Keep

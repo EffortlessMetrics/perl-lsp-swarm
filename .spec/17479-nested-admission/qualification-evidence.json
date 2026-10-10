@@ -1,0 +1,225 @@
+{
+  "schema_version": 1,
+  "qualification": "manual narrow Linux warm experiment",
+  "tested_source": "b2f4ea124fa0c5aa3e436d164f634a23b2fe861e",
+  "platform": "linux x86_64-unknown-linux-gnu",
+  "toolchain_pin": "1.95.0",
+  "gate_receipt_toolchain_reporting": "unknown; native pinned tools independently bound by owner snapshot",
+  "cargo_invocations": 4,
+  "outer_argv": [
+    "run",
+    "-p",
+    "xtask",
+    "--bin",
+    "xtask",
+    "--locked",
+    "--",
+    "gates",
+    "--tier",
+    "merge-gate",
+    "--gate",
+    "perllsp_handoff_narrow",
+    "--gate-policy",
+    ".spec/17479-nested-admission/qualification-gates.yaml",
+    "--receipt",
+    "--receipt-path",
+    "/workspace/perl-lsp-17479-nested/target/receipts/perllsp-handoff-narrow.json"
+  ],
+  "rows": [
+    "perllsp-build",
+    "perllsp-handoff-support",
+    "perllsp-handoff-common"
+  ],
+  "runtime_denominator": 2,
+  "named_results": [
+    {
+      "test": "health_prints_ok",
+      "resolver": "support",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "filtered_out": 32,
+      "runtime_seconds": 1.04
+    },
+    {
+      "test": "lsp_server_version_matches_crate_version",
+      "resolver": "common",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "filtered_out": 40,
+      "runtime_seconds": 1.19
+    }
+  ],
+  "generic_gate_metrics": {
+    "tests_total": 1,
+    "tests_passed": 1,
+    "tests_failed": 0,
+    "tests_ignored": 0,
+    "limitation": "generic parser returns the first nonzero harness summary, not aggregate two-leaf coverage"
+  },
+  "artifact": {
+    "path": "/workspace/.devplane-17479/bf4c09722087-linux-727b814873041b4a/worktrees/ca8a330a66f6d236fa1e8d7f63aed3c09474f0bcc618a13452eb2d5faca8978e/target/debug/perllsp",
+    "file_identity": [
+      27,
+      1457655,
+      141146776,
+      1791628802355389155,
+      1791628802387388197
+    ],
+    "sha256": "cda511066a24cc628fbe86396666c56d54c6570a937d6cc36d8c2c37bbe276ce"
+  },
+  "cargo_artifact": {
+    "reason": "compiler-artifact",
+    "package_id": "path+file:///workspace/perl-lsp-17479-nested/crates/perllsp#0.17.0",
+    "manifest_path": "/workspace/perl-lsp-17479-nested/crates/perllsp/Cargo.toml",
+    "target": {
+      "kind": [
+        "bin"
+      ],
+      "crate_types": [
+        "bin"
+      ],
+      "name": "perllsp",
+      "src_path": "/workspace/perl-lsp-17479-nested/crates/perllsp/src/main.rs",
+      "edition": "2024",
+      "doc": true,
+      "doctest": false,
+      "test": true
+    },
+    "profile": {
+      "opt_level": "1",
+      "debuginfo": "line-tables-only",
+      "debug_assertions": true,
+      "overflow_checks": true,
+      "test": false
+    },
+    "features": [],
+    "filenames": [
+      "/workspace/.devplane-17479/bf4c09722087-linux-727b814873041b4a/worktrees/ca8a330a66f6d236fa1e8d7f63aed3c09474f0bcc618a13452eb2d5faca8978e/target/debug/perllsp"
+    ],
+    "executable": "/workspace/.devplane-17479/bf4c09722087-linux-727b814873041b4a/worktrees/ca8a330a66f6d236fa1e8d7f63aed3c09474f0bcc618a13452eb2d5faca8978e/target/debug/perllsp",
+    "fresh": false
+  },
+  "snapshot_sha256": "b3a23fe16d84d0064914985e53fa0865efab7501c4354452321bbdbac55aeb6f",
+  "lease_live_during_evidence_copy": true,
+  "scope_resources": {
+    "target": "/workspace/.devplane-17479/bf4c09722087-linux-727b814873041b4a/worktrees/ca8a330a66f6d236fa1e8d7f63aed3c09474f0bcc618a13452eb2d5faca8978e/target",
+    "build": "/workspace/.devplane-17479/bf4c09722087-linux-727b814873041b4a/worktrees/ca8a330a66f6d236fa1e8d7f63aed3c09474f0bcc618a13452eb2d5faca8978e/build",
+    "cargo_home": "/workspace/.cloud-tools/cargo",
+    "temp": "/workspace/perl-lsp-17479-nested/target/receipts"
+  },
+  "budget": {
+    "reserve_bytes": 8589934592,
+    "expected_additional_growth_bytes": 19327352832,
+    "basis_verified": false,
+    "interpretation": "reviewed warm operator estimate; retained baseline already charged to free space; no global policy change"
+  },
+  "measurement": {
+    "elapsed_seconds": 868.2903205200018,
+    "initial_free": 28829220864,
+    "min_free_bytes": 27359232000,
+    "observed_volume_growth": 1469988864,
+    "aggregate_sampled_peak_memory": 6103719936,
+    "initial_memory_events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\n",
+    "final_memory_events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\n",
+    "exit_code": 0,
+    "cancel_reason": null,
+    "observer_error": null
+  },
+  "measurement_limits": [
+    "2s best-effort volume/cgroup sampling, not compiler RSS or hard quotas",
+    "growth includes concurrent evidence executable copy on this volume",
+    "warm baseline; neither cold sizing nor total lifetime cache usage",
+    "no controlled before/after timing comparison"
+  ],
+  "owner_settlement": {
+    "tree_settled": true,
+    "proof": "kernel ECHILD (__WALL)",
+    "cancelled": false,
+    "termination_requested": false,
+    "reaped_descendants": [],
+    "owned_child_table_available": false,
+    "errors": [],
+    "pending_bound_pids": [],
+    "reason": "all owned descendants reaped",
+    "lease": "/workspace/.devplane-17479/bf4c09722087-linux-727b814873041b4a/cargo-active",
+    "lease_identity": [
+      27,
+      1455322
+    ],
+    "lease_marker": "/workspace/.devplane-17479/bf4c09722087-linux-727b814873041b4a/cargo-active/owner-355d28952ec34b739b26094918739ff2",
+    "lease_released": true
+  },
+  "evidence_files": {
+    "gate.log": {
+      "bytes": 315782,
+      "sha256": "ddfedc5e25812f1b5ca5316fda86617b6209980bda359e91e0906281432e69f5"
+    },
+    "gate-receipt.json": {
+      "bytes": 2792,
+      "sha256": "cebb4d45b6a5d358e9408401d46cdf345269942ee4a0d4146b3e1fdd64e695b4"
+    },
+    "result.json": {
+      "bytes": 2104,
+      "sha256": "e1c6b33156d9adcdafcc0fca855829d7b0bc4ae8365922ad0e1897e8c7a311de"
+    },
+    "snapshot-copy-evidence.json": {
+      "bytes": 284,
+      "sha256": "27cbb0a5598cf971f2c9e0e7f8343ca007073507ebf9438f419efe7cadb08117"
+    },
+    "captured-nested-snapshot.json": {
+      "bytes": 10143,
+      "sha256": "b3a23fe16d84d0064914985e53fa0865efab7501c4354452321bbdbac55aeb6f"
+    },
+    "artifact-copy-evidence.json": {
+      "bytes": 783,
+      "sha256": "e1695a30c9d2657737db0e194209246b8137d21f1eb3e4114ba0678906d88325"
+    },
+    "captured-handoff.json": {
+      "bytes": 15839,
+      "sha256": "b88c76ff6edf86c7b2ddbac195add58145f3436c890113e57278a87b25ebe647"
+    },
+    "perllsp-owned-copy": {
+      "bytes": 141146776,
+      "sha256": "cda511066a24cc628fbe86396666c56d54c6570a937d6cc36d8c2c37bbe276ce"
+    },
+    "samples.jsonl": {
+      "bytes": 50370,
+      "sha256": "e1061b86501ba452b966fb9f619edb07ea56384f5251b59f1ba1db68b6c60c1c"
+    },
+    "stderr.log": {
+      "bytes": 206501,
+      "sha256": "5ad5b87420310f1e27015094717f87ab7efec987c41d2867a7144a3dbddd2b47"
+    },
+    "stdout.log": {
+      "bytes": 2549,
+      "sha256": "8883b14cd955694682cfffd0853979a687217286a34b1c54e56f910d79c81ad8"
+    },
+    "admission.json": {
+      "bytes": 1787,
+      "sha256": "fba778a0e974ca8b2185a251bc425e1e8c57a8228f43be02bf720606b5f28aaf"
+    },
+    "scoped-preflight.log": {
+      "bytes": 3791,
+      "sha256": "f54fc29408701c7a991fee5a5c5bbc9f54dedb81cad0ebc12a0bd2da14d4ddde"
+    },
+    "budget.json": {
+      "bytes": 1938,
+      "sha256": "16dbe8e1da685ea6f2e6b547253d88e9fcc8f12302061a56a850f82ebabc8797"
+    },
+    "default-preflight.log": {
+      "bytes": 1772,
+      "sha256": "c3e4a5d27b1dce219057d77e9dfd7cfe81e45aff4f19ff6901c1e758ab2c6ba1"
+    }
+  },
+  "not_qualified": [
+    "native Windows",
+    "canonical nine-package compile/runtime population",
+    "fresh dynamic planner scope",
+    "remaining parser/xtask compiler fixtures and deliberate diagnostics",
+    "arbitrary Cargo-test/build-script loader variants",
+    "cold aggregate storage/RAM sizing",
+    "hosted activation"
+  ]
+}
