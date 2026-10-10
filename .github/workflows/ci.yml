@@ -345,7 +345,10 @@ jobs:
           SUBJECT_HEAD_SHA: ${{ inputs.head_sha || '' }}
         run: |
           set -euo pipefail
+          python3 scripts/ci/test_selection_owner.py
+          python3 scripts/ci/test_selection_bootstrap.py
           selection_runner=$(scripts/ci/bootstrap-selection.sh)
+          python3 scripts/ci/test_selection_cli.py --runner "$selection_runner"
           "$selection_runner" ci-subject \
             --base-sha "$SUBJECT_BASE_SHA" \
             --head-sha "$SUBJECT_HEAD_SHA" \

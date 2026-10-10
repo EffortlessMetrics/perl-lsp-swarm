@@ -974,7 +974,7 @@ pub struct CiScopeConfig {
     pub format: String,
 }
 
-/// Entry point called from xtask main.
+/// Shared CLI entry point consumed by the lightweight runner and xtask delegate.
 ///
 /// Base resolution and the changed-path diff are delegated to the shared
 /// `change_set::resolve_change_set` resolver (#3985 Slice 2) rather than a
@@ -1097,7 +1097,7 @@ fn validate_subject_classification(output: &ScopeOutput) -> Result<()> {
 // (`resolve_base_ref`/`git_ref_exists`/`get_head_sha`/`get_changed_files`).
 // #3985 Slice 2 repointed `run()` above onto the shared
 // `change_set::resolve_change_set` resolver and removed the duplicates —
-// see `xtask/src/tasks/change_set.rs` for the single base-resolver +
+// see `crates/perl-ci-hygiene/src/change_set.rs` for the single base-resolver +
 // single `git diff` they now share with `gates::compute_scope_output` and
 // `targeted_checks::run`.
 
