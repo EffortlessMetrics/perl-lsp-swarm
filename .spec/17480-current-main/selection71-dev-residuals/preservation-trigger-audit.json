@@ -1,0 +1,8 @@
+{
+  "branch": "recovery/perl-helper-current-proof-17480-17484",
+  "workflows": 39,
+  "matched_push_workflows": 0,
+  "all_recorded_workflow_hashes_still_match": true,
+  "reference": ".spec/17480-current-main/proof-reuse/push-trigger-audit.json",
+  "scope": "Evidence-only change; no workflow/source paths changed."
+}

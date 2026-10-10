@@ -1,0 +1,58 @@
+{
+  "schema_version": 2,
+  "base": "HEAD~1",
+  "head_sha": "71a69a477665e98dd11d1be163a4d08cea51ef64",
+  "changed_files": [
+    "crates/perl-ci-hygiene/src/main.rs"
+  ],
+  "diff_class": "code",
+  "direct_crates": [
+    {
+      "name": "perl-ci-hygiene",
+      "reason": "direct"
+    }
+  ],
+  "reverse_dep_closure": [
+    {
+      "name": "xtask",
+      "reason": "reverse-dep of perl-ci-hygiene"
+    }
+  ],
+  "architecture_wideners": [],
+  "risk_tags": [],
+  "platform_overrides": {
+    "windows_runner": false
+  },
+  "selected_lanes": [
+    {
+      "lane": "clippy_scoped",
+      "scope": [
+        "perl-ci-hygiene",
+        "xtask"
+      ],
+      "reason": "direct"
+    },
+    {
+      "lane": "test_scoped",
+      "scope": [
+        "perl-ci-hygiene",
+        "xtask"
+      ],
+      "reason": "direct"
+    }
+  ],
+  "selected_heavy_lanes": [
+    {
+      "lane": "mutation_diff",
+      "reason": "code_diff_default (crates: perl-ci-hygiene)"
+    }
+  ],
+  "lanes": {
+    "parser_ratchet": {
+      "selected": false,
+      "profile": "pr",
+      "reasons": []
+    }
+  },
+  "explanations": {}
+}

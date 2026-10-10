@@ -1,0 +1,95 @@
+{
+  "source": "71a69a477665e98dd11d1be163a4d08cea51ef64",
+  "source_branch_change": "Owned clean helper worktree switched detached to exact selection; original7432 branch and remote preserved. Same source path/cache resources, no fingerprint/output copying.",
+  "profile": "default cargo-test/dev; canonical unit_routed_full test portion specifies no --profile/--target",
+  "toolchain": "Rust1.95.0 nativeLinux; unchanged root profiles/Cargo config/pin. Offline+locked,no install,jobs2.",
+  "build_measurement": {
+    "exit": 0,
+    "seconds": 618.1556238080002,
+    "free_before": 24058802176,
+    "free_after": 21177540608,
+    "source": "71a69a477665e98dd11d1be163a4d08cea51ef64",
+    "profile": "default cargo-test/dev",
+    "resources": {
+      "target": "/workspace/perl-helper-current-proof/devplane/e6b3f4152dd5-linux-b65dcb543d0ae605/worktrees/61d81e4ef2af58e921a1387fd1456fc4cfbeb6ffba1e47c6eb2cbfd7a2574bec/target",
+      "build": "/workspace/perl-helper-current-proof/devplane/e6b3f4152dd5-linux-b65dcb543d0ae605/worktrees/61d81e4ef2af58e921a1387fd1456fc4cfbeb6ffba1e47c6eb2cbfd7a2574bec/build",
+      "cargo_home": "/workspace/.cloud-tools/cargo",
+      "temp": "/workspace/perl-helper-current-proof/devplane/e6b3f4152dd5-linux-b65dcb543d0ae605/tmp"
+    }
+  },
+  "net_filesystem_allocation_bytes": 2881261568,
+  "capacity": "Current native admission; exact4GiB growth estimate+8GiB reserve; basis_verified=false, independently reviewed warm estimate, not upper bound or peak measurement. Default40GiB still refuses.",
+  "artifact_inventory": {
+    "total": 416,
+    "cached": 380,
+    "rebuilt": 36,
+    "normal_executables": 31,
+    "test_executables": 3,
+    "fresh_package_ids": [
+      "path+file:///workspace/perl-helper-current-main/crates/perl-ci-hygiene#0.17.0",
+      "path+file:///workspace/perl-helper-current-main/xtask#0.17.0"
+    ],
+    "limit": "Cargo compiler-artifact accounting; no whole-host/cold process trace. No fresh product package artifacts."
+  },
+  "runtime": {
+    "passed": 20,
+    "failed": 0,
+    "selector_wall_seconds_sum": 1.8889659079977719,
+    "actual_source_root": "/workspace/perl-helper-current-main",
+    "head_after": "71a69a477665e98dd11d1be163a4d08cea51ef64",
+    "dirty_after": "",
+    "cli_sha256": "633e313bd88d20d58b240f9f4c4ed386b44f112e67f9c529b19ba3aa1deb76c0",
+    "test_hashes": {
+      "xtask": "94b4222d9aad858bf4acf8c9e8ebac08472cfbf96b02530a94bbc4fb0b0c91e5",
+      "ci_subject": "0c335d2ac65c8866a966c2140606092ad540135353ef7704ec5710872a3fa625",
+      "ci_scope_tests": "169944cafee276a70d37f13ab055659b326aac93759f12873a9398fc6a21badc",
+      "normal_xtask": "633e313bd88d20d58b240f9f4c4ed386b44f112e67f9c529b19ba3aa1deb76c0"
+    },
+    "selectors": {
+      "xtask": [
+        "tasks::workflow_policy_lint::tests::shipped_workflows_enumerate_xtask_cli_wiring",
+        "tasks::workflow_policy_lint::tests::runner_mismatch_skipped_for_stale_ref_in_multi_job_workflow",
+        "tasks::workflow_policy_lint::tests::shipped_tree_has_no_undeclared_or_orphaned_self_hosted_capacity",
+        "tasks::workflow_policy_lint::tests::shipped_profiles_are_current_today",
+        "tasks::gates::tests::plan_gates_nightly_tier_never_selects_a_commit_tier_gate",
+        "tasks::gates::tests::plan_gates_all_tier_selects_the_commit_tier_gate",
+        "tasks::gates::tests::plan_pr_fast_gates_falls_back_broadly_when_explicit_base_does_not_resolve",
+        "tasks::gates::tests::agent_receipt_builder_preserves_scope_status_and_plan_contract",
+        "tasks::gates::tests::static_gate_plan_threads_staged_tree_oid_into_agent_receipt",
+        "tasks::gates::tests::static_gate_plan_leaves_staged_tree_oid_none_when_not_staged"
+      ],
+      "ci_subject": [
+        "ci_workflow_routes_scope_gate_contract_and_windows_cache_inputs_through_subject"
+      ],
+      "ci_scope_tests": [
+        "test_ci_scope_auto_base_no_warning",
+        "test_ci_scope_diff_class_is_valid_value",
+        "test_ci_scope_each_lane_has_reason_field",
+        "test_ci_scope_help_shows_base_flag",
+        "test_ci_scope_help_shows_format_flag",
+        "test_ci_scope_invalid_explicit_base_fails_closed",
+        "test_ci_scope_empty_diff_has_no_selected_lanes",
+        "test_ci_scope_json_output_is_valid_schema_v2",
+        "test_ci_scope_text_output_is_readable"
+      ]
+    }
+  },
+  "extra_real_caller": {
+    "exit": 0,
+    "selected_lane_count": 2,
+    "argv": [
+      "/workspace/perl-helper-current-proof/devplane/e6b3f4152dd5-linux-b65dcb543d0ae605/worktrees/61d81e4ef2af58e921a1387fd1456fc4cfbeb6ffba1e47c6eb2cbfd7a2574bec/target/debug/xtask",
+      "ci-scope",
+      "--base",
+      "HEAD~1",
+      "--format",
+      "json"
+    ],
+    "cli_sha256": "633e313bd88d20d58b240f9f4c4ed386b44f112e67f9c529b19ba3aa1deb76c0",
+    "source": "71a69a477665e98dd11d1be163a4d08cea51ef64"
+  },
+  "ownership": "Build original native owner ECHILD and matching lease release recorded in no-run.log; subsequent exact runtime original native owner ECHILD recorded in runtime-settlement.json. Runtime metadata calls offline/no-install, no nested compiler selector among these20. No full-gate lease claim.",
+  "independent_review": "CLEAR: actual20 uniqueexact one-pass selectors, exactclean71source, four executable hashes verified,416artifacts380cached36fresh exclusivelyhygiene/xtask, admittedPASS/originalbuildECHILDmatchingrelease/runtimeECHILD, actualreasonCLI success2lanes; no fullgate/agent/Windows/peak claim.",
+  "remaining": "Other4 ci_subject integration selectors/relocated47scope tests retain separate owning proof; no fresh448/fullfilters/277harness/fullrouted/hook/agent/Windows pass. Product prep/artifact handoff, nested7compiler+JSONRPC admission/closure, dynamicdispatch/transitiveshell/capacity remain with owners.",
+  "publication": "Evidence-only quiet branch preservation guidance; no source branch publication, PR/comment/merge/hosted run."
+}

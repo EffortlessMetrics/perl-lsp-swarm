@@ -1,0 +1,35 @@
+{
+  "head": "71a69a477665e98dd11d1be163a4d08cea51ef64",
+  "dirty": "",
+  "files": {
+    "Cargo.toml": "05c53e3ea29456ca23df7f68d82c4c2f3a67d4d886cfb575c512451c2e01ff93",
+    "Cargo.lock": "de6dc86b68fd8865150592d64c7ea63f2700c506370fb72a347c539afd302030",
+    "rust-toolchain.toml": "b1700c7278dac6172b28141c317a54a4dc2309c163644c0f3f48567541f00eaa",
+    ".cargo/config.toml": "cc3d8bb15199fae945c24e509180bec2b2af75bd5d8f187be49156274a5c16df",
+    "scripts/cargo_admitted.py": "840f179f1326cc32f0b112c2b2b2c597aca08b28b97f4ee1cbf1d1dd6b780f4a",
+    "xtask/Cargo.toml": "5f4d81469210fd13e2d19c0c077d36a0ba113e366135e08ce09af5b5abc6aeba",
+    "crates/perl-ci-hygiene/Cargo.toml": "42259bf293b48d177a9c17fd1872d54e2dc0b6ce68bb54a5e5ddd343a3cb88fa",
+    "xtask/src/tasks/ci_scope.rs": "67991d16d734ee8894b4ffb03848a88f95b573e528dcea65c7438a239ad54b3b",
+    "xtask/src/tasks/ci_subject.rs": "775f119cfa41f82c6d06963e5096bc53911db6237cdea8b3e4d47e6ed17aff31",
+    "crates/perl-ci-hygiene/src/ci_scope.rs": "05a2db39d4055e4217cb59ed34390f3e26406f1e711f4c90b1a87a5b6a6ac27b",
+    "crates/perl-ci-hygiene/src/ci_subject.rs": "d9d7e5d44149d614d02767a8120a9161cd044d082f0f3b47f3951f1b097563db",
+    ".github/workflows/ci.yml": "76ece05edef853a9f722ddfb47fb77392787c2fd04f3f8a407666ec0c494a27e",
+    ".ci/risk-tags.yaml": "7c9040e2a886ad1fb42db65545a232df281211754988f1419efe905c06a1d5e3",
+    ".ci/scope.d/parser-ratchet.toml": "a81ca43850fd928daa6f81e86a67983c233754a663946e0ca1303620b7d6afe1"
+  },
+  "argv": [
+    "test",
+    "--offline",
+    "--locked",
+    "-p",
+    "xtask",
+    "--bin",
+    "xtask",
+    "--test",
+    "ci_subject",
+    "--test",
+    "ci_scope_tests",
+    "--no-run",
+    "--message-format=json"
+  ]
+}
