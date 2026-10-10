@@ -1,5 +1,8 @@
 //! Bounded argv launch for native gates. This is not a shell interpreter:
 //! only argv, `env NAME=value` / `env -u NAME`, and `&&` are supported.
+//! Command text uses POSIX quotes and double-quote escapes, not cmd quoting.
+//! Unquoted backslashes are rejected: use forward slashes or single quotes for
+//! native paths (including UNC paths and trailing separators).
 //! Shell-dependent policy commands must use an explicit supported shell.
 use std::path::Path;
 use std::process::Command;
@@ -139,6 +142,12 @@ fn segments(command: &str) -> Result<Vec<Vec<&str>>, String> {
             continue;
         }
         if c == '\\' && quote != Some('\'') {
+            if quote.is_none() {
+                return Err(
+                    "unquoted backslash is unsupported; use forward slashes or single-quote native paths"
+                        .into(),
+                );
+            }
             escaped = true;
             continue;
         }
@@ -205,6 +214,55 @@ fn segments(command: &str) -> Result<Vec<Vec<&str>>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_unquoted_backslashes_refuse_without_corrupting_argv()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let cwd = std::env::current_dir()?;
+        for command in [
+            r"cargo --manifest-path C:\repo\Cargo.toml",
+            r"target\debug\tool.exe",
+            r"env ROOT=C:\repo cargo test",
+            r"cargo build && cargo test --manifest-path C:\repo\Cargo.toml",
+            r"cargo path\ with\ spaces",
+            r"cargo escaped\&value",
+        ] {
+            let Err(error) = processes(command, &cwd) else {
+                return Err(format!("raw backslash accepted: {command}").into());
+            };
+            assert!(error.contains("unquoted backslash"), "{command}: {error}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn native_quoted_windows_paths_and_encoded_argv_remain_literal()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let cwd = std::env::current_dir()?;
+        let commands = processes(
+            r#"'C:\repo with spaces\tool.exe' --manifest-path 'C:\repo\Cargo.toml' '\\server\share\' "C:\repo\Cargo.toml" C:/repo/Cargo.toml"#,
+            &cwd,
+        )?;
+        assert_eq!(commands[0].get_program(), r"C:\repo with spaces\tool.exe");
+        assert_eq!(
+            commands[0].get_args().collect::<Vec<_>>(),
+            [
+                "--manifest-path",
+                r"C:\repo\Cargo.toml",
+                r"\\server\share\",
+                r"C:\repo\Cargo.toml",
+                "C:/repo/Cargo.toml"
+            ]
+        );
+        // The maintained fixture encoder is the lossless producer contract;
+        // do not invent Windows-shell escaping for arbitrary command strings.
+        for value in [r"C:\repo\Cargo.toml", r"\\server\share\", r"C:\O'Brien & space\"] {
+            let encoded = shlex::try_quote(value)?;
+            let commands = processes(&format!("cargo {encoded}"), &cwd)?;
+            assert_eq!(commands[0].get_args().collect::<Vec<_>>(), [value]);
+        }
+        Ok(())
+    }
 
     #[test]
     fn native_argv_and_environment_are_literal() -> Result<(), Box<dyn std::error::Error>> {
