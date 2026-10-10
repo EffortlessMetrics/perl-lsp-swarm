@@ -1652,6 +1652,22 @@ mod tests {
     }
 
     #[test]
+    fn shared_scope_owner_keeps_parser_ratchet_coverage() -> Result<()> {
+        let metadata = fake_metadata(&[("perl-ci-hygiene", "crates/perl-ci-hygiene")]);
+        for path in ["xtask/src/tasks/ci_scope.rs", "crates/perl-ci-hygiene/src/ci_scope.rs"] {
+            let output = classify_files(&[path.to_string()], &metadata, "/workspace")?;
+            assert!(output.lanes.parser_ratchet.selected, "classifier owner must select: {path}");
+        }
+        let output = classify_files(
+            &["crates/perl-ci-hygiene/src/version_sync.rs".to_string()],
+            &metadata,
+            "/workspace",
+        )?;
+        assert!(!output.lanes.parser_ratchet.selected, "unrelated hygiene helpers stay narrow");
+        Ok(())
+    }
+
+    #[test]
     fn test_classify_files_meta_change_selects_parser_ratchet_lane() -> Result<()> {
         let metadata = fake_metadata(&[("perl-parser", "crates/perl-parser")]);
         let files = vec!["xtask/src/tasks/ci_scope.rs".to_string()];
