@@ -13,6 +13,8 @@ on:
       - 'Cargo.toml'
       - 'Cargo.lock'
       - '.github/workflows/vscode-installed-first-hour-windows.yml'
+      - 'scripts/ci/qualified_definition_protocol_probe.py'
+      - 'scripts/ci/test_qualified_definition_protocol_probe.py'
 
 concurrency:
   group: vscode-installed-first-hour-windows-${{ github.event.pull_request.number }}
@@ -58,6 +60,17 @@ jobs:
         env:
           CARGO_TARGET_DIR: ${{ runner.temp }}/perl-lsp-first-hour-target
         run: cargo build -p perllsp --bin perllsp -p perl-dap --bin perl-dap --release --locked
+
+      - name: Qualified definition protocol regression
+        working-directory: .
+        shell: pwsh
+        env:
+          QUALIFIED_DEFINITION_BINARY: ${{ runner.temp }}/perl-lsp-first-hour-target/release/perllsp.exe
+          QUALIFIED_DEFINITION_SOURCE_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          python scripts/ci/test_qualified_definition_protocol_probe.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python scripts/ci/qualified_definition_protocol_probe.py --binary "$env:QUALIFIED_DEFINITION_BINARY" --source-sha "$env:QUALIFIED_DEFINITION_SOURCE_SHA" --receipt-dir target/receipts/vscode-smoke/installed-first-hour-windows/qualified-definition-protocol
 
       - name: Run installed first-hour byte leaf
         env:

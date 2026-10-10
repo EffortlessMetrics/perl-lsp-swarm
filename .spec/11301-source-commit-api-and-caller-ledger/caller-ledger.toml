@@ -147,7 +147,13 @@ compatibility_apis = ["index_file", "index_file_str", "index_file_with_generatio
 #   crates/perl-lsp-rs-core/src/providers/completion/completion/tests.rs
 #     112 -> 111 (-1): the composed-role test rewrite re-seeds one fixture
 #     through the canonical initial API.
-compatibility_baseline = 707
+# Reconciled 707 -> 705 for #17212 after #17206 (squash 2264c4fcfb):
+#   crates/perl-workspace/benches/workspace_index_benchmark.rs
+#     33 -> 31 (-2): the initial batch seed now calls index_initial_files_batch;
+#     repeated updates call index_live_file and check typed Accepted/NoOp outcomes.
+# The squash parent 04baae9ae8 has 707 compatibility calls; the landed tree has
+# 705. No other file changes its compatibility count or caller identity.
+compatibility_baseline = 705
 
 # Structural recurrence control (#11305): files under these prefixes must
 # never call compatibility source APIs at all -- live commits go through

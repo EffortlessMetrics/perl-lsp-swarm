@@ -190,7 +190,8 @@ fn is_ci_config_file(file: &str) -> bool {
 pub fn requires_windows_runner(files: &[String]) -> bool {
     files.iter().any(|file| {
         let normalized = file.replace('\\', "/").to_ascii_lowercase();
-        normalized == "hooks/pre-push"
+        is_powershell_completion_path(&normalized)
+            || normalized == "hooks/pre-push"
             || normalized.starts_with("hooks/")
             || (normalized.starts_with("scripts/") && normalized.ends_with(".sh"))
             || normalized == "crates/perl-ci-hygiene/src/process.rs"
@@ -204,6 +205,9 @@ pub fn requires_windows_runner(files: &[String]) -> bool {
             // exercise the bound and prove it terminates its probe child.
             || normalized.starts_with("crates/perl-dap/src/reload/")
             || normalized == "crates/perl-dap/src/reload.rs"
+            // Windows directory identity and its replacement witness live
+            // in this shared file; select the exact seam, not its module.
+            || normalized == "crates/perl-dap/src/security/launch_authority.rs"
             || normalized.starts_with("crates/perl-uri/")
             || normalized.contains("workspace-index")
             || normalized.contains("workspace_index")
@@ -216,6 +220,17 @@ pub fn requires_windows_runner(files: &[String]) -> bool {
             // admission so the platform boundary cannot silently bit-rot.
             || normalized == "xtask/tests/release_artifact_size_smoke_script.rs"
     })
+}
+
+fn is_powershell_completion_path(file: &str) -> bool {
+    let normalized = file.replace('\\', "/").to_ascii_lowercase();
+    matches!(
+        normalized.as_str(),
+        "crates/perllsp/src/main.rs"
+            | "crates/perl-lsp-rs/src/cli.rs"
+            | "crates/perllsp/tests/powershell_completion.rs"
+            | "crates/perllsp/tests/fixtures/powershell_completion_probe.ps1"
+    ) || normalized.starts_with("crates/perl-lsp-rs-core/src/runtime/launcher/")
 }
 
 fn is_docs_as_code_file(file: &str) -> bool {
@@ -518,6 +533,11 @@ fn is_xtask_policy_guarded_input(file: &str) -> bool {
         // Publishable-crate manifests: binstall metadata, publish metadata, and
         // version-sync are all xtask-owned assertions over these files.
         || (file.starts_with("crates/") && file.ends_with("/Cargo.toml"))
+        // The lane-termination classifier is asserted by xtask's E1
+        // correctness harness and P3 scale bench (#17154): both execute the
+        // script and pin its counters. Without this routing, a script-only
+        // PR would skip the guards written to catch it (#17345 review).
+        || file == "scripts/ci/classify-ripr-lane-termination"
 }
 
 /// Extract unique crate names from cargo metadata JSON for crate dirs in the changed files.
@@ -819,6 +839,11 @@ pub fn classify_files(
                 "perl-workspace".to_string(),
                 "perl-dap".to_string(),
             ]);
+        }
+        // The public-binary completion probe lives in perllsp even when
+        // only its shared CLI/template changes in a different crate.
+        if files.iter().any(|file| is_powershell_completion_path(file)) {
+            crates.push("perllsp".to_string());
         }
         crates.sort();
         crates.dedup();
@@ -1182,10 +1207,16 @@ mod tests {
             "crates/perl-dap/src/reload/mod.rs",
             "crates/perl-dap/src/reload/runtime.rs",
             "crates/perl-dap/src/reload/measurement.rs",
+            "crates/perl-dap/src/security/launch_authority.rs",
             "crates/perl-uri/src/fs.rs",
             "crates/perl-workspace/src/workspace-index.rs",
             "crates/perl-workspace/src/platform/windows.rs",
             "xtask/tests/release_artifact_size_smoke_script.rs",
+            "crates/perllsp/src/main.rs",
+            "crates/perl-lsp-rs/src/cli.rs",
+            "crates/perl-lsp-rs-core/src/runtime/launcher/mod.rs",
+            "crates/perllsp/tests/powershell_completion.rs",
+            "crates/perllsp/tests/fixtures/powershell_completion_probe.ps1",
         ] {
             assert!(
                 requires_windows_runner(&[file.to_string()]),
@@ -1200,11 +1231,11 @@ mod tests {
             "docs/windows.md".to_string(),
             "scripts/check-shell.py".to_string(),
             "crates/perl-parser/src/lib.rs".to_string(),
-            // perl-dap siblings outside the reload module should not
-            // select a Windows runner; the bounded-probe Windows
-            // coverage claim is scoped to the reload seam.
+            // Other perl-dap security siblings are outside the exact
+            // identity seam and should not select a Windows runner.
             "crates/perl-dap/src/lib.rs".to_string(),
             "crates/perl-dap/src/debug_adapter/protocol.rs".to_string(),
+            "crates/perl-dap/src/security/mod.rs".to_string(),
         ];
         assert!(!requires_windows_runner(&files));
     }
@@ -1335,6 +1366,22 @@ mod tests {
         assert!(
             crates.contains("xtask"),
             "changing the packaging step must route to the guard that asserts on it"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn classifier_script_change_selects_xtask() -> Result<()> {
+        // #17345 review: E1's correctness harness and the P3 scale bench
+        // execute `scripts/ci/classify-ripr-lane-termination` and pin its
+        // counters. A script-only PR must route xtask into scope or a
+        // classifier regression sails through every required check green.
+        let files = vec!["scripts/ci/classify-ripr-lane-termination".to_string()];
+        let metadata = fake_metadata(&[("xtask", "xtask")]);
+        let crates = crates_from_files(&files, &metadata, "/workspace")?;
+        assert!(
+            crates.contains("xtask"),
+            "changing the classifier script must route to the E1/P3 guards that assert on it"
         );
         Ok(())
     }
@@ -1605,6 +1652,30 @@ mod tests {
         assert!(!output.platform_overrides.windows_runner);
         assert!(output.platform_overrides.windows_test_crates.is_empty());
         assert!(!output.explanations.contains_key("windows_runner"));
+        Ok(())
+    }
+
+    #[test]
+    fn classify_powershell_completion_paths_select_public_binary_on_windows() -> Result<()> {
+        let metadata = fake_metadata(&[
+            ("perllsp", "crates/perllsp"),
+            ("perl-lsp-rs", "crates/perl-lsp-rs"),
+            ("perl-lsp-rs-core", "crates/perl-lsp-rs-core"),
+        ]);
+        for (file, expected) in [
+            ("crates/perllsp/src/main.rs", vec!["perllsp"]),
+            ("crates/perl-lsp-rs/src/cli.rs", vec!["perl-lsp-rs", "perllsp"]),
+            (
+                "crates/perl-lsp-rs-core/src/runtime/launcher/mod.rs",
+                vec!["perl-lsp-rs-core", "perllsp"],
+            ),
+            ("crates/perllsp/tests/powershell_completion.rs", vec!["perllsp"]),
+            ("crates/perllsp/tests/fixtures/powershell_completion_probe.ps1", vec!["perllsp"]),
+        ] {
+            let output = classify_files(&[file.to_string()], &metadata, "/workspace")?;
+            assert!(output.platform_overrides.windows_runner, "{file} must execute on Windows");
+            assert_eq!(output.platform_overrides.windows_test_crates, expected, "{file}");
+        }
         Ok(())
     }
 

@@ -63,7 +63,7 @@ fn lsp_frame(body: &[u8]) -> Vec<u8> {
 }
 
 #[test]
-fn output_capture_parses_two_coalesced_frames() {
+fn output_capture_parses_two_coalesced_frames() -> Result<(), Box<dyn std::error::Error>> {
     let output = OutputCapture::new();
     let mut writer = output.clone();
     must_with(
@@ -81,10 +81,11 @@ fn output_capture_parses_two_coalesced_frames() {
         output.get_messages(),
         vec![json!({"id": 1, "result": "first"}), json!({"id": 2, "result": "second"}),]
     );
+    Ok(())
 }
 
 #[test]
-fn output_capture_waits_for_split_frame() {
+fn output_capture_waits_for_split_frame() -> Result<(), Box<dyn std::error::Error>> {
     let output = OutputCapture::new();
     let frame = lsp_frame(br#"{"id":3,"result":"split"}"#);
     let split = frame.len() / 2;
@@ -94,20 +95,23 @@ fn output_capture_waits_for_split_frame() {
 
     must_with(writer.write_all(&frame[split..]), "capture accepts frame suffix");
     assert_eq!(output.get_messages(), vec![json!({"id": 3, "result": "split"})]);
+    Ok(())
 }
 
 #[test]
-fn output_capture_preserves_crlf_in_frame_body() {
+fn output_capture_preserves_crlf_in_frame_body() -> Result<(), Box<dyn std::error::Error>> {
     let output = OutputCapture::new();
     let mut writer = output.clone();
     let body = b"{\r\n\"id\":4,\r\n\"result\":\"body\"\r\n}\r\n\r\n";
     must_with(writer.write_all(&lsp_frame(body)), "capture accepts CRLF body");
 
     assert_eq!(output.get_messages(), vec![json!({"id": 4, "result": "body"})]);
+    Ok(())
 }
 
 #[test]
-fn output_capture_rejects_malformed_and_truncated_lengths() {
+fn output_capture_rejects_malformed_and_truncated_lengths() -> Result<(), Box<dyn std::error::Error>>
+{
     let output = OutputCapture::new();
     let mut writer = output.clone();
     must_with(
@@ -124,6 +128,7 @@ fn output_capture_rejects_malformed_and_truncated_lengths() {
 
     must_with(writer.write_all(&frame[frame.len() - 1..]), "capture accepts final byte");
     assert_eq!(output.get_messages(), vec![json!({"id": 5, "result": "truncated"})]);
+    Ok(())
 }
 
 fn wait_for_messages(output: &OutputCapture, minimum_count: usize) -> Vec<Value> {

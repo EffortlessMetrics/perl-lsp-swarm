@@ -9,8 +9,8 @@
       "rule": "cargo-bench-targets",
       "authority": "crates/*/Cargo.toml",
       "emits": "benchmark",
-      "considered": 15,
-      "emitted": 15,
+      "considered": 16,
+      "emitted": 16,
       "not_seeded_reason": "every [[bench]] target is emitted; nothing is filtered"
     },
     {
@@ -419,6 +419,36 @@
         "authority": "crates/perl-pragma/Cargo.toml"
       },
       "owner": "perl-pragma",
+      "promotion": {
+        "state": "not_evaluated"
+      }
+    },
+    {
+      "surface_id": "bench:perl-ripr-facts/ripr_facts_benchmark",
+      "class": "benchmark",
+      "class_authority": {
+        "kind": "derived",
+        "authority": "crates/perl-ripr-facts/Cargo.toml",
+        "rule": "cargo-bench-targets"
+      },
+      "semantic_authority": "crates/perl-ripr-facts/Cargo.toml#bench.ripr_facts_benchmark",
+      "consumers": [
+        "crates/perl-ripr-facts"
+      ],
+      "compile_profiles": [
+        "bench"
+      ],
+      "registration": {
+        "state": "established",
+        "authority": "crates/perl-ripr-facts/Cargo.toml",
+        "detail": "[[bench]] name = \"ripr_facts_benchmark\""
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": "crates/perl-ripr-facts/Cargo.toml"
+      },
+      "owner": "perl-ripr-facts",
       "promotion": {
         "state": "not_evaluated"
       }

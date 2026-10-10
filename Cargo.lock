@@ -2154,6 +2154,8 @@ dependencies = [
 name = "perl-ripr-facts"
 version = "0.17.0"
 dependencies = [
+ "criterion",
+ "jsonschema",
  "perl-parser-core",
  "perl-symbol",
  "perl-tdd-support",
@@ -4230,6 +4232,7 @@ dependencies = [
  "sha1",
  "sha2",
  "similar 3.2.0",
+ "strum",
  "syn 3.0.5",
  "tar",
  "tempfile",

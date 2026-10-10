@@ -1920,10 +1920,16 @@ impl LspServer {
             }
         }
 
+        // #17247: one batched pass resolves every occurrence's wire location;
+        // the per-occurrence single-anchor lookup scanned the whole shard map
+        // per result and made references latency quadratic in workspace size.
+        let occurrence_anchor_ids: Vec<AnchorId> =
+            occurrences.iter().map(|occurrence| occurrence.anchor_id).collect();
+        let wire_locations = workspace_index.semantic_anchor_wire_locations(&occurrence_anchor_ids);
+
         let mut locations = Vec::with_capacity(occurrences.len() + 1);
         for occurrence in occurrences {
-            let Some(wire_location) =
-                workspace_index.semantic_anchor_wire_location(occurrence.anchor_id)
+            let Some(wire_location) = wire_locations.get(&occurrence.anchor_id).cloned().flatten()
             else {
                 return SourceBackedReferenceAttempt::Declined(
                     SourceBackedReferenceDecline::OccurrenceLocationUnavailable,

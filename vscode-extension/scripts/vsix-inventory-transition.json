@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "owner_issue": 16595,
-  "reason": "Folder-scoped includePaths configuration fix increases the combined bundled extension entrypoint by 639 bytes.",
-  "base_baseline_file_sha256": "02be3f2c70c23fe13159d7f0c3e1e84ac7f53ab291c51a28b21c22cb0d5a5791",
-  "candidate_baseline_file_sha256": "975f428f8ea36ca04de3ee3ae5093b961b9a0002dfd61a9fc3b25e8c9fdb42eb",
-  "base_inventory_sha256": "91c883030a238ffa984d0fe649ff56cb0f1669efb096f1beaaa3eabaa976c9cf",
-  "candidate_inventory_sha256": "02fe6fe2c7ab70962c657b90ca6b341bf245a1a1e7c6f1d637a3994500c4645e"
+  "owner_issue": 17472,
+  "reason": "Joining remover-owned filesystem request completion changes only the generated extension bundle byte inventory.",
+  "base_baseline_file_sha256": "4b7015a4d9513bca24dabd2f163f3287d6390f2cf4cab2b4a67bc9ea38ee4f39",
+  "candidate_baseline_file_sha256": "833b67c30dfaaf09e39eb9759bbb6ff0c4545ab13ec593156457c89400af94e0",
+  "base_inventory_sha256": "6f8b14c43e8ac5316e0b05f6041d3c5ff5d9691270b3a221d8c439be9f47ed78",
+  "candidate_inventory_sha256": "a7ab35ff5bbc699e1b7c1dbdfe0784b1183c844a71db5c5463696adaddcb1573"
 }

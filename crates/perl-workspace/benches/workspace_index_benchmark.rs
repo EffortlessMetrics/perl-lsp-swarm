@@ -1,9 +1,11 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::expect_used)]
 use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
-use perl_tdd_support::must;
-use perl_workspace::workspace_index::WorkspaceIndex;
+use perl_tdd_support::{must, must_some};
+use perl_workspace::workspace_index::{SourceCommit, SourceCommitOutcome, WorkspaceIndex};
 use std::fs;
 use std::hint::black_box;
+use std::num::NonZeroU32;
+use std::time::{Duration, Instant};
 use tempfile::TempDir;
 use url::Url;
 
@@ -785,8 +787,7 @@ fn bench_search_symbols_at_scale(c: &mut Criterion) {
     });
 }
 
-/// Benchmark incremental update at scale (re-index 1 file in 1000-file workspace).
-fn bench_incremental_update_at_scale(c: &mut Criterion) {
+fn populated_update_workspace() -> (WorkspaceIndex, Url) {
     let index = WorkspaceIndex::new();
     let files: Vec<(Url, String)> = (0..1000)
         .map(|i| {
@@ -794,18 +795,117 @@ fn bench_incremental_update_at_scale(c: &mut Criterion) {
             (uri, generate_module(i))
         })
         .collect();
-    let _errors = index.index_files_batch(files);
+    let errors = index.index_initial_files_batch(files);
+    assert!(errors.is_empty(), "update benchmark setup failed: {errors:?}");
+    assert_eq!(index.file_count(), 1000);
 
     let update_uri = must(Url::parse("file:///lib/Gen/Module500.pm"));
+    (index, update_uri)
+}
 
-    c.bench_function("incremental update at 1000-file scale", |b| {
-        b.iter(|| {
-            let updated =
-                "package Gen::Module500;\nsub updated_method { return 42; }\n1;\n".to_string();
-            index.index_file(update_uri.clone(), updated).ok();
-            black_box(&index);
+/// Time only the live commit. Input ownership and the publication oracle stay
+/// outside the timer, though the oracle still affects between-iteration caches.
+fn checked_workspace_update(
+    index: &WorkspaceIndex,
+    uri: &Url,
+    variant: &(String, &str, &str),
+    generation: &mut u32,
+    expected_outcome: SourceCommitOutcome,
+) -> Duration {
+    *generation = must_some(generation.checked_add(1));
+    // DocumentStore uses i32 versions; exhaustion must refuse the benchmark.
+    assert!(*generation <= i32::MAX as u32, "update benchmark generation exhausted");
+    let commit = SourceCommit::new(must_some(NonZeroU32::new(*generation)));
+    let candidate_uri = uri.clone();
+    let candidate_source = variant.0.clone();
+
+    let start = Instant::now();
+    let outcome = index.index_live_file(candidate_uri, candidate_source, commit);
+    let elapsed = start.elapsed();
+
+    assert_eq!(outcome, expected_outcome);
+    assert_eq!(index.file_count(), 1000);
+    assert_eq!(index.indexed_generation(uri.as_str()), Some(*generation));
+    let document = must_some(index.document_store().get(uri.as_str()));
+    assert_eq!(document.text(), variant.0.as_str());
+    let definition = must_some(index.find_definition(variant.1));
+    assert_eq!(definition.uri, uri.as_str());
+    assert!(index.find_definition(variant.2).is_none(), "obsolete declaration survived update");
+    elapsed
+}
+
+/// Live workspace commit latency, excluding caller-side source preparation and
+/// editor processing. These cases replace the old mostly-NoOp "incremental
+/// update" timing; its historical numbers are not real-edit baselines.
+fn bench_incremental_update_at_scale(c: &mut Criterion) {
+    let module = generate_module(500);
+    assert!(module.contains("sub method_a_500 "));
+    let variants = [
+        (
+            module.replace("method_a_500", "edited_a_500"),
+            "Gen::Module500::edited_a_500",
+            "Gen::Module500::edited_b_500",
+        ),
+        (
+            module.replace("method_a_500", "edited_b_500"),
+            "Gen::Module500::edited_b_500",
+            "Gen::Module500::edited_a_500",
+        ),
+    ];
+
+    for (name, changes_content) in [
+        ("accepted real update at 1000-file scale", true),
+        ("unchanged live commit at 1000-file scale", false),
+    ] {
+        // Each case owns an independently populated index.
+        let (index, update_uri) = populated_update_workspace();
+        let mut generation = 0;
+        // Preflight both edit directions and the unchanged-content control.
+        // None of this fixture validation contributes to Criterion's duration.
+        for variant in [0, 1, 0] {
+            checked_workspace_update(
+                &index,
+                &update_uri,
+                &variants[variant],
+                &mut generation,
+                SourceCommitOutcome::Accepted,
+            );
+        }
+        assert!(index.find_definition("Gen::Module500::method_a_500").is_none());
+        checked_workspace_update(
+            &index,
+            &update_uri,
+            &variants[0],
+            &mut generation,
+            SourceCommitOutcome::NoOp,
+        );
+
+        // Preserve accepted state across warmup and sampling callbacks.
+        let mut active_variant = 0;
+        c.bench_function(name, |b| {
+            b.iter_custom(|iters| {
+                let mut elapsed = Duration::ZERO;
+                for _ in 0..iters {
+                    let next_variant =
+                        if changes_content { 1 - active_variant } else { active_variant };
+                    let expected = if changes_content {
+                        SourceCommitOutcome::Accepted
+                    } else {
+                        SourceCommitOutcome::NoOp
+                    };
+                    elapsed += checked_workspace_update(
+                        &index,
+                        &update_uri,
+                        &variants[next_variant],
+                        &mut generation,
+                        expected,
+                    );
+                    active_variant = next_variant;
+                }
+                elapsed
+            });
         });
-    });
+    }
 }
 
 /// Generate a dense Perl module with ~100 symbols for CPAN-scale 500K-symbol testing.

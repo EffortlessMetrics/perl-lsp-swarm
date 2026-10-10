@@ -75,6 +75,7 @@ where
             print!(
                 "{}",
                 format_info_output(
+                    &command_name,
                     env!("CARGO_PKG_VERSION"),
                     revision_label,
                     revision,
@@ -87,12 +88,16 @@ where
         }
         LaunchAction::Check => run_check(&command_name, &launch_plan.files),
         LaunchAction::CheckProject { ref dir } => check_project::run_check_project(dir),
-        LaunchAction::Doctor { ref dir, json } => doctor::run_doctor(dir, json),
-        LaunchAction::DoctorExternalTools { json } => doctor::run_doctor_external_tools(json),
-        LaunchAction::DoctorCriticCompatibility { json } => {
-            doctor::run_doctor_critic_compatibility(json)
+        LaunchAction::Doctor { ref dir, json } => doctor::run_doctor(dir, json, &command_name),
+        LaunchAction::DoctorExternalTools { json } => {
+            doctor::run_doctor_external_tools(json, &command_name)
         }
-        LaunchAction::DoctorDevEnvironment { json } => doctor::run_doctor_dev_environment(json),
+        LaunchAction::DoctorCriticCompatibility { json } => {
+            doctor::run_doctor_critic_compatibility(json, &command_name)
+        }
+        LaunchAction::DoctorDevEnvironment { json } => {
+            doctor::run_doctor_dev_environment(json, &command_name)
+        }
         LaunchAction::Completion { ref shell } => {
             if let Some(script) = shell_completion(shell) {
                 print!("{}", render_shell_completion(script, &command_name));
@@ -124,12 +129,14 @@ where
             ref head,
             ref fact_classes,
             ref out,
-        } => perl_ripr_facts::run_ripr_facts(
+            ref diff_path,
+        } => perl_ripr_facts::run_ripr_facts_with_diff_path(
             schema,
             root,
             base.as_deref(),
             head.as_deref(),
             fact_classes,
+            diff_path.as_deref(),
             out,
         ),
         LaunchAction::Help => {
@@ -714,7 +721,7 @@ mod tests {
     #[test]
     fn help_text_documents_ripr_facts_flags() {
         // The --ripr-facts surface must be discoverable from --help output.
-        // Regression guard for issue #5278 — covers all 7 --ripr-* flags.
+        // Regression guard for issue #5278 — covers all 8 --ripr-* flags.
         let rendered = render_help_text("perllsp");
         for flag in [
             "--ripr-facts",
@@ -724,6 +731,7 @@ mod tests {
             "--ripr-head",
             "--ripr-fact-classes",
             "--ripr-out",
+            "--ripr-diff",
         ] {
             assert!(rendered.contains(flag), "help must list {flag}");
         }

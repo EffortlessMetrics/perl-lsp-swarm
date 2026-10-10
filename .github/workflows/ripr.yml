@@ -708,8 +708,11 @@ jobs:
       - name: Install ripr
         run: cargo install ripr --version "$RIPR_VERSION" --locked
 
+      - name: Check xtask build observer controls
+        run: python3 scripts/tests/test_observe_xtask_build.py
+
       - name: Build xtask
-        run: cargo build -p xtask --locked
+        run: bash scripts/ci/observe-xtask-build.sh host-initial "$RIPR_FRESHNESS_HANDOFF/xtask-builds" -- cargo build -p xtask --locked
 
       - name: Run ripr doctor
         run: ripr doctor
@@ -775,6 +778,7 @@ jobs:
             -e RIPR_VERSION -e BASE_REF -e PR_HEAD_SHA \
             -e RIPR_MAX_DIFF_INDEX_FILES=2560 \
             -e RIPR_FRESHNESS_HANDOFF=/freshness -e RIPR_FRESHNESS_TOKEN \
+            -e GITHUB_RUN_ID -e GITHUB_RUN_ATTEMPT \
             -e MEASUREMENT_IMAGE_ID="$image_id" -e MEASUREMENT_IMAGE_DIGEST="$image_digest" \
             -v "$GITHUB_WORKSPACE:/workspace" -v "$RIPR_FRESHNESS_HANDOFF:/freshness" \
             -w /workspace "$image_id" bash -euo pipefail -c '
@@ -793,7 +797,7 @@ jobs:
                 printf "head=%s\nbase=%s\nripr_version=%s\nripr_sha256=%s\nindex_limit=%s\n" "$(git rev-parse HEAD)" "$base_arg" "$ripr_version" "$ripr_sha256" "$RIPR_MAX_DIFF_INDEX_FILES"
                 printf "%s\n%s\n" "$rustc_version" "$cargo_version"
               } >> target/ripr/pr/ripr-measurement-config.txt
-              cargo build -p xtask --locked
+              bash scripts/ci/observe-xtask-build.sh container "$RIPR_FRESHNESS_HANDOFF/xtask-builds" -- cargo build -p xtask --locked
               ripr doctor
               set +e
               timeout --signal=TERM --kill-after=30s 25m /usr/bin/time -v -o target/ripr/pr/ripr-measurement-time.txt cargo xtask ripr-pr --base "$base_arg" --head HEAD --pr-head "$PR_HEAD_SHA"
@@ -868,7 +872,7 @@ jobs:
             echo "head-memoized receipt restored; validating"
             rm -f target/receipts/quality/.ripr-plus-fresh
           else
-            cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json
+            bash scripts/ci/observe-xtask-build.sh host-baseline "$RIPR_FRESHNESS_HANDOFF/xtask-builds" -- cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json
             mkdir -p target/receipts/quality
             printf 'produced-fresh head=%s\n' "$(git rev-parse HEAD)" > target/receipts/quality/.ripr-plus-fresh
           fi
@@ -891,7 +895,7 @@ jobs:
         # child at the bound, exit 143), so the bound is raised together with
         # the 135m job envelope — analysis 40m + receipt + guidance 60m fits,
         # and an incomplete receipt keeps failing closed, just later.
-        run: cargo xtask ripr-review-comments --base "origin/$BASE_REF" --head HEAD --pr-head "$PR_HEAD_SHA" --timeout-seconds 3600
+        run: bash scripts/ci/observe-xtask-build.sh host-guidance "$RIPR_FRESHNESS_HANDOFF/xtask-builds" -- cargo xtask ripr-review-comments --base "origin/$BASE_REF" --head HEAD --pr-head "$PR_HEAD_SHA" --timeout-seconds 3600
 
       - name: Generate impacted evidence
         if: always()
@@ -1011,6 +1015,18 @@ jobs:
             target/receipts/quality/quality-gate-ripr.md
           retention-days: 14
           if-no-files-found: error
+
+      # Diagnostic data has no receipt/gate authority. Keep its artifact separate
+      # so the trusted freshness handshake and proof archive layout stay intact.
+      - name: Upload xtask build observations
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: ripr-xtask-build-observations
+          path: ${{ env.RIPR_FRESHNESS_HANDOFF }}/xtask-builds/**
+          retention-days: 7
+          if-no-files-found: warn
 
       # #16431: publish the freshly produced receipt under its exact head key
       # so a re-run of the same head restores it (~44m -> ~33s warm). The
@@ -1802,23 +1818,14 @@ jobs:
             echo $((gate_deadline - now))
           }
 
-          # A cancelled lane is the ABSENCE of evidence, not negative evidence.
-          # The gate stays blocking — no proof was produced for this SHA — but it
-          # must not read as a ripr failure. The `github)` branch below reported
-          # this as "did not succeed: cancelled", which names the outcome but
-          # still reads as a gate failure rather than an unevaluated head (#5460).
-          #
-          # The workflow deliberately does not cancel in-progress evidence runs
-          # when a newer PR head arrives. A cancelled lane therefore still names
-          # an external/manual cancellation or runner failure, not normal head
-          # supersession. Keep it blocking because no proof was produced.
-          for lane_result in "${SELFHOSTED_RESULT:-}" "${GITHUB_RESULT:-}" "${FALLBACK_RESULT:-}"; do
-            if [ "$lane_result" = "cancelled" ]; then
-              echo "RIPR_GATE_VERDICT=cancelled-no-verdict"
-              echo "::error::ripr lane cancelled — no proof produced for this SHA. This is NOT a new RIPR gap. Normal PR synchronization does not cancel active RIPR runs; investigate an external, manual, or API cancellation and re-run this head."
-              echo "ripr+ New Gap Gate: cancelled (no proof for this SHA)"
-              exit 1
-            fi
+          # #16980: a cancelled lane is still blocking, but must reach the
+          # current-attempt job/annotation lookup before naming its cause and
+          # writing the attempt-bound classification artifact. A configured
+          # 135-minute timeout has a specific platform annotation; absent that
+          # evidence, cancellation remains cancelled-no-verdict (#5460).
+          cancelled_result_seen=false
+          for observed_result in "${SELFHOSTED_RESULT:-}" "${GITHUB_RESULT:-}" "${FALLBACK_RESULT:-}"; do
+            if [ "$observed_result" = "cancelled" ]; then cancelled_result_seen=true; fi
           done
 
           # #6807: a lane that reports `failure` may have been killed by the
@@ -1842,6 +1849,9 @@ jobs:
             lane_result="$FALLBACK_RESULT"
           fi
           lane_class="ripr-failure"
+          if [ "$cancelled_result_seen" = "true" ]; then
+            lane_class="cancelled-no-verdict"
+          fi
           lane_gap_hits=0
           lane_evidence_source="unavailable"
           lane_job_id=""
@@ -1851,13 +1861,16 @@ jobs:
           # bounded lookup/fetch retrieval here would spend real time on
           # every disk-preflight failover without producing evidence anyone
           # reads.
-          if [ -n "$lane_name" ] && [ "$lane_result" != "success" ] && [ "$FALLBACK_RESULT" != "success" ]; then
+          if [ -n "$lane_name" ] && [ "$lane_result" != "success" ] &&
+            { [ "$FALLBACK_RESULT" != "success" ] || [ "$cancelled_result_seen" = "true" ]; }; then
             # Keep both retrieval phases inside the one job-level deadline.
             # The deadline was established before checkout/setup, reserving the
             # finalization interval for the verdict, summary, and artifact upload.
-            bounded_gh_api() {
+            bounded_gh_api_until() {
+              local cutoff="$1"
+              shift
               local remaining
-              remaining="$(remaining_until_deadline)"
+              remaining=$((cutoff - $(date +%s)))
               if [ "$remaining" -le 0 ]; then
                 return 124
               fi
@@ -1867,14 +1880,20 @@ jobs:
               fi
               timeout --signal=TERM --kill-after=5s "${request_timeout}s" gh api "$@"
             }
-            bounded_sleep() {
-              local delay="$1"
+            bounded_gh_api() {
+              bounded_gh_api_until "$gate_deadline" "$@"
+            }
+            bounded_sleep_until() {
+              local cutoff="$1" delay="$2"
               local remaining
-              remaining="$(remaining_until_deadline)"
+              remaining=$((cutoff - $(date +%s)))
               if [ "$remaining" -le 0 ] || [ "$delay" -gt "$remaining" ]; then
                 return 124
               fi
               sleep "$delay"
+            }
+            bounded_sleep() {
+              bounded_sleep_until "$gate_deadline" "$1"
             }
             # #14774: the bound on both retrieval phases is the gate's own
             # budget, not a fixed attempt count. A five-attempt schedule of
@@ -1893,13 +1912,22 @@ jobs:
               fi
               printf '%s\n' "$delay"
             }
+            # Cancelled jobs can expose the configured timeout only through
+            # their check-run annotation. Reserve the final 120 seconds for
+            # that API lookup: both the lane lookup and the log fetch below
+            # stop at this earlier cutoff so a lagging jobs API cannot
+            # consume the annotation window before the cutoff applies.
+            log_fetch_deadline="$gate_deadline"
+            if [ "$lane_result" = "cancelled" ]; then
+              log_fetch_deadline=$((gate_deadline - 120))
+            fi
             # The Actions jobs listing can briefly lag the lane result.
             # Keep this lookup bounded rather than silently skipping it.
             lane_lookup_output=$(mktemp)
             lane_lookup_attempts=0
-            while [ "$(remaining_until_deadline)" -gt 0 ]; do
+            while [ "$((log_fetch_deadline - $(date +%s)))" -gt 0 ]; do
               lane_lookup_attempts=$((lane_lookup_attempts + 1))
-              if bounded_gh_api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/jobs?per_page=100" \
+              if bounded_gh_api_until "$log_fetch_deadline" "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/attempts/${GITHUB_RUN_ATTEMPT}/jobs?per_page=100" \
                 --jq ".jobs[] | select(.name == \"${lane_name}\") | .id" > "$lane_lookup_output"; then
                 lane_job_id=$(head -1 "$lane_lookup_output")
               else
@@ -1908,7 +1936,7 @@ jobs:
               if [ -n "$lane_job_id" ]; then
                 break
               fi
-              if ! bounded_sleep "$(next_backoff "$lane_lookup_attempts")"; then
+              if ! bounded_sleep_until "$log_fetch_deadline" "$(next_backoff "$lane_lookup_attempts")"; then
                 break
               fi
             done
@@ -1930,9 +1958,11 @@ jobs:
               lane_log=$(mktemp)
               fetched=false
               lane_fetch_attempts=0
-              while [ "$(remaining_until_deadline)" -gt 0 ]; do
+              # The cutoff above already reserves the final 120 seconds for
+              # the annotation lookup on cancelled lanes.
+              while [ "$((log_fetch_deadline - $(date +%s)))" -gt 0 ]; do
                 lane_fetch_attempts=$((lane_fetch_attempts + 1))
-                if bounded_gh_api "repos/${GITHUB_REPOSITORY}/actions/jobs/${lane_job_id}/logs" > "$lane_log" 2>/dev/null; then
+                if bounded_gh_api_until "$log_fetch_deadline" "repos/${GITHUB_REPOSITORY}/actions/jobs/${lane_job_id}/logs" > "$lane_log" 2>/dev/null; then
                   fetched=true
                   lane_evidence_source="lane-log"
                   clf_out=$(bash scripts/ci/classify-ripr-lane-termination "$lane_log") || clf_out=""
@@ -1941,14 +1971,16 @@ jobs:
                   clf_gap=$(printf '%s\n' "$clf_out" | sed -n 's/^gap_receipt_matches=//p' | head -1)
                   case "$clf_gap" in ''|*[!0-9]*) clf_gap=0 ;; esac
                   lane_gap_hits="$clf_gap"
-                  if [ "${clf_class:-}" = "infra-no-proof" ]; then
+                  if [ "$lane_gap_hits" -gt 0 ]; then
+                    lane_class="ripr-failure"
+                  elif [ "${clf_class:-}" = "infra-no-proof" ] && [ "$lane_result" != "cancelled" ]; then
                     lane_class="infra-no-proof"
                   fi
                 fi
                 if [ "$fetched" = "true" ]; then
                   break
                 fi
-                if ! bounded_sleep "$(next_backoff "$lane_fetch_attempts")"; then
+                if ! bounded_sleep_until "$log_fetch_deadline" "$(next_backoff "$lane_fetch_attempts")"; then
                   break
                 fi
               done
@@ -1975,7 +2007,7 @@ jobs:
               # budget on run 35507463908. Gather the API evidence under the
               # same deadline and let the classifier's --api-evidence mode
               # decide; it fails closed on anything else.
-              if [ "$lane_class" != "infra-no-proof" ] && [ "$lane_gap_hits" -eq 0 ]; then
+              if { [ "$lane_class" != "infra-no-proof" ] || [ "$lane_result" = "cancelled" ]; } && [ "$lane_gap_hits" -eq 0 ]; then
                 annotations_json=$(mktemp)
                 steps_json=$(mktemp)
                 annotations_ok=false
@@ -1991,7 +2023,7 @@ jobs:
                     fi
                   fi
                   if [ "$steps_ok" != "true" ]; then
-                    if bounded_gh_api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/jobs?per_page=100" \
+                    if bounded_gh_api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/attempts/${GITHUB_RUN_ATTEMPT}/jobs?per_page=100" \
                       --jq "first(.jobs[] | select(.name == \"${lane_name}\") | {conclusion: .conclusion, steps: [.steps[] | {name: .name, status: .status, conclusion: .conclusion}]})" \
                       > "$steps_json" 2>/dev/null; then
                       steps_ok=true
@@ -2016,7 +2048,13 @@ jobs:
                   fi
                   printf '%s\n' "$clf_out"
                   clf_class=$(printf '%s\n' "$clf_out" | sed -n 's/^classification=//p' | head -1)
-                  if [ "${clf_class:-}" = "infra-no-proof" ]; then
+                  clf_gap=$(printf '%s\n' "$clf_out" | sed -n 's/^gap_receipt_matches=//p' | head -1)
+                  case "$clf_gap" in ''|*[!0-9]*) clf_gap=0 ;; esac
+                  if [ "$clf_gap" -gt 0 ]; then
+                    lane_class="ripr-failure"
+                  elif [ "${clf_class:-}" = "configured-timeout-no-proof" ] && [ "$lane_result" = "cancelled" ]; then
+                    lane_class="configured-timeout-no-proof"
+                  elif [ "${clf_class:-}" = "infra-no-proof" ] && [ "$lane_result" != "cancelled" ]; then
                     lane_class="infra-no-proof"
                   fi
                 else
@@ -2056,6 +2094,7 @@ jobs:
               echo "head_sha=${GITHUB_SHA}"
               echo "router_target=${ROUTER_TARGET:-unknown}"
               echo "run_id=${GITHUB_RUN_ID}"
+              echo "run_attempt=${GITHUB_RUN_ATTEMPT}"
               echo "evidence=${lane_evidence_source}"
             } > ripr-gate-classification.env
           }
@@ -2075,6 +2114,14 @@ jobs:
                 echo "- evidence: \`${lane_evidence_source}\`"
                 echo "- rerun: \`gh run rerun ${GITHUB_RUN_ID} --failed\` (automatic bounded retry armed once; second eviction = manual path)"
               } >> "$GITHUB_STEP_SUMMARY"
+            elif [ "$lane_class" = "configured-timeout-no-proof" ]; then
+              echo "RIPR_GATE_VERDICT=configured-timeout-no-proof"
+              write_gate_classification "configured-timeout-no-proof" "configured hosted lane exceeded 135 minutes, proven by current job annotation"
+              echo "::error::ripr lane ${lane_name} (job ${lane_job_id}) exceeded its configured 135-minute limit. No proof exists for ${GITHUB_SHA}; this is not a RIPR gap or an infra auto-retry. Investigate the bounded lane before a manual rerun."
+            elif [ "$lane_class" = "cancelled-no-verdict" ]; then
+              echo "RIPR_GATE_VERDICT=cancelled-no-verdict"
+              write_gate_classification "cancelled-no-verdict" "cancellation cause unproved on current lane attempt"
+              echo "::error::ripr lane cancelled — no proof produced for ${GITHUB_SHA}. No current-job 135-minute timeout annotation or genuine gap receipt proved a more specific cause. This is NOT a new RIPR gap; investigate the cancellation and re-run this head."
             else
               echo "RIPR_GATE_VERDICT=ripr-failure"
               write_gate_classification "ripr-failure" "$1"
@@ -2085,7 +2132,9 @@ jobs:
 
           case "${ROUTER_TARGET:-}" in
             selfhosted)
-              if [ "$SELFHOSTED_RESULT" = "success" ]; then
+              if [ "$cancelled_result_seen" = "true" ]; then
+                report_lane_failure "ripr lane cancelled; no proof for this SHA"
+              elif [ "$SELFHOSTED_RESULT" = "success" ]; then
                 : # Primary succeeded normally.
               elif [ "$FALLBACK_RESULT" = "success" ]; then
                 # Disk-full preflight failover: fallback ran on GitHub-hosted.
@@ -2098,7 +2147,9 @@ jobs:
               fi
               ;;
             github)
-              if [ "$GITHUB_RESULT" != "success" ]; then
+              if [ "$cancelled_result_seen" = "true" ]; then
+                report_lane_failure "ripr lane cancelled; no proof for this SHA"
+              elif [ "$GITHUB_RESULT" != "success" ]; then
                 report_lane_failure "ripr on GitHub-hosted did not succeed: $GITHUB_RESULT"
               fi
               ;;
