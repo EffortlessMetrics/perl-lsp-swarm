@@ -30,7 +30,7 @@ The [PIR model](../../crates/perl-parser-core/src/pir/model.rs) has
 `Literal { kind: PirLiteralKind }`, without the literal value on that operation.
 Flat-HIR facts can retain literal payloads. The gap is a qualified body/PIR
 handoff, not an assertion that the entire compiler has lost every literal.
-#17538, under #6658, owns the first scalar-literal repair and payload relation.
+\#17538, under #6658, owns the first scalar-literal repair and payload relation.
 
 Source anchoring does not resolve this: a byte range identifies a location, not
 its runtime value or evaluation rule. The adapter must not reparse source,
@@ -87,7 +87,7 @@ order within a block. Branch targets and edge operands determine control flow;
 container iteration or HIR traversal order does not.
 
 Start with the exact literals, places, operations and return forms admitted by
-#4773 and #17536. Add branches/loops under #2350 and direct calls under #17513
+\#4773 and #17536. Add branches/loops under #2350 and direct calls under #17513
 only when those families have independent reference proof. A type capable of
 representing a call or branch does not admit that operation to an earlier profile.
 
@@ -125,8 +125,8 @@ for the rest of the source unit; silently dropping unsupported bodies is not one
 
 ## Values, state, failure and code lifetime
 
-#2413 owns scalar/aggregate construction, coercion and alias-visible cells.
-#2354 owns frame/pad/stash/localization/handler lifetime. Both reference and native
+\#2413 owns scalar/aggregate construction, coercion and alias-visible cells.
+\#2354 owns frame/pad/stash/localization/handler lifetime. Both reference and native
 execution use these semantic operations rather than maintaining parallel value
 models. Begin with bounded runtime-owned handles and non-moving storage; a moving
 collector, concurrent interpreter or unsafe `Send`/`Sync` assertion is not needed
@@ -152,13 +152,13 @@ Resolve #17534's commit/cleanup contract as follows, subject to review:
 | Native side exit follows effects | Resume exact state or propagate failure; never replay the entire function |
 | Internal invariant/panic failure | Terminal internal failure, not a successful fallback or Perl exception |
 
-Thus “no partial writes” protects operation admission and coherent state, not a
+Thus `no partial writes` protects operation admission and coherent state, not a
 fiction that Perl exceptions roll back an entire evaluation. PR #17537 supplies
 stock-Perl counterexamples distinguishing ordinary writes from localization.
 It does not implement runtime transactions or prove the Rust/native cleanup path.
 
 Native #17516 owns the reviewed fixed-layout ABI and typed status returns;
-#17517 owns closed imports, write/execute policy, finalization, callable handles,
+\#17517 owns closed imports, write/execute policy, finalization, callable handles,
 retirement and quiescent reclamation. Active/retained calls pin code and required
 runtime dependencies. No unowned function pointer is a safe API. In-process native
 execution is not a security sandbox, even when it uses these controls.
@@ -208,10 +208,10 @@ once its pure family is qualified; it need not wait for all loops/calls/closures
 Advance source/reference integration, native control/calls, then function-entry
 JIT and multi-mode qualification through #17509's existing train.
 
-#17533 measures whether call-count hotness reaches useful work. OSR remains an
+\#17533 measures whether call-count hotness reaches useful work. OSR remains an
 optional measured successor, not a concealed first-JIT requirement. #17527 owns
 cold/warm/compile/memory/break-even proof; machine code existence is not a speedup.
-#17535 extends the existing result axes rather than adding another evidence store.
+\#17535 extends the existing result axes rather than adding another evidence store.
 
 ## Review, alternatives and rollback
 
