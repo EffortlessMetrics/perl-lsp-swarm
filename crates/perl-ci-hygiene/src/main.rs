@@ -72,8 +72,32 @@ fn main() -> std::process::ExitCode {
 
 fn run() -> Result<i32> {
     let cli = Cli::parse();
+    // Resolver commands can inspect an explicit fixture or current workspace
+    // without first selecting the hygiene scanner's nearest-manifest root.
+    let command = match cli.command {
+        CliCommand::ChangeSet { base, head, format, root } => {
+            perl_ci_hygiene::change_set::run(perl_ci_hygiene::change_set::ChangeSetConfig {
+                base,
+                head,
+                format,
+                root,
+            })?;
+            return Ok(0);
+        }
+        CliCommand::ResolvePackageName { crate_dir } => {
+            let root = std::env::current_dir()?;
+            let name =
+                perl_ci_hygiene::package_resolver::resolve_single_package_name(&root, &crate_dir)?;
+            println!("{name}");
+            return Ok(0);
+        }
+        command => command,
+    };
     let repo_root = find_repo_root()?;
-    let code = match cli.command {
+    let code = match command {
+        CliCommand::ChangeSet { .. } | CliCommand::ResolvePackageName { .. } => {
+            return Err(color_eyre::eyre::eyre!("resolver command was not dispatched"));
+        }
         CliCommand::CheckDocPaths { docs_dir } => {
             cmd_check_doc_paths(&repo_root, docs_dir.as_deref())?
         }

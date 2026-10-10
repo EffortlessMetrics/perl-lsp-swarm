@@ -83,6 +83,13 @@ on:
       # half must re-run the self-test gate.
       - 'scripts/worktree-add.sh'
       - 'scripts/tests/test-worktree-add-hooks.sh'
+      - 'hooks/pre-push'
+      - 'crates/perl-ci-hygiene/src/git_hooks.rs'
+      - 'scripts/install-githooks.sh'
+      - 'scripts/check-githooks.sh'
+      - 'scripts/githooks-bootstrap.sh'
+      - 'scripts/tests/test-install-githooks-wrapper.sh'
+      - 'scripts/tests/test-pre-push-launchers.py'
       - 'scripts/agent-preflight.sh'
       - 'scripts/test-agent-preflight.sh'
       # Per-worktree core.hooksPath isolation (issue #17414 rule C).
@@ -529,6 +536,11 @@ jobs:
 
       - name: Run worktree hook-provisioning self-test
         run: bash scripts/tests/test-worktree-add-hooks.sh
+
+      - name: Run hook bootstrap and full-gate launcher self-tests
+        run: |
+          bash scripts/tests/test-install-githooks-wrapper.sh
+          python3 scripts/tests/test-pre-push-launchers.py
 
       - name: Summary
         if: always()
