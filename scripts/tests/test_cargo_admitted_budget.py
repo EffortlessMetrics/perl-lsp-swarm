@@ -352,7 +352,11 @@ class ConstrainedAdmissionTests(unittest.TestCase):
         self.write_budget()
         for key in ("MIN_FREE_GB", "MAX_USED_PCT", "CARGO_STORAGE_POLICY", "CARGO_EXPECTED_GROWTH_GB", "CARGO_STORAGE_BUDGET_EVIDENCE"):
             self.env = {key: ""}
-            self.assertEqual(self.invoke(["--budget-file", str(self.budget), *self.args])[0], 75)
+            with self.subTest(env=key):
+                result, _, cargo = self.invoke(["--budget-file", str(self.budget), *self.args])
+                self.assertEqual(result, 75)
+                cargo.assert_not_called()
+                self.assert_unallocated()
         for key, value in (("RUSTFLAGS", "-Cdebuginfo=2"), ("CARGO_PROFILE_DEV_DEBUG", "2"),
                            ("CARGO_BUILD_TARGET", "other-target"), ("CARGO_BUILD_JOBS", "1"),
                            ("PATH", "/different/toolchain"), ("CARGO_NET_OFFLINE", "true")):
