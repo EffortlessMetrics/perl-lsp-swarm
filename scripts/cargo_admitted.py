@@ -973,21 +973,21 @@ def directory_identity(path):
     return metadata.st_dev, metadata.st_ino
 
 
-def owns_lease(lock, identity, marker):
+def owns_lease(lock, identity, marker, marker_identity):
     try:
-        return directory_identity(lock) == identity and directory_identity(marker) is not None
+        return directory_identity(lock) == identity and directory_identity(marker) == marker_identity
     except (OSError, Denied):
         return False
 
 
-def release_lease(lock, identity, marker=None):
+def release_lease(lock, identity, marker=None, marker_identity=None):
     # A copied token cannot transfer the original directory's ownership. Never
     # recursively delete a lease or release replacement/unrecognized evidence.
     try:
         if directory_identity(lock) != identity:
             return
         if marker is not None:
-            if not owns_lease(lock, identity, marker):
+            if not owns_lease(lock, identity, marker, marker_identity):
                 return
             marker.rmdir()
         lock.rmdir()
@@ -1069,6 +1069,7 @@ def main(args=None):
         marker = lock / ("owner-" + uuid.uuid4().hex)
         try:
             marker.mkdir()
+            marker_identity = directory_identity(marker)
         except BaseException:
             release_lease(lock, identity)
             raise
@@ -1078,6 +1079,8 @@ def main(args=None):
         tree, result, interrupted = None, None, False
         try:
             admission = check_capacity([slot, *paths.values()], env, budget)
+            if not owns_lease(lock, identity, marker, marker_identity):
+                raise Denied("lease ownership changed before resource allocation")
             for path in (slot, *paths.values()):
                 if native_path(str(path)) != path:
                     raise Denied("resource path changed after admission: " + str(path))
@@ -1095,10 +1098,10 @@ def main(args=None):
                 # Persist the original owner observation before any setup/product
                 # child starts. Recovery must not adopt a replacement directory
                 # or reconstruct ownership from age/current contents after death.
-                descriptor.update(lease_identity=list(identity), lease_marker=str(marker))
+                descriptor.update(lease_identity=list(identity), lease_marker=str(marker),
+                                  marker_identity=list(marker_identity))
             if nested is not None:
-                descriptor.update(marker_identity=list(directory_identity(marker)),
-                                  owner_process=process_fact(os.getpid()))
+                descriptor.update(owner_process=process_fact(os.getpid()))
                 snapshot_path = slot / ("nested-plan-" + marker.name + ".json")
                 payload = json.dumps({"descriptor": descriptor, "plan": nested}, sort_keys=True).encode()
                 if len(payload) > BUDGET_FILE_LIMIT:
@@ -1177,7 +1180,7 @@ def main(args=None):
             for path in (slot, *paths.values()):
                 if native_path(str(path)) != path:
                     raise Denied("resource path changed before launch: " + str(path))
-            if not owns_lease(lock, identity, marker):
+            if not owns_lease(lock, identity, marker, marker_identity):
                 raise Denied("lease ownership changed before Cargo launch")
             launch_attempted = True
             if clippy:
@@ -1209,7 +1212,7 @@ def main(args=None):
                 completed = settlement["tree_settled"]
             if completed or not launch_attempted:
                 try:
-                    release_lease(lock, identity, marker)
+                    release_lease(lock, identity, marker, marker_identity)
                 except KeyboardInterrupt:
                     if not managed:
                         raise

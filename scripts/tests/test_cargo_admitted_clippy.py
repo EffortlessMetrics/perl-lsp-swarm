@@ -209,7 +209,7 @@ class ClippyAdmissionTests(unittest.TestCase):
         receipt = json.loads(next(line.split(": ", 1)[1] for line in output.splitlines()
                                   if line.startswith("cargo-admitted resources: ")))
         lock = Path(receipt["lease"])
-        self.assertTrue(safe.owns_lease(lock, tuple(receipt["lease_identity"]), Path(receipt["lease_marker"])))
+        self.assertTrue(safe.owns_lease(lock, tuple(receipt["lease_identity"]), Path(receipt["lease_marker"]), tuple(receipt["marker_identity"])))
 
     def test_configuration_change_during_setup_refuses_package_and_retains_lease(self):
         launch = Mock()
