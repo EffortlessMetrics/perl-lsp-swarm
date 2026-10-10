@@ -1,4 +1,6 @@
 """Independent generated-lock transition and expected compiler failure controls."""
+import contextlib
+import io
 import importlib.util
 import json
 import os
@@ -93,6 +95,20 @@ class JsonRpcTests(unittest.TestCase):
         record=json.loads(self.receipt('rejected').read_text());self.assertEqual(record['stderr'],ERROR);self.assertTrue(record['diagnostic_validation']['passed'])
         with self.assertRaises(self.a.Denied):self.f.phase('rejected',self.n.env,invoke)
         invoke.assert_not_called()
+
+    def test_large_native_trace_has_separate_bounded_receipt_reader(self):
+        self.lock()
+        trace='fingerprint trace\n'*6000
+        invoke=Mock(return_value=subprocess.CompletedProcess([],0,'',trace))
+        with contextlib.redirect_stdout(io.StringIO()),contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(self.f.phase('neutral',self.n.env,invoke),0)
+        with self.assertRaises(self.a.Denied):self.a.bounded_json(self.receipt('neutral'))
+        record=self.a.jsonrpc_phase_record(self.n.plan,self.n.receipt,self.n.plan['jsonrpc_fixture'],'neutral')
+        self.assertEqual(record['stderr'],trace)
+        subject=self.a.file_subject(self.receipt('neutral'))
+        subject['file_identity'][2]=2*4*1024*1024*6+self.a.BUDGET_FILE_LIMIT+1
+        with patch.object(self.a,'file_subject',return_value=subject),self.assertRaises(self.a.Denied):
+            self.a.jsonrpc_receipt(self.receipt('neutral'))
 
     def test_lock_generation_is_actual_and_lock_identity_freezes_both_checks(self):
         invoke=self.lock();record=json.loads(self.receipt('lock').read_text())

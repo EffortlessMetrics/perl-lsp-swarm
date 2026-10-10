@@ -544,11 +544,12 @@ for _name, _suffix in (("routed-compile", ("--no-run",)), ("routed-runtime", ())
     NESTED_COMMANDS[_name] = ("test", "--locked", "--tests", *sum((("-p", p) for p in NESTED_PACKAGES), ()), *_suffix)
 
 
-def bounded_json(path):
+def bounded_json(path, limit=None):
     path = native_path(str(path))
     subject = file_subject(path)
-    if subject["file_identity"][2] > BUDGET_FILE_LIMIT:
-        raise Denied("nested request exceeds 64 KiB")
+    limit = BUDGET_FILE_LIMIT if limit is None else limit
+    if subject["file_identity"][2] > limit:
+        raise Denied("nested request exceeds bounded reader limit: " + str(limit))
     def unique(pairs):
         result = {}
         for key, value in pairs:
@@ -777,7 +778,7 @@ def jsonrpc_fixture(worktree, paths):
 
 def jsonrpc_generated_locks(plan, receipt, fixture):
     path = Path(fixture["cwd"]) / ("lock-generation-" + str(receipt["pid"]) + ".json")
-    generated, _ = bounded_json(path)
+    generated, _ = jsonrpc_receipt(path)
     if (generated.get("schema_version") != 1 or generated.get("row") != JSONRPC_LOCK_ROW
             or generated.get("exit_code") != 0 or generated.get("generated_by_native_command") is not True
             or generated.get("diagnostic_validation") != {"passed": True, "error": None}
@@ -798,7 +799,7 @@ def jsonrpc_generated_locks(plan, receipt, fixture):
 
 
 def jsonrpc_phase_record(plan, receipt, fixture, mode):
-    record, _ = bounded_json(Path(fixture["cwd"]) / ("native-" + mode + "-" + str(receipt["pid"]) + ".json"))
+    record, _ = jsonrpc_receipt(Path(fixture["cwd"]) / ("native-" + mode + "-" + str(receipt["pid"]) + ".json"))
     row = JSONRPC_NEUTRAL_ROW if mode == "neutral" else JSONRPC_REJECTED_ROW
     if (record.get("phase") != mode or record.get("row") != row
             or record.get("tested_source") != plan["source"]["head"]
@@ -813,6 +814,13 @@ def jsonrpc_phase_record(plan, receipt, fixture, mode):
             or record.get("cwd") != fixture["directories"][mode]["path"]):
         raise Denied("JSON-RPC phase used another command/cwd")
     return record
+
+
+def jsonrpc_receipt(path):
+    # The adapter bounds each raw stream to 4 MiB. JSON can escape one byte
+    # into six characters; leave 64 KiB for the separately bounded metadata.
+    # Plans and budget files retain their ordinary 64 KiB reader ceiling.
+    return bounded_json(path, limit=2 * 4 * 1024 * 1024 * 6 + BUDGET_FILE_LIMIT)
 
 
 def jsonrpc_expected_command(row, plan, receipt, fixture):

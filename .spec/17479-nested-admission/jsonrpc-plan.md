@@ -26,7 +26,7 @@ root bootstrap invocations, two owning Cargo test invocations, one native lock
 generator and two native checks (seven total). This batch needs one bootstrap,
 one owning Cargo test, one generator and two checks (five total). The generator
 is not compiler-producing. These are source counts until actual execution
-receipts establish them. The owning integration target may compile all 31
+receipts establish them. The owning integration target may compile all 30
 automatic xtask binaries plus the primary binary; no retained main-unit harness
 freshness proves that integration footprint. Qualify the complete selected
 owning build closure rather than pretending it is only one small executable.
@@ -56,7 +56,7 @@ coverage intact in any future finite slice.
 
 Use existing inherited capacity admission with jobs 1 and incremental disabled,
 retained roots and native Rust 1.95. A scoped 14 GiB additional-growth forecast
-plus 8 GiB reserve is an unverified bound for all implicit owning binaries,
+plus 8 GiB reserve is an unverified bound for all 31 owning binary targets,
 integration linking and the two fixture variants. Monitor aggregate cgroup
 memory, filesystem free bytes, original-owner liveness and ring fingerprints;
 settle through that owner's pidfd if pressure or unexpected ring compilation
@@ -68,3 +68,19 @@ read-only harness provenance, sampled aggregate memory, peak additional volume,
 minimum free space and ECHILD owner settlement. Sampled processes are lower
 bounds, not exact invocation accounting. Cold and cross-platform proof remain
 separate. Perform no public comment, PR, merge or hosted CI activation.
+
+The first native attempt built 415 Cargo artifacts (384 fresh), including all
+31 metadata-declared xtask binary targets and the integration harness. Actual
+lock generation and neutral check succeeded; the owning test correctly failed
+when the 103443-byte neutral receipt exceeded the original 64 KiB metadata
+reader. The negative check was never launched. The repair gives only raw phase
+receipts a finite ceiling derived from two 4 MiB streams, worst-case JSON escape
+expansion and 64 KiB metadata. The ordinary plan/budget ceiling is unchanged.
+
+A warm rerun uses a newly scoped unverified 10 GiB additional-growth forecast
+plus 8 GiB reserve: the first complete owning build measured 2008567808 bytes
+peak additional volume, and the reader repair changes no Rust or manifests.
+Preserve the same monitor thresholds and require fresh admission; retained
+integration artifacts do not establish cold sizing. Composed owner behavior is
+byte-identical to main 1f973039d812fe080abddc44e461112d7b95a6fa and its native
+builtin-tree controls are repeated before qualification.
