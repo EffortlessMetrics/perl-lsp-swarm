@@ -1,0 +1,86 @@
+{
+  "schema_version": "gates.v1",
+  "metadata": {
+    "timestamp": "2026-10-10T15:34:26Z",
+    "git_sha": "42ea165fec26d75644d687090876eaa1c6dae4bc",
+    "git_sha_short": "42ea165",
+    "git_branch": "fix/perl-helper-current-main",
+    "git_dirty": false,
+    "toolchain": {
+      "rustc_version": "rustc 1.95.0 (59807616e 2026-04-14)",
+      "rustc_semver": "1.95.0",
+      "cargo_version": "cargo 1.95.0 (f2d3ce0bd 2026-03-21)"
+    },
+    "platform": {
+      "os": "linux",
+      "os_version": "6.18.44",
+      "arch": "x86_64",
+      "cpu_cores": 4,
+      "memory_gb": 17.58588409423828,
+      "is_wsl": false
+    },
+    "environment": {
+      "type": "local",
+      "nix_shell": false
+    },
+    "trigger": "manual"
+  },
+  "gates": [
+    {
+      "gate_name": "publish_manifest_check",
+      "tier": "pr_fast",
+      "status": "pass",
+      "required": true,
+      "duration_ms": 77,
+      "command": "just ci-publish-manifest-check",
+      "output_summary": "Executed internally via xtask task dispatch",
+      "log_path": "logs/publish_manifest_check.log"
+    }
+  ],
+  "summary": {
+    "total_gates": 1,
+    "passed": 1,
+    "failed": 0,
+    "skipped": 0,
+    "total_duration_ms": 141,
+    "tier_results": {
+      "pr_fast": {
+        "total": 1,
+        "passed": 1,
+        "failed": 0,
+        "skipped": 0,
+        "duration_ms": 77
+      }
+    },
+    "overall_status": "pass"
+  },
+  "agent_receipt": {
+    "sha": "42ea165fec26d75644d687090876eaa1c6dae4bc",
+    "is_latest": true,
+    "tier": "pr_fast",
+    "scope": {
+      "direct_crates": [],
+      "reverse_deps": [],
+      "risk_tags": []
+    },
+    "selected_lanes": [],
+    "failures": [],
+    "suggested_next_actions": [
+      "No blocking failures detected. Proceed with review or merge flow."
+    ],
+    "plan": {
+      "base": "origin/main",
+      "scope_ok": true,
+      "fallback_used": false,
+      "package_args": [],
+      "selected": [
+        {
+          "name": "publish_manifest_check",
+          "role": "always_on",
+          "reason": "selected by static policy filter"
+        }
+      ],
+      "skipped": []
+    }
+  }
+}

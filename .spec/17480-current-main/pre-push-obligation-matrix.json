@@ -1,0 +1,255 @@
+{
+  "head": "42ea165fec26d75644d687090876eaa1c6dae4bc",
+  "base": "1f973039d812fe080abddc44e461112d7b95a6fa",
+  "method": "Canonical ci-scope plus source-derived current gate planning roles; not executed canonical gate plan or receipt",
+  "selected": [
+    {
+      "name": "fmt",
+      "role": "always_on",
+      "command": "cargo xtask fmt --check",
+      "landed_main_pass": true,
+      "evidence": "fresh cargo fmt -p perl-ci-hygiene -p xtask -- --check; unchanged other Rust inputs inherit main",
+      "residual": "none for affected contribution"
+    },
+    {
+      "name": "ignored_tests_check_refs",
+      "role": "always_on",
+      "command": "just ignored-tests-check-refs",
+      "landed_main_pass": true,
+      "evidence": "landed actual pass; implementation/policy and existing owning sources unchanged; no changed ignore attributes/README/release surfaces/token inputs",
+      "residual": "owning-input reuse; no fresh whole-gate execution claimed"
+    },
+    {
+      "name": "check_conflict_markers",
+      "role": "always_on",
+      "command": "just check-conflict-markers",
+      "landed_main_pass": true,
+      "evidence": "exact changed-path pattern scan no findings + unchanged main whole-tree pass",
+      "residual": "none for affected contribution"
+    },
+    {
+      "name": "release_history",
+      "role": "always_on",
+      "command": "just ci-release-history",
+      "landed_main_pass": true,
+      "evidence": "landed actual pass; implementation/policy and existing owning sources unchanged; no changed ignore attributes/README/release surfaces/token inputs",
+      "residual": "owning-input reuse; no fresh whole-gate execution claimed"
+    },
+    {
+      "name": "readme_heading_check",
+      "role": "always_on",
+      "command": "just readme-heading-check",
+      "landed_main_pass": true,
+      "evidence": "landed actual pass; implementation/policy and existing owning sources unchanged; no changed ignore attributes/README/release surfaces/token inputs",
+      "residual": "owning-input reuse; no fresh whole-gate execution claimed"
+    },
+    {
+      "name": "publish_closure",
+      "role": "always_on",
+      "command": "just ci-publish-closure",
+      "landed_main_pass": true,
+      "evidence": "fresh canonical one-row receipt",
+      "residual": "none for affected contribution"
+    },
+    {
+      "name": "publish_manifest_check",
+      "role": "always_on",
+      "command": "just ci-publish-manifest-check",
+      "landed_main_pass": true,
+      "evidence": "fresh canonical one-row receipt",
+      "residual": "none for affected contribution"
+    },
+    {
+      "name": "layer_check",
+      "role": "always_on",
+      "command": "just ci-layer-check",
+      "landed_main_pass": true,
+      "evidence": "fresh canonical one-row receipt",
+      "residual": "none for affected contribution"
+    },
+    {
+      "name": "published_crate_count_pr_fast",
+      "role": "always_on",
+      "command": "just ci-published-crate-count",
+      "landed_main_pass": true,
+      "evidence": "fresh canonical one-row receipt",
+      "residual": "none for affected contribution"
+    },
+    {
+      "name": "serial_test_ratchet",
+      "role": "always_on",
+      "command": "just ci-serial-test-ratchet",
+      "landed_main_pass": true,
+      "evidence": "fresh immutable hygiene check-serial-test exit0 current0 registry0",
+      "residual": "none for affected contribution"
+    },
+    {
+      "name": "release_history_check",
+      "role": "always_on",
+      "command": "just ci-release-history-check",
+      "landed_main_pass": true,
+      "evidence": "landed actual pass; implementation/policy and existing owning sources unchanged; no changed ignore attributes/README/release surfaces/token inputs",
+      "residual": "owning-input reuse; no fresh whole-gate execution claimed"
+    },
+    {
+      "name": "source_commit_api_check",
+      "role": "always_on",
+      "command": "python3 scripts/ci/check_source_commit_api.py",
+      "landed_main_pass": true,
+      "evidence": "fresh production Python script exit0 75callers705calls9owners",
+      "residual": "none for affected contribution"
+    },
+    {
+      "name": "clippy_scoped",
+      "role": "rust_scoped",
+      "command": "cargo clippy --locked --lib -p perl-ci-hygiene -p xtask -- -D warnings -A missing_docs",
+      "landed_main_pass": false,
+      "evidence": "helper contribution:373f4dac focused tests/strict all-targetClippy by34input+whole-owner-tree equality;39actualCLI and new paired normal-bin build; unaffected product owners inherit main",
+      "residual": "affected xtask lib/test/scoped lint/routed contribution not yet independently executed or explicitly fully reconciled; paired bin build is not all-target/test proof"
+    },
+    {
+      "name": "unit_scoped",
+      "role": "rust_scoped",
+      "command": "cargo test --locked --lib -p perl-ci-hygiene -p xtask",
+      "landed_main_pass": false,
+      "evidence": "helper contribution:373f4dac focused tests/strict all-targetClippy by34input+whole-owner-tree equality;39actualCLI and new paired normal-bin build; unaffected product owners inherit main",
+      "residual": "affected xtask lib/test/scoped lint/routed contribution not yet independently executed or explicitly fully reconciled; paired bin build is not all-target/test proof"
+    },
+    {
+      "name": "check_tests_scoped",
+      "role": "rust_scoped",
+      "command": "cargo check --locked --tests -p perl-ci-hygiene -p xtask",
+      "landed_main_pass": false,
+      "evidence": "helper contribution:373f4dac focused tests/strict all-targetClippy by34input+whole-owner-tree equality;39actualCLI and new paired normal-bin build; unaffected product owners inherit main",
+      "residual": "affected xtask lib/test/scoped lint/routed contribution not yet independently executed or explicitly fully reconciled; paired bin build is not all-target/test proof"
+    },
+    {
+      "name": "inline_completion_quality_receipt",
+      "role": "rust_package_scoped",
+      "command": "cargo xtask inline-completion-quality --receipt target/receipts/inline-completion-quality.json",
+      "landed_main_pass": true,
+      "evidence": "landed actual pass; quality owner/source fixtures unchanged",
+      "residual": "owning-input reuse; shared xtask build binding proved by paired build; not fresh quality receipt"
+    },
+    {
+      "name": "perl_token_leaf_contract",
+      "role": "always_on",
+      "command": "cargo test -p perl-token --test conformance_guards --locked",
+      "landed_main_pass": true,
+      "evidence": "landed actual pass; implementation/policy and existing owning sources unchanged; no changed ignore attributes/README/release surfaces/token inputs",
+      "residual": "owning-input reuse; no fresh whole-gate execution claimed"
+    },
+    {
+      "name": "compile_all_targets",
+      "role": "always_on",
+      "command": "just check-all-targets",
+      "landed_main_pass": true,
+      "evidence": "helper contribution:373f4dac focused tests/strict all-targetClippy by34input+whole-owner-tree equality;39actualCLI and new paired normal-bin build; unaffected product owners inherit main",
+      "residual": "affected xtask lib/test/scoped lint/routed contribution not yet independently executed or explicitly fully reconciled; paired bin build is not all-target/test proof"
+    },
+    {
+      "name": "clippy_full",
+      "role": "always_on",
+      "command": "cargo clippy --workspace --lib --locked -- -D warnings -A missing_docs && cargo clippy --workspace --bins --locked --no-deps -- -D clippy::unwrap_used -D clippy::expect_used",
+      "landed_main_pass": true,
+      "evidence": "helper contribution:373f4dac focused tests/strict all-targetClippy by34input+whole-owner-tree equality;39actualCLI and new paired normal-bin build; unaffected product owners inherit main",
+      "residual": "affected xtask lib/test/scoped lint/routed contribution not yet independently executed or explicitly fully reconciled; paired bin build is not all-target/test proof"
+    },
+    {
+      "name": "clippy_tests_kernel",
+      "role": "always_on",
+      "command": "cargo clippy -p perl-token -p perl-position-tracking -p perl-uri -p perl-tdd-support -p perl-test-must -p perl-ast-v2 -p perl-symbol -p perl-ast -p perl-semantic-facts -p perl-source-identity -p perl-line-index -p perl-workspace -p perl-semantic-analyzer -p perl-diagnostics -p perl-lsp-perltidy -p perl-subprocess-runtime -p perl-test-facts -p perl-parser-bench -p perl-core-test-runner -p perl-parser-pest -p perl-parser-comparison -p tree-sitter-perl-c -p perl-incremental-parsing -p tree-sitter-perl-rs -p perl-release-readiness -p perl-workspace-core -p perl-tree-sitter-compat -p perl-module -p perl-pod -p perl-pragma -p perl-test-generators -p perl-core-harness-types -p perl-regex -p perllsp -p perl-lexer -p perl-ci-hygiene -p perl-operation-trace --all-targets --locked -- -D warnings -A missing_docs",
+      "landed_main_pass": true,
+      "evidence": "helper contribution:373f4dac focused tests/strict all-targetClippy by34input+whole-owner-tree equality;39actualCLI and new paired normal-bin build; unaffected product owners inherit main",
+      "residual": "no xtask in this cohort; helper strict all-target contribution covered by owning-input reuse, other cohort owners/dependency versions unchanged; whole-gate fresh execution not claimed"
+    },
+    {
+      "name": "ci_subject_digest_oracle",
+      "role": "rust_package_scoped",
+      "command": "cargo test -p xtask --locked --test ci_subject",
+      "landed_main_pass": true,
+      "evidence": "helper contribution:373f4dac focused tests/strict all-targetClippy by34input+whole-owner-tree equality;39actualCLI and new paired normal-bin build; unaffected product owners inherit main",
+      "residual": "affected xtask lib/test/scoped lint/routed contribution not yet independently executed or explicitly fully reconciled; paired bin build is not all-target/test proof"
+    },
+    {
+      "name": "unit_control_plane_bins",
+      "role": "rust_package_scoped",
+      "command": "cargo test -p xtask --locked --bin xtask -- tasks::gates:: tasks::ci_scope:: tasks::workflow_policy_lint:: tasks::workflow_trigger_lint:: -- --test-threads=1",
+      "landed_main_pass": true,
+      "evidence": "helper contribution:373f4dac focused tests/strict all-targetClippy by34input+whole-owner-tree equality;39actualCLI and new paired normal-bin build; unaffected product owners inherit main",
+      "residual": "affected xtask lib/test/scoped lint/routed contribution not yet independently executed or explicitly fully reconciled; paired bin build is not all-target/test proof"
+    },
+    {
+      "name": "unit_routed_full",
+      "role": "rust_scoped",
+      "command": "cargo build -p perllsp --locked && env PERL_LSP_BIN=\"$PWD/target/debug/perllsp\" cargo test --locked --tests -p perl-ci-hygiene -p xtask",
+      "landed_main_pass": false,
+      "evidence": "helper contribution:373f4dac focused tests/strict all-targetClippy by34input+whole-owner-tree equality;39actualCLI and new paired normal-bin build; unaffected product owners inherit main",
+      "residual": "affected xtask lib/test/scoped lint/routed contribution not yet independently executed or explicitly fully reconciled; paired bin build is not all-target/test proof"
+    }
+  ],
+  "skipped": [
+    {
+      "name": "inline_completion_registration",
+      "role": "rust_package_scoped",
+      "command": "cargo test -p perl-lsp-rs --locked --test lsp_inline_completion_registration_tests"
+    },
+    {
+      "name": "lsp_registration_contract",
+      "role": "rust_package_scoped",
+      "command": "cargo test -p perl-lsp-rs --locked --test lsp_registration_tests"
+    },
+    {
+      "name": "lsp_capability_snapshots",
+      "role": "rust_package_scoped",
+      "command": "cargo test -p perl-lsp-rs --locked --test lsp_cap_snap"
+    },
+    {
+      "name": "inline_completion_core",
+      "role": "rust_package_scoped",
+      "command": "cargo test -p perl-lsp-rs-core --locked --lib inline_completion"
+    },
+    {
+      "name": "clippy_core",
+      "role": "rust_fallback",
+      "command": "cargo clippy -p perl-parser -p perl-lexer -p perl-parser-core --lib --locked -- -D warnings -A missing_docs"
+    },
+    {
+      "name": "unit_core",
+      "role": "rust_fallback",
+      "command": "cargo test -p perl-parser -p perl-lexer -p perl-parser-core --lib --locked -- --test-threads=4"
+    }
+  ],
+  "landed_receipt": {
+    "head": "12c162c8fe3534f40a61adc88a407d743b77ffe9",
+    "landed_as": "1f973039d812fe080abddc44e461112d7b95a6fa",
+    "job_id": 114230000644,
+    "url": "https://github.com/EffortlessMetrics/perl-lsp-swarm/actions/runs/38057828834/job/114230000644",
+    "actual": "25BEGIN25END25pass0fail0skip1925.6s",
+    "limit": "different subject/selection; never relabel as23/23candidate execution"
+  },
+  "publication_residuals": [
+    "nativeWindows helper/hook caller qualification",
+    "affected xtask scoped lint/tests,ci_subject/control-plane/routed tests and remaining all-target contribution or sufficient explicit owning-input proof",
+    "supported Nix+flake/just full launcher absent here; actual selected nested Cargo portfolio must use parent-owned supported admission (#17479), not merely a live outer lease",
+    "parent cumulative fullmatrix judgment before late draft/hosted opportunity",
+    "exact canonical staged commit-hook obligations on a frozen nonempty candidate index remain unrun; clean committed index is not proof of the candidate delta"
+  ],
+  "selection_child": {
+    "source_sha": "ce99f24f7df1f8561ecd28cda57b055094d2920a",
+    "receipt_sha": "8456eae1dd55f45597fc3e6fcbfe2bf423206701",
+    "child_paths": 19,
+    "cumulative_paths": 43,
+    "scope_observation": "helper42 immutable canonical xtask consumer with explicit root at separate ce99 clone; offline metadata only; selection receipt14actual comparisons establishes semantic equivalence; not a rebuilt ce99 xtask binary",
+    "same_selection_inputs": true,
+    "selected_rows": 23,
+    "skipped_rows": 6,
+    "fresh_helper_tests": 718,
+    "selection_registry": 539,
+    "strict_clippy_reuse": "receipt points to prior56e407 source/tool hash comparison; not independently fetched or a new Clippy run here",
+    "residual": "Affected xtask test/scoped lint/routed/all-target contribution, frozen canonical hook obligations, Windows and supported nested portfolio admission remain; no source findings",
+    "native_windows_owner_status": "Both owners still selected; narrow new-source hygiene Windows proof does not establish native xtask adapter execution",
+    "manifest_reuse": "selection-manifest-input-comparison.json establishes unchanged guard-input projection; no remaining manifest semantic gap; no new ce99 canonical execution claimed"
+  },
+  "independent_handoff_review": "Reviewed read-only; corrected missing--lib and bootstrap package fixture-root mismatch; clarified kernel cohort excludesxtask"
+}

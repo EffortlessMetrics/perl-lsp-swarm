@@ -1,0 +1,20 @@
+{
+  "base": "42ea165fec26d75644d687090876eaa1c6dae4bc",
+  "child": "ce99f24f7df1f8561ecd28cda57b055094d2920a",
+  "method": "Source-backed manifest guard input projection, not fresh ce99 gate execution",
+  "unchanged_guard_paths": [
+    "Cargo.toml",
+    "xtask/src/tasks/publish_closure.rs",
+    "xtask/src/tasks/publish_manifest_check.rs",
+    "xtask/src/tasks/layer_check.rs",
+    "xtask/src/tasks/count_ratchet.rs",
+    "xtask/published-crate-baseline.txt",
+    ".ci/public-api-baselines/ratchet-crates.txt"
+  ],
+  "manifest_change": "Only serde+sha2 registry normal dependencies added to unpublished hygiene; all other workspace manifests unchanged; lock changes only these hygiene edges, no versions/checksums change",
+  "publish_manifest_fields": "package table identical including name/license/version/publish=false; no LICENSE/API-baseline/allowlist change",
+  "publish_closure": "Fresh42 pass means no allowlisted published normal closure reaches unpublished hygiene; new dependencies from hygiene cannot change those closure inputs",
+  "layer_check": "Rules only constrain perl-diagnostics/perl-symbol/perl-workspace; all their manifests unchanged",
+  "published_count": "Root allowlist and baseline byte-identical",
+  "result": "Fresh42 four canonical passes may carry to ce99 in these owning-input dimensions; not a ce99 execution receipt"
+}

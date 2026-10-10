@@ -1,0 +1,19 @@
+{
+  "schema_version": "ci-subject.v1",
+  "producer": "cargo-xtask-ci-subject",
+  "status": "RESOLVED",
+  "repository": "EffortlessMetrics/perl-lsp-swarm",
+  "event_kind": "explicit",
+  "resolution_source": "explicit_input",
+  "diff_mode": "direct",
+  "base_sha": "1f973039d812fe080abddc44e461112d7b95a6fa",
+  "head_sha": "42ea165fec26d75644d687090876eaa1c6dae4bc",
+  "base_tree": "069cc53d8819b43b537f7366a30537e4d6b60ef3",
+  "head_tree": "56321d28592254bcc58a8734a91d49732e15832d",
+  "diff_base_sha": "1f973039d812fe080abddc44e461112d7b95a6fa",
+  "diff_base_tree": "069cc53d8819b43b537f7366a30537e4d6b60ef3",
+  "changed_file_count": 29,
+  "changed_input_digest": "38cb63d7873b84bef95fd8d97bd1988fd5126b951000b47eadd7b2c483cb80c7",
+  "subject_digest": "27464236c5474db2e927bc746f730f375da361b95cfe43a350fecba240244e11",
+  "error_code": null
+}

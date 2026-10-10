@@ -1,0 +1,112 @@
+{
+  "schema_version": 2,
+  "base": "1f973039d812fe080abddc44e461112d7b95a6fa",
+  "head_sha": "42ea165fec26d75644d687090876eaa1c6dae4bc",
+  "changed_files": [
+    ".github/workflows/ci-gate-self-tests.yml",
+    "Cargo.lock",
+    "crates/perl-ci-hygiene/Cargo.toml",
+    "crates/perl-ci-hygiene/src/change_set.rs",
+    "crates/perl-ci-hygiene/src/cli.rs",
+    "crates/perl-ci-hygiene/src/git_hooks.rs",
+    "crates/perl-ci-hygiene/src/lib.rs",
+    "crates/perl-ci-hygiene/src/main.rs",
+    "crates/perl-ci-hygiene/src/package_resolver.rs",
+    "crates/perl-ci-hygiene/src/staged.rs",
+    "crates/perl-ci-hygiene/tests/change_set_cli.rs",
+    "crates/perl-ci-hygiene/tests/package_resolver_cli.rs",
+    "docs/contributing/FIRST_PR.md",
+    "hooks/pre-push",
+    "justfile",
+    "scripts/README.md",
+    "scripts/check-githooks.sh",
+    "scripts/githooks-bootstrap.sh",
+    "scripts/install-githooks.sh",
+    "scripts/tests/test-install-githooks-wrapper.sh",
+    "scripts/tests/test-pre-push-launchers.py",
+    "scripts/worktree-manager.py",
+    "xtask/src/bin/workspace_doctor_inventory/sources.rs",
+    "xtask/src/tasks/change_set.rs",
+    "xtask/src/tasks/ci_hygiene.rs",
+    "xtask/src/tasks/devex_doctor.rs",
+    "xtask/src/tasks/mod.rs",
+    "xtask/src/tasks/targeted_checks.rs",
+    "xtask/tests/workspace_doctor_inventory/support.rs"
+  ],
+  "diff_class": "mixed",
+  "direct_crates": [
+    {
+      "name": "perl-ci-hygiene",
+      "reason": "direct"
+    },
+    {
+      "name": "xtask",
+      "reason": "direct"
+    }
+  ],
+  "reverse_dep_closure": [],
+  "architecture_wideners": [],
+  "risk_tags": [
+    "dep_change"
+  ],
+  "platform_overrides": {
+    "windows_runner": true,
+    "windows_test_crates": [
+      "perl-ci-hygiene",
+      "xtask"
+    ]
+  },
+  "selected_lanes": [
+    {
+      "lane": "publish",
+      "scope": [],
+      "reason": "workspace_root"
+    },
+    {
+      "lane": "security",
+      "scope": [],
+      "reason": "workspace_root"
+    },
+    {
+      "lane": "ci_policy",
+      "scope": [],
+      "reason": "workspace_root"
+    },
+    {
+      "lane": "clippy_scoped",
+      "scope": [
+        "perl-ci-hygiene",
+        "xtask"
+      ],
+      "reason": "direct"
+    },
+    {
+      "lane": "test_scoped",
+      "scope": [
+        "perl-ci-hygiene",
+        "xtask"
+      ],
+      "reason": "direct"
+    }
+  ],
+  "selected_heavy_lanes": [
+    {
+      "lane": "mutation_diff",
+      "reason": "code_diff_default (crates: perl-ci-hygiene, xtask)"
+    }
+  ],
+  "lanes": {
+    "parser_ratchet": {
+      "selected": true,
+      "profile": "pr",
+      "reasons": [
+        "changed_path:.github/workflows/ci-gate-self-tests.yml",
+        "changed_path:Cargo.lock"
+      ]
+    }
+  },
+  "explanations": {
+    "publish": "Workspace root files (Cargo.toml/Lock, workflows, hooks) trigger publish + security + CI-policy checks",
+    "windows_runner": "changed path exercises a Windows-sensitive portability seam"
+  }
+}

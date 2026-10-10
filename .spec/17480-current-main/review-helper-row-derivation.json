@@ -1,0 +1,154 @@
+{
+  "head": "42ea165fec26d75644d687090876eaa1c6dae4bc",
+  "base": "1f973039d812fe080abddc44e461112d7b95a6fa",
+  "method": "Canonical ci-scope plus source-derived current gate planning roles; not executed canonical gate plan or receipt",
+  "selected": [
+    {
+      "name": "fmt",
+      "role": "always_on",
+      "command": "cargo xtask fmt --check"
+    },
+    {
+      "name": "ignored_tests_check_refs",
+      "role": "always_on",
+      "command": "just ignored-tests-check-refs"
+    },
+    {
+      "name": "check_conflict_markers",
+      "role": "always_on",
+      "command": "just check-conflict-markers"
+    },
+    {
+      "name": "release_history",
+      "role": "always_on",
+      "command": "just ci-release-history"
+    },
+    {
+      "name": "readme_heading_check",
+      "role": "always_on",
+      "command": "just readme-heading-check"
+    },
+    {
+      "name": "publish_closure",
+      "role": "always_on",
+      "command": "just ci-publish-closure"
+    },
+    {
+      "name": "publish_manifest_check",
+      "role": "always_on",
+      "command": "just ci-publish-manifest-check"
+    },
+    {
+      "name": "layer_check",
+      "role": "always_on",
+      "command": "just ci-layer-check"
+    },
+    {
+      "name": "published_crate_count_pr_fast",
+      "role": "always_on",
+      "command": "just ci-published-crate-count"
+    },
+    {
+      "name": "serial_test_ratchet",
+      "role": "always_on",
+      "command": "just ci-serial-test-ratchet"
+    },
+    {
+      "name": "release_history_check",
+      "role": "always_on",
+      "command": "just ci-release-history-check"
+    },
+    {
+      "name": "source_commit_api_check",
+      "role": "always_on",
+      "command": "python3 scripts/ci/check_source_commit_api.py"
+    },
+    {
+      "name": "clippy_scoped",
+      "role": "rust_scoped",
+      "command": "cargo clippy --locked --lib -p perl-ci-hygiene -p xtask -- -D warnings -A missing_docs"
+    },
+    {
+      "name": "unit_scoped",
+      "role": "rust_scoped",
+      "command": "cargo test --locked --lib -p perl-ci-hygiene -p xtask"
+    },
+    {
+      "name": "check_tests_scoped",
+      "role": "rust_scoped",
+      "command": "cargo check --locked --tests -p perl-ci-hygiene -p xtask"
+    },
+    {
+      "name": "inline_completion_quality_receipt",
+      "role": "rust_package_scoped",
+      "command": "cargo xtask inline-completion-quality --receipt target/receipts/inline-completion-quality.json"
+    },
+    {
+      "name": "perl_token_leaf_contract",
+      "role": "always_on",
+      "command": "cargo test -p perl-token --test conformance_guards --locked"
+    },
+    {
+      "name": "compile_all_targets",
+      "role": "always_on",
+      "command": "just check-all-targets"
+    },
+    {
+      "name": "clippy_full",
+      "role": "always_on",
+      "command": "cargo clippy --workspace --lib --locked -- -D warnings -A missing_docs && cargo clippy --workspace --bins --locked --no-deps -- -D clippy::unwrap_used -D clippy::expect_used"
+    },
+    {
+      "name": "clippy_tests_kernel",
+      "role": "always_on",
+      "command": "cargo clippy -p perl-token -p perl-position-tracking -p perl-uri -p perl-tdd-support -p perl-test-must -p perl-ast-v2 -p perl-symbol -p perl-ast -p perl-semantic-facts -p perl-source-identity -p perl-line-index -p perl-workspace -p perl-semantic-analyzer -p perl-diagnostics -p perl-lsp-perltidy -p perl-subprocess-runtime -p perl-test-facts -p perl-parser-bench -p perl-core-test-runner -p perl-parser-pest -p perl-parser-comparison -p tree-sitter-perl-c -p perl-incremental-parsing -p tree-sitter-perl-rs -p perl-release-readiness -p perl-workspace-core -p perl-tree-sitter-compat -p perl-module -p perl-pod -p perl-pragma -p perl-test-generators -p perl-core-harness-types -p perl-regex -p perllsp -p perl-lexer -p perl-ci-hygiene -p perl-operation-trace --all-targets --locked -- -D warnings -A missing_docs"
+    },
+    {
+      "name": "ci_subject_digest_oracle",
+      "role": "rust_package_scoped",
+      "command": "cargo test -p xtask --locked --test ci_subject"
+    },
+    {
+      "name": "unit_control_plane_bins",
+      "role": "rust_package_scoped",
+      "command": "cargo test -p xtask --locked --bin xtask -- tasks::gates:: tasks::ci_scope:: tasks::workflow_policy_lint:: tasks::workflow_trigger_lint:: -- --test-threads=1"
+    },
+    {
+      "name": "unit_routed_full",
+      "role": "rust_scoped",
+      "command": "cargo build -p perllsp --locked && env PERL_LSP_BIN=\"$PWD/target/debug/perllsp\" cargo test --locked --tests -p perl-ci-hygiene -p xtask"
+    }
+  ],
+  "skipped": [
+    {
+      "name": "inline_completion_registration",
+      "role": "rust_package_scoped",
+      "command": "cargo test -p perl-lsp-rs --locked --test lsp_inline_completion_registration_tests"
+    },
+    {
+      "name": "lsp_registration_contract",
+      "role": "rust_package_scoped",
+      "command": "cargo test -p perl-lsp-rs --locked --test lsp_registration_tests"
+    },
+    {
+      "name": "lsp_capability_snapshots",
+      "role": "rust_package_scoped",
+      "command": "cargo test -p perl-lsp-rs --locked --test lsp_cap_snap"
+    },
+    {
+      "name": "inline_completion_core",
+      "role": "rust_package_scoped",
+      "command": "cargo test -p perl-lsp-rs-core --locked --lib inline_completion"
+    },
+    {
+      "name": "clippy_core",
+      "role": "rust_fallback",
+      "command": "cargo clippy -p perl-parser -p perl-lexer -p perl-parser-core --lib --locked -- -D warnings -A missing_docs"
+    },
+    {
+      "name": "unit_core",
+      "role": "rust_fallback",
+      "command": "cargo test -p perl-parser -p perl-lexer -p perl-parser-core --lib --locked -- --test-threads=4"
+    }
+  ]
+}
