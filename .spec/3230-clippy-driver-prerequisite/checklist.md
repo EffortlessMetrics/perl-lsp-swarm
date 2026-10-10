@@ -19,7 +19,7 @@
   for the bounded preparation claim. No production or merge judgment.
 - [x] Initial prerequisite preserved at 75d64037 and documented in all three existing issues.
 - [x] Staged admission preserved on quiet branch at 6b4024cbe6057dc2d495a9ebb800fae1c157c4fd.
-- [ ] Update existing issues with revised scope and exact downstream failure.
+- [x] Updated existing #3230/#11660/#11663 and consumer #17484 with revised scope and exact downstream failure.
 - [x] Finite existing-owner Linux admission; real fail/clean fixture qualification.
 - [ ] Canonical typed executor/parity, native Windows Clippy, exact hook/resolver qualification.
 
@@ -104,3 +104,14 @@ lease remains retained at `/workspace/clippy-consumer-proof/devplane/
 are in ownership.json; no cleanup or generalized fixture release applied.
 Worktree/source/build/cache/trace artifacts are retained with reason: reviewable
 qualification failure. Parent owns consumer fixes and final native verification.
+
+Existing-issue updates:
+
+- [#3230 implementation/evidence](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3230#issuecomment-6094379204)
+- [#11660 canonical boundary](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/11660#issuecomment-6094383511)
+- [#11663 remaining parity](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/11663#issuecomment-6094384275)
+- [#17484 exact consumer failure](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/17484#issuecomment-6094384950)
+
+All 39 push workflows are main/master restricted. Production commit 6b4024cbe
+workflow-runs query returned no runs. No PR/merge/CI label or expensive hosted work.
+Exact storage writer remote verified unchanged fd8aa27ce2ebf2a1e95b2eae4109be394252b729.
