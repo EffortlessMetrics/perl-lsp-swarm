@@ -80,6 +80,35 @@ class ClippyAdmissionTests(unittest.TestCase):
                                   if line.startswith("cargo-admitted resources: ")))
         self.assertEqual(tuple(receipt["lease_identity"]), safe.directory_identity(lock))
         self.assertEqual(receipt["lease_marker"], str(next(lock.iterdir())))
+        self.assertEqual(tuple(receipt["marker_identity"]), safe.directory_identity(next(lock.iterdir())))
+
+    def test_settled_clippy_retains_replacement_marker_and_reports_original_identity(self):
+        original = self.root / "original-marker"
+        def replace(command, env, lock):
+            marker = next(lock.iterdir())
+            marker.rename(original)
+            marker.mkdir()
+            return 0
+        result, output = self.invoke(call=replace, settled=True)
+        self.assertEqual(result, 75, "settlement cannot authorize a replacement marker")
+        self.assertTrue((self.slot / "cargo-active").is_dir())
+        receipt = json.loads(next(line.split(": ", 1)[1] for line in output.splitlines()
+                                 if line.startswith("cargo-admitted resources: ")))
+        self.assertEqual(tuple(receipt["marker_identity"]), safe.directory_identity(original))
+        self.assertIn('"lease_released": false', output)
+
+    def test_clippy_setup_replacement_marker_refuses_before_product_launch(self):
+        def replace(*args):
+            marker = next((self.slot / "cargo-active").iterdir())
+            marker.rename(self.root / "original-marker")
+            marker.mkdir()
+            return {}
+        def launch(*args):
+            self.fail("product launch after marker replacement")
+        result, output = self.invoke(versions=replace, call=launch, settled=True)
+        self.assertEqual(result, 75)
+        self.assertIn("lease ownership changed before Cargo launch", output)
+        self.assertTrue((self.slot / "cargo-active").is_dir())
 
     def test_success_failure_and_unfamiliar_exit_all_retain_exact_lease(self):
         for status in (0, 101, 17):
@@ -209,7 +238,7 @@ class ClippyAdmissionTests(unittest.TestCase):
         receipt = json.loads(next(line.split(": ", 1)[1] for line in output.splitlines()
                                   if line.startswith("cargo-admitted resources: ")))
         lock = Path(receipt["lease"])
-        self.assertTrue(safe.owns_lease(lock, tuple(receipt["lease_identity"]), Path(receipt["lease_marker"])))
+        self.assertTrue(safe.owns_lease(lock, tuple(receipt["lease_identity"]), Path(receipt["lease_marker"]), tuple(receipt["marker_identity"])))
 
     def test_configuration_change_during_setup_refuses_package_and_retains_lease(self):
         launch = Mock()
@@ -259,9 +288,9 @@ class ClippyAdmissionTests(unittest.TestCase):
             with self.subTest(released=released):
                 self.slot = self.root / ("release-interrupt-" + str(released))
                 original = safe.release_lease
-                def interrupt(lock, identity, marker):
+                def interrupt(lock, identity, marker, marker_identity):
                     if released:
-                        original(lock, identity, marker)
+                        original(lock, identity, marker, marker_identity)
                     raise KeyboardInterrupt
                 with patch.object(safe, "release_lease", side_effect=interrupt):
                     result, output = self.invoke(settled=True)

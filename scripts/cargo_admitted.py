@@ -685,21 +685,21 @@ def directory_identity(path):
     return metadata.st_dev, metadata.st_ino
 
 
-def owns_lease(lock, identity, marker):
+def owns_lease(lock, identity, marker, marker_identity):
     try:
-        return directory_identity(lock) == identity and directory_identity(marker) is not None
+        return directory_identity(lock) == identity and directory_identity(marker) == marker_identity
     except (OSError, Denied):
         return False
 
 
-def release_lease(lock, identity, marker=None):
+def release_lease(lock, identity, marker=None, marker_identity=None):
     # A copied token cannot transfer the original directory's ownership. Never
     # recursively delete a lease or release replacement/unrecognized evidence.
     try:
         if directory_identity(lock) != identity:
             return
         if marker is not None:
-            if not owns_lease(lock, identity, marker):
+            if not owns_lease(lock, identity, marker, marker_identity):
                 return
             marker.rmdir()
         lock.rmdir()
@@ -757,6 +757,7 @@ def main(args=None):
         marker = lock / ("owner-" + uuid.uuid4().hex)
         try:
             marker.mkdir()
+            marker_identity = directory_identity(marker)
         except BaseException:
             release_lease(lock, identity)
             raise
@@ -766,6 +767,8 @@ def main(args=None):
         tree, result, interrupted = None, None, False
         try:
             admission = check_capacity([slot, *paths.values()], env, budget)
+            if not owns_lease(lock, identity, marker, marker_identity):
+                raise Denied("lease ownership changed before resource allocation")
             for path in (slot, *paths.values()):
                 if native_path(str(path)) != path:
                     raise Denied("resource path changed after admission: " + str(path))
@@ -783,7 +786,8 @@ def main(args=None):
                 # Persist the original owner observation before any setup/product
                 # child starts. Recovery must not adopt a replacement directory
                 # or reconstruct ownership from age/current contents after death.
-                descriptor.update(lease_identity=list(identity), lease_marker=str(marker))
+                descriptor.update(lease_identity=list(identity), lease_marker=str(marker),
+                                  marker_identity=list(marker_identity))
             print("cargo-admitted resources: " + json.dumps(descriptor), file=sys.stderr, flush=True)
             command = ["cargo", "--config", "unstable.unstable-options=false",
                        "--config", "build.build-dir=" + json.dumps(str(paths["build"])),
@@ -840,7 +844,7 @@ def main(args=None):
             for path in (slot, *paths.values()):
                 if native_path(str(path)) != path:
                     raise Denied("resource path changed before launch: " + str(path))
-            if not owns_lease(lock, identity, marker):
+            if not owns_lease(lock, identity, marker, marker_identity):
                 raise Denied("lease ownership changed before Cargo launch")
             launch_attempted = True
             if clippy:
@@ -872,7 +876,7 @@ def main(args=None):
                 completed = settlement["tree_settled"]
             if completed or not launch_attempted:
                 try:
-                    release_lease(lock, identity, marker)
+                    release_lease(lock, identity, marker, marker_identity)
                 except KeyboardInterrupt:
                     if not managed:
                         raise
@@ -884,6 +888,7 @@ def main(args=None):
                 settlement["cancelled"] = interrupted or settlement.get("cancelled", False)
                 print("cargo-admitted " + operation + " settlement: " + json.dumps({**settlement,
                       "lease": str(lock), "lease_identity": list(identity), "lease_marker": str(marker),
+                      "marker_identity": list(marker_identity),
                       "lease_released": released}), file=sys.stderr, flush=True)
                 # A positive product code cannot mask failed terminality/release.
                 completed = completed and released

@@ -171,6 +171,53 @@ class ConstrainedAdmissionTests(unittest.TestCase):
         self.assertFalse((self.slot / "cargo-active").exists())
         self.assertFalse(self.paths["target"].exists())
 
+    def replace_owner_marker(self, lock):
+        marker = next(lock.glob("owner-*"))
+        marker.rename(self.root / "original-marker")
+        marker.mkdir()
+        return marker
+
+    def test_replaced_marker_refuses_launch_and_preserves_lease(self):
+        lock = self.slot / "cargo-active"
+        replacement = []
+        def disk(path):
+            if lock.exists() and not replacement:
+                replacement.append(self.replace_owner_marker(lock))
+            return self.Usage(32*self.gib, 3*self.gib, 29*self.gib)
+        result, _, cargo = self.invoke(["--budget-file", str(self.budget), *self.args], disk=disk)
+        self.assertEqual(result, 75)
+        cargo.assert_not_called()
+        self.assertTrue(replacement[0].is_dir())
+        self.assertTrue(lock.is_dir())
+        self.assertFalse(self.paths["target"].exists())
+
+    def test_capacity_refusal_preserves_replaced_marker(self):
+        lock = self.slot / "cargo-active"
+        replacement = []
+        def disk(path):
+            if lock.exists():
+                replacement.append(self.replace_owner_marker(lock))
+                raise OSError("fixture capacity refusal after marker replacement")
+            return self.Usage(32*self.gib, 3*self.gib, 29*self.gib)
+        result, _, cargo = self.invoke(["--budget-file", str(self.budget), *self.args], disk=disk)
+        self.assertEqual(result, 75)
+        cargo.assert_not_called()
+        self.assertTrue(replacement[0].is_dir())
+        self.assertTrue(lock.is_dir())
+        self.assertFalse(self.paths["target"].exists())
+
+    def test_normal_completion_preserves_replaced_marker(self):
+        lock = self.slot / "cargo-active"
+        replacement = []
+        def replace(command, env):
+            replacement.append(self.replace_owner_marker(lock))
+            return 0
+        result, _, cargo = self.invoke(["--budget-file", str(self.budget), *self.args], call=replace)
+        self.assertEqual(result, 75 if sys.platform == "linux" else 0)
+        cargo.assert_called_once()
+        self.assertTrue(replacement[0].is_dir())
+        self.assertTrue(lock.is_dir())
+
     def test_normal_completion_preserves_a_replacement_lease(self):
         lock = self.slot / "cargo-active"
         def replace(command, env):
