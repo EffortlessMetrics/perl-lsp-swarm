@@ -299,6 +299,7 @@ fn is_parser_ratchet_path(file: &str) -> bool {
         || file == ".ci/common-corpus-manifest.txt"
         || file.starts_with("docs/project/status/parser")
         || file == "xtask/src/tasks/ci_scope.rs"
+        || file == "crates/perl-ci-hygiene/src/ci_scope.rs"
         || file == "xtask/src/tasks/gates.rs"
         || (file.starts_with("xtask/src/tasks/")
             && (file.contains("parser") || file.contains("corpus") || file.contains("ratchet")))
