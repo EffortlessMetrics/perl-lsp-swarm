@@ -1,0 +1,60 @@
+{
+  "schema_version": 1,
+  "claim": "Existing builtin Linux Cargo route requires launched-tree closure before lease reuse",
+  "base_sha": "8a375c220a2f8450c234a5aacf8c27a2bcb82bd6",
+  "owner_sha256": "3e903e4b53dc28073276f3cf56ca610f8bb9b5a096a849c750433437d316eddb",
+  "prior_discriminator": {
+    "receipt_commit": "373f4dac880a1be2d745cc8369b5be1d6d15b194",
+    "receipt_blob": "03bf3c675ee5486eb489a1e540e039d2bc296073",
+    "product_exit": 0,
+    "lease_absent_while_owned_helper_alive": true,
+    "adopted_helper_waitable_and_live": true,
+    "outer_kernel_settlement": true
+  },
+  "suite": {
+    "tests": 110,
+    "passed": 110,
+    "skipped": 0,
+    "seconds": 6.007,
+    "real_cargo_aba": true,
+    "installed_driver_controls": true
+  },
+  "wrong_owner": {
+    "source_sha": "8a375c220a2f8450c234a5aacf8c27a2bcb82bd6",
+    "test_methods": 2,
+    "assertion_failures": 3,
+    "instrument_errors": 0
+  },
+  "reviews": {
+    "proof_compatibility": "CANDIDATE_READY",
+    "ownership_result_plane": "No remaining actionable findings",
+    "mocked_legacy_compatibility": true,
+    "native_windows": false,
+    "native_macos": false
+  },
+  "resource_ownership": {
+    "old_consumer": "1b03b05 retained and unproven elsewhere; no inspection/adoption/release",
+    "new_finite_test_helpers": "original inner or exclusive outer fixture owner proved closure before fixture disposal",
+    "shared_caches_toolchain": "retained",
+    "storage_pr_17478": "untouched"
+  },
+  "limits": [
+    "only newly launched exclusive native Linux descendant scope",
+    "unrelated existing services/independent consumers need separate proof",
+    "missing Linux owner capabilities refuse",
+    "other platforms remain explicitly legacy/unqualified",
+    "no canonical executor/output-capture/readback completion",
+    "no full consumer build, Ready, merge or hosted CI"
+  ],
+  "local_proof_sha256": {
+    "builtin-final-suite.log": "0ea61fc81ca90cca4b59b7b5eea364e415fa2df7a53dcfa6fb3c3b24cc3995cb",
+    "builtin-native-mutant.log": "fb2b4110645742a9430e5c7e7123d82f14887fa663f085325b8353a236e0cae2",
+    "builtin-real-aba.log": "120ef59192a2730b0b6c550a22ead0cbc1b58bfa9aecbfdb52b6a7449e8a72ac"
+  },
+  "quiet_push": {
+    "push_workflows": 39,
+    "all_main_master_only": true,
+    "workflow_edits": false,
+    "pull_request": false
+  }
+}

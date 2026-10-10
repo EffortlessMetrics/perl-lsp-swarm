@@ -406,11 +406,14 @@ class ClippyTree:
                 "reason": "all owned descendants reaped" if settled else "owned descendants unproven; deadline/error retains lease"}
 
 
-def call_clippy(command, env, lock, tree=None):
+def call_clippy(command, env, lock, tree=None, operation="Clippy"):
     # Staged ownership model: attributable POSIX group for native cancellation,
     # but never infer whole-tree settlement from this leader's exit. The caller
     # retains its lease until the optional owned kernel tree scope proves closure.
     process = None
+    detached = operation == "Clippy"
+    if not detached and tree is None:
+        raise Denied("builtin Cargo requires its bound native owner")
     published = False
     pending = []
     previous = {}
@@ -423,18 +426,22 @@ def call_clippy(command, env, lock, tree=None):
         # signal a group using an unbound/reusable numeric ID.
         if process.returncode is None:
             try:
-                os.killpg(process.pid, signal.SIGTERM)
+                if detached:
+                    os.killpg(process.pid, signal.SIGTERM)
+                # Builtin Cargo shares its caller's group: unwind into the
+                # existing tree owner, which signals only bound, waitable pidfds.
             except ProcessLookupError:
                 pass
-        raise KeyboardInterrupt("Clippy cancelled; lease retained for native owner verification")
+        raise KeyboardInterrupt(operation + " cancelled; lease retained for native owner verification")
     try:
         for signum in (signal.SIGINT, signal.SIGTERM):
             previous[signum] = signal.signal(signum, cancelled)
-        process = subprocess.Popen(command, env=env, start_new_session=True)
+        process = subprocess.Popen(command, env=env, start_new_session=detached)
         if tree is not None:
             tree.track(process.pid, process)
-        print("cargo-admitted Clippy launch: " + json.dumps({"pid": process.pid,
-              "process_group": process.pid, "lease": str(lock), "host": socket.gethostname(),
+        print("cargo-admitted " + operation + " launch: " + json.dumps({"pid": process.pid,
+              "process_group": process.pid if detached else os.getpgrp(),
+              "session_inherited": not detached, "lease": str(lock), "host": socket.gethostname(),
               "terminality": "awaiting owner verification"}), file=sys.stderr, flush=True)
         published = True
         if pending:
@@ -714,6 +721,9 @@ def main(args=None):
     try:
         preflight, budget_file, args = admission_options(args)
         clippy = args[0] == "clippy"
+        owned_linux = sys.platform == "linux"
+        managed = clippy or owned_linux
+        operation = "Clippy" if clippy else "Cargo"
         env = os.environ.copy()
         env["RUSTUP_AUTO_INSTALL"] = "0"
         worktree, slot, paths = resource_plan(env)
@@ -779,7 +789,7 @@ def main(args=None):
             descriptor = {"worktree": str(worktree), "scope": scope,
                           "resources": {k: str(v) for k, v in paths.items()},
                           "lease": str(lock), "pid": os.getpid(), "admission": admission, "disposition": "retained with reason: reusable bounded slot"}
-            if clippy:
+            if managed:
                 # Persist the original owner observation before any setup/product
                 # child starts. Recovery must not adopt a replacement directory
                 # or reconstruct ownership from age/current contents after death.
@@ -831,23 +841,35 @@ def main(args=None):
                 print("cargo-admitted Clippy setup: " + json.dumps(versions), file=sys.stderr, flush=True)
                 if clippy_configuration(worktree, paths) != scope["clippy_setup"]["configuration"]:
                     raise Denied("Clippy configuration changed during setup")
+            elif owned_linux:
+                # Reuse the proven owner, without changing builtin Cargo policy,
+                # toolchain resolution or argument/environment construction.
+                tree = ClippyTree()
+                print("cargo-admitted Cargo tree: " + json.dumps({"owner_pid": os.getpid(),
+                      "subreaper": True, "prior_children": "none", "single_native_thread": True,
+                      "lease": str(lock)}), file=sys.stderr, flush=True)
             for path in (slot, *paths.values()):
                 if native_path(str(path)) != path:
                     raise Denied("resource path changed before launch: " + str(path))
             if not owns_lease(lock, identity, marker, marker_identity):
                 raise Denied("lease ownership changed before Cargo launch")
             launch_attempted = True
-            result = call_clippy(command, env, lock, tree) if clippy else subprocess.call(command, env=env)
+            if clippy:
+                result = call_clippy(command, env, lock, tree)
+            elif owned_linux:
+                result = call_clippy(command, env, lock, tree, operation="Cargo")
+            else:
+                result = subprocess.call(command, env=env)
             # Cargo uses 101 for ordinary failure and may also panic with 101.
             # Retain for signals/NT termination/unfamiliar exits, but no exit
             # status proves all descendants ended: root verifies other consumers.
-            completed = not clippy and result in (0, 101)
-            if clippy:
-                print("cargo-admitted Clippy product: " + json.dumps({"exit_code": result,
+            completed = not managed and result in (0, 101)
+            if managed:
+                print("cargo-admitted " + operation + " product: " + json.dumps({"exit_code": result,
                       "lease": str(lock), "terminality": "awaiting owner verification",
                       "lease_released": False}), file=sys.stderr, flush=True)
         except KeyboardInterrupt:
-            if not clippy:
+            if not managed:
                 raise
             interrupted = True
             if tree is not None:
@@ -863,7 +885,7 @@ def main(args=None):
                 try:
                     release_lease(lock, identity, marker, marker_identity)
                 except KeyboardInterrupt:
-                    if not clippy:
+                    if not managed:
                         raise
                     interrupted = True
             else:
@@ -871,13 +893,13 @@ def main(args=None):
             if settlement is not None:
                 released = not os.path.lexists(lock)
                 settlement["cancelled"] = interrupted or settlement.get("cancelled", False)
-                print("cargo-admitted Clippy settlement: " + json.dumps({**settlement,
+                print("cargo-admitted " + operation + " settlement: " + json.dumps({**settlement,
                       "lease": str(lock), "lease_identity": list(identity), "lease_marker": str(marker),
                       "marker_identity": list(marker_identity),
                       "lease_released": released}), file=sys.stderr, flush=True)
                 # A positive product code cannot mask failed terminality/release.
                 completed = completed and released
-        if clippy:
+        if managed:
             if not completed:
                 return 75
             if interrupted or (settlement is not None and settlement.get("cancelled", False)):

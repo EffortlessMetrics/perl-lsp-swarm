@@ -123,17 +123,37 @@ with command-local empty values. Arbitrary build scripts and
 programs can write elsewhere; this is not an OS sandbox or a disk reservation.
 
 The atomic `cargo-active` directory is a conservative lease. Contenders refuse.
-Builtin Cargo exit 0 or 101 releases only the invocation's matching lease and retains artifacts.
-Clippy releases only after its owned Linux kernel child scope proves settlement
+Builtin Cargo on Linux and staged Clippy release only after their owned Linux
+kernel child scope proves settlement
 and matching lease release succeeds. Exit 0/101, leader/session absence and a
 disconnect never establish that proof. Ambiguity or deadline expiry retains it.
 Cleanup requires the original directory identity and unique ownership marker;
 replacement leases, including copied markers, remain for owner verification.
+Linux uses the existing exclusive single-thread CPython subreaper/pidfd owner;
+missing capabilities refuse without a leader-only fallback. Builtin Cargo
+session and controlling-terminal behavior are preserved: unlike finite Clippy,
+builtin launch inherits the caller's session/group. Cancellation never signals
+that shared group; the existing tree owner validates and signals bound child
+pidfds before proving kernel closure and releasing the matching lease. Builtin
+launch receipts identify the inherited group without claiming ownership of it.
+Builtin command, PATH/toolchain selection, argument order and environment
+projection are unchanged.
+Original lease identity/marker and operation-labelled Cargo launch/product/settlement
+receipts make product exit independent of terminality. Any product status can be
+returned after proven closure and matching release; cancellation returns 130.
+Incomplete closure or failed release returns 75 and retains ownership.
+
+Other platforms retain the legacy builtin behavior: exit 0/101 releases its
+matching lease, without a descendant-settlement guarantee; abnormal statuses and
+interruption retain it. This Linux correction does not qualify native Windows,
+macOS, WSL as native Windows, or canonical executor completion (#11659/#11660).
+Native Windows remains owned by #17482. Independently owned consumers still need
+separate proof, and old attempts cannot be retroactively adopted.
+
 An unlaunched preparation failure releases only its own lease. Storage paths are
 revalidated for links before allocation and launch; this is not an adversarial
-filesystem sandbox. Recognized abnormal
-statuses (signals and Windows termination), unfamiliar exit codes, parent
-interruption and failed spawn retain it for owner verification. Exit 101 can also
+filesystem sandbox. An unproven Linux tree or failed matching release retains it
+for owner verification regardless of leader status. Exit 101 can also
 represent a Cargo panic: an exit status is not proof that all descendants ended.
 The root must verify independent consumers before assigning the slot again.
 No age/PID-based stealing or automatic deletion exists.
