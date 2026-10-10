@@ -1,0 +1,138 @@
+[
+  {
+    "path": ".github/workflows/ci-gate-self-tests.yml",
+    "same_consumer_bytes": true
+  },
+  {
+    "path": "Cargo.lock",
+    "same_consumer_bytes": true
+  },
+  {
+    "path": "crates/perl-ci-hygiene/Cargo.toml",
+    "same_consumer_bytes": true
+  },
+  {
+    "path": "crates/perl-ci-hygiene/src/change_set.rs",
+    "same_consumer_bytes": true
+  },
+  {
+    "path": "crates/perl-ci-hygiene/src/cli.rs",
+    "same_consumer_bytes": true
+  },
+  {
+    "path": "crates/perl-ci-hygiene/src/git_hooks.rs",
+    "same_consumer_bytes": true
+  },
+  {
+    "path": "crates/perl-ci-hygiene/src/lib.rs",
+    "same_consumer_bytes": true
+  },
+  {
+    "path": "crates/perl-ci-hygiene/src/main.rs",
+    "same_consumer_bytes": true
+  },
+  {
+    "path": "crates/perl-ci-hygiene/src/package_resolver.rs",
+    "same_consumer_bytes": true
+  },
+  {
+    "path": "crates/perl-ci-hygiene/src/staged.rs",
+    "same_consumer_bytes": true
+  },
+  {
+    "path": "crates/perl-ci-hygiene/tests/change_set_cli.rs",
+    "same_consumer_bytes": true
+  },
+  {
+    "path": "crates/perl-ci-hygiene/tests/package_resolver_cli.rs",
+    "same_consumer_bytes": true
+  },
+  {
+    "path": "docs/contributing/FIRST_PR.md",
+    "same_consumer_bytes": true
+  },
+  {
+    "path": "hooks/pre-push",
+    "same_consumer_bytes": true
+  },
+  {
+    "path": "justfile",
+    "same_consumer_bytes": true
+  },
+  {
+    "path": "scripts/README.md",
+    "same_consumer_bytes": true
+  },
+  {
+    "path": "scripts/check-githooks.sh",
+    "same_consumer_bytes": true
+  },
+  {
+    "path": "scripts/githooks-bootstrap.sh",
+    "same_consumer_bytes": true
+  },
+  {
+    "path": "scripts/install-githooks.sh",
+    "same_consumer_bytes": true
+  },
+  {
+    "path": "scripts/tests/test-install-githooks-wrapper.sh",
+    "same_consumer_bytes": true
+  },
+  {
+    "path": "scripts/tests/test-pre-push-launchers.py",
+    "same_consumer_bytes": true
+  },
+  {
+    "path": "scripts/worktree-manager.py",
+    "same_consumer_bytes": true
+  },
+  {
+    "path": "xtask/src/bin/workspace_doctor_inventory/sources.rs",
+    "same_consumer_bytes": true
+  },
+  {
+    "path": "xtask/src/tasks/change_set.rs",
+    "same_consumer_bytes": true
+  },
+  {
+    "path": "xtask/src/tasks/ci_hygiene.rs",
+    "same_consumer_bytes": true
+  },
+  {
+    "path": "xtask/src/tasks/devex_doctor.rs",
+    "same_consumer_bytes": true
+  },
+  {
+    "path": "xtask/src/tasks/mod.rs",
+    "same_consumer_bytes": true
+  },
+  {
+    "path": "xtask/src/tasks/targeted_checks.rs",
+    "same_consumer_bytes": true
+  },
+  {
+    "path": "xtask/tests/workspace_doctor_inventory/support.rs",
+    "same_consumer_bytes": true
+  },
+  {
+    "path": "Cargo.toml",
+    "same_consumer_bytes": true
+  },
+  {
+    "path": ".cargo/config.toml",
+    "same_consumer_bytes": true
+  },
+  {
+    "path": "rust-toolchain.toml",
+    "same_consumer_bytes": true
+  },
+  {
+    "path": "xtask/Cargo.toml",
+    "same_consumer_bytes": true
+  },
+  {
+    "path": "clippy.toml",
+    "same_consumer_bytes": true
+  }
+]

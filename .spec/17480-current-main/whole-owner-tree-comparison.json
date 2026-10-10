@@ -1,0 +1,10 @@
+{
+  "crates/perl-ci-hygiene": [
+    "b20f5d1e4eefe4c06ccb52ea7cf5dadcc3d9ae1b",
+    "b20f5d1e4eefe4c06ccb52ea7cf5dadcc3d9ae1b"
+  ],
+  "xtask": [
+    "69ae7306e123eac9ec82b56736047898da1c3921",
+    "69ae7306e123eac9ec82b56736047898da1c3921"
+  ]
+}

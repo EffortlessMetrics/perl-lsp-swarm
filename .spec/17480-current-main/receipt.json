@@ -1,0 +1,63 @@
+{
+  "source_sha": "42ea165fec26d75644d687090876eaa1c6dae4bc",
+  "base_sha": "1f973039d812fe080abddc44e461112d7b95a6fa",
+  "independent_linux_prior_receipt": "373f4dac880a1be2d745cc8369b5be1d6d15b194",
+  "prior_receipt_reuse": "34 owning inputs identical; full hygiene and xtask trees identical;155 library,432 binary,9CLI tests plus strictClippy and positive/negative controls reused by comparison",
+  "fresh_shell_checks": {
+    "launcher_scenarios": 30,
+    "wrapper_cases": 11,
+    "provisioning_cases": 13,
+    "isolation_cases": 8
+  },
+  "actual_cli_invocations": 39,
+  "paired_build": {
+    "exit": 0,
+    "elapsed_seconds": 664.47464693,
+    "free_before": 30465355776,
+    "free_after": 28390559744,
+    "resources": {
+      "target": "/workspace/perl-helper-current-proof/devplane/e6b3f4152dd5-linux-b65dcb543d0ae605/worktrees/61d81e4ef2af58e921a1387fd1456fc4cfbeb6ffba1e47c6eb2cbfd7a2574bec/target",
+      "build": "/workspace/perl-helper-current-proof/devplane/e6b3f4152dd5-linux-b65dcb543d0ae605/worktrees/61d81e4ef2af58e921a1387fd1456fc4cfbeb6ffba1e47c6eb2cbfd7a2574bec/build",
+      "cargo_home": "/workspace/.cloud-tools/cargo",
+      "temp": "/workspace/perl-helper-current-proof/devplane/e6b3f4152dd5-linux-b65dcb543d0ae605/tmp"
+    }
+  },
+  "settlement": {
+    "tree_settled": true,
+    "proof": "kernel ECHILD (__WALL)",
+    "cancelled": false,
+    "termination_requested": false,
+    "reaped_descendants": [
+      {
+        "pid": 13695,
+        "exit_code": 0
+      },
+      {
+        "pid": 13702,
+        "exit_code": 0
+      }
+    ],
+    "owned_child_table_available": false,
+    "errors": [],
+    "pending_bound_pids": [],
+    "reason": "all owned descendants reaped"
+  },
+  "lightweight_normal_build_repository_packages": [
+    "perl-ci-hygiene"
+  ],
+  "native_windows": "NOT_PROVEN: native path/drive handling, Git Bash hook execution/installation/currentness and permissions, Git selectors, package metadata and rename/deletion behavior; Linux backslash spelling only is not native evidence",
+  "limits": [
+    "Net filesystem delta is not peak disk or memory usage",
+    "Paired xtask compatibility build compiles product dependencies; lightweight product-free claim established separately by dependency analysis",
+    "Installer retained established extra final newline; direct and xtask installed bytes match exactly",
+    "No hosted CI run, Ready transition or merge performed"
+  ],
+  "resource_disposition": "Fresh proof retained for handoff; original shared Git metadata restored and generated root hooks removed; old unproven resources untouched",
+  "independent_review": {
+    "result": "CANDIDATE_READY",
+    "agent": "current_helper_review",
+    "source_sha": "42ea165fec26d75644d687090876eaa1c6dae4bc",
+    "findings": [],
+    "scope": "Linux actual compatibility seams; excludes nativeWindows/hostedCI/oldresource settlement"
+  }
+}

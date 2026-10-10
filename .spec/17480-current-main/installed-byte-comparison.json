@@ -1,0 +1,12 @@
+{
+  "compatibility_install_sha256": {
+    "pre-commit": "c1debbf3dd729664d8367bb0e4150b7f3a514e0929e1652fa06d577102d86016",
+    "pre-push": "1de7c901b015aca9226670dec2d528649d0d5348b55f91548a97b089ccbcf71a"
+  },
+  "direct_install_sha256": {
+    "pre-commit": "c1debbf3dd729664d8367bb0e4150b7f3a514e0929e1652fa06d577102d86016",
+    "pre-push": "1de7c901b015aca9226670dec2d528649d0d5348b55f91548a97b089ccbcf71a"
+  },
+  "all_checks_read_only": true,
+  "fixture_worktree_list": "worktree /workspace/perl-helper-current-main\nHEAD 42ea165fec26d75644d687090876eaa1c6dae4bc\nbranch refs/heads/proof-helper"
+}

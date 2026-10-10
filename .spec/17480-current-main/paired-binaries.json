@@ -1,0 +1,10 @@
+{
+  "xtask": {
+    "path": "/workspace/perl-helper-current-proof/immutable-xtask",
+    "sha256": "d6ab7f1aafdcd5baf66acccf1d5a3746912d7b89e19a0f81935d856ae095c319"
+  },
+  "perl-ci-hygiene": {
+    "path": "/workspace/perl-helper-current-proof/immutable-perl-ci-hygiene",
+    "sha256": "e675186d1ea82cfc731d4fc44ef98ae413024a5d2f0ce9292b4891e5cf843328"
+  }
+}

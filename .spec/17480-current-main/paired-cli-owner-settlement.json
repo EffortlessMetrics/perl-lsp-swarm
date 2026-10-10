@@ -1,0 +1,20 @@
+{
+  "tree_settled": true,
+  "proof": "kernel ECHILD (__WALL)",
+  "cancelled": false,
+  "termination_requested": false,
+  "reaped_descendants": [
+    {
+      "pid": 13695,
+      "exit_code": 0
+    },
+    {
+      "pid": 13702,
+      "exit_code": 0
+    }
+  ],
+  "owned_child_table_available": false,
+  "errors": [],
+  "pending_bound_pids": [],
+  "reason": "all owned descendants reaped"
+}

@@ -1,0 +1,598 @@
+[
+  {
+    "label": "hygiene-paths-df7d25bf",
+    "argv": [
+      "/workspace/perl-helper-current-proof/immutable-perl-ci-hygiene",
+      "change-set",
+      "--base",
+      "df7d25bf9cf1126522e4498e824e899dba296325",
+      "--head",
+      "be40cb6f0852f1df62289fb3d6bf4161454bf967",
+      "--format",
+      "paths",
+      "--root",
+      "/workspace/perl-helper-current-proof/CLI fixture with spaces"
+    ],
+    "cwd": "/workspace/perl-helper-current-proof/CLI fixture with spaces",
+    "exit": 0,
+    "seconds": 0.008541177999859428,
+    "stdout_sha256": "60e1fefc12cd880e727564bf5f3c7c5921ea204348cb67fe5b82778bb324b45c"
+  },
+  {
+    "label": "xtask-paths-df7d25bf",
+    "argv": [
+      "/workspace/perl-helper-current-proof/immutable-xtask",
+      "change-set",
+      "--base",
+      "df7d25bf9cf1126522e4498e824e899dba296325",
+      "--head",
+      "be40cb6f0852f1df62289fb3d6bf4161454bf967",
+      "--format",
+      "paths",
+      "--root",
+      "/workspace/perl-helper-current-proof/CLI fixture with spaces"
+    ],
+    "cwd": "/workspace/perl-helper-current-proof/CLI fixture with spaces",
+    "exit": 0,
+    "seconds": 0.011452484999836088,
+    "stdout_sha256": "60e1fefc12cd880e727564bf5f3c7c5921ea204348cb67fe5b82778bb324b45c"
+  },
+  {
+    "label": "hygiene-paths-auto",
+    "argv": [
+      "/workspace/perl-helper-current-proof/immutable-perl-ci-hygiene",
+      "change-set",
+      "--base",
+      "auto",
+      "--head",
+      "be40cb6f0852f1df62289fb3d6bf4161454bf967",
+      "--format",
+      "paths",
+      "--root",
+      "/workspace/perl-helper-current-proof/CLI fixture with spaces"
+    ],
+    "cwd": "/workspace/perl-helper-current-proof/CLI fixture with spaces",
+    "exit": 0,
+    "seconds": 0.008116243000131362,
+    "stdout_sha256": "60e1fefc12cd880e727564bf5f3c7c5921ea204348cb67fe5b82778bb324b45c"
+  },
+  {
+    "label": "xtask-paths-auto",
+    "argv": [
+      "/workspace/perl-helper-current-proof/immutable-xtask",
+      "change-set",
+      "--base",
+      "auto",
+      "--head",
+      "be40cb6f0852f1df62289fb3d6bf4161454bf967",
+      "--format",
+      "paths",
+      "--root",
+      "/workspace/perl-helper-current-proof/CLI fixture with spaces"
+    ],
+    "cwd": "/workspace/perl-helper-current-proof/CLI fixture with spaces",
+    "exit": 0,
+    "seconds": 0.011337060999949244,
+    "stdout_sha256": "60e1fefc12cd880e727564bf5f3c7c5921ea204348cb67fe5b82778bb324b45c"
+  },
+  {
+    "label": "hygiene-json-df7d25bf",
+    "argv": [
+      "/workspace/perl-helper-current-proof/immutable-perl-ci-hygiene",
+      "change-set",
+      "--base",
+      "df7d25bf9cf1126522e4498e824e899dba296325",
+      "--head",
+      "be40cb6f0852f1df62289fb3d6bf4161454bf967",
+      "--format",
+      "json",
+      "--root",
+      "/workspace/perl-helper-current-proof/CLI fixture with spaces"
+    ],
+    "cwd": "/workspace/perl-helper-current-proof/CLI fixture with spaces",
+    "exit": 0,
+    "seconds": 0.0071773140000459534,
+    "stdout_sha256": "f12319b6bd500e79b48f3ec22e72bb79a729fd568515034147d7ec53cb754766"
+  },
+  {
+    "label": "xtask-json-df7d25bf",
+    "argv": [
+      "/workspace/perl-helper-current-proof/immutable-xtask",
+      "change-set",
+      "--base",
+      "df7d25bf9cf1126522e4498e824e899dba296325",
+      "--head",
+      "be40cb6f0852f1df62289fb3d6bf4161454bf967",
+      "--format",
+      "json",
+      "--root",
+      "/workspace/perl-helper-current-proof/CLI fixture with spaces"
+    ],
+    "cwd": "/workspace/perl-helper-current-proof/CLI fixture with spaces",
+    "exit": 0,
+    "seconds": 0.009919305000039458,
+    "stdout_sha256": "f12319b6bd500e79b48f3ec22e72bb79a729fd568515034147d7ec53cb754766"
+  },
+  {
+    "label": "hygiene-json-auto",
+    "argv": [
+      "/workspace/perl-helper-current-proof/immutable-perl-ci-hygiene",
+      "change-set",
+      "--base",
+      "auto",
+      "--head",
+      "be40cb6f0852f1df62289fb3d6bf4161454bf967",
+      "--format",
+      "json",
+      "--root",
+      "/workspace/perl-helper-current-proof/CLI fixture with spaces"
+    ],
+    "cwd": "/workspace/perl-helper-current-proof/CLI fixture with spaces",
+    "exit": 0,
+    "seconds": 0.006964743000025919,
+    "stdout_sha256": "f12319b6bd500e79b48f3ec22e72bb79a729fd568515034147d7ec53cb754766"
+  },
+  {
+    "label": "xtask-json-auto",
+    "argv": [
+      "/workspace/perl-helper-current-proof/immutable-xtask",
+      "change-set",
+      "--base",
+      "auto",
+      "--head",
+      "be40cb6f0852f1df62289fb3d6bf4161454bf967",
+      "--format",
+      "json",
+      "--root",
+      "/workspace/perl-helper-current-proof/CLI fixture with spaces"
+    ],
+    "cwd": "/workspace/perl-helper-current-proof/CLI fixture with spaces",
+    "exit": 0,
+    "seconds": 0.009752047000120001,
+    "stdout_sha256": "f12319b6bd500e79b48f3ec22e72bb79a729fd568515034147d7ec53cb754766"
+  },
+  {
+    "label": "hostile-hygiene",
+    "argv": [
+      "/workspace/perl-helper-current-proof/immutable-perl-ci-hygiene",
+      "change-set",
+      "--base",
+      "df7d25bf9cf1126522e4498e824e899dba296325",
+      "--head",
+      "be40cb6f0852f1df62289fb3d6bf4161454bf967",
+      "--format",
+      "paths",
+      "--root",
+      "/workspace/perl-helper-current-proof/CLI fixture with spaces"
+    ],
+    "cwd": "/workspace/perl-helper-current-proof/CLI fixture with spaces",
+    "exit": 0,
+    "seconds": 0.0077626600000257895,
+    "stdout_sha256": "60e1fefc12cd880e727564bf5f3c7c5921ea204348cb67fe5b82778bb324b45c"
+  },
+  {
+    "label": "hostile-xtask",
+    "argv": [
+      "/workspace/perl-helper-current-proof/immutable-xtask",
+      "change-set",
+      "--base",
+      "df7d25bf9cf1126522e4498e824e899dba296325",
+      "--head",
+      "be40cb6f0852f1df62289fb3d6bf4161454bf967",
+      "--format",
+      "paths",
+      "--root",
+      "/workspace/perl-helper-current-proof/CLI fixture with spaces"
+    ],
+    "cwd": "/workspace/perl-helper-current-proof/CLI fixture with spaces",
+    "exit": 0,
+    "seconds": 0.010267248999980438,
+    "stdout_sha256": "60e1fefc12cd880e727564bf5f3c7c5921ea204348cb67fe5b82778bb324b45c"
+  },
+  {
+    "label": "invalid-base-hygiene",
+    "argv": [
+      "/workspace/perl-helper-current-proof/immutable-perl-ci-hygiene",
+      "change-set",
+      "--base",
+      "missing-proof-base",
+      "--head",
+      "be40cb6f0852f1df62289fb3d6bf4161454bf967",
+      "--format",
+      "paths",
+      "--root",
+      "/workspace/perl-helper-current-proof/CLI fixture with spaces"
+    ],
+    "cwd": "/workspace/perl-helper-current-proof/CLI fixture with spaces",
+    "exit": 1,
+    "seconds": 0.002806793999980073,
+    "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "label": "invalid-base-xtask",
+    "argv": [
+      "/workspace/perl-helper-current-proof/immutable-xtask",
+      "change-set",
+      "--base",
+      "missing-proof-base",
+      "--head",
+      "be40cb6f0852f1df62289fb3d6bf4161454bf967",
+      "--format",
+      "paths",
+      "--root",
+      "/workspace/perl-helper-current-proof/CLI fixture with spaces"
+    ],
+    "cwd": "/workspace/perl-helper-current-proof/CLI fixture with spaces",
+    "exit": 1,
+    "seconds": 0.005388562999996793,
+    "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "label": "invalid-format-hygiene",
+    "argv": [
+      "/workspace/perl-helper-current-proof/immutable-perl-ci-hygiene",
+      "change-set",
+      "--base",
+      "df7d25bf9cf1126522e4498e824e899dba296325",
+      "--head",
+      "be40cb6f0852f1df62289fb3d6bf4161454bf967",
+      "--format",
+      "pathss",
+      "--root",
+      "/workspace/perl-helper-current-proof/CLI fixture with spaces"
+    ],
+    "cwd": "/workspace/perl-helper-current-proof/CLI fixture with spaces",
+    "exit": 1,
+    "seconds": 0.007378036000091015,
+    "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "label": "invalid-format-xtask",
+    "argv": [
+      "/workspace/perl-helper-current-proof/immutable-xtask",
+      "change-set",
+      "--base",
+      "df7d25bf9cf1126522e4498e824e899dba296325",
+      "--head",
+      "be40cb6f0852f1df62289fb3d6bf4161454bf967",
+      "--format",
+      "pathss",
+      "--root",
+      "/workspace/perl-helper-current-proof/CLI fixture with spaces"
+    ],
+    "cwd": "/workspace/perl-helper-current-proof/CLI fixture with spaces",
+    "exit": 1,
+    "seconds": 0.009574540999892633,
+    "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "label": "pkg-hygiene-21",
+    "argv": [
+      "/workspace/perl-helper-current-proof/immutable-perl-ci-hygiene",
+      "resolve-package-name",
+      "crates/directory-name"
+    ],
+    "cwd": "/workspace/perl-helper-current-proof/CLI fixture with spaces",
+    "exit": 0,
+    "seconds": 0.0214210430001458,
+    "stdout_sha256": "53aea2661a9634208374d29468314b33ab1e5e3ea1e345179e4c242db6628d6f"
+  },
+  {
+    "label": "pkg-xtask-21",
+    "argv": [
+      "/workspace/perl-helper-current-proof/immutable-xtask",
+      "resolve-package-name",
+      "crates/directory-name"
+    ],
+    "cwd": "/workspace/perl-helper-current-proof/CLI fixture with spaces",
+    "exit": 0,
+    "seconds": 0.019924374000083844,
+    "stdout_sha256": "53aea2661a9634208374d29468314b33ab1e5e3ea1e345179e4c242db6628d6f"
+  },
+  {
+    "label": "pkg-hygiene-22",
+    "argv": [
+      "/workspace/perl-helper-current-proof/immutable-perl-ci-hygiene",
+      "resolve-package-name",
+      "crates\\directory-name\\"
+    ],
+    "cwd": "/workspace/perl-helper-current-proof/CLI fixture with spaces",
+    "exit": 0,
+    "seconds": 0.016740722000122332,
+    "stdout_sha256": "53aea2661a9634208374d29468314b33ab1e5e3ea1e345179e4c242db6628d6f"
+  },
+  {
+    "label": "pkg-xtask-22",
+    "argv": [
+      "/workspace/perl-helper-current-proof/immutable-xtask",
+      "resolve-package-name",
+      "crates\\directory-name\\"
+    ],
+    "cwd": "/workspace/perl-helper-current-proof/CLI fixture with spaces",
+    "exit": 0,
+    "seconds": 0.020613406999927975,
+    "stdout_sha256": "53aea2661a9634208374d29468314b33ab1e5e3ea1e345179e4c242db6628d6f"
+  },
+  {
+    "label": "unknown-pkg-xtask",
+    "argv": [
+      "/workspace/perl-helper-current-proof/immutable-xtask",
+      "resolve-package-name",
+      "crates/unknown"
+    ],
+    "cwd": "/workspace/perl-helper-current-proof/CLI fixture with spaces",
+    "exit": 1,
+    "seconds": 0.020668380000188336,
+    "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "label": "unknown-pkg-perl-ci-hygiene",
+    "argv": [
+      "/workspace/perl-helper-current-proof/immutable-perl-ci-hygiene",
+      "resolve-package-name",
+      "crates/unknown"
+    ],
+    "cwd": "/workspace/perl-helper-current-proof/CLI fixture with spaces",
+    "exit": 1,
+    "seconds": 0.016519879999805198,
+    "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "label": "missing-metadata-xtask",
+    "argv": [
+      "/workspace/perl-helper-current-proof/immutable-xtask",
+      "resolve-package-name",
+      "crates/directory-name"
+    ],
+    "cwd": "/workspace/perl-helper-current-proof/CLI fixture with spaces",
+    "exit": 1,
+    "seconds": 0.019778548999966006,
+    "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "label": "missing-metadata-perl-ci-hygiene",
+    "argv": [
+      "/workspace/perl-helper-current-proof/immutable-perl-ci-hygiene",
+      "resolve-package-name",
+      "crates/directory-name"
+    ],
+    "cwd": "/workspace/perl-helper-current-proof/CLI fixture with spaces",
+    "exit": 1,
+    "seconds": 0.01598656599981041,
+    "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "label": "xtask-default-root",
+    "argv": [
+      "/workspace/perl-helper-current-proof/immutable-xtask",
+      "change-set",
+      "--base",
+      "1f973039d812fe080abddc44e461112d7b95a6fa",
+      "--head",
+      "HEAD",
+      "--format",
+      "paths"
+    ],
+    "cwd": "/workspace/perl-helper-current-proof/CLI fixture with spaces",
+    "exit": 0,
+    "seconds": 0.013327658999969572,
+    "stdout_sha256": "7f2cec47a03c623c0729201947fb3ef48f035c6419ab6e7ff9dc079405a4e343"
+  },
+  {
+    "label": "hygiene-explicit-compiled-root",
+    "argv": [
+      "/workspace/perl-helper-current-proof/immutable-perl-ci-hygiene",
+      "change-set",
+      "--base",
+      "1f973039d812fe080abddc44e461112d7b95a6fa",
+      "--head",
+      "HEAD",
+      "--format",
+      "paths",
+      "--root",
+      "/workspace/perl-helper-current-main"
+    ],
+    "cwd": "/workspace/perl-helper-current-proof/CLI fixture with spaces",
+    "exit": 0,
+    "seconds": 0.011162968999997247,
+    "stdout_sha256": "7f2cec47a03c623c0729201947fb3ef48f035c6419ab6e7ff9dc079405a4e343"
+  },
+  {
+    "label": "hygiene-default-fixture-root",
+    "argv": [
+      "/workspace/perl-helper-current-proof/immutable-perl-ci-hygiene",
+      "change-set",
+      "--base",
+      "df7d25bf9cf1126522e4498e824e899dba296325",
+      "--head",
+      "be40cb6f0852f1df62289fb3d6bf4161454bf967",
+      "--format",
+      "paths"
+    ],
+    "cwd": "/workspace/perl-helper-current-proof/CLI fixture with spaces",
+    "exit": 0,
+    "seconds": 0.007173356999828684,
+    "stdout_sha256": "60e1fefc12cd880e727564bf5f3c7c5921ea204348cb67fe5b82778bb324b45c"
+  },
+  {
+    "label": "fixture-clone",
+    "argv": [
+      "git",
+      "clone",
+      "--no-checkout",
+      "--shared",
+      "/workspace/perl-lsp-swarm",
+      "/workspace/perl-helper-current-proof/install-fixture-checkout"
+    ],
+    "cwd": "/workspace/perl-helper-current-proof",
+    "exit": 0,
+    "seconds": 0.007744783999896754,
+    "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "label": "fixture-head",
+    "argv": [
+      "git",
+      "-C",
+      "/workspace/perl-helper-current-proof/install-fixture-checkout",
+      "update-ref",
+      "refs/heads/proof-helper",
+      "42ea165fec26d75644d687090876eaa1c6dae4bc"
+    ],
+    "cwd": "/workspace/perl-helper-current-proof",
+    "exit": 0,
+    "seconds": 0.0016566060000968719,
+    "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "label": "fixture-symbolic-head",
+    "argv": [
+      "git",
+      "-C",
+      "/workspace/perl-helper-current-proof/install-fixture-checkout",
+      "symbolic-ref",
+      "HEAD",
+      "refs/heads/proof-helper"
+    ],
+    "cwd": "/workspace/perl-helper-current-proof",
+    "exit": 0,
+    "seconds": 0.001392297999927905,
+    "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "label": "direct-check-missing",
+    "argv": [
+      "/workspace/perl-helper-current-proof/immutable-perl-ci-hygiene",
+      "check-githooks"
+    ],
+    "cwd": "/workspace/perl-helper-current-main",
+    "exit": 1,
+    "seconds": 0.0026215200000478944,
+    "stdout_sha256": "f98053c570d51d6e51c6d2e3686e8af30b4223978940e870d8c330114420bbf9"
+  },
+  {
+    "label": "xtask-check-missing",
+    "argv": [
+      "/workspace/perl-helper-current-proof/immutable-xtask",
+      "ci-hygiene",
+      "check-githooks",
+      "--budget-file",
+      "/workspace/perl-helper-current-proof/check-githooks-budget.json"
+    ],
+    "cwd": "/workspace/perl-helper-current-proof/CLI fixture with spaces",
+    "exit": 1,
+    "seconds": 0.2745373259999724,
+    "stdout_sha256": "f98053c570d51d6e51c6d2e3686e8af30b4223978940e870d8c330114420bbf9"
+  },
+  {
+    "label": "xtask-install",
+    "argv": [
+      "/workspace/perl-helper-current-proof/immutable-xtask",
+      "ci-hygiene",
+      "install-githooks",
+      "--budget-file",
+      "/workspace/perl-helper-current-proof/install-githooks-budget.json"
+    ],
+    "cwd": "/workspace/perl-helper-current-proof/CLI fixture with spaces",
+    "exit": 0,
+    "seconds": 0.24006974100007028,
+    "stdout_sha256": "9b48c2e826f7d834e2ed972bb7dd08389162aab954271f841094a9ba7cea74c2"
+  },
+  {
+    "label": "direct-check-current",
+    "argv": [
+      "/workspace/perl-helper-current-proof/immutable-perl-ci-hygiene",
+      "check-githooks"
+    ],
+    "cwd": "/workspace/perl-helper-current-main",
+    "exit": 0,
+    "seconds": 0.0029842060000646597,
+    "stdout_sha256": "a27c7c46fdd99109e25bfd8ef597d5b27bc8f9778a83620f50d2a32a281fbffa"
+  },
+  {
+    "label": "xtask-check-current",
+    "argv": [
+      "/workspace/perl-helper-current-proof/immutable-xtask",
+      "ci-hygiene",
+      "check-githooks",
+      "--budget-file",
+      "/workspace/perl-helper-current-proof/check-githooks-budget.json"
+    ],
+    "cwd": "/workspace/perl-helper-current-proof/CLI fixture with spaces",
+    "exit": 0,
+    "seconds": 0.2512212819999604,
+    "stdout_sha256": "a27c7c46fdd99109e25bfd8ef597d5b27bc8f9778a83620f50d2a32a281fbffa"
+  },
+  {
+    "label": "direct-check-stale",
+    "argv": [
+      "/workspace/perl-helper-current-proof/immutable-perl-ci-hygiene",
+      "check-githooks"
+    ],
+    "cwd": "/workspace/perl-helper-current-main",
+    "exit": 1,
+    "seconds": 0.002788520999956745,
+    "stdout_sha256": "e56e36d66b692e662cfe454496270854374b19cc300944c6a0f84dd21dd5b24e"
+  },
+  {
+    "label": "xtask-check-stale",
+    "argv": [
+      "/workspace/perl-helper-current-proof/immutable-xtask",
+      "ci-hygiene",
+      "check-githooks",
+      "--budget-file",
+      "/workspace/perl-helper-current-proof/check-githooks-budget.json"
+    ],
+    "cwd": "/workspace/perl-helper-current-proof/CLI fixture with spaces",
+    "exit": 1,
+    "seconds": 0.24305736700011948,
+    "stdout_sha256": "e56e36d66b692e662cfe454496270854374b19cc300944c6a0f84dd21dd5b24e"
+  },
+  {
+    "label": "direct-install",
+    "argv": [
+      "/workspace/perl-helper-current-proof/immutable-perl-ci-hygiene",
+      "install-githooks"
+    ],
+    "cwd": "/workspace/perl-helper-current-main",
+    "exit": 0,
+    "seconds": 0.0051918770000156655,
+    "stdout_sha256": "9b48c2e826f7d834e2ed972bb7dd08389162aab954271f841094a9ba7cea74c2"
+  },
+  {
+    "label": "direct-check-nonexec",
+    "argv": [
+      "/workspace/perl-helper-current-proof/immutable-perl-ci-hygiene",
+      "check-githooks"
+    ],
+    "cwd": "/workspace/perl-helper-current-main",
+    "exit": 1,
+    "seconds": 0.00276798000004419,
+    "stdout_sha256": "e56e36d66b692e662cfe454496270854374b19cc300944c6a0f84dd21dd5b24e"
+  },
+  {
+    "label": "xtask-check-nonexec",
+    "argv": [
+      "/workspace/perl-helper-current-proof/immutable-xtask",
+      "ci-hygiene",
+      "check-githooks",
+      "--budget-file",
+      "/workspace/perl-helper-current-proof/check-githooks-budget.json"
+    ],
+    "cwd": "/workspace/perl-helper-current-proof/CLI fixture with spaces",
+    "exit": 1,
+    "seconds": 0.27475781800012555,
+    "stdout_sha256": "e56e36d66b692e662cfe454496270854374b19cc300944c6a0f84dd21dd5b24e"
+  },
+  {
+    "label": "direct-reinstall",
+    "argv": [
+      "/workspace/perl-helper-current-proof/immutable-perl-ci-hygiene",
+      "install-githooks"
+    ],
+    "cwd": "/workspace/perl-helper-current-main",
+    "exit": 0,
+    "seconds": 0.004211435000115671,
+    "stdout_sha256": "9b48c2e826f7d834e2ed972bb7dd08389162aab954271f841094a9ba7cea74c2"
+  }
+]
