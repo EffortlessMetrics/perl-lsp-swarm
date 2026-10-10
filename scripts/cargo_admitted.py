@@ -1441,6 +1441,7 @@ def main(args=None):
                 settlement["cancelled"] = interrupted or settlement.get("cancelled", False)
                 print("cargo-admitted " + operation + " settlement: " + json.dumps({**settlement,
                       "lease": str(lock), "lease_identity": list(identity), "lease_marker": str(marker),
+                      "marker_identity": list(marker_identity),
                       "lease_released": released}), file=sys.stderr, flush=True)
                 # A positive product code cannot mask failed terminality/release.
                 completed = completed and released
