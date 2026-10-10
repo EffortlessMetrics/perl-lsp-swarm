@@ -1674,11 +1674,13 @@ dependencies = [
  "chrono",
  "clap",
  "color-eyre",
+ "duct",
  "perl-test-must",
  "proc-macro2",
  "regex",
  "serde_json",
  "syn 3.0.5",
+ "tempfile",
  "toml",
  "walkdir",
 ]

@@ -12,7 +12,17 @@ use crate::utils::project_root;
 
 pub fn run(command: String, args: Vec<String>) -> Result<()> {
     let root = project_root()?;
-    let status = {
+    let status = if matches!(command.as_str(), "install-githooks" | "check-githooks") {
+        // Compatibility alias: use the same admitted revision-owned bootstrap
+        // as the first-mile wrappers, never a cached target/debug executable.
+        Command::new("bash")
+            .current_dir(&root)
+            .arg(root.join("scripts/githooks-bootstrap.sh"))
+            .arg(&command)
+            .args(&args)
+            .status()
+            .context("Failed to run the admitted git-hook bootstrap")?
+    } else {
         let local_binary = perl_ci_hygiene::binary_path(&root);
         if local_binary_is_fresh(&local_binary, &root) {
             Command::new(local_binary)
