@@ -4,12 +4,14 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 ROOT = Path(__file__).resolve().parents[2]
 spec = importlib.util.spec_from_file_location("cargo_admitted", ROOT / "scripts/cargo_admitted.py")
 safe = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(safe)
+NATIVE_TREE = safe.ClippyTree
+NATIVE_LAUNCH = safe.call_clippy
 
 
 def git_output(path):
@@ -25,6 +27,13 @@ class AdmissionTests(unittest.TestCase):
         self.paths = {"target": self.slot / "target", "build": self.slot / "build",
                       "cargo_home": self.root / "home", "temp": self.root / "temp"}
         self.env = {"MIN_FREE_GB": "0.001", "MAX_USED_PCT": "100"}
+        # Storage policy fixtures substitute the process seam; actual Linux
+        # ownership is independently exercised by test_cargo_admitted_builtin_tree.
+        self.tree = Mock()
+        self.tree.finish.return_value = {"tree_settled": True, "cancelled": False}
+        self.enterContext(patch.object(safe, "ClippyTree", return_value=self.tree))
+        self.enterContext(patch.object(safe, "call_clippy", side_effect=
+            lambda command, env, lock, tree, **kw: safe.subprocess.call(command, env=env)))
 
     def run_safe(self, args, call=None):
         with patch.dict(os.environ, self.env, clear=True), \
@@ -146,7 +155,7 @@ class AdmissionTests(unittest.TestCase):
         output = io.StringIO()
         with patch.object(safe.shutil, "disk_usage", return_value=Usage(4096*gib, 4016*gib, 80*gib)), contextlib.redirect_stderr(output):
             self.assertEqual(self.run_safe(["check"]), 0)
-        descriptor = json.loads(output.getvalue().split("cargo-admitted resources: ", 1)[1])
+        descriptor = json.loads(output.getvalue().split("cargo-admitted resources: ", 1)[1].splitlines()[0])
         self.assertEqual(descriptor["admission"]["policy"], "byte-budget")
         self.assertEqual(descriptor["admission"]["evidence_reference"], self.env["CARGO_STORAGE_BUDGET_EVIDENCE"])
         self.assertTrue(all(row["headroom_bytes"] == 20*gib for row in descriptor["admission"]["destinations"]))
@@ -194,8 +203,12 @@ class AdmissionTests(unittest.TestCase):
     def test_cancellation_retains_exclusive_resource_lease(self):
         def cancel(*args, **kw):
             raise KeyboardInterrupt()
-        with self.assertRaises(KeyboardInterrupt):
-            self.run_safe(["run"], cancel)
+        self.tree.finish.return_value = {"tree_settled": False}
+        if os.sys.platform == "linux":
+            self.assertEqual(self.run_safe(["run"], cancel), 75)
+        else:
+            with self.assertRaises(KeyboardInterrupt):
+                self.run_safe(["run"], cancel)
         self.assertTrue((self.slot / "cargo-active").exists())
         self.assertEqual(self.run_safe(["test"]), 75)
 
@@ -225,6 +238,7 @@ class AdmissionTests(unittest.TestCase):
     def test_cancel_or_failed_spawn_retains_lease_without_pid_stealing(self):
         def fail(*args, **kw):
             raise OSError("spawn failed")
+        self.tree.finish.return_value = {"tree_settled": False}
         self.assertEqual(self.run_safe(["build"], fail), 75)
         self.assertTrue((self.slot / "cargo-active").exists())
         self.assertEqual(self.run_safe(["build"]), 75)
@@ -238,12 +252,14 @@ class AdmissionTests(unittest.TestCase):
         self.assertFalse((self.slot / "cargo-active").exists())
 
     def test_abnormal_child_exit_retains_lease(self):
+        self.tree.finish.return_value = {"tree_settled": False}
         for code in (-9, 3221225786, 9):
             # Fresh fixture slot for each termination status; never clear a
             # retained production lease just to make a retry pass.
             self.slot = self.root / ("terminated-" + str(code))
             self.paths = {name: self.slot / name for name in self.paths}
-            self.assertEqual(self.run_safe(["test"], lambda *a, **kw: code), code)
+            self.assertEqual(self.run_safe(["test"], lambda *a, **kw: code),
+                             75 if os.sys.platform == "linux" else code)
             self.assertTrue((self.slot / "cargo-active").exists())
             self.assertEqual(self.run_safe(["check"]), 75)
 
@@ -284,7 +300,7 @@ class AdmissionTests(unittest.TestCase):
                 output = io.StringIO()
                 with patch.dict(os.environ, env, clear=True), patch.object(safe.subprocess, "call", return_value=0), contextlib.redirect_stderr(output):
                     self.assertEqual(safe.main(["check"]), 0)
-                descriptor = json.loads(output.getvalue().split("cargo-admitted resources: ", 1)[1])
+                descriptor = json.loads(output.getvalue().split("cargo-admitted resources: ", 1)[1].splitlines()[0])
                 self.assertEqual(Path(descriptor["worktree"]), worktree.resolve())
                 self.assertNotEqual(Path(descriptor["worktree"]), nested)
                 descriptors.append(descriptor)
@@ -487,9 +503,16 @@ class AdmissionTests(unittest.TestCase):
                 output = io.StringIO()
                 with patch.dict(os.environ, env, clear=True), \
                      patch.object(safe, "check_capacity", return_value={"fixture": "identity-only"}), \
+                     patch.object(safe, "ClippyTree", NATIVE_TREE), \
+                     patch.object(safe, "call_clippy", NATIVE_LAUNCH), \
                      contextlib.redirect_stderr(output):
                     self.assertEqual(safe.main(["build", "-p", "identity-app", "--offline", "--locked"]), 0)
-                descriptor = json.loads(output.getvalue().split("cargo-admitted resources: ", 1)[1])
+                descriptor = json.loads(output.getvalue().split("cargo-admitted resources: ", 1)[1].splitlines()[0])
+                if os.sys.platform == "linux":
+                    settlement = json.loads(output.getvalue().split("cargo-admitted Cargo settlement: ", 1)[1].splitlines()[0])
+                    self.assertTrue(settlement["tree_settled"])
+                    self.assertTrue(settlement["lease_released"])
+                    self.assertEqual(settlement["proof"], "kernel ECHILD (__WALL)")
                 descriptors.append(descriptor)
                 executable = Path(descriptor["resources"]["target"]) / "debug" / ("identity-app.exe" if os.name == "nt" else "identity-app")
                 # This one test owns the TemporaryDirectory and runs builds
