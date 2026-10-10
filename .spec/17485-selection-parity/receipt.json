@@ -1,0 +1,453 @@
+{
+  "schema_version": 1,
+  "claim": "Shared product-free selection slice of #17485; actual maintained caller parity for tested Linux subjects",
+  "source_head": "51c8db10365112a36cab55cc5651173468fd4eb5",
+  "source_branch": "recovery/perl-ci-selection-17485",
+  "resolver_parent": "1b03b05a6991207b7d866716c2edc5f9a8da5b9c",
+  "compiled_integration_head": "936059d5013c84fb651bda6d34ae472f63e947d9",
+  "proof_commit": "7ae4eab527435929004150d2780c5c082770fc38",
+  "source_join_head": "546ea008e2999548602425a0ae7c17951b35b0d4",
+  "changes_after_compilation": [
+    "scripts/ci/test_selection_cli.py"
+  ],
+  "validation_only_prerequisites": {
+    "clippy": "8a375c220a2f8450c234a5aacf8c27a2bcb82bd6",
+    "builtin_cargo": "f87e754848e9e5f5bcc69059f8378686b43b8d77",
+    "implementation_sha256": "3e903e4b53dc28073276f3cf56ca610f8bb9b5a096a849c750433437d316eddb",
+    "note": "Unmodified separate owners. Neither prerequisite is in the selection source diff."
+  },
+  "build": {
+    "argv": [
+      "build",
+      "--offline",
+      "--locked",
+      "--profile",
+      "agent",
+      "-p",
+      "xtask",
+      "-p",
+      "perl-ci-hygiene",
+      "--bin",
+      "xtask",
+      "--bin",
+      "perl-ci-hygiene",
+      "--message-format=json"
+    ],
+    "exit_code": 0,
+    "seconds": 662.9128377989998,
+    "artifact_package_id_count": 299,
+    "default_preflight_exit": 75,
+    "scope": {
+      "hostname": "8ab52a28f4a1",
+      "platform": "linux",
+      "working_directory": "/workspace/perl-ci-selection-17485-parity",
+      "worktree": "/workspace/perl-ci-selection-17485-parity",
+      "operation": "build",
+      "cargo_argv_sha256": "0081720a6a801c4bb8058f4f424e598567d12510e0c32622fb7871298f8e0154",
+      "resources": {
+        "target": "/workspace/selection-17485-evidence/parity/devplane/8ab52a28f4a1-linux-b65dcb543d0ae605/worktrees/09cb63e16ef9b7054ee6ef846fb550720b27733a13c14211658e3425b1861220/target",
+        "build": "/workspace/selection-17485-evidence/parity/devplane/8ab52a28f4a1-linux-b65dcb543d0ae605/worktrees/09cb63e16ef9b7054ee6ef846fb550720b27733a13c14211658e3425b1861220/build",
+        "cargo_home": "/workspace/.cloud-tools/cargo",
+        "temp": "/workspace/selection-17485-evidence/parity/temp"
+      },
+      "jobs": 2,
+      "build_environment_sha256": "bdae034cec82a70a917f15bc56af5066e381bb968f40c6478afa76075785687c"
+    },
+    "admission": {
+      "policy": "budget-file",
+      "reserve_bytes": 8589934592,
+      "expected_total_growth_bytes": 17179869184,
+      "evidence_reference": "#17485 fresh exact locked offline Linux agent-profile xtask plus perl-ci-hygiene binaries, jobs2, installed1.95, one exclusive lane. Whole workload estimate allows16GiB aggregate additional disk across299-package product graph, binaries/intermediates/metadata/temp plus fixture parity;8GiB host reserve. Earlier lightweight retained outputs<1GiB are not heavy-build peak evidence; estimate unverified. No downloads/full suite/Clippy/second profile/independent consumers. Existing retained resources stay untouched. Default40GiB denial unchanged.",
+      "basis_verified": false,
+      "budget_sha256": "ab88e0326cbdac7e270d0013b593abaf230eb96b344f7621e78eb10cc4743e2b",
+      "required_free_bytes": 25769803776,
+      "destinations": [
+        {
+          "path": "/workspace/selection-17485-evidence/parity/devplane/8ab52a28f4a1-linux-b65dcb543d0ae605",
+          "observed_ancestor": "/workspace/selection-17485-evidence/parity/devplane/8ab52a28f4a1-linux-b65dcb543d0ae605",
+          "free_bytes": 30885597184,
+          "required_free_bytes": 25769803776,
+          "headroom_bytes": 5115793408
+        },
+        {
+          "path": "/workspace/selection-17485-evidence/parity/devplane/8ab52a28f4a1-linux-b65dcb543d0ae605/worktrees/09cb63e16ef9b7054ee6ef846fb550720b27733a13c14211658e3425b1861220/target",
+          "observed_ancestor": "/workspace/selection-17485-evidence/parity/devplane/8ab52a28f4a1-linux-b65dcb543d0ae605",
+          "free_bytes": 30885597184,
+          "required_free_bytes": 25769803776,
+          "headroom_bytes": 5115793408
+        },
+        {
+          "path": "/workspace/selection-17485-evidence/parity/devplane/8ab52a28f4a1-linux-b65dcb543d0ae605/worktrees/09cb63e16ef9b7054ee6ef846fb550720b27733a13c14211658e3425b1861220/build",
+          "observed_ancestor": "/workspace/selection-17485-evidence/parity/devplane/8ab52a28f4a1-linux-b65dcb543d0ae605",
+          "free_bytes": 30885597184,
+          "required_free_bytes": 25769803776,
+          "headroom_bytes": 5115793408
+        },
+        {
+          "path": "/workspace/.cloud-tools/cargo",
+          "observed_ancestor": "/workspace/.cloud-tools/cargo",
+          "free_bytes": 30885597184,
+          "required_free_bytes": 25769803776,
+          "headroom_bytes": 5115793408
+        },
+        {
+          "path": "/workspace/selection-17485-evidence/parity/temp",
+          "observed_ancestor": "/workspace/selection-17485-evidence/parity/temp",
+          "free_bytes": 30885597184,
+          "required_free_bytes": 25769803776,
+          "headroom_bytes": 5115793408
+        }
+      ]
+    },
+    "settlement": {
+      "tree_settled": true,
+      "proof": "kernel ECHILD (__WALL)",
+      "cancelled": false,
+      "termination_requested": false,
+      "reaped_descendants": [],
+      "owned_child_table_available": false,
+      "errors": [],
+      "pending_bound_pids": [],
+      "reason": "all owned descendants reaped",
+      "lease": "/workspace/selection-17485-evidence/parity/devplane/8ab52a28f4a1-linux-b65dcb543d0ae605/cargo-active",
+      "lease_identity": [
+        27,
+        1835113
+      ],
+      "lease_marker": "/workspace/selection-17485-evidence/parity/devplane/8ab52a28f4a1-linux-b65dcb543d0ae605/cargo-active/owner-f822f47e7c6a426a84f88922286b84f3",
+      "lease_released": true
+    },
+    "executables": {
+      "xtask": {
+        "emitted": "/workspace/selection-17485-evidence/parity/devplane/8ab52a28f4a1-linux-b65dcb543d0ae605/worktrees/09cb63e16ef9b7054ee6ef846fb550720b27733a13c14211658e3425b1861220/target/agent/xtask",
+        "snapshot": "/workspace/selection-17485-evidence/parity/xtask-proof",
+        "sha256": "8ad9284d86859b570744219f28b51c426aaf95b1496f4c15971dc6ec9ec2e7a8"
+      },
+      "perl-ci-hygiene": {
+        "emitted": "/workspace/selection-17485-evidence/parity/devplane/8ab52a28f4a1-linux-b65dcb543d0ae605/worktrees/09cb63e16ef9b7054ee6ef846fb550720b27733a13c14211658e3425b1861220/target/agent/perl-ci-hygiene",
+        "snapshot": "/workspace/selection-17485-evidence/parity/perl-ci-hygiene-proof",
+        "sha256": "c3db7d1a80e9e8827110f0c22545934712f178f3abfcfb4ef9312028c7442b36"
+      }
+    }
+  },
+  "parity": {
+    "argv": [
+      "python3",
+      "scripts/ci/test_selection_cli.py",
+      "--runner",
+      "/workspace/selection-17485-evidence/parity/perl-ci-hygiene-proof",
+      "--compare-runner",
+      "/workspace/selection-17485-evidence/parity/xtask-proof",
+      "--caller-root",
+      "/workspace/perl-ci-selection-17485-parity"
+    ],
+    "exit_code": 0,
+    "cases": 15,
+    "passed": 15,
+    "seconds": 2.481102792999991,
+    "settlement": {
+      "tree_settled": true,
+      "proof": "kernel ECHILD (__WALL)",
+      "cancelled": false,
+      "termination_requested": false,
+      "reaped_descendants": [
+        {
+          "pid": 25085,
+          "exit_code": 0
+        },
+        {
+          "pid": 25090,
+          "exit_code": 0
+        },
+        {
+          "pid": 25153,
+          "exit_code": 0
+        },
+        {
+          "pid": 25211,
+          "exit_code": 0
+        },
+        {
+          "pid": 25216,
+          "exit_code": 0
+        },
+        {
+          "pid": 25326,
+          "exit_code": 0
+        },
+        {
+          "pid": 25331,
+          "exit_code": 0
+        },
+        {
+          "pid": 25441,
+          "exit_code": 0
+        },
+        {
+          "pid": 25551,
+          "exit_code": 0
+        },
+        {
+          "pid": 25565,
+          "exit_code": 0
+        },
+        {
+          "pid": 25570,
+          "exit_code": 0
+        },
+        {
+          "pid": 25653,
+          "exit_code": 0
+        },
+        {
+          "pid": 25658,
+          "exit_code": 0
+        },
+        {
+          "pid": 25670,
+          "exit_code": 0
+        },
+        {
+          "pid": 25675,
+          "exit_code": 0
+        },
+        {
+          "pid": 25738,
+          "exit_code": 0
+        },
+        {
+          "pid": 25743,
+          "exit_code": 0
+        },
+        {
+          "pid": 25853,
+          "exit_code": 0
+        },
+        {
+          "pid": 25858,
+          "exit_code": 0
+        },
+        {
+          "pid": 25943,
+          "exit_code": 0
+        },
+        {
+          "pid": 25948,
+          "exit_code": 0
+        },
+        {
+          "pid": 25998,
+          "exit_code": 0
+        },
+        {
+          "pid": 26003,
+          "exit_code": 0
+        },
+        {
+          "pid": 26061,
+          "exit_code": 0
+        },
+        {
+          "pid": 26066,
+          "exit_code": 0
+        },
+        {
+          "pid": 26176,
+          "exit_code": 0
+        },
+        {
+          "pid": 26181,
+          "exit_code": 0
+        }
+      ],
+      "owned_child_table_available": false,
+      "errors": [],
+      "pending_bound_pids": [],
+      "reason": "all owned descendants reaped"
+    },
+    "error_comparison": "Exact stdout, recreated byte-identical receipts and exit codes. Error messages/warnings identical after stripping ANSI and the two established top-level renderers plus only the observed exact terminal eyre footer. Raw stderr is not byte-identical. Extra trailing messages fail."
+  },
+  "discriminators": {
+    "controls": {
+      "stdout": {
+        "returncode": 1,
+        "assertion_failure": true,
+        "instrument_error": false
+      },
+      "exit": {
+        "returncode": 1,
+        "assertion_failure": true,
+        "instrument_error": false
+      },
+      "receipt": {
+        "returncode": 1,
+        "assertion_failure": true,
+        "instrument_error": false
+      },
+      "omission": {
+        "returncode": 1,
+        "assertion_failure": true,
+        "instrument_error": false
+      },
+      "error": {
+        "returncode": 1,
+        "assertion_failure": true,
+        "instrument_error": false
+      },
+      "error-footer": {
+        "returncode": 1,
+        "assertion_failure": true,
+        "instrument_error": false
+      }
+    },
+    "settlement": {
+      "tree_settled": true,
+      "proof": "kernel ECHILD (__WALL)",
+      "cancelled": false,
+      "termination_requested": false,
+      "reaped_descendants": [
+        {
+          "pid": 26334,
+          "exit_code": 0
+        },
+        {
+          "pid": 26339,
+          "exit_code": 0
+        },
+        {
+          "pid": 26387,
+          "exit_code": 0
+        },
+        {
+          "pid": 26392,
+          "exit_code": 0
+        },
+        {
+          "pid": 26440,
+          "exit_code": 0
+        },
+        {
+          "pid": 26445,
+          "exit_code": 0
+        },
+        {
+          "pid": 26493,
+          "exit_code": 0
+        },
+        {
+          "pid": 26498,
+          "exit_code": 0
+        },
+        {
+          "pid": 26546,
+          "exit_code": 0
+        },
+        {
+          "pid": 26551,
+          "exit_code": 0
+        },
+        {
+          "pid": 26566,
+          "exit_code": 0
+        },
+        {
+          "pid": 26571,
+          "exit_code": 0
+        }
+      ],
+      "owned_child_table_available": false,
+      "errors": [],
+      "pending_bound_pids": [],
+      "reason": "all owned descendants reaped"
+    }
+  },
+  "graph": {
+    "lightweight_normal_build_host_package_ids": 80,
+    "lightweight_repository_packages": 1,
+    "xtask_normal_build_host_package_ids": 299,
+    "xtask_repository_packages": 33,
+    "measurement_source": "Earlier issue-native cargo-tree/metadata qualification; graph unchanged by this test-only followup. The fresh combined executable build emitted299distinct packageIDs."
+  },
+  "inherited_registry": {
+    "owner_issue": 17421,
+    "state": "open",
+    "assignees": [],
+    "writer_claim_found": false,
+    "controller": 14728,
+    "current": 539,
+    "active_registry": 524,
+    "new": 21,
+    "missing_active": 6,
+    "native_command": [
+      "perl-ci-hygiene",
+      "check-panic-test"
+    ],
+    "native_exit": 1,
+    "package_test": "test_panic_test_identity_registry_is_enforced",
+    "package_test_prior_exit": 101,
+    "candidate_head": "7ae4eab527435929004150d2780c5c082770fc38",
+    "main_head": "ac383369c40494bd873d9657e8c881b7e8792000",
+    "all_diagnostics_identical": true,
+    "diagnostics": [
+      "FAIL: 27 panic identity transition(s) require adjudication",
+      "- NEW identity: crates/perl-lsp-rs-core/src/runtime/launcher/mod.rs:2408 ripr_facts_threads_optional_diff_path (other => panic!(\"expected RiprFacts action, got {other:?}\"),)",
+      "- NEW identity: crates/perl-lsp-rs-core/src/runtime/launcher/mod.rs:2415 ripr_facts_threads_optional_diff_path (other => panic!(\"expected RiprFacts action, got {other:?}\"),)",
+      "- NEW identity: crates/perl-lsp-rs/tests/lsp_call_hierarchy_tests.rs:1558 test_outgoing_calls_distinguish_bareword_class_receivers (.unwrap_or_else(|| panic!(\"missing outgoing callee {}\", qualified_name));)",
+      "- NEW identity: crates/perl-lsp-ux-tests/tests/ux_scenario_13_document_symbols.rs:337 assert_document_symbol_children (.unwrap_or_else(|| panic!(\"Each symbol must have a non-empty name: {symbol:?}\"));)",
+      "- NEW identity: crates/perl-lsp-ux-tests/tests/ux_scenario_13_document_symbols.rs:341 assert_document_symbol_children (.unwrap_or_else(|| panic!(\"Symbol `{name}` must include LSP SymbolKind: {symbol:?}\"));)",
+      "- NEW identity: crates/perl-lsp-ux-tests/tests/ux_scenario_13_document_symbols.rs:351 assert_document_symbol_children (panic!(\"DocumentSymbol `{name}` children must be an array: {symbol:?}\"))",
+      "- NEW identity: crates/perl-lsp-ux-tests/tests/ux_scenario_13_document_symbols.rs:309 assert_document_symbol_row (.unwrap_or_else(|err| panic!(\"{err}: {symbol:?}\"));)",
+      "- NEW identity: crates/perl-lsp-ux-tests/tests/ux_scenario_13_document_symbols.rs:314 assert_document_symbol_row (.unwrap_or_else(|err| panic!(\"{err}: {symbol:?}\"));)",
+      "- NEW identity: crates/perl-lsp-ux-tests/tests/ux_scenario_13_document_symbols.rs:284 assert_symbol_shapes_with_seen (.unwrap_or_else(|err| panic!(\"{err}: {symbol:?}\"));)",
+      "- NEW identity: crates/perl-lsp-ux-tests/tests/ux_scenario_13_document_symbols.rs:245 assert_symbol_shapes_with_seen (.unwrap_or_else(|| panic!(\"Each symbol must have a non-empty name: {symbol:?}\"));)",
+      "- NEW identity: crates/perl-lsp-ux-tests/tests/ux_scenario_13_document_symbols.rs:250 assert_symbol_shapes_with_seen (.unwrap_or_else(|| panic!(\"Symbol `{name}` must include LSP SymbolKind: {symbol:?}\"));)",
+      "- NEW identity: crates/perl-lsp-ux-tests/tests/ux_scenario_13_document_symbols.rs:264 assert_symbol_shapes_with_seen (panic!(\"DocumentSymbol `{name}` children must be an array: {symbol:?}\"))",
+      "- NEW identity: crates/perl-lsp-ux-tests/tests/ux_scenario_13_document_symbols.rs:273 assert_symbol_shapes_with_seen (panic!(\"SymbolInformation `{name}` location must be an object: {symbol:?}\"))",
+      "- NEW identity: crates/perl-parser-core/tests/fix_16732_sigilless_decl_list.rs:105 diagnostic_is_tied_to_the_offending_bareword (panic!(\"constant-item diagnostic must exist\");)",
+      "- NEW identity: crates/perl-parser-core/tests/fix_16732_sigilless_decl_list.rs:108 diagnostic_is_tied_to_the_offending_bareword (panic!(\"fixture contains base\");)",
+      "- NEW identity: crates/perl-parser-core/tests/fix_16732_sigilless_decl_list.rs:198 valid_dollar_base_keeps_source_geometry (panic!(\"$base must remain in the AST: {}\", ast.to_sexp());)",
+      "- NEW identity: crates/perl-parser-core/tests/fix_16732_sigilless_decl_list.rs:201 valid_dollar_base_keeps_source_geometry (panic!(\"fixture contains $base\");)",
+      "- NEW identity: crates/perl-parser-core/tests/hir_pir_try_regions.rs:276 catch_declaration_write_keeps_its_binding_with_and_without_outer_shadow (panic!(\"catch declaration place must be a variable\");)",
+      "- NEW identity: crates/perl-parser-core/tests/hir_pir_try_regions.rs:266 catch_declaration_write_keeps_its_binding_with_and_without_outer_shadow (panic!(\"catch must have its declaration place\");)",
+      "- NEW identity: xtask/src/tasks/metrics/parser_stats.rs:273 test_find_latest_errors_when_only_receipts_present (Ok(p) => panic!(\"must error with no parser file, got {}\", p.display()),)",
+      "- NEW identity: xtask/src/test_support.rs:217 a_panicking_fake_cargo_child_does_not_poison_later_children (panic!(\"intentional child-only harness failure\");)",
+      "- ACTIVE identity missing from current inventory: crates/perl-lsp-ux-tests/tests/ux_scenario_13_document_symbols.rs assert_symbol_shapes (.unwrap_or_else(|err| panic!(\"{err}: {symbol:?}\"));)",
+      "- ACTIVE identity missing from current inventory: crates/perl-lsp-ux-tests/tests/ux_scenario_13_document_symbols.rs assert_symbol_shapes (.unwrap_or_else(|err| panic!(\"{err}: {symbol:?}\"));)",
+      "- ACTIVE identity missing from current inventory: crates/perl-lsp-ux-tests/tests/ux_scenario_13_document_symbols.rs assert_symbol_shapes (.unwrap_or_else(|| panic!(\"Each symbol must have a non-empty name: {symbol:?}\"));)",
+      "- ACTIVE identity missing from current inventory: crates/perl-lsp-ux-tests/tests/ux_scenario_13_document_symbols.rs assert_symbol_shapes (.unwrap_or_else(|| panic!(\"Symbol `{name}` must include LSP SymbolKind: {symbol:?}\"));)",
+      "- ACTIVE identity missing from current inventory: crates/perl-lsp-ux-tests/tests/ux_scenario_13_document_symbols.rs assert_symbol_shapes (panic!(\"DocumentSymbol `{name}` children must be an array: {symbol:?}\"))",
+      "- ACTIVE identity missing from current inventory: crates/perl-lsp-ux-tests/tests/ux_scenario_13_document_symbols.rs assert_symbol_shapes (panic!(\"SymbolInformation `{name}` location must be an object: {symbol:?}\"))"
+    ],
+    "fresh_scanner_settlement": {
+      "tree_settled": true,
+      "proof": "kernel ECHILD (__WALL)",
+      "cancelled": false,
+      "termination_requested": false,
+      "reaped_descendants": [],
+      "owned_child_table_available": false,
+      "errors": [],
+      "pending_bound_pids": [],
+      "reason": "all owned descendants reaped"
+    },
+    "note": "No registry/source adjudication; existing package integration test remains inherited red."
+  },
+  "independent_review": {
+    "candidate": "7ae4eab527435929004150d2780c5c082770fc38",
+    "judgment": "PROOF_EXECUTION_OBSERVED_AND_ADEQUATE",
+    "focused_candidate_review_and_final_challenge": "clean",
+    "construction_findings_repaired": [
+      "receipt recreation omission control",
+      "exact terminal footer with semantic trailing-message controls"
+    ]
+  },
+  "limits": [
+    "Linux only; native Windows separately owned and unrun",
+    "No full gate-engine extraction or policy-shard migration claimed",
+    "No full workspace suite or xtask Clippy",
+    "No hosted CI/Ready/merge or draft PR; draft PR would trigger publish-dry-run workflow on existing manifest/lock changes",
+    "Build time is fresh combined xtask+hygiene agent-profile work, not isolated xtask or an overall-CI speedup comparison",
+    "Storage budget remains an unverified conservative whole-workload estimate; final allocations are not measured peak",
+    "No retrospective qualification or reclamation of old attempts; caches/old roots untouched",
+    "Root held exclusive worktree and immutable proof-binary consumer ownership; no general independent post-lease consumer safety claim"
+  ]
+}
