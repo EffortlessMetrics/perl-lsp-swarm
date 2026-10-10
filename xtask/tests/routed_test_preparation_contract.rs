@@ -1,4 +1,7 @@
 //! Compilation staging cannot substitute for the routed runtime proof (#17459).
+#[path = "../src/tasks/gates/routed_preparation.rs"]
+mod routed_preparation;
+
 use serde_yaml_ng::Value;
 use std::{fs, path::PathBuf};
 
@@ -34,6 +37,30 @@ fn preparation_preserves_runtime_command_and_budget() -> Result<(), Box<dyn std:
     assert_eq!(runtime["timeout_seconds"].as_u64(), Some(1500));
     assert_eq!(runtime["retry_count"].as_u64(), Some(1));
     assert_eq!(build["retry_count"].as_u64(), Some(0));
+    let dap = find("dap_workspace_prepare")?;
+    assert_eq!(
+        dap["command"].as_str(),
+        Some(
+            "cargo build -p perl-lsp-rs --message-format=short --locked && cargo build -p perl-lsp-rs-core --message-format=short --locked && cargo build -p perl-dap --bin perl-dap --locked && cargo clippy -p perl-dap --lib --locked -- -D warnings -A clippy::wildcard_imports"
+        )
+    );
+    assert_eq!(dap["required"].as_bool(), Some(true));
+    assert_eq!(dap["quarantine"].as_bool(), Some(false));
+    assert_eq!(dap["retry_count"].as_u64(), Some(0));
+    assert_eq!(dap["timeout_seconds"].as_u64(), Some(1500));
+    assert_eq!(dap["planning"]["role"].as_str(), Some("rust_package_scoped"));
+    assert_eq!(dap["planning"]["packages"], serde_yaml_ng::from_str::<Value>("[perl-dap]")?);
+    let index = |name| gates.iter().position(|row| row["name"].as_str() == Some(name));
+    assert!(index("unit_routed_full_build") < index("dap_workspace_prepare"));
+    assert!(index("dap_workspace_prepare") < index("unit_routed_full"));
+    assert_eq!(find("fmt")?["command"].as_str(), Some("cargo xtask fmt --check"));
+    assert_eq!(find("fmt")?["required"].as_bool(), Some(true));
+    assert!(!root()?.join("crates/perl-dap/tests/wave_h_workspace_verification.rs").exists());
+    let manifest = fs::read_to_string(root()?.join("crates/perl-dap/Cargo.toml"))?;
+    assert!(!manifest.contains("wave_h_workspace_verification"));
+    let runner = fs::read_to_string(root()?.join("xtask/src/tasks/gates.rs"))?;
+    assert!(runner.contains("routed_preparation::retain_for_filter("));
+    assert!(runner.contains("routed_preparation::blocking_failure("));
     Ok(())
 }
 
@@ -57,7 +84,7 @@ fn preparation_precedes_watchdog_and_has_separate_evidence()
         route_command
             .contains("cargo test -p xtask --test routed_test_preparation_contract --locked --")
     );
-    assert!(route_command.contains("2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;"));
+    assert!(route_command.contains("14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;"));
     assert!(route_command.contains("preparation_preserves_runtime_command_and_budget"));
     assert!(route_command.contains("preparation_precedes_watchdog_and_has_separate_evidence"));
     assert_eq!(route["continue-on-error"], Value::Null);
@@ -73,6 +100,11 @@ fn preparation_precedes_watchdog_and_has_separate_evidence()
         .position(|step| step["name"].as_str() == Some("Run PR-fast via shared xtask gate runner"))
         .ok_or("missing runtime")?;
     assert!(prepare < execute);
+    assert_eq!(steps[prepare]["id"].as_str(), Some("routed-test-preparation"));
+    assert_eq!(
+        steps[execute]["env"]["PR_SMOKE_ROUTED_PREPARATION_OUTCOME"].as_str(),
+        Some("${{ steps.routed-test-preparation.outcome }}")
+    );
     let build = steps[prepare]["run"].as_str().ok_or("missing preparation command")?;
     assert!(
         build.contains("--gate unit_routed_full_build --subject target/receipts/ci-subject.json")

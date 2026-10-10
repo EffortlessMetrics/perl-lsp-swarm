@@ -26,13 +26,12 @@
 //!   bind directly, and a post-start error is never flattened into a
 //!   never-started one (review thread FC-ADAPTER-ERROR-FLATTEN);
 //! - the runner observes no signal identities, has no cancellation path,
-//!   and has no dependency gating, so `signal` is `None`, `cancelled` is
-//!   `false`, and dependency maps are empty on every live record: these are
-//!   the runner's true observations, not fabricated verdicts;
+//!   so `signal` is `None` and `cancelled` is `false`; explicit routed
+//!   preparation blockers carry their observed dependency name and status;
 //! - a completed command implies its prerequisites were ready (the process
 //!   ran), so `Ready` is recorded only for started commands; a
-//!   never-started command carries no prerequisite evidence at all rather
-//!   than an assumed-ready fact;
+//!   never-started command carries explicit failed or missing preparation
+//!   evidence when observed, otherwise no assumed-ready fact;
 //! - when structured executor observation (#11618/#9548) lands, this
 //!   adapter binds those fields; until then the narrower live claim is
 //!   explicit here and in the PR contract, and the schema stays
@@ -707,6 +706,7 @@ fn project_declared_artifacts(
 /// (review thread 3871822398). A publication that never succeeds surfaces
 /// as a typed error so the gates command fails loudly instead of continuing
 /// with no durable result (review thread 3871822403).
+#[cfg(test)]
 pub(super) fn emit_planned_run_row_result(
     plan: &CiRoutePlanV1,
     gate: &GateDefinition,
@@ -716,7 +716,34 @@ pub(super) fn emit_planned_run_row_result(
     output_dir: &Path,
     hosted: Option<HostedIdentity>,
 ) -> Result<RoutedGateResultV1> {
-    let observation = observation_from_gate_result(gate, result, root, receipt_root, hosted)?;
+    emit_planned_run_row_result_with_preparation(
+        plan,
+        gate,
+        result,
+        root,
+        receipt_root,
+        output_dir,
+        (hosted, None),
+    )
+}
+
+pub(super) fn emit_planned_run_row_result_with_preparation(
+    plan: &CiRoutePlanV1,
+    gate: &GateDefinition,
+    result: &GateResult,
+    root: &Path,
+    receipt_root: &Path,
+    output_dir: &Path,
+    context: (Option<HostedIdentity>, Option<&super::routed_preparation::PreparationBlock>),
+) -> Result<RoutedGateResultV1> {
+    let (hosted, preparation) = context;
+    let mut observation = observation_from_gate_result(gate, result, root, receipt_root, hosted)?;
+    if let Some(block) = preparation {
+        if result.command_started || result.exit_code.is_some() {
+            bail!("preparation-blocked gate {} reported process execution", gate.name);
+        }
+        observation.prerequisites = Some(preparation_evidence(block));
+    }
     let built = build_routed_result(plan, &gate.name, observation)
         .map_err(|error| eyre!("result normalization refused for {}: {error}", gate.name))?;
     // canonical_json validates before any filesystem effect, then the
@@ -725,6 +752,23 @@ pub(super) fn emit_planned_run_row_result(
     publish_routed_receipt(output_dir, &built)
         .map_err(|error| eyre!("durable publication refused for {}: {error}", gate.name))?;
     Ok(built)
+}
+
+fn preparation_evidence(
+    block: &super::routed_preparation::PreparationBlock,
+) -> PrerequisiteEvidence {
+    match &block.status {
+        Some(status) => PrerequisiteEvidence {
+            state: PrerequisiteState::Failed,
+            missing_artifacts: Vec::new(),
+            dependency_gates: BTreeMap::from([(block.dependency.clone(), status.clone())]),
+        },
+        None => PrerequisiteEvidence {
+            state: PrerequisiteState::Missing,
+            missing_artifacts: vec![format!("terminal result for {}", block.dependency)],
+            dependency_gates: BTreeMap::new(),
+        },
+    }
 }
 
 fn unix_millis_now() -> Option<i64> {
@@ -949,6 +993,30 @@ mod fixtures {
             .validate_against_plan(&plan)
             .expect_err("plan-bound validation must refuse the fabricated row");
         assert!(error.contains("exact planned row"), "unexpected refusal: {error}");
+    }
+
+    #[test]
+    fn preparation_block_preserves_known_failed_and_missing_dependencies() {
+        for dependency in ["fmt", "unit_routed_full_build", "dap_workspace_prepare"] {
+            let block = super::super::routed_preparation::PreparationBlock {
+                reason: "not run".into(),
+                dependency: dependency.into(),
+                status: Some("fail".into()),
+            };
+            let evidence = preparation_evidence(&block);
+            assert_eq!(evidence.state, PrerequisiteState::Failed);
+            assert_eq!(evidence.dependency_gates.get(dependency).map(String::as_str), Some("fail"));
+            let missing =
+                preparation_evidence(&super::super::routed_preparation::PreparationBlock {
+                    status: None,
+                    ..block
+                });
+            assert_eq!(missing.state, PrerequisiteState::Missing);
+            assert_eq!(
+                missing.missing_artifacts,
+                vec![format!("terminal result for {dependency}")]
+            );
+        }
     }
 
     #[test]

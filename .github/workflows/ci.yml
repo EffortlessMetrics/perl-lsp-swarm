@@ -997,9 +997,10 @@ jobs:
       # the exact canonical scope first, with independent compile-only evidence.
       # The 75m job envelope and all runtime assertions remain unchanged.
       - name: Prepare routed integration-test targets
+        id: routed-test-preparation
         # Preserve the full tier's independent facts even if preparation fails.
-        # Its separate failed receipt remains evidence; runtime gates still own
-        # the verdict, including the required compilation row on their retry.
+        # Its failed receipt remains evidence. The later invocation receives
+        # the original outcome and refuses routed runtime after failed warm-up.
         continue-on-error: true
         run: |
           set +e
@@ -1019,6 +1020,9 @@ jobs:
       - name: Run PR-fast via shared xtask gate runner
         env:
           PR_SMOKE_NAVIGATION_PROOF: ${{ steps.inline-completion-scope.outputs.warm_inline_completion }}
+          # Preserve the early terminal prerequisite; the full tier still runs
+          # independent proofs, but cannot retry a failed warm-up into runtime.
+          PR_SMOKE_ROUTED_PREPARATION_OUTCOME: ${{ steps.routed-test-preparation.outcome }}
         run: |
           set +e
           # Gate commands reuse the shared CARGO_TARGET_DIR=target build warmed
@@ -2111,7 +2115,7 @@ jobs:
           set -o pipefail
           cargo test -p xtask --test routed_test_preparation_contract --locked -- \
             --test-threads=1 --color never | tee "$RUNNER_TEMP/routed-test-preparation-contract.log"
-          grep -Eq '^test result: ok\. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in ' \
+          grep -Eq '^test result: ok\. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in ' \
             "$RUNNER_TEMP/routed-test-preparation-contract.log"
           for test_name in \
             preparation_preserves_runtime_command_and_budget \

@@ -377,11 +377,6 @@ path = "tests/wave_h_structure_verification.rs"
 # Green TDD: verify file-to-folder conversion and module structure correctness
 
 [[test]]
-name = "wave_h_workspace_verification"
-path = "tests/wave_h_workspace_verification.rs"
-# Green TDD: verify workspace-level artifacts and build success
-
-[[test]]
 name = "wave_h_platform_edge_cases"
 path = "tests/wave_h_platform_edge_cases.rs"
 # Green TDD: edge cases and boundary conditions for platform module

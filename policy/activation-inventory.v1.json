@@ -49,8 +49,8 @@
       "rule": "gate-policy-gates",
       "authority": ".ci/gate-policy.yaml",
       "emits": "gate",
-      "considered": 96,
-      "emitted": 96,
+      "considered": 97,
+      "emitted": 97,
       "not_seeded_reason": "every entry under gates: is emitted; nothing is filtered"
     },
     {
@@ -1440,7 +1440,7 @@
       "promotion": {
         "state": "not_evaluated"
       },
-      "notes": "No #9204 derivation rule classifies a differential test-oracle crate. crates/tree-sitter-perl-c/Cargo.toml describes the crate as a \"Tree-sitter Perl C FFI snapshot for testing, experimentation, accuracy comparison, and baseline benchmarking\". It has two in-tree Cargo dependents, both optional and both oracle uses: crates/perl-parser-comparison gates it behind `historical = [\"dep:tree-sitter-perl-c\"]` to compare native-parser output against the legacy C grammar, and xtask gates it behind `parser-tasks = [\"legacy\", \"tree-sitter-perl-c\"]`, calling `tree_sitter_perl_c::language()` in xtask/src/tasks/compare_parsers.rs. The root Cargo.toml `[workspace.metadata.publish] allow` list names this crate, which establishes that publication is permitted, not that any version was actually published — only a registry lookup could show that, and this ledger stays checkable from the repository alone. The row therefore claims `publish_allowed` rather than `published`."
+      "notes": "No #9204 derivation rule classifies a differential test-oracle crate. crates/tree-sitter-perl-c/Cargo.toml describes the crate as a \"Tree-sitter Perl C FFI snapshot for testing, experimentation, accuracy comparison, and baseline benchmarking\". It has two in-tree Cargo dependents, both optional and both oracle uses: crates/perl-parser-comparison gates it behind `historical = [\"dep:tree-sitter-perl-c\"]` to compare native-parser output against the legacy C grammar, and xtask gates it behind `parser-tasks = [\"legacy\", \"tree-sitter-perl-c\"]`, calling `tree_sitter_perl_c::language()` in xtask/src/tasks/compare_parsers.rs. The root Cargo.toml `[workspace.metadata.publish] allow` list names this crate, which establishes that publication is permitted, not that any version was actually published \u2014 only a registry lookup could show that, and this ledger stays checkable from the repository alone. The row therefore claims `publish_allowed` rather than `published`."
     },
     {
       "surface_id": "feature:lsp.code_action",
@@ -3229,7 +3229,7 @@
       "promotion": {
         "state": "not_evaluated"
       },
-      "notes": "Prove the compiler performance receipt contract discriminates — the falsifiers for every schema, typed, and cross-field rule — then validate the committed schema and every receipt fixture against it"
+      "notes": "Prove the compiler performance receipt contract discriminates \u2014 the falsifiers for every schema, typed, and cross-field rule \u2014 then validate the committed schema and every receipt fixture against it"
     },
     {
       "surface_id": "gate:compiler_proof_policy",
@@ -3419,6 +3419,33 @@
         "state": "not_evaluated"
       },
       "notes": "CPAN corpus baseline + known-clean manifest must remain green (advisory; CPAN corpus not installed on PR runners)"
+    },
+    {
+      "surface_id": "gate:dap_workspace_prepare",
+      "class": "gate",
+      "class_authority": {
+        "kind": "derived",
+        "authority": ".ci/gate-policy.yaml",
+        "rule": "gate-policy-gates"
+      },
+      "semantic_authority": ".ci/gate-policy.yaml#dap_workspace_prepare",
+      "consumers": [],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": ".ci/gate-policy.yaml",
+        "detail": "tier = \"pr_fast\"; required = true"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": ".ci/gate-policy.yaml"
+      },
+      "owner": "release/ci",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "Build Wave H consumers and link DAP; retain exact DAP-lib lint policy"
     },
     {
       "surface_id": "gate:determinism_check",
@@ -3931,7 +3958,7 @@
       "promotion": {
         "state": "not_evaluated"
       },
-      "notes": "LSP capability snapshot contract — detects capability-negotiation drift (lsp_cap_snap)"
+      "notes": "LSP capability snapshot contract \u2014 detects capability-negotiation drift (lsp_cap_snap)"
     },
     {
       "surface_id": "gate:lsp_registration_contract",
@@ -4093,7 +4120,7 @@
       "promotion": {
         "state": "not_evaluated"
       },
-      "notes": "Report changes that drop an .expect(\"…\") explanation into a bare perl-test-must helper"
+      "notes": "Report changes that drop an .expect(\"\u2026\") explanation into a bare perl-test-must helper"
     },
     {
       "surface_id": "gate:mutation",

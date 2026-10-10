@@ -1113,6 +1113,32 @@ gates:
     planning:
       role: rust_scoped
 
+  # #17479: repository build/lint assertions run before the routed runtime.
+  # Failure/incomplete preparation blocks that runtime in every tier/filter.
+  # The existing required fmt owner supplies the fifth (formatting) assertion.
+  - name: dap_workspace_prepare
+    tier: pr_fast
+    description: "Build Wave H consumers and link DAP; retain exact DAP-lib lint policy"
+    required: true
+    command: >-
+      cargo build -p perl-lsp-rs --message-format=short --locked &&
+      cargo build -p perl-lsp-rs-core --message-format=short --locked &&
+      cargo build -p perl-dap --bin perl-dap --locked &&
+      cargo clippy -p perl-dap --lib --locked -- -D warnings -A clippy::wildcard_imports
+    # Reuse the existing routed bound. Sufficiency still needs admitted proof;
+    # this grants no increase to the outer job/runtime watchdogs.
+    timeout_seconds: 1500
+    retry_count: 0
+    quarantine: false
+    tags:
+      - compile
+      - lint
+      - dap
+    planning:
+      role: rust_package_scoped
+      packages:
+        - perl-dap
+
   - name: unit_routed_full
     tier: pr_fast
     description: "Scoped routed integration tests for ci-scope selected crates (required test gate for #1470 coupling; --tests runs tests/ directories, catching runtime assertion failures not reachable by --lib)"

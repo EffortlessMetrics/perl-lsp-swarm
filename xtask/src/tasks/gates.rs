@@ -41,6 +41,7 @@ pub mod disposition;
 mod first_failure;
 mod planning_types;
 pub mod route_profile;
+mod routed_preparation;
 mod routed_result_adapter;
 
 pub use first_failure::{is_cargo_test_command, parse_first_failure};
@@ -1011,19 +1012,29 @@ fn plan_gates(root: &Path, policy: &GatePolicy, config: &GateRunnerConfig) -> Re
     if config.gate_filter.is_some() {
         let filtered = filter_gates(policy, config)?;
         if filtered.iter().any(|gate| {
-            gate.tier == "pr_fast"
-                && gate
-                    .planning
-                    .as_ref()
-                    .is_some_and(|planning| planning.role == GatePlanningRole::RustScoped)
+            gate.name == routed_preparation::DAP
+                || gate.tier == "pr_fast"
+                    && gate
+                        .planning
+                        .as_ref()
+                        .is_some_and(|planning| planning.role == GatePlanningRole::RustScoped)
         }) {
             // A named scoped gate needs the same package rendering and skip /
             // fallback decisions as the full tier. Static filtering leaves
             // {package_args} unresolved, even with an immutable subject.
             let mut plan =
                 plan_pr_fast_gates(root, gates_for_tier(policy, "pr_fast"), base, subject_scope)?;
-            plan.selected.retain(|row| Some(&row.gate.name) == config.gate_filter.as_ref());
-            plan.skipped.retain(|row| Some(&row.name) == config.gate_filter.as_ref());
+            let requested =
+                config.gate_filter.as_deref().ok_or_else(|| eyre!("missing gate filter"))?;
+            let selected_names: Vec<_> =
+                plan.selected.iter().map(|row| row.gate.name.as_str()).collect();
+            let retained = routed_preparation::retain_for_filter(
+                &selected_names,
+                requested,
+                routed_preparation::includes_dap(&plan.package_args),
+            );
+            plan.selected.retain(|row| retained.contains(&row.gate.name));
+            plan.skipped.retain(|row| row.name == requested);
             plan.tier = config.tier.clone();
             plan.staged_tree_oid = staged_tree_oid;
             return Ok(plan);
@@ -1352,6 +1363,24 @@ fn build_pr_fast_plan_from_scope_with_targets(
                     gate.name
                 );
             }
+        }
+    }
+
+    // The transferred DAP operations apply only when the canonical runtime
+    // actually selects DAP. In particular, a fallback that skips RustScoped
+    // integration tests must not silently gain this build/lint obligation.
+    let dap_runtime_selected = routed_preparation::includes_dap(&package_args)
+        && selected.iter().any(|row| row.gate.name == routed_preparation::RUNTIME);
+    if !dap_runtime_selected {
+        if let Some(index) =
+            selected.iter().position(|row| row.gate.name == routed_preparation::DAP)
+        {
+            let row = selected.remove(index);
+            skipped.push(SkippedGate {
+                name: row.gate.name,
+                role: Some(row.role),
+                reason: "DAP routed runtime not selected".to_string(),
+            });
         }
     }
 
@@ -1698,6 +1727,9 @@ fn run_gate_plan(
         None
     };
 
+    let hosted_preparation_outcome = std::env::var_os("PR_SMOKE_ROUTED_PREPARATION_OUTCOME")
+        .map(|outcome| outcome.to_string_lossy().into_owned());
+    let dap_selected = routed_preparation::includes_dap(&plan.package_args);
     for (idx, planned_gate) in plan.selected.iter().enumerate() {
         let gate = &planned_gate.gate;
         if routed_gate_plan.is_some() {
@@ -1713,8 +1745,38 @@ fn run_gate_plan(
             pb.set_message(format!("Running {}...", gate.name));
         }
 
-        let result =
-            run_single_gate(gate, policy, &log_dir, config, plan.staged_tree_oid.as_deref())?;
+        // Preparation failure never becomes runtime evidence. This applies to
+        // every tier and named runtime execution, not just pr_fast short-circuit.
+        // Only earlier terminal results from this invocation may qualify it.
+        let prior_results: Vec<_> = results
+            .iter()
+            .map(|result| (result.gate_name.as_str(), result.status.as_str()))
+            .collect();
+        let preparation_block = routed_preparation::blocking_failure(
+            &gate.name,
+            dap_selected,
+            &prior_results,
+            hosted_preparation_outcome.as_deref(),
+        );
+        let result = if let Some(block) = &preparation_block {
+            GateResult {
+                gate_name: gate.name.clone(),
+                tier: gate.tier.clone(),
+                status: "error".to_string(),
+                required: Some(gate.required),
+                duration_ms: 0,
+                command: gate.command.clone(),
+                exit_code: None,
+                output_summary: Some(block.reason.clone()),
+                log_path: None,
+                metrics: None,
+                artifacts: None,
+                first_failure: None,
+                command_started: false,
+            }
+        } else {
+            run_single_gate(gate, policy, &log_dir, config, plan.staged_tree_oid.as_deref())?
+        };
         emit_gate_end(gate, &result);
 
         // One executed planned `run` row -> one normalized result (#9156).
@@ -1723,14 +1785,14 @@ fn run_gate_plan(
         if let Some((compiled, output_dir)) = &routed_gate_plan
             && !routed_result_adapter::is_quarantine_skipped(gate, config.verbose)
         {
-            routed_result_adapter::emit_planned_run_row_result(
+            routed_result_adapter::emit_planned_run_row_result_with_preparation(
                 compiled,
                 gate,
                 &result,
                 &root,
                 &root.join("target/receipts"),
                 output_dir,
-                routed_hosted_identity.clone(),
+                (routed_hosted_identity.clone(), preparation_block.as_ref()),
             )
             .with_context(|| format!("normalized routed-gate result failed for {}", gate.name))?;
         }
@@ -3875,6 +3937,92 @@ mod tests {
             }),
             ..pr_gate(name, GatePlanningRole::RustPackageScoped, "cargo test -p perl-token")
         }
+    }
+
+    #[test]
+    fn dap_preparation_selection_follows_the_actual_routed_runtime() -> color_eyre::eyre::Result<()>
+    {
+        for (packages, fallback, expected) in [
+            (vec!["perl-dap"], false, true),
+            (vec!["perl-token"], false, false),
+            (vec!["perl-dap"], true, false),
+        ] {
+            let gates = vec![
+                package_pr_gate("dap_workspace_prepare", vec!["perl-dap".into()]),
+                pr_gate(
+                    "unit_routed_full",
+                    GatePlanningRole::RustScoped,
+                    "cargo test --locked --tests {package_args}",
+                ),
+            ];
+            let plan = build_pr_fast_plan_from_scope(
+                GateTier::PrFast,
+                "HEAD".into(),
+                gates,
+                Some(scope_output("code", &packages, &[], &[])),
+                true,
+                fallback,
+                None,
+            )?;
+            assert_eq!(
+                selected_gate_names(&plan).contains(&"dap_workspace_prepare".into()),
+                expected
+            );
+        }
+        Ok(())
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn failed_preparation_prevents_runtime_in_every_tier_and_keeps_backstops()
+    -> color_eyre::eyre::Result<()> {
+        for tier in [GateTier::PrFast, GateTier::MergeGate, GateTier::Nightly, GateTier::All] {
+            for failed in ["fmt", "unit_routed_full_build", "dap_workspace_prepare"] {
+                let gates: Vec<_> = [
+                    "fmt",
+                    "unit_routed_full_build",
+                    "dap_workspace_prepare",
+                    "unit_routed_full",
+                    "independent_backstop",
+                ]
+                .into_iter()
+                .map(|name| {
+                    pr_gate(
+                        name,
+                        GatePlanningRole::AlwaysOn,
+                        if name == failed { "exit 101" } else { "exit 0" },
+                    )
+                })
+                .collect();
+                let policy = policy_with_gates(gates.clone());
+                let mut plan = static_gate_plan(tier.clone(), "HEAD".into(), gates, None);
+                plan.package_args = vec!["-p".into(), "perl-dap".into()];
+                let config = GateRunnerConfig {
+                    tier,
+                    output_format: OutputFormat::Summary,
+                    ..GateRunnerConfig::default()
+                };
+                let receipt = run_gate_plan(&plan, &policy, &config)?;
+                let runtime = receipt
+                    .gates
+                    .iter()
+                    .find(|row| row.gate_name == "unit_routed_full")
+                    .ok_or_else(|| color_eyre::eyre::eyre!("missing runtime disposition"))?;
+                assert_eq!(runtime.status, "error");
+                assert!(!runtime.command_started);
+                assert!(runtime.metrics.is_none());
+                assert!(runtime.exit_code.is_none());
+                assert_eq!(receipt.summary.overall_status, "fail");
+                let backstop = receipt
+                    .gates
+                    .iter()
+                    .find(|row| row.gate_name == "independent_backstop")
+                    .ok_or_else(|| color_eyre::eyre::eyre!("missing independent backstop"))?;
+                assert_eq!(backstop.status, "pass");
+                assert!(backstop.command_started);
+            }
+        }
+        Ok(())
     }
 
     fn scope_output(
