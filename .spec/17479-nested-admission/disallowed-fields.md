@@ -84,8 +84,11 @@ corrupt JSON, altered inputs/roots, live ownership and exact owning-test output.
 Five assertion-rejected semantic mutants remove fixture revalidation, accept a
 wrong diagnostic or zero exit, or omit terminal/access-span proof. No Cargo is
 run by those controls. Direct native proof and selected owning-test proof remain
-separate; direct success alone proves no executed-test population. Native shape
-and owning-harness execution remain NOT_PROVEN until actual qualification.
+separate; direct success alone proves no executed-test population. Actual direct
+and exact owning-harness results, with their separate source identities and
+retained first compilation failure, are in
+[disallowed-fields-results.md](disallowed-fields-results.md). The owning stage
+proves one named test.
 
 This slice does not qualify other compiler fixtures, arbitrary loader variants,
 the canonical nine-package population, planner coverage, cold sizing, Windows,

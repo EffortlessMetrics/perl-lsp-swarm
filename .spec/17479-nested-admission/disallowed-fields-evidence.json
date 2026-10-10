@@ -1,0 +1,601 @@
+{
+  "schema_version": 1,
+  "tested_source": "a33a353a91fdf52c4dc6dada8e4248fb9a08fe7e",
+  "stages": {
+    "direct": {
+      "tested_source": "4c625ef475d0f3d3cb67c87b9ffa30fdc80b96bb",
+      "executed_test_denominator": 0,
+      "named_results": [],
+      "measurement": {
+        "stage": "direct",
+        "source": "4c625ef475d0f3d3cb67c87b9ffa30fdc80b96bb",
+        "cwd": "/workspace/perl-lsp-17479-nested",
+        "outer_argv": [
+          "run",
+          "-p",
+          "xtask",
+          "--bin",
+          "xtask",
+          "--locked",
+          "--",
+          "gates",
+          "--tier",
+          "merge-gate",
+          "--gate",
+          "disallowed_fields_direct",
+          "--gate-policy",
+          ".spec/17479-nested-admission/disallowed-fields-gates.yaml",
+          "--receipt",
+          "--receipt-path",
+          "/workspace/perl-lsp-17479-nested/target/receipts/disallowed-fields-direct.json"
+        ],
+        "scope": {
+          "hostname": "bf4c09722087",
+          "platform": "linux",
+          "working_directory": "/workspace/perl-lsp-17479-nested",
+          "worktree": "/workspace/perl-lsp-17479-nested",
+          "operation": "run",
+          "cargo_argv_sha256": "1031da561fb9146a2ae10aa6851468572baed13d42dedec42210a1ded338a9cc",
+          "resources": {
+            "target": "/workspace/.devplane-17479/bf4c09722087-linux-727b814873041b4a/worktrees/ca8a330a66f6d236fa1e8d7f63aed3c09474f0bcc618a13452eb2d5faca8978e/target",
+            "build": "/workspace/.devplane-17479/bf4c09722087-linux-727b814873041b4a/worktrees/ca8a330a66f6d236fa1e8d7f63aed3c09474f0bcc618a13452eb2d5faca8978e/build",
+            "cargo_home": "/workspace/.cloud-tools/cargo",
+            "temp": "/workspace/perl-lsp-17479-nested/target/receipts"
+          },
+          "jobs": 1,
+          "build_environment_sha256": "715891adfc627d31e0ee3f9daa3550a1cfdde6b6aaeaefbecda936f92f7d6530",
+          "nested_plan_sha256": "a36c099cb6bf1cde322316f1b2502fb0b0fefac16ef37b5d43e1b818dfc29ea2"
+        },
+        "no_competing_compilers": true,
+        "initial_free": 27358760960,
+        "initial_memory_events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\n",
+        "growth_estimated_not_verified": true,
+        "disk_cancel_below": 10737418240,
+        "memory_cancel_at": 15032385536,
+        "wall_cancel_seconds": 5400,
+        "observer_error": null,
+        "exit_code": 0,
+        "elapsed_seconds": 632.1732608790007,
+        "cancel_reason": null,
+        "aggregate_sampled_peak_memory": 8771866624,
+        "min_free_bytes": 27037138944,
+        "observed_volume_growth": 321622016,
+        "final_memory_events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\n"
+      },
+      "owner_settlement": {
+        "tree_settled": true,
+        "proof": "kernel ECHILD (__WALL)",
+        "cancelled": false,
+        "termination_requested": false,
+        "reaped_descendants": [],
+        "owned_child_table_available": false,
+        "errors": [],
+        "pending_bound_pids": [],
+        "reason": "all owned descendants reaped",
+        "lease": "/workspace/.devplane-17479/bf4c09722087-linux-727b814873041b4a/cargo-active",
+        "lease_identity": [
+          27,
+          1572962
+        ],
+        "lease_marker": "/workspace/.devplane-17479/bf4c09722087-linux-727b814873041b4a/cargo-active/owner-e909494be0ac44b08674ee8572bdbb44",
+        "lease_released": true
+      },
+      "original_owner": {
+        "pid": 28841,
+        "lease_identity": [
+          27,
+          1572962
+        ],
+        "marker_identity": [
+          27,
+          1572977
+        ]
+      },
+      "snapshot_sha256": "3c4ac227ffc52ba7a2da19018259269b383720e2e9ec42e10187811338b82523",
+      "gate_duration_ms": 1005,
+      "artifact_evidence": null,
+      "evidence_manifest": {
+        "bytes": 1749,
+        "sha256": "574d4646cd3e2dc2895b3c530fd26f98333bb03f2c4dc566a076da2b20d87dde"
+      },
+      "evidence_files": {
+        "admission.json": {
+          "bytes": 1816,
+          "sha256": "4db16ff6c7e5128a682149690c64dc4a7606716efa3aa370f02486823f176479"
+        },
+        "budget.json": {
+          "bytes": 1597,
+          "sha256": "76829f570d723b3621dd1bde8f69963de414896549bfc9fe4971e9d70b464232"
+        },
+        "captured-nested-snapshot.json": {
+          "bytes": 13113,
+          "sha256": "3c4ac227ffc52ba7a2da19018259269b383720e2e9ec42e10187811338b82523"
+        },
+        "default-preflight.log": {
+          "bytes": 1769,
+          "sha256": "eaca0fc6ed7c23889ccd53eee5c7dcabe511faaa43a62ef5493b8c960b1b10cd"
+        },
+        "gate-receipt.json": {
+          "bytes": 4599,
+          "sha256": "21bb0795bceb7a81b677b323ac9bd68882d8ea4835fd24d58560573f3465b9e1"
+        },
+        "gate.log": {
+          "bytes": 2385,
+          "sha256": "41a43a66d7530d6769d49a3eef15c57deb0b3ebe48798395244b4677cdd60f6f"
+        },
+        "result.json": {
+          "bytes": 2132,
+          "sha256": "2f3c9ee754bc812ad6b8da28f677700a3f0dfb287606b4b30c4554feaf371568"
+        },
+        "samples.jsonl": {
+          "bytes": 36678,
+          "sha256": "fdb9bf863cf17324e5fd7aca72999cfc8725f1228fe8a3150ffed8234b7562d4"
+        },
+        "scoped-preflight.log": {
+          "bytes": 3476,
+          "sha256": "1280868e2a5541f2630ca7566a06ea3942ba6ef44954f172548a6d028b3dee25"
+        },
+        "snapshot-copy-evidence.json": {
+          "bytes": 284,
+          "sha256": "27d4fa898ac55544f9403bf1b19030303793f8acd77305d2dc3c0a6a420f6f6d"
+        },
+        "stderr.log": {
+          "bytes": 206481,
+          "sha256": "6142cee74885bc356ce15bab58d250c4d8c6690ca7666c4cf65767fc14fb65d8"
+        },
+        "stdout.log": {
+          "bytes": 701,
+          "sha256": "3614f4385da962ceb0d45895250beaf89181886f0c91db6f701a78f51d57914b"
+        }
+      }
+    },
+    "owning": {
+      "tested_source": "a33a353a91fdf52c4dc6dada8e4248fb9a08fe7e",
+      "executed_test_denominator": 1,
+      "named_results": [
+        {
+          "test": "tasks::check_lint_policy::tests::config::disallowed_fields::configured_field_is_rejected_by_clippy",
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0,
+          "filtered_out": 4791,
+          "runtime_seconds": 0.93
+        }
+      ],
+      "measurement": {
+        "stage": "owning",
+        "source": "a33a353a91fdf52c4dc6dada8e4248fb9a08fe7e",
+        "cwd": "/workspace/perl-lsp-17479-nested",
+        "outer_argv": [
+          "run",
+          "-p",
+          "xtask",
+          "--bin",
+          "xtask",
+          "--locked",
+          "--",
+          "gates",
+          "--tier",
+          "merge-gate",
+          "--gate",
+          "disallowed_fields_owning",
+          "--gate-policy",
+          ".spec/17479-nested-admission/disallowed-fields-gates.yaml",
+          "--receipt",
+          "--receipt-path",
+          "/workspace/perl-lsp-17479-nested/target/receipts/disallowed-fields-owning.json"
+        ],
+        "scope": {
+          "hostname": "bf4c09722087",
+          "platform": "linux",
+          "working_directory": "/workspace/perl-lsp-17479-nested",
+          "worktree": "/workspace/perl-lsp-17479-nested",
+          "operation": "run",
+          "cargo_argv_sha256": "0f2ebc3b57cb19d6096efc28381b0efe8a6e931d453c1535d6472d76f45b9d7a",
+          "resources": {
+            "target": "/workspace/.devplane-17479/bf4c09722087-linux-727b814873041b4a/worktrees/ca8a330a66f6d236fa1e8d7f63aed3c09474f0bcc618a13452eb2d5faca8978e/target",
+            "build": "/workspace/.devplane-17479/bf4c09722087-linux-727b814873041b4a/worktrees/ca8a330a66f6d236fa1e8d7f63aed3c09474f0bcc618a13452eb2d5faca8978e/build",
+            "cargo_home": "/workspace/.cloud-tools/cargo",
+            "temp": "/workspace/perl-lsp-17479-nested/target/receipts"
+          },
+          "jobs": 1,
+          "build_environment_sha256": "715891adfc627d31e0ee3f9daa3550a1cfdde6b6aaeaefbecda936f92f7d6530",
+          "nested_plan_sha256": "2079d557a2c65e27a30977b3b735604ab8564ccfae0156c483cab6baa6945cd8"
+        },
+        "no_competing_compilers": true,
+        "initial_free": 27348529152,
+        "initial_memory_events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\n",
+        "growth_estimated_not_verified": true,
+        "disk_cancel_below": 10737418240,
+        "memory_cancel_at": 15032385536,
+        "wall_cancel_seconds": 5400,
+        "observer_error": null,
+        "exit_code": 0,
+        "elapsed_seconds": 1520.4415110279988,
+        "cancel_reason": null,
+        "aggregate_sampled_peak_memory": 10172014592,
+        "min_free_bytes": 26593902592,
+        "observed_volume_growth": 754626560,
+        "final_memory_events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\n"
+      },
+      "owner_settlement": {
+        "tree_settled": true,
+        "proof": "kernel ECHILD (__WALL)",
+        "cancelled": false,
+        "termination_requested": false,
+        "reaped_descendants": [],
+        "owned_child_table_available": false,
+        "errors": [],
+        "pending_bound_pids": [],
+        "reason": "all owned descendants reaped",
+        "lease": "/workspace/.devplane-17479/bf4c09722087-linux-727b814873041b4a/cargo-active",
+        "lease_identity": [
+          27,
+          1573032
+        ],
+        "lease_marker": "/workspace/.devplane-17479/bf4c09722087-linux-727b814873041b4a/cargo-active/owner-dd19d59e8fd144a48770019c0be6e7d6",
+        "lease_released": true
+      },
+      "original_owner": {
+        "pid": 31045,
+        "lease_identity": [
+          27,
+          1573032
+        ],
+        "marker_identity": [
+          27,
+          1573061
+        ]
+      },
+      "snapshot_sha256": "9cb4f848de450694144395f8881dae325af5cf9a5409fe94a9a7e8e244554555",
+      "gate_duration_ms": 855923,
+      "artifact_evidence": {
+        "schema_version": 1,
+        "tested_source": "a33a353a91fdf52c4dc6dada8e4248fb9a08fe7e",
+        "toolchain_pin": "1.95.0",
+        "artifact": {
+          "path": "/workspace/.devplane-17479/bf4c09722087-linux-727b814873041b4a/worktrees/ca8a330a66f6d236fa1e8d7f63aed3c09474f0bcc618a13452eb2d5faca8978e/build/debug/deps/xtask-50f6fb483a63b005",
+          "file_identity": [
+            27,
+            1458462,
+            377331808,
+            1791633760428782561,
+            1791633760460780638
+          ],
+          "sha256": "12aa6a9d2081cd2297881a24072e75eee731917972e4fb6b60bc8bae5197dd1e"
+        },
+        "copy": {
+          "path": "/workspace/perl-lsp-17479-nested/target/receipts/disallowed-fields-owning-31897",
+          "file_identity": [
+            27,
+            1458463,
+            377331808,
+            1791633762800630638,
+            1791633763388591913
+          ],
+          "sha256": "12aa6a9d2081cd2297881a24072e75eee731917972e4fb6b60bc8bae5197dd1e"
+        },
+        "cargo_artifact": {
+          "reason": "compiler-artifact",
+          "package_id": "path+file:///workspace/perl-lsp-17479-nested/xtask#0.17.0",
+          "manifest_path": "/workspace/perl-lsp-17479-nested/xtask/Cargo.toml",
+          "target": {
+            "kind": [
+              "bin"
+            ],
+            "crate_types": [
+              "bin"
+            ],
+            "name": "xtask",
+            "src_path": "/workspace/perl-lsp-17479-nested/xtask/src/main.rs",
+            "edition": "2024",
+            "doc": true,
+            "doctest": false,
+            "test": true
+          },
+          "profile": {
+            "opt_level": "1",
+            "debuginfo": "line-tables-only",
+            "debug_assertions": true,
+            "overflow_checks": true,
+            "test": true
+          },
+          "features": [],
+          "filenames": [
+            "/workspace/.devplane-17479/bf4c09722087-linux-727b814873041b4a/worktrees/ca8a330a66f6d236fa1e8d7f63aed3c09474f0bcc618a13452eb2d5faca8978e/build/debug/deps/xtask-50f6fb483a63b005"
+          ],
+          "executable": "/workspace/.devplane-17479/bf4c09722087-linux-727b814873041b4a/worktrees/ca8a330a66f6d236fa1e8d7f63aed3c09474f0bcc618a13452eb2d5faca8978e/build/debug/deps/xtask-50f6fb483a63b005",
+          "fresh": false
+        },
+        "snapshot": {
+          "path": "/workspace/.devplane-17479/bf4c09722087-linux-727b814873041b4a/nested-plan-owner-dd19d59e8fd144a48770019c0be6e7d6.json",
+          "file_identity": [
+            27,
+            1458362,
+            13229,
+            1791632245061286457,
+            1791632245061286457
+          ],
+          "sha256": "9cb4f848de450694144395f8881dae325af5cf9a5409fe94a9a7e8e244554555"
+        },
+        "owner_process": {
+          "pid": 31045,
+          "parent": 30952,
+          "start": "2538224"
+        },
+        "lease": "/workspace/.devplane-17479/bf4c09722087-linux-727b814873041b4a/cargo-active",
+        "lease_identity": [
+          27,
+          1573032
+        ],
+        "lease_marker": "/workspace/.devplane-17479/bf4c09722087-linux-727b814873041b4a/cargo-active/owner-dd19d59e8fd144a48770019c0be6e7d6",
+        "marker_identity": [
+          27,
+          1573061
+        ],
+        "copied_under_original_live_owner": true,
+        "named_test": "tasks::check_lint_policy::tests::config::disallowed_fields::configured_field_is_rejected_by_clippy"
+      },
+      "evidence_manifest": {
+        "bytes": 1903,
+        "sha256": "a7b6aa17cd2321c6b4d4ba6d25ca9c763cdcb0037e9f66b2131006e698f41010"
+      },
+      "evidence_files": {
+        "admission.json": {
+          "bytes": 1816,
+          "sha256": "90b6a55f84e465efc2a6a04b1708f43ba02891c1bacfe983a9e809b905050a82"
+        },
+        "budget.json": {
+          "bytes": 1688,
+          "sha256": "337de3924fa90887037ad106813e00b5dc9057388f4ab7f6a4265c77ad03da43"
+        },
+        "captured-nested-snapshot.json": {
+          "bytes": 13229,
+          "sha256": "9cb4f848de450694144395f8881dae325af5cf9a5409fe94a9a7e8e244554555"
+        },
+        "default-preflight.log": {
+          "bytes": 1772,
+          "sha256": "13ded446753cb9fe85b5a315354fb64df0096c92dabe9df17cdcc8ecb13c2f5a"
+        },
+        "gate-receipt.json": {
+          "bytes": 2934,
+          "sha256": "5aec6a0f9f994ff4da857c7714d05b13d622e0c96aa6d08178307af6f1c208b8"
+        },
+        "gate.log": {
+          "bytes": 1682759,
+          "sha256": "7503c4835eceffdfeff7939bd846960d4b8145f1997c14542ba5ebb0dff14b9c"
+        },
+        "owning-artifact-evidence.json": {
+          "bytes": 2507,
+          "sha256": "be1dbbec3122496f7a4389b11e34e1b0eefda6230e9d3f76c3d6446a29c96531"
+        },
+        "result.json": {
+          "bytes": 2134,
+          "sha256": "c3b822b7090b5ab9224eab7f6c49adf4918d8e02c42b3a9265b4ac81e3e5c06a"
+        },
+        "samples.jsonl": {
+          "bytes": 88410,
+          "sha256": "e098720868a70cfa909dcfc0c8930dbb4d702f872788e5c32864bd0a0b4568a7"
+        },
+        "scoped-preflight.log": {
+          "bytes": 3562,
+          "sha256": "a06260535bb661d05b88b81af91a0572cbaf45d0c79f879de2a1940cd9481f4c"
+        },
+        "snapshot-copy-evidence.json": {
+          "bytes": 284,
+          "sha256": "0e58bf75ee2d6235051f75c191228b869416a16c59508acbe238598e67f6f0bc"
+        },
+        "stderr.log": {
+          "bytes": 206567,
+          "sha256": "b4975af9f97ffeb1c0f0158643161a45b38f6eb9e415bc226fbd97165459e570"
+        },
+        "stdout.log": {
+          "bytes": 2552,
+          "sha256": "0f7311f2a83a3cbb500a50898108ef670394948030e7874da8b1fed1b4c3b693"
+        }
+      }
+    }
+  },
+  "first_owning_failure": {
+    "tested_source": "4c625ef475d0f3d3cb67c87b9ffa30fdc80b96bb",
+    "executed_test_denominator": 0,
+    "cause": "E0382: existing preparation-control loop moved tier into config then borrowed it on next inner iteration",
+    "repair_commit": "a33a353a91fdf52c4dc6dada8e4248fb9a08fe7e",
+    "repair": "test-only tier: tier.clone()",
+    "measurement": {
+      "stage": "owning",
+      "source": "4c625ef475d0f3d3cb67c87b9ffa30fdc80b96bb",
+      "cwd": "/workspace/perl-lsp-17479-nested",
+      "outer_argv": [
+        "run",
+        "-p",
+        "xtask",
+        "--bin",
+        "xtask",
+        "--locked",
+        "--",
+        "gates",
+        "--tier",
+        "merge-gate",
+        "--gate",
+        "disallowed_fields_owning",
+        "--gate-policy",
+        ".spec/17479-nested-admission/disallowed-fields-gates.yaml",
+        "--receipt",
+        "--receipt-path",
+        "/workspace/perl-lsp-17479-nested/target/receipts/disallowed-fields-owning.json"
+      ],
+      "scope": {
+        "hostname": "bf4c09722087",
+        "platform": "linux",
+        "working_directory": "/workspace/perl-lsp-17479-nested",
+        "worktree": "/workspace/perl-lsp-17479-nested",
+        "operation": "run",
+        "cargo_argv_sha256": "0f2ebc3b57cb19d6096efc28381b0efe8a6e931d453c1535d6472d76f45b9d7a",
+        "resources": {
+          "target": "/workspace/.devplane-17479/bf4c09722087-linux-727b814873041b4a/worktrees/ca8a330a66f6d236fa1e8d7f63aed3c09474f0bcc618a13452eb2d5faca8978e/target",
+          "build": "/workspace/.devplane-17479/bf4c09722087-linux-727b814873041b4a/worktrees/ca8a330a66f6d236fa1e8d7f63aed3c09474f0bcc618a13452eb2d5faca8978e/build",
+          "cargo_home": "/workspace/.cloud-tools/cargo",
+          "temp": "/workspace/perl-lsp-17479-nested/target/receipts"
+        },
+        "jobs": 1,
+        "build_environment_sha256": "715891adfc627d31e0ee3f9daa3550a1cfdde6b6aaeaefbecda936f92f7d6530",
+        "nested_plan_sha256": "0a90405ebbdafbc576c696d768e091c935b8637f236facea590eb95cdb95c89e"
+      },
+      "no_competing_compilers": true,
+      "initial_free": 27358679040,
+      "initial_memory_events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\n",
+      "growth_estimated_not_verified": true,
+      "disk_cancel_below": 10737418240,
+      "memory_cancel_at": 15032385536,
+      "wall_cancel_seconds": 5400,
+      "observer_error": null,
+      "exit_code": 1,
+      "elapsed_seconds": 344.109494458,
+      "cancel_reason": null,
+      "aggregate_sampled_peak_memory": 8504397824,
+      "min_free_bytes": 27348656128,
+      "observed_volume_growth": 10022912,
+      "final_memory_events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\n"
+    },
+    "owner_settlement": {
+      "tree_settled": true,
+      "proof": "kernel ECHILD (__WALL)",
+      "cancelled": false,
+      "termination_requested": false,
+      "reaped_descendants": [],
+      "owned_child_table_available": false,
+      "errors": [],
+      "pending_bound_pids": [],
+      "reason": "all owned descendants reaped",
+      "lease": "/workspace/.devplane-17479/bf4c09722087-linux-727b814873041b4a/cargo-active",
+      "lease_identity": [
+        27,
+        1572957
+      ],
+      "lease_marker": "/workspace/.devplane-17479/bf4c09722087-linux-727b814873041b4a/cargo-active/owner-1252db25e75f47f7a469ed9a045bcd13",
+      "lease_released": true
+    },
+    "evidence_manifest": {
+      "sha256": "d7a9788474e51e37759eb041f91ea055b327c045a45e838a2a1982be752ba56d"
+    },
+    "evidence_files": {
+      "gate.log": {
+        "bytes": 1654330,
+        "sha256": "758becf56f766752d6ffd26282cf9266c3993c7b03bb8eb12d8a1f3c38d3d05d"
+      },
+      "gate-receipt.json": {
+        "bytes": 2931,
+        "sha256": "473b87495030f3e267394dbb2291ee4235b090f23b7e762f218601c5f91d27d4"
+      },
+      "result.json": {
+        "bytes": 2127,
+        "sha256": "09fa150e1d7e5a549efbbbd392fd0df511adcfd233db8587e7b46e82bf6252e0"
+      },
+      "snapshot-copy-evidence.json": {
+        "bytes": 284,
+        "sha256": "480bf82d59c9095b6331dbcb09b7ff73c9d3814023888206f5fef9f91895a5c1"
+      },
+      "captured-nested-snapshot.json": {
+        "bytes": 13229,
+        "sha256": "aa5740bfdec9f72b3ed3a13421d17c45ab745f9a9eacf13afd3f4adb1e5482b8"
+      },
+      "samples.jsonl": {
+        "bytes": 19995,
+        "sha256": "257ba176221fca2f71a97bb50ecf8146d2baabd9b650e83aa466570d4d5f06bc"
+      },
+      "stderr.log": {
+        "bytes": 211272,
+        "sha256": "c9c5dc7429eb28b7749e0233c47a25ab4aae217c82ec3375bd20244afbb6ea95"
+      },
+      "stdout.log": {
+        "bytes": 1494,
+        "sha256": "623e6560fdfbf1e37c1bb3788e81f9d7f26b83786c66422819564220f276c3dd"
+      },
+      "admission.json": {
+        "bytes": 1816,
+        "sha256": "8edeea63ef2f7be551f1578deb9b757a61796d34705607e1b532464f0214249e"
+      },
+      "scoped-preflight.log": {
+        "bytes": 3562,
+        "sha256": "3d9d6c36c0b0fd35159d2ac391b2ce54b0535802cc316d10183f1d1bf4d698c9"
+      },
+      "budget.json": {
+        "bytes": 1688,
+        "sha256": "d6791732a04541f26c95f7b5f94cf15b62ba481e7be112e9d91ef39f1c404886"
+      },
+      "default-preflight.log": {
+        "bytes": 1769,
+        "sha256": "554375a650e9ca71b9d73716622b6be6651cd24f8f8105a550cfb51f25a0da8e"
+      }
+    }
+  },
+  "cheap_proof": {
+    "complete_owner_suite": {
+      "run": 156,
+      "passed": 155,
+      "skipped": 1,
+      "failed": 0,
+      "log_sha256": "d53283326cecb9d57c9c0e7b51909c1fb0efe1f0f2d8f34c4cf7f4613d933787"
+    },
+    "focused_fixture_controls": 17,
+    "focused_nested_controls": 35,
+    "semantic_mutants": [
+      {
+        "mutant": "drop-fixture-revalidation",
+        "rejected_by_assertion": true,
+        "exit_code": 1
+      },
+      {
+        "mutant": "accept-wrong-diagnostic",
+        "rejected_by_assertion": true,
+        "exit_code": 1
+      },
+      {
+        "mutant": "accept-zero-exit",
+        "rejected_by_assertion": true,
+        "exit_code": 1
+      },
+      {
+        "mutant": "omit-failed-terminal",
+        "rejected_by_assertion": true,
+        "exit_code": 1
+      },
+      {
+        "mutant": "omit-access-span",
+        "rejected_by_assertion": true,
+        "exit_code": 1
+      }
+    ],
+    "mutation_instrumentation_errors": 0
+  },
+  "source_patch": {
+    "base": "a1ac60e7a972422d30f13968fe9f883b654cdf8a",
+    "head": "a33a353a91fdf52c4dc6dada8e4248fb9a08fe7e",
+    "sha256": "e7c77911ad58ff88661920cb8288a395e52802fbcac3bfed4b0203eabc432002"
+  },
+  "measurement_limits": [
+    "2s best-effort volume/cgroup aggregate sampling, not compiler RSS or hard quotas",
+    "Warm retained cache already charged to initial free; observed growth includes live-owner artifact copy and may include other volume activity",
+    "Each scoped growth forecast had basis_verified=false before launch; no cold/aggregate forecast qualification or controlled before/after speedup",
+    "Owning inner Clippy output is captured by the Rust test; raw direct diagnostic and enforced adapter oracle are separate evidence",
+    "Gate receipts report Rust unknown; actual pinned native1.95.0 tool identities are in bound owner snapshots"
+  ],
+  "prior_two_resolver_proof": {
+    "tested_source": "b2f4ea124fa0c5aa3e436d164f634a23b2fe861e",
+    "runtime_denominator": 2,
+    "evidence": "qualification-evidence.json",
+    "results": "qualification-results.md",
+    "relation": "Separate earlier exact source and two named runtime passes; neither denominator is combined with this fixture."
+  },
+  "remaining_not_proven": [
+    "Canonical nine-package preparation/runtime and fresh genuine planner scope",
+    "Other compiler fixtures and arbitrary loader variants",
+    "Native Windows/macOS",
+    "Cold aggregate storage/RAM sizing",
+    "Execution of repaired all-tier preparation control",
+    "Hosted activation and CI qualification",
+    "Later composition with current main and separately reconciled owner changes"
+  ],
+  "later_composition_main": "2f33ac783b5bb0da7c8bc12644bc47d565c21c7c"
+}
