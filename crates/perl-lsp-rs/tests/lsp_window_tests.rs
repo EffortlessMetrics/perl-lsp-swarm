@@ -62,63 +62,63 @@ fn lsp_frame(body: &[u8]) -> Vec<u8> {
 }
 
 #[test]
-fn output_capture_parses_two_coalesced_frames() {
+fn output_capture_parses_two_coalesced_frames() -> Result<(), Box<dyn std::error::Error>> {
     let output = OutputCapture::new();
     let mut writer = output.clone();
-    writer
-        .write_all(
-            &[
-                lsp_frame(br#"{"id":1,"result":"first"}"#),
-                lsp_frame(br#"{"id":2,"result":"second"}"#),
-            ]
+    writer.write_all(
+        &[lsp_frame(br#"{"id":1,"result":"first"}"#), lsp_frame(br#"{"id":2,"result":"second"}"#)]
             .concat(),
-        )
-        .expect("capture accepts coalesced frames");
+    )?;
 
     assert_eq!(
         output.get_messages(),
         vec![json!({"id": 1, "result": "first"}), json!({"id": 2, "result": "second"}),]
     );
+    Ok(())
 }
 
 #[test]
-fn output_capture_waits_for_split_frame() {
+fn output_capture_waits_for_split_frame() -> Result<(), Box<dyn std::error::Error>> {
     let output = OutputCapture::new();
     let frame = lsp_frame(br#"{"id":3,"result":"split"}"#);
     let split = frame.len() / 2;
     let mut writer = output.clone();
-    writer.write_all(&frame[..split]).expect("capture accepts frame prefix");
+    writer.write_all(&frame[..split])?;
     assert!(output.get_messages().is_empty(), "truncated frame must not parse");
 
-    writer.write_all(&frame[split..]).expect("capture accepts frame suffix");
+    writer.write_all(&frame[split..])?;
     assert_eq!(output.get_messages(), vec![json!({"id": 3, "result": "split"})]);
+    Ok(())
 }
 
 #[test]
-fn output_capture_preserves_crlf_in_frame_body() {
+fn output_capture_preserves_crlf_in_frame_body() -> Result<(), Box<dyn std::error::Error>> {
     let output = OutputCapture::new();
     let mut writer = output.clone();
     let body = b"{\r\n\"id\":4,\r\n\"result\":\"body\"\r\n}\r\n\r\n";
-    writer.write_all(&lsp_frame(body)).expect("capture accepts CRLF body");
+    writer.write_all(&lsp_frame(body))?;
 
     assert_eq!(output.get_messages(), vec![json!({"id": 4, "result": "body"})]);
+    Ok(())
 }
 
 #[test]
-fn output_capture_rejects_malformed_and_truncated_lengths() {
+fn output_capture_rejects_malformed_and_truncated_lengths() -> Result<(), Box<dyn std::error::Error>>
+{
     let output = OutputCapture::new();
     let mut writer = output.clone();
-    writer.write_all(b"Content-Length: nope\r\n\r\n{}").expect("capture accepts malformed frame");
+    writer.write_all(b"Content-Length: nope\r\n\r\n{}")?;
     assert!(output.get_messages().is_empty(), "malformed length must not parse");
 
     output.clear();
     let body = br#"{"id":5,"result":"truncated"}"#;
     let frame = lsp_frame(body);
-    writer.write_all(&frame[..frame.len() - 1]).expect("capture accepts truncated frame");
+    writer.write_all(&frame[..frame.len() - 1])?;
     assert!(output.get_messages().is_empty(), "truncated body must not parse");
 
-    writer.write_all(&frame[frame.len() - 1..]).expect("capture accepts final byte");
+    writer.write_all(&frame[frame.len() - 1..])?;
     assert_eq!(output.get_messages(), vec![json!({"id": 5, "result": "truncated"})]);
+    Ok(())
 }
 
 fn wait_for_messages(output: &OutputCapture, minimum_count: usize) -> Vec<Value> {

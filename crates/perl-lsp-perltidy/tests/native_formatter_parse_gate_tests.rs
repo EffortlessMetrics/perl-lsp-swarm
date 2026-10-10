@@ -377,3 +377,20 @@ fn range_format_clean_lines_succeeds_when_qw_is_elsewhere_in_document() {
         result.diagnostics,
     );
 }
+
+#[test]
+fn native_formatter_keeps_budget_exhaustion_as_incomplete_proof() {
+    let formatter = NativeFormatter::new();
+    let source = format!("my $x = {}1{};\n", "(".repeat(1024), ")".repeat(1024));
+    let mut parser = perl_parser_core::Parser::new(&source);
+    let parsed = parser.parse_with_recovery();
+    assert!(parsed.stop_cause().is_some_and(|cause| cause.is_budget_exhaustion()));
+
+    let result = formatter.format_document(&source, &FormatConfig::default());
+
+    assert!(!result.changed);
+    assert_eq!(result.formatted, source);
+    assert!(result.edits.is_empty());
+    assert_eq!(result.diagnostics.len(), 1);
+    assert_eq!(result.diagnostics[0].code, "native.format.parse_incomplete");
+}

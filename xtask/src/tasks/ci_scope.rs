@@ -533,6 +533,11 @@ fn is_xtask_policy_guarded_input(file: &str) -> bool {
         // Publishable-crate manifests: binstall metadata, publish metadata, and
         // version-sync are all xtask-owned assertions over these files.
         || (file.starts_with("crates/") && file.ends_with("/Cargo.toml"))
+        // The lane-termination classifier is asserted by xtask's E1
+        // correctness harness and P3 scale bench (#17154): both execute the
+        // script and pin its counters. Without this routing, a script-only
+        // PR would skip the guards written to catch it (#17345 review).
+        || file == "scripts/ci/classify-ripr-lane-termination"
 }
 
 /// Extract unique crate names from cargo metadata JSON for crate dirs in the changed files.
@@ -1361,6 +1366,22 @@ mod tests {
         assert!(
             crates.contains("xtask"),
             "changing the packaging step must route to the guard that asserts on it"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn classifier_script_change_selects_xtask() -> Result<()> {
+        // #17345 review: E1's correctness harness and the P3 scale bench
+        // execute `scripts/ci/classify-ripr-lane-termination` and pin its
+        // counters. A script-only PR must route xtask into scope or a
+        // classifier regression sails through every required check green.
+        let files = vec!["scripts/ci/classify-ripr-lane-termination".to_string()];
+        let metadata = fake_metadata(&[("xtask", "xtask")]);
+        let crates = crates_from_files(&files, &metadata, "/workspace")?;
+        assert!(
+            crates.contains("xtask"),
+            "changing the classifier script must route to the E1/P3 guards that assert on it"
         );
         Ok(())
     }

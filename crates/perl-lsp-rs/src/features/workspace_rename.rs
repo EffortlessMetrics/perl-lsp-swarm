@@ -2,9 +2,10 @@
 //!
 //! Provides cross-file renaming functionality using the workspace index.
 
+use perl_parser::ast::{Node, NodeKind};
 use perl_workspace::workspace_index::{SymKind, SymbolKey, WorkspaceIndex};
 use serde_json::{Value, json};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::fmt;
 
 /// Represents a text edit for a single document
@@ -110,6 +111,20 @@ pub fn build_rename_edit(
         }
     }
 
+    // #9814: arrow method-call sites recorded under the bare method name are
+    // invisible to `find_refs` unless the receiver is the conventional
+    // `$self`/`$this`. A receiver whose class the call-site AST establishes
+    // (`my $obj = Greeter->new(...)` — the same constructor-assignment fact
+    // class hover reports as the variable's type) is not dynamic, so its call
+    // site joins the edit set. Receivers that stay unresolvable keep the
+    // fail-closed exclusion encoded by
+    // `rename_arrow_method_call_with_unrelated_receiver_is_not_rewritten`.
+    let mut known: HashSet<(String, u32, u32, u32, u32)> =
+        locs.iter().map(location_dedup_key).collect();
+    let (attributed_sites, receiver_attributed) =
+        receiver_attributed_arrow_sites(idx, key, &mut known);
+    locs.extend(attributed_sites);
+
     // 2) Also include the definition itself
     locs.push(def);
 
@@ -130,10 +145,15 @@ pub fn build_rename_edit(
 
         // Guard: unqualified bare call to this sub from a different package is
         // ambiguous — the workspace can't tell if it's intentionally calling our
-        // sub or a same-package sub with the same name.
-        if is_ambiguous_sub_reference(
-            idx, key, &loc.uri, start_line, start_char, end_line, end_char,
-        ) {
+        // sub or a same-package sub with the same name. A receiver-attributed
+        // arrow site (#9814) is exempt: its receiver was resolved to this
+        // package's dispatch chain, which is strictly stronger evidence than
+        // the caller-package heuristic below.
+        if !receiver_attributed.contains(&location_dedup_key(&loc))
+            && is_ambiguous_sub_reference(
+                idx, key, &loc.uri, start_line, start_char, end_line, end_char,
+            )
+        {
             return Err(RenameRefusal::AmbiguousIdentity(format!(
                 "unqualified `{}` reference outside package `{}`",
                 key.name, key.pkg
@@ -257,6 +277,229 @@ fn is_ambiguous_sub_reference(
     }
 
     package_at_line != key.pkg.as_ref()
+}
+
+/// Deduplication key for a reference location (mirrors `find_refs`).
+fn location_dedup_key(
+    loc: &perl_workspace::workspace_index::Location,
+) -> (String, u32, u32, u32, u32) {
+    (
+        loc.uri.clone(),
+        loc.range.start.line,
+        loc.range.start.column,
+        loc.range.end.line,
+        loc.range.end.column,
+    )
+}
+
+/// Per-call-site-document memoized ASTs (#9814).
+///
+/// A rename can touch several call-site documents; each is parsed at most once
+/// per [`build_rename_edit`] invocation. `None` records a document whose parse
+/// produced no AST — every variable receiver in it stays unresolvable (fail
+/// closed).
+type CallSiteAsts = BTreeMap<String, Option<Node>>;
+
+/// Resolved class of a variable receiver (`$obj` → `Some("Greeter")`).
+///
+/// Scans the call-site AST — never the raw text, so comments and strings
+/// cannot fabricate an attribution — for the nearest preceding
+/// `my $obj = Greeter->new(...)` / `$obj = Greeter->new(...)` binding that
+/// completes at or before the arrow call site. This is the same syntactic fact
+/// class the type-inference engine records as `ConstructorCall` evidence, but
+/// resolved at call-site granularity: the engine's environments are scoped per
+/// subroutine and dropped after inference, so a receiver declared inside a sub
+/// resolves to nothing from its global environment.
+///
+/// Known bound: scoping approximates Perl lexical visibility by source order,
+/// so a receiver whose only same-named binding is a `my` variable inside a
+/// *different, earlier* subroutine would attribute to that binding. The
+/// alternative (the engine's file-global last-write-wins environment) is
+/// strictly coarser; an unresolvable receiver is never rewritten.
+fn variable_receiver_package(
+    asts: &mut CallSiteAsts,
+    idx: &WorkspaceIndex,
+    uri: &str,
+    receiver_bare: &str,
+    call_offset: usize,
+) -> Option<String> {
+    if !asts.contains_key(uri) {
+        let parsed = idx
+            .document_store()
+            .get(uri)
+            .and_then(|doc| crate::Parser::new(doc.text()).parse().ok());
+        asts.insert(uri.to_string(), parsed);
+    }
+
+    let ast = asts.get(uri)?.as_ref()?;
+    constructor_assigned_class(ast, receiver_bare, call_offset)
+}
+
+/// The class the nearest preceding constructor assignment binds to
+/// `receiver_bare` before `call_offset`, if any.
+fn constructor_assigned_class(
+    ast: &Node,
+    receiver_bare: &str,
+    call_offset: usize,
+) -> Option<String> {
+    let mut class: Option<String> = None;
+    constructor_assignment_walk(ast, receiver_bare, call_offset, &mut class);
+    class
+}
+
+/// Pre-order DFS collecting constructor-assignment bindings of the receiver
+/// that complete at or before `call_offset`; the last one visited (source
+/// order) wins.
+fn constructor_assignment_walk(
+    node: &Node,
+    receiver_bare: &str,
+    call_offset: usize,
+    class: &mut Option<String>,
+) {
+    // Anything starting at or after the call site cannot be its binding.
+    if node.location.start >= call_offset {
+        return;
+    }
+
+    match &node.kind {
+        NodeKind::VariableDeclaration { variable, initializer: Some(init), .. }
+            if is_scalar_variable_named(variable, receiver_bare)
+                && init.location.end <= call_offset =>
+        {
+            if let Some(pkg) = constructor_call_class(init) {
+                *class = Some(pkg);
+            }
+        }
+        NodeKind::Assignment { lhs, rhs, op }
+            if op == "="
+                && is_scalar_variable_named(lhs, receiver_bare)
+                && rhs.location.end <= call_offset =>
+        {
+            if let Some(pkg) = constructor_call_class(rhs) {
+                *class = Some(pkg);
+            }
+        }
+        _ => {}
+    }
+
+    for child in node.children() {
+        constructor_assignment_walk(child, receiver_bare, call_offset, class);
+    }
+}
+
+/// True for a scalar `$name` node whose bare name matches `receiver_bare`.
+fn is_scalar_variable_named(node: &Node, receiver_bare: &str) -> bool {
+    matches!(&node.kind, NodeKind::Variable { sigil, name } if sigil == "$" && name == receiver_bare)
+}
+
+/// The class named by a direct constructor expression (`Greeter->new(...)`).
+///
+/// Only the `ClassName->new` shape is attributed; anything else (`$x->new`,
+/// chained calls, indirect constructors) stays unattributed so it fails
+/// closed.
+fn constructor_call_class(node: &Node) -> Option<String> {
+    match &node.kind {
+        NodeKind::MethodCall { object, method, .. }
+            if method == "new"
+                && let NodeKind::Identifier { name } = &object.kind =>
+        {
+            Some(name.clone())
+        }
+        _ => None,
+    }
+}
+
+/// Collect arrow method-call sites whose receiver is statically attributed to
+/// `key`'s dispatch chain (#9814).
+///
+/// Returns the sites to append to the edit set plus their dedup keys: the
+/// grouping loop must exempt them from the caller-package ambiguity refusal,
+/// because the receiver resolution is strictly stronger evidence than the
+/// caller-package heuristic. Receivers that stay unresolvable are skipped
+/// here — they keep the fail-closed exclusion and are neither rewritten nor
+/// refused.
+///
+/// Attribution rules, in order:
+/// - `$self`/`$this` receivers are already carried by `find_refs`
+///   (`bare_reference_matches_package`); only the rest reach this function.
+/// - A variable receiver resolves through the nearest preceding constructor
+///   assignment in the call-site AST (`my $obj = Greeter->new`); it dispatches
+///   to `key` when the resolved class equals `key.pkg` or explicitly inherits
+///   it in the call-site document.
+/// - An uppercase-initial receiver (`Child->method`) names its class directly.
+/// - Chained dynamic receivers (`$app->dispatcher->handle`) name an
+///   intermediate object no static fact covers; attributing them from the
+///   first segment alone would over-claim, so they fail closed.
+fn receiver_attributed_arrow_sites(
+    idx: &WorkspaceIndex,
+    key: &SymbolKey,
+    known: &mut HashSet<(String, u32, u32, u32, u32)>,
+) -> (Vec<perl_workspace::workspace_index::Location>, HashSet<(String, u32, u32, u32, u32)>) {
+    let mut sites = Vec::new();
+    let mut attributed: HashSet<(String, u32, u32, u32, u32)> = HashSet::new();
+    let mut asts: CallSiteAsts = BTreeMap::new();
+
+    for loc in idx.find_method_call_refs(key) {
+        let loc_key = location_dedup_key(&loc);
+        if !known.insert(loc_key.clone()) {
+            // Already part of the reference set (a `$self` dispatch, or a
+            // static `Pkg->method` site recorded under both names).
+            continue;
+        }
+
+        let Some(doc) = idx.document_store().get(&loc.uri) else {
+            continue;
+        };
+        let (Some(start_off), Some(end_off)) = (
+            doc.line_index.position_to_offset(loc.range.start.line, loc.range.start.column),
+            doc.line_index.position_to_offset(loc.range.end.line, loc.range.end.column),
+        ) else {
+            continue;
+        };
+        let Some(expression) = doc.text().get(start_off..end_off) else {
+            continue;
+        };
+
+        if expression.matches("->").count() != 1 {
+            continue;
+        }
+        let Some((receiver, _)) = expression.split_once("->") else {
+            continue;
+        };
+        let receiver = receiver.trim();
+
+        let receiver_package = if receiver.len() > 1 && receiver.starts_with('$') {
+            let bare = receiver.trim_start_matches('$');
+            let is_plain_identifier =
+                !bare.is_empty() && bare.chars().all(|ch| ch.is_alphanumeric() || ch == '_');
+            if !is_plain_identifier {
+                continue;
+            }
+            variable_receiver_package(&mut asts, idx, &loc.uri, bare, start_off)
+        } else if receiver.starts_with(|ch: char| ch.is_ascii_uppercase())
+            && receiver.chars().all(|ch| is_ident_char(ch) || ch == ':')
+        {
+            Some(receiver.to_string())
+        } else {
+            None
+        };
+
+        let Some(receiver_package) = receiver_package else {
+            continue;
+        };
+
+        let dispatches_to_target = receiver_package == key.pkg.as_ref()
+            || package_explicitly_inherits(doc.text(), &receiver_package, key.pkg.as_ref());
+        if !dispatches_to_target {
+            // Same-named method on a different class: not this symbol's site.
+            continue;
+        }
+
+        attributed.insert(loc_key);
+        sites.push(loc);
+    }
+
+    (sites, attributed)
 }
 
 fn package_name_for_line(text: &str, target_line: u32) -> &str {
@@ -852,6 +1095,89 @@ $var;
             child_edit.is_some(),
             "rename must produce edits for Child.pm inherited call site. Got URIs: {:?}",
             edits.iter().map(|e| &e.uri).collect::<Vec<_>>()
+        );
+
+        Ok(())
+    }
+
+    /// A receiver whose class is established by `my $obj = Pkg->new(...)` is not
+    /// dynamic (#9814): the workspace index records the arrow site under the bare
+    /// method name with no package attribution, and `find_refs` retains only the
+    /// conventional `$self`/`$this` receivers, so the site used to be silently
+    /// omitted — a successful WorkspaceEdit that left the caller calling a method
+    /// that no longer exists. Rename must include the attributed call site.
+    #[test]
+    fn rename_arrow_call_on_constructed_receiver_is_included()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let idx = WorkspaceIndex::new();
+
+        let greeter =
+            "package Greeter;\nsub new { return bless {}, shift }\nsub greet { return 'hi' }\n1;\n";
+        let caller = "package Caller;\nuse Greeter;\nsub run {\n    my $obj = Greeter->new();\n    my $qualified = Greeter::greet($obj);\n    return $obj->greet();\n}\n1;\n";
+
+        index_text(&idx, "file:///Greeter.pm", greeter)?;
+        index_text(&idx, "file:///Caller.pm", caller)?;
+
+        let key = SymbolKey {
+            pkg: Arc::from("Greeter"),
+            name: Arc::from("greet"),
+            sigil: None,
+            kind: SymKind::Sub,
+        };
+
+        let edits = build_rename_edit(&idx, &key, "salute")?;
+        let caller_edit = edits.iter().find(|e| e.uri.contains("Caller.pm"));
+        let Some(caller_edit) = caller_edit else {
+            return Err(format!(
+                "rename returned Ok but omitted the `$obj->greet()` call site in Caller.pm, \
+                 leaving a stale call. Got URIs: {:?}",
+                edits.iter().map(|e| &e.uri).collect::<Vec<_>>()
+            )
+            .into());
+        };
+
+        // Both the qualified call and the arrow call must be renamed.
+        assert_eq!(caller_edit.edits.len(), 2, "qualified + arrow call edits: {caller_edit:?}");
+        assert!(
+            caller_edit.edits.iter().all(|e| e.new_text == "salute"),
+            "every call-site edit renames the method: {caller_edit:?}"
+        );
+
+        Ok(())
+    }
+
+    /// A receiver typed as a different class (`my $logger = Logger->new`) names
+    /// that class's same-named method, not this symbol (#9814). Receiver
+    /// attribution must not sweep foreign-typed sites into the edit set, and the
+    /// site belongs to another method, so the rename still succeeds.
+    #[test]
+    fn rename_arrow_call_on_foreign_typed_receiver_is_not_swept_in()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let idx = WorkspaceIndex::new();
+
+        let greeter = "package Greeter;\nsub greet { return 'hi' }\n1;\n";
+        let logger = "package Logger;\nsub greet { return 'log' }\n1;\n";
+        let caller = "package Caller;\nuse Logger;\nsub run {\n    my $logger = Logger->new();\n    return $logger->greet();\n}\n1;\n";
+
+        index_text(&idx, "file:///Greeter.pm", greeter)?;
+        index_text(&idx, "file:///Logger.pm", logger)?;
+        index_text(&idx, "file:///Caller.pm", caller)?;
+
+        let key = SymbolKey {
+            pkg: Arc::from("Greeter"),
+            name: Arc::from("greet"),
+            sigil: None,
+            kind: SymKind::Sub,
+        };
+
+        let edits = build_rename_edit(&idx, &key, "salute")?;
+        assert!(
+            edits.iter().all(|e| !e.uri.contains("Caller.pm")),
+            "foreign-typed receiver's same-named method must not be renamed; got {edits:?}"
+        );
+        assert!(
+            edits.iter().all(|e| !e.uri.contains("Logger.pm")),
+            "Logger's own `greet` must not be renamed when renaming `Greeter::greet`; got {edits:?}"
         );
 
         Ok(())

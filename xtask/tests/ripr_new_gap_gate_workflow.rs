@@ -763,6 +763,9 @@ ci-disk-guard() {
         .env("TMPDIR", scratch.join("tmp"))
         .env("CARGO_TARGET_DIR", scratch.join("target"))
         .env("CARGO_HOME", cache.join("cargo-home"))
+        // The real preflight run block ends with `mkdir -p ... "$RIPR_CACHE_DIR"`
+        // under `set -u` (ripr.yml), so the sandbox must provide it (#17182).
+        .env("RIPR_CACHE_DIR", cache.join("ripr"))
         .env("GITHUB_OUTPUT", &output_file)
         .env("GITHUB_STEP_SUMMARY", &summary)
         .stdin(Stdio::piped())
@@ -1254,6 +1257,7 @@ gh() {
   local expected_artifact_zip_url="repos/${FAKE_REPOSITORY}/actions/artifacts/${FAKE_ARTIFACT_ID}/zip"
   local expected_run_url="repos/${FAKE_REPOSITORY}/actions/runs/${FAKE_RUN_ID}"
   local expected_jobs_url="repos/${FAKE_REPOSITORY}/actions/runs/${FAKE_RUN_ID}/attempts/${RUN_ATTEMPT}/jobs?per_page=100"
+  local expected_source_ref_url="repos/${FAKE_REPOSITORY}/git/ref/heads%2Ffixture"
   local expected_rerun_url="repos/${FAKE_REPOSITORY}/actions/runs/${FAKE_RUN_ID}/rerun-failed-jobs"
   printf '%s %s\n' "$method" "$url" >> "$FAKE_API_CALLS"
   if [ "$url" = "$expected_artifacts_url" ]; then
@@ -1283,6 +1287,10 @@ gh() {
       [ "$method" = "GET" ] || return 1
       printf '{"jobs":[{"id":97001,"name":"ripr+ on GitHub Hosted"}]}\n' > "$FAKE_LIVE_RESPONSE"
       jq -r "$jq_selector" "$FAKE_LIVE_RESPONSE"
+  elif [ "$url" = "$expected_source_ref_url" ]; then
+      [ "$method" = "GET" ] || return 1
+      printf '{"object":{"sha":"%s"}}\n' "$HEAD_SHA" > "$FAKE_LIVE_RESPONSE"
+      jq -r "$jq_selector" "$FAKE_LIVE_RESPONSE"
   elif [ "$url" = "$expected_rerun_url" ]; then
       [ "$method" = "POST" ] || return 1
       : > "$FAKE_POST_CALLED"
@@ -1303,6 +1311,9 @@ gh() {
         .env("RUN_ID", "4242")
         .env("RUN_ATTEMPT", run_attempt)
         .env("HEAD_SHA", "0123456789abcdef0123456789abcdef01234567")
+        .env("SOURCE_EVENT", "pull_request")
+        .env("SOURCE_REPOSITORY", "EffortlessMetrics/perl-lsp-swarm")
+        .env("SOURCE_BRANCH", "fixture")
         .env("FAKE_ARTIFACT_MODE", artifact_mode)
         .env("FAKE_ARTIFACTS_JSON", artifact_response_with_id(artifact_mode, artifact_id))
         .env("FAKE_ARTIFACT_RESPONSE", &artifact_response_file)

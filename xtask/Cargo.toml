@@ -88,6 +88,7 @@ perl-tdd-support = { workspace = true }
 # #1269 parallel-unsafe test ratchet requires it to be serialized rather than
 # adjudicated into ci/serial_test_identities.json.
 serial_test = "4.0.1"
+strum = { workspace = true }
 
 [features]
 # Legacy Pest-based (v2) tasks -- v2-parity corpus, v2-only diagnostics.

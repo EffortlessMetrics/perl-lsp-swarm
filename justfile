@@ -8,6 +8,10 @@ cargo_safe := "./scripts/cargo-safe"
 default:
     @just --list
 
+# Optional explicit-date upstream cadence capture; no install or policy promotion (#15304).
+cargo-allow-cadence executable sha256 as_of root output_dir:
+    python3 scripts/cargo_allow_cadence.py --executable {{quote(executable)}} --expected-sha256 {{quote(sha256)}} --as-of {{quote(as_of)}} --root {{quote(root)}} --output-dir {{quote(output_dir)}}
+
 
 # Initialize bounded build/cache directories.
 devplane-init:
@@ -22,7 +26,8 @@ target-gc *args:
     ./scripts/target-gc.sh {{args}}
 
 agent-preflight: storage-doctor
-    @echo "agent preflight ok"
+    @echo "storage layout preflight ok; Cargo build capacity was not assessed"
+    @echo "For build admission: scripts/cargo-admitted --preflight <exact Cargo command>"
 
 # Agent-safe check: routed target/build dirs, incremental off, bounded sccache, build lock.
 agent-check:
@@ -1905,6 +1910,12 @@ bench-ripr-quality:
     @echo "📊 Running RIPR quality benches (E2/E3/D2/D3/A2)..."
     ./scripts/cargo-admitted test -p perl-ripr-facts --test boundary_recall --test limitation_honesty --test fingerprint_sensitivity --test order_invariance --test guidance_actionability --locked
 
+# RIPR E1 gap precision/recall bench (#17154): new-gap gate FP/FN over the
+# fixtures/ripr-gate matrix plus lane-termination classifier mapping.
+bench-ripr-e1:
+    @echo "📊 Running RIPR E1 gap precision/recall bench..."
+    ./scripts/cargo-admitted test -p xtask --test ripr_e1_gap_precision_recall --locked
+
 # Format benchmark results as receipt
 bench-receipt:
     @echo "📋 Generating benchmark receipt..."
@@ -1940,6 +1951,13 @@ bench-alert-test:
     @echo "🧪 Running benchmark alert regression tests..."
     @cargo xtask bench-alert-test
 
+# Run benchmark runner harness tests (#17218 failure surfacing, #17219 parsing)
+bench-runner-test:
+    @echo "🧪 Running benchmark runner harness tests..."
+    @bash -n benchmarks/scripts/run-benchmarks.sh
+    bash benchmarks/scripts/test_run_benchmarks_parse.sh
+    bash benchmarks/scripts/test_run_benchmarks_failure.sh
+
 
 # Run all performance benchmarks and save baseline for 0.12.0
 perf-baseline:
@@ -1948,7 +1966,7 @@ perf-baseline:
     cargo bench -p perl-lexer --bench lexer_benchmarks --locked
     cargo bench -p perl-lsp-completion --bench completion_benchmark --locked
     cargo bench -p perl-lsp-navigation --bench navigation_benchmark --locked
-    cargo bench -p perl-workspace --bench workspace_index_benchmark --locked
+    cargo bench -p perl-workspace --features workspace --bench workspace_index_benchmark --locked
     cargo bench -p perl-lsp-rs --bench rope_performance_benchmark --locked
     cargo bench -p perl-lsp-tooling --bench cache_benchmark --locked
     @echo "Baseline complete. See docs/project/PERFORMANCE_BASELINES.md"

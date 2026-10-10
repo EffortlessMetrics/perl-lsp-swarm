@@ -1,0 +1,1 @@
+{"framework": "Test::More", "runner_hints": ["prove"], "expected_oracles": [{"call": "is", "kind": "exact_return_assertion", "strength": "strong_exact"}, {"call": "isnt", "kind": "exact_return_assertion", "strength": "strong_exact"}, {"call": "is_deeply", "kind": "exact_return_assertion", "strength": "strong_exact"}]}

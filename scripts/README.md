@@ -23,7 +23,8 @@ Run these locally during normal contribution work.
 |--------|---------|
 | `cleanup-worktrees.sh` | Remove stale git worktrees |
 | `cleanup-completed-worktrees.sh` | Remove worktrees whose branches are merged (`--dry-run` is strictly read-only) |
-| `worktree-manager.py` | Python interface to create and track named worktrees |
+| `worktree-manager.py` | Python interface to create and track named worktrees (provisions git hooks on allocate, #17406) |
+| `worktree-add.sh` | Provisioned `git worktree add` wrapper (installs + verifies git hooks, #17406) |
 | `validate-workspace-exclusions.sh` | Ensure excluded paths aren't accidentally included |
 | `gen-xlarge-workspace.sh` | Generate a large synthetic workspace for scale testing |
 

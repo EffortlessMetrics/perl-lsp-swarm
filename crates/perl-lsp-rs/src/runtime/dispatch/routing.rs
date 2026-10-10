@@ -88,8 +88,13 @@ impl LspServer {
             // text-sync session contract (`initialization_accepted`): a consumed
             // one-shot guard without acceptance — the failed-acceptance window —
             // must fail closed here with ServerNotInitialized instead of serving
-            // (review 5061915323). shutdown/exit stay reachable per LSP spec.
-            _ if !self.initialization_accepted() && method != "shutdown" && method != "exit" => {
+            // (review 5061915323). `shutdown` is a request like any other and is
+            // rejected here too (#17346): admitting it pre-initialize latched the
+            // shutdown state on a never-initialized session, permanently wedging
+            // it behind -32600 "Server has been shutdown" for every later request
+            // including a valid `initialize`. Only `exit` — the notification that
+            // must stay reachable to terminate the process — bypasses this gate.
+            _ if !self.initialization_accepted() && method != "exit" => {
                 Err(JsonRpcError {
                     code: -32002, // ServerNotInitialized per LSP spec
                     message: "Server not initialized".to_string(),
@@ -681,10 +686,20 @@ mod tests {
 
     /// ripr seam `238e98ead57e2ab1`: `method != "shutdown"` is required for the
     /// post-shutdown reject — `shutdown` itself must still reach the handler.
+    /// #17346: since pre-initialize `shutdown` is now rejected with -32002,
+    /// a latched shutdown state is only reachable on an accepted session, so
+    /// the setup accepts the text-sync contract before latching.
     #[test]
     fn ripr_seam_proof_route_request_shutdown_bypasses_post_shutdown_gate()
     -> Result<(), Box<dyn std::error::Error>> {
         let server = LspServer::new();
+        server
+            .handle_initialize_dispatch(Some(json!({ "capabilities": {} })))
+            .map_err(|e| format!("initialize must be accepted: {e:?}"))?;
+        assert!(
+            server.initialization_accepted(),
+            "setup must reach the accepted-session state a real shutdown requires"
+        );
         server.shutdown_received.store(true, Ordering::Release);
 
         let routed = server.route_request(
@@ -715,9 +730,13 @@ mod tests {
         Ok(())
     }
 
-    /// ripr seam `fe813eac7a1c99cf`: `!initialization_accepted && method != "shutdown"`.
+    /// ripr seam `fe813eac7a1c99cf`, superseded by #17346: the pre-initialize
+    /// -32002 arm is `!initialization_accepted && method != "exit"`. The
+    /// original seam exempted `shutdown`, which let a pre-initialize shutdown
+    /// latch the shutdown state on a never-initialized session and wedge it
+    /// permanently behind -32600 "Server has been shutdown".
     #[test]
-    fn ripr_seam_proof_route_request_before_initialize_rejects_non_shutdown()
+    fn ripr_seam_proof_route_request_before_initialize_rejects_non_initialize_family()
     -> Result<(), Box<dyn std::error::Error>> {
         let server = LspServer::new();
         assert!(
@@ -742,6 +761,8 @@ mod tests {
             result.err().ok_or("pre-initialize non-shutdown must be ServerNotInitialized")?;
         assert_eq!(error.code, -32002, "exact ServerNotInitialized (-32002)");
 
+        // #17346: `shutdown` is a request; before `initialize` it must be
+        // rejected with -32002 and must not latch the shutdown state.
         let shutdown = server.route_request(
             JsonRpcRequest {
                 _jsonrpc: "2.0".to_string(),
@@ -753,12 +774,36 @@ mod tests {
             true,
         );
         let RoutedResponse::Handler { result, .. } = shutdown else {
-            return Err("pre-initialize shutdown must reach the lifecycle handler".into());
+            return Err("pre-initialize shutdown must return a Handler response".into());
         };
-        assert_eq!(
-            result.map_err(|e| format!("first shutdown must succeed: {e:?}"))?,
-            Some(json!(null)),
-            "method == \"shutdown\" must bypass the pre-initialize reject"
+        let error = result.err().ok_or(
+            "pre-initialize shutdown must be ServerNotInitialized, not an accepted shutdown",
+        )?;
+        assert_eq!(error.code, -32002, "pre-initialize shutdown is ServerNotInitialized");
+        assert!(
+            !server.shutdown_received.load(Ordering::Acquire),
+            "a rejected pre-initialize shutdown must not latch the shutdown state"
+        );
+
+        // The session is recoverable: a later valid initialize is accepted.
+        let initialize = server.route_request(
+            JsonRpcRequest {
+                _jsonrpc: "2.0".to_string(),
+                id: Some(JsonRpcId::Integer(77085)),
+                method: "initialize".to_string(),
+                params: Some(json!({ "capabilities": {} })),
+            },
+            Some(json!(77085)),
+            true,
+        );
+        let RoutedResponse::Handler { result, .. } = initialize else {
+            return Err(
+                "initialize after rejected pre-init shutdown must return a Handler response".into(),
+            );
+        };
+        assert!(
+            result.is_ok(),
+            "initialize after a rejected pre-initialize shutdown must be accepted (session not wedged): {result:?}"
         );
         Ok(())
     }
