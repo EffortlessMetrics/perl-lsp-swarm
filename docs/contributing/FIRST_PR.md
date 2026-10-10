@@ -71,6 +71,13 @@ Install the pre-push hook when you want the fast gate before every push:
 bash scripts/install-githooks.sh
 ```
 
+The installer and `bash scripts/check-githooks.sh` use the existing
+`perl-ci-hygiene` binary through `scripts/cargo-admitted`, keeping both build
+directories private to the worktree and refusing missing toolchains or storage
+admission. Checking does not install or refresh hooks. The familiar
+`cargo xtask ci-hygiene install-githooks` / `check-githooks` aliases delegate to
+the same bootstrap, but compiling xtask still has product dependencies.
+
 ## 3. Choose one issue and one claim
 
 Start from an existing issue when one owns the work. Keep one pull request centered on:

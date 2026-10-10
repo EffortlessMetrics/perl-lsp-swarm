@@ -9,6 +9,7 @@ Run these locally during normal contribution work.
 | Script | Purpose |
 |--------|---------|
 | `install-githooks.sh` | Install the pre-push hook (run once after cloning) |
+| `check-githooks.sh` | Read-only installed hook currentness check through the lightweight hygiene package |
 | `check-rust-toolchain.sh` | Legacy wrapper to `cargo xtask check-toolchain` (MSRV compatibility check) |
 | `devex-doctor.sh` | Environment diagnostics (tool availability, paths) |
 | `devex-targeted-checks.sh` | Targeted subset of diagnostics for a specific area |

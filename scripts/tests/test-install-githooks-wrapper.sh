@@ -93,13 +93,30 @@ TMPDIR_BASE="$(mktemp -d)"
 FAKE_BIN="${TMPDIR_BASE}/bin"
 FAKE_LOG="${TMPDIR_BASE}/cargo-args.txt"
 write_fake_cargo "$FAKE_BIN" "$FAKE_LOG"
+# Exercise the real first-mile wrappers; stub only the admission/build boundary.
+# The production admission guard has its own focused suite. No fake free-space
+# observation is passed into the actual wrapper on this host.
+FIXTURE_ROOT="${TMPDIR_BASE}/repo with spaces"
+mkdir -p "$FIXTURE_ROOT/scripts"
+cp "$REPO_ROOT/scripts/"{install-githooks.sh,check-githooks.sh,githooks-bootstrap.sh} "$FIXTURE_ROOT/scripts/"
+cat > "$FIXTURE_ROOT/scripts/cargo-admitted" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$PWD" > "$FAKE_CWD_LOG"
+exec cargo "$@"
+STUB
+chmod +x "$FIXTURE_ROOT/scripts/cargo-admitted"
+INSTALL_GITHOOKS_SCRIPT="$FIXTURE_ROOT/scripts/install-githooks.sh"
+export FAKE_CWD_LOG="${TMPDIR_BASE}/cwd.txt"
 
 PASS_DIR="${TMPDIR_BASE}/pass"
 mkdir -p "$PASS_DIR"
 EXPECTED_PASS_ARGS="${PASS_DIR}/expected-args.txt"
 cat > "$EXPECTED_PASS_ARGS" <<'ARGS'
-xtask
-ci-hygiene
+run
+--locked
+-p
+perl-ci-hygiene
+--
 install-githooks
 --check
 ARGS
@@ -109,7 +126,7 @@ code=0
   cd "$REPO_ROOT"
   PATH="${FAKE_BIN}:$PATH" bash "$INSTALL_GITHOOKS_SCRIPT" --check
 ) > "${PASS_DIR}/out.txt" 2> "${PASS_DIR}/err.txt" || code=$?
-assert_exit_zero "delegates to cargo xtask ci-hygiene install-githooks" "$code"
+assert_exit_zero "delegates to admitted lightweight hygiene package" "$code"
 assert_args_equal "forwards install-githooks arguments unchanged" "$EXPECTED_PASS_ARGS" "$FAKE_LOG"
 
 FAIL_DIR="${TMPDIR_BASE}/fail"
@@ -121,6 +138,31 @@ code=0
 ) > "${FAIL_DIR}/out.txt" 2> "${FAIL_DIR}/err.txt" || code=$?
 assert_exit_nonzero "propagates cargo failure from delegated command" "$code"
 
+if [[ "$(cat "$FAKE_CWD_LOG")" == "$FIXTURE_ROOT" ]]; then
+  pass "bootstrap selects its own revision from an unrelated working directory"
+else
+  fail "bootstrap cwd must be its own repository"
+fi
+EXPECTED_CHECK_ARGS="${TMPDIR_BASE}/check-args.txt"
+sed 's/install-githooks/check-githooks/; /--check/d' "$EXPECTED_PASS_ARGS" > "$EXPECTED_CHECK_ARGS"
+code=0
+PATH="${FAKE_BIN}:$PATH" bash "$FIXTURE_ROOT/scripts/check-githooks.sh" || code=$?
+assert_exit_zero "check uses the read-only owning command" "$code"
+assert_args_equal "check routes to the same lightweight package" "$EXPECTED_CHECK_ARGS" "$FAKE_LOG"
+# A stale same-name executable on PATH must not satisfy bootstrap failure.
+printf '#!/usr/bin/env bash\nexit 0\n' > "$FAKE_BIN/perl-ci-hygiene"
+chmod +x "$FAKE_BIN/perl-ci-hygiene"
+code=0
+PATH="${FAKE_BIN}:$PATH" FAKE_CARGO_EXIT=37 bash "$INSTALL_GITHOOKS_SCRIPT" || code=$?
+if [[ "$code" -eq 37 ]]; then
+  pass "bootstrap failure propagates exactly despite stale PATH executable"
+else
+  fail "bootstrap failure must preserve status 37"
+fi
+rm "$FIXTURE_ROOT/scripts/cargo-admitted"
+code=0
+PATH="${FAKE_BIN}:$PATH" bash "$INSTALL_GITHOOKS_SCRIPT" > "$TMPDIR_BASE/missing-admission.log" 2>&1 || code=$?
+assert_exit_nonzero "missing admission executable cannot report installation success" "$code"
 TOTAL=$((PASS + FAIL))
 echo ""
 echo "=== Results: ${PASS}/${TOTAL} passed ==="
