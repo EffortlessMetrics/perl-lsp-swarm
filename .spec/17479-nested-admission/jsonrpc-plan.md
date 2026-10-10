@@ -15,8 +15,8 @@ before either check. Each phase receipt binds source, command, cwd, snapshot,
 original process, lease and marker. Adapter exit 75 becomes a Rust I/O error.
 
 Both private target and build roots are selected for each fixture command. The
-neutral and negative phases share those outputs within their original owner;
-the package-local source and manifests remain separate, byte-bound inputs.
+neutral and negative phases use separate target and build roots within their
+original owner; their source and manifests remain separate, byte-bound inputs.
 The actual integration harness must be captured from Cargo's test-kind artifact
 and copied read-only before owner release. A two-name success summary without
 all three current phase records cannot produce successful owning evidence.
@@ -84,3 +84,12 @@ Preserve the same monitor thresholds and require fresh admission; retained
 integration artifacts do not establish cold sizing. Composed owner behavior is
 byte-identical to main 1f973039d812fe080abddc44e461112d7b95a6fa and its native
 builtin-tree controls are repeated before qualification.
+
+The second native attempt retained all 415 fresh owning artifacts and executed
+all three phases, but its negative check unexpectedly returned 0: the same-named
+neutral and negative package manifests shared both output roots, and Cargo
+reused the neutral unit. The specific negative oracle failed closed (1 passed,
+1 failed). The final repair isolates both target and build roots per mode; no
+command, source wrapper, manifest or diagnostic oracle is weakened. Both failed
+attempts remain evidence, with negative execution absent in the first and status
+0 in the second. A third current-source experiment is required for success.

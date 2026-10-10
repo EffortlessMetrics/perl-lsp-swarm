@@ -766,7 +766,9 @@ def jsonrpc_fixture(worktree, paths):
             if file_subject(template / source) != original or actual["sha256"] != hashlib.sha256(data).hexdigest():
                 raise Denied("JSON-RPC fixed source/manifest differs")
             files[mode + "/" + name] = {"template": original, "generated": actual}
-    for name in ("neutral", "rejected", "target", "build"):
+    # Identically named packages in two manifests can reuse a same-root fresh
+    # unit despite their different wrappers. Isolate both output roots per mode.
+    for name in ("neutral", "rejected", "neutral/target", "neutral/build", "rejected/target", "rejected/build"):
         path = native_path(str(root / name))
         directories[name] = {"path": str(path), "identity": list(directory_identity(path))}
     return {"cwd": str(root), "directories": directories, "files": files, "model": model,
@@ -1083,7 +1085,7 @@ def render_nested(row, env, worktree, paths, toolchain, fixture=None):
         mode = "rejected" if row == JSONRPC_REJECTED_ROW else "neutral"
         cwd = Path(fixture["directories"][mode]["path"])
         args = [str(cwd / "Cargo.toml") if arg == "@manifest@" else arg for arg in args]
-        paths = {**paths, **{name: Path(fixture["directories"][name]["path"]) for name in ("target", "build")}}
+        paths = {**paths, **{name: Path(fixture["directories"][mode + "/" + name]["path"]) for name in ("target", "build")}}
     exact = toolchain["subjects"]
     controlled = {"CARGO": exact["cargo"]["path"], "RUSTC": exact["rustc"]["path"],
                   "RUSTDOC": exact["rustdoc"]["path"], "RUSTC_WRAPPER": "", "RUSTC_WORKSPACE_WRAPPER": "",

@@ -24,7 +24,8 @@ def prepare(env=None):
     root = owner.native_path(str(paths['temp']/'jsonrpc-17479'))
     template = worktree/'.spec/17479-nested-admission/jsonrpc-fixture'
     model = str(worktree/'crates/perl-lsp-rs-core/src/protocol/jsonrpc.rs').replace('\\','\\\\').replace('"','\\"')
-    for path in (root,root/'target',root/'build',root/'neutral/src',root/'rejected/src'):
+    for path in (root,root/'neutral/src',root/'rejected/src',root/'neutral/target',
+                 root/'neutral/build',root/'rejected/target',root/'rejected/build'):
         owner.native_path(str(path)).mkdir(parents=True,exist_ok=True)
     for mode in ('neutral','rejected'):
         for name, source in (('Cargo.toml','Cargo.toml'),('src/lib.rs',mode+'.rs.in')):

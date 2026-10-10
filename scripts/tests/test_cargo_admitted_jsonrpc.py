@@ -76,7 +76,8 @@ class JsonRpcTests(unittest.TestCase):
         self.assertEqual(command[-3:],['--offline','--manifest-path',str(cwd/'Cargo.toml')])
         for row in ROWS:
             command,env,cwd=self.a.render_nested(row,self.n.env.copy(),self.n.worktree,self.n.paths,self.n.tool,self.n.plan['jsonrpc_fixture'])
-            self.assertEqual(env['CARGO_TARGET_DIR'],str(self.root/'target'));self.assertEqual(env['CARGO_BUILD_BUILD_DIR'],str(self.root/'build'))
+            mode='rejected' if row==ROWS[2] else 'neutral'
+            self.assertEqual(env['CARGO_TARGET_DIR'],str(self.root/mode/'target'));self.assertEqual(env['CARGO_BUILD_BUILD_DIR'],str(self.root/mode/'build'))
             self.assertEqual(cwd,self.root/('rejected' if row==ROWS[2] else 'neutral'))
             self.assertEqual(command[command.index('--manifest-path')+1],str(cwd/'Cargo.toml'))
         _,env,_=self.n.command(BATCH);self.assertEqual(env['CARGO_ADMITTED_JSONRPC_ROOT'],str(self.root));self.assertEqual(env['CARGO_ADMITTED_JSONRPC_PYTHON'],self.n.plan['jsonrpc_fixture']['python']['path'])
