@@ -3745,6 +3745,8 @@ mod tests {
     use std::collections::{BTreeMap, HashMap, HashSet};
     use std::fs;
     use std::path::Path;
+    #[cfg(windows)]
+    use std::path::PathBuf;
     use std::process::Command;
 
     use perl_tdd_support::{must_err_with, must_some_with, must_with};
