@@ -677,7 +677,7 @@ jobs:
 
       - name: Install just
         if: env.RUN_API_RATCHET == 'true'
-        uses: taiki-e/install-action@d438492cf8a250514fa2d34b30bc3c0dc37c65ff  # v2.87.8
+        uses: taiki-e/install-action@3f74d7c16a4242f1c95561e98edc25d36adb4375  # v2.87.12
         with:
           tool: just
 
@@ -866,7 +866,7 @@ jobs:
           components: rustfmt, clippy
 
       - name: Install just
-        uses: taiki-e/install-action@d438492cf8a250514fa2d34b30bc3c0dc37c65ff  # v2.87.8
+        uses: taiki-e/install-action@3f74d7c16a4242f1c95561e98edc25d36adb4375  # v2.87.12
         with:
           tool: just
 
@@ -1260,7 +1260,7 @@ jobs:
           components: rustfmt, clippy
 
       - name: Install just
-        uses: taiki-e/install-action@d438492cf8a250514fa2d34b30bc3c0dc37c65ff  # v2.87.8
+        uses: taiki-e/install-action@3f74d7c16a4242f1c95561e98edc25d36adb4375  # v2.87.12
         with:
           tool: just
 
@@ -1808,7 +1808,7 @@ jobs:
           toolchain: 1.95.0
 
       - name: Install just
-        uses: taiki-e/install-action@d438492cf8a250514fa2d34b30bc3c0dc37c65ff  # v2.87.8
+        uses: taiki-e/install-action@3f74d7c16a4242f1c95561e98edc25d36adb4375  # v2.87.12
         with:
           tool: just
 
@@ -2045,7 +2045,7 @@ jobs:
           toolchain: 1.95.0
 
       - name: Install just
-        uses: taiki-e/install-action@d438492cf8a250514fa2d34b30bc3c0dc37c65ff  # v2.87.8
+        uses: taiki-e/install-action@3f74d7c16a4242f1c95561e98edc25d36adb4375  # v2.87.12
         with:
           tool: just
 
