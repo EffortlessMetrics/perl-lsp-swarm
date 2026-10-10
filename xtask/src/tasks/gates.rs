@@ -2784,6 +2784,13 @@ pub(crate) fn run_shell_command_with_timeout_in(
         .map(Path::to_path_buf)
         .map_or_else(std::env::current_dir, Ok)
         .map_err(|report| GateShellError { report: report.into(), child_started })?;
+    let cwd = if cwd.is_absolute() {
+        cwd
+    } else {
+        std::env::current_dir()
+            .map_err(|report| GateShellError { report: report.into(), child_started })?
+            .join(cwd)
+    };
     // POSIX keeps its supported Bash grammar. Windows refuses unsupported
     // shell syntax instead of interpreting POSIX policy strings through cmd.
     #[cfg(windows)]
@@ -5530,9 +5537,10 @@ gates:
             fs::write(
                 record,
                 format!(
-                    "{:?}\n{:?}",
+                    "{:?}\n{:?}\n{:?}",
                     std::env::var_os("NATIVE_GATE_VALUE"),
-                    std::env::args().collect::<Vec<_>>()
+                    std::env::args().collect::<Vec<_>>(),
+                    std::env::var_os("PERL_LSP_BIN")
                 ),
             )?;
         }
@@ -5587,6 +5595,35 @@ gates:
         assert!(report.contains("literal && argument"), "{report}");
         assert!(result.stdout.contains("1 passed"), "{}", result.stdout);
         assert!(!result.stdout.contains("stale report"));
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn native_launcher_relative_directory_binds_absolute_binary() -> color_eyre::eyre::Result<()> {
+        let tmp = tempfile::tempdir_in(std::env::current_dir()?)?;
+        let relative = tmp
+            .path()
+            .file_name()
+            .ok_or_else(|| color_eyre::eyre::eyre!("relative fixture name"))?;
+        let (command, record) = native_fixture_command(tmp.path())?;
+        let command = command.replacen(
+            "env ",
+            "env -u CARGO_TARGET_DIR PERL_LSP_BIN=\"$PWD/target/debug/perllsp\" ",
+            1,
+        );
+        let result = super::run_shell_command_with_timeout_in(
+            &command,
+            &tmp.path().join("relative.log"),
+            30,
+            Some(Path::new(relative)),
+        )?;
+        assert_eq!(result.exit_code, 0);
+        let expected = tmp.path().join("target").join("debug").join("perllsp.exe");
+        assert!(
+            fs::read_to_string(record)?.contains(&format!("{:?}", expected.as_os_str())),
+            "relative cwd lost binary identity"
+        );
         Ok(())
     }
 
