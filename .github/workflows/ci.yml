@@ -992,6 +992,30 @@ jobs:
           cargo test -p perl-lsp-rs --locked --test lsp_inline_completion_registration_tests --no-run
           cargo test -p perl-lsp-rs-core --locked --lib inline_completion --no-run
 
+      # #17459: the retained main run spent 21m45s compiling routed targets
+      # after earlier gates consumed most of the 60m runtime watchdog. Prepare
+      # the exact canonical scope first, with independent compile-only evidence.
+      # The 75m job envelope and all runtime assertions remain unchanged.
+      - name: Prepare routed integration-test targets
+        # Preserve the full tier's independent facts even if preparation fails.
+        # Its separate failed receipt remains evidence; runtime gates still own
+        # the verdict, including the required compilation row on their retry.
+        continue-on-error: true
+        run: |
+          set +e
+          "$CARGO_TARGET_DIR/debug/xtask" gates --tier pr-fast \
+            --gate unit_routed_full_build --subject target/receipts/ci-subject.json \
+            --receipt --receipt-path target/receipts/routed-test-build/receipt.json
+          preparation_status=$?
+          # The full tier writes the same gate log again. Keep the original
+          # preparation log beside its independent receipt, including failures.
+          if [ -f target/receipts/logs/unit_routed_full_build.log ]; then
+            mkdir -p target/receipts/routed-test-build/logs || exit 1
+            cp target/receipts/logs/unit_routed_full_build.log \
+              target/receipts/routed-test-build/logs/unit_routed_full_build.log || exit 1
+          fi
+          exit "$preparation_status"
+
       - name: Run PR-fast via shared xtask gate runner
         env:
           PR_SMOKE_NAVIGATION_PROOF: ${{ steps.inline-completion-scope.outputs.warm_inline_completion }}
@@ -1088,6 +1112,8 @@ jobs:
           name: pr-fast-receipt-${{ github.sha }}
           path: |
             target/receipts/receipt.json
+            target/receipts/routed-test-build/receipt.json
+            target/receipts/routed-test-build/logs/*.log
             target/receipts/ci-subject.json
             target/receipts/logs/*.log
           if-no-files-found: warn
@@ -2076,6 +2102,21 @@ jobs:
             pr_fast_watchdog_accepts_direct_and_heredoc_runners \
             pr_fast_watchdog_rejects_untimed_or_status_losing_runners; do
             grep -Fx "test $test_name ... ok" "$RUNNER_TEMP/pr-fast-watchdog-contract.log"
+          done
+
+      # #17459: workflow/policy-only changes skip RustScoped routed tests.
+      # Execute this governed-surface contract on the protected merge surface.
+      - name: Routed test preparation contract (required merge surface)
+        run: |
+          set -o pipefail
+          cargo test -p xtask --test routed_test_preparation_contract --locked -- \
+            --test-threads=1 --color never | tee "$RUNNER_TEMP/routed-test-preparation-contract.log"
+          grep -Eq '^test result: ok\. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in ' \
+            "$RUNNER_TEMP/routed-test-preparation-contract.log"
+          for test_name in \
+            preparation_preserves_runtime_command_and_budget \
+            preparation_precedes_watchdog_and_has_separate_evidence; do
+            grep -Fx "test $test_name ... ok" "$RUNNER_TEMP/routed-test-preparation-contract.log"
           done
 
       # The frozen legacy parity authority is a required merge surface. Keep
