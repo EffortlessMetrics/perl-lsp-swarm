@@ -12,6 +12,8 @@ use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
 pub mod change_set;
+pub mod ci_scope;
+pub mod ci_subject;
 pub mod doctest_enforcement;
 pub mod package_resolver;
 pub mod staged;

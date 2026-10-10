@@ -345,11 +345,12 @@ jobs:
           SUBJECT_HEAD_SHA: ${{ inputs.head_sha || '' }}
         run: |
           set -euo pipefail
-          cargo run -p xtask --locked -- ci-subject \
+          selection_runner=$(scripts/ci/bootstrap-selection.sh)
+          "$selection_runner" ci-subject \
             --base-sha "$SUBJECT_BASE_SHA" \
             --head-sha "$SUBJECT_HEAD_SHA" \
             --receipt "$RUNNER_TEMP/ci-subject.json"
-          cargo run -p xtask --locked -- ci-scope \
+          "$selection_runner" ci-scope \
             --subject "$RUNNER_TEMP/ci-subject.json" \
             --format json > "$RUNNER_TEMP/ci-scope.json"
           schema_version=$(jq -r '.schema_version' "$RUNNER_TEMP/ci-scope.json")
