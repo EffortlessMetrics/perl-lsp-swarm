@@ -500,6 +500,9 @@ JSONRPC_TESTS = ("jsonrpc_model_is_dependency_closed_and_rejects_indirect_perl_t
 PARSER_OCCUPANCY_STREAM_LIMIT = 16 * 1024 * 1024
 PARSER_OCCUPANCY_ROW = "parser-collapsible-if-measure"
 PARSER_OCCUPANCY_TEST_ROW = "parser-collapsible-if-test"
+ROUTED_MEASUREMENTS = "CARGO_ADMITTED_ROUTED_MEASUREMENTS"
+ROUTED_FIXTURE_ROWS = (DISALLOWED_FIXTURE_ROW, *LOCK_FIXTURE_ROWS, *JSONRPC_FIXTURE_ROWS)
+ROUTED_SOURCE_PATTERN = r'Command::new\([^\n]*("cargo"|\bcargo\b|env!\("CARGO"\))|cmd\("cargo"|exec[^\n]*"cargo"'
 PARSER_OCCUPANCY_TESTS = (
     'cfg_attr_allow_fixture_is_detected',
     'cfg_attr_without_collapsible_if_does_not_occupy',
@@ -699,6 +702,8 @@ def nested_plan(filename, env, worktree, paths):
         plan["jsonrpc_fixture"] = rpc_fixture
     if occupancy:
         plan["parser_occupancy"] = occupancy
+    if "routed-runtime" in data["rows"]:
+        plan["routed_preparation"] = routed_preparation_binding(worktree)
     return plan
 
 
@@ -783,6 +788,70 @@ def parser_occupancy_binding(worktree):
             "support_adapter": file_subject(worktree / "scripts/ci/disallowed_fields_prepare.py"),
             "owning_test": file_subject(worktree / "crates/perl-parser/tests/collapsible_if_occupancy.rs"),
             "python": file_subject(Path(sys.executable).resolve(strict=True))}
+
+
+def routed_preparation_binding(worktree):
+    return {"adapter": file_subject(worktree / "scripts/ci/routed_nested_prepare.py"),
+            "mapping": file_subject(worktree / ".spec/17479-nested-admission/canonical-source-map.json"),
+            "python": file_subject(Path(sys.executable).resolve(strict=True))}
+
+
+def routed_mapping(plan):
+    mapping, subject = bounded_json(plan["routed_preparation"]["mapping"]["path"])
+    if (subject != plan["routed_preparation"]["mapping"]
+            or type(mapping.get("schema_version")) is not int or mapping["schema_version"] != 1
+            or mapping.get("packages") != list(NESTED_PACKAGES)
+            or mapping.get("fixture_rows") != [*ROUTED_FIXTURE_ROWS, PARSER_OCCUPANCY_ROW]
+            or mapping.get("row_commands") != {row:list(args) for row,args in NESTED_COMMANDS.items()}
+            or mapping.get("source_scan_pattern") != ROUTED_SOURCE_PATTERN
+            or any(not isinstance(mapping.get(key), list) or any(not isinstance(x,str) for x in mapping[key])
+                   for key in ("unknown_dynamic", "missing_active_rows"))):
+        raise Denied("missing/changed finite source/command mapping")
+    worktree = Path(plan["routed_preparation"]["mapping"]["path"]).parents[2]
+    roots = [worktree / "xtask" / part for part in ("src", "tests")]
+    roots += [worktree / "crates" / package / part for package in NESTED_PACKAGES
+              if package != "xtask" for part in ("src", "tests")]
+    observed = {str(path.relative_to(worktree)): file_subject(path)["sha256"]
+                for root in roots for path in root.rglob("*.rs")
+                if re.search(ROUTED_SOURCE_PATTERN, path.read_text())}
+    if not observed or mapping.get("compiler_looking_source_subjects") != observed:
+        raise Denied("new/changed/unmapped compiler-looking source requires classification")
+    if mapping["unknown_dynamic"] or mapping["missing_active_rows"]:
+        raise Denied("unclassified/missing dynamic compiler obligation blocks routed runtime: "
+                     + json.dumps({key:mapping[key] for key in ("unknown_dynamic", "missing_active_rows")}))
+    return mapping
+
+
+def routed_phase_record(plan, receipt, row, env):
+    if row not in ROUTED_FIXTURE_ROWS or row not in plan["request"]["rows"]:
+        raise Denied("unknown/unadmitted prepared fixture row")
+    subjects = json.loads(env[ROUTED_MEASUREMENTS])
+    if not isinstance(subjects, dict) or set(subjects) != set(ROUTED_FIXTURE_ROWS):
+        raise Denied("prepared runtime lacks its exact nine fixture measurements")
+    path = Path(receipt["resources"]["temp"]) / ("routed-measurement-" + str(receipt["pid"]) + "-" + row + ".json")
+    record, subject = bounded_json(path, limit=2 * 4 * 1024 * 1024 * 6 + BUDGET_FILE_LIMIT)
+    code = 101 if row in (DISALLOWED_FIXTURE_ROW, JSONRPC_REJECTED_ROW) else 0
+    if (subject != subjects[row] or type(record.get("schema_version")) is not int or record["schema_version"] != 1
+            or record.get("recorded_under_original_live_owner") is not True
+            or record.get("row") != row or record.get("tested_source") != plan["source"]["head"]
+            or record.get("snapshot") != receipt["nested_snapshot"]
+            or record.get("diagnostic_validation") != {"passed": True, "error": None}
+            or type(record.get("exit_code")) is not int or record["exit_code"] != code):
+        raise Denied("stale/changed/unqualified prepared fixture result")
+    for key in ("owner_process", "lease_identity", "marker_identity"):
+        if record.get(key) != receipt[key]:
+            raise Denied("prepared fixture result has another original owner")
+    fixture = (plan["lock_union_fixture"] if row in LOCK_FIXTURE_ROWS else
+               plan["jsonrpc_fixture"] if row in JSONRPC_FIXTURE_ROWS else plan["disallowed_fields_fixture"])
+    paths = {name: Path(value) for name, value in receipt["resources"].items()}
+    expected = {**plan["compiler_environment"], "CARGO_BUILD_JOBS": str(receipt["scope"]["jobs"])}
+    command, _, cwd = render_nested(row, expected, Path(receipt["worktree"]), paths, plan["toolchain"], fixture)
+    if record.get("argv") != command or record.get("cwd") != str(cwd):
+        raise Denied("prepared fixture result used another command/cwd")
+    if any(not isinstance(record.get(key), str) or len(record[key].encode()) > 4 * 1024 * 1024
+           for key in ("stdout", "stderr")):
+        raise Denied("prepared fixture raw output exceeds bounded reader")
+    return record, subject
 
 
 def parser_occupancy_measurement(plan, receipt):
@@ -1075,6 +1144,9 @@ def nested_command(row, env=None):
         occupancy = plan.get("parser_occupancy")
         if occupancy is not None and parser_occupancy_binding(worktree) != occupancy:
             raise Denied("parser occupancy source/adapter changed")
+        routed = plan.get("routed_preparation")
+        if routed is not None and routed_preparation_binding(worktree) != routed:
+            raise Denied("routed preparation source/mapping/interpreter changed")
         if row in (PARSER_OCCUPANCY_ROW, PARSER_OCCUPANCY_TEST_ROW) and occupancy is None:
             raise Denied("parser occupancy measurement is not bound")
         if row == PARSER_OCCUPANCY_TEST_ROW:
@@ -1113,6 +1185,15 @@ def nested_command(row, env=None):
             raise Denied("nested rustup selector changed")
         if actual != plan["compiler_environment"] and actual != expected:
             raise Denied("nested compiler/profile environment changed")
+        if row == "routed-runtime":
+            if routed is None:
+                raise Denied("routed runtime has no bound preparation/projection")
+            routed_mapping(plan)
+            for member in ROUTED_FIXTURE_ROWS:
+                routed_phase_record(plan, receipt, member, env)
+            measured, subject = parser_occupancy_measurement(plan, receipt)
+            if measured["exit_code"] != 0 or json.loads(env["CARGO_ADMITTED_OCCUPANCY_MEASUREMENT"]) != subject:
+                raise Denied("routed runtime needs frozen successful occupancy preparation")
         env.pop("LD_LIBRARY_PATH", None)
         env.update(expected)
         selected_fixture = lock_fixture if row in (*LOCK_FIXTURE_ROWS, LOCK_UNION_TEST_ROW, LOCK_PARTITION_TEST_ROW) else fixture
@@ -1120,6 +1201,9 @@ def nested_command(row, env=None):
             selected_fixture = rpc_fixture
         if row in (PARSER_OCCUPANCY_ROW, PARSER_OCCUPANCY_TEST_ROW):
             selected_fixture = occupancy
+        if row == "routed-runtime":
+            selected_fixture = {"fields": fixture, "locks": lock_fixture, "rpc": rpc_fixture,
+                                "occupancy": occupancy, "routed": routed}
         return render_nested(row, env, worktree, paths, plan["toolchain"], selected_fixture)
     except (KeyError, TypeError, ValueError, OSError) as error:
         raise Denied("invalid/stale nested handoff: " + str(error)) from error
@@ -1182,6 +1266,14 @@ def render_nested(row, env, worktree, paths, toolchain, fixture=None):
         record = Path(paths["temp"]) / ("parser-occupancy-measurement-" + str(descriptor["pid"]) + ".json")
         controlled["CARGO_ADMITTED_OCCUPANCY_PYTHON"] = fixture["python"]["path"]
         controlled["CARGO_ADMITTED_OCCUPANCY_MEASUREMENT"] = json.dumps(file_subject(record), sort_keys=True)
+    if row == "routed-runtime":
+        controlled.update({ROUTED_MEASUREMENTS: env[ROUTED_MEASUREMENTS],
+            "CARGO_ADMITTED_FIXTURE_PYTHON": fixture["fields"]["python"]["path"],
+            "CARGO_ADMITTED_LOCK_PYTHON": fixture["locks"]["python"]["path"],
+            "CARGO_ADMITTED_JSONRPC_PYTHON": fixture["rpc"]["python"]["path"],
+            "CARGO_ADMITTED_JSONRPC_ROOT": fixture["rpc"]["cwd"],
+            "CARGO_ADMITTED_OCCUPANCY_PYTHON": fixture["occupancy"]["python"]["path"],
+            "CARGO_ADMITTED_OCCUPANCY_MEASUREMENT": env["CARGO_ADMITTED_OCCUPANCY_MEASUREMENT"]})
     env.update(controlled)
     command = [exact["cargo"]["path"]]
     for name, value in controlled.items():

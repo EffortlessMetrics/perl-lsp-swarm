@@ -14,6 +14,8 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import cargo_admitted as owner
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import routed_nested_prepare
 
 HANDOFF = "CARGO_ADMITTED_PERLLSP_HANDOFF"
 PYTHON = "CARGO_ADMITTED_PYTHON"
@@ -152,7 +154,13 @@ def run(mode, env=None, invoke=subprocess.run):
     if mode not in MODES:
         raise owner.Denied("unknown perllsp preparation mode")
     rows = MODES[mode]
+    if mode == "--runtime":
+        # Existing canonical adapter, not policy activation. An unknown
+        # dynamic edge or missing finite prerequisite refuses before builds.
+        routed_nested_prepare.preflight(env)
     for row in ("perllsp-build", *rows):
+        if mode == "--runtime" and row == "routed-runtime":
+            continue  # Needs actual measurements, rendered only after prep.
         owner.nested_command(row, env)  # whole-mode admission before any build
     command, child, cwd = owner.nested_command("perllsp-build", env)
     output = invoke(command, env=child, cwd=cwd, capture_output=True,
@@ -162,6 +170,8 @@ def run(mode, env=None, invoke=subprocess.run):
     if output.returncode:
         return output.returncode if output.returncode > 0 else 1
     child = capture(output.stdout, env)
+    if mode == "--runtime":
+        child = routed_nested_prepare.prepare(child, invoke)
     for row in rows:
         command, child, cwd = owner.nested_command(row, child)
         validate(child, "debug")

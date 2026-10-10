@@ -66,6 +66,10 @@ def phase(mode, env=None, invoke=subprocess.run):
     env=dict(os.environ if env is None else env)
     if mode not in MODES:raise owner.Denied('unknown finite JSON-RPC phase')
     row=MODES[mode];command,child,cwd=owner.nested_command(row,env)
+    replayed=shared.prepared_output(row,env)
+    if replayed is not None:
+        print(replayed.stdout,end='',flush=True);print(replayed.stderr,end='',file=sys.stderr,flush=True)
+        return replayed.returncode
     descriptor=json.loads(env['CARGO_ADMITTED_RESOURCES']);snapshot,_=owner.bounded_json(descriptor['nested_snapshot']['path']);binding=snapshot['plan']['jsonrpc_fixture']
     if owner.file_subject(Path(sys.executable).resolve(strict=True))!=binding['python']:raise owner.Denied('JSON-RPC interpreter differs from bound subject')
     root=Path(binding['cwd']);name=('lock-generation-' if mode=='lock' else 'native-'+mode+'-')+str(descriptor['pid'])+'.json'

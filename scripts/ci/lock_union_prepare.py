@@ -112,15 +112,18 @@ def fixture(env=None, invoke=subprocess.run, measurement='union'):
     binding = snapshot['plan']['lock_union_fixture']
     if owner.file_subject(Path(sys.executable).resolve(strict=True)) != binding['python']:
         raise owner.Denied('lock-union interpreter differs from admitted native interpreter')
-    result = invoke(command, env=child, cwd=cwd, capture_output=True, text=True,
-                    encoding='utf-8', errors='strict')
+    result = shared.prepared_output(row, env)
+    replayed = result is not None
+    if result is None:
+        result = invoke(command, env=child, cwd=cwd, capture_output=True, text=True,
+                        encoding='utf-8', errors='strict')
     owner.nested_command(row, env)
     diagnostic_error = None
     try:
         diagnostic_success(result.stdout, result.returncode, cwd, measurement)
     except (owner.Denied, ValueError, TypeError, KeyError) as error:
         diagnostic_error = error
-    if owner.LOCK_PARTITION_TEST_ROW in snapshot['plan']['request']['rows']:
+    if not replayed and owner.LOCK_PARTITION_TEST_ROW in snapshot['plan']['request']['rows']:
         evidence = {'schema_version':1, 'measurement':measurement, 'tested_source':snapshot['plan']['source']['head'],
                     'row':row, 'argv':command, 'cwd':str(cwd), 'exit_code':result.returncode,
                     'stdout':result.stdout[:shared.LIMIT], 'stderr':result.stderr[:shared.LIMIT],

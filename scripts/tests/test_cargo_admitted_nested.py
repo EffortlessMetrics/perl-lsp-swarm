@@ -64,7 +64,7 @@ class NestedTests(unittest.TestCase):
         template=self.worktree/'.spec/17479-nested-admission/disallowed-fields-fixture'
         shutil.copytree(actual/'.spec/17479-nested-admission/disallowed-fields-fixture',template)
         script=self.worktree/'scripts/ci/disallowed_fields_prepare.py'
-        script.parent.mkdir(parents=True);shutil.copyfile(actual/'scripts/ci/disallowed_fields_prepare.py',script)
+        script.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(actual/'scripts/ci/disallowed_fields_prepare.py',script)
         root=self.paths['temp']/'disallowed-fields-17479'
         shutil.copytree(template,root)
         for name in ['target','build']:(root/name).mkdir()
@@ -308,7 +308,7 @@ class NestedTests(unittest.TestCase):
         for row in a.NESTED_COMMANDS:
             # Dynamic generated-lock prerequisites are independently exercised
             # by literal JSON-RPC and parser occupancy preparation controls.
-            if row in ('xtask-jsonrpc-lock','xtask-jsonrpc-neutral','xtask-jsonrpc-rejected','xtask-jsonrpc-test','parser-collapsible-if-measure','parser-collapsible-if-test'):continue
+            if row in ('xtask-jsonrpc-lock','xtask-jsonrpc-neutral','xtask-jsonrpc-rejected','xtask-jsonrpc-test','parser-collapsible-if-measure','parser-collapsible-if-test','routed-runtime'):continue
             with self.subTest(row=row):
                 cmd,env,cwd=self.command(row)
                 selected=lock_fixture if row in ('xtask-lock-union-fixture','xtask-lock-rustc-fixture','xtask-lock-clippy-fixture','xtask-lock-must-use-fixture','xtask-lock-sweep-fixture') else fixture
@@ -322,7 +322,13 @@ class NestedTests(unittest.TestCase):
     def test_routed_denominator_and_compile_runtime_distinct(self):
         self.assertEqual(sum([139,8,16,290,108,181,1,16,236]),995)
         for row in ['routed-compile','routed-runtime']:
-            cmd,_,_=self.command(row);packages=[cmd[i+1] for i,v in enumerate(cmd) if v=='-p']
+            # Complete prepared-runtime rendering is covered by routed controls;
+            # absent prerequisite results now refuse before producing a command.
+            if row == 'routed-runtime':
+                with self.assertRaises(a.Denied):self.command(row)
+                cmd=list(a.NESTED_COMMANDS[row])
+            else:cmd,_,_=self.command(row)
+            packages=[cmd[i+1] for i,v in enumerate(cmd) if v=='-p']
             self.assertEqual(packages,['perl-dap','perl-incremental-parsing','perl-lsp-perltidy','perl-lsp-rs','perl-lsp-rs-core','perl-parser','perl-parser-bench','perllsp','xtask'])
             self.assertEqual('--no-run' in cmd,row=='routed-compile')
     def test_docs_only_flags_and_manifest_cwd(self):

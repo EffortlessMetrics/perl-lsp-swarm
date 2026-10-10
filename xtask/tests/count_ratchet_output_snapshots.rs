@@ -42,6 +42,10 @@ fn run_xtask_published_crate_count_once() -> XtaskOutput {
         command.arg("published-crate-count");
         command
     } else {
+        assert!(
+            std::env::var_os("CARGO_ADMITTED_RESOURCES").is_none(),
+            "admitted runtime requires Cargo's existing xtask binary; missing projection forbids Cargo fallback"
+        );
         let mut command = StdCommand::new("cargo");
         command.args(["xtask", "published-crate-count"]);
         command

@@ -182,16 +182,44 @@ class HandoffControls(unittest.TestCase):
         def fail_build(args, **kwargs):
             calls.append(args)
             return subprocess.CompletedProcess(args, 101, '', 'failed')
-        self.assertEqual(adapter.run('--runtime', self.env, fail_build), 101)
+        self.assertEqual(adapter.run('--compile', self.env, fail_build), 101)
         self.assertEqual(len(calls), 1)
         calls.clear()
-        self.subject.plan['request']['rows'].remove('routed-runtime'); self.subject.save()
+        self.subject.plan['request']['rows'].remove('routed-compile'); self.subject.save()
         with self.assertRaises(fixture.a.Denied):
-            adapter.run('--runtime', self.env, fail_build)
+            adapter.run('--compile', self.env, fail_build)
         self.assertEqual(calls, [])
 
+    def test_runtime_missing_closure_refuses_before_product_build(self):
+        calls = []
+        def invoke(args, **kw):
+            calls.append(args)
+            self.fail('missing canonical closure launched a compiler')
+        with patch.object(adapter.routed_nested_prepare, 'preflight',
+                          side_effect=fixture.a.Denied('unknown dynamic compiler obligation')) as preflight:
+            with self.assertRaisesRegex(fixture.a.Denied, 'unknown dynamic'):
+                adapter.run('--runtime', self.env, invoke)
+        preflight.assert_called_once_with(self.env)
+        self.assertEqual(calls, [])
+
+    def test_runtime_failed_preparation_cannot_launch_routed_tests(self):
+        calls = []
+        def invoke(args, **kw):
+            calls.append(args)
+            return subprocess.CompletedProcess(args, 0, self.log(), '')
+        with patch.object(adapter.routed_nested_prepare, 'preflight'), \
+             patch.object(adapter.routed_nested_prepare, 'prepare',
+                          side_effect=fixture.a.Denied('failed diagnostic measurement')) as prepare:
+            with self.assertRaisesRegex(fixture.a.Denied, 'failed diagnostic'):
+                adapter.run('--runtime', self.env, invoke)
+        self.assertEqual(len(calls), 1)
+        self.assertIn('build', calls[0])
+        self.assertEqual(prepare.call_count, 1)
+
     def test_success_pipeline_binds_exact_path_and_preserves_runtime_output(self):
-        for mode, row in [('--compile', 'routed-compile'), ('--runtime', 'routed-runtime')]:
+        # These controls isolate artifact handoff. Prepared runtime now has
+        # mandatory, separately exercised fixture/closure prerequisites.
+        for mode, row in [('--compile', 'routed-compile')]:
             calls = []
             def invoke(args, **kw):
                 calls.append((args, kw))
@@ -215,7 +243,7 @@ class HandoffControls(unittest.TestCase):
             self.subject.marker.mkdir()
             return subprocess.CompletedProcess(args, 0)
         with self.assertRaises(fixture.a.Denied):
-            adapter.run('--runtime', self.env, invoke)
+            adapter.run('--compile', self.env, invoke)
         self.assertEqual(len(calls), 2)
 
     def test_successful_probe_cannot_hide_during_probe_artifact_mutation(self):

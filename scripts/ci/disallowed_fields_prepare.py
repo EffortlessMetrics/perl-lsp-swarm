@@ -18,6 +18,15 @@ import cargo_admitted as owner
 LIMIT = 4 * 1024 * 1024
 
 
+def prepared_output(row, env):
+    if owner.ROUTED_MEASUREMENTS not in env:
+        return None
+    # Current canonical projection only. A partial/stale selector fails in
+    # replay; it must never fall back to another compiler measurement.
+    import routed_nested_prepare
+    return routed_nested_prepare.replay(row, env)
+
+
 def prepare(env=None, label="disallowed-fields"):
     env = dict(os.environ if env is None else env)
     worktree, slot, paths = owner.resource_plan(env)
@@ -99,8 +108,10 @@ def fixture(env=None, invoke=subprocess.run):
     binding = snapshot["plan"]["disallowed_fields_fixture"]
     if owner.file_subject(Path(sys.executable).resolve(strict=True)) != binding["python"]:
         raise owner.Denied("fixture interpreter differs from admitted native interpreter")
-    result = invoke(command, env=child, cwd=cwd, capture_output=True, text=True,
-                    encoding="utf-8", errors="strict")
+    result = prepared_output(owner.DISALLOWED_FIXTURE_ROW, env)
+    if result is None:
+        result = invoke(command, env=child, cwd=cwd, capture_output=True, text=True,
+                        encoding="utf-8", errors="strict")
     owner.nested_command(owner.DISALLOWED_FIXTURE_ROW, env)
     diagnostic_success(result.stdout, result.returncode, cwd)
     print(result.stdout, end="", flush=True)
