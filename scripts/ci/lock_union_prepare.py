@@ -38,11 +38,12 @@ def diagnostic_success(stdout, returncode, root, measurement='union'):
     if measurement == 'clippy': required = {s: 'clippy::let_underscore_lock' for s in PL}
     if measurement == 'must-use': required = {s: 'clippy::let_underscore_must_use' for s in OWNED}
     if measurement == 'sweep': required.update({s: 'clippy::let_underscore_must_use' for s in OWNED})
-    allowed = dict(required)
-    if measurement == 'must-use': allowed.update({s: 'clippy::let_underscore_must_use' for s in STD})
+    allowed = set(required.items())
+    if measurement in ('must-use', 'sweep'):
+        allowed.update((s, 'clippy::let_underscore_must_use') for s in STD)
     governed = ({'clippy::let_underscore_must_use'} if measurement == 'must-use'
                 else set(EXPECTED.values()) | ({'clippy::let_underscore_must_use'} if measurement == 'sweep' else set()))
-    found, terminal = {}, False
+    found, terminal = set(), False
     source = root / 'src/lib.rs'
     source_lines = source.read_text().splitlines()
     for line in stdout.splitlines():
@@ -79,6 +80,9 @@ def diagnostic_success(stdout, returncode, root, measurement='union'):
         span = primary[0] if lint in governed else spans[0]
         if not isinstance(span, dict): raise owner.Denied('invalid lock span')
         number, text = span.get('line_start'), span.get('text')
+        if lint not in governed and text == []:
+            # Command-line group advice has a dummy span, no source finding.
+            continue
         if (span.get('file_name') not in ('src/lib.rs', str(source))
                 or type(number) is not int or not isinstance(text, list) or not text
                 or not 1 <= number <= len(source_lines)
@@ -89,10 +93,11 @@ def diagnostic_success(stdout, returncode, root, measurement='union'):
         if measurement == 'sweep' and statement in DROP:
             raise owner.Denied('Clippy now covers explicit drop; revisit the measured ruling')
         if lint not in governed: continue
-        if len(text) != 1 or allowed.get(statement) != lint or statement in found:
+        pair = (statement, lint)
+        if len(text) != 1 or pair not in allowed or pair in found:
             raise owner.Denied('unexpected/duplicate lock site or wrong lint ownership')
-        found[statement] = lint
-    if any(found.get(statement) != lint for statement,lint in required.items()) or not terminal:
+        found.add(pair)
+    if not set(required.items()).issubset(found) or not terminal:
         raise owner.Denied('missing current lock positives or successful terminal')
 
 
@@ -110,15 +115,24 @@ def fixture(env=None, invoke=subprocess.run, measurement='union'):
     result = invoke(command, env=child, cwd=cwd, capture_output=True, text=True,
                     encoding='utf-8', errors='strict')
     owner.nested_command(row, env)
-    diagnostic_success(result.stdout, result.returncode, cwd, measurement)
+    diagnostic_error = None
+    try:
+        diagnostic_success(result.stdout, result.returncode, cwd, measurement)
+    except (owner.Denied, ValueError, TypeError, KeyError) as error:
+        diagnostic_error = error
     if owner.LOCK_PARTITION_TEST_ROW in snapshot['plan']['request']['rows']:
         evidence = {'schema_version':1, 'measurement':measurement, 'tested_source':snapshot['plan']['source']['head'],
                     'row':row, 'argv':command, 'cwd':str(cwd), 'exit_code':result.returncode,
-                    'stdout':result.stdout, 'stderr':result.stderr, 'snapshot':descriptor['nested_snapshot'],
+                    'stdout':result.stdout[:shared.LIMIT], 'stderr':result.stderr[:shared.LIMIT],
+                    'stdout_truncated':len(result.stdout)>shared.LIMIT, 'stderr_truncated':len(result.stderr)>shared.LIMIT,
+                    'diagnostic_validation':{'passed':diagnostic_error is None, 'error':str(diagnostic_error) if diagnostic_error else None},
+                    'snapshot':descriptor['nested_snapshot'],
                     'owner_process':descriptor['owner_process'], 'lease_identity':descriptor['lease_identity'],
                     'marker_identity':descriptor['marker_identity'], 'recorded_under_original_live_owner':True}
         path = Path(descriptor['resources']['temp']) / ('lock-measurement-' + str(os.getpid()) + '-' + measurement + '.json')
         with path.open('x', encoding='utf-8') as record: json.dump(evidence, record)
+    if diagnostic_error is not None:
+        raise diagnostic_error
     print(result.stdout, end='', flush=True)
     print(result.stderr, end='', file=sys.stderr, flush=True)
     return result.returncode

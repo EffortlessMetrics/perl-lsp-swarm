@@ -155,3 +155,29 @@ class LockBatchTests(unittest.TestCase):
         self.assertEqual(evidence['artifact'],self.a.file_subject(path))
         self.assertEqual(evidence['marker_identity'],self.n.receipt['marker_identity'])
         self.assertTrue(evidence['copied_under_original_live_owner'])
+
+    def test_sweep_allows_standard_must_use_overlap_but_requires_rustc_positives(self):
+        self.available()
+        events=self.findings('sweep')
+        overlap=[self.finding(s,'clippy::let_underscore_must_use') for s in STD]
+        try:self.f.diagnostic_success(self.measurement_output('sweep',events+overlap),0,self.root,measurement='sweep')
+        except self.a.Denied as error:self.fail('valid overlapping sweep warnings refused: '+str(error))
+        for bad in (events[2:]+overlap,events+overlap+[overlap[0]]):
+            with self.assertRaises(self.a.Denied):self.f.diagnostic_success(self.measurement_output('sweep',bad),0,self.root,measurement='sweep')
+        advice=self.finding(STD[0],'clippy::blanket_clippy_restriction_lints')
+        advice['message']['spans']=[{'is_primary':True,'file_name':'<command-line>','line_start':0,'text':[]}]
+        self.f.diagnostic_success(self.measurement_output('sweep',events+[advice]),0,self.root,measurement='sweep')
+
+    def test_refused_instrument_preserves_bounded_raw_receipt_without_success(self):
+        self.available()
+        raw=self.measurement_output('sweep',self.findings('sweep')[:-1])
+        invoke=Mock(return_value=subprocess.CompletedProcess([],0,raw,'actual instrument stderr'))
+        with self.assertRaises(self.a.Denied):self.f.fixture(self.n.env,invoke,measurement='sweep')
+        receipts=list(self.n.paths['temp'].glob('lock-measurement-*-sweep.json'))
+        self.assertEqual(len(receipts),1)
+        receipt=json.loads(receipts[0].read_text())
+        self.assertEqual(receipt['stdout'],raw);self.assertEqual(receipt['stderr'],'actual instrument stderr')
+        self.assertFalse(receipt['diagnostic_validation']['passed']);self.assertTrue(receipt['diagnostic_validation']['error'])
+        self.assertFalse(receipt['stdout_truncated']);self.assertFalse(receipt['stderr_truncated'])
+        self.assertEqual(receipt['owner_process'],self.n.receipt['owner_process'])
+        self.assertEqual(receipt['marker_identity'],self.n.receipt['marker_identity'])
