@@ -5854,7 +5854,7 @@ gates:
     #[test]
     fn run_single_gate_captures_test_metrics_artifacts_and_log() -> color_eyre::eyre::Result<()> {
         let command = if cfg!(windows) {
-            "echo prelude && echo test result: ok. 3 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.01s"
+            "cmd /D /C 'echo prelude && echo test result: ok. 3 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.01s'"
         } else {
             "printf 'prelude\ntest result: ok. 3 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.01s\n'"
         };
