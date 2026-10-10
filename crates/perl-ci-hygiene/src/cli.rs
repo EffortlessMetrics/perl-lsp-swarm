@@ -14,6 +14,19 @@ pub(crate) struct Cli {
 
 #[derive(Subcommand)]
 pub(crate) enum CliCommand {
+    /// Resolve changed paths using the shared Git subject resolver.
+    ChangeSet {
+        #[arg(long, default_value = "auto")]
+        base: String,
+        #[arg(long, default_value = "HEAD")]
+        head: String,
+        #[arg(long, default_value = "json")]
+        format: String,
+        #[arg(long)]
+        root: Option<PathBuf>,
+    },
+    /// Resolve a crate directory to its authoritative Cargo package name.
+    ResolvePackageName { crate_dir: String },
     /// Benchmark perl-parser against tree-sitter-perl-c for standard cases.
     RunParserComparison,
     /// Print and apply environment caps for local safety checks.

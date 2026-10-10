@@ -710,7 +710,7 @@ doctor:
             echo "✅ pre-push hook installed and current"
         elif [ -f "$expected_hook" ]; then
             echo "⚠️  pre-push hook installed but stale: $hook_path"
-            echo "   Fix: cargo xtask ci-hygiene install-githooks   # refresh from hooks/pre-push"
+            echo "   Fix: bash scripts/install-githooks.sh   # refresh from hooks/pre-push"
             issues=$((issues + 1))
         else
             echo "✅ pre-push hook installed"
@@ -721,7 +721,7 @@ doctor:
         issues=$((issues + 1))
     else
         echo "⚠️  pre-push hook not installed"
-        echo "   Fix: cargo xtask ci-hygiene install-githooks   # or: bash scripts/install-githooks.sh"
+        echo "   Fix: bash scripts/install-githooks.sh"
         issues=$((issues + 1))
     fi
 
