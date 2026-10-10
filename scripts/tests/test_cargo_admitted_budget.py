@@ -2,6 +2,7 @@ import importlib.util
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import Mock, patch
@@ -177,7 +178,7 @@ class ConstrainedAdmissionTests(unittest.TestCase):
             lock.mkdir()
             return 0
         result, _, cargo = self.invoke(["--budget-file", str(self.budget), *self.args], call=replace)
-        self.assertEqual(result, 75 if os.sys.platform == "linux" else 0)
+        self.assertEqual(result, 75 if sys.platform == "linux" else 0)
         cargo.assert_called_once()
         self.assertTrue(lock.is_dir())
 
@@ -445,7 +446,7 @@ class ConstrainedAdmissionTests(unittest.TestCase):
         result, _, cargo = self.invoke(["--budget-file", str(self.budget), *self.args], call=OSError("fixture spawn failure"))
         self.assertEqual(result, 75)
         cargo.assert_called_once()
-        self.assertEqual((self.slot / "cargo-active").exists(), os.sys.platform != "linux")
+        self.assertEqual((self.slot / "cargo-active").exists(), sys.platform != "linux")
 
     def test_nonregular_or_linked_budget_file_is_not_read(self):
         target = self.root / "directory"

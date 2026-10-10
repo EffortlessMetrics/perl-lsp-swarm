@@ -2,6 +2,7 @@ import importlib.util
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import Mock, patch
@@ -204,7 +205,7 @@ class AdmissionTests(unittest.TestCase):
         def cancel(*args, **kw):
             raise KeyboardInterrupt()
         self.tree.finish.return_value = {"tree_settled": False}
-        if os.sys.platform == "linux":
+        if sys.platform == "linux":
             self.assertEqual(self.run_safe(["run"], cancel), 75)
         else:
             with self.assertRaises(KeyboardInterrupt):
@@ -259,7 +260,7 @@ class AdmissionTests(unittest.TestCase):
             self.slot = self.root / ("terminated-" + str(code))
             self.paths = {name: self.slot / name for name in self.paths}
             self.assertEqual(self.run_safe(["test"], lambda *a, **kw: code),
-                             75 if os.sys.platform == "linux" else code)
+                             75 if sys.platform == "linux" else code)
             self.assertTrue((self.slot / "cargo-active").exists())
             self.assertEqual(self.run_safe(["check"]), 75)
 
@@ -508,7 +509,7 @@ class AdmissionTests(unittest.TestCase):
                      contextlib.redirect_stderr(output):
                     self.assertEqual(safe.main(["build", "-p", "identity-app", "--offline", "--locked"]), 0)
                 descriptor = json.loads(output.getvalue().split("cargo-admitted resources: ", 1)[1].splitlines()[0])
-                if os.sys.platform == "linux":
+                if sys.platform == "linux":
                     settlement = json.loads(output.getvalue().split("cargo-admitted Cargo settlement: ", 1)[1].splitlines()[0])
                     self.assertTrue(settlement["tree_settled"])
                     self.assertTrue(settlement["lease_released"])
