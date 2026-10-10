@@ -9,7 +9,7 @@ route sets `RUSTUP_AUTO_INSTALL=0` before even the version probe, preserves it f
 Cargo, and forces it in Cargo's child environment; a missing pinned toolchain
 refuses instead of automatically installing. This changes no global rustup setting.
 See the [rustup environment reference](https://rust-lang.github.io/rustup/environment-variables.html).
-Python 3.10+ and Cargo 1.95+ are required. Keep the qualification
+Builtin routes require Python 3.10+ and Cargo 1.95+; staged Clippy requires Python 3.11+ and the exact installed repository pin 1.95.0. Keep the qualification
 profiles unchanged. Default jobs remain two (accepted range one to four), with
 incremental compilation disabled. This is a capacity policy, not a speed claim.
 
@@ -47,10 +47,10 @@ retained worktrees, and the capacity gate remains necessary. Do not repurpose a
 worktree path or restore backdated source over its build state without a separately
 verified fresh qualification; this path partition is not content-addressed state.
 
-The wrapper refuses aliases, external subcommands (including clippy and nextest), +toolchain,
+The wrapper refuses aliases, arbitrary external subcommands (including nextest), +toolchain,
 clean, manifest/config/path overrides (including output/artifact/build directory
-flags) and job overrides. Clippy requires a separately admitted route because Cargo
-can resolve it through an alias or external executable. Before `--`, joined single-dash tokens are refused except pure verbosity
+flags) and job overrides. The staged Linux Clippy route below binds direct installed
+drivers rather than Cargo alias/external discovery. Before `--`, joined single-dash tokens are refused except pure verbosity
 (`-vv`, `-vvv`, etc.); `-vj8`, `-pfoo` and `-Ffoo` are refused.
 Spell other permitted short options and values separately (`-p foo`, `-F foo`);
 job/configuration overrides remain refused. Arguments after `--` are passed to
@@ -123,7 +123,9 @@ with command-local empty values. Arbitrary build scripts and
 programs can write elsewhere; this is not an OS sandbox or a disk reservation.
 
 The atomic `cargo-active` directory is a conservative lease. Contenders refuse.
-Cargo exit 0 or 101 releases only the invocation's matching lease and retains artifacts.
+Builtin Cargo exit 0 or 101 releases only the invocation's matching lease and retains artifacts.
+Every attempted Clippy invocation retains its lease, including exit 0/101 and setup
+probe failures: its exit code describes the product, never whole-tree settlement.
 Cleanup requires the original directory identity and unique ownership marker;
 replacement leases, including copied markers, remain for owner verification.
 An unlaunched preparation failure releases only its own lease. Storage paths are
@@ -134,6 +136,43 @@ interruption and failed spawn retain it for owner verification. Exit 101 can als
 represent a Cargo panic: an exit status is not proof that all descendants ended.
 The root must verify independent consumers before assigning the slot again.
 No age/PID-based stealing or automatic deletion exists.
+
+### Staged native Clippy
+
+The existing owner admits only this finite Linux request (optional `--offline`):
+
+```text
+python3 scripts/cargo_admitted.py clippy -p PACKAGE --all-targets --profile agent --locked -- -D warnings
+```
+
+Python 3.11+ and the already-installed repository pin 1.95.0 are required. No
+installation occurs. The route fingerprints direct Cargo/rustc/rustdoc,
+cargo-clippy and sibling clippy-driver plus compiler runtimes, repository pin,
+owner source and discovered Cargo/Clippy configuration into the budget scope;
+it revalidates tools/config before launch and checks matching native versions
+under the same lease. These observations bind local file identity, not signed
+distribution provenance. It refuses wrappers, compiler/lint/loader selectors,
+Cargo config includes and configured loader environment entries. Bounded TOML
+validation covers quoted/dotted keys; there is no partial text parser. Forced
+Cargo child environment cannot replace projected tools, lint policy or resource
+paths. The renderer enforces one explicit native target and private target/build
+directories. Raw flags, `--fix`, help/version and other no-work shapes refuse.
+
+The direct driver gets the literal `clippy` token, exact child Cargo and compiler
+identities. Cargo JSON artifacts can witness compilation work; setup version
+success never qualifies package linting. Cancellation signals the owned native
+session group and retains the lease. Owner verification of every consumer is
+required before reuse even after a product pass; no general automatic tree proof
+is implemented. This staged route does not close the canonical typed executor
+or parity contracts #11660/#11663. Native Windows Clippy remains unqualified.
+
+The opt-in `scripts/tests/qualify_admitted_clippy.py --proof-root ABSOLUTE_DIR`
+creates a dependency-free offline fail/clean fixture. Its scoped reserve 4 GiB and
+growth 2 GiB apply only to that fixture, with every destination checked. The
+default 40 GiB reserve remains unchanged. It preserves logs, source hashes,
+budget/volume observations and matching-owner release receipts. Its exact-group
+absence proof is valid only for that owned fixture with no build scripts or
+independent consumers; do not use it as arbitrary workload lease cleanup.
 The wrapper holds through `run` and `test` execution, not independent later
 artifact consumers. The root must retain exclusive slot ownership for those
 consumers or use a separately admitted route. Direct Cargo and older wrappers do

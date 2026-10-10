@@ -17,10 +17,12 @@
   modes and checked upstream/live issue authorities. One documentation finding
   (table versus implemented renderer) repaired and re-reviewed; no open findings
   for the bounded preparation claim. No production or merge judgment.
-- [ ] Preserve exact commit on quiet branch and document decisions in existing issues.
-- [ ] Production Clippy admission/qualification: BLOCKED_BY_PREREQUISITE.
+- [x] Initial prerequisite preserved at 75d64037 and documented in all three existing issues.
+- [ ] Preserve staged admission commit and update existing issues with revised scope.
+- [x] Finite existing-owner Linux admission; real fail/clean fixture qualification.
+- [ ] Canonical typed executor/parity, native Windows Clippy, exact hook/resolver qualification.
 
-Commands actually run (no raw Rust build):
+Initial prerequisite commands (no product build at that stage):
 
 ```text
 python3 scripts/tests/test_clippy_driver_contract.py -v
@@ -43,8 +45,29 @@ SHA256 observation (these are evidence, not a portable trust allowlist):
 | clippy-driver | `81bd985ee50d78e9d8c5810f6ca836614d1bf95e0e8142f1ec5f42eb250ed729` |
 | rustc | `bff349e72704ff70bc08a234a3847338e797065bbedde5e556808bc87b7bf7c6` |
 
-No immutable product binary exists because no product build was performed. Driver
-dispatch is prerequisite evidence, never a lint/product receipt. Native Windows,
-real lint fail/clean, capacity/process-tree behavior and hook/resolver qualification
-remain NOT_PROVEN. Resources: source worktree retained for review; no production
-target/build/cache/lease allocated; test-owned recording fixtures removed normally.
+Staged follow-up checks:
+
+- Combined admitted tests: 72 total, 71 pass, 1 separate opt-in build skip.
+- New finite route suite:18 tests pass, including configuration/identity,
+  contention, all-exit retention and early/late cancellation.
+- Fresh authority review confirmed startup cancellation and post-probe config
+  repairs. Fresh prerequisite review found loader/include/target and SYSROOT
+  seams; all repaired, final re-review recorded with preserved candidate.
+- Real native fail/clean pair passed; latest reproducible proof directory:
+  `/workspace/clippy-qualification/clippy-native-lnlsrkm_`.
+- Retained `*-stdout.txt`, `*-stderr.txt`, `*-budget.json`, `*-receipt.json`
+  contain product101/0, Clippy-specific diagnostic, clean package artifacts,
+  source/owner hashes, exact native group absence, captured lease identity and
+  verified owner release postcondition. Fixture retained, not deleted.
+- Fixture-specific reserve 4 GiB/growth 2 GiB covers every checked actual destination;
+  default 40 GiB remains unchanged. No default build or expensive CI admitted.
+
+```text
+CARGO_HOME=/workspace/.cloud-tools/cargo RUSTUP_HOME=/workspace/.cloud-tools/rustup RUSTUP_AUTO_INSTALL=0 python3 scripts/tests/qualify_admitted_clippy.py --proof-root /workspace/clippy-qualification
+```
+
+Native Windows Clippy, general automatic tree settlement, canonical typed executor
+completion/parity and exact hook/resolver lint qualification remain NOT_PROVEN.
+Source worktree, installed shared toolchain/cache and owned fixture artifacts are
+retained. Both fixture leases released only after independent matching-owner
+native verification; no outstanding fixture consumer was observed.
