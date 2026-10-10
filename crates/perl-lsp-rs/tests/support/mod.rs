@@ -4,6 +4,9 @@
 
 use std::sync::OnceLock;
 
+#[path = "../common/admitted_binary.rs"]
+mod admitted_binary;
+
 pub mod bdd_diagnostics;
 pub mod client_caps;
 pub mod env_guard;
@@ -29,6 +32,11 @@ pub mod ux_bdd;
 // Shared support is compiled separately by tests that do not all spawn a process.
 #[allow(dead_code)]
 pub fn product_binary_path() -> Result<String, Box<dyn std::error::Error>> {
+    if let Some(path) =
+        admitted_binary::resolve(if cfg!(debug_assertions) { "debug" } else { "release" })
+    {
+        return path.map(|path| path.to_string_lossy().into_owned()).map_err(Into::into);
+    }
     if let Ok(path) = std::env::var("PERL_LSP_BIN") {
         return Ok(path);
     }

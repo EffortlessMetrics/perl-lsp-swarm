@@ -473,7 +473,7 @@ NESTED_COMMANDS = {
     "dap-core-build": ("build", "-p", "perl-lsp-rs-core", "--message-format=short", "--locked"),
     "dap-bin-build": ("build", "-p", "perl-dap", "--bin", "perl-dap", "--locked"),
     "dap-clippy": ("clippy", "-p", "perl-dap", "--lib", "--locked", "--", "-D", "warnings", "-A", "clippy::wildcard_imports"),
-    "perllsp-build": ("build", "-p", "perllsp", "--locked"),
+    "perllsp-build": ("build", "-p", "perllsp", "--locked", "--message-format=json"),
     "parser-doc": ("doc", "--no-deps", "--package", "perl-parser"),
     "parser-tree": ("tree", "-p", "perl-parser", "--edges", "normal"),
     "incremental-metadata": ("metadata", "--no-deps", "--format-version", "1"),

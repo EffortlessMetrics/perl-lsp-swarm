@@ -33,7 +33,15 @@ use std::process::Command;
 
 const BUILD_STDERR_MAX_BYTES: usize = 8 * 1024;
 
+#[path = "admitted_binary.rs"]
+mod admitted_binary;
+
 pub(crate) fn resolve_perl_lsp_cmds() -> impl Iterator<Item = Command> {
+    if let Some(path) = admitted_binary::resolve(active_profile()) {
+        let mut command = Command::new(must(path));
+        command.arg("--stdio");
+        return vec![command].into_iter();
+    }
     // Resolution order (fixed for test reliability):
     // 1. Explicit override via PERL_LSP_BIN
     // 2. Compile-time CARGO_BIN_EXE (guaranteed correct during `cargo test -p perl-lsp-rs`)

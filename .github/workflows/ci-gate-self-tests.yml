@@ -22,6 +22,11 @@ on:
       - 'scripts/tests/test_cargo_admitted_nested.py'
       - 'scripts/ci/parser_workspace_prepare.py'
       - 'scripts/ci/test_parser_workspace_prepare.py'
+      - 'scripts/ci/perllsp_workspace_prepare.py'
+      - 'scripts/ci/test_perllsp_workspace_prepare.py'
+      - 'crates/perl-lsp-rs/tests/common/admitted_binary.rs'
+      - 'crates/perl-lsp-rs/tests/common/binary_resolution.rs'
+      - 'crates/perl-lsp-rs/tests/support/mod.rs'
       - 'scripts/ci/pr_smoke_resources.py'
       - 'scripts/ci/test_pr_smoke_resources.py'
       - 'justfile'
@@ -645,6 +650,7 @@ jobs:
         run: |
           python3 -m unittest discover -s scripts/tests -p 'test_cargo_admitted*.py' -v
           python3 scripts/ci/test_parser_workspace_prepare.py
+          python3 scripts/ci/test_perllsp_workspace_prepare.py
           python3 scripts/ci/test_pr_smoke_resources.py
 
   cargo-toolchain-guard-self-test:

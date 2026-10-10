@@ -348,3 +348,28 @@ carries that same value through preallocation, prelaunch, snapshot and release.
 Snapshot construction must not re-observe a replacement marker. The repair's
 native qualification remains a separate prerequisite; cheap joined controls
 are not new Windows/macOS qualification or aggregate-workload admission.
+
+`perllsp-build` preserves `build -p perllsp --locked` and adds
+`--message-format=json`. The unactivated `scripts/ci/perllsp_workspace_prepare.py`
+adapter selects the actual Cargo compiler-artifact executable and requires a
+successful terminal build message. It never guesses a product path. Its existing
+temporary-root receipt binds the current nested plan, original live marker,
+source/config/tools, native platform, debug build profile, both roots and artifact
+identity/digest. It retains the outer owner's lifetime through the following
+`routed-compile` or `routed-runtime` row, preserving the existing libtest output.
+Each entire mode must belong to the outer plan before its build starts.
+
+The two LSP resolver families use one shared admitted-mode validator before any
+explicit candidate or developer freshness build. The child interpreter uses
+isolated mode. Missing, stale, mismatched, mutated or unspawnable handoffs refuse
+instead of falling through to Cargo, PATH or an opposite profile. Ordinary
+developer mode retains the existing resolver freshness behavior. The version
+probe is only executable eligibility; it proves no behavioral assertions.
+
+The adapter is intentionally not wired into gate policy or the native launcher
+yet. Its debug-only build row refuses a release consumer; no release build is
+silently substituted. Nested ownership remains Linux-qualified only. Platform
+suffix/refusal controls are not native Windows proof. Exact harness compilation,
+actual product JSON capture, parser diagnostic/xtask fixture admission, selected
+lib/bin harness inventory, conservative aggregate capacity/concurrency and
+runtime proof remain prerequisites to activation.
