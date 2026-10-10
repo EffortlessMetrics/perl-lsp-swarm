@@ -1141,10 +1141,10 @@ mod tests {
     /// instrument failure, never a silently discarded entry: output drift
     /// must not be able to turn a staged path into a clean absence.
     #[test]
-    fn malformed_ls_tree_records_are_instrument_failures_not_absence() {
-        assert!(parse_ls_tree_paths("").unwrap().is_empty());
+    fn malformed_ls_tree_records_are_instrument_failures_not_absence() -> Result<()> {
+        assert!(parse_ls_tree_paths("")?.is_empty());
         let well_formed = "100644 blob 4f1c3f0d4bc31cf1a5e4d13d314a4a1c31d0225d\tok.rs\0";
-        assert_eq!(parse_ls_tree_paths(well_formed).unwrap(), vec!["ok.rs"]);
+        assert_eq!(parse_ls_tree_paths(well_formed)?, vec!["ok.rs"]);
 
         for malformed in [
             // No TAB separator at all.
@@ -1161,6 +1161,7 @@ mod tests {
                 "malformed record {malformed:?} must be rejected, not skipped"
             );
         }
+        Ok(())
     }
 
     /// A type-changed (symlink) entry is PRESENT for content reads — its
