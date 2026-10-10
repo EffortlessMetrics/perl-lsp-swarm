@@ -95,9 +95,10 @@ impl LocalSymbolTable {
     /// table exists to inform. One bounded exception guards the POD gate
     /// (#17318): a line-initial POD directive directly after a code line whose
     /// last code character is a bare `/` is never trusted, because no legal
-    /// division continues with a line-initial `=command` term. The guard
-    /// clears after one line, so a real POD opener can be delayed by at most
-    /// one line.
+    /// division continues with a line-initial `=command` term. That directive
+    /// line is consumed without collecting declarations from its pattern text
+    /// (#17440). The guard clears after one line, so a real POD opener can be
+    /// delayed by at most one line.
     ///
     /// # Cost
     ///
@@ -361,10 +362,10 @@ fn scan_pass(input: &str, hints: &Declarations) -> Declarations {
         // a bare `/` may be the body of a multiline bare regex (`my $r = /`
         // newline `=cut`), and the scan cannot decide regex-versus-division
         // for an unprefixed slash (#17318). No legal division continues with a
-        // line-initial `=command`, so refuse the opener and scan the line as
-        // code instead.
-        if state.quote == QuoteState::Code && !state.possible_bare_regex_body && starts_pod(line) {
-            state.in_pod = true;
+        // line-initial `=command`, so consume the refused directive line as
+        // opaque pattern text rather than collecting fake declarations (#17440).
+        if state.quote == QuoteState::Code && starts_pod(line) {
+            state.in_pod = !state.possible_bare_regex_body;
             state.possible_bare_regex_body = false;
             line_start = next_line_start;
             continue;
