@@ -11,7 +11,6 @@
 //! Output is deterministic given the same diff + cargo metadata.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use color_eyre::eyre::{Context, Result, eyre};
@@ -28,44 +27,58 @@ use crate::ci_subject;
 /// A directly-changed crate.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 pub struct DirectCrate {
+    /// Cargo package name.
     pub name: String,
+    /// Selection reason retained in the receipt.
     pub reason: String,
 }
 
 /// A crate in the reverse-dependency closure.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 pub struct RevDepCrate {
+    /// Cargo package name.
     pub name: String,
+    /// Selection reason retained in the receipt.
     pub reason: String,
 }
 
 /// A crate pulled in by an architectural widener.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ArchWidener {
+    /// Cargo package name.
     pub name: String,
+    /// Rule.
     pub rule: String,
 }
 
 /// A selected standard CI lane with its reason and scope.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LaneEntry {
+    /// Selected CI lane identifier.
     pub lane: String,
+    /// Cargo packages selected for this lane.
     pub scope: Vec<String>,
+    /// Selection reason retained in the receipt.
     pub reason: String,
 }
 
 /// A selected heavy CI lane (mutation, fuzz) promoted by risk tags.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HeavyLaneEntry {
+    /// Selected CI lane identifier.
     pub lane: String,
+    /// Selection reason retained in the receipt.
     pub reason: String,
 }
 
 /// Decision payload for lane-selection metadata that is not yet enforced.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct LaneDecision {
+    /// Whether the lane is selected.
     pub selected: bool,
+    /// Requested lane profile.
     pub profile: String,
+    /// Deterministic selection reasons.
     pub reasons: Vec<String>,
 }
 
@@ -73,33 +86,50 @@ pub struct LaneDecision {
 /// plus provenance/reasons.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct LaneDecisions {
+    /// Parser-ratchet selection and provenance.
     pub parser_ratchet: LaneDecision,
 }
 
 /// Platform override flags.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct PlatformOverrides {
+    /// Whether changed paths require the Windows lane.
     pub windows_runner: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    /// Exact package subset for the Windows lane.
     pub windows_test_crates: Vec<String>,
 }
 
 /// The full scope classifier output (schema_version 2).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScopeOutput {
+    /// Version of the serialized receipt schema.
     pub schema_version: u32,
+    /// Resolved base identity.
     pub base: String,
+    /// Exact selected checkout commit.
     pub head_sha: String,
+    /// Resolved changed paths in deterministic order.
     pub changed_files: Vec<String>,
+    /// Changed-input classification.
     pub diff_class: String,
+    /// Packages directly changed by the subject.
     pub direct_crates: Vec<DirectCrate>,
+    /// Packages depending transitively on the directly changed packages.
     pub reverse_dep_closure: Vec<RevDepCrate>,
+    /// Additional packages required by architectural rules.
     pub architecture_wideners: Vec<ArchWidener>,
+    /// Detected risk categories.
     pub risk_tags: Vec<String>,
+    /// Platform selection derived from changed paths.
     pub platform_overrides: PlatformOverrides,
+    /// Selected standard CI lanes.
     pub selected_lanes: Vec<LaneEntry>,
+    /// Selected heavy CI lanes.
     pub selected_heavy_lanes: Vec<HeavyLaneEntry>,
+    /// Additional typed lane decisions.
     pub lanes: LaneDecisions,
+    /// Selection explanations keyed by lane.
     pub explanations: BTreeMap<String, String>,
 }
 
@@ -286,12 +316,19 @@ fn is_parser_ratchet_path(file: &str) -> bool {
 
 /// Risk tag constants.
 pub const RISK_TAG_CONCURRENCY: &str = "concurrency";
+/// Const risk tag parser recovery.
 pub const RISK_TAG_PARSER_RECOVERY: &str = "parser_recovery";
+/// Const risk tag offset math.
 pub const RISK_TAG_OFFSET_MATH: &str = "offset_math";
+/// Const risk tag path normalization.
 pub const RISK_TAG_PATH_NORMALIZATION: &str = "path_normalization";
+/// Const risk tag perf hot path.
 pub const RISK_TAG_PERF_HOT_PATH: &str = "perf_hot_path";
+/// Const risk tag public api.
 pub const RISK_TAG_PUBLIC_API: &str = "public_api";
+/// Const risk tag dep change.
 pub const RISK_TAG_DEP_CHANGE: &str = "dep_change";
+/// Const risk tag security surface.
 pub const RISK_TAG_SECURITY_SURFACE: &str = "security_surface";
 
 /// Public API facade crates (changing these → public_api risk tag).
@@ -944,6 +981,10 @@ pub struct CiScopeConfig {
 /// private copy of the main-first candidate chain + three-dot/two-dot diff.
 /// `classify_files`/`ScopeOutput` below remain the untouched classification
 /// brain — this function only supplies their `changed_files` input.
+#[expect(
+    clippy::print_stdout,
+    reason = "Shared CLI output preserves legacy xtask write-failure behavior; the classifier itself does not print."
+)]
 pub fn run(config: CiScopeConfig) -> Result<()> {
     let root = match config.root {
         Some(root) => root,
@@ -960,10 +1001,10 @@ pub fn run(config: CiScopeConfig) -> Result<()> {
         "json" => {
             let json = serde_json::to_string_pretty(&output)
                 .context("Failed to serialize scope output to JSON")?;
-            writeln!(std::io::stdout().lock(), "{json}").context("Failed to write scope JSON")?;
+            println!("{json}");
         }
         _ => {
-            print_text_summary(&output)?;
+            print_text_summary(&output);
         }
     }
 
@@ -1078,63 +1119,64 @@ pub fn load_metadata(root: &Path) -> Result<serde_json::Value> {
 // Text output
 // ---------------------------------------------------------------------------
 
-fn print_text_summary(output: &ScopeOutput) -> Result<()> {
-    let mut writer = std::io::stdout().lock();
-    writeln!(writer, "=== CI Scope Classifier (schema v{}) ===", output.schema_version)?;
-    writeln!(writer, "Base:       {}", output.base)?;
-    writeln!(writer, "HEAD SHA:   {}", output.head_sha)?;
-    writeln!(writer, "Diff class: {}", output.diff_class)?;
-    writeln!(writer, "Changed files: {}", output.changed_files.len())?;
+#[expect(
+    clippy::print_stdout,
+    reason = "Shared CLI output preserves legacy xtask write-failure behavior; the classifier itself does not print."
+)]
+fn print_text_summary(output: &ScopeOutput) {
+    println!("=== CI Scope Classifier (schema v{}) ===", output.schema_version);
+    println!("Base:       {}", output.base);
+    println!("HEAD SHA:   {}", output.head_sha);
+    println!("Diff class: {}", output.diff_class);
+    println!("Changed files: {}", output.changed_files.len());
 
     if output.direct_crates.is_empty() {
-        writeln!(writer, "Direct crates: (none)")?;
+        println!("Direct crates: (none)");
     } else {
-        writeln!(writer, "Direct crates:")?;
+        println!("Direct crates:");
         for c in &output.direct_crates {
-            writeln!(writer, "  [{}] {}", c.reason, c.name)?;
+            println!("  [{}] {}", c.reason, c.name);
         }
     }
 
     if !output.reverse_dep_closure.is_empty() {
-        writeln!(writer, "Reverse-dep closure:")?;
+        println!("Reverse-dep closure:");
         for c in &output.reverse_dep_closure {
-            writeln!(writer, "  {}", c.name)?;
+            println!("  {}", c.name);
         }
     }
 
     if !output.architecture_wideners.is_empty() {
-        writeln!(writer, "Architecture wideners:")?;
+        println!("Architecture wideners:");
         for w in &output.architecture_wideners {
-            writeln!(writer, "  {} — {}", w.name, w.rule)?;
+            println!("  {} — {}", w.name, w.rule);
         }
     }
 
     if !output.risk_tags.is_empty() {
-        writeln!(writer, "Risk tags: {}", output.risk_tags.join(", "))?;
+        println!("Risk tags: {}", output.risk_tags.join(", "));
     }
 
     if output.selected_lanes.is_empty() {
-        writeln!(writer, "Selected lanes: (none)")?;
+        println!("Selected lanes: (none)");
     } else {
-        writeln!(writer, "Selected lanes:")?;
+        println!("Selected lanes:");
         for l in &output.selected_lanes {
-            writeln!(writer, "  [{}] {} — {:?}", l.reason, l.lane, l.scope)?;
+            println!("  [{}] {} — {:?}", l.reason, l.lane, l.scope);
         }
     }
 
     if !output.selected_heavy_lanes.is_empty() {
-        writeln!(writer, "Heavy lanes:")?;
+        println!("Heavy lanes:");
         for l in &output.selected_heavy_lanes {
-            writeln!(writer, "  {} — {}", l.lane, l.reason)?;
+            println!("  {} — {}", l.lane, l.reason);
         }
     }
 
-    writeln!(
-        writer,
+    println!(
         "Parser ratchet lane: {} ({})",
         output.lanes.parser_ratchet.selected, output.lanes.parser_ratchet.profile
-    )?;
-    Ok(())
+    );
 }
 
 // ---------------------------------------------------------------------------

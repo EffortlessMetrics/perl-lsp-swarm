@@ -5,7 +5,6 @@
 //! never consult a mutable branch name after the event has been captured.
 
 use std::fs;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread;
@@ -28,68 +27,112 @@ const MAX_FAILURE_DETAIL_CHARS: usize = 256;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+/// Event vocabulary captured in CI subject receipts.
 pub enum CiEventKind {
+    /// Pull request event.
     PullRequest,
+    /// Push event.
     Push,
+    /// Merge-group event.
     MergeGroup,
+    /// Workflow-dispatch event.
     WorkflowDispatch,
+    /// Explicit commit-pair request.
     Explicit,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+/// Authority for subject input.
 pub enum SubjectResolutionSource {
+    /// GitHub event input authority.
     GithubEvent,
+    /// Explicit command input authority.
     ExplicitInput,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+/// Comparison mode bound to the subject.
 pub enum SubjectDiffMode {
+    /// Compare from the common ancestor.
     MergeBase,
+    /// Compare the two commit trees directly.
     Direct,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+/// Subject proof disposition.
 pub enum SubjectStatus {
+    /// Exact subject resolved and verified.
     Resolved,
+    /// Subject resolution did not establish proof.
     NotProven,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+/// Stable subject-resolution failure vocabulary.
 pub enum SubjectErrorCode {
+    /// Missing input resolution failure.
     MissingInput,
+    /// Malformed sha resolution failure.
     MalformedSha,
+    /// Zero sha resolution failure.
     ZeroSha,
+    /// Repository mismatch resolution failure.
     RepositoryMismatch,
+    /// Object unavailable resolution failure.
     ObjectUnavailable,
+    /// Non commit object resolution failure.
     NonCommitObject,
+    /// Diff unavailable resolution failure.
     DiffUnavailable,
+    /// Contradictory empty diff resolution failure.
     ContradictoryEmptyDiff,
+    /// Receipt invalid resolution failure.
     ReceiptInvalid,
+    /// Checkout mismatch resolution failure.
     CheckoutMismatch,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Subject configuration.
 pub struct CiSubjectReceipt {
+    /// Version of the serialized receipt schema.
     pub schema_version: String,
+    /// Stable semantic producer identity retained across entrypoints.
     pub producer: String,
+    /// Subject resolution disposition.
     pub status: SubjectStatus,
+    /// Expected repository owner/name.
     pub repository: String,
+    /// Captured event kind.
     pub event_kind: CiEventKind,
+    /// Authority that supplied the commit pair.
     pub resolution_source: SubjectResolutionSource,
+    /// Direct-tree or merge-base comparison mode.
     pub diff_mode: SubjectDiffMode,
+    /// Exact base commit.
     pub base_sha: String,
+    /// Exact selected checkout commit.
     pub head_sha: String,
+    /// Base commit tree identity.
     pub base_tree: String,
+    /// Head commit tree identity.
     pub head_tree: String,
+    /// Exact commit used as the diff base.
     pub diff_base_sha: String,
+    /// Diff-base tree identity.
     pub diff_base_tree: String,
+    /// Number of resolved changed paths.
     pub changed_file_count: usize,
+    /// Digest of the resolved changed-input list.
     pub changed_input_digest: String,
+    /// Digest binding the complete subject identity.
     pub subject_digest: String,
+    /// Typed resolution failure, when present.
     pub error_code: Option<SubjectErrorCode>,
 }
 
@@ -103,25 +146,40 @@ struct CiSubjectFailureReceipt {
 }
 
 #[derive(Debug)]
+/// Validated subject and its independently re-resolved changed paths.
 pub struct ResolvedCiSubject {
+    /// Validated immutable subject receipt.
     pub receipt: CiSubjectReceipt,
+    /// Changed paths re-resolved from the exact commits.
     pub changed_paths: Vec<String>,
 }
 
+/// Inputs for the immutable CI subject front door.
 pub struct CiSubjectConfig {
+    /// Explicit event name, or the existing GitHub environment default.
     pub event_name: Option<String>,
+    /// GitHub event JSON path.
     pub event_path: Option<PathBuf>,
+    /// Expected repository owner/name.
     pub repository: Option<String>,
+    /// Trusted workflow commit identity.
     pub github_sha: Option<String>,
+    /// Exact base commit.
     pub base_sha: Option<String>,
+    /// Exact selected checkout commit.
     pub head_sha: Option<String>,
+    /// Validated immutable subject receipt.
     pub receipt: PathBuf,
+    /// Repository-root override.
     pub root: Option<PathBuf>,
 }
 
 #[derive(Debug)]
+/// Typed subject-resolution error with bounded detail.
 pub struct SubjectResolutionError {
+    /// Stable typed resolution error.
     pub code: SubjectErrorCode,
+    /// Bounded actionable resolution detail.
     pub message: String,
 }
 
@@ -146,6 +204,11 @@ pub struct SubjectInput {
     pub head_sha: String,
 }
 
+/// Fn run(config.
+#[expect(
+    clippy::print_stdout,
+    reason = "Shared CLI output preserves legacy xtask write-failure behavior; the classifier itself does not print."
+)]
 pub fn run(config: CiSubjectConfig) -> Result<()> {
     let root = match config.root.as_ref() {
         Some(root) => root.clone(),
@@ -164,12 +227,7 @@ pub fn run(config: CiSubjectConfig) -> Result<()> {
     match resolution {
         Ok(subject) => {
             write_receipt(&config.receipt, &subject.receipt)?;
-            writeln!(
-                std::io::stdout().lock(),
-                "ci subject: RESOLVED ({})",
-                config.receipt.display()
-            )
-            .context("Failed to write CI subject summary")?;
+            println!("ci subject: RESOLVED ({})", config.receipt.display());
             Ok(())
         }
         Err(error) => {
@@ -179,6 +237,7 @@ pub fn run(config: CiSubjectConfig) -> Result<()> {
     }
 }
 
+/// Fn load and resolve(path.
 pub fn load_and_resolve(path: &Path, root: &Path) -> Result<ResolvedCiSubject> {
     let bytes = fs::read(path).with_context(|| format!("failed to read {}", path.display()))?;
     let receipt: CiSubjectReceipt = serde_json::from_slice(&bytes)
