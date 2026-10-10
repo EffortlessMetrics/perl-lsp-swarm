@@ -397,6 +397,10 @@ opt-level = 1
 # dev target/ size under parallel multi-worktree dev (#12791).
 debug = "line-tables-only"
 
+# Keep canonical test semantics while avoiding optimization of xtask itself.
+[profile.test.package.xtask]
+opt-level = 0
+
 # Profile for agent builds - optimized for lower artifact footprint
 [profile.agent]
 inherits = "dev"
