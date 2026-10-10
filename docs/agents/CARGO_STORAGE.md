@@ -9,7 +9,7 @@ route sets `RUSTUP_AUTO_INSTALL=0` before even the version probe, preserves it f
 Cargo, and forces it in Cargo's child environment; a missing pinned toolchain
 refuses instead of automatically installing. This changes no global rustup setting.
 See the [rustup environment reference](https://rust-lang.github.io/rustup/environment-variables.html).
-Python 3.10+ and Cargo 1.95+ are required. Keep the qualification
+Builtin routes require Python 3.10+ and Cargo 1.95+; staged Clippy requires Python 3.11+ and the exact installed repository pin 1.95.0. Keep the qualification
 profiles unchanged. Default jobs remain two (accepted range one to four), with
 incremental compilation disabled. This is a capacity policy, not a speed claim.
 
@@ -47,10 +47,10 @@ retained worktrees, and the capacity gate remains necessary. Do not repurpose a
 worktree path or restore backdated source over its build state without a separately
 verified fresh qualification; this path partition is not content-addressed state.
 
-The wrapper refuses aliases, external subcommands (including clippy and nextest), +toolchain,
+The wrapper refuses aliases, arbitrary external subcommands (including nextest), +toolchain,
 clean, manifest/config/path overrides (including output/artifact/build directory
-flags) and job overrides. Clippy requires a separately admitted route because Cargo
-can resolve it through an alias or external executable. Before `--`, joined single-dash tokens are refused except pure verbosity
+flags) and job overrides. The staged Linux Clippy route below binds direct installed
+drivers rather than Cargo alias/external discovery. Before `--`, joined single-dash tokens are refused except pure verbosity
 (`-vv`, `-vvv`, etc.); `-vj8`, `-pfoo` and `-Ffoo` are refused.
 Spell other permitted short options and values separately (`-p foo`, `-F foo`);
 job/configuration overrides remain refused. Arguments after `--` are passed to
@@ -123,7 +123,10 @@ with command-local empty values. Arbitrary build scripts and
 programs can write elsewhere; this is not an OS sandbox or a disk reservation.
 
 The atomic `cargo-active` directory is a conservative lease. Contenders refuse.
-Cargo exit 0 or 101 releases only the invocation's matching lease and retains artifacts.
+Builtin Cargo exit 0 or 101 releases only the invocation's matching lease and retains artifacts.
+Clippy releases only after its owned Linux kernel child scope proves settlement
+and matching lease release succeeds. Exit 0/101, leader/session absence and a
+disconnect never establish that proof. Ambiguity or deadline expiry retains it.
 Cleanup requires the original directory identity and unique ownership marker;
 replacement leases, including copied markers, remain for owner verification.
 An unlaunched preparation failure releases only its own lease. Storage paths are
@@ -134,6 +137,113 @@ interruption and failed spawn retain it for owner verification. Exit 101 can als
 represent a Cargo panic: an exit status is not proof that all descendants ended.
 The root must verify independent consumers before assigning the slot again.
 No age/PID-based stealing or automatic deletion exists.
+
+### Staged native Clippy
+
+The existing owner admits only this finite Linux request (optional `--offline`):
+
+```text
+python3 scripts/cargo_admitted.py clippy -p PACKAGE --all-targets --profile agent --locked -- -D warnings
+```
+
+Python 3.11+ and the already-installed repository pin 1.95.0 are required. No
+installation occurs. The route fingerprints direct Cargo/rustc/rustdoc,
+cargo-clippy and sibling clippy-driver plus compiler runtimes, repository pin,
+owner source and discovered Cargo/Clippy configuration into the budget scope;
+it revalidates tools/config before launch and checks matching native versions
+under the same lease. These observations bind local file identity, not signed
+distribution provenance. It refuses wrappers, compiler/lint/loader selectors,
+Cargo config includes and configured loader environment entries. Bounded TOML
+validation covers quoted/dotted keys; there is no partial text parser. Forced
+Cargo child environment cannot replace projected tools, lint policy or resource
+paths. The renderer enforces one explicit native target and private target/build
+directories. Raw flags, `--fix`, help/version and other no-work shapes refuse.
+
+The direct driver gets the literal `clippy` token, exact child Cargo and compiler
+identities. Cargo JSON artifacts can witness compilation work; setup version
+success never qualifies package linting. Cancellation signals the owned native
+session group. Before the first setup/product child, the process-local Linux
+subreaper requires a single native CPython thread, no existing unrelated children, a known
+default SIGCHLD action without auto-reaping, and supported pidfd child waits and
+signals. The same owner reaps adopted descendants, including setsid/double-fork
+helpers, until kernel ECHILD with __WALL proves all its child types have ended.
+Only that proof plus matching lease release permits reuse; no whole-host process
+or environment scan is required. The recorded leader result remains separate
+from tree settlement. Proven settlement and release after cancellation returns
+status 130, preserving the product exit separately. Failed settlement or release
+returns admission status 75, including cancellation with incomplete closure.
+This staged route does not close the canonical
+typed executor/parity contracts #11660/#11663 or cover independent external
+services/artifact consumers. The guarantee covers descendants of newly launched
+setup and product children in this exclusive Linux scope, including descendants
+that change sessions. Work delegated to an unrelated existing service is outside
+that tree and requires separate ownership proof. Native Windows Clippy remains
+unqualified; other platforms are refused.
+
+Cancellation uses bound pidfds validated as this owner's waitable children.
+The current driver's unreaped native session can receive TERM; owned handles
+receive TERM then KILL after2seconds, with at most30seconds of post-leader drain.
+Only the owner's immediate-child table may discover adopted cancellation
+candidates. If that table is unavailable, kernel waits can still prove eventual
+settlement, but unknown surviving detached helpers cannot safely be signaled:
+deadline/error retains the lease. There is no broad /proc fallback. Missing
+capabilities, existing children/threads, lost subreaper ownership, ambiguous waits,
+owner death and incomplete cancellation never become release authority.
+
+The opt-in `scripts/tests/qualify_admitted_clippy.py --proof-root ABSOLUTE_DIR`
+creates a dependency-free offline fail/clean fixture. Its scoped reserve 4 GiB and
+growth 2 GiB apply only to that fixture, with every destination checked. The
+default 40 GiB reserve remains unchanged. It preserves logs, source hashes,
+budget/volume observations and original-owner kernel settlement/release receipts.
+It independently records exact-group absence; that additional observation does
+not authorize arbitrary workload cleanup or cover independent consumers.
+
+#### Recovering a retained Clippy lease
+
+Capture the `cargo-admitted resources:` JSON before setup starts, together with
+launch/product/cancellation logs and the exact owner revision. It records the
+original `lease`, `lease_identity` (device/inode) and unique `lease_marker`;
+`cargo-admitted Clippy launch:` records the native host and process group. These
+fields are evidence for recovery, not automatic release authority. New owned
+operations emit `cargo-admitted Clippy settlement:` with kernel proof and release
+postcondition. Previously retained attempts launched without that subreaper scope
+cannot be adopted or retroactively proven by a later owner.
+
+For new operations, a trustworthy matching settlement receipt with
+`tree_settled:true` and `proof:"kernel ECHILD (__WALL)"` replaces any whole-host
+scan requirement for the launched tree. Verify original ownership, any separately
+admitted artifact consumers, and the release postcondition. Failed/missing proof
+preserves the lease. The manual independent verification below applies to older
+or interrupted operations with no kernel completion receipt:
+
+1. Recover executor connectivity and verify the same native host and complete
+   process visibility. A connection loss, age, missing leader PID, exit 0/101 or
+   absent process group alone does not prove settlement. Do not signal a reused
+   numeric PID/group or adopt ownership from current directory contents.
+2. Independently verify no active descendant, detached helper, build script,
+   binary consumer or separate Cargo operation uses the recorded source/output/
+   temporary roots. Check native process ancestry/group/session, executable,
+   cwd, open descriptors and mappings within authorized task visibility. Do not
+   retry blocked privileged scans or inspect unrelated process environments.
+   Account explicitly for known pre-existing provider processes and observation
+   limits; unfamiliar active processes or incomplete consumer visibility refuse.
+   Native Windows requires the separately qualified launcher/tree authority;
+   Linux observations do not substitute for it.
+3. Preserve the verification receipt and artifact inventory/identities. Confirm
+   the original lease device/inode and exactly its recorded empty unique marker
+   still match. Missing original ownership evidence, replaced/linked directories,
+   extra markers/files, host mismatch or changed resource identities refuse.
+4. Only after those checks, the root owner calls this revision's existing
+   `release_lease(Path(receipt["lease"]), tuple(receipt["lease_identity"]),
+   Path(receipt["lease_marker"]))`. This removes only the matching empty marker
+   and lease directories. Verify `os.path.lexists(lease)` is false; a failed
+   postcondition remains retained for investigation. Never use recursive deletion,
+   unlink a replacement, clear outputs/caches or use age-only reclamation.
+
+Already-absent leases are an observed released state, not permission to release a
+new directory at the same path. If any consumer/evidence is uncertain, preserve
+the lease and artifacts with a stated blocker. This is a practical manual owner
+procedure; no generic automatic process-tree proof or cleanup service is added.
 The wrapper holds through `run` and `test` execution, not independent later
 artifact consumers. The root must retain exclusive slot ownership for those
 consumers or use a separately admitted route. Direct Cargo and older wrappers do
