@@ -14,6 +14,12 @@ on:
   pull_request:
     branches: [main, master]
     paths:
+      # Scoped pre-build storage admission; Python fixtures compile no Rust.
+      - 'scripts/cargo-admitted'
+      - 'scripts/cargo_admitted.py'
+      - 'scripts/tests/test_cargo_admitted_storage.py'
+      - 'scripts/tests/test_cargo_admitted_budget.py'
+      - 'justfile'
       - 'scripts/cargo_allow_cadence.py'
       - 'scripts/tests/test_cargo_allow_cadence.py'
       - 'scripts/cargo-package-workspace-dry-run.sh'
@@ -622,6 +628,16 @@ jobs:
             echo "" >> "$GITHUB_STEP_SUMMARY"
             echo "The per-worktree target-dir isolation contract regressed. Check the step output above for the failed case." >> "$GITHUB_STEP_SUMMARY"
           fi
+
+  cargo-admitted-storage-self-test:
+    name: Cargo admitted storage self-test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - name: Run both admitted storage suites without Rust builds
+        run: python3 -m unittest discover -s scripts/tests -p 'test_cargo_admitted*.py' -v
 
   cargo-toolchain-guard-self-test:
     name: Entrypoint cargo toolchain guard self-test
