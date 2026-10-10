@@ -45,6 +45,7 @@ mod planning_types;
 pub mod route_profile;
 mod routed_preparation;
 mod routed_result_adapter;
+mod routed_runtime_evidence;
 
 pub use first_failure::{is_cargo_test_command, parse_first_failure};
 
@@ -2441,7 +2442,7 @@ fn run_single_gate(
 
     match execution {
         Ok(execution) => {
-            let status = if execution.timed_out {
+            let mut status = if execution.timed_out {
                 "timeout".to_string()
             } else if execution.exit_code == 0 {
                 "pass".to_string()
@@ -2450,7 +2451,7 @@ fn run_single_gate(
             };
 
             // Extract output summary (last 10 lines or error message)
-            let output_summary = extract_output_summary(&execution.stdout, 10);
+            let mut output_summary = extract_output_summary(&execution.stdout, 10);
 
             // Parse metrics if this is a test gate. Whether the test binary
             // was reached (#11797) is orthogonal to whether the summary was
@@ -2480,6 +2481,29 @@ fn run_single_gate(
                     execution.test_execution_reached_attempts.clone();
             }
 
+            // Exit zero is necessary but does not establish executed runtime.
+            // Validate only this selected nonempty obligation; preparation and
+            // scoped-noop dispositions retain their distinct meanings.
+            if status == "pass" && gate.name == routed_preparation::RUNTIME {
+                let evidence = fs::File::open(&log_path)
+                    .map_err(|error| format!("runtime log unavailable: {error}"))
+                    .and_then(|file| {
+                        routed_runtime_evidence::validate(std::io::BufReader::new(file))
+                    });
+                match evidence {
+                    Ok(counts) => {
+                        let metrics = metrics.get_or_insert_with(GateMetrics::default);
+                        metrics.tests_passed = Some(counts.passed);
+                        metrics.tests_failed = Some(0);
+                        metrics.tests_ignored = Some(counts.ignored);
+                        metrics.tests_total = counts.passed.checked_add(counts.ignored);
+                    }
+                    Err(reason) => {
+                        status = "error".into();
+                        output_summary = format!("runtime evidence NOT_PROVEN: {reason}");
+                    }
+                }
+            }
             // For failing cargo test gates, extract the first failure details
             let first_failure = if status == "fail" && is_cargo_test_command(command) {
                 parse_first_failure(&execution.stdout, execution.exit_code)
@@ -5528,6 +5552,69 @@ gates:
         Ok(())
     }
 
+    #[test]
+    #[cfg(windows)]
+    fn routed_runtime_requires_current_executed_success() -> color_eyre::eyre::Result<()> {
+        let dir = tempdir()?;
+        let (passing, _) = native_fixture_command(dir.path())?;
+        let cases = [
+            (passing.clone(), "pass", 0),
+            (passing.replace("--exact", "--list --exact"), "error", 0),
+            (passing.replace("--ignored", ""), "error", 0),
+            (format!("{passing} --skip native_child_fixture"), "error", 0),
+            (
+                passing.replace("NATIVE_GATE_VALUE=", "NATIVE_GATE_FAIL=1 NATIVE_GATE_VALUE="),
+                "fail",
+                101,
+            ),
+        ];
+        let policy = policy_with_gates(Vec::new());
+        for (command, expected, exit) in cases {
+            // A prior successful report cannot qualify this invocation.
+            fs::write(
+                dir.path().join("unit_routed_full.log"),
+                "running 1 test\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;\n",
+            )?;
+            let gate = pr_gate("unit_routed_full", GatePlanningRole::RustScoped, &command);
+            let result =
+                run_single_gate(&gate, &policy, dir.path(), &GateRunnerConfig::default(), None)?;
+            assert_eq!(result.status, expected, "{:?}", result.output_summary);
+            assert_eq!(result.exit_code, Some(exit));
+            assert!(result.command_started);
+            let observation = super::routed_result_adapter::observation_from_gate_result(
+                &gate,
+                &result,
+                dir.path(),
+                dir.path(),
+                None,
+            )?;
+            let expected_status = match expected {
+                "pass" => xtask::routed_result::RoutedReaderGateStatus::Pass,
+                "fail" => xtask::routed_result::RoutedReaderGateStatus::Fail,
+                _ => xtask::routed_result::RoutedReaderGateStatus::ErrorAfterStart,
+            };
+            assert_eq!(observation.runner_status, expected_status);
+            if expected == "error" {
+                // The same execution under the prior unvalidated status path
+                // returns pass, proving the guard detects an actual false pass.
+                let mut unvalidated = gate.clone();
+                unvalidated.name = "runtime_validation_negative_control".into();
+                let control = run_single_gate(
+                    &unvalidated,
+                    &policy,
+                    dir.path(),
+                    &GateRunnerConfig::default(),
+                    None,
+                )?;
+                assert_eq!(control.status, "pass");
+                assert_eq!(control.exit_code, Some(0));
+            }
+            if expected == "pass" {
+                assert_eq!(result.metrics.and_then(|metrics| metrics.tests_passed), Some(1));
+            }
+        }
+        Ok(())
+    }
     // Native launcher regressions (#17482). The child is this real libtest
     // executable; fixture configuration is only in Command's child environment.
     #[test]
