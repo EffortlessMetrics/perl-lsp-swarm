@@ -185,12 +185,17 @@ fn spec_violations(graph: &TrainGraph, root: &Path) -> Vec<String> {
         // programmes may own `.spec/<issue>-*` directories; only this train's
         // controller set is guarded here, and the manifest laws already forbid
         // any governance node from claiming a compiled packet.
-        if CONTROLLER_NO_PACKET.contains(&id.as_str()) && packet_dir_exists(root, node.issue_number)
-        {
-            violations.push(format!(
-                "S03 [{id}]: route controller has a .spec/{}-* packet; controllers receive no implementation packet",
-                node.issue_number
-            ));
+        if CONTROLLER_NO_PACKET.contains(&id.as_str()) {
+            match packet_dir_exists(root, node.issue_number) {
+                Ok(true) => violations.push(format!(
+                    "S03 [{id}]: route controller has a .spec/{}-* packet; controllers receive no implementation packet",
+                    node.issue_number
+                )),
+                Ok(false) => {}
+                Err(error) => violations.push(format!(
+                    "S03 [{id}]: cannot enumerate .spec: {error}; controller packet absence is not established"
+                )),
+            }
         }
     }
 
@@ -223,15 +228,24 @@ fn spec_violations(graph: &TrainGraph, root: &Path) -> Vec<String> {
     violations
 }
 
-fn packet_dir_exists(root: &Path, issue: u64) -> bool {
+fn packet_dir_exists(root: &Path, issue: u64) -> std::io::Result<bool> {
+    packet_entries_exist(std::fs::read_dir(root.join(".spec"))?, issue)
+}
+
+fn packet_entries_exist(
+    entries: impl IntoIterator<Item = std::io::Result<std::fs::DirEntry>>,
+    issue: u64,
+) -> std::io::Result<bool> {
     let prefix = format!("{issue}-");
-    let Ok(entries) = std::fs::read_dir(root.join(".spec")) else {
-        return false;
-    };
-    entries.filter_map(Result::ok).any(|entry| {
-        entry.path().is_dir()
-            && entry.file_name().to_str().is_some_and(|name| name.starts_with(&prefix))
-    })
+    let mut found = false;
+    // Finish enumeration even after a match so a later entry error is never
+    // mistaken for a successfully enumerated directory.
+    for entry in entries {
+        let entry = entry?;
+        found |= entry.path().is_dir()
+            && entry.file_name().to_str().is_some_and(|name| name.starts_with(&prefix));
+    }
+    Ok(found)
 }
 
 /// Digit-bounded `#{issue}` containment: `#1143` must not pass by matching
@@ -438,14 +452,14 @@ mod tests {
         let root = project_root().expect("project root");
         let graph = graph();
         // The committed tree never grants a controller a packet.
-        assert!(!packet_dir_exists(&root, 8087));
+        assert!(!packet_dir_exists(&root, 8087).expect("enumerate committed packets"));
         assert!(spec_violations(&graph, &root).is_empty());
         // A fabricated `.spec/8087-*` directory trips the S03 rule.
         let probe = probe_root("controller-packet");
         std::fs::create_dir_all(probe.join(".spec").join("8087-controller-packet"))
             .expect("probe dir");
-        assert!(packet_dir_exists(&probe, 8087));
-        assert!(!packet_dir_exists(&probe, 11463));
+        assert!(packet_dir_exists(&probe, 8087).expect("enumerate probe packets"));
+        assert!(!packet_dir_exists(&probe, 11463).expect("enumerate probe packets"));
         // The fabricated packet actually trips the S03 rule in the check
         // itself, not just the directory probe.
         let probe_violations = spec_violations(&graph, &probe);
@@ -453,6 +467,87 @@ mod tests {
             probe_violations.iter().any(|v| v.starts_with("S03 [8087]")),
             "unexpected violations: {probe_violations:?}"
         );
+    }
+
+    #[test]
+    fn enumeration_open_error_is_an_s03_violation() {
+        let probe = probe_root(&format!("enumeration-open-error-{}", std::process::id()));
+        let spec = probe.join(".spec");
+        std::fs::remove_dir(&spec).expect("remove empty spec directory");
+        assert!(packet_dir_exists(&probe, 8087).is_err());
+        let violations = spec_violations(&graph(), &probe);
+        assert!(
+            violations.iter().any(|v| {
+                v.starts_with("S03 [8087]: cannot enumerate .spec")
+                    && v.contains("controller packet absence is not established")
+            }),
+            "unexpected violations: {violations:?}"
+        );
+        // An existing path that is not a directory also fails enumeration.
+        std::fs::write(&spec, "not a directory").expect("spec file");
+        assert!(packet_dir_exists(&probe, 8087).is_err());
+        let violations = spec_violations(&graph(), &probe);
+        assert!(violations.iter().any(|v| v.starts_with("S03 [8087]: cannot enumerate .spec")));
+        std::fs::remove_file(&spec).expect("remove probe file");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn traverse_only_spec_directory_is_an_s03_violation() {
+        use std::os::unix::fs::PermissionsExt;
+        let probe = probe_root(&format!("enumeration-traverse-only-{}", std::process::id()));
+        let spec = probe.join(".spec");
+        std::fs::create_dir_all(spec.join("8087-controller-packet")).expect("hidden packet");
+        let original = std::fs::metadata(&spec).expect("spec metadata").permissions();
+        std::fs::set_permissions(&spec, std::fs::Permissions::from_mode(0o111))
+            .expect("traverse-only permissions");
+        let is_dir = spec.is_dir();
+        let listing = std::fs::read_dir(&spec);
+        let violations = spec_violations(&graph(), &probe);
+        std::fs::set_permissions(&spec, original).expect("restore spec permissions");
+        if listing.is_ok() {
+            eprintln!(
+                "permission-denial fixture unavailable: process can list traverse-only directories"
+            );
+            return;
+        }
+        assert!(is_dir, "the old directory guard must still pass");
+        assert!(
+            violations.iter().any(|v| {
+                v.starts_with("S03 [8087]: cannot enumerate .spec")
+                    && v.contains("controller packet absence is not established")
+            }),
+            "unexpected violations: {violations:?}"
+        );
+    }
+
+    #[test]
+    fn enumeration_entry_errors_are_not_discarded() {
+        let error = || std::io::Error::from(std::io::ErrorKind::PermissionDenied);
+        assert!(packet_entries_exist([Err(error())], 8087).is_err());
+        let probe = probe_root(&format!("enumeration-entry-error-{}", std::process::id()));
+        std::fs::create_dir_all(probe.join(".spec/8087-controller-packet"))
+            .expect("controller packet");
+        // Both entry orders must reject; an early match must not hide a later error.
+        let entries = std::fs::read_dir(probe.join(".spec")).expect("read probe");
+        assert!(packet_entries_exist(entries.chain([Err(error())]), 8087).is_err());
+        let entries = std::fs::read_dir(probe.join(".spec")).expect("read probe");
+        assert!(packet_entries_exist([Err(error())].into_iter().chain(entries), 8087).is_err());
+    }
+
+    #[test]
+    fn successful_enumeration_preserves_packet_matching() {
+        let probe = probe_root(&format!("enumeration-controls-{}", std::process::id()));
+        assert!(!packet_dir_exists(&probe, 8087).expect("empty spec directory"));
+        for name in ["80870-other-packet", "18087-other-packet", "11463-route-packet"] {
+            std::fs::create_dir_all(probe.join(".spec").join(name)).expect("unrelated packet");
+        }
+        std::fs::write(probe.join(".spec/8087-file"), "not a packet directory")
+            .expect("ordinary file");
+        assert!(!packet_dir_exists(&probe, 8087).expect("no matching packet directory"));
+        std::fs::create_dir_all(probe.join(".spec/8087-controller-packet"))
+            .expect("matching packet");
+        assert!(packet_dir_exists(&probe, 8087).expect("matching controller packet"));
     }
 
     #[test]
