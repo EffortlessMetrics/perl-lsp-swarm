@@ -6,7 +6,9 @@ The initial dispatch-only prerequisite was preserved at `75d64037c699b92dd48924d
 Review of the existing CARGO_STORAGE root-admission exception distinguishes a
 separately admitted finite route from a production substitute for #11660. This
 increment changes that same owner, preserves its resources/capacity/lease and
-retains every attempted Clippy lease for independent owner verification. No
+initially retained every attempted Clippy lease for independent owner verification.
+The follow-up kernel scope below makes new owned-tree settlement independent of
+unrelated host-daemon visibility; earlier unproven attempts remain retained. No
 parallel executor/model/reservation architecture is introduced.
 
 ## Current subjects and start gate
@@ -126,13 +128,23 @@ compiler/lint/loader selectors refuse. Parsed Cargo config includes and loader
 entries refuse; forced child tool/lint/sysroot/resource entries are overridden.
 No aliases, fixes, help/version, arbitrary flags, discovery fallback or install.
 
-Version probes are lease-owned setup only. Product exit 0/101 is separately
-reported with terminality awaiting owner verification. Every attempted Clippy
-lease remains owned, including probes, spawn failure, cancellation and unfamiliar
-exit. The owned session group receives cancellation; no exit infers descendant
-settlement. Root must verify every native consumer before matching-owner release.
-General automatic supervision/release, typed model/operation/result/queue APIs,
-canonical selected-work counters and cross-host parity remain future contracts.
+Version probes are lease-owned setup only. New ClippyTree scopes are enabled
+before every setup/product child in the existing single-thread CPython owner.
+Initial ECHILD with __WALL refuses unrelated children; prior subreaper0 and known
+SIGCHLD default/non-autoreaping action are required. Linux adoption retains
+setsid/double-fork descendants as this owner's children. Sequential leader waits
+preserve product results; bounded adopted-child waits must reach kernel ECHILD
+with __WALL before original matching lease release. Group absence never suffices.
+Pidfd cancellation requires kernel child waitability. Only an owner-only children
+table discovers additional candidates; no broad process/environment scan. This
+host lacks that table, so an unknown surviving detached helper conservatively
+retains its lease at deadline, while eventual kernel closure can still settle.
+Missing capabilities, ownership/wait errors, timeout, process death or failed
+release never become completion (CLI75 even if product0). Earlier scopes without
+subreaper provenance cannot be retroactively adopted. Independent external
+service/artifact consumers remain separately owned and outside this guarantee.
+Canonical typed model/operation/result/queue APIs, work counters, broad supervision
+and cross-host parity remain future contracts.
 
 `scripts/tests/test_cargo_admitted_clippy.py` supplies bounded positive/negative
 route, identity/config, contention, setup, cancellation and lease controls.
@@ -142,8 +154,9 @@ spy and no-work/wrong-route controls; no compiler work is claimed by that spy.
 It creates an offline no-dependency library with two tiny normal/test lint units,
 then observes deliberate `clippy::useless_vec` failure 101 and clean exit 0 plus two
 Cargo compiler-artifact rows. It tests hostile forced Cargo tool/lint/sysroot/
-resource settings. Actual group absence and captured lease inode+unique marker
-permit its independent root-owned release, only for this no-helper fixture.
+resource settings. The original owner now releases after kernel ECHILD proof and matching original
+lease inode/marker. The fixture independently checks that receipt and group
+absence; it adds no arbitrary-workload manual release authority.
 All source, logs, budget, source/owner hashes and volume receipts are retained.
 
 /workspace has about 30 GiB free and /tmp 8.8 GiB; default 40 GiB admission remains denied.
@@ -153,5 +166,8 @@ fixture. Every actual destination is checked; no generic reserve change or disk
 reservation is claimed. Latest artifacts live under the recorded proof directory
 in checklist.md. Hook/resolver qualification needs its own conservative exact
 workload budget and independent consumer settlement. No performance gain or
-canonical parity/native Windows qualification follows from the fixture.
+canonical parity/native Windows qualification follows from the fixture. Native
+lifecycle microfixtures cover detached generations, cancellation, clone children,
+foreign ownership, missing capabilities, wait errors and lost scope, without
+Cargo or any cross-process environment scan.
 Rollback reverts this finite owner branch; existing artifacts stay intact.

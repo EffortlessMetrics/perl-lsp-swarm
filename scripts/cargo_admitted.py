@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Bounded Cargo admission. No artifact deletion or ownership inference."""
 import hashlib
+import ctypes
 import json
 import math
 import os
@@ -13,6 +14,7 @@ import signal
 import stat
 import subprocess
 import sys
+import time
 import uuid
 
 
@@ -181,11 +183,12 @@ def revalidate_clippy_toolchain(plan):
             raise Denied("Clippy toolchain identity changed before launch: " + expected["path"])
 
 
-def clippy_version_check(plan, env):
+def clippy_version_check(plan, env, tree=None):
     versions = {}
     for name in ("cargo", "rustc", "cargo-clippy", "clippy-driver"):
         command = [plan["subjects"][name]["path"], "-vV" if name == "rustc" else "--version"]
-        result = subprocess.run(command, env=env, capture_output=True, timeout=15, check=True)
+        result = (tree.probe(command, env) if tree else
+                  subprocess.run(command, env=env, capture_output=True, timeout=15, check=True))
         if len(result.stdout) + len(result.stderr) > 16384:
             raise Denied("Clippy setup output exceeded its observation bound")
         versions[name] = result.stdout.decode("utf-8").strip()
@@ -237,10 +240,176 @@ def clippy_configuration(worktree, paths):
     return observed
 
 
-def call_clippy(command, env, lock):
+class ClippyTree:
+    """One exclusively owned Linux CLI scope; not a general process executor.
+
+    Kernel adoption/waits cover detached descendants. Unrelated daemons need no
+    inspection. Only our own children file may locate cancellation candidates;
+    waitability + pidfds authorize signals, never a numeric PID/PPID guess.
+    """
+    WALL = 0x40000000  # Linux __WALL also includes non-SIGCHLD clone children.
+
+    def __init__(self):
+        if platform.python_implementation() != "CPython" or len(list(Path('/proc/self/task').iterdir())) != 1:
+            raise Denied("Clippy tree requires a single native CPython thread")
+        if (not hasattr(os, "pidfd_open") or not hasattr(signal, "pidfd_send_signal")
+                or not hasattr(os, "P_PIDFD") or signal.getsignal(signal.SIGCHLD) != signal.SIG_DFL):
+            raise Denied("Clippy tree requires pidfd waits/signals and default SIGCHLD")
+        self.libc = ctypes.CDLL(None, use_errno=True)
+        prior = ctypes.c_int()
+        if self.libc.prctl(37, ctypes.byref(prior), 0, 0, 0) != 0 or prior.value != 0:
+            raise Denied("Clippy tree requires an unclaimed subreaper scope")
+        try:
+            os.waitid(os.P_ALL, 0, os.WEXITED | os.WNOHANG | os.WNOWAIT | self.WALL)
+        except ChildProcessError:
+            pass
+        else:
+            raise Denied("Clippy tree refuses existing unrelated children")
+        fd = os.pidfd_open(os.getpid())
+        try:
+            try:
+                os.waitid(os.P_PIDFD, fd, os.WEXITED | os.WNOHANG | os.WNOWAIT | self.WALL)
+            except ChildProcessError:
+                pass  # self is not a child: pidfd wait support confirmed.
+            else:
+                raise Denied("invalid Clippy pidfd child-wait probe")
+        finally:
+            os.close(fd)
+        # CPython PyOS_setsig installs fresh sigaction flags (SA_ONSTACK),
+        # explicitly clearing SA_NOCLDWAIT rather than inspecting only handler.
+        signal.signal(signal.SIGCHLD, signal.SIG_DFL)
+        if self.libc.prctl(36, 1, 0, 0, 0) != 0:
+            raise Denied("native Clippy subreaper setup failed")
+        if self.libc.prctl(37, ctypes.byref(prior), 0, 0, 0) != 0 or prior.value != 1:
+            raise Denied("native Clippy subreaper ownership was not established")
+        self.handles, self.reaped, self.errors = {}, [], []
+        self.cancelled = False
+        self.stopping = False
+        self.binding = False
+        self.previous = {}
+        for signum in (signal.SIGINT, signal.SIGTERM):
+            self.previous[signum] = signal.signal(signum, self.interrupted)
+
+    def interrupted(self, signum, frame):
+        self.cancelled = True
+        if self.binding:
+            return  # defer until the just-spawned child's handle is recorded.
+        raise KeyboardInterrupt("Clippy cancelled; owned descendants must settle")
+
+    def track(self, pid, process=None):
+        if pid in self.handles:
+            return
+        fd = os.pidfd_open(pid)
+        try:
+            os.waitid(os.P_PIDFD, fd, os.WEXITED | os.WNOHANG | os.WNOWAIT | self.WALL)
+        except BaseException:
+            os.close(fd)
+            raise
+        self.handles[pid] = (fd, process)
+
+    def probe(self, command, env):
+        self.binding = True
+        try:
+            process = subprocess.Popen(command, env=env, stdout=subprocess.PIPE,
+                                       stderr=subprocess.PIPE, start_new_session=True)
+            self.track(process.pid, process)
+        finally:
+            self.binding = False
+        if self.cancelled:
+            raise KeyboardInterrupt("Clippy probe cancelled after child binding")
+        stdout, stderr = process.communicate(timeout=15)
+        result = subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+        result.check_returncode()
+        return result
+
+    def child_ids(self):
+        try:
+            text = (Path('/proc/self/task') / str(os.getpid()) / 'children').read_text()
+        except FileNotFoundError:
+            return []  # unavailable: never substitute a whole-host scan.
+        if len(text) > 65536:
+            raise Denied("owned child table exceeds observation bound")
+        return [int(pid) for pid in text.split()]
+
+    def finish(self, stop=False, timeout=30, grace=2):
+        self.stopping |= stop or self.cancelled
+        started = time.monotonic()
+        settled = False
+        child_table_available = (Path('/proc/self/task') / str(os.getpid()) / 'children').exists()
+        def pending(signum, frame):
+            self.cancelled = True  # repeated cancellation cannot interrupt reap.
+            self.stopping = True
+        for signum in self.previous:
+            signal.signal(signum, pending)
+        try:
+            while time.monotonic() - started < timeout:
+                if len(list(Path('/proc/self/task').iterdir())) != 1:
+                    raise Denied("Clippy tree acquired a competing native thread")
+                owned = ctypes.c_int()
+                if (self.libc.prctl(37, ctypes.byref(owned), 0, 0, 0) != 0 or owned.value != 1
+                        or signal.getsignal(signal.SIGCHLD) != signal.SIG_DFL):
+                    raise Denied("Clippy tree lost subreaper/reaping ownership")
+                # Only one reaper is active: all Popen wait/communicate calls
+                # have returned or unwound before this adopted-child drain.
+                while True:
+                    try:
+                        pid, status = os.waitpid(-1, os.WNOHANG | self.WALL)
+                    except ChildProcessError:
+                        settled = True  # ECHILD is positive kernel closure.
+                        break
+                    if pid == 0:
+                        break  # live children remain; never treat as closure.
+                    self.reaped.append({"pid": pid, "exit_code": os.waitstatus_to_exitcode(status)})
+                    if pid in self.handles:
+                        fd, process = self.handles.pop(pid)
+                        if process is not None:
+                            process.returncode = os.waitstatus_to_exitcode(status)
+                        os.close(fd)
+                if settled:
+                    break
+                if self.stopping:
+                    child_path = Path('/proc/self/task') / str(os.getpid()) / 'children'
+                    child_table_available = child_path.exists()
+                    for pid in self.child_ids():
+                        self.track(pid)
+                    for pid, (fd, process) in list(self.handles.items()):
+                        if process is not None and process.returncode is not None:
+                            continue  # Popen already reaped this known leader.
+                        # Validate kernel waitability, then signal its bound
+                        # descriptor. ECHILD/ambiguity never authorizes a signal.
+                        os.waitid(os.P_PIDFD, fd, os.WEXITED | os.WNOHANG | os.WNOWAIT | self.WALL)
+                        try:
+                            signal.pidfd_send_signal(fd, signal.SIGKILL if time.monotonic() - started >= grace else signal.SIGTERM)
+                        except ProcessLookupError:
+                            pass
+                time.sleep(0.05)
+        except (OSError, Denied, ValueError) as error:
+            self.errors.append(str(error))
+        finally:
+            if settled:
+                for fd, process in self.handles.values():
+                    os.close(fd)
+                self.handles.clear()
+                if self.libc.prctl(36, 0, 0, 0, 0) != 0:
+                    self.errors.append("cannot restore settled subreaper scope")
+            # Unsettled descendants retain the subreaper and handles until this
+            # owner exits; no false transfer/restoration or generic reclamation.
+            for signum, handler in self.previous.items():
+                signal.signal(signum, handler)
+        return {"tree_settled": settled and not self.errors,
+                "proof": "kernel ECHILD (__WALL)" if settled else None,
+                "cancelled": self.cancelled, "termination_requested": self.stopping,
+                "reaped_descendants": self.reaped,
+                "owned_child_table_available": child_table_available,
+                "errors": self.errors, "pending_bound_pids": [pid for pid, (fd, process) in self.handles.items()
+                                                               if process is None or process.returncode is None],
+                "reason": "all owned descendants reaped" if settled else "owned descendants unproven; deadline/error retains lease"}
+
+
+def call_clippy(command, env, lock, tree=None):
     # Staged ownership model: attributable POSIX group for native cancellation,
     # but never infer whole-tree settlement from this leader's exit. The caller
-    # always retains its lease; root verifies every consumer before reuse.
+    # retains its lease until the optional owned kernel tree scope proves closure.
     process = None
     published = False
     pending = []
@@ -262,6 +431,8 @@ def call_clippy(command, env, lock):
         for signum in (signal.SIGINT, signal.SIGTERM):
             previous[signum] = signal.signal(signum, cancelled)
         process = subprocess.Popen(command, env=env, start_new_session=True)
+        if tree is not None:
+            tree.track(process.pid, process)
         print("cargo-admitted Clippy launch: " + json.dumps({"pid": process.pid,
               "process_group": process.pid, "lease": str(lock), "host": socket.gethostname(),
               "terminality": "awaiting owner verification"}), file=sys.stderr, flush=True)
@@ -589,6 +760,7 @@ def main(args=None):
         # Once launch is attempted, preserve the conservative interrupted/spawn
         # failure rule. Earlier refusal can release only this unlaunched lease.
         completed, launch_attempted = False, False
+        tree, result, interrupted = None, None, False
         try:
             admission = check_capacity([slot, *paths.values()], env, budget)
             for path in (slot, *paths.values()):
@@ -646,8 +818,12 @@ def main(args=None):
                 revalidate_clippy_toolchain(toolchain)
                 # Version probes are setup, not package work. Hold the same
                 # conservative lease before invoking these installed tools.
+                tree = ClippyTree()
+                print("cargo-admitted Clippy tree: " + json.dumps({"owner_pid": os.getpid(),
+                      "subreaper": True, "prior_children": "none", "single_native_thread": True,
+                      "lease": str(lock)}), file=sys.stderr, flush=True)
                 launch_attempted = True
-                versions = clippy_version_check(toolchain, env)
+                versions = clippy_version_check(toolchain, env, tree)
                 print("cargo-admitted Clippy setup: " + json.dumps(versions), file=sys.stderr, flush=True)
                 if clippy_configuration(worktree, paths) != scope["clippy_setup"]["configuration"]:
                     raise Denied("Clippy configuration changed during setup")
@@ -657,7 +833,7 @@ def main(args=None):
             if not owns_lease(lock, identity, marker):
                 raise Denied("lease ownership changed before Cargo launch")
             launch_attempted = True
-            result = call_clippy(command, env, lock) if clippy else subprocess.call(command, env=env)
+            result = call_clippy(command, env, lock, tree) if clippy else subprocess.call(command, env=env)
             # Cargo uses 101 for ordinary failure and may also panic with 101.
             # Retain for signals/NT termination/unfamiliar exits, but no exit
             # status proves all descendants ended: root verifies other consumers.
@@ -666,12 +842,42 @@ def main(args=None):
                 print("cargo-admitted Clippy product: " + json.dumps({"exit_code": result,
                       "lease": str(lock), "terminality": "awaiting owner verification",
                       "lease_released": False}), file=sys.stderr, flush=True)
-            return result
+        except KeyboardInterrupt:
+            if not clippy:
+                raise
+            interrupted = True
+            if tree is not None:
+                tree.cancelled = True
         finally:
+            settlement = None
+            if tree is not None:
+                if sys.exc_info()[0] is KeyboardInterrupt:
+                    tree.cancelled = True
+                settlement = tree.finish(stop=interrupted or sys.exc_info()[0] is not None)
+                completed = settlement["tree_settled"]
             if completed or not launch_attempted:
-                release_lease(lock, identity, marker)
+                try:
+                    release_lease(lock, identity, marker)
+                except KeyboardInterrupt:
+                    if not clippy:
+                        raise
+                    interrupted = True
             else:
                 print("cargo-admitted: lease retained; root must verify all consumers before release", file=sys.stderr)
+            if settlement is not None:
+                released = not os.path.lexists(lock)
+                settlement["cancelled"] = interrupted or settlement.get("cancelled", False)
+                print("cargo-admitted Clippy settlement: " + json.dumps({**settlement,
+                      "lease": str(lock), "lease_identity": list(identity), "lease_marker": str(marker),
+                      "lease_released": released}), file=sys.stderr, flush=True)
+                # A positive product code cannot mask failed terminality/release.
+                completed = completed and released
+        if clippy:
+            if not completed:
+                return 75
+            if interrupted or (settlement is not None and settlement.get("cancelled", False)):
+                return 130
+        return result
     except (Denied, OSError, ValueError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
         print("cargo-admitted: DENY: " + str(error), file=sys.stderr)
         if preflight:

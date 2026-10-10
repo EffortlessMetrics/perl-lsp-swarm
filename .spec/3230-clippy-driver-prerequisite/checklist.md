@@ -163,3 +163,44 @@ The next native cell is Windows/MSVC Clippy driver/compiler identity and forced
 child-environment projection, with native process-tree/cancellation/release via
 active #17482 launcher ownership. Do not compete for laptop builds or implement a
 parallel Windows supervisor; Linux manually verified settlement cannot fill it.
+
+## Exclusive Linux lifecycle follow-up
+
+The existing finite Clippy route now establishes one exclusive process-local
+Linux subreaper scope before the first setup child, requires native CPython with
+one thread and no existing children, and uses pidfd waitability before signaling.
+Setup and product descendants share the same owner. Kernel ECHILD with __WALL,
+not exit status, proves closure before original inode/marker release. Detached
+setsid/double-fork and non-SIGCHLD clone controls exercise that boundary. Missing
+capabilities, ownership errors, ambiguous waits, deadlines or failed release
+remain admission 75 and retain ownership. Cancellation with proven closure and
+release returns 130; the product result stays separate. Probe, driver, late drain
+and interrupted release paths have deterministic positive/negative controls.
+
+Final focused suite: 101 tests in 3.622 seconds, 100 passed, one separate opt-in
+offline Cargo A/B/A build skipped. This includes 25 route controls, 12 native
+lifecycle controls and 10 installed 1.95.0 driver controls. Both fresh prerequisite
+and authority reviews returned CANDIDATE_READY for production SHA256
+`7a1f25478287fc0c06b3885a035ed6afe9f973b5699bf82894794bcf96954d51`.
+
+The final dependency-free offline native fixture at
+`/workspace/clippy-qualification/clippy-native-mblaqdyv` returned deliberate lint
+failure 101 and clean 0. Both original owners recorded kernel closure, matching
+release and absent lease postconditions. The scoped reserve 4 GiB/growth 2 GiB
+was checked against every destination; default reserve remains 40 GiB. Source,
+outputs and full logs/receipts are retained. The committed lifecycle-receipt.json
+binds exact owner/source hashes, original ownership, kernel proof and full receipt
+hashes. Earlier fixture outputs and shared toolchain/cache are also retained.
+
+Consumer `1b03b05a6991207b7d866716c2edc5f9a8da5b9c` remains explicitly retained and
+unproven. Its original launch lacked this scope; no later owner can retroactively
+adopt its descendants. No forbidden scan, unrelated signal or old-consumer
+release was attempted in this follow-up. No new consumer build was started.
+Only newly launched Linux trees in this exclusive scope are covered; unrelated
+existing services and independent artifact consumers require separate proof.
+Unknown detached cancellation helpers cannot be signaled when the owner's child
+table is unavailable; incomplete closure retains the lease. Windows/MSVC stays
+with #17482, other platforms refuse, and canonical #11660/#11663 remain open.
+
+Quiet preservation audit: all 39 push workflows select only main/master. No
+workflow files changed; no PR, CI label, merge or expensive CI requested.

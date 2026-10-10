@@ -4,9 +4,10 @@
 Run with Python3.11+, installed pinned1.95.0 Cargo+Clippy, and explicit CARGO_HOME/
 RUSTUP_HOME. This creates only an owned no-dependency fixture under --proof-root.
 Reserve4GiB/growth2GiB are fixture-specific; admission checks every actual volume.
-All artifacts/evidence are retained. A lease is released only after this fixture's
-exact native process group is absent and the captured owner identity still matches.
-Do not adapt this release proof to arbitrary packages/build scripts or consumers.
+All artifacts/evidence are retained. The original owner now releases only after
+its subreaper observes kernel ECHILD and its captured lease identity still matches.
+The fixture separately records group absence; that observation never authorizes
+arbitrary workload release or proves independent artifact consumers have stopped.
 """
 import argparse
 import hashlib
@@ -93,11 +94,8 @@ def execute(label, source):
         if line.startswith('cargo-admitted resources: '):
             resources = json.loads(line.split(': ', 1)[1])
             lock = Path(resources['lease'])
-            identity = safe.directory_identity(lock)
-            owners = tuple(lock.iterdir())
-            if len(owners) != 1:
-                raise RuntimeError('unexpected lease evidence')
-            marker = owners[0]
+            identity = tuple(resources['lease_identity'])
+            marker = Path(resources['lease_marker'])
         if line.startswith('cargo-admitted Clippy launch: '):
             pgid = json.loads(line.split(': ', 1)[1])['process_group']
     status = process.wait(timeout=30)
@@ -114,19 +112,21 @@ def execute(label, source):
         group_absent = True
     else:
         group_absent = False
+    settlement = next((json.loads(line.split(': ',1)[1]) for line in lines
+                       if line.startswith('cargo-admitted Clippy settlement: ')), None)
     receipt = {'label': label, 'product_exit': status,
                'source_sha256': hashlib.sha256(source.encode()).hexdigest(),
                'owner_sha256': hashlib.sha256(SOURCE.read_bytes()).hexdigest(), 'process_group': pgid,
                'group_absent': group_absent, 'lock_retained_after_exit': lock.exists(),
                'lease_identity': identity, 'marker': str(marker),
                'root_owned_no_independent_consumers': True, 'budget': budget,
-               'resource_observations': resources['admission']}
-    if not group_absent or not safe.owns_lease(lock, identity, marker):
+               'resource_observations': resources['admission'], 'kernel_settlement': settlement}
+    if (not group_absent or settlement is None or not settlement['tree_settled']
+            or not settlement['lease_released'] or os.path.lexists(lock)):
         receipt['lease_disposition'] = 'awaiting owner verification'
         (BASE / (label + '-receipt.json')).write_text(json.dumps(receipt, indent=2))
         raise RuntimeError('no verified release; all resources retained')
-    safe.release_lease(lock, identity, marker)
-    receipt['lease_disposition'] = 'released after exact native owner verification'
+    receipt['lease_disposition'] = 'released by original owner after kernel ECHILD proof and matching identity'
     if lock.exists():
         raise RuntimeError('release postcondition failed')
     (BASE / (label + '-receipt.json')).write_text(json.dumps(receipt, indent=2))

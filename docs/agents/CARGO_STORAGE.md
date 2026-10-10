@@ -124,8 +124,9 @@ programs can write elsewhere; this is not an OS sandbox or a disk reservation.
 
 The atomic `cargo-active` directory is a conservative lease. Contenders refuse.
 Builtin Cargo exit 0 or 101 releases only the invocation's matching lease and retains artifacts.
-Every attempted Clippy invocation retains its lease, including exit 0/101 and setup
-probe failures: its exit code describes the product, never whole-tree settlement.
+Clippy releases only after its owned Linux kernel child scope proves settlement
+and matching lease release succeeds. Exit 0/101, leader/session absence and a
+disconnect never establish that proof. Ambiguity or deadline expiry retains it.
 Cleanup requires the original directory identity and unique ownership marker;
 replacement leases, including copied markers, remain for owner verification.
 An unlaunched preparation failure releases only its own lease. Storage paths are
@@ -161,18 +162,41 @@ directories. Raw flags, `--fix`, help/version and other no-work shapes refuse.
 The direct driver gets the literal `clippy` token, exact child Cargo and compiler
 identities. Cargo JSON artifacts can witness compilation work; setup version
 success never qualifies package linting. Cancellation signals the owned native
-session group and retains the lease. Owner verification of every consumer is
-required before reuse even after a product pass; no general automatic tree proof
-is implemented. This staged route does not close the canonical typed executor
-or parity contracts #11660/#11663. Native Windows Clippy remains unqualified.
+session group. Before the first setup/product child, the process-local Linux
+subreaper requires a single native CPython thread, no existing unrelated children, a known
+default SIGCHLD action without auto-reaping, and supported pidfd child waits and
+signals. The same owner reaps adopted descendants, including setsid/double-fork
+helpers, until kernel ECHILD with __WALL proves all its child types have ended.
+Only that proof plus matching lease release permits reuse; no whole-host process
+or environment scan is required. The recorded leader result remains separate
+from tree settlement. Proven settlement and release after cancellation returns
+status 130, preserving the product exit separately. Failed settlement or release
+returns admission status 75, including cancellation with incomplete closure.
+This staged route does not close the canonical
+typed executor/parity contracts #11660/#11663 or cover independent external
+services/artifact consumers. The guarantee covers descendants of newly launched
+setup and product children in this exclusive Linux scope, including descendants
+that change sessions. Work delegated to an unrelated existing service is outside
+that tree and requires separate ownership proof. Native Windows Clippy remains
+unqualified; other platforms are refused.
+
+Cancellation uses bound pidfds validated as this owner's waitable children.
+The current driver's unreaped native session can receive TERM; owned handles
+receive TERM then KILL after2seconds, with at most30seconds of post-leader drain.
+Only the owner's immediate-child table may discover adopted cancellation
+candidates. If that table is unavailable, kernel waits can still prove eventual
+settlement, but unknown surviving detached helpers cannot safely be signaled:
+deadline/error retains the lease. There is no broad /proc fallback. Missing
+capabilities, existing children/threads, lost subreaper ownership, ambiguous waits,
+owner death and incomplete cancellation never become release authority.
 
 The opt-in `scripts/tests/qualify_admitted_clippy.py --proof-root ABSOLUTE_DIR`
 creates a dependency-free offline fail/clean fixture. Its scoped reserve 4 GiB and
 growth 2 GiB apply only to that fixture, with every destination checked. The
 default 40 GiB reserve remains unchanged. It preserves logs, source hashes,
-budget/volume observations and matching-owner release receipts. Its exact-group
-absence proof is valid only for that owned fixture with no build scripts or
-independent consumers; do not use it as arbitrary workload lease cleanup.
+budget/volume observations and original-owner kernel settlement/release receipts.
+It independently records exact-group absence; that additional observation does
+not authorize arbitrary workload cleanup or cover independent consumers.
 
 #### Recovering a retained Clippy lease
 
@@ -180,7 +204,17 @@ Capture the `cargo-admitted resources:` JSON before setup starts, together with
 launch/product/cancellation logs and the exact owner revision. It records the
 original `lease`, `lease_identity` (device/inode) and unique `lease_marker`;
 `cargo-admitted Clippy launch:` records the native host and process group. These
-fields are evidence for root-owned recovery, not automatic release authority.
+fields are evidence for recovery, not automatic release authority. New owned
+operations emit `cargo-admitted Clippy settlement:` with kernel proof and release
+postcondition. Previously retained attempts launched without that subreaper scope
+cannot be adopted or retroactively proven by a later owner.
+
+For new operations, a trustworthy matching settlement receipt with
+`tree_settled:true` and `proof:"kernel ECHILD (__WALL)"` replaces any whole-host
+scan requirement for the launched tree. Verify original ownership, any separately
+admitted artifact consumers, and the release postcondition. Failed/missing proof
+preserves the lease. The manual independent verification below applies to older
+or interrupted operations with no kernel completion receipt:
 
 1. Recover executor connectivity and verify the same native host and complete
    process visibility. A connection loss, age, missing leader PID, exit 0/101 or
@@ -189,7 +223,8 @@ fields are evidence for root-owned recovery, not automatic release authority.
 2. Independently verify no active descendant, detached helper, build script,
    binary consumer or separate Cargo operation uses the recorded source/output/
    temporary roots. Check native process ancestry/group/session, executable,
-   cwd, open descriptors and mappings, plus resource environment where available.
+   cwd, open descriptors and mappings within authorized task visibility. Do not
+   retry blocked privileged scans or inspect unrelated process environments.
    Account explicitly for known pre-existing provider processes and observation
    limits; unfamiliar active processes or incomplete consumer visibility refuse.
    Native Windows requires the separately qualified launcher/tree authority;

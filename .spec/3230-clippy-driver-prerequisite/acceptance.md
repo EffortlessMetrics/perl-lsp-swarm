@@ -2,9 +2,12 @@
 
 The initial dispatch prerequisite is preserved at 75d64037. This increment is
 complete for staged existing-owner admission when its finite native route passes
-positive/negative controls, retains all attempted leases, and real Clippy-only
+positive/negative controls, retains every unproven lease, proves new owned-tree closure through the kernel,
+and real Clippy-only
 failure/clean work is observed. It does not close #3230/#11660/#11663 or claim
-canonical executor APIs, automatic tree settlement or native Windows Clippy.
+canonical executor APIs, general tree settlement or native Windows Clippy.
+The narrow Linux subreaper scope settles only newly launched descendants; it
+cannot adopt older attempts or independent service/artifact consumers.
 
 | ID | Cheapest falsifier/control | Current evidence |
 | --- | --- | --- |

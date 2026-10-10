@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import signal
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import Mock, patch
@@ -18,6 +19,7 @@ spec.loader.exec_module(safe)
 REQUEST = ["clippy", "-p", "consumer", "--all-targets", "--profile", "agent", "--locked", "--", "-D", "warnings"]
 
 
+@unittest.skipUnless(sys.platform == "linux" and sys.version_info >= (3, 11), "staged Linux Clippy only")
 class ClippyAdmissionTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="admitted-clippy-controls-")
@@ -31,15 +33,19 @@ class ClippyAdmissionTests(unittest.TestCase):
                                   ("cargo", "rustc", "rustdoc", "cargo-clippy", "clippy-driver")}}
         self.env = {"MIN_FREE_GB": "0.001", "MAX_USED_PCT": "100"}
 
-    def invoke(self, args=REQUEST, status=0, env=None, call=None, versions=None, config=None):
+    def invoke(self, args=REQUEST, status=0, env=None, call=None, versions=None, config=None, settled=False, cancelled=False):
         stderr = io.StringIO()
+        guard = Mock()
+        guard.finish.return_value = {"tree_settled": settled, "cancelled": cancelled}
         with patch.dict(os.environ, env or self.env, clear=True), contextlib.redirect_stderr(stderr), \
              patch.object(safe, "resource_plan", return_value=(self.worktree, self.slot, self.paths)), \
              patch.object(safe, "clippy_toolchain", return_value=self.plan), \
              patch.object(safe, "clippy_configuration", side_effect=config or (lambda *a: [])), \
              patch.object(safe, "revalidate_clippy_toolchain"), \
              patch.object(safe, "clippy_version_check", side_effect=versions or (lambda *a: {})), \
-             patch.object(safe, "call_clippy", side_effect=call or (lambda *a: status)), \
+             patch.object(safe, "ClippyTree", return_value=guard), \
+             patch.object(safe, "call_clippy", side_effect=lambda command, env, lock, tree:
+                          (call(command, env, lock) if call else status)), \
              patch.object(safe.subprocess, "call") as raw:
             result = safe.main(list(args))
             raw.assert_not_called()
@@ -52,7 +58,7 @@ class ClippyAdmissionTests(unittest.TestCase):
             self.assertTrue((lock / next(p.name for p in lock.iterdir())).is_dir())
             return 0
         result, output = self.invoke(call=launch)
-        self.assertEqual(result, 0)
+        self.assertEqual(result, 75, "product pass cannot mask unproven terminality")
         command, env, lock = observed[0]
         self.assertEqual(command[:2], [self.plan["subjects"]["cargo-clippy"]["path"], "clippy"])
         self.assertEqual(command[-len(REQUEST[1:]):], REQUEST[1:])
@@ -80,7 +86,7 @@ class ClippyAdmissionTests(unittest.TestCase):
             with self.subTest(status=status):
                 self.slot = self.root / ("slot-" + str(status))
                 result, output = self.invoke(status=status)
-                self.assertEqual(result, status)
+                self.assertEqual(result, 75)
                 lock = self.slot / "cargo-active"
                 self.assertTrue(lock.exists())
                 marker = tuple(lock.iterdir())
@@ -89,6 +95,45 @@ class ClippyAdmissionTests(unittest.TestCase):
                 self.assertEqual(again, 75)
                 self.assertEqual(tuple(lock.iterdir()), marker)
                 self.assertIn("awaiting owner verification", output)
+
+    def test_only_positive_kernel_settlement_and_release_postcondition_complete(self):
+        for status in (0, 101, 17):
+            with self.subTest(status=status):
+                self.slot = self.root / ("settled-" + str(status))
+                result, output = self.invoke(status=status, settled=True)
+                self.assertEqual(result, status)
+                self.assertFalse((self.slot / 'cargo-active').exists())
+                self.assertIn('"lease_released": true', output)
+
+    def test_settlement_cannot_release_replacement_or_mask_failed_release(self):
+        with patch.object(safe, "release_lease"):
+            result, output = self.invoke(settled=True)
+        self.assertEqual(result, 75)
+        self.assertTrue((self.slot / 'cargo-active').exists())
+        self.assertIn('"lease_released": false', output)
+
+    def test_late_cancellation_returns_130_after_proven_release(self):
+        for status in (0, 101, 17):
+            with self.subTest(status=status):
+                self.slot = self.root / ("cancelled-" + str(status))
+                result, output = self.invoke(status=status, settled=True, cancelled=True)
+                self.assertEqual(result, 130)
+                self.assertFalse((self.slot / "cargo-active").exists())
+                self.assertIn('"exit_code": ' + str(status), output)
+                self.assertIn('"cancelled": true', output)
+                self.assertIn('"lease_released": true', output)
+
+    def test_late_cancellation_cannot_mask_unproven_tree_or_failed_release(self):
+        result, output = self.invoke(cancelled=True)
+        self.assertEqual(result, 75)
+        self.assertTrue((self.slot / "cargo-active").exists())
+        self.assertIn('"lease_released": false', output)
+        self.slot = self.root / "cancelled-release-failure"
+        with patch.object(safe, "release_lease"):
+            result, output = self.invoke(settled=True, cancelled=True)
+        self.assertEqual(result, 75)
+        self.assertTrue((self.slot / "cargo-active").exists())
+        self.assertIn('"lease_released": false', output)
 
     def test_only_finite_positive_work_shape_is_admitted(self):
         invalid = [["clippy"], ["clippy", "--version"], ["clippy", "--fix"],
@@ -106,6 +151,12 @@ class ClippyAdmissionTests(unittest.TestCase):
                 result, _ = self.invoke(args)
                 self.assertEqual(result, 75)
                 self.assertFalse(self.slot.exists())
+
+    def test_other_native_hosts_refuse_before_allocation(self):
+        with patch.object(safe.sys, "platform", "win32"):
+            result, _ = self.invoke()
+        self.assertEqual(result, 75)
+        self.assertFalse(self.slot.exists())
 
     def test_compiler_and_loader_injection_refuse_before_allocation(self):
         for name in ("CARGO", "RUSTC", "RUSTDOC", "CLIPPY_ARGS", "CLIPPY_CONF_DIR", "CLIPPY_DRIVER_PATH",
@@ -182,11 +233,44 @@ class ClippyAdmissionTests(unittest.TestCase):
                     safe.clippy_configuration(worktree, self.paths)
 
     def test_interruption_retains_owned_lease(self):
-        with self.assertRaises(KeyboardInterrupt):
-            self.invoke(call=Mock(side_effect=KeyboardInterrupt))
+        result, output = self.invoke(call=Mock(side_effect=KeyboardInterrupt))
+        self.assertEqual(result, 75)
         self.assertTrue((self.slot / "cargo-active").exists())
+        self.assertIn('"lease_released": false', output)
+
+    def test_thrown_probe_and_driver_cancellation_use_settlement_status_precedence(self):
+        for phase in ("probe", "driver"):
+            for disposition in ("settled", "unproven", "release-failed"):
+                with self.subTest(phase=phase, disposition=disposition):
+                    self.slot = self.root / (phase + "-" + disposition)
+                    kwargs = {"versions" if phase == "probe" else "call":
+                              Mock(side_effect=KeyboardInterrupt),
+                              "settled": disposition != "unproven"}
+                    release = (patch.object(safe, "release_lease") if disposition == "release-failed"
+                               else contextlib.nullcontext())
+                    with release:
+                        result, output = self.invoke(**kwargs)
+                    self.assertEqual(result, 130 if disposition == "settled" else 75)
+                    self.assertEqual((self.slot / "cargo-active").exists(), disposition != "settled")
+                    self.assertIn('"lease_released": ' + ("true" if disposition == "settled" else "false"), output)
+
+    def test_release_cancellation_reports_actual_postcondition_before_status(self):
+        for released in (False, True):
+            with self.subTest(released=released):
+                self.slot = self.root / ("release-interrupt-" + str(released))
+                original = safe.release_lease
+                def interrupt(lock, identity, marker):
+                    if released:
+                        original(lock, identity, marker)
+                    raise KeyboardInterrupt
+                with patch.object(safe, "release_lease", side_effect=interrupt):
+                    result, output = self.invoke(settled=True)
+                self.assertEqual(result, 130 if released else 75)
+                self.assertEqual((self.slot / "cargo-active").exists(), not released)
+                self.assertIn('"cancelled": true', output)
 
 
+@unittest.skipUnless(sys.platform == "linux" and sys.version_info >= (3, 11), "staged Linux Clippy only")
 class ClippyIdentityTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="clippy-identity-controls-")
