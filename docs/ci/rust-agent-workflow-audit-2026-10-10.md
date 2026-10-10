@@ -12,8 +12,10 @@ Audited checkout: `ac383369c40494bd873d9657e8c881b7e8792000`.
 Read `AGENTS.md`, the authority-status registry, relevant `.agents/skills`, current
 source and live issue plans. Source inspection and Python TOML parsing only:
 no Cargo build, hosted CI, cleanup, hook installation, or settings mutation.
-The audit host reported about 30 GiB available, below the admitted route's 40 GiB
-reserve. This observation does not establish workload growth or fleet capacity.
+Reported environment evidence from the audit: `df -h /workspace` showed
+`overlay 32G 2.5M 30G 1% /workspace`. Its exact capture timestamp was not retained.
+The approximately 30 GiB available was below the admitted route's 40 GiB reserve;
+this observation does not establish workload growth or fleet capacity.
 Refresh source and prerequisite behavior before implementing a packet.
 
 ## Ranked verified gaps
@@ -23,7 +25,7 @@ Refresh source and prerequisite behavior before implementing a packet.
 | P0 | `justfile` routes agent recipes and PR-fast through `cargo-safe`; other checks use raw Cargo. `scripts/cargo-safe` shares target/build paths by checkout basename, and the `xtask` alias bypasses its heavy-command flock case. AGENTS requires private target and intermediate paths. | #3230 / #9549; consume #17477 / PR #17478 and #17479 / PR #17460 before front-door migration. |
 | P0 | `scripts/cargo_admitted.py::validate_args` refuses Clippy and aliases. Raw AGENTS Clippy and legacy agent-Clippy therefore do not form a supported admitted route. | #3230; canonical executor #11660 and adoption #11663 when qualified. |
 | P0 | Windows `gates.rs::shell_command_process` uses `cmd /C`; `unit_routed_full` policy uses `$PWD`, `env` and a compound build/test command. | #17482: launch semantics and actual runtime-result validation together. Native Windows proof remains required. |
-| P1 | `justfile::check-all-targets` contains five distinct modes. Policy allows 900 seconds; `ci.yml::check-all-targets` allows 35 minutes. The current job has 38 Cargo-test command lines across 42 steps, beyond the historical four-contract tail description. | #17483: inventory the complete tail and retain per-mode completion evidence. |
+| P1 | `justfile::check-all-targets` contains five distinct modes. Policy allows 900 seconds; `ci.yml::check-all-targets` allows 35 minutes. The current job has 38 non-comment Cargo-test command lines across 42 steps (including unnamed `uses` steps), beyond the historical four-contract tail description. | #17483: inventory the complete tail and retain per-mode completion evidence. |
 | P1 | Pre-push new-branch and package-name resolution invokes heavyweight xtask. TOML inspection found 16 unconditional product/parser dependency roots in xtask. Package lookup still has a directory-name fallback. | #17480 / #17481 / #17484 own first-mile repair. |
 | P1 | `gates.rs` dispatches fmt, publication, layer/count, inline-completion and commit tasks in-process. Moving only the gate file cannot remove the product graph. The policy shard includes product-dependent children. | #17485 after #17484: one shared engine and one real policy-lane consumer; retain explicit product children. |
 | P1 | `targeted_checks.rs` selects only `crates/*`, uses library-only tests and Clippy without all-targets, and blocks in `duct.run()`. Non-crate changes can return “No crate changes.” | #9549; consume topology/route facts #12125 / #12126 without claiming full coverage. |
@@ -59,8 +61,8 @@ and currentness evidence.
    compiler units or a measured build cost.
 4. Read the five `check-all-targets` recipe commands and
    `.ci/gate-policy.yaml::compile_all_targets`. Bound the hosted job block from
-   `check-all-targets:` to the next job; count its step markers and Cargo-test
-   command lines. These counts describe source, not executed test populations.
+   `check-all-targets:` to the next job; count all step markers (including unnamed `uses` steps) and non-comment
+   Cargo-test command lines. These counts describe source, not executed test populations.
 5. Inspect `gates.rs::shell_command_process`, internal task dispatch and
    `targeted_checks.rs::run_checks`. Preserve platform and compile/runtime
    distinctions; source inspection cannot qualify native Windows behavior.
