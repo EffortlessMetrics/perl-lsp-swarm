@@ -197,3 +197,16 @@ suite build fallbacks remain separately unqualified; private outer roots alone
 do not authorize concurrent nested compilation. Raw parser preparation without
 the live parent descriptor refuses. Native validation must execute the owning
 runner and resource controls before claiming the full canonical runtime.
+
+`scripts/ci/pr_smoke_resources.py` is a read-only consumer of the existing
+`resource_plan`: it writes both canonical output paths to `GITHUB_ENV`, allocating
+no directories and granting no lease or capacity admission. It rejects paths that
+cannot be represented as one environment-file line. This helper is not activated
+in PR Smoke yet. Exporting a live descriptor from an outer admitted `cargo run`
+does not admit every command that its program or tests might launch. In particular,
+the parser's existing strict Clippy shape differs from the finite Linux route in
+#17506. Supported nested command admission and Linux settlement #17507 are
+prerequisites to activating the proposed hosted handoff; unsupported descendants
+must refuse before product preparation starts. Compiled-output cache restoration
+also remains unqualified by this storage policy. Dependency downloads can be
+cached separately without restoring final or intermediate outputs.

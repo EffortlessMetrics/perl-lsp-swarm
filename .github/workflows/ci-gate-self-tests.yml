@@ -21,6 +21,8 @@ on:
       - 'scripts/tests/test_cargo_admitted_budget.py'
       - 'scripts/ci/parser_workspace_prepare.py'
       - 'scripts/ci/test_parser_workspace_prepare.py'
+      - 'scripts/ci/pr_smoke_resources.py'
+      - 'scripts/ci/test_pr_smoke_resources.py'
       - 'justfile'
       - 'scripts/cargo_allow_cadence.py'
       - 'scripts/tests/test_cargo_allow_cadence.py'
@@ -642,6 +644,7 @@ jobs:
         run: |
           python3 -m unittest discover -s scripts/tests -p 'test_cargo_admitted*.py' -v
           python3 scripts/ci/test_parser_workspace_prepare.py
+          python3 scripts/ci/test_pr_smoke_resources.py
 
   cargo-toolchain-guard-self-test:
     name: Entrypoint cargo toolchain guard self-test
