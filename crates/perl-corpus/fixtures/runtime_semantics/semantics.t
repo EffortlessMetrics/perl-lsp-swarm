@@ -6,7 +6,7 @@ use Config;
 use Test::More tests => 50;
 
 # Linux proof cell: bound regressions such as a lost loop update.
-$SIG{ALRM} = sub { die "runtime-semantic fixture exceeded 10 seconds\n" };
+$SIG{ALRM} = sub { BAIL_OUT('runtime-semantic fixture exceeded 10 seconds') };
 alarm 10;
 
 # Explicit offline oracle fixture. Never part of editor activation.
@@ -24,7 +24,7 @@ $subject_stderr = '';
     for my $name (@source_files) {
         my $source = File::Spec->catfile($Bin, $name);
         my $loaded = do $source;
-        die "load $source: " . ($@ || $! || 'false source result') unless $loaded;
+        BAIL_OUT("load $source: " . ($@ || $! || 'false source result')) unless $loaded;
     }
 }
 diag("stock Perl $^V; arch=$Config{archname}; ivsize=$Config{ivsize}; nvsize=$Config{nvsize}");
