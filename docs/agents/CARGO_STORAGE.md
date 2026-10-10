@@ -309,3 +309,28 @@ prove concurrent or independent post-lease binary consumption. Production caller
 must still hold ownership through consumers or capture immutable artifacts before
 releasing that ownership. The cleanup sweep fixture checks command-local fetch
 maintenance suppression; it does not change global Git configuration.
+
+## Bounded nested request prerequisite (#17479)
+
+On the qualified Linux owner, `--nested-plan PATH` (before existing admission
+options) binds a finite JSON request `{"schema_version":1,"rows":["parser-check",
+"parser-build","parser-clippy","parser-lib"]}` to the outer request, installed
+tools/config/exact committed source and effective environment before launch.
+The request is capped at 64 KiB, accepts only unique maintained row identifiers,
+and does not certify that these rows cover a full consumer workload.
+
+Migrated children call `nested_command(row, env)` from `cargo_admitted.py` or
+invoke `python scripts/cargo_admitted.py --nested-row ROW`. The renderer checks
+current plan membership, kernel ancestry, original live lease/marker identity,
+canonical roots and bound inputs. It does not reacquire or release the lease;
+the child CLI replaces itself with the direct identified tool. Existing
+consumer logging, watchdogs, work-count and product-result checks remain owners.
+Compiler/profile flags are frozen; unsupported flags/selectors refuse, and
+parser docs alone gets its explicit missing-docs flag exception.
+
+A live `CARGO_ADMITTED_RESOURCES` descriptor by itself admits no nested command.
+No generic Cargo/alias fallback is added. Hosted activation still requires
+complete selected inventory, measured aggregate capacity/lifetimes, migrated
+callers and current-source binary handoff. The retained snapshot is owned
+metadata, not a cache or a product-success receipt. Native non-Linux support and
+hermetic external/build-script inputs remain unqualified.

@@ -129,7 +129,7 @@ def file_subject(path):
     facts = lambda s: (s.st_dev, s.st_ino, s.st_size, s.st_mtime_ns, s.st_ctime_ns)
     if facts(before) != facts(after):
         raise Denied("toolchain subject changed during observation: " + str(path))
-    return {"path": str(path), "file_identity": facts(after), "sha256": digest.hexdigest()}
+    return {"path": str(path), "file_identity": list(facts(after)), "sha256": digest.hexdigest()}
 
 
 def clippy_toolchain(env, worktree):
@@ -206,14 +206,15 @@ def clippy_version_check(plan, env, tree=None):
     return versions
 
 
-def clippy_configuration(worktree, paths):
+def clippy_configuration(worktree, paths, directory=None):
     try:
         import tomllib
     except ImportError:
         raise Denied("staged Clippy requires Python 3.11+ for bounded Cargo TOML validation")
     candidates = {worktree / "clippy.toml", worktree / ".clippy.toml"}
-    for directory in (Path.cwd(), *Path.cwd().parents, paths["cargo_home"]):
-        candidates.update(directory / ".cargo" / name for name in ("config", "config.toml"))
+    directory = Path.cwd() if directory is None else directory
+    for ancestor in (directory, *directory.parents, paths["cargo_home"]):
+        candidates.update(ancestor / ".cargo" / name for name in ("config", "config.toml"))
     candidates.update(paths["cargo_home"] / name for name in ("config", "config.toml"))
     observed = []
     for path in sorted(candidates):
@@ -456,6 +457,293 @@ def call_clippy(command, env, lock, tree=None, operation="Clippy"):
     finally:
         for signum, handler in previous.items():
             signal.signal(signum, handler)
+
+
+# Finite compatibility request fields for #17479, not a second executor or a
+# completeness certificate for the selected gate/runtime inventory.
+NESTED_PACKAGES = ("perl-dap", "perl-incremental-parsing", "perl-lsp-perltidy",
+                   "perl-lsp-rs", "perl-lsp-rs-core", "perl-parser",
+                   "perl-parser-bench", "perllsp", "xtask")
+NESTED_COMMANDS = {
+    "parser-check": ("check", "--package", "perl-parser", "--message-format", "json", "--locked", "--offline"),
+    "parser-build": ("build", "--package", "perl-parser", "--locked", "--offline"),
+    "parser-clippy": ("clippy", "--package", "perl-parser", "--locked", "--offline", "--", "-D", "warnings"),
+    "parser-lib": ("test", "--package", "perl-parser", "--lib", "--locked", "--offline"),
+    "dap-lsp-build": ("build", "-p", "perl-lsp-rs", "--message-format=short", "--locked"),
+    "dap-core-build": ("build", "-p", "perl-lsp-rs-core", "--message-format=short", "--locked"),
+    "dap-bin-build": ("build", "-p", "perl-dap", "--bin", "perl-dap", "--locked"),
+    "dap-clippy": ("clippy", "-p", "perl-dap", "--lib", "--locked", "--", "-D", "warnings", "-A", "clippy::wildcard_imports"),
+    "perllsp-build": ("build", "-p", "perllsp", "--locked"),
+    "parser-doc": ("doc", "--no-deps", "--package", "perl-parser"),
+    "parser-tree": ("tree", "-p", "perl-parser", "--edges", "normal"),
+    "incremental-metadata": ("metadata", "--no-deps", "--format-version", "1"),
+    "xtask-build": ("build", "-p", "xtask", "--locked"),
+    "lsp-inline-compile": ("test", "-p", "perl-lsp-rs", "--locked", "--test", "lsp_inline_completion_registration_tests", "--no-run"),
+    "core-inline-compile": ("test", "-p", "perl-lsp-rs-core", "--locked", "--lib", "inline_completion", "--no-run"),
+}
+for _name in ("cross_file_goto_definition_tests", "navigation_regression_tests"):
+    NESTED_COMMANDS["navigation-" + _name] = ("test", "-p", "perl-lsp-rs", "--locked", "--test", _name,
+                                            "--", "--test-threads=1", "--color", "never")
+for _name, _suffix in (("routed-compile", ("--no-run",)), ("routed-runtime", ())):
+    NESTED_COMMANDS[_name] = ("test", "--locked", "--tests", *sum((("-p", p) for p in NESTED_PACKAGES), ()), *_suffix)
+
+
+def bounded_json(path):
+    path = native_path(str(path))
+    subject = file_subject(path)
+    if subject["file_identity"][2] > BUDGET_FILE_LIMIT:
+        raise Denied("nested request exceeds 64 KiB")
+    def unique(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise Denied("duplicate nested request key")
+            result[key] = value
+        return result
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=unique)
+    except (ValueError, UnicodeError) as error:
+        raise Denied("invalid nested request JSON") from error
+    if file_subject(path) != subject:
+        raise Denied("nested request changed during observation")
+    return data, subject
+
+
+def nested_source(worktree):
+    # Exact committed Git subject, not a claim of hermetic build-script inputs.
+    def git(*args):
+        return subprocess.check_output(["git", "-C", str(worktree), *args], text=True,
+                                       env={k: v for k, v in os.environ.items() if not k.startswith("GIT_")}).strip()
+    if git("status", "--porcelain", "--untracked-files=all"):
+        raise Denied("nested plan requires a clean exact committed source")
+    return {"head": git("rev-parse", "HEAD"), "lock": file_subject(worktree / "Cargo.lock")}
+
+
+def compiler_environment(env):
+    flags = {"RUSTFLAGS", "RUSTDOCFLAGS", "CARGO_ENCODED_RUSTFLAGS", "CARGO_ENCODED_RUSTDOCFLAGS",
+             "CARGO_BUILD_RUSTFLAGS", "CARGO_BUILD_RUSTDOCFLAGS"}
+    return {k: v for k, v in env.items() if k in flags or k.startswith("CARGO_PROFILE_")
+            or (k.startswith("CARGO_TARGET_") and k.endswith(("_RUSTFLAGS", "_RUSTDOCFLAGS")))}
+
+
+def nested_flags(values, docs=False):
+    # A finite compatibility cell: codegen debug choices cannot cap/suppress
+    # lints or change cfg/targets/plugins. Unknown flags need their own owner.
+    for name, value in values.items():
+        if name.startswith("CARGO_PROFILE_"):
+            continue
+        tokens = value.split("\x1f") if "ENCODED" in name else value.split()
+        tokens = [v for v in tokens if v]
+        if docs and tokens == ["-W", "missing_docs"]:
+            continue
+        while tokens:
+            token = tokens.pop(0)
+            if token == "-C" and tokens:
+                token += tokens.pop(0)
+            if token not in ("-Cdebuginfo=0", "-Cdebuginfo=1", "-Cdebuginfo=2", "-Cdebuginfo=line-tables-only"):
+                raise Denied("unsupported nested compiler/doc flag input: " + name)
+
+
+def nested_selectors(env):
+    if any(env.get(name) for name in ("GIT_SSH", "GIT_SSH_COMMAND", "GIT_PROXY_COMMAND")):
+        raise Denied("nested Git network executable selector is unsupported")
+    if env.get("RUSTC_BOOTSTRAP"):
+        raise Denied("nested bootstrap compiler selector is unsupported")
+    if any(name.startswith("CARGO_TARGET_") and name.endswith(("_LINKER", "_RUNNER")) and value
+           for name, value in env.items()):
+        raise Denied("nested target linker/runner requires executable identity qualification")
+
+
+def nested_build_environment(env):
+    return {k: v for k, v in env.items() if k in ("PATH", "CC", "CXX", "AR", "CFLAGS", "CXXFLAGS", "LDFLAGS")}
+
+
+def nested_network(env):
+    return {k: v for k, v in env.items() if k.startswith(("CARGO_NET_", "CARGO_HTTP_"))
+            or k.upper() in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
+                             "SSL_CERT_FILE", "SSL_CERT_DIR", "CURL_CA_BUNDLE")}
+
+
+def nested_plan(filename, env, worktree, paths):
+    if sys.platform != "linux":
+        raise Denied("nested plan requires qualified native Linux ownership")
+    data, request_subject = bounded_json(filename)
+    if (not isinstance(data, dict) or set(data) != {"schema_version", "rows"}
+            or type(data["schema_version"]) is not int or data["schema_version"] != 1
+            or not isinstance(data["rows"], list) or not 1 <= len(data["rows"]) <= len(NESTED_COMMANDS)
+            or any(not isinstance(r, str) or r not in NESTED_COMMANDS for r in data["rows"])
+            or len(set(data["rows"])) != len(data["rows"])):
+        raise Denied("unknown/duplicate nested operation or request field")
+    # Permit declared ordinary compiler/profile flags, but never ambient tool,
+    # wrapper or loader selectors. Each effective value is frozen in the plan.
+    nested_flags(compiler_environment(env))
+    nested_selectors(env)
+    selectors = dict(env)
+    for name in compiler_environment(env):
+        selectors.pop(name, None)
+    clippy_environment(selectors)
+    toolchain = clippy_toolchain(env, worktree)
+    return {"request": data, "request_subject": request_subject,
+            "source": nested_source(worktree), "toolchain": toolchain,
+            "configuration": nested_configuration(worktree, paths),
+            "compiler_environment": compiler_environment(env), "network_environment": nested_network(env), "build_environment": nested_build_environment(env),
+            "renderer": file_subject(Path(__file__))}
+
+
+def nested_configuration(worktree, paths):
+    # Include package-local config discovery for the two declared non-root rows.
+    observed = {}
+    for directory in (worktree, worktree / "crates/perl-parser", worktree / "crates/perl-incremental-parsing"):
+        for item in clippy_configuration(worktree, paths, directory):
+            if Path(item["path"]).name in ("config", "config.toml"):
+                import tomllib
+                config = tomllib.loads(Path(item["path"]).read_text(encoding="utf-8"))
+                def inspect(table):
+                    for key, value in table.items():
+                        if key in ("rustflags", "rustdocflags"):
+                            text = "\x1f".join(value) if isinstance(value, list) else value
+                            if not isinstance(text, str):
+                                raise Denied("invalid nested configured compiler flags")
+                            nested_flags({"CARGO_ENCODED_RUSTFLAGS": text})
+                        if key in ("linker", "runner", "rustc", "rustdoc", "rustc-wrapper", "rustc-workspace-wrapper", "target") and value and not isinstance(value, dict):
+                            raise Denied("unsupported nested configuration selector: " + key)
+                        if isinstance(value, dict):
+                            inspect(value)
+                inspect(config)
+                for name, setting in config.get("env", {}).items():
+                    value = setting.get("value", "") if isinstance(setting, dict) else setting
+                    nested_selectors({name: value})
+                    projected = compiler_environment({name: value})
+                    nested_flags(projected)
+                    if not projected:
+                        clippy_environment({name: value})
+                        if name in ("RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER") and value:
+                            raise Denied("unsupported nested configured wrapper")
+            observed[item["path"]] = item
+
+    return [observed[key] for key in sorted(observed)]
+
+
+def process_fact(pid):
+    # Directed ancestry only, never a whole-host process scan or environment read.
+    raw = (Path('/proc') / str(pid) / 'stat').read_text()
+    fields = raw[raw.rindex(')') + 2:].split()
+    return {"pid": pid, "parent": int(fields[1]), "start": fields[19]}
+
+
+def nested_descendant(owner):
+    current = process_fact(os.getpid())
+    for _ in range(128):
+        if current["pid"] == owner["pid"]:
+            if current != owner:
+                raise Denied("nested owner process identity changed")
+            return
+        if current["parent"] <= 1:
+            break
+        current = process_fact(current["parent"])
+    raise Denied("nested caller is not in the live owner's ancestry")
+
+
+def nested_command(row, env=None):
+    """Render one bound leaf; no resource-bearing spawn or lease transition.
+
+    Validation may invoke read-only Git commands under the existing owner.
+
+    Consumers retain their existing logging/watchdog/result semantics. The
+    original Linux owner supervises every descendant through final ECHILD.
+    This is not a security sandbox for arbitrary same-user repository code.
+    """
+    env = dict(os.environ if env is None else env)
+    try:
+        receipt = json.loads(env["CARGO_ADMITTED_RESOURCES"])
+        snapshot, subject = bounded_json(receipt["nested_snapshot"]["path"])
+        if subject != receipt["nested_snapshot"] or snapshot["descriptor"] != {k: v for k, v in receipt.items() if k != "nested_snapshot"}:
+            raise Denied("nested descriptor/snapshot mismatch")
+        nested_descendant(receipt["owner_process"])
+        worktree, slot, paths = resource_plan(env)
+        if str(worktree) != receipt["worktree"] or {k: str(v) for k,v in paths.items()} != receipt["resources"]:
+            raise Denied("nested canonical resources changed")
+        lock, marker = Path(receipt["lease"]), Path(receipt["lease_marker"])
+        if (lock != slot / "cargo-active" or marker.parent != lock
+                or directory_identity(lock) != tuple(receipt["lease_identity"])
+                or directory_identity(marker) != tuple(receipt["marker_identity"])):
+            raise Denied("nested original lease/marker identity changed")
+        for key, variable in (("target", "CARGO_TARGET_DIR"), ("build", "CARGO_BUILD_BUILD_DIR"),
+                              ("cargo_home", "CARGO_HOME"), ("temp", "TMPDIR"), ("temp", "TEMP"), ("temp", "TMP")):
+            if env.get(variable) != str(paths[key]):
+                raise Denied("nested environment/resource mismatch: " + variable)
+        if env.get("CARGO_BUILD_JOBS") != str(receipt["scope"]["jobs"]) or env.get("CARGO_INCREMENTAL") != "0" or env.get("RUSTUP_AUTO_INSTALL") != "0":
+            raise Denied("nested resource control changed")
+        plan = snapshot["plan"]
+        selectors = dict(env)
+        for name in compiler_environment(env):
+            selectors.pop(name, None)
+        for name, key in (("CARGO", "cargo"), ("RUSTC", "rustc"), ("RUSTDOC", "rustdoc")):
+            if selectors.get(name) != plan["toolchain"]["subjects"][key]["path"]:
+                raise Denied("nested executable selector changed: " + name)
+            selectors.pop(name)
+        clippy_environment(selectors)
+        if selectors.get("RUSTC_WRAPPER") or selectors.get("RUSTC_WORKSPACE_WRAPPER"):
+            raise Denied("nested compiler wrapper changed")
+        if row not in plan["request"]["rows"] or row not in NESTED_COMMANDS:
+            raise Denied("nested operation is not a member of the admitted plan")
+        if nested_source(worktree) != plan["source"] or file_subject(Path(__file__)) != plan["renderer"]:
+            raise Denied("nested source/renderer changed")
+        revalidate_clippy_toolchain(plan["toolchain"])
+        if nested_configuration(worktree, paths) != plan["configuration"]:
+            raise Denied("nested Cargo/Clippy configuration changed")
+        expected = dict(plan["compiler_environment"])
+        if row == "parser-doc":
+            expected["RUSTFLAGS"] = "-W missing_docs"
+            expected["CARGO_ENCODED_RUSTFLAGS"] = "-W\x1fmissing_docs"
+        actual = compiler_environment(env)
+        nested_flags(actual, docs=row == "parser-doc")
+        nested_selectors(env)
+        if nested_build_environment(env) != plan["build_environment"]:
+            raise Denied("nested build-tool environment changed")
+        if nested_network(env) != plan["network_environment"]:
+            raise Denied("nested network environment changed")
+        if env.get("RUSTUP_TOOLCHAIN") not in (None, "", plan["toolchain"].get("pin"), plan["toolchain"].get("pin", "") + "-" + plan["toolchain"].get("host", "")):
+            raise Denied("nested rustup selector changed")
+        if actual != plan["compiler_environment"] and actual != expected:
+            raise Denied("nested compiler/profile environment changed")
+        env.update(expected)
+        return render_nested(row, env, worktree, paths, plan["toolchain"])
+    except (KeyError, TypeError, ValueError, OSError) as error:
+        raise Denied("invalid/stale nested handoff: " + str(error)) from error
+
+
+def render_nested(row, env, worktree, paths, toolchain):
+    args = list(NESTED_COMMANDS[row])
+    exact = toolchain["subjects"]
+    controlled = {"CARGO": exact["cargo"]["path"], "RUSTC": exact["rustc"]["path"],
+                  "RUSTDOC": exact["rustdoc"]["path"], "RUSTC_WRAPPER": "", "RUSTC_WORKSPACE_WRAPPER": "",
+                  "CARGO_TARGET_DIR": str(paths["target"]), "CARGO_BUILD_BUILD_DIR": str(paths["build"]),
+                  "CARGO_BUILD_JOBS": env["CARGO_BUILD_JOBS"], "CARGO_INCREMENTAL": "0",
+                  "RUSTUP_AUTO_INSTALL": "0", **compiler_environment(env)}
+    if args[0] == "clippy":
+        controlled.update(RUSTC_WORKSPACE_WRAPPER=exact["clippy-driver"]["path"],
+                          SYSROOT=toolchain["root"], CLIPPY_CONF_DIR=str(worktree),
+                          CLIPPY_ARGS="".join(value + "__CLIPPY_HACKERY__" for value in args[args.index("--") + 1:]))
+    for name in ("TEMP", "TMP", "TMPDIR"):
+        controlled[name] = str(paths["temp"])
+    env.update(controlled)
+    command = [exact["cargo"]["path"]]
+    for name, value in controlled.items():
+        for field, setting in (("value", json.dumps(value)), ("force", "true"), ("relative", "false")):
+            command += ["--config", "env." + name + "." + field + "=" + setting]
+    command += ["--config", "unstable.unstable-options=false", "--config", "build.build-dir=" + json.dumps(str(paths["build"])),
+                "--config", 'build.rustc-wrapper=""', "--config", 'build.rustc-workspace-wrapper=""', args[0]]
+    if args[0] not in ("metadata", "tree"):
+        command += ["--target-dir", str(paths["target"])]
+    command += args[1:]
+    if args[0] == "clippy":
+        position = command.index("clippy")
+        command = [exact["cargo-clippy"]["path"], "clippy", *command[1:position], *command[position + 1:]]
+    cwd = worktree / "crates/perl-parser" if row == "parser-doc" else worktree
+    if row == "incremental-metadata":
+        cwd = worktree / "crates/perl-incremental-parsing"
+    return command, env, cwd
 
 
 # A policy file is an explicit caller declaration, not a measured forecast or
@@ -709,7 +997,23 @@ def release_lease(lock, identity, marker=None):
 
 
 def main(args=None):
-    args = sys.argv[1:] if args is None else args
+    args = list(sys.argv[1:] if args is None else args)
+    if args[:1] == ["--nested-row"]:
+        try:
+            if len(args) != 2:
+                raise Denied("--nested-row accepts one bound row identifier, no raw arguments")
+            command, child_env, cwd = nested_command(args[1])
+            os.chdir(cwd)
+            os.execve(command[0], command, child_env)
+        except (Denied, OSError) as error:
+            print("cargo-admitted nested: DENY: " + str(error), file=sys.stderr)
+            return 75
+    nested_file = None
+    if args[:1] == ["--nested-plan"]:
+        if len(args) < 3:
+            print("cargo-admitted: --nested-plan requires path and Cargo request", file=sys.stderr)
+            return 75
+        nested_file, args = args[1], args[2:]
     preflight, scope = False, None
     try:
         preflight, budget_file, args = admission_options(args)
@@ -718,6 +1022,8 @@ def main(args=None):
         managed = clippy or owned_linux
         operation = "Clippy" if clippy else "Cargo"
         env = os.environ.copy()
+        if env.get("CARGO_ADMITTED_RESOURCES"):
+            raise Denied("nested callers must use bound leaf rendering, not reacquire a parent lease")
         env["RUSTUP_AUTO_INSTALL"] = "0"
         worktree, slot, paths = resource_plan(env)
         if env.get("RUSTC_WRAPPER") or env.get("RUSTC_WORKSPACE_WRAPPER"):
@@ -732,6 +1038,12 @@ def main(args=None):
         if not 1 <= jobs <= 4:
             raise Denied("CARGO_BUILD_JOBS must be between 1 and 4")
         scope = budget_scope(args, env, worktree, paths, jobs)
+        nested = nested_plan(nested_file, env, worktree, paths) if nested_file else None
+        if nested is not None:
+            if clippy or Path.cwd().resolve() != worktree:
+                raise Denied("nested owner requires a builtin operation at workspace root")
+            scope["nested_plan_sha256"] = hashlib.sha256(json.dumps(nested, sort_keys=True).encode()).hexdigest()
+            toolchain = nested["toolchain"]
         if clippy:
             scope["clippy_setup"] = {"toolchain": toolchain,
                                      "configuration": clippy_configuration(worktree, paths),
@@ -784,6 +1096,18 @@ def main(args=None):
                 # child starts. Recovery must not adopt a replacement directory
                 # or reconstruct ownership from age/current contents after death.
                 descriptor.update(lease_identity=list(identity), lease_marker=str(marker))
+            if nested is not None:
+                descriptor.update(marker_identity=list(directory_identity(marker)),
+                                  owner_process=process_fact(os.getpid()))
+                snapshot_path = slot / ("nested-plan-" + marker.name + ".json")
+                payload = json.dumps({"descriptor": descriptor, "plan": nested}, sort_keys=True).encode()
+                if len(payload) > BUDGET_FILE_LIMIT:
+                    raise Denied("owned nested snapshot exceeds 64 KiB")
+                fd = os.open(snapshot_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                with os.fdopen(fd, "wb") as stream:
+                    stream.write(payload)
+                descriptor["nested_snapshot"] = file_subject(snapshot_path)
+            env["CARGO_ADMITTED_RESOURCES"] = json.dumps(descriptor)
             print("cargo-admitted resources: " + json.dumps(descriptor), file=sys.stderr, flush=True)
             command = ["cargo", "--config", "unstable.unstable-options=false",
                        "--config", "build.build-dir=" + json.dumps(str(paths["build"])),
@@ -834,6 +1158,19 @@ def main(args=None):
                 # Reuse the proven owner, without changing builtin Cargo policy,
                 # toolchain resolution or argument/environment construction.
                 tree = ClippyTree()
+                if nested is not None:
+                    launch_attempted = True
+                    clippy_version_check(toolchain, env, tree)
+                    if (nested_source(worktree) != nested["source"]
+                            or nested_configuration(worktree, paths) != nested["configuration"]):
+                        raise Denied("nested setup changed before launch")
+                    command[0] = toolchain["subjects"]["cargo"]["path"]
+                    for name, key in (("CARGO", "cargo"), ("RUSTC", "rustc"), ("RUSTDOC", "rustdoc")):
+                        env[name] = toolchain["subjects"][key]["path"]
+                    env["RUSTC_WRAPPER"] = env["RUSTC_WORKSPACE_WRAPPER"] = ""
+                    for name in ("CARGO", "RUSTC", "RUSTDOC", "RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER", *compiler_environment(env)):
+                        for field, value in (("value", json.dumps(env[name])), ("force", "true"), ("relative", "false")):
+                            command[1:1] = ["--config", "env." + name + "." + field + "=" + value]
                 print("cargo-admitted Cargo tree: " + json.dumps({"owner_pid": os.getpid(),
                       "subreaper": True, "prior_children": "none", "single_native_thread": True,
                       "lease": str(lock)}), file=sys.stderr, flush=True)

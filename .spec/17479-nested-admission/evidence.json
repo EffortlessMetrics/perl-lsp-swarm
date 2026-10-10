@@ -1,0 +1,75 @@
+{
+  "base": "6ac32625c60edcaba7ac2d656857ff7b1f8877ae",
+  "consumer_contract": "https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/17479#issuecomment-6095456552",
+  "source_sha256": "b98de3a4ba6c1c67f2d051b67956229bc4ffaf5e52e5df0430d76c903aaf8e45",
+  "tests": {
+    "total": 136,
+    "passed": 135,
+    "skipped": 1,
+    "seconds": 6.018,
+    "skip": "opt-in real storage build; no broad consumer build"
+  },
+  "new_controls": 26,
+  "mutants": {
+    "source_sha256": "b98de3a4ba6c1c67f2d051b67956229bc4ffaf5e52e5df0430d76c903aaf8e45",
+    "mutants": [
+      {
+        "mutant": "membership-current",
+        "test": "test_no_unenumerated_raw_fallback",
+        "exit": 1,
+        "instrument_errors": 0
+      },
+      {
+        "mutant": "lint-render-current",
+        "test": "test_exact_fixed_contract_and_lints",
+        "exit": 1,
+        "instrument_errors": 0
+      },
+      {
+        "mutant": "marker-identity-current",
+        "test": "test_original_lease_and_marker_identity",
+        "exit": 1,
+        "instrument_errors": 0
+      },
+      {
+        "mutant": "docs-encoded-current",
+        "test": "test_docs_only_flags_and_manifest_cwd",
+        "exit": 1,
+        "instrument_errors": 0
+      },
+      {
+        "mutant": "cap-lints-current",
+        "test": "test_lint_suppression_is_not_a_declared_qualifying_input",
+        "exit": 1,
+        "instrument_errors": 0
+      },
+      {
+        "mutant": "doc-flag-freeze-current",
+        "test": "test_undeclared_doc_flag_refuses",
+        "exit": 1,
+        "instrument_errors": 0
+      },
+      {
+        "mutant": "proxy-freeze-current",
+        "test": "test_environment_controls_and_injection",
+        "exit": 1,
+        "instrument_errors": 0
+      }
+    ]
+  },
+  "fresh_reviews": {
+    "authority": "clear at b98de3a4ba6c1c67f2d051b67956229bc4ffaf5e52e5df0430d76c903aaf8e45",
+    "prerequisite": "clear at b98de3a4ba6c1c67f2d051b67956229bc4ffaf5e52e5df0430d76c903aaf8e45"
+  },
+  "limitations": [
+    "consumer migration",
+    "complete reachable inventory and call-count/concurrency bounds",
+    "aggregate actual-volume growth/RAM/cache qualification",
+    "fresh planner and real nonzero runtime",
+    "current-source binary handoff",
+    "hosted activation",
+    "native Windows/macOS",
+    "hermetic ignored/build-script/external inputs"
+  ],
+  "proof_archive": "/workspace/clippy-publication-proof/nested-plan"
+}
