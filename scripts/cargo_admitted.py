@@ -468,7 +468,17 @@ DISALLOWED_FIXTURE_ROW = "xtask-disallowed-fields-fixture"
 DISALLOWED_TEST_ROW = "xtask-disallowed-fields-test"
 DISALLOWED_TEST = "tasks::check_lint_policy::tests::config::disallowed_fields::configured_field_is_rejected_by_clippy"
 DISALLOWED_FILES = ("Cargo.toml", "Cargo.lock", "clippy.toml", "src/lib.rs")
+LOCK_UNION_ROW = "xtask-lock-union-fixture"
+LOCK_UNION_TEST_ROW = "xtask-lock-union-test"
+LOCK_UNION_TEST = "tasks::check_lint_policy::tests::lock_partition::the_two_rows_jointly_cover_every_borrowed_guard_discard"
+PREPARATION_CONTROL_ROW = "xtask-preparation-control-test"
+PREPARATION_CONTROL_TEST = "tasks::gates::tests::failed_preparation_prevents_runtime_in_every_tier_and_keeps_backstops"
 NESTED_COMMANDS = {
+    PREPARATION_CONTROL_ROW: ("test", "-p", "xtask", "--bin", "xtask", "--locked", "--message-format=json", PREPARATION_CONTROL_TEST,
+                            "--", "--exact", "--test-threads=1", "--color", "never"),
+    LOCK_UNION_ROW: ("clippy", "--offline", "--quiet", "--lib", "--no-deps", "--message-format=json", "--", "--force-warn", "let_underscore_lock", "--force-warn", "clippy::let_underscore_lock"),
+    LOCK_UNION_TEST_ROW: ("test", "-p", "xtask", "--bin", "xtask", "--locked", "--message-format=json", LOCK_UNION_TEST,
+                          "--", "--exact", "--test-threads=1", "--color", "never"),
     DISALLOWED_FIXTURE_ROW: ("clippy", "--offline", "--quiet", "--lib", "--no-deps", "--message-format=json", "--", "-D", "warnings"),
     DISALLOWED_TEST_ROW: ("test", "-p", "xtask", "--bin", "xtask", "--locked", "--message-format=json", DISALLOWED_TEST,
                           "--", "--exact", "--test-threads=1", "--color", "never"),
@@ -599,38 +609,97 @@ def nested_plan(filename, env, worktree, paths):
         if DISALLOWED_FIXTURE_ROW not in data["rows"]:
             raise Denied("owning disallowed-fields test requires its finite fixture row")
         fixture = disallowed_fixture(worktree, paths)
+    lock_fixture = None
+    if LOCK_UNION_ROW in data["rows"] or LOCK_UNION_TEST_ROW in data["rows"]:
+        if LOCK_UNION_ROW not in data["rows"]:
+            raise Denied("owning lock-union test requires its finite fixture row")
+        lock_fixture = lock_union_fixture(worktree, paths)
+    extra = tuple(Path(f["cwd"]) for f in (fixture, lock_fixture) if f)
     plan = {"request": data, "request_subject": request_subject,
             "source": nested_source(worktree), "toolchain": toolchain,
-            "configuration": nested_configuration(worktree, paths, (Path(fixture["cwd"]),) if fixture else ()),
+            "configuration": nested_configuration(worktree, paths, extra),
             "compiler_environment": compiler_environment(env), "network_environment": nested_network(env), "build_environment": nested_build_environment(env),
             "renderer": file_subject(Path(__file__))}
     if fixture:
         plan["disallowed_fields_fixture"] = fixture
+    if lock_fixture:
+        plan["lock_union_fixture"] = lock_fixture
     return plan
 
 
 def disallowed_fixture(worktree, paths):
-    """Only this checked-in dependency-free fixture; never arbitrary manifests.
+    return fixed_fixture(worktree, paths, "disallowed-fields", "disallowed_fields_prepare.py")
+
+
+def lock_union_fixture(worktree, paths):
+    binding = fixed_fixture(worktree, paths, "lock-union", "lock_union_prepare.py")
+    binding["support_adapter"] = file_subject(worktree / "scripts/ci/disallowed_fields_prepare.py")
+    validate_lock_union_template(worktree)
+    return binding
+
+
+def validate_lock_union_template(worktree):
+    import tomllib
+    root = worktree / ".spec/17479-nested-admission/lock-union-fixture"
+    packages = tomllib.loads((worktree / "Cargo.lock").read_text())["package"]
+    def pick(dep):
+        parts = dep.split()
+        found = [p for p in packages if p["name"] == parts[0]
+                 and (len(parts) == 1 or p["version"] == parts[1])]
+        if len(found) != 1:
+            raise Denied("ambiguous lock-union registry dependency")
+        return found[0]
+    manifest = tomllib.loads((root / "Cargo.toml").read_text())
+    if manifest.get("dependencies") != {"parking_lot": {"version": "=" + pick("parking_lot")["version"], "features": ["arc_lock"]}}:
+        raise Denied("lock-union must measure exact workspace parking_lot with arc_lock")
+    expected, pending = {}, ["parking_lot"]
+    while pending:
+        package = pick(pending.pop())
+        key = (package["name"], package["version"])
+        if key in expected:
+            continue
+        if not package.get("source", "").startswith("registry+") or not package.get("checksum"):
+            raise Denied("lock-union dependency must have registry/checksum provenance")
+        expected[key] = package
+        pending.extend(package.get("dependencies", []))
+    lock = tomllib.loads((root / "Cargo.lock").read_text())
+    # Standalone lock references omit a version only when that package name is
+    # unique in this closure; preserve resolved versions/checksums themselves.
+    normalized = []
+    for package in expected.values():
+        package = dict(package)
+        if "dependencies" in package:
+            package["dependencies"] = [
+                dependency.split()[0] if sum(p["name"] == dependency.split()[0] for p in expected.values()) == 1
+                else dependency for dependency in package["dependencies"]]
+        normalized.append(package)
+    fixture = {"name": "let-underscore-lock-partition-fixture", "version": "0.0.0", "dependencies": ["parking_lot"]}
+    if lock.get("version") != 4 or sorted(lock.get("package", []), key=lambda p: (p["name"], p["version"])) != sorted([*normalized, fixture], key=lambda p: (p["name"], p["version"])):
+        raise Denied("lock-union closure differs from current workspace registry subjects")
+
+
+def fixed_fixture(worktree, paths, label, adapter):
+    """Only the two fixed callers' checked-in fixtures; no request-selected path.
 
     Inputs and both output directories must already exist before admission.
     Captured identities supplement fixed paths and exact template bytes.
     """
-    root = native_path(str(paths["temp"] / "disallowed-fields-17479"))
-    template = worktree / ".spec/17479-nested-admission/disallowed-fields-fixture"
+    root = native_path(str(paths["temp"] / (label + "-17479")))
+    template = worktree / (".spec/17479-nested-admission/" + label + "-fixture")
     files = {}
     for name in DISALLOWED_FILES:
         if any(path.stat().st_size > BUDGET_FILE_LIMIT for path in (template / name, root / name)):
-            raise Denied("disallowed-fields fixture input exceeds bounded template")
+            raise Denied(label + " fixture input exceeds bounded template")
         expected, actual = file_subject(template / name), file_subject(root / name)
         if expected["file_identity"][2] > BUDGET_FILE_LIMIT or actual["sha256"] != expected["sha256"]:
-            raise Denied("disallowed-fields fixture differs from its current template: " + name)
+            raise Denied(label + " fixture differs from its current template: " + name)
         files[name] = {"template": expected, "generated": actual}
     directories = {}
     for name, path in (("cwd", root), ("target", root / "target"), ("build", root / "build")):
         native_path(str(path))
         directories[name] = {"path": str(path), "identity": list(directory_identity(path))}
     return {"cwd": str(root), "directories": directories, "files": files,
-            "adapter": file_subject(worktree / "scripts/ci/disallowed_fields_prepare.py"),
+            "adapter": file_subject(worktree / "scripts/ci" / adapter),
             "python": file_subject(Path(sys.executable).resolve(strict=True))}
 
 
@@ -800,7 +869,13 @@ def nested_command(row, env=None):
             raise Denied("disallowed-fields fixture inputs/cwd/output roots changed")
         if row in (DISALLOWED_FIXTURE_ROW, DISALLOWED_TEST_ROW) and fixture is None:
             raise Denied("disallowed-fields fixture is not bound to this workload")
-        if nested_configuration(worktree, paths, (Path(fixture["cwd"]),) if fixture else ()) != plan["configuration"]:
+        lock_fixture = plan.get("lock_union_fixture")
+        if lock_fixture is not None and lock_union_fixture(worktree, paths) != lock_fixture:
+            raise Denied("lock-union fixture inputs/cwd/output roots changed")
+        if row in (LOCK_UNION_ROW, LOCK_UNION_TEST_ROW) and lock_fixture is None:
+            raise Denied("lock-union fixture is not bound to this workload")
+        extra = tuple(Path(f["cwd"]) for f in (fixture, lock_fixture) if f)
+        if nested_configuration(worktree, paths, extra) != plan["configuration"]:
             raise Denied("nested Cargo/Clippy configuration changed")
         expected = dict(plan["compiler_environment"])
         if row == "parser-doc":
@@ -819,7 +894,8 @@ def nested_command(row, env=None):
             raise Denied("nested compiler/profile environment changed")
         env.pop("LD_LIBRARY_PATH", None)
         env.update(expected)
-        return render_nested(row, env, worktree, paths, plan["toolchain"], fixture)
+        selected_fixture = lock_fixture if row in (LOCK_UNION_ROW, LOCK_UNION_TEST_ROW) else fixture
+        return render_nested(row, env, worktree, paths, plan["toolchain"], selected_fixture)
     except (KeyError, TypeError, ValueError, OSError) as error:
         raise Denied("invalid/stale nested handoff: " + str(error)) from error
 
@@ -829,7 +905,7 @@ def render_nested(row, env, worktree, paths, toolchain, fixture=None):
     cwd = worktree / "crates/perl-parser" if row == "parser-doc" else worktree
     if row == "incremental-metadata":
         cwd = worktree / "crates/perl-incremental-parsing"
-    if row == DISALLOWED_FIXTURE_ROW:
+    if row in (DISALLOWED_FIXTURE_ROW, LOCK_UNION_ROW):
         cwd = Path(fixture["cwd"])
         paths = {**paths, **{name: Path(fixture["directories"][name]["path"]) for name in ("target", "build")}}
     exact = toolchain["subjects"]
@@ -846,6 +922,8 @@ def render_nested(row, env, worktree, paths, toolchain, fixture=None):
         controlled[name] = str(paths["temp"])
     if row == DISALLOWED_TEST_ROW:
         controlled["CARGO_ADMITTED_FIXTURE_PYTHON"] = fixture["python"]["path"]
+    if row == LOCK_UNION_TEST_ROW:
+        controlled["CARGO_ADMITTED_LOCK_PYTHON"] = fixture["python"]["path"]
     env.update(controlled)
     command = [exact["cargo"]["path"]]
     for name, value in controlled.items():

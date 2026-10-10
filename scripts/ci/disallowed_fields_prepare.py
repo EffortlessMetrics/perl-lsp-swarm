@@ -18,13 +18,15 @@ import cargo_admitted as owner
 LIMIT = 4 * 1024 * 1024
 
 
-def prepare(env=None):
+def prepare(env=None, label="disallowed-fields"):
     env = dict(os.environ if env is None else env)
     worktree, slot, paths = owner.resource_plan(env)
     if (slot / "cargo-active").exists():
         raise owner.Denied("cannot prepare fixture while the Cargo owner lease is active")
-    root = owner.native_path(str(paths["temp"] / "disallowed-fields-17479"))
-    template = worktree / ".spec/17479-nested-admission/disallowed-fields-fixture"
+    if label not in ("disallowed-fields", "lock-union"):
+        raise owner.Denied("unknown fixed fixture")
+    root = owner.native_path(str(paths["temp"] / (label + "-17479")))
+    template = worktree / (".spec/17479-nested-admission/" + label + "-fixture")
     for directory in (root, root / "src", root / "target", root / "build"):
         owner.native_path(str(directory)).mkdir(parents=True, exist_ok=True)
     for name in owner.DISALLOWED_FILES:
@@ -41,7 +43,7 @@ def prepare(env=None):
         else:
             with destination.open("xb") as output:
                 output.write(data)
-    binding = owner.disallowed_fixture(worktree, paths)
+    binding = (owner.disallowed_fixture if label == "disallowed-fields" else owner.lock_union_fixture)(worktree, paths)
     print(json.dumps({"prepared": binding["cwd"], "compiler_launched": False}))
 
 
@@ -106,34 +108,53 @@ def fixture(env=None, invoke=subprocess.run):
     return result.returncode
 
 
-def owning_test(env=None, invoke=subprocess.run):
+def owning_test(env=None, invoke=subprocess.run, fixture_row=None, test_row=None, test_name=None,
+                copy_prefix="disallowed-fields-owning"):
     env = dict(os.environ if env is None else env)
-    for row in (owner.DISALLOWED_FIXTURE_ROW, owner.DISALLOWED_TEST_ROW):
+    fixture_row = fixture_row or owner.DISALLOWED_FIXTURE_ROW
+    test_row = test_row or owner.DISALLOWED_TEST_ROW
+    test_name = test_name or owner.DISALLOWED_TEST
+    selections = {
+        owner.DISALLOWED_TEST_ROW: (owner.DISALLOWED_FIXTURE_ROW, owner.DISALLOWED_TEST, "disallowed-fields-owning"),
+        owner.LOCK_UNION_TEST_ROW: (owner.LOCK_UNION_ROW, owner.LOCK_UNION_TEST, "lock-union-owning"),
+        owner.PREPARATION_CONTROL_ROW: (owner.LOCK_UNION_ROW, owner.PREPARATION_CONTROL_TEST, "preparation-control-owning"),
+    }
+    if selections.get(test_row) != (fixture_row, test_name, copy_prefix):
+        raise owner.Denied("unsupported owning-test selection")
+    for row in (fixture_row, test_row):
         owner.nested_command(row, env)
-    command, child, cwd = owner.nested_command(owner.DISALLOWED_TEST_ROW, env)
+    command, child, cwd = owner.nested_command(test_row, env)
     result = invoke(command, env=child, cwd=cwd, capture_output=True, text=True,
                     encoding="utf-8", errors="strict")
     print(result.stdout, end="", flush=True)
     print(result.stderr, end="", file=sys.stderr, flush=True)
-    owner.nested_command(owner.DISALLOWED_TEST_ROW, env)
+    owner.nested_command(test_row, env)
     if result.returncode:
         return result.returncode if result.returncode > 0 else 1
     lines = result.stdout.splitlines()
     if ([line for line in lines if re.fullmatch(r"running [0-9]+ tests?", line)] != ["running 1 test"]
             or [line for line in lines if re.fullmatch(r"test .* \.\.\. (ok|FAILED|ignored.*)", line)]
-            != ["test " + owner.DISALLOWED_TEST + " ... ok"]
+            != ["test " + test_name + " ... ok"]
             or len([line for line in lines if line.startswith("test result:")]) != 1
             or not any(re.fullmatch(r"test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; [0-9]+ filtered out; finished in [0-9]+(?:\.[0-9]+)?s", line) for line in lines)):
         raise owner.Denied("missing exact current owning fixture-test pass")
-    capture_owning_artifact(result.stdout, env)
+    capture_owning_artifact(result.stdout, env, test_row, test_name, copy_prefix)
     return 0
 
 
-def capture_owning_artifact(stdout, env):
+def capture_owning_artifact(stdout, env, test_row=None, test_name=None,
+                            copy_prefix="disallowed-fields-owning"):
     """Preserve the actual Cargo-reported harness before releasing its owner."""
     if len(stdout.encode('utf-8')) > 64*1024*1024:
         raise owner.Denied("owning-harness compiler output exceeds bounded reader")
     descriptor = json.loads(env["CARGO_ADMITTED_RESOURCES"])
+    test_row = test_row or owner.DISALLOWED_TEST_ROW
+    test_name = test_name or owner.DISALLOWED_TEST
+    if (test_row, test_name, copy_prefix) not in (
+            (owner.DISALLOWED_TEST_ROW, owner.DISALLOWED_TEST, "disallowed-fields-owning"),
+            (owner.LOCK_UNION_TEST_ROW, owner.LOCK_UNION_TEST, "lock-union-owning"),
+            (owner.PREPARATION_CONTROL_ROW, owner.PREPARATION_CONTROL_TEST, "preparation-control-owning")):
+        raise owner.Denied("unsupported owning-artifact selection")
     snapshot, _ = owner.bounded_json(descriptor["nested_snapshot"]["path"])
     worktree = Path(descriptor["worktree"])
     matches, terminals = [], []
@@ -161,23 +182,23 @@ def capture_owning_artifact(stdout, env):
             or not path.name.startswith('xtask-') or str(path) not in event.get('filenames', [])
             or not os.access(path, os.X_OK)):
         raise owner.Denied("owning harness has wrong executable/root")
-    owner.nested_command(owner.DISALLOWED_TEST_ROW, env)
+    owner.nested_command(test_row, env)
     original = owner.file_subject(path)
-    copy = Path(descriptor['resources']['temp']) / ('disallowed-fields-owning-' + str(os.getpid()))
+    copy = Path(descriptor['resources']['temp']) / (copy_prefix + '-' + str(os.getpid()))
     with path.open('rb') as source, copy.open('xb') as destination:
         shutil.copyfileobj(source, destination, 1024*1024)
     copied = owner.file_subject(copy)
     if copied['sha256'] != original['sha256'] or owner.file_subject(path) != original:
         raise owner.Denied("owning harness changed while capturing evidence")
     copy.chmod(0o444)
-    owner.nested_command(owner.DISALLOWED_TEST_ROW, env)
+    owner.nested_command(test_row, env)
     evidence = {'schema_version':1, 'tested_source':snapshot['plan']['source']['head'],
                 'toolchain_pin':snapshot['plan']['toolchain'].get('pin'),
                 'artifact':original, 'copy':owner.file_subject(copy), 'cargo_artifact':event,
                 'snapshot':descriptor['nested_snapshot'], 'owner_process':descriptor['owner_process'],
                 'lease':descriptor['lease'], 'lease_identity':descriptor['lease_identity'],
                 'lease_marker':descriptor['lease_marker'], 'marker_identity':descriptor['marker_identity'],
-                'copied_under_original_live_owner':True, 'named_test':owner.DISALLOWED_TEST}
+                'copied_under_original_live_owner':True, 'named_test':test_name}
     with copy.with_suffix('.json').open('x',encoding='utf-8') as record:
         json.dump(evidence,record)
     print('Owning fixture harness preserved: '+json.dumps({'path':str(copy),'sha256':copied['sha256']}),flush=True)

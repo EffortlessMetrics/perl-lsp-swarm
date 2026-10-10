@@ -1,0 +1,11 @@
+[package]
+name = "let-underscore-lock-partition-fixture"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.95"
+publish = false
+
+[dependencies]
+parking_lot = { version = "=0.12.5", features = ["arc_lock"] }
+
+[workspace]

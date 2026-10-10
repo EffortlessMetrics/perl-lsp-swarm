@@ -131,64 +131,10 @@ fn workspace_parking_lot_version(root: &Path) -> Result<String> {
 /// and the same call sites as the discards and differ only in whether the guard
 /// is bound. A lint that fired on them, or one that fired on nothing at all,
 /// would not discriminate, and the assertions below would catch either.
-const FIXTURE_SOURCE: &str = r#"use parking_lot::{Mutex as PlMutex, MutexGuard as PlMutexGuard, RwLock as PlRwLock};
-use std::sync::{Arc, Mutex, RwLock};
-
-pub fn discards_std_guards(dropped_std_mutex: &Mutex<u32>, dropped_std_rwlock: &RwLock<u32>) {
-    let _ = dropped_std_mutex.lock();
-    let _ = dropped_std_rwlock.read();
-}
-
-pub fn discards_parking_lot_guards(dropped_pl_mutex: &PlMutex<u32>, dropped_pl_rwlock: &PlRwLock<u32>) {
-    let _ = dropped_pl_mutex.lock();
-    let _ = dropped_pl_rwlock.write();
-}
-
-pub fn discards_arc_guards(dropped_arc_mutex: &Arc<PlMutex<u32>>, dropped_arc_rwlock: &Arc<PlRwLock<u32>>) {
-    let _ = dropped_arc_mutex.lock_arc();
-    let _ = dropped_arc_rwlock.write_arc();
-}
-
-pub fn discards_by_explicit_drop(dropped_via_std_drop: &Mutex<u32>, dropped_via_pl_drop: &PlMutex<u32>) {
-    drop(dropped_via_std_drop.lock());
-    drop(dropped_via_pl_drop.lock());
-}
-
-pub fn discards_mapped_guard(dropped_mapped_pl: &PlMutex<(u32, u32)>) {
-    let dropped_mapped_pl_guard = dropped_mapped_pl.lock();
-    let _ = PlMutexGuard::map(dropped_mapped_pl_guard, |value| &mut value.0);
-}
-
-pub fn holds_mapped_guard(held_mapped_pl: &PlMutex<(u32, u32)>) -> u32 {
-    let held_mapped_pl_guard = held_mapped_pl.lock();
-    let mut mapped = PlMutexGuard::map(held_mapped_pl_guard, |value| &mut value.0);
-    *mapped = mapped.wrapping_add(1);
-    *mapped
-}
-
-pub fn holds_arc_guards(held_arc_mutex: &Arc<PlMutex<u32>>, held_arc_rwlock: &Arc<PlRwLock<u32>>) -> u32 {
-    let mut guard = held_arc_mutex.lock_arc();
-    *guard = guard.wrapping_add(1);
-    let mut writer = held_arc_rwlock.write_arc();
-    *writer = guard.wrapping_add(1);
-    *writer
-}
-
-pub fn holds_std_guards(held_std_mutex: &Mutex<u32>, held_std_rwlock: &RwLock<u32>) -> Option<u32> {
-    let mut guard = held_std_mutex.lock().ok()?;
-    *guard = guard.wrapping_add(1);
-    let reader = held_std_rwlock.read().ok()?;
-    Some(guard.wrapping_add(*reader))
-}
-
-pub fn holds_parking_lot_guards(held_pl_mutex: &PlMutex<u32>, held_pl_rwlock: &PlRwLock<u32>) -> u32 {
-    let mut guard = held_pl_mutex.lock();
-    *guard = guard.wrapping_add(1);
-    let mut writer = held_pl_rwlock.write();
-    *writer = guard.wrapping_add(1);
-    *writer
-}
-"#;
+const FIXTURE_SOURCE: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../.spec/17479-nested-admission/lock-union-fixture/src/lib.rs"
+));
 
 /// One reported finding: which lint fired, and on which source line it fired.
 #[derive(Debug)]
@@ -402,25 +348,25 @@ fn the_two_rows_jointly_cover_every_borrowed_guard_discard() -> Result<()> {
 /// Compile the fixture with the given lint flags and return the findings it
 /// reported, filtered by `keep`.
 fn measure_fixture(lint_flags: &[&str], keep: Keep) -> Result<Vec<LintFinding>> {
-    let manifest = fixture_manifest(&workspace_parking_lot_version(super::test_root())?);
-    let fixture = tempdir()?;
-    write_fixture(fixture.path(), &manifest)?;
-
-    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"));
-    let mut command = Command::new(cargo);
-    command
-        .current_dir(fixture.path())
-        .args(["clippy", "--offline", "--quiet", "--lib", "--no-deps", "--message-format=json"])
-        .arg("--");
-    command.args(lint_flags);
-    let output = command
-        .env("CARGO_TARGET_DIR", fixture.path().join("target"))
-        .env("CARGO_TERM_COLOR", "never")
-        .env_remove("CARGO_ENCODED_RUSTFLAGS")
-        .env_remove("RUSTC_WORKSPACE_WRAPPER")
-        .env_remove("RUSTC_WRAPPER")
-        .env_remove("RUSTFLAGS")
-        .output()?;
+    let admitted = std::env::var_os("CARGO_ADMITTED_RESOURCES");
+    let interpreter = std::env::var_os("CARGO_ADMITTED_LOCK_PYTHON");
+    let output = if admitted.is_some() || interpreter.is_some() {
+        let Some(python) = interpreter else {
+            bail!("admitted lock measurement requires its bound native interpreter");
+        };
+        if admitted.is_none()
+            || lint_flags != ["--force-warn", RUST_LOCK_LINT, "--force-warn", CLIPPY_LOCK_LINT]
+        {
+            bail!("admitted lock measurement is not the finite union fixture");
+        }
+        Command::new(python)
+            .arg("-I")
+            .arg(super::test_root().join("scripts/ci/lock_union_prepare.py"))
+            .arg("--fixture")
+            .output()?
+    } else {
+        compile_developer_fixture(lint_flags)?
+    };
 
     // Every lint here is warned or force-warned, so a clean instrument exits
     // zero. A non-zero exit means the fixture did not build — a missing
@@ -436,6 +382,28 @@ fn measure_fixture(lint_flags: &[&str], keep: Keep) -> Result<Vec<LintFinding>> 
     }
 
     collect_findings(&output.stdout, keep)
+}
+
+fn compile_developer_fixture(lint_flags: &[&str]) -> Result<std::process::Output> {
+    let manifest = fixture_manifest(&workspace_parking_lot_version(super::test_root())?);
+    let fixture = tempdir()?;
+    write_fixture(fixture.path(), &manifest)?;
+
+    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"));
+    let mut command = Command::new(cargo);
+    command
+        .current_dir(fixture.path())
+        .args(["clippy", "--offline", "--quiet", "--lib", "--no-deps", "--message-format=json"])
+        .arg("--");
+    command.args(lint_flags);
+    Ok(command
+        .env("CARGO_TARGET_DIR", fixture.path().join("target"))
+        .env("CARGO_TERM_COLOR", "never")
+        .env_remove("CARGO_ENCODED_RUSTFLAGS")
+        .env_remove("RUSTC_WORKSPACE_WRAPPER")
+        .env_remove("RUSTC_WRAPPER")
+        .env_remove("RUSTFLAGS")
+        .output()?)
 }
 
 fn write_fixture(root: &Path, manifest: &str) -> Result<()> {

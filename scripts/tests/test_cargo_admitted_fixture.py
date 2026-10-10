@@ -147,7 +147,7 @@ class FixtureTests(unittest.TestCase):
         invoke=Mock(return_value=subprocess.CompletedProcess([],0,good,''))
         with patch.object(f,'capture_owning_artifact') as capture:
             self.assertEqual(f.owning_test(self.n.env,invoke),0)
-            capture.assert_called_once_with(good,self.n.env)
+            capture.assert_called_once_with(good,self.n.env,a.DISALLOWED_TEST_ROW,a.DISALLOWED_TEST,'disallowed-fields-owning')
         with patch.object(f,'capture_owning_artifact') as capture:
             for bad in [good.replace(a.DISALLOWED_TEST,'other'),good.replace('1 passed','0 passed'),good.replace('... ok','... ignored'),good.replace('running 1 test','running 0 tests')]:
                 invoke.return_value=subprocess.CompletedProcess([],0,bad,'')
