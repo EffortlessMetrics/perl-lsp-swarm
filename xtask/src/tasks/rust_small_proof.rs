@@ -133,8 +133,9 @@ const SCORECARD_CENSUS_ARGS: &[&str] = &[
 
 /// References scorecard execution argv with frozen snapshot writes: any insta
 /// snapshot drift surfaces as a product/test failure, never as a silently
-/// rewritten fixture. This is exactly what every route ran before
-/// consolidation (the old `INSTA_UPDATE=no cargo test ...` line).
+/// rewritten fixture. `--include-ignored` executes every censused test identity,
+/// including ignored tests: a positive listing must not replay as an
+/// ignored-only success.
 const SCORECARD_RUN_ARGS: &[&str] = &[
     "test",
     "-p",
@@ -148,6 +149,7 @@ const SCORECARD_RUN_ARGS: &[&str] = &[
     "references_tier_scorecard_tests",
     "--",
     "--test-threads=1",
+    "--include-ignored",
 ];
 
 const SCORECARD_REPLAY_ENV: [(&str, &str); 1] = [("INSTA_UPDATE", "no")];
@@ -1268,6 +1270,99 @@ tests::gamma: test
         }
         assert!(SCORECARD_CENSUS_ARGS.contains(&"--list"));
         assert!(SCORECARD_RUN_ARGS.contains(&"--test-threads=1"));
+        assert!(SCORECARD_RUN_ARGS.contains(&"--include-ignored"));
+    }
+
+    #[test]
+    fn scorecard_replay_executes_ignored_tests_and_preserves_failures() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let source = dir.path().join("scorecard_fixture.rs");
+        let binary = dir.path().join(format!("scorecard_fixture{}", std::env::consts::EXE_SUFFIX));
+        fs::write(
+            &source,
+            r#"
+mod references_tier_scorecard_tests {
+    fn mark_executed() {
+        let path = std::env::var("SCORECARD_EXECUTION_MARKER").expect("marker path");
+        std::fs::write(path, b"executed").expect("write execution marker");
+    }
+    #[test]
+    fn passing() { mark_executed(); }
+    #[test]
+    fn failing() { assert!(false, "retained failing control"); }
+    #[test]
+    #[ignore = "controlled ignored passing fixture; #8407"]
+    fn ignored_passing() { mark_executed(); }
+    #[test]
+    #[ignore = "controlled ignored failing fixture; #8407"]
+    fn ignored_failing() { assert!(false, "ignored failure must execute"); }
+}
+"#,
+        )?;
+        let rustc = std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into());
+        let compiled =
+            Command::new(rustc).arg("--test").arg(&source).arg("-o").arg(&binary).output()?;
+        assert!(
+            compiled.status.success(),
+            "fixture must compile: {}",
+            String::from_utf8_lossy(&compiled.stderr)
+        );
+
+        // Use the production libtest tails, so removing --include-ignored makes
+        // both ignored controls discriminate against the actual replay command.
+        let census_separator = SCORECARD_CENSUS_ARGS
+            .iter()
+            .position(|arg| *arg == "--")
+            .ok_or_else(|| eyre!("census lost its libtest separator"))?;
+        let replay_separator = SCORECARD_RUN_ARGS
+            .iter()
+            .position(|arg| *arg == "--")
+            .ok_or_else(|| eyre!("replay lost its libtest separator"))?;
+        let filter = SCORECARD_RUN_ARGS[replay_separator - 1];
+        for (case, expected_exit, expect_marker) in [
+            ("passing", 0, true),
+            ("failing", 101, false),
+            ("ignored_passing", 0, true),
+            ("ignored_failing", 101, false),
+        ] {
+            let selected = format!("{filter}::{case}");
+            let listing = Command::new(&binary)
+                .arg(&selected)
+                .args(&SCORECARD_CENSUS_ARGS[census_separator + 1..])
+                .output()?;
+            assert!(listing.status.success(), "{case}: census instrument must succeed");
+            assert_eq!(
+                count_libtest_listed_tests(&String::from_utf8_lossy(&listing.stdout)),
+                1,
+                "{case}: exactly one fixture test must be censused"
+            );
+            let marker = dir.path().join(format!("{case}.executed"));
+            let replay = Command::new(&binary)
+                .arg(&selected)
+                .args(&SCORECARD_RUN_ARGS[replay_separator + 1..])
+                .envs(SCORECARD_REPLAY_ENV)
+                .env("SCORECARD_EXECUTION_MARKER", &marker)
+                .output()?;
+            assert_eq!(
+                replay.status.code(),
+                Some(expected_exit),
+                "{case}: {}",
+                String::from_utf8_lossy(&replay.stdout)
+            );
+            assert_eq!(marker.is_file(), expect_marker, "{case}: test body execution");
+        }
+
+        let listing = Command::new(&binary)
+            .arg(format!("{filter}::missing_test"))
+            .args(&SCORECARD_CENSUS_ARGS[census_separator + 1..])
+            .output()?;
+        assert!(listing.status.success(), "empty-filter census instrument must succeed");
+        assert_eq!(
+            count_libtest_listed_tests(&String::from_utf8_lossy(&listing.stdout)),
+            0,
+            "an empty filter must still be rejected by the census"
+        );
+        Ok(())
     }
 
     #[test]
@@ -1398,6 +1493,14 @@ tests::gamma: test
         let subject = sample_subject();
         assert!(verify_receipt(&receipt, None).is_ok());
         assert!(verify_receipt(&receipt, Some(&subject)).is_ok());
+    }
+
+    #[test]
+    fn a_receipt_without_ignored_scorecard_execution_is_refused() {
+        let mut receipt = success_receipt();
+        receipt.steps[CARGO_STEPS.len() + 1].argv.retain(|arg| arg != "--include-ignored");
+        let text = rejection(&receipt, None);
+        assert!(text.contains("canonical proof"), "{text}");
     }
 
     #[test]
