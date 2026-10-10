@@ -1,0 +1,52 @@
+
+running 47 tests
+test tasks::ci_scope::tests::classifier_script_change_selects_xtask ... ok
+test tasks::ci_scope::tests::classify_ci_hygiene_sibling_sources_do_not_widen_process_routing ... ok
+test tasks::ci_scope::tests::classify_files_does_not_widen_unrelated_code_to_windows ... ok
+test tasks::ci_scope::tests::classify_files_emits_windows_platform_override_and_explanation ... ok
+test tasks::ci_scope::tests::classify_files_fallback_includes_perl_dap_when_windows_runner_triggers_without_direct_crates ... ok
+test tasks::ci_scope::tests::classify_powershell_completion_paths_select_public_binary_on_windows ... ok
+test tasks::ci_scope::tests::classify_process_helper_sources_select_ci_hygiene_for_windows_smoke ... ok
+test tasks::ci_scope::tests::crate_source_change_does_not_select_xtask ... ok
+test tasks::ci_scope::tests::gate_policy_change_selects_xtask ... ok
+test tasks::ci_scope::tests::hermetic_vim_workflow_change_selects_xtask ... ok
+test tasks::ci_scope::tests::immutable_subject_accepts_non_cargo_input_without_governed_projection ... ok
+test tasks::ci_scope::tests::immutable_subject_rejects_unprojected_rust_input ... ok
+test tasks::ci_scope::tests::publishable_manifest_change_selects_both_its_crate_and_xtask ... ok
+test tasks::ci_scope::tests::release_workflow_change_selects_xtask ... ok
+test tasks::ci_scope::tests::required_checks_ledger_change_selects_xtask ... ok
+test tasks::ci_scope::tests::test_apply_wideners_v2_dedup ... ok
+test tasks::ci_scope::tests::test_apply_wideners_v2_no_match ... ok
+test tasks::ci_scope::tests::test_apply_wideners_v2_parser_triggers_lsp_smoke ... ok
+test tasks::ci_scope::tests::test_build_reverse_dep_map_basic ... ok
+test tasks::ci_scope::tests::test_classify_diff_ci_config ... ok
+test tasks::ci_scope::tests::test_classify_diff_code ... ok
+test tasks::ci_scope::tests::test_classify_diff_empty_is_prose_only ... ok
+test tasks::ci_scope::tests::test_classify_diff_mixed_code_and_docs ... ok
+test tasks::ci_scope::tests::test_classify_diff_prose_only ... ok
+test tasks::ci_scope::tests::test_classify_files_cargo_toml_triggers_dep_change ... ok
+test tasks::ci_scope::tests::test_classify_files_code_diff_has_mutation_diff ... ok
+test tasks::ci_scope::tests::test_classify_files_docs_only ... ok
+test tasks::ci_scope::tests::test_classify_files_empty_diff ... ok
+test tasks::ci_scope::tests::test_classify_files_meta_change_selects_parser_ratchet_lane ... ok
+test tasks::ci_scope::tests::test_classify_files_parser_path_selects_parser_ratchet_lane ... ok
+test tasks::ci_scope::tests::test_classify_files_parser_recovery_file_triggers_fuzz ... ok
+test tasks::ci_scope::tests::test_crates_from_files_basic ... ok
+test tasks::ci_scope::tests::test_crates_from_files_empty ... ok
+test tasks::ci_scope::tests::test_crates_from_files_maps_xtask_workspace_member ... ok
+test tasks::ci_scope::tests::test_heavy_lanes_empty_when_no_direct_crates ... ok
+test tasks::ci_scope::tests::test_heavy_lanes_are_deduplicated_and_risk_driven ... ok
+test tasks::ci_scope::tests::test_heavy_lanes_mutation_diff_default ... ok
+test tasks::ci_scope::tests::test_risk_tag_dep_change_cargo_toml ... ok
+test tasks::ci_scope::tests::test_reverse_dep_closure_transitive ... ok
+test tasks::ci_scope::tests::test_risk_tag_none_for_unrelated ... ok
+test tasks::ci_scope::tests::test_risk_tag_parser_recovery ... ok
+test tasks::ci_scope::tests::test_risk_tag_public_api ... ok
+test tasks::ci_scope::tests::test_risk_tags_cover_each_path_family ... ok
+test tasks::ci_scope::tests::unrelated_workflow_change_does_not_select_xtask ... ok
+test tasks::ci_scope::tests::windows_runner_matches_known_portability_seams ... ok
+test tasks::ci_scope::tests::windows_runner_ignores_unrelated_paths_and_non_shell_scripts ... ok
+test tasks::ci_scope::tests::workflow_contract_inputs_select_xtask ... ok
+
+test result: ok. 47 passed; 0 failed; 0 ignored; 0 measured; 4680 filtered out; finished in 0.00s
+

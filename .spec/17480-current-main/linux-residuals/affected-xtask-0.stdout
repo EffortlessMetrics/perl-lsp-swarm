@@ -1,0 +1,246 @@
+
+running 230 tests
+test tasks::gates::disposition::gate_disposition_spec::checked_in_quarantine_bits_without_ledger_rows_resolve_invalid ... ok
+test tasks::gates::disposition::gate_disposition_spec::checked_in_rows_cover_every_governed_gate_exactly_once ... ok
+test tasks::gates::disposition::gate_disposition_spec::current_quarantine_is_never_executed_through_ordinary_admission ... ok
+test tasks::gates::disposition::gate_disposition_spec::digest_covers_every_semantic_field_of_a_row ... ok
+test tasks::gates::disposition::gate_disposition_spec::disposition_converted_err_assertion_still_fails_when_schema_is_supported - should panic ... ok
+test tasks::gates::disposition::gate_disposition_spec::disposition_converted_option_assertion_still_fails_when_row_is_absent - should panic ... ok
+test tasks::gates::disposition::gate_disposition_spec::disposition_converted_result_assertion_still_fails_when_date_is_invalid - should panic ... ok
+test tasks::gates::disposition::gate_disposition_spec::duplicate_policy_rows_and_duplicate_ledger_rows_fail_closed ... ok
+test tasks::gates::disposition::gate_disposition_spec::duplicate_projection_entries_fail_closed ... ok
+test tasks::gates::disposition::gate_disposition_spec::evidenced_quarantine_resolves_current_with_owner_reason_and_horizon ... ok
+test tasks::gates::disposition::gate_disposition_spec::execution_skip_observation_establishes_neither_proposition ... ok
+test tasks::gates::disposition::gate_disposition_spec::expired_quarantine_is_action_required_non_success ... ok
+test tasks::gates::disposition::gate_disposition_spec::explain_output_names_authority_and_row_reasons ... ok
+test tasks::gates::disposition::gate_disposition_spec::flake_projection_without_ledger_row_fails_closed ... ok
+test tasks::gates::disposition::gate_disposition_spec::ledger_row_without_quarantine_bit_conflicts_and_fails_closed ... ok
+test tasks::gates::disposition::gate_disposition_spec::mirroring_projection_keeps_the_quarantine_current ... ok
+test tasks::gates::disposition::gate_disposition_spec::named_gate_added_to_policy_is_covered_exactly_once ... ok
+test tasks::gates::disposition::gate_disposition_spec::ordinary_gate_resolves_active_current_from_policy_default ... ok
+test tasks::gates::disposition::gate_disposition_spec::checked_in_security_audit_resolves_invalid_not_quarantined_or_noop ... ok
+test tasks::gates::disposition::gate_disposition_spec::ordinary_quarantined_tests_are_test_level_debt_not_unknown_gates ... ok
+test tasks::gates::disposition::gate_disposition_spec::policy_role_is_consumed_not_moved_by_quarantine ... ok
+test tasks::gates::disposition::gate_disposition_spec::quarantine_without_owner_fails_closed ... ok
+test tasks::gates::disposition::gate_disposition_spec::projection_field_disagreements_with_ledger_evidence_fail_closed ... ok
+test tasks::gates::disposition::gate_disposition_spec::quarantine_without_reason_fails_closed ... ok
+test tasks::gates::disposition::gate_disposition_spec::quarantine_without_review_horizon_fails_closed ... ok
+test tasks::gates::disposition::gate_disposition_spec::required_role_cannot_promote_dormant_or_blocked_to_active ... ok
+test tasks::gates::disposition::gate_disposition_spec::quarantined_applicable_gate_cannot_compile_as_scoped_noop ... ok
+test tasks::gates::disposition::gate_disposition_spec::retired_gate_cannot_remain_runnable ... ok
+test tasks::gates::disposition::gate_disposition_spec::scoped_noop_requires_both_active_lifecycle_and_selector_evidence ... ok
+test tasks::gates::disposition::gate_disposition_spec::selector_non_applicability_cannot_mutate_lifecycle_disposition ... ok
+test tasks::gates::disposition::gate_disposition_spec::selector_skipped_and_quarantined_gate_keeps_quarantine_authority ... ok
+test tasks::gates::disposition::gate_disposition_spec::source_reordering_preserves_digest_and_semantic_movement_changes_it ... ok
+test tasks::gates::disposition::gate_disposition_spec::unknown_projection_gate_and_unsupported_schema_fail_closed ... ok
+test tasks::gates::disposition::gate_disposition_spec::unnamed_ledger_row_fails_closed ... ok
+test tasks::gates::disposition::gate_disposition_spec::verbose_cannot_turn_expired_or_invalid_quarantine_into_runnable_work ... ok
+test tasks::gates::first_failure::tests::invalid_utf8_line_does_not_hide_a_later_libtest_marker ... ok
+test tasks::gates::planning_types::route_plan_canonical_seam_tests::adapter_input_survives_the_cli_json_handoff ... ok
+test tasks::gates::planning_types::route_plan_canonical_seam_tests::adapter_output_round_trips_canonical_publication ... ok
+test tasks::gates::planning_types::route_plan_seam_tests::adapter_projects_positive_proof_only_where_the_selector_decided ... ok
+test tasks::gates::planning_types::route_plan_seam_tests::current_quarantine_skipped_by_runner_stays_quarantined ... ok
+test tasks::gates::planning_types::route_plan_seam_tests::expired_quarantine_with_selector_noop_is_error ... ok
+test tasks::gates::planning_types::route_plan_seam_tests::invalid_lifecycle_with_selector_noop_is_error_not_scoped_noop ... ok
+test tasks::gates::planning_types::route_plan_seam_tests::fallback_fired_selection_never_becomes_a_proof_backed_run ... ok
+test tasks::gates::planning_types::route_plan_seam_tests::planning_types_converted_err_assertion_still_fails_when_authority_projects - should panic ... ok
+test tasks::gates::planning_types::route_plan_seam_tests::planning_types_converted_json_assertion_still_fails_when_bytes_are_invalid - should panic ... ok
+test tasks::gates::planning_types::route_plan_seam_tests::planning_types_converted_option_assertion_still_fails_when_fixture_date_is_invalid - should panic ... ok
+test tasks::gates::planning_types::route_plan_seam_tests::planning_types_converted_must_wrappers_carry_track_caller ... ok
+test tasks::gates::planning_types::route_plan_seam_tests::planning_types_converted_outcome_assertion_still_fails_when_row_is_error - should panic ... ok
+test tasks::gates::planning_types::route_plan_seam_tests::planning_types_converted_result_assertion_still_fails_when_compile_input_is_invalid - should panic ... ok
+test tasks::gates::planning_types::route_plan_seam_tests::route_execution_identity_renders_scoped_package_arguments ... ok
+test tasks::gates::planning_types::route_plan_seam_tests::policy_role_is_stable_across_profiles_and_aggregates_inherit ... ok
+test tasks::gates::planning_types::route_plan_seam_tests::unattributable_quarantine_sources_refuse_projection ... ok
+test tasks::gates::route_profile::route_profile_spec::all_includes_commit_and_release_and_every_policy_tier ... ok
+test tasks::gates::route_profile::route_profile_spec::all_admits_a_newly_added_policy_tier_and_other_profiles_do_not ... ok
+test tasks::gates::route_profile::route_profile_spec::commit_expands_to_exactly_the_commit_tier ... ok
+test tasks::gates::route_profile::route_profile_spec::direct_tier_string_equality_yields_empty_or_partial_denominators ... ok
+test tasks::gates::route_profile::route_profile_spec::display_list_semantics_diverge_and_execution_denominator_stays_correct ... ok
+test tasks::gates::route_profile::route_profile_spec::duplicate_gate_rows_fail_closed ... ok
+test tasks::gates::route_profile::route_profile_spec::every_gate_appears_exactly_once_even_through_overlapping_paths ... ok
+test tasks::gates::route_profile::route_profile_spec::excluded_native_tiers_are_in_canonical_order_not_hashmap_order ... ok
+test tasks::gates::route_profile::route_profile_spec::expansion_rule_digest_tracks_rule_movement ... ok
+test tasks::gates::route_profile::route_profile_spec::explain_output_names_authority_profile_and_denominator ... ok
+test tasks::gates::route_profile::route_profile_spec::gate_filter_naming_an_outside_profile_gate_fails_closed ... ok
+test tasks::gates::route_profile::route_profile_spec::gate_filter_naming_an_unknown_gate_fails_closed ... ok
+test tasks::gates::route_profile::route_profile_spec::gate_filter_narrows_the_expanded_profile_without_redefining_membership ... ok
+test tasks::gates::route_profile::route_profile_spec::gate_tier_movement_between_included_tiers_changes_the_fingerprint ... ok
+test tasks::gates::route_profile::route_profile_spec::merge_gate_inherits_pr_fast_and_keeps_a_pr_fast_only_gate ... ok
+test tasks::gates::route_profile::route_profile_spec::narrower_profile_identity_cannot_satisfy_the_expanded_one ... ok
+test tasks::gates::route_profile::route_profile_spec::nightly_inherits_pr_fast_and_merge_gate_and_excludes_commit_and_release ... ok
+test tasks::gates::route_profile::route_profile_spec::non_active_lifecycle_rows_remain_in_the_denominator ... ok
+test tasks::gates::route_profile::route_profile_spec::outside_profile_gates_are_accounted_not_silently_omitted ... ok
+test tasks::gates::route_profile::route_profile_spec::pr_fast_expands_to_exactly_pr_fast ... ok
+test tasks::gates::route_profile::route_profile_spec::release_is_typed_unsupported_and_never_aliases_another_profile ... ok
+test tasks::gates::route_profile::route_profile_spec::removing_one_inherited_gate_changes_the_denominator_identity ... ok
+test tasks::gates::route_profile::route_profile_spec::reordered_policy_produces_identical_fingerprint_and_movement_changes_it ... ok
+test tasks::gates::route_profile::route_profile_spec::undeclared_gate_tier_fails_closed ... ok
+test tasks::gates::route_profile::route_profile_spec::unknown_request_profile_fails_closed_at_parse ... ok
+test tasks::gates::routed_result_adapter::fixtures::a_plan_from_a_foreign_base_or_profile_is_refused ... ok
+test tasks::gates::routed_result_adapter::fixtures::a_post_start_error_is_never_published_as_never_started ... ok
+test tasks::gates::routed_result_adapter::fixtures::a_quarantined_selected_gate_does_not_abort_the_routed_run ... ok
+test tasks::gates::routed_result_adapter::fixtures::a_symbolic_plan_base_binds_through_the_commit_it_names ... ok
+test tasks::gates::routed_result_adapter::fixtures::an_after_start_error_is_not_flattened_and_never_started_stays_missing ... ok
+test tasks::gates::routed_result_adapter::fixtures::an_unrepresentable_duration_refuses_instead_of_degrading_to_never_started ... ok
+test tasks::gates::routed_result_adapter::fixtures::built_result_carries_the_plan_bound_row_identity_digest ... ok
+test tasks::gates::routed_result_adapter::fixtures::cross_row_substitution_reseal_refuses_validation ... ok
+test tasks::gates::routed_result_adapter::fixtures::declared_artifacts_are_projected_or_named_as_shortfall ... ok
+test tasks::gates::routed_result_adapter::fixtures::happy_gate_result_publishes_one_normalized_result ... ok
+test tasks::gates::routed_result_adapter::fixtures::hosted_identity_requires_the_complete_claimed_binding_set ... ok
+test tasks::gates::routed_result_adapter::fixtures::plan_selection_authority_binds_runner_profile_and_base ... ok
+test tasks::gates::routed_result_adapter::fixtures::plan_selection_must_match_the_plan_exactly_before_running ... ok
+test tasks::gates::routed_result_adapter::fixtures::plan_subject_and_row_execution_identity_bind_to_the_invocation ... ok
+test tasks::gates::routed_result_adapter::fixtures::plan_subject_binds_every_mirrored_receipt_field_not_only_the_digest ... ok
+test tasks::gates::routed_result_adapter::fixtures::process_pass_with_clean_exit_still_normalizes_as_success ... ok
+test tasks::gates::routed_result_adapter::fixtures::publication_failure_fails_the_invocation ... ok
+test tasks::gates::routed_result_adapter::fixtures::route_plan_refuses_a_dirty_execution_tree ... ok
+test tasks::gates::routed_result_adapter::fixtures::stale_published_plan_bytes_fail_closed ... ok
+test tasks::gates::routed_result_adapter::fixtures::wholly_resealed_fabrication_refuses_plan_bound_validation ... ok
+test tasks::gates::tests::agent_receipt_builder_preserves_scope_status_and_plan_contract ... ok
+test tasks::gates::tests::agent_receipt_phase1_fields_roundtrip_with_correct_values ... ok
+test tasks::gates::tests::all_static_extension_includes_release_gates ... ok
+test tasks::gates::tests::blocking_status_classification_includes_timeout_and_error ... ok
+test tasks::gates::tests::commit_advisories_ignores_gates_outside_the_commit_tier ... ok
+test tasks::gates::tests::commit_advisories_recovers_non_blocking_reports_from_commit_tier_gates ... ok
+test tasks::gates::tests::compare_receipts_handles_zero_baseline_delta_without_nan ... ok
+test tasks::gates::tests::compare_receipts_reports_multiple_metric_dimensions ... ok
+Receipt Comparison
+============================================================
+Baseline: 2026-04-23T00:00:00Z
+Current:  2026-04-23T00:00:00Z
+
+Metric Changes:
+  tests [tests_total]: 10 -> 15 (+50.0%)
+
+OVERALL: No regressions
+test tasks::gates::tests::diff_output_accepts_json_and_human_formats ... ok
+test tasks::gates::tests::each_former_composite_package_selects_the_whole_inline_completion_family ... ok
+test tasks::gates::tests::explicit_gate_filter_uses_static_plan_without_ci_scope ... ok
+test tasks::gates::tests::failure_guidance_all_required_and_failing_each_gets_action ... ok
+test tasks::gates::tests::failure_guidance_defaults_posture_to_blocked_for_non_commit_gates ... ok
+test tasks::gates::tests::failure_guidance_enriches_commit_tier_blocked_gate_with_report_fields ... ok
+test tasks::gates::tests::failure_guidance_includes_repro_and_next_actions_for_blocking_gates ... ok
+test tasks::gates::tests::failure_guidance_with_no_gates_produces_proceed_action ... ok
+test tasks::gates::tests::first_failure_skips_serializing_none_fields ... ok
+test tasks::gates::tests::focused_control_plane_gates_precede_unit_routed_full_and_pin_the_backstop ... ok
+test tasks::gates::tests::focused_pass_keeps_the_broad_cohort_running ... ok
+test tasks::gates::tests::gate_output_reader_truncates_large_logs_to_tail ... ok
+test tasks::gates::tests::gate_output_summary_keeps_tail_lines ... ok
+test tasks::gates::tests::gate_policy_deserializes_gate_defaults ... ok
+test tasks::gates::tests::gate_policy_deserializes_structured_policy_fields ... ok
+test tasks::gates::tests::gate_result_first_failure_field_roundtrips_in_json ... ok
+test tasks::gates::tests::gate_result_without_first_failure_deserializes_for_backward_compat ... ok
+test tasks::gates::route_profile::route_profile_spec::checked_in_policy_denominator_matches_the_execution_planner_semantics ... ok
+test tasks::gates::tests::gates_converted_err_assertion_still_fails_when_receipt_exists - should panic ... ok
+test tasks::gates::tests::gates_converted_must_wrappers_carry_track_caller ... ok
+test tasks::gates::tests::gates_converted_option_assertion_still_fails_when_cargo_summary_is_absent - should panic ... ok
+test tasks::gates::tests::gates_converted_result_assertion_still_fails_when_receipt_json_is_invalid - should panic ... ok
+test tasks::gates::tests::gates_converted_write_helper_preserves_site_specific_context - should panic ... ok
+test tasks::gates::tests::gates_display_names_match_policy_schema_values ... ok
+test tasks::gates::tests::gates_filter_orders_merge_gate_policy_by_execution_priority ... ok
+test tasks::gates::tests::gates_filter_prefers_explicit_gate_over_tier ... ok
+test tasks::gates::tests::gates_filter_reports_unknown_explicit_gate ... ok
+test tasks::gates::tests::inline_completion_contract_replaced_by_four_independent_gates ... ok
+test tasks::gates::tests::inline_completion_gates_are_required_within_tier_and_family_scoped ... ok
+test tasks::gates::tests::inline_completion_gates_cover_the_same_packages_as_former_composite ... ok
+test tasks::gates::tests::inline_completion_gates_have_no_command_chaining ... ok
+test tasks::gates::tests::inline_completion_gates_size_budget_for_cold_cache_compilation ... ok
+test tasks::gates::tests::is_cargo_test_command_matches_standard_forms ... ok
+test tasks::gates::tests::is_cargo_test_command_recognizes_env_wrapped_invocations ... ok
+test tasks::gates::tests::is_cargo_test_command_rejects_non_test_commands ... ok
+test tasks::gates::tests::is_latest_commit_compares_configured_upstream ... ok
+5a359aa9f264096c80dd2f0413b4dc5f9a7c2efc
+5a359aa9f264096c80dd2f0413b4dc5f9a7c2efc
+test tasks::gates::tests::isolated_repo_helper_publishes_origin_main_and_seed_commit ... ok
+test tasks::gates::tests::load_policy_for_inspection_reads_yaml_file ... ok
+test tasks::gates::tests::load_policy_for_inspection_reports_missing_file ... ok
+test tasks::gates::tests::load_policy_for_inspection_reports_yaml_parse_error ... ok
+test tasks::gates::tests::log_reaches_test_execution_scans_env_wrapped_commands ... ok
+test tasks::gates::tests::log_reaches_test_execution_survives_a_tail_evicting_preamble ... ok
+test tasks::gates::tests::merge_gate_static_extension_does_not_add_raw_pr_fast_templates ... ok
+test tasks::gates::tests::overall_status_is_fail_when_required_timeout_exists_even_without_fail_count ... ok
+test tasks::gates::tests::parse_first_failure_exit_code_is_preserved ... ok
+test tasks::gates::tests::parse_first_failure_extracts_site_old_style ... ok
+test tasks::gates::tests::parse_first_failure_extracts_test_name_site_and_message_new_style ... ok
+test tasks::gates::tests::parse_first_failure_prefers_failed_line_over_stdout_section ... ok
+test tasks::gates::tests::parse_first_failure_returns_none_for_compile_error_only ... ok
+test tasks::gates::tests::parse_first_failure_returns_none_for_empty_output ... ok
+test tasks::gates::tests::parse_first_failure_roundtrips_through_first_failure_struct ... ok
+test tasks::gates::tests::parse_test_execution_reached_accepts_repeated_and_tab_whitespace ... ok
+test tasks::gates::tests::parse_test_execution_reached_detects_running_marker ... ok
+test tasks::gates::tests::parse_test_execution_reached_detects_summary_line_alone ... ok
+test tasks::gates::tests::parse_test_execution_reached_detects_zero_tests_running_marker ... ok
+test tasks::gates::tests::parse_test_execution_reached_ignores_non_cargo_test_commands ... ok
+test tasks::gates::tests::parse_test_execution_reached_ignores_running_substring_inside_test_stdout ... ok
+test tasks::gates::tests::parse_test_execution_reached_is_false_when_only_compile_output_captured ... ok
+test tasks::gates::tests::parse_test_execution_reached_is_false_when_output_is_empty ... ok
+test tasks::gates::tests::parse_test_execution_reached_recognizes_doc_tests_preamble ... ok
+test tasks::gates::tests::parse_test_execution_reached_rejects_nearby_running_tokens ... ok
+test tasks::gates::tests::parse_test_metrics_reads_standard_cargo_summary ... ok
+test tasks::gates::tests::plan_gates_all_tier_selects_the_commit_tier_gate ... ok
+test tasks::gates::tests::gate_runner_reports_independent_results_when_a_peer_fails ... ok
+test tasks::gates::tests::plan_gates_threads_staged_tree_oid_into_non_commit_tiers ... ok
+test tasks::gates::tests::plan_pr_fast_gates_falls_back_broadly_when_explicit_base_does_not_resolve ... ok
+test tasks::gates::tests::pr_fast_ci_config_keeps_always_on_and_skips_rust_lanes ... ok
+test tasks::gates::tests::pr_fast_code_diff_package_args_include_architecture_wideners ... ok
+test tasks::gates::tests::pr_fast_code_diff_package_args_include_direct_crates ... ok
+test tasks::gates::tests::pr_fast_code_diff_package_args_include_reverse_dependencies ... ok
+test tasks::gates::tests::pr_fast_code_diff_selects_scoped_rust_lanes_with_full_package_scope ... ok
+test tasks::gates::tests::pr_fast_code_diff_with_empty_package_set_uses_fallback ... ok
+test tasks::gates::tests::pr_fast_docs_as_code_keeps_always_on_and_skips_rust_lanes ... ok
+test tasks::gates::tests::pr_fast_lib_scoped_gate_filters_packages_without_lib_targets ... ok
+test tasks::gates::tests::pr_fast_lib_scoped_gate_skips_when_no_selected_package_has_lib_target ... ok
+test tasks::gates::tests::pr_fast_package_scoped_gate_reports_missing_configured_packages ... ok
+test tasks::gates::tests::pr_fast_package_scoped_gate_runs_on_scope_failure ... ok
+test tasks::gates::tests::pr_fast_package_scoped_gate_runs_only_when_package_selected ... ok
+test tasks::gates::tests::pr_fast_policy_planning_roles_are_complete ... ok
+test tasks::gates::tests::pr_fast_prose_only_keeps_always_on_and_skips_rust_lanes ... ok
+test tasks::gates::tests::pr_fast_scope_failure_preserves_always_on_and_uses_fallback ... ok
+test tasks::gates::tests::quarantined_gate_skips_without_verbose_mode ... ok
+test tasks::gates::tests::receipt_rejects_missing_or_duplicate_attempt_ordinals ... ok
+test tasks::gates::tests::receipt_round_trip_enforces_legacy_final_attempt_consistency ... ok
+test tasks::gates::tests::receipt_write_and_load_roundtrip_reports_missing_file ... ok
+test tasks::gates::tests::plan_gates_nightly_tier_never_selects_a_commit_tier_gate ... ok
+test tasks::gates::tests::required_timeout_and_error_are_blocking_failures ... ok
+test tasks::gates::tests::required_gate_timeout_reports_receipt_fields_and_blocks_overall_status ... ok
+test tasks::gates::tests::retry_runner_rejects_oversized_counts_before_execution ... ok
+test tasks::gates::tests::retried_cargo_test_gate_retains_each_attempt_reach_result ... ok
+test tasks::gates::tests::run_internal_commit_check_maps_advisory_posture_to_pass_status ... ok
+test tasks::gates::tests::run_internal_commit_check_maps_blocked_posture_to_fail_status ... ok
+test tasks::gates::tests::run_internal_commit_check_maps_clean_pass_to_pass_status ... ok
+test tasks::gates::tests::run_internal_xtask_gate_maps_error_to_fail_status ... ok
+test tasks::gates::tests::run_internal_xtask_gate_maps_ok_to_pass_status ... ok
+test tasks::gates::tests::run_single_gate_captures_test_metrics_artifacts_and_log ... ok
+test tasks::gates::tests::run_single_gate_dispatches_version_sync_in_process ... ok
+test tasks::gates::tests::run_single_gate_marks_test_execution_not_reached_for_compile_only_output ... ok
+test tasks::gates::tests::run_single_gate_marks_test_execution_reached_for_cargo_test_passes ... ok
+test tasks::gates::tests::run_single_gate_omits_test_execution_reached_for_non_cargo_commands ... ok
+test tasks::gates::tests::selects_commit_tier_gate_matches_plan_gates_real_tier_composition ... ok
+test tasks::gates::tests::shell_command_natural_exit_preserves_actual_exit_code ... ok
+test tasks::gates::tests::retry_trailer_failure_preserves_captured_attempt_evidence ... ok
+test tasks::gates::tests::short_circuit_does_not_fire_outside_pr_fast_plans ... ok
+test tasks::gates::tests::shell_command_timeout_marks_execution_and_writes_log ... ok
+test tasks::gates::tests::staged_guard_violation_allows_gate_name_selecting_a_non_commit_gate ... ok
+test tasks::gates::tests::staged_guard_violation_fires_for_all_tier_which_genuinely_includes_commit_gates ... ok
+test tasks::gates::tests::staged_guard_violation_fires_for_gate_name_selecting_a_commit_tier_gate ... ok
+test tasks::gates::tests::staged_guard_violation_fires_for_tier_commit_without_staged ... ok
+test tasks::gates::tests::staged_guard_violation_none_for_a_tier_without_any_commit_gate ... ok
+test tasks::gates::tests::staged_guard_violation_none_for_nightly_tier_which_never_selects_commit_gates ... ok
+test tasks::gates::tests::staged_guard_violation_none_in_explain_denominator_mode ... ok
+test tasks::gates::tests::staged_guard_violation_none_in_explain_disposition_mode ... ok
+test tasks::gates::tests::staged_guard_violation_none_in_list_only_mode ... ok
+test tasks::gates::tests::staged_guard_violation_none_when_staged_flag_is_set ... ok
+test tasks::gates::tests::static_gate_plan_leaves_staged_tree_oid_none_when_not_staged ... ok
+test tasks::gates::tests::static_gate_plan_threads_staged_tree_oid_into_agent_receipt ... ok
+test tasks::gates::tests::short_circuit_failure_stops_the_cohort_and_records_saved_work ... ok
+test tasks::gates::tests::timeout_gate_failing_retry_labels_the_failure_not_a_pass ... ok
+test tasks::gates::tests::timeout_gate_rescued_on_retry_reports_pass_with_rescue_trailer ... ok
+test tasks::gates::tests::unreadable_attempt_log_is_unknown_not_compile_only ... ok
+test tasks::gates::tests::unresolved_package_args_gate_refuses_to_spawn ... ok
+test tasks::gates::tests::version_sync_gate_command_matches_gate_policy ... ok
+test tasks::gates::tests::watchdog_timeout_includes_process_cleanup_grace ... ok
+test tasks::gates::tests::timeout_gate_with_retry_count_runs_both_attempts_and_trails_the_log ... ok
+
+test result: ok. 230 passed; 0 failed; 0 ignored; 0 measured; 4497 filtered out; finished in 6.91s
+

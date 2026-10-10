@@ -1,0 +1,12 @@
+
+running 7 tests
+test test_change_set_help_shows_expected_flags ... ok
+test test_change_set_auto_base_resolves_to_origin_main_sha ... ok
+test test_change_set_json_output_has_bounded_shape ... ok
+test test_change_set_unresolvable_explicit_base_fails_loudly_not_empty_success ... ok
+test test_change_set_unknown_format_fails_loudly_not_silent_json ... ok
+test test_fixture_has_no_origin_master ... ok
+test test_regression_old_shell_algorithm_self_diffs_new_branch_new_resolver_does_not ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.16s
+

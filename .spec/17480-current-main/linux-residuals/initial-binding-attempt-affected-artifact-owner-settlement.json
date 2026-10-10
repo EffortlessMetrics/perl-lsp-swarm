@@ -1,0 +1,80 @@
+{
+  "tree_settled": true,
+  "proof": "kernel ECHILD (__WALL)",
+  "cancelled": false,
+  "termination_requested": false,
+  "reaped_descendants": [
+    {
+      "pid": 20712,
+      "exit_code": 0
+    },
+    {
+      "pid": 20723,
+      "exit_code": 0
+    },
+    {
+      "pid": 20740,
+      "exit_code": 0
+    },
+    {
+      "pid": 20751,
+      "exit_code": 0
+    },
+    {
+      "pid": 20753,
+      "exit_code": 0
+    },
+    {
+      "pid": 20762,
+      "exit_code": 0
+    },
+    {
+      "pid": 20801,
+      "exit_code": 0
+    },
+    {
+      "pid": 20810,
+      "exit_code": 0
+    },
+    {
+      "pid": 20827,
+      "exit_code": 0
+    },
+    {
+      "pid": 20837,
+      "exit_code": 0
+    },
+    {
+      "pid": 20838,
+      "exit_code": 0
+    },
+    {
+      "pid": 20848,
+      "exit_code": 0
+    },
+    {
+      "pid": 20879,
+      "exit_code": 0
+    },
+    {
+      "pid": 20885,
+      "exit_code": 0
+    },
+    {
+      "pid": 20905,
+      "exit_code": 0
+    },
+    {
+      "pid": 20912,
+      "exit_code": 0
+    },
+    {
+      "pid": 20917,
+      "exit_code": 0
+    }
+  ],
+  "owned_child_table_available": false,
+  "errors": [],
+  "pending_bound_pids": [],
+  "reason": "all owned descendants reaped"
+}

@@ -1,0 +1,7 @@
+
+running 2 tests
+test tests::users_path_detection_only_allows_generic_name_examples ... ok
+test tests::home_path_detection_only_allows_generic_user_examples ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 430 filtered out; finished in 0.00s
+

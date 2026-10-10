@@ -1,0 +1,10 @@
+
+running 5 tests
+test ci_workflow_routes_scope_gate_contract_and_windows_cache_inputs_through_subject ... ok
+test explicit_branch_name_fails_with_typed_not_proven_receipt ... ok
+test producer_refuses_successful_receipt_when_checkout_head_differs ... ok
+test public_push_and_merge_group_adapters_preserve_direct_exact_pair_semantics ... ok
+test captured_pr_subject_survives_base_branch_movement_and_drives_real_ci_scope ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.22s
+

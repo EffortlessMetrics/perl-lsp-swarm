@@ -1,0 +1,11 @@
+{
+  "tree_settled": true,
+  "proof": "kernel ECHILD (__WALL)",
+  "cancelled": false,
+  "termination_requested": false,
+  "reaped_descendants": [],
+  "owned_child_table_available": false,
+  "errors": [],
+  "pending_bound_pids": [],
+  "reason": "all owned descendants reaped"
+}

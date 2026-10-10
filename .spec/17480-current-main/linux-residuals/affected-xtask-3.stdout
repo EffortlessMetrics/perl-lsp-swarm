@@ -1,0 +1,20 @@
+
+running 15 tests
+test tasks::workflow_trigger_lint::tests::a_non_required_governance_row_governs_nothing ... ok
+test tasks::workflow_trigger_lint::tests::a_remainder_without_a_tracking_issue_is_a_violation ... ok
+test tasks::workflow_trigger_lint::tests::a_clause_carrying_two_exemptions_is_a_violation ... ok
+test tasks::workflow_trigger_lint::tests::a_repository_job_with_no_workflow_is_reported_rather_than_assumed_external ... ok
+test tasks::workflow_trigger_lint::tests::a_required_context_with_no_producer_is_reported ... ok
+test tasks::workflow_trigger_lint::tests::an_exempted_clause_is_recorded_rather_than_reported ... ok
+test tasks::workflow_trigger_lint::tests::an_exemption_for_a_clause_the_workflow_satisfies_is_a_violation ... ok
+test tasks::workflow_trigger_lint::tests::an_exemption_without_a_reason_is_a_violation ... ok
+test tasks::workflow_trigger_lint::tests::an_external_producer_is_counted_out_of_scope_rather_than_governed ... ok
+test tasks::workflow_trigger_lint::tests::an_exemption_naming_an_unknown_clause_is_a_violation ... ok
+test tasks::workflow_trigger_lint::tests::governance_line_accounts_for_every_required_context ... ok
+test tasks::workflow_trigger_lint::tests::missing_merge_group_fixture_fails ... ok
+test tasks::workflow_trigger_lint::tests::labeled_pull_request_type_fixture_fails ... ok
+test tasks::workflow_trigger_lint::tests::required_context_without_a_governance_row_is_reported ... ok
+test tasks::workflow_trigger_lint::tests::valid_required_fixture_passes ... ok
+
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 4712 filtered out; finished in 0.00s
+

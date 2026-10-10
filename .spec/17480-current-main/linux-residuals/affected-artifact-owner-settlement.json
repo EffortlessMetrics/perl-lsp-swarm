@@ -1,0 +1,148 @@
+{
+  "tree_settled": true,
+  "proof": "kernel ECHILD (__WALL)",
+  "cancelled": false,
+  "termination_requested": false,
+  "reaped_descendants": [
+    {
+      "pid": 21692,
+      "exit_code": 0
+    },
+    {
+      "pid": 21700,
+      "exit_code": 0
+    },
+    {
+      "pid": 21722,
+      "exit_code": 0
+    },
+    {
+      "pid": 21727,
+      "exit_code": 0
+    },
+    {
+      "pid": 21734,
+      "exit_code": 0
+    },
+    {
+      "pid": 21739,
+      "exit_code": 0
+    },
+    {
+      "pid": 21782,
+      "exit_code": 0
+    },
+    {
+      "pid": 21786,
+      "exit_code": 0
+    },
+    {
+      "pid": 21810,
+      "exit_code": 0
+    },
+    {
+      "pid": 21814,
+      "exit_code": 0
+    },
+    {
+      "pid": 21819,
+      "exit_code": 0
+    },
+    {
+      "pid": 21826,
+      "exit_code": 0
+    },
+    {
+      "pid": 21855,
+      "exit_code": 0
+    },
+    {
+      "pid": 21874,
+      "exit_code": 0
+    },
+    {
+      "pid": 21879,
+      "exit_code": 0
+    },
+    {
+      "pid": 21892,
+      "exit_code": 0
+    },
+    {
+      "pid": 21897,
+      "exit_code": 0
+    },
+    {
+      "pid": 22164,
+      "exit_code": 0
+    },
+    {
+      "pid": 22170,
+      "exit_code": 0
+    },
+    {
+      "pid": 22175,
+      "exit_code": 0
+    },
+    {
+      "pid": 22184,
+      "exit_code": 0
+    },
+    {
+      "pid": 22224,
+      "exit_code": 0
+    },
+    {
+      "pid": 22233,
+      "exit_code": 0
+    },
+    {
+      "pid": 22244,
+      "exit_code": 0
+    },
+    {
+      "pid": 22331,
+      "exit_code": 0
+    },
+    {
+      "pid": 22337,
+      "exit_code": 0
+    },
+    {
+      "pid": 22670,
+      "exit_code": 0
+    },
+    {
+      "pid": 22693,
+      "exit_code": 0
+    },
+    {
+      "pid": 22704,
+      "exit_code": 0
+    },
+    {
+      "pid": 22717,
+      "exit_code": 0
+    },
+    {
+      "pid": 22809,
+      "exit_code": 0
+    },
+    {
+      "pid": 22872,
+      "exit_code": -15
+    },
+    {
+      "pid": 22925,
+      "exit_code": -15
+    },
+    {
+      "pid": 23190,
+      "exit_code": -15
+    }
+  ],
+  "owned_child_table_available": false,
+  "errors": [],
+  "pending_bound_pids": [],
+  "reason": "all owned descendants reaped"
+}

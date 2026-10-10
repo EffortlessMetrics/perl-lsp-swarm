@@ -1,0 +1,9 @@
+
+running 4 tests
+test tasks::targeted_checks::tests::test_extract_crate_dirs_empty ... ok
+test tasks::targeted_checks::tests::test_extract_crate_dirs_basic ... ok
+test tasks::targeted_checks::tests::test_extract_crate_dirs_ignores_non_crate_paths ... ok
+test tasks::targeted_checks::tests::test_extract_crate_dirs_nested ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 4723 filtered out; finished in 0.00s
+

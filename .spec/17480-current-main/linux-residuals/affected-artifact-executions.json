@@ -1,0 +1,92 @@
+[
+  {
+    "name": "change_set_cli",
+    "filter": "",
+    "exit": 0,
+    "seconds": 0.170672790000026,
+    "test_binary_sha256": "65f764b22479950121b99780635dc95b8ca4eff30f620dc7a9734f6e702e9a7d",
+    "cli_bound_path": "/workspace/perl-helper-current-proof/devplane/e6b3f4152dd5-linux-b65dcb543d0ae605/worktrees/61d81e4ef2af58e921a1387fd1456fc4cfbeb6ffba1e47c6eb2cbfd7a2574bec/target/debug/xtask",
+    "cli_sha256": "d6ab7f1aafdcd5baf66acccf1d5a3746912d7b89e19a0f81935d856ae095c319"
+  },
+  {
+    "name": "workspace_doctor_inventory_falsifiers",
+    "filter": "",
+    "exit": 0,
+    "seconds": 0.0035308100000293052,
+    "test_binary_sha256": "fd52966c8a582a8e48a56ce6791d628a03fb5818b4f471e046558d15b38dd456",
+    "cli_bound_path": "/workspace/perl-helper-current-proof/devplane/e6b3f4152dd5-linux-b65dcb543d0ae605/worktrees/61d81e4ef2af58e921a1387fd1456fc4cfbeb6ffba1e47c6eb2cbfd7a2574bec/target/debug/xtask",
+    "cli_sha256": "d6ab7f1aafdcd5baf66acccf1d5a3746912d7b89e19a0f81935d856ae095c319"
+  },
+  {
+    "name": "ci_scope_tests",
+    "filter": "",
+    "exit": 0,
+    "seconds": 1.2000171099998624,
+    "test_binary_sha256": "9b721b4b53a5b124d3c5a57b1eca60e8bfebe988512a26b1cca5029b591c04ad",
+    "cli_bound_path": "/workspace/perl-helper-current-proof/devplane/e6b3f4152dd5-linux-b65dcb543d0ae605/worktrees/61d81e4ef2af58e921a1387fd1456fc4cfbeb6ffba1e47c6eb2cbfd7a2574bec/target/debug/xtask",
+    "cli_sha256": "d6ab7f1aafdcd5baf66acccf1d5a3746912d7b89e19a0f81935d856ae095c319"
+  },
+  {
+    "name": "ci_subject",
+    "filter": "",
+    "exit": 0,
+    "seconds": 0.22434410100004243,
+    "test_binary_sha256": "fabd51d7827011b953cd0e2c016111b3635182c0d8d75287c89ed4e3b37e9b65",
+    "cli_bound_path": "/workspace/perl-helper-current-proof/devplane/e6b3f4152dd5-linux-b65dcb543d0ae605/worktrees/61d81e4ef2af58e921a1387fd1456fc4cfbeb6ffba1e47c6eb2cbfd7a2574bec/target/debug/xtask",
+    "cli_sha256": "d6ab7f1aafdcd5baf66acccf1d5a3746912d7b89e19a0f81935d856ae095c319"
+  },
+  {
+    "name": "workspace_doctor_inventory_contract",
+    "filter": "",
+    "exit": 0,
+    "seconds": 0.0030294340003820253,
+    "test_binary_sha256": "f7684e2896b7fd5f28284e13adb005a636d96135a5622c10c55c02f95eb4baf0",
+    "cli_bound_path": "/workspace/perl-helper-current-proof/devplane/e6b3f4152dd5-linux-b65dcb543d0ae605/worktrees/61d81e4ef2af58e921a1387fd1456fc4cfbeb6ffba1e47c6eb2cbfd7a2574bec/target/debug/xtask",
+    "cli_sha256": "d6ab7f1aafdcd5baf66acccf1d5a3746912d7b89e19a0f81935d856ae095c319"
+  },
+  {
+    "name": "xtask",
+    "filter": "tasks::gates::",
+    "exit": 0,
+    "seconds": 6.918358694999824,
+    "test_binary_sha256": "c3313b80e59e75b54359365678fd2ca2d61e6afc518b3754a8f95b1954557c83",
+    "cli_bound_path": "/workspace/perl-helper-current-proof/devplane/e6b3f4152dd5-linux-b65dcb543d0ae605/worktrees/61d81e4ef2af58e921a1387fd1456fc4cfbeb6ffba1e47c6eb2cbfd7a2574bec/target/debug/xtask",
+    "cli_sha256": "d6ab7f1aafdcd5baf66acccf1d5a3746912d7b89e19a0f81935d856ae095c319"
+  },
+  {
+    "name": "xtask",
+    "filter": "tasks::ci_scope::",
+    "exit": 0,
+    "seconds": 0.006527533000280528,
+    "test_binary_sha256": "c3313b80e59e75b54359365678fd2ca2d61e6afc518b3754a8f95b1954557c83",
+    "cli_bound_path": "/workspace/perl-helper-current-proof/devplane/e6b3f4152dd5-linux-b65dcb543d0ae605/worktrees/61d81e4ef2af58e921a1387fd1456fc4cfbeb6ffba1e47c6eb2cbfd7a2574bec/target/debug/xtask",
+    "cli_sha256": "d6ab7f1aafdcd5baf66acccf1d5a3746912d7b89e19a0f81935d856ae095c319"
+  },
+  {
+    "name": "xtask",
+    "filter": "tasks::workflow_policy_lint::",
+    "exit": 0,
+    "seconds": 0.07431746100019154,
+    "test_binary_sha256": "c3313b80e59e75b54359365678fd2ca2d61e6afc518b3754a8f95b1954557c83",
+    "cli_bound_path": "/workspace/perl-helper-current-proof/devplane/e6b3f4152dd5-linux-b65dcb543d0ae605/worktrees/61d81e4ef2af58e921a1387fd1456fc4cfbeb6ffba1e47c6eb2cbfd7a2574bec/target/debug/xtask",
+    "cli_sha256": "d6ab7f1aafdcd5baf66acccf1d5a3746912d7b89e19a0f81935d856ae095c319"
+  },
+  {
+    "name": "xtask",
+    "filter": "tasks::workflow_trigger_lint::",
+    "exit": 0,
+    "seconds": 0.00562432299966531,
+    "test_binary_sha256": "c3313b80e59e75b54359365678fd2ca2d61e6afc518b3754a8f95b1954557c83",
+    "cli_bound_path": "/workspace/perl-helper-current-proof/devplane/e6b3f4152dd5-linux-b65dcb543d0ae605/worktrees/61d81e4ef2af58e921a1387fd1456fc4cfbeb6ffba1e47c6eb2cbfd7a2574bec/target/debug/xtask",
+    "cli_sha256": "d6ab7f1aafdcd5baf66acccf1d5a3746912d7b89e19a0f81935d856ae095c319"
+  },
+  {
+    "name": "xtask",
+    "filter": "tasks::targeted_checks::",
+    "exit": 0,
+    "seconds": 0.0042690820000643726,
+    "test_binary_sha256": "c3313b80e59e75b54359365678fd2ca2d61e6afc518b3754a8f95b1954557c83",
+    "cli_bound_path": "/workspace/perl-helper-current-proof/devplane/e6b3f4152dd5-linux-b65dcb543d0ae605/worktrees/61d81e4ef2af58e921a1387fd1456fc4cfbeb6ffba1e47c6eb2cbfd7a2574bec/target/debug/xtask",
+    "cli_sha256": "d6ab7f1aafdcd5baf66acccf1d5a3746912d7b89e19a0f81935d856ae095c319"
+  }
+]

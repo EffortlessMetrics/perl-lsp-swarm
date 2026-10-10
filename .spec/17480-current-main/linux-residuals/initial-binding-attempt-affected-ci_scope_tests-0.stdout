@@ -1,0 +1,83 @@
+
+running 9 tests
+test test_ci_scope_diff_class_is_valid_value ... FAILED
+test test_ci_scope_auto_base_no_warning ... FAILED
+test test_ci_scope_empty_diff_has_no_selected_lanes ... FAILED
+test test_ci_scope_each_lane_has_reason_field ... FAILED
+test test_ci_scope_help_shows_base_flag ... FAILED
+test test_ci_scope_help_shows_format_flag ... FAILED
+test test_ci_scope_invalid_explicit_base_fails_closed ... FAILED
+test test_ci_scope_json_output_is_valid_schema_v2 ... FAILED
+test test_ci_scope_text_output_is_readable ... FAILED
+
+failures:
+
+---- test_ci_scope_diff_class_is_valid_value stdout ----
+
+thread 'test_ci_scope_diff_class_is_valid_value' (20949) panicked at /workspace/.cloud-tools/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/assert_cmd-2.2.2/src/cargo.rs:232:5:
+`CARGO_BIN_EXE_xtask` is unset
+help: if this is running within a unit test, move it to an integration test to gain access to `CARGO_BIN_EXE_xtask`
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- test_ci_scope_auto_base_no_warning stdout ----
+
+thread 'test_ci_scope_auto_base_no_warning' (20948) panicked at /workspace/.cloud-tools/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/assert_cmd-2.2.2/src/cargo.rs:232:5:
+`CARGO_BIN_EXE_xtask` is unset
+help: if this is running within a unit test, move it to an integration test to gain access to `CARGO_BIN_EXE_xtask`
+
+---- test_ci_scope_empty_diff_has_no_selected_lanes stdout ----
+
+thread 'test_ci_scope_empty_diff_has_no_selected_lanes' (20951) panicked at /workspace/.cloud-tools/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/assert_cmd-2.2.2/src/cargo.rs:232:5:
+`CARGO_BIN_EXE_xtask` is unset
+help: if this is running within a unit test, move it to an integration test to gain access to `CARGO_BIN_EXE_xtask`
+
+---- test_ci_scope_each_lane_has_reason_field stdout ----
+
+thread 'test_ci_scope_each_lane_has_reason_field' (20950) panicked at /workspace/.cloud-tools/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/assert_cmd-2.2.2/src/cargo.rs:232:5:
+`CARGO_BIN_EXE_xtask` is unset
+help: if this is running within a unit test, move it to an integration test to gain access to `CARGO_BIN_EXE_xtask`
+
+---- test_ci_scope_help_shows_base_flag stdout ----
+
+thread 'test_ci_scope_help_shows_base_flag' (20952) panicked at /workspace/.cloud-tools/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/assert_cmd-2.2.2/src/cargo.rs:232:5:
+`CARGO_BIN_EXE_xtask` is unset
+help: if this is running within a unit test, move it to an integration test to gain access to `CARGO_BIN_EXE_xtask`
+
+---- test_ci_scope_help_shows_format_flag stdout ----
+
+thread 'test_ci_scope_help_shows_format_flag' (20953) panicked at /workspace/.cloud-tools/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/assert_cmd-2.2.2/src/cargo.rs:232:5:
+`CARGO_BIN_EXE_xtask` is unset
+help: if this is running within a unit test, move it to an integration test to gain access to `CARGO_BIN_EXE_xtask`
+
+---- test_ci_scope_invalid_explicit_base_fails_closed stdout ----
+
+thread 'test_ci_scope_invalid_explicit_base_fails_closed' (20954) panicked at /workspace/.cloud-tools/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/assert_cmd-2.2.2/src/cargo.rs:232:5:
+`CARGO_BIN_EXE_xtask` is unset
+help: if this is running within a unit test, move it to an integration test to gain access to `CARGO_BIN_EXE_xtask`
+
+---- test_ci_scope_json_output_is_valid_schema_v2 stdout ----
+
+thread 'test_ci_scope_json_output_is_valid_schema_v2' (20955) panicked at /workspace/.cloud-tools/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/assert_cmd-2.2.2/src/cargo.rs:232:5:
+`CARGO_BIN_EXE_xtask` is unset
+help: if this is running within a unit test, move it to an integration test to gain access to `CARGO_BIN_EXE_xtask`
+
+---- test_ci_scope_text_output_is_readable stdout ----
+
+thread 'test_ci_scope_text_output_is_readable' (20956) panicked at /workspace/.cloud-tools/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/assert_cmd-2.2.2/src/cargo.rs:232:5:
+`CARGO_BIN_EXE_xtask` is unset
+help: if this is running within a unit test, move it to an integration test to gain access to `CARGO_BIN_EXE_xtask`
+
+
+failures:
+    test_ci_scope_auto_base_no_warning
+    test_ci_scope_diff_class_is_valid_value
+    test_ci_scope_each_lane_has_reason_field
+    test_ci_scope_empty_diff_has_no_selected_lanes
+    test_ci_scope_help_shows_base_flag
+    test_ci_scope_help_shows_format_flag
+    test_ci_scope_invalid_explicit_base_fails_closed
+    test_ci_scope_json_output_is_valid_schema_v2
+    test_ci_scope_text_output_is_readable
+
+test result: FAILED. 0 passed; 9 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

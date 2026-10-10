@@ -1,0 +1,12 @@
+{
+  "exit": 0,
+  "elapsed_seconds": 338.3798000759998,
+  "free_before": 27242045440,
+  "free_after": 24815271936,
+  "resources": {
+    "target": "/workspace/perl-helper-current-proof/devplane/e6b3f4152dd5-linux-b65dcb543d0ae605/worktrees/61d81e4ef2af58e921a1387fd1456fc4cfbeb6ffba1e47c6eb2cbfd7a2574bec/target",
+    "build": "/workspace/perl-helper-current-proof/devplane/e6b3f4152dd5-linux-b65dcb543d0ae605/worktrees/61d81e4ef2af58e921a1387fd1456fc4cfbeb6ffba1e47c6eb2cbfd7a2574bec/build",
+    "cargo_home": "/workspace/.cloud-tools/cargo",
+    "temp": "/workspace/perl-helper-current-proof/devplane/e6b3f4152dd5-linux-b65dcb543d0ae605/tmp"
+  }
+}

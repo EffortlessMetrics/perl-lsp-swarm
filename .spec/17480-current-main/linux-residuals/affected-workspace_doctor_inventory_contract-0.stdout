@@ -1,0 +1,8 @@
+
+running 3 tests
+test output_is_deterministic ... ok
+test complete_inventory_exposes_false_success_and_mutation ... ok
+test schema_version_is_project_wide_string_field ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

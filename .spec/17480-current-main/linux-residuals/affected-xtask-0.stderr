@@ -1,0 +1,2 @@
+error: could not find `Cargo.toml` in `/tmp/.tmpQq4IS9` or any parent directory
+Warning: explicit base ref 'origin/definitely-not-a-real-ref-3985-slice2-parity' does not exist; refusing to substitute a different base (a caller-supplied base must resolve on its own — see #3985 Slice 2 review, PR #4153).

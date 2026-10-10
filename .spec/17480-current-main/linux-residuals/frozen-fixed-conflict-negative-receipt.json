@@ -1,0 +1,303 @@
+{
+  "schema_version": "gates.v1",
+  "metadata": {
+    "timestamp": "2026-10-10T15:55:43Z",
+    "git_sha": "1f973039d812fe080abddc44e461112d7b95a6fa",
+    "git_sha_short": "1f97303",
+    "git_branch": "frozen-proof",
+    "git_dirty": true,
+    "toolchain": {
+      "rustc_version": "rustc 1.95.0 (59807616e 2026-04-14)",
+      "rustc_semver": "1.95.0",
+      "cargo_version": "cargo 1.95.0 (f2d3ce0bd 2026-03-21)"
+    },
+    "platform": {
+      "os": "linux",
+      "os_version": "6.18.44",
+      "arch": "x86_64",
+      "cpu_cores": 4,
+      "memory_gb": 17.58588409423828,
+      "is_wsl": false
+    },
+    "environment": {
+      "type": "local",
+      "nix_shell": false
+    },
+    "trigger": "manual"
+  },
+  "gates": [
+    {
+      "gate_name": "staged_tree_identity",
+      "tier": "commit",
+      "status": "pass",
+      "required": true,
+      "duration_ms": 4,
+      "command": "cargo xtask commit-check staged_tree_identity",
+      "output_summary": "ADVISORY: staged tree d52fff0b1c16beee9ee2dc6f4acc0406176174e9 — 30 file(s) staged relative to HEAD\nwhy: wiring proof for the commit-tier substrate (issue #3786-A): confirms --staged resolves the exact git write-tree identity and threads it through the receipt, independent of any real hygiene check\naffected: .github/workflows/ci-gate-self-tests.yml, Cargo.lock, crates/perl-ci-hygiene/Cargo.toml, crates/perl-ci-hygiene/src/change_set.rs, crates/perl-ci-hygiene/src/cli.rs, crates/perl-ci-hygiene/src/git_hooks.rs, crates/perl-ci-hygiene/src/lib.rs, crates/perl-ci-hygiene/src/main.rs, crates/perl-ci-hygiene/src/package_resolver.rs, crates/perl-ci-hygiene/src/staged.rs, crates/perl-ci-hygiene/tests/change_set_cli.rs, crates/perl-ci-hygiene/tests/package_resolver_cli.rs, docs/contributing/FIRST_PR.md, hooks/pre-push, justfile, proof-conflict.rs, scripts/README.md, scripts/check-githooks.sh, scripts/githooks-bootstrap.sh, scripts/install-githooks.sh, scripts/tests/test-install-githooks-wrapper.sh, scripts/tests/test-pre-push-launchers.py, scripts/worktree-manager.py, xtask/src/bin/workspace_doctor_inventory/sources.rs, xtask/src/tasks/change_set.rs, xtask/src/tasks/ci_hygiene.rs, xtask/src/tasks/devex_doctor.rs, xtask/src/tasks/mod.rs, xtask/src/tasks/targeted_checks.rs, xtask/tests/workspace_doctor_inventory/support.rs\nrerun: cargo xtask gates --tier commit --staged --gate staged_tree_identity\nwhat remains: none — the nine structural checks (issue #3786-B) run alongside this one, not instead of it\n\nCOMMIT_CHECK_REPORT_JSON:{\"check\":\"staged_tree_identity\",\"posture\":\"ADVISORY\",\"result\":\"staged tree d52fff0b1c16beee9ee2dc6f4acc0406176174e9 — 30 file(s) staged relative to HEAD\",\"why\":\"wiring proof for the commit-tier substrate (issue #3786-A): confirms --staged resolves the exact git write-tree identity and threads it through the receipt, independent of any real hygiene check\",\"affected\":[\".github/workflows/ci-gate-self-tests.yml\",\"Cargo.lock\",\"crates/perl-ci-hygiene/Cargo.toml\",\"crates/perl-ci-hygiene/src/change_set.rs\",\"crates/perl-ci-hygiene/src/cli.rs\",\"crates/perl-ci-hygiene/src/git_hooks.rs\",\"crates/perl-ci-hygiene/src/lib.rs\",\"crates/perl-ci-hygiene/src/main.rs\",\"crates/perl-ci-hygiene/src/package_resolver.rs\",\"crates/perl-ci-hygiene/src/staged.rs\",\"crates/perl-ci-hygiene/tests/change_set_cli.rs\",\"crates/perl-ci-hygiene/tests/package_resolver_cli.rs\",\"docs/contributing/FIRST_PR.md\",\"hooks/pre-push\",\"justfile\",\"proof-conflict.rs\",\"scripts/README.md\",\"scripts/check-githooks.sh\",\"scripts/githooks-bootstrap.sh\",\"scripts/install-githooks.sh\",\"scripts/tests/test-install-githooks-wrapper.sh\",\"scripts/tests/test-pre-push-launchers.py\",\"scripts/worktree-manager.py\",\"xtask/src/bin/workspace_doctor_inventory/sources.rs\",\"xtask/src/tasks/change_set.rs\",\"xtask/src/tasks/ci_hygiene.rs\",\"xtask/src/tasks/devex_doctor.rs\",\"xtask/src/tasks/mod.rs\",\"xtask/src/tasks/targeted_checks.rs\",\"xtask/tests/workspace_doctor_inventory/support.rs\"],\"rerun\":\"cargo xtask gates --tier commit --staged --gate staged_tree_identity\",\"what_remains\":\"none — the nine structural checks (issue #3786-B) run alongside this one, not instead of it\"}",
+      "log_path": "logs/staged_tree_identity.log"
+    },
+    {
+      "gate_name": "whitespace_check",
+      "tier": "commit",
+      "status": "fail",
+      "required": true,
+      "duration_ms": 12,
+      "command": "cargo xtask commit-check whitespace_check",
+      "output_summary": "BLOCKED: `git diff HEAD d52fff0b1c16beee9ee2dc6f4acc0406176174e9 --check` found 3 issue(s) in the staged diff\nwhy: trailing whitespace and unresolved merge-conflict markers break formatting and, for markers, compilation\naffected: proof-conflict.rs:1: leftover conflict marker, proof-conflict.rs:3: leftover conflict marker, proof-conflict.rs:5: leftover conflict marker\nfix: remove trailing whitespace / resolve the conflict, then re-stage (git add)\nrerun: cargo xtask gates --tier commit --staged --gate whitespace_check\nwhat remains: none — this is the full check\n\nCOMMIT_CHECK_REPORT_JSON:{\"check\":\"whitespace_check\",\"posture\":\"BLOCKED\",\"result\":\"`git diff HEAD d52fff0b1c16beee9ee2dc6f4acc0406176174e9 --check` found 3 issue(s) in the staged diff\",\"why\":\"trailing whitespace and unresolved merge-conflict markers break formatting and, for markers, compilation\",\"affected\":[\"proof-conflict.rs:1: leftover conflict marker\",\"proof-conflict.rs:3: leftover conflict marker\",\"proof-conflict.rs:5: leftover conflict marker\"],\"fix\":\"remove trailing whitespace / resolve the conflict, then re-stage (git add)\",\"rerun\":\"cargo xtask gates --tier commit --staged --gate whitespace_check\",\"what_remains\":\"none — this is the full check\"}",
+      "log_path": "logs/whitespace_check.log"
+    },
+    {
+      "gate_name": "conflict_markers_staged",
+      "tier": "commit",
+      "status": "fail",
+      "required": true,
+      "duration_ms": 133,
+      "command": "cargo xtask commit-check conflict_markers_staged",
+      "output_summary": "BLOCKED: 3 staged line(s) look like leftover merge-conflict markers\nwhy: a committed conflict marker breaks compilation/parsing and usually means a merge was left unresolved\naffected: proof-conflict.rs:1, proof-conflict.rs:3, proof-conflict.rs:5\nfix: resolve the conflict and remove the <<<<<<</=======/>>>>>>> lines, then re-stage\nrerun: cargo xtask gates --tier commit --staged --gate conflict_markers_staged\nwhat remains: none — full-content scan of every staged file touched by this commit\n\nCOMMIT_CHECK_REPORT_JSON:{\"check\":\"conflict_markers_staged\",\"posture\":\"BLOCKED\",\"result\":\"3 staged line(s) look like leftover merge-conflict markers\",\"why\":\"a committed conflict marker breaks compilation/parsing and usually means a merge was left unresolved\",\"affected\":[\"proof-conflict.rs:1\",\"proof-conflict.rs:3\",\"proof-conflict.rs:5\"],\"fix\":\"resolve the conflict and remove the <<<<<<</=======/>>>>>>> lines, then re-stage\",\"rerun\":\"cargo xtask gates --tier commit --staged --gate conflict_markers_staged\",\"what_remains\":\"none — full-content scan of every staged file touched by this commit\"}",
+      "log_path": "logs/conflict_markers_staged.log"
+    },
+    {
+      "gate_name": "staged_exec_mode_policy",
+      "tier": "commit",
+      "status": "pass",
+      "required": true,
+      "duration_ms": 22,
+      "command": "cargo xtask commit-check staged_exec_mode_policy",
+      "output_summary": "staged executable-bit policy holds",
+      "log_path": "logs/staged_exec_mode_policy.log"
+    },
+    {
+      "gate_name": "staged_config_syntax",
+      "tier": "commit",
+      "status": "pass",
+      "required": true,
+      "duration_ms": 17,
+      "command": "cargo xtask commit-check staged_config_syntax",
+      "output_summary": "staged JSON/YAML/TOML files parse cleanly",
+      "log_path": "logs/staged_config_syntax.log"
+    },
+    {
+      "gate_name": "forbidden_machine_paths",
+      "tier": "commit",
+      "status": "pass",
+      "required": true,
+      "duration_ms": 156,
+      "command": "cargo xtask commit-check forbidden_machine_paths",
+      "output_summary": "no machine-specific absolute paths found in staged non-doc files",
+      "log_path": "logs/forbidden_machine_paths.log"
+    },
+    {
+      "gate_name": "staged_oversized_or_binary",
+      "tier": "commit",
+      "status": "pass",
+      "required": true,
+      "duration_ms": 64,
+      "command": "cargo xtask commit-check staged_oversized_or_binary",
+      "output_summary": "no oversized or disallowed-binary staged files",
+      "log_path": "logs/staged_oversized_or_binary.log"
+    },
+    {
+      "gate_name": "changie_fragment_staged",
+      "tier": "commit",
+      "status": "pass",
+      "required": true,
+      "duration_ms": 8,
+      "command": "cargo xtask commit-check changie_fragment_staged",
+      "output_summary": "no staged Changie inputs changed",
+      "log_path": "logs/changie_fragment_staged.log"
+    },
+    {
+      "gate_name": "rustfmt_staged",
+      "tier": "commit",
+      "status": "pass",
+      "required": true,
+      "duration_ms": 549,
+      "command": "cargo xtask commit-check rustfmt_staged",
+      "output_summary": "NOT PROVEN: the rustfmt_staged instrument failed to run to completion\nwhy: a tool/subprocess error, timeout, or undecodable output means this check didn't actually verify anything -- that is not the same as the staged tree being clean\nfix: investigate and re-run: rustfmt reported a failure rather than a formatting diff: error: encountered diff marker\n --> <stdin>:1:1\n  |\n1 | <<<<<<< proof\n  | ^^^^^^^ between this marker and `=======` is the code that you are merging into\n2 | conflict\n3 | =======\n  | ------- between this marker and `>>>>>>>` is the incoming code\n4 | other\n5 | >>>>>>> proof\n  | ^^^^^^^ this marker concludes the conflict region\n  |\n  = note: conflict markers indicate that a merge was started but could not be completed due to merge conflicts\n          to resolve a conflict, keep only the code you want and then delete the lines containing conflict markers\n  = help: if you are in a merge, the top section is the code you already had checked out and the bottom section is the new code\n          if you are in a rebase, the top section is the code being rebased onto and the bottom section is the code you had checked out which is being rebased\n  = note: for an explanation on these markers from the `git` documentation, visit <https://git-scm.com/book/en/v2/Git-Tools-Advanced-Merging#_checking_out_conflicts>\n\n\nrerun: cargo xtask gates --tier commit --staged --gate rustfmt_staged\nwhat remains: this check did not run to completion; its verification is still outstanding\n\nCOMMIT_CHECK_REPORT_JSON:{\"check\":\"rustfmt_staged\",\"posture\":\"NOT PROVEN\",\"result\":\"the rustfmt_staged instrument failed to run to completion\",\"why\":\"a tool/subprocess error, timeout, or undecodable output means this check didn't actually verify anything -- that is not the same as the staged tree being clean\",\"affected\":[],\"fix\":\"investigate and re-run: rustfmt reported a failure rather than a formatting diff: error: encountered diff marker\\n --> <stdin>:1:1\\n  |\\n1 | <<<<<<< proof\\n  | ^^^^^^^ between this marker and `=======` is the code that you are merging into\\n2 | conflict\\n3 | =======\\n  | ------- between this marker and `>>>>>>>` is the incoming code\\n4 | other\\n5 | >>>>>>> proof\\n  | ^^^^^^^ this marker concludes the conflict region\\n  |\\n  = note: conflict markers indicate that a merge was started but could not be completed due to merge conflicts\\n          to resolve a conflict, keep only the code you want and then delete the lines containing conflict markers\\n  = help: if you are in a merge, the top section is the code you already had checked out and the bottom section is the new code\\n          if you are in a rebase, the top section is the code being rebased onto and the bottom section is the code you had checked out which is being rebased\\n  = note: for an explanation on these markers from the `git` documentation, visit <https://git-scm.com/book/en/v2/Git-Tools-Advanced-Merging#_checking_out_conflicts>\\n\\n\",\"rerun\":\"cargo xtask gates --tier commit --staged --gate rustfmt_staged\",\"what_remains\":\"this check did not run to completion; its verification is still outstanding\"}",
+      "log_path": "logs/rustfmt_staged.log"
+    },
+    {
+      "gate_name": "from_raw_staged",
+      "tier": "commit",
+      "status": "pass",
+      "required": true,
+      "duration_ms": 88,
+      "command": "cargo xtask commit-check from_raw_staged",
+      "output_summary": "no disallowed ExitStatus::from_raw() usage in staged files",
+      "log_path": "logs/from_raw_staged.log"
+    }
+  ],
+  "summary": {
+    "total_gates": 10,
+    "passed": 8,
+    "failed": 2,
+    "skipped": 0,
+    "total_duration_ms": 1129,
+    "tier_results": {
+      "commit": {
+        "total": 10,
+        "passed": 8,
+        "failed": 2,
+        "skipped": 0,
+        "duration_ms": 1053
+      }
+    },
+    "overall_status": "fail",
+    "blocking_failures": [
+      "whitespace_check",
+      "conflict_markers_staged"
+    ]
+  },
+  "agent_receipt": {
+    "sha": "1f973039d812fe080abddc44e461112d7b95a6fa",
+    "is_latest": true,
+    "tier": "commit",
+    "scope": {
+      "direct_crates": [],
+      "reverse_deps": [],
+      "risk_tags": []
+    },
+    "selected_lanes": [],
+    "failures": [
+      {
+        "lane": "whitespace_check",
+        "summary": "`git diff HEAD d52fff0b1c16beee9ee2dc6f4acc0406176174e9 --check` found 3 issue(s) in the staged diff — trailing whitespace and unresolved merge-conflict markers break formatting and, for markers, compilation",
+        "repro": "cargo xtask gates --tier commit --staged --gate whitespace_check",
+        "posture": "BLOCKED",
+        "affected": [
+          "proof-conflict.rs:1: leftover conflict marker",
+          "proof-conflict.rs:3: leftover conflict marker",
+          "proof-conflict.rs:5: leftover conflict marker"
+        ],
+        "fix": "remove trailing whitespace / resolve the conflict, then re-stage (git add)"
+      },
+      {
+        "lane": "conflict_markers_staged",
+        "summary": "3 staged line(s) look like leftover merge-conflict markers — a committed conflict marker breaks compilation/parsing and usually means a merge was left unresolved",
+        "repro": "cargo xtask gates --tier commit --staged --gate conflict_markers_staged",
+        "posture": "BLOCKED",
+        "affected": [
+          "proof-conflict.rs:1",
+          "proof-conflict.rs:3",
+          "proof-conflict.rs:5"
+        ],
+        "fix": "resolve the conflict and remove the <<<<<<</=======/>>>>>>> lines, then re-stage"
+      }
+    ],
+    "suggested_next_actions": [
+      "Reproduce and fix gate 'whitespace_check' locally, then rerun: cargo xtask gates --tier commit --staged --gate whitespace_check",
+      "Reproduce and fix gate 'conflict_markers_staged' locally, then rerun: cargo xtask gates --tier commit --staged --gate conflict_markers_staged"
+    ],
+    "plan": {
+      "base": "HEAD~1",
+      "scope_ok": true,
+      "fallback_used": false,
+      "package_args": [],
+      "selected": [
+        {
+          "name": "staged_tree_identity",
+          "role": "static",
+          "reason": "selected by static policy filter"
+        },
+        {
+          "name": "whitespace_check",
+          "role": "static",
+          "reason": "selected by static policy filter"
+        },
+        {
+          "name": "conflict_markers_staged",
+          "role": "static",
+          "reason": "selected by static policy filter"
+        },
+        {
+          "name": "staged_exec_mode_policy",
+          "role": "static",
+          "reason": "selected by static policy filter"
+        },
+        {
+          "name": "staged_config_syntax",
+          "role": "static",
+          "reason": "selected by static policy filter"
+        },
+        {
+          "name": "forbidden_machine_paths",
+          "role": "static",
+          "reason": "selected by static policy filter"
+        },
+        {
+          "name": "staged_oversized_or_binary",
+          "role": "static",
+          "reason": "selected by static policy filter"
+        },
+        {
+          "name": "changie_fragment_staged",
+          "role": "static",
+          "reason": "selected by static policy filter"
+        },
+        {
+          "name": "rustfmt_staged",
+          "role": "static",
+          "reason": "selected by static policy filter"
+        },
+        {
+          "name": "from_raw_staged",
+          "role": "static",
+          "reason": "selected by static policy filter"
+        }
+      ],
+      "skipped": []
+    },
+    "staged_tree_oid": "d52fff0b1c16beee9ee2dc6f4acc0406176174e9",
+    "advisories": [
+      {
+        "lane": "staged_tree_identity",
+        "posture": "ADVISORY",
+        "summary": "staged tree d52fff0b1c16beee9ee2dc6f4acc0406176174e9 — 30 file(s) staged relative to HEAD",
+        "why": "wiring proof for the commit-tier substrate (issue #3786-A): confirms --staged resolves the exact git write-tree identity and threads it through the receipt, independent of any real hygiene check",
+        "affected": [
+          ".github/workflows/ci-gate-self-tests.yml",
+          "Cargo.lock",
+          "crates/perl-ci-hygiene/Cargo.toml",
+          "crates/perl-ci-hygiene/src/change_set.rs",
+          "crates/perl-ci-hygiene/src/cli.rs",
+          "crates/perl-ci-hygiene/src/git_hooks.rs",
+          "crates/perl-ci-hygiene/src/lib.rs",
+          "crates/perl-ci-hygiene/src/main.rs",
+          "crates/perl-ci-hygiene/src/package_resolver.rs",
+          "crates/perl-ci-hygiene/src/staged.rs",
+          "crates/perl-ci-hygiene/tests/change_set_cli.rs",
+          "crates/perl-ci-hygiene/tests/package_resolver_cli.rs",
+          "docs/contributing/FIRST_PR.md",
+          "hooks/pre-push",
+          "justfile",
+          "proof-conflict.rs",
+          "scripts/README.md",
+          "scripts/check-githooks.sh",
+          "scripts/githooks-bootstrap.sh",
+          "scripts/install-githooks.sh",
+          "scripts/tests/test-install-githooks-wrapper.sh",
+          "scripts/tests/test-pre-push-launchers.py",
+          "scripts/worktree-manager.py",
+          "xtask/src/bin/workspace_doctor_inventory/sources.rs",
+          "xtask/src/tasks/change_set.rs",
+          "xtask/src/tasks/ci_hygiene.rs",
+          "xtask/src/tasks/devex_doctor.rs",
+          "xtask/src/tasks/mod.rs",
+          "xtask/src/tasks/targeted_checks.rs",
+          "xtask/tests/workspace_doctor_inventory/support.rs"
+        ],
+        "rerun": "cargo xtask gates --tier commit --staged --gate staged_tree_identity",
+        "what_remains": "none — the nine structural checks (issue #3786-B) run alongside this one, not instead of it"
+      },
+      {
+        "lane": "rustfmt_staged",
+        "posture": "NOT PROVEN",
+        "summary": "the rustfmt_staged instrument failed to run to completion",
+        "why": "a tool/subprocess error, timeout, or undecodable output means this check didn't actually verify anything -- that is not the same as the staged tree being clean",
+        "fix": "investigate and re-run: rustfmt reported a failure rather than a formatting diff: error: encountered diff marker\n --> <stdin>:1:1\n  |\n1 | <<<<<<< proof\n  | ^^^^^^^ between this marker and `=======` is the code that you are merging into\n2 | conflict\n3 | =======\n  | ------- between this marker and `>>>>>>>` is the incoming code\n4 | other\n5 | >>>>>>> proof\n  | ^^^^^^^ this marker concludes the conflict region\n  |\n  = note: conflict markers indicate that a merge was started but could not be completed due to merge conflicts\n          to resolve a conflict, keep only the code you want and then delete the lines containing conflict markers\n  = help: if you are in a merge, the top section is the code you already had checked out and the bottom section is the new code\n          if you are in a rebase, the top section is the code being rebased onto and the bottom section is the code you had checked out which is being rebased\n  = note: for an explanation on these markers from the `git` documentation, visit <https://git-scm.com/book/en/v2/Git-Tools-Advanced-Merging#_checking_out_conflicts>\n\n",
+        "rerun": "cargo xtask gates --tier commit --staged --gate rustfmt_staged",
+        "what_remains": "this check did not run to completion; its verification is still outstanding"
+      }
+    ]
+  }
+}
