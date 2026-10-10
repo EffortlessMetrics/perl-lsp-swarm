@@ -194,7 +194,7 @@ class ConstrainedAdmissionTests(unittest.TestCase):
                 self.assertFalse((self.slot / "cargo-active").exists())
 
     def test_ci_reaches_both_admission_suites(self):
-        workflow = (ROOT / ".github/workflows/ci-gate-self-tests.yml").read_text()
+        workflow = (ROOT / ".github/workflows/ci-gate-self-tests.yml").read_text(encoding="utf-8")
         filters = workflow.split("jobs:", 1)[0]
         for path in ("scripts/cargo-admitted", "scripts/cargo_admitted.py",
                      "scripts/tests/test_cargo_admitted_storage.py",
@@ -205,7 +205,7 @@ class ConstrainedAdmissionTests(unittest.TestCase):
         self.assertNotIn("CARGO_ADMITTED_REAL_BUILD_TEST", job)
 
     def test_generic_preflight_cannot_claim_build_admission(self):
-        recipe = (ROOT / "justfile").read_text().split("agent-preflight: storage-doctor", 1)[1].split("\n\n", 1)[0]
+        recipe = (ROOT / "justfile").read_text(encoding="utf-8").split("agent-preflight: storage-doctor", 1)[1].split("\n\n", 1)[0]
         self.assertIn("Cargo build capacity was not assessed", recipe)
         self.assertIn("scripts/cargo-admitted --preflight <exact Cargo command>", recipe)
         self.assertNotIn('"agent preflight ok"', recipe)
