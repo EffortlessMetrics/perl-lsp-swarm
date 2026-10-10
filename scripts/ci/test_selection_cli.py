@@ -130,6 +130,17 @@ class SelectionCli(unittest.TestCase):
         self.assertEqual(result["status"], "NOT_PROVEN")
         self.assertEqual(result["error_code"], "MALFORMED_SHA")
 
+    @unittest.skipUnless(Path("/dev/full").exists(), "native POSIX write-failure control")
+    def test_stdout_failure_preserves_legacy_exit(self):
+        self.write("docs/start.md", "changed\n")
+        self.commit()
+        with open("/dev/full", "wb") as sink:
+            result = subprocess.run([RUNNER, "ci-scope", "--base", self.base,
+                                     "--root", str(self.root), "--format", "json"],
+                                    cwd=self.root, env=self.env, stdout=sink,
+                                    stderr=subprocess.PIPE, timeout=30)
+        self.assertEqual(result.returncode, 101, result.stderr)
+
     def test_range_missing_base_refuses_and_text_fallback_remains(self):
         self.write("docs/start.md", "changed\n")
         self.commit()
