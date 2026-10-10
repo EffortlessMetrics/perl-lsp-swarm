@@ -334,3 +334,17 @@ complete selected inventory, measured aggregate capacity/lifetimes, migrated
 callers and current-source binary handoff. The retained snapshot is owned
 metadata, not a cache or a product-success receipt. Native non-Linux support and
 hermetic external/build-script inputs remain unqualified.
+
+The parser/DAP preparation consumer now renders its eight fixed operations
+through `nested_command` in the existing owner, checking again after each
+successful child. It does not reconstruct tool argv or accept a descriptor
+without its bound plan. Parser JSON/warning checks and the existing nonzero
+library-test guard remain; DAP keeps its exact library lint exception. Missing
+rows or changed source/environment/resources/ownership refuse before the next
+child. Neither the consumer nor the root selector activates hosted PR Smoke.
+
+The joined marker repair captures identity immediately at marker creation and
+carries that same value through preallocation, prelaunch, snapshot and release.
+Snapshot construction must not re-observe a replacement marker. The repair's
+native qualification remains a separate prerequisite; cheap joined controls
+are not new Windows/macOS qualification or aggregate-workload admission.

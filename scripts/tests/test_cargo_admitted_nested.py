@@ -58,6 +58,42 @@ class NestedTests(unittest.TestCase):
         self.receipt['nested_snapshot']=a.file_subject(self.snapshot)
         self.env['CARGO_ADMITTED_RESOURCES']=json.dumps(self.receipt)
     def command(self,row):return a.nested_command(row,self.env)
+    def test_parent_snapshot_carries_original_creation_marker_identity(self):
+        # Composition seam: replacement AFTER allocation must not be adopted
+        # by snapshot creation. No tool/product launch or capacity qualification.
+        import io
+        from contextlib import redirect_stderr
+        self.marker.rmdir(); self.lock.rmdir()
+        parent={k:v for k,v in self.env.items() if k!='CARGO_ADMITTED_RESOURCES'}
+        original_mkdir=Path.mkdir
+        observed={}
+        def replace_after_capture(path,*args,**kw):
+            result=original_mkdir(path,*args,**kw)
+            if path==self.paths['build']:
+                marker=next(self.lock.iterdir())
+                observed['original']=a.directory_identity(marker)
+                marker.rename(self.slot/'retained-original-marker')
+                original_mkdir(marker)
+                observed['replacement']=a.directory_identity(marker)
+            return result
+        tree=Mock(); tree.finish.return_value={'tree_settled':True,'cancelled':False}
+        previous=Path.cwd()
+        try:
+            os.chdir(self.worktree)
+            with patch.dict(os.environ,parent,clear=True), patch.object(a,'nested_plan',return_value=self.plan), \
+                 patch.object(a,'check_capacity',return_value={}), patch.object(Path,'mkdir',replace_after_capture), \
+                 patch.object(a,'ClippyTree',return_value=tree), patch.object(a,'clippy_version_check',return_value={}), \
+                 patch.object(a,'call_clippy') as launch, redirect_stderr(io.StringIO()):
+                self.assertEqual(a.main(['--nested-plan','fixture','run','-p','xtask']),75)
+                launch.assert_not_called()
+        finally:
+            os.chdir(previous)
+        snapshots=list(self.slot.glob('nested-plan-*.json'))
+        self.assertEqual(len(snapshots),1)
+        saved=json.loads(snapshots[0].read_text())['descriptor']
+        self.assertEqual(tuple(saved['marker_identity']),observed['original'])
+        self.assertNotEqual(tuple(saved['marker_identity']),observed['replacement'])
+        self.assertTrue(self.lock.is_dir())
     def test_exact_fixed_contract_and_lints(self):
         for row,args in EXPECTED.items():
             with self.subTest(row=row):

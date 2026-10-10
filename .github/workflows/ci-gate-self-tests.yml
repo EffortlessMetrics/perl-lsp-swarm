@@ -19,6 +19,7 @@ on:
       - 'scripts/cargo_admitted.py'
       - 'scripts/tests/test_cargo_admitted_storage.py'
       - 'scripts/tests/test_cargo_admitted_budget.py'
+      - 'scripts/tests/test_cargo_admitted_nested.py'
       - 'scripts/ci/parser_workspace_prepare.py'
       - 'scripts/ci/test_parser_workspace_prepare.py'
       - 'scripts/ci/pr_smoke_resources.py'

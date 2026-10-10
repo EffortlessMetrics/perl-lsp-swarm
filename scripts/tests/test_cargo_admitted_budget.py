@@ -213,7 +213,7 @@ class ConstrainedAdmissionTests(unittest.TestCase):
             replacement.append(self.replace_owner_marker(lock))
             return 0
         result, _, cargo = self.invoke(["--budget-file", str(self.budget), *self.args], call=replace)
-        self.assertEqual(result, 0)
+        self.assertEqual(result, 75 if sys.platform == "linux" else 0)
         cargo.assert_called_once()
         self.assertTrue(replacement[0].is_dir())
         self.assertTrue(lock.is_dir())
@@ -255,7 +255,10 @@ class ConstrainedAdmissionTests(unittest.TestCase):
                      "scripts/tests/test_cargo_admitted_budget.py", "justfile"):
             self.assertIn("- '" + path + "'", filters)
         job = workflow.split("  cargo-admitted-storage-self-test:", 1)[1].split("\n  cargo-toolchain-guard-self-test:", 1)[0]
-        self.assertIn("run: python3 -m unittest discover -s scripts/tests -p 'test_cargo_admitted*.py'", job)
+        self.assertTrue(any(line.strip() in (
+            "run: python3 -m unittest discover -s scripts/tests -p 'test_cargo_admitted*.py' -v",
+            "python3 -m unittest discover -s scripts/tests -p 'test_cargo_admitted*.py' -v",
+        ) for line in job.splitlines()))
         self.assertNotIn("CARGO_ADMITTED_REAL_BUILD_TEST", job)
 
     def test_generic_preflight_cannot_claim_build_admission(self):

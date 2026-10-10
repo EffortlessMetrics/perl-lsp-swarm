@@ -259,9 +259,9 @@ class ClippyAdmissionTests(unittest.TestCase):
             with self.subTest(released=released):
                 self.slot = self.root / ("release-interrupt-" + str(released))
                 original = safe.release_lease
-                def interrupt(lock, identity, marker):
+                def interrupt(lock, identity, marker, marker_identity):
                     if released:
-                        original(lock, identity, marker)
+                        original(lock, identity, marker, marker_identity)
                     raise KeyboardInterrupt
                 with patch.object(safe, "release_lease", side_effect=interrupt):
                     result, output = self.invoke(settled=True)

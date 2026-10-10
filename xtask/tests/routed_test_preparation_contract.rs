@@ -40,9 +40,7 @@ fn preparation_preserves_runtime_command_and_budget() -> Result<(), Box<dyn std:
     let dap = find("dap_workspace_prepare")?;
     assert_eq!(
         dap["command"].as_str(),
-        Some(
-            "cargo build -p perl-lsp-rs --message-format=short --locked && cargo build -p perl-lsp-rs-core --message-format=short --locked && cargo build -p perl-dap --bin perl-dap --locked && cargo clippy -p perl-dap --lib --locked -- -D warnings -A clippy::wildcard_imports"
-        )
+        Some("python scripts/ci/parser_workspace_prepare.py --dap")
     );
     assert_eq!(dap["required"].as_bool(), Some(true));
     assert_eq!(dap["quarantine"].as_bool(), Some(false));

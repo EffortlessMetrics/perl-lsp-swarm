@@ -1,130 +1,145 @@
-"""Focused controls; never compile the product or claim native runtime proof."""
+"""Consumer/production-owner composition controls; no product compilation."""
 import importlib.util
 import io
 import json
 from pathlib import Path
 import subprocess
-import tempfile
 import unittest
 from unittest.mock import patch
 
-SPEC = importlib.util.spec_from_file_location("parser_prepare", Path(__file__).with_name("parser_workspace_prepare.py"))
-prepare = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(prepare)
+ROOT = Path(__file__).resolve().parents[2]
+def load(name, path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
+prepare = load('prepare', ROOT / 'scripts/ci/parser_workspace_prepare.py')
+fixture = load('owner_fixture', ROOT / 'scripts/tests/test_cargo_admitted_nested.py')
+EXPECTED = {
+    'parser': ('parser-check', 'parser-build', 'parser-clippy', 'parser-lib'),
+    'dap': ('dap-lsp-build', 'dap-core-build', 'dap-bin-build', 'dap-clippy'),
+}
 
 class PreparationControls(unittest.TestCase):
     def setUp(self):
-        self.temp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.temp.cleanup)
-        self.base = Path(self.temp.name).resolve()
-        self.source = self.base / "source"
-        self.source.mkdir()
-        self.env = self.resources("slot-a", "tree-a")
+        # Reuse the existing owner's exact-root/lease/tool fixture, not another
+        # validator. Only source/config/tool observations are mocked there;
+        # membership, snapshot equality, identities and argv rendering are real.
+        self.subject = fixture.NestedTests()
+        self.subject.setUp()
+        self.addCleanup(self.subject.doCleanups)
+        self.enterContext(patch.object(prepare, 'nested_command', fixture.a.nested_command))
+        self.enterContext(patch('sys.stdout', io.StringIO()))
+        self.enterContext(patch('sys.stderr', io.StringIO()))
 
-    def resources(self, slot_name, tree_name):
-        slot = self.base / slot_name
-        pair = slot / "worktrees" / tree_name
-        target, build = pair / "target", pair / "build"
-        marker = slot / "cargo-active" / "owner-fixture"
-        for path in (target, build, marker):
-            path.mkdir(parents=True, exist_ok=True)
-        receipt = {"worktree": str(self.source), "resources": {"target": str(target), "build": str(build)},
-                   "lease": str(marker.parent), "lease_marker": str(marker)}
-        return {"CARGO_ADMITTED_RESOURCES": json.dumps(receipt), "CARGO_TARGET_DIR": str(target),
-                "CARGO_BUILD_BUILD_DIR": str(build)}
+    def run_mode(self, mode='parser', invoke=None, env=None):
+        return prepare.run(self.subject.env if env is None else env,
+                           invoke or (lambda args, **kw: subprocess.CompletedProcess(args, 0, '', '')), mode)
 
-    def execute(self, invoke, env=None):
-        # The production root is fixed; fixtures change only the source subject.
-        original = prepare.admitted_resources
-        with patch.object(prepare, "ROOT", self.source), \
-             patch.object(prepare, "admitted_resources", lambda env: original(env, self.source)), \
-             patch("sys.stdout", io.StringIO()), patch("sys.stderr", io.StringIO()):
-            return prepare.run(self.env if env is None else env, invoke)
-
-    def test_exact_commands_keep_both_private_roots_through_all_consumers(self):
-        calls = []
-        def invoke(args, **kwargs):
-            calls.append((args, kwargs))
-            return subprocess.CompletedProcess(args, 0, "running 1 test\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;\n", "")
-        self.assertEqual(self.execute(invoke), 0)
-        for (actual, _), expected in zip(calls, prepare.COMMANDS):
-            operation = actual.index(expected[0])
-            self.assertEqual(actual[operation:], [expected[0], "--target-dir", self.env["CARGO_TARGET_DIR"], *expected[1:]])
-            self.assertIn("build.build-dir=" + json.dumps(self.env["CARGO_BUILD_BUILD_DIR"]), actual)
-            self.assertIn('build.rustc-wrapper=""', actual)
-            self.assertIn('build.rustc-workspace-wrapper=""', actual)
-        for _, kwargs in calls:
-            self.assertEqual(kwargs["cwd"], self.source)
-            self.assertEqual(kwargs["env"], self.env)
-        self.assertNotEqual(self.env["CARGO_TARGET_DIR"], self.env["CARGO_BUILD_BUILD_DIR"])
-
-    def test_each_failure_stops_before_subsequent_work(self):
-        for failed in range(4):
+    def test_both_modes_use_exact_owner_rows_and_lints(self):
+        for mode, rows in EXPECTED.items():
             calls = []
             def invoke(args, **kwargs):
-                calls.append(args)
-                return subprocess.CompletedProcess(args, 101 if len(calls) == failed + 1 else 0, "", "failure")
-            self.assertEqual(self.execute(invoke), 101)
-            self.assertEqual(len(calls), failed + 1)
+                calls.append((args, kwargs))
+                return subprocess.CompletedProcess(args, 0, '', '')
+            self.assertEqual(self.run_mode(mode, invoke), 0)
+            self.assertEqual(len(calls), 4)
+            for (cmd, kw), row in zip(calls, rows):
+                expected, env, cwd = self.subject.command(row)
+                self.assertEqual(cmd, expected)
+                self.assertEqual(kw['env'], env)
+                self.assertEqual(kw['cwd'], cwd)
+                self.assertEqual(kw['encoding'], 'utf-8')
+                self.assertEqual(kw['errors'], 'replace')
+            parser_lint = list(fixture.a.NESTED_COMMANDS['parser-clippy'])
+            dap_lint = list(fixture.a.NESTED_COMMANDS['dap-clippy'])
+            self.assertEqual(parser_lint, ['clippy','--package','perl-parser','--locked','--offline','--','-D','warnings'])
+            self.assertEqual(dap_lint, ['clippy','-p','perl-dap','--lib','--locked','--','-D','warnings','-A','clippy::wildcard_imports'])
 
-    def test_build_warnings_preserve_parser_only_anchor_scan(self):
-        calls = []
-        def invoke(args, **kwargs):
+    def test_every_failure_stops_later_stages(self):
+        for mode in EXPECTED:
+            for failed in range(4):
+                calls = []
+                def invoke(args, **kw):
+                    calls.append(args)
+                    return subprocess.CompletedProcess(args, 101 if len(calls)==failed+1 else 0, '', 'failure')
+                self.assertEqual(self.run_mode(mode, invoke), 101)
+                self.assertEqual(len(calls), failed+1)
+
+    def test_missing_plan_cannot_launch(self):
+        with self.assertRaises(fixture.a.Denied):
+            self.run_mode(invoke=lambda *a, **kw: self.fail('must refuse before launch'), env={})
+
+    def test_absent_row_stops_before_any_child(self):
+        self.subject.plan['request']['rows'].remove('parser-clippy')
+        self.subject.save()
+        calls=[]
+        def invoke(args, **kw):
             calls.append(args)
-            return subprocess.CompletedProcess(args, 0, "", "warning: issue\n --> crates\\perl-parser\\src\\lib.rs:1\n" if "build" in args else "")
-        self.assertEqual(self.execute(invoke), 1)
-        self.assertEqual(len(calls), 2)
-        self.assertFalse(prepare.warnings_anchored_in_parser("warning: issue\n --> crates/other/src/lib.rs:1"))
+            return subprocess.CompletedProcess(args,0,'','')
+        with self.assertRaises(fixture.a.Denied):
+            self.run_mode(invoke=invoke)
+        self.assertEqual(len(calls),0)
 
-    def test_missing_or_stale_lease_cannot_start_cargo(self):
-        for env in ({}, self.env | {"CARGO_ADMITTED_RESOURCES": "null"}):
-            with self.assertRaises(ValueError):
-                self.execute(lambda *_args, **_kwargs: self.fail("Cargo must not start"), env)
-        receipt = json.loads(self.env["CARGO_ADMITTED_RESOURCES"])
-        Path(receipt["lease_marker"]).rmdir()
-        with self.assertRaises(ValueError):
-            self.execute(lambda *_args, **_kwargs: self.fail("Cargo must not start"))
+    def test_original_marker_replacement_cannot_launch(self):
+        self.subject.marker.rename(self.subject.marker.with_name('retained-original'))
+        self.subject.marker.mkdir()
+        with self.assertRaises(fixture.a.Denied):
+            self.run_mode(invoke=lambda *a, **kw: self.fail('must refuse before launch'))
 
-    def test_shared_or_overlapping_intermediates_cannot_start_cargo(self):
-        for variable in ("CARGO_TARGET_DIR", "CARGO_BUILD_BUILD_DIR"):
-            with self.assertRaises(ValueError):
-                self.execute(lambda *_args, **_kwargs: self.fail("Cargo must not start"), self.env | {variable: str(self.base)})
-        receipt = json.loads(self.env["CARGO_ADMITTED_RESOURCES"])
-        receipt["resources"]["build"] = receipt["resources"]["target"]
-        env = self.env | {"CARGO_ADMITTED_RESOURCES": json.dumps(receipt), "CARGO_BUILD_BUILD_DIR": receipt["resources"]["build"]}
-        with self.assertRaises(ValueError):
-            self.execute(lambda *_args, **_kwargs: self.fail("Cargo must not start"), env)
+    def test_ownership_loss_is_checked_after_each_success(self):
+        # Losing ownership after the LAST command must also refuse; otherwise
+        # deleting the post-validation survives ordinary next-stage controls.
+        for failed in (0, 3):
+            with self.subTest(stage=failed):
+                calls=[]
+                original=self.subject.marker.with_name('retained-original')
+                def invoke(args, **kw):
+                    calls.append(args)
+                    if len(calls)==failed+1:
+                        self.subject.marker.rename(original)
+                        self.subject.marker.mkdir()
+                    return subprocess.CompletedProcess(args,0,'','')
+                try:
+                    with self.assertRaises(fixture.a.Denied):
+                        self.run_mode(invoke=invoke)
+                    self.assertEqual(len(calls),failed+1)
+                finally:
+                    self.subject.marker.rmdir()
+                    original.rename(self.subject.marker)
 
-    def test_concurrent_agent_domains_cannot_mix_final_and_intermediate_roots(self):
-        second = self.resources("slot-b", "tree-b")
-        for env in (self.env, second):
-            prepare.admitted_resources(env, self.source)
-        for key in ("CARGO_TARGET_DIR", "CARGO_BUILD_BUILD_DIR"):
-            self.assertNotEqual(self.env[key], second[key])
-            with self.assertRaises(ValueError):
-                prepare.admitted_resources(self.env | {key: second[key]}, self.source)
+    def test_source_environment_and_sibling_roots_refuse_before_launch(self):
+        for key in ('CARGO_TARGET_DIR','CARGO_BUILD_BUILD_DIR','CARGO_PROFILE_DEV_DEBUG'):
+            with self.subTest(key=key), self.assertRaises(fixture.a.Denied):
+                self.run_mode(env=self.subject.env | {key:'changed'}, invoke=lambda *a, **kw:self.fail('must refuse'))
+        self.subject.plan['source']={'head':'other-source'}
+        self.subject.save()
+        with self.assertRaises(fixture.a.Denied):
+            self.run_mode(invoke=lambda *a, **kw:self.fail('must refuse'))
 
-    def test_ownership_loss_stops_before_next_command(self):
-        calls = []
-        def invoke(args, **kwargs):
+    def test_parser_checks_keep_original_diagnostics_and_warning_anchor(self):
+        for diagnostic in ('cannot find value `signature`','failed to resolve: could not find `tower_lsp`'):
+            self.assertEqual(self.run_mode(invoke=lambda args,**kw: subprocess.CompletedProcess(args,0,diagnostic,'')),1)
+        calls=[]
+        def invoke(args, **kw):
             calls.append(args)
-            Path(json.loads(self.env["CARGO_ADMITTED_RESOURCES"])["lease_marker"]).rmdir()
-            return subprocess.CompletedProcess(args, 0, "", "")
-        with self.assertRaises(ValueError):
-            self.execute(invoke)
-        self.assertEqual(len(calls), 1)
+            return subprocess.CompletedProcess(args,0,'','warning: issue\n --> crates\\perl-parser\\src\\lib.rs:1\n' if len(calls)==2 else '')
+        self.assertEqual(self.run_mode(invoke=invoke),1)
+        self.assertEqual(len(calls),2)
+        self.assertFalse(prepare.warnings_anchored_in_parser('warning: issue\n --> crates/other/src/lib.rs:1'))
 
-    def test_transfer_keeps_targets_and_reuses_real_runtime_evidence_guard(self):
-        root = Path(__file__).resolve().parents[2]
-        for name in ("issue_146_unit_tests.rs", "issue_146_architectural_integrity_tests.rs"):
-            text = (root / "crates/perl-parser/tests" / name).read_text()
-            self.assertIn("parser_workspace_prepare", text)
-            self.assertNotIn("perl-parser-qa-nested-target", text)
-        runner = (root / "xtask/src/tasks/gates.rs").read_text()
-        self.assertIn("routed_preparation::RUNTIME | routed_preparation::PARSER", runner)
-        self.assertIn("routed_runtime_evidence::validate", runner)
+    def test_signal_status_is_failure(self):
+        self.assertEqual(self.run_mode(invoke=lambda args,**kw:subprocess.CompletedProcess(args,-15,'','')),1)
 
+    def test_required_wiring_and_nonzero_guard_preserved(self):
+        runner=(ROOT/'xtask/src/tasks/gates.rs').read_text()
+        self.assertIn('routed_preparation::RUNTIME | routed_preparation::PARSER',runner)
+        self.assertIn('routed_runtime_evidence::validate',runner)
+        policy=(ROOT/'.ci/gate-policy.yaml').read_text()
+        dap=policy.split('  - name: dap_workspace_prepare\n',1)[1].split('  - name:',1)[0]
+        for field in ('command: python scripts/ci/parser_workspace_prepare.py --dap','required: true','timeout_seconds: 1500','retry_count: 0'):
+            self.assertIn(field,dap)
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     unittest.main()

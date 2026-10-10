@@ -1120,11 +1120,7 @@ gates:
     tier: pr_fast
     description: "Build Wave H consumers and link DAP; retain exact DAP-lib lint policy"
     required: true
-    command: >-
-      cargo build -p perl-lsp-rs --message-format=short --locked &&
-      cargo build -p perl-lsp-rs-core --message-format=short --locked &&
-      cargo build -p perl-dap --bin perl-dap --locked &&
-      cargo clippy -p perl-dap --lib --locked -- -D warnings -A clippy::wildcard_imports
+    command: python scripts/ci/parser_workspace_prepare.py --dap
     # Reuse the existing routed bound. Sufficiency still needs admitted proof;
     # this grants no increase to the outer job/runtime watchdogs.
     timeout_seconds: 1500
