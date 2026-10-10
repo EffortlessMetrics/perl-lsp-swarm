@@ -1,5 +1,6 @@
 """Finite borrowed-guard union eligibility and instrument falsifiers."""
 import importlib.util
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -18,6 +19,15 @@ ARGV = ('clippy', '--offline', '--quiet', '--lib', '--no-deps', '--message-forma
 
 
 class LockContractTests(unittest.TestCase):
+    def test_fixed_lock_keeps_observed_native_cargo_serialization(self):
+        # Native Cargo 1.95.0 rewrote only the header/list formatting in the
+        # first source-bound run. Exact measured bytes prevent that mutation
+        # without relaxing the owner's pre/post input identity checks.
+        lock = (Path(__file__).resolve().parents[2] /
+                '.spec/17479-nested-admission/lock-union-fixture/Cargo.lock')
+        self.assertEqual(hashlib.sha256(lock.read_bytes()).hexdigest(),
+                         'ff2a47a9ba4466ff072f8b5c2e61193fc9d3dee0c659a1eb27612f1bc309a5d3')
+
     def test_exact_finite_union_command(self):
         self.assertEqual(support.a.NESTED_COMMANDS.get(ROW), ARGV)
 
