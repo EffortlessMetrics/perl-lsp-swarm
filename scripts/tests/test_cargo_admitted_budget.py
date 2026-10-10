@@ -2,9 +2,10 @@ import importlib.util
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 ROOT = Path(__file__).resolve().parents[2]
 spec = importlib.util.spec_from_file_location("cargo_admitted", ROOT / "scripts/cargo_admitted.py")
@@ -44,6 +45,12 @@ class ConstrainedAdmissionTests(unittest.TestCase):
         }
         self.budget = self.root / "budget.json"
         self.budget.write_text(json.dumps(self.document), encoding="utf-8")
+        # Arithmetic fixtures mock execution; native route tests prove ownership.
+        tree = Mock()
+        tree.finish.return_value = {"tree_settled": True, "cancelled": False}
+        self.enterContext(patch.object(safe, "ClippyTree", return_value=tree))
+        self.enterContext(patch.object(safe, "call_clippy", side_effect=
+            lambda command, env, lock, tree, **kw: safe.subprocess.call(command, env=env)))
 
     def write_budget(self):
         import json
@@ -171,7 +178,7 @@ class ConstrainedAdmissionTests(unittest.TestCase):
             lock.mkdir()
             return 0
         result, _, cargo = self.invoke(["--budget-file", str(self.budget), *self.args], call=replace)
-        self.assertEqual(result, 0)
+        self.assertEqual(result, 75 if sys.platform == "linux" else 0)
         cargo.assert_called_once()
         self.assertTrue(lock.is_dir())
 
@@ -232,7 +239,7 @@ class ConstrainedAdmissionTests(unittest.TestCase):
         cargo.assert_called_once()
         command = cargo.call_args.args[0]
         self.assertEqual(command[-3:], self.args[-3:])
-        descriptor = json.loads(output.split("cargo-admitted resources: ", 1)[1])
+        descriptor = json.loads(output.split("cargo-admitted resources: ", 1)[1].splitlines()[0])
         admission = descriptor["admission"]
         self.assertEqual(admission["budget_sha256"], hashlib.sha256(self.budget.read_bytes()).hexdigest())
         self.assertTrue(all(row["headroom_bytes"] == 9*self.gib for row in admission["destinations"]))
@@ -425,7 +432,7 @@ class ConstrainedAdmissionTests(unittest.TestCase):
         cargo.assert_not_called()
         self.assert_unallocated()
 
-    def test_unlaunched_failure_releases_own_lease_but_spawn_failure_retains(self):
+    def test_unlaunched_failure_and_proven_empty_spawn_failure_release_own_lease(self):
         original = Path.mkdir
         def fail_target(path, *args, **kwargs):
             if path == self.paths["target"]:
@@ -439,7 +446,7 @@ class ConstrainedAdmissionTests(unittest.TestCase):
         result, _, cargo = self.invoke(["--budget-file", str(self.budget), *self.args], call=OSError("fixture spawn failure"))
         self.assertEqual(result, 75)
         cargo.assert_called_once()
-        self.assertTrue((self.slot / "cargo-active").exists())
+        self.assertEqual((self.slot / "cargo-active").exists(), sys.platform != "linux")
 
     def test_nonregular_or_linked_budget_file_is_not_read(self):
         target = self.root / "directory"
