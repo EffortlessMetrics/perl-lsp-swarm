@@ -345,9 +345,11 @@ jobs:
           SUBJECT_HEAD_SHA: ${{ inputs.head_sha || '' }}
         run: |
           set -euo pipefail
-          python3 scripts/ci/test_selection_owner.py
           python3 scripts/ci/test_selection_bootstrap.py
           selection_runner=$(scripts/ci/bootstrap-selection.sh)
+          cargo metadata --locked --format-version 1 > "$RUNNER_TEMP/selection-metadata.json"
+          python3 scripts/ci/check_selection_graph.py "$RUNNER_TEMP/selection-metadata.json"
+          SELECTION_METADATA="$RUNNER_TEMP/selection-metadata.json" python3 scripts/ci/test_selection_owner.py
           python3 scripts/ci/test_selection_cli.py --runner "$selection_runner"
           "$selection_runner" ci-subject \
             --base-sha "$SUBJECT_BASE_SHA" \

@@ -26,6 +26,8 @@ class SelectionOwner(unittest.TestCase):
         job = workflow.split("\n  platform-overrides:", 1)[1].split("\n  windows-platform-smoke:", 1)[0]
         self.assertNotIn("cargo run -p xtask", job)
         self.assertEqual(job.count("scripts/ci/bootstrap-selection.sh"), 1)
+        self.assertIn('scripts/ci/check_selection_graph.py "$RUNNER_TEMP/selection-metadata.json"', job)
+        self.assertIn('SELECTION_METADATA="$RUNNER_TEMP/selection-metadata.json"', job)
         for command in ("ci-subject", "ci-scope"):
             self.assertIn(f'"$selection_runner" {command}', job)
         self.assertIn('--subject "$RUNNER_TEMP/ci-subject.json"', job)
