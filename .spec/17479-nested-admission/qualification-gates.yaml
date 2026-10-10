@@ -1,0 +1,18 @@
+# Manual narrow Linux qualification only; not the canonical gate policy.
+schema_version: 1
+global:
+  default_timeout_seconds: 3600
+tiers:
+  merge_gate:
+    description: Narrow executable handoff experiment
+    target_duration_seconds: 3600
+    enforcement: required
+gates:
+  - name: perllsp_handoff_narrow
+    tier: merge_gate
+    description: Current artifact capture and two actual resolver consumers
+    required: true
+    command: python3 -I scripts/ci/perllsp_workspace_prepare.py --qualify
+    timeout_seconds: 3600
+    retry_count: 0
+    tags: [test, narrow-qualification]

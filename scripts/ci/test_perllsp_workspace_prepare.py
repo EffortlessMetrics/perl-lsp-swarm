@@ -242,6 +242,129 @@ class HandoffControls(unittest.TestCase):
         self.assertEqual(result.stdout, '')
         self.assertIn('perllsp preparation refused', result.stderr)
 
+    def narrow_log(self, row):
+        # Independent literal test names, not the adapter's selector table.
+        name = {'perllsp-handoff-support': 'health_prints_ok',
+                'perllsp-handoff-common': 'lsp_server_version_matches_crate_version'}[row]
+        return ('running 1 test\ntest ' + name + ' ... ok\n\n'
+                'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 7 filtered out; finished in 0.01s\n')
+
+    def clear_control_receipt(self):
+        (self.subject.paths['temp'] / ('perllsp-handoff-' + str(os.getpid()) + '.json')).unlink(missing_ok=True)
+
+    def test_qualification_rows_are_exact_finite_real_consumers(self):
+        expected = {
+            'perllsp-handoff-support': ['test', '-p', 'perl-lsp-rs', '--locked', '--test', 'cli_smoke',
+                                       'health_prints_ok', '--', '--exact', '--test-threads=1', '--color', 'never'],
+            'perllsp-handoff-common': ['test', '-p', 'perl-lsp-rs', '--locked', '--test', 'binary_version_test',
+                                      'lsp_server_version_matches_crate_version', '--', '--exact', '--test-threads=1', '--color', 'never'],
+        }
+        for row, args in expected.items():
+            command, env, cwd = self.subject.command(row)
+            self.assertEqual(list(fixture.a.NESTED_COMMANDS[row]), args)
+            position = command.index('test')
+            self.assertEqual(command[position+3:], args[1:])  # skip owner-owned --target-dir PATH
+            self.assertEqual(cwd, self.subject.worktree)
+            self.assertEqual(env['CARGO_BUILD_BUILD_DIR'], str(self.subject.paths['build']))
+        self.assertEqual(adapter.MODES['--qualify'], ('perllsp-handoff-support', 'perllsp-handoff-common'))
+        for row in ['perllsp-handoff-any', 'perllsp-handoff-support --release']:
+            with self.assertRaises(fixture.a.Denied):
+                self.subject.command(row)
+
+    def test_qualification_missing_later_row_refuses_before_build(self):
+        self.subject.plan['request']['rows'].remove('perllsp-handoff-common')
+        self.subject.save()
+        with self.assertRaises(fixture.a.Denied):
+            adapter.run('--qualify', self.env, lambda *a, **k: self.fail('must not launch'))
+
+    def test_qualification_two_separate_current_named_results(self):
+        calls = []
+        rows = ['perllsp-handoff-support', 'perllsp-handoff-common']
+        def invoke(args, **kwargs):
+            calls.append(args)
+            if len(calls) == 1:
+                return subprocess.CompletedProcess(args, 0, self.log(), '')
+            row = rows[len(calls)-2]
+            self.assertEqual(kwargs['env']['PERL_LSP_BIN'], str(self.binary))
+            self.assertTrue(kwargs['capture_output'])
+            return subprocess.CompletedProcess(args, 0, self.narrow_log(row), '')
+        self.assertEqual(adapter.run('--qualify', self.env, invoke), 0)
+        self.assertEqual(len(calls), 3)
+
+    def test_narrow_evidence_rejects_zero_compile_ignored_wrong_incomplete_duplicate(self):
+        row = 'perllsp-handoff-support'; good = self.narrow_log(row)
+        faults = ['', 'Compiling perl-lsp-rs\nFinished test profile\n',
+                  good.replace('running 1 test', 'running 0 tests').replace('1 passed', '0 passed'),
+                  good.replace('... ok', '... ignored').replace('1 passed; 0 failed; 0 ignored', '0 passed; 0 failed; 1 ignored'),
+                  good.replace('health_prints_ok', 'other_test'),
+                  good[:good.index('test result:')], good + good,
+                  good.replace('test result: ok.', 'test result: FAILED.'),
+                  good.replace('0 failed', '1 failed'), good.replace('0.01s', 'invalid')]
+        self.assertTrue(adapter.narrow_success(good, row))
+        for output in faults:
+            with self.subTest(output=output):
+                self.assertFalse(adapter.narrow_success(output, row))
+        self.assertFalse(adapter.narrow_success(good, 'perllsp-handoff-common'))
+
+    def test_one_passed_leaf_cannot_hide_another_zero_leaf(self):
+        for failed_index in [1, 2]:
+            self.clear_control_receipt(); calls = []
+            def invoke(args, **kwargs):
+                calls.append(args)
+                if len(calls) == 1:
+                    return subprocess.CompletedProcess(args, 0, self.log(), '')
+                stage = len(calls)-1
+                row = ['perllsp-handoff-support', 'perllsp-handoff-common'][stage-1]
+                output = 'running 0 tests\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n' if stage == failed_index else self.narrow_log(row)
+                return subprocess.CompletedProcess(args, 0, output, '')
+            with self.subTest(failed_index=failed_index), self.assertRaises(fixture.a.Denied):
+                adapter.run('--qualify', self.env, invoke)
+            self.assertEqual(len(calls), failed_index+1)
+
+    def test_qualification_actual_failure_retains_precedence(self):
+        for failed_index in [1, 2]:
+            self.clear_control_receipt(); calls = []
+            def invoke(args, **kwargs):
+                calls.append(args)
+                if len(calls) == 1:
+                    return subprocess.CompletedProcess(args, 0, self.log(), '')
+                stage = len(calls)-1; row = ['perllsp-handoff-support', 'perllsp-handoff-common'][stage-1]
+                return subprocess.CompletedProcess(args, 101 if stage == failed_index else 0, self.narrow_log(row), '')
+            self.assertEqual(adapter.run('--qualify', self.env, invoke), 101)
+            self.assertEqual(len(calls), failed_index+1)
+
+    def test_qualification_marker_replacement_stops_next_consumer(self):
+        calls = []
+        def invoke(args, **kwargs):
+            calls.append(args)
+            if len(calls) == 1:
+                return subprocess.CompletedProcess(args, 0, self.log(), '')
+            self.subject.marker.rename(self.subject.marker.with_name('original-retained'))
+            self.subject.marker.mkdir()
+            return subprocess.CompletedProcess(args, 0, self.narrow_log('perllsp-handoff-support'), '')
+        with self.assertRaises(fixture.a.Denied):
+            adapter.run('--qualify', self.env, invoke)
+        self.assertEqual(len(calls), 2)
+
+    def test_qualification_cannot_accept_extra_selector_or_raw_argument(self):
+        with self.assertRaises(fixture.a.Denied):
+            adapter.run('--qualify --release', self.env, lambda *a, **k: self.fail('must not launch'))
+        result = subprocess.run([os.sys.executable, '-I', str(ROOT / 'scripts/ci/perllsp_workspace_prepare.py'),
+                                 '--qualify', '--release'], env={}, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 1)
+
+    def test_qualification_request_and_manual_policy_are_bound_and_unactivated(self):
+        request = json.loads((ROOT / '.spec/17479-nested-admission/qualification-plan.json').read_text())
+        self.assertEqual(request, {'schema_version': 1, 'rows': ['perllsp-build', 'perllsp-handoff-support', 'perllsp-handoff-common']})
+        policy = (ROOT / '.spec/17479-nested-admission/qualification-gates.yaml').read_text()
+        self.assertIn('command: python3 -I scripts/ci/perllsp_workspace_prepare.py --qualify', policy)
+        self.assertIn('retry_count: 0', policy)
+        self.assertNotIn('--qualify', (ROOT / '.ci/gate-policy.yaml').read_text())
+
+    def test_nested_plan_refuses_windows_before_launch(self):
+        with patch.object(fixture.a.sys, 'platform', 'win32'), self.assertRaises(fixture.a.Denied):
+            fixture.a.nested_plan('unused', self.env, self.subject.worktree, self.subject.paths)
+
 
 if __name__ == '__main__':
     unittest.main()

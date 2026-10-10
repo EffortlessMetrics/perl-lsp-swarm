@@ -8,6 +8,7 @@ outer finite plan. No new lease, allocator, descendant supervisor or fallback.
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 
@@ -17,6 +18,10 @@ import cargo_admitted as owner
 HANDOFF = "CARGO_ADMITTED_PERLLSP_HANDOFF"
 PYTHON = "CARGO_ADMITTED_PYTHON"
 LIMIT = 64 * 1024 * 1024
+MODES = {"--compile": ("routed-compile",), "--runtime": ("routed-runtime",),
+         "--qualify": ("perllsp-handoff-support", "perllsp-handoff-common")}
+SELECTED_TESTS = {"perllsp-handoff-support": "health_prints_ok",
+                  "perllsp-handoff-common": "lsp_server_version_matches_crate_version"}
 
 
 def context(env):
@@ -129,10 +134,26 @@ def validate(env, profile, probe=subprocess.run):
         raise owner.Denied("invalid/stale/unspawnable perllsp handoff") from error
 
 
+def narrow_success(stdout, row):
+    """Current one-test leaf evidence; never a canonical denominator claim."""
+    lines = stdout.splitlines()
+    populations = [line for line in lines if re.fullmatch(r"running [0-9]+ tests?", line)]
+    outcomes = [line for line in lines if line.startswith("test result:")]
+    tests = [line for line in lines if re.fullmatch(r"test .* \.\.\. (ok|FAILED|ignored.*)", line)]
+    return (populations == ["running 1 test"]
+            and tests == ["test " + SELECTED_TESTS[row] + " ... ok"]
+            and len(outcomes) == 1 and re.fullmatch(
+                r"test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; [0-9]+ filtered out; finished in [0-9]+(?:\.[0-9]+)?s",
+                outcomes[0]) is not None)
+
+
 def run(mode, env=None, invoke=subprocess.run):
     env = dict(os.environ if env is None else env)
-    row = {"--compile": "routed-compile", "--runtime": "routed-runtime"}[mode]
-    owner.nested_command(row, env)  # whole-mode admission before any build
+    if mode not in MODES:
+        raise owner.Denied("unknown perllsp preparation mode")
+    rows = MODES[mode]
+    for row in ("perllsp-build", *rows):
+        owner.nested_command(row, env)  # whole-mode admission before any build
     command, child, cwd = owner.nested_command("perllsp-build", env)
     output = invoke(command, env=child, cwd=cwd, capture_output=True,
                     text=True, encoding="utf-8", errors="strict")
@@ -141,14 +162,24 @@ def run(mode, env=None, invoke=subprocess.run):
     if output.returncode:
         return output.returncode if output.returncode > 0 else 1
     child = capture(output.stdout, env)
-    command, child, cwd = owner.nested_command(row, child)
-    validate(child, "debug")
-    # Inherited output preserves the existing gate's libtest evidence parser.
-    status = invoke(command, env=child, cwd=cwd).returncode
-    if status:
-        return status if status > 0 else 1
-    validate(child, "debug")
-    owner.nested_command(row, child)
+    for row in rows:
+        command, child, cwd = owner.nested_command(row, child)
+        validate(child, "debug")
+        # Canonical modes retain inherited output and their existing gate guard.
+        # The two narrow leaves require separate current named one-test results;
+        # one leaf's success cannot conceal zero tests in the other.
+        options = ({"capture_output": True, "text": True, "encoding": "utf-8", "errors": "strict"}
+                   if mode == "--qualify" else {})
+        output = invoke(command, env=child, cwd=cwd, **options)
+        if mode == "--qualify":
+            print(output.stdout, end="", flush=True)
+            print(output.stderr, end="", file=sys.stderr, flush=True)
+        if output.returncode:
+            return output.returncode if output.returncode > 0 else 1
+        validate(child, "debug")
+        owner.nested_command(row, child)
+        if mode == "--qualify" and not narrow_success(output.stdout, row):
+            raise owner.Denied("missing current named one-test success for " + row)
     return 0
 
 
@@ -157,10 +188,10 @@ if __name__ == "__main__":
         args = sys.argv[1:]
         if len(args) == 2 and args[0] == "--resolve":
             print(validate(dict(os.environ), args[1]))
-        elif args in (["--compile"], ["--runtime"]):
+        elif len(args) == 1 and args[0] in MODES:
             sys.exit(run(args[0]))
         else:
-            raise owner.Denied("expected --compile, --runtime or --resolve PROFILE")
+            raise owner.Denied("expected --compile, --runtime, --qualify or --resolve PROFILE")
     except (owner.Denied, KeyError, TypeError, ValueError, OSError) as error:
         print("perllsp preparation refused: " + str(error), file=sys.stderr)
         sys.exit(1)
