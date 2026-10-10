@@ -63,12 +63,18 @@ tree.track(p.pid,p)
 stdout,stderr=p.communicate(timeout=5)
 assert p.returncode==0,(stdout,stderr)
 result=json.loads(stdout.splitlines()[-1])
-result['early_release']=(root/'helper-live').exists() and not (root/'helper-end').exists() and not (root/'slot/cargo-active').exists()
+if mode!='cancel':
+ result['early_release']=(root/'helper-live').exists() and not (root/'helper-end').exists() and not (root/'slot/cargo-active').exists()
 result['lease_retained']=(root/'slot/cargo-active').exists()
 result['stderr']=stderr
 settlement=tree.finish(timeout=2)
 assert settlement['tree_settled'],settlement
-result['helper_end']=(root/'helper-end').read_text()
+if mode!='cancel':
+ result['helper_end']=(root/'helper-end').read_text()
+else:
+ result['settlement']=next(json.loads(line.split(': ',1)[1]) for line in stderr.splitlines() if line.startswith('cargo-admitted Cargo settlement: '))
+ result['resources']=next(json.loads(line.split(': ',1)[1]) for line in stderr.splitlines() if line.startswith('cargo-admitted resources: '))
+ result['marker_retained']=os.path.lexists(result['settlement']['lease_marker'])
 print(json.dumps(result))
 '''
             p=subprocess.run([sys.executable,'-c',outer,str(OWNER),str(root),mode,str(status),CHILD],capture_output=True,text=True,timeout=8)
@@ -96,9 +102,16 @@ print(json.dumps(result))
         row=self.fixture(mode='cancel')
         self.assertEqual(row['result'],130)
         self.assertFalse(row['lease_retained'])
-        self.assertFalse(row['early_release'])
-        self.assertEqual(row['helper_end'],'lease-present')
-        self.assertIn('"cancelled": true',row['stderr'])
+        # Cancellation may kill the helper before it writes its completion file.
+        # Only kernel closure and release of the admitted lease establish success.
+        settlement=row['settlement']
+        self.assertTrue(settlement['cancelled'])
+        self.assertTrue(settlement['tree_settled'])
+        self.assertEqual(settlement['proof'],'kernel ECHILD (__WALL)')
+        self.assertTrue(settlement['lease_released'])
+        for key in ('lease_identity','lease_marker','marker_identity'):
+            self.assertEqual(settlement[key],row['resources'][key])
+        self.assertFalse(row['marker_retained'])
 
 
 @unittest.skipUnless(sys.platform == 'linux', 'Linux route controls')
