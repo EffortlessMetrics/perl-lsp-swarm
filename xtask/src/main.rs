@@ -3350,6 +3350,9 @@ enum NonRustCommand {
         /// against merge-base.
         #[arg(long)]
         check: bool,
+        /// Evidence destination; defaults to target/policy in the source tree.
+        #[arg(long)]
+        output_dir: Option<PathBuf>,
     },
 
     /// Check non-Rust files against the allowlist and report violations.
@@ -7661,12 +7664,12 @@ fn run_cli(cli: Cli) -> Result<()> {
                     repository.as_deref(),
                 )
             }
-            NonRustCommand::Inventory { check } => {
+            NonRustCommand::Inventory { check, output_dir } => {
                 let root = utils::project_root()?;
                 if check {
-                    tasks::file_policy::non_rust_inventory_check(&root)
+                    tasks::file_policy::non_rust_inventory_check_to(&root, output_dir.as_deref())
                 } else {
-                    tasks::file_policy::non_rust_inventory(&root)
+                    tasks::file_policy::non_rust_inventory_to(&root, output_dir.as_deref())
                 }
             }
             NonRustCommand::Check { mode, json, allowlist, root: root_override } => {

@@ -1,0 +1,66 @@
+{
+  "schema_version": 1,
+  "source_previous_head": "7e978d5fa8b2aef2ec3c96802df8a8f91721b952",
+  "subjects": {
+    "scripts/cargo_admitted.py": "26840516dda820bf1dc0e4ab5cb20ffa35e5c821d63609bb5d0255a8a4f435d9",
+    "scripts/ci/helper_artifact_prepare.py": "af985497db4309a01fe926cb2d5a7f61cb02aaaf95400de8aef1ff87104a7e72",
+    "scripts/ci/perllsp_workspace_prepare.py": "14beae341a0b6da2ebdad7ca8ffc883a5f4bd6fa124140096c5c701dce995bf4",
+    "scripts/ci/routed_nested_prepare.py": "a3bb138e545e12667d6ce6e52f1f04f6f699b6325f7b56891542ae879e78959d",
+    "scripts/tests/test_cargo_admitted_helper_route.py": "f9e20d50aa828c194f8ddf79dab10134e6bc8f22b32c9805903bf47ae25e76df",
+    "scripts/tests/test_cargo_admitted_helper_artifacts.py": "da48b79311a0919cb321559212c2c6083922d3e2f926e33daa671a0a64d0fba9",
+    "xtask/src/tasks/parser_corpus_sweep.rs": "fa9462af87475ec106ce487cdbce626479bc5b855c567c220078216011fa9538",
+    "xtask/tests/count_ratchet_output_snapshots.rs": "a373185a0ed3d0953dc67abeddd98e0abc48d31ad10a2b82dfc3c23a0d6676f8",
+    ".spec/17479-nested-admission/helper-source-map.json": "091dbe28d5bb998b6bc2fe8e51040e04d69ef86dba7fb5b9c28f2a6911387bb9",
+    ".spec/17479-nested-admission/helper-composed-results.md": "a5e0dc1baf5fc883f83e322b4a5ebc0c6c42dd6ca429f7b563d8534bdc7869e8",
+    ".spec/17479-nested-admission/helper-composed-target-inventory.json": "f2e22254f1212c0b7f94313e6fa299790ec3ac673781f8844559a52f9fe79000",
+    ".spec/17479-nested-admission/helper-composed-resource-census.json": "0c573da8e53ab40f02c296de287292c9e00a7b676f51dd5b4b2ff1410949db92"
+  },
+  "logs": {
+    "helper-composed-final-all-controls.log": "a6bc2ba4be2834c057d3f0cb17d4d32c78e15712675dbd9f87a3f61d9ecc7b33",
+    "helper-composed-final-route-controls.log": "eb36457b3386658caab6be67011f06f1a41d6fdc15b4331ef668c92a95ff66c0",
+    "helper-composed-perllsp-controls.log": "d78c585223836c2a2b6ccfb77cf71a0b7aa3a46e3b4b8200bd1479694fd87840",
+    "helper-output-controls.log": "936bca980382e52afc018e2fc97d5308f3a92dfd341193d366b0c1ba79a765da"
+  },
+  "controls": {
+    "all": {
+      "run": 235,
+      "passed": 234,
+      "skipped": 1
+    },
+    "helper_focused": {
+      "run": 11,
+      "passed": 11,
+      "independent_review_passed": 11
+    },
+    "product_adapter": {
+      "run": 30,
+      "passed": 30
+    },
+    "actual_python_output": {
+      "run": 2,
+      "passed": 2
+    }
+  },
+  "metadata": {
+    "command": "Cargo1.95 metadata --offline --locked --format-version1; private target/build/temp, explicit shared cargo cache",
+    "sha256": "51b500c04b4ac849c5032c404cdd22f71b69d7d7cf6f173ae57c3e8436184879",
+    "runtime_harnesses": 277,
+    "normal_bins": 32,
+    "conservative_closure_packages": 385,
+    "repository_packages": 37,
+    "compiler_or_build_script_execution": false
+  },
+  "review": {
+    "disposition": "No further localized findings after repairs",
+    "repaired": [
+      "wrong final root for split-output harnesses",
+      "undeclared must helper",
+      "direct runtime artifact bypass",
+      "corpus receipt checkout writer"
+    ]
+  },
+  "proof_ceiling": "Synthetic current-original-owner/artifact/raw protocol, actual Python output checks, Rustfmt syntax checks; no native current277/helper/product output proof",
+  "parent_selection20_receipt": "f8759a9cff206d2f383cd53fdf6138f06320d8bc",
+  "aggregate_launch": false,
+  "aggregate_budget_file": null
+}

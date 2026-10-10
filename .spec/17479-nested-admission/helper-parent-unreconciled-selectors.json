@@ -272,5 +272,39 @@
       "xtask"
     ]
   },
-  "total": 262
+  "total": 262,
+  "subsequent_selector_reconciliation": {
+    "receipt_commit": "f8759a9cff206d2f383cd53fdf6138f06320d8bc",
+    "exact_owner_source": "71a69a477665e98dd11d1be163a4d08cea51ef64",
+    "passed_selectors": {
+      "xtask": [
+        "tasks::workflow_policy_lint::tests::shipped_workflows_enumerate_xtask_cli_wiring",
+        "tasks::workflow_policy_lint::tests::runner_mismatch_skipped_for_stale_ref_in_multi_job_workflow",
+        "tasks::workflow_policy_lint::tests::shipped_tree_has_no_undeclared_or_orphaned_self_hosted_capacity",
+        "tasks::workflow_policy_lint::tests::shipped_profiles_are_current_today",
+        "tasks::gates::tests::plan_gates_nightly_tier_never_selects_a_commit_tier_gate",
+        "tasks::gates::tests::plan_gates_all_tier_selects_the_commit_tier_gate",
+        "tasks::gates::tests::plan_pr_fast_gates_falls_back_broadly_when_explicit_base_does_not_resolve",
+        "tasks::gates::tests::agent_receipt_builder_preserves_scope_status_and_plan_contract",
+        "tasks::gates::tests::static_gate_plan_threads_staged_tree_oid_into_agent_receipt",
+        "tasks::gates::tests::static_gate_plan_leaves_staged_tree_oid_none_when_not_staged"
+      ],
+      "ci_subject": [
+        "ci_workflow_routes_scope_gate_contract_and_windows_cache_inputs_through_subject"
+      ],
+      "ci_scope_tests": [
+        "test_ci_scope_auto_base_no_warning",
+        "test_ci_scope_diff_class_is_valid_value",
+        "test_ci_scope_each_lane_has_reason_field",
+        "test_ci_scope_help_shows_base_flag",
+        "test_ci_scope_help_shows_format_flag",
+        "test_ci_scope_invalid_explicit_base_fails_closed",
+        "test_ci_scope_empty_diff_has_no_selected_lanes",
+        "test_ci_scope_json_output_is_valid_schema_v2",
+        "test_ci_scope_text_output_is_readable"
+      ]
+    },
+    "remaining_of_these20": 0,
+    "whole_harness_caution": "262 is historical independently unreconciled whole-harness population, not262mandatory reruns; these20cases do not decrement it by20. Reconcile current artifact/inputs at aggregate owner."
+  }
 }

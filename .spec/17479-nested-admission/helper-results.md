@@ -1,5 +1,7 @@
 # Exact helper route: bounded preparation and residual handoff
 
+Historical qualification at4797ba52. [Current composed handoff](helper-composed-results.md) supersedes its missing-target boundary,20selector request,11row plan and invocation topology; prior results retain their original subjects.
+
 The patch adds `--helper-compile` and `--helper-runtime` to the existing original-owner adapter. Runtime prepares nine unique native measurement rows, freezes their actual tool/argv/cwd/source/owner/lease/marker/raw results, and replays those results into the original semantic oracles. It performs no parser occupancy measurement. The existing nine-package route remains independently bounded and retains its six unknown dynamic groups.
 
 Canonical policy subject (unchanged):

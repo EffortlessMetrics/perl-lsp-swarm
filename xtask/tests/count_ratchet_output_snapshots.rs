@@ -38,6 +38,18 @@ fn run_xtask_published_crate_count() -> XtaskOutput {
 fn run_xtask_published_crate_count_once() -> XtaskOutput {
     let root = project_root();
     let mut command = if let Some(xtask) = option_env!("CARGO_BIN_EXE_xtask") {
+        if std::env::var_os("CARGO_ADMITTED_RESOURCES").is_some() {
+            let python = std::env::var_os("CARGO_ADMITTED_HELPER_ARTIFACT_PYTHON")
+                .expect("admitted runtime requires its frozen artifact interpreter");
+            let validation = StdCommand::new(python)
+                .arg("-I")
+                .arg(root.join("scripts/ci/helper_artifact_prepare.py"))
+                .args(["--resolve-xtask", xtask])
+                .output()
+                .expect("failed to validate actual admitted xtask artifact");
+            assert!(validation.status.success(), "{}", String::from_utf8_lossy(&validation.stderr));
+            assert_eq!(String::from_utf8_lossy(&validation.stdout).trim(), xtask);
+        }
         let mut command = StdCommand::new(xtask);
         command.arg("published-crate-count");
         command

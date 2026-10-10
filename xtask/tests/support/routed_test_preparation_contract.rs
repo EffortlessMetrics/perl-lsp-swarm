@@ -1,5 +1,5 @@
 //! Compilation staging cannot substitute for the routed runtime proof (#17459).
-#[path = "../src/tasks/gates/routed_preparation.rs"]
+#[path = "../../src/tasks/gates/routed_preparation.rs"]
 mod routed_preparation;
 
 use serde_yaml_ng::Value;

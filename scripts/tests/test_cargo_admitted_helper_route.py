@@ -6,6 +6,7 @@ from pathlib import Path
 import shutil
 from unittest.mock import Mock, patch
 import importlib.util
+import sys
 import test_cargo_admitted_routed as support
 
 class HelperRouteTests(support.RoutedTests):
@@ -20,7 +21,7 @@ class HelperRouteTests(support.RoutedTests):
             for target in targets:
                 destination = self.n.worktree/target['src_path'];destination.parent.mkdir(parents=True,exist_ok=True)
                 if not destination.exists():destination.write_text('// synthetic target declaration for projection control\n')
-        self.n.plan['request']['rows'] = ['perllsp-build',self.a.HELPER_RUNTIME,*self.a.ROUTED_FIXTURE_ROWS]
+        self.n.plan['request']['rows'] = ['perllsp-build','helper-routed-compile',self.a.HELPER_RUNTIME,*self.a.ROUTED_FIXTURE_ROWS]
         self.map_path = self.n.worktree/'.spec/17479-nested-admission/helper-source-map.json'
         self.mapping.update(packages=list(self.a.HELPER_PACKAGES),fixture_rows=list(self.a.ROUTED_FIXTURE_ROWS),
                             runtime_row=self.a.HELPER_RUNTIME,excluded_dynamic_group_count=6)
@@ -28,12 +29,30 @@ class HelperRouteTests(support.RoutedTests):
         self.mapping['reviewed_source_subjects'] = self.a.helper_reviewed_subjects(self.n.worktree)
         self.mapping['compiler_looking_source_subjects'] = {key:value for key,value in self.mapping['compiler_looking_source_subjects'].items() if not key.startswith('crates/perl-parser/')}
         self.bind_mapping()
+        sys.path.insert(0,str(self.actual/'scripts/ci'))
+        import helper_artifact_prepare as bridge
+        import perllsp_workspace_prepare as product
+        self.bridge=bridge
+        self.enterContext(patch.object(bridge,'owner',self.a))
+        self.enterContext(patch.object(product,'owner',self.a))
     def bind_mapping(self):
         self.map_path.write_text(json.dumps(self.mapping))
         row = self.a.HELPER_RUNTIME if self.mapping.get('runtime_row') == self.a.HELPER_RUNTIME else 'routed-runtime'
         self.n.plan['routed_preparation'] = self.a.routed_preparation_binding(self.n.worktree,row)
         self.n.save()
     def prepare(self):
+        records=[]
+        for key,target in self.bridge.expected(self.mapping).items():
+            package,name,kind,test=key
+            path=(self.n.paths['build']/'debug/deps'/(name.replace('-','_')+'-123abc')
+                  if test else self.n.paths['target']/'debug'/name)
+            path.parent.mkdir(parents=True,exist_ok=True);path.write_text('#!/bin/sh\nexit 0\n');path.chmod(0o755)
+            records.append({'reason':'compiler-artifact',
+                'manifest_path':str(self.n.worktree/('xtask' if package=='xtask' else 'crates/'+package)/'Cargo.toml'),
+                'target':{'name':name,'kind':list(kind),'src_path':str(self.n.worktree/target['src_path'])},
+                'profile':{'test':test},'executable':str(path),'filenames':[str(path)]})
+        log='\n'.join(json.dumps(row) for row in records)+'\n'+json.dumps({'reason':'build-finished','success':True})+'\n'
+        self.n.env=self.bridge.capture(log,self.n.env)
         invoke = Mock(side_effect=self.compiler)
         with contextlib.redirect_stdout(io.StringIO()),contextlib.redirect_stderr(io.StringIO()):self.env = self.f.prepare(self.n.env,invoke)
         self.assertEqual(invoke.call_count,9)
@@ -95,4 +114,23 @@ class HelperRouteTests(support.RoutedTests):
             plan=self.a.nested_plan(request,parent,self.n.worktree,self.n.paths)
         self.assertEqual(plan['routed_preparation']['runtime_row'],self.a.HELPER_RUNTIME)
         self.assertNotIn('parser_occupancy',plan)
-        self.assertEqual(plan['request']['rows'],['perllsp-build',self.a.HELPER_RUNTIME,*self.a.ROUTED_FIXTURE_ROWS])
+        self.assertEqual(plan['request']['rows'],['perllsp-build','helper-routed-compile',self.a.HELPER_RUNTIME,*self.a.ROUTED_FIXTURE_ROWS])
+
+    def test_missing_compile_row_refuses_before_product_build(self):
+        spec = importlib.util.spec_from_file_location('helper_product_adapter',self.actual/'scripts/ci/perllsp_workspace_prepare.py')
+        product=importlib.util.module_from_spec(spec);spec.loader.exec_module(product)
+        self.n.plan['request']['rows'].remove('helper-routed-compile');self.n.save()
+        invoke=Mock(side_effect=AssertionError('product launch with incomplete bridge plan'))
+        with patch.object(product,'owner',self.a):
+            with self.assertRaisesRegex(self.a.Denied,'finite prerequisite'):
+                product.run('--helper-runtime',self.n.env,invoke)
+        invoke.assert_not_called()
+
+    def test_direct_runtime_row_refuses_missing_and_changed_artifact_bridge(self):
+        self.prepare()
+        child=dict(self.env);child.pop(self.bridge.HANDOFF)
+        with self.assertRaisesRegex(self.a.Denied,'artifact bridge refused'):
+            self.a.nested_command(self.a.HELPER_RUNTIME,child)
+        (self.n.paths['target']/'debug/xtask').write_text('#!/bin/sh\nexit 1\n')
+        with self.assertRaisesRegex(self.a.Denied,'artifact bridge refused'):
+            self.a.nested_command(self.a.HELPER_RUNTIME,self.env)

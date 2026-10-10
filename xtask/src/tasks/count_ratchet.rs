@@ -39,6 +39,11 @@ pub fn run() -> Result<()> {
             Ok(())
         }
         CountStatus::Ratchet { new_baseline } => {
+            if std::env::var_os("CARGO_ADMITTED_RESOURCES").is_some() {
+                bail!(
+                    "admitted owning tests refuse a tracked baseline update; reconcile the ratchet before qualification"
+                );
+            }
             println!(
                 "published-crate-count: RATCHET — count dropped from {baseline} to {new_baseline}, updating {BASELINE_FILE}"
             );

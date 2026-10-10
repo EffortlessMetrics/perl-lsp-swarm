@@ -446,3 +446,6 @@ impl protocol::ErrorClass for JsonRpcError {{
 
     Ok(())
 }
+
+#[path = "support/routed_test_preparation_contract.rs"]
+mod routed_test_preparation_contract;

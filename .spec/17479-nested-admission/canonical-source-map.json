@@ -480,7 +480,8 @@
       "perl-ci-hygiene",
       "-p",
       "xtask",
-      "--no-run"
+      "--no-run",
+      "--message-format=json"
     ],
     "helper-routed-runtime": [
       "test",

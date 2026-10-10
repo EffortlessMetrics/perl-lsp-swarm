@@ -202,7 +202,8 @@ fn exact_tree_schema_validation_delegates_to_canonical_allow_schema() -> Result<
 fn exact_tree_refuses_empty_subject_sha_and_names_the_missing_input() -> Result<()> {
     let _guard = inventory_output_lock();
     let root = project_root()?;
-    let receipt = root.join("target/policy/non-rust-policy-exact-tree-empty-subject.json");
+    let output_dir = tempfile::tempdir()?;
+    let receipt = output_dir.path().join("non-rust-policy-exact-tree-empty-subject.json");
     let _ = std::fs::remove_file(&receipt);
     let output = Command::cargo_bin("xtask")?
         .args([
@@ -254,8 +255,11 @@ fn exact_tree_refuses_empty_subject_sha_and_names_the_missing_input() -> Result<
 #[test]
 fn non_rust_inventory_command_exits_zero() -> Result<()> {
     let _guard = inventory_output_lock();
+    let output_dir = tempfile::tempdir()?;
     Command::cargo_bin("xtask")?
         .args(["non-rust", "inventory"])
+        .arg("--output-dir")
+        .arg(output_dir.path())
         .current_dir(project_root()?)
         .assert()
         .success();
@@ -266,8 +270,11 @@ fn non_rust_inventory_command_exits_zero() -> Result<()> {
 #[test]
 fn non_rust_inventory_check_command_exits_zero() -> Result<()> {
     let _guard = inventory_output_lock();
+    let output_dir = tempfile::tempdir()?;
     Command::cargo_bin("xtask")?
         .args(["non-rust", "inventory", "--check"])
+        .arg("--output-dir")
+        .arg(output_dir.path())
         .current_dir(project_root()?)
         .assert()
         .success();
@@ -281,19 +288,21 @@ fn non_rust_inventory_check_command_exits_zero() -> Result<()> {
 #[test]
 fn non_rust_inventory_creates_output_files() -> Result<()> {
     let _guard = inventory_output_lock();
+    let output_dir = tempfile::tempdir()?;
     Command::cargo_bin("xtask")?
         .args(["non-rust", "inventory"])
+        .arg("--output-dir")
+        .arg(output_dir.path())
         .current_dir(project_root()?)
         .assert()
         .success();
 
-    let root = project_root()?;
     assert!(
-        root.join("target/policy/non-rust-inventory.md").exists(),
+        output_dir.path().join("non-rust-inventory.md").exists(),
         "target/policy/non-rust-inventory.md should exist after the command"
     );
     assert!(
-        root.join("target/policy/non-rust-inventory.json").exists(),
+        output_dir.path().join("non-rust-inventory.json").exists(),
         "target/policy/non-rust-inventory.json should exist after the command"
     );
     // docs/policy/NON_RUST_INVENTORY.md is a frozen pointer and is never
@@ -305,14 +314,16 @@ fn non_rust_inventory_creates_output_files() -> Result<()> {
 #[test]
 fn non_rust_inventory_json_is_valid() -> Result<()> {
     let _guard = inventory_output_lock();
+    let output_dir = tempfile::tempdir()?;
     Command::cargo_bin("xtask")?
         .args(["non-rust", "inventory"])
+        .arg("--output-dir")
+        .arg(output_dir.path())
         .current_dir(project_root()?)
         .assert()
         .success();
 
-    let root = project_root()?;
-    let json_path = root.join("target/policy/non-rust-inventory.json");
+    let json_path = output_dir.path().join("non-rust-inventory.json");
     let content = std::fs::read_to_string(&json_path)?;
     let value: serde_json::Value = serde_json::from_str(&content)?;
 
@@ -334,14 +345,16 @@ fn non_rust_inventory_json_is_valid() -> Result<()> {
 #[test]
 fn non_rust_inventory_markdown_has_header() -> Result<()> {
     let _guard = inventory_output_lock();
+    let output_dir = tempfile::tempdir()?;
     Command::cargo_bin("xtask")?
         .args(["non-rust", "inventory"])
+        .arg("--output-dir")
+        .arg(output_dir.path())
         .current_dir(project_root()?)
         .assert()
         .success();
 
-    let root = project_root()?;
-    let md_path = root.join("target/policy/non-rust-inventory.md");
+    let md_path = output_dir.path().join("non-rust-inventory.md");
     let content = std::fs::read_to_string(&md_path)?;
 
     assert!(

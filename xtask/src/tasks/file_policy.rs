@@ -1663,8 +1663,12 @@ pub(crate) fn verify_inventory_projection(markdown: &str) -> Result<()> {
 ///
 /// Both the observation command and the merge check use this path so success
 /// and failure inspect the same Markdown/JSON representation.
-fn write_inventory_outputs(root: &Path, records: &[FileRecord]) -> Result<()> {
-    let target_dir = root.join("target/policy");
+fn write_inventory_outputs(
+    root: &Path,
+    records: &[FileRecord],
+    output: Option<&Path>,
+) -> Result<()> {
+    let target_dir = output.map(Path::to_path_buf).unwrap_or_else(|| root.join("target/policy"));
     fs::create_dir_all(&target_dir)
         .with_context(|| format!("creating {}", target_dir.display()))?;
 
@@ -1690,10 +1694,15 @@ fn write_inventory_outputs(root: &Path, records: &[FileRecord]) -> Result<()> {
 /// Writes only current-tree evidence under `target/policy/`; no tracked file is
 /// read as authority or modified.
 pub fn non_rust_inventory(root: &Path) -> Result<()> {
+    non_rust_inventory_to(root, None)
+}
+
+/// Inspect the same source tree with an explicit evidence destination.
+pub fn non_rust_inventory_to(root: &Path, output: Option<&Path>) -> Result<()> {
     println!("Building non-Rust file inventory...");
 
     let records = build_inventory(root)?;
-    write_inventory_outputs(root, &records)?;
+    write_inventory_outputs(root, &records, output)?;
 
     let total = records.len();
     let rust_count = records.iter().filter(|record| record.category == "rust").count();
@@ -1853,11 +1862,25 @@ fn verify_frozen_inventory_publication_against(
 /// paths. It requires the tracked pointer document to stay frozen and never
 /// rewrites it.
 pub fn non_rust_inventory_check(root: &Path) -> Result<()> {
-    let baseline = resolve_inventory_baseline(root);
-    non_rust_inventory_check_with_baseline(root, baseline.as_deref())
+    non_rust_inventory_check_to(root, None)
 }
 
+/// Retain every policy verdict while selecting an explicit evidence destination.
+pub fn non_rust_inventory_check_to(root: &Path, output: Option<&Path>) -> Result<()> {
+    let baseline = resolve_inventory_baseline(root);
+    non_rust_inventory_check_with_baseline_to(root, baseline.as_deref(), output)
+}
+
+#[cfg(test)]
 fn non_rust_inventory_check_with_baseline(root: &Path, baseline: Option<&str>) -> Result<()> {
+    non_rust_inventory_check_with_baseline_to(root, baseline, None)
+}
+
+fn non_rust_inventory_check_with_baseline_to(
+    root: &Path,
+    baseline: Option<&str>,
+    output: Option<&Path>,
+) -> Result<()> {
     let mut policy_errors = Vec::new();
     validate_policy_table(
         &root.join("policy/non-rust-allowlist.toml"),
@@ -1870,7 +1893,7 @@ fn non_rust_inventory_check_with_baseline(root: &Path, baseline: Option<&str>) -
     }
 
     let records = build_inventory(root)?;
-    write_inventory_outputs(root, &records)?;
+    write_inventory_outputs(root, &records, output)?;
     verify_frozen_inventory_publication(root, baseline)?;
 
     let unclassified: Vec<&FileRecord> =

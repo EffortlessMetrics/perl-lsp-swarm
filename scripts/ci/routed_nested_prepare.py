@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+sys.dont_write_bytecode = True
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import disallowed_fields_prepare as fields
@@ -36,6 +37,7 @@ def preflight(env, expected_runtime=None):
     if expected_runtime is not None and runtime != expected_runtime:
         raise owner.Denied('requested runtime differs from finite preparation binding')
     required = {*owner.ROUTED_FIXTURE_ROWS, runtime, 'perllsp-build'}
+    if runtime == owner.HELPER_RUNTIME:required.add('helper-routed-compile')
     if runtime == 'routed-runtime':required.update((owner.PARSER_OCCUPANCY_ROW, owner.PARSER_OCCUPANCY_TEST_ROW))
     if not required.issubset(plan['request']['rows']):
         raise owner.Denied('routed runtime lacks a finite prerequisite row')

@@ -330,7 +330,8 @@ fn committed_receipt_is_an_honest_blocked_external_observation() -> Result<(), B
 #[test]
 fn blocked_gates_are_live_bound_to_the_current_surfaces() -> Result<(), Box<dyn Error>> {
     let root = repo_root()?;
-    let target = root.join("target/lite-xl-public-replay-tests/blocked-gates");
+    let output = tempfile::tempdir()?;
+    let target = output.path().join("lite-xl-public-replay-tests/blocked-gates");
     fs::create_dir_all(&target)?;
     let committed = load_json(&root.join(RECEIPT))?;
     let real_manifest = root.join(ACCEPTANCE_MANIFEST);
@@ -454,7 +455,8 @@ fn blocked_gates_are_live_bound_to_the_current_surfaces() -> Result<(), Box<dyn 
 #[test]
 fn pass_journey_requires_an_accepted_upstream_subject() -> Result<(), Box<dyn Error>> {
     let root = repo_root()?;
-    let target = root.join("target/lite-xl-public-replay-tests/pass-control");
+    let output = tempfile::tempdir()?;
+    let target = output.path().join("lite-xl-public-replay-tests/pass-control");
     fs::create_dir_all(&target)?;
     let committed = load_json(&root.join(RECEIPT))?;
     let control = pass_control(&committed)?;
@@ -524,7 +526,8 @@ fn pass_journey_requires_an_accepted_upstream_subject() -> Result<(), Box<dyn Er
 #[test]
 fn pass_mutations_fail_closed_naming_the_exact_defect() -> Result<(), Box<dyn Error>> {
     let root = repo_root()?;
-    let target = root.join("target/lite-xl-public-replay-tests/pass-mutations");
+    let output = tempfile::tempdir()?;
+    let target = output.path().join("lite-xl-public-replay-tests/pass-mutations");
     fs::create_dir_all(&target)?;
     let committed = load_json(&root.join(RECEIPT))?;
     let control = pass_control(&committed)?;

@@ -181,6 +181,7 @@ fn validator_cli_checks_schema_then_semantics() -> Result<(), Box<dyn Error>> {
 #[test]
 fn single_purpose_entry_points_parse_without_running_a_host() -> Result<(), Box<dyn Error>> {
     let root = repo_root()?;
+    let output_dir = tempfile::tempdir()?;
     for script in [
         "scripts/zed_exact_source_prepare.py",
         "scripts/zed_exact_source_launch.py",
@@ -202,6 +203,7 @@ fn single_purpose_entry_points_parse_without_running_a_host() -> Result<(), Box<
     let output = Command::new(python())
         .arg("-m")
         .arg("py_compile")
+        .env("PYTHONPYCACHEPREFIX", output_dir.path())
         .args([
             "scripts/zed_exact_source_prepare.py",
             "scripts/zed_exact_source_launch.py",

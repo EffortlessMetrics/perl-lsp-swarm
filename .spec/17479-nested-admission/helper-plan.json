@@ -2,6 +2,7 @@
   "schema_version": 1,
   "rows": [
     "perllsp-build",
+    "helper-routed-compile",
     "helper-routed-runtime",
     "xtask-disallowed-fields-fixture",
     "xtask-lock-union-fixture",

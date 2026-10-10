@@ -520,6 +520,7 @@ HELPER_TRANSITIVE_INPUTS = (
     "scripts/zed_exact_source_finalize.py", "scripts/lite_xl_public_replay.py",
     "scripts/ux/validate_vim_first_class_profile.py",
     "xtask/tests/fixtures/ci-route-plan/generate_golden.py",
+    "scripts/ci/helper_artifact_prepare.py",
 )
 HELPER_TRANSITIVE_DIRS = ("scripts/zed_host", "scripts/zed_assets", "scripts/lite_xl_replay",
                           "crates/perl-tdd-support/src", "crates/perl-test-must/src")
@@ -591,6 +592,7 @@ for _name, _suffix in (("routed-compile", ("--no-run",)), ("routed-runtime", ())
 
 for _name, _suffix in (("helper-routed-compile", ("--no-run",)), (HELPER_RUNTIME, ())):
     NESTED_COMMANDS[_name] = ("test", "--locked", "--tests", *sum((("-p", p) for p in HELPER_PACKAGES), ()), *_suffix)
+NESTED_COMMANDS["helper-routed-compile"] += ("--message-format=json",)
 
 
 def bounded_json(path, limit=None):
@@ -1245,6 +1247,16 @@ def nested_command(row, env=None):
             routed_mapping(plan)
             for member in ROUTED_FIXTURE_ROWS:
                 routed_phase_record(plan, receipt, member, env)
+            if row == HELPER_RUNTIME:
+                # Direct finite-row consumers share the same mandatory bridge
+                # as the adapter. Its context validates perllsp-build, avoiding
+                # recursive admission of this runtime row.
+                sys.path.insert(0, str(worktree / "scripts/ci"))
+                import helper_artifact_prepare
+                try:
+                    helper_artifact_prepare.validate(env)
+                except Exception as error:
+                    raise Denied("helper runtime artifact bridge refused: " + str(error)) from error
             if row == "routed-runtime":
                 measured, subject = parser_occupancy_measurement(plan, receipt)
                 if measured["exit_code"] != 0 or json.loads(env["CARGO_ADMITTED_OCCUPANCY_MEASUREMENT"]) != subject:
@@ -1327,6 +1339,9 @@ def render_nested(row, env, worktree, paths, toolchain, fixture=None):
             "CARGO_ADMITTED_LOCK_PYTHON": fixture["locks"]["python"]["path"],
             "CARGO_ADMITTED_JSONRPC_PYTHON": fixture["rpc"]["python"]["path"],
             "CARGO_ADMITTED_JSONRPC_ROOT": fixture["rpc"]["cwd"]})
+    if row == HELPER_RUNTIME:
+        controlled.update(PYTHONPYCACHEPREFIX=str(Path(paths["temp"]) / "python-cache"),
+                          PYTHONDONTWRITEBYTECODE="1")
     if row == "routed-runtime":
         controlled.update({"CARGO_ADMITTED_OCCUPANCY_PYTHON": fixture["occupancy"]["python"]["path"],
             "CARGO_ADMITTED_OCCUPANCY_MEASUREMENT": env["CARGO_ADMITTED_OCCUPANCY_MEASUREMENT"]})

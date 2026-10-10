@@ -1925,8 +1925,8 @@ fn the_module_walk_reaches_nested_directories() -> Result<()> {
     // The lifecycle modules are flat today, so recursion is proven against a
     // temporary tree rather than with an assertion that would pass simply
     // because no nested directory exists.
-    let root = repo_root()?;
-    let scratch = root.join("target/lifecycle-walk-fixture");
+    let output = tempfile::tempdir()?;
+    let scratch = output.path().join("lifecycle-walk-fixture");
     let nested = scratch.join("deeply/nested");
     fs::create_dir_all(&nested).with_context(|| format!("create {}", nested.display()))?;
     fs::write(scratch.join("top.rs"), "pub enum Top {}\n")?;

@@ -11,11 +11,13 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+sys.dont_write_bytecode = True
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import cargo_admitted as owner
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import routed_nested_prepare
+import helper_artifact_prepare
 
 HANDOFF = "CARGO_ADMITTED_PERLLSP_HANDOFF"
 PYTHON = "CARGO_ADMITTED_PYTHON"
@@ -170,11 +172,24 @@ def run(mode, env=None, invoke=subprocess.run):
     if output.returncode:
         return output.returncode if output.returncode > 0 else 1
     child = capture(output.stdout, env)
+    if mode in ("--helper-compile", "--helper-runtime"):
+        command, child, cwd = owner.nested_command("helper-routed-compile", child)
+        output = invoke(command, env=child, cwd=cwd, capture_output=True,
+                        text=True, encoding="utf-8", errors="strict")
+        print(output.stdout, end="", flush=True)
+        print(output.stderr, end="", file=sys.stderr, flush=True)
+        if output.returncode:
+            return output.returncode if output.returncode > 0 else 1
+        child = helper_artifact_prepare.capture(output.stdout, child)
+        if mode == "--helper-compile":
+            return 0
     if mode in ("--runtime", "--helper-runtime"):
         child = routed_nested_prepare.prepare(child, invoke)
     for row in rows:
         command, child, cwd = owner.nested_command(row, child)
         validate(child, "debug")
+        if mode == "--helper-runtime":
+            helper_artifact_prepare.validate(child)
         # Canonical modes retain inherited output and their existing gate guard.
         # The two narrow leaves require separate current named one-test results;
         # one leaf's success cannot conceal zero tests in the other.
@@ -188,6 +203,8 @@ def run(mode, env=None, invoke=subprocess.run):
             return output.returncode if output.returncode > 0 else 1
         validate(child, "debug")
         owner.nested_command(row, child)
+        if mode == "--helper-runtime":
+            helper_artifact_prepare.validate(child)
         if mode == "--qualify" and not narrow_success(output.stdout, row):
             raise owner.Denied("missing current named one-test success for " + row)
     return 0

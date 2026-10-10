@@ -198,9 +198,17 @@ fn retained_packet_run_is_offline_and_leaves_landed_fixtures_byte_identical() ->
 
     let scratch = tempfile::tempdir()?;
     let packet_path = scratch.path().join("observation.json");
-    // The proposal boundary is repository-local: the artifact goes under the
-    // repository's ignored `target/` tree, never outside the repository.
-    let proposal_path = root.join("target").join("vim-lsp-subject-refresh-contract.json");
+    // Keep the repository-local writer boundary on a private fixture root.
+    let fixture = tempfile::tempdir()?;
+    for relative in [
+        vim_lsp_subject_refresh::SUBJECT_MANIFEST_PATH,
+        vim_lsp_subject_refresh::PUBLIC_SURFACE_INVENTORY_PATH,
+    ] {
+        let destination = fixture.path().join(relative);
+        std::fs::create_dir_all(destination.parent().context("fixture input parent")?)?;
+        std::fs::copy(root.join(relative), destination)?;
+    }
+    let proposal_path = fixture.path().join("target/vim-lsp-subject-refresh-contract.json");
     std::fs::write(&packet_path, serde_json::to_string(&packet)?)?;
 
     let outcome = vim_lsp_subject_refresh::run(RefreshOptions {
@@ -208,7 +216,7 @@ fn retained_packet_run_is_offline_and_leaves_landed_fixtures_byte_identical() ->
         proposal: Some(proposal_path.clone()),
         observation: Some(packet_path),
         allow_network: false,
-        repo_root: root.clone(),
+        repo_root: fixture.path().to_path_buf(),
     })
     .context("offline run with a retained packet must succeed without any network gate")?;
     ensure!(!outcome.instrument_failed, "world-unchanged run must not report instrument failure");

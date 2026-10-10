@@ -1068,14 +1068,15 @@ mod tests {
     #[test]
     fn test_estimate_subprocess_memory() {
         // Test with a known file
-        let temp_file = "/tmp/test_memory_file.txt";
-        std::fs::write(temp_file, "test content").ok();
+        let output = must(tempfile::tempdir());
+        let temp_file = output.path().join("test_memory_file.txt");
+        must(std::fs::write(&temp_file, "test content"));
 
-        let estimated = estimate_subprocess_memory(temp_file);
+        let estimated = estimate_subprocess_memory(&temp_file.to_string_lossy());
         assert!(estimated > 0.0);
 
         // Clean up
-        std::fs::remove_file(temp_file).ok();
+        std::fs::remove_file(&temp_file).ok();
     }
 
     #[test]

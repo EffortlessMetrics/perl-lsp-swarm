@@ -150,7 +150,8 @@ fn checked_projection_not_run_template_and_cache_recovery_validate_offline()
         smoke_version, "perl-dap 0.17.0",
         "the executed row must record the exact canonical perl-dap version line"
     );
-    let work_dir = root.join("target/zed-dap-receipt-contract-tests/cache");
+    let output = tempfile::tempdir()?;
+    let work_dir = output.path().join("zed-dap-receipt-contract-tests/cache");
     let _ = fs::remove_dir_all(&work_dir);
     assert_success(
         &run(&root, &["dap-cache-recovery", "--work-dir", &work_dir.to_string_lossy()])?,
@@ -162,7 +163,8 @@ fn checked_projection_not_run_template_and_cache_recovery_validate_offline()
 #[test]
 fn contract_mutations_fail_closed_naming_the_exact_defect() -> Result<(), Box<dyn Error>> {
     let root = repo_root()?;
-    let target = root.join("target/zed-dap-receipt-contract-tests");
+    let output = tempfile::tempdir()?;
+    let target = output.path().join("zed-dap-receipt-contract-tests");
     fs::create_dir_all(&target)?;
     let original = load_json(&root.join(CONTRACT))?;
 
@@ -262,7 +264,8 @@ fn contract_mutations_fail_closed_naming_the_exact_defect() -> Result<(), Box<dy
 #[test]
 fn receipt_mutations_fail_closed_on_overclaim_and_stale_subjects() -> Result<(), Box<dyn Error>> {
     let root = repo_root()?;
-    let target = root.join("target/zed-dap-receipt-contract-tests");
+    let output = tempfile::tempdir()?;
+    let target = output.path().join("zed-dap-receipt-contract-tests");
     fs::create_dir_all(&target)?;
     let template = load_json(&root.join(TEMPLATE))?;
     let contract = load_json(&root.join(CONTRACT))?;

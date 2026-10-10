@@ -80,21 +80,23 @@ fn committed_projection_is_current_and_drift_free() -> Result<(), Box<dyn Error>
 #[test]
 fn second_generation_is_byte_identical() -> Result<(), Box<dyn Error>> {
     let root = repo_root()?;
+    let output_dir = tempfile::tempdir()?;
     let output = Command::new(python())
         .arg(root.join(SCRIPT))
         .arg("project-dap-support")
         .arg("--policy-output")
-        .arg(root.join("target/zed-dap-support-second.toml"))
+        .arg(output_dir.path().join("zed-dap-support-second.toml"))
         .arg("--docs-output")
-        .arg(root.join("target/zed-dap-support-second.md"))
+        .arg(output_dir.path().join("zed-dap-support-second.md"))
         .current_dir(&root)
         .output()?;
     assert_success(&output, "regenerating the Zed DAP support projection")?;
 
     let committed_policy = read(&root, SUPPORT_POLICY)?;
     let committed_docs = read(&root, SUPPORT_DOCS)?;
-    let regenerated_policy = fs::read_to_string(root.join("target/zed-dap-support-second.toml"))?;
-    let regenerated_docs = fs::read_to_string(root.join("target/zed-dap-support-second.md"))?;
+    let regenerated_policy =
+        fs::read_to_string(output_dir.path().join("zed-dap-support-second.toml"))?;
+    let regenerated_docs = fs::read_to_string(output_dir.path().join("zed-dap-support-second.md"))?;
     assert_eq!(
         committed_policy, regenerated_policy,
         "second policy generation must produce no diff"

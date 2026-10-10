@@ -73,7 +73,8 @@ fn checked_projection_and_not_run_template_validate_offline() -> Result<(), Box<
 #[test]
 fn mutation_controls_reject_wrong_identity_and_zed_overclaim() -> Result<(), Box<dyn Error>> {
     let root = repo_root()?;
-    let target = root.join("target/zed-receipt-contract-tests");
+    let output = tempfile::tempdir()?;
+    let target = output.path().join("zed-receipt-contract-tests");
     fs::create_dir_all(&target)?;
 
     let contract_text = fs::read_to_string(root.join(CONTRACT))?;
