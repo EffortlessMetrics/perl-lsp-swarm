@@ -234,7 +234,7 @@ expression: "serde_json::to_string_pretty(&snapshot_receipt)?"
       "receipt_reason": "live_provider_result",
       "receipt_source_backed_state": "workspace_mixed_fallback",
       "request_shape": "function_call",
-      "result_count": 8,
+      "result_count": 6,
       "scenario_rationale": "carp_croak_declared_outside_the_fixture_project",
       "source_backed": false,
       "source_backed_attempted": true,
