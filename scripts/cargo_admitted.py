@@ -497,7 +497,29 @@ JSONRPC_FIXTURE_ROWS = (JSONRPC_LOCK_ROW, JSONRPC_NEUTRAL_ROW, JSONRPC_REJECTED_
 JSONRPC_TEST_ROW = "xtask-jsonrpc-test"
 JSONRPC_TESTS = ("jsonrpc_model_is_dependency_closed_and_rejects_indirect_perl_taxonomy",
                 "probe_lock_rejects_path_git_and_unreviewed_registry_sources")
+PARSER_OCCUPANCY_STREAM_LIMIT = 16 * 1024 * 1024
+PARSER_OCCUPANCY_ROW = "parser-collapsible-if-measure"
+PARSER_OCCUPANCY_TEST_ROW = "parser-collapsible-if-test"
+PARSER_OCCUPANCY_TESTS = (
+    'cfg_attr_allow_fixture_is_detected',
+    'cfg_attr_without_collapsible_if_does_not_occupy',
+    'clippy_all_targets_has_no_collapsible_if_hits',
+    'comment_and_string_literals_do_not_occupy',
+    'crate_level_allow_fixture_is_detected',
+    'expect_attr_fixture_is_detected',
+    'item_allow_fixture_is_detected',
+    'lib_rs_crate_allow_list_does_not_name_collapsible_if',
+    'nested_cfg_attr_allow_fixture_is_detected',
+    'occupancy_requires_allow_attr_not_scanner_literals',
+    'perl_parser_sources_do_not_allow_collapsible_if',
+    'successful_clippy_without_hits_is_clean',
+    'unsuccessful_clippy_with_hits_still_reports_occupancy',
+    'unsuccessful_clippy_without_hits_is_instrument_failure',
+)
+
 NESTED_COMMANDS = {
+    PARSER_OCCUPANCY_ROW: ("clippy", "-p", "perl-parser", "--all-targets", "--features", "incremental", "--locked", "--no-deps", "--message-format=json", "--", "--cap-lints=allow", "--force-warn", "clippy::collapsible_if"),
+    PARSER_OCCUPANCY_TEST_ROW: ("test", "-p", "perl-parser", "--test", "collapsible_if_occupancy", "--locked", "--message-format=json", "--", "--exact", *PARSER_OCCUPANCY_TESTS, "--test-threads=1", "--color", "never"),
     JSONRPC_LOCK_ROW: ("generate-lockfile", "--offline", "--manifest-path", "@manifest@"),
     JSONRPC_NEUTRAL_ROW: ("check", "--quiet", "--locked", "--offline", "--manifest-path", "@manifest@"),
     JSONRPC_REJECTED_ROW: ("check", "--quiet", "--locked", "--offline", "--manifest-path", "@manifest@"),
@@ -656,6 +678,11 @@ def nested_plan(filename, env, worktree, paths):
         if any(row not in data["rows"] for row in JSONRPC_FIXTURE_ROWS):
             raise Denied("JSON-RPC measurement requires all three finite phase members")
         rpc_fixture = jsonrpc_fixture(worktree, paths)
+    occupancy = None
+    if any(row in data["rows"] for row in (PARSER_OCCUPANCY_ROW, PARSER_OCCUPANCY_TEST_ROW)):
+        if PARSER_OCCUPANCY_ROW not in data["rows"]:
+            raise Denied("parser owning occupancy requires its exact Clippy measurement")
+        occupancy = parser_occupancy_binding(worktree)
     extra = tuple(Path(f["cwd"]) for f in (fixture, lock_fixture) if f)
     if rpc_fixture:
         extra += tuple(Path(rpc_fixture["directories"][mode]["path"]) for mode in ("neutral", "rejected"))
@@ -670,6 +697,8 @@ def nested_plan(filename, env, worktree, paths):
         plan["lock_union_fixture"] = lock_fixture
     if rpc_fixture:
         plan["jsonrpc_fixture"] = rpc_fixture
+    if occupancy:
+        plan["parser_occupancy"] = occupancy
     return plan
 
 
@@ -747,6 +776,37 @@ def fixed_fixture(worktree, paths, label, adapter):
     return {"cwd": str(root), "directories": directories, "files": files,
             "adapter": file_subject(worktree / "scripts/ci" / adapter),
             "python": file_subject(Path(sys.executable).resolve(strict=True))}
+
+
+def parser_occupancy_binding(worktree):
+    return {"adapter": file_subject(worktree / "scripts/ci/parser_occupancy_prepare.py"),
+            "support_adapter": file_subject(worktree / "scripts/ci/disallowed_fields_prepare.py"),
+            "owning_test": file_subject(worktree / "crates/perl-parser/tests/collapsible_if_occupancy.rs"),
+            "python": file_subject(Path(sys.executable).resolve(strict=True))}
+
+
+def parser_occupancy_measurement(plan, receipt):
+    path = Path(receipt["resources"]["temp"]) / ("parser-occupancy-measurement-" + str(receipt["pid"]) + ".json")
+    record, subject = bounded_json(path, limit=2 * PARSER_OCCUPANCY_STREAM_LIMIT * 6 + BUDGET_FILE_LIMIT)
+    if (record.get("schema_version") != 1 or record.get("row") != PARSER_OCCUPANCY_ROW
+            or record.get("tested_source") != plan["source"]["head"]
+            or record.get("snapshot") != receipt["nested_snapshot"]
+            or record.get("instrument_validation") != {"passed": True, "error": None}
+            or type(record.get("exit_code")) is not int or record.get("exit_code") not in (0, 101)):
+        raise Denied("missing current measured parser occupancy result")
+    for key in ("owner_process", "lease_identity", "marker_identity"):
+        if record.get(key) != receipt[key]:
+            raise Denied("parser occupancy measurement has another original owner")
+    paths = {name: Path(path) for name, path in receipt["resources"].items()}
+    env = {**plan["compiler_environment"], "CARGO_BUILD_JOBS": str(receipt["scope"]["jobs"])}
+    expected = render_nested(PARSER_OCCUPANCY_ROW, env, Path(receipt["worktree"]), paths,
+                             plan["toolchain"], plan["parser_occupancy"])[0]
+    if record.get("argv") != expected or record.get("cwd") != receipt["worktree"]:
+        raise Denied("parser occupancy measurement used another command/cwd")
+    if any(not isinstance(record.get(key), str) or len(record[key].encode()) > PARSER_OCCUPANCY_STREAM_LIMIT
+           for key in ("stdout", "stderr")):
+        raise Denied("parser occupancy raw stream exceeds its bound")
+    return record, subject
 
 
 def jsonrpc_fixture(worktree, paths):
@@ -1012,6 +1072,16 @@ def nested_command(row, env=None):
             raise Denied("lock-union fixture inputs/cwd/output roots changed")
         if row in (*LOCK_FIXTURE_ROWS, LOCK_UNION_TEST_ROW, LOCK_PARTITION_TEST_ROW) and lock_fixture is None:
             raise Denied("lock-union fixture is not bound to this workload")
+        occupancy = plan.get("parser_occupancy")
+        if occupancy is not None and parser_occupancy_binding(worktree) != occupancy:
+            raise Denied("parser occupancy source/adapter changed")
+        if row in (PARSER_OCCUPANCY_ROW, PARSER_OCCUPANCY_TEST_ROW) and occupancy is None:
+            raise Denied("parser occupancy measurement is not bound")
+        if row == PARSER_OCCUPANCY_TEST_ROW:
+            _, measured_subject = parser_occupancy_measurement(plan, receipt)
+            frozen = env.get("CARGO_ADMITTED_OCCUPANCY_MEASUREMENT")
+            if frozen is not None and json.loads(frozen) != measured_subject:
+                raise Denied("parser occupancy measurement changed before owning proof")
         rpc_fixture = plan.get("jsonrpc_fixture")
         if rpc_fixture is not None and jsonrpc_fixture(worktree, paths) != rpc_fixture:
             raise Denied("JSON-RPC source/manifest/cwd/output roots changed")
@@ -1048,6 +1118,8 @@ def nested_command(row, env=None):
         selected_fixture = lock_fixture if row in (*LOCK_FIXTURE_ROWS, LOCK_UNION_TEST_ROW, LOCK_PARTITION_TEST_ROW) else fixture
         if row in (*JSONRPC_FIXTURE_ROWS, JSONRPC_TEST_ROW):
             selected_fixture = rpc_fixture
+        if row in (PARSER_OCCUPANCY_ROW, PARSER_OCCUPANCY_TEST_ROW):
+            selected_fixture = occupancy
         return render_nested(row, env, worktree, paths, plan["toolchain"], selected_fixture)
     except (KeyError, TypeError, ValueError, OSError) as error:
         raise Denied("invalid/stale nested handoff: " + str(error)) from error
@@ -1105,6 +1177,11 @@ def render_nested(row, env, worktree, paths, toolchain, fixture=None):
     if row == JSONRPC_TEST_ROW:
         controlled["CARGO_ADMITTED_JSONRPC_PYTHON"] = fixture["python"]["path"]
         controlled["CARGO_ADMITTED_JSONRPC_ROOT"] = fixture["cwd"]
+    if row == PARSER_OCCUPANCY_TEST_ROW:
+        descriptor = json.loads(env["CARGO_ADMITTED_RESOURCES"])
+        record = Path(paths["temp"]) / ("parser-occupancy-measurement-" + str(descriptor["pid"]) + ".json")
+        controlled["CARGO_ADMITTED_OCCUPANCY_PYTHON"] = fixture["python"]["path"]
+        controlled["CARGO_ADMITTED_OCCUPANCY_MEASUREMENT"] = json.dumps(file_subject(record), sort_keys=True)
     env.update(controlled)
     command = [exact["cargo"]["path"]]
     for name, value in controlled.items():

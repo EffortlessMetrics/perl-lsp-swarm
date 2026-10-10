@@ -120,6 +120,7 @@ def owning_test(env=None, invoke=subprocess.run, fixture_row=None, test_row=None
         owner.PREPARATION_CONTROL_ROW: (owner.LOCK_UNION_ROW, owner.PREPARATION_CONTROL_TEST, "preparation-control-owning"),
         owner.LOCK_PARTITION_TEST_ROW: (owner.LOCK_FIXTURE_ROWS, owner.LOCK_PARTITION_TESTS, "lock-remaining-owning"),
         owner.JSONRPC_TEST_ROW: (owner.JSONRPC_LOCK_ROW, owner.JSONRPC_TESTS, "jsonrpc-owning"),
+        owner.PARSER_OCCUPANCY_TEST_ROW: (owner.PARSER_OCCUPANCY_ROW, owner.PARSER_OCCUPANCY_TESTS, "parser-occupancy-owning"),
     }
     if selections.get(test_row) != (fixture_row, test_name, copy_prefix):
         raise owner.Denied("unsupported owning-test selection")
@@ -164,14 +165,16 @@ def capture_owning_artifact(stdout, env, test_row=None, test_name=None,
             (owner.LOCK_UNION_TEST_ROW, owner.LOCK_UNION_TEST, "lock-union-owning"),
             (owner.PREPARATION_CONTROL_ROW, owner.PREPARATION_CONTROL_TEST, "preparation-control-owning"),
             (owner.LOCK_PARTITION_TEST_ROW, owner.LOCK_PARTITION_TESTS, "lock-remaining-owning"),
-            (owner.JSONRPC_TEST_ROW, owner.JSONRPC_TESTS, "jsonrpc-owning")):
+            (owner.JSONRPC_TEST_ROW, owner.JSONRPC_TESTS, "jsonrpc-owning"),
+            (owner.PARSER_OCCUPANCY_TEST_ROW, owner.PARSER_OCCUPANCY_TESTS, "parser-occupancy-owning")):
         raise owner.Denied("unsupported owning-artifact selection")
     snapshot, _ = owner.bounded_json(descriptor["nested_snapshot"]["path"])
     worktree = Path(descriptor["worktree"])
-    integration = test_row == owner.JSONRPC_TEST_ROW
-    target_name = "lsp_jsonrpc_dependency_probe" if integration else "xtask"
-    target_kind = ["test"] if integration else ["bin"]
-    target_source = worktree / ("xtask/tests/lsp_jsonrpc_dependency_probe.rs" if integration else "xtask/src/main.rs")
+    integrations = {owner.JSONRPC_TEST_ROW: ("xtask/Cargo.toml", "xtask/tests/lsp_jsonrpc_dependency_probe.rs", "lsp_jsonrpc_dependency_probe"),
+                    owner.PARSER_OCCUPANCY_TEST_ROW: ("crates/perl-parser/Cargo.toml", "crates/perl-parser/tests/collapsible_if_occupancy.rs", "collapsible_if_occupancy")}
+    manifest_path, source_path, target_name = integrations.get(test_row, ("xtask/Cargo.toml", "xtask/src/main.rs", "xtask"))
+    target_kind = ["test"] if test_row in integrations else ["bin"]
+    target_source, manifest = worktree / source_path, worktree / manifest_path
     matches, terminals = [], []
     for line in stdout.splitlines():
         if not line.startswith('{'):
@@ -183,7 +186,7 @@ def capture_owning_artifact(stdout, env, test_row=None, test_name=None,
             terminals.append(event.get('success') is True)
         target, profile = event.get('target'), event.get('profile')
         if (event.get('reason') == 'compiler-artifact'
-                and event.get('manifest_path') == str(worktree/'xtask/Cargo.toml')
+                and event.get('manifest_path') == str(manifest)
                 and isinstance(target,dict) and target.get('name') == target_name
                 and target.get('kind') == target_kind
                 and target.get('src_path') == str(target_source)

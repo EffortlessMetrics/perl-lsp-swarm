@@ -1,0 +1,18 @@
+# Manual unactivated qualification; canonical gate policy is unchanged.
+schema_version: 1
+global:
+  default_timeout_seconds: 1500
+tiers:
+  merge_gate:
+    description: Exact parser diagnostic preparation and owning tests
+    target_duration_seconds: 1500
+    enforcement: required
+gates:
+  - name: parser_occupancy_owning
+    tier: merge_gate
+    description: One genuine Clippy measurement then fourteen original tests
+    required: true
+    command: python3 -I scripts/ci/parser_occupancy_prepare.py --test
+    timeout_seconds: 1500
+    retry_count: 0
+    tags: [test, lint, narrow-qualification]

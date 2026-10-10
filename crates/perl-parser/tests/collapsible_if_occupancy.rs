@@ -317,6 +317,28 @@ fn clippy_hits_from_parts(
 }
 
 fn clippy_collapsible_if_hits() -> Result<Vec<String>, String> {
+    let descriptor = std::env::var_os("CARGO_ADMITTED_RESOURCES");
+    let python = std::env::var_os("CARGO_ADMITTED_OCCUPANCY_PYTHON");
+    let measured = std::env::var_os("CARGO_ADMITTED_OCCUPANCY_MEASUREMENT");
+    if descriptor.is_some() || python.is_some() || measured.is_some() {
+        let (Some(_), Some(python), Some(_)) = (descriptor, python, measured) else {
+            return Err("incomplete admitted parser occupancy selectors".to_string());
+        };
+        let helper = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../scripts/ci/parser_occupancy_prepare.py");
+        let output = Command::new(python)
+            .arg("-I")
+            .arg(helper)
+            .arg("--read")
+            .output()
+            .map_err(|error| format!("failed to read admitted occupancy: {error}"))?;
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if output.status.code() == Some(75) {
+            return Err(format!("admitted occupancy instrument refused: {stderr}"));
+        }
+        return clippy_hits_from_parts(output.status.success(), &stdout, &stderr);
+    }
     let output = Command::new(env!("CARGO"))
         .args([
             "clippy",
