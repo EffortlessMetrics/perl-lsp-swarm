@@ -604,6 +604,11 @@ def main(args=None):
             descriptor = {"worktree": str(worktree), "scope": scope,
                           "resources": {k: str(v) for k, v in paths.items()},
                           "lease": str(lock), "pid": os.getpid(), "admission": admission, "disposition": "retained with reason: reusable bounded slot"}
+            if clippy:
+                # Persist the original owner observation before any setup/product
+                # child starts. Recovery must not adopt a replacement directory
+                # or reconstruct ownership from age/current contents after death.
+                descriptor.update(lease_identity=list(identity), lease_marker=str(marker))
             print("cargo-admitted resources: " + json.dumps(descriptor), file=sys.stderr, flush=True)
             command = ["cargo", "--config", "unstable.unstable-options=false",
                        "--config", "build.build-dir=" + json.dumps(str(paths["build"])),

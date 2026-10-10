@@ -70,6 +70,10 @@ class ClippyAdmissionTests(unittest.TestCase):
         self.assertEqual(env["CLIPPY_ARGS"], safe.CLIPPY_LINT_ARGS)
         self.assertTrue(lock.exists(), "even lint success cannot release unverified descendants")
         self.assertIn('"lease_released": false', output)
+        receipt = json.loads(next(line.split(": ", 1)[1] for line in output.splitlines()
+                                  if line.startswith("cargo-admitted resources: ")))
+        self.assertEqual(tuple(receipt["lease_identity"]), safe.directory_identity(lock))
+        self.assertEqual(receipt["lease_marker"], str(next(lock.iterdir())))
 
     def test_success_failure_and_unfamiliar_exit_all_retain_exact_lease(self):
         for status in (0, 101, 17):
@@ -151,6 +155,10 @@ class ClippyAdmissionTests(unittest.TestCase):
         self.assertEqual(result, 75)
         self.assertTrue((self.slot / "cargo-active").exists())
         self.assertNotIn("Clippy product:", output)
+        receipt = json.loads(next(line.split(": ", 1)[1] for line in output.splitlines()
+                                  if line.startswith("cargo-admitted resources: ")))
+        lock = Path(receipt["lease"])
+        self.assertTrue(safe.owns_lease(lock, tuple(receipt["lease_identity"]), Path(receipt["lease_marker"])))
 
     def test_configuration_change_during_setup_refuses_package_and_retains_lease(self):
         launch = Mock()

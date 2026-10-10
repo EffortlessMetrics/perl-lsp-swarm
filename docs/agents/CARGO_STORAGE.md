@@ -173,6 +173,42 @@ default 40 GiB reserve remains unchanged. It preserves logs, source hashes,
 budget/volume observations and matching-owner release receipts. Its exact-group
 absence proof is valid only for that owned fixture with no build scripts or
 independent consumers; do not use it as arbitrary workload lease cleanup.
+
+#### Recovering a retained Clippy lease
+
+Capture the `cargo-admitted resources:` JSON before setup starts, together with
+launch/product/cancellation logs and the exact owner revision. It records the
+original `lease`, `lease_identity` (device/inode) and unique `lease_marker`;
+`cargo-admitted Clippy launch:` records the native host and process group. These
+fields are evidence for root-owned recovery, not automatic release authority.
+
+1. Recover executor connectivity and verify the same native host and complete
+   process visibility. A connection loss, age, missing leader PID, exit 0/101 or
+   absent process group alone does not prove settlement. Do not signal a reused
+   numeric PID/group or adopt ownership from current directory contents.
+2. Independently verify no active descendant, detached helper, build script,
+   binary consumer or separate Cargo operation uses the recorded source/output/
+   temporary roots. Check native process ancestry/group/session, executable,
+   cwd, open descriptors and mappings, plus resource environment where available.
+   Account explicitly for known pre-existing provider processes and observation
+   limits; unfamiliar active processes or incomplete consumer visibility refuse.
+   Native Windows requires the separately qualified launcher/tree authority;
+   Linux observations do not substitute for it.
+3. Preserve the verification receipt and artifact inventory/identities. Confirm
+   the original lease device/inode and exactly its recorded empty unique marker
+   still match. Missing original ownership evidence, replaced/linked directories,
+   extra markers/files, host mismatch or changed resource identities refuse.
+4. Only after those checks, the root owner calls this revision's existing
+   `release_lease(Path(receipt["lease"]), tuple(receipt["lease_identity"]),
+   Path(receipt["lease_marker"]))`. This removes only the matching empty marker
+   and lease directories. Verify `os.path.lexists(lease)` is false; a failed
+   postcondition remains retained for investigation. Never use recursive deletion,
+   unlink a replacement, clear outputs/caches or use age-only reclamation.
+
+Already-absent leases are an observed released state, not permission to release a
+new directory at the same path. If any consumer/evidence is uncertain, preserve
+the lease and artifacts with a stated blocker. This is a practical manual owner
+procedure; no generic automatic process-tree proof or cleanup service is added.
 The wrapper holds through `run` and `test` execution, not independent later
 artifact consumers. The root must retain exclusive slot ownership for those
 consumers or use a separately admitted route. Direct Cargo and older wrappers do

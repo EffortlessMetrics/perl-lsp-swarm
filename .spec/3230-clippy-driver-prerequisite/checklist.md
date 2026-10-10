@@ -115,3 +115,51 @@ Existing-issue updates:
 All 39 push workflows are main/master restricted. Production commit 6b4024cbe
 workflow-runs query returned no runs. No PR/merge/CI label or expensive hosted work.
 Exact storage writer remote verified unchanged fd8aa27ce2ebf2a1e95b2eae4109be394252b729.
+
+## Independent finished-attempt settlement
+
+Follow-up root-owned verification recovered executor connectivity on the same
+native host `5b4b67c9a262`; a transient transport disconnect was never used as
+owner-death evidence. Exact consumer group 3801 and fixture groups 2727/2759/3085/
+3117 were absent. Two native roster scans in the same visible init PID namespace
+found only known pre-existing provider processes and verifier ancestors; no active
+compiler, Cargo, Clippy, build script, detached helper or product consumer.
+Same-UID executable/cwd/descriptor/mapping/environment associations were checked;
+the two pre-existing UID0 provider daemons were explicitly accounted as runtime
+infrastructure with no workload workers (their descriptors are unavailable to the
+agent UID). No OS security or process ownership settings were changed.
+
+Consumer inode (device 27, inode 1080777) and its original empty unique marker
+`owner-faf2a535561b4eb9b0a433949498a757` still matched the active-owner receipt.
+The existing release helper removed only that marker and `cargo-active`; native
+postcondition confirms lease absent. Both older and reproducible fixture pairs'
+leases also remain absent. 749 artifact files /84,032,428 logical bytes across nine
+recorded target/build/temp roots retain their original identities/content hashes.
+Consumer source remains clean at exact b5046c390. All worktrees, outputs and shared
+Cargo/rustup resources are retained; no artifact/cache cleanup was attempted.
+
+Full receipt: `/workspace/clippy-settlement/settlement-final.json`, SHA256
+`61532fdb1d6a994e41a588645026d20ec4f66a23aec0cb1a12506bfee2fc1b54`.
+The committed `settlement-receipt.json` preserves the native process roster,
+original inode/marker, release postcondition, per-root inventory identities/counts
+and manifest hashes; full file-level inventories remain local. These establish
+this bounded manual owner settlement, not generic automatic tree proof.
+
+To make future retained-lease recovery practical, Clippy now emits original
+`lease_identity` and `lease_marker` in the resource JSON before setup probes;
+positive and retained setup-failure tests check them. The existing matching-owner
+release helper and builtin storage paths are unchanged. No storage PR candidate
+(including parent-reported 3ff48c85 after integrated 4e57090b) is modified here.
+The supported manual procedure and refusal cases are documented in CARGO_STORAGE.
+
+Smallest next parity qualification: after the original owner fixes the three
+consumer lints, use one exact Linux package/lock/source/profile/native-target/
+environment/config/toolchain subject, separate admitted private output and
+scope-bound budget, then record cold/warm compilation-artifact identities and
+freshness with matching selected units. Do not compare this 76-package Clippy/dev
+workload against the earlier 70-package normal/build baseline as a speed gain.
+Canonical selected-work/result parity still needs accepted executor contracts.
+The next native cell is Windows/MSVC Clippy driver/compiler identity and forced
+child-environment projection, with native process-tree/cancellation/release via
+active #17482 launcher ownership. Do not compete for laptop builds or implement a
+parallel Windows supervisor; Linux manually verified settlement cannot fill it.
