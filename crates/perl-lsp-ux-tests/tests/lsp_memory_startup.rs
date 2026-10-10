@@ -47,9 +47,9 @@
 
 use anyhow::{Context, Result, anyhow, bail};
 use perl_lsp_ux_tests::{
-    LspEvent, UxClient, UxHarness, binary_available, fixture_content, fixture_scenario_config,
-    iso8601_now, load_mojolicious_fixture_files, open_all_fixture_files, resolve_binary,
-    workspace_root,
+    FakeWorkspace, LspEvent, UxClient, UxHarness, binary_available, fixture_content,
+    fixture_scenario_config, iso8601_now, load_mojolicious_fixture_files, open_all_fixture_files,
+    resolve_binary, workspace_root,
 };
 use serde_json::{Value, json};
 use std::path::PathBuf;
@@ -392,16 +392,27 @@ fn lsp_memory_startup_receipt() -> Result<()> {
     let binary = resolve_binary().context("resolving the perl-lsp binary for the bench")?;
 
     // ── Lane 1: server_startup_to_ready — 15 cold spawns ─────────────────────
-    let startup_harness = UxHarness::new(config.clone())
-        .context("failed to spawn perl-lsp for the startup-lane workspace")?;
-    let entry_uri = startup_harness.workspace.uri(ENTRY_FILE);
+    // Seed a bare workspace directly instead of UxHarness: a harness-started
+    // server would stay alive across every cold sample and contend for CPU and
+    // disk, so the lane would no longer measure isolated cold starts. Seeding
+    // mirrors UxHarness::new (workspace_files + workspace_folders) minus the
+    // server spawn.
+    let startup_workspace =
+        FakeWorkspace::new().context("failed to create the startup-lane workspace")?;
+    for (path, content) in &config.workspace_files {
+        startup_workspace.write(path, content)?;
+    }
+    for (path, _) in &config.workspace_folders {
+        startup_workspace.ensure_dir(path)?;
+    }
+    let entry_uri = startup_workspace.uri(ENTRY_FILE);
 
     let mut spawn_to_initialize_samples: Vec<u64> = Vec::new();
     let mut initialize_to_diagnostics_samples: Vec<u64> = Vec::new();
     let mut spawn_to_ready_samples: Vec<u64> = Vec::new();
     for sample in 0..STARTUP_SAMPLES {
         let spawn_started = Instant::now();
-        let client = UxClient::spawn(&binary, &startup_harness.workspace, &config)
+        let client = UxClient::spawn(&binary, &startup_workspace, &config)
             .with_context(|| format!("startup sample {sample}: spawn + initialize failed"))?;
         let handshake_elapsed = spawn_started.elapsed();
 
@@ -432,6 +443,7 @@ fn lsp_memory_startup_receipt() -> Result<()> {
         // Bounded best-effort drop (SHUTDOWN_GRACE) before the next cold spawn.
         drop(client);
     }
+    drop(startup_workspace);
 
     // ── Lane 2: server_rss_memory — one warm session ─────────────────────────
     let memory_harness = UxHarness::new(config.clone())
