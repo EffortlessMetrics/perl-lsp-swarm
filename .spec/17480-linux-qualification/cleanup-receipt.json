@@ -1,0 +1,20 @@
+{
+  "head": "373f4dac880a1be2d745cc8369b5be1d6d15b194",
+  "remote_head_verified": "373f4dac880a1be2d745cc8369b5be1d6d15b194",
+  "worktree": "/workspace/q",
+  "worktree_disposition": "removed after exact push/clean checks, preservation of ignored Python bytecode, kernel closure and completed reviewer/consumers",
+  "ignored_preserved_sha256": {
+    "scripts/__pycache__/cargo_admitted.cpython-312.pyc": "f910cd0363cd0aa1e7b43edf3fda7b09a138517f716338a4f8082a80c6236004",
+    "scripts/__pycache__/worktree-manager.cpython-312.pyc": "4e83ef4fbdf967f9d72632d4b4a2fc185a3272b3d562785d7031b2f9494dc03a",
+    "scripts/tests/__pycache__/test-pre-push-launchers.cpython-312.pyc": "5227613d33c2dcc051afe74de9aee8dbe6c6a85f3fda7489b9c11b70ad6f5d6b",
+    "scripts/tests/__pycache__/test_cargo_admitted_budget.cpython-312.pyc": "111930e848006f1202032404ad59b4cb316948d3dd6077622a24889e443c3d7d",
+    "scripts/tests/__pycache__/test_cargo_admitted_clippy.cpython-312.pyc": "7836912640f2611de22f70eb327f459e2a14a1307a0482f2d585b1061672f207",
+    "scripts/tests/__pycache__/test_cargo_admitted_clippy_tree.cpython-312.pyc": "c08691249699137c3504b716ecf6193537989e5947250f6fd05d69a45d397a3c",
+    "scripts/tests/__pycache__/test_cargo_admitted_storage.cpython-312.pyc": "b9a964369604151082faaa219565620e06376ae5584d53a61108c9121f929a5b"
+  },
+  "outputs": "/workspace/qd retained",
+  "temp": "/workspace/qt retained",
+  "evidence": "/workspace/q-evidence retained",
+  "shared_caches": "/workspace/.cloud-tools retained",
+  "old_resources": "untouched, retained and unproven; no inspection/settlement"
+}
