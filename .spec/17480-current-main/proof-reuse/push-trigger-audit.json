@@ -1,0 +1,780 @@
+{
+  "branch": "recovery/perl-helper-current-proof-17480-17484",
+  "source_head": "260624886a4643e9b0145a60a3130c6875096ff3",
+  "matched_push_workflows": 0,
+  "workflows": [
+    {
+      "workflow": ".github/workflows/active-authority-contract.yml",
+      "sha256": "eae025e8ab9f4407471527d2dd1a28e24b2d97eec6766df0887471cdfb4740c0",
+      "push": {
+        "branches": [
+          "main"
+        ],
+        "paths": [
+          "CONTRIBUTING.md",
+          ".github/copilot-instructions.md",
+          "docs/reference/MAINTAINER_AGENT_DOCTRINE.md",
+          "docs/reference/WORKTREE_PROTOCOL.md",
+          "AGENTS.md",
+          "CLAUDE.md",
+          ".agents/skills/**",
+          ".claude/skills/**",
+          ".claude/agents/**",
+          "docs/agents/DEVELOPMENT_METHOD.md",
+          "docs/agents/REVIEW_CURRENTNESS.md",
+          "docs/agents/SKILL_CONTRACT.md",
+          "justfile",
+          ".gitignore",
+          "tests/test_active_authority_contract.py",
+          "tests/test_writer_authority_transfer_contract.py",
+          ".github/workflows/active-authority-contract.yml"
+        ]
+      },
+      "branch_matches": false
+    },
+    {
+      "workflow": ".github/workflows/agent-authority-status.yml",
+      "sha256": "08b26004c7fbd7bc5a174882e50cf7ca7f569fa35d7b0d23c34445d7b8667421",
+      "push": {
+        "branches": [
+          "main"
+        ],
+        "paths": [
+          ".github/copilot-instructions.md",
+          ".github/workflows/agent-authority-status.yml",
+          ".spec/3988-merge-readiness/spec.md",
+          "AGENTS.md",
+          "CLAUDE.md",
+          "CONTRIBUTING.md",
+          "docs/adr/0044-octopus-cluster-orchestration.md",
+          "docs/agents/AUTHORITY_STATUS.md",
+          "docs/agents/DEVELOPMENT_METHOD.md",
+          "docs/agents/GITHUB_SURFACES.md",
+          "docs/agents/README.md",
+          "docs/agents/REVIEW_CURRENTNESS.md",
+          "docs/agents/SKILL_CONTRACT.md",
+          "docs/agents/authority_status.toml",
+          "docs/articles/PIPELINE_STATE_MACHINE.md",
+          "docs/ci/perl-lsp-rust-1.95-rollout.md",
+          "docs/development/RUST_1_95_PROACTIVE_GUARDS.md",
+          "docs/development/RUST_1_95_ROLLOUT.md",
+          "docs/development/STRONG_CLIPPY_LINTS_ROLLOUT.md",
+          "docs/handoff/SWARM_DESIGN.md",
+          "docs/how-to/AGENT_CONTRIBUTING.md",
+          "docs/how-to/SESSION_OPERATIONS.md",
+          "docs/project/RAILS_INDEX.md",
+          "docs/reference/GLOSSARY.md",
+          "docs/reference/LIVE_SIGNALS_VS_LABELS.md",
+          "docs/reference/MAINTAINER_AGENT_DOCTRINE.md",
+          "docs/reference/OCTOPUS_CLUSTER.md",
+          "docs/reference/ORCHESTRATION_DOCTRINE.md",
+          "docs/reference/PIPELINE_GATES.md",
+          "docs/reference/WORKTREE_PROTOCOL.md",
+          "docs/specs/PLSP-SPEC-0006-pr-queue-disposition.md",
+          "docs/specs/PLSP-SPEC-0037-reload-lifecycle-v1.md",
+          "scripts/ci/check-pr-claim-currentness",
+          "scripts/ci/check-pr-review-convergence-core",
+          "scripts/reviews/claim-digest",
+          "tests/test_agent_authority_status.py",
+          "tests/test_legacy_authority_banners.py"
+        ]
+      },
+      "branch_matches": false
+    },
+    {
+      "workflow": ".github/workflows/agent-capability-gate.yml",
+      "sha256": "69b32c43b031aee1629b55559784ac2cea4e9c9543c7b0faeaef9991fc266c34",
+      "push": {
+        "branches": [
+          "main",
+          "master"
+        ]
+      },
+      "branch_matches": false
+    },
+    {
+      "workflow": ".github/workflows/agent-flow-control-plane.yml",
+      "sha256": "50646fe447425b20a04d327895aea98b78dbf1927d1e96af6514cbcc6bf1667d",
+      "push": {
+        "branches": [
+          "main",
+          "master"
+        ],
+        "paths": [
+          "AGENTS.md",
+          "CLAUDE.md",
+          ".github/PULL_REQUEST_TEMPLATE.md",
+          "docs/agents/**",
+          "docs/specs/PLSP-SPEC-0006-pr-queue-disposition.md",
+          "docs/specs/README.md",
+          "docs/INDEX.md",
+          ".agents/skills/**",
+          ".claude/skills/**",
+          ".claude/settings.json",
+          ".codex/**",
+          "xtask/src/main.rs",
+          "xtask/src/tasks/agent_flow.rs",
+          "xtask/src/tasks/agent_flow/**",
+          "xtask/src/tasks/mod.rs",
+          "xtask/tests/agent_merge_review_backstop.rs",
+          "xtask/tests/agent_shift_left_entry_contract.rs",
+          "xtask/tests/agent_remote_wait_attention.rs",
+          "xtask/tests/agent_shift_left_mutation_admission_contract.rs",
+          "xtask/tests/pr_convergence_contract.rs",
+          "xtask/tests/shift_left_publication_contract.rs",
+          "policy/skill-provider-parity.toml",
+          "scripts/tests/test-agent-flow-control-plane-trigger.sh",
+          ".github/workflows/agent-flow-control-plane.yml"
+        ]
+      },
+      "branch_matches": false
+    },
+    {
+      "workflow": ".github/workflows/authority-transfer-graph.yml",
+      "sha256": "d715fd6ba8816ddf420c4508a104937cba3ca1defe77685f6ff67e85c00f90a5",
+      "push": {
+        "branches": [
+          "main",
+          "master"
+        ],
+        "paths": [
+          ".ci/authority-transfer-programme/**",
+          "scripts/check-authority-transfer-graph.sh",
+          "xtask/src/bin/authority-transfer-graph.rs",
+          ".github/workflows/authority-transfer-graph.yml"
+        ]
+      },
+      "branch_matches": false
+    },
+    {
+      "workflow": ".github/workflows/ci-security.yml",
+      "sha256": "cd2e17abd1a3b0bd25c9f6b46455218ba5aaf94f6cb217149207e720cf6dc548",
+      "push": {
+        "branches": [
+          "main",
+          "master"
+        ]
+      },
+      "branch_matches": false
+    },
+    {
+      "workflow": ".github/workflows/ci.yml",
+      "sha256": "180d0728bce2252ac7ff3e223e4407ef3dceb2d6d09b4af3095cadbcb4598010",
+      "push": {
+        "branches": [
+          "main",
+          "master"
+        ]
+      },
+      "branch_matches": false
+    },
+    {
+      "workflow": ".github/workflows/composite-action-contracts.yml",
+      "sha256": "c405756ea5e389b48df2d90c2edea62606173dd85a73e66eb8397e9a5551c96e",
+      "push": {
+        "branches": [
+          "main",
+          "master"
+        ],
+        "paths": [
+          ".github/actions/rust-checks/**",
+          ".github/actions/upload-receipt/**",
+          ".github/workflows/composite-action-contracts.yml",
+          ".ci/receipt.schema.json",
+          "xtask/src/tasks/gates.rs"
+        ]
+      },
+      "branch_matches": false
+    },
+    {
+      "workflow": ".github/workflows/content-anchored-baselines.yml",
+      "sha256": "dedd176b79eb82d23754535577cda45223f5aa83c669605350761dedf4cab84c",
+      "push": {
+        "branches": [
+          "main",
+          "master"
+        ]
+      },
+      "branch_matches": false
+    },
+    {
+      "workflow": ".github/workflows/dap-editor-transport.yml",
+      "sha256": "ec4179560be12497d8013e42470578ca915a13ba8b276d8213f667fdc4da2c5e",
+      "push": {
+        "branches": [
+          "main",
+          "master"
+        ],
+        "paths": [
+          ".ci/dap/editor-transport-inventory.v1.json",
+          ".ci/editor-clients/vimspector-perl-dap.v1.json",
+          ".ci/fixtures/zed-perl-upstream/zed-perl/src/perl.rs",
+          ".docker/perl-lsp/Dockerfile",
+          "book/src/dap/user-guide.md",
+          "clients/sublime/LSP-perllsp/dap_support.py",
+          "crates/perl-dap/**",
+          "crates/perl-lsp-rs-core/src/runtime/launcher/mod.rs",
+          "docs/adr/0047-dap-stdio-only-editor-transport.md",
+          "docs/EDITORS/HELIX_SETUP.md",
+          "docs/how-to/EXTERNAL_DEBUGGER_PEER_QUICKSTART.md",
+          "docs/tutorials/DAP_USER_GUIDE.md",
+          "integrations/lsp4ij/upstream/0.20.1/dap/template.json",
+          "scripts/ci/dap_editor_transport*.py",
+          "scripts/tests/test_dap_editor_transport_inventory.py",
+          "scripts/tests/test_dap_editor_transport_security.py",
+          "scripts/ux/neovim/perl_dap.lua",
+          "vscode-extension/src/debugAdapter.ts",
+          ".github/workflows/dap-editor-transport.yml"
+        ]
+      },
+      "branch_matches": false
+    },
+    {
+      "workflow": ".github/workflows/dap-protocol-authority.yml",
+      "sha256": "c053388a5d8acc0b501ce95ac77258e59b1385a71cbc5ce2de4e3dddbaaec7ec",
+      "push": {
+        "branches": [
+          "main",
+          "master"
+        ],
+        "paths": [
+          ".ci/dap/protocol-authority.json",
+          "crates/perl-dap/**",
+          "scripts/ci/dap_protocol_authority.py",
+          "scripts/ci/dap_nullability_inventory.py",
+          "scripts/tests/test_dap_nullability_inventory.py",
+          ".ci/dap/upstream-debugAdapterProtocol.json",
+          ".ci/dap/nullability-inventory.v1.json",
+          "scripts/ci/dap_authority_*.py",
+          "scripts/tests/test_dap_protocol_authority.py",
+          "docs/reference/DAP_PROTOCOL_SCHEMA.md",
+          "book/src/dap/protocol-schema.md",
+          ".github/workflows/dap-protocol-authority.yml"
+        ]
+      },
+      "branch_matches": false
+    },
+    {
+      "workflow": ".github/workflows/dap-scorecard.yml",
+      "sha256": "39194d406a5f676d82a823b8470fca5ba9d9bf13226245843d4a9fecf99973ab",
+      "push": {
+        "branches": [
+          "main",
+          "master"
+        ],
+        "paths": [
+          "crates/perl-dap/**",
+          "crates/perl-lsp-rs-core/src/transport/framing.rs",
+          "xtask/src/tasks/update_status/dap.rs",
+          "docs/project/status/dap.md",
+          "scripts/ci/dap_scorecard_*.py",
+          "scripts/tests/test_dap_scorecard_*.py",
+          ".github/workflows/dap-scorecard.yml",
+          "Cargo.toml",
+          "Cargo.lock",
+          "xtask/src/main.rs",
+          "xtask/src/tasks/mod.rs"
+        ]
+      },
+      "branch_matches": false
+    },
+    {
+      "workflow": ".github/workflows/docs-deploy.yml",
+      "sha256": "4f1e67e1a9aac17ff5f43e531c725b4f2a5a14ef8a169a79a569cd8a7ca081a6",
+      "push": {
+        "branches": [
+          "main",
+          "master"
+        ],
+        "paths": [
+          "CONTRIBUTING.md",
+          "docs/**",
+          "book/**",
+          "scripts/populate-book.sh",
+          "scripts/tests/test-populate-book-roadmap-links.sh",
+          ".github/workflows/docs-deploy.yml"
+        ]
+      },
+      "branch_matches": false
+    },
+    {
+      "workflow": ".github/workflows/droid-security-boundary.yml",
+      "sha256": "56a6c7a13cb19ebe88a650b076f55382adf8b1eb429bf5bcfe3d2169eec343c7",
+      "push": {
+        "branches": [
+          "main",
+          "master"
+        ],
+        "paths": [
+          ".ci/policies/action-pin-provenance.toml",
+          ".github/workflows/droid.yml",
+          ".github/workflows/droid-review.yml",
+          ".github/workflows/droid-security-scan.yml",
+          ".github/workflows/droid-security-boundary.yml",
+          "docs/agent-context/droid-smoke-tests.md",
+          "scripts/ci/test_droid_security_boundary.py"
+        ]
+      },
+      "branch_matches": false
+    },
+    {
+      "workflow": ".github/workflows/em-ci-routed-rust.yml",
+      "sha256": "66a6e20221eee0b8beeea47e19b3bcd2add4805b732a26c47de304ff39f7a3e5",
+      "push": {
+        "branches": [
+          "main",
+          "master"
+        ]
+      },
+      "branch_matches": false
+    },
+    {
+      "workflow": ".github/workflows/gate-enforcement-contract.yml",
+      "sha256": "04562882121c9d655852dbf256bbbc3d700329870d2b7b9814335e93c2668407",
+      "push": {
+        "branches": [
+          "main",
+          "master"
+        ]
+      },
+      "branch_matches": false
+    },
+    {
+      "workflow": ".github/workflows/installer-bootstrap-contract.yml",
+      "sha256": "377fddc400111a05aa735b7a13e3cb4f41963efa52cbb26c054fd34f75efd3e0",
+      "push": {
+        "branches": [
+          "main",
+          "master"
+        ],
+        "paths": [
+          "install.sh",
+          "scripts/install.sh",
+          "scripts/tests/test-install-bootstrap-identity.sh",
+          "scripts/tests/test-install-arg-surface.sh",
+          "docs/how-to/INSTALLATION.md",
+          "README.md",
+          ".github/workflows/installer-bootstrap-contract.yml"
+        ]
+      },
+      "branch_matches": false
+    },
+    {
+      "workflow": ".github/workflows/installer-checksum-contract.yml",
+      "sha256": "6b60ce69986ae60af2bcdfee5b9afcee28a49cefdc32e9508fadb1248a2952a7",
+      "push": {
+        "branches": [
+          "main",
+          "master"
+        ],
+        "paths": [
+          "scripts/install.sh",
+          "install.ps1",
+          "scripts/tests/test-installer-checksum-required.sh",
+          "scripts/tests/test-installer-archive-safety.sh",
+          "scripts/tests/test-installer-product-unit-promotion.sh",
+          "scripts/tests/test-installer-verify-install.sh",
+          "scripts/tests/lib/standalone_archive_fixtures.py",
+          "policy/standalone-archive-safety.v1.toml",
+          "docs/how-to/INSTALLATION.md",
+          ".github/workflows/installer-checksum-contract.yml"
+        ]
+      },
+      "branch_matches": false
+    },
+    {
+      "workflow": ".github/workflows/installer-powershell-checksum-contract.yml",
+      "sha256": "074a4d0f9fa2713722e087a251a4f2bc9c278abcf5d7035f9f9e30d4486cf1c8",
+      "push": {
+        "branches": [
+          "main",
+          "master"
+        ],
+        "paths": [
+          "install.ps1",
+          "scripts/install.sh",
+          "scripts/tests/test-install-ps1-checksum-required.ps1",
+          "scripts/tests/test-install-ps1-archive-safety.ps1",
+          "scripts/tests/test-install-ps1-product-unit-promotion.ps1",
+          "policy/standalone-archive-safety.v1.toml",
+          "docs/how-to/INSTALLATION.md",
+          ".github/workflows/installer-powershell-checksum-contract.yml"
+        ]
+      },
+      "branch_matches": false
+    },
+    {
+      "workflow": ".github/workflows/installer-termux-contract.yml",
+      "sha256": "a6f97e12af03c2cfaef2f388ffb2292f01f927383a6e1960443ea5079a0b2259",
+      "push": {
+        "branches": [
+          "main",
+          "master"
+        ],
+        "paths": [
+          "install.sh",
+          "scripts/install.sh",
+          "scripts/tests/test-installer-termux-detection.sh",
+          "docs/how-to/INSTALLATION.md",
+          ".github/workflows/installer-termux-contract.yml"
+        ]
+      },
+      "branch_matches": false
+    },
+    {
+      "workflow": ".github/workflows/legacy-authority-banners.yml",
+      "sha256": "e49bdad8acb7d9d1e80264866b7e7ecdb295d0fe453aaee1717c531d1335ba1a",
+      "push": {
+        "branches": [
+          "main"
+        ],
+        "paths": [
+          ".github/workflows/legacy-authority-banners.yml",
+          ".spec/3988-merge-readiness/spec.md",
+          "docs/adr/0044-octopus-cluster-orchestration.md",
+          "docs/agents/authority_status.toml",
+          "docs/articles/PIPELINE_STATE_MACHINE.md",
+          "docs/ci/perl-lsp-rust-1.95-rollout.md",
+          "docs/development/RUST_1_95_PROACTIVE_GUARDS.md",
+          "docs/development/RUST_1_95_ROLLOUT.md",
+          "docs/development/STRONG_CLIPPY_LINTS_ROLLOUT.md",
+          "docs/handoff/SWARM_DESIGN.md",
+          "docs/project/RAILS_INDEX.md",
+          "docs/reference/GLOSSARY.md",
+          "docs/reference/LIVE_SIGNALS_VS_LABELS.md",
+          "docs/reference/OCTOPUS_CLUSTER.md",
+          "docs/reference/ORCHESTRATION_DOCTRINE.md",
+          "docs/reference/PIPELINE_GATES.md",
+          "scripts/migrate-legacy-authority-banners.py",
+          "tests/test_legacy_authority_banners.py"
+        ]
+      },
+      "branch_matches": false
+    },
+    {
+      "workflow": ".github/workflows/lsp-318-claim-guard.yml",
+      "sha256": "e898fc84e96de857fbf00566647ab1f4d37ea5f0e28ef08f9df355b9de1c6b3a",
+      "push": {
+        "branches": [
+          "main",
+          "master"
+        ],
+        "paths": [
+          ".github/workflows/lsp-318-claim-guard.yml",
+          "policy/ci-lane-whitelist.toml",
+          "features.toml",
+          "crates/perl-lsp-rs/features_sot.toml",
+          "crates/perl-lsp-rs/src/**",
+          "crates/perl-lsp-rs-core/src/**",
+          "crates/perl-lsp-rs/tests/lsp_318_negative_claims.rs",
+          "crates/perl-lsp-rs/tests/lsp_cap_snap.rs",
+          "crates/perl-lsp-rs/tests/lsp_caps_contract_shapes.rs",
+          "crates/perl-lsp-rs/tests/snapshots/**",
+          "docs/specs/PLSP-SPEC-0029-lsp-318-conformance-boundary.md",
+          "docs/specs/lsp-318-conformance-matrix.md",
+          "docs/specs/lsp-318-closure-ownership.md",
+          "xtask/src/main.rs",
+          "xtask/src/tasks/mod.rs",
+          "xtask/src/tasks/lsp_318_claims.rs",
+          "xtask/src/tasks/lsp_318_matrix.rs",
+          "xtask/tests/list_commands_cli.rs",
+          "xtask/tests/lsp_318_changelog_totality.rs",
+          "xtask/tests/lsp_318_closure_ownership.rs",
+          "xtask/tests/fixtures/lsp-318-changelog/**"
+        ]
+      },
+      "branch_matches": false
+    },
+    {
+      "workflow": ".github/workflows/main-history-event.yml",
+      "sha256": "1efba63fa76b552a2a84dd6e3d1ed47399c214c6669ceb9f1fb9cbfd82e5647b",
+      "push": {
+        "branches": [
+          "main"
+        ]
+      },
+      "branch_matches": false
+    },
+    {
+      "workflow": ".github/workflows/methodology-gate.yml",
+      "sha256": "99b202e935016f6902c58ee8ed952c288030819e24ec44a766bda3e866ff3e1d",
+      "push": {
+        "branches": [
+          "main",
+          "master"
+        ]
+      },
+      "branch_matches": false
+    },
+    {
+      "workflow": ".github/workflows/non-rust-policy.yml",
+      "sha256": "f6032be4cca66efe2351693434515aa6863d148f39860a0edff868b609d074d2",
+      "push": {
+        "branches": [
+          "main",
+          "master"
+        ]
+      },
+      "branch_matches": false
+    },
+    {
+      "workflow": ".github/workflows/post-merge-status.yml",
+      "sha256": "62dbf8659231d5677c51d106a130e7ce223f23b396ac0fb8b29791e908eeee1a",
+      "push": {
+        "branches": [
+          "main",
+          "master"
+        ]
+      },
+      "branch_matches": false
+    },
+    {
+      "workflow": ".github/workflows/release-history.yml",
+      "sha256": "fef77add6c35f6d7809b270cbb25ae8be3a3dd2f5a9ac320f7f65e5cd76690b8",
+      "push": {
+        "branches": [
+          "main"
+        ],
+        "paths": [
+          ".github/workflows/release-history.yml",
+          "rust-toolchain.toml",
+          "RELEASE_HISTORY.md",
+          "docs/releases/**",
+          "policy/release-tag-provenance.toml",
+          "scripts/check_release_history.sh",
+          "scripts/check_release_tag_provenance.py",
+          "scripts/tests/test_release_channel_actuals.py",
+          "scripts/test_release_build_identity.py",
+          "scripts/test_release_package_evidence.py",
+          "scripts/test_release_tag_authority.py",
+          "scripts/test_release_topology_json.py"
+        ]
+      },
+      "branch_matches": false
+    },
+    {
+      "workflow": ".github/workflows/release-settings-closeout.yml",
+      "sha256": "395c3156d1da37c42cb7dd555619b0e92c4d73d4e39c8d7674e9b9639ef411c3",
+      "push": {
+        "branches": [
+          "main",
+          "master"
+        ],
+        "paths": [
+          ".ci/security/release-settings-closeout.json",
+          "docs/security/release-settings-closeout.md",
+          "scripts/ci/check_release_settings_closeout.py",
+          "scripts/ci/test_check_release_settings_closeout.py",
+          ".github/workflows/release-settings-closeout.yml"
+        ]
+      },
+      "branch_matches": false
+    },
+    {
+      "workflow": ".github/workflows/reload-lifecycle-authority.yml",
+      "sha256": "9238402156ea0874823419d16613ffb90c7a00b3bbef9341d36cdd709ec2bcc0",
+      "push": {
+        "branches": [
+          "main"
+        ],
+        "paths": [
+          ".github/workflows/reload-lifecycle-authority.yml",
+          "crates/**",
+          "docs/**",
+          "tests/test_reload_lifecycle_authority.py",
+          "tests/test_writer_authority_transfer_contract.py"
+        ]
+      },
+      "branch_matches": false
+    },
+    {
+      "workflow": ".github/workflows/review-receipt-retirement.yml",
+      "sha256": "ef740a874c9b799e81e2283d7c3a25738a70024f0965c35222fcbea27dd784d6",
+      "push": {
+        "branches": [
+          "main"
+        ],
+        "paths": [
+          "scripts/ci/check-pr-claim-currentness",
+          "scripts/reviews/claim-digest",
+          "scripts/reviews/claim_digest.py",
+          "tests/test_review_claim_currentness.py",
+          "tests/test_review_claim_fail_closed.py",
+          "tests/test_retired_review_receipt_commands.py",
+          ".github/workflows/review-receipt-retirement.yml"
+        ]
+      },
+      "branch_matches": false
+    },
+    {
+      "workflow": ".github/workflows/ripr.yml",
+      "sha256": "f3b8d0754432e04d4fd6a2ab5878be682fef23f1df3805dbc55e0cc6f5152b7f",
+      "push": {
+        "branches": [
+          "master",
+          "main"
+        ]
+      },
+      "branch_matches": false
+    },
+    {
+      "workflow": ".github/workflows/security-reconciliation.yml",
+      "sha256": "6be9ac1015940d901253978551245b7786051f39c53c35ef7421b2cea29efc0d",
+      "push": {
+        "branches": [
+          "main",
+          "master"
+        ],
+        "paths": [
+          ".ci/security/may-2026-findings.json",
+          ".ci/security/may-2026-findings/**",
+          "docs/security/may-2026-findings.md",
+          "scripts/ci/check_security_reconciliation.py",
+          "scripts/ci/security_reconciliation_model.py",
+          "scripts/ci/security_reconciliation_io.py",
+          "scripts/ci/test_check_security_reconciliation.py",
+          ".github/workflows/security-reconciliation.yml"
+        ]
+      },
+      "branch_matches": false
+    },
+    {
+      "workflow": ".github/workflows/sublime-dap-real-host.yml",
+      "sha256": "5202df15bf754e7a2a6dfcd6408d1a319386db6632aed63c974206a81acf435f",
+      "push": {
+        "branches": [
+          "main"
+        ],
+        "paths": [
+          "clients/sublime/**",
+          "scripts/sublime/**",
+          "crates/perl-dap/**",
+          "crates/perl-lsp-rs-core/**",
+          "Cargo.toml",
+          "Cargo.lock",
+          ".github/workflows/sublime-dap-real-host.yml"
+        ]
+      },
+      "branch_matches": false
+    },
+    {
+      "workflow": ".github/workflows/sublime-package-contract.yml",
+      "sha256": "4ad813f14f8430ab962f3dcb61f02ec9650d8005e0e75a62a88c76136c404faa",
+      "push": {
+        "branches": [
+          "main"
+        ],
+        "paths": [
+          "clients/sublime/**",
+          "policy/non-rust-allowlist.toml",
+          ".github/workflows/sublime-package-contract.yml",
+          "xtask/src/main.rs",
+          "xtask/src/tasks/mod.rs"
+        ]
+      },
+      "branch_matches": false
+    },
+    {
+      "workflow": ".github/workflows/worked-lane-corpus.yml",
+      "sha256": "56e17093e84f671bd5c0745d4dc75d069a9e2e0e82e9bfe7c7e7ed0c0b347617",
+      "push": {
+        "branches": [
+          "main"
+        ],
+        "paths": [
+          ".github/workflows/worked-lane-corpus.yml",
+          "docs/agents/README.md",
+          "docs/agents/examples/**",
+          "tests/test_worked_lane_corpus.py"
+        ]
+      },
+      "branch_matches": false
+    },
+    {
+      "workflow": ".github/workflows/workflow-contracts-advisory.yml",
+      "sha256": "ac3a164f29e3d5464973a3622b6fdd9f172104a39fed25956378a59e695fbf96",
+      "push": {
+        "branches": [
+          "main"
+        ],
+        "paths": [
+          ".github/workflows/**",
+          "scripts/ci/test_codecov_test_results_workflows.py",
+          "scripts/ci/test_perf_nightly_alert.py",
+          "scripts/bash_binary.py",
+          "xtask/src/tasks/workflows.rs",
+          "policy/workflow-contracts.toml",
+          "xtask/src/main.rs",
+          "xtask/src/tasks/mod.rs"
+        ]
+      },
+      "branch_matches": false
+    },
+    {
+      "workflow": ".github/workflows/workflow-policy.yml",
+      "sha256": "50f9623b8cefa58715c2a14752d82d0c4056ebbfa66f37f10ab941a978bfb719",
+      "push": {
+        "branches": [
+          "main",
+          "master"
+        ],
+        "paths": [
+          ".github/workflows/**",
+          "xtask/src/tasks/workflow_policy_lint.rs",
+          "policy/self-hosted-runner-isolation.toml",
+          "xtask/src/tasks/ux_regression_receipt.rs",
+          "crates/perl-lsp-ux-tests/src/regression_receipt.rs",
+          "crates/perl-lsp-ux-tests/src/bin/ux_regression_receipt.rs",
+          "xtask/src/main.rs",
+          "xtask/src/tasks/mod.rs",
+          "xtask/tests/ux_regression_gate_workflow_policy.rs",
+          "xtask/tests/public_api_pr_gating_workflow.rs",
+          "xtask/tests/perl_version_matrix_cache_contract.rs",
+          "xtask/tests/corpus_windows_reparse_cache_contract.rs",
+          "xtask/tests/ci_nightly_cache_contract.rs",
+          "scripts/ci/candidate_proof_presence.py",
+          "scripts/ci/test_candidate_proof_presence.py",
+          ".github/ci-config.yml",
+          "scripts/gh/ensure-labels.sh",
+          "scripts/tests/test-public-api-ratchet.sh",
+          "scripts/tests/test-public-api-label.sh",
+          "docs/ci/labels.md",
+          "justfile",
+          ".ci/receipts/schemas/workflow-policy.schema.json",
+          "xtask/tests/fixtures/workflow-policy/**"
+        ]
+      },
+      "branch_matches": false
+    },
+    {
+      "workflow": ".github/workflows/workflow-security-ratchet.yml",
+      "sha256": "88983edbfd6249e56067e5d27c386d2f9f87b4adcb7b63d89ee8f54450ba919c",
+      "push": {
+        "branches": [
+          "main",
+          "master"
+        ],
+        "paths": [
+          ".github/workflows/**",
+          ".github/actions/**",
+          ".ci/workflow-security-baseline.json",
+          "scripts/ci/workflow_security_ratchet.py",
+          "scripts/ci/test_workflow_security_ratchet.py"
+        ]
+      },
+      "branch_matches": false
+    },
+    {
+      "workflow": ".github/workflows/workflow-trigger-lint.yml",
+      "sha256": "235a59068c651cbbd893e639eeb86b11c092d89d0e243fed040ad91e6785698f",
+      "push": {
+        "branches": [
+          "main",
+          "master"
+        ]
+      },
+      "branch_matches": false
+    }
+  ],
+  "limits": "Branch trigger audit; no PR, tag, dispatch, or hosted run requested."
+}

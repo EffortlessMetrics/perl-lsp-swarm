@@ -1,0 +1,119 @@
+{
+  "run": 38057828834,
+  "fragments": [
+    {
+      "id": "114230039836",
+      "lines": [
+        "2026-10-10T14:00:59.9658454Z   1.95.0-x86_64-unknown-linux-gnu installed - rustc 1.95.0 (59807616e 2026-04-14)",
+        "2026-10-10T14:01:00.3754738Z   1.95.0-x86_64-unknown-linux-gnu unchanged - rustc 1.95.0 (59807616e 2026-04-14)",
+        "2026-10-10T14:01:00.7298217Z rustc 1.95.0 (59807616e 2026-04-14)",
+        "2026-10-10T14:05:17.1918329Z \u001b[1m\u001b[92m    Finished\u001b[0m `dev` profile [optimized + debuginfo] target(s) in 4m 06s",
+        "2026-10-10T14:05:18.5634404Z Rust: rustc 1.95.0 (59807616e 2026-04-14)",
+        "2026-10-10T14:05:39.3671067Z Rust: rustc 1.95.0 (59807616e 2026-04-14)",
+        "2026-10-10T14:05:40.0373099Z Rust: rustc 1.95.0 (59807616e 2026-04-14)",
+        "2026-10-10T14:05:40.7061032Z Rust: rustc 1.95.0 (59807616e 2026-04-14)",
+        "2026-10-10T14:05:41.3726268Z Rust: rustc 1.95.0 (59807616e 2026-04-14)",
+        "2026-10-10T14:05:42.1224192Z Rust: rustc 1.95.0 (59807616e 2026-04-14)",
+        "2026-10-10T14:05:42.2096698Z BEGIN gate=compiler_performance_receipt_contract timeout=600 command=cargo test -p xtask --bin xtask compiler_performance_receipt --locked && cargo xtask check-compiler-performance-receipt",
+        "2026-10-10T14:08:20.9163241Z END gate=compiler_performance_receipt_contract status=pass exit=0 duration_ms=158706",
+        "2026-10-10T14:08:21.1015655Z Rust: rustc 1.95.0 (59807616e 2026-04-14)",
+        "2026-10-10T14:08:21.7745055Z Rust: rustc 1.95.0 (59807616e 2026-04-14)",
+        "2026-10-10T14:08:21.8696578Z BEGIN gate=postfix_capability_closure timeout=300 command=cargo test -p xtask --bin postfix-capability-closure --locked && cargo run --locked -p xtask --bin postfix-capability-closure -- --check",
+        "2026-10-10T14:08:23.6747460Z END gate=postfix_capability_closure status=pass exit=0 duration_ms=1804",
+        "2026-10-10T14:08:23.8533531Z Rust: rustc 1.95.0 (59807616e 2026-04-14)",
+        "2026-10-10T14:08:24.5254602Z Rust: rustc 1.95.0 (59807616e 2026-04-14)",
+        "2026-10-10T14:08:49.5318222Z Rust: rustc 1.95.0 (59807616e 2026-04-14)",
+        "2026-10-10T14:08:50.2122506Z Rust: rustc 1.95.0 (59807616e 2026-04-14)",
+        "2026-10-10T14:08:50.9947816Z Rust: rustc 1.95.0 (59807616e 2026-04-14)",
+        "2026-10-10T14:08:52.0331997Z Rust: rustc 1.95.0 (59807616e 2026-04-14)",
+        "2026-10-10T14:08:52.7736726Z Rust: rustc 1.95.0 (59807616e 2026-04-14)",
+        "2026-10-10T14:08:53.4430789Z Rust: rustc 1.95.0 (59807616e 2026-04-14)",
+        "2026-10-10T14:08:53.9140802Z Rust: rustc 1.95.0 (59807616e 2026-04-14)",
+        "2026-10-10T14:08:54.3834272Z Rust: rustc 1.95.0 (59807616e 2026-04-14)",
+        "2026-10-10T14:10:12.4721687Z Rust: rustc 1.95.0 (59807616e 2026-04-14)",
+        "2026-10-10T14:10:13.2455048Z Rust: rustc 1.95.0 (59807616e 2026-04-14)",
+        "2026-10-10T14:10:13.5634163Z Rust: rustc 1.95.0 (59807616e 2026-04-14)",
+        "2026-10-10T14:10:14.2358250Z Rust: rustc 1.95.0 (59807616e 2026-04-14)",
+        "2026-10-10T14:10:14.9040831Z Rust: rustc 1.95.0 (59807616e 2026-04-14)",
+        "2026-10-10T14:10:18.1663940Z Finished uploading artifact content to blob storage!",
+        "2026-10-10T14:10:19.2764378Z Finished uploading artifact content to blob storage!",
+        "2026-10-10T14:10:20.2547637Z Finished uploading artifact content to blob storage!"
+      ]
+    },
+    {
+      "id": "114230000565",
+      "lines": [
+        "2026-10-10T14:00:35.7468094Z   1.95.0-x86_64-unknown-linux-gnu installed - rustc 1.95.0 (59807616e 2026-04-14)",
+        "2026-10-10T14:00:35.7752062Z   1.95.0-x86_64-unknown-linux-gnu unchanged - rustc 1.95.0 (59807616e 2026-04-14)",
+        "2026-10-10T14:00:35.9218111Z rustc 1.95.0 (59807616e 2026-04-14)",
+        "2026-10-10T14:00:42.8857236Z ##[group]Run cargo build -p perllsp --bin perllsp",
+        "2026-10-10T14:02:18.8241353Z \u001b[1m\u001b[92m    Finished\u001b[0m `dev` profile [optimized + debuginfo] target(s) in 1m 35s",
+        "2026-10-10T14:03:12.6481309Z \u001b[1m\u001b[92m    Finished\u001b[0m `dev` profile [optimized + debuginfo] target(s) in 53.75s",
+        "2026-10-10T14:04:33.2449743Z \u001b[1m\u001b[92m    Finished\u001b[0m `test` profile [optimized + debuginfo] target(s) in 1m 20s",
+        "2026-10-10T14:05:50.8100202Z \u001b[1m\u001b[92m    Finished\u001b[0m `dev` profile [optimized + debuginfo] target(s) in 0.08s",
+        "2026-10-10T14:05:51.4455370Z Finished uploading artifact content to blob storage!"
+      ]
+    },
+    {
+      "id": "114230039732",
+      "lines": [
+        "2026-10-10T14:01:03.6274032Z   1.95.0-x86_64-unknown-linux-gnu installed - rustc 1.95.0 (59807616e 2026-04-14)",
+        "2026-10-10T14:01:03.6546794Z   1.95.0-x86_64-unknown-linux-gnu unchanged - rustc 1.95.0 (59807616e 2026-04-14)",
+        "2026-10-10T14:01:03.7953603Z rustc 1.95.0 (59807616e 2026-04-14)",
+        "2026-10-10T14:05:39.4002935Z \u001b[1m\u001b[92m    Finished\u001b[0m `dev` profile [optimized + debuginfo] target(s) in 4m 25s",
+        "2026-10-10T14:05:39.6944198Z BEGIN gate=unit_dap_support_full timeout=450 command=cargo test --locked --lib -p perl-ci-hygiene -p perl-dap -p perl-tdd-support -p perl-test-generators -p perl-test-must -p tree-sitter-perl-c -p tree-sitter-perl-rs -- --test-threads=4 && cargo test --locked --features test-helpers -p perl-dap --test eval_ref_cache_miss_resume_tests --test dap_evaluate_comprehensive_tests --test dap_variable_reference_hardening_tests --test pause_signal_delivery_tests -- --test-threads=4",
+        "2026-10-10T14:08:22.0614337Z END gate=unit_dap_support_full status=pass exit=0 duration_ms=162367",
+        "2026-10-10T14:08:22.2403123Z Rust: rustc 1.95.0 (59807616e 2026-04-14)",
+        "2026-10-10T14:08:28.1131457Z Finished uploading artifact content to blob storage!",
+        "2026-10-10T14:08:29.3584695Z Finished uploading artifact content to blob storage!"
+      ]
+    }
+  ],
+  "jobs": [
+    {
+      "id": 114230000565,
+      "name": "UX Regression Tests",
+      "conclusion": "success",
+      "steps": [
+        {
+          "name": "Install Rust toolchain",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 4
+        }
+      ]
+    },
+    {
+      "id": 114230000653,
+      "name": "Compile All Targets (bit-rot guard)",
+      "conclusion": "success",
+      "steps": [
+        {
+          "name": "Install Rust toolchain",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 3
+        },
+        {
+          "name": "Package formatter caller contracts (required merge surface)",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 12
+        }
+      ]
+    },
+    {
+      "id": 114230039836,
+      "name": "CI Gate shard (policy)",
+      "conclusion": "success",
+      "steps": [
+        {
+          "name": "Install Rust toolchain",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 6
+        }
+      ]
+    }
+  ]
+}

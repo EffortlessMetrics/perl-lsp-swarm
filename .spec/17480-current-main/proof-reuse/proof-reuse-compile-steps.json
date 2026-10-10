@@ -1,0 +1,38 @@
+{
+  "run": 38057828834,
+  "id": 114230000653,
+  "name": "Compile All Targets (bit-rot guard)",
+  "conclusion": "success",
+  "steps": [
+    {
+      "name": "Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+      "status": "completed",
+      "conclusion": "success",
+      "number": 2
+    },
+    {
+      "name": "Install Rust toolchain",
+      "status": "completed",
+      "conclusion": "success",
+      "number": 3
+    },
+    {
+      "name": "Package formatter caller contracts (required merge surface)",
+      "status": "completed",
+      "conclusion": "success",
+      "number": 12
+    },
+    {
+      "name": "LSP JSON-RPC dependency probe (required merge surface)",
+      "status": "completed",
+      "conclusion": "success",
+      "number": 28
+    },
+    {
+      "name": "Post Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+      "status": "completed",
+      "conclusion": "success",
+      "number": 86
+    }
+  ]
+}
