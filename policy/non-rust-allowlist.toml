@@ -5833,6 +5833,19 @@ created = "2026-10-01"
 review_after = "2027-01-01"
 
 [[allow]]
+id = "non-rust-cargo-admitted-budget-proof"
+path = "scripts/tests/test_cargo_admitted_budget.py"
+kind = "ci_tooling"
+language = "python"
+surface = "tooling"
+classification = "test"
+owner = "tooling/agents"
+reason = "Standard-library scoped budget and lease regression fixtures exercise admission without Rust compilation."
+covered_by = ["python3 -m unittest discover -s scripts/tests -p 'test_cargo_admitted*.py'"]
+created = "2026-10-10"
+review_after = "2027-01-10"
+
+[[allow]]
 id = "non-rust-cleanup-fetch-maintenance-proof"
 path = "scripts/tests/test_cleanup_fetch_maintenance.py"
 kind = "ci_tooling"

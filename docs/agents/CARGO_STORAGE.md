@@ -75,6 +75,22 @@ requirement for this workload. The 40 GiB reserve is a preserved safety floor,
 not a proven universal reserve. `MIN_FREE_GB`/`MAX_USED_PCT` remain explicit host
 policy in the unchanged percentage mode; do not tune them simply to pass a build.
 
+For constrained hosts, the existing route also accepts an exact-command
+`--preflight` and an explicit scope-bound `--budget-file`. See
+[Cargo work on a constrained host](../how-to/CONSTRAINED_CARGO_BUILDS.md) for the
+schema and operator sizing obligations. The no-build Python preflight reports
+host/cwd/worktree, argument and captured-environment digests, effective paths and
+jobs without allocating resources or acquiring a lease. A generic storage doctor
+or writer preflight does not assess Cargo capacity.
+
+A declared budget may select a smaller reserve only with an operator-owned sizing
+basis for the exact request. `basis_verified: false` remains explicit: no measured
+small-cloud profile is supplied. Execution checks reserve plus total additional
+peak growth on every destination again inside the lease. This does not reserve
+bytes, enforce runtime quotas, attest all source/config/cache state, apportion
+separate volumes, admit compiler caches or account for cross-repository consumers.
+Without this option, the policies below retain their existing thresholds.
+
 For a host with an evidenced byte budget, the root may explicitly select
 `CARGO_STORAGE_POLICY=byte-budget`. This requires both:
 
@@ -107,7 +123,12 @@ with command-local empty values. Arbitrary build scripts and
 programs can write elsewhere; this is not an OS sandbox or a disk reservation.
 
 The atomic `cargo-active` directory is a conservative lease. Contenders refuse.
-Cargo exit 0 or 101 releases the lease and retains artifacts. Recognized abnormal
+Cargo exit 0 or 101 releases only the invocation's matching lease and retains artifacts.
+Cleanup requires the original directory identity and unique ownership marker;
+replacement leases, including copied markers, remain for owner verification.
+An unlaunched preparation failure releases only its own lease. Storage paths are
+revalidated for links before allocation and launch; this is not an adversarial
+filesystem sandbox. Recognized abnormal
 statuses (signals and Windows termination), unfamiliar exit codes, parent
 interruption and failed spawn retain it for owner verification. Exit 101 can also
 represent a Cargo panic: an exit status is not proof that all descendants ended.
@@ -149,7 +170,8 @@ approved proposals. Do not move active target directories or restart workers.
 Changing the wrapper does not retrofit currently running processes. Revert the
 candidate to roll back code, preserving all retained resources for review.
 
-Proof: `python scripts/tests/test_cargo_admitted_storage.py` covers admission,
+Proof: `python3 -m unittest discover -s scripts/tests -p 'test_cargo_admitted*.py'`
+runs both admission suites. The storage suite covers admission,
 worktree-private paths with a common lease, same-name and trailing-whitespace
 worktree distinction, exact
 and stale override handling, lock refusal, cancellation retention, path
