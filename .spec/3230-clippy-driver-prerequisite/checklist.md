@@ -18,7 +18,8 @@
   (table versus implemented renderer) repaired and re-reviewed; no open findings
   for the bounded preparation claim. No production or merge judgment.
 - [x] Initial prerequisite preserved at 75d64037 and documented in all three existing issues.
-- [ ] Preserve staged admission commit and update existing issues with revised scope.
+- [x] Staged admission preserved on quiet branch at 6b4024cbe6057dc2d495a9ebb800fae1c157c4fd.
+- [ ] Update existing issues with revised scope and exact downstream failure.
 - [x] Finite existing-owner Linux admission; real fail/clean fixture qualification.
 - [ ] Canonical typed executor/parity, native Windows Clippy, exact hook/resolver qualification.
 
@@ -50,9 +51,10 @@ Staged follow-up checks:
 - Combined admitted tests: 72 total, 71 pass, 1 separate opt-in build skip.
 - New finite route suite:18 tests pass, including configuration/identity,
   contention, all-exit retention and early/late cancellation.
-- Fresh authority review confirmed startup cancellation and post-probe config
-  repairs. Fresh prerequisite review found loader/include/target and SYSROOT
-  seams; all repaired, final re-review recorded with preserved candidate.
+- Both fresh final reviews found the bounded candidate ready. Startup
+  cancellation/post-probe configuration and loader/include/target/SYSROOT findings
+  were repaired and re-reviewed. One final wording precision (renderer source
+  binding versus tool/config revalidation) was corrected.
 - Real native fail/clean pair passed; latest reproducible proof directory:
   `/workspace/clippy-qualification/clippy-native-lnlsrkm_`.
 - Retained `*-stdout.txt`, `*-stderr.txt`, `*-budget.json`, `*-receipt.json`
@@ -71,3 +73,34 @@ completion/parity and exact hook/resolver lint qualification remain NOT_PROVEN.
 Source worktree, installed shared toolchain/cache and owned fixture artifacts are
 retained. Both fixture leases released only after independent matching-owner
 native verification; no outstanding fixture consumer was observed.
+
+## Exact hook/resolver consumer attempt
+
+After route correctness/fresh review, checked out detached exact
+`b5046c390bd6ea141b530bc896448c11c57f6cf2`, tree
+`9f6958b3a3936a04fa5c35ec1597d052b20d925b`, at
+`/workspace/clippy-hook-consumer`. Used immutable production route 6b4024cbe and
+`clippy -p perl-ci-hygiene --all-targets --profile agent --locked --offline -- -D warnings`.
+Default 40 GiB preflight still denied. Separately frozen budget used reserve 8 GiB /
+aggregate estimated peak growth 16 GiB (not a measured forecast): prior cold 70-package
+trace and mixed profiles/tests output<1GiB from issue #17484 comment 6094107977;
+large estimate conservatively covers native-target Clippy/all-target dev units,
+no downloads/fullworkspace/product execution. All destination roots were on the
+actual workspace volume with sufficient 24 GiB admission headroom; jobs 2.
+
+Actual product exit 101: strict workspace Clippy `print_stderr` at
+`crates/perl-ci-hygiene/src/change_set.rs:236`, and `print_stdout` at 411, 422.
+No source fixes were made to this qualification consumer. 96 dependency artifact
+events / 76 package IDs were observed; sole repo artifact package was
+`perl-test-must` (an explicit dev-dependency). No completed hygiene artifact or
+package pass is claimed. Distinct Clippy workload is not the prior 70-package
+normal/build product-free baseline; no performance/no-less-work parity claim.
+
+Evidence: `/workspace/clippy-consumer-proof/{preflight.stderr,budget.json,
+clippy.stdout,clippy.stderr,ownership.json}`. Exact launched group is absent,
+but this dependency-bearing workload needs independent all-consumer verification;
+lease remains retained at `/workspace/clippy-consumer-proof/devplane/
+5b4b67c9a262-linux-b65dcb543d0ae605/cargo-active`. Captured identity/UUID marker
+are in ownership.json; no cleanup or generalized fixture release applied.
+Worktree/source/build/cache/trace artifacts are retained with reason: reviewable
+qualification failure. Parent owns consumer fixes and final native verification.
