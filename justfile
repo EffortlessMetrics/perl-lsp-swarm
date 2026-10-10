@@ -26,7 +26,8 @@ target-gc *args:
     ./scripts/target-gc.sh {{args}}
 
 agent-preflight: storage-doctor
-    @echo "agent preflight ok"
+    @echo "storage layout preflight ok; Cargo build capacity was not assessed"
+    @echo "For build admission: scripts/cargo-admitted --preflight <exact Cargo command>"
 
 # Agent-safe check: routed target/build dirs, incremental off, bounded sccache, build lock.
 agent-check:
