@@ -26,8 +26,8 @@ class SelectionCli(unittest.TestCase):
         self.git("config", "user.name", "Selection fixture")
         self.git("config", "user.email", "selection@example.invalid")
         self.git("remote", "add", "origin", "https://github.com/owner/repo.git")
-        self.write("Cargo.toml", '[workspace]\nmembers=["crates/alpha", "crates/beta", "crates/perl-uri"]\nresolver="2"\n')
-        for name in ("alpha", "beta", "perl-uri"):
+        self.write("Cargo.toml", '[workspace]\nmembers=["crates/alpha", "crates/beta", "crates/perl-uri", "crates/perl-ci-hygiene"]\nresolver="2"\n')
+        for name in ("alpha", "beta", "perl-uri", "perl-ci-hygiene"):
             dependency = '\n[dependencies]\nalpha={path="../alpha"}\n' if name == "beta" else ""
             self.write(f"crates/{name}/Cargo.toml", f'[package]\nname="{name}"\nversion="0.1.0"\nedition="2021"\n{dependency}')
             self.write(f"crates/{name}/src/lib.rs", 'compile_error!("selection must never compile product");\n')
@@ -100,6 +100,20 @@ class SelectionCli(unittest.TestCase):
         scope = self.scope(self.capture())
         self.assertTrue(scope["platform_overrides"]["windows_runner"])
         self.assertIn("perl-uri", scope["platform_overrides"]["windows_test_crates"])
+
+    def test_relocated_classifier_retains_parser_ratchet_selection(self):
+        self.write("crates/perl-ci-hygiene/src/ci_scope.rs", "// classifier change\n")
+        self.commit()
+        scope = self.scope(self.capture())
+        self.assertTrue(scope["lanes"]["parser_ratchet"]["selected"])
+        self.assertIn("changed_path:crates/perl-ci-hygiene/src/ci_scope.rs",
+                      scope["lanes"]["parser_ratchet"]["reasons"])
+
+    def test_unrelated_hygiene_sibling_keeps_parser_ratchet_unselected(self):
+        self.write("crates/perl-ci-hygiene/src/version_sync.rs", "// sibling change\n")
+        self.commit()
+        scope = self.scope(self.capture())
+        self.assertFalse(scope["lanes"]["parser_ratchet"]["selected"])
 
     def test_scope_refuses_stale_checkout_without_rewriting_receipt(self):
         self.write("docs/start.md", "changed\n")
