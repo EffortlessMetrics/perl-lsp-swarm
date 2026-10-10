@@ -19,7 +19,7 @@
 #     being tracked (see hint output below for issue numbers).
 #   * The hook is failing for an environmental reason that is out of band of
 #     your change (e.g., nix store cache miss, transient toolchain issue,
-#     `cargo xtask change-set` reporting NOT PROVEN because origin/main is
+#     `bash scripts/githooks-bootstrap.sh change-set` reporting NOT PROVEN because origin/main is
 #     unreachable — see issue #3985).
 #
 # NOT OK to bypass:
@@ -35,7 +35,7 @@
 # Hook logic version (#17431 review wave 3): bump the integer below on EVERY
 # guard-logic change. Self-heal only upgrades (checkout > installed) and
 # never downgrades; unmarked legacy hooks count as version 0.
-# pre-push-hook-version: 2
+# pre-push-hook-version: 3
 
 set -euo pipefail
 
@@ -213,7 +213,7 @@ for line in "${PUSH_REFS[@]+"${PUSH_REFS[@]}"}"; do
     if [ "$remote_sha" = "0000000000000000000000000000000000000000" ]; then
         # New branch: there is no known remote SHA to diff against. Resolve
         # the changed-path set through the single shared #3985 change_set
-        # resolver (`cargo xtask change-set` — main-first: origin/main,
+        # resolver (`bash scripts/githooks-bootstrap.sh change-set` — main-first: origin/main,
         # main, HEAD~1; never origin/master, which does not exist on this
         # remote) instead of a second shell base-resolution algorithm.
         #
@@ -225,10 +225,10 @@ for line in "${PUSH_REFS[@]+"${PUSH_REFS[@]}"}"; do
         # Slice 3A: the pre-push affected-proof was silently degrading to
         # the broadest/full gate for every new branch instead of running
         # the intended targeted proof against the real diff).
-        if ! CHANGED_FILES="$(cargo xtask change-set --base auto --head "$local_sha" --format paths)"; then
+        if ! CHANGED_FILES="$(bash "$REPO_ROOT/scripts/githooks-bootstrap.sh" change-set --base auto --head "$local_sha" --format paths)"; then
             echo ""
             echo "❌ NOT PROVEN: could not resolve the change set for this new-branch push."
-            echo "   'cargo xtask change-set' failed to resolve a canonical base ref"
+            echo "   'bash scripts/githooks-bootstrap.sh change-set' failed to resolve a canonical base ref"
             echo "   (see the error above — e.g. origin/main unreachable, no network, or"
             echo "   another git error). Refusing to silently treat this as an empty"
             echo "   change set and skip the affected-scope proof."
@@ -297,8 +297,11 @@ if [ "$SINGLE_CRATE_ALL_UNDER_CRATES" = true ] && [ "$SINGLE_CRATE_COUNT" = "1" 
     SINGLE_CRATE_DIR="$(printf '%s' "$SINGLE_CRATE_NAMES" | tr -d '[:space:]')"
     # Resolve the Cargo package name from Cargo.toml, not the directory basename.
     # This fixes the perl-lsp -> perl-lsp-rs mismatch (issue #4512).
-    # Falls back to directory name if cargo xtask is unavailable.
-    SINGLE_CRATE_NAME="$(cargo xtask resolve-package-name "crates/${SINGLE_CRATE_DIR}" 2>/dev/null || printf '%s' "$SINGLE_CRATE_DIR")"
+    # Missing metadata/bootstrap is unknown package identity, never a directory fallback.
+    if ! SINGLE_CRATE_NAME="$(bash "$REPO_ROOT/scripts/githooks-bootstrap.sh" resolve-package-name "crates/${SINGLE_CRATE_DIR}")"; then
+        echo "❌ NOT PROVEN: could not resolve the changed crate's Cargo package identity."
+        exit 1
+    fi
     echo "Single-crate push (${SINGLE_CRATE_DIR} -> ${SINGLE_CRATE_NAME}) — running targeted gate"
     echo "   (Skip with: git push --no-verify)"
     echo ""

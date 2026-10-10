@@ -69,7 +69,7 @@ class LauncherTests(unittest.TestCase):
         for authority, hook in hooks.items():
             for case in ("missing", "nix", "nix-fails", "just", "just-fails",
                          "nix-no-flake", "docs", "delete", "protected-delete",
-                         "unknown", "single"):
+                         "unknown", "single", "new-docs", "new-mixed", "package-fails", "missing-bootstrap"):
                 with self.subTest(authority=authority, case=case), tempfile.TemporaryDirectory() as tmp:
                     self.run_case(Path(tmp), hook, case)
 
@@ -87,7 +87,7 @@ class LauncherTests(unittest.TestCase):
         run_git("add", ".")
         run_git("-c", "core.hooksPath=/dev/null", "commit", "-qm", "base")
         base = run_git("rev-parse", "HEAD")
-        path = "docs/a.md" if case == "docs" else "crates/probe/src/lib.rs" if case == "single" else "crates/one/src/lib.rs" if case == "missing" else "src/a.rs"
+        path = "docs/a.md" if case in ("docs", "new-docs") else "crates/probe/src/lib.rs" if case in ("single", "package-fails") else "crates/one/src/lib.rs" if case == "missing" else "src/a.rs"
         changed = repo / path
         changed.parent.mkdir(parents=True, exist_ok=True)
         changed.write_text("changed\n")
@@ -103,7 +103,7 @@ class LauncherTests(unittest.TestCase):
         tools = root / "tools"
         tools.mkdir()
         # Do not inherit ambient nix/just/cargo, even if the host has them.
-        for name in ("git", "bash", "awk", "grep", "head", "sed", "tr", "mktemp", "tee", "rm"):
+        for name in ("git", "bash", "awk", "grep", "head", "sed", "tr", "mktemp", "tee", "rm", "dirname"):
             os.symlink(shutil.which(name), tools / name)
         log = root / "calls"
         def stub(name, body):
@@ -116,14 +116,27 @@ class LauncherTests(unittest.TestCase):
                 (repo / "flake.nix").write_text("{}\n")
         if case in ("nix", "nix-fails", "just", "just-fails", "nix-no-flake"):
             stub("just", 'echo "just $*" >> "$CALLS"\nexit ' + ("38" if case == "just-fails" else "0") + "\n")
-        if case == "single":
-            stub("cargo", 'echo "cargo $*" >> "$CALLS"\nif [ "$1" = xtask ]; then echo actual-package; fi\n')
+        if case in ("single", "package-fails", "new-docs", "new-mixed", "unknown"):
+            scripts = repo / "scripts"
+            scripts.mkdir()
+            (scripts / "githooks-bootstrap.sh").write_bytes((ROOT / "scripts/githooks-bootstrap.sh").read_bytes())
+            admission = scripts / "cargo-admitted"
+            admission.write_text(f'#!{bash}\nexec cargo "$@"\n')
+            admission.chmod(0o755)
+            if case == "package-fails":
+                body = 'echo "cargo $*" >> "$CALLS"\nexit 39\n'
+            elif case in ("new-docs", "new-mixed"):
+                body = f'echo "cargo $*" >> "$CALLS"\necho {path}\n'
+            elif case == "unknown":
+                body = 'exit 39\n'
+            else:
+                body = 'echo "cargo $*" >> "$CALLS"\nif [ "$1" = run ]; then echo actual-package; fi\n'
+            stub("cargo", body)
         zero = "0" * 40
         if case in ("delete", "protected-delete"):
             head = zero
-        if case == "unknown":
+        if case in ("unknown", "new-docs", "new-mixed", "missing-bootstrap"):
             base = zero
-            stub("cargo", "exit 39\n")
         ref = "refs/heads/main" if case == "protected-delete" else "refs/heads/topic"
         env = dict(os.environ, PATH=str(tools), CALLS=str(log))
         for name in ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "PERL_LSP_ALLOW_HISTORY_REWRITE"):
@@ -132,7 +145,7 @@ class LauncherTests(unittest.TestCase):
                                 input=f"refs/heads/topic {head} {ref} {base}\n",
                                 text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         expected = {"missing": 1, "nix-fails": 37, "just-fails": 38,
-                    "protected-delete": 1, "unknown": 1}.get(case, 0)
+                    "protected-delete": 1, "unknown": 1, "new-mixed": 1, "package-fails": 1, "missing-bootstrap": 1}.get(case, 0)
         self.assertEqual(result.returncode, expected, result.stdout)
         calls = log.read_text() if log.exists() else ""
         if case == "missing":
@@ -145,6 +158,15 @@ class LauncherTests(unittest.TestCase):
         elif case == "single":
             self.assertIn("cargo test -p actual-package --locked", calls)
             self.assertIn("Single-crate gate passed", result.stdout)
+        elif case in ("new-docs", "new-mixed"):
+            self.assertIn("cargo run --locked -p perl-ci-hygiene -- change-set --base auto --head", calls)
+            self.assertNotIn("xtask", calls)
+            if case == "new-docs":
+                self.assertIn("Doc-only push", result.stdout)
+        elif case == "package-fails":
+            self.assertIn("NOT PROVEN", result.stdout)
+            self.assertIn("resolve-package-name crates/probe", calls)
+            self.assertNotIn("cargo fmt", calls)
         else:
             self.assertEqual(calls, "")
 

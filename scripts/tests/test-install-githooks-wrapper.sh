@@ -102,6 +102,10 @@ cp "$REPO_ROOT/scripts/"{install-githooks.sh,check-githooks.sh,githooks-bootstra
 cat > "$FIXTURE_ROOT/scripts/cargo-admitted" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$PWD" > "$FAKE_CWD_LOG"
+if [[ ${GIT_DIR+x} || ${GIT_WORK_TREE+x} || ${GIT_COMMON_DIR+x} ]]; then
+  echo 'unexpected inherited Git selector in admission child' >&2
+  exit 44
+fi
 exec cargo "$@"
 STUB
 chmod +x "$FIXTURE_ROOT/scripts/cargo-admitted"
@@ -124,7 +128,7 @@ ARGS
 code=0
 (
   cd "$REPO_ROOT"
-  PATH="${FAKE_BIN}:$PATH" bash "$INSTALL_GITHOOKS_SCRIPT" --check
+  PATH="${FAKE_BIN}:$PATH" GIT_DIR=wrong.git GIT_WORK_TREE="wrong tree" GIT_COMMON_DIR="wrong common" bash "$INSTALL_GITHOOKS_SCRIPT" --check
 ) > "${PASS_DIR}/out.txt" 2> "${PASS_DIR}/err.txt" || code=$?
 assert_exit_zero "delegates to admitted lightweight hygiene package" "$code"
 assert_args_equal "forwards install-githooks arguments unchanged" "$EXPECTED_PASS_ARGS" "$FAKE_LOG"
@@ -158,6 +162,20 @@ if [[ "$code" -eq 37 ]]; then
   pass "bootstrap failure propagates exactly despite stale PATH executable"
 else
   fail "bootstrap failure must preserve status 37"
+fi
+EXPECTED_BUDGET_ARGS="${TMPDIR_BASE}/budget-args.txt"
+printf '%s\n' --budget-file "${TMPDIR_BASE}/budget with spaces.json" > "$EXPECTED_BUDGET_ARGS"
+cat "$EXPECTED_PASS_ARGS" >> "$EXPECTED_BUDGET_ARGS"
+code=0
+PATH="${FAKE_BIN}:$PATH" bash "$INSTALL_GITHOOKS_SCRIPT" --budget-file "${TMPDIR_BASE}/budget with spaces.json" --check || code=$?
+assert_exit_zero "explicit scoped budget reaches admission" "$code"
+assert_args_equal "budget path and program arguments retain identity" "$EXPECTED_BUDGET_ARGS" "$FAKE_LOG"
+code=0
+PATH="${FAKE_BIN}:$PATH" bash "$INSTALL_GITHOOKS_SCRIPT" --budget-file > "$TMPDIR_BASE/missing-budget.log" 2>&1 || code=$?
+if [[ "$code" -eq 2 ]]; then
+  pass "missing budget path refuses before admission"
+else
+  fail "missing budget path must refuse with status2"
 fi
 rm "$FIXTURE_ROOT/scripts/cargo-admitted"
 code=0
