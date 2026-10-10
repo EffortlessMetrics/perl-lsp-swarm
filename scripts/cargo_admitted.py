@@ -411,6 +411,9 @@ def call_clippy(command, env, lock, tree=None, operation="Clippy"):
     # but never infer whole-tree settlement from this leader's exit. The caller
     # retains its lease until the optional owned kernel tree scope proves closure.
     process = None
+    detached = operation == "Clippy"
+    if not detached and tree is None:
+        raise Denied("builtin Cargo requires its bound native owner")
     published = False
     pending = []
     previous = {}
@@ -423,18 +426,22 @@ def call_clippy(command, env, lock, tree=None, operation="Clippy"):
         # signal a group using an unbound/reusable numeric ID.
         if process.returncode is None:
             try:
-                os.killpg(process.pid, signal.SIGTERM)
+                if detached:
+                    os.killpg(process.pid, signal.SIGTERM)
+                # Builtin Cargo shares its caller's group: unwind into the
+                # existing tree owner, which signals only bound, waitable pidfds.
             except ProcessLookupError:
                 pass
         raise KeyboardInterrupt(operation + " cancelled; lease retained for native owner verification")
     try:
         for signum in (signal.SIGINT, signal.SIGTERM):
             previous[signum] = signal.signal(signum, cancelled)
-        process = subprocess.Popen(command, env=env, start_new_session=True)
+        process = subprocess.Popen(command, env=env, start_new_session=detached)
         if tree is not None:
             tree.track(process.pid, process)
         print("cargo-admitted " + operation + " launch: " + json.dumps({"pid": process.pid,
-              "process_group": process.pid, "lease": str(lock), "host": socket.gethostname(),
+              "process_group": process.pid if detached else os.getpgrp(),
+              "session_inherited": not detached, "lease": str(lock), "host": socket.gethostname(),
               "terminality": "awaiting owner verification"}), file=sys.stderr, flush=True)
         published = True
         if pending:

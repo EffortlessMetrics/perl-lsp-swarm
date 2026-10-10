@@ -6,6 +6,9 @@
   a known leader-only implementation fails this discriminator without test errors.
 - Deadline/ambiguous closure and failed release return 75 with ownership retained.
 - Cancellation after proven closure and release returns 130, never product success.
+- Builtin commands preserve their caller session and controlling terminal;
+  cancellation never signals the shared caller group. Native PTY proof covers
+  `/dev/tty`, caller session/group identities and a surviving caller-group sibling.
 - Original lease identity and marker, operation-labelled product and kernel
   settlement receipts remain independent and attributable.
 - Missing Linux capabilities refuse without spawning through legacy fallback.

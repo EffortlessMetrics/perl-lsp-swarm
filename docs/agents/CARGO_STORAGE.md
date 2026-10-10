@@ -130,8 +130,14 @@ disconnect never establish that proof. Ambiguity or deadline expiry retains it.
 Cleanup requires the original directory identity and unique ownership marker;
 replacement leases, including copied markers, remain for owner verification.
 Linux uses the existing exclusive single-thread CPython subreaper/pidfd owner;
-missing capabilities refuse without a leader-only fallback. Builtin Cargo command,
-PATH/toolchain selection, argument order and environment projection are unchanged.
+missing capabilities refuse without a leader-only fallback. Builtin Cargo
+session and controlling-terminal behavior are preserved: unlike finite Clippy,
+builtin launch inherits the caller's session/group. Cancellation never signals
+that shared group; the existing tree owner validates and signals bound child
+pidfds before proving kernel closure and releasing the matching lease. Builtin
+launch receipts identify the inherited group without claiming ownership of it.
+Builtin command, PATH/toolchain selection, argument order and environment
+projection are unchanged.
 Original lease identity/marker and operation-labelled Cargo launch/product/settlement
 receipts make product exit independent of terminality. Any product status can be
 returned after proven closure and matching release; cancellation returns 130.
