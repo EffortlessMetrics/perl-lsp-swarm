@@ -4060,7 +4060,7 @@ mod tests {
                 plan.package_args =
                     vec!["-p".into(), "perl-dap".into(), "-p".into(), "perl-parser".into()];
                 let config = GateRunnerConfig {
-                    tier,
+                    tier: tier.clone(),
                     output_format: OutputFormat::Summary,
                     ..GateRunnerConfig::default()
                 };
