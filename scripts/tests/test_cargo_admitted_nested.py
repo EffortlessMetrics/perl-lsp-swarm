@@ -87,6 +87,93 @@ class NestedTests(unittest.TestCase):
         self.plan['lock_union_fixture']=a.lock_union_fixture(self.worktree,self.paths)
         self.save()
         return root
+    def test_cargo_leaf_does_not_fingerprint_callers_runtime_package_metadata(self):
+        # Cargo 1.95 fill_env injects these for `cargo run` executables.
+        # Its build-script from_env fingerprint reads the Cargo invoker's
+        # environment. A caller's package values must not affect a leaf unit.
+        expected, expected_env, expected_cwd = self.command('parser-build')
+        metadata = {'CARGO_MANIFEST_DIR': '/caller/xtask',
+                    'CARGO_MANIFEST_PATH': '/caller/xtask/Cargo.toml',
+                    'CARGO_MANIFEST_LINKS': 'caller-native',
+                    'CARGO_PKG_NAME': 'xtask', 'CARGO_PKG_VERSION': '0.17.0',
+                    'CARGO_PKG_VERSION_MAJOR': '0', 'CARGO_PKG_VERSION_MINOR': '17',
+                    'CARGO_PKG_VERSION_PATCH': '0', 'CARGO_PKG_VERSION_PRE': '',
+                    'CARGO_PKG_DESCRIPTION': 'caller description',
+                    'CARGO_PKG_HOMEPAGE': 'caller-home', 'CARGO_PKG_REPOSITORY': 'caller-repo',
+                    'CARGO_PKG_LICENSE': 'MIT', 'CARGO_PKG_LICENSE_FILE': 'caller-license',
+                    'CARGO_PKG_AUTHORS': 'caller', 'CARGO_PKG_RUST_VERSION': '1.95',
+                    'CARGO_PKG_README': 'caller-readme'}
+        for package in ('xtask', 'another-caller'):
+            inherited = {**self.env, **metadata, 'CARGO_PKG_NAME': package}
+            command, child, cwd = a.nested_command('parser-build', inherited)
+            self.assertEqual(child, expected_env)
+            self.assertEqual((command, cwd), (expected, expected_cwd))
+            self.assertEqual(inherited['CARGO_PKG_NAME'], package)
+
+    def test_package_metadata_hygiene_keeps_admitted_context(self):
+        self.env.update(CARGO_PKG_USER_SETTING='preserved', HTTPS_PROXY='bound-proxy')
+        self.plan['network_environment'] = {'HTTPS_PROXY': 'bound-proxy'}
+        self.save()
+        command, child, cwd = a.nested_command(
+            'parser-build', {**self.env, 'CARGO_PKG_NAME': 'xtask'})
+        for key in ('CARGO_ADMITTED_RESOURCES', 'CARGO_HOME', 'CARGO', 'RUSTC',
+                    'RUSTDOC', 'CARGO_TARGET_DIR', 'CARGO_BUILD_BUILD_DIR',
+                    'CARGO_BUILD_JOBS', 'CARGO_INCREMENTAL', 'RUSTUP_AUTO_INSTALL',
+                    'CARGO_PROFILE_DEV_DEBUG', 'TEMP', 'TMP', 'TMPDIR',
+                    'HTTPS_PROXY', 'CARGO_PKG_USER_SETTING'):
+            self.assertEqual(child.get(key), self.env[key])
+        self.assertNotIn('CARGO_PKG_NAME', child)
+        self.assertEqual(cwd, self.worktree)
+        self.assertEqual(command[0], self.tool['subjects']['cargo']['path'])
+        self.assertIn('env.RUSTC.value=' + json.dumps(self.env['RUSTC']), command)
+
+    def test_nested_root_preflight_normalizes_the_same_package_context(self):
+        import io
+        from contextlib import redirect_stderr
+        parent = {key: value for key, value in self.env.items()
+                  if key != 'CARGO_ADMITTED_RESOURCES'}
+        parent.update(CARGO_PKG_NAME='upstream-caller',
+                      CARGO_MANIFEST_DIR='/upstream/caller')
+        previous = Path.cwd()
+        try:
+            os.chdir(self.worktree)
+            with patch.dict(os.environ, parent, clear=True), \
+                 patch.object(a, 'nested_plan', return_value=self.plan) as plan, \
+                 patch.object(a, 'nested_runtime_contract', return_value={}), \
+                 patch.object(a, 'check_capacity', return_value={}) as capacity, \
+                 patch.object(a.os.path, 'lexists', return_value=False), \
+                 patch.object(a, 'ClippyTree') as tree, redirect_stderr(io.StringIO()):
+                self.assertEqual(a.main(['--nested-plan', 'fixture', '--preflight',
+                                         'run', '-p', 'xtask']), 0)
+                for observed in (plan.call_args.args[1], capacity.call_args.args[1]):
+                    self.assertNotIn('CARGO_PKG_NAME', observed)
+                    self.assertNotIn('CARGO_MANIFEST_DIR', observed)
+                    self.assertEqual(observed['CARGO_HOME'], parent['CARGO_HOME'])
+                tree.assert_not_called()
+                self.assertEqual(os.environ['CARGO_PKG_NAME'], 'upstream-caller')
+        finally:
+            os.chdir(previous)
+
+    def test_ordinary_root_admission_retains_ambient_package_inputs(self):
+        import io
+        from contextlib import redirect_stderr
+        parent = {key: value for key, value in self.env.items()
+                  if key != 'CARGO_ADMITTED_RESOURCES'}
+        parent['CARGO_PKG_NAME'] = 'ordinary-input'
+        previous = Path.cwd()
+        try:
+            os.chdir(self.worktree)
+            with patch.dict(os.environ, parent, clear=True), \
+                 patch.object(a, 'check_capacity', return_value={}) as capacity, \
+                 patch.object(a.os.path, 'lexists', return_value=False), \
+                 patch.object(a, 'ClippyTree') as tree, redirect_stderr(io.StringIO()):
+                self.assertEqual(a.main(['--preflight', 'run', '-p', 'xtask']), 0)
+                self.assertEqual(capacity.call_args.args[1]['CARGO_PKG_NAME'],
+                                 'ordinary-input')
+                tree.assert_not_called()
+        finally:
+            os.chdir(previous)
+
     def test_parent_snapshot_carries_original_creation_marker_identity(self):
         # Composition seam: replacement AFTER allocation must not be adopted
         # by snapshot creation. No tool/product launch or capacity qualification.

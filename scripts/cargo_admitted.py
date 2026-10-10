@@ -900,7 +900,27 @@ def nested_command(row, env=None):
         raise Denied("invalid/stale nested handoff: " + str(error)) from error
 
 
+# Cargo 1.95 sets package metadata even for `cargo run` executables. A
+# subsequent Cargo invoker must not fingerprint its caller's package context.
+# Cargo reconstructs these values for each rustc/build-script/target process;
+# configured [env] values remain governed by the bound Cargo configuration.
+CARGO_PACKAGE_CONTEXT = (
+    "CARGO_MANIFEST_DIR", "CARGO_MANIFEST_PATH", "CARGO_MANIFEST_LINKS",
+    "CARGO_PKG_NAME", "CARGO_PKG_VERSION", "CARGO_PKG_VERSION_MAJOR",
+    "CARGO_PKG_VERSION_MINOR", "CARGO_PKG_VERSION_PATCH", "CARGO_PKG_VERSION_PRE",
+    "CARGO_PKG_DESCRIPTION", "CARGO_PKG_HOMEPAGE", "CARGO_PKG_REPOSITORY",
+    "CARGO_PKG_LICENSE", "CARGO_PKG_LICENSE_FILE", "CARGO_PKG_AUTHORS",
+    "CARGO_PKG_RUST_VERSION", "CARGO_PKG_README",
+)
+
+
+def clear_cargo_package_context(env):
+    for name in CARGO_PACKAGE_CONTEXT:
+        env.pop(name, None)
+
+
 def render_nested(row, env, worktree, paths, toolchain, fixture=None):
+    clear_cargo_package_context(env)
     args = list(NESTED_COMMANDS[row])
     cwd = worktree / "crates/perl-parser" if row == "parser-doc" else worktree
     if row == "incremental-metadata":
@@ -1218,6 +1238,8 @@ def main(args=None):
         env = os.environ.copy()
         if env.get("CARGO_ADMITTED_RESOURCES"):
             raise Denied("nested callers must use bound leaf rendering, not reacquire a parent lease")
+        if nested_file is not None:
+            clear_cargo_package_context(env)
         env["RUSTUP_AUTO_INSTALL"] = "0"
         worktree, slot, paths = resource_plan(env)
         if env.get("RUSTC_WRAPPER") or env.get("RUSTC_WORKSPACE_WRAPPER"):
