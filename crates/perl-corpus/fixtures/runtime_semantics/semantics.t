@@ -16,8 +16,8 @@ my (@warnings, $subject_stdout, $subject_stderr);
 $subject_stdout = '';
 $subject_stderr = '';
 {
-    open my $out, '>', \$subject_stdout or die "capture subject stdout: $!";
-    open my $err, '>', \$subject_stderr or die "capture subject stderr: $!";
+    open my $out, '>', \$subject_stdout or BAIL_OUT("capture subject stdout: $!");
+    open my $err, '>', \$subject_stderr or BAIL_OUT("capture subject stderr: $!");
     local *STDOUT = $out;
     local *STDERR = $err;
     local $SIG{__WARN__} = sub { push @warnings, @_ };
@@ -32,8 +32,8 @@ diag("stock Perl $^V; arch=$Config{archname}; ivsize=$Config{ivsize}; nvsize=$Co
 # Observe unexpected warnings/output without mixing them with the driver's TAP.
 sub observed (&) {
     my ($operation) = @_;
-    open my $out, '>>', \$subject_stdout or die "capture subject stdout: $!";
-    open my $err, '>>', \$subject_stderr or die "capture subject stderr: $!";
+    open my $out, '>>', \$subject_stdout or BAIL_OUT("capture subject stdout: $!");
+    open my $err, '>>', \$subject_stderr or BAIL_OUT("capture subject stderr: $!");
     local *STDOUT = $out;
     local *STDERR = $err;
     local $SIG{__WARN__} = sub { push @warnings, @_ };
