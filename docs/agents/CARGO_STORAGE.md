@@ -185,3 +185,15 @@ prove concurrent or independent post-lease binary consumption. Production caller
 must still hold ownership through consumers or capture immutable artifacts before
 releasing that ownership. The cleanup sweep fixture checks command-local fetch
 maintenance suppression; it does not change global Git configuration.
+
+Parser preparation (#17479) consumes `CARGO_ADMITTED_RESOURCES` from the live
+admitted parent: exact worktree, final/intermediate pair and lease marker. It
+reuses those roots sequentially before integration libtest; it allocates no nested
+slot, changes no capacity policy, and cleans no outputs. The descriptor is a trusted
+parent observation, not a cryptographic admission token or a host-wide reservation.
+Root admission must include every parser preparation command (strict Clippy and
+nonzero library tests included) and all other selected nested workloads. Other
+suite build fallbacks remain separately unqualified; private outer roots alone
+do not authorize concurrent nested compilation. Raw parser preparation without
+the live parent descriptor refuses. Native validation must execute the owning
+runner and resource controls before claiming the full canonical runtime.

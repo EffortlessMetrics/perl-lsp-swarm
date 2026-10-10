@@ -1015,7 +1015,7 @@ fn plan_gates(root: &Path, policy: &GatePolicy, config: &GateRunnerConfig) -> Re
     if config.gate_filter.is_some() {
         let filtered = filter_gates(policy, config)?;
         if filtered.iter().any(|gate| {
-            gate.name == routed_preparation::DAP
+            matches!(gate.name.as_str(), routed_preparation::DAP | routed_preparation::PARSER)
                 || gate.tier == "pr_fast"
                     && gate
                         .planning
@@ -1035,6 +1035,7 @@ fn plan_gates(root: &Path, policy: &GatePolicy, config: &GateRunnerConfig) -> Re
                 &selected_names,
                 requested,
                 routed_preparation::includes_dap(&plan.package_args),
+                routed_preparation::includes_package(&plan.package_args, "perl-parser"),
             );
             plan.selected.retain(|row| retained.contains(&row.gate.name));
             plan.skipped.retain(|row| row.name == requested);
@@ -1372,18 +1373,20 @@ fn build_pr_fast_plan_from_scope_with_targets(
     // The transferred DAP operations apply only when the canonical runtime
     // actually selects DAP. In particular, a fallback that skips RustScoped
     // integration tests must not silently gain this build/lint obligation.
-    let dap_runtime_selected = routed_preparation::includes_dap(&package_args)
-        && selected.iter().any(|row| row.gate.name == routed_preparation::RUNTIME);
-    if !dap_runtime_selected {
-        if let Some(index) =
-            selected.iter().position(|row| row.gate.name == routed_preparation::DAP)
-        {
-            let row = selected.remove(index);
-            skipped.push(SkippedGate {
-                name: row.gate.name,
-                role: Some(row.role),
-                reason: "DAP routed runtime not selected".to_string(),
-            });
+    for (package, preparation) in
+        [("perl-dap", routed_preparation::DAP), ("perl-parser", routed_preparation::PARSER)]
+    {
+        let runtime_selected = routed_preparation::includes_package(&package_args, package)
+            && selected.iter().any(|row| row.gate.name == routed_preparation::RUNTIME);
+        if !runtime_selected {
+            if let Some(index) = selected.iter().position(|row| row.gate.name == preparation) {
+                let row = selected.remove(index);
+                skipped.push(SkippedGate {
+                    name: row.gate.name,
+                    role: Some(row.role),
+                    reason: format!("{package} routed runtime not selected"),
+                });
+            }
         }
     }
 
@@ -1733,6 +1736,7 @@ fn run_gate_plan(
     let hosted_preparation_outcome = std::env::var_os("PR_SMOKE_ROUTED_PREPARATION_OUTCOME")
         .map(|outcome| outcome.to_string_lossy().into_owned());
     let dap_selected = routed_preparation::includes_dap(&plan.package_args);
+    let parser_selected = routed_preparation::includes_package(&plan.package_args, "perl-parser");
     for (idx, planned_gate) in plan.selected.iter().enumerate() {
         let gate = &planned_gate.gate;
         if routed_gate_plan.is_some() {
@@ -1758,6 +1762,7 @@ fn run_gate_plan(
         let preparation_block = routed_preparation::blocking_failure(
             &gate.name,
             dap_selected,
+            parser_selected,
             &prior_results,
             hosted_preparation_outcome.as_deref(),
         );
@@ -2484,7 +2489,12 @@ fn run_single_gate(
             // Exit zero is necessary but does not establish executed runtime.
             // Validate only this selected nonempty obligation; preparation and
             // scoped-noop dispositions retain their distinct meanings.
-            if status == "pass" && gate.name == routed_preparation::RUNTIME {
+            if status == "pass"
+                && matches!(
+                    gate.name.as_str(),
+                    routed_preparation::RUNTIME | routed_preparation::PARSER
+                )
+            {
                 let evidence = fs::File::open(&log_path)
                     .map_err(|error| format!("runtime log unavailable: {error}"))
                     .and_then(|file| {
@@ -4022,11 +4032,17 @@ mod tests {
     fn failed_preparation_prevents_runtime_in_every_tier_and_keeps_backstops()
     -> color_eyre::eyre::Result<()> {
         for tier in [GateTier::PrFast, GateTier::MergeGate, GateTier::Nightly, GateTier::All] {
-            for failed in ["fmt", "unit_routed_full_build", "dap_workspace_prepare"] {
+            for failed in [
+                "fmt",
+                "unit_routed_full_build",
+                "dap_workspace_prepare",
+                "parser_workspace_prepare",
+            ] {
                 let gates: Vec<_> = [
                     "fmt",
                     "unit_routed_full_build",
                     "dap_workspace_prepare",
+                    "parser_workspace_prepare",
                     "unit_routed_full",
                     "independent_backstop",
                 ]
@@ -4041,7 +4057,8 @@ mod tests {
                 .collect();
                 let policy = policy_with_gates(gates.clone());
                 let mut plan = static_gate_plan(tier.clone(), "HEAD".into(), gates, None);
-                plan.package_args = vec!["-p".into(), "perl-dap".into()];
+                plan.package_args =
+                    vec!["-p".into(), "perl-dap".into(), "-p".into(), "perl-parser".into()];
                 let config = GateRunnerConfig {
                     tier,
                     output_format: OutputFormat::Summary,
@@ -5569,48 +5586,55 @@ gates:
             ),
         ];
         let policy = policy_with_gates(Vec::new());
-        for (command, expected, exit) in cases {
-            // A prior successful report cannot qualify this invocation.
-            fs::write(
-                dir.path().join("unit_routed_full.log"),
-                "running 1 test\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;\n",
-            )?;
-            let gate = pr_gate("unit_routed_full", GatePlanningRole::RustScoped, &command);
-            let result =
-                run_single_gate(&gate, &policy, dir.path(), &GateRunnerConfig::default(), None)?;
-            assert_eq!(result.status, expected, "{:?}", result.output_summary);
-            assert_eq!(result.exit_code, Some(exit));
-            assert!(result.command_started);
-            let observation = super::routed_result_adapter::observation_from_gate_result(
-                &gate,
-                &result,
-                dir.path(),
-                dir.path(),
-                None,
-            )?;
-            let expected_status = match expected {
-                "pass" => xtask::routed_result::RoutedReaderGateStatus::Pass,
-                "fail" => xtask::routed_result::RoutedReaderGateStatus::Fail,
-                _ => xtask::routed_result::RoutedReaderGateStatus::ErrorAfterStart,
-            };
-            assert_eq!(observation.runner_status, expected_status);
-            if expected == "error" {
-                // The same execution under the prior unvalidated status path
-                // returns pass, proving the guard detects an actual false pass.
-                let mut unvalidated = gate.clone();
-                unvalidated.name = "runtime_validation_negative_control".into();
-                let control = run_single_gate(
-                    &unvalidated,
+        for gate_name in [routed_preparation::RUNTIME, routed_preparation::PARSER] {
+            for (command, expected, exit) in cases.clone() {
+                // A prior successful report cannot qualify this invocation.
+                fs::write(
+                    dir.path().join(format!("{gate_name}.log")),
+                    "running 1 test\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;\n",
+                )?;
+                let gate = pr_gate(gate_name, GatePlanningRole::RustScoped, &command);
+                let result = run_single_gate(
+                    &gate,
                     &policy,
                     dir.path(),
                     &GateRunnerConfig::default(),
                     None,
                 )?;
-                assert_eq!(control.status, "pass");
-                assert_eq!(control.exit_code, Some(0));
-            }
-            if expected == "pass" {
-                assert_eq!(result.metrics.and_then(|metrics| metrics.tests_passed), Some(1));
+                assert_eq!(result.status, expected, "{:?}", result.output_summary);
+                assert_eq!(result.exit_code, Some(exit));
+                assert!(result.command_started);
+                let observation = super::routed_result_adapter::observation_from_gate_result(
+                    &gate,
+                    &result,
+                    dir.path(),
+                    dir.path(),
+                    None,
+                )?;
+                let expected_status = match expected {
+                    "pass" => xtask::routed_result::RoutedReaderGateStatus::Pass,
+                    "fail" => xtask::routed_result::RoutedReaderGateStatus::Fail,
+                    _ => xtask::routed_result::RoutedReaderGateStatus::ErrorAfterStart,
+                };
+                assert_eq!(observation.runner_status, expected_status);
+                if expected == "error" {
+                    // The same execution under the prior unvalidated status path
+                    // returns pass, proving the guard detects an actual false pass.
+                    let mut unvalidated = gate.clone();
+                    unvalidated.name = "runtime_validation_negative_control".into();
+                    let control = run_single_gate(
+                        &unvalidated,
+                        &policy,
+                        dir.path(),
+                        &GateRunnerConfig::default(),
+                        None,
+                    )?;
+                    assert_eq!(control.status, "pass");
+                    assert_eq!(control.exit_code, Some(0));
+                }
+                if expected == "pass" {
+                    assert_eq!(result.metrics.and_then(|metrics| metrics.tests_passed), Some(1));
+                }
             }
         }
         Ok(())

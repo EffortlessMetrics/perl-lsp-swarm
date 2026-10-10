@@ -8,16 +8,27 @@
 pub(super) const RUNTIME: &str = "unit_routed_full";
 pub(super) const BUILD: &str = "unit_routed_full_build";
 pub(super) const DAP: &str = "dap_workspace_prepare";
+pub(super) const PARSER: &str = "parser_workspace_prepare";
 
 /// The canonical planner renders package arguments as separate -p/name pairs.
 pub(super) fn includes_dap(package_args: &[String]) -> bool {
-    package_args
-        .windows(2)
-        .any(|pair| matches!(pair[0].as_str(), "-p" | "--package") && pair[1] == "perl-dap")
+    includes_package(package_args, "perl-dap")
 }
 
-pub(super) fn prerequisites(gate: &str, dap_selected: bool) -> &'static [&'static str] {
+pub(super) fn includes_package(package_args: &[String], package: &str) -> bool {
+    package_args
+        .windows(2)
+        .any(|pair| matches!(pair[0].as_str(), "-p" | "--package") && pair[1] == package)
+}
+
+pub(super) fn prerequisites(
+    gate: &str,
+    dap_selected: bool,
+    parser_selected: bool,
+) -> &'static [&'static str] {
     match gate {
+        RUNTIME if dap_selected && parser_selected => &["fmt", BUILD, DAP, PARSER],
+        RUNTIME if parser_selected => &[BUILD, PARSER],
         RUNTIME if dap_selected => &["fmt", BUILD, DAP],
         RUNTIME => &[BUILD],
         DAP => &["fmt"],
@@ -31,13 +42,17 @@ pub(super) fn retain_for_filter(
     selected: &[&str],
     requested: &str,
     dap_selected: bool,
+    parser_selected: bool,
 ) -> Vec<String> {
     if !selected.contains(&requested) {
         return Vec::new();
     }
     selected
         .iter()
-        .filter(|name| **name == requested || prerequisites(requested, dap_selected).contains(name))
+        .filter(|name| {
+            **name == requested
+                || prerequisites(requested, dap_selected, parser_selected).contains(name)
+        })
         .map(|name| (*name).to_string())
         .collect()
 }
@@ -58,15 +73,18 @@ pub(super) struct PreparationBlock {
 pub(super) fn blocking_reason(
     gate: &str,
     dap_selected: bool,
+    parser_selected: bool,
     results: &[(&str, &str)],
     hosted_outcome: Option<&str>,
 ) -> Option<String> {
-    blocking_failure(gate, dap_selected, results, hosted_outcome).map(|block| block.reason)
+    blocking_failure(gate, dap_selected, parser_selected, results, hosted_outcome)
+        .map(|block| block.reason)
 }
 
 pub(super) fn blocking_failure(
     gate: &str,
     dap_selected: bool,
+    parser_selected: bool,
     results: &[(&str, &str)],
     hosted_outcome: Option<&str>,
 ) -> Option<PreparationBlock> {
@@ -82,7 +100,7 @@ pub(super) fn blocking_failure(
             status: Some(outcome.into()),
         });
     }
-    for prerequisite in prerequisites(gate, dap_selected) {
+    for prerequisite in prerequisites(gate, dap_selected, parser_selected) {
         let mut matching = results.iter().filter(|(name, _)| name == prerequisite);
         let terminal = matching.next();
         if matching.next().is_some() {
@@ -134,24 +152,27 @@ mod tests {
     #[test]
     fn named_dap_runtime_keeps_preparation_in_canonical_order() {
         let names = ["fmt", "other", BUILD, DAP, RUNTIME];
-        assert_eq!(retain_for_filter(&names, RUNTIME, true), ["fmt", BUILD, DAP, RUNTIME]);
-        assert_eq!(retain_for_filter(&names, RUNTIME, false), [BUILD, RUNTIME]);
+        assert_eq!(retain_for_filter(&names, RUNTIME, true, false), ["fmt", BUILD, DAP, RUNTIME]);
+        assert_eq!(retain_for_filter(&names, RUNTIME, false, false), [BUILD, RUNTIME]);
     }
 
     #[test]
     fn harness_warmup_does_not_duplicate_dap_operations() {
-        assert_eq!(retain_for_filter(&["fmt", BUILD, DAP, RUNTIME], BUILD, true), [BUILD]);
-        assert!(prerequisites(BUILD, true).is_empty());
+        assert_eq!(retain_for_filter(&["fmt", BUILD, DAP, RUNTIME], BUILD, true, false), [BUILD]);
+        assert!(prerequisites(BUILD, true, false).is_empty());
     }
 
     #[test]
     fn named_dap_preparation_reuses_formatter() {
-        assert_eq!(retain_for_filter(&["fmt", BUILD, DAP, RUNTIME], DAP, true), ["fmt", DAP]);
+        assert_eq!(
+            retain_for_filter(&["fmt", BUILD, DAP, RUNTIME], DAP, true, false),
+            ["fmt", DAP]
+        );
     }
 
     #[test]
     fn inapplicable_runtime_does_not_select_preparation() {
-        assert!(retain_for_filter(&["fmt", DAP], RUNTIME, true).is_empty());
+        assert!(retain_for_filter(&["fmt", DAP], RUNTIME, true, false).is_empty());
     }
 
     #[test]
@@ -160,13 +181,14 @@ mod tests {
             blocking_reason(
                 RUNTIME,
                 true,
+                false,
                 &[("fmt", "pass"), (BUILD, "pass"), (DAP, "pass")],
                 None
             )
             .is_none()
         );
         // Runtime execution/metrics remain owned by run_single_gate afterwards.
-        assert!(blocking_reason("independent_backstop", true, &[], None).is_none());
+        assert!(blocking_reason("independent_backstop", true, false, &[], None).is_none());
     }
 
     #[test]
@@ -179,7 +201,7 @@ mod tests {
                         row.1 = status;
                     }
                 }
-                let reason = blocking_reason(RUNTIME, true, &results, None);
+                let reason = blocking_reason(RUNTIME, true, false, &results, None);
                 assert!(reason.is_some_and(|value| value.contains(prerequisite) && value.contains(status)));
             }
         }
@@ -191,26 +213,28 @@ mod tests {
             let results = [("fmt", "pass"), (BUILD, "pass"), (DAP, "pass")];
             let retained: Vec<_> = results.into_iter().filter(|row| row.0 != missing).collect();
             assert!(
-                blocking_reason(RUNTIME, true, &retained, None)
+                blocking_reason(RUNTIME, true, false, &retained, None)
                     .is_some_and(|reason| reason.contains("no terminal result"))
             );
         }
-        assert!(blocking_reason(RUNTIME, false, &[("foreign_build", "pass")], None).is_some());
         assert!(
-            blocking_reason(RUNTIME, false, &[(BUILD, "pass"), (BUILD, "fail")], None)
+            blocking_reason(RUNTIME, false, false, &[("foreign_build", "pass")], None).is_some()
+        );
+        assert!(
+            blocking_reason(RUNTIME, false, false, &[(BUILD, "pass"), (BUILD, "fail")], None)
                 .is_some_and(|reason| reason.contains("duplicate terminal results"))
         );
     }
 
     #[test]
     fn non_dap_runtime_does_not_require_dap_or_formatter() {
-        assert!(blocking_reason(RUNTIME, false, &[(BUILD, "pass")], None).is_none());
+        assert!(blocking_reason(RUNTIME, false, false, &[(BUILD, "pass")], None).is_none());
     }
 
     #[test]
     fn dap_preparation_cannot_erase_formatter_failure() {
-        assert!(blocking_reason(DAP, true, &[("fmt", "fail")], None).is_some());
-        assert!(blocking_reason(DAP, true, &[], None).is_some());
+        assert!(blocking_reason(DAP, true, false, &[("fmt", "fail")], None).is_some());
+        assert!(blocking_reason(DAP, true, false, &[], None).is_some());
     }
 
     #[test]
@@ -218,16 +242,43 @@ mod tests {
         for status in ["failure", "cancelled", "skipped", "unknown", ""] {
             for gate in [BUILD, RUNTIME] {
                 assert!(
-                    blocking_reason(gate, false, &[(BUILD, "pass")], Some(status))
+                    blocking_reason(gate, false, false, &[(BUILD, "pass")], Some(status))
                         .is_some_and(|reason| reason.contains("hosted routed preparation"))
                 );
             }
         }
-        assert!(blocking_reason(RUNTIME, false, &[(BUILD, "pass")], Some("success")).is_none());
+        assert!(
+            blocking_reason(RUNTIME, false, false, &[(BUILD, "pass")], Some("success")).is_none()
+        );
     }
 
     #[test]
     fn independent_backstops_ignore_hosted_preparation_failure() {
-        assert!(blocking_reason("unit_dap_support_full", true, &[], Some("failure")).is_none());
+        assert!(
+            blocking_reason("unit_dap_support_full", true, false, &[], Some("failure")).is_none()
+        );
+    }
+    #[test]
+    fn parser_runtime_retains_its_preparation_without_selecting_dap() {
+        assert_eq!(
+            retain_for_filter(&[BUILD, PARSER, RUNTIME], RUNTIME, false, true),
+            [BUILD, PARSER, RUNTIME]
+        );
+        assert!(includes_package(&["-p".into(), "perl-parser".into()], "perl-parser"));
+        assert!(!includes_package(&["-p".into(), "perl-parser-core".into()], "perl-parser"));
+    }
+
+    #[test]
+    fn parser_missing_or_failed_preparation_never_qualifies_runtime() {
+        for status in ["fail", "error", "timeout", "skip"] {
+            let block =
+                blocking_failure(RUNTIME, false, true, &[(BUILD, "pass"), (PARSER, status)], None);
+            assert_eq!(block.map(|b| b.dependency), Some(PARSER.into()));
+        }
+        assert!(blocking_failure(RUNTIME, false, true, &[(BUILD, "pass")], None).is_some());
+        assert!(
+            blocking_failure(RUNTIME, false, true, &[(BUILD, "pass"), (PARSER, "pass")], None)
+                .is_none()
+        );
     }
 }

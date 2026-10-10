@@ -49,8 +49,8 @@
       "rule": "gate-policy-gates",
       "authority": ".ci/gate-policy.yaml",
       "emits": "gate",
-      "considered": 97,
-      "emitted": 97,
+      "considered": 98,
+      "emitted": 98,
       "not_seeded_reason": "every entry under gates: is emitted; nothing is filtered"
     },
     {
@@ -4310,6 +4310,33 @@
         "state": "not_evaluated"
       },
       "notes": "Bounded parser integration proof with a non-shrinking target manifest (#6107)"
+    },
+    {
+      "surface_id": "gate:parser_workspace_prepare",
+      "class": "gate",
+      "class_authority": {
+        "kind": "derived",
+        "authority": ".ci/gate-policy.yaml",
+        "rule": "gate-policy-gates"
+      },
+      "semantic_authority": ".ci/gate-policy.yaml#parser_workspace_prepare",
+      "consumers": [],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": ".ci/gate-policy.yaml",
+        "detail": "tier = \"pr_fast\"; required = true"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": ".ci/gate-policy.yaml"
+      },
+      "owner": "release/ci",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "Check parser JSON compilation, warning-free build, strict Clippy and nonzero library tests under the admitted private roots"
     },
     {
       "surface_id": "gate:pending_parse_freshness",

@@ -95,7 +95,7 @@ def budget_scope(args, env, worktree, paths, jobs):
     # Hash build-related overrides without printing their values (which may be
     # private). Forced output paths/jobs are represented by their effective
     # values below. This is request scope, not a full source/config/cache digest.
-    forced = {"RUSTUP_AUTO_INSTALL", "CARGO_BUILD_JOBS", "CARGO_BUILD_BUILD_DIR",
+    forced = {"RUSTUP_AUTO_INSTALL", "CARGO_ADMITTED_RESOURCES", "CARGO_BUILD_JOBS", "CARGO_BUILD_BUILD_DIR",
               "CARGO_TARGET_DIR", "CARGO_HOME", "RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER", *CAPACITY_ENV}
     build_env = {key: value for key, value in env.items()
                  if key not in forced and (key.startswith(("RUST", "CARGO_"))
@@ -372,6 +372,10 @@ def main(args=None):
             descriptor = {"worktree": str(worktree), "scope": scope,
                           "resources": {k: str(v) for k, v in paths.items()},
                           "lease": str(lock), "pid": os.getpid(), "admission": admission, "disposition": "retained with reason: reusable bounded slot"}
+            # Preparation children consume the same live lease/resources,
+            # sequentially before libtest; this is not a nested admission slot.
+            descriptor["lease_marker"] = str(marker)
+            env["CARGO_ADMITTED_RESOURCES"] = json.dumps(descriptor)
             print("cargo-admitted resources: " + json.dumps(descriptor), file=sys.stderr, flush=True)
             command = ["cargo", "--config", "unstable.unstable-options=false",
                        "--config", "build.build-dir=" + json.dumps(str(paths["build"])),

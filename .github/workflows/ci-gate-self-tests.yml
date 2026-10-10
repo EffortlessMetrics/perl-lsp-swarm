@@ -19,6 +19,8 @@ on:
       - 'scripts/cargo_admitted.py'
       - 'scripts/tests/test_cargo_admitted_storage.py'
       - 'scripts/tests/test_cargo_admitted_budget.py'
+      - 'scripts/ci/parser_workspace_prepare.py'
+      - 'scripts/ci/test_parser_workspace_prepare.py'
       - 'justfile'
       - 'scripts/cargo_allow_cadence.py'
       - 'scripts/tests/test_cargo_allow_cadence.py'
@@ -637,7 +639,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - name: Run both admitted storage suites without Rust builds
-        run: python3 -m unittest discover -s scripts/tests -p 'test_cargo_admitted*.py' -v
+        run: |
+          python3 -m unittest discover -s scripts/tests -p 'test_cargo_admitted*.py' -v
+          python3 scripts/ci/test_parser_workspace_prepare.py
 
   cargo-toolchain-guard-self-test:
     name: Entrypoint cargo toolchain guard self-test

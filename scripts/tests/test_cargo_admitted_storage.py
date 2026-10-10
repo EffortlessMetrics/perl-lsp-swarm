@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -31,6 +32,21 @@ class AdmissionTests(unittest.TestCase):
              patch.object(safe, "resource_plan", return_value=(self.root, self.slot, self.paths)), \
              patch.object(safe.subprocess, "call", side_effect=call or (lambda *a, **kw: 0)):
             return safe.main(args)
+
+    def test_preparation_receives_exact_resources_and_live_lease(self):
+        seen = []
+        def cargo(command, env):
+            descriptor = json.loads(env["CARGO_ADMITTED_RESOURCES"])
+            self.assertEqual(descriptor["resources"]["target"], env["CARGO_TARGET_DIR"])
+            self.assertEqual(descriptor["resources"]["build"], env["CARGO_BUILD_BUILD_DIR"])
+            self.assertNotEqual(env["CARGO_TARGET_DIR"], env["CARGO_BUILD_BUILD_DIR"])
+            self.assertTrue(Path(descriptor["lease_marker"]).is_dir())
+            self.assertEqual(Path(descriptor["lease_marker"]).parent, Path(descriptor["lease"]))
+            seen.append(descriptor)
+            return 0
+        self.assertEqual(self.run_safe(["run", "-p", "xtask"], cargo), 0)
+        self.assertEqual(len(seen), 1)
+        self.assertFalse(Path(seen[0]["lease_marker"]).exists())
 
     def test_overrides_aliases_and_global_option_bypasses_refused_before_allocation(self):
         for args in [["+1.95", "build"], ["--config", "x", "build"], ["b"], ["nextest"],

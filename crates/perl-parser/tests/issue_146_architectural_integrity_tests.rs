@@ -10,37 +10,7 @@ use std::process::Command;
 mod issue_146_tests {
     use super::*;
 
-    /// AC-1.1: Validate tdd_workflow.rs compilation after signature variable fix
-    #[test]
-    fn test_tdd_workflow_compilation_fix() {
-        // Test that tdd_workflow.rs compiles without the undefined signature error
-        let output_res = Command::new("cargo")
-            .args(["check", "--package", "perl-parser", "--message-format", "json"])
-            .output();
-        assert!(output_res.is_ok(), "Failed to run cargo check");
-        let output = output_res.unwrap_or_else(|_| unreachable!());
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
-
-        // Should not contain compilation errors about undefined signature variable
-        assert!(
-            !stdout.contains("cannot find value `signature`"),
-            "tdd_workflow.rs still has undefined signature variable error"
-        );
-
-        // Should not contain tower_lsp import errors
-        assert!(
-            !stdout.contains("failed to resolve: could not find `tower_lsp`"),
-            "tdd_workflow.rs still has tower_lsp import errors"
-        );
-
-        // Check that compilation succeeds
-        assert!(
-            output.status.success(),
-            "cargo check failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
+    // The JSON compilation check moved to parser_workspace_prepare (#17479).
 
     /// AC-1.2: Validate LSP types import compatibility
     #[test]
@@ -106,35 +76,8 @@ mod issue_146_tests {
 mod integration_tests {
     use super::*;
 
-    /// Full compilation test for entire perl-parser crate
-    #[test]
-    fn test_full_crate_compilation() {
-        let output_res = Command::new("cargo").args(["build", "--package", "perl-parser"]).output();
-        assert!(output_res.is_ok(), "Failed to run cargo build");
-        let output = output_res.unwrap_or_else(|_| unreachable!());
-
-        assert!(
-            output.status.success(),
-            "Full crate compilation failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-
-    /// Test that clippy passes after architectural repairs
-    #[test]
-    fn test_clippy_compliance() {
-        let output_res = Command::new("cargo")
-            .args(["clippy", "--package", "perl-parser", "--", "-D", "warnings"])
-            .output();
-        assert!(output_res.is_ok(), "Failed to run cargo clippy");
-        let output = output_res.unwrap_or_else(|_| unreachable!());
-
-        assert!(
-            output.status.success(),
-            "Clippy found warnings: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
+    // Full compilation and strict Clippy obligations moved to the required
+    // parser_workspace_prepare gate, before any routed runtime (#17479).
 
     /// Test LSP end-to-end functionality after module restoration
     #[test]

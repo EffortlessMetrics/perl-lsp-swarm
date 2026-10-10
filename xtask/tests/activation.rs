@@ -79,8 +79,8 @@ const EXPECTED_CLASS_COUNTS: &[(&str, usize)] = &[
     // 94 -> 95: `unsafe_prod_check` entered .ci/gate-policy.yaml with #16215;
     // the committed inventory and these constants predate the merge that
     // carried it, so both fell one gate behind the authority.
-    // 95 -> 97: routed harness preparation (#17459) plus transferred DAP obligations (#17479).
-    ("gate", 97),
+    // 95 -> 98: routed harness, DAP and parser preparation (#17459/#17479).
+    ("gate", 98),
 ];
 
 /// Pin derivation receipts independently of class counts so a rule that
@@ -97,8 +97,8 @@ const EXPECTED_DERIVATION: &[(&str, usize, usize)] = &[
     // in c02237eda (#16102) and code_action_generation_ledger in 3752ae836 (#15946).
     // 94/94 -> 95/95: unsafe_prod_check (#16215) entered .ci/gate-policy.yaml and
     // the merge carrying it onto this branch predates the last inventory write.
-    // 95/95 -> 97/97: harness preparation (#17459) and DAP obligation transfer (#17479).
-    ("gate-policy-gates", 97, 97),
+    // 95/95 -> 98/98: harness, DAP and parser preparation (#17459/#17479).
+    ("gate-policy-gates", 98, 98),
     // 15/15 -> 16/16: `perl-ripr-facts/ripr_facts_benchmark` [[bench]]
     // target added by the #17154 ripr packet benchmark suite (#17170).
     ("cargo-bench-targets", 16, 16),

@@ -55,6 +55,14 @@ fn preparation_preserves_runtime_command_and_budget() -> Result<(), Box<dyn std:
     assert!(index("dap_workspace_prepare") < index("unit_routed_full"));
     assert_eq!(find("fmt")?["command"].as_str(), Some("cargo xtask fmt --check"));
     assert_eq!(find("fmt")?["required"].as_bool(), Some(true));
+    let parser = find("parser_workspace_prepare")?;
+    assert_eq!(parser["command"].as_str(), Some("python scripts/ci/parser_workspace_prepare.py"));
+    assert_eq!(parser["required"].as_bool(), Some(true));
+    assert_eq!(parser["retry_count"].as_u64(), Some(0));
+    assert_eq!(parser["quarantine"].as_bool(), Some(false));
+    assert_eq!(parser["planning"]["packages"], serde_yaml_ng::from_str::<Value>("[perl-parser]")?);
+    assert!(index("parser_workspace_prepare") < index("unit_routed_full"));
+
     assert!(!root()?.join("crates/perl-dap/tests/wave_h_workspace_verification.rs").exists());
     let manifest = fs::read_to_string(root()?.join("crates/perl-dap/Cargo.toml"))?;
     assert!(!manifest.contains("wave_h_workspace_verification"));
@@ -84,7 +92,7 @@ fn preparation_precedes_watchdog_and_has_separate_evidence()
         route_command
             .contains("cargo test -p xtask --test routed_test_preparation_contract --locked --")
     );
-    assert!(route_command.contains("14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;"));
+    assert!(route_command.contains("16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;"));
     assert!(route_command.contains("preparation_preserves_runtime_command_and_budget"));
     assert!(route_command.contains("preparation_precedes_watchdog_and_has_separate_evidence"));
     assert_eq!(route["continue-on-error"], Value::Null);

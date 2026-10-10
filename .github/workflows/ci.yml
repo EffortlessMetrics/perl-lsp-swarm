@@ -2115,7 +2115,7 @@ jobs:
           set -o pipefail
           cargo test -p xtask --test routed_test_preparation_contract --locked -- \
             --test-threads=1 --color never | tee "$RUNNER_TEMP/routed-test-preparation-contract.log"
-          grep -Eq '^test result: ok\. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in ' \
+          grep -Eq '^test result: ok\. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in ' \
             "$RUNNER_TEMP/routed-test-preparation-contract.log"
           for test_name in \
             preparation_preserves_runtime_command_and_budget \

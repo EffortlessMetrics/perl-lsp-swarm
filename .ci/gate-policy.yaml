@@ -1139,6 +1139,20 @@ gates:
       packages:
         - perl-dap
 
+  # Issue146 repository checks precede libtest; never acquire nested Cargo locks.
+  - name: parser_workspace_prepare
+    tier: pr_fast
+    description: "Check parser JSON compilation, warning-free build, strict Clippy and nonzero library tests under the admitted private roots"
+    required: true
+    command: python scripts/ci/parser_workspace_prepare.py
+    timeout_seconds: 1500
+    retry_count: 0
+    quarantine: false
+    tags: [compile, lint, parser]
+    planning:
+      role: rust_package_scoped
+      packages: [perl-parser]
+
   - name: unit_routed_full
     tier: pr_fast
     description: "Scoped routed integration tests for ci-scope selected crates (required test gate for #1470 coupling; --tests runs tests/ directories, catching runtime assertion failures not reachable by --lib)"
