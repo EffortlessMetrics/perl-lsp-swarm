@@ -49,6 +49,7 @@
 //! - `ci_scope::classify_files` / `ScopeOutput` are untouched — this module
 //!   is only the input seam (identity → changed paths), not a classifier.
 
+use std::io::{self, Write};
 use std::path::Path;
 
 use color_eyre::eyre::{Context, Result, eyre};
@@ -233,11 +234,13 @@ fn resolve_base_ref(base: &str, root: &Path) -> Result<String> {
         if git_ref_exists(base, root)? {
             return Ok(base.to_string());
         }
-        eprintln!(
+        writeln!(
+            io::stderr().lock(),
             "Warning: explicit base ref '{base}' does not exist; refusing to substitute a \
              different base (a caller-supplied base must resolve on its own — see #3985 \
              Slice 2 review, PR #4153)."
-        );
+        )
+        .context("Failed to write explicit-base warning")?;
         return Err(eyre!(
             "Explicit base ref '{base}' does not exist. Refusing to silently fall back to \
              {BASE_CANDIDATES:?} for an explicitly-requested base — an explicit base must \
@@ -404,11 +407,12 @@ pub fn run(config: ChangeSetConfig) -> Result<()> {
     };
     let identity = ArtifactIdentity::CommitRange { base: config.base, head: config.head };
     let resolved = resolve_change_set(identity, &root)?;
+    let mut stdout = io::stdout().lock();
 
     match config.format.as_str() {
         "paths" => {
             for path in &resolved.changed_paths {
-                println!("{path}");
+                writeln!(stdout, "{path}").context("Failed to write change-set path")?;
             }
         }
         "json" => {
@@ -419,7 +423,7 @@ pub fn run(config: ChangeSetConfig) -> Result<()> {
             });
             let pretty = serde_json::to_string_pretty(&json)
                 .context("Failed to serialize change set to JSON")?;
-            println!("{pretty}");
+            writeln!(stdout, "{pretty}").context("Failed to write change-set JSON")?;
         }
         other => {
             return Err(eyre!(
