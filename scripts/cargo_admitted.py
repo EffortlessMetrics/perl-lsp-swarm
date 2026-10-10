@@ -471,12 +471,28 @@ DISALLOWED_FILES = ("Cargo.toml", "Cargo.lock", "clippy.toml", "src/lib.rs")
 LOCK_UNION_ROW = "xtask-lock-union-fixture"
 LOCK_UNION_TEST_ROW = "xtask-lock-union-test"
 LOCK_UNION_TEST = "tasks::check_lint_policy::tests::lock_partition::the_two_rows_jointly_cover_every_borrowed_guard_discard"
+LOCK_FIXTURE_ROWS = (LOCK_UNION_ROW, "xtask-lock-rustc-fixture", "xtask-lock-clippy-fixture",
+                     "xtask-lock-must-use-fixture", "xtask-lock-sweep-fixture")
+LOCK_PARTITION_TEST_ROW = "xtask-lock-remaining-test"
+LOCK_PARTITION_TESTS = tuple("tasks::check_lint_policy::tests::lock_partition::" + name for name in (
+    "clippy_row_covers_parking_lot_guards_and_not_standard_library",
+    "discards_outside_the_governed_forms_are_covered_by_neither_row",
+    "explicit_drop_discards_are_covered_by_no_clippy_lint_at_any_level",
+    "let_underscore_must_use_owns_owned_and_mapped_guard_discards",
+    "rustc_row_covers_standard_library_guards_and_not_parking_lot",
+))
 PREPARATION_CONTROL_ROW = "xtask-preparation-control-test"
 PREPARATION_CONTROL_TEST = "tasks::gates::tests::failed_preparation_prevents_runtime_in_every_tier_and_keeps_backstops"
 NESTED_COMMANDS = {
     PREPARATION_CONTROL_ROW: ("test", "-p", "xtask", "--bin", "xtask", "--locked", "--message-format=json", PREPARATION_CONTROL_TEST,
                             "--", "--exact", "--test-threads=1", "--color", "never"),
     LOCK_UNION_ROW: ("clippy", "--offline", "--quiet", "--lib", "--no-deps", "--message-format=json", "--", "--force-warn", "let_underscore_lock", "--force-warn", "clippy::let_underscore_lock"),
+    "xtask-lock-rustc-fixture": ("clippy", "--offline", "--quiet", "--lib", "--no-deps", "--message-format=json", "--", "-A", "clippy::let_underscore_lock", "--force-warn", "let_underscore_lock"),
+    "xtask-lock-clippy-fixture": ("clippy", "--offline", "--quiet", "--lib", "--no-deps", "--message-format=json", "--", "-A", "let_underscore_lock", "--force-warn", "clippy::let_underscore_lock"),
+    "xtask-lock-must-use-fixture": ("clippy", "--offline", "--quiet", "--lib", "--no-deps", "--message-format=json", "--", "-A", "let_underscore_lock", "-A", "clippy::let_underscore_lock", "--force-warn", "clippy::let_underscore_must_use"),
+    "xtask-lock-sweep-fixture": ("clippy", "--offline", "--quiet", "--lib", "--no-deps", "--message-format=json", "--", "--force-warn", "let_underscore_lock", "--force-warn", "clippy::let_underscore_lock", "-W", "clippy::all", "-W", "clippy::pedantic", "-W", "clippy::nursery", "-W", "clippy::restriction"),
+    LOCK_PARTITION_TEST_ROW: ("test", "-p", "xtask", "--bin", "xtask", "--locked", "--message-format=json",
+                              "--", "--exact", *LOCK_PARTITION_TESTS, "--test-threads=1", "--color", "never"),
     LOCK_UNION_TEST_ROW: ("test", "-p", "xtask", "--bin", "xtask", "--locked", "--message-format=json", LOCK_UNION_TEST,
                           "--", "--exact", "--test-threads=1", "--color", "never"),
     DISALLOWED_FIXTURE_ROW: ("clippy", "--offline", "--quiet", "--lib", "--no-deps", "--message-format=json", "--", "-D", "warnings"),
@@ -610,8 +626,9 @@ def nested_plan(filename, env, worktree, paths):
             raise Denied("owning disallowed-fields test requires its finite fixture row")
         fixture = disallowed_fixture(worktree, paths)
     lock_fixture = None
-    if LOCK_UNION_ROW in data["rows"] or LOCK_UNION_TEST_ROW in data["rows"]:
-        if LOCK_UNION_ROW not in data["rows"]:
+    if any(row in data["rows"] for row in (*LOCK_FIXTURE_ROWS, LOCK_UNION_TEST_ROW, LOCK_PARTITION_TEST_ROW)):
+        required = LOCK_FIXTURE_ROWS if LOCK_PARTITION_TEST_ROW in data["rows"] else (LOCK_UNION_ROW,) if LOCK_UNION_TEST_ROW in data["rows"] else ()
+        if any(row not in data["rows"] for row in required):
             raise Denied("owning lock-union test requires its finite fixture row")
         lock_fixture = lock_union_fixture(worktree, paths)
     extra = tuple(Path(f["cwd"]) for f in (fixture, lock_fixture) if f)
@@ -872,7 +889,7 @@ def nested_command(row, env=None):
         lock_fixture = plan.get("lock_union_fixture")
         if lock_fixture is not None and lock_union_fixture(worktree, paths) != lock_fixture:
             raise Denied("lock-union fixture inputs/cwd/output roots changed")
-        if row in (LOCK_UNION_ROW, LOCK_UNION_TEST_ROW) and lock_fixture is None:
+        if row in (*LOCK_FIXTURE_ROWS, LOCK_UNION_TEST_ROW, LOCK_PARTITION_TEST_ROW) and lock_fixture is None:
             raise Denied("lock-union fixture is not bound to this workload")
         extra = tuple(Path(f["cwd"]) for f in (fixture, lock_fixture) if f)
         if nested_configuration(worktree, paths, extra) != plan["configuration"]:
@@ -894,7 +911,7 @@ def nested_command(row, env=None):
             raise Denied("nested compiler/profile environment changed")
         env.pop("LD_LIBRARY_PATH", None)
         env.update(expected)
-        selected_fixture = lock_fixture if row in (LOCK_UNION_ROW, LOCK_UNION_TEST_ROW) else fixture
+        selected_fixture = lock_fixture if row in (*LOCK_FIXTURE_ROWS, LOCK_UNION_TEST_ROW, LOCK_PARTITION_TEST_ROW) else fixture
         return render_nested(row, env, worktree, paths, plan["toolchain"], selected_fixture)
     except (KeyError, TypeError, ValueError, OSError) as error:
         raise Denied("invalid/stale nested handoff: " + str(error)) from error
@@ -925,7 +942,7 @@ def render_nested(row, env, worktree, paths, toolchain, fixture=None):
     cwd = worktree / "crates/perl-parser" if row == "parser-doc" else worktree
     if row == "incremental-metadata":
         cwd = worktree / "crates/perl-incremental-parsing"
-    if row in (DISALLOWED_FIXTURE_ROW, LOCK_UNION_ROW):
+    if row in (DISALLOWED_FIXTURE_ROW, *LOCK_FIXTURE_ROWS):
         cwd = Path(fixture["cwd"])
         paths = {**paths, **{name: Path(fixture["directories"][name]["path"]) for name in ("target", "build")}}
     exact = toolchain["subjects"]
@@ -942,7 +959,7 @@ def render_nested(row, env, worktree, paths, toolchain, fixture=None):
         controlled[name] = str(paths["temp"])
     if row == DISALLOWED_TEST_ROW:
         controlled["CARGO_ADMITTED_FIXTURE_PYTHON"] = fixture["python"]["path"]
-    if row == LOCK_UNION_TEST_ROW:
+    if row in (LOCK_UNION_TEST_ROW, LOCK_PARTITION_TEST_ROW):
         controlled["CARGO_ADMITTED_LOCK_PYTHON"] = fixture["python"]["path"]
     env.update(controlled)
     command = [exact["cargo"]["path"]]

@@ -118,10 +118,12 @@ def owning_test(env=None, invoke=subprocess.run, fixture_row=None, test_row=None
         owner.DISALLOWED_TEST_ROW: (owner.DISALLOWED_FIXTURE_ROW, owner.DISALLOWED_TEST, "disallowed-fields-owning"),
         owner.LOCK_UNION_TEST_ROW: (owner.LOCK_UNION_ROW, owner.LOCK_UNION_TEST, "lock-union-owning"),
         owner.PREPARATION_CONTROL_ROW: (owner.LOCK_UNION_ROW, owner.PREPARATION_CONTROL_TEST, "preparation-control-owning"),
+        owner.LOCK_PARTITION_TEST_ROW: (owner.LOCK_FIXTURE_ROWS, owner.LOCK_PARTITION_TESTS, "lock-remaining-owning"),
     }
     if selections.get(test_row) != (fixture_row, test_name, copy_prefix):
         raise owner.Denied("unsupported owning-test selection")
-    for row in (fixture_row, test_row):
+    fixture_rows = fixture_row if isinstance(fixture_row, tuple) else (fixture_row,)
+    for row in (*fixture_rows, test_row):
         owner.nested_command(row, env)
     command, child, cwd = owner.nested_command(test_row, env)
     result = invoke(command, env=child, cwd=cwd, capture_output=True, text=True,
@@ -132,11 +134,13 @@ def owning_test(env=None, invoke=subprocess.run, fixture_row=None, test_row=None
     if result.returncode:
         return result.returncode if result.returncode > 0 else 1
     lines = result.stdout.splitlines()
-    if ([line for line in lines if re.fullmatch(r"running [0-9]+ tests?", line)] != ["running 1 test"]
-            or [line for line in lines if re.fullmatch(r"test .* \.\.\. (ok|FAILED|ignored.*)", line)]
-            != ["test " + test_name + " ... ok"]
+    names = (test_name,) if isinstance(test_name, str) else test_name
+    count = len(names)
+    expected_results = ["test " + name + " ... ok" for name in sorted(names)]
+    if ([line for line in lines if re.fullmatch(r"running [0-9]+ tests?", line)] != [f"running {count} test" + ("s" if count != 1 else "")]
+            or [line for line in lines if re.fullmatch(r"test .* \.\.\. (ok|FAILED|ignored.*)", line)] != expected_results
             or len([line for line in lines if line.startswith("test result:")]) != 1
-            or not any(re.fullmatch(r"test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; [0-9]+ filtered out; finished in [0-9]+(?:\.[0-9]+)?s", line) for line in lines)):
+            or not any(re.fullmatch(rf"test result: ok\. {count} passed; 0 failed; 0 ignored; 0 measured; [0-9]+ filtered out; finished in [0-9]+(?:\.[0-9]+)?s", line) for line in lines)):
         raise owner.Denied("missing exact current owning fixture-test pass")
     capture_owning_artifact(result.stdout, env, test_row, test_name, copy_prefix)
     return 0
@@ -153,7 +157,8 @@ def capture_owning_artifact(stdout, env, test_row=None, test_name=None,
     if (test_row, test_name, copy_prefix) not in (
             (owner.DISALLOWED_TEST_ROW, owner.DISALLOWED_TEST, "disallowed-fields-owning"),
             (owner.LOCK_UNION_TEST_ROW, owner.LOCK_UNION_TEST, "lock-union-owning"),
-            (owner.PREPARATION_CONTROL_ROW, owner.PREPARATION_CONTROL_TEST, "preparation-control-owning")):
+            (owner.PREPARATION_CONTROL_ROW, owner.PREPARATION_CONTROL_TEST, "preparation-control-owning"),
+            (owner.LOCK_PARTITION_TEST_ROW, owner.LOCK_PARTITION_TESTS, "lock-remaining-owning")):
         raise owner.Denied("unsupported owning-artifact selection")
     snapshot, _ = owner.bounded_json(descriptor["nested_snapshot"]["path"])
     worktree = Path(descriptor["worktree"])
@@ -198,7 +203,8 @@ def capture_owning_artifact(stdout, env, test_row=None, test_name=None,
                 'snapshot':descriptor['nested_snapshot'], 'owner_process':descriptor['owner_process'],
                 'lease':descriptor['lease'], 'lease_identity':descriptor['lease_identity'],
                 'lease_marker':descriptor['lease_marker'], 'marker_identity':descriptor['marker_identity'],
-                'copied_under_original_live_owner':True, 'named_test':test_name}
+                'copied_under_original_live_owner':True}
+    evidence['named_test' if isinstance(test_name, str) else 'named_tests'] = test_name
     with copy.with_suffix('.json').open('x',encoding='utf-8') as record:
         json.dump(evidence,record)
     print('Owning fixture harness preserved: '+json.dumps({'path':str(copy),'sha256':copied['sha256']}),flush=True)

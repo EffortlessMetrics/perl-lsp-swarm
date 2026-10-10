@@ -354,15 +354,41 @@ fn measure_fixture(lint_flags: &[&str], keep: Keep) -> Result<Vec<LintFinding>> 
         let Some(python) = interpreter else {
             bail!("admitted lock measurement requires its bound native interpreter");
         };
-        if admitted.is_none()
-            || lint_flags != ["--force-warn", RUST_LOCK_LINT, "--force-warn", CLIPPY_LOCK_LINT]
-        {
-            bail!("admitted lock measurement is not the finite union fixture");
+        if admitted.is_none() {
+            bail!("admitted lock measurement requires its original owner");
         }
+        let measurement = match lint_flags {
+            ["--force-warn", RUST_LOCK_LINT, "--force-warn", CLIPPY_LOCK_LINT] => "union",
+            ["-A", CLIPPY_LOCK_LINT, "--force-warn", RUST_LOCK_LINT] => "rustc",
+            ["-A", RUST_LOCK_LINT, "--force-warn", CLIPPY_LOCK_LINT] => "clippy",
+            [
+                "-A",
+                RUST_LOCK_LINT,
+                "-A",
+                CLIPPY_LOCK_LINT,
+                "--force-warn",
+                CLIPPY_MUST_USE_LINT,
+            ] => "must-use",
+            [
+                "--force-warn",
+                RUST_LOCK_LINT,
+                "--force-warn",
+                CLIPPY_LOCK_LINT,
+                "-W",
+                "clippy::all",
+                "-W",
+                "clippy::pedantic",
+                "-W",
+                "clippy::nursery",
+                "-W",
+                "clippy::restriction",
+            ] => "sweep",
+            _ => bail!("admitted lock measurement is not a finite declared lint tuple"),
+        };
         Command::new(python)
             .arg("-I")
             .arg(super::test_root().join("scripts/ci/lock_union_prepare.py"))
-            .arg("--fixture")
+            .args(["--measurement", measurement])
             .output()?
     } else {
         compile_developer_fixture(lint_flags)?

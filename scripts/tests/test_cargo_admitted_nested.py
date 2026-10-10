@@ -308,12 +308,12 @@ class NestedTests(unittest.TestCase):
         for row in a.NESTED_COMMANDS:
             with self.subTest(row=row):
                 cmd,env,cwd=self.command(row)
-                selected=lock_fixture if row==a.LOCK_UNION_ROW else fixture
+                selected=lock_fixture if row in ('xtask-lock-union-fixture','xtask-lock-rustc-fixture','xtask-lock-clippy-fixture','xtask-lock-must-use-fixture','xtask-lock-sweep-fixture') else fixture
                 for key in ['CARGO_TARGET_DIR','CARGO_BUILD_BUILD_DIR','CARGO_HOME','TEMP','TMP','TMPDIR','CARGO_BUILD_JOBS','CARGO_INCREMENTAL']:
                     expected=(str(selected/('target' if key=='CARGO_TARGET_DIR' else 'build'))
-                              if row in (a.DISALLOWED_FIXTURE_ROW,a.LOCK_UNION_ROW) and key in ['CARGO_TARGET_DIR','CARGO_BUILD_BUILD_DIR'] else self.env[key])
+                              if row in (a.DISALLOWED_FIXTURE_ROW,'xtask-lock-union-fixture','xtask-lock-rustc-fixture','xtask-lock-clippy-fixture','xtask-lock-must-use-fixture','xtask-lock-sweep-fixture') and key in ['CARGO_TARGET_DIR','CARGO_BUILD_BUILD_DIR'] else self.env[key])
                     self.assertEqual(env[key],expected)
-                build=selected/'build' if row in (a.DISALLOWED_FIXTURE_ROW,a.LOCK_UNION_ROW) else self.paths['build']
+                build=selected/'build' if row in (a.DISALLOWED_FIXTURE_ROW,'xtask-lock-union-fixture','xtask-lock-rustc-fixture','xtask-lock-clippy-fixture','xtask-lock-must-use-fixture','xtask-lock-sweep-fixture') else self.paths['build']
                 self.assertIn('build.build-dir='+json.dumps(str(build)),cmd)
                 self.assertFalse(any(x in cmd for x in ['--release','--fix','--workspace']))
     def test_routed_denominator_and_compile_runtime_distinct(self):

@@ -1,0 +1,18 @@
+# Manual unactivated qualification; canonical gate policy is unchanged.
+schema_version: 1
+global:
+  default_timeout_seconds: 3600
+tiers:
+  merge_gate:
+    description: Five exact remaining lock measurements under one admission
+    target_duration_seconds: 3600
+    enforcement: required
+gates:
+  - name: lock_remaining_owning
+    tier: merge_gate
+    description: Five exact owning tests preserving all distinct lint tuples
+    required: true
+    command: python3 -I scripts/ci/lock_union_prepare.py --remaining
+    timeout_seconds: 3600
+    retry_count: 0
+    tags: [test, compiler-fixture, narrow-qualification]
