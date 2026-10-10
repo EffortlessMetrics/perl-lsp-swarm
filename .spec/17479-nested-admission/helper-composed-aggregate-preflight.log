@@ -1,0 +1,68 @@
+[
+  {
+    "argv": [
+      "python3",
+      "-B",
+      "-I",
+      "scripts/ci/disallowed_fields_prepare.py",
+      "--prepare"
+    ],
+    "exit_code": 0,
+    "stdout": "{\"prepared\": \"/workspace/.devplane-17479/bf4c09722087-linux-727b814873041b4a/worktrees/ca8a330a66f6d236fa1e8d7f63aed3c09474f0bcc618a13452eb2d5faca8978e/temp/disallowed-fields-17479\", \"compiler_launched\": false}\n",
+    "stderr": ""
+  },
+  {
+    "argv": [
+      "python3",
+      "-B",
+      "-I",
+      "scripts/ci/lock_union_prepare.py",
+      "--prepare"
+    ],
+    "exit_code": 0,
+    "stdout": "{\"prepared\": \"/workspace/.devplane-17479/bf4c09722087-linux-727b814873041b4a/worktrees/ca8a330a66f6d236fa1e8d7f63aed3c09474f0bcc618a13452eb2d5faca8978e/temp/lock-union-17479\", \"compiler_launched\": false}\n",
+    "stderr": ""
+  },
+  {
+    "argv": [
+      "python3",
+      "-B",
+      "-I",
+      "scripts/ci/jsonrpc_prepare.py",
+      "--prepare"
+    ],
+    "exit_code": 0,
+    "stdout": "{\"prepared\": \"/workspace/.devplane-17479/bf4c09722087-linux-727b814873041b4a/worktrees/ca8a330a66f6d236fa1e8d7f63aed3c09474f0bcc618a13452eb2d5faca8978e/temp/jsonrpc-17479\", \"compiler_launched\": false, \"lock_generated\": false}\n",
+    "stderr": ""
+  },
+  {
+    "argv": [
+      "python3",
+      "-B",
+      "scripts/cargo_admitted.py",
+      "--nested-plan",
+      "/workspace/perl-lsp-17479-nested/.spec/17479-nested-admission/helper-plan.json",
+      "--preflight",
+      "run",
+      "-p",
+      "xtask",
+      "--bin",
+      "xtask",
+      "--locked",
+      "--",
+      "gates",
+      "--tier",
+      "merge-gate",
+      "--gate",
+      "helper_routed_owning",
+      "--gate-policy",
+      ".spec/17479-nested-admission/helper-gates.yaml",
+      "--receipt",
+      "--receipt-path",
+      "/workspace/.devplane-17479/bf4c09722087-linux-727b814873041b4a/worktrees/ca8a330a66f6d236fa1e8d7f63aed3c09474f0bcc618a13452eb2d5faca8978e/temp/helper-owning.json"
+    ],
+    "exit_code": 75,
+    "stdout": "",
+    "stderr": "cargo-admitted: DENY: insufficient disk headroom at /workspace/.devplane-17479/bf4c09722087-linux-727b814873041b4a free_bytes=22332944384 required_free_bytes=42949672960.0 shortfall_bytes=20616728576.0 used_pct=33.86788031452055\ncargo-admitted preflight: {\"verdict\": \"DENY\", \"scope\": {\"hostname\": \"bf4c09722087\", \"platform\": \"linux\", \"working_directory\": \"/workspace/perl-lsp-17479-nested\", \"worktree\": \"/workspace/perl-lsp-17479-nested\", \"operation\": \"run\", \"cargo_argv_sha256\": \"d7913dbf8abbe4de03947b813b16a6620dff7b64d553be20f11b85f8b125dbea\", \"resources\": {\"target\": \"/workspace/.devplane-17479/bf4c09722087-linux-727b814873041b4a/worktrees/ca8a330a66f6d236fa1e8d7f63aed3c09474f0bcc618a13452eb2d5faca8978e/target\", \"build\": \"/workspace/.devplane-17479/bf4c09722087-linux-727b814873041b4a/worktrees/ca8a330a66f6d236fa1e8d7f63aed3c09474f0bcc618a13452eb2d5faca8978e/build\", \"cargo_home\": \"/workspace/.cloud-tools/cargo\", \"temp\": \"/workspace/.devplane-17479/bf4c09722087-linux-727b814873041b4a/worktrees/ca8a330a66f6d236fa1e8d7f63aed3c09474f0bcc618a13452eb2d5faca8978e/temp\"}, \"jobs\": 2, \"build_environment_sha256\": \"89d03e8fba7787a8ec0723f00348bc2196995b8f561ddbbba4702a1bdad2b17d\", \"nested_plan_sha256\": \"707a7f9506ec90369dd89ac98e0d7df77f8bb55018a6c95be48bd3d90fac1387\"}, \"lease_acquired\": false, \"reason\": \"insufficient disk headroom at /workspace/.devplane-17479/bf4c09722087-linux-727b814873041b4a free_bytes=22332944384 required_free_bytes=42949672960.0 shortfall_bytes=20616728576.0 used_pct=33.86788031452055\", \"observation\": {\"path\": \"/workspace/.devplane-17479/bf4c09722087-linux-727b814873041b4a\", \"observed_ancestor\": \"/workspace/.devplane-17479/bf4c09722087-linux-727b814873041b4a\", \"free_bytes\": 22332944384, \"required_free_bytes\": 42949672960.0, \"headroom_bytes\": -20616728576.0, \"shortfall_bytes\": 20616728576.0, \"used_pct\": 33.86788031452055}}\n"
+  }
+]
