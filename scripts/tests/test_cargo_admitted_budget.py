@@ -67,6 +67,149 @@ class ConstrainedAdmissionTests(unittest.TestCase):
         self.assertFalse(self.slot.exists())
         self.assertFalse(any(path.exists() for path in self.paths.values()))
 
+    @unittest.skipIf(os.name == "nt", "POSIX open-directory/fdopen failure fixture")
+    def test_directory_budget_failure_closes_opened_descriptor(self):
+        directory = self.root / "directory-budget"
+        directory.mkdir()
+        opened = []
+        original = os.open
+        def record(*args, **kwargs):
+            fd = original(*args, **kwargs)
+            opened.append(fd)
+            return fd
+        with patch.object(safe.os, "open", side_effect=record):
+            result, _, cargo = self.invoke(["--budget-file", str(directory), *self.args])
+        self.assertEqual(result, 75)
+        cargo.assert_not_called()
+        self.assertEqual(len(opened), 1)
+        with self.assertRaises(OSError):
+            os.fstat(opened[0])
+        self.assert_unallocated()
+
+    def test_stream_construction_interrupt_closes_untransferred_descriptor(self):
+        for failure in (KeyboardInterrupt, SystemExit, RuntimeError):
+            opened = []
+            original = os.open
+            def record(*args, **kwargs):
+                fd = original(*args, **kwargs)
+                opened.append(fd)
+                return fd
+            with self.subTest(failure=failure), patch.object(safe.os, "open", side_effect=record), \
+                 patch.object(safe.os, "fdopen", side_effect=failure):
+                with self.assertRaises(failure):
+                    safe.read_budget_file(str(self.budget), self.document["scope"], {})
+            self.assertEqual(len(opened), 1)
+            with self.assertRaises(OSError):
+                os.fstat(opened[0])
+
+    def test_utf8_bom_is_optional_but_invalid_encoding_refuses(self):
+        import hashlib
+        raw = self.budget.read_bytes()
+        self.budget.write_bytes(b"\xef\xbb\xbf" + raw)
+        result, output, cargo = self.invoke(["--preflight", "--budget-file", str(self.budget), *self.args])
+        self.assertEqual(result, 0, output)
+        self.assertIn(hashlib.sha256(b"\xef\xbb\xbf" + raw).hexdigest(), output)
+        cargo.assert_not_called()
+        for bad in (b"\xff" + raw, b"\xef\xbb\xbf\xef\xbb\xbf" + raw,
+                    raw.replace(b'"schema_version"', b'\xef\xbb\xbf"schema_version"'),
+                    raw.decode().encode("utf-16")):
+            with self.subTest(raw=bad[:30]):
+                self.budget.write_bytes(bad)
+                result, _, cargo = self.invoke(["--preflight", "--budget-file", str(self.budget), *self.args])
+                self.assertEqual(result, 75)
+                cargo.assert_not_called()
+                self.assert_unallocated()
+
+    def test_prelaunch_failure_does_not_release_a_replacement_lease(self):
+        lock = self.slot / "cargo-active"
+        def disk(path):
+            if lock.exists():
+                lock.rename(self.slot / "original-lease")
+                lock.mkdir()
+                raise OSError("fixture replacement before capacity refusal")
+            return self.Usage(32*self.gib, 3*self.gib, 29*self.gib)
+        result, _, cargo = self.invoke(["--budget-file", str(self.budget), *self.args], disk=disk)
+        self.assertEqual(result, 75)
+        cargo.assert_not_called()
+        self.assertTrue(lock.is_dir())
+        self.assertFalse(self.paths["target"].exists())
+
+    def test_copied_marker_cannot_transfer_lease_ownership(self):
+        import shutil
+        lock = self.slot / "cargo-active"
+        def disk(path):
+            if lock.exists():
+                original = self.slot / "original-lease"
+                lock.rename(original)
+                shutil.copytree(original, lock)
+                raise OSError("fixture copied lease before capacity refusal")
+            return self.Usage(32*self.gib, 3*self.gib, 29*self.gib)
+        result, _, cargo = self.invoke(["--budget-file", str(self.budget), *self.args], disk=disk)
+        self.assertEqual(result, 75)
+        cargo.assert_not_called()
+        self.assertTrue(lock.is_dir())
+        self.assertEqual(sorted(p.name for p in lock.iterdir()),
+                         sorted(p.name for p in (self.slot / "original-lease").iterdir()))
+
+    def test_marker_setup_failure_releases_its_unlaunched_lease(self):
+        original = Path.mkdir
+        def fail_marker(path, *args, **kwargs):
+            if path.parent == self.slot / "cargo-active":
+                raise OSError("fixture marker setup failure")
+            return original(path, *args, **kwargs)
+        with patch.object(Path, "mkdir", fail_marker):
+            result, _, cargo = self.invoke(["--budget-file", str(self.budget), *self.args])
+        self.assertEqual(result, 75)
+        cargo.assert_not_called()
+        self.assertFalse((self.slot / "cargo-active").exists())
+        self.assertFalse(self.paths["target"].exists())
+
+    def test_normal_completion_preserves_a_replacement_lease(self):
+        lock = self.slot / "cargo-active"
+        def replace(command, env):
+            lock.rename(self.slot / "original-lease")
+            lock.mkdir()
+            return 0
+        result, _, cargo = self.invoke(["--budget-file", str(self.budget), *self.args], call=replace)
+        self.assertEqual(result, 0)
+        cargo.assert_called_once()
+        self.assertTrue(lock.is_dir())
+
+    @unittest.skipIf(os.name == "nt", "POSIX symlink replacement fixture")
+    def test_each_storage_path_replaced_after_planning_refuses_launch(self):
+        for key in self.paths:
+            with self.subTest(path=key):
+                foreign = self.root / ("foreign-" + key)
+                foreign.mkdir()
+                path = self.paths[key]
+                def disk(ancestor):
+                    if (self.slot / "cargo-active").exists() and not path.is_symlink():
+                        path.symlink_to(foreign, target_is_directory=True)
+                    return self.Usage(32*self.gib, 3*self.gib, 29*self.gib)
+                result, _, cargo = self.invoke(["--budget-file", str(self.budget), *self.args], disk=disk)
+                self.assertEqual(result, 75)
+                cargo.assert_not_called()
+                self.assertEqual(list(foreign.iterdir()), [])
+                path.unlink()
+                self.assertFalse((self.slot / "cargo-active").exists())
+
+    def test_ci_reaches_both_admission_suites(self):
+        workflow = (ROOT / ".github/workflows/ci-gate-self-tests.yml").read_text()
+        filters = workflow.split("jobs:", 1)[0]
+        for path in ("scripts/cargo-admitted", "scripts/cargo_admitted.py",
+                     "scripts/tests/test_cargo_admitted_storage.py",
+                     "scripts/tests/test_cargo_admitted_budget.py", "justfile"):
+            self.assertIn("- '" + path + "'", filters)
+        job = workflow.split("  cargo-admitted-storage-self-test:", 1)[1].split("\n  cargo-toolchain-guard-self-test:", 1)[0]
+        self.assertIn("run: python3 -m unittest discover -s scripts/tests -p 'test_cargo_admitted*.py'", job)
+        self.assertNotIn("CARGO_ADMITTED_REAL_BUILD_TEST", job)
+
+    def test_generic_preflight_cannot_claim_build_admission(self):
+        recipe = (ROOT / "justfile").read_text().split("agent-preflight: storage-doctor", 1)[1].split("\n\n", 1)[0]
+        self.assertIn("Cargo build capacity was not assessed", recipe)
+        self.assertIn("scripts/cargo-admitted --preflight <exact Cargo command>", recipe)
+        self.assertNotIn('"agent preflight ok"', recipe)
+
     def test_readonly_preflight_uses_the_execution_budget_without_allocating(self):
         import json
         result, output, cargo = self.invoke(["--preflight", "--budget-file", str(self.budget), *self.args])

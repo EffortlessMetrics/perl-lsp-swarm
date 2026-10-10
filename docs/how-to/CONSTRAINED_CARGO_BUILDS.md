@@ -64,7 +64,9 @@ files. A build profile change or cold cache can invalidate a warm-build bound.
 
 Both byte counts and their sum must fit a signed 64-bit integer. Booleans,
 fractional values, zero, negative values, nonfinite JSON, duplicate keys, unknown
-fields/versions, and files larger than 64 KiB refuse. Use an absolute regular-file
+fields/versions, and files larger than 64 KiB refuse. An optional initial UTF-8 BOM is accepted;
+other encodings refuse, and an interior BOM is not treated as JSON whitespace.
+The declaration digest still hashes the original bytes. Use an absolute regular-file
 path with no linked/junction components, consistent with the existing storage
 path contract. The sizing reference is limited to 4,096 characters and must not
 contain credentials or private log contents.
@@ -129,7 +131,10 @@ old outputs, or modify release/security/merge gates.
 Execution repeats capacity observation inside the existing lease before
 allocating build resources or attempting Cargo launch. If that observation or
 another pre-launch preparation step fails, only this invocation's unlaunched
-lease is released; already created directories and pre-existing evidence remain.
+lease is released only when its directory identity and unique ownership marker
+still match; replacement leases remain for owner verification. Marker setup
+failure removes only its own empty original lease. Already created directories
+and pre-existing evidence remain.
 Once launch is attempted, spawn failure, interruption, and abnormal statuses
 retain the conservative lease for owner verification. Cargo exit 0 or 101 keeps
 the existing release behavior; neither status proves all descendants ended.

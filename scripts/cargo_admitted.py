@@ -11,6 +11,7 @@ import socket
 import stat
 import subprocess
 import sys
+import uuid
 
 
 class Denied(Exception):
@@ -116,7 +117,14 @@ def read_budget_file(filename, scope, env):
     # replacement from hanging this read; O_NOFOLLOW protects the final component
     # on platforms that provide it. This is not an adversarial filesystem sandbox.
     flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOFOLLOW", 0)
-    with os.fdopen(os.open(path, flags), "rb") as stream:
+    descriptor = os.open(path, flags)
+    try:
+        stream = os.fdopen(descriptor, "rb")
+    except BaseException:
+        # Ownership has not transferred, including on interruption.
+        os.close(descriptor)
+        raise
+    with stream:
         metadata = os.fstat(stream.fileno())
         if not stat.S_ISREG(metadata.st_mode) or metadata.st_size > BUDGET_FILE_LIMIT:
             raise Denied("budget file must be a regular file of at most 65536 bytes")
@@ -136,7 +144,7 @@ def read_budget_file(filename, scope, env):
         raise Denied("nonfinite JSON constant in budget file")
 
     try:
-        data = json.loads(raw.decode("utf-8"), object_pairs_hook=object_pairs,
+        data = json.loads(raw.decode("utf-8-sig"), object_pairs_hook=object_pairs,
                           parse_constant=invalid_constant)
     except (ValueError, RecursionError) as error:
         raise Denied("invalid budget JSON") from error
@@ -278,6 +286,36 @@ def resource_plan(env):
     return worktree, slot, paths
 
 
+def directory_identity(path):
+    metadata = path.lstat()
+    if not stat.S_ISDIR(metadata.st_mode) or path.is_symlink():
+        raise Denied("lease directory was replaced: " + str(path))
+    return metadata.st_dev, metadata.st_ino
+
+
+def owns_lease(lock, identity, marker):
+    try:
+        return directory_identity(lock) == identity and directory_identity(marker) is not None
+    except (OSError, Denied):
+        return False
+
+
+def release_lease(lock, identity, marker=None):
+    # A copied token cannot transfer the original directory's ownership. Never
+    # recursively delete a lease or release replacement/unrecognized evidence.
+    try:
+        if directory_identity(lock) != identity:
+            return
+        if marker is not None:
+            if not owns_lease(lock, identity, marker):
+                return
+            marker.rmdir()
+        lock.rmdir()
+    except (OSError, Denied):
+        # Retaining evidence is safer than masking the operation's result.
+        pass
+
+
 def main(args=None):
     args = sys.argv[1:] if args is None else args
     preflight, scope = False, None
@@ -309,11 +347,21 @@ def main(args=None):
             lock.mkdir()
         except FileExistsError:
             raise Denied("slot is active or awaits owner verification: " + str(lock))
+        identity = directory_identity(lock)
+        marker = lock / ("owner-" + uuid.uuid4().hex)
+        try:
+            marker.mkdir()
+        except BaseException:
+            release_lease(lock, identity)
+            raise
         # Once launch is attempted, preserve the conservative interrupted/spawn
         # failure rule. Earlier refusal can release only this unlaunched lease.
         completed, launch_attempted = False, False
         try:
             admission = check_capacity([slot, *paths.values()], env, budget)
+            for path in (slot, *paths.values()):
+                if native_path(str(path)) != path:
+                    raise Denied("resource path changed after admission: " + str(path))
             for path in paths.values():
                 path.mkdir(parents=True, exist_ok=True)
             env.update(CARGO_TARGET_DIR=str(paths["target"]),
@@ -336,6 +384,11 @@ def main(args=None):
                 child_value = "0" if name == "RUSTUP_AUTO_INSTALL" else str(paths["temp"])
                 for field, value in (("value", json.dumps(child_value)), ("force", "true"), ("relative", "false")):
                     command[1:1] = ["--config", "env." + name + "." + field + "=" + value]
+            for path in (slot, *paths.values()):
+                if native_path(str(path)) != path:
+                    raise Denied("resource path changed before launch: " + str(path))
+            if not owns_lease(lock, identity, marker):
+                raise Denied("lease ownership changed before Cargo launch")
             launch_attempted = True
             result = subprocess.call(command, env=env)
             # Cargo uses 101 for ordinary failure and may also panic with 101.
@@ -345,7 +398,7 @@ def main(args=None):
             return result
         finally:
             if completed or not launch_attempted:
-                lock.rmdir()
+                release_lease(lock, identity, marker)
             else:
                 print("cargo-admitted: lease retained; root must verify all consumers before release", file=sys.stderr)
     except (Denied, OSError, ValueError, subprocess.CalledProcessError) as error:
