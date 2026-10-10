@@ -293,21 +293,21 @@ def directory_identity(path):
     return metadata.st_dev, metadata.st_ino
 
 
-def owns_lease(lock, identity, marker):
+def owns_lease(lock, identity, marker, marker_identity):
     try:
-        return directory_identity(lock) == identity and directory_identity(marker) is not None
+        return directory_identity(lock) == identity and directory_identity(marker) == marker_identity
     except (OSError, Denied):
         return False
 
 
-def release_lease(lock, identity, marker=None):
+def release_lease(lock, identity, marker=None, marker_identity=None):
     # A copied token cannot transfer the original directory's ownership. Never
     # recursively delete a lease or release replacement/unrecognized evidence.
     try:
         if directory_identity(lock) != identity:
             return
         if marker is not None:
-            if not owns_lease(lock, identity, marker):
+            if not owns_lease(lock, identity, marker, marker_identity):
                 return
             marker.rmdir()
         lock.rmdir()
@@ -351,6 +351,7 @@ def main(args=None):
         marker = lock / ("owner-" + uuid.uuid4().hex)
         try:
             marker.mkdir()
+            marker_identity = directory_identity(marker)
         except BaseException:
             release_lease(lock, identity)
             raise
@@ -359,6 +360,8 @@ def main(args=None):
         completed, launch_attempted = False, False
         try:
             admission = check_capacity([slot, *paths.values()], env, budget)
+            if not owns_lease(lock, identity, marker, marker_identity):
+                raise Denied("lease ownership changed before resource allocation")
             for path in (slot, *paths.values()):
                 if native_path(str(path)) != path:
                     raise Denied("resource path changed after admission: " + str(path))
@@ -387,7 +390,7 @@ def main(args=None):
             for path in (slot, *paths.values()):
                 if native_path(str(path)) != path:
                     raise Denied("resource path changed before launch: " + str(path))
-            if not owns_lease(lock, identity, marker):
+            if not owns_lease(lock, identity, marker, marker_identity):
                 raise Denied("lease ownership changed before Cargo launch")
             launch_attempted = True
             result = subprocess.call(command, env=env)
@@ -398,7 +401,7 @@ def main(args=None):
             return result
         finally:
             if completed or not launch_attempted:
-                release_lease(lock, identity, marker)
+                release_lease(lock, identity, marker, marker_identity)
             else:
                 print("cargo-admitted: lease retained; root must verify all consumers before release", file=sys.stderr)
     except (Denied, OSError, ValueError, subprocess.CalledProcessError) as error:
