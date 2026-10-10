@@ -425,6 +425,24 @@
       "state": "retired"
     },
     {
+      "path": "crates/perl-lsp-rs-core/src/runtime/launcher/mod.rs",
+      "enclosing_test_or_function": "ripr_facts_threads_optional_diff_path",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"expected RiprFacts action, got {other:?}\"),",
+      "selector_identity": "invocation:2341f7ec4387f79e:occurrence:1",
+      "accepted_reason": "Intentional #17330/#17152 launcher action oracle: --ripr-facts with change.diff must select RiprFacts and preserve the explicit diff path.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-lsp-rs-core/src/runtime/launcher/mod.rs",
+      "enclosing_test_or_function": "ripr_facts_threads_optional_diff_path",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"expected RiprFacts action, got {other:?}\"),",
+      "selector_identity": "invocation:2341f7ec4387f79e:occurrence:2",
+      "accepted_reason": "Intentional #17330/#17152 launcher action oracle: --ripr-facts without a path must select RiprFacts and preserve an absent diff path.",
+      "state": "active"
+    },
+    {
       "path": "crates/perl-lsp-rs-core/src/semantic_snapshot.rs",
       "enclosing_test_or_function": "round_trip_every_terminal_state",
       "macro_family": "panic!",
@@ -713,13 +731,67 @@
       "state": "active"
     },
     {
+      "path": "crates/perl-lsp-rs/tests/lsp_call_hierarchy_tests.rs",
+      "enclosing_test_or_function": "test_outgoing_calls_distinguish_bareword_class_receivers",
+      "macro_family": "panic!",
+      "normalized_snippet": ".unwrap_or_else(|| panic!(\"missing outgoing callee {}\", qualified_name));",
+      "selector_identity": "invocation:9897144005f5b5c3:occurrence:1",
+      "accepted_reason": "Intentional #17379/#17368 outgoing-call oracle: each expected qualified bareword-class callee must exist before its call-range count is checked.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-lsp-ux-tests/tests/ux_scenario_13_document_symbols.rs",
+      "enclosing_test_or_function": "assert_document_symbol_children",
+      "macro_family": "panic!",
+      "normalized_snippet": ".unwrap_or_else(|| panic!(\"Each symbol must have a non-empty name: {symbol:?}\"));",
+      "selector_identity": "invocation:a9f840cae4aef361:occurrence:1",
+      "accepted_reason": "Intentional #16509/#13950 document-symbol UX shape oracle: nested document-symbol child must have a non-empty name.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-lsp-ux-tests/tests/ux_scenario_13_document_symbols.rs",
+      "enclosing_test_or_function": "assert_document_symbol_children",
+      "macro_family": "panic!",
+      "normalized_snippet": ".unwrap_or_else(|| panic!(\"Symbol `{name}` must include LSP SymbolKind: {symbol:?}\"));",
+      "selector_identity": "invocation:c6e55719552d2693:occurrence:1",
+      "accepted_reason": "Intentional #16509/#13950 document-symbol UX shape oracle: nested document-symbol child must include a numeric LSP SymbolKind.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-lsp-ux-tests/tests/ux_scenario_13_document_symbols.rs",
+      "enclosing_test_or_function": "assert_document_symbol_children",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"DocumentSymbol `{name}` children must be an array: {symbol:?}\")",
+      "selector_identity": "invocation:693eb37dd060ccb8:occurrence:1",
+      "accepted_reason": "Intentional #16509/#13950 document-symbol UX shape oracle: nested document-symbol child children must be an array before recursive shape validation.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-lsp-ux-tests/tests/ux_scenario_13_document_symbols.rs",
+      "enclosing_test_or_function": "assert_document_symbol_row",
+      "macro_family": "panic!",
+      "normalized_snippet": ".unwrap_or_else(|err| panic!(\"{err}: {symbol:?}\"));",
+      "selector_identity": "invocation:8f3b678e5e57e51a:occurrence:1",
+      "accepted_reason": "Intentional #16509/#13950 document-symbol UX shape oracle: document-symbol row range must have valid ordered LSP positions before selection containment is checked.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-lsp-ux-tests/tests/ux_scenario_13_document_symbols.rs",
+      "enclosing_test_or_function": "assert_document_symbol_row",
+      "macro_family": "panic!",
+      "normalized_snippet": ".unwrap_or_else(|err| panic!(\"{err}: {symbol:?}\"));",
+      "selector_identity": "invocation:8f3b678e5e57e51a:occurrence:2",
+      "accepted_reason": "Intentional #16509/#13950 document-symbol UX shape oracle: document-symbol row selectionRange must have valid ordered LSP positions before range containment is checked.",
+      "state": "active"
+    },
+    {
       "path": "crates/perl-lsp-ux-tests/tests/ux_scenario_13_document_symbols.rs",
       "enclosing_test_or_function": "assert_symbol_shapes",
       "macro_family": "panic!",
       "normalized_snippet": ".unwrap_or_else(|| panic!(\"Each symbol must have a non-empty name: {symbol:?}\"));",
       "selector_identity": "invocation:a9f840cae4aef361:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-ux-tests/tests/ux_scenario_13_document_symbols.rs",
@@ -728,7 +800,7 @@
       "normalized_snippet": ".unwrap_or_else(|| panic!(\"Symbol `{name}` must include LSP SymbolKind: {symbol:?}\"));",
       "selector_identity": "invocation:c6e55719552d2693:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-ux-tests/tests/ux_scenario_13_document_symbols.rs",
@@ -737,7 +809,7 @@
       "normalized_snippet": ".unwrap_or_else(|err| panic!(\"{err}: {symbol:?}\"));",
       "selector_identity": "invocation:8f3b678e5e57e51a:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-ux-tests/tests/ux_scenario_13_document_symbols.rs",
@@ -746,7 +818,7 @@
       "normalized_snippet": ".unwrap_or_else(|err| panic!(\"{err}: {symbol:?}\"));",
       "selector_identity": "invocation:8f3b678e5e57e51a:occurrence:2",
       "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-ux-tests/tests/ux_scenario_13_document_symbols.rs",
@@ -755,7 +827,7 @@
       "normalized_snippet": "panic!(\"DocumentSymbol `{name}` children must be an array: {symbol:?}\")",
       "selector_identity": "invocation:693eb37dd060ccb8:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-ux-tests/tests/ux_scenario_13_document_symbols.rs",
@@ -764,6 +836,51 @@
       "normalized_snippet": "panic!(\"SymbolInformation `{name}` location must be an object: {symbol:?}\")",
       "selector_identity": "invocation:054cf9b52594c0ad:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
+      "state": "retired"
+    },
+    {
+      "path": "crates/perl-lsp-ux-tests/tests/ux_scenario_13_document_symbols.rs",
+      "enclosing_test_or_function": "assert_symbol_shapes_with_seen",
+      "macro_family": "panic!",
+      "normalized_snippet": ".unwrap_or_else(|err| panic!(\"{err}: {symbol:?}\"));",
+      "selector_identity": "invocation:8f3b678e5e57e51a:occurrence:1",
+      "accepted_reason": "Intentional #16509/#13950 document-symbol UX shape oracle: top-level symbol SymbolInformation location.range must have valid ordered LSP positions.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-lsp-ux-tests/tests/ux_scenario_13_document_symbols.rs",
+      "enclosing_test_or_function": "assert_symbol_shapes_with_seen",
+      "macro_family": "panic!",
+      "normalized_snippet": ".unwrap_or_else(|| panic!(\"Each symbol must have a non-empty name: {symbol:?}\"));",
+      "selector_identity": "invocation:a9f840cae4aef361:occurrence:1",
+      "accepted_reason": "Intentional #16509/#13950 document-symbol UX shape oracle: top-level symbol must have a non-empty name.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-lsp-ux-tests/tests/ux_scenario_13_document_symbols.rs",
+      "enclosing_test_or_function": "assert_symbol_shapes_with_seen",
+      "macro_family": "panic!",
+      "normalized_snippet": ".unwrap_or_else(|| panic!(\"Symbol `{name}` must include LSP SymbolKind: {symbol:?}\"));",
+      "selector_identity": "invocation:c6e55719552d2693:occurrence:1",
+      "accepted_reason": "Intentional #16509/#13950 document-symbol UX shape oracle: top-level symbol must include a numeric LSP SymbolKind.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-lsp-ux-tests/tests/ux_scenario_13_document_symbols.rs",
+      "enclosing_test_or_function": "assert_symbol_shapes_with_seen",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"DocumentSymbol `{name}` children must be an array: {symbol:?}\")",
+      "selector_identity": "invocation:693eb37dd060ccb8:occurrence:1",
+      "accepted_reason": "Intentional #16509/#13950 document-symbol UX shape oracle: top-level symbol children must be an array before recursive shape validation.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-lsp-ux-tests/tests/ux_scenario_13_document_symbols.rs",
+      "enclosing_test_or_function": "assert_symbol_shapes_with_seen",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"SymbolInformation `{name}` location must be an object: {symbol:?}\")",
+      "selector_identity": "invocation:054cf9b52594c0ad:occurrence:1",
+      "accepted_reason": "Intentional #16509/#13950 document-symbol UX shape oracle: top-level symbol SymbolInformation location must be an object.",
       "state": "active"
     },
     {
@@ -1865,6 +1982,60 @@
       "state": "active"
     },
     {
+      "path": "crates/perl-parser-core/tests/fix_16732_sigilless_decl_list.rs",
+      "enclosing_test_or_function": "diagnostic_is_tied_to_the_offending_bareword",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"constant-item diagnostic must exist\");",
+      "selector_identity": "invocation:658a0292af19dff6:occurrence:1",
+      "accepted_reason": "Intentional #16769/#16732 declaration-list parser oracle: the bareword declaration must produce the constant-item diagnostic before its exact source position is checked.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/fix_16732_sigilless_decl_list.rs",
+      "enclosing_test_or_function": "diagnostic_is_tied_to_the_offending_bareword",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"fixture contains base\");",
+      "selector_identity": "invocation:6f50106d7bb1d2ee:occurrence:1",
+      "accepted_reason": "Intentional #16769/#16732 declaration-list parser oracle: the fixture must contain base so the offending-bareword diagnostic has an exact source-position oracle.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/fix_16732_sigilless_decl_list.rs",
+      "enclosing_test_or_function": "valid_dollar_base_keeps_source_geometry",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"$base must remain in the AST: {}\", ast.to_sexp());",
+      "selector_identity": "invocation:1bb31b83e4ae73e0:occurrence:1",
+      "accepted_reason": "Intentional #16769/#16732 declaration-list parser oracle: the valid $base declaration must retain a variable AST node before its source geometry is checked.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/fix_16732_sigilless_decl_list.rs",
+      "enclosing_test_or_function": "valid_dollar_base_keeps_source_geometry",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"fixture contains $base\");",
+      "selector_identity": "invocation:405e41ecf4caaa48:occurrence:1",
+      "accepted_reason": "Intentional #16769/#16732 declaration-list parser oracle: the fixture must contain $base so the preserved variable AST geometry has exact source offsets.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/hir_pir_try_regions.rs",
+      "enclosing_test_or_function": "catch_declaration_write_keeps_its_binding_with_and_without_outer_shadow",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"catch declaration place must be a variable\");",
+      "selector_identity": "invocation:869a741f84454600:occurrence:1",
+      "accepted_reason": "Intentional #16502/#13868 HIR/PIR try-region oracle: the catch declaration place must be a variable before catch-binding identity and declaration write are checked.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/hir_pir_try_regions.rs",
+      "enclosing_test_or_function": "catch_declaration_write_keeps_its_binding_with_and_without_outer_shadow",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"catch must have its declaration place\");",
+      "selector_identity": "invocation:0e68d0a8208af612:occurrence:1",
+      "accepted_reason": "Intentional #16502/#13868 HIR/PIR try-region oracle: the catch handler must retain its declaration place before source-exact binding lookup.",
+      "state": "active"
+    },
+    {
       "path": "crates/perl-parser/tests/parser_panic_free_invariant.rs",
       "enclosing_test_or_function": "repository_and_fuzz_corpora_are_panic_free",
       "macro_family": "panic!",
@@ -2018,6 +2189,15 @@
       "state": "retired"
     },
     {
+      "path": "xtask/src/tasks/metrics/parser_stats.rs",
+      "enclosing_test_or_function": "test_find_latest_errors_when_only_receipts_present",
+      "macro_family": "panic!",
+      "normalized_snippet": "Ok(p) => panic!(\"must error with no parser file, got {}\", p.display()),",
+      "selector_identity": "invocation:80bf7471578f43ee:occurrence:1",
+      "accepted_reason": "Intentional #17390/#17154 parser-statistics discovery oracle: receipt-only results must return the no-parser-compatible-file error, never a benchmark file.",
+      "state": "active"
+    },
+    {
       "path": "xtask/src/tasks/module_train_live_tests.rs",
       "enclosing_test_or_function": "gh_queries_are_bound_to_the_checkout_repository",
       "macro_family": "panic!",
@@ -2051,6 +2231,15 @@
       "normalized_snippet": "panic!(\"could not read declared/total counts from Overall row: {overall}\");",
       "selector_identity": "invocation:48347cc22ee9a1b2:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/test_support.rs",
+      "enclosing_test_or_function": "a_panicking_fake_cargo_child_does_not_poison_later_children",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"intentional child-only harness failure\");",
+      "selector_identity": "invocation:338216ee551c97af:occurrence:1",
+      "accepted_reason": "Intentional #17233 subprocess harness fault injection: only the explicitly requested child panics; the parent verifies child failure and a subsequent healthy child without environment poisoning.",
       "state": "active"
     },
     {
