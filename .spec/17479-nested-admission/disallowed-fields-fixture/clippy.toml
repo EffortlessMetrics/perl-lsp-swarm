@@ -1,0 +1,1 @@
+disallowed-fields = [{ path = "std::ops::Range::start", reason = "fixture proves configured fields are enforced" }]

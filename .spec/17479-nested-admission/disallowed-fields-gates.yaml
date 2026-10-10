@@ -1,0 +1,26 @@
+# Manual bounded compiler-fixture qualification; canonical policy is unchanged.
+schema_version: 1
+global:
+  default_timeout_seconds: 3600
+tiers:
+  merge_gate:
+    description: Single disallowed-fields fixture qualification
+    target_duration_seconds: 3600
+    enforcement: required
+gates:
+  - name: disallowed_fields_direct
+    tier: merge_gate
+    description: Current intentional Clippy error in one bound fixture
+    required: true
+    command: python3 -I scripts/ci/disallowed_fields_prepare.py --direct
+    timeout_seconds: 3600
+    retry_count: 0
+    tags: [compiler-fixture, narrow-qualification]
+  - name: disallowed_fields_owning
+    tier: merge_gate
+    description: Exact owning xtask test under the original Cargo owner
+    required: true
+    command: python3 -I scripts/ci/disallowed_fields_prepare.py --test
+    timeout_seconds: 3600
+    retry_count: 0
+    tags: [test, compiler-fixture, narrow-qualification]

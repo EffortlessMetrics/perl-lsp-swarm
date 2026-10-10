@@ -58,6 +58,19 @@ class NestedTests(unittest.TestCase):
         self.receipt['nested_snapshot']=a.file_subject(self.snapshot)
         self.env['CARGO_ADMITTED_RESOURCES']=json.dumps(self.receipt)
     def command(self,row):return a.nested_command(row,self.env)
+    def bind_disallowed_fixture(self):
+        import shutil
+        actual=Path(__file__).resolve().parents[2]
+        template=self.worktree/'.spec/17479-nested-admission/disallowed-fields-fixture'
+        shutil.copytree(actual/'.spec/17479-nested-admission/disallowed-fields-fixture',template)
+        script=self.worktree/'scripts/ci/disallowed_fields_prepare.py'
+        script.parent.mkdir(parents=True);shutil.copyfile(actual/'scripts/ci/disallowed_fields_prepare.py',script)
+        root=self.paths['temp']/'disallowed-fields-17479'
+        shutil.copytree(template,root)
+        for name in ['target','build']:(root/name).mkdir()
+        self.plan['disallowed_fields_fixture']=a.disallowed_fixture(self.worktree,self.paths)
+        self.save()
+        return root
     def test_parent_snapshot_carries_original_creation_marker_identity(self):
         # Composition seam: replacement AFTER allocation must not be adopted
         # by snapshot creation. No tool/product launch or capacity qualification.
@@ -187,12 +200,16 @@ class NestedTests(unittest.TestCase):
                 self.assertEqual(cmd[0],self.tool['subjects']['cargo-clippy' if args[0]=='clippy' else 'cargo']['path'])
                 if args[0]=='clippy':self.assertEqual(env['CLIPPY_ARGS'],''.join(x+'__CLIPPY_HACKERY__' for x in args[args.index('--')+1:]))
     def test_all_finite_rows_render_private_controls(self):
+        fixture=self.bind_disallowed_fixture()
         for row in a.NESTED_COMMANDS:
             with self.subTest(row=row):
                 cmd,env,cwd=self.command(row)
                 for key in ['CARGO_TARGET_DIR','CARGO_BUILD_BUILD_DIR','CARGO_HOME','TEMP','TMP','TMPDIR','CARGO_BUILD_JOBS','CARGO_INCREMENTAL']:
-                    self.assertEqual(env[key],self.env[key])
-                self.assertIn('build.build-dir='+json.dumps(str(self.paths['build'])),cmd)
+                    expected=(str(fixture/('target' if key=='CARGO_TARGET_DIR' else 'build'))
+                              if row==a.DISALLOWED_FIXTURE_ROW and key in ['CARGO_TARGET_DIR','CARGO_BUILD_BUILD_DIR'] else self.env[key])
+                    self.assertEqual(env[key],expected)
+                build=fixture/'build' if row==a.DISALLOWED_FIXTURE_ROW else self.paths['build']
+                self.assertIn('build.build-dir='+json.dumps(str(build)),cmd)
                 self.assertFalse(any(x in cmd for x in ['--release','--fix','--workspace']))
     def test_routed_denominator_and_compile_runtime_distinct(self):
         self.assertEqual(sum([139,8,16,290,108,181,1,16,236]),995)

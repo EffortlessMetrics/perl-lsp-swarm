@@ -464,7 +464,14 @@ def call_clippy(command, env, lock, tree=None, operation="Clippy"):
 NESTED_PACKAGES = ("perl-dap", "perl-incremental-parsing", "perl-lsp-perltidy",
                    "perl-lsp-rs", "perl-lsp-rs-core", "perl-parser",
                    "perl-parser-bench", "perllsp", "xtask")
+DISALLOWED_FIXTURE_ROW = "xtask-disallowed-fields-fixture"
+DISALLOWED_TEST_ROW = "xtask-disallowed-fields-test"
+DISALLOWED_TEST = "tasks::check_lint_policy::tests::config::disallowed_fields::configured_field_is_rejected_by_clippy"
+DISALLOWED_FILES = ("Cargo.toml", "Cargo.lock", "clippy.toml", "src/lib.rs")
 NESTED_COMMANDS = {
+    DISALLOWED_FIXTURE_ROW: ("clippy", "--offline", "--quiet", "--lib", "--no-deps", "--message-format=json", "--", "-D", "warnings"),
+    DISALLOWED_TEST_ROW: ("test", "-p", "xtask", "--bin", "xtask", "--locked", "--message-format=json", DISALLOWED_TEST,
+                          "--", "--exact", "--test-threads=1", "--color", "never"),
     "parser-check": ("check", "--package", "perl-parser", "--message-format", "json", "--locked", "--offline"),
     "parser-build": ("build", "--package", "perl-parser", "--locked", "--offline"),
     "parser-clippy": ("clippy", "--package", "perl-parser", "--locked", "--offline", "--", "-D", "warnings"),
@@ -587,17 +594,50 @@ def nested_plan(filename, env, worktree, paths):
         selectors.pop(name, None)
     clippy_environment(selectors)
     toolchain = clippy_toolchain(env, worktree)
-    return {"request": data, "request_subject": request_subject,
+    fixture = None
+    if DISALLOWED_FIXTURE_ROW in data["rows"] or DISALLOWED_TEST_ROW in data["rows"]:
+        if DISALLOWED_FIXTURE_ROW not in data["rows"]:
+            raise Denied("owning disallowed-fields test requires its finite fixture row")
+        fixture = disallowed_fixture(worktree, paths)
+    plan = {"request": data, "request_subject": request_subject,
             "source": nested_source(worktree), "toolchain": toolchain,
-            "configuration": nested_configuration(worktree, paths),
+            "configuration": nested_configuration(worktree, paths, (Path(fixture["cwd"]),) if fixture else ()),
             "compiler_environment": compiler_environment(env), "network_environment": nested_network(env), "build_environment": nested_build_environment(env),
             "renderer": file_subject(Path(__file__))}
+    if fixture:
+        plan["disallowed_fields_fixture"] = fixture
+    return plan
 
 
-def nested_configuration(worktree, paths):
+def disallowed_fixture(worktree, paths):
+    """Only this checked-in dependency-free fixture; never arbitrary manifests.
+
+    Inputs and both output directories must already exist before admission.
+    Captured identities supplement fixed paths and exact template bytes.
+    """
+    root = native_path(str(paths["temp"] / "disallowed-fields-17479"))
+    template = worktree / ".spec/17479-nested-admission/disallowed-fields-fixture"
+    files = {}
+    for name in DISALLOWED_FILES:
+        if any(path.stat().st_size > BUDGET_FILE_LIMIT for path in (template / name, root / name)):
+            raise Denied("disallowed-fields fixture input exceeds bounded template")
+        expected, actual = file_subject(template / name), file_subject(root / name)
+        if expected["file_identity"][2] > BUDGET_FILE_LIMIT or actual["sha256"] != expected["sha256"]:
+            raise Denied("disallowed-fields fixture differs from its current template: " + name)
+        files[name] = {"template": expected, "generated": actual}
+    directories = {}
+    for name, path in (("cwd", root), ("target", root / "target"), ("build", root / "build")):
+        native_path(str(path))
+        directories[name] = {"path": str(path), "identity": list(directory_identity(path))}
+    return {"cwd": str(root), "directories": directories, "files": files,
+            "adapter": file_subject(worktree / "scripts/ci/disallowed_fields_prepare.py"),
+            "python": file_subject(Path(sys.executable).resolve(strict=True))}
+
+
+def nested_configuration(worktree, paths, extra_directories=()):
     # Include package-local config discovery for the two declared non-root rows.
     observed = {}
-    for directory in (worktree, worktree / "crates/perl-parser", worktree / "crates/perl-incremental-parsing"):
+    for directory in (worktree, worktree / "crates/perl-parser", worktree / "crates/perl-incremental-parsing", *extra_directories):
         for item in clippy_configuration(worktree, paths, directory):
             if Path(item["path"]).name in ("config", "config.toml"):
                 import tomllib
@@ -755,7 +795,12 @@ def nested_command(row, env=None):
         # Even read-only Git must not inherit a runtime loader projection.
         if nested_source(worktree, validation_env) != plan["source"] or file_subject(Path(__file__)) != plan["renderer"]:
             raise Denied("nested source/renderer changed")
-        if nested_configuration(worktree, paths) != plan["configuration"]:
+        fixture = plan.get("disallowed_fields_fixture")
+        if fixture is not None and disallowed_fixture(worktree, paths) != fixture:
+            raise Denied("disallowed-fields fixture inputs/cwd/output roots changed")
+        if row in (DISALLOWED_FIXTURE_ROW, DISALLOWED_TEST_ROW) and fixture is None:
+            raise Denied("disallowed-fields fixture is not bound to this workload")
+        if nested_configuration(worktree, paths, (Path(fixture["cwd"]),) if fixture else ()) != plan["configuration"]:
             raise Denied("nested Cargo/Clippy configuration changed")
         expected = dict(plan["compiler_environment"])
         if row == "parser-doc":
@@ -774,13 +819,19 @@ def nested_command(row, env=None):
             raise Denied("nested compiler/profile environment changed")
         env.pop("LD_LIBRARY_PATH", None)
         env.update(expected)
-        return render_nested(row, env, worktree, paths, plan["toolchain"])
+        return render_nested(row, env, worktree, paths, plan["toolchain"], fixture)
     except (KeyError, TypeError, ValueError, OSError) as error:
         raise Denied("invalid/stale nested handoff: " + str(error)) from error
 
 
-def render_nested(row, env, worktree, paths, toolchain):
+def render_nested(row, env, worktree, paths, toolchain, fixture=None):
     args = list(NESTED_COMMANDS[row])
+    cwd = worktree / "crates/perl-parser" if row == "parser-doc" else worktree
+    if row == "incremental-metadata":
+        cwd = worktree / "crates/perl-incremental-parsing"
+    if row == DISALLOWED_FIXTURE_ROW:
+        cwd = Path(fixture["cwd"])
+        paths = {**paths, **{name: Path(fixture["directories"][name]["path"]) for name in ("target", "build")}}
     exact = toolchain["subjects"]
     controlled = {"CARGO": exact["cargo"]["path"], "RUSTC": exact["rustc"]["path"],
                   "RUSTDOC": exact["rustdoc"]["path"], "RUSTC_WRAPPER": "", "RUSTC_WORKSPACE_WRAPPER": "",
@@ -789,10 +840,12 @@ def render_nested(row, env, worktree, paths, toolchain):
                   "RUSTUP_AUTO_INSTALL": "0", **compiler_environment(env)}
     if args[0] == "clippy":
         controlled.update(RUSTC_WORKSPACE_WRAPPER=exact["clippy-driver"]["path"],
-                          SYSROOT=toolchain["root"], CLIPPY_CONF_DIR=str(worktree),
+                          SYSROOT=toolchain["root"], CLIPPY_CONF_DIR=str(cwd),
                           CLIPPY_ARGS="".join(value + "__CLIPPY_HACKERY__" for value in args[args.index("--") + 1:]))
     for name in ("TEMP", "TMP", "TMPDIR"):
         controlled[name] = str(paths["temp"])
+    if row == DISALLOWED_TEST_ROW:
+        controlled["CARGO_ADMITTED_FIXTURE_PYTHON"] = fixture["python"]["path"]
     env.update(controlled)
     command = [exact["cargo"]["path"]]
     for name, value in controlled.items():
@@ -806,9 +859,6 @@ def render_nested(row, env, worktree, paths, toolchain):
     if args[0] == "clippy":
         position = command.index("clippy")
         command = [exact["cargo-clippy"]["path"], "clippy", *command[1:position], *command[position + 1:]]
-    cwd = worktree / "crates/perl-parser" if row == "parser-doc" else worktree
-    if row == "incremental-metadata":
-        cwd = worktree / "crates/perl-incremental-parsing"
     return command, env, cwd
 
 

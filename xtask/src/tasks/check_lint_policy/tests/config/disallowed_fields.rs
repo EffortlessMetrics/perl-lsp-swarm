@@ -177,39 +177,69 @@ fn tracked_lint_without_marker_or_hook_is_rejected() -> Result<()> {
 
 #[test]
 fn configured_field_is_rejected_by_clippy() -> Result<()> {
+    let admitted = ["CARGO_ADMITTED_RESOURCES", "CARGO_ADMITTED_FIXTURE_PYTHON"]
+        .iter()
+        .any(|name| std::env::var_os(name).is_some());
+    let output = if admitted {
+        if std::env::var_os("CARGO_ADMITTED_RESOURCES").is_none_or(|value| value.is_empty()) {
+            bail!("missing admitted fixture owner binding");
+        }
+        let Some(python) =
+            std::env::var_os("CARGO_ADMITTED_FIXTURE_PYTHON").filter(|value| !value.is_empty())
+        else {
+            bail!("missing admitted fixture interpreter binding");
+        };
+        Command::new(python)
+            .arg("-I")
+            .arg(concat!(env!("CARGO_MANIFEST_DIR"), "/../scripts/ci/disallowed_fields_prepare.py"))
+            .arg("--fixture")
+            .output()?
+    } else {
+        compile_disallowed_fields_fixture()?
+    };
+
+    if output.status.success() {
+        bail!("configured disallowed field unexpectedly passed Clippy");
+    }
+
+    if !contains_disallowed_fields_lint(&output.stdout)? {
+        let stdout = bounded_diagnostic(&output.stdout);
+        let stderr = bounded_diagnostic(&output.stderr);
+        bail!(
+            "Clippy failed without the expected lint identity:\nstdout (bounded):\n{stdout}\nstderr (bounded):\n{stderr}"
+        );
+    }
+    Ok(())
+}
+
+fn compile_disallowed_fields_fixture() -> Result<std::process::Output> {
     let fixture = tempdir()?;
     let source_dir = fixture.path().join("src");
     fs::create_dir(&source_dir)?;
     fs::write(
         fixture.path().join("Cargo.toml"),
-        r#"[package]
-name = "clippy-disallowed-fields-fixture"
-version = "0.0.0"
-edition = "2024"
-rust-version = "1.95"
-publish = false
-
-[workspace]
-"#,
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../.spec/17479-nested-admission/disallowed-fields-fixture/Cargo.toml"
+        )),
     )?;
     fs::write(
         fixture.path().join("clippy.toml"),
-        format!(
-            "disallowed-fields = [{{ path = \"std::ops::Range::start\", reason = \"{DISALLOWED_FIELD_REASON}\" }}]\n"
-        ),
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../.spec/17479-nested-admission/disallowed-fields-fixture/clippy.toml"
+        )),
     )?;
     fs::write(
         source_dir.join("lib.rs"),
-        r#"#![deny(clippy::disallowed_fields)]
-
-pub fn range_start(range: std::ops::Range<usize>) -> usize {
-    range.start
-}
-"#,
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../.spec/17479-nested-admission/disallowed-fields-fixture/src/lib.rs"
+        )),
     )?;
 
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"));
-    let output = Command::new(cargo)
+    Ok(Command::new(cargo)
         .current_dir(fixture.path())
         .args([
             "clippy",
@@ -228,20 +258,7 @@ pub fn range_start(range: std::ops::Range<usize>) -> usize {
         .env_remove("RUSTC_WORKSPACE_WRAPPER")
         .env_remove("RUSTC_WRAPPER")
         .env_remove("RUSTFLAGS")
-        .output()?;
-
-    if output.status.success() {
-        bail!("configured disallowed field unexpectedly passed Clippy");
-    }
-
-    if !contains_disallowed_fields_lint(&output.stdout)? {
-        let stdout = bounded_diagnostic(&output.stdout);
-        let stderr = bounded_diagnostic(&output.stderr);
-        bail!(
-            "Clippy failed without the expected lint identity:\nstdout (bounded):\n{stdout}\nstderr (bounded):\n{stderr}"
-        );
-    }
-    Ok(())
+        .output()?)
 }
 
 #[test]
