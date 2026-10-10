@@ -378,39 +378,7 @@ pub enum CompileEffectKind {
     EmitDynamicBoundary,
 }
 
-/// Source construct that produced a compile effect.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[non_exhaustive]
-pub enum CompileEffectSourceKind {
-    /// `package` declaration.
-    PackageDecl,
-    /// `sub` declaration.
-    SubDecl,
-    /// `method` declaration.
-    MethodDecl,
-    /// Variable declaration.
-    VariableDecl,
-    /// `use` directive.
-    UseDirective,
-    /// `no` directive.
-    NoDirective,
-    /// `require` directive.
-    RequireDirective,
-    /// Compile-time phase block.
-    PhaseBlock,
-    /// Symbolic-reference dereference.
-    SymbolicReferenceDeref,
-    /// Assignment expression.
-    Assignment,
-    /// Typeglob assignment.
-    TypeglobAssignment,
-    /// Derived HIR scope graph fact.
-    ScopeGraph,
-    /// Derived HIR stash graph fact.
-    StashGraph,
-    /// Derived compile-environment fact.
-    CompileEnvironment,
-}
+pub use perl_semantic_facts::CompileEffectSourceKind;
 
 /// Semantic fact category emitted by a compile effect.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
