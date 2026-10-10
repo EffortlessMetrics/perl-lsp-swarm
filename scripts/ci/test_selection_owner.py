@@ -28,6 +28,8 @@ class SelectionOwner(unittest.TestCase):
         self.assertEqual(job.count("scripts/ci/bootstrap-selection.sh"), 1)
         self.assertIn('scripts/ci/check_selection_graph.py "$RUNNER_TEMP/selection-metadata.json"', job)
         self.assertIn('SELECTION_METADATA="$RUNNER_TEMP/selection-metadata.json"', job)
+        self.assertLess(job.index("scripts/ci/check_selection_graph.py"),
+                        job.index("scripts/ci/bootstrap-selection.sh"))
         for command in ("ci-subject", "ci-scope"):
             self.assertIn(f'"$selection_runner" {command}', job)
         self.assertIn('--subject "$RUNNER_TEMP/ci-subject.json"', job)
