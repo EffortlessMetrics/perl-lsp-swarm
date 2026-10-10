@@ -75,6 +75,37 @@ fn run() -> Result<i32> {
     // Resolver commands can inspect an explicit fixture or current workspace
     // without first selecting the hygiene scanner's nearest-manifest root.
     let command = match cli.command {
+        CliCommand::CiSubject {
+            event_name,
+            event_path,
+            repository,
+            github_sha,
+            base_sha,
+            head_sha,
+            receipt,
+            root,
+        } => {
+            perl_ci_hygiene::ci_subject::run(perl_ci_hygiene::ci_subject::CiSubjectConfig {
+                event_name,
+                event_path,
+                repository,
+                github_sha,
+                base_sha,
+                head_sha,
+                receipt,
+                root,
+            })?;
+            return Ok(0);
+        }
+        CliCommand::CiScope { base, subject, root, format } => {
+            perl_ci_hygiene::ci_scope::run(perl_ci_hygiene::ci_scope::CiScopeConfig {
+                base,
+                subject,
+                root,
+                format,
+            })?;
+            return Ok(0);
+        }
         CliCommand::ChangeSet { base, head, format, root } => {
             perl_ci_hygiene::change_set::run(perl_ci_hygiene::change_set::ChangeSetConfig {
                 base,
@@ -95,7 +126,10 @@ fn run() -> Result<i32> {
     };
     let repo_root = find_repo_root()?;
     let code = match command {
-        CliCommand::ChangeSet { .. } | CliCommand::ResolvePackageName { .. } => {
+        CliCommand::CiSubject { .. }
+        | CliCommand::CiScope { .. }
+        | CliCommand::ChangeSet { .. }
+        | CliCommand::ResolvePackageName { .. } => {
             return Err(color_eyre::eyre::eyre!("resolver command was not dispatched"));
         }
         CliCommand::CheckDocPaths { docs_dir } => {
