@@ -1,0 +1,2631 @@
+{
+  "schema_version": 1,
+  "scope": "Fresh isolated Linux consumer qualification only; no Ready/merge/hosted CI/Windows/old-resource settlement",
+  "consumer_sha": "1b03b05a6991207b7d866716c2edc5f9a8da5b9c",
+  "route_sha": "8a375c220a2f8450c234a5aacf8c27a2bcb82bd6",
+  "integration_sha": "1ffb86a2e06cb925d0be564f1da285e6ba5a8acc",
+  "integration_tree": "92d1dd875ef651667b6821595c482b32eb85e064",
+  "integration_method": "Conflict-free nonrewriting merge retaining exact parents; consumer paths and route implementation preserve parent blobs; no source correction needed. Consumer29/route13 cumulative changed-path sets disjoint; #17485 untouched.",
+  "installed_toolchain_root": "/workspace/.cloud-tools/rustup/toolchains/1.95.0-x86_64-unknown-linux-gnu",
+  "host_limits": {
+    "cgroup_ram_bytes": 17179869184,
+    "cpu_quota": "400000/100000",
+    "jobs": 2,
+    "default_free_floor_bytes": 42949672960
+  },
+  "receipts": {
+    "tests": {
+      "label": "tests",
+      "args": [
+        "test",
+        "-p",
+        "perl-ci-hygiene",
+        "--lib",
+        "--bin",
+        "perl-ci-hygiene",
+        "--test",
+        "change_set_cli",
+        "--test",
+        "package_resolver_cli",
+        "--profile",
+        "agent",
+        "--locked",
+        "--offline"
+      ],
+      "exit_code": 0,
+      "seconds": 85.76637071199997,
+      "resources": {
+        "worktree": "/workspace/q",
+        "scope": {
+          "hostname": "5b75b52e9333",
+          "platform": "linux",
+          "working_directory": "/workspace/q",
+          "worktree": "/workspace/q",
+          "operation": "test",
+          "cargo_argv_sha256": "5204e2d4a52ae7f2165e1d0b9449cbbb9030f682fa72783f8b9fcb7bb3353f78",
+          "resources": {
+            "target": "/workspace/qd/5b75b52e9333-linux-b65dcb543d0ae605/worktrees/e37e3284be413cd907c60ad0034f9b7aa38d33b59ced6f31d8181a342b8d1009/target",
+            "build": "/workspace/qd/5b75b52e9333-linux-b65dcb543d0ae605/worktrees/e37e3284be413cd907c60ad0034f9b7aa38d33b59ced6f31d8181a342b8d1009/build",
+            "cargo_home": "/workspace/.cloud-tools/cargo",
+            "temp": "/workspace/qt"
+          },
+          "jobs": 2,
+          "build_environment_sha256": "068e63355d01f97082a7ae0a556748531002cc7858d8643e2ae53aefbf9cf99b"
+        },
+        "resources": {
+          "target": "/workspace/qd/5b75b52e9333-linux-b65dcb543d0ae605/worktrees/e37e3284be413cd907c60ad0034f9b7aa38d33b59ced6f31d8181a342b8d1009/target",
+          "build": "/workspace/qd/5b75b52e9333-linux-b65dcb543d0ae605/worktrees/e37e3284be413cd907c60ad0034f9b7aa38d33b59ced6f31d8181a342b8d1009/build",
+          "cargo_home": "/workspace/.cloud-tools/cargo",
+          "temp": "/workspace/qt"
+        },
+        "lease": "/workspace/qd/5b75b52e9333-linux-b65dcb543d0ae605/cargo-active",
+        "pid": 2433,
+        "admission": {
+          "policy": "budget-file",
+          "reserve_bytes": 8589934592,
+          "expected_total_growth_bytes": 17179869184,
+          "evidence_reference": "Exact isolated perl-ci-hygiene package, locked offline installed 1.95.0, agent profile, jobs2. Prior issue-native mixed test/dev outputs under1GiB are final allocations not peak measurements. Conservative16GiB aggregate additional peak growth covers two target forms, tests, metadata/intermediates and temporary storage with no downloads or product/xtask compilation. Explicit8GiB host reserve against observed30GiB free, 16GiB cgroup RAM/4CPU, one build lane. All destinations on workspace volume checked; default40GiB unchanged; basis remains unverified estimate. Root exclusively owns new sources/outputs; no independent consumers.",
+          "basis_verified": false,
+          "budget_sha256": "379baaffad74c81e14169fc9620c9b97a12d5e526847e1a36967655e978e5240",
+          "required_free_bytes": 25769803776,
+          "destinations": [
+            {
+              "path": "/workspace/qd/5b75b52e9333-linux-b65dcb543d0ae605",
+              "observed_ancestor": "/workspace/qd/5b75b52e9333-linux-b65dcb543d0ae605",
+              "free_bytes": 31795445760,
+              "required_free_bytes": 25769803776,
+              "headroom_bytes": 6025641984
+            },
+            {
+              "path": "/workspace/qd/5b75b52e9333-linux-b65dcb543d0ae605/worktrees/e37e3284be413cd907c60ad0034f9b7aa38d33b59ced6f31d8181a342b8d1009/target",
+              "observed_ancestor": "/workspace/qd/5b75b52e9333-linux-b65dcb543d0ae605",
+              "free_bytes": 31795445760,
+              "required_free_bytes": 25769803776,
+              "headroom_bytes": 6025641984
+            },
+            {
+              "path": "/workspace/qd/5b75b52e9333-linux-b65dcb543d0ae605/worktrees/e37e3284be413cd907c60ad0034f9b7aa38d33b59ced6f31d8181a342b8d1009/build",
+              "observed_ancestor": "/workspace/qd/5b75b52e9333-linux-b65dcb543d0ae605",
+              "free_bytes": 31795445760,
+              "required_free_bytes": 25769803776,
+              "headroom_bytes": 6025641984
+            },
+            {
+              "path": "/workspace/.cloud-tools/cargo",
+              "observed_ancestor": "/workspace/.cloud-tools/cargo",
+              "free_bytes": 31795445760,
+              "required_free_bytes": 25769803776,
+              "headroom_bytes": 6025641984
+            },
+            {
+              "path": "/workspace/qt",
+              "observed_ancestor": "/workspace/qt",
+              "free_bytes": 31795445760,
+              "required_free_bytes": 25769803776,
+              "headroom_bytes": 6025641984
+            }
+          ]
+        },
+        "disposition": "retained with reason: reusable bounded slot"
+      },
+      "budget": {
+        "schema_version": 1,
+        "scope": {
+          "hostname": "5b75b52e9333",
+          "platform": "linux",
+          "working_directory": "/workspace/q",
+          "worktree": "/workspace/q",
+          "operation": "test",
+          "cargo_argv_sha256": "5204e2d4a52ae7f2165e1d0b9449cbbb9030f682fa72783f8b9fcb7bb3353f78",
+          "resources": {
+            "target": "/workspace/qd/5b75b52e9333-linux-b65dcb543d0ae605/worktrees/e37e3284be413cd907c60ad0034f9b7aa38d33b59ced6f31d8181a342b8d1009/target",
+            "build": "/workspace/qd/5b75b52e9333-linux-b65dcb543d0ae605/worktrees/e37e3284be413cd907c60ad0034f9b7aa38d33b59ced6f31d8181a342b8d1009/build",
+            "cargo_home": "/workspace/.cloud-tools/cargo",
+            "temp": "/workspace/qt"
+          },
+          "jobs": 2,
+          "build_environment_sha256": "068e63355d01f97082a7ae0a556748531002cc7858d8643e2ae53aefbf9cf99b"
+        },
+        "reserve_bytes": 8589934592,
+        "expected_growth_bytes": 17179869184,
+        "basis": "Exact isolated perl-ci-hygiene package, locked offline installed 1.95.0, agent profile, jobs2. Prior issue-native mixed test/dev outputs under1GiB are final allocations not peak measurements. Conservative16GiB aggregate additional peak growth covers two target forms, tests, metadata/intermediates and temporary storage with no downloads or product/xtask compilation. Explicit8GiB host reserve against observed30GiB free, 16GiB cgroup RAM/4CPU, one build lane. All destinations on workspace volume checked; default40GiB unchanged; basis remains unverified estimate. Root exclusively owns new sources/outputs; no independent consumers."
+      },
+      "default_preflight_exit": 75,
+      "disk_free_before": 31795458048,
+      "disk_free_after": 31445565440,
+      "sampled_min_disk_free": 31444447232,
+      "sampled_max_additional_disk": 351010816,
+      "sampled_cgroup_memory_baseline": 422060032,
+      "sampled_cgroup_memory_peak": 1293680640,
+      "child_rusage_maxrss_kib": 404352,
+      "sampling_interval_seconds": 0.25,
+      "sampling_limitation": "Host/cgroup observations include unrelated host activity; sampled values are not exact workload peaks or quotas.",
+      "owner_sha256": "7a1f25478287fc0c06b3885a035ed6afe9f973b5699bf82894794bcf96954d51",
+      "exclusive_new_roots": true,
+      "independent_consumers": false,
+      "lease_absent": true
+    },
+    "tests-owned": {
+      "label": "tests-owned",
+      "args": [
+        "test",
+        "-p",
+        "perl-ci-hygiene",
+        "--lib",
+        "--bin",
+        "perl-ci-hygiene",
+        "--test",
+        "change_set_cli",
+        "--test",
+        "package_resolver_cli",
+        "--profile",
+        "agent",
+        "--locked",
+        "--offline"
+      ],
+      "exit_code": 0,
+      "seconds": 11.01544835300001,
+      "resources": {
+        "worktree": "/workspace/q",
+        "scope": {
+          "hostname": "5b75b52e9333",
+          "platform": "linux",
+          "working_directory": "/workspace/q",
+          "worktree": "/workspace/q",
+          "operation": "test",
+          "cargo_argv_sha256": "5204e2d4a52ae7f2165e1d0b9449cbbb9030f682fa72783f8b9fcb7bb3353f78",
+          "resources": {
+            "target": "/workspace/qd/5b75b52e9333-linux-b65dcb543d0ae605/worktrees/e37e3284be413cd907c60ad0034f9b7aa38d33b59ced6f31d8181a342b8d1009/target",
+            "build": "/workspace/qd/5b75b52e9333-linux-b65dcb543d0ae605/worktrees/e37e3284be413cd907c60ad0034f9b7aa38d33b59ced6f31d8181a342b8d1009/build",
+            "cargo_home": "/workspace/.cloud-tools/cargo",
+            "temp": "/workspace/qt"
+          },
+          "jobs": 2,
+          "build_environment_sha256": "068e63355d01f97082a7ae0a556748531002cc7858d8643e2ae53aefbf9cf99b"
+        },
+        "resources": {
+          "target": "/workspace/qd/5b75b52e9333-linux-b65dcb543d0ae605/worktrees/e37e3284be413cd907c60ad0034f9b7aa38d33b59ced6f31d8181a342b8d1009/target",
+          "build": "/workspace/qd/5b75b52e9333-linux-b65dcb543d0ae605/worktrees/e37e3284be413cd907c60ad0034f9b7aa38d33b59ced6f31d8181a342b8d1009/build",
+          "cargo_home": "/workspace/.cloud-tools/cargo",
+          "temp": "/workspace/qt"
+        },
+        "lease": "/workspace/qd/5b75b52e9333-linux-b65dcb543d0ae605/cargo-active",
+        "pid": 8297,
+        "admission": {
+          "policy": "budget-file",
+          "reserve_bytes": 8589934592,
+          "expected_total_growth_bytes": 17179869184,
+          "evidence_reference": "Exact isolated perl-ci-hygiene package, locked offline installed 1.95.0, agent profile, jobs2. Prior issue-native mixed test/dev outputs under1GiB are final allocations not peak measurements. Conservative16GiB aggregate additional peak growth covers two target forms, tests, metadata/intermediates and temporary storage with no downloads or product/xtask compilation. Explicit8GiB host reserve against observed30GiB free, 16GiB cgroup RAM/4CPU, one build lane. All destinations on workspace volume checked; default40GiB unchanged; basis remains unverified estimate. Root exclusively owns new sources/outputs; no independent consumers.",
+          "basis_verified": false,
+          "budget_sha256": "379baaffad74c81e14169fc9620c9b97a12d5e526847e1a36967655e978e5240",
+          "required_free_bytes": 25769803776,
+          "destinations": [
+            {
+              "path": "/workspace/qd/5b75b52e9333-linux-b65dcb543d0ae605",
+              "observed_ancestor": "/workspace/qd/5b75b52e9333-linux-b65dcb543d0ae605",
+              "free_bytes": 31357308928,
+              "required_free_bytes": 25769803776,
+              "headroom_bytes": 5587505152
+            },
+            {
+              "path": "/workspace/qd/5b75b52e9333-linux-b65dcb543d0ae605/worktrees/e37e3284be413cd907c60ad0034f9b7aa38d33b59ced6f31d8181a342b8d1009/target",
+              "observed_ancestor": "/workspace/qd/5b75b52e9333-linux-b65dcb543d0ae605/worktrees/e37e3284be413cd907c60ad0034f9b7aa38d33b59ced6f31d8181a342b8d1009/target",
+              "free_bytes": 31357308928,
+              "required_free_bytes": 25769803776,
+              "headroom_bytes": 5587505152
+            },
+            {
+              "path": "/workspace/qd/5b75b52e9333-linux-b65dcb543d0ae605/worktrees/e37e3284be413cd907c60ad0034f9b7aa38d33b59ced6f31d8181a342b8d1009/build",
+              "observed_ancestor": "/workspace/qd/5b75b52e9333-linux-b65dcb543d0ae605/worktrees/e37e3284be413cd907c60ad0034f9b7aa38d33b59ced6f31d8181a342b8d1009/build",
+              "free_bytes": 31357308928,
+              "required_free_bytes": 25769803776,
+              "headroom_bytes": 5587505152
+            },
+            {
+              "path": "/workspace/.cloud-tools/cargo",
+              "observed_ancestor": "/workspace/.cloud-tools/cargo",
+              "free_bytes": 31357308928,
+              "required_free_bytes": 25769803776,
+              "headroom_bytes": 5587505152
+            },
+            {
+              "path": "/workspace/qt",
+              "observed_ancestor": "/workspace/qt",
+              "free_bytes": 31357308928,
+              "required_free_bytes": 25769803776,
+              "headroom_bytes": 5587505152
+            }
+          ]
+        },
+        "disposition": "retained with reason: reusable bounded slot"
+      },
+      "budget": {
+        "schema_version": 1,
+        "scope": {
+          "hostname": "5b75b52e9333",
+          "platform": "linux",
+          "working_directory": "/workspace/q",
+          "worktree": "/workspace/q",
+          "operation": "test",
+          "cargo_argv_sha256": "5204e2d4a52ae7f2165e1d0b9449cbbb9030f682fa72783f8b9fcb7bb3353f78",
+          "resources": {
+            "target": "/workspace/qd/5b75b52e9333-linux-b65dcb543d0ae605/worktrees/e37e3284be413cd907c60ad0034f9b7aa38d33b59ced6f31d8181a342b8d1009/target",
+            "build": "/workspace/qd/5b75b52e9333-linux-b65dcb543d0ae605/worktrees/e37e3284be413cd907c60ad0034f9b7aa38d33b59ced6f31d8181a342b8d1009/build",
+            "cargo_home": "/workspace/.cloud-tools/cargo",
+            "temp": "/workspace/qt"
+          },
+          "jobs": 2,
+          "build_environment_sha256": "068e63355d01f97082a7ae0a556748531002cc7858d8643e2ae53aefbf9cf99b"
+        },
+        "reserve_bytes": 8589934592,
+        "expected_growth_bytes": 17179869184,
+        "basis": "Exact isolated perl-ci-hygiene package, locked offline installed 1.95.0, agent profile, jobs2. Prior issue-native mixed test/dev outputs under1GiB are final allocations not peak measurements. Conservative16GiB aggregate additional peak growth covers two target forms, tests, metadata/intermediates and temporary storage with no downloads or product/xtask compilation. Explicit8GiB host reserve against observed30GiB free, 16GiB cgroup RAM/4CPU, one build lane. All destinations on workspace volume checked; default40GiB unchanged; basis remains unverified estimate. Root exclusively owns new sources/outputs; no independent consumers."
+      },
+      "default_preflight_exit": 75,
+      "disk_free_before": 31357317120,
+      "disk_free_after": 31357186048,
+      "sampled_min_disk_free": 31355834368,
+      "sampled_max_additional_disk": 1482752,
+      "sampled_cgroup_memory_baseline": 882683904,
+      "sampled_cgroup_memory_peak": 967778304,
+      "child_rusage_maxrss_kib": 60652,
+      "sampling_interval_seconds": 0.25,
+      "sampling_limitation": "Host/cgroup observations include unrelated host activity; sampled values are not exact workload peaks or quotas.",
+      "owner_sha256": "7a1f25478287fc0c06b3885a035ed6afe9f973b5699bf82894794bcf96954d51",
+      "exclusive_new_roots": true,
+      "independent_consumers": false,
+      "lease_absent": true,
+      "outer_kernel_settlement": {
+        "tree_settled": true,
+        "proof": "kernel ECHILD (__WALL)",
+        "cancelled": false,
+        "termination_requested": false,
+        "reaped_descendants": [
+          {
+            "pid": 8342,
+            "exit_code": 0
+          },
+          {
+            "pid": 8345,
+            "exit_code": 0
+          },
+          {
+            "pid": 8348,
+            "exit_code": 0
+          },
+          {
+            "pid": 8350,
+            "exit_code": 0
+          },
+          {
+            "pid": 8397,
+            "exit_code": 0
+          },
+          {
+            "pid": 8401,
+            "exit_code": 0
+          },
+          {
+            "pid": 8400,
+            "exit_code": 0
+          },
+          {
+            "pid": 8405,
+            "exit_code": 0
+          },
+          {
+            "pid": 8417,
+            "exit_code": 0
+          },
+          {
+            "pid": 8418,
+            "exit_code": 0
+          },
+          {
+            "pid": 8421,
+            "exit_code": 0
+          },
+          {
+            "pid": 8434,
+            "exit_code": 0
+          },
+          {
+            "pid": 8455,
+            "exit_code": 0
+          },
+          {
+            "pid": 8473,
+            "exit_code": 0
+          },
+          {
+            "pid": 8487,
+            "exit_code": 0
+          },
+          {
+            "pid": 8505,
+            "exit_code": 0
+          },
+          {
+            "pid": 8519,
+            "exit_code": 0
+          },
+          {
+            "pid": 8547,
+            "exit_code": 0
+          },
+          {
+            "pid": 8563,
+            "exit_code": 0
+          },
+          {
+            "pid": 8571,
+            "exit_code": 0
+          },
+          {
+            "pid": 8572,
+            "exit_code": 0
+          },
+          {
+            "pid": 8591,
+            "exit_code": 0
+          },
+          {
+            "pid": 8593,
+            "exit_code": 0
+          },
+          {
+            "pid": 8598,
+            "exit_code": 0
+          },
+          {
+            "pid": 8607,
+            "exit_code": 0
+          },
+          {
+            "pid": 8609,
+            "exit_code": 0
+          },
+          {
+            "pid": 8617,
+            "exit_code": 0
+          },
+          {
+            "pid": 8635,
+            "exit_code": 0
+          },
+          {
+            "pid": 8651,
+            "exit_code": 0
+          },
+          {
+            "pid": 8684,
+            "exit_code": 0
+          },
+          {
+            "pid": 8685,
+            "exit_code": 0
+          },
+          {
+            "pid": 8709,
+            "exit_code": 0
+          },
+          {
+            "pid": 8722,
+            "exit_code": 0
+          },
+          {
+            "pid": 8726,
+            "exit_code": 0
+          },
+          {
+            "pid": 8778,
+            "exit_code": 0
+          },
+          {
+            "pid": 8783,
+            "exit_code": 0
+          },
+          {
+            "pid": 8785,
+            "exit_code": 0
+          },
+          {
+            "pid": 8801,
+            "exit_code": 0
+          },
+          {
+            "pid": 8802,
+            "exit_code": 0
+          },
+          {
+            "pid": 8814,
+            "exit_code": 0
+          },
+          {
+            "pid": 8825,
+            "exit_code": 0
+          },
+          {
+            "pid": 8832,
+            "exit_code": 0
+          },
+          {
+            "pid": 8845,
+            "exit_code": 0
+          },
+          {
+            "pid": 8874,
+            "exit_code": 0
+          },
+          {
+            "pid": 8879,
+            "exit_code": 0
+          },
+          {
+            "pid": 8884,
+            "exit_code": 0
+          },
+          {
+            "pid": 8896,
+            "exit_code": 0
+          },
+          {
+            "pid": 8903,
+            "exit_code": 0
+          },
+          {
+            "pid": 8916,
+            "exit_code": 0
+          },
+          {
+            "pid": 8924,
+            "exit_code": 0
+          },
+          {
+            "pid": 8934,
+            "exit_code": 0
+          },
+          {
+            "pid": 9063,
+            "exit_code": 0
+          },
+          {
+            "pid": 9067,
+            "exit_code": 0
+          },
+          {
+            "pid": 9071,
+            "exit_code": 0
+          },
+          {
+            "pid": 9079,
+            "exit_code": 0
+          },
+          {
+            "pid": 9102,
+            "exit_code": 0
+          },
+          {
+            "pid": 9110,
+            "exit_code": 0
+          },
+          {
+            "pid": 9119,
+            "exit_code": 0
+          },
+          {
+            "pid": 9130,
+            "exit_code": 0
+          },
+          {
+            "pid": 9148,
+            "exit_code": 0
+          },
+          {
+            "pid": 9181,
+            "exit_code": 0
+          },
+          {
+            "pid": 9208,
+            "exit_code": 0
+          },
+          {
+            "pid": 9228,
+            "exit_code": 0
+          },
+          {
+            "pid": 9620,
+            "exit_code": 0
+          },
+          {
+            "pid": 9727,
+            "exit_code": 101
+          },
+          {
+            "pid": 9934,
+            "exit_code": 0
+          },
+          {
+            "pid": 9938,
+            "exit_code": 0
+          },
+          {
+            "pid": 9941,
+            "exit_code": 0
+          },
+          {
+            "pid": 9943,
+            "exit_code": 0
+          },
+          {
+            "pid": 9993,
+            "exit_code": 0
+          },
+          {
+            "pid": 9994,
+            "exit_code": 0
+          },
+          {
+            "pid": 9995,
+            "exit_code": 0
+          },
+          {
+            "pid": 9996,
+            "exit_code": 0
+          },
+          {
+            "pid": 10013,
+            "exit_code": 0
+          },
+          {
+            "pid": 10014,
+            "exit_code": 0
+          },
+          {
+            "pid": 10017,
+            "exit_code": 0
+          },
+          {
+            "pid": 10021,
+            "exit_code": 0
+          },
+          {
+            "pid": 10099,
+            "exit_code": 0
+          },
+          {
+            "pid": 10101,
+            "exit_code": 0
+          },
+          {
+            "pid": 10104,
+            "exit_code": 0
+          },
+          {
+            "pid": 10142,
+            "exit_code": 0
+          },
+          {
+            "pid": 10143,
+            "exit_code": 0
+          },
+          {
+            "pid": 10146,
+            "exit_code": 0
+          },
+          {
+            "pid": 10155,
+            "exit_code": 0
+          },
+          {
+            "pid": 10157,
+            "exit_code": 0
+          }
+        ],
+        "owned_child_table_available": false,
+        "errors": [],
+        "pending_bound_pids": [],
+        "reason": "all owned descendants reaped"
+      },
+      "ownership_boundary": "Root retained exclusive new source/output ownership throughout builtin test lease release and outer closure. Outer tree uses exact maintained ClippyTree, started before first setup/test child; this is scoped qualification proof, not changed builtin route semantics."
+    },
+    "clippy-cold": {
+      "label": "clippy-cold",
+      "args": [
+        "clippy",
+        "-p",
+        "perl-ci-hygiene",
+        "--all-targets",
+        "--profile",
+        "agent",
+        "--locked",
+        "--offline",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit_code": 0,
+      "seconds": 15.031843511000034,
+      "resources": {
+        "worktree": "/workspace/q",
+        "scope": {
+          "hostname": "5b75b52e9333",
+          "platform": "linux",
+          "working_directory": "/workspace/q",
+          "worktree": "/workspace/q",
+          "operation": "clippy",
+          "cargo_argv_sha256": "a64b837b9f4f75963f185babcaa429a811d52db7d3c3f305f7241bebc6731f37",
+          "resources": {
+            "target": "/workspace/qd/5b75b52e9333-linux-b65dcb543d0ae605/worktrees/e37e3284be413cd907c60ad0034f9b7aa38d33b59ced6f31d8181a342b8d1009/target",
+            "build": "/workspace/qd/5b75b52e9333-linux-b65dcb543d0ae605/worktrees/e37e3284be413cd907c60ad0034f9b7aa38d33b59ced6f31d8181a342b8d1009/build",
+            "cargo_home": "/workspace/.cloud-tools/cargo",
+            "temp": "/workspace/qt"
+          },
+          "jobs": 2,
+          "build_environment_sha256": "068e63355d01f97082a7ae0a556748531002cc7858d8643e2ae53aefbf9cf99b",
+          "clippy_setup": {
+            "toolchain": {
+              "pin": "1.95.0",
+              "host": "x86_64-unknown-linux-gnu",
+              "root": "/workspace/.cloud-tools/rustup/toolchains/1.95.0-x86_64-unknown-linux-gnu",
+              "subjects": {
+                "cargo": {
+                  "path": "/workspace/.cloud-tools/rustup/toolchains/1.95.0-x86_64-unknown-linux-gnu/bin/cargo",
+                  "file_identity": [
+                    27,
+                    9223372036855990353,
+                    42185192,
+                    1791598026210381703,
+                    1791598026210381703
+                  ],
+                  "sha256": "841072d1d92f9e841d9ba5b0814182a0adf064acf4527cd120967b7bc49dcb66"
+                },
+                "rustc": {
+                  "path": "/workspace/.cloud-tools/rustup/toolchains/1.95.0-x86_64-unknown-linux-gnu/bin/rustc",
+                  "file_identity": [
+                    27,
+                    9223372036855990374,
+                    644784,
+                    1791598031622568940,
+                    1791598031622568940
+                  ],
+                  "sha256": "bff349e72704ff70bc08a234a3847338e797065bbedde5e556808bc87b7bf7c6"
+                },
+                "rustdoc": {
+                  "path": "/workspace/.cloud-tools/rustup/toolchains/1.95.0-x86_64-unknown-linux-gnu/bin/rustdoc",
+                  "file_identity": [
+                    27,
+                    9223372036855990377,
+                    13303096,
+                    1791598031622568940,
+                    1791598031622568940
+                  ],
+                  "sha256": "e5144902aed6cf94280eae3ad7708da5bdd3819b5281728af432d0e70231439c"
+                },
+                "cargo-clippy": {
+                  "path": "/workspace/.cloud-tools/rustup/toolchains/1.95.0-x86_64-unknown-linux-gnu/bin/cargo-clippy",
+                  "file_identity": [
+                    27,
+                    9223372036855990356,
+                    1263912,
+                    1791598024930337418,
+                    1791598024930337418
+                  ],
+                  "sha256": "b71b1263063707608daa1e9b231ad9d87507c11d6aa178ede2b01d8372d5effb"
+                },
+                "clippy-driver": {
+                  "path": "/workspace/.cloud-tools/rustup/toolchains/1.95.0-x86_64-unknown-linux-gnu/bin/clippy-driver",
+                  "file_identity": [
+                    27,
+                    9223372036855990362,
+                    20339280,
+                    1791598024926337280,
+                    1791598024926337280
+                  ],
+                  "sha256": "81bd985ee50d78e9d8c5810f6ca836614d1bf95e0e8142f1ec5f42eb250ed729"
+                },
+                "runtime-0": {
+                  "path": "/workspace/.cloud-tools/rustup/toolchains/1.95.0-x86_64-unknown-linux-gnu/lib/libLLVM-22-rust-1.95.0-stable.so",
+                  "file_identity": [
+                    27,
+                    9223372036855990393,
+                    42,
+                    1791598033806644591,
+                    1791598033806644591
+                  ],
+                  "sha256": "044a388f61f18a07583a1126fa91c1288ecb0745f41a8369ec4a6b2acb9b51d3"
+                },
+                "runtime-1": {
+                  "path": "/workspace/.cloud-tools/rustup/toolchains/1.95.0-x86_64-unknown-linux-gnu/lib/libLLVM.so.22.1-rust-1.95.0-stable",
+                  "file_identity": [
+                    27,
+                    9223372036855990396,
+                    199603328,
+                    1791598033786643897,
+                    1791598033786643897
+                  ],
+                  "sha256": "f6a654c837c51bc2fc00f83d58318607b6f30fec364a00f09b6172129e591fb5"
+                },
+                "runtime-2": {
+                  "path": "/workspace/.cloud-tools/rustup/toolchains/1.95.0-x86_64-unknown-linux-gnu/lib/librustc_driver-6108105cd7e839cf.so",
+                  "file_identity": [
+                    27,
+                    9223372036855990399,
+                    153621360,
+                    1791598035634707964,
+                    1791598035634707964
+                  ],
+                  "sha256": "ae69468875215df490fde685ec1f1b969743482ba7e0251f4074a222606a5484"
+                }
+              },
+              "pin_subject": {
+                "path": "/workspace/q/rust-toolchain.toml",
+                "file_identity": [
+                  27,
+                  798287,
+                  208,
+                  1791614387761267794,
+                  1791614387761267794
+                ],
+                "sha256": "b1700c7278dac6172b28141c317a54a4dc2309c163644c0f3f48567541f00eaa"
+              }
+            },
+            "configuration": [
+              {
+                "path": "/workspace/q/.cargo/config.toml",
+                "file_identity": [
+                  27,
+                  786704,
+                  623,
+                  1791614387090201023,
+                  1791614387090201023
+                ],
+                "sha256": "cc3d8bb15199fae945c24e509180bec2b2af75bd5d8f187be49156274a5c16df"
+              },
+              {
+                "path": "/workspace/q/clippy.toml",
+                "file_identity": [
+                  27,
+                  789071,
+                  558,
+                  1791614387219143838,
+                  1791614387219143838
+                ],
+                "sha256": "3732aff14b6eeee0ba4756bdaf50197fe0d161bb7e89545332e1d3a7ff34208d"
+              }
+            ],
+            "renderer": {
+              "path": "/workspace/q/scripts/cargo_admitted.py",
+              "file_identity": [
+                27,
+                798388,
+                47383,
+                1791614393769965534,
+                1791614393769965534
+              ],
+              "sha256": "7a1f25478287fc0c06b3885a035ed6afe9f973b5699bf82894794bcf96954d51"
+            }
+          }
+        },
+        "resources": {
+          "target": "/workspace/qd/5b75b52e9333-linux-b65dcb543d0ae605/worktrees/e37e3284be413cd907c60ad0034f9b7aa38d33b59ced6f31d8181a342b8d1009/target",
+          "build": "/workspace/qd/5b75b52e9333-linux-b65dcb543d0ae605/worktrees/e37e3284be413cd907c60ad0034f9b7aa38d33b59ced6f31d8181a342b8d1009/build",
+          "cargo_home": "/workspace/.cloud-tools/cargo",
+          "temp": "/workspace/qt"
+        },
+        "lease": "/workspace/qd/5b75b52e9333-linux-b65dcb543d0ae605/cargo-active",
+        "pid": 6592,
+        "admission": {
+          "policy": "budget-file",
+          "reserve_bytes": 8589934592,
+          "expected_total_growth_bytes": 17179869184,
+          "evidence_reference": "Exact isolated perl-ci-hygiene package, locked offline installed 1.95.0, agent profile, jobs2. Prior issue-native mixed test/dev outputs under1GiB are final allocations not peak measurements. Conservative16GiB aggregate additional peak growth covers two target forms, tests, metadata/intermediates and temporary storage with no downloads or product/xtask compilation. Explicit8GiB host reserve against observed30GiB free, 16GiB cgroup RAM/4CPU, one build lane. All destinations on workspace volume checked; default40GiB unchanged; basis remains unverified estimate. Root exclusively owns new sources/outputs; no independent consumers.",
+          "basis_verified": false,
+          "budget_sha256": "3319486a5d229152f651dda2f9736f721eee141dee6c34a2e802f907d5fa3673",
+          "required_free_bytes": 25769803776,
+          "destinations": [
+            {
+              "path": "/workspace/qd/5b75b52e9333-linux-b65dcb543d0ae605",
+              "observed_ancestor": "/workspace/qd/5b75b52e9333-linux-b65dcb543d0ae605",
+              "free_bytes": 31407734784,
+              "required_free_bytes": 25769803776,
+              "headroom_bytes": 5637931008
+            },
+            {
+              "path": "/workspace/qd/5b75b52e9333-linux-b65dcb543d0ae605/worktrees/e37e3284be413cd907c60ad0034f9b7aa38d33b59ced6f31d8181a342b8d1009/target",
+              "observed_ancestor": "/workspace/qd/5b75b52e9333-linux-b65dcb543d0ae605/worktrees/e37e3284be413cd907c60ad0034f9b7aa38d33b59ced6f31d8181a342b8d1009/target",
+              "free_bytes": 31407734784,
+              "required_free_bytes": 25769803776,
+              "headroom_bytes": 5637931008
+            },
+            {
+              "path": "/workspace/qd/5b75b52e9333-linux-b65dcb543d0ae605/worktrees/e37e3284be413cd907c60ad0034f9b7aa38d33b59ced6f31d8181a342b8d1009/build",
+              "observed_ancestor": "/workspace/qd/5b75b52e9333-linux-b65dcb543d0ae605/worktrees/e37e3284be413cd907c60ad0034f9b7aa38d33b59ced6f31d8181a342b8d1009/build",
+              "free_bytes": 31407734784,
+              "required_free_bytes": 25769803776,
+              "headroom_bytes": 5637931008
+            },
+            {
+              "path": "/workspace/.cloud-tools/cargo",
+              "observed_ancestor": "/workspace/.cloud-tools/cargo",
+              "free_bytes": 31407734784,
+              "required_free_bytes": 25769803776,
+              "headroom_bytes": 5637931008
+            },
+            {
+              "path": "/workspace/qt",
+              "observed_ancestor": "/workspace/qt",
+              "free_bytes": 31407734784,
+              "required_free_bytes": 25769803776,
+              "headroom_bytes": 5637931008
+            }
+          ]
+        },
+        "disposition": "retained with reason: reusable bounded slot",
+        "lease_identity": [
+          27,
+          804495
+        ],
+        "lease_marker": "/workspace/qd/5b75b52e9333-linux-b65dcb543d0ae605/cargo-active/owner-4f105a473a464a76bf79a8955615bb45"
+      },
+      "budget": {
+        "schema_version": 1,
+        "scope": {
+          "hostname": "5b75b52e9333",
+          "platform": "linux",
+          "working_directory": "/workspace/q",
+          "worktree": "/workspace/q",
+          "operation": "clippy",
+          "cargo_argv_sha256": "a64b837b9f4f75963f185babcaa429a811d52db7d3c3f305f7241bebc6731f37",
+          "resources": {
+            "target": "/workspace/qd/5b75b52e9333-linux-b65dcb543d0ae605/worktrees/e37e3284be413cd907c60ad0034f9b7aa38d33b59ced6f31d8181a342b8d1009/target",
+            "build": "/workspace/qd/5b75b52e9333-linux-b65dcb543d0ae605/worktrees/e37e3284be413cd907c60ad0034f9b7aa38d33b59ced6f31d8181a342b8d1009/build",
+            "cargo_home": "/workspace/.cloud-tools/cargo",
+            "temp": "/workspace/qt"
+          },
+          "jobs": 2,
+          "build_environment_sha256": "068e63355d01f97082a7ae0a556748531002cc7858d8643e2ae53aefbf9cf99b",
+          "clippy_setup": {
+            "toolchain": {
+              "pin": "1.95.0",
+              "host": "x86_64-unknown-linux-gnu",
+              "root": "/workspace/.cloud-tools/rustup/toolchains/1.95.0-x86_64-unknown-linux-gnu",
+              "subjects": {
+                "cargo": {
+                  "path": "/workspace/.cloud-tools/rustup/toolchains/1.95.0-x86_64-unknown-linux-gnu/bin/cargo",
+                  "file_identity": [
+                    27,
+                    9223372036855990353,
+                    42185192,
+                    1791598026210381703,
+                    1791598026210381703
+                  ],
+                  "sha256": "841072d1d92f9e841d9ba5b0814182a0adf064acf4527cd120967b7bc49dcb66"
+                },
+                "rustc": {
+                  "path": "/workspace/.cloud-tools/rustup/toolchains/1.95.0-x86_64-unknown-linux-gnu/bin/rustc",
+                  "file_identity": [
+                    27,
+                    9223372036855990374,
+                    644784,
+                    1791598031622568940,
+                    1791598031622568940
+                  ],
+                  "sha256": "bff349e72704ff70bc08a234a3847338e797065bbedde5e556808bc87b7bf7c6"
+                },
+                "rustdoc": {
+                  "path": "/workspace/.cloud-tools/rustup/toolchains/1.95.0-x86_64-unknown-linux-gnu/bin/rustdoc",
+                  "file_identity": [
+                    27,
+                    9223372036855990377,
+                    13303096,
+                    1791598031622568940,
+                    1791598031622568940
+                  ],
+                  "sha256": "e5144902aed6cf94280eae3ad7708da5bdd3819b5281728af432d0e70231439c"
+                },
+                "cargo-clippy": {
+                  "path": "/workspace/.cloud-tools/rustup/toolchains/1.95.0-x86_64-unknown-linux-gnu/bin/cargo-clippy",
+                  "file_identity": [
+                    27,
+                    9223372036855990356,
+                    1263912,
+                    1791598024930337418,
+                    1791598024930337418
+                  ],
+                  "sha256": "b71b1263063707608daa1e9b231ad9d87507c11d6aa178ede2b01d8372d5effb"
+                },
+                "clippy-driver": {
+                  "path": "/workspace/.cloud-tools/rustup/toolchains/1.95.0-x86_64-unknown-linux-gnu/bin/clippy-driver",
+                  "file_identity": [
+                    27,
+                    9223372036855990362,
+                    20339280,
+                    1791598024926337280,
+                    1791598024926337280
+                  ],
+                  "sha256": "81bd985ee50d78e9d8c5810f6ca836614d1bf95e0e8142f1ec5f42eb250ed729"
+                },
+                "runtime-0": {
+                  "path": "/workspace/.cloud-tools/rustup/toolchains/1.95.0-x86_64-unknown-linux-gnu/lib/libLLVM-22-rust-1.95.0-stable.so",
+                  "file_identity": [
+                    27,
+                    9223372036855990393,
+                    42,
+                    1791598033806644591,
+                    1791598033806644591
+                  ],
+                  "sha256": "044a388f61f18a07583a1126fa91c1288ecb0745f41a8369ec4a6b2acb9b51d3"
+                },
+                "runtime-1": {
+                  "path": "/workspace/.cloud-tools/rustup/toolchains/1.95.0-x86_64-unknown-linux-gnu/lib/libLLVM.so.22.1-rust-1.95.0-stable",
+                  "file_identity": [
+                    27,
+                    9223372036855990396,
+                    199603328,
+                    1791598033786643897,
+                    1791598033786643897
+                  ],
+                  "sha256": "f6a654c837c51bc2fc00f83d58318607b6f30fec364a00f09b6172129e591fb5"
+                },
+                "runtime-2": {
+                  "path": "/workspace/.cloud-tools/rustup/toolchains/1.95.0-x86_64-unknown-linux-gnu/lib/librustc_driver-6108105cd7e839cf.so",
+                  "file_identity": [
+                    27,
+                    9223372036855990399,
+                    153621360,
+                    1791598035634707964,
+                    1791598035634707964
+                  ],
+                  "sha256": "ae69468875215df490fde685ec1f1b969743482ba7e0251f4074a222606a5484"
+                }
+              },
+              "pin_subject": {
+                "path": "/workspace/q/rust-toolchain.toml",
+                "file_identity": [
+                  27,
+                  798287,
+                  208,
+                  1791614387761267794,
+                  1791614387761267794
+                ],
+                "sha256": "b1700c7278dac6172b28141c317a54a4dc2309c163644c0f3f48567541f00eaa"
+              }
+            },
+            "configuration": [
+              {
+                "path": "/workspace/q/.cargo/config.toml",
+                "file_identity": [
+                  27,
+                  786704,
+                  623,
+                  1791614387090201023,
+                  1791614387090201023
+                ],
+                "sha256": "cc3d8bb15199fae945c24e509180bec2b2af75bd5d8f187be49156274a5c16df"
+              },
+              {
+                "path": "/workspace/q/clippy.toml",
+                "file_identity": [
+                  27,
+                  789071,
+                  558,
+                  1791614387219143838,
+                  1791614387219143838
+                ],
+                "sha256": "3732aff14b6eeee0ba4756bdaf50197fe0d161bb7e89545332e1d3a7ff34208d"
+              }
+            ],
+            "renderer": {
+              "path": "/workspace/q/scripts/cargo_admitted.py",
+              "file_identity": [
+                27,
+                798388,
+                47383,
+                1791614393769965534,
+                1791614393769965534
+              ],
+              "sha256": "7a1f25478287fc0c06b3885a035ed6afe9f973b5699bf82894794bcf96954d51"
+            }
+          }
+        },
+        "reserve_bytes": 8589934592,
+        "expected_growth_bytes": 17179869184,
+        "basis": "Exact isolated perl-ci-hygiene package, locked offline installed 1.95.0, agent profile, jobs2. Prior issue-native mixed test/dev outputs under1GiB are final allocations not peak measurements. Conservative16GiB aggregate additional peak growth covers two target forms, tests, metadata/intermediates and temporary storage with no downloads or product/xtask compilation. Explicit8GiB host reserve against observed30GiB free, 16GiB cgroup RAM/4CPU, one build lane. All destinations on workspace volume checked; default40GiB unchanged; basis remains unverified estimate. Root exclusively owns new sources/outputs; no independent consumers."
+      },
+      "default_preflight_exit": 75,
+      "disk_free_before": 31407742976,
+      "disk_free_after": 31358222336,
+      "sampled_min_disk_free": 31358226432,
+      "sampled_max_additional_disk": 49516544,
+      "sampled_cgroup_memory_baseline": 828514304,
+      "sampled_cgroup_memory_peak": 1254572032,
+      "child_rusage_maxrss_kib": 404352,
+      "sampling_interval_seconds": 0.25,
+      "sampling_limitation": "Host/cgroup observations include unrelated host activity; sampled values are not exact workload peaks or quotas.",
+      "owner_sha256": "7a1f25478287fc0c06b3885a035ed6afe9f973b5699bf82894794bcf96954d51",
+      "exclusive_new_roots": true,
+      "independent_consumers": false,
+      "lease_absent": true,
+      "settlement": {
+        "tree_settled": true,
+        "proof": "kernel ECHILD (__WALL)",
+        "cancelled": false,
+        "termination_requested": false,
+        "reaped_descendants": [],
+        "owned_child_table_available": false,
+        "errors": [],
+        "pending_bound_pids": [],
+        "reason": "all owned descendants reaped",
+        "lease": "/workspace/qd/5b75b52e9333-linux-b65dcb543d0ae605/cargo-active",
+        "lease_identity": [
+          27,
+          804495
+        ],
+        "lease_marker": "/workspace/qd/5b75b52e9333-linux-b65dcb543d0ae605/cargo-active/owner-4f105a473a464a76bf79a8955615bb45",
+        "lease_released": true
+      },
+      "group_absent": true
+    },
+    "clippy-warm": {
+      "label": "clippy-warm",
+      "args": [
+        "clippy",
+        "-p",
+        "perl-ci-hygiene",
+        "--all-targets",
+        "--profile",
+        "agent",
+        "--locked",
+        "--offline",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit_code": 0,
+      "seconds": 1.2523927269999717,
+      "resources": {
+        "worktree": "/workspace/q",
+        "scope": {
+          "hostname": "5b75b52e9333",
+          "platform": "linux",
+          "working_directory": "/workspace/q",
+          "worktree": "/workspace/q",
+          "operation": "clippy",
+          "cargo_argv_sha256": "a64b837b9f4f75963f185babcaa429a811d52db7d3c3f305f7241bebc6731f37",
+          "resources": {
+            "target": "/workspace/qd/5b75b52e9333-linux-b65dcb543d0ae605/worktrees/e37e3284be413cd907c60ad0034f9b7aa38d33b59ced6f31d8181a342b8d1009/target",
+            "build": "/workspace/qd/5b75b52e9333-linux-b65dcb543d0ae605/worktrees/e37e3284be413cd907c60ad0034f9b7aa38d33b59ced6f31d8181a342b8d1009/build",
+            "cargo_home": "/workspace/.cloud-tools/cargo",
+            "temp": "/workspace/qt"
+          },
+          "jobs": 2,
+          "build_environment_sha256": "068e63355d01f97082a7ae0a556748531002cc7858d8643e2ae53aefbf9cf99b",
+          "clippy_setup": {
+            "toolchain": {
+              "pin": "1.95.0",
+              "host": "x86_64-unknown-linux-gnu",
+              "root": "/workspace/.cloud-tools/rustup/toolchains/1.95.0-x86_64-unknown-linux-gnu",
+              "subjects": {
+                "cargo": {
+                  "path": "/workspace/.cloud-tools/rustup/toolchains/1.95.0-x86_64-unknown-linux-gnu/bin/cargo",
+                  "file_identity": [
+                    27,
+                    9223372036855990353,
+                    42185192,
+                    1791598026210381703,
+                    1791598026210381703
+                  ],
+                  "sha256": "841072d1d92f9e841d9ba5b0814182a0adf064acf4527cd120967b7bc49dcb66"
+                },
+                "rustc": {
+                  "path": "/workspace/.cloud-tools/rustup/toolchains/1.95.0-x86_64-unknown-linux-gnu/bin/rustc",
+                  "file_identity": [
+                    27,
+                    9223372036855990374,
+                    644784,
+                    1791598031622568940,
+                    1791598031622568940
+                  ],
+                  "sha256": "bff349e72704ff70bc08a234a3847338e797065bbedde5e556808bc87b7bf7c6"
+                },
+                "rustdoc": {
+                  "path": "/workspace/.cloud-tools/rustup/toolchains/1.95.0-x86_64-unknown-linux-gnu/bin/rustdoc",
+                  "file_identity": [
+                    27,
+                    9223372036855990377,
+                    13303096,
+                    1791598031622568940,
+                    1791598031622568940
+                  ],
+                  "sha256": "e5144902aed6cf94280eae3ad7708da5bdd3819b5281728af432d0e70231439c"
+                },
+                "cargo-clippy": {
+                  "path": "/workspace/.cloud-tools/rustup/toolchains/1.95.0-x86_64-unknown-linux-gnu/bin/cargo-clippy",
+                  "file_identity": [
+                    27,
+                    9223372036855990356,
+                    1263912,
+                    1791598024930337418,
+                    1791598024930337418
+                  ],
+                  "sha256": "b71b1263063707608daa1e9b231ad9d87507c11d6aa178ede2b01d8372d5effb"
+                },
+                "clippy-driver": {
+                  "path": "/workspace/.cloud-tools/rustup/toolchains/1.95.0-x86_64-unknown-linux-gnu/bin/clippy-driver",
+                  "file_identity": [
+                    27,
+                    9223372036855990362,
+                    20339280,
+                    1791598024926337280,
+                    1791598024926337280
+                  ],
+                  "sha256": "81bd985ee50d78e9d8c5810f6ca836614d1bf95e0e8142f1ec5f42eb250ed729"
+                },
+                "runtime-0": {
+                  "path": "/workspace/.cloud-tools/rustup/toolchains/1.95.0-x86_64-unknown-linux-gnu/lib/libLLVM-22-rust-1.95.0-stable.so",
+                  "file_identity": [
+                    27,
+                    9223372036855990393,
+                    42,
+                    1791598033806644591,
+                    1791598033806644591
+                  ],
+                  "sha256": "044a388f61f18a07583a1126fa91c1288ecb0745f41a8369ec4a6b2acb9b51d3"
+                },
+                "runtime-1": {
+                  "path": "/workspace/.cloud-tools/rustup/toolchains/1.95.0-x86_64-unknown-linux-gnu/lib/libLLVM.so.22.1-rust-1.95.0-stable",
+                  "file_identity": [
+                    27,
+                    9223372036855990396,
+                    199603328,
+                    1791598033786643897,
+                    1791598033786643897
+                  ],
+                  "sha256": "f6a654c837c51bc2fc00f83d58318607b6f30fec364a00f09b6172129e591fb5"
+                },
+                "runtime-2": {
+                  "path": "/workspace/.cloud-tools/rustup/toolchains/1.95.0-x86_64-unknown-linux-gnu/lib/librustc_driver-6108105cd7e839cf.so",
+                  "file_identity": [
+                    27,
+                    9223372036855990399,
+                    153621360,
+                    1791598035634707964,
+                    1791598035634707964
+                  ],
+                  "sha256": "ae69468875215df490fde685ec1f1b969743482ba7e0251f4074a222606a5484"
+                }
+              },
+              "pin_subject": {
+                "path": "/workspace/q/rust-toolchain.toml",
+                "file_identity": [
+                  27,
+                  798287,
+                  208,
+                  1791614387761267794,
+                  1791614387761267794
+                ],
+                "sha256": "b1700c7278dac6172b28141c317a54a4dc2309c163644c0f3f48567541f00eaa"
+              }
+            },
+            "configuration": [
+              {
+                "path": "/workspace/q/.cargo/config.toml",
+                "file_identity": [
+                  27,
+                  786704,
+                  623,
+                  1791614387090201023,
+                  1791614387090201023
+                ],
+                "sha256": "cc3d8bb15199fae945c24e509180bec2b2af75bd5d8f187be49156274a5c16df"
+              },
+              {
+                "path": "/workspace/q/clippy.toml",
+                "file_identity": [
+                  27,
+                  789071,
+                  558,
+                  1791614387219143838,
+                  1791614387219143838
+                ],
+                "sha256": "3732aff14b6eeee0ba4756bdaf50197fe0d161bb7e89545332e1d3a7ff34208d"
+              }
+            ],
+            "renderer": {
+              "path": "/workspace/q/scripts/cargo_admitted.py",
+              "file_identity": [
+                27,
+                798388,
+                47383,
+                1791614393769965534,
+                1791614393769965534
+              ],
+              "sha256": "7a1f25478287fc0c06b3885a035ed6afe9f973b5699bf82894794bcf96954d51"
+            }
+          }
+        },
+        "resources": {
+          "target": "/workspace/qd/5b75b52e9333-linux-b65dcb543d0ae605/worktrees/e37e3284be413cd907c60ad0034f9b7aa38d33b59ced6f31d8181a342b8d1009/target",
+          "build": "/workspace/qd/5b75b52e9333-linux-b65dcb543d0ae605/worktrees/e37e3284be413cd907c60ad0034f9b7aa38d33b59ced6f31d8181a342b8d1009/build",
+          "cargo_home": "/workspace/.cloud-tools/cargo",
+          "temp": "/workspace/qt"
+        },
+        "lease": "/workspace/qd/5b75b52e9333-linux-b65dcb543d0ae605/cargo-active",
+        "pid": 7135,
+        "admission": {
+          "policy": "budget-file",
+          "reserve_bytes": 8589934592,
+          "expected_total_growth_bytes": 17179869184,
+          "evidence_reference": "Exact isolated perl-ci-hygiene package, locked offline installed 1.95.0, agent profile, jobs2. Prior issue-native mixed test/dev outputs under1GiB are final allocations not peak measurements. Conservative16GiB aggregate additional peak growth covers two target forms, tests, metadata/intermediates and temporary storage with no downloads or product/xtask compilation. Explicit8GiB host reserve against observed30GiB free, 16GiB cgroup RAM/4CPU, one build lane. All destinations on workspace volume checked; default40GiB unchanged; basis remains unverified estimate. Root exclusively owns new sources/outputs; no independent consumers.",
+          "basis_verified": false,
+          "budget_sha256": "3319486a5d229152f651dda2f9736f721eee141dee6c34a2e802f907d5fa3673",
+          "required_free_bytes": 25769803776,
+          "destinations": [
+            {
+              "path": "/workspace/qd/5b75b52e9333-linux-b65dcb543d0ae605",
+              "observed_ancestor": "/workspace/qd/5b75b52e9333-linux-b65dcb543d0ae605",
+              "free_bytes": 31358169088,
+              "required_free_bytes": 25769803776,
+              "headroom_bytes": 5588365312
+            },
+            {
+              "path": "/workspace/qd/5b75b52e9333-linux-b65dcb543d0ae605/worktrees/e37e3284be413cd907c60ad0034f9b7aa38d33b59ced6f31d8181a342b8d1009/target",
+              "observed_ancestor": "/workspace/qd/5b75b52e9333-linux-b65dcb543d0ae605/worktrees/e37e3284be413cd907c60ad0034f9b7aa38d33b59ced6f31d8181a342b8d1009/target",
+              "free_bytes": 31358169088,
+              "required_free_bytes": 25769803776,
+              "headroom_bytes": 5588365312
+            },
+            {
+              "path": "/workspace/qd/5b75b52e9333-linux-b65dcb543d0ae605/worktrees/e37e3284be413cd907c60ad0034f9b7aa38d33b59ced6f31d8181a342b8d1009/build",
+              "observed_ancestor": "/workspace/qd/5b75b52e9333-linux-b65dcb543d0ae605/worktrees/e37e3284be413cd907c60ad0034f9b7aa38d33b59ced6f31d8181a342b8d1009/build",
+              "free_bytes": 31358169088,
+              "required_free_bytes": 25769803776,
+              "headroom_bytes": 5588365312
+            },
+            {
+              "path": "/workspace/.cloud-tools/cargo",
+              "observed_ancestor": "/workspace/.cloud-tools/cargo",
+              "free_bytes": 31358169088,
+              "required_free_bytes": 25769803776,
+              "headroom_bytes": 5588365312
+            },
+            {
+              "path": "/workspace/qt",
+              "observed_ancestor": "/workspace/qt",
+              "free_bytes": 31358169088,
+              "required_free_bytes": 25769803776,
+              "headroom_bytes": 5588365312
+            }
+          ]
+        },
+        "disposition": "retained with reason: reusable bounded slot",
+        "lease_identity": [
+          27,
+          805233
+        ],
+        "lease_marker": "/workspace/qd/5b75b52e9333-linux-b65dcb543d0ae605/cargo-active/owner-fede1452fce24e43bb060a7ebd6a7316"
+      },
+      "budget": {
+        "schema_version": 1,
+        "scope": {
+          "hostname": "5b75b52e9333",
+          "platform": "linux",
+          "working_directory": "/workspace/q",
+          "worktree": "/workspace/q",
+          "operation": "clippy",
+          "cargo_argv_sha256": "a64b837b9f4f75963f185babcaa429a811d52db7d3c3f305f7241bebc6731f37",
+          "resources": {
+            "target": "/workspace/qd/5b75b52e9333-linux-b65dcb543d0ae605/worktrees/e37e3284be413cd907c60ad0034f9b7aa38d33b59ced6f31d8181a342b8d1009/target",
+            "build": "/workspace/qd/5b75b52e9333-linux-b65dcb543d0ae605/worktrees/e37e3284be413cd907c60ad0034f9b7aa38d33b59ced6f31d8181a342b8d1009/build",
+            "cargo_home": "/workspace/.cloud-tools/cargo",
+            "temp": "/workspace/qt"
+          },
+          "jobs": 2,
+          "build_environment_sha256": "068e63355d01f97082a7ae0a556748531002cc7858d8643e2ae53aefbf9cf99b",
+          "clippy_setup": {
+            "toolchain": {
+              "pin": "1.95.0",
+              "host": "x86_64-unknown-linux-gnu",
+              "root": "/workspace/.cloud-tools/rustup/toolchains/1.95.0-x86_64-unknown-linux-gnu",
+              "subjects": {
+                "cargo": {
+                  "path": "/workspace/.cloud-tools/rustup/toolchains/1.95.0-x86_64-unknown-linux-gnu/bin/cargo",
+                  "file_identity": [
+                    27,
+                    9223372036855990353,
+                    42185192,
+                    1791598026210381703,
+                    1791598026210381703
+                  ],
+                  "sha256": "841072d1d92f9e841d9ba5b0814182a0adf064acf4527cd120967b7bc49dcb66"
+                },
+                "rustc": {
+                  "path": "/workspace/.cloud-tools/rustup/toolchains/1.95.0-x86_64-unknown-linux-gnu/bin/rustc",
+                  "file_identity": [
+                    27,
+                    9223372036855990374,
+                    644784,
+                    1791598031622568940,
+                    1791598031622568940
+                  ],
+                  "sha256": "bff349e72704ff70bc08a234a3847338e797065bbedde5e556808bc87b7bf7c6"
+                },
+                "rustdoc": {
+                  "path": "/workspace/.cloud-tools/rustup/toolchains/1.95.0-x86_64-unknown-linux-gnu/bin/rustdoc",
+                  "file_identity": [
+                    27,
+                    9223372036855990377,
+                    13303096,
+                    1791598031622568940,
+                    1791598031622568940
+                  ],
+                  "sha256": "e5144902aed6cf94280eae3ad7708da5bdd3819b5281728af432d0e70231439c"
+                },
+                "cargo-clippy": {
+                  "path": "/workspace/.cloud-tools/rustup/toolchains/1.95.0-x86_64-unknown-linux-gnu/bin/cargo-clippy",
+                  "file_identity": [
+                    27,
+                    9223372036855990356,
+                    1263912,
+                    1791598024930337418,
+                    1791598024930337418
+                  ],
+                  "sha256": "b71b1263063707608daa1e9b231ad9d87507c11d6aa178ede2b01d8372d5effb"
+                },
+                "clippy-driver": {
+                  "path": "/workspace/.cloud-tools/rustup/toolchains/1.95.0-x86_64-unknown-linux-gnu/bin/clippy-driver",
+                  "file_identity": [
+                    27,
+                    9223372036855990362,
+                    20339280,
+                    1791598024926337280,
+                    1791598024926337280
+                  ],
+                  "sha256": "81bd985ee50d78e9d8c5810f6ca836614d1bf95e0e8142f1ec5f42eb250ed729"
+                },
+                "runtime-0": {
+                  "path": "/workspace/.cloud-tools/rustup/toolchains/1.95.0-x86_64-unknown-linux-gnu/lib/libLLVM-22-rust-1.95.0-stable.so",
+                  "file_identity": [
+                    27,
+                    9223372036855990393,
+                    42,
+                    1791598033806644591,
+                    1791598033806644591
+                  ],
+                  "sha256": "044a388f61f18a07583a1126fa91c1288ecb0745f41a8369ec4a6b2acb9b51d3"
+                },
+                "runtime-1": {
+                  "path": "/workspace/.cloud-tools/rustup/toolchains/1.95.0-x86_64-unknown-linux-gnu/lib/libLLVM.so.22.1-rust-1.95.0-stable",
+                  "file_identity": [
+                    27,
+                    9223372036855990396,
+                    199603328,
+                    1791598033786643897,
+                    1791598033786643897
+                  ],
+                  "sha256": "f6a654c837c51bc2fc00f83d58318607b6f30fec364a00f09b6172129e591fb5"
+                },
+                "runtime-2": {
+                  "path": "/workspace/.cloud-tools/rustup/toolchains/1.95.0-x86_64-unknown-linux-gnu/lib/librustc_driver-6108105cd7e839cf.so",
+                  "file_identity": [
+                    27,
+                    9223372036855990399,
+                    153621360,
+                    1791598035634707964,
+                    1791598035634707964
+                  ],
+                  "sha256": "ae69468875215df490fde685ec1f1b969743482ba7e0251f4074a222606a5484"
+                }
+              },
+              "pin_subject": {
+                "path": "/workspace/q/rust-toolchain.toml",
+                "file_identity": [
+                  27,
+                  798287,
+                  208,
+                  1791614387761267794,
+                  1791614387761267794
+                ],
+                "sha256": "b1700c7278dac6172b28141c317a54a4dc2309c163644c0f3f48567541f00eaa"
+              }
+            },
+            "configuration": [
+              {
+                "path": "/workspace/q/.cargo/config.toml",
+                "file_identity": [
+                  27,
+                  786704,
+                  623,
+                  1791614387090201023,
+                  1791614387090201023
+                ],
+                "sha256": "cc3d8bb15199fae945c24e509180bec2b2af75bd5d8f187be49156274a5c16df"
+              },
+              {
+                "path": "/workspace/q/clippy.toml",
+                "file_identity": [
+                  27,
+                  789071,
+                  558,
+                  1791614387219143838,
+                  1791614387219143838
+                ],
+                "sha256": "3732aff14b6eeee0ba4756bdaf50197fe0d161bb7e89545332e1d3a7ff34208d"
+              }
+            ],
+            "renderer": {
+              "path": "/workspace/q/scripts/cargo_admitted.py",
+              "file_identity": [
+                27,
+                798388,
+                47383,
+                1791614393769965534,
+                1791614393769965534
+              ],
+              "sha256": "7a1f25478287fc0c06b3885a035ed6afe9f973b5699bf82894794bcf96954d51"
+            }
+          }
+        },
+        "reserve_bytes": 8589934592,
+        "expected_growth_bytes": 17179869184,
+        "basis": "Exact isolated perl-ci-hygiene package, locked offline installed 1.95.0, agent profile, jobs2. Prior issue-native mixed test/dev outputs under1GiB are final allocations not peak measurements. Conservative16GiB aggregate additional peak growth covers two target forms, tests, metadata/intermediates and temporary storage with no downloads or product/xtask compilation. Explicit8GiB host reserve against observed30GiB free, 16GiB cgroup RAM/4CPU, one build lane. All destinations on workspace volume checked; default40GiB unchanged; basis remains unverified estimate. Root exclusively owns new sources/outputs; no independent consumers."
+      },
+      "default_preflight_exit": 75,
+      "disk_free_before": 31358177280,
+      "disk_free_after": 31358062592,
+      "sampled_min_disk_free": 31358160896,
+      "sampled_max_additional_disk": 16384,
+      "sampled_cgroup_memory_baseline": 880422912,
+      "sampled_cgroup_memory_peak": 892194816,
+      "child_rusage_maxrss_kib": 404352,
+      "sampling_interval_seconds": 0.25,
+      "sampling_limitation": "Host/cgroup observations include unrelated host activity; sampled values are not exact workload peaks or quotas.",
+      "owner_sha256": "7a1f25478287fc0c06b3885a035ed6afe9f973b5699bf82894794bcf96954d51",
+      "exclusive_new_roots": true,
+      "independent_consumers": false,
+      "lease_absent": true,
+      "settlement": {
+        "tree_settled": true,
+        "proof": "kernel ECHILD (__WALL)",
+        "cancelled": false,
+        "termination_requested": false,
+        "reaped_descendants": [],
+        "owned_child_table_available": false,
+        "errors": [],
+        "pending_bound_pids": [],
+        "reason": "all owned descendants reaped",
+        "lease": "/workspace/qd/5b75b52e9333-linux-b65dcb543d0ae605/cargo-active",
+        "lease_identity": [
+          27,
+          805233
+        ],
+        "lease_marker": "/workspace/qd/5b75b52e9333-linux-b65dcb543d0ae605/cargo-active/owner-fede1452fce24e43bb060a7ebd6a7316",
+        "lease_released": true
+      },
+      "group_absent": true
+    },
+    "byte": {
+      "checks": [
+        "exact paths+LF",
+        "pretty JSON+singleLF",
+        "exact invalid-base warning/error+empty stdout+exit1",
+        "paths stdout=/dev/full contextual exit1",
+        "json stdout=/dev/full contextual exit1"
+      ],
+      "binary_sha256": "84407e78b7620c9f5f98c3cc743706656c45247b93290be128f38072d42a4241",
+      "settlement": {
+        "tree_settled": true,
+        "proof": "kernel ECHILD (__WALL)",
+        "cancelled": false,
+        "termination_requested": false,
+        "reaped_descendants": [
+          {
+            "pid": 7302,
+            "exit_code": 0
+          },
+          {
+            "pid": 7307,
+            "exit_code": 0
+          }
+        ],
+        "owned_child_table_available": false,
+        "errors": [],
+        "pending_bound_pids": [],
+        "reason": "all owned descendants reaped"
+      }
+    },
+    "builtin-boundary": {
+      "fixture": "/workspace/q-evidence/builtin-control-9jz_kleq",
+      "instrument": "fake Cargo exits0 after detached helper; no Rust compilation",
+      "product_exit": 0,
+      "lease_absent_while_owned_helper_alive": true,
+      "adopted_helper_waitable_and_live": true,
+      "helper_pid": 10315,
+      "resources": {
+        "worktree": "/workspace/q-evidence/builtin-control-9jz_kleq/repo",
+        "scope": {
+          "hostname": "5b75b52e9333",
+          "platform": "linux",
+          "working_directory": "/workspace/q-evidence/builtin-control-9jz_kleq/repo",
+          "worktree": "/workspace/q-evidence/builtin-control-9jz_kleq/repo",
+          "operation": "test",
+          "cargo_argv_sha256": "ae76fcbf780b2c7d7f57e7aa1f5f4d4e4ed66d7741eebbe28f6414fc789da652",
+          "resources": {
+            "target": "/workspace/q-evidence/builtin-control-9jz_kleq/devplane/5b75b52e9333-linux-e4eac40c23c13df9/worktrees/ca62214efe771a00714449c54fe59009768c0be94c1fe65a13baf6df5433d36a/target",
+            "build": "/workspace/q-evidence/builtin-control-9jz_kleq/devplane/5b75b52e9333-linux-e4eac40c23c13df9/worktrees/ca62214efe771a00714449c54fe59009768c0be94c1fe65a13baf6df5433d36a/build",
+            "cargo_home": "/workspace/q-evidence/builtin-control-9jz_kleq/cargo-home",
+            "temp": "/workspace/q-evidence/builtin-control-9jz_kleq/temp"
+          },
+          "jobs": 2,
+          "build_environment_sha256": "b3235c0a77f87ed8e4596e088a910018ae807124fd3a00732a92b5c4820c15b3"
+        },
+        "resources": {
+          "target": "/workspace/q-evidence/builtin-control-9jz_kleq/devplane/5b75b52e9333-linux-e4eac40c23c13df9/worktrees/ca62214efe771a00714449c54fe59009768c0be94c1fe65a13baf6df5433d36a/target",
+          "build": "/workspace/q-evidence/builtin-control-9jz_kleq/devplane/5b75b52e9333-linux-e4eac40c23c13df9/worktrees/ca62214efe771a00714449c54fe59009768c0be94c1fe65a13baf6df5433d36a/build",
+          "cargo_home": "/workspace/q-evidence/builtin-control-9jz_kleq/cargo-home",
+          "temp": "/workspace/q-evidence/builtin-control-9jz_kleq/temp"
+        },
+        "lease": "/workspace/q-evidence/builtin-control-9jz_kleq/devplane/5b75b52e9333-linux-e4eac40c23c13df9/cargo-active",
+        "pid": 10311,
+        "admission": {
+          "policy": "percent",
+          "reserve_bytes": 1073741.824,
+          "max_used_pct": 100.0,
+          "required_free_bytes": 1073741.824,
+          "destinations": [
+            {
+              "path": "/workspace/q-evidence/builtin-control-9jz_kleq/devplane/5b75b52e9333-linux-e4eac40c23c13df9",
+              "observed_ancestor": "/workspace/q-evidence/builtin-control-9jz_kleq/devplane/5b75b52e9333-linux-e4eac40c23c13df9",
+              "free_bytes": 31356923904,
+              "required_free_bytes": 1073741.824,
+              "headroom_bytes": 31355850162.176
+            },
+            {
+              "path": "/workspace/q-evidence/builtin-control-9jz_kleq/devplane/5b75b52e9333-linux-e4eac40c23c13df9/worktrees/ca62214efe771a00714449c54fe59009768c0be94c1fe65a13baf6df5433d36a/target",
+              "observed_ancestor": "/workspace/q-evidence/builtin-control-9jz_kleq/devplane/5b75b52e9333-linux-e4eac40c23c13df9",
+              "free_bytes": 31356923904,
+              "required_free_bytes": 1073741.824,
+              "headroom_bytes": 31355850162.176
+            },
+            {
+              "path": "/workspace/q-evidence/builtin-control-9jz_kleq/devplane/5b75b52e9333-linux-e4eac40c23c13df9/worktrees/ca62214efe771a00714449c54fe59009768c0be94c1fe65a13baf6df5433d36a/build",
+              "observed_ancestor": "/workspace/q-evidence/builtin-control-9jz_kleq/devplane/5b75b52e9333-linux-e4eac40c23c13df9",
+              "free_bytes": 31356923904,
+              "required_free_bytes": 1073741.824,
+              "headroom_bytes": 31355850162.176
+            },
+            {
+              "path": "/workspace/q-evidence/builtin-control-9jz_kleq/cargo-home",
+              "observed_ancestor": "/workspace/q-evidence/builtin-control-9jz_kleq",
+              "free_bytes": 31356923904,
+              "required_free_bytes": 1073741.824,
+              "headroom_bytes": 31355850162.176
+            },
+            {
+              "path": "/workspace/q-evidence/builtin-control-9jz_kleq/temp",
+              "observed_ancestor": "/workspace/q-evidence/builtin-control-9jz_kleq",
+              "free_bytes": 31356923904,
+              "required_free_bytes": 1073741.824,
+              "headroom_bytes": 31355850162.176
+            }
+          ]
+        },
+        "disposition": "retained with reason: reusable bounded slot"
+      },
+      "boundary": "Builtin completed=result in(0,101) releases without ClippyTree; shared-owner process-lifecycle limitation, not consumer source defect.",
+      "outer_kernel_settlement": {
+        "tree_settled": true,
+        "proof": "kernel ECHILD (__WALL)",
+        "cancelled": false,
+        "termination_requested": false,
+        "reaped_descendants": [
+          {
+            "pid": 10315,
+            "exit_code": 0
+          }
+        ],
+        "owned_child_table_available": false,
+        "errors": [],
+        "pending_bound_pids": [],
+        "reason": "all owned descendants reaped"
+      }
+    },
+    "hook-mutant": {
+      "instrument": "in-memory return0 missing-launcher mutation in both hook authorities",
+      "intended_assertion_failures": 4,
+      "instrument_errors": 0,
+      "cases": "missing/new-mixed in generated/maintained",
+      "maintained_source_changed": false
+    }
+  },
+  "clippy_artifacts": {
+    "clippy-cold": {
+      "events": 108,
+      "fresh_events": 23,
+      "package_ids": [
+        "path+file:///workspace/q/crates/perl-ci-hygiene#0.17.0",
+        "path+file:///workspace/q/crates/perl-test-must#0.17.0",
+        "registry+https://github.com/rust-lang/crates.io-index#addr2line@0.25.1",
+        "registry+https://github.com/rust-lang/crates.io-index#adler2@2.0.1",
+        "registry+https://github.com/rust-lang/crates.io-index#aho-corasick@1.1.4",
+        "registry+https://github.com/rust-lang/crates.io-index#anstream@1.0.0",
+        "registry+https://github.com/rust-lang/crates.io-index#anstyle-parse@1.0.0",
+        "registry+https://github.com/rust-lang/crates.io-index#anstyle-query@1.1.5",
+        "registry+https://github.com/rust-lang/crates.io-index#anstyle@1.0.14",
+        "registry+https://github.com/rust-lang/crates.io-index#autocfg@1.5.0",
+        "registry+https://github.com/rust-lang/crates.io-index#backtrace@0.3.76",
+        "registry+https://github.com/rust-lang/crates.io-index#bitflags@2.11.1",
+        "registry+https://github.com/rust-lang/crates.io-index#cfg-if@1.0.4",
+        "registry+https://github.com/rust-lang/crates.io-index#chrono@0.4.45",
+        "registry+https://github.com/rust-lang/crates.io-index#clap@4.6.6",
+        "registry+https://github.com/rust-lang/crates.io-index#clap_builder@4.6.6",
+        "registry+https://github.com/rust-lang/crates.io-index#clap_derive@4.6.4",
+        "registry+https://github.com/rust-lang/crates.io-index#clap_lex@1.1.0",
+        "registry+https://github.com/rust-lang/crates.io-index#color-eyre@0.6.5",
+        "registry+https://github.com/rust-lang/crates.io-index#color-spantrace@0.3.0",
+        "registry+https://github.com/rust-lang/crates.io-index#colorchoice@1.0.5",
+        "registry+https://github.com/rust-lang/crates.io-index#duct@1.1.2",
+        "registry+https://github.com/rust-lang/crates.io-index#errno@0.3.14",
+        "registry+https://github.com/rust-lang/crates.io-index#eyre@0.6.12",
+        "registry+https://github.com/rust-lang/crates.io-index#fastrand@2.4.1",
+        "registry+https://github.com/rust-lang/crates.io-index#getrandom@0.4.3",
+        "registry+https://github.com/rust-lang/crates.io-index#gimli@0.32.3",
+        "registry+https://github.com/rust-lang/crates.io-index#heck@0.5.0",
+        "registry+https://github.com/rust-lang/crates.io-index#iana-time-zone@0.1.65",
+        "registry+https://github.com/rust-lang/crates.io-index#indenter@0.3.4",
+        "registry+https://github.com/rust-lang/crates.io-index#is_terminal_polyfill@1.70.2",
+        "registry+https://github.com/rust-lang/crates.io-index#itoa@1.0.18",
+        "registry+https://github.com/rust-lang/crates.io-index#lazy_static@1.5.0",
+        "registry+https://github.com/rust-lang/crates.io-index#libc@0.2.189",
+        "registry+https://github.com/rust-lang/crates.io-index#linux-raw-sys@0.12.1",
+        "registry+https://github.com/rust-lang/crates.io-index#memchr@2.8.3",
+        "registry+https://github.com/rust-lang/crates.io-index#miniz_oxide@0.8.9",
+        "registry+https://github.com/rust-lang/crates.io-index#num-traits@0.2.19",
+        "registry+https://github.com/rust-lang/crates.io-index#object@0.37.3",
+        "registry+https://github.com/rust-lang/crates.io-index#once_cell@1.21.4",
+        "registry+https://github.com/rust-lang/crates.io-index#os_pipe@1.2.3",
+        "registry+https://github.com/rust-lang/crates.io-index#owo-colors@4.3.0",
+        "registry+https://github.com/rust-lang/crates.io-index#pin-project-lite@0.2.17",
+        "registry+https://github.com/rust-lang/crates.io-index#proc-macro2@1.0.107",
+        "registry+https://github.com/rust-lang/crates.io-index#quote@1.0.45",
+        "registry+https://github.com/rust-lang/crates.io-index#regex-automata@0.4.16",
+        "registry+https://github.com/rust-lang/crates.io-index#regex-syntax@0.8.11",
+        "registry+https://github.com/rust-lang/crates.io-index#regex@1.13.1",
+        "registry+https://github.com/rust-lang/crates.io-index#rustc-demangle@0.1.27",
+        "registry+https://github.com/rust-lang/crates.io-index#rustix@1.1.4",
+        "registry+https://github.com/rust-lang/crates.io-index#same-file@1.0.6",
+        "registry+https://github.com/rust-lang/crates.io-index#serde_core@1.0.229",
+        "registry+https://github.com/rust-lang/crates.io-index#serde_json@1.0.151",
+        "registry+https://github.com/rust-lang/crates.io-index#serde_spanned@1.1.1",
+        "registry+https://github.com/rust-lang/crates.io-index#sharded-slab@0.1.7",
+        "registry+https://github.com/rust-lang/crates.io-index#shared_child@1.1.1",
+        "registry+https://github.com/rust-lang/crates.io-index#shared_thread@0.2.0",
+        "registry+https://github.com/rust-lang/crates.io-index#sigchld@0.2.4",
+        "registry+https://github.com/rust-lang/crates.io-index#signal-hook-registry@1.4.8",
+        "registry+https://github.com/rust-lang/crates.io-index#signal-hook@0.3.18",
+        "registry+https://github.com/rust-lang/crates.io-index#strsim@0.11.1",
+        "registry+https://github.com/rust-lang/crates.io-index#syn@3.0.5",
+        "registry+https://github.com/rust-lang/crates.io-index#tempfile@3.27.0",
+        "registry+https://github.com/rust-lang/crates.io-index#thread_local@1.1.9",
+        "registry+https://github.com/rust-lang/crates.io-index#toml@1.1.5+spec-1.1.0",
+        "registry+https://github.com/rust-lang/crates.io-index#toml_datetime@1.1.1+spec-1.1.0",
+        "registry+https://github.com/rust-lang/crates.io-index#toml_parser@1.1.3+spec-1.1.0",
+        "registry+https://github.com/rust-lang/crates.io-index#toml_writer@1.1.2+spec-1.1.0",
+        "registry+https://github.com/rust-lang/crates.io-index#tracing-core@0.1.36",
+        "registry+https://github.com/rust-lang/crates.io-index#tracing-error@0.2.1",
+        "registry+https://github.com/rust-lang/crates.io-index#tracing-subscriber@0.3.23",
+        "registry+https://github.com/rust-lang/crates.io-index#tracing@0.1.44",
+        "registry+https://github.com/rust-lang/crates.io-index#unicode-ident@1.0.24",
+        "registry+https://github.com/rust-lang/crates.io-index#utf8parse@0.2.2",
+        "registry+https://github.com/rust-lang/crates.io-index#walkdir@2.5.0",
+        "registry+https://github.com/rust-lang/crates.io-index#winnow@1.0.2",
+        "registry+https://github.com/rust-lang/crates.io-index#zmij@1.0.23"
+      ],
+      "consumer_targets": [
+        {
+          "target": {
+            "kind": [
+              "lib"
+            ],
+            "crate_types": [
+              "lib"
+            ],
+            "name": "perl_ci_hygiene",
+            "src_path": "/workspace/q/crates/perl-ci-hygiene/src/lib.rs",
+            "edition": "2024",
+            "doc": true,
+            "doctest": true,
+            "test": true
+          },
+          "profile": {
+            "opt_level": "1",
+            "debuginfo": "line-tables-only",
+            "debug_assertions": true,
+            "overflow_checks": true,
+            "test": false
+          },
+          "features": [],
+          "fresh": false
+        },
+        {
+          "target": {
+            "kind": [
+              "test"
+            ],
+            "crate_types": [
+              "bin"
+            ],
+            "name": "check_print_in_lib_test",
+            "src_path": "/workspace/q/crates/perl-ci-hygiene/tests/check_print_in_lib_test.rs",
+            "edition": "2024",
+            "doc": false,
+            "doctest": false,
+            "test": true
+          },
+          "profile": {
+            "opt_level": "1",
+            "debuginfo": "line-tables-only",
+            "debug_assertions": true,
+            "overflow_checks": true,
+            "test": true
+          },
+          "features": [],
+          "fresh": false
+        },
+        {
+          "target": {
+            "kind": [
+              "test"
+            ],
+            "crate_types": [
+              "bin"
+            ],
+            "name": "test_quality_baseline_infrastructure",
+            "src_path": "/workspace/q/crates/perl-ci-hygiene/tests/test_quality_baseline_infrastructure.rs",
+            "edition": "2024",
+            "doc": false,
+            "doctest": false,
+            "test": true
+          },
+          "profile": {
+            "opt_level": "1",
+            "debuginfo": "line-tables-only",
+            "debug_assertions": true,
+            "overflow_checks": true,
+            "test": true
+          },
+          "features": [],
+          "fresh": false
+        },
+        {
+          "target": {
+            "kind": [
+              "test"
+            ],
+            "crate_types": [
+              "bin"
+            ],
+            "name": "change_set_cli",
+            "src_path": "/workspace/q/crates/perl-ci-hygiene/tests/change_set_cli.rs",
+            "edition": "2024",
+            "doc": false,
+            "doctest": false,
+            "test": true
+          },
+          "profile": {
+            "opt_level": "1",
+            "debuginfo": "line-tables-only",
+            "debug_assertions": true,
+            "overflow_checks": true,
+            "test": true
+          },
+          "features": [],
+          "fresh": false
+        },
+        {
+          "target": {
+            "kind": [
+              "bin"
+            ],
+            "crate_types": [
+              "bin"
+            ],
+            "name": "perl-ci-hygiene",
+            "src_path": "/workspace/q/crates/perl-ci-hygiene/src/main.rs",
+            "edition": "2024",
+            "doc": true,
+            "doctest": false,
+            "test": true
+          },
+          "profile": {
+            "opt_level": "1",
+            "debuginfo": "line-tables-only",
+            "debug_assertions": true,
+            "overflow_checks": true,
+            "test": false
+          },
+          "features": [],
+          "fresh": false
+        },
+        {
+          "target": {
+            "kind": [
+              "test"
+            ],
+            "crate_types": [
+              "bin"
+            ],
+            "name": "source_walk_extensionless_test",
+            "src_path": "/workspace/q/crates/perl-ci-hygiene/tests/source_walk_extensionless_test.rs",
+            "edition": "2024",
+            "doc": false,
+            "doctest": false,
+            "test": true
+          },
+          "profile": {
+            "opt_level": "1",
+            "debuginfo": "line-tables-only",
+            "debug_assertions": true,
+            "overflow_checks": true,
+            "test": true
+          },
+          "features": [],
+          "fresh": false
+        },
+        {
+          "target": {
+            "kind": [
+              "test"
+            ],
+            "crate_types": [
+              "bin"
+            ],
+            "name": "check_regex_static_test",
+            "src_path": "/workspace/q/crates/perl-ci-hygiene/tests/check_regex_static_test.rs",
+            "edition": "2024",
+            "doc": false,
+            "doctest": false,
+            "test": true
+          },
+          "profile": {
+            "opt_level": "1",
+            "debuginfo": "line-tables-only",
+            "debug_assertions": true,
+            "overflow_checks": true,
+            "test": true
+          },
+          "features": [],
+          "fresh": false
+        },
+        {
+          "target": {
+            "kind": [
+              "test"
+            ],
+            "crate_types": [
+              "bin"
+            ],
+            "name": "forbid_fatal_constructs_test",
+            "src_path": "/workspace/q/crates/perl-ci-hygiene/tests/forbid_fatal_constructs_test.rs",
+            "edition": "2024",
+            "doc": false,
+            "doctest": false,
+            "test": true
+          },
+          "profile": {
+            "opt_level": "1",
+            "debuginfo": "line-tables-only",
+            "debug_assertions": true,
+            "overflow_checks": true,
+            "test": true
+          },
+          "features": [],
+          "fresh": false
+        },
+        {
+          "target": {
+            "kind": [
+              "test"
+            ],
+            "crate_types": [
+              "bin"
+            ],
+            "name": "badge_generation_test",
+            "src_path": "/workspace/q/crates/perl-ci-hygiene/tests/badge_generation_test.rs",
+            "edition": "2024",
+            "doc": false,
+            "doctest": false,
+            "test": true
+          },
+          "profile": {
+            "opt_level": "1",
+            "debuginfo": "line-tables-only",
+            "debug_assertions": true,
+            "overflow_checks": true,
+            "test": true
+          },
+          "features": [],
+          "fresh": false
+        },
+        {
+          "target": {
+            "kind": [
+              "test"
+            ],
+            "crate_types": [
+              "bin"
+            ],
+            "name": "package_resolver_cli",
+            "src_path": "/workspace/q/crates/perl-ci-hygiene/tests/package_resolver_cli.rs",
+            "edition": "2024",
+            "doc": false,
+            "doctest": false,
+            "test": true
+          },
+          "profile": {
+            "opt_level": "1",
+            "debuginfo": "line-tables-only",
+            "debug_assertions": true,
+            "overflow_checks": true,
+            "test": true
+          },
+          "features": [],
+          "fresh": false
+        },
+        {
+          "target": {
+            "kind": [
+              "lib"
+            ],
+            "crate_types": [
+              "lib"
+            ],
+            "name": "perl_ci_hygiene",
+            "src_path": "/workspace/q/crates/perl-ci-hygiene/src/lib.rs",
+            "edition": "2024",
+            "doc": true,
+            "doctest": true,
+            "test": true
+          },
+          "profile": {
+            "opt_level": "1",
+            "debuginfo": "line-tables-only",
+            "debug_assertions": true,
+            "overflow_checks": true,
+            "test": true
+          },
+          "features": [],
+          "fresh": false
+        },
+        {
+          "target": {
+            "kind": [
+              "bin"
+            ],
+            "crate_types": [
+              "bin"
+            ],
+            "name": "perl-ci-hygiene",
+            "src_path": "/workspace/q/crates/perl-ci-hygiene/src/main.rs",
+            "edition": "2024",
+            "doc": true,
+            "doctest": false,
+            "test": true
+          },
+          "profile": {
+            "opt_level": "1",
+            "debuginfo": "line-tables-only",
+            "debug_assertions": true,
+            "overflow_checks": true,
+            "test": true
+          },
+          "features": [],
+          "fresh": false
+        }
+      ],
+      "build_finished": [
+        {
+          "reason": "build-finished",
+          "success": true
+        }
+      ]
+    },
+    "clippy-warm": {
+      "events": 108,
+      "fresh_events": 108,
+      "package_ids": [
+        "path+file:///workspace/q/crates/perl-ci-hygiene#0.17.0",
+        "path+file:///workspace/q/crates/perl-test-must#0.17.0",
+        "registry+https://github.com/rust-lang/crates.io-index#addr2line@0.25.1",
+        "registry+https://github.com/rust-lang/crates.io-index#adler2@2.0.1",
+        "registry+https://github.com/rust-lang/crates.io-index#aho-corasick@1.1.4",
+        "registry+https://github.com/rust-lang/crates.io-index#anstream@1.0.0",
+        "registry+https://github.com/rust-lang/crates.io-index#anstyle-parse@1.0.0",
+        "registry+https://github.com/rust-lang/crates.io-index#anstyle-query@1.1.5",
+        "registry+https://github.com/rust-lang/crates.io-index#anstyle@1.0.14",
+        "registry+https://github.com/rust-lang/crates.io-index#autocfg@1.5.0",
+        "registry+https://github.com/rust-lang/crates.io-index#backtrace@0.3.76",
+        "registry+https://github.com/rust-lang/crates.io-index#bitflags@2.11.1",
+        "registry+https://github.com/rust-lang/crates.io-index#cfg-if@1.0.4",
+        "registry+https://github.com/rust-lang/crates.io-index#chrono@0.4.45",
+        "registry+https://github.com/rust-lang/crates.io-index#clap@4.6.6",
+        "registry+https://github.com/rust-lang/crates.io-index#clap_builder@4.6.6",
+        "registry+https://github.com/rust-lang/crates.io-index#clap_derive@4.6.4",
+        "registry+https://github.com/rust-lang/crates.io-index#clap_lex@1.1.0",
+        "registry+https://github.com/rust-lang/crates.io-index#color-eyre@0.6.5",
+        "registry+https://github.com/rust-lang/crates.io-index#color-spantrace@0.3.0",
+        "registry+https://github.com/rust-lang/crates.io-index#colorchoice@1.0.5",
+        "registry+https://github.com/rust-lang/crates.io-index#duct@1.1.2",
+        "registry+https://github.com/rust-lang/crates.io-index#errno@0.3.14",
+        "registry+https://github.com/rust-lang/crates.io-index#eyre@0.6.12",
+        "registry+https://github.com/rust-lang/crates.io-index#fastrand@2.4.1",
+        "registry+https://github.com/rust-lang/crates.io-index#getrandom@0.4.3",
+        "registry+https://github.com/rust-lang/crates.io-index#gimli@0.32.3",
+        "registry+https://github.com/rust-lang/crates.io-index#heck@0.5.0",
+        "registry+https://github.com/rust-lang/crates.io-index#iana-time-zone@0.1.65",
+        "registry+https://github.com/rust-lang/crates.io-index#indenter@0.3.4",
+        "registry+https://github.com/rust-lang/crates.io-index#is_terminal_polyfill@1.70.2",
+        "registry+https://github.com/rust-lang/crates.io-index#itoa@1.0.18",
+        "registry+https://github.com/rust-lang/crates.io-index#lazy_static@1.5.0",
+        "registry+https://github.com/rust-lang/crates.io-index#libc@0.2.189",
+        "registry+https://github.com/rust-lang/crates.io-index#linux-raw-sys@0.12.1",
+        "registry+https://github.com/rust-lang/crates.io-index#memchr@2.8.3",
+        "registry+https://github.com/rust-lang/crates.io-index#miniz_oxide@0.8.9",
+        "registry+https://github.com/rust-lang/crates.io-index#num-traits@0.2.19",
+        "registry+https://github.com/rust-lang/crates.io-index#object@0.37.3",
+        "registry+https://github.com/rust-lang/crates.io-index#once_cell@1.21.4",
+        "registry+https://github.com/rust-lang/crates.io-index#os_pipe@1.2.3",
+        "registry+https://github.com/rust-lang/crates.io-index#owo-colors@4.3.0",
+        "registry+https://github.com/rust-lang/crates.io-index#pin-project-lite@0.2.17",
+        "registry+https://github.com/rust-lang/crates.io-index#proc-macro2@1.0.107",
+        "registry+https://github.com/rust-lang/crates.io-index#quote@1.0.45",
+        "registry+https://github.com/rust-lang/crates.io-index#regex-automata@0.4.16",
+        "registry+https://github.com/rust-lang/crates.io-index#regex-syntax@0.8.11",
+        "registry+https://github.com/rust-lang/crates.io-index#regex@1.13.1",
+        "registry+https://github.com/rust-lang/crates.io-index#rustc-demangle@0.1.27",
+        "registry+https://github.com/rust-lang/crates.io-index#rustix@1.1.4",
+        "registry+https://github.com/rust-lang/crates.io-index#same-file@1.0.6",
+        "registry+https://github.com/rust-lang/crates.io-index#serde_core@1.0.229",
+        "registry+https://github.com/rust-lang/crates.io-index#serde_json@1.0.151",
+        "registry+https://github.com/rust-lang/crates.io-index#serde_spanned@1.1.1",
+        "registry+https://github.com/rust-lang/crates.io-index#sharded-slab@0.1.7",
+        "registry+https://github.com/rust-lang/crates.io-index#shared_child@1.1.1",
+        "registry+https://github.com/rust-lang/crates.io-index#shared_thread@0.2.0",
+        "registry+https://github.com/rust-lang/crates.io-index#sigchld@0.2.4",
+        "registry+https://github.com/rust-lang/crates.io-index#signal-hook-registry@1.4.8",
+        "registry+https://github.com/rust-lang/crates.io-index#signal-hook@0.3.18",
+        "registry+https://github.com/rust-lang/crates.io-index#strsim@0.11.1",
+        "registry+https://github.com/rust-lang/crates.io-index#syn@3.0.5",
+        "registry+https://github.com/rust-lang/crates.io-index#tempfile@3.27.0",
+        "registry+https://github.com/rust-lang/crates.io-index#thread_local@1.1.9",
+        "registry+https://github.com/rust-lang/crates.io-index#toml@1.1.5+spec-1.1.0",
+        "registry+https://github.com/rust-lang/crates.io-index#toml_datetime@1.1.1+spec-1.1.0",
+        "registry+https://github.com/rust-lang/crates.io-index#toml_parser@1.1.3+spec-1.1.0",
+        "registry+https://github.com/rust-lang/crates.io-index#toml_writer@1.1.2+spec-1.1.0",
+        "registry+https://github.com/rust-lang/crates.io-index#tracing-core@0.1.36",
+        "registry+https://github.com/rust-lang/crates.io-index#tracing-error@0.2.1",
+        "registry+https://github.com/rust-lang/crates.io-index#tracing-subscriber@0.3.23",
+        "registry+https://github.com/rust-lang/crates.io-index#tracing@0.1.44",
+        "registry+https://github.com/rust-lang/crates.io-index#unicode-ident@1.0.24",
+        "registry+https://github.com/rust-lang/crates.io-index#utf8parse@0.2.2",
+        "registry+https://github.com/rust-lang/crates.io-index#walkdir@2.5.0",
+        "registry+https://github.com/rust-lang/crates.io-index#winnow@1.0.2",
+        "registry+https://github.com/rust-lang/crates.io-index#zmij@1.0.23"
+      ],
+      "consumer_targets": [
+        {
+          "target": {
+            "kind": [
+              "lib"
+            ],
+            "crate_types": [
+              "lib"
+            ],
+            "name": "perl_ci_hygiene",
+            "src_path": "/workspace/q/crates/perl-ci-hygiene/src/lib.rs",
+            "edition": "2024",
+            "doc": true,
+            "doctest": true,
+            "test": true
+          },
+          "profile": {
+            "opt_level": "1",
+            "debuginfo": "line-tables-only",
+            "debug_assertions": true,
+            "overflow_checks": true,
+            "test": false
+          },
+          "features": [],
+          "fresh": true
+        },
+        {
+          "target": {
+            "kind": [
+              "test"
+            ],
+            "crate_types": [
+              "bin"
+            ],
+            "name": "check_print_in_lib_test",
+            "src_path": "/workspace/q/crates/perl-ci-hygiene/tests/check_print_in_lib_test.rs",
+            "edition": "2024",
+            "doc": false,
+            "doctest": false,
+            "test": true
+          },
+          "profile": {
+            "opt_level": "1",
+            "debuginfo": "line-tables-only",
+            "debug_assertions": true,
+            "overflow_checks": true,
+            "test": true
+          },
+          "features": [],
+          "fresh": true
+        },
+        {
+          "target": {
+            "kind": [
+              "bin"
+            ],
+            "crate_types": [
+              "bin"
+            ],
+            "name": "perl-ci-hygiene",
+            "src_path": "/workspace/q/crates/perl-ci-hygiene/src/main.rs",
+            "edition": "2024",
+            "doc": true,
+            "doctest": false,
+            "test": true
+          },
+          "profile": {
+            "opt_level": "1",
+            "debuginfo": "line-tables-only",
+            "debug_assertions": true,
+            "overflow_checks": true,
+            "test": true
+          },
+          "features": [],
+          "fresh": true
+        },
+        {
+          "target": {
+            "kind": [
+              "test"
+            ],
+            "crate_types": [
+              "bin"
+            ],
+            "name": "source_walk_extensionless_test",
+            "src_path": "/workspace/q/crates/perl-ci-hygiene/tests/source_walk_extensionless_test.rs",
+            "edition": "2024",
+            "doc": false,
+            "doctest": false,
+            "test": true
+          },
+          "profile": {
+            "opt_level": "1",
+            "debuginfo": "line-tables-only",
+            "debug_assertions": true,
+            "overflow_checks": true,
+            "test": true
+          },
+          "features": [],
+          "fresh": true
+        },
+        {
+          "target": {
+            "kind": [
+              "test"
+            ],
+            "crate_types": [
+              "bin"
+            ],
+            "name": "package_resolver_cli",
+            "src_path": "/workspace/q/crates/perl-ci-hygiene/tests/package_resolver_cli.rs",
+            "edition": "2024",
+            "doc": false,
+            "doctest": false,
+            "test": true
+          },
+          "profile": {
+            "opt_level": "1",
+            "debuginfo": "line-tables-only",
+            "debug_assertions": true,
+            "overflow_checks": true,
+            "test": true
+          },
+          "features": [],
+          "fresh": true
+        },
+        {
+          "target": {
+            "kind": [
+              "test"
+            ],
+            "crate_types": [
+              "bin"
+            ],
+            "name": "forbid_fatal_constructs_test",
+            "src_path": "/workspace/q/crates/perl-ci-hygiene/tests/forbid_fatal_constructs_test.rs",
+            "edition": "2024",
+            "doc": false,
+            "doctest": false,
+            "test": true
+          },
+          "profile": {
+            "opt_level": "1",
+            "debuginfo": "line-tables-only",
+            "debug_assertions": true,
+            "overflow_checks": true,
+            "test": true
+          },
+          "features": [],
+          "fresh": true
+        },
+        {
+          "target": {
+            "kind": [
+              "test"
+            ],
+            "crate_types": [
+              "bin"
+            ],
+            "name": "change_set_cli",
+            "src_path": "/workspace/q/crates/perl-ci-hygiene/tests/change_set_cli.rs",
+            "edition": "2024",
+            "doc": false,
+            "doctest": false,
+            "test": true
+          },
+          "profile": {
+            "opt_level": "1",
+            "debuginfo": "line-tables-only",
+            "debug_assertions": true,
+            "overflow_checks": true,
+            "test": true
+          },
+          "features": [],
+          "fresh": true
+        },
+        {
+          "target": {
+            "kind": [
+              "test"
+            ],
+            "crate_types": [
+              "bin"
+            ],
+            "name": "test_quality_baseline_infrastructure",
+            "src_path": "/workspace/q/crates/perl-ci-hygiene/tests/test_quality_baseline_infrastructure.rs",
+            "edition": "2024",
+            "doc": false,
+            "doctest": false,
+            "test": true
+          },
+          "profile": {
+            "opt_level": "1",
+            "debuginfo": "line-tables-only",
+            "debug_assertions": true,
+            "overflow_checks": true,
+            "test": true
+          },
+          "features": [],
+          "fresh": true
+        },
+        {
+          "target": {
+            "kind": [
+              "test"
+            ],
+            "crate_types": [
+              "bin"
+            ],
+            "name": "check_regex_static_test",
+            "src_path": "/workspace/q/crates/perl-ci-hygiene/tests/check_regex_static_test.rs",
+            "edition": "2024",
+            "doc": false,
+            "doctest": false,
+            "test": true
+          },
+          "profile": {
+            "opt_level": "1",
+            "debuginfo": "line-tables-only",
+            "debug_assertions": true,
+            "overflow_checks": true,
+            "test": true
+          },
+          "features": [],
+          "fresh": true
+        },
+        {
+          "target": {
+            "kind": [
+              "lib"
+            ],
+            "crate_types": [
+              "lib"
+            ],
+            "name": "perl_ci_hygiene",
+            "src_path": "/workspace/q/crates/perl-ci-hygiene/src/lib.rs",
+            "edition": "2024",
+            "doc": true,
+            "doctest": true,
+            "test": true
+          },
+          "profile": {
+            "opt_level": "1",
+            "debuginfo": "line-tables-only",
+            "debug_assertions": true,
+            "overflow_checks": true,
+            "test": true
+          },
+          "features": [],
+          "fresh": true
+        },
+        {
+          "target": {
+            "kind": [
+              "test"
+            ],
+            "crate_types": [
+              "bin"
+            ],
+            "name": "badge_generation_test",
+            "src_path": "/workspace/q/crates/perl-ci-hygiene/tests/badge_generation_test.rs",
+            "edition": "2024",
+            "doc": false,
+            "doctest": false,
+            "test": true
+          },
+          "profile": {
+            "opt_level": "1",
+            "debuginfo": "line-tables-only",
+            "debug_assertions": true,
+            "overflow_checks": true,
+            "test": true
+          },
+          "features": [],
+          "fresh": true
+        },
+        {
+          "target": {
+            "kind": [
+              "bin"
+            ],
+            "crate_types": [
+              "bin"
+            ],
+            "name": "perl-ci-hygiene",
+            "src_path": "/workspace/q/crates/perl-ci-hygiene/src/main.rs",
+            "edition": "2024",
+            "doc": true,
+            "doctest": false,
+            "test": true
+          },
+          "profile": {
+            "opt_level": "1",
+            "debuginfo": "line-tables-only",
+            "debug_assertions": true,
+            "overflow_checks": true,
+            "test": false
+          },
+          "features": [],
+          "fresh": true
+        }
+      ],
+      "build_finished": [
+        {
+          "reason": "build-finished",
+          "success": true
+        }
+      ]
+    }
+  },
+  "artifact_parity": {
+    "events_each": 108,
+    "distinct_identities_each": 102,
+    "identical_identity_sets": true,
+    "consumer_target_profile_identities_each": 12,
+    "consumer_first_fresh": false,
+    "consumer_warm_fresh": true,
+    "limitation": "First Clippy after focused tests is not an empty-cache package build; 23 dependency/build rows already fresh. No comparison to earlier70-package graph or full-CI speedup."
+  },
+  "resolved_normal_build_graph": [
+    "perl-ci-hygiene v0.17.0 (/workspace/q/crates/perl-ci-hygiene)",
+    "chrono v0.4.45",
+    "iana-time-zone v0.1.65",
+    "num-traits v0.2.19",
+    "autocfg v1.5.0",
+    "clap v4.6.6",
+    "clap_builder v4.6.6",
+    "anstream v1.0.0",
+    "anstyle v1.0.14",
+    "anstyle-parse v1.0.0",
+    "utf8parse v0.2.2",
+    "anstyle-query v1.1.5",
+    "colorchoice v1.0.5",
+    "is_terminal_polyfill v1.70.2",
+    "utf8parse v0.2.2",
+    "anstyle v1.0.14",
+    "clap_lex v1.1.0",
+    "strsim v0.11.1",
+    "clap_derive v4.6.4 (proc-macro)",
+    "heck v0.5.0",
+    "proc-macro2 v1.0.107",
+    "unicode-ident v1.0.24",
+    "quote v1.0.45",
+    "proc-macro2 v1.0.107 (*)",
+    "syn v3.0.5",
+    "proc-macro2 v1.0.107 (*)",
+    "quote v1.0.45 (*)",
+    "unicode-ident v1.0.24",
+    "color-eyre v0.6.5",
+    "backtrace v0.3.76",
+    "addr2line v0.25.1",
+    "gimli v0.32.3",
+    "cfg-if v1.0.4",
+    "libc v0.2.189",
+    "miniz_oxide v0.8.9",
+    "adler2 v2.0.1",
+    "object v0.37.3",
+    "memchr v2.8.3",
+    "rustc-demangle v0.1.27",
+    "color-spantrace v0.3.0",
+    "once_cell v1.21.4",
+    "owo-colors v4.3.0",
+    "tracing-core v0.1.36",
+    "once_cell v1.21.4",
+    "tracing-error v0.2.1",
+    "tracing v0.1.44",
+    "pin-project-lite v0.2.17",
+    "tracing-core v0.1.36 (*)",
+    "tracing-subscriber v0.3.23",
+    "sharded-slab v0.1.7",
+    "lazy_static v1.5.0",
+    "thread_local v1.1.9",
+    "cfg-if v1.0.4",
+    "tracing-core v0.1.36 (*)",
+    "eyre v0.6.12",
+    "indenter v0.3.4",
+    "once_cell v1.21.4",
+    "indenter v0.3.4",
+    "once_cell v1.21.4",
+    "owo-colors v4.3.0",
+    "tracing-error v0.2.1 (*)",
+    "duct v1.1.2",
+    "libc v0.2.189",
+    "os_pipe v1.2.3",
+    "libc v0.2.189",
+    "shared_child v1.1.1",
+    "libc v0.2.189",
+    "sigchld v0.2.4",
+    "libc v0.2.189",
+    "os_pipe v1.2.3 (*)",
+    "signal-hook v0.3.18",
+    "libc v0.2.189",
+    "signal-hook-registry v1.4.8",
+    "errno v0.3.14",
+    "libc v0.2.189",
+    "libc v0.2.189",
+    "shared_thread v0.2.0",
+    "proc-macro2 v1.0.107",
+    "unicode-ident v1.0.24",
+    "regex v1.13.1",
+    "aho-corasick v1.1.4",
+    "memchr v2.8.3",
+    "memchr v2.8.3",
+    "regex-automata v0.4.16",
+    "aho-corasick v1.1.4 (*)",
+    "memchr v2.8.3",
+    "regex-syntax v0.8.11",
+    "regex-syntax v0.8.11",
+    "serde_json v1.0.151",
+    "itoa v1.0.18",
+    "memchr v2.8.3",
+    "serde_core v1.0.229",
+    "zmij v1.0.23",
+    "syn v3.0.5",
+    "proc-macro2 v1.0.107 (*)",
+    "quote v1.0.45",
+    "proc-macro2 v1.0.107 (*)",
+    "unicode-ident v1.0.24",
+    "toml v1.1.5+spec-1.1.0",
+    "serde_core v1.0.229",
+    "serde_spanned v1.1.1",
+    "serde_core v1.0.229",
+    "toml_datetime v1.1.1+spec-1.1.0",
+    "serde_core v1.0.229",
+    "toml_parser v1.1.3+spec-1.1.0",
+    "winnow v1.0.2",
+    "toml_writer v1.1.2+spec-1.1.0",
+    "winnow v1.0.2",
+    "walkdir v2.5.0",
+    "same-file v1.0.6"
+  ],
+  "proof_counts": {
+    "library": 155,
+    "binary": 432,
+    "change_set_cli": 8,
+    "package_resolver_cli": 1,
+    "nested_binary_child_result_already_included": true,
+    "hook_shell_scenarios": 30,
+    "wrapper_controls": 11,
+    "provisioning_controls": 13,
+    "isolation_controls": 8,
+    "admission_suite": {
+      "total": 91,
+      "passed": 90,
+      "skipped": 1
+    },
+    "installed_driver_suite": 10,
+    "independent_byte_failure_checks": 5,
+    "hook_return0_mutant_assertion_failures": 4,
+    "format_and_diff_check": "PASS"
+  },
+  "review": {
+    "source": "CANDIDATE_READY, no findings for exact combined source; shared owner/reachability/duplication/staged assertion/output lenses",
+    "fresh_proof": "PROOF_EXECUTION_OBSERVED_AND_ADEQUATE: independent matching lease/group postconditions, cold/warm selected work, controlled bytes and final outer test tree closure",
+    "builtin_boundary": "Shared builtin route releases on product0/101 without descendant closure; distinct from harness-only missing receipt. Exact source840/858 and documented CARGO_STORAGE128; bounded fake-Cargo discriminator retained. Existing process owner#11659/composition#11660/#3230 for parent assignment; no executor rewrite."
+  },
+  "ownership": {
+    "fresh_worktree": "/workspace/q",
+    "private_build_root": "/workspace/qd",
+    "private_temp_root": "/workspace/qt",
+    "evidence_root": "/workspace/q-evidence",
+    "leases": "all new owned production Clippy leases released with kernel closure and matching original identities/markers; builtin control helper proved settled by outer tree",
+    "outputs": "retained; root ownership; no active independent consumers",
+    "worktree_cleanup": "remove only own completed worktree after remote exact-SHA verification, clean status and completed consumers/review readers",
+    "shared_cargo_rustup_caches": "retained; not cleanup targets",
+    "old_attempt": "retained and unproven elsewhere; untouched, no inspection/settlement/resource claim"
+  },
+  "unrun_scope": [
+    "native Windows",
+    "actual legacy xtask execution/parity",
+    "full workspace compile",
+    "hosted CI",
+    "canonical generalized executor qualification",
+    "old retained attempt settlement"
+  ],
+  "quiet_branch": {
+    "name": "recovery/perl-linux-qualification-17480-17484",
+    "push_workflows_inspected": 39,
+    "all_push_branches_restricted_main_master": true,
+    "pull_request_created": false
+  },
+  "local_evidence_sha256": {
+    "provisioning.log": "0484634e8334b8e19b3cdd0c01590f121bbcad0c7da47fa9a17f246506463ed9",
+    "issue-17480.txt": "d9cf4c3905c090f8359be5a28a08abf332e5d21763b30c9e7ce47ff8641199f9",
+    "route-tests.log": "deed470c274ffba2c688aeadb1384cfef3f714b3843185c8f4368b58462cbf90",
+    "tests-admitted-preflight.stderr": "3299ba821d4f68ba502cc3de170692db56e81db4ba4ec3f12068209aee0cf6a5",
+    "clippy-cold-admitted-preflight.stderr": "b6a71a0974390820a82be5c1250370459e276b9800ee4601fcca4f8f1d417002",
+    "tests_owned.py": "67d835af5c11c8e916e289bbffe46b1b3cc950ccfb62e996a104bed7a6f4bd01",
+    "wrappers.log": "396eff19c57469043b1e0eb72d1a7b521bad048c541c74707549c1f4dd46cf45",
+    "clippy-cold.stdout": "b43a75b765b91df0427d4688cf82e8f83abbb2d45cf7a145db592028f3e798f2",
+    "clippy-warm-admitted-preflight.stderr": "d7562f6a5979148912be61641847d0b44b0fe61c7cd279a5ab96c89d473877b6",
+    "clippy-cold.stderr": "b271eecb9862a27dea508d125be7bff6a7f63855218f23082c263fa4e109b956",
+    "qualify.py": "5a2e7b34e0f8ab52f3cefe87a8c054183d69129e69eedcefebf5e0169cb87fb9",
+    "tests-owned.stdout": "3eb2c77d12e2b6228ef84c544e8d9edb8fafcad4ad87fe3a64d5edcc1be1ea07",
+    "dependency-graph.txt": "8f2fd316260b338dbf36666307d25e91395d856a3ba95c9df32d4aea1967c673",
+    "tests.stdout": "a6d3ba2221fc2a32981a32d109f0294df66469a0aea135b6b7a99768f67e3c05",
+    "tests.stderr": "fb1dee9b69c0048d25788061417c325bd2f50f4542416791c6772f7d4f951f91",
+    "clippy-warm-default-preflight.stderr": "2ffb38e5945e80e14139edf876f5e1b432b6643e9c629f787e3e5bb2ea0c314a",
+    "tests-owned-default-preflight.stderr": "a69e5731af57b85541cf2dda0e285071b3c413953ee307dda360ba37d7d0d74d",
+    "tests-default-preflight.stderr": "df1696fcf6e8bdc3671b3529361a23203dfcdab6d46c75c365921170759fe9b9",
+    "tests-owned.stderr": "535a1a58d76f7c6c640a5a3cbcdfd4fa9d8d1a04eda1eac6f1538bb744eb69e7",
+    "issue-3230.txt": "547348c090b15be7900834f6a3c460fc68d5f2152bb19be4311c472e59fc6d46",
+    "clippy-cold-default-preflight.stderr": "b9a3a0432db52224e65fe7dfa2676a333e296c5f36028ace081ea9582ad516b7",
+    "hooks.log": "6c3c238de581a9db35e9b65da5f6cc5389fc541a5ba6bb17a5fe6c25cc0bab1c",
+    "driver-tests.log": "6445c5d29c244ea3a47dbd4980262c8e754b9fe2f3cdf07018f9f0346796aa1e",
+    "builtin_boundary.py": "ba5ad7a22ad71b9df30d5d15758852f2b94be0b11c3d95aaaaba81458669864b",
+    "clippy-warm.stderr": "588a3a6f7d0f7ccd02464967eebde97c29b3f7991337cb0615f5e719c01a6ec3",
+    "clippy-warm.stdout": "0d96f4b1eef8d624bad5961fab2c635e6bf349e9df03d8a0b64f319bea03d88d",
+    "isolation.log": "ff6d04ba35267ee81fc7b03fb9215ae9414d616b3f4868a183598d4432024c27",
+    "issue-17484.txt": "0bbf6e6e00088e185abc1e11c1bf5a82386f8a40dac22d7aa6ccf085734694f6",
+    "hook-mutant.log": "1bd52b5cd7f883d1b084f294ffef10fe8182505b062f0879bab00697fd9ddda0",
+    "issue-17481.txt": "652ba2726d9a7ea76a5bf9f1a3b3894cd14d073a597d7c06539482fc6a67de4a",
+    "bytes.py": "21c5ccd1045e0f5bb9152312466822f6a115f250e4988e1569a967627b7a1d1e",
+    "tests-owned-admitted-preflight.stderr": "b4abfdab5506eb72dd31d0d9457523ecbb9c4d10c1a946417b5f70b4616bceeb"
+  }
+}
