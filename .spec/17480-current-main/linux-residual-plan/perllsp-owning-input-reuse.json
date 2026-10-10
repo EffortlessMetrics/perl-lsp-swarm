@@ -1,0 +1,12 @@
+{
+  "base": "1f973039d812fe080abddc44e461112d7b95a6fa",
+  "head": "7432f164ca08f5802b9f246ded384a6f1066411d",
+  "lock_entries_changed": [
+    "perl-ci-hygiene"
+  ],
+  "root_manifest_unchanged": true,
+  "product_source_paths_changed": [],
+  "perllsp_graph_contains_hygiene": false,
+  "registry_package_subjects_unchanged": true,
+  "limit": "Does not establish cached feature/artifact/profile identity or availability of a linked perllsp binary."
+}

@@ -1,0 +1,1 @@
+cargo-admitted: DENY: Clippy requires -p PACKAGE --all-targets --profile agent --locked -- -D warnings

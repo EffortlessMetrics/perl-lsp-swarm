@@ -1,0 +1,52 @@
+[
+  {
+    "path": "xtask/src/lib.rs",
+    "sha256": "a0c75ebfbbffbf9e881601252dedb66fa4dc68a1ec72f79e011d225fcba4d9c7",
+    "identical_to_landed_main": true
+  },
+  {
+    "path": "xtask/src/utils.rs",
+    "sha256": "a4e5d6671fac448d885c5746fc10ae8cf8a33b86f923a4e0a1aa2869dfa7e6cd",
+    "identical_to_landed_main": true
+  },
+  {
+    "path": "xtask/src/tasks/check_lint_policy/tests/lock_partition.rs",
+    "sha256": "e0e93f2c76557532bf5749486d5ca7ca06ee1d9066a7bb3def7b85a8814adaae",
+    "identical_to_landed_main": true
+  },
+  {
+    "path": "xtask/src/tasks/check_lint_policy/tests/config/disallowed_fields.rs",
+    "sha256": "862ab180bf8de18a6a5093c6aa9e81b0fb4fba95a5d2da989228c300089f71b7",
+    "identical_to_landed_main": true
+  },
+  {
+    "path": "xtask/tests/lsp_jsonrpc_dependency_probe.rs",
+    "sha256": "a7673d7dc600254c942ddc39a09d7cb6d52280467707de8a60983bbd465cfd6a",
+    "identical_to_landed_main": true
+  },
+  {
+    "path": "xtask/tests/count_ratchet_output_snapshots.rs",
+    "sha256": "ba9cb18561237812333bb3ce1b73ada9db3fedafebf01980e56516c27d5aeb54",
+    "identical_to_landed_main": true
+  },
+  {
+    "path": "xtask/tests/claude_code_host_smoke.rs",
+    "sha256": "eb2bdb10b022f78e9fd2afbcf3239cfc762f0e7286d3bde2d49dd1a74484504d",
+    "identical_to_landed_main": true
+  },
+  {
+    "path": "crates/perl-lsp-rs-core/src/protocol/jsonrpc.rs",
+    "sha256": "40f262fb7497b7d95ac4426bf7e385e68cd4966d8b0394ba25fcd837bbebcc5b",
+    "identical_to_landed_main": true
+  },
+  {
+    "path": "clippy.toml",
+    "sha256": "3732aff14b6eeee0ba4756bdaf50197fe0d161bb7e89545332e1d3a7ff34208d",
+    "identical_to_landed_main": true
+  },
+  {
+    "path": "rust-toolchain.toml",
+    "sha256": "b1700c7278dac6172b28141c317a54a4dc2309c163644c0f3f48567541f00eaa",
+    "identical_to_landed_main": true
+  }
+]
