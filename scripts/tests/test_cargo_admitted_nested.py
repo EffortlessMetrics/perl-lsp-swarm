@@ -381,7 +381,7 @@ class NestedTests(unittest.TestCase):
         self.assertEqual(a.file_subject(self.snapshot),json.loads(json.dumps(a.file_subject(self.snapshot))))
 
     def test_proxy_add_change_delete_and_git_network_selectors(self):
-        for key in ['HTTP_PROXY','HTTPS_PROXY','http_proxy','https_proxy','ALL_PROXY','NO_PROXY','SSL_CERT_FILE']:
+        for key in ['HTTP_PROXY','HTTPS_PROXY','http_proxy','https_proxy','ALL_PROXY','NO_PROXY','SSL_CERT_FILE','SSL_CERT_DIR']:
             with self.subTest(key=key),self.assertRaises(a.Denied):
                 a.nested_command('parser-tree',{**self.env,key:'private-proxy'})
             self.plan['network_environment'][key]='private-proxy';self.env[key]='private-proxy';self.save()

@@ -34,6 +34,10 @@ export CARGO_HOME=/workspace/.cloud-tools/cargo
 export RUSTUP_HOME=/workspace/.cloud-tools/rustup
 export RUSTUP_AUTO_INSTALL=0
 export CARGO_BUILD_JOBS=1
+# On the observed native cloud host Cargo fills this system trust directory.
+# Declare it before admission so later insertion cannot change frozen inputs.
+# Verify the native host's actual trust directory before using this path elsewhere.
+export SSL_CERT_DIR=/usr/lib/ssl/certs
 export TMPDIR="$PWD/target/receipts"
 export TEMP="$TMPDIR" TMP="$TMPDIR"
 unset CARGO_STORAGE_POLICY MIN_FREE_GB MAX_USED_PCT
