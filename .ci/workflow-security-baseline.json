@@ -1,7 +1,7 @@
 {
   "control_files": {
-    ".github/workflows/workflow-security-ratchet.yml": "sha256:88983edbfd6249e56067e5d27c386d2f9f87b4adcb7b63d89ee8f54450ba919c",
-    "scripts/ci/test_workflow_security_ratchet.py": "sha256:30109505187ddcc1028183a60f6c6aa0f28773dad8730dfd2b7873d973a90073",
+    ".github/workflows/workflow-security-ratchet.yml": "sha256:71d5ef40e6af4bb22eb44100556095010832334f16dd5705947aab9d4c141070",
+    "scripts/ci/test_workflow_security_ratchet.py": "sha256:b3a2ffdc81ef36f39c7a1ff9e994d90e7e5ba34421ac003c0bb2284f766d7545",
     "scripts/ci/workflow_security_ratchet.py": "sha256:ff09c307818293ffdfcfc49d6bdfcc03471e1ee89e202b8e4dd9f9e1002da1dd"
   },
   "findings": [
