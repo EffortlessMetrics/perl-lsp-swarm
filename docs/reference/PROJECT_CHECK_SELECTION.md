@@ -115,7 +115,8 @@ executor transport proof remain separate.
 
 ## Repeatable proof
 
-Use Python 3 with the repository's existing `jsonschema` development dependency.
+Use Python 3.10 or newer with the repository's existing `jsonschema` development
+dependency.
 Build only `perllsp --bin perllsp --profile agent --locked` through the pinned
 1.95.0 admitted route after exact-request host admission. Hold the root build
 lane through capturing an immutable executable; never consume sibling output.
