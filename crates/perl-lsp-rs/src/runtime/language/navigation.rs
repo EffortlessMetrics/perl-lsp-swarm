@@ -1540,9 +1540,18 @@ fn same_file_definition_matches_qualification(
         && let crate::ast::NodeKind::AmperCall { name, .. } = &node.kind
         && !name.is_empty()
         && !name.starts_with(['$', '@', '%'])
-        && (!is_callable || (definition.name != *name && definition.qualified_name != *name))
     {
-        return false;
+        let matches_name = definition.name == *name
+            || definition.qualified_name == *name
+            // Leading `::` addresses Perl's root namespace: `::handler`
+            // denotes `main::handler`, and `::App::handler` denotes App's sub.
+            || name.strip_prefix("::").is_some_and(|absolute_name| {
+                definition.qualified_name.strip_prefix("main::").unwrap_or(&definition.qualified_name)
+                    == absolute_name
+            });
+        if !is_callable || !matches_name {
+            return false;
+        }
     }
     let Ok(regex) = get_fqn_regex() else {
         return true;

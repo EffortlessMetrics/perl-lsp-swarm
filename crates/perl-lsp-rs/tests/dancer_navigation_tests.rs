@@ -160,6 +160,35 @@ mod dancer_navigation_tests {
     }
 
     #[test]
+    fn named_coderef_main_shorthand_preserves_definition_navigation() -> TestResult {
+        let code =
+            "sub handler { 1 }\nmy $r = \\&::handler;\n&::handler();\nmy $miss = \\&::missing;\n";
+        let uri = "file:///dancer_main_shorthand_coderef.pl";
+        let server = TestServerBuilder::new().build();
+        server.open_document(uri, code);
+        document_barrier(&server, uri)?;
+        for (line, character) in [(1, 14), (2, 4)] {
+            let response = server.get_definition(uri, line, character);
+            let locations = definition_locations(&response, uri, line, character)?;
+            assert_eq!(locations.len(), 1, "main shorthand: {response}");
+            assert_eq!(locations[0].uri.as_str(), uri, "main shorthand: {response}");
+            assert_eq!(
+                locations[0].range,
+                lsp_types::Range::new(
+                    lsp_types::Position::new(0, 0),
+                    lsp_types::Position::new(0, 17),
+                ),
+                "main shorthand must retain its real subroutine declaration: {response}"
+            );
+        }
+        let response = server.get_definition(uri, 3, 17);
+        let locations = definition_locations(&response, uri, 3, 17)?;
+        assert!(locations.is_empty(), "missing main shorthand: {response}");
+        server.shutdown();
+        Ok(())
+    }
+
+    #[test]
     fn dancer_handler_misses_do_not_resolve_containers_or_other_scopes() -> TestResult {
         let server = TestServerBuilder::new().build();
         let uri = "file:///dancer_missing_handler_controls.pl";
