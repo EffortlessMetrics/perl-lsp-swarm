@@ -14,7 +14,7 @@
 mod support;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
-use support::lsp_harness::LspHarness;
+use support::lsp_harness::{LspHarness, TempWorkspace};
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
@@ -1430,19 +1430,20 @@ fn assert_comment_region_code_control(
 
 #[test]
 fn test_comment_regions_refuse_same_name_traps() -> TestResult {
+    let workspace = TempWorkspace::new()?;
     let mut harness = LspHarness::new();
-    harness.initialize(None)?;
-    let uri = "file:///CommentRegions.pl";
-    harness.open(uri, "my $note = 1;\nsub wave { return $note; }\nwave(); # wave $note isn't \"code\"\n# 😀 wave $note\n=pod\nwave $note\n=cut\nwave();\n__DATA__\nwave $note\n")?;
+    harness.initialize_with_root(&workspace.root_uri, None)?;
+    let uri = workspace.uri("CommentRegions.pl");
+    harness.open(&uri, "my $note = 1;\nsub wave { return $note; }\nwave(); # wave $note isn't \"code\"\n# 😀 wave $note\n=pod\nwave $note\n=cut\nwave();\n__DATA__\nwave $note\n")?;
 
     for (line, character) in
         [(2, 10), (2, 15), (2, 16), (3, 5), (3, 10), (5, 0), (5, 5), (9, 0), (9, 5)]
     {
-        assert_comment_region_refused(&mut harness, uri, line, character)?;
+        assert_comment_region_refused(&mut harness, &uri, line, character)?;
     }
     assert_comment_region_code_control(
         &mut harness,
-        uri,
+        &uri,
         0,
         3,
         8,
@@ -1454,7 +1455,7 @@ fn test_comment_regions_refuse_same_name_traps() -> TestResult {
     )?;
     assert_comment_region_code_control(
         &mut harness,
-        uri,
+        &uri,
         1,
         4,
         8,
@@ -1470,16 +1471,18 @@ fn test_comment_regions_refuse_same_name_traps() -> TestResult {
 
 #[test]
 fn test_comment_regions_refuse_end_payload_with_default_behavior() -> TestResult {
+    let workspace = TempWorkspace::new()?;
     let mut harness = LspHarness::new();
-    harness.initialize(Some(
-        json!({ "textDocument": { "rename": { "prepareSupportDefaultBehavior": 1 } } }),
-    ))?;
-    let uri = "file:///EndCommentRegions.pl";
-    harness.open(uri, "sub wave { 1 }\n# wave\n__END__\nwave\n")?;
-    assert_comment_region_refused(&mut harness, uri, 1, 2)?;
-    assert_comment_region_refused(&mut harness, uri, 3, 0)?;
+    harness.initialize_with_root(
+        &workspace.root_uri,
+        Some(json!({ "textDocument": { "rename": { "prepareSupportDefaultBehavior": 1 } } })),
+    )?;
+    let uri = workspace.uri("EndCommentRegions.pl");
+    harness.open(&uri, "sub wave { 1 }\n# wave\n__END__\nwave\n")?;
+    assert_comment_region_refused(&mut harness, &uri, 1, 2)?;
+    assert_comment_region_refused(&mut harness, &uri, 3, 0)?;
     let prepared = answered_result(
-        &raw_prepare_rename(&mut harness, uri, 0, 4),
+        &raw_prepare_rename(&mut harness, &uri, 0, 4),
         "default behavior code control",
     )?;
     assert_eq!(prepared, json!({ "defaultBehavior": true }));
@@ -1488,14 +1491,15 @@ fn test_comment_regions_refuse_end_payload_with_default_behavior() -> TestResult
 
 #[test]
 fn test_comment_regions_preserve_code_after_hash_literals() -> TestResult {
+    let workspace = TempWorkspace::new()?;
     let mut harness = LspHarness::new();
-    harness.initialize(None)?;
-    let uri = "file:///HashLiteralCommentRegions.pl";
-    harness.open(uri, "my $mark = \"😀#\"; my $note = 1;\nmy $quoted = '#'; $note++; # $note\nmy $like = q{#}; $note++;\n")?;
-    assert_comment_region_refused(&mut harness, uri, 1, 29)?;
+    harness.initialize_with_root(&workspace.root_uri, None)?;
+    let uri = workspace.uri("HashLiteralCommentRegions.pl");
+    harness.open(&uri, "my $mark = \"😀#\"; my $note = 1;\nmy $quoted = '#'; $note++; # $note\nmy $like = q{#}; $note++;\n")?;
+    assert_comment_region_refused(&mut harness, &uri, 1, 29)?;
     assert_comment_region_code_control(
         &mut harness,
-        uri,
+        &uri,
         0,
         21,
         26,
@@ -1511,9 +1515,10 @@ fn test_comment_regions_preserve_code_after_hash_literals() -> TestResult {
 
 #[test]
 fn test_comment_regions_refuse_token_fallback_at_eof() -> TestResult {
+    let workspace = TempWorkspace::new()?;
     let mut harness = LspHarness::new();
-    harness.initialize(None)?;
-    let uri = "file:///EofCommentRegions.pl";
+    harness.initialize_with_root(&workspace.root_uri, None)?;
+    let uri = workspace.uri("EofCommentRegions.pl");
     for (version, source, line, character) in [
         (2, "sub wave { 1 }\n# wave", 1, 6),
         (3, "sub wave { 1 }\n=pod\nwave", 2, 4),
@@ -1522,15 +1527,15 @@ fn test_comment_regions_refuse_token_fallback_at_eof() -> TestResult {
         (6, "sub wave { 1 }\nwave# wave", 1, 4),
     ] {
         if version == 2 {
-            harness.open(uri, source)?;
+            harness.open(&uri, source)?;
         } else {
-            harness.change_full(uri, version, source)?;
+            harness.change_full(&uri, version, source)?;
         }
-        assert_comment_region_refused(&mut harness, uri, line, character)?;
+        assert_comment_region_refused(&mut harness, &uri, line, character)?;
     }
-    harness.change_full(uri, 7, "sub wave { 1 }\nwave;")?;
+    harness.change_full(&uri, 7, "sub wave { 1 }\nwave;")?;
     let prepared = answered_result(
-        &raw_prepare_rename(&mut harness, uri, 1, 5),
+        &raw_prepare_rename(&mut harness, &uri, 1, 5),
         "prepareRename token fallback at real code EOF",
     )?;
     assert_eq!(
@@ -1542,7 +1547,7 @@ fn test_comment_regions_refuse_token_fallback_at_eof() -> TestResult {
     );
     assert_comment_region_code_control(
         &mut harness,
-        uri,
+        &uri,
         1,
         0,
         4,
@@ -1557,20 +1562,21 @@ fn test_comment_regions_refuse_token_fallback_at_eof() -> TestResult {
 
 #[test]
 fn test_comment_regions_follow_current_document_edits() -> TestResult {
+    let workspace = TempWorkspace::new()?;
     let mut harness = LspHarness::new();
-    harness.initialize(None)?;
-    let uri = "file:///EditedCommentRegions.pl";
+    harness.initialize_with_root(&workspace.root_uri, None)?;
+    let uri = workspace.uri("EditedCommentRegions.pl");
     let code = "sub wave { 1 }\n  wave();\n";
     let edits = json!([
         { "range": { "start": { "line": 0, "character": 4 }, "end": { "line": 0, "character": 8 } }, "newText": "renamed_target" },
         { "range": { "start": { "line": 1, "character": 2 }, "end": { "line": 1, "character": 6 } }, "newText": "renamed_target" }
     ]);
-    harness.open(uri, code)?;
-    assert_comment_region_code_control(&mut harness, uri, 1, 2, 6, "wave", edits.clone())?;
-    harness.change_full(uri, 2, "sub wave { 1 }\n# wave();\n")?;
-    assert_comment_region_refused(&mut harness, uri, 1, 2)?;
-    harness.change_full(uri, 3, code)?;
-    assert_comment_region_code_control(&mut harness, uri, 1, 2, 6, "wave", edits)?;
+    harness.open(&uri, code)?;
+    assert_comment_region_code_control(&mut harness, &uri, 1, 2, 6, "wave", edits.clone())?;
+    harness.change_full(&uri, 2, "sub wave { 1 }\n# wave();\n")?;
+    assert_comment_region_refused(&mut harness, &uri, 1, 2)?;
+    harness.change_full(&uri, 3, code)?;
+    assert_comment_region_code_control(&mut harness, &uri, 1, 2, 6, "wave", edits)?;
     Ok(())
 }
 
