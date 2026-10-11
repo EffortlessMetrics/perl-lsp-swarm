@@ -1282,8 +1282,10 @@ jobs:
             target/policy/non-rust-inventory.json \
             target/policy/non-rust-inventory-subject.json
 
+      # The shard adapter consumes this runner. Gates select helper binaries
+      # explicitly; required all-target/integration proof remains separate.
       - name: Warm xtask
-        run: cargo build -p xtask --locked
+        run: cargo build -p xtask --bin xtask --locked
 
       - name: Verify candidate meta self-tests
         if: matrix.name == 'meta'
