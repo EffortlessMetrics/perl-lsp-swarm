@@ -216,6 +216,13 @@ error[E0425]: cannot find value `missing` in this scope
 ERROR
 assert_classification "compiler source excerpt does not establish doctor execution" bootstrap_build_failed
 
+cat > "${FAIL_DIR}/classifier.input" <<'ERROR'
+error[E0425]: cannot find value `missing` in this scope
+  --> xtask/src/main.rs:1:69
+1 | fn main() { println!("xtask.exe: being used by another process {}", missing); }
+ERROR
+assert_classification "compiler source excerpt does not establish an executable lock" bootstrap_build_failed
+
 printf 'devex-doctor: started\nerror: mentioned doctor_check_failed in a probe\n' > "${FAIL_DIR}/classifier.input"
 assert_classification "incidental finding text does not manufacture a doctor finding" doctor_instrument_failed
 

@@ -98,13 +98,19 @@ pub fn run() -> Result<()> {
 
     if missing_tool || missing_component || failed_check {
         if missing_tool {
-            fail("doctor_required_tool_missing: install the missing tool listed above (Rust tools: https://rustup.rs)");
+            fail(
+                "doctor_required_tool_missing: install the missing tool listed above (Rust tools: https://rustup.rs)",
+            );
         }
         if missing_component {
-            fail("doctor_required_component_missing: run the rustup component add command listed above");
+            fail(
+                "doctor_required_component_missing: run the rustup component add command listed above",
+            );
         }
         if failed_check {
-            fail("doctor_check_failed: inspect the failed probe or toolchain check above; no missing tool was inferred from it");
+            fail(
+                "doctor_check_failed: inspect the failed probe or toolchain check above; no missing tool was inferred from it",
+            );
         }
         bail!("required checks did not pass");
     }

@@ -45,10 +45,11 @@ elif grep -Eq 'cargo-toolchain-guard: REFUSED|cargo-toolchain-guard:.*predates' 
     echo "devex: bootstrap_toolchain_rejected (exit $result; use the toolchain guard action above)" >&2
 elif grep -Eiq 'cargo: command not found|cargo: not found|cargo: No such file or directory' "$log_file"; then
     echo "devex: bootstrap_tool_missing (exit $result; install Rust from https://rustup.rs)" >&2
-elif grep -Ei '(being used by another process|os error 32([^0-9]|$))' "$log_file" |
+elif grep -Ei '^error: .*(being used by another process|os error 32([^0-9]|$))' "$log_file" |
     grep -Ei '(^|[^[:alnum:]_.-])xtask(\.exe)?($|[^[:alnum:]_./\\-])' > /dev/null; then
-    # Require same-line sharing evidence and an executable basename, not an
-    # xtask directory/source path. Access denied alone does not prove a lock.
+    # Require a Cargo error line with sharing evidence and an executable
+    # basename, not a compiler source excerpt or xtask directory/source path.
+    # Access denied alone does not prove a lock.
     # Drain both greps: early grep -q exit can break the upstream pipe and make
     # pipefail turn a match into a build failure for large output (#16413).
     echo "devex: bootstrap_artifact_locked_or_in_use (exit $result; inspect the process holding xtask before retrying; owner NOT_PROVEN)" >&2
