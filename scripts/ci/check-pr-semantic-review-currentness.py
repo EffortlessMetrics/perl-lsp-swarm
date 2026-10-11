@@ -55,6 +55,7 @@ RESULT_ITEM_RE = re.compile(r"^[ \t]*[-*][ \t]*([A-Z_]+)\b", re.MULTILINE)
 # and gates. Pin the payload version explicitly so a shape bump (e.g. a new
 # `finalised_at` key) is observable at the consumer side rather than silent.
 SCHEMA_VERSION = "semantic_review_currentness.v1"
+FIXTURE_ENV = "SEMANTIC_REVIEW_TEST_FIXTURE"
 
 
 class Review(NamedTuple):
@@ -527,14 +528,19 @@ def evaluate(
 
 
 def _flatten_pages(value: Any) -> list[Mapping[str, Any]]:
-    if not isinstance(value, list):
-        raise CurrentnessError("review API did not return an array")
-    if value and all(isinstance(page, list) for page in value):
-        return [item for page in value for item in page if isinstance(item, dict)]
-    return [item for item in value if isinstance(item, dict)]
+    # gh --paginate --slurp returns an array of page arrays, including [[]]
+    # for no reviews. Never discard a malformed page/row from the inventory.
+    if not isinstance(value, list) or not value or any(
+        not isinstance(page, list) for page in value
+    ):
+        raise CurrentnessError("review API omitted its paginated page arrays")
+    rows = [item for page in value for item in page]
+    if any(not isinstance(row, dict) for row in rows):
+        raise CurrentnessError("review API returned a malformed row")
+    return rows
 
 
-def fetch_pr(repo: str, pr: int, root: Path) -> tuple[str, str, list[Review]]:
+def fetch_pr_identity(repo: str, pr: int, root: Path) -> tuple[str, str]:
     metadata_raw = _run(
         [
             "gh",
@@ -549,10 +555,20 @@ def fetch_pr(repo: str, pr: int, root: Path) -> tuple[str, str, list[Review]]:
         cwd=root,
     ).stdout
     metadata = json.loads(metadata_raw)
+    if not isinstance(metadata, dict):
+        raise CurrentnessError("PR metadata did not return an object")
     current_head = metadata.get("headRefOid")
     base_head = metadata.get("baseRefOid")
-    if not isinstance(current_head, str) or not isinstance(base_head, str):
+    if any(
+        not isinstance(oid, str) or not OID_RE.fullmatch(oid)
+        for oid in (current_head, base_head)
+    ):
         raise CurrentnessError("PR metadata omitted head/base identity")
+    return current_head, base_head
+
+
+def fetch_pr(repo: str, pr: int, root: Path) -> tuple[str, str, list[Review]]:
+    current_head, base_head = fetch_pr_identity(repo, pr, root)
 
     reviews_raw = _run(
         [
@@ -565,17 +581,25 @@ def fetch_pr(repo: str, pr: int, root: Path) -> tuple[str, str, list[Review]]:
         cwd=root,
     ).stdout
     rows = _flatten_pages(json.loads(reviews_raw))
-    reviews = [
-        Review(
-            login=str((row.get("user") or {}).get("login") or ""),
-            user_type=str((row.get("user") or {}).get("type") or ""),
-            state=str(row.get("state") or ""),
-            body=str(row.get("body") or ""),
-            commit_oid=str(row.get("commit_id") or ""),
-            submitted_at=str(row.get("submitted_at") or ""),
-        )
-        for row in rows
-    ]
+    reviews = []
+    for row in rows:
+        user = row.get("user")
+        if (
+            not isinstance(user, dict)
+            or any(not isinstance(user.get(key), str) or not user[key]
+                   for key in ("login", "type"))
+            or any(not isinstance(row.get(key), str)
+                   for key in ("state", "body", "commit_id", "submitted_at"))
+        ):
+            raise CurrentnessError("review API omitted typed review identity/content")
+        if not row["state"] or not row["submitted_at"] or not OID_RE.fullmatch(row["commit_id"]):
+            raise CurrentnessError("review API omitted review state/commit/submission identity")
+        reviews.append(Review(
+            user["login"], user["type"], row["state"], row["body"],
+            row["commit_id"], row["submitted_at"],
+        ))
+    if fetch_pr_identity(repo, pr, root) != (current_head, base_head):
+        raise CurrentnessError("PR head/base moved during review acquisition")
     return current_head, base_head, reviews
 
 
@@ -583,7 +607,11 @@ class MarkerRefused(RuntimeError):
     """The substantive review result does not carry a marker; not an instrument failure."""
 
 
-def emit_marker(root: Path, repo: str, pr: int, result: str) -> str:
+def emit_marker(
+    root: Path, repo: str, pr: int, result: str, *, expected_head: Optional[str] = None
+) -> str:
+    if FIXTURE_ENV in os.environ:
+        raise CurrentnessError("fixture environment cannot emit a production marker")
     if result not in SUBSTANTIVE_REVIEW_RESULTS:
         raise CurrentnessError(f"unknown substantive review result: {result!r}")
     if result != MARKER_RESULT:
@@ -592,6 +620,8 @@ def emit_marker(root: Path, repo: str, pr: int, result: str) -> str:
             f"only {MARKER_RESULT} does"
         )
     current_head, base_head, _ = fetch_pr(repo, pr, root)
+    if expected_head is not None and current_head != expected_head:
+        raise CurrentnessError("acquired PR head differs from expected head")
     ensure_commit(root, current_head)
     ensure_commit(root, base_head)
     merge_base = _git_text(root, "merge-base", base_head, current_head)
@@ -630,7 +660,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("pr", type=int)
     parser.add_argument("repo")
     parser.add_argument("--root", type=Path, default=Path("."))
-    parser.add_argument("--fixture", type=Path)
+    parser.add_argument("--fixture", type=Path, help="test-only evaluator input; never live qualification")
+    parser.add_argument("--expected-head", help="refuse acquisition of a different PR head")
     parser.add_argument("--emit-marker", action="store_true")
     parser.add_argument(
         "--result",
@@ -649,18 +680,36 @@ def main(argv: Optional[list[str]] = None) -> int:
         parser.error("--emit-marker requires --result naming the substantive review result")
     root = args.root.resolve()
     fixture = args.fixture
-    if fixture is None and os.environ.get("SEMANTIC_REVIEW_TEST_FIXTURE"):
-        fixture = Path(os.environ["SEMANTIC_REVIEW_TEST_FIXTURE"])
+    fixture_selected = fixture is not None or FIXTURE_ENV in os.environ
     try:
         if args.emit_marker:
-            print(emit_marker(root, args.repo, args.pr, args.result))
+            if fixture_selected:
+                raise CurrentnessError("fixture inputs cannot emit a production marker")
+            print(emit_marker(
+                root, args.repo, args.pr, args.result, expected_head=args.expected_head
+            ))
             return 0
-        if fixture:
+        if fixture is None and FIXTURE_ENV in os.environ:
+            if not os.environ[FIXTURE_ENV]:
+                raise CurrentnessError("empty fixture environment is not live acquisition")
+            fixture = Path(os.environ[FIXTURE_ENV])
+        if fixture is not None:
             raw = json.loads(fixture.read_text(encoding="utf-8"))
-            current_head = str(raw["head"])
-            reviews = [Review(**row) for row in raw.get("reviews", [])]
+            if (
+                not isinstance(raw, dict)
+                or not isinstance(raw.get("head"), str)
+                or not OID_RE.fullmatch(raw["head"])
+                or not isinstance(raw.get("reviews"), list)
+            ):
+                raise CurrentnessError("fixture omitted head/review inventory")
+            current_head = raw["head"]
+            reviews = [Review(**row) for row in raw["reviews"]]
+            if any(not isinstance(field, str) for row in reviews for field in row):
+                raise CurrentnessError("fixture review fields must be strings")
         else:
             current_head, _base, reviews = fetch_pr(args.repo, args.pr, root)
+        if args.expected_head is not None and current_head != args.expected_head:
+            raise CurrentnessError("acquired PR head differs from expected head")
         result = evaluate(
             root,
             pr=args.pr,
@@ -698,6 +747,14 @@ def main(argv: Optional[list[str]] = None) -> int:
             }
         )
         return 2
+    if fixture_selected:
+        result = {
+            "classification": "NOT_PROVEN", "reason": "fixture_evaluation_only",
+            "pr": args.pr, "repo": args.repo, "acquisition_mode": "fixture",
+            "evaluator_result": stdout_payload(result),
+        }
+    else:
+        result.update(acquisition_mode="gh_live", repo=args.repo)
     emit_stdout_json(result)
     return 0 if result["classification"] == "REVIEW_CURRENT" else 1
 
