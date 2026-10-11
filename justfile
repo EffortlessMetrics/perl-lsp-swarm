@@ -501,7 +501,7 @@ ready: doctor pr-fast
 # Run before any agent-spawning session. Safe to run repeatedly (idempotent).
 # Checks: core.bare corruption (#3205), stale branches, worktree leaks, orphaned
 # worktree dirs, pre-push hook, workspace cleanliness, master fast-forward state.
-# Workspace health check — auto-detects and auto-fixes recurring state corruption
+# Workspace health check — reports findings without repairing Git configuration
 doctor:
     #!/usr/bin/env bash
     set -uo pipefail
@@ -509,7 +509,6 @@ doctor:
     echo
 
     issues=0
-    fixed=0
 
     # ------------------------------------------------------------------
     # Locate main checkout. NOTE: on Git Bash for Windows, every external
@@ -546,18 +545,21 @@ doctor:
     # ------------------------------------------------------------------
     # Check 1: core.bare = true corruption (#3205)
     # ------------------------------------------------------------------
-    bare_value=$(git --git-dir="$main_git_dir" config --local --get core.bare 2>/dev/null || true)
+    bare_status=0
+    bare_value=$(git --git-dir="$main_git_dir" config --local --type=bool --get core.bare) || bare_status=$?
+    if [ "$bare_status" -ne 0 ] && [ "$bare_status" -ne 1 ]; then
+        echo "❌ could not inspect local core.bare (git config exited $bare_status)"
+        echo "   No repair performed; resolve the Git configuration error and rerun just doctor."
+        exit 1
+    fi
     if [ "$bare_value" = "true" ]; then
         echo "⚠️  git config core.bare = true detected in main checkout (#3205)"
-        if git --git-dir="$main_git_dir" config --local --unset core.bare 2>/dev/null; then
-            echo "   Auto-fixed: unset core.bare"
-            fixed=$((fixed + 1))
-        else
-            echo "   Fix: git --git-dir=\"$main_git_dir\" config --local --unset core.bare"
-            issues=$((issues + 1))
-        fi
+        echo "   No repair performed. Only if this is an ordinary checkout, run explicitly:"
+        printf '   Fix: git --git-dir=%q config --local --unset core.bare\n' "$main_git_dir"
+        echo "   Remaining checks not run: worktree observations require non-bare configuration."
+        exit 1
     else
-        echo "✅ git config core.bare unset (was OK)"
+        echo "✅ local core.bare is false or unset"
     fi
 
     # ------------------------------------------------------------------
@@ -790,10 +792,10 @@ doctor:
     fi
 
     echo
-    if [ "$issues" -eq 0 ] && [ "$fixed" -eq 0 ]; then
+    if [ "$issues" -eq 0 ]; then
         echo "✅ all checks passed"
     else
-        echo "$issues issues found, $fixed auto-fixed"
+        echo "$issues issues found; no repairs performed"
     fi
     exit 0
 
