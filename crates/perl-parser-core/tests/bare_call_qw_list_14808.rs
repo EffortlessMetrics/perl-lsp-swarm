@@ -343,6 +343,7 @@ fn comma_after_immediate_qw_still_collects_later_args() {
     let source = "has qw(a b), $x;";
     assert_clean_parse(source);
     assert_eq!(call_arg_kinds(source, "has"), ["String", "String", "Variable"]);
+    assert_eq!(call_span(source, "has"), "has qw(a b), $x");
 }
 
 #[test]
