@@ -405,3 +405,50 @@ fn stage_copy_copies_regular_files_with_content_deterministically() -> Result<()
     assert_eq!(stage_copy(empty_source.path(), empty_destination.path())?, 0);
     Ok(())
 }
+
+#[test]
+fn stage_copy_names_the_failing_paths_on_error() -> Result<(), String> {
+    // A missing source fails at listing, and the error must name the path so
+    // a mis-provisioned corpus is diagnosable from the message alone.
+    let absent_source = TempDir::new().map_err(|error| format!("tempdir: {error}"))?;
+    let destination = TempDir::new().map_err(|error| format!("tempdir: {error}"))?;
+    let missing = absent_source.path().join("no_such_corpus_dir");
+    let listed_error = stage_copy(&missing, destination.path())
+        .err()
+        .ok_or("stage_copy must fail when the source directory is absent")?;
+    assert!(
+        listed_error.contains("read_dir"),
+        "absent-source error must name the listing seam: {listed_error}"
+    );
+    assert!(
+        listed_error.contains(&missing.display().to_string()),
+        "absent-source error must name the missing path: {listed_error}"
+    );
+
+    // A staged target pre-occupied by a directory fails at the copy itself:
+    // both the source and the occupied target must be named. This is the
+    // std::fs::copy error path in stage_copy (the map_err ? on the copy call).
+    let source = TempDir::new().map_err(|error| format!("tempdir: {error}"))?;
+    let lib_dir = source.path().join("lib");
+    fs::create_dir_all(&lib_dir).map_err(|error| format!("create_dir_all lib: {error}"))?;
+    fs::write(lib_dir.join("First.pm"), "package First;\n1;\n")
+        .map_err(|error| format!("write First.pm: {error}"))?;
+
+    let occupied = TempDir::new().map_err(|error| format!("tempdir: {error}"))?;
+    let occupied_target = occupied.path().join("lib").join("First.pm");
+    fs::create_dir_all(&occupied_target)
+        .map_err(|error| format!("create_dir_all occupied target: {error}"))?;
+
+    let copy_error = stage_copy(source.path(), occupied.path())
+        .err()
+        .ok_or("stage_copy must fail when a staged target is an existing directory")?;
+    assert!(
+        copy_error.starts_with("copy "),
+        "occupied-target error must name the copy seam: {copy_error}"
+    );
+    assert!(
+        copy_error.contains("First.pm"),
+        "occupied-target error must name the staged file: {copy_error}"
+    );
+    Ok(())
+}
