@@ -124,7 +124,9 @@ fn stdio_transport_attach_host_rejects_wrong_types_without_connecting() -> Resul
     // EOF/exit also bounds any delayed background connection attempt.
     match listener.accept() {
         Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
-        other => return Err(anyhow!("refused attach contacted the listener before exit: {other:?}")),
+        other => {
+            return Err(anyhow!("refused attach contacted the listener before exit: {other:?}"));
+        }
     }
     Ok(())
 }
