@@ -1534,6 +1534,16 @@ fn same_file_definition_matches_qualification(
         crate::symbol::SymbolKind::Subroutine | crate::symbol::SymbolKind::Method
     ) || (definition.kind == crate::symbol::SymbolKind::Constant
         && definition.declaration.as_deref() == Some("constant"));
+    // A missing named CodeRef can otherwise select its containing route/sub
+    // through SemanticModel's general symbol-at-position fallback.
+    if let Some(node) = crate::declaration::find_node_at_offset(ast, offset)
+        && let crate::ast::NodeKind::AmperCall { name, .. } = &node.kind
+        && !name.is_empty()
+        && !name.starts_with(['$', '@', '%'])
+        && (!is_callable || (definition.name != *name && definition.qualified_name != *name))
+    {
+        return false;
+    }
     let Ok(regex) = get_fqn_regex() else {
         return true;
     };

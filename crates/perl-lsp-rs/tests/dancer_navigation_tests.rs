@@ -7,7 +7,15 @@ type TestResult = Result<(), Box<dyn std::error::Error>>;
 #[cfg(test)]
 mod dancer_navigation_tests {
     use super::TestResult;
-    use crate::common::test_utils::{TestServerBuilder, semantic};
+    use crate::common::test_utils::{TestServer, TestServerBuilder, semantic};
+
+    fn document_barrier(server: &TestServer, uri: &str) -> TestResult {
+        let response = server.get_symbols(uri);
+        if response.get("error").is_some() || response.get("result").is_none() {
+            return Err(format!("document request barrier failed at {uri}: {response}").into());
+        }
+        Ok(())
+    }
 
     fn definition_locations(
         response: &serde_json::Value,
@@ -45,6 +53,7 @@ mod dancer_navigation_tests {
     ) -> Result<(serde_json::Value, Vec<lsp_types::Location>), Box<dyn std::error::Error>> {
         let server = TestServerBuilder::new().build();
         server.open_document(uri, code);
+        document_barrier(&server, uri)?;
         let (line, character) = semantic::find_pos(code, needle, target_line);
         let response = server.get_definition(uri, line, character);
         let locations = definition_locations(&response, uri, line, character)?;
@@ -54,7 +63,7 @@ mod dancer_navigation_tests {
     #[test]
     fn dancer_route_target_definitions_to_named_sub() -> TestResult {
         let code =
-            "use Dancer;\nget '/about' => \\&show_about;\nsub show_about { return 'About'; }\n";
+            "use Dancer;\nget '/about' => 'show_about';\nsub show_about { return 'About'; }\n";
         let uri = "file:///dancer_route_target.pl";
 
         let (resp, locations) = goto_def(code, uri, "show_about", 1)?;
@@ -71,7 +80,7 @@ mod dancer_navigation_tests {
     }
 
     #[test]
-    fn dancer_named_handler_references_do_not_promote_string_spellings() -> TestResult {
+    fn dancer_named_handler_references_require_exact_semantic_evidence() -> TestResult {
         let code = concat!(
             "use Dancer;\n",
             "get '/about' => \\&show_about;\n",
@@ -91,7 +100,7 @@ mod dancer_navigation_tests {
         for (line, character, expected_line, label) in [
             (2, 0, Some(6), "ordinary call"),
             (1, 18, Some(6), "named CodeRef"),
-            (3, 17, None, "quoted route spelling"),
+            (3, 17, Some(6), "recorded Dancer1 quoted handler"),
             (4, 14, None, "ordinary quoted spelling"),
             (5, 18, None, "missing named CodeRef"),
         ] {
@@ -104,8 +113,78 @@ mod dancer_navigation_tests {
                     locations[0].range.start.line, expected_line,
                     "{label}: response={response}"
                 );
+                assert_eq!(locations[0].range.start.character, 4, "{label}: response={response}");
+                assert_eq!(
+                    locations[0].range.end.line, expected_line,
+                    "{label}: response={response}"
+                );
+                assert_eq!(locations[0].range.end.character, 14, "{label}: response={response}");
             } else {
                 assert!(locations.is_empty(), "{label}: response={response}");
+            }
+        }
+        // Changing the import revokes and restores the existing reference fact;
+        // ordinary Perl references stay live in the same process throughout.
+        for (version, changed, expected) in [
+            (2, code.replacen("use Dancer;", "           ", 1), false),
+            (3, code.to_string(), true),
+            (4, code.replacen("use Dancer;", "use Dancer2;", 1), false),
+        ] {
+            server.change_document(uri, &changed, version);
+            document_barrier(&server, uri)?;
+            for (line, character, resolves, label) in [
+                (2, 0, true, "ordinary call after import change"),
+                (1, 18, true, "CodeRef after import change"),
+                (3, 17, expected, "quoted handler after import change"),
+            ] {
+                let response = server.get_definition(uri, line, character);
+                let locations = definition_locations(&response, uri, line, character)?;
+                if resolves {
+                    assert_eq!(locations.len(), 1, "{label}, version={version}: {response}");
+                    assert_eq!(locations[0].uri.as_str(), uri, "{label}: {response}");
+                    assert_eq!(
+                        locations[0].range,
+                        lsp_types::Range::new(
+                            lsp_types::Position::new(6, 4),
+                            lsp_types::Position::new(6, 14),
+                        ),
+                        "{label}: {response}"
+                    );
+                } else {
+                    assert!(locations.is_empty(), "{label}, version={version}: {response}");
+                }
+            }
+        }
+        server.shutdown();
+        Ok(())
+    }
+
+    #[test]
+    fn dancer_handler_misses_do_not_resolve_containers_or_other_scopes() -> TestResult {
+        let server = TestServerBuilder::new().build();
+        let uri = "file:///dancer_missing_handler_controls.pl";
+        let cases = [
+            (
+                "use Dancer;\nsub enclosing {\nget '/x' => 'missing_handler';\nget '/y' => \\&missing_handler;\nmy $label = 'show_about';\n}\nsub show_about { 1 }\n",
+                vec![(2, 13), (3, 14), (4, 14)],
+            ),
+            ("use Dancer;\nget '/x' => 'hidden';\n{ my sub hidden { 1 } }\n", vec![(1, 13)]),
+            (
+                "use Dancer;\nget '/x' => 'Missing::show_about';\nsub show_about { 1 }\n",
+                vec![(1, 22)],
+            ),
+        ];
+        server.open_document(uri, cases[0].0);
+        document_barrier(&server, uri)?;
+        for (index, (code, positions)) in cases.into_iter().enumerate() {
+            if index > 0 {
+                server.change_document(uri, code, index as i32 + 1);
+                document_barrier(&server, uri)?;
+            }
+            for (line, character) in positions {
+                let response = server.get_definition(uri, line, character);
+                let locations = definition_locations(&response, uri, line, character)?;
+                assert!(locations.is_empty(), "case={index} at {line}:{character}: {response}");
             }
         }
         server.shutdown();
@@ -157,9 +236,10 @@ mod dancer_navigation_tests {
         Ok(())
     }
 
-    // Removing the activation import must not leave stale exact route behavior.
+    // Without a versioned workspace fixture these are absence controls; they do
+    // not claim revocation of a previously active Dancer2 route (see scenario69).
     #[test]
-    fn dancer2_activation_removal_drops_route_navigation() -> TestResult {
+    fn dancer2_unproved_activation_stays_absent_after_import_removal() -> TestResult {
         let code = "use Dancer2;\nget '/status' => sub { 'ok' };\n";
         let uri = "file:///dancer2_staleness.pl";
 
@@ -189,6 +269,7 @@ sub route_helper { 1 }
 route_helper();
 ";
         server.change_document(uri, changed, 2);
+        document_barrier(&server, uri)?;
         let (line, character) = semantic::find_pos(changed, "/status", 0);
         let after = server.get_definition(uri, line, character);
         let after_locations = definition_locations(&after, uri, line, character)?;
