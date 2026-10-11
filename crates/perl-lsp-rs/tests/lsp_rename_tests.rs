@@ -1533,16 +1533,16 @@ fn test_comment_regions_refuse_token_fallback_at_eof() -> TestResult {
         }
         assert_comment_region_refused(&mut harness, &uri, line, character)?;
     }
-    harness.change_full(&uri, 7, "sub wave { 1 }\nwave;")?;
+    harness.change_full(&uri, 7, "my $note = 1;\n$note;")?;
     let prepared = answered_result(
-        &raw_prepare_rename(&mut harness, &uri, 1, 5),
+        &raw_prepare_rename(&mut harness, &uri, 1, 6),
         "prepareRename token fallback at real code EOF",
     )?;
     assert_eq!(
         prepared,
         json!({
-            "range": { "start": { "line": 1, "character": 0 }, "end": { "line": 1, "character": 4 } },
-            "placeholder": "wave"
+            "range": { "start": { "line": 1, "character": 0 }, "end": { "line": 1, "character": 5 } },
+            "placeholder": "$note"
         })
     );
     assert_comment_region_code_control(
@@ -1550,11 +1550,11 @@ fn test_comment_regions_refuse_token_fallback_at_eof() -> TestResult {
         &uri,
         1,
         0,
-        4,
-        "wave",
+        5,
+        "$note",
         json!([
-            { "range": { "start": { "line": 0, "character": 4 }, "end": { "line": 0, "character": 8 } }, "newText": "renamed_target" },
-            { "range": { "start": { "line": 1, "character": 0 }, "end": { "line": 1, "character": 4 } }, "newText": "renamed_target" }
+            { "range": { "start": { "line": 0, "character": 3 }, "end": { "line": 0, "character": 8 } }, "newText": "$renamed_target" },
+            { "range": { "start": { "line": 1, "character": 0 }, "end": { "line": 1, "character": 5 } }, "newText": "$renamed_target" }
         ]),
     )?;
     Ok(())
