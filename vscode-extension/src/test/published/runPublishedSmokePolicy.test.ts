@@ -287,7 +287,7 @@ for (const trust of ['disabled', 'untrusted'] as const) {
         withPublishedChild(
           scenario,
           trust,
-          (result, observation) => {
+          (result, observation, { original, extensions }) => {
             assert.equal(result.status, 0, String(result.stderr));
             assert.equal(observation.installTargets.length, 1);
             assert.equal(observation.runners.length, 1);
@@ -302,6 +302,63 @@ for (const trust of ['disabled', 'untrusted'] as const) {
             });
             assert.deepEqual(observation.installedBytes, ['archive A']);
             assert.equal(observation.runners[0]?.digest, archiveADigest);
+            if (scenario === 'unchanged') {
+              // Compose the actual child VSIX observation with the real parent
+              // validator. Other receipt fields are fixtures, not editor proof.
+              const { observeSmokeArtifact, validateChildSmokeReceipt } = require(
+                path.resolve(__dirname, '../../../scripts/run-local-vsix-smoke.js'),
+              );
+              const extensionRoot = path.join(extensions, 'installed-extension');
+              const installedServer = path.join(extensionRoot, 'server');
+              fs.writeFileSync(installedServer, 'server bytes');
+              const selectedServer = observeSmokeArtifact(installedServer);
+              const metrics = {
+                binary_resolution_source: 'bundled',
+                binary_resolution_status: 'ok',
+                server_start_status: 'ok',
+                initialize_status: 'ok',
+                binary_resolution_path: installedServer,
+              };
+              const receipt = {
+                outcome: 'completed',
+                failures: [],
+                environment: {
+                  source_revision: 'a'.repeat(40),
+                  server_source_revision: 'a'.repeat(40),
+                  vsix_sha256: observation.runners[0]?.digest,
+                  requested_vscode_version: 'stable',
+                  vscode_version: '1.125.0',
+                  extension_id: 'EffortlessMetrics.perl-lsp-rs',
+                },
+                startup: { language_client: metrics },
+                lifecycle: { restart: { language_client: metrics } },
+                installed_byte_identity: {
+                  schema_version: 'installed_lsp_vsix_bytes.v1',
+                  extensions_root: extensions,
+                  extension_root: extensionRoot,
+                  before_provider: selectedServer,
+                  after_restart: selectedServer,
+                  after_shutdown: selectedServer,
+                  vsix_before: observation.firstHour.observedVsix,
+                  vsix_after: observation.firstHour.observedVsix,
+                },
+              };
+              const verdict = validateChildSmokeReceipt({
+                receiptFile: '/fixture/receipt.json',
+                expectedRevision: 'a'.repeat(40),
+                expectedServerSourceSha: 'a'.repeat(40),
+                expectedVsixSha256: archiveADigest,
+                expectedServerObservation: observeSmokeArtifact(
+                  path.join(path.dirname(original), 'input-server'),
+                ),
+                expectedVsixObservation: observeSmokeArtifact(original),
+                expectedExtensionsRoot: extensions,
+                expectedVscodeVersion: 'stable',
+                exists: () => true,
+                readFile: () => JSON.stringify(receipt),
+              });
+              assert.equal(verdict.ok, true, verdict.violations?.join('; '));
+            }
           },
           source,
           true,
