@@ -13,7 +13,7 @@ import unittest
 import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
-CONTRACT_COMMAND = "python3 scripts/ci/test_conflict_marker_scanners.py"
+CONTRACT_COMMAND = '"$RUNNER_TEMP/required-ci-regression/bin/python" scripts/ci/test_conflict_marker_scanners.py'
 
 
 def scan_bodies() -> dict[str, str]:

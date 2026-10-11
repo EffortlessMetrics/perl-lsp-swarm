@@ -2135,13 +2135,12 @@ jobs:
         run: |
           python3 -m venv "$RUNNER_TEMP/required-ci-regression"
           "$RUNNER_TEMP/required-ci-regression/bin/python" -m pip install --disable-pip-version-check --quiet 'PyYAML==6.0.3'
-          echo "$RUNNER_TEMP/required-ci-regression/bin" >> "$GITHUB_PATH"
 
       - name: Required CI prerequisite regression contract
-        run: python3 scripts/ci/test_required_ci_prerequisites.py
+        run: '"$RUNNER_TEMP/required-ci-regression/bin/python" scripts/ci/test_required_ci_prerequisites.py'
 
       - name: Conflict marker scanner regression contract
-        run: python3 scripts/ci/test_conflict_marker_scanners.py
+        run: '"$RUNNER_TEMP/required-ci-regression/bin/python" scripts/ci/test_conflict_marker_scanners.py'
 
       # #17349: routed xtask library failures can prevent this integration
       # target from executing. Run its 15 retained tests independently here;

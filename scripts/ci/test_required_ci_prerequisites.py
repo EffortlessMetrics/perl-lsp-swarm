@@ -15,7 +15,7 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 JOBS = ("check-all-targets", "conflict-markers")
-CONTRACT_COMMAND = "python3 scripts/ci/test_required_ci_prerequisites.py"
+CONTRACT_COMMAND = '"$RUNNER_TEMP/required-ci-regression/bin/python" scripts/ci/test_required_ci_prerequisites.py'
 
 
 def workflow_jobs() -> dict:
