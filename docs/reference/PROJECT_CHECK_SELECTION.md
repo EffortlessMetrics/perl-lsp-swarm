@@ -94,8 +94,12 @@ sequentially. This bounded evidence does not prove a large-tree resource envelop
 or production cancellation. Every process is the synchronous CLI source route;
 the timeout is instrument protection, not a general descendant-settlement proof.
 
-Report observations join reported lines to the literal fixture subjects, including
-colon-space names; error-text delimiters are not path boundaries. A subject is
+Report observations join reported lines to a separate literal report-subject
+inventory, including unselected, excluded, directory and explicit alias spellings.
+Validation requires coverage of created paths and their ancestor spellings without
+walking or classifying; aliases are literal inventory entries. The expected
+selected set does not define this inventory. Colon-space delimiters in error text
+are not path boundaries. A subject is
 recorded only when the report contains it. Unknown or multiply matching path lines
 fail the instrument rather than inventing identity. This remains controlled human
 report characterization, not a general text or machine-consumer interface.

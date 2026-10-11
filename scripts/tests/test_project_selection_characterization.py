@@ -406,10 +406,7 @@ class SelectionResearchTests(unittest.TestCase):
             ),
             stderr=b"",
         )
-        subjects = {
-            "selected_display": ["a: b.pm"],
-            "unscanned_display": ["sub: tree"],
-        }
+        subjects = ["a: b.pm", "sub: tree"]
         observed, order, _, _ = RESEARCH.observe(
             output, Path("/root"), subjects
         )
@@ -439,10 +436,7 @@ class SelectionResearchTests(unittest.TestCase):
                 RESEARCH.observe(
                     output,
                     Path("/root"),
-                    {
-                        "selected_display": selected,
-                        "unscanned_display": [],
-                    },
+                    selected,
                 )
 
     def test_literal_subjects_are_observed_only_when_reported(self):
@@ -458,13 +452,73 @@ class SelectionResearchTests(unittest.TestCase):
         observed, order, _, _ = RESEARCH.observe(
             output,
             Path("/root"),
-            {
-                "selected_display": ["reported.pm", "missing.pm"],
-                "unscanned_display": [],
-            },
+            ["reported.pm", "missing.pm"],
         )
         self.assertEqual(observed["selected_display"], ["reported.pm"])
         self.assertEqual(order, ["reported.pm"])
+
+    def test_report_inventory_cannot_omit_unselected_literal_paths(self):
+        manifest = copy.deepcopy(self.manifest)
+        case = next(c for c in manifest["cases"] if c["id"] == "extensions")
+        case["report_subjects"].remove("input.pm.bak")
+        with self.assertRaisesRegex(
+            ValueError, "omits a literal created path"
+        ):
+            self.validate(manifest=manifest)
+
+    @unittest.skipUnless(sys.platform == "linux", "controlled Linux backend")
+    def test_wrong_unselected_colon_subject_cannot_pass_the_instrument(self):
+        manifest = copy.deepcopy(self.manifest)
+        case = next(c for c in manifest["cases"] if c["id"] == "extensions")
+        case["entries"].append(
+            {"path": "root/input.pm: note.txt", "kind": "file"}
+        )
+        case["report_subjects"].append("input.pm: note.txt")
+        # Expected selection is deliberately unchanged. The wrong backend
+        # reports the unselected literal name in place of input.pm.
+        replies = [
+            subprocess.CompletedProcess([], 1, stdout=b"error", stderr=b""),
+            subprocess.CompletedProcess(
+                [],
+                0,
+                stdout=(
+                    b"Files scanned: 0\n"
+                    b"No Perl files (.pm, .pl, .t) found.\n"
+                ),
+                stderr=b"",
+            ),
+        ]
+
+        def wrong_backend(binary, args, environment):
+            if replies:
+                return replies.pop(0)
+            root = args[1]
+            return subprocess.CompletedProcess(
+                [],
+                1,
+                stdout=(
+                    "Files scanned: 3\nParse errors:\n"
+                    f"  {root}/input.pm: note.txt: controlled error\n"
+                    f"  {root}/input.pl: controlled error\n"
+                    f"  {root}/input.t: controlled error\n\n"
+                ).encode("utf-8"),
+                stderr=b"",
+            )
+
+        with (
+            patch.object(RESEARCH.sys, "platform", "linux"),
+            patch.object(RESEARCH.os, "geteuid", return_value=1, create=True),
+            patch.object(
+                RESEARCH, "run_binary", side_effect=wrong_backend
+            ) as run,
+            self.assertRaisesRegex(
+                AssertionError, "unrecognized or ambiguous"
+            ),
+        ):
+            RESEARCH.characterize(
+                Path("/controlled-wrong-backend"), self.policy, manifest
+            )
+        self.assertEqual(run.call_count, 3)
 
     def test_text_instrument_separates_traversal_errors_from_selected_files(
         self,
@@ -481,10 +535,7 @@ class SelectionResearchTests(unittest.TestCase):
         observed, order, _, _ = RESEARCH.observe(
             output,
             Path("/root"),
-            {
-                "selected_display": ["bad.pm"],
-                "unscanned_display": ["subtree"],
-            },
+            ["bad.pm", "subtree"],
         )
         self.assertEqual(
             observed,

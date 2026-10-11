@@ -355,6 +355,16 @@
                   ]
                 }
               },
+              "report_subjects": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "uniqueItems": true,
+                "minItems": 1,
+                "maxItems": 1024
+              },
               "policy_rows": {
                 "type": "array",
                 "items": {
@@ -432,6 +442,7 @@
               "root",
               "root_kind",
               "entries",
+              "report_subjects",
               "policy_rows",
               "shuffle",
               "current",

@@ -73,6 +73,25 @@ def validate_source_commit(commit):
         raise ValueError("declared commit walker differs from observed source")
 
 
+def literal_report_subjects(case):
+    """Describe created path spellings, without filesystem discovery."""
+    subjects = {"."}
+    for entry in case["entries"]:
+        path = Path(entry["path"])
+        if "native_name_hex" in entry:
+            path = path.with_name(
+                os.fsdecode(bytes.fromhex(entry["native_name_hex"]))
+            )
+        try:
+            relative = path.relative_to(case["root"])
+        except ValueError:
+            continue  # Outside-root and alias subjects are explicitly listed.
+        subjects.update(
+            display_path(part) for part in [relative, *relative.parents]
+        )
+    return subjects
+
+
 def validate_artifacts(policy, manifest, receipt=None):
     """Validate strict schemas, identity and disposition invariants."""
     schema = read_json(DATA / "schema.v1.json")
@@ -153,6 +172,21 @@ def validate_artifacts(policy, manifest, receipt=None):
                     entry["target"]
                 ).is_absolute() or not resolved.is_relative_to("/fixture"):
                     raise ValueError("symlink target escapes temporary tree")
+        subjects = set(case["report_subjects"])
+        if not literal_report_subjects(case).issubset(subjects):
+            raise ValueError("report inventory omits a literal created path")
+        if not set(
+            case["current"]["selected_display"]
+            + case["current"]["unscanned_display"]
+        ).issubset(subjects):
+            raise ValueError(
+                "expected report subject is absent from inventory"
+            )
+        for subject in subjects:
+            if Path(subject).is_absolute() or ".." in Path(subject).parts:
+                raise ValueError(
+                    "report inventory subject escapes fixture root"
+                )
     if receipt is not None:
         if receipt["policy_id"] != policy["policy_id"]:
             raise ValueError("receipt policy identity mismatch")
@@ -210,7 +244,7 @@ def observe(output, root, subjects):
         ):
             matches = [
                 subject
-                for subject in subjects[section]
+                for subject in subjects
                 if line.startswith(
                     "  "
                     + (
@@ -351,7 +385,7 @@ def characterize(binary, policy, manifest, log_dir=None):
                             binary, ["--check-project", str(root)], environment
                         )
                         current, order, stdout, stderr = observe(
-                            output, root, case["current"]
+                            output, root, case["report_subjects"]
                         )
                         if current != case["current"]:
                             raise AssertionError(

@@ -40,7 +40,7 @@
     ]
   },
   "binary_sha256": "2b32a94860cae41e9cdb93a4f86b339ee92c9dc80f0bda58a526ab56b52f6b55",
-  "fixture_sha256": "b0734d300181bf937569710410bf351384de3f85376023233cb82c1484dbc2af",
+  "fixture_sha256": "098208f05d443c2e60988281daa961d6e77f5fa064c496e0682c7eae33a84ad4",
   "instrument": {
     "begin_control": "--check exit 0; marker absent",
     "blocking_control": "--check exit 1",

@@ -18,7 +18,10 @@
         "exit": 0
       },
       "stdout_contains": [],
-      "stderr_contains": []
+      "stderr_contains": [],
+      "report_subjects": [
+        "."
+      ]
     },
     {
       "id": "extensions",
@@ -134,7 +137,33 @@
         "exit": 1
       },
       "stdout_contains": [],
-      "stderr_contains": []
+      "stderr_contains": [],
+      "report_subjects": [
+        ".",
+        ".pm",
+        "directory.pm",
+        "input.PL",
+        "input.PM",
+        "input.Pl",
+        "input.T",
+        "input.cgi",
+        "input.ep",
+        "input.fcgi",
+        "input.i",
+        "input.mason",
+        "input.pM",
+        "input.pl",
+        "input.pm",
+        "input.pm.bak",
+        "input.pmx",
+        "input.pod",
+        "input.psgi",
+        "input.t",
+        "input.tt",
+        "input.tt2",
+        "input.xs",
+        "script"
+      ]
     },
     {
       "id": "exclude-local",
@@ -178,7 +207,20 @@
         "exit": 1
       },
       "stdout_contains": [],
-      "stderr_contains": []
+      "stderr_contains": [],
+      "report_subjects": [
+        ".",
+        "LOCAL",
+        "LOCAL/case.t",
+        "deep",
+        "deep/local",
+        "deep/local/deep.pm",
+        "local",
+        "local-suffix",
+        "local-suffix/own.pl",
+        "local.pm",
+        "local/dep.pm"
+      ]
     },
     {
       "id": "explicit-local",
@@ -208,7 +250,14 @@
         "exit": 1
       },
       "stdout_contains": [],
-      "stderr_contains": []
+      "stderr_contains": [],
+      "report_subjects": [
+        ".",
+        "nested",
+        "nested/local",
+        "nested/local/skip.pl",
+        "own.pm"
+      ]
     },
     {
       "id": "exclude-blib",
@@ -252,7 +301,20 @@
         "exit": 1
       },
       "stdout_contains": [],
-      "stderr_contains": []
+      "stderr_contains": [],
+      "report_subjects": [
+        ".",
+        "BLIB",
+        "BLIB/case.t",
+        "blib",
+        "blib-suffix",
+        "blib-suffix/own.pl",
+        "blib.pm",
+        "blib/dep.pm",
+        "deep",
+        "deep/blib",
+        "deep/blib/deep.pm"
+      ]
     },
     {
       "id": "explicit-blib",
@@ -282,7 +344,14 @@
         "exit": 1
       },
       "stdout_contains": [],
-      "stderr_contains": []
+      "stderr_contains": [],
+      "report_subjects": [
+        ".",
+        "nested",
+        "nested/blib",
+        "nested/blib/skip.pl",
+        "own.pm"
+      ]
     },
     {
       "id": "exclude-vendor",
@@ -326,7 +395,20 @@
         "exit": 1
       },
       "stdout_contains": [],
-      "stderr_contains": []
+      "stderr_contains": [],
+      "report_subjects": [
+        ".",
+        "VENDOR",
+        "VENDOR/case.t",
+        "deep",
+        "deep/vendor",
+        "deep/vendor/deep.pm",
+        "vendor",
+        "vendor-suffix",
+        "vendor-suffix/own.pl",
+        "vendor.pm",
+        "vendor/dep.pm"
+      ]
     },
     {
       "id": "explicit-vendor",
@@ -356,7 +438,14 @@
         "exit": 1
       },
       "stdout_contains": [],
-      "stderr_contains": []
+      "stderr_contains": [],
+      "report_subjects": [
+        ".",
+        "nested",
+        "nested/vendor",
+        "nested/vendor/skip.pl",
+        "own.pm"
+      ]
     },
     {
       "id": "exclude-node_modules",
@@ -400,7 +489,20 @@
         "exit": 1
       },
       "stdout_contains": [],
-      "stderr_contains": []
+      "stderr_contains": [],
+      "report_subjects": [
+        ".",
+        "NODE_MODULES",
+        "NODE_MODULES/case.t",
+        "deep",
+        "deep/node_modules",
+        "deep/node_modules/deep.pm",
+        "node_modules",
+        "node_modules-suffix",
+        "node_modules-suffix/own.pl",
+        "node_modules.pm",
+        "node_modules/dep.pm"
+      ]
     },
     {
       "id": "explicit-node_modules",
@@ -430,7 +532,14 @@
         "exit": 1
       },
       "stdout_contains": [],
-      "stderr_contains": []
+      "stderr_contains": [],
+      "report_subjects": [
+        ".",
+        "nested",
+        "nested/node_modules",
+        "nested/node_modules/skip.pl",
+        "own.pm"
+      ]
     },
     {
       "id": "exclude-git",
@@ -474,7 +583,20 @@
         "exit": 1
       },
       "stdout_contains": [],
-      "stderr_contains": []
+      "stderr_contains": [],
+      "report_subjects": [
+        ".",
+        ".GIT",
+        ".GIT/case.t",
+        ".git",
+        ".git-suffix",
+        ".git-suffix/own.pl",
+        ".git.pm",
+        ".git/dep.pm",
+        "deep",
+        "deep/.git",
+        "deep/.git/deep.pm"
+      ]
     },
     {
       "id": "explicit-git",
@@ -504,7 +626,14 @@
         "exit": 1
       },
       "stdout_contains": [],
-      "stderr_contains": []
+      "stderr_contains": [],
+      "report_subjects": [
+        ".",
+        "nested",
+        "nested/.git",
+        "nested/.git/skip.pl",
+        "own.pm"
+      ]
     },
     {
       "id": "exclude-target",
@@ -548,7 +677,20 @@
         "exit": 1
       },
       "stdout_contains": [],
-      "stderr_contains": []
+      "stderr_contains": [],
+      "report_subjects": [
+        ".",
+        "TARGET",
+        "TARGET/case.t",
+        "deep",
+        "deep/target",
+        "deep/target/deep.pm",
+        "target",
+        "target-suffix",
+        "target-suffix/own.pl",
+        "target.pm",
+        "target/dep.pm"
+      ]
     },
     {
       "id": "explicit-target",
@@ -578,7 +720,14 @@
         "exit": 1
       },
       "stdout_contains": [],
-      "stderr_contains": []
+      "stderr_contains": [],
+      "report_subjects": [
+        ".",
+        "nested",
+        "nested/target",
+        "nested/target/skip.pl",
+        "own.pm"
+      ]
     },
     {
       "id": "exclude-build",
@@ -622,7 +771,20 @@
         "exit": 1
       },
       "stdout_contains": [],
-      "stderr_contains": []
+      "stderr_contains": [],
+      "report_subjects": [
+        ".",
+        ".BUILD",
+        ".BUILD/case.t",
+        ".build",
+        ".build-suffix",
+        ".build-suffix/own.pl",
+        ".build.pm",
+        ".build/dep.pm",
+        "deep",
+        "deep/.build",
+        "deep/.build/deep.pm"
+      ]
     },
     {
       "id": "explicit-build",
@@ -652,7 +814,14 @@
         "exit": 1
       },
       "stdout_contains": [],
-      "stderr_contains": []
+      "stderr_contains": [],
+      "report_subjects": [
+        ".",
+        "nested",
+        "nested/.build",
+        "nested/.build/skip.pl",
+        "own.pm"
+      ]
     },
     {
       "id": "exclude-auto",
@@ -696,7 +865,20 @@
         "exit": 1
       },
       "stdout_contains": [],
-      "stderr_contains": []
+      "stderr_contains": [],
+      "report_subjects": [
+        ".",
+        "AUTO",
+        "AUTO/case.t",
+        "auto",
+        "auto-suffix",
+        "auto-suffix/own.pl",
+        "auto.pm",
+        "auto/dep.pm",
+        "deep",
+        "deep/auto",
+        "deep/auto/deep.pm"
+      ]
     },
     {
       "id": "explicit-auto",
@@ -726,7 +908,14 @@
         "exit": 1
       },
       "stdout_contains": [],
-      "stderr_contains": []
+      "stderr_contains": [],
+      "report_subjects": [
+        ".",
+        "nested",
+        "nested/auto",
+        "nested/auto/skip.pl",
+        "own.pm"
+      ]
     },
     {
       "id": "hidden-ignored",
@@ -791,7 +980,24 @@
         "exit": 1
       },
       "stdout_contains": [],
-      "stderr_contains": []
+      "stderr_contains": [],
+      "report_subjects": [
+        ".",
+        ".cache",
+        ".cache/code.pm",
+        ".gitignore",
+        ".hg",
+        ".hg/code.pm",
+        ".hidden",
+        ".hidden.pm",
+        ".hidden/inside.pl",
+        ".ignore",
+        ".perl-lsp",
+        ".perl-lsp/cache.t",
+        ".svn",
+        ".svn/code.pm",
+        "ignored.pm"
+      ]
     },
     {
       "id": "links",
@@ -881,7 +1087,25 @@
         "symbolic link loop",
         "Paths not scanned: 2"
       ],
-      "stderr_contains": []
+      "stderr_contains": [],
+      "report_subjects": [
+        ".",
+        "dangling.pm",
+        "dir-alias",
+        "dir-alias/own.pm",
+        "escape-dir",
+        "escape-dir/escape.t",
+        "escape.pl",
+        "file-alias.pl",
+        "ignored.txt",
+        "lib",
+        "lib/own.pm",
+        "loop",
+        "vendor",
+        "vendor-shortcut",
+        "vendor-shortcut/dep.pm",
+        "vendor/dep.pm"
+      ]
     },
     {
       "id": "only-loop",
@@ -911,7 +1135,11 @@
         "symbolic link loop",
         "No Perl files"
       ],
-      "stderr_contains": []
+      "stderr_contains": [],
+      "report_subjects": [
+        ".",
+        "loop"
+      ]
     },
     {
       "id": "explicit-link",
@@ -942,7 +1170,11 @@
         "exit": 1
       },
       "stdout_contains": [],
-      "stderr_contains": []
+      "stderr_contains": [],
+      "report_subjects": [
+        ".",
+        "own.pm"
+      ]
     },
     {
       "id": "hardlinks",
@@ -973,7 +1205,12 @@
         "exit": 1
       },
       "stdout_contains": [],
-      "stderr_contains": []
+      "stderr_contains": [],
+      "report_subjects": [
+        ".",
+        "original.pm",
+        "second.pl"
+      ]
     },
     {
       "id": "unreadable-file",
@@ -1001,7 +1238,11 @@
       "stdout_contains": [
         "read error:"
       ],
-      "stderr_contains": []
+      "stderr_contains": [],
+      "report_subjects": [
+        ".",
+        "denied.pm"
+      ]
     },
     {
       "id": "unreadable-subtree",
@@ -1040,7 +1281,13 @@
         "Paths not scanned: 1",
         "scanned files only"
       ],
-      "stderr_contains": []
+      "stderr_contains": [],
+      "report_subjects": [
+        ".",
+        "denied",
+        "denied/hidden.pm",
+        "own.pm"
+      ]
     },
     {
       "id": "partial-threshold",
@@ -1079,7 +1326,13 @@
         "Clean parses: 1/1",
         "Assessment: PASS (100.0% parsable, scanned files only)"
       ],
-      "stderr_contains": []
+      "stderr_contains": [],
+      "report_subjects": [
+        ".",
+        "clean.pm",
+        "denied",
+        "denied/hidden.pm"
+      ]
     },
     {
       "id": "threshold-compensation",
@@ -1127,7 +1380,15 @@
         "Clean parses: 4/5 (80.0%)",
         "Assessment: PASS"
       ],
-      "stderr_contains": []
+      "stderr_contains": [],
+      "report_subjects": [
+        ".",
+        "bad.pm",
+        "clean0.pl",
+        "clean1.pl",
+        "clean2.pl",
+        "clean3.pl"
+      ]
     },
     {
       "id": "unicode-bytes",
@@ -1178,7 +1439,15 @@
         "exit": 1
       },
       "stdout_contains": [],
-      "stderr_contains": []
+      "stderr_contains": [],
+      "report_subjects": [
+        ".",
+        "bad-�.pm",
+        "colon:name.pl",
+        "é.pm",
+        "é.pm",
+        "été.pm"
+      ]
     },
     {
       "id": "colon-space",
@@ -1230,7 +1499,15 @@
         "Paths not scanned: 1",
         "scanned files only"
       ],
-      "stderr_contains": []
+      "stderr_contains": [],
+      "report_subjects": [
+        ".",
+        "a.pm: b.pm",
+        "a: b.pm",
+        "locked: subtree",
+        "locked: subtree/hidden.pm",
+        "plain.pm"
+      ]
     },
     {
       "id": "creation-order",
@@ -1265,7 +1542,13 @@
         "exit": 1
       },
       "stdout_contains": [],
-      "stderr_contains": []
+      "stderr_contains": [],
+      "report_subjects": [
+        ".",
+        "a.pm",
+        "middle.t",
+        "z.pl"
+      ]
     },
     {
       "id": "bounded-large",
@@ -2565,7 +2848,266 @@
         "exit": 1
       },
       "stdout_contains": [],
-      "stderr_contains": []
+      "stderr_contains": [],
+      "report_subjects": [
+        ".",
+        "f000.pm",
+        "f001.pm",
+        "f002.pm",
+        "f003.pm",
+        "f004.pm",
+        "f005.pm",
+        "f006.pm",
+        "f007.pm",
+        "f008.pm",
+        "f009.pm",
+        "f010.pm",
+        "f011.pm",
+        "f012.pm",
+        "f013.pm",
+        "f014.pm",
+        "f015.pm",
+        "f016.pm",
+        "f017.pm",
+        "f018.pm",
+        "f019.pm",
+        "f020.pm",
+        "f021.pm",
+        "f022.pm",
+        "f023.pm",
+        "f024.pm",
+        "f025.pm",
+        "f026.pm",
+        "f027.pm",
+        "f028.pm",
+        "f029.pm",
+        "f030.pm",
+        "f031.pm",
+        "f032.pm",
+        "f033.pm",
+        "f034.pm",
+        "f035.pm",
+        "f036.pm",
+        "f037.pm",
+        "f038.pm",
+        "f039.pm",
+        "f040.pm",
+        "f041.pm",
+        "f042.pm",
+        "f043.pm",
+        "f044.pm",
+        "f045.pm",
+        "f046.pm",
+        "f047.pm",
+        "f048.pm",
+        "f049.pm",
+        "f050.pm",
+        "f051.pm",
+        "f052.pm",
+        "f053.pm",
+        "f054.pm",
+        "f055.pm",
+        "f056.pm",
+        "f057.pm",
+        "f058.pm",
+        "f059.pm",
+        "f060.pm",
+        "f061.pm",
+        "f062.pm",
+        "f063.pm",
+        "f064.pm",
+        "f065.pm",
+        "f066.pm",
+        "f067.pm",
+        "f068.pm",
+        "f069.pm",
+        "f070.pm",
+        "f071.pm",
+        "f072.pm",
+        "f073.pm",
+        "f074.pm",
+        "f075.pm",
+        "f076.pm",
+        "f077.pm",
+        "f078.pm",
+        "f079.pm",
+        "f080.pm",
+        "f081.pm",
+        "f082.pm",
+        "f083.pm",
+        "f084.pm",
+        "f085.pm",
+        "f086.pm",
+        "f087.pm",
+        "f088.pm",
+        "f089.pm",
+        "f090.pm",
+        "f091.pm",
+        "f092.pm",
+        "f093.pm",
+        "f094.pm",
+        "f095.pm",
+        "f096.pm",
+        "f097.pm",
+        "f098.pm",
+        "f099.pm",
+        "f100.pm",
+        "f101.pm",
+        "f102.pm",
+        "f103.pm",
+        "f104.pm",
+        "f105.pm",
+        "f106.pm",
+        "f107.pm",
+        "f108.pm",
+        "f109.pm",
+        "f110.pm",
+        "f111.pm",
+        "f112.pm",
+        "f113.pm",
+        "f114.pm",
+        "f115.pm",
+        "f116.pm",
+        "f117.pm",
+        "f118.pm",
+        "f119.pm",
+        "f120.pm",
+        "f121.pm",
+        "f122.pm",
+        "f123.pm",
+        "f124.pm",
+        "f125.pm",
+        "f126.pm",
+        "f127.pm",
+        "f128.pm",
+        "f129.pm",
+        "f130.pm",
+        "f131.pm",
+        "f132.pm",
+        "f133.pm",
+        "f134.pm",
+        "f135.pm",
+        "f136.pm",
+        "f137.pm",
+        "f138.pm",
+        "f139.pm",
+        "f140.pm",
+        "f141.pm",
+        "f142.pm",
+        "f143.pm",
+        "f144.pm",
+        "f145.pm",
+        "f146.pm",
+        "f147.pm",
+        "f148.pm",
+        "f149.pm",
+        "f150.pm",
+        "f151.pm",
+        "f152.pm",
+        "f153.pm",
+        "f154.pm",
+        "f155.pm",
+        "f156.pm",
+        "f157.pm",
+        "f158.pm",
+        "f159.pm",
+        "f160.pm",
+        "f161.pm",
+        "f162.pm",
+        "f163.pm",
+        "f164.pm",
+        "f165.pm",
+        "f166.pm",
+        "f167.pm",
+        "f168.pm",
+        "f169.pm",
+        "f170.pm",
+        "f171.pm",
+        "f172.pm",
+        "f173.pm",
+        "f174.pm",
+        "f175.pm",
+        "f176.pm",
+        "f177.pm",
+        "f178.pm",
+        "f179.pm",
+        "f180.pm",
+        "f181.pm",
+        "f182.pm",
+        "f183.pm",
+        "f184.pm",
+        "f185.pm",
+        "f186.pm",
+        "f187.pm",
+        "f188.pm",
+        "f189.pm",
+        "f190.pm",
+        "f191.pm",
+        "f192.pm",
+        "f193.pm",
+        "f194.pm",
+        "f195.pm",
+        "f196.pm",
+        "f197.pm",
+        "f198.pm",
+        "f199.pm",
+        "f200.pm",
+        "f201.pm",
+        "f202.pm",
+        "f203.pm",
+        "f204.pm",
+        "f205.pm",
+        "f206.pm",
+        "f207.pm",
+        "f208.pm",
+        "f209.pm",
+        "f210.pm",
+        "f211.pm",
+        "f212.pm",
+        "f213.pm",
+        "f214.pm",
+        "f215.pm",
+        "f216.pm",
+        "f217.pm",
+        "f218.pm",
+        "f219.pm",
+        "f220.pm",
+        "f221.pm",
+        "f222.pm",
+        "f223.pm",
+        "f224.pm",
+        "f225.pm",
+        "f226.pm",
+        "f227.pm",
+        "f228.pm",
+        "f229.pm",
+        "f230.pm",
+        "f231.pm",
+        "f232.pm",
+        "f233.pm",
+        "f234.pm",
+        "f235.pm",
+        "f236.pm",
+        "f237.pm",
+        "f238.pm",
+        "f239.pm",
+        "f240.pm",
+        "f241.pm",
+        "f242.pm",
+        "f243.pm",
+        "f244.pm",
+        "f245.pm",
+        "f246.pm",
+        "f247.pm",
+        "f248.pm",
+        "f249.pm",
+        "f250.pm",
+        "f251.pm",
+        "f252.pm",
+        "f253.pm",
+        "f254.pm",
+        "f255.pm"
+      ]
     },
     {
       "id": "missing-root",
@@ -2585,6 +3127,9 @@
       "stdout_contains": [],
       "stderr_contains": [
         "directory not found"
+      ],
+      "report_subjects": [
+        "."
       ]
     },
     {
@@ -2610,6 +3155,9 @@
       "stdout_contains": [],
       "stderr_contains": [
         "not a directory"
+      ],
+      "report_subjects": [
+        "."
       ]
     },
     {
@@ -2644,7 +3192,11 @@
         "Paths not scanned: 1",
         "No Perl files"
       ],
-      "stderr_contains": []
+      "stderr_contains": [],
+      "report_subjects": [
+        ".",
+        "hidden.pm"
+      ]
     },
     {
       "id": "begin-noexecution",
@@ -2671,7 +3223,11 @@
         "Clean parses: 1/1",
         "Assessment: PASS"
       ],
-      "stderr_contains": []
+      "stderr_contains": [],
+      "report_subjects": [
+        ".",
+        "begin.pl"
+      ]
     }
   ],
   "not_proven": [
