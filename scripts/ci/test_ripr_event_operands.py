@@ -22,12 +22,16 @@ LANES = ("ripr-selfhosted", "ripr-github", "ripr-fallback")
 A = "022a38b47cf27baf086611017cc522b89ec1df2f"
 H = "7db766bf1941a7faa960074e63ed5b204d7fe04b"
 E = "b193a7840cf3e9df7c9883dff94d5bdc90cffbf3"
+LARGE_E = "f3cb73d6f634cdea3968868fc8151efe55e62983"
+ADVANCED_E = "e6165b3a50af4bbb8c96d0551287ea03fb8a5eea"
 B = "8bd75ed2e244b3f29239593d35bbb2de6dfd8f14"
 C = "c824af93c0e3f4f3e0666acc45370a7868457a11"
 DIGEST = "066459f45988da46a0ef0757de85dba5cbdc3061ddf25fb09c5d56befe47040c"
+ADVANCED_DIGEST = "d5f2f0ae5d5836e1696fe473b9f4fb8b4cdde58fc501dd7e6d8a852397ba42d9"
 GIT_ENV_KEYS = subprocess.check_output(
     ["git", "rev-parse", "--local-env-vars"], text=True).split()
-ENV = {k: v for k, v in os.environ.items() if k not in GIT_ENV_KEYS}
+ENV = {k: v for k, v in os.environ.items()
+       if k not in GIT_ENV_KEYS and k != "GIT_DEFAULT_HASH"}
 ENV.update(
     GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1",
     GIT_AUTHOR_NAME="Fixture", GIT_AUTHOR_EMAIL="fixture@example.invalid",
@@ -161,6 +165,45 @@ class RiprEventOperands(unittest.TestCase):
         result = self.guard()
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("NOT_PROVEN", result.stderr)
+
+    def test_guard_consumes_large_commit_message_without_reading_body_as_parents(self):
+        tree = self.git("rev-parse", E + "^{tree}")
+        message = "large integration message\n\n" + "x" * 1048576 + "\nparent " + "f" * 40 + "\n"
+        actual = subprocess.check_output(
+            ["git", "commit-tree", tree, "-p", A, "-p", H], cwd=self.repo,
+            env=self.env, input=message, text=True).strip()
+        self.assertEqual(actual, LARGE_E)
+        self.git("checkout", "--detach", LARGE_E)
+        result = self.guard(RIPR_EVALUATED_SHA=LARGE_E)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(),
+                         f"RIPR subject verified: base={A} event_head={H} evaluated={LARGE_E}")
+        # Consuming the body must not hide a genuine header identity mismatch.
+        result = self.guard(RIPR_EVALUATED_SHA=LARGE_E, RIPR_BASE_SHA=B)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("integration base ancestry unavailable or contradictory", result.stderr)
+
+    def test_descendant_integration_base_keeps_exact_event_operands(self):
+        self.git("checkout", "--detach", B)
+        self.git("merge", "--no-ff", "feature", "-m", "advanced-base integration")
+        self.assertEqual(self.git("rev-parse", "HEAD"), ADVANCED_E)
+        self.assertEqual(self.git("show", "-s", "--format=%P", "HEAD"), B + " " + H)
+        self.env["RIPR_EVALUATED_SHA"] = ADVANCED_E
+        expected = {"base_sha": A, "head_sha": ADVANCED_E, "pr_head_sha": H,
+                    "digest": ADVANCED_DIGEST}
+        for moving in (B, C):
+            self.git("update-ref", "refs/remotes/origin/main", moving)
+            result = self.guard()
+            self.assertEqual(result.returncode, 0, result.stderr)
+            for lane in LANES:
+                with self.subTest(moving=moving, lane=lane):
+                    self.assertEqual(self.stage(lane, moving == C), expected)
+        # Descendance does not admit an incompatible base or a different raw head.
+        for changes in ({"RIPR_BASE_SHA": C}, {"RIPR_BASE_SHA": H},
+                        {"RIPR_EVENT_HEAD_SHA": A, "PR_HEAD_SHA": A}):
+            result = self.guard(**changes)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("NOT_PROVEN", result.stderr)
 
     def test_missing_raw_head_is_fetched_by_sha_without_moving_the_tuple(self):
         remote = Path(self.temp.name) / "exact.git"

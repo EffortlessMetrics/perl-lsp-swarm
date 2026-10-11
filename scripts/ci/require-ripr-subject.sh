@@ -31,11 +31,18 @@ case "${GITHUB_EVENT_NAME:-}" in
     [[ "${PR_HEAD_SHA:-}" == "$RIPR_EVENT_HEAD_SHA" ]] ||
       not_proven "raw PR head differs from the event head"
     # Read the commit header itself: shallow traversal can hide existing parents.
+    # Drain the message too so a large body cannot SIGPIPE git under pipefail.
     parents="$(git cat-file commit "$RIPR_EVALUATED_SHA" |
-      awk '/^$/ { exit } /^parent / { printf "%s%s", separator, $2; separator=" " }')" ||
+      awk 'BEGIN { header=1 } /^$/ { header=0 } header && /^parent / { printf "%s%s", separator, $2; separator=" " }')" ||
       not_proven "integration parents unavailable"
-    [[ "$parents" == "$RIPR_BASE_SHA $RIPR_EVENT_HEAD_SHA" ]] ||
-      not_proven "integration parents differ from the event base/head pair"
+    read -r -a parent_shas <<< "$parents"
+    [[ "${#parent_shas[@]}" -eq 2 ]] ||
+      not_proven "integration commit must have exactly two parents"
+    [[ "${parent_shas[1]}" == "$RIPR_EVENT_HEAD_SHA" ]] ||
+      not_proven "integration second parent differs from the event head"
+    # The merge ref may include a descendant base. The operand remains event A.
+    git merge-base --is-ancestor "$RIPR_BASE_SHA" "${parent_shas[0]}" ||
+      not_proven "integration base ancestry unavailable or contradictory"
     ;;
   push|merge_group|workflow_dispatch)
     [[ "$RIPR_EVALUATED_SHA" == "$RIPR_EVENT_HEAD_SHA" && -z "${PR_HEAD_SHA:-}" ]] ||
