@@ -1,68 +1,86 @@
 #!/usr/bin/env bash
 # scripts/clean-tmp-targets.sh
 #
-# Reap orphaned agent /tmp build-target directories that exhaust disk space.
+# Advisory inspection of legacy agent /tmp build-target directories.
 #
 # These directories are created by agents via CARGO_TARGET_DIR=/tmp/agent-*-target
 # (and similar patterns). Finished/zombie agents leave them behind; this script
-# identifies which ones are NOT backed by a live registered git worktree and can
-# be removed safely.
+# reports names, recency and size. These observations do not establish ownership,
+# consumer closure or reclaimability. Exact reclaim planning is owned by #11671.
 #
 # Usage:
-#   bash scripts/clean-tmp-targets.sh            # dry-run: list orphans + sizes
-#   bash scripts/clean-tmp-targets.sh --prune    # actually delete orphaned dirs
-#   APPLY=1 bash scripts/clean-tmp-targets.sh   # same as --prune
+#   bash scripts/clean-tmp-targets.sh            # advisory report
+#   bash scripts/clean-tmp-targets.sh --prune    # retired; refuses with exit 78
+#   APPLY=1 bash scripts/clean-tmp-targets.sh   # retired; refuses with exit 78
 #
-# Safety guarantees:
-#   - Only touches dirs matching /tmp/agent-*-target or /tmp/wt-*-target
-#   - Never removes a target dir whose path prefix matches a registered worktree
-#   - Skips dirs modified in the last GRACE_MINUTES (default 5) — likely active build
-#   - Dry-run by default; explicit --prune or APPLY=1 required to delete
+# Inspection scope:
+#   - Reports /tmp/agent-*-target and /tmp/wt-*-target naming patterns
+#   - Annotates matching registered-worktree names and recent modification
+#   - Missing Git observations refuse rather than implying orphaned state
+#   - Performs no target deletion; name/age are never deletion authority
 
 set -euo pipefail
 
+# Refuse every destructive request before help, flag overrides or discovery.
+# This legacy reaper does not participate in exact resource/consumer ownership.
+if [[ "${APPLY:-0}" != 0 ]]; then
+    echo "REFUSING: legacy temporary target deletion is retired; request an exact root-owned cleanup proposal" >&2
+    exit 78
+fi
+for arg in "$@"; do
+    if [[ "$arg" == --prune ]]; then
+        echo "REFUSING: legacy temporary target deletion is retired; request an exact root-owned cleanup proposal" >&2
+        exit 78
+    fi
+done
+
 # ── Configuration ─────────────────────────────────────────────────────────────
 
-# Minutes within which a directory is considered "recently touched" (active build).
+# Recency annotation only; recent or old state does not prove consumer status.
 GRACE_MINUTES="${GRACE_MINUTES:-5}"
 
-# Whether to actually delete (1) or only list (0).
-APPLY="${APPLY:-0}"
-
-# Parse --prune flag.
+# Parse advisory flags. Destructive flags have already refused.
 for arg in "$@"; do
     case "$arg" in
-        --prune) APPLY=1 ;;
-        --dry-run) APPLY=0 ;;
+        --dry-run) ;;
         --help|-h)
             grep '^#' "$0" | sed 's/^# //' | sed 's/^#//'
             exit 0
             ;;
         *)
             echo "Unknown flag: $arg" >&2
-            echo "Usage: $0 [--prune|--dry-run]" >&2
+            echo "Usage: $0 [--dry-run] (--prune is retired)" >&2
             exit 1
             ;;
     esac
 done
 
-# ── Discover live worktree paths ───────────────────────────────────────────────
+# ── Observe registered worktree names ──────────────────────────────────────────
 #
-# We cross-check /tmp target dirs against these to ensure we never remove a
-# target directory that belongs to a currently registered worktree.
+# Registered names are advisory annotations, not exact allocation ownership.
 #
 # Heuristic: given a worktree at /path/to/worktrees/agent-XXXX the expected
 # CARGO_TARGET_DIR is /tmp/agent-XXXX-target (the per-branch convention from
-# agent-preflight.sh and CLAUDE.md). We build a set of "safe" name fragments
-# from every live worktree path and compare against candidate dir basenames.
+# agent-preflight.sh and CLAUDE.md). We derive registered name fragments
+# from worktree paths and compare against candidate dir basenames.
 
 collect_live_worktree_target_names() {
-    # Try to find the repo root; fall back to CWD if not in a git repo.
-    local repo_root
-    repo_root="$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")"
+    local repo_root worktree_rows
+    if ! repo_root="$(git rev-parse --show-toplevel 2>/dev/null)" || [[ -z "$repo_root" ]]; then
+        echo "REFUSING: repository identity is unavailable" >&2
+        return 75
+    fi
+    if ! worktree_rows="$(git -C "$repo_root" worktree list --porcelain 2>/dev/null)"; then
+        echo "REFUSING: registered worktree observation failed" >&2
+        return 75
+    fi
+    if ! grep -q '^worktree ' <<< "$worktree_rows"; then
+        echo "REFUSING: registered worktree observation is empty or incomplete" >&2
+        return 75
+    fi
 
     # Collect all registered worktree paths and branches from git's porcelain
-    # listing. We emit "safe" target dir basenames from three sources:
+    # listing. We emit possible associated target basenames from three sources:
     #
     # 1. The worktree PATH basename — agent-preflight.sh names the target dir
     #    after the worktree dir (for the main checkout or early conventions).
@@ -79,7 +97,7 @@ collect_live_worktree_target_names() {
     #    creation time), then LATER rename/checkout to their real work
     #    branch (e.g. "impl/NNN-slug") once a spec/issue is assigned.
     #    CARGO_TARGET_DIR is fixed at session start and never updates on
-    #    branch rename, so deriving safe names from the *current* branch
+    #    branch rename, so deriving names from the *current* branch
     #    (source #2) misses this case entirely — confirmed in production:
     #    PR #3577's `--prune` run reclaimed a live open-PR worktree's 4.5GB
     #    cache (`agent-worktree-agent-adb287b548d29729c-target`) because its
@@ -90,9 +108,8 @@ collect_live_worktree_target_names() {
     #    this pattern is derived from it directly rather than from history
     #    we can't observe.
     #
-    # We emit all three so we cover old, new, and renamed-branch conventions
-    # without false positives (a target dir only matches if SOME currently
-    # registered worktree's path or branch produces that exact name).
+    # We annotate old, new, and renamed-branch naming conventions. Even an exact
+    # name match cannot establish current allocation ownership or consumer state.
 
     local wt_path="" branch_ref=""
     while IFS= read -r line; do
@@ -118,7 +135,7 @@ collect_live_worktree_target_names() {
                 echo "agent-${branch_slug}-target"
                 ;;
         esac
-    done < <(git -C "$repo_root" worktree list --porcelain 2>/dev/null || true)
+    done <<< "$worktree_rows"
 
     # Flush final entry.
     if [[ -n "$wt_path" ]]; then
@@ -130,12 +147,12 @@ collect_live_worktree_target_names() {
     fi
 }
 
-# Build a newline-separated list of "safe" /tmp dir names (those matching a
-# live worktree).  We use a file so we can grep against it without subshells.
-SAFE_NAMES_FILE="$(mktemp)"
-trap 'rm -f "$SAFE_NAMES_FILE"' EXIT
-
-collect_live_worktree_target_names | sort -u > "$SAFE_NAMES_FILE"
+# Capture the complete observation before allocating a report scratch file.
+# A failed producer never becomes an empty protected-name set.
+registered_names="$(collect_live_worktree_target_names)" || exit $?
+KNOWN_NAMES_FILE="$(mktemp)"
+trap 'rm -f "$KNOWN_NAMES_FILE"' EXIT
+sort -u <<< "$registered_names" > "$KNOWN_NAMES_FILE"
 
 # ── Find candidate dirs in /tmp ────────────────────────────────────────────────
 #
@@ -148,16 +165,12 @@ declare -a PATTERNS=(
 # ── Main loop ─────────────────────────────────────────────────────────────────
 
 found_any=0
-total_orphan_kb=0
-orphan_count=0
+total_observed_kb=0
+unverified_count=0
 skip_count=0
 live_count=0
 
-if [[ "$APPLY" -eq 1 ]]; then
-    echo "=== clean-tmp-targets: PRUNE MODE ==="
-else
-    echo "=== clean-tmp-targets: DRY-RUN (pass --prune to delete) ==="
-fi
+echo "=== clean-tmp-targets: advisory report; ownership and reclaimability unverified ==="
 echo ""
 
 for pattern in "${PATTERNS[@]}"; do
@@ -168,14 +181,14 @@ for pattern in "${PATTERNS[@]}"; do
 
         name="$(basename "$candidate")"
 
-        # Safety check 1: is this a live worktree's target dir?
-        if grep -qxF "$name" "$SAFE_NAMES_FILE" 2>/dev/null; then
-            echo "  LIVE    $candidate  (registered worktree — skipping)"
+        # Name match only: this does not identify a live resource consumer.
+        if grep -qxF "$name" "$KNOWN_NAMES_FILE" 2>/dev/null; then
+            echo "  NAMED   $candidate  (registered worktree name — ownership unverified)"
             live_count=$((live_count + 1))
             continue
         fi
 
-        # Safety check 2: was this dir modified recently (active build)?
+        # Recency only: no owner or process conclusion follows.
         # find -mmin -N lists files modified within N minutes.
         recently_touched="$(find "$candidate" -maxdepth 1 -mmin "-${GRACE_MINUTES}" 2>/dev/null | head -1)"
         if [[ -n "$recently_touched" ]]; then
@@ -184,19 +197,13 @@ for pattern in "${PATTERNS[@]}"; do
             continue
         fi
 
-        # Measure reclaimable space.
+        # Observe size without claiming that the bytes are reclaimable.
         dir_kb=0
         dir_kb="$(du -sk "$candidate" 2>/dev/null | awk '{print $1}' || echo 0)"
         dir_human="$(du -sh "$candidate" 2>/dev/null | awk '{print $1}' || echo '?')"
-        total_orphan_kb=$((total_orphan_kb + dir_kb))
-        orphan_count=$((orphan_count + 1))
-
-        if [[ "$APPLY" -eq 1 ]]; then
-            echo "  REMOVE  $candidate  ($dir_human)"
-            rm -rf "$candidate"
-        else
-            echo "  ORPHAN  $candidate  ($dir_human reclaimable)"
-        fi
+        total_observed_kb=$((total_observed_kb + dir_kb))
+        unverified_count=$((unverified_count + 1))
+        echo "  UNVERIFIED  $candidate  ($dir_human observed; no ownership clearance)"
     done
 done
 
@@ -207,19 +214,12 @@ if [[ "$found_any" -eq 0 ]]; then
     echo "No agent /tmp target dirs found (patterns: ${PATTERNS[*]})."
 else
     total_human=""
-    if [[ "$total_orphan_kb" -gt 0 ]]; then
-        total_human=" ($(( total_orphan_kb / 1024 ))M reclaimable)"
+    if [[ "$total_observed_kb" -gt 0 ]]; then
+        total_human=" ($(( total_observed_kb / 1024 ))M observed)"
     fi
 
-    echo "Live worktree targets skipped:  $live_count"
+    echo "Registered name matches:        $live_count"
     echo "Recently-modified dirs skipped: $skip_count"
-    if [[ "$APPLY" -eq 1 ]]; then
-        echo "Orphaned dirs removed:          $orphan_count${total_human}"
-    else
-        echo "Orphaned dirs identified:       $orphan_count${total_human}"
-        if [[ "$orphan_count" -gt 0 ]]; then
-            echo ""
-            echo "Re-run with --prune to delete, or: APPLY=1 bash scripts/clean-tmp-targets.sh"
-        fi
-    fi
+    echo "Unverified targets observed:    $unverified_count${total_human}"
+    echo "Exact owner, consumer and evidence verification is required before any cleanup."
 fi

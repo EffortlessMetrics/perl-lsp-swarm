@@ -1,382 +1,197 @@
 #!/usr/bin/env bash
-# scripts/tests/test-clean-tmp-targets.sh
-#
-# Safety-invariant test suite for scripts/clean-tmp-targets.sh
-#
-# KEY INVARIANT UNDER TEST:
-#   Given a set of fake /tmp target dirs where some correspond to live worktrees
-#   and some do not, the reaper (dry-run) MUST:
-#     - Report ONLY the orphaned (non-live) dirs
-#     - NEVER report a live-worktree target dir as an orphan
-#     - NEVER delete anything in dry-run mode
-#
-# Approach: we create a hermetic tempdir, fake the naming patterns under it,
-# and override 'git' with a mock that returns canned worktree list output.
-# The IMPL is invoked with GIT_DIR pointed away from the real repo so it
-# cannot accidentally see real worktrees.
-
+# Behavioral safety proof: fixtures never expose real /tmp caches to deletion.
 set -euo pipefail
-
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-IMPL="$SCRIPT_DIR/../clean-tmp-targets.sh"
-PASS_COUNT=0
-FAIL_COUNT=0
-
-if [[ ! -f "$IMPL" ]]; then
-    echo "ERROR: clean-tmp-targets.sh not found at $IMPL"
-    echo "Write the implementation first: scripts/clean-tmp-targets.sh"
-    exit 1
-fi
-
-pass() { printf 'PASS %s\n' "$1"; PASS_COUNT=$((PASS_COUNT + 1)); }
-fail() { printf 'FAIL %s\n' "$1"; FAIL_COUNT=$((FAIL_COUNT + 1)); }
-
-# ── Hermetic tmpdir infrastructure ────────────────────────────────────────────
-
-# Global tmpdir for all fake /tmp dirs; cleaned up on EXIT.
-FAKE_TMP="$(mktemp -d)"
-trap 'rm -rf "$FAKE_TMP"' EXIT
-
-# Create a mock `git` that returns a canned worktree porcelain output.
-# The mock is placed first on PATH so the script picks it up.
-make_mock_git() {
-    local mock_dir porcelain_output
-    mock_dir="$(mktemp -d "$FAKE_TMP/mock-git-XXXX")"
-    porcelain_output="$1"
-    # Use printf %q to safely embed multi-line content.
-    cat > "$mock_dir/git" <<'MOCK_HEADER'
-#!/usr/bin/env bash
-# Mock git — only intercepts 'worktree list --porcelain'
-MOCK_HEADER
-    # Append the canned output via a heredoc stored as a variable.
-    printf 'CANNED=%q\n' "$porcelain_output" >> "$mock_dir/git"
-    cat >> "$mock_dir/git" <<'MOCK_BODY'
-if [[ "${*}" == *"worktree list --porcelain"* ]]; then
-    printf '%s\n' "$CANNED"
-    exit 0
-fi
-# For rev-parse --show-toplevel, return a stable fake path.
-if [[ "${*}" == *"rev-parse --show-toplevel"* ]]; then
-    echo "/fake/repo"
-    exit 0
-fi
-# Other git commands fall through to real git if available.
-exec git "$@"
-MOCK_BODY
-    chmod +x "$mock_dir/git"
-    echo "$mock_dir"
-}
-
-# Create a fake "agent target" directory under FAKE_TMP.
-# We redirect the PATTERN search by monkey-patching the variable inside
-# the script via env vars — but since the script hard-codes /tmp, we instead
-# override the script's directory searching by injecting a wrapper that
-# swaps the target prefix.  The cleanest approach: create actual dirs under
-# /tmp but with unique names using our test prefix, then clean them up.
-
-# Create uniquely-named test dirs that look like agent targets.
-TEST_PREFIX="clean-tmp-test-$$"
-
-make_fake_target() {
-    local name="$1"
-    local full="/tmp/${TEST_PREFIX}-${name}"
-    mkdir -p "$full"
-    # Ensure it looks old (not "recently modified").
-    touch -t 200001010000.00 "$full"
-    echo "$full"
-}
-
-remove_fake_targets() {
-    rm -rf /tmp/"${TEST_PREFIX}"-* 2>/dev/null || true
-}
-
-# We need the script to scan our fake dirs. Since the script hard-codes
-# the glob patterns /tmp/agent-*-target and /tmp/wt-*-target, we name
-# our test dirs accordingly, using a prefix collision with those patterns.
-# We embed the test session ID to avoid polluting other tests.
-
-make_live_target() {
-    # Creates a fake dir whose name matches what a live worktree would produce.
-    local wt_id="$1"
-    local full="/tmp/agent-${wt_id}-target"
-    mkdir -p "$full"
-    touch -t 200001010000.00 "$full"
-    echo "$full"
-}
-
-make_orphan_target() {
-    local suffix="$1"
-    local full="/tmp/agent-orphan-${TEST_PREFIX}-${suffix}-target"
-    mkdir -p "$full"
-    touch -t 200001010000.00 "$full"
-    echo "$full"
-}
-
-run_reaper_dry_run() {
-    local mock_git_dir="$1"
-    PATH="$mock_git_dir:$PATH" bash "$IMPL" 2>&1
-}
-
-# ── Test 1: Safety invariant — live targets never reported as orphans ─────────
-
-test_live_target_never_reported_as_orphan() {
-    local wt_id="livetest-${TEST_PREFIX}"
-    local live_dir orphan_dir output
-
-    # Create a live-worktree target dir.
-    live_dir="$(make_live_target "$wt_id")"
-
-    # Create a separate orphan dir.
-    orphan_dir="$(make_orphan_target "safety1")"
-
-    # Porcelain listing that includes the live worktree path.
-    local porcelain
-    porcelain="$(printf 'worktree /some/base/.claude/worktrees/agent-%s\nHEAD abc123\nbranch refs/heads/test\n' "$wt_id")"
-
-    local mock_git
-    mock_git="$(make_mock_git "$porcelain")"
-
-    output="$(run_reaper_dry_run "$mock_git" 2>&1)"
-
-    rm -rf "$live_dir" "$orphan_dir" "$mock_git"
-
-    # The live target must NOT appear as ORPHAN.
-    if echo "$output" | grep "ORPHAN" | grep -q "agent-${wt_id}-target"; then
-        fail "live target incorrectly reported as ORPHAN: $output"
-    else
-        pass "live target is NOT reported as an orphan"
-    fi
-}
-
-# ── Test 2: Orphan target IS reported ─────────────────────────────────────────
-
-test_orphan_target_is_reported() {
-    local orphan_dir output
-
-    orphan_dir="$(make_orphan_target "report1")"
-
-    # Porcelain listing with NO worktree matching the orphan.
-    local porcelain
-    porcelain="$(printf 'worktree /some/repo\nHEAD abc123\nbranch refs/heads/main\n')"
-
-    local mock_git
-    mock_git="$(make_mock_git "$porcelain")"
-
-    output="$(run_reaper_dry_run "$mock_git" 2>&1)"
-
-    rm -rf "$orphan_dir" "$mock_git"
-
-    if echo "$output" | grep -q "ORPHAN.*agent-orphan-${TEST_PREFIX}-report1-target"; then
-        pass "orphan target correctly reported as ORPHAN"
-    else
-        fail "orphan target not found in output — got: $output"
-    fi
-}
-
-# ── Test 3: Dry-run does NOT delete anything ──────────────────────────────────
-
-test_dry_run_does_not_delete() {
-    local orphan_dir output
-
-    orphan_dir="$(make_orphan_target "dryrun1")"
-
-    local porcelain
-    porcelain="$(printf 'worktree /some/repo\nHEAD abc123\nbranch refs/heads/main\n')"
-
-    local mock_git
-    mock_git="$(make_mock_git "$porcelain")"
-
-    output="$(run_reaper_dry_run "$mock_git" 2>&1)"
-
-    local still_exists=0
-    [[ -d "$orphan_dir" ]] && still_exists=1
-
-    rm -rf "$orphan_dir" "$mock_git"
-
-    if [[ "$still_exists" -eq 1 ]]; then
-        pass "dry-run does NOT delete the orphan dir"
-    else
-        fail "dry-run DELETED the orphan dir (should not have)"
-    fi
-}
-
-# ── Test 4: Multiple mixed dirs — only orphans reported ───────────────────────
-
-test_mixed_dirs_only_orphans_reported() {
-    local wt_id="mixedlive-${TEST_PREFIX}"
-    local live_dir orphan1 orphan2 output
-
-    live_dir="$(make_live_target "$wt_id")"
-    orphan1="$(make_orphan_target "mix1")"
-    orphan2="$(make_orphan_target "mix2")"
-
-    local porcelain
-    porcelain="$(printf 'worktree /repo/.claude/worktrees/agent-%s\nHEAD abc\nbranch refs/heads/x\n' "$wt_id")"
-
-    local mock_git
-    mock_git="$(make_mock_git "$porcelain")"
-
-    output="$(run_reaper_dry_run "$mock_git" 2>&1)"
-
-    rm -rf "$live_dir" "$orphan1" "$orphan2" "$mock_git"
-
-    local ok=1
-
-    # Live must NOT be orphan.
-    if echo "$output" | grep "ORPHAN" | grep -q "agent-${wt_id}-target"; then
-        fail "live target incorrectly in ORPHAN list"
-        ok=0
-    fi
-
-    # Both orphans must appear.
-    if ! echo "$output" | grep -q "ORPHAN.*agent-orphan-${TEST_PREFIX}-mix1-target"; then
-        fail "orphan1 not found in ORPHAN list"
-        ok=0
-    fi
-
-    if ! echo "$output" | grep -q "ORPHAN.*agent-orphan-${TEST_PREFIX}-mix2-target"; then
-        fail "orphan2 not found in ORPHAN list"
-        ok=0
-    fi
-
-    [[ "$ok" -eq 1 ]] && pass "mixed dirs: only orphans reported"
-}
-
-# ── Test 5: Recently-modified dirs are skipped (grace period) ─────────────────
-
-test_recent_dir_is_skipped() {
-    local orphan_dir output
-
-    orphan_dir="$(make_orphan_target "recent1")"
-    # Touch to make it look freshly modified (within grace window).
-    touch "$orphan_dir"
-
-    local porcelain
-    porcelain="$(printf 'worktree /some/repo\nHEAD abc123\nbranch refs/heads/main\n')"
-
-    local mock_git
-    mock_git="$(make_mock_git "$porcelain")"
-
-    output="$(run_reaper_dry_run "$mock_git" 2>&1)"
-
-    rm -rf "$orphan_dir" "$mock_git"
-
-    if echo "$output" | grep -q "RECENT.*agent-orphan-${TEST_PREFIX}-recent1-target"; then
-        pass "recently-modified dir skipped (grace period)"
-    else
-        # If the dir was not found at all (no match in /tmp), also pass —
-        # meaning it was not treated as an orphan.
-        if echo "$output" | grep "ORPHAN" | grep -q "agent-orphan-${TEST_PREFIX}-recent1-target"; then
-            fail "recently-modified dir incorrectly listed as orphan"
-        else
-            pass "recently-modified dir not listed as orphan (grace period)"
-        fi
-    fi
-}
-
-# ── Test 6: --prune flag actually deletes orphans ─────────────────────────────
-
-test_prune_flag_deletes_orphans() {
-    local orphan_dir output
-
-    orphan_dir="$(make_orphan_target "prune1")"
-
-    local porcelain
-    porcelain="$(printf 'worktree /some/repo\nHEAD abc123\nbranch refs/heads/main\n')"
-
-    local mock_git
-    mock_git="$(make_mock_git "$porcelain")"
-
-    output="$(PATH="$mock_git:$PATH" bash "$IMPL" --prune 2>&1)"
-
-    local deleted=0
-    [[ ! -d "$orphan_dir" ]] && deleted=1
-
-    rm -rf "$orphan_dir" "$mock_git" 2>/dev/null || true
-
-    if [[ "$deleted" -eq 1 ]]; then
-        pass "--prune deletes orphaned dirs"
-    else
-        fail "--prune did not delete orphaned dir — output: $output"
-    fi
-}
-
-# ── Test 7: APPLY=1 env var also deletes orphans ─────────────────────────────
-
-test_apply_env_deletes_orphans() {
-    local orphan_dir output
-
-    orphan_dir="$(make_orphan_target "apply1")"
-
-    local porcelain
-    porcelain="$(printf 'worktree /some/repo\nHEAD abc123\nbranch refs/heads/main\n')"
-
-    local mock_git
-    mock_git="$(make_mock_git "$porcelain")"
-
-    output="$(APPLY=1 PATH="$mock_git:$PATH" bash "$IMPL" 2>&1)"
-
-    local deleted=0
-    [[ ! -d "$orphan_dir" ]] && deleted=1
-
-    rm -rf "$orphan_dir" "$mock_git" 2>/dev/null || true
-
-    if [[ "$deleted" -eq 1 ]]; then
-        pass "APPLY=1 env var deletes orphaned dirs"
-    else
-        fail "APPLY=1 did not delete orphaned dir — output: $output"
-    fi
-}
-
-# ── Test 8: Live target is marked LIVE, not REMOVE, even with --prune ─────────
-
-test_prune_never_deletes_live_target() {
-    local wt_id="livenodel-${TEST_PREFIX}"
-    local live_dir output
-
-    live_dir="$(make_live_target "$wt_id")"
-
-    local porcelain
-    porcelain="$(printf 'worktree /repo/.claude/worktrees/agent-%s\nHEAD abc\nbranch refs/heads/x\n' "$wt_id")"
-
-    local mock_git
-    mock_git="$(make_mock_git "$porcelain")"
-
-    output="$(PATH="$mock_git:$PATH" bash "$IMPL" --prune 2>&1)"
-
-    local still_exists=0
-    [[ -d "$live_dir" ]] && still_exists=1
-
-    rm -rf "$live_dir" "$mock_git"
-
-    if [[ "$still_exists" -eq 1 ]]; then
-        pass "--prune does NOT delete live worktree target"
-    else
-        fail "--prune DELETED live worktree target (SAFETY VIOLATION)"
-    fi
-}
-
-# ── Run all tests ─────────────────────────────────────────────────────────────
-
-echo "=== clean-tmp-targets safety test suite ==="
-echo ""
-
-test_live_target_never_reported_as_orphan
-test_orphan_target_is_reported
-test_dry_run_does_not_delete
-test_mixed_dirs_only_orphans_reported
-test_recent_dir_is_skipped
-test_prune_flag_deletes_orphans
-test_apply_env_deletes_orphans
-test_prune_never_deletes_live_target
-
-# Clean up any stray test dirs.
-remove_fake_targets
-
-echo ""
-echo "=== Results: $PASS_COUNT passed, $FAIL_COUNT failed ==="
-
-if [[ "$FAIL_COUNT" -gt 0 ]]; then
-    exit 1
-fi
-exit 0
+python3 - "$SCRIPT_DIR/../clean-tmp-targets.sh" <<'PY'
+import os
+from pathlib import Path
+import shlex
+import shutil
+import subprocess
+import sys
+import tempfile
+import unittest
+
+IMPL = Path(sys.argv.pop()).resolve()
+BASH = shutil.which("bash")
+
+
+class TemporaryTargetInspection(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix="tmp-target-proof-")
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.targets = self.root / "targets"
+        self.targets.mkdir()
+        self.bin = self.root / "bin"
+        self.bin.mkdir()
+        self.log = self.root / "calls.log"
+        self.porcelain = self.root / "worktrees.txt"
+        self.porcelain.write_text(
+            "worktree /repo/.worktrees/agent-live\nHEAD abc\n"
+            "branch refs/heads/topic/renamed\n\n"
+        )
+        self.env = os.environ.copy()
+        self.env.update(
+            PATH=str(self.bin) + os.pathsep + self.env["PATH"],
+            APPLY="0", GRACE_MINUTES="5", SPY_LOG=str(self.log),
+            GIT_PORCELAIN=str(self.porcelain), GIT_CASE="good",
+        )
+        source = IMPL.read_text()
+        # Preserve the actual script except its two literal scan roots. Refuse
+        # fixture setup if the production entrypoint changes those constants.
+        for pattern in ('"/tmp/agent-*-target"', '"/tmp/wt-*-target"'):
+            self.assertEqual(source.count(pattern), 1)
+            source = source.replace(pattern, '"' + str(self.targets) + pattern[5:])
+        self.fixture_impl = self.root / "inspect.sh"
+        self.fixture_impl.write_text(source)
+        self.old = self.make_target("agent-unowned-target", old=True)
+        self.named = self.make_target("agent-live-target", old=True)
+        self.renamed = self.make_target("agent-worktree-agent-live-target", old=True)
+        self.recent = self.make_target("wt-recent-target", old=False)
+        victim = self.root / "outside"
+        victim.mkdir()
+        (victim / "unique-source.pl").write_text("retained source\n")
+        (self.targets / "agent-linked-target").symlink_to(victim, target_is_directory=True)
+        self.before = self.snapshot()
+        self.write_tool("git", """
+case "$*" in
+  *rev-parse*)
+    [ "$GIT_CASE" != root-failure ] || exit 9
+    printf '%s\\n' /repo
+    ;;
+  *"worktree list --porcelain"*)
+    [ "$GIT_CASE" != empty ] || exit 0
+    cat "$GIT_PORCELAIN"
+    [ "$GIT_CASE" != partial-failure ] || exit 9
+    ;;
+  *) exit 99 ;;
+esac
+""")
+
+    def make_target(self, name, old):
+        p = self.targets / name
+        p.mkdir()
+        for name, content in [
+            ("source.pl", "unique work\n"),
+            (".ignored", "scratch\n"),
+            ("receipt.json", '{"proof": "keep"}\n'),
+            ("owner-marker", "retained lease evidence\n"),
+        ]:
+            f = p / name
+            f.write_text(content)
+            if old:
+                os.utime(f, (946684800, 946684800))
+        if old:
+            os.utime(p, (946684800, 946684800))
+        return p
+
+    def snapshot(self):
+        result = {}
+        for base in (self.targets, self.root / "outside"):
+            if not base.exists():
+                continue
+            for p in [base, *base.rglob("*")]:
+                st = p.lstat()
+                value = os.readlink(p) if p.is_symlink() else (
+                    p.read_bytes() if p.is_file() else None
+                )
+                result[str(p.relative_to(self.root))] = (
+                    st.st_ino, st.st_mode, st.st_size, st.st_mtime_ns, value
+                )
+        return result
+
+    def write_tool(self, name, body):
+        p = self.bin / name
+        p.write_text(
+            "#!/bin/sh\n"
+            + "printf '%s\\n' " + shlex.quote(name) + " >> \"$SPY_LOG\"\n"
+            + body
+        )
+        p.chmod(0o755)
+
+    def calls(self):
+        return self.log.read_text().splitlines() if self.log.exists() else []
+
+    def run_script(self, args=(), apply="0", impl=None, git_case="good"):
+        env = dict(self.env, APPLY=apply, GIT_CASE=git_case)
+        result = subprocess.run(
+            [BASH, str(impl or self.fixture_impl), *args],
+            env=env, cwd=self.root, text=True, capture_output=True, timeout=15,
+        )
+        self.assertEqual(self.snapshot(), self.before, result.stdout + result.stderr)
+        return result
+
+    def test_retired_forms_refuse_before_external_discovery(self):
+        # The original production entrypoint is safe to exercise even on RED:
+        # every discovery/deletion command is a refusing spy.
+        for name in ("git", "mktemp", "find", "du", "rm", "sort",
+                     "basename", "head", "awk", "grep", "sed"):
+            self.write_tool(name, "exit 99\n")
+        cases = [
+            (("--prune",), "0"), ((), "1"),
+            (("--prune", "--dry-run"), "0"),
+            (("--dry-run", "--prune"), "0"),
+            (("--dry-run",), "1"), (("--prune",), "1"),
+            (("--help", "--prune"), "0"),
+            (("--prune", "--help"), "0"), (("--help",), "1"),
+        ]
+        for args, apply in cases:
+            with self.subTest(args=args, apply=apply):
+                self.log.unlink(missing_ok=True)
+                result = self.run_script(args, apply, impl=IMPL)
+                self.assertEqual(result.returncode, 78, result.stdout + result.stderr)
+                self.assertIn("retired", result.stderr.lower())
+                self.assertEqual(self.calls(), [])
+
+    def test_advisory_observes_fixture_without_ownership_clearance(self):
+        # Deterministic size oracle plus argument evidence: a no-op size
+        # observer must not pass merely because it prints the fixture path.
+        self.write_tool("du", """
+printf 'DU_ARG:%s|%s\\n' "$1" "$2" >> "$SPY_LOG"
+case "$1" in
+  -sk) printf '8192\\t%s\\n' "$2" ;;
+  -sh) printf '8.0M\\t%s\\n' "$2" ;;
+  *) exit 99 ;;
+esac
+""")
+        result = self.run_script()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("UNVERIFIED  " + str(self.old), result.stdout)
+        self.assertIn("NAMED   " + str(self.named), result.stdout)
+        self.assertIn("NAMED   " + str(self.renamed), result.stdout)
+        self.assertIn("RECENT  " + str(self.recent), result.stdout)
+        self.assertIn("ownership and reclaimability unverified", result.stdout)
+        self.assertIn("8.0M observed; no ownership clearance", result.stdout)
+        self.assertIn("8M observed", result.stdout)
+        self.assertIn("DU_ARG:-sk|" + str(self.old), self.calls())
+        self.assertIn("DU_ARG:-sh|" + str(self.old), self.calls())
+        for misleading in ("reclaimable", "Re-run with --prune", "safe to delete", "ORPHAN"):
+            self.assertNotIn(misleading, result.stdout)
+
+    def test_git_observation_failure_refuses_without_traversal(self):
+        for name in ("mktemp", "find", "du", "rm"):
+            self.write_tool(name, "exit 99\n")
+        for case in ("root-failure", "partial-failure", "empty"):
+            with self.subTest(case=case):
+                self.log.unlink(missing_ok=True)
+                result = self.run_script(git_case=case)
+                self.assertEqual(result.returncode, 75, result.stdout + result.stderr)
+                self.assertIn("REFUSING", result.stderr)
+                self.assertTrue(self.calls())
+                self.assertTrue(all(name == "git" for name in self.calls()))
+                self.assertNotIn("UNVERIFIED", result.stdout)
+
+    def test_help_and_unknown_flags_remain_non_destructive(self):
+        result = self.run_script(("--help",), impl=IMPL)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("advisory", result.stdout.lower())
+        self.assertIn("retired", result.stdout.lower())
+        self.assertEqual(self.calls(), [])
+        result = self.run_script(("--unknown",), impl=IMPL)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(self.calls(), [])
+
+
+unittest.main(verbosity=2)
+PY
