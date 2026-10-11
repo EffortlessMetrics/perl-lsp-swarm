@@ -65,6 +65,9 @@ fi
 if [[ -n "\${FAKE_CARGO_ERROR:-}" ]]; then
   echo "\$FAKE_CARGO_ERROR" >&2
 fi
+if [[ -n "\${FAKE_CARGO_ERROR_FILE:-}" ]]; then
+  cat "\$FAKE_CARGO_ERROR_FILE" >&2
+fi
 exit "\${FAKE_CARGO_SAFE_EXIT:-0}"
 FAKE
   chmod +x "${script_dir}/cargo-safe"
@@ -168,6 +171,63 @@ if [[ "$code" -eq 37 ]] && grep -Fq 'bootstrap_build_failed (exit 37' "${FAIL_DI
 else
   fail "unrelated access error with a distant xtask mention is not a locked artifact"
 fi
+
+# These cases supply all output themselves, including any real startup marker.
+# Use a file so the large-output regression does not depend on environment size.
+assert_classification() {
+  local label="$1"
+  local expected="$2"
+  local code=0
+  FAKE_BOOTSTRAP_FAILURE=1 FAKE_CARGO_SAFE_EXIT=37 \
+    FAKE_CARGO_ERROR_FILE="${FAIL_DIR}/classifier.input" \
+    bash "${TEST_SCRIPTS}/devex-doctor.sh" > "${FAIL_DIR}/classifier.out" 2> "${FAIL_DIR}/classifier.err" || code=$?
+  if [[ "$code" -eq 37 ]] && grep -Fq "devex: $expected (exit 37" "${FAIL_DIR}/classifier.err"; then
+    pass "$label"
+  else
+    fail "$label (exit $code)"
+    cat "${FAIL_DIR}/classifier.err"
+  fi
+}
+
+for artifact in 'C:\repo\xtask\target' 'C:\repo\xtask\src\main.rs' 'C:\repo\target\debug\xtask.exe'; do
+  printf 'error: failed to open %s: Access is denied. (os error 5)\n' "$artifact" > "${FAIL_DIR}/classifier.input"
+  assert_classification "access denial is not proof of a lock: $artifact" bootstrap_build_failed
+done
+
+# Even sharing evidence must identify an executable, not a similarly named file
+# or an xtask directory somewhere in the path.
+for artifact in 'C:\repo\xtask\src\main.rs' 'C:\repo\target\debug\xtask.exe.d' '/repo/xtask/target' '/repo/not-xtask.exe'; do
+  printf 'error: failed to open `%s`: being used by another process (os error 32)\n' "$artifact" > "${FAIL_DIR}/classifier.input"
+  assert_classification "sharing evidence names a different artifact: $artifact" bootstrap_build_failed
+done
+
+for artifact in 'C:\repo\target\debug\xtask.exe' '/repo/target/debug/xtask' 'xtask.exe'; do
+  printf 'error: failed to replace `%s`: being used by another process (os error 32)\n' "$artifact" > "${FAIL_DIR}/classifier.input"
+  assert_classification "sharing evidence identifies executable: $artifact" bootstrap_artifact_locked_or_in_use
+done
+
+printf 'error: xtask.exe (os error 320)\n' > "${FAIL_DIR}/classifier.input"
+assert_classification "error 320 is not sharing error 32" bootstrap_build_failed
+
+cat > "${FAIL_DIR}/classifier.input" <<'ERROR'
+error[E0425]: cannot find value `missing` in this scope
+  --> xtask/src/tasks/devex_doctor.rs:19:1
+19 | println!("devex-doctor: started", missing);
+ERROR
+assert_classification "compiler source excerpt does not establish doctor execution" bootstrap_build_failed
+
+printf 'devex-doctor: started\nerror: mentioned doctor_check_failed in a probe\n' > "${FAIL_DIR}/classifier.input"
+assert_classification "incidental finding text does not manufacture a doctor finding" doctor_instrument_failed
+
+for finding in doctor_required_tool_missing doctor_required_component_missing doctor_check_failed; do
+  printf 'devex-doctor: started\r\n❌ %s: fixture\r\n' "$finding" > "${FAIL_DIR}/classifier.input"
+  assert_classification "CRLF marker and rendered $finding remain recognized" doctor_exited
+done
+
+# Enough matching output to exceed the pipe buffer: grep -q in the second
+# stage used to close the pipe early and invert the condition under pipefail.
+awk 'BEGIN { for (i = 0; i < 10000; i++) print "error: failed to replace xtask.exe: being used by another process (os error 32)" }' > "${FAIL_DIR}/classifier.input"
+assert_classification "large matching output preserves lock classification" bootstrap_artifact_locked_or_in_use
 
 TOTAL=$((PASS + FAIL))
 echo ""
