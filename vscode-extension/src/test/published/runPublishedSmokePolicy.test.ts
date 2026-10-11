@@ -25,6 +25,13 @@ interface PublishedChildObservation {
   installTargets: string[];
   installedBytes: string[];
   runners: { kind: string; digest?: string }[];
+  childVsixPath?: string;
+  firstHour?: {
+    status: number;
+    stderr: string;
+    requestedVsixPath?: string;
+    observedVsix?: { path: string; sha256: string; size: number };
+  };
   waits: number[];
 }
 
@@ -39,6 +46,7 @@ function withPublishedChild(
     paths: { original: string; profile: string; extensions: string; workspace: string },
   ) => void,
   source: 'vsix' | 'open-vsx' | 'marketplace' = 'vsix',
+  firstHour = false,
 ): void {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'published-vsix-attribution-'));
   const original = path.join(root, 'candidate.vsix');
@@ -47,11 +55,70 @@ function withPublishedChild(
   const workspace = path.join(root, 'caller-workspace');
   const observationPath = path.join(root, 'observation.json');
   const preload = path.join(root, 'preload.cjs');
+  const consumerPreload = path.join(root, 'first-hour-preload.cjs');
+  const consumerObservation = path.join(root, 'first-hour-observation.json');
+  const server = path.join(root, 'input-server');
   for (const directory of [profile, extensions, workspace]) {
     fs.mkdirSync(directory);
     fs.writeFileSync(path.join(directory, 'caller-owned'), 'preserve');
   }
   fs.writeFileSync(original, 'archive A');
+  if (firstHour) {
+    fs.writeFileSync(server, 'server bytes');
+    fs.writeFileSync(path.join(workspace, 'smoke.pl'), 'print "ok";');
+    const installedExtension = path.join(extensions, 'installed-extension');
+    fs.mkdirSync(installedExtension);
+    fs.writeFileSync(
+      consumerPreload,
+      `
+const fs = require('node:fs');
+const Module = require('node:module');
+const observation = {};
+const boundary = new Error('first-hour VSIX observation complete');
+const load = Module._load;
+global.suite = (_name, run) => run.call({ timeout() {} });
+global.test = (_name, run) => {
+  Promise.resolve().then(() => run.call({ timeout() {} })).catch(error => {
+    if (error !== boundary) { console.error(error); process.exitCode = 1; }
+  });
+};
+Module._load = function(request, ...args) {
+  if (request === 'vscode') return {
+    version: 'fixture', env: {},
+    workspace: {
+      workspaceFolders: [{ uri: { scheme: 'file', fsPath: process.env.PERL_LSP_SMOKE_WORKSPACE } }],
+      textDocuments: [], isTrusted: true,
+      openTextDocument: async file => ({ uri: { toString: () => file }, positionAt: () => ({ line: 0, character: 0 }) }),
+    },
+    window: { showTextDocument: async () => {} },
+    commands: {
+      getCommands: async () => ['perl-lsp.runHealthCheck'],
+      executeCommand: async (_command, file) => ({ ok: file === process.env.PERL_LSP_FIRST_HOUR_SERVER_PATH, checks: [{ label: 'LSP binary', status: 'error' }] }),
+    },
+    extensions: { getExtension: () => ({
+      extensionPath: process.env.TEST_INSTALLED_EXTENSION, packageJSON: { version: 'fixture' },
+      activate: async () => ({ waitForActiveDocumentReady: async () => {} }),
+    }) },
+  };
+  const actual = load.call(this, request, ...args);
+  if (request !== '../installedArtifactObservation') return actual;
+  return { ...actual, observeArtifact: (...arguments_) => {
+    const selectedVsix = arguments_[0] === process.env.PERL_LSP_PUBLISHED_VSIX_PATH;
+    if (selectedVsix) observation.requestedVsixPath = arguments_[0];
+    const observed = actual.observeArtifact(...arguments_);
+    if (selectedVsix) {
+      observation.observedVsix = observed;
+      // Stop the actual receipt callback after its real byte observer, before
+      // mocked editor/provider behavior could be mistaken for acceptance proof.
+      throw boundary;
+    }
+    return observed;
+  } };
+};
+process.once('exit', () => fs.writeFileSync(process.env.TEST_CONSUMER_OBSERVATION, JSON.stringify(observation)));
+`,
+    );
+  }
   fs.writeFileSync(
     preload,
     `
@@ -60,6 +127,7 @@ const path = require('node:path');
 const Module = require('node:module');
 const { PassThrough } = require('node:stream');
 const { EventEmitter } = require('node:events');
+const spawnSync = require('node:child_process').spawnSync;
 const scenario = process.env.TEST_SCENARIO;
 const original = process.env.TEST_ORIGINAL;
 const observation = { ownedDirectories: [], installTargets: [], installedBytes: [], runners: [], waits: [] };
@@ -113,6 +181,17 @@ require('node:child_process').spawnSync = (_command, args) => {
 };
 const runner = kind => async options => {
   observation.runners.push({ kind, digest: options.extensionTestsEnv.PERL_LSP_VSIX_SHA256 });
+  observation.childVsixPath = options.extensionTestsEnv.PERL_LSP_PUBLISHED_VSIX_PATH;
+  if (process.env.TEST_FIRST_HOUR === '1') {
+    const result = spawnSync(process.execPath, ['--require', process.env.TEST_CONSUMER_PRELOAD, process.env.TEST_CONSUMER], {
+      env: { ...process.env, ...options.extensionTestsEnv }, encoding: 'utf8', timeout: 5_000,
+    });
+    if (result.error) throw result.error;
+    observation.firstHour = {
+      status: result.status, stderr: result.stderr,
+      ...JSON.parse(fs.readFileSync(process.env.TEST_CONSUMER_OBSERVATION, 'utf8')),
+    };
+  }
   if (scenario === 'runner-failure') throw new Error('fixture runner failure');
 };
 const load = Module._load;
@@ -152,6 +231,11 @@ process.once('exit', () => write(process.env.TEST_OBSERVATION, JSON.stringify(ob
       TEST_SCENARIO: scenario,
       TEST_ORIGINAL: original,
       TEST_OBSERVATION: observationPath,
+      TEST_FIRST_HOUR: firstHour ? '1' : '0',
+      TEST_CONSUMER: path.join(__dirname, '../integration/firstHourReceipt.test.js'),
+      TEST_CONSUMER_PRELOAD: consumerPreload,
+      TEST_CONSUMER_OBSERVATION: consumerObservation,
+      TEST_INSTALLED_EXTENSION: path.join(extensions, 'installed-extension'),
       PERL_LSP_PUBLISHED_EXTENSION_SOURCE: source,
       PERL_LSP_PUBLISHED_EXTENSION_VERSION: source === 'marketplace' ? '' : '0.17.0',
       PERL_LSP_PUBLISHED_VSIX_PATH: original,
@@ -164,6 +248,10 @@ process.once('exit', () => write(process.env.TEST_OBSERVATION, JSON.stringify(ob
       // A stale ambient digest must be replaced or removed by main.
       PERL_LSP_VSIX_SHA256: 'stale digest',
     });
+    if (firstHour) {
+      env.PERL_LSP_CURRENT_SOURCE_SMOKE = '1';
+      env.PERL_LSP_FIRST_HOUR_SERVER_PATH = server;
+    }
     const result = spawnSync(
       process.execPath,
       ['--require', preload, path.join(__dirname, 'runPublishedSmoke.js')],
@@ -192,6 +280,36 @@ process.once('exit', () => write(process.env.TEST_OBSERVATION, JSON.stringify(ob
 }
 
 const archiveADigest = createHash('sha256').update('archive A').digest('hex');
+for (const trust of ['disabled', 'untrusted'] as const) {
+  for (const source of ['vsix', 'open-vsx'] as const) {
+    for (const scenario of ['unchanged', 'replace-original', 'delete-original']) {
+      void test(`compiled ${trust} ${source} first-hour consumer observes captured VSIX: ${scenario}`, () => {
+        withPublishedChild(
+          scenario,
+          trust,
+          (result, observation) => {
+            assert.equal(result.status, 0, String(result.stderr));
+            assert.equal(observation.installTargets.length, 1);
+            assert.equal(observation.runners.length, 1);
+            assert.ok(observation.firstHour);
+            assert.equal(observation.firstHour.status, 0, observation.firstHour.stderr);
+            assert.equal(observation.firstHour.observedVsix?.sha256, archiveADigest);
+            assert.equal(observation.firstHour.requestedVsixPath, observation.snapshotPath);
+            assert.deepEqual(observation.firstHour.observedVsix, {
+              path: observation.snapshotPath,
+              sha256: archiveADigest,
+              size: Buffer.byteLength('archive A'),
+            });
+            assert.deepEqual(observation.installedBytes, ['archive A']);
+            assert.equal(observation.runners[0]?.digest, archiveADigest);
+          },
+          source,
+          true,
+        );
+      });
+    }
+  }
+}
 for (const trust of ['disabled', 'untrusted'] as const) {
   for (const scenario of ['unchanged', 'replace-original', 'delete-original', 'transient-retry']) {
     void test(`compiled ${trust} smoke binds captured VSIX bytes: ${scenario}`, () => {
@@ -278,6 +396,7 @@ void test('compiled unbound Marketplace smoke installs the ID and clears an ambi
       assert.deepEqual(observation.installTargets, ['EffortlessMetrics.perl-lsp-rs']);
       assert.equal(observation.snapshotPath, undefined);
       assert.deepEqual(observation.runners, [{ kind: 'trusted' }]);
+      assert.equal(observation.childVsixPath, original);
       assert.equal(fs.readFileSync(original, 'utf8'), 'archive A');
     },
     'marketplace',

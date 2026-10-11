@@ -601,6 +601,7 @@ async function main(): Promise<void> {
     if (vsixSha256 === undefined) {
       delete extensionTestsEnv.PERL_LSP_VSIX_SHA256;
     } else {
+      extensionTestsEnv.PERL_LSP_PUBLISHED_VSIX_PATH = installTarget;
       extensionTestsEnv.PERL_LSP_VSIX_SHA256 = vsixSha256;
     }
 
