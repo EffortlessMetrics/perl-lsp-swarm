@@ -36,6 +36,18 @@
       "invocation_sha256": "0fee291736275420f9ae5585dc370bc6f42cc37990f5b6c27c3edf7d26ff3f9e"
     },
     {
+      "id": "parser.hir.program_body_geometry",
+      "invocation_sha256": "ac08211a9da5df905d3b9e3f8dec9b215503a1ad6a6ebb1404326ede42892af0"
+    },
+    {
+      "id": "parser.hir.program_body_parity",
+      "invocation_sha256": "7ca2ad26ba07a0df246e74e8098de6e5e808266bfb321e2af0d888b044e74859"
+    },
+    {
+      "id": "parser.hir.program_body_regex",
+      "invocation_sha256": "cfa2459045abfd0ac2ed2268eecf2a73e7b8d3daedfca278eea5bd99aeb55155"
+    },
+    {
       "id": "parser.incremental.accuracy",
       "invocation_sha256": "187f9c074665fa77b5902bb020f90aec379011508c78667d5d7b1a53039960d9"
     },
