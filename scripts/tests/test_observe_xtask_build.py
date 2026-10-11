@@ -2,6 +2,7 @@
 from pathlib import Path
 import json
 import os
+import signal
 import shutil
 import subprocess
 import tempfile
@@ -79,15 +80,20 @@ exit "${FAKE_EXIT:-0}"
         path.write_text("#!/usr/bin/env bash\n" + body, encoding="utf-8", newline="\n")
         path.chmod(0o755)
 
-    def observe(self, **extra):
+    def observer_command(self, phase):
+        return [BASH, "--noprofile", "--norc", "-c",
+                'export PATH="$1:$PATH"; shift; exec bash "$@"',
+                "observation-control", posix(self.bin), posix(OBSERVER), phase, "out", "--",
+                "cargo", "xtask", "ripr-plus", "--receipt", "target/path with space.json"]
+
+    def observe(self, phase="host-test", **extra):
         env = dict(os.environ, FAKE_STATE=posix(self.state), HOME=posix(self.work),
                    CARGO_HOME=posix(self.work / "cargo-home"), CARGO_TARGET_DIR="target",
                    GITHUB_RUN_ID="123", GITHUB_RUN_ATTEMPT="2")
         env.update(extra)
         command = ["cargo", "xtask", "ripr-plus", "--receipt", "target/path with space.json"]
         result = subprocess.run(
-            [BASH, "--noprofile", "--norc", "-c", 'export PATH="$1:$PATH"; shift; exec bash "$@"',
-             "observation-control", posix(self.bin), posix(OBSERVER), "host-test", "out", "--", *command],
+            self.observer_command(phase),
             cwd=self.work, env=env, capture_output=True, text=True, encoding="utf-8", timeout=25,
         )
         records = list((self.work / "out").glob("*.observation.json"))
@@ -99,8 +105,76 @@ exit "${FAKE_EXIT:-0}"
         self.assertIn("ordinary command stderr", result.stderr)
         return result, observation
 
+    def test_baseline_liveness_preserves_failure(self):
+        result, record = self.observe(phase="host-baseline", FAKE_EXIT="37")
+        self.assertEqual(result.returncode, 37)
+        self.assertEqual(record["exit_code"], 37)
+        self.assertIn("ripr baseline liveness: waiting elapsed_seconds=0; semantic_progress=not_proven", result.stderr)
+
+    @unittest.skipUnless(os.name == "posix" and Path("/proc/self").exists(), "Linux lifecycle control")
+    def test_baseline_liveness_repeats_and_stops_on_parent_only_termination(self):
+        # Hold the actual command open independently of the wrapper. Killing only
+        # the wrapper must close the heartbeat pipe even while Cargo retains its
+        # own stdout/stderr. This is liveness proof, never analyzer progress.
+        self.stub("cargo", '''if [[ "$*" == "-vV" ]]; then echo 'cargo 1.95.0 (test)'; exit 0; fi
+printf '%s' "$$" > "$FAKE_STATE/command-pid"
+printf 'stdout control\\n'
+while :; do sleep 0.1; done
+''')
+        env = dict(os.environ, FAKE_STATE=posix(self.state), HOME=posix(self.work),
+                   CARGO_HOME=posix(self.work / "cargo-home"), CARGO_TARGET_DIR="target")
+        # Exercise real Bash timeout/EOF behavior cheaply while retaining the
+        # requested production interval. No product knob or timer child is added.
+        env["BASH_FUNC_read%%"] = '''() {
+printf '%s\\0' "$@" >> "$FAKE_STATE/read-args"
+builtin read -r -t 0.05
+}'''
+        with (self.work / "live.stderr").open("wb") as stderr:
+            process = subprocess.Popen(self.observer_command("host-baseline"), cwd=self.work,
+                                       env=env, stdout=subprocess.PIPE, stderr=stderr,
+                                       start_new_session=True)
+            try:
+                start = time.monotonic()
+                log = self.work / "live.stderr"
+                while time.monotonic() - start < 5:
+                    lines = [line for line in log.read_text().splitlines()
+                             if line.startswith("ripr baseline liveness:")]
+                    if len(lines) >= 2 and (self.state / "command-pid").exists():
+                        break
+                    time.sleep(0.05)
+                self.assertGreaterEqual(len(lines), 2, log.read_text()[-1000:])
+                elapsed = int(lines[1].split("elapsed_seconds=")[1].split(";")[0])
+                self.assertGreaterEqual(elapsed, 0)
+                self.assertIn("semantic_progress=not_proven", lines[1])
+                self.assertEqual((self.state / "read-args").read_bytes().split(b"\0")[:3],
+                                 [b"-r", b"-t", b"30"])
+                command_pid = int((self.state / "command-pid").read_text())
+                children = subprocess.check_output(
+                    ["ps", "-o", "pid=,comm=", "--ppid", str(process.pid)], text=True).splitlines()
+                heartbeat = [line.split()[0] for line in children
+                             if line.split()[1] == "bash" and int(line.split()[0]) != command_pid]
+                self.assertEqual(len(heartbeat), 1, children)
+                process.terminate()
+                self.assertEqual(process.wait(timeout=3), -signal.SIGTERM)
+                # A zombie is already exited; reaping belongs to its new parent.
+                deadline = time.monotonic() + 3
+                stat = Path(f"/proc/{heartbeat[0]}/stat")
+                while stat.exists() and stat.read_text().split()[2] != "Z" and time.monotonic() < deadline:
+                    time.sleep(0.05)
+                self.assertTrue(not stat.exists() or stat.read_text().split()[2] == "Z")
+                os.kill(command_pid, 0)  # child deliberately remains; no new signal policy
+            finally:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                process.wait(timeout=3)
+                stdout, _ = process.communicate(timeout=3)
+            self.assertEqual(stdout, b"stdout control\n")
+
     def test_original_arguments_verdict_and_identity_are_preserved(self):
         result, record = self.observe()
+        self.assertNotIn("ripr baseline liveness:", result.stderr)
         self.assertEqual(result.returncode, 0)
         self.assertTrue(record["identity_stable"])
         self.assertEqual(record["before"]["target_dir_hint"], "target")
@@ -377,7 +451,7 @@ DIAGNOSTIC
 
     def test_detached_stderr_cannot_hold_the_native_verdict_indefinitely(self):
         start = time.monotonic()
-        result, record = self.observe(FAKE_DETACHED_STDERR="yes", FAKE_EXIT="37")
+        result, record = self.observe(phase="host-baseline", FAKE_DETACHED_STDERR="yes", FAKE_EXIT="37")
         self.assertLess(time.monotonic() - start, 7)
         self.assertEqual(result.returncode, 37)
         self.assertTrue(record["reader_timed_out"])
@@ -433,12 +507,14 @@ DIAGNOSTIC
         self.assertEqual(result.returncode, 0, result.stderr[-1000:])
         self.assertIn("produced-fresh head=", marker.read_text())
         self.assertTrue((self.state / "args").exists())
+        self.assertIn("ripr baseline liveness:", result.stderr)
 
     def test_exact_hit_does_not_publish_a_freshness_marker(self):
         result, marker = self.receipt_path(exact=True)
         self.assertEqual(result.returncode, 0, result.stderr[-1000:])
         self.assertFalse(marker.exists())
         self.assertFalse((self.state / "args").exists())
+        self.assertNotIn("ripr baseline liveness:", result.stderr)
 
     def test_failed_fresh_generation_does_not_publish_a_marker(self):
         result, marker = self.receipt_path(exact=False, fail=True)
