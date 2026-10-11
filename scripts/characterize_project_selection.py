@@ -188,8 +188,8 @@ def display_path(path):
     return os.fsencode(path).decode("utf-8", errors="replace")
 
 
-def observe(output, root):
-    """Read legacy text for research; never a machine-consumer interface."""
+def observe(output, root, subjects):
+    """Join legacy text to literal fixture subjects; refuse ambiguous joins."""
     stdout = output.stdout.decode("utf-8", errors="replace")
     stderr = output.stderr.decode("utf-8", errors="replace")
     count = re.search(r"^Files scanned: (\d+)$", stdout, flags=re.MULTILINE)
@@ -199,20 +199,35 @@ def observe(output, root):
     section = None
     for line in stdout.splitlines():
         if line == "Parse errors:":
-            section = selected
+            section = "selected_display"
         elif line.startswith("Paths not scanned:"):
-            section = unscanned
+            section = "unscanned_display"
         elif not line:
             section = None
         elif section is not None and (
             line.startswith("  " + prefix)
             or line.startswith("  " + display_path(root) + ": ")
         ):
-            path = line[2:].split(": ", 1)[0]
-            offset = len(prefix)
-            subject = "." if path == display_path(root) else path[offset:]
-            if subject not in section:
-                section.append(subject)
+            matches = [
+                subject
+                for subject in subjects[section]
+                if line.startswith(
+                    "  "
+                    + (
+                        display_path(root)
+                        if subject == "."
+                        else prefix + subject
+                    )
+                    + ": "
+                )
+            ]
+            if len(matches) != 1:
+                raise AssertionError(
+                    "unrecognized or ambiguous fixture path in legacy text"
+                )
+            observed = selected if section == "selected_display" else unscanned
+            if matches[0] not in observed:
+                observed.append(matches[0])
     return (
         {
             "selected_display": sorted(selected),
@@ -292,7 +307,7 @@ def characterize(binary, policy, manifest, log_dir=None):
         )
         for name in ("perl", "perl5", "perl5.40"):
             executable = traps / name
-            executable.write_text(trap)
+            executable.write_text(trap, encoding="utf-8")
             executable.chmod(0o700)
         environment = os.environ.copy()
         environment["PATH"] = (
@@ -311,7 +326,7 @@ def characterize(binary, policy, manifest, log_dir=None):
             raise AssertionError("interpreter trap positive control failed")
         marker.unlink()
         blocking = work / "blocking.pl"
-        blocking.write_text(BLOCKING)
+        blocking.write_text(BLOCKING, encoding="utf-8")
         strict = run_binary(binary, ["--check", str(blocking)], environment)
         if (
             strict.returncode != 1
@@ -335,7 +350,9 @@ def characterize(binary, policy, manifest, log_dir=None):
                         output = run_binary(
                             binary, ["--check-project", str(root)], environment
                         )
-                        current, order, stdout, stderr = observe(output, root)
+                        current, order, stdout, stderr = observe(
+                            output, root, case["current"]
+                        )
                         if current != case["current"]:
                             raise AssertionError(
                                 f"CHARACTERIZATION changed for {case['id']}: "
@@ -365,7 +382,9 @@ def characterize(binary, policy, manifest, log_dir=None):
                             )
                             variant = "reverse" if reverse else "forward"
                             name = f"{case['id']}-{variant}.txt"
-                            (log_dir / name).write_text(normalized)
+                            (log_dir / name).write_text(
+                                normalized, encoding="utf-8"
+                            )
                     finally:
                         for path in restricted:
                             path.chmod(0o700)
@@ -385,7 +404,8 @@ def characterize(binary, policy, manifest, log_dir=None):
         begin = work / "begin.pl"
         begin.write_text(
             'BEGIN { open my $fh, ">", $ENV{SELECTION_EXEC_MARKER}; '
-            'print $fh "executed"; close $fh; }\n1;\n'
+            'print $fh "executed"; close $fh; }\n1;\n',
+            encoding="utf-8",
         )
         source_control = run_binary(
             binary, ["--check", str(begin)], environment
@@ -427,8 +447,9 @@ def main():
         type=Path,
         help="immutable copy of admitted production perllsp",
     )
-    parser.add_argument("--write-receipt", type=Path)
-    parser.add_argument("--check-receipt", type=Path)
+    receipts = parser.add_mutually_exclusive_group()
+    receipts.add_argument("--write-receipt", type=Path)
+    receipts.add_argument("--check-receipt", type=Path)
     parser.add_argument("--log-dir", type=Path)
     args = parser.parse_args()
     policy = read_json(POLICY)
@@ -459,16 +480,16 @@ def main():
     encoded = (
         json.dumps(receipt, ensure_ascii=True, sort_keys=True, indent=2) + "\n"
     )
-    if args.write_receipt is not None:
-        args.write_receipt.write_text(encoded, encoding="utf-8")
     if (
         args.check_receipt is not None
-        and args.check_receipt.read_text(encoding="utf-8") != encoded
+        and args.check_receipt.read_bytes() != encoded.encode("utf-8")
     ):
         raise ValueError(
             "second-generation receipt differs; "
             "characterize and review the changed subject"
         )
+    if args.write_receipt is not None:
+        args.write_receipt.write_text(encoded, encoding="utf-8")
     print(
         f"characterized {len(receipt['observations'])} cases; "
         f"creation-order changes: {order_changed}"

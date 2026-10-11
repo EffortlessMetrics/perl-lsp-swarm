@@ -1,7 +1,11 @@
 """Discriminators for #11266 research, separate from production policy."""
 
 import copy
+from contextlib import redirect_stderr, redirect_stdout
 import importlib.util
+import io
+import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -52,7 +56,9 @@ class SelectionResearchTests(unittest.TestCase):
     def test_available_commit_must_match_observed_walker(self):
         with tempfile.TemporaryDirectory() as temp:
             source = Path(temp) / "different-walker.rs"
-            source.write_text("// different source subject\n")
+            source.write_text(
+                "// different source subject\n", encoding="utf-8"
+            )
             with patch.object(RESEARCH, "SOURCE", source):
                 with self.assertRaisesRegex(ValueError, "walker differs"):
                     self.validate()
@@ -69,8 +75,9 @@ class SelectionResearchTests(unittest.TestCase):
                 )
             else:
                 case["current"]["scanned"] = 257
-            with self.subTest(mutation=mutation), self.assertRaises(
-                RESEARCH.jsonschema.ValidationError
+            with (
+                self.subTest(mutation=mutation),
+                self.assertRaises(RESEARCH.jsonschema.ValidationError),
             ):
                 self.validate(manifest=manifest)
             with patch.object(RESEARCH, "run_binary") as run:
@@ -103,8 +110,9 @@ class SelectionResearchTests(unittest.TestCase):
             candidate["rows"][0][key] = (
                 "correct" if key == "disposition" else "silently changed"
             )
-            with self.subTest(key=key), self.assertRaisesRegex(
-                ValueError, "identity movement"
+            with (
+                self.subTest(key=key),
+                self.assertRaisesRegex(ValueError, "identity movement"),
             ):
                 self.validate(policy=candidate)
 
@@ -150,8 +158,9 @@ class SelectionResearchTests(unittest.TestCase):
             candidate["observations"] = [
                 o for o in candidate["observations"] if o["id"] != case_id
             ]
-            with self.subTest(case=case_id), self.assertRaisesRegex(
-                ValueError, "fixture coverage"
+            with (
+                self.subTest(case=case_id),
+                self.assertRaisesRegex(ValueError, "fixture coverage"),
             ):
                 self.validate(receipt=candidate)
         candidate = copy.deepcopy(self.receipt)
@@ -237,7 +246,10 @@ class SelectionResearchTests(unittest.TestCase):
     def test_duplicate_json_keys_are_not_last_writer_wins(self):
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / "duplicate.json"
-            path.write_text('{"disposition":"correct","disposition":"retain"}')
+            path.write_text(
+                '{"disposition":"correct","disposition":"retain"}',
+                encoding="utf-8",
+            )
             with self.assertRaisesRegex(ValueError, "duplicate key"):
                 RESEARCH.read_json(path)
 
@@ -252,7 +264,8 @@ class SelectionResearchTests(unittest.TestCase):
         )
 
     @unittest.skipUnless(
-        sys.platform == "linux", "real Linux fixture instrument"
+        sys.platform == "linux" and os.geteuid() != 0,
+        "requires actual non-root Linux instrument execution",
     )
     def test_fake_empty_success_cannot_pass_the_characterization_instrument(
         self,
@@ -266,13 +279,192 @@ class SelectionResearchTests(unittest.TestCase):
                 "if '--check' in sys.argv:\n"
                 " print('error: controlled blocker'); sys.exit(1)\n"
                 "print('Files scanned: 0\\n"
-                "No Perl files (.pm, .pl, .t) found.')\n"
+                "No Perl files (.pm, .pl, .t) found.')\n",
+                encoding="utf-8",
             )
             binary.chmod(0o700)
             with self.assertRaisesRegex(
                 AssertionError, "CHARACTERIZATION changed for extensions"
             ):
                 RESEARCH.characterize(binary, self.policy, self.manifest)
+
+    def test_root_prerequisite_refuses_before_binary_execution(self):
+        with (
+            patch.object(RESEARCH.sys, "platform", "linux"),
+            patch.object(RESEARCH.os, "geteuid", return_value=0, create=True),
+            patch.object(RESEARCH, "run_binary") as run,
+        ):
+            with self.assertRaisesRegex(ValueError, "requires non-root Linux"):
+                RESEARCH.characterize(
+                    Path("/unexecuted"), self.policy, self.manifest
+                )
+            run.assert_not_called()
+
+    def test_write_and_check_are_exclusive_before_any_evidence_mutation(self):
+        with tempfile.TemporaryDirectory() as temp:
+            baseline = Path(temp) / "baseline.json"
+            baseline.write_bytes(b"original checked evidence\n")
+            destinations = [baseline, Path(temp) / "different.json"]
+            if sys.platform == "linux":
+                symlink = Path(temp) / "symlink.json"
+                symlink.symlink_to(baseline)
+                hardlink = Path(temp) / "hardlink.json"
+                os.link(baseline, hardlink)
+                destinations.extend([symlink, hardlink])
+            for destination in destinations:
+                argv = [
+                    "research",
+                    "--binary",
+                    str(baseline),
+                    "--write-receipt",
+                    str(destination),
+                    "--check-receipt",
+                    str(baseline),
+                ]
+                with (
+                    self.subTest(destination=destination.name),
+                    patch.object(sys, "argv", argv),
+                    patch.object(RESEARCH, "characterize") as run,
+                    redirect_stderr(io.StringIO()),
+                ):
+                    with self.assertRaises(SystemExit) as rejected:
+                        RESEARCH.main()
+                    self.assertEqual(rejected.exception.code, 2)
+                    run.assert_not_called()
+                self.assertEqual(
+                    baseline.read_bytes(), b"original checked evidence\n"
+                )
+            self.assertFalse(destinations[1].exists())
+
+    def test_failed_receipt_check_preserves_exact_baseline_bytes(self):
+        encoded = (
+            json.dumps(self.receipt, sort_keys=True, indent=2) + "\n"
+        ).encode("utf-8")
+        for baseline_bytes in (
+            b"different evidence\n",
+            encoded.replace(b"\n", b"\r\n"),
+        ):
+            with tempfile.TemporaryDirectory() as temp:
+                baseline = Path(temp) / "baseline.json"
+                baseline.write_bytes(baseline_bytes)
+                argv = [
+                    "research",
+                    "--binary",
+                    str(baseline),
+                    "--check-receipt",
+                    str(baseline),
+                ]
+                with (
+                    patch.object(sys, "argv", argv),
+                    patch.object(
+                        RESEARCH,
+                        "characterize",
+                        return_value=(self.receipt, []),
+                    ),
+                    self.assertRaisesRegex(ValueError, "receipt differs"),
+                ):
+                    RESEARCH.main()
+                self.assertEqual(baseline.read_bytes(), baseline_bytes)
+
+    def test_matching_receipt_check_succeeds_without_writing(self):
+        with tempfile.TemporaryDirectory() as temp:
+            baseline = Path(temp) / "baseline.json"
+            encoded = (
+                json.dumps(self.receipt, sort_keys=True, indent=2) + "\n"
+            ).encode("utf-8")
+            baseline.write_bytes(encoded)
+            argv = [
+                "research",
+                "--binary",
+                str(baseline),
+                "--check-receipt",
+                str(baseline),
+            ]
+            with (
+                patch.object(sys, "argv", argv),
+                patch.object(
+                    RESEARCH, "characterize", return_value=(self.receipt, [])
+                ),
+                patch.object(Path, "write_text") as write,
+                redirect_stdout(io.StringIO()),
+            ):
+                RESEARCH.main()
+                write.assert_not_called()
+            self.assertEqual(baseline.read_bytes(), encoded)
+
+    def test_literal_path_join_preserves_colon_space_in_paths_and_messages(
+        self,
+    ):
+        output = subprocess.CompletedProcess(
+            [],
+            1,
+            stdout=(
+                b"Files scanned: 1\nParse errors:\n"
+                b"  /root/a: b.pm: error: source.pm: bad operand\n\n"
+                b"Paths not scanned: 1\n"
+                b"  /root/sub: tree: Permission denied: controlled detail\n\n"
+            ),
+            stderr=b"",
+        )
+        subjects = {
+            "selected_display": ["a: b.pm"],
+            "unscanned_display": ["sub: tree"],
+        }
+        observed, order, _, _ = RESEARCH.observe(
+            output, Path("/root"), subjects
+        )
+        self.assertEqual(observed["selected_display"], ["a: b.pm"])
+        self.assertEqual(observed["unscanned_display"], ["sub: tree"])
+        self.assertEqual(order, ["a: b.pm"])
+
+    def test_literal_path_join_refuses_unknown_and_ambiguous_report_subjects(
+        self,
+    ):
+        for selected in (["different.pm"], ["a.pm", "a.pm: b.pm"]):
+            output = subprocess.CompletedProcess(
+                [],
+                1,
+                stdout=(
+                    b"Files scanned: 1\nParse errors:\n"
+                    b"  /root/a.pm: b.pm: error\n\n"
+                ),
+                stderr=b"",
+            )
+            with (
+                self.subTest(selected=selected),
+                self.assertRaisesRegex(
+                    AssertionError, "unrecognized or ambiguous"
+                ),
+            ):
+                RESEARCH.observe(
+                    output,
+                    Path("/root"),
+                    {
+                        "selected_display": selected,
+                        "unscanned_display": [],
+                    },
+                )
+
+    def test_literal_subjects_are_observed_only_when_reported(self):
+        output = subprocess.CompletedProcess(
+            [],
+            1,
+            stdout=(
+                b"Files scanned: 2\nParse errors:\n"
+                b"  /root/reported.pm: error\n\n"
+            ),
+            stderr=b"",
+        )
+        observed, order, _, _ = RESEARCH.observe(
+            output,
+            Path("/root"),
+            {
+                "selected_display": ["reported.pm", "missing.pm"],
+                "unscanned_display": [],
+            },
+        )
+        self.assertEqual(observed["selected_display"], ["reported.pm"])
+        self.assertEqual(order, ["reported.pm"])
 
     def test_text_instrument_separates_traversal_errors_from_selected_files(
         self,
@@ -286,7 +478,14 @@ class SelectionResearchTests(unittest.TestCase):
             ),
             stderr=b"",
         )
-        observed, order, _, _ = RESEARCH.observe(output, Path("/root"))
+        observed, order, _, _ = RESEARCH.observe(
+            output,
+            Path("/root"),
+            {
+                "selected_display": ["bad.pm"],
+                "unscanned_display": ["subtree"],
+            },
+        )
         self.assertEqual(
             observed,
             {

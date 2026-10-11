@@ -40,7 +40,7 @@
     ]
   },
   "binary_sha256": "2b32a94860cae41e9cdb93a4f86b339ee92c9dc80f0bda58a526ab56b52f6b55",
-  "fixture_sha256": "c338e653f0d5e605ae110d12275920d69d2ef0fded6cc698fea8c27350933424",
+  "fixture_sha256": "b0734d300181bf937569710410bf351384de3f85376023233cb82c1484dbc2af",
   "instrument": {
     "begin_control": "--check exit 0; marker absent",
     "blocking_control": "--check exit 1",
@@ -506,6 +506,25 @@
       "id": "unicode-bytes",
       "policy_rows": [
         "path-identity"
+      ]
+    },
+    {
+      "current": {
+        "exit": 1,
+        "scanned": 3,
+        "selected_display": [
+          "a.pm: b.pm",
+          "a: b.pm",
+          "plain.pm"
+        ],
+        "unscanned_display": [
+          "locked: subtree"
+        ]
+      },
+      "id": "colon-space",
+      "policy_rows": [
+        "path-identity",
+        "unreadable"
       ]
     },
     {

@@ -18,7 +18,7 @@ are reusable inputs to #10756, not another product JSON envelope.
 
 Source: `main@9e83b961ee60b16f299a34b08e2ae07d5c8a4527`,
 `crates/perl-lsp-rs/src/cli/check_project.rs`. The receipt binds source, fixture
-and immutable binary bytes. The actual public production binary exercised 34
+and immutable binary bytes. The actual public production binary exercised 35
 non-root Linux temporary-tree cases. `my $selection_probe = ;` independently
 failed strict `--check`, making selected file paths visible in the report's
 blocking findings. No replacement walker was implemented.
@@ -36,6 +36,7 @@ blocking findings. No replacement walker was implemented.
 | Empty/unreadable root | Zero selected files returns 0, including an unreadable directory with unscanned evidence | `no-input` / correct canonical disposition |
 | Root argument | Missing root and explicit file root exit 1; explicit directory link followed | `root-directory` / retain directory subject; canonicalize explicit root once |
 | Native path identity | Unicode variants remain distinct; two invalid-byte names display identically as `bad-�.pm` despite six scanned logical paths and five distinct displayed paths | `path-identity` / correct reversible byte identity |
+| Colon-space names | `a: b.pm`, `a.pm: b.pm` and an unreadable `locked: subtree` retain their full displayed identities in controlled report evidence | `path-identity`, `unreadable` / instrument join, unchanged production policy |
 | Ordering | Same selected set in forward/reverse trees; rendered order varies and is not lexical | `ordering` / correct ordering of bounded static plan |
 | Threshold | Four clean files compensate for one blocking file: legacy report passes at 80% | Existing #10742/#10766 report-versus-strict ruling, not a selection-policy change |
 
@@ -93,6 +94,12 @@ sequentially. This bounded evidence does not prove a large-tree resource envelop
 or production cancellation. Every process is the synchronous CLI source route;
 the timeout is instrument protection, not a general descendant-settlement proof.
 
+Report observations join reported lines to the literal fixture subjects, including
+colon-space names; error-text delimiters are not path boundaries. A subject is
+recorded only when the report contains it. Unknown or multiply matching path lines
+fail the instrument rather than inventing identity. This remains controlled human
+report characterization, not a general text or machine-consumer interface.
+
 Concurrent disappearance/replacement during traversal/read, atomic snapshots,
 non-UTF-8 root arguments, native Windows/macOS, drive/UNC/case normalization,
 multi-root and parser interruption remain explicitly unqualified. No race hook,
@@ -121,6 +128,12 @@ Changing the binary changes receipt identity even if behavior remains the same;
 regenerate and review the exact observed subject deliberately. The set assertions
 are **current-behavior characterization** and may need reviewed migration when
 the owning implementation changes. No CI gate is added, required or relaxed.
+
+Receipt writing and checking are mutually exclusive, including aliased paths.
+Checking compares exact bytes and does not write evidence. Root or non-Linux
+execution refuses before invoking the instrument. The empty-success behavioral
+falsifier requires actual non-root Linux execution; its explicit prerequisite
+refusal has a separate test, and a skipped behavioral control is not a pass.
 
 Validation requires the declared Git commit to exist locally and its exact walker
 blob to match the observed source. Binary build provenance remains an operator

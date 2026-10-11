@@ -1181,6 +1181,58 @@
       "stderr_contains": []
     },
     {
+      "id": "colon-space",
+      "root": "root",
+      "root_kind": "directory",
+      "entries": [
+        {
+          "path": "root/a: b.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/a.pm: b.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/plain.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/locked: subtree",
+          "kind": "directory",
+          "unreadable": true
+        },
+        {
+          "path": "root/locked: subtree/hidden.pm",
+          "kind": "file"
+        }
+      ],
+      "policy_rows": [
+        "path-identity",
+        "unreadable"
+      ],
+      "shuffle": false,
+      "current": {
+        "selected_display": [
+          "a.pm: b.pm",
+          "a: b.pm",
+          "plain.pm"
+        ],
+        "scanned": 3,
+        "unscanned_display": [
+          "locked: subtree"
+        ],
+        "exit": 1
+      },
+      "stdout_contains": [
+        "a: b.pm",
+        "locked: subtree",
+        "Paths not scanned: 1",
+        "scanned files only"
+      ],
+      "stderr_contains": []
+    },
+    {
       "id": "creation-order",
       "root": "root",
       "root_kind": "directory",
