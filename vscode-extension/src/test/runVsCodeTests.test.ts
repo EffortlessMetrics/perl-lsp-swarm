@@ -15,6 +15,9 @@ process.env = { ...fixture.ambient };
 const overlay = { ...fixture.overlay };
 for (const key of fixture.unset) overlay[key] = undefined;
 if (fixture.deleteDigest) delete overlay.PERL_LSP_VSIX_SHA256;
+if (fixture.nonEnumerableDigest) Object.defineProperty(overlay, 'PERL_LSP_VSIX_SHA256', {
+  value: overlay.PERL_LSP_VSIX_SHA256, enumerable: false,
+});
 const calls = [];
 childProcess.spawn = (command, args, options) => {
   calls.push({ command, args, options, envKeys: Object.keys(options.env) });
@@ -52,11 +55,15 @@ function observeWrapper(
   overlay: NodeJS.ProcessEnv,
   unset: string[] = [],
   deleteDigest = false,
+  nonEnumerableDigest = false,
 ): SpawnObservation {
   const result = spawnSync(
     process.execPath,
     ['-e', wrapperProbe, path.join(__dirname, 'runVsCodeTests.js')],
-    { input: JSON.stringify({ ambient, overlay, unset, deleteDigest }), encoding: 'utf8' },
+    {
+      input: JSON.stringify({ ambient, overlay, unset, deleteDigest, nonEnumerableDigest }),
+      encoding: 'utf8',
+    },
   );
   expect(result.error).toBeUndefined();
   expect(result.status).toBe(0);
@@ -114,6 +121,29 @@ test('ambient-only Marketplace attribution does not supply an archive digest', (
   });
   expect(observation.calls[0].envKeys).not.toContain('PERL_LSP_VSIX_SHA256');
 });
+
+test.each(['hidden-digest', undefined])(
+  'non-enumerable digest %j does not restore ambient Marketplace attribution',
+  (digest) => {
+    const observation = observeWrapper(
+      ambient,
+      {
+        PERL_LSP_PUBLISHED_EXTENSION_SOURCE: 'marketplace',
+        PERL_LSP_VSIX_SHA256: digest,
+      },
+      [],
+      false,
+      true,
+    );
+    expect(observation.overlayKeys).not.toContain('PERL_LSP_VSIX_SHA256');
+    expect(observation.calls[0].options.env).toEqual({
+      PATH: '/fixture/bin',
+      KEEP: 'ambient',
+      PERL_LSP_PUBLISHED_EXTENSION_SOURCE: 'marketplace',
+    });
+    expect(observation.calls[0].envKeys).not.toContain('PERL_LSP_VSIX_SHA256');
+  },
+);
 
 test.each(['vsix', 'open-vsx'])('%s forwards explicit bound archive digest and path', (source) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wrapper-bound-vsix-'));

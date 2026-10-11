@@ -5,7 +5,7 @@ export interface UntrustedHostTestOptions {
   /** One or more development extension roots; each becomes its own CLI flag. */
   extensionDevelopmentPath: string | string[];
   extensionTestsPath: string;
-  /** Values override inherited env; an own undefined value explicitly unsets a key. */
+  /** Enumerable values override inherited env; undefined explicitly unsets that key. */
   extensionTestsEnv: NodeJS.ProcessEnv;
   launchArgs: string[];
 }
@@ -33,8 +33,9 @@ export function runWithoutForcedWorkspaceTrust(options: UntrustedHostTestOptions
     `--extensionTestsPath=${options.extensionTestsPath}`,
     ...developmentPathArgs(options.extensionDevelopmentPath),
   ];
-  const env = { ...process.env, ...options.extensionTestsEnv };
-  for (const [key, value] of Object.entries(options.extensionTestsEnv)) {
+  const extensionTestsEnv = { ...options.extensionTestsEnv };
+  const env = { ...process.env, ...extensionTestsEnv };
+  for (const [key, value] of Object.entries(extensionTestsEnv)) {
     if (value === undefined) {
       delete env[key];
     }
@@ -44,7 +45,7 @@ export function runWithoutForcedWorkspaceTrust(options: UntrustedHostTestOptions
   // An explicit caller value, including an empty string, still takes precedence.
   if (
     env.PERL_LSP_PUBLISHED_EXTENSION_SOURCE?.trim() === 'marketplace' &&
-    !Object.hasOwn(options.extensionTestsEnv, 'PERL_LSP_VSIX_SHA256')
+    !Object.hasOwn(extensionTestsEnv, 'PERL_LSP_VSIX_SHA256')
   ) {
     delete env.PERL_LSP_VSIX_SHA256;
   }
