@@ -727,6 +727,24 @@ impl LspServer {
     fn rename_blocked_at(doc: &crate::state::DocumentState, offset: usize) -> bool {
         Self::offset_is_generated_accessor_declaration(&doc.text, offset)
             || Self::offset_is_inside_quoted_string(&doc.text, offset)
+            || {
+                let regions = SourceRegionIndex::build(&doc.text);
+                let is_comment_region = |probe| {
+                    matches!(
+                        regions.classify_offset(probe).proven_kind(),
+                        Some(
+                            SourceRegionKind::LineComment
+                                | SourceRegionKind::Pod
+                                | SourceRegionKind::DataSection
+                        )
+                    )
+                };
+                // Token selection also accepts a cursor just after the word,
+                // including EOF, where there is no source byte to classify.
+                is_comment_region(offset)
+                    || Self::token_span_at(&doc.text, offset)
+                        .is_some_and(|(start, _)| is_comment_region(start))
+            }
     }
 
     /// True when the cursor is not on a symbol this provider will rename.
