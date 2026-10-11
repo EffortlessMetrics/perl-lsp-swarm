@@ -1,6 +1,7 @@
 //! Perl 5.40.1 `-MO=Deparse,-p` quotes only the ungrouped, unqualified
-//! bareword in `f($cond ? 'C' : k => 'v')`. A comma or parentheses keep
-//! `k` executable. Argument count alone cannot distinguish these ASTs.
+//! bareword in `f($cond ? 'C' : k => 'v')`. With a declared `sub k`, a
+//! comma or parentheses keep `k` executable. Argument count alone cannot
+//! distinguish these ASTs.
 mod cpan_test_helpers;
 
 use perl_parser_core::{Node, NodeKind, Parser};
@@ -42,7 +43,8 @@ fn else_operand(node: &Node) -> Result<&Node, Box<dyn std::error::Error>> {
 fn assert_key(source: &str, node: &Node) {
     assert!(
         matches!(&node.kind, NodeKind::String { value, interpolated: false } if value == "k"),
-        "expected autoquoted k, got {:?}", node.kind
+        "expected autoquoted k, got {:?}",
+        node.kind
     );
     assert_eq!(source.get(node.location.start..node.location.end), Some("k"));
 }
@@ -58,7 +60,10 @@ fn direct_fat_arrow_quotes_the_else_operand_without_absorbing_its_sibling() -> T
         let args = call_args(&ast)?;
         let ternary = args.first().ok_or("missing ternary")?;
         assert_key(source, else_operand(ternary)?);
-        assert_eq!(source.get(ternary.location.start..ternary.location.end), Some("$cond ? 'C' : k"));
+        assert_eq!(
+            source.get(ternary.location.start..ternary.location.end),
+            Some("$cond ? 'C' : k")
+        );
         let value = args.get(1).ok_or("missing sibling")?;
         assert_eq!(source.get(value.location.start..value.location.end), Some("'v'"));
         assert!(matches!(&value.kind, NodeKind::String { interpolated: false, .. }));
@@ -86,16 +91,17 @@ fn nested_else_and_assignment_keep_the_direct_fat_arrow_boundary() -> TestResult
 
 #[test]
 fn comma_and_grouped_operands_are_not_autoquoted() -> TestResult {
-    for source in [
-        "f($cond ? 'C' : k, 'v');",
-        "f($cond ? 'C' : (k) => 'v');",
-        "f(($cond ? 'C' : k) => 'v');",
-    ] {
+    for source in
+        ["f($cond ? 'C' : k, 'v');", "f($cond ? 'C' : (k) => 'v');", "f(($cond ? 'C' : k) => 'v');"]
+    {
         let ast = clean(source)?;
         let args = call_args(&ast)?;
         let operand = else_operand(args.first().ok_or("missing ternary")?)?;
-        assert!(matches!(&operand.kind, NodeKind::Identifier { name } if name == "k"),
-            "group/comma must retain the bareword, got {:?}", operand.kind);
+        assert!(
+            matches!(&operand.kind, NodeKind::Identifier { name } if name == "k"),
+            "group/comma must retain the bareword, got {:?}",
+            operand.kind
+        );
     }
     Ok(())
 }
@@ -106,7 +112,10 @@ fn qualified_names_are_not_autoquoted() -> TestResult {
     let ast = clean(source)?;
     let args = call_args(&ast)?;
     let operand = else_operand(args.first().ok_or("missing ternary")?)?;
-    assert!(matches!(&operand.kind, NodeKind::Identifier { name } if name == "Foo::k"),
-        "qualified name must not become a string, got {:?}", operand.kind);
+    assert!(
+        matches!(&operand.kind, NodeKind::Identifier { name } if name == "Foo::k"),
+        "qualified name must not become a string, got {:?}",
+        operand.kind
+    );
     Ok(())
 }
