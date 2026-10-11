@@ -1245,16 +1245,19 @@ fn closing_keyword_is_prose(lines: &[&str], line_index: usize, keyword_start: us
         let hashes = trimmed.len() - after_hashes.len();
         let heading = (1..=6).contains(&hashes)
             && (after_hashes.is_empty() || after_hashes.starts_with(char::is_whitespace));
-        let separator: String = trimmed.chars().filter(|c| !c.is_whitespace()).collect();
-        let divider = ['=', '-', '*', '_'].into_iter().any(|marker| {
-            let minimum = if matches!(marker, '=' | '-') { 1 } else { 3 };
-            separator.len() >= minimum && separator.chars().all(|c| c == marker)
-        });
+        // Setext underlines are contiguous; only thematic breaks permit
+        // internal spaces/tabs (GFM example 58).
+        let setext = !trimmed.is_empty()
+            && ['=', '-'].into_iter().any(|marker| trimmed.chars().all(|c| c == marker));
+        let separator: String = trimmed.chars().filter(|c| !matches!(c, ' ' | '\t')).collect();
+        let thematic = separator.len() >= 3
+            && ['-', '*', '_'].into_iter().any(|marker| separator.chars().all(|c| c == marker));
         trimmed.is_empty()
             || fence_marker(trimmed).is_some()
             || trimmed.starts_with('>')
             || heading
-            || divider
+            || setext
+            || thematic
     };
     let mut paragraph_open = false;
     let mut active_list_kind = None;
@@ -3692,6 +3695,26 @@ mod tests {
             let report = negated_terminal_report(body)?;
             assert_eq!(report.aggregate_code, ResultCode::PassNotApplicable, "{body}");
             assert!(report.rows.is_empty(), "{body}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn negated_terminal_spaced_equals_does_not_split_inline_code() -> Result<()> {
+        // GFM example 58: internal whitespace is not a setext underline.
+        for separator in ["= =", "=\t="] {
+            let report = negated_terminal_report(&format!(
+                "Example: `before\n{separator}\ndoes not close #42`"
+            ))?;
+            assert_eq!(report.rows.len(), 1);
+            assert_eq!(report.aggregate_code, ResultCode::PassNoHighConfidenceContradiction);
+        }
+        for separator in ["=", "===", "-", "---", "* * *", "_ _ _", "- - -"] {
+            let report = negated_terminal_report(&format!(
+                "Example: `before\n{separator}\ndoes not close #42`"
+            ))?;
+            assert_eq!(report.rows.len(), 1);
+            assert_eq!(report.aggregate_code, ResultCode::FailNegatedTerminalRelation);
         }
         Ok(())
     }
