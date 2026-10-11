@@ -26,6 +26,7 @@ fn initialize_omits_inline_completion_when_client_does_not_declare_support() -> 
     let sibling = TempWorkspace::new()?;
     sibling.write("sentinel.pl", "# preserve sibling\n")?;
     let mut failed_root = None;
+    let mut reached_blocked_write = false;
     let failure = (|| -> Result<(), String> {
         let failed_workspace = TempWorkspace::new()?;
         failed_root = Some(failed_workspace.dir.path().to_path_buf());
@@ -36,10 +37,16 @@ fn initialize_omits_inline_completion_when_client_does_not_declare_support() -> 
         failed_harness.initialize_with_root(&failed_workspace.root_uri, None)?;
         assert_owned_workspace(&mut failed_harness, &failed_workspace)?;
         failed_workspace.write("blocked", "owned file")?;
+        assert!(failed_workspace.dir.path().join("blocked").is_file());
+        reached_blocked_write = true;
         failed_workspace.write("blocked/document.pl", "use strict;\n")?;
         Ok(())
     })();
-    assert!(failure.is_err(), "writing below an owned file must fail");
+    assert!(reached_blocked_write, "fixture setup must reach the blocked-path write");
+    assert!(
+        failure.as_ref().is_err_and(|error| error.starts_with("Failed to create dirs:")),
+        "writing below the owned file must fail while creating its parent: {failure:?}"
+    );
     assert!(!failed_root.ok_or("failed fixture must have been created")?.exists());
     assert!(workspace.dir.path().is_dir());
     assert_eq!(
@@ -660,7 +667,7 @@ fn inline_completion_selected_completion_info_matching_text_returns_same_range()
     });
     let result = request_inline_completion_with_context(
         &mut harness,
-        uri,
+        &uri,
         0,
         4,
         json!({
@@ -710,7 +717,7 @@ fn inline_completion_selected_completion_info_use_partial_token_returns_replacem
     });
     let result = request_inline_completion_with_context(
         &mut harness,
-        uri,
+        &uri,
         0,
         7,
         json!({
@@ -752,7 +759,7 @@ fn inline_completion_selected_completion_info_method_partial_token_returns_repla
     });
     let result = request_inline_completion_with_context(
         &mut harness,
-        uri,
+        &uri,
         0,
         7,
         json!({
@@ -789,7 +796,7 @@ fn inline_completion_selected_completion_info_text_mismatch_returns_empty() -> T
 
     let result = request_inline_completion_with_context(
         &mut harness,
-        uri,
+        &uri,
         0,
         4,
         json!({
@@ -828,7 +835,7 @@ fn inline_completion_selected_completion_info_range_mismatch_returns_empty() -> 
 
     let result = request_inline_completion_with_context(
         &mut harness,
-        uri,
+        &uri,
         0,
         4,
         json!({
@@ -867,7 +874,7 @@ fn inline_completion_selected_completion_info_multiline_range_returns_empty() ->
 
     let result = request_inline_completion_with_context(
         &mut harness,
-        uri,
+        &uri,
         0,
         4,
         json!({
