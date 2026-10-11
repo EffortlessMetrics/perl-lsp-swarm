@@ -11,8 +11,8 @@ use std::error::Error;
 use perl_parser_core::{
     Parser,
     hir::{
-        AccessMode, AssignMode, BinaryOp, DeclStorageClass, HirBody, HirExpr, HirStmt, VariableKind,
-        lower_ast, lower_body,
+        AccessMode, AssignMode, BinaryOp, DeclStorageClass, HirBody, HirExpr, HirStmt,
+        VariableKind, lower_ast, lower_body,
     },
 };
 
