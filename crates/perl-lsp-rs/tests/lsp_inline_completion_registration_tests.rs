@@ -1444,9 +1444,13 @@ fn assert_owned_workspace(
     harness.open(&first_uri, "use ")?;
     harness.open(&second_uri, "my $value = 1;")?;
     let report = harness.execute_command("perl.workspaceTrustReport", vec![])?;
+    let reported_root = report
+        .pointer("/workspace/root_path")
+        .and_then(Value::as_str)
+        .ok_or("workspace report must include a root path")?;
     assert_eq!(
-        report.pointer("/workspace/root_path"),
-        Some(&json!(workspace.dir.path().display().to_string())),
+        std::path::Path::new(reported_root),
+        workspace.dir.path(),
         "server must initialize against the owned fixture root"
     );
     assert_eq!(report.pointer("/workspace/folders/0/uri"), Some(&json!(workspace.root_uri)));
