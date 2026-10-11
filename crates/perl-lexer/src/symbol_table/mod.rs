@@ -97,8 +97,10 @@ impl LocalSymbolTable {
     /// last code character is a bare `/` is never trusted, because no legal
     /// division continues with a line-initial `=command` term. That directive
     /// line is consumed without collecting declarations from its pattern text
-    /// (#17440). The guard clears after one line, so a real POD opener can be
-    /// delayed by at most one line.
+    /// (#17440). If the pattern closes on that line, the existing quote-like
+    /// scanner resumes declaration collection from the code suffix. The guard
+    /// clears after one line, so a real POD opener can be delayed by at most
+    /// one line.
     ///
     /// # Cost
     ///
@@ -365,10 +367,20 @@ fn scan_pass(input: &str, hints: &Declarations) -> Declarations {
         // line-initial `=command`, so consume the refused directive line as
         // opaque pattern text rather than collecting fake declarations (#17440).
         if state.quote == QuoteState::Code && starts_pod(line) {
-            state.in_pod = !state.possible_bare_regex_body;
+            let guarded_pattern = state.possible_bare_regex_body;
             state.possible_bare_regex_body = false;
-            line_start = next_line_start;
-            continue;
+            let body = QuoteLikeState::new('/', 1);
+            if guarded_pattern && quote_like_closes(line, body) {
+                // Only a closer on this physical line admits suffix code.
+                // Reuse the existing delimiter owner on the original line so
+                // offsets and prefix context stay intact; do not scan later
+                // lines as a general bare-regex body.
+                state.quote_like = Some(body);
+            } else {
+                state.in_pod = !guarded_pattern;
+                line_start = next_line_start;
+                continue;
+            }
         }
 
         if state.quote == QuoteState::Code && is_data_marker(line) {

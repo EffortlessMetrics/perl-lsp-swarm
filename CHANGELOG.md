@@ -167,8 +167,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Keep POD-shaped lines immediately after a bare regex opener out of local
-  subroutine discovery, preserving division for later undeclared names (#17440).
+- Keep POD-shaped regex text out of local subroutine discovery, preserving
+  division for later undeclared names and declarations after the pattern (#17440).
 
 #### LSP integration
 

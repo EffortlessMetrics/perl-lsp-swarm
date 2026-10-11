@@ -87,6 +87,47 @@ fn real_known_sub_after_guarded_pod_pattern_keeps_regex_path() {
 }
 
 #[test]
+fn guarded_pattern_same_line_closer_keeps_real_code_suffix() {
+    for directive in DIRECTIVES {
+        for newline in LINE_ENDINGS {
+            for pattern in ["sub phantom", r"escaped \/ sub phantom"] {
+                let prefix =
+                    format!("my $r = /{newline}={directive} {pattern}/; sub real {{ }}{newline}");
+                let table = LocalSymbolTable::scan_subs(&prefix);
+                assert!(!table.is_known_sub("phantom"), "pattern text leaked: {prefix:?}");
+                assert!(table.is_known_sub("real"), "same-line real declaration lost: {prefix:?}");
+
+                let unknown = format!("{prefix}phantom /x/;");
+                let slash_start = prefix.len() + "phantom ".len();
+                let tokens = tokens_with_prepass(&unknown);
+                for start in [slash_start, slash_start + 2] {
+                    assert!(
+                        tokens.iter().any(|token| {
+                            token.start == start
+                                && token.end == start + 1
+                                && matches!(token.token_type, TokenType::Division)
+                        }),
+                        "expected division at {start}: {unknown:?}; {tokens:?}"
+                    );
+                }
+
+                let known = format!("{prefix}real /x/;");
+                let slash_start = prefix.len() + "real ".len();
+                let tokens = tokens_with_prepass(&known);
+                assert!(
+                    tokens.iter().any(|token| {
+                        token.start == slash_start
+                            && token.end == slash_start + "/x/".len()
+                            && matches!(token.token_type, TokenType::RegexMatch)
+                    }),
+                    "same-line real call lost its regex argument: {known:?}; {tokens:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn ordinary_pod_still_hides_directive_and_body_sub_text() {
     for directive in DIRECTIVES {
         for newline in LINE_ENDINGS {
