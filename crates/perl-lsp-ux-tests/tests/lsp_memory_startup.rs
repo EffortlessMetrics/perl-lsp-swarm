@@ -307,8 +307,8 @@ fn binary_profile(binary: &str) -> &'static str {
 /// Request ops use the #17179 fixture coordinates; the `did_change_full` op
 /// alternates broken/clean entry-file content per cycle and waits for the
 /// diagnostics publish caused by THAT change (event-driven, gated on the
-/// publish count observed before the change) so the soak measures steady
-/// state rather than a queue flood.
+/// publish count observed before the change AND the didChange version) so the
+/// soak measures steady state rather than a queue flood.
 fn run_mixed_soak_message(
     harness: &UxHarness,
     message_index: usize,
@@ -335,11 +335,12 @@ fn run_mixed_soak_message(
             let cycle = message_index / MIXED_CYCLE.len();
             let content = if cycle.is_multiple_of(2) { broken_content } else { clean_content };
             let seen_before = harness.diagnostics_event_count(ENTRY_FILE);
-            harness.change_file_full(ENTRY_FILE, content)?;
+            let sent_version = harness.change_file_full(ENTRY_FILE, content)?;
             harness
-                .wait_for_diagnostics_after_count(
+                .wait_for_diagnostics_after_count_and_version(
                     ENTRY_FILE,
                     seen_before,
+                    sent_version,
                     DIAGNOSTICS_ARRIVAL_BUDGET,
                 )
                 .map_err(|end| {
