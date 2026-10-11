@@ -40,6 +40,16 @@ Cargo home, while assigning both target and build paths to a canonical-worktree
 hash under that slot. It preserves toolchain pins, checks every admitted storage
 destination and refuses incompatible inherited target/build overrides.
 
+Before building, inspect the smallest exact operation with
+`scripts/cargo-admitted --preflight <exact Cargo command>`. For a host below the
+default reserve, use the explicit scope-bound `--budget-file` route described in
+[Cargo work on a constrained host](CONSTRAINED_CARGO_BUILDS.md). An accepted file
+is an operator declaration with `basis_verified: false`, not a measured host
+profile. Both preflight and execution evaluate every destination; execution
+rechecks inside the lease. Neither reserves bytes, enforces quotas, admits
+compiler caches, apportions growth per filesystem, or accounts for independent
+repositories and consumers. Do not lower legacy thresholds to make a build fit.
+
 `DEVPLANE` selects the machine storage root; it does not make sibling worktrees'
 mutable artifacts compatible. There is no automatic migration or deletion of old
 shared outputs. Account for per-worktree artifact growth before admission, and
