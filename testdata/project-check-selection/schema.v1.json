@@ -298,7 +298,7 @@
               },
               "entries": {
                 "type": "array",
-                "maxItems": 300,
+                "maxItems": 256,
                 "items": {
                   "type": "object",
                   "additionalProperties": false,
@@ -384,7 +384,8 @@
                       "integer",
                       "null"
                     ],
-                    "minimum": 0
+                    "minimum": 0,
+                    "maximum": 256
                   },
                   "unscanned_display": {
                     "type": "array",
@@ -521,7 +522,8 @@
                       "integer",
                       "null"
                     ],
-                    "minimum": 0
+                    "minimum": 0,
+                    "maximum": 256
                   },
                   "unscanned_display": {
                     "type": "array",

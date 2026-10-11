@@ -87,7 +87,8 @@ guarantees or proposed CLI options. Source-byte/parser interruption limits remai
 a required #10756/#10897 decision before claiming complete canonical evaluation.
 
 The current walker has no discovery cap/cancellation callback. The harness limits
-each CLI invocation to 10 seconds, at most 256 files per tree, and runs processes
+each CLI invocation to 10 seconds and rejects fixtures above 256 literal entries
+or expected scanned logical files before execution. It runs processes
 sequentially. This bounded evidence does not prove a large-tree resource envelope
 or production cancellation. Every process is the synchronous CLI source route;
 the timeout is instrument protection, not a general descendant-settlement proof.
@@ -121,6 +122,11 @@ regenerate and review the exact observed subject deliberately. The set assertion
 are **current-behavior characterization** and may need reviewed migration when
 the owning implementation changes. No CI gate is added, required or relaxed.
 
+Validation requires the declared Git commit to exist locally and its exact walker
+blob to match the observed source. Binary build provenance remains an operator
+obligation established by the admitted build and immutable executable capture;
+a matching binary digest alone does not attest its source or installed behavior.
+
 Local admission observed 30 GiB free, 16 GiB cgroup memory capacity, a prior
 retained agent footprint of 1.8 GiB and no active Cargo lane. The operator's
 6 GiB reserve plus 16 GiB additional-growth forecast was unverified and scoped
@@ -132,5 +138,6 @@ admitted owner proved kernel child settlement and matching lease release.
 Negative controls reject empty-success instruments, unknown/missing/wrong-version
 fields, missing unreadable/alias/outside-root/no-input observations, absent
 dispositions, semantic changes without policy identity movement, duplicate
-subjects/keys, alternate discovery authority and platform overclaims. Second
+subjects/keys, nonexistent or mismatched source subjects, fixture ceiling
+violations, alternate discovery authority and platform overclaims. Second
 generation is byte-identical for the same executable/source/fixture subject.

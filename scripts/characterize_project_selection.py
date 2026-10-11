@@ -24,6 +24,8 @@ POLICY = REPO / "policy/project-check-selection.v1.json"
 SOURCE = REPO / "crates/perl-lsp-rs/src/cli/check_project.rs"
 BLOCKING = "my $selection_probe = ;\n"
 TIMEOUT_SECONDS = 10
+MAXIMUM_FIXTURE_FILES = 256
+WALKER_PATH = "crates/perl-lsp-rs/src/cli/check_project.rs"
 
 
 def digest(path):
@@ -47,6 +49,30 @@ def read_json(path):
     )
 
 
+def validate_source_commit(commit):
+    """Verify the declared Git subject, separately from binary provenance."""
+    identity = subprocess.run(
+        ["git", "cat-file", "-e", f"{commit}^{{commit}}"],
+        cwd=REPO,
+        capture_output=True,
+        timeout=TIMEOUT_SECONDS,
+        check=False,
+    )
+    if identity.returncode != 0:
+        raise ValueError("declared source commit is not an available commit")
+    blob = subprocess.run(
+        ["git", "show", f"{commit}:{WALKER_PATH}"],
+        cwd=REPO,
+        capture_output=True,
+        timeout=TIMEOUT_SECONDS,
+        check=False,
+    )
+    if blob.returncode != 0 or hashlib.sha256(
+        blob.stdout
+    ).hexdigest() != digest(SOURCE):
+        raise ValueError("declared commit walker differs from observed source")
+
+
 def validate_artifacts(policy, manifest, receipt=None):
     """Validate strict schemas, identity and disposition invariants."""
     schema = read_json(DATA / "schema.v1.json")
@@ -63,6 +89,7 @@ def validate_artifacts(policy, manifest, receipt=None):
             }
             jsonschema.Draft202012Validator.check_schema(selected)
             jsonschema.Draft202012Validator(selected).validate(document)
+    validate_source_commit(manifest["source_commit"])
     ids = [row["id"] for row in policy["rows"]]
     if len(set(ids)) != len(ids):
         raise ValueError("duplicate policy row")
@@ -84,6 +111,11 @@ def validate_artifacts(policy, manifest, receipt=None):
     if len(set(case_ids)) != len(case_ids):
         raise ValueError("duplicate fixture case")
     for case in manifest["cases"]:
+        if len(case["entries"]) > MAXIMUM_FIXTURE_FILES or (
+            case["current"]["scanned"] is not None
+            and case["current"]["scanned"] > MAXIMUM_FIXTURE_FILES
+        ):
+            raise ValueError("fixture exceeds admitted logical-file ceiling")
         if (
             Path(case["root"]).is_absolute()
             or ".." in Path(case["root"]).parts
@@ -242,6 +274,7 @@ def materialize(tree, case, reverse=False):
 
 def characterize(binary, policy, manifest, log_dir=None):
     """Return deterministic evidence for measured cases and explicit limits."""
+    validate_artifacts(policy, manifest)
     if sys.platform != "linux" or os.geteuid() == 0:
         raise ValueError(
             "requires non-root Linux; permission/platform rows "
@@ -381,7 +414,7 @@ def characterize(binary, policy, manifest, log_dir=None):
                 "fake interpreter exit 97; marker present, then cleared"
             ),
             "timeout_seconds_per_process": TIMEOUT_SECONDS,
-            "maximum_fixture_files": 256,
+            "maximum_fixture_files": MAXIMUM_FIXTURE_FILES,
         },
         "not_proven": manifest["not_proven"],
     }, order_changed

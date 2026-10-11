@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
 SPEC = importlib.util.spec_from_file_location(
@@ -40,6 +41,44 @@ class SelectionResearchTests(unittest.TestCase):
             self.receipt["fixture_sha256"],
             RESEARCH.digest(RESEARCH.DATA / "fixtures.v1.json"),
         )
+
+    def test_matching_nonexistent_commit_cannot_stamp_a_receipt(self):
+        manifest = copy.deepcopy(self.manifest)
+        receipt = copy.deepcopy(self.receipt)
+        manifest["source_commit"] = receipt["source_commit"] = "0" * 40
+        with self.assertRaisesRegex(ValueError, "not an available commit"):
+            self.validate(manifest=manifest, receipt=receipt)
+
+    def test_available_commit_must_match_observed_walker(self):
+        with tempfile.TemporaryDirectory() as temp:
+            source = Path(temp) / "different-walker.rs"
+            source.write_text("// different source subject\n")
+            with patch.object(RESEARCH, "SOURCE", source):
+                with self.assertRaisesRegex(ValueError, "walker differs"):
+                    self.validate()
+
+    def test_fixture_entry_and_selection_ceilings_are_admission_checks(self):
+        for mutation in ("entry", "scanned"):
+            manifest = copy.deepcopy(self.manifest)
+            case = next(
+                c for c in manifest["cases"] if c["id"] == "bounded-large"
+            )
+            if mutation == "entry":
+                case["entries"].append(
+                    {"path": "root/f256.pm", "kind": "file"}
+                )
+            else:
+                case["current"]["scanned"] = 257
+            with self.subTest(mutation=mutation), self.assertRaises(
+                RESEARCH.jsonschema.ValidationError
+            ):
+                self.validate(manifest=manifest)
+            with patch.object(RESEARCH, "run_binary") as run:
+                with self.assertRaises(RESEARCH.jsonschema.ValidationError):
+                    RESEARCH.characterize(
+                        Path("/unexecuted"), self.policy, manifest
+                    )
+                run.assert_not_called()
 
     def test_unknown_missing_and_wrong_generation_are_rejected(self):
         for name in ("policy", "manifest", "receipt"):
