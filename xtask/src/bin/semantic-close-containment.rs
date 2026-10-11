@@ -1256,32 +1256,119 @@ fn closing_keyword_is_prose(lines: &[&str], line_index: usize, keyword_start: us
             || heading
             || divider
     };
-    let list_start = |line: &str| {
-        let marker = line.split_whitespace().next().unwrap_or_default();
-        matches!(marker, "-" | "+" | "*")
-            || marker.strip_suffix(['.', ')']).is_some_and(|digits| {
+    let mut paragraph_open = false;
+    let mut active_list_kind = None;
+    let list_starts: Vec<bool> = lines
+        .iter()
+        .map(|line| {
+            if boundary(line) {
+                paragraph_open = false;
+                active_list_kind = None;
+                return false;
+            }
+            let mut words = line.split_whitespace();
+            let marker = words.next().unwrap_or_default();
+            let has_content = words.next().is_some();
+            let ordered = marker.strip_suffix(['.', ')']).filter(|digits| {
                 (1..=9).contains(&digits.len()) && digits.bytes().all(|c| c.is_ascii_digit())
-            })
-    };
+            });
+            let bullet = matches!(marker, "-" | "+" | "*");
+            let kind = if bullet {
+                marker.chars().next()
+            } else {
+                ordered.and_then(|_| marker.chars().last())
+            };
+            // A later numeral can split established siblings, but only 1 may
+            // interrupt an ordinary paragraph (GFM example 284).
+            let starts = kind.is_some()
+                && (!paragraph_open
+                    || kind == active_list_kind
+                    || (has_content
+                        && (bullet
+                            || ordered.is_some_and(|digits| digits.parse::<u32>() == Ok(1)))));
+            if starts {
+                active_list_kind = kind;
+            }
+            paragraph_open = true;
+            starts
+        })
+        .collect();
     let mut start = line_index;
-    if !boundary(lines[line_index]) && !list_start(lines[line_index]) {
+    if !boundary(lines[line_index]) && !list_starts[line_index] {
         while start > 0 && !boundary(lines[start - 1]) {
             start -= 1;
-            if list_start(lines[start]) {
+            if list_starts[start] {
                 break;
             }
         }
     }
     let mut end = line_index + 1;
     if !boundary(lines[line_index]) {
-        while end < lines.len() && !boundary(lines[end]) && !list_start(lines[end]) {
+        while end < lines.len() && !boundary(lines[end]) && !list_starts[end] {
             end += 1;
+        }
+    }
+
+    // Recognize pipe-delimited tables only after a header/delimiter pair
+    // with matching cell counts. Inlines belong to a cell, never to a row
+    // or the surrounding paragraph. Pipes outside tables remain prose.
+    for delimiter in (start + 1..end.min(line_index + 2)).rev() {
+        let Some(header) = pipe_table_cells(lines[delimiter - 1]) else { continue };
+        let Some(cells) = pipe_table_cells(lines[delimiter]) else { continue };
+        if header.len() != cells.len()
+            || !cells.iter().all(|cell| {
+                let text = lines[delimiter][cell.clone()].trim();
+                let text = text.strip_prefix(':').unwrap_or(text);
+                let text = text.strip_suffix(':').unwrap_or(text);
+                !text.is_empty() && text.bytes().all(|byte| byte == b'-')
+            })
+        {
+            continue;
+        }
+        // A body row without pipes is still the first cell (GFM example 202).
+        let cells =
+            pipe_table_cells(lines[line_index]).unwrap_or_else(|| vec![0..lines[line_index].len()]);
+        if let Some(cell) = cells.into_iter().find(|cell| cell.contains(&keyword_start)) {
+            return inline_keyword_is_prose(
+                &lines[line_index][cell.clone()],
+                keyword_start - cell.start,
+            );
         }
     }
     let keyword_start =
         keyword_start + lines[start..line_index].iter().map(|line| line.len() + 1).sum::<usize>();
     let paragraph = lines[start..end].join("\n");
-    let line = paragraph.as_str();
+    inline_keyword_is_prose(&paragraph, keyword_start)
+}
+
+/// Raw cell ranges for the bounded pipe-table form. Escaped pipes are cell
+/// content even inside code; they use the same odd-backslash rule as backticks.
+fn pipe_table_cells(line: &str) -> Option<Vec<std::ops::Range<usize>>> {
+    let pipes: Vec<usize> = line
+        .match_indices('|')
+        .map(|(index, _)| index)
+        .filter(|index| !backtick_is_escaped(line, *index))
+        .collect();
+    if pipes.is_empty() {
+        return None;
+    }
+    let mut cells = Vec::new();
+    let mut start = 0;
+    for pipe in pipes {
+        cells.push(start..pipe);
+        start = pipe + 1;
+    }
+    cells.push(start..line.len());
+    if cells.first().is_some_and(|cell| line[cell.clone()].trim().is_empty()) {
+        cells.remove(0);
+    }
+    if cells.last().is_some_and(|cell| line[cell.clone()].trim().is_empty()) {
+        cells.pop();
+    }
+    (!cells.is_empty()).then_some(cells)
+}
+
+fn inline_keyword_is_prose(line: &str, keyword_start: usize) -> bool {
     let mut index = 0;
     while index < keyword_start {
         let Some(character) = line[index..].chars().next() else { break };
@@ -3605,6 +3692,77 @@ mod tests {
             let report = negated_terminal_report(body)?;
             assert_eq!(report.aggregate_code, ResultCode::PassNotApplicable, "{body}");
             assert!(report.rows.is_empty(), "{body}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn negated_terminal_table_cells_do_not_share_inline_code_delimiters() -> Result<()> {
+        // GFM tables parse inlines separately in each cell.
+        for body in [
+            "| A | B |\n| --- | --- |\n| `unmatched | does not close #42` |",
+            "| A | B |\n| --- | --- |\n| `unmatched | B |\n| does not close #42` | B |",
+            "| `unmatched | does not close #42` |\n| --- | --- |",
+            "| A | B |\n| --- | --- |\n| `unmatched | B |\ndoes not close #42`",
+            "Intro text\n| A | B |\n| --- | --- |\n| `unmatched | does not close #42` |",
+        ] {
+            let report = negated_terminal_report(body)?;
+            assert_eq!(report.rows.len(), 1, "{body}");
+            assert_eq!(report.aggregate_code, ResultCode::FailNegatedTerminalRelation, "{body}");
+        }
+        for body in [
+            "| A | B |\n| --- | --- |\n| A | `does not close #42` |",
+            "| A | B |\n| --- | --- |\n| A | `before \\| does not close #42` |",
+            "Example: `before | does not close #42`",
+            "| A | B |\n| --- |\n| `before | does not close #42` |",
+            "| A \\| B |\n| --- | --- |\n| `before | does not close #42` |",
+            "| A | B |\n\n| --- | --- |\n| `before | does not close #42` |",
+            "| A | B |\n| --- | --- |\n\n| `before | does not close #42` |",
+            "| A | B |\n| --- | --- |\n# Heading\n| `before | does not close #42` |",
+        ] {
+            let report = negated_terminal_report(body)?;
+            assert_eq!(report.rows.len(), 1, "{body}");
+            assert_eq!(
+                report.aggregate_code,
+                ResultCode::PassNoHighConfidenceContradiction,
+                "{body}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn negated_terminal_non_one_ordered_marker_does_not_interrupt_inline_code() -> Result<()> {
+        // GFM example 284: only an ordered list starting with 1 can interrupt a paragraph.
+        for body in [
+            "Example: `before\n2. does not close #42`",
+            "Example: `before\n2) does not close #42`",
+            "Example: `before\n1.\ndoes not close #42`",
+            "Example: `before\n+\ndoes not close #42`",
+            "Example: `before\n*\ndoes not close #42`",
+            "1. Example: `before\n2) does not close #42`",
+        ] {
+            let report = negated_terminal_report(body)?;
+            assert_eq!(report.rows.len(), 1, "{body}");
+            assert_eq!(
+                report.aggregate_code,
+                ResultCode::PassNoHighConfidenceContradiction,
+                "{body}"
+            );
+        }
+        for body in [
+            "Example: `before\n1. does not close #42`",
+            "Example: `before\n1) does not close #42`",
+            "1. `before\n2. does not close #42`",
+            "2. `before\n3. does not close #42`",
+            "1) `before\n2) does not close #42`",
+            "2) `before\n3) does not close #42`",
+            "* `before\n*\ndoes not close #42`",
+            "+ `before\n+\ndoes not close #42`",
+        ] {
+            let report = negated_terminal_report(body)?;
+            assert_eq!(report.rows.len(), 1, "{body}");
+            assert_eq!(report.aggregate_code, ResultCode::FailNegatedTerminalRelation, "{body}");
         }
         Ok(())
     }

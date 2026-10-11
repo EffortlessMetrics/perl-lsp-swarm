@@ -120,6 +120,14 @@ non-closing `Refs` wording with the same repository/issue identity. It does not
 propagate negation across intervening words, punctuation, lines, or issue lists.
 Positive relations remain independent. Fences and quotes keep their existing
 exclusion, and matched inline examples do not donate this prose contradiction.
+The bounded inline-span window recognizes simple block boundaries, flat list
+items, and established table cells; it is not full Markdown conformance.
+A table requires a header/delimiter pair with matching cell counts; escaped pipes
+remain cell content, and ordinary pipes outside tables retain their inline spans.
+Only a nonempty ordered marker starting with 1 interrupts ordinary prose; later
+numbers can separate established sibling items. These controls follow the
+[GFM table and list rules](https://github.github.com/gfm/), without introducing a
+general Markdown parser or changing the existing relation-extraction grammar.
 Lookup and instrument uncertainty keep their existing precedence.
 
 ## Result vocabulary
