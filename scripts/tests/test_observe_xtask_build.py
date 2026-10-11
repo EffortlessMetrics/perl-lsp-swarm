@@ -109,6 +109,82 @@ exit "${FAKE_EXIT:-0}"
         self.assertEqual(record["stderr"]["dirty_lines"], 2)
         self.assertEqual((record["run_id"], record["run_attempt"]), ("123", "2"))
 
+    def test_sparse_stderr_is_redacted_and_visible_before_command_exit(self):
+        secret = "CONTROL-SYNTHETIC-LIVE-SECRET"
+        marker = "ordinary live stderr after redaction"
+        cargo = self.bin / "cargo"
+        payload = f"""cat >&2 <<'DIAGNOSTIC'
+0.01 INFO cargo::core::compiler::fingerprint: dirty: RustflagsChanged {{ old: "{secret}" }}
+0.01 INFO cargo::core::compiler::fingerprint: fingerprint error for fixture {secret}
+0.01 INFO cargo::core::compiler::fingerprint: err: failed to read {secret}
+Caused by:
+    {secret}
+{marker}
+DIAGNOSTIC
+printf 'stdout control\\n'
+while [[ ! -f "$FAKE_STATE/release" ]]; do sleep 0.05; done
+"""
+        cargo.write_text(cargo.read_text().replace("case ${FAKE_CHANGE:-none} in",
+                                                  payload + "case ${FAKE_CHANGE:-none} in"),
+                         encoding="utf-8", newline="\n")
+        env = dict(os.environ, FAKE_STATE=posix(self.state), FAKE_EXIT="37",
+                   CARGO_HOME=posix(self.work / "cargo-home"), CARGO_TARGET_DIR="target")
+        log = self.work / "live.stderr"
+        with log.open("wb") as stderr:
+            process = subprocess.Popen(
+                [BASH, "--noprofile", "--norc", "-c", 'export PATH="$1:$PATH"; shift; exec bash "$@"',
+                 "live-control", posix(self.bin), posix(OBSERVER), "host-test", "out", "--",
+                 "cargo", "xtask", "ripr-plus"],
+                cwd=self.work, env=env, stdout=subprocess.PIPE, stderr=stderr)
+            try:
+                deadline = time.monotonic() + 3
+                while marker not in log.read_text() and time.monotonic() < deadline:
+                    time.sleep(0.02)
+                self.assertIsNone(process.poll(), "command must still own its open stderr pipe")
+                self.assertIn(marker, log.read_text(), "sparse stderr was buffered until EOF")
+                self.assertNotIn(secret, log.read_text())
+            finally:
+                (self.state / "release").touch()
+                stdout, _ = process.communicate(timeout=5)
+        self.assertEqual(process.returncode, 37)
+        self.assertEqual(stdout, b"stdout control\n")
+        for path in (self.work / "out").iterdir():
+            self.assertNotIn(secret, path.read_text(), str(path))
+        record = json.loads(next((self.work / "out").glob("*.observation.json")).read_text())
+        self.assertFalse(record["reader_timed_out"])
+        self.assertFalse(record["selected_trace_complete"])
+        self.assertGreater(record["stderr"]["filtered_error_continuations"], 0)
+
+    def check_other_awk_probe(self, version, status):
+        # A non-mawk may ignore -W and read its stdin. The version probe must
+        # see EOF without stealing command diagnostics, even when it fails.
+        real_awk = subprocess.check_output(
+            [BASH, "--noprofile", "--norc", "-c", "command -v awk"], text=True).strip()
+        self.stub("awk", '''if [[ "$1" == -W && "$2" == version ]]; then
+  IFS= read -r -t 1 line
+  printf '%s' "$?" > "$FAKE_STATE/probe-read-status"
+  printf '%s\\n' "$FAKE_AWK_VERSION"
+  exit "$FAKE_AWK_PROBE_STATUS"
+fi
+printf '%s' "$1" > "$FAKE_STATE/collector-first-arg"
+exec "$REAL_OBSERVER_AWK" "$@"
+''')
+        result, record = self.observe(REAL_OBSERVER_AWK=real_awk, FAKE_AWK_VERSION=version,
+                                      FAKE_AWK_PROBE_STATUS=str(status), FAKE_EXIT="37")
+        self.assertEqual((self.state / "probe-read-status").read_text(), "1")
+        self.assertEqual((self.state / "collector-first-arg").read_text(), "-v")
+        self.assertEqual(result.returncode, 37)
+        self.assertTrue(record["selected_trace_complete"])
+        self.assertNotIn(version, result.stdout + result.stderr)
+        for path in (self.work / "out").iterdir():
+            self.assertNotIn(version, path.read_text(), str(path))
+
+    def test_other_awk_probe_does_not_consume_diagnostics_or_receive_mawk_option(self):
+        self.check_other_awk_probe("OTHER-AWK-CONTROL-VERSION", 0)
+
+    def test_failed_mawk_identification_does_not_select_interactive_mode(self):
+        self.check_other_awk_probe("mawk CONTROL-FAILED-VERSION", 17)
+
     def test_failed_cargo_is_not_rescued(self):
         result, record = self.observe(FAKE_EXIT="37")
         self.assertEqual(result.returncode, 37)
