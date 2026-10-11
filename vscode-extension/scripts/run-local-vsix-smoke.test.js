@@ -1377,6 +1377,19 @@ void test('a private VSIX snapshot cannot change paths between receipt phases', 
   assert.match(result.violations.join('; '), /installed byte identity/);
 });
 
+for (const field of ['sha256', 'size']) {
+  void test(`a private VSIX snapshot cannot change ${field} after the initial observation`, () => {
+    const receipt = snapshotChildReceipt();
+    receipt.installed_byte_identity.vsix_after =
+      field === 'sha256'
+        ? { ...observedSnapshotVsix, sha256: 'd'.repeat(64) }
+        : { ...observedSnapshotVsix, size: observedSnapshotVsix.size + 1 };
+    const result = validateChild(receipt);
+    assert.equal(result.ok, false);
+    assert.match(result.violations.join('; '), /installed byte identity/);
+  });
+}
+
 for (const mutation of ['replacement', 'deletion']) {
   void test(`a private VSIX snapshot cannot hide parent package ${mutation}`, () => {
     try {
