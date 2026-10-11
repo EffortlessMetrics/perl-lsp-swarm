@@ -11,6 +11,7 @@ from pathlib import Path
 import re
 import subprocess
 import tempfile
+import textwrap
 import unittest
 
 
@@ -176,6 +177,47 @@ class RiprEventOperands(unittest.TestCase):
         self.assertEqual(self.git("rev-parse", "HEAD"), E)
         self.assertEqual(self.git("rev-parse", "origin/main"), E)
         self.assertEqual(self.git("rev-parse", "FETCH_HEAD"), H)
+
+    def test_selfhosted_docker_transports_one_valid_script_and_badge_json(self):
+        text = lane_text("ripr-selfhosted")
+        block = re.search(
+            r"      - name: Run ripr evidence and gate \(Docker\)\n"
+            r"        shell: bash\n        run: \|\n(.*?)(?=      - name:)",
+            text, re.S).group(1)
+        capture = Path(self.temp.name) / "docker.json"
+        docker = self.bin / "docker"
+        docker.write_text(
+            "#!/usr/bin/env python3\nimport json,os,sys\n"
+            "open(os.environ['TEST_DOCKER_ARGS'],'w').write(json.dumps(sys.argv[1:]))\n")
+        docker.chmod(0o755)
+        env = self.env | {name: "fixture" for name in (
+            "RIPR_MAX_DIFF_INDEX_FILES", "RIPR_FRESHNESS_TOKEN", "PR_LABELS",
+            "SCCACHE_DIR", "SCCACHE_CACHE_SIZE", "RIPR_CACHE_DIR",
+            "CARGO_INCREMENTAL", "CARGO_BUILD_JOBS", "CARGO_TARGET_DIR",
+            "CARGO_HOME", "TMPDIR", "RIPR_FRESHNESS_HANDOFF")}
+        env.update(RIPR_VERSION="0.10.0", GITHUB_WORKSPACE=str(self.repo),
+                   TEST_DOCKER_ARGS=str(capture))
+        wrapper = textwrap.dedent(block)
+        syntax = subprocess.run(["bash", "-n"], input=wrapper, text=True, capture_output=True)
+        self.assertEqual(syntax.returncode, 0, syntax.stderr)
+        result = subprocess.run(["bash", "-euo", "pipefail", "-c", wrapper],
+                                cwd=self.repo, env=env, text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        args = json.loads(capture.read_text())
+        command_index = args.index("-c")
+        self.assertEqual(len(args[command_index + 1:]), 1)
+        script = args[command_index + 1]
+        syntax = subprocess.run(["bash", "-n"], input=script, text=True, capture_output=True)
+        self.assertEqual(syntax.returncode, 0, syntax.stderr)
+        badge_command = re.search(r"^\s*printf .*ripr_badge_producer.*$", script, re.M).group(0)
+        (self.repo / "target/receipts/quality").mkdir(parents=True)
+        subprocess.run(["bash", "-euo", "pipefail", "-c", badge_command],
+                       cwd=self.repo, env=env, check=True)
+        badge = json.loads((self.repo / "target/receipts/quality/ripr-badge-producer.json").read_text())
+        self.assertEqual(badge, {
+            "schema_version": 1, "kind": "ripr_badge_producer", "head": E,
+            "root": ".", "source_format": "ripr-plus repo-badge-json", "ripr_version": "0.10.0",
+        })
 
     def test_every_consumer_and_container_uses_exact_operands(self):
         for lane in LANES:

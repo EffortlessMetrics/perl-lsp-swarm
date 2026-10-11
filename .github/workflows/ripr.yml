@@ -496,12 +496,12 @@ jobs:
               cargo xtask ripr-pr --base "$RIPR_BASE_SHA" --head "$RIPR_EVALUATED_SHA" --pr-head "$PR_HEAD_SHA" || RIPR_FAILED=1
               cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json || RIPR_FAILED=1
               mkdir -p target/receipts/quality
-              printf '{"schema_version":1,"kind":"ripr_badge_producer","head":"%s","root":".","source_format":"ripr-plus repo-badge-json","ripr_version":"%s"}\n' "$(git rev-parse HEAD)" "$RIPR_VERSION" > target/receipts/quality/ripr-badge-producer.json
+              printf '\''{"schema_version":1,"kind":"ripr_badge_producer","head":"%s","root":".","source_format":"ripr-plus repo-badge-json","ripr_version":"%s"}\n'\'' "$(git rev-parse HEAD)" "$RIPR_VERSION" > target/receipts/quality/ripr-badge-producer.json
               cargo xtask ripr-review-comments --base "$RIPR_BASE_SHA" --head "$RIPR_EVALUATED_SHA" --pr-head "$PR_HEAD_SHA" --timeout-seconds 210 || RIPR_FAILED=1
               cargo xtask impacted-evidence --labels-csv "$PR_LABELS" || RIPR_FAILED=1
               cargo xtask ripr-pr-summary || RIPR_FAILED=1
               cargo xtask ripr-annotations || RIPR_FAILED=1
-              # Advisory: reports the suppression ledger's own expires/review_after
+              # Advisory: reports suppression ledger expires/review_after
               # dates, which nothing else in the toolchain reads. Never gates.
               cargo xtask ripr-suppression-audit || true
 
