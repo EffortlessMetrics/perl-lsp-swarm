@@ -544,6 +544,56 @@ class NegativeControlTests(unittest.TestCase):
             )
             self.assertIn("master-as-default-branch", _ids(_findings(tmp)))
 
+    def test_public_selector_does_not_excuse_other_master_instructions(self) -> None:
+        for guidance in (
+            "gh pr create --repo EffortlessMetrics/perl-lsp --base master\n"
+            "Swarm work targets `master`.\n",
+            "External PRs target `EffortlessMetrics/perl-lsp/master`.\n"
+            "Swarm work targets `master`.\n",
+            "gh pr create --repo EffortlessMetrics/perl-lsp --base master; "
+            "gh pr create --repo EffortlessMetrics/perl-lsp-swarm --base master\n",
+            "`gh pr create --repo EffortlessMetrics/perl-lsp --base master` "
+            "does not mean swarm work targets `master`.\n",
+            "Swarm work targets `master`.\n"
+            "gh pr create --repo EffortlessMetrics/perl-lsp --base master\n",
+            "See EffortlessMetrics/perl-lsp. Swarm work targets `master`.\n",
+            "[`EffortlessMetrics/perl-lsp`](https://github.com/EffortlessMetrics/perl-lsp)\n"
+            "on `master` is public. Swarm work targets `master`.\n",
+        ):
+            with self.subTest(guidance=guidance), tempfile.TemporaryDirectory() as temp:
+                tmp = Path(temp)
+                _clone_surfaces(tmp)
+                _rewrite(tmp, MANAGEMENT_GUIDE, lambda text: text + "\n\n" + guidance)
+                self.assertIn("master-as-default-branch", _ids(_findings(tmp)))
+
+    def test_public_command_requires_exact_repository_and_branch(self) -> None:
+        for command in (
+            "gh pr create --repo EffortlessMetrics/perl-lsp-swarm --base master",
+            "gh pr create --repo EffortlessMetrics/perl-lsp-other --base master",
+            "gh pr create --repo EffortlessMetrics/perl-lsp --base master-old",
+            "gh pr create --repo EffortlessMetrics/perl-lsp --base master "
+            "--repo EffortlessMetrics/perl-lsp-swarm",
+        ):
+            with self.subTest(command=command), tempfile.TemporaryDirectory() as temp:
+                tmp = Path(temp)
+                _clone_surfaces(tmp)
+                _rewrite(tmp, MANAGEMENT_GUIDE, lambda text: text + "\n\n" + command)
+                self.assertIn("master-as-default-branch", _ids(_findings(tmp)))
+
+    def test_documented_public_command_forms_are_allowed(self) -> None:
+        for command in (
+            "gh pr create --repo EffortlessMetrics/perl-lsp --base master",
+            "Use `gh pr create --repo EffortlessMetrics/perl-lsp --base master`.",
+            "[`EffortlessMetrics/perl-lsp`](https://github.com/EffortlessMetrics/perl-lsp)\n"
+            "on `master` is the public pull-request surface.",
+            "gh pr create \\\n  --repo EffortlessMetrics/perl-lsp \\\n  --base master",
+        ):
+            with self.subTest(command=command), tempfile.TemporaryDirectory() as temp:
+                tmp = Path(temp)
+                _clone_surfaces(tmp)
+                _rewrite(tmp, MANAGEMENT_GUIDE, lambda text: text + "\n\n" + command)
+                self.assertNotIn("master-as-default-branch", _ids(_findings(tmp)))
+
 
 class CooldownTests(unittest.TestCase):
     def test_each_ecosystem_refuses_missing_or_wrong_cooldown(self) -> None:

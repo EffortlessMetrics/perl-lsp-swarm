@@ -913,6 +913,24 @@ def _inspect_patch_query(path: str, text: str) -> list[Finding]:
 
 def _inspect_master_mentions(path: str, text: str) -> list[Finding]:
     findings: list[Finding] = []
+    # Recognize the documented command, not a repository name somewhere nearby.
+    # Only its branch argument is exempt; separate prose/commands still get checked.
+    # Keep this a bounded docs check, not a general shell-command parser.
+    gap = r"(?:[ \t]|\\\r?\n)+"
+    public_command = re.compile(
+        rf"(?m)(?:^|[`;&|])[ \t]*gh{gap}pr{gap}create{gap}"
+        rf"--repo{gap}EffortlessMetrics/perl-lsp{gap}--base{gap}"
+        r"(?P<branch>master)(?=[ \t]*(?:$|[`;&|#]))"
+    )
+    public_branches = {match.span("branch") for match in public_command.finditer(text)}
+    # The front door also spells the same instruction as a linked repository
+    # followed by "on `master`". Bind that exception to its branch token too.
+    public_prose = re.compile(
+        r"\[`EffortlessMetrics/perl-lsp`\]"
+        r"\(https://github\.com/EffortlessMetrics/perl-lsp\)\s+"
+        r"on[ \t]+(?P<branch>`master`)"
+    )
+    public_branches.update(match.span("branch") for match in public_prose.finditer(text))
     for match in re.finditer(
         r"(?:(?:EffortlessMetrics/)?perl-lsp/)?(`master`|\bmaster\b)", text
     ):
@@ -922,13 +940,7 @@ def _inspect_master_mentions(path: str, text: str) -> list[Finding]:
             # whatever else happens to sit in the surrounding text, so a
             # nearby unqualified swarm instruction is still rejected.
             continue
-        window = text[max(0, match.start() - 180) : match.end() + 80]
-        # `master` is wrong when it is presented as this swarm repository's
-        # default branch, but it is the real public-contribution/publication
-        # branch for perl-lsp. Accept a nearby explicit public repository
-        # selector such as `--repo EffortlessMetrics/perl-lsp --base master`,
-        # whose bare `master` is qualified by the selector on the same line.
-        if re.search(r"EffortlessMetrics/perl-lsp(?!-swarm)", window):
+        if match.span() in public_branches:
             continue
         findings.append(
             Finding(
