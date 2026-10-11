@@ -219,6 +219,7 @@ caller_paths = [
   "crates/perl-parser/tests/workspace_index_tests.rs",
   "crates/perl-semantic-analyzer/src/analysis/index.rs",
   "crates/perl-semantic-analyzer/tests/ripr_seam_proof_qw_whitespace.rs",
+  "crates/perl-workspace/benches/support/index_real_corpus.rs",
   "crates/perl-workspace/benches/workspace_index_benchmark.rs",
   "crates/perl-workspace/src/bin/workspace_memory_profile.rs",
   "crates/perl-workspace/src/workspace/workspace_index.rs",
