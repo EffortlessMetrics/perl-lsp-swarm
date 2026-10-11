@@ -21,6 +21,14 @@
 //! A pure declaration (a relation keyword and issue references only) is
 //! ignored by the rule; a declaration qualified with additional prose stays
 //! subject to it.
+//!
+//! # Locally negated closing keywords
+//!
+//! A supported negation immediately before a closing keyword in prose does
+//! not remove the relation: GitHub can still act on the keyword/reference
+//! token. CP00-NEGATED-TERMINAL diagnoses that contradiction and recommends
+//! non-closing wording. This is a same-line, adjacent-token check, not general
+//! natural-language inference; the existing relation grammar stays unchanged.
 #![allow(clippy::print_stderr, clippy::print_stdout)]
 
 use clap::{Parser, ValueEnum};
@@ -92,6 +100,7 @@ enum ResultCode {
     FailControllerPacketMissing,
     FailPredecessorSuccessorCollapse,
     FailProofLevelContradiction,
+    FailNegatedTerminalRelation,
     NotProvenGithub,
     InstrumentFailure,
 }
@@ -106,6 +115,7 @@ impl ResultCode {
                 | Self::FailControllerPacketMissing
                 | Self::FailPredecessorSuccessorCollapse
                 | Self::FailProofLevelContradiction
+                | Self::FailNegatedTerminalRelation
         )
     }
 
@@ -132,6 +142,7 @@ impl ResultCode {
             Self::FailControllerPacketMissing => "FAIL_CONTROLLER_PACKET_MISSING",
             Self::FailPredecessorSuccessorCollapse => "FAIL_PREDECESSOR_SUCCESSOR_COLLAPSE",
             Self::FailProofLevelContradiction => "FAIL_PROOF_LEVEL_CONTRADICTION",
+            Self::FailNegatedTerminalRelation => "FAIL_NEGATED_TERMINAL_RELATION",
             Self::NotProvenGithub => "NOT_PROVEN_GITHUB",
             Self::InstrumentFailure => "INSTRUMENT_FAILURE",
         }
@@ -146,6 +157,7 @@ enum RuleId {
     ControllerPacketMissing,
     PredecessorSuccessorCollapse,
     ProofLevelContradiction,
+    NegatedTerminal,
 }
 
 impl RuleId {
@@ -157,6 +169,7 @@ impl RuleId {
             Self::ControllerPacketMissing => "CP00-CONTROLLER-PACKET-MISSING",
             Self::PredecessorSuccessorCollapse => "CP00-PREDECESSOR-SUCCESSOR-COLLAPSE",
             Self::ProofLevelContradiction => "CP00-PROOF-LEVEL-CONTRADICTION",
+            Self::NegatedTerminal => "CP00-NEGATED-TERMINAL",
         }
     }
 
@@ -170,11 +183,12 @@ impl RuleId {
                 "CP03 proposition identity and successor-retirement evaluation"
             }
             Self::ProofLevelContradiction => "CP03 required proof-level evaluation",
+            Self::NegatedTerminal => "CP03 terminal-relation intent evaluation",
         }
     }
 
     #[cfg(test)]
-    fn all() -> [Self; 6] {
+    fn all() -> [Self; 7] {
         [
             Self::PhaseTerminal,
             Self::ExplicitlyNotProven,
@@ -182,6 +196,7 @@ impl RuleId {
             Self::ControllerPacketMissing,
             Self::PredecessorSuccessorCollapse,
             Self::ProofLevelContradiction,
+            Self::NegatedTerminal,
         ]
     }
 }
@@ -245,6 +260,7 @@ struct ClosingRelation {
     keyword: String,
     source_line: String,
     line_number: usize,
+    locally_negated: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -889,6 +905,16 @@ fn evaluate_relation(
         }
     };
 
+    if rules.enabled(RuleId::NegatedTerminal) && relation.locally_negated {
+        return failed_row(
+            &relation,
+            ResultCode::FailNegatedTerminalRelation,
+            RuleId::NegatedTerminal,
+            "the closing keyword is explicitly negated in adjacent prose, but its keyword/reference token can still close the issue on GitHub; replace that token with non-closing wording",
+            suggested_refs(&relation.key, &pull.repository),
+        );
+    }
+
     let controlling = section_text(sections, &[SectionKind::ControllingIssue]);
     let claim_boundary = section_text(sections, &[SectionKind::ClaimBoundary]);
     let scoped_to_issue = relation_count == 1
@@ -1135,11 +1161,18 @@ fn parse_closing_relations(body: &str, current_repository: &str) -> Result<Vec<C
         r"(?i)\b(close(?:s|d)?|fix(?:es|ed)?|resolve(?:s|d)?):?\s+(?:https://github\.com/(?P<url_repo>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/issues/(?P<url_number>[0-9]+)\b|(?:(?P<repo>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+))?#(?P<number>[0-9]+)\b)",
     )
     .context("compiling closing-relation parser")?;
+    // Only the suffix immediately before this exact keyword may donate
+    // negation. Do not scan a sentence/window or propagate through a list.
+    let negation_re = Regex::new(
+        r"(?i)(?:^|[^\p{L}\p{N}_'’\-])(?:not|never|without|cannot|no[ \t]+longer|(?:do|does|did|wo|would|ca|could|should|must|is|are|was|were|has|have|had|need)n['’]t)[ \t]+$",
+    )
+    .context("compiling local closing-keyword negation parser")?;
     let mut relations = Vec::new();
     let mut fence: Option<Fence> = None;
     let mut in_blockquote = false;
+    let lines: Vec<&str> = body.lines().collect();
 
-    for (index, line) in body.lines().enumerate() {
+    for (index, line) in lines.iter().enumerate() {
         if line.len() > MAX_SOURCE_LINE_BYTES {
             bail!("PR body contains a line larger than the relation-parser bound");
         }
@@ -1171,10 +1204,10 @@ fn parse_closing_relations(body: &str, current_repository: &str) -> Result<Vec<C
             if relations.len() >= MAX_RELATIONS {
                 bail!("PR body exceeds the supported terminal-relation count");
             }
-            let keyword = capture
-                .get(1)
-                .map(|value| value.as_str().to_ascii_lowercase())
-                .context("closing relation omitted keyword")?;
+            let keyword_match = capture.get(1).context("closing relation omitted keyword")?;
+            let keyword = keyword_match.as_str().to_ascii_lowercase();
+            let locally_negated = negation_re.is_match(&line[..keyword_match.start()])
+                && closing_keyword_is_prose(&lines, index, keyword_match.start());
             let repository = match capture.name("url_repo").or_else(|| capture.name("repo")) {
                 Some(value) => canonical_repository(value.as_str())?,
                 None => current_repository.to_string(),
@@ -1194,10 +1227,79 @@ fn parse_closing_relations(body: &str, current_repository: &str) -> Result<Vec<C
                 keyword,
                 source_line: sanitize_for_output(line.trim(), MAX_SOURCE_LINE_BYTES),
                 line_number: index + 1,
+                locally_negated,
             });
         }
     }
     Ok(relations)
+}
+
+/// Keep inline examples from donating a prose contradiction while preserving
+/// the existing relation parser's treatment of their keyword/reference tokens.
+fn closing_keyword_is_prose(lines: &[&str], line_index: usize, keyword_start: usize) -> bool {
+    // Inline spans can cross soft line breaks, but cannot borrow delimiters
+    // from another paragraph, heading, fenced example, quote, or list item.
+    let boundary = |line: &str| {
+        let trimmed = line.trim();
+        let after_hashes = trimmed.trim_start_matches('#');
+        let hashes = trimmed.len() - after_hashes.len();
+        let heading = (1..=6).contains(&hashes)
+            && (after_hashes.is_empty() || after_hashes.starts_with(char::is_whitespace));
+        let separator: String = trimmed.chars().filter(|c| !c.is_whitespace()).collect();
+        let divider = ['=', '-', '*', '_'].into_iter().any(|marker| {
+            let minimum = if matches!(marker, '=' | '-') { 1 } else { 3 };
+            separator.len() >= minimum && separator.chars().all(|c| c == marker)
+        });
+        trimmed.is_empty()
+            || fence_marker(trimmed).is_some()
+            || trimmed.starts_with('>')
+            || heading
+            || divider
+    };
+    let list_start = |line: &str| {
+        let marker = line.split_whitespace().next().unwrap_or_default();
+        matches!(marker, "-" | "+" | "*")
+            || marker.strip_suffix(['.', ')']).is_some_and(|digits| {
+                (1..=9).contains(&digits.len()) && digits.bytes().all(|c| c.is_ascii_digit())
+            })
+    };
+    let mut start = line_index;
+    if !boundary(lines[line_index]) && !list_start(lines[line_index]) {
+        while start > 0 && !boundary(lines[start - 1]) {
+            start -= 1;
+            if list_start(lines[start]) {
+                break;
+            }
+        }
+    }
+    let mut end = line_index + 1;
+    if !boundary(lines[line_index]) {
+        while end < lines.len() && !boundary(lines[end]) && !list_start(lines[end]) {
+            end += 1;
+        }
+    }
+    let keyword_start =
+        keyword_start + lines[start..line_index].iter().map(|line| line.len() + 1).sum::<usize>();
+    let paragraph = lines[start..end].join("\n");
+    let line = paragraph.as_str();
+    let mut index = 0;
+    while index < keyword_start {
+        let Some(character) = line[index..].chars().next() else { break };
+        if character == '`' && !backtick_is_escaped(line, index) {
+            let run = line[index..].chars().take_while(|next| *next == '`').count();
+            if let Some(end) = matching_inline_code_span_end(line, index, run) {
+                if keyword_start < end {
+                    return false;
+                }
+                index = end;
+                continue;
+            }
+            index += run;
+            continue;
+        }
+        index += character.len_utf8();
+    }
+    true
 }
 
 fn parse_sections(body: &str, max_body_bytes: usize) -> Result<BTreeMap<SectionKind, Section>> {
@@ -2561,7 +2663,21 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
-    const FIXTURES: [(&str, &str); 29] = [
+    const FIXTURES: [(&str, &str); 31] = [
+        (
+            "negated-terminal-mixed-controls",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../.ci/semantic-close-containment/fixtures/negated-terminal-mixed-controls.json"
+            )),
+        ),
+        (
+            "invalid-negated-terminal-17556",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../.ci/semantic-close-containment/fixtures/invalid-negated-terminal-17556.json"
+            )),
+        ),
         (
             "valid-explicit-subject-inventory-14633",
             include_str!(concat!(
@@ -2846,6 +2962,7 @@ mod tests {
             ResultCode::FailControllerPacketMissing,
             ResultCode::FailPredecessorSuccessorCollapse,
             ResultCode::FailProofLevelContradiction,
+            ResultCode::FailNegatedTerminalRelation,
             ResultCode::NotProvenGithub,
             ResultCode::InstrumentFailure,
         ] {
@@ -3330,6 +3447,250 @@ mod tests {
         let body = "```text\nCloses #123\nCloses https://github.com/org/repo/issues/124\n```\n> Fixes #456\nRefs #789\n";
         let relations = parse_closing_relations(body, "effortlessmetrics/perl-lsp-swarm")?;
         assert!(relations.is_empty());
+        Ok(())
+    }
+
+    fn negated_terminal_report(body: &str) -> Result<Report> {
+        let pull = PullRequestSubject {
+            repository: "effortlessmetrics/perl-lsp-swarm".into(),
+            number: 17556,
+            title: "bounded local-negation control".into(),
+            body: body.into(),
+        };
+        evaluate(&pull, |key| {
+            IssueEvidence::Available(IssueSubject {
+                number: key.number,
+                title: "bounded issue subject".into(),
+                body: "## Acceptance\nThe named work is established.".into(),
+            })
+        })
+    }
+
+    #[test]
+    fn negated_terminal_incident_retains_only_the_direct_token_and_line() -> Result<()> {
+        let sentence = "This does not close #8639 or #9551";
+        let report = negated_terminal_report(&format!("{}{sentence}", "\n".repeat(33)))?;
+        assert_eq!(report.rows.len(), 1, "negation must not erase or expand closing relations");
+        let row = &report.rows[0];
+        assert_eq!(row.issue_number, 8639);
+        assert_eq!(row.line_number, 34);
+        assert_eq!(row.source_line, sentence);
+        assert_eq!(row.keyword, "close");
+        assert_eq!(row.rule_id.as_deref(), Some("CP00-NEGATED-TERMINAL"));
+        assert_eq!(row.suggested_relation.as_deref(), Some("Refs #8639"));
+        assert!(row.reason.contains("GitHub"));
+        assert_eq!(report.aggregate_code, ResultCode::FailNegatedTerminalRelation);
+        assert_eq!(report.exit_code(), EXIT_CONTRADICTION);
+        assert!(!report.semantic_completion_proven);
+        let repaired = negated_terminal_report("Refs #8639; #8639 and #9551 remain open.")?;
+        assert_eq!(repaired.aggregate_code, ResultCode::PassNotApplicable);
+        assert!(repaired.rows.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn negated_terminal_adjacent_forms_preserve_all_closing_keywords() -> Result<()> {
+        for prefix in [
+            "This does not",
+            "Do not",
+            "NEVER",
+            "without",
+            "no longer",
+            "cannot",
+            "doesn't",
+            "don't",
+            "didn't",
+            "won't",
+            "can't",
+            "shouldn’t",
+            "wouldn't",
+            "couldn't",
+            "mustn't",
+            "isn't",
+            "aren't",
+            "wasn't",
+            "weren't",
+            "hasn't",
+            "haven't",
+            "hadn't",
+            "needn't",
+            "(not",
+            "例: not\t",
+        ] {
+            for keyword in [
+                "close", "closes", "closed", "fix", "fixes", "fixed", "resolve", "resolves",
+                "resolved",
+            ] {
+                let body = format!("{prefix} {keyword}: #42");
+                let report = negated_terminal_report(&body)?;
+                assert_eq!(report.rows.len(), 1, "{body}");
+                assert_eq!(
+                    report.aggregate_code,
+                    ResultCode::FailNegatedTerminalRelation,
+                    "{body}"
+                );
+                assert_eq!(report.exit_code(), EXIT_CONTRADICTION, "{body}");
+                let positive = negated_terminal_report(&format!("{keyword}: #42"))?;
+                assert_eq!(positive.rows.len(), 1);
+                assert_eq!(positive.aggregate_code, ResultCode::PassNoHighConfidenceContradiction);
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn negated_terminal_does_not_borrow_negation_or_reclassify_inline_examples() -> Result<()> {
+        for body in [
+            "Closes #42",
+            "Not only closes #42",
+            "not merely fixes #42",
+            "No longer needed; closes #42",
+            "Do not regress; closes #42",
+            "Do not\nclose #42",
+            "does not really close #42",
+            "cannot yet close #42",
+            "not: close #42",
+            "not-close #42",
+            "cannot-close #42",
+            "not_not close #42",
+            "why-not close #42",
+            "cannotnot close #42",
+            "`not close #42`",
+            "``does not close #42``",
+            "Example: `does not close #42\nexample`",
+            "Example: `example\ndoes not close #42`",
+            "- Example: `example\ndoes not close #42`",
+            "`not` close #42",
+            "not `close #42`",
+            "`example` closes #42",
+            "This closes #42, not #43",
+        ] {
+            let report = negated_terminal_report(body)?;
+            assert_eq!(report.rows.len(), 1, "existing detection must remain: {body}");
+            assert_eq!(
+                report.aggregate_code,
+                ResultCode::PassNoHighConfidenceContradiction,
+                "{body}"
+            );
+            assert_eq!(report.exit_code(), 0, "{body}");
+            assert!(!report.semantic_completion_proven);
+        }
+        for body in [
+            "\\`not close #42\\`",
+            "`unmatched not close #42",
+            "`example\ncontinued` does not close #42",
+            "`unmatched\n\ndoes not close #42`",
+            "`unmatched\n## Heading\ndoes not close #42`",
+            "`unmatched\n# Heading\ndoes not close #42`",
+            "`unmatched\n---\ndoes not close #42`",
+            "`unmatched\n===\ndoes not close #42`",
+            "`unmatched\n***\ndoes not close #42`",
+            "- `unmatched\n- does not close #42`",
+            "+ `unmatched\n+ does not close #42`",
+            "1) `unmatched\n2) does not close #42`",
+            "```text\n`unmatched\n```\ndoes not close #42`",
+        ] {
+            let report = negated_terminal_report(body)?;
+            assert_eq!(report.aggregate_code, ResultCode::FailNegatedTerminalRelation, "{body}");
+        }
+        for body in [
+            "```text\nnot close #42\n```",
+            "~~~~\nnot close #42\n~~~~",
+            "> does not close #42",
+            "> example\ndoes not close #42",
+            "does not close:#42",
+            "does not close issue #42",
+            "not closing #42",
+        ] {
+            let report = negated_terminal_report(body)?;
+            assert_eq!(report.aggregate_code, ResultCode::PassNotApplicable, "{body}");
+            assert!(report.rows.is_empty(), "{body}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn negated_terminal_is_bound_to_each_exact_repository_and_keyword() -> Result<()> {
+        let report = negated_terminal_report(
+            "Closes #42; does not fix OtherOrg/OtherRepo#42; resolves #43.\nNever resolves https://github.com/OtherOrg/ThirdRepo/issues/42; closes #42.",
+        )?;
+        let rows = report
+            .rows
+            .iter()
+            .map(|row| {
+                (
+                    row.repository.as_str(),
+                    row.issue_number,
+                    row.code,
+                    row.suggested_relation.as_deref(),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            rows,
+            vec![
+                (
+                    "effortlessmetrics/perl-lsp-swarm",
+                    42,
+                    ResultCode::PassNoHighConfidenceContradiction,
+                    None
+                ),
+                (
+                    "otherorg/otherrepo",
+                    42,
+                    ResultCode::FailNegatedTerminalRelation,
+                    Some("Refs otherorg/otherrepo#42")
+                ),
+                (
+                    "effortlessmetrics/perl-lsp-swarm",
+                    43,
+                    ResultCode::PassNoHighConfidenceContradiction,
+                    None
+                ),
+                (
+                    "otherorg/thirdrepo",
+                    42,
+                    ResultCode::FailNegatedTerminalRelation,
+                    Some("Refs otherorg/thirdrepo#42")
+                ),
+                (
+                    "effortlessmetrics/perl-lsp-swarm",
+                    42,
+                    ResultCode::PassNoHighConfidenceContradiction,
+                    None
+                ),
+            ]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn negated_terminal_preserves_issue_lookup_uncertainty() -> Result<()> {
+        let pull = PullRequestSubject {
+            repository: "effortlessmetrics/perl-lsp-swarm".into(),
+            number: 17556,
+            title: "lookup control".into(),
+            body: "does not close #42".into(),
+        };
+        for (evidence, expected) in [
+            (
+                IssueEvidence::LookupFailed("transport unavailable".into()),
+                ResultCode::InstrumentFailure,
+            ),
+            (IssueEvidence::Unavailable("absent issue".into()), ResultCode::NotProvenGithub),
+            (
+                IssueEvidence::Available(IssueSubject {
+                    number: 43,
+                    title: "wrong subject".into(),
+                    body: String::new(),
+                }),
+                ResultCode::InstrumentFailure,
+            ),
+        ] {
+            let report = evaluate(&pull, |_| evidence.clone())?;
+            assert_eq!(report.rows.len(), 1);
+            assert_eq!(report.aggregate_code, expected);
+        }
         Ok(())
     }
 
@@ -4847,6 +5208,7 @@ mod tests {
     #[test]
     fn mutation_controls_prove_each_rule_owns_its_fixture_disposition() -> Result<()> {
         let controls = [
+            (RuleId::NegatedTerminal, "invalid-negated-terminal-17556", None),
             (
                 RuleId::PhaseTerminal,
                 "invalid-phase-terminal-5023-5001",
