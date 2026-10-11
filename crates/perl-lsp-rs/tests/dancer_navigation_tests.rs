@@ -60,6 +60,11 @@ mod dancer_navigation_tests {
         Ok((response, locations))
     }
 
+    // Preserve the recorded Dancer1 static reference even when its program would
+    // fail at dispatch. In the Dancer 1.3522 / Perl 5.40.1 minimal GET proof,
+    // quoted handlers compile and register but dispatch 500 under strict refs;
+    // the matching CodeRef dispatches 200 with "About". Navigation does not run
+    // the application or claim that its callback succeeds.
     #[test]
     fn dancer_route_target_definitions_to_named_sub() -> TestResult {
         let code =
@@ -95,8 +100,8 @@ mod dancer_navigation_tests {
         server.open_document(uri, code);
 
         // Literal positions and declaration line are independent of the provider.
-        // The two positives also prevent empty/error navigation from satisfying
-        // the string and missing-handler controls.
+        // Positive controls also prevent empty/error navigation from satisfying
+        // the plain-string and missing-handler negative controls.
         for (line, character, expected_line, label) in [
             (2, 0, Some(6), "ordinary call"),
             (1, 18, Some(6), "named CodeRef"),
@@ -226,7 +231,7 @@ mod dancer_navigation_tests {
     // `perl-semantic-analyzer/tests/frameworks_web.rs`
     // (`dancer2_route_target_string_does_not_add_subroutine_reference`); the
     // navigation-level controls are the inline-handler containment test and the
-    // activation-removal staleness test below (a same-file word-name
+    // import-removal absence control below (a same-file word-name
     // goto-definition fallback is generic Perl behavior, not a route fact).
 
     // Valid inline CodeRef handler stays navigable under exact Dancer2 activation.
