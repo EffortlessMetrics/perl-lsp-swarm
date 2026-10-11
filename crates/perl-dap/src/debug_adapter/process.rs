@@ -2755,7 +2755,20 @@ impl DebugAdapter {
             }
 
             // Extract host and port for TCP attachment.
-            let host = args.get("host").and_then(|h| h.as_str()).unwrap_or("localhost");
+            let host = match args.get("host") {
+                None | Some(Value::Null) => "localhost",
+                Some(Value::String(host)) => host.as_str(),
+                Some(_) => {
+                    return DapMessage::Response {
+                        seq,
+                        request_seq,
+                        success: false,
+                        command: "attach".to_string(),
+                        body: None,
+                        message: Some("Invalid host: expected a string".to_string()),
+                    };
+                }
+            };
             let normalized_host = host.trim();
             let raw_port = args.get("port").and_then(|p| p.as_u64()).unwrap_or(13603);
             if raw_port > 65535 {
