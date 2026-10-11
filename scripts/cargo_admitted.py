@@ -24,6 +24,10 @@ class Denied(Exception):
         self.details = details
 
 
+class CapacityRefused(Denied):
+    """Observed disk headroom is insufficient for the selected policy."""
+
+
 def native_path(value):
     # Python on Windows does not understand Git Bash /c/... environment paths.
     if value.startswith(("\\\\", "//")):
@@ -634,11 +638,11 @@ def check_capacity(paths, env, budget=None):
                 (usage.total - usage.free) * 100 / usage.total >= ceiling):
             row["shortfall_bytes"] = max(0, required - usage.free)
             row["used_pct"] = (usage.total - usage.free) * 100 / usage.total
-            raise Denied("insufficient disk headroom at " + str(path)
-                         + " free_bytes=" + str(usage.free)
-                         + " required_free_bytes=" + str(required)
-                         + " shortfall_bytes=" + str(row["shortfall_bytes"])
-                         + " used_pct=" + str(row["used_pct"]), row)
+            raise CapacityRefused("insufficient disk headroom at " + str(path)
+                                  + " free_bytes=" + str(usage.free)
+                                  + " required_free_bytes=" + str(required)
+                                  + " shortfall_bytes=" + str(row["shortfall_bytes"])
+                                  + " used_pct=" + str(row["used_pct"]), row)
         observations.append(row)
     report["destinations"] = observations
     return report
@@ -907,6 +911,11 @@ def main(args=None):
         return result
     except (Denied, OSError, ValueError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
         print("cargo-admitted: DENY: " + str(error), file=sys.stderr)
+        if isinstance(error, CapacityRefused) and not preflight:
+            print("cargo-admitted: next: run scripts/cargo-admitted --preflight with the "
+                  "same admission options and exact Cargo arguments to inspect request scope "
+                  "and private output roots (read-only; no capacity reservation).",
+                  file=sys.stderr, flush=True)
         if preflight:
             print("cargo-admitted preflight: " + json.dumps({
                 "verdict": "DENY", "scope": scope, "lease_acquired": False,
