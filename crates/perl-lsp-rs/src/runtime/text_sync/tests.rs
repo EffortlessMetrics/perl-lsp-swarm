@@ -1859,7 +1859,7 @@ fn test_did_change_all_valid_full_members_keep_last_text_current() -> anyhow::Re
         .ok_or_else(|| anyhow::anyhow!("accepted document"))?
         .clone();
     anyhow::ensure!(document.text == final_text, "last full replacement must win");
-    anyhow::ensure!(document.rope.to_string() == final_text, "rope must match final text");
+    anyhow::ensure!(document.rope == final_text, "rope must match final text");
     anyhow::ensure!(document.version == 2, "accepted batch must advance the client version");
     anyhow::ensure!(
         document.current_generation() == opened_generation + 1,
