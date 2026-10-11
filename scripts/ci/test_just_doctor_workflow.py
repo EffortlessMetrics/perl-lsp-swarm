@@ -54,9 +54,13 @@ def check_route(text):
     text = "\n".join(line.split(" #", 1)[0].rstrip() for line in text.splitlines()
                      if not line.lstrip().startswith("#")) + "\n"
     event = block(text, "  pull_request:", r"^  \S")
+    if set(re.findall(r"^    ([\w-]+):", event, re.M)) != {"branches", "paths"}:
+        raise AssertionError("doctor PR trigger must keep the default update activity types")
     if "    branches: [main, master]" not in event.splitlines():
         raise AssertionError("doctor regressions must run for PRs to main and master")
     paths = block(event, "    paths:", r"^    \S")
+    if re.search(r"^      - ['\"]?!", paths, re.M):
+        raise AssertionError("negative PR paths can exclude doctor changes")
     for path in PATHS:
         if not re.search(rf"^      - '{re.escape(path)}'$", paths, re.M):
             raise AssertionError(f"missing pull_request path: {path}")
@@ -84,10 +88,13 @@ class JustDoctorWorkflowTests(unittest.TestCase):
         for path in PATHS:
             with self.subTest(path=path), self.assertRaisesRegex(AssertionError, "path"):
                 check_route(text.replace(f"      - '{path}'", f"      # - '{path}'"))
+            with self.subTest(excluded=path), self.assertRaisesRegex(AssertionError, "negative"):
+                check_route(text.replace(f"      - '{path}'", f"      - '{path}'\n      - '!{path}'"))
 
     def test_skipped_or_masked_execution_is_rejected(self):
         text = WORKFLOW.read_text()
         for before, after in (
+            ("  pull_request:\n", "  pull_request:\n    types: [closed]\n"),
             ("    branches: [main, master]", "    branches: [unrelated]"),
             ("    paths:", "    paths-ignore:"),
             (f"  {JOB}:\n", f"  {JOB}:\n    if: false\n"),
