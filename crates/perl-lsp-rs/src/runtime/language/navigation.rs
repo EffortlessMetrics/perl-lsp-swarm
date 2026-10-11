@@ -5733,7 +5733,8 @@ mod tests {
     /// target. The exact-name resolution (`Animal::name`, declared in the
     /// receiver's package) must win; a bareword that names no sub must stay
     /// an honest empty result. A cursor on the method token itself keeps
-    /// resolving to the method.
+    /// resolving to the method, and an argument word that merely spells the
+    /// receiver's name is still an argument, not the receiver.
     #[cfg(feature = "workspace")]
     #[test]
     fn definition_on_a_constructor_hash_key_never_resolves_the_constructor()
@@ -5743,8 +5744,8 @@ mod tests {
         let server = LspServer::new();
         let animal_uri = "file:///workspace/animal-17158/lib/Animal.pm";
         let main_uri = "file:///workspace/animal-17158/main.pl";
-        let animal_text = "package Animal;\nuse strict; use warnings;\n\nsub new {\n    my ($class, %args) = @_;\n    my $self = { name => $args{name} || 'generic' };\n    return bless $self, $class;\n}\n\nsub name {\n    my ($self) = @_;\n    return $self->{name};\n}\n\n1;\n";
-        let main_text = "use lib 'lib';\nuse Animal;\n\nmy $generic = Animal->new(name => 'Generic');\nmy $other = Animal->new(zznomatch => 'x');\n";
+        let animal_text = "package Animal;\nuse strict; use warnings;\n\nsub new {\n    my ($class, %args) = @_;\n    my $self = { name => $args{name} || 'generic' };\n    return bless $self, $class;\n}\n\nsub name {\n    my ($self) = @_;\n    return $self->{name};\n}\n\nsub Animal {\n    my ($self) = @_;\n    return 'Animal';\n}\n\n1;\n";
+        let main_text = "use lib 'lib';\nuse Animal;\n\nmy $generic = Animal->new(name => 'Generic');\nmy $other = Animal->new(zznomatch => 'x');\nmy $collide = Animal->new(Animal => 1);\n";
 
         server.test_apply_did_open(animal_uri, animal_text, 1)?;
         server.test_apply_did_open(main_uri, main_text, 1)?;
@@ -5845,6 +5846,34 @@ mod tests {
                 .iter()
                 .any(|(_, start, end)| { *start <= new_decl_line && new_decl_line <= *end }),
             "the method token cursor must reach sub new; got {method_targets:?}"
+        );
+
+        // An argument bareword that SPELLS the receiver's name (`Animal` in
+        // `Animal->new(Animal => 1)`) is positional evidence, not a receiver
+        // cursor. Classifying by word text alone used to hand the cursor the
+        // call's method identity, so goto-definition landed on the
+        // constructor `new` instead of the argument's exact-name sub.
+        let animal_decl_line = animal_text
+            .lines()
+            .position(|l| l.starts_with("sub Animal {"))
+            .ok_or("fixture must declare sub Animal")? as u64;
+        let collide_char = main_text
+            .lines()
+            .nth(5)
+            .unwrap_or("")
+            .rfind("Animal")
+            .ok_or("fixture must carry the receiver-named argument")?
+            as u32;
+        let collide_targets = targets(definition_at(5, collide_char)?)?;
+        assert!(
+            !collide_targets.is_empty(),
+            "the exact-name sub exists (Animal::Animal), so the argument cursor resolves to it"
+        );
+        assert!(
+            collide_targets
+                .iter()
+                .all(|(uri, start, _)| uri == animal_uri && *start == animal_decl_line),
+            "an argument spelling the receiver name must resolve to sub Animal, not the constructor; got {collide_targets:?}"
         );
 
         Ok(())

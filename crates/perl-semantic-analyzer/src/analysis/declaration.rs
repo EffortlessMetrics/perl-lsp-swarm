@@ -1478,7 +1478,10 @@ fn bareword_at_offset(text: &str, offset: usize) -> Option<&str> {
 /// inside the node — argument words, hash keys, quoted strings — which must
 /// not inherit the call's method identity (#17158). The token span is located
 /// textually after the receiver's `->`, so a quoted argument that spells the
-/// method name (`'new' => ...`) does not match.
+/// method name (`'new' => ...`) does not match. The receiver branch is
+/// positional: the cursor must sit within the receiver's span, so an
+/// argument word that merely spells the receiver's name (`Animal => 1`)
+/// does not match either.
 fn method_call_cursor_names_call(
     source_text: &str,
     node: &Node,
@@ -1486,9 +1489,11 @@ fn method_call_cursor_names_call(
     method: &str,
     offset: usize,
 ) -> bool {
-    let on_bareword_receiver = bareword_at_offset(source_text, offset).is_some_and(
-        |word| matches!(&object.kind, NodeKind::Identifier { name } if word == name.as_str()),
-    );
+    let on_bareword_receiver = offset >= object.location.start
+        && offset <= object.location.end
+        && bareword_at_offset(source_text, offset).is_some_and(
+            |word| matches!(&object.kind, NodeKind::Identifier { name } if word == name.as_str()),
+        );
     if on_bareword_receiver {
         return true;
     }
@@ -2890,6 +2895,72 @@ mod tests {
         let key = result.unwrap();
         assert_eq!(key.name.as_ref(), "greet", "symbol name must be the bare method name");
         assert_eq!(key.pkg.as_ref(), "Foo", "pkg must be the current_pkg for bare method names");
+    }
+
+    // =========================================================================
+    // MethodCall guard — argument word spelling the receiver (#17158)
+    //
+    // method_call_cursor_names_call classifies a cursor as the bareword
+    // receiver by comparing the word under the cursor with the receiver's
+    // name. That comparison is only meaningful when the cursor sits inside
+    // the receiver's span: an argument bareword that spells the receiver's
+    // name (`Animal` in `Animal->new(Animal => 1)`) must stay an argument.
+    // =========================================================================
+
+    /// An argument word spelling the receiver's name is not the receiver.
+    ///
+    /// Cursor on the hash key `Animal` in `Animal->new(Animal => 1)`: the
+    /// with-source guard must decline it (no `new` key), and the
+    /// argument-bareword resolver must yield the exact-name key
+    /// `Animal::Animal` instead. The receiver and method-token cursors keep
+    /// classifying the call.
+    #[test]
+    fn method_call_argument_word_spelling_the_receiver_declines_the_call() {
+        let source = "package Animal;\nsub new { return 1; }\nAnimal->new(Animal => 1);\n";
+        let mut parser = Parser::new(source);
+        let ast = parser.parse().expect("parse must succeed");
+
+        let receiver = source.find("Animal->new").expect("receiver must be in source");
+        let argument = source.rfind("Animal =>").expect("argument key must be in source");
+        let method_token = source.find("->new(").expect("method call must be in source") + 3;
+
+        let receiver_key = symbol_at_cursor_with_source(&ast, receiver, "Animal", source)
+            .expect("cursor on the bareword receiver must classify the call");
+        assert_eq!(
+            receiver_key.name.as_ref(),
+            "new",
+            "the receiver cursor must resolve the method"
+        );
+        assert_eq!(
+            receiver_key.pkg.as_ref(),
+            "Animal",
+            "the receiver package comes from the receiver identifier"
+        );
+
+        let method_key = symbol_at_cursor_with_source(&ast, method_token, "Animal", source)
+            .expect("cursor on the method token must classify the call");
+        assert_eq!(
+            method_key.name.as_ref(),
+            "new",
+            "the method-token cursor must resolve the method"
+        );
+
+        assert!(
+            symbol_at_cursor_with_source(&ast, argument, "Animal", source).is_none(),
+            "an argument word spelling the receiver name must not classify as the call"
+        );
+        let argument_key = method_argument_bareword_key(&ast, argument, "Animal", source)
+            .expect("the argument bareword yields its exact-name key");
+        assert_eq!(
+            argument_key.name.as_ref(),
+            "Animal",
+            "the argument key must be the bareword itself, not the method"
+        );
+        assert_eq!(
+            argument_key.pkg.as_ref(),
+            "Animal",
+            "the bareword's package is the receiver's package"
+        );
     }
 
     // =========================================================================
