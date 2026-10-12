@@ -31,6 +31,17 @@ logic in xtask, where its tests and history already live.
 to the exact xtask invocation when it is not. Removing this crate (or the
 rewrite block in `cargo_admitted.py`) restores the original path.
 
+## Workspace accounting
+
+The agent-context policy classifies this private bootstrap as infrastructure:
+it adds no independent product surface and compiles xtask's canonical source.
+
+The Clippy all-target partition lists it in the residual cohort alongside xtask,
+under the existing repair obligation. Shared source does not establish clean
+Clippy results for this package's own compilation context. Admission to the
+strict cohort still requires the exact measured zero-residual proof described
+in `docs/CLIPPY_POLICY.md`; no selector or lint obligation is removed.
+
 ## Status
 
 Staged only. Complete workload fit is NOT_PROVEN until native exact-candidate
