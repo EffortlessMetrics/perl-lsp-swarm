@@ -1,4 +1,4 @@
-﻿#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 use perl_lsp_perltidy::PerlFormatter;
 use perl_lsp_perltidy::native::{
     BracePlacement, ElsePlacement, FormatConfig, FormatContext, FormatDisposition, FormatEngine,
@@ -583,4 +583,3 @@ fn formats_list_operator_statements_inside_blocks() {
     assert_eq!(second.formatted, expected);
     assert!(!second.changed);
 }
-
