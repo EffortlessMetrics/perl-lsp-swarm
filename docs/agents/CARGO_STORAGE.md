@@ -593,3 +593,12 @@ that service neither signals live children nor proves closure or releases a leas
 Final `finish()` remains responsible for ECHILD. Missing service refuses before
 launch. The bridge claims its exclusive result path before constructing the scope
 or running producer/consumers; a collision preserves prior evidence and refuses.
+
+Adversarial review of that composition found two interactions, both repaired in
+the next candidate: an externally interrupted scan must not send a second SIGINT
+during orderly child shutdown, and an empty/malformed exclusive bridge result must
+preserve the child’s typed 75/130 failure rather than become generic status 1.
+The real single-signal control asserts exactly one delivered SIGINT and both child
+and measurement status 130. A native result-decoding control retains malformed
+evidence and checks typed 75/130/101 propagation. The repository-supported `xtask --all-targets --profile agent` Clippy shape is
+a named hosted check through the original admitted owner, without lint overrides.

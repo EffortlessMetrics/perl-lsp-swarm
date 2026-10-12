@@ -114,6 +114,49 @@ class StorageMeasurement(unittest.TestCase):
                                           env={**os.environ, 'LC_ALL': 'C'})
             self.assertEqual(subject.allocation([a, b]), int(raw.splitlines()[-1].split(b'\t')[0]))
 
+    def test_external_interrupt_does_not_resend_for_interrupted_scan(self):
+        # One real user signal interrupts a mocked in-flight scan. The child
+        # acknowledges it, then remains alive during orderly shutdown so a
+        # duplicate signal is observable rather than hidden by fast exit.
+        with tempfile.TemporaryDirectory() as name:
+            root = Path(name); ready = root / 'ready'; signals = root / 'signals'
+            entered = threading.Event(); calls = 0
+            program = ("from pathlib import Path\nimport signal,time\n"
+                       "def stop(*_):\n with Path(" + repr(str(signals)) + ").open('a') as stream:stream.write('INT\\n')\n"
+                       " time.sleep(.15)\n raise SystemExit(130)\n"
+                       "signal.signal(signal.SIGINT,stop)\nPath(" + repr(str(ready)) + ").touch()\ntime.sleep(1)\n")
+            good = {'allocated_bytes': 0, 'filesystems': {'1': {'free_bytes': 10000}}, 'scan_seconds': 0}
+            def observe(_roots, event=None):
+                nonlocal calls
+                calls += 1
+                if calls == 2:
+                    deadline = time.monotonic() + 2
+                    while not ready.exists() and time.monotonic() < deadline:
+                        time.sleep(.005)
+                    self.assertTrue(ready.exists()); entered.set()
+                    self.assertTrue(event.wait(2))
+                    while not signals.exists() and time.monotonic() < deadline:
+                        time.sleep(.005)
+                    self.assertTrue(signals.exists())
+                    raise subject.MeasurementError('scan interrupted by external cancellation')
+                return good
+            def cancel_once():
+                if entered.wait(2):
+                    os.kill(os.getpid(), signal.SIGINT)
+            actor = threading.Thread(target=cancel_once); actor.start()
+            try:
+                with patch.object(subject, 'observe', side_effect=observe):
+                    status = subject.main(['--root', str(root / 'target'), '--evidence', str(root / 'receipt'),
+                                           '--interval', '.01', '--', sys.executable, '-c', program])
+            finally:
+                actor.join(timeout=2)
+            self.assertFalse(actor.is_alive())
+            summary = json.loads((root / 'receipt').read_text().splitlines()[-1])
+            self.assertEqual(signals.read_text().splitlines(), ['INT'])
+            self.assertEqual((status, summary['command_status']), (130, 130))
+            self.assertEqual(summary['cancelled_signals'], [signal.SIGINT])
+            self.assertFalse(summary['measurement_complete'])
+
     def test_missing_roots_and_filesystem_observations(self):
         with tempfile.TemporaryDirectory() as directory:
             row = subject.observe([Path(directory) / 'missing'])

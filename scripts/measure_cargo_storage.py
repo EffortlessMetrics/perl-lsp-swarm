@@ -143,10 +143,12 @@ def main(argv=None):
                 except OSError:
                     # Durable evidence failure must fail the measurement and stop work.
                     samples.append({'valid': False, 'error': 'measurement persistence failed'})
-                    signal_child(signal.SIGINT)
+                    if not cancelled:
+                        signal_child(signal.SIGINT)
                     return
                 if not samples[-1]['valid'] or reserve_lost(samples[-1]):
-                    signal_child(signal.SIGINT)
+                    if not cancelled:
+                        signal_child(signal.SIGINT)
                     return
         worker = threading.Thread(target=monitor)
         worker.start()

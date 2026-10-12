@@ -370,6 +370,18 @@ fn bridge_failure_status(row: Option<&Value>, child: Option<i32>) -> u8 {
         .map_or(1, |status| status)
 }
 
+fn read_bridge_result(path: &Path, child: Option<i32>) -> Result<Value> {
+    let decoded: Result<Value> = (|| Ok(serde_json::from_slice(&fs::read(path)?)?))();
+    decoded.map_err(|error| {
+        BridgeFailure {
+            status: bridge_failure_status(None, child),
+            evidence: path.to_path_buf(),
+            detail: format!("claimed bridge result is unreadable or malformed: {error}"),
+        }
+        .into()
+    })
+}
+
 struct Driver {
     root: PathBuf,
     evidence: PathBuf,
@@ -413,7 +425,7 @@ impl Driver {
             }
             .into());
         }
-        let row: Value = serde_json::from_slice(&fs::read(&result)?)?;
+        let row = read_bridge_result(&result, status.code())?;
         if !status.success() || row["status"] != 0 || row["settlement"]["tree_settled"] != true {
             return Err(BridgeFailure {
                 status: bridge_failure_status(Some(&row), status.code()),
@@ -947,9 +959,11 @@ mod tests {
         assert!(plan_cohorts(&metadata, &packages, &checked).is_err());
     }
     #[test]
-    fn bin_owning_integration_and_benchmark_targets_keep_their_selectors() {
+    fn bin_owning_integration_and_benchmark_targets_keep_their_selectors() -> Result<()> {
         let (mut metadata, packages, checked) = fixture();
-        let targets = metadata["packages"][1]["targets"].as_array_mut().unwrap();
+        let targets = metadata["packages"][1]["targets"]
+            .as_array_mut()
+            .ok_or_else(|| eyre!("fixture targets must be an array"))?;
         targets.extend([
             json!({"name":"enabled_probe","kind":["bin"],"src_path":"/fixture/b/src/enabled_probe.rs","test":false,"required-features":["enabled-bin"]}),
             json!({"name":"unbuilt_probe","kind":["bin"],"src_path":"/fixture/b/src/unbuilt_probe.rs","test":false,"required-features":["unbuilt"]}),
@@ -958,14 +972,16 @@ mod tests {
             let mut metadata = metadata.clone();
             metadata["packages"][1]["targets"]
                 .as_array_mut()
-                .unwrap()
+                .ok_or_else(|| eyre!("fixture targets must be an array"))?
                 .retain(|target| target["name"] != "shared");
             let mut checked = vec![checked[0].clone()];
             let target = json!({"name":"runtime_env","kind":[kind],"src_path":"/fixture/b/tests/runtime_env.rs","test":true,"required-features":[]});
-            metadata["packages"][1]["targets"].as_array_mut().unwrap().push(target.clone());
+            metadata["packages"][1]["targets"]
+                .as_array_mut()
+                .ok_or_else(|| eyre!("fixture targets must be an array"))?
+                .push(target.clone());
             checked.push(json!({"reason":"compiler-artifact","package_id":"b","target":target,"features":[],"profile":{"test":true}}));
-            let plan = plan_cohorts(&metadata, &packages, &checked)
-                .unwrap_or_else(|error| panic!("{kind} target was dropped: {error}"));
+            let plan = plan_cohorts(&metadata, &packages, &checked)?;
             assert!(
                 plan.iter().any(|cohort| cohort
                     .targets
@@ -973,16 +989,16 @@ mod tests {
                     .any(|unit| unit["target"]["kind"][0] == kind))
             );
         }
+        Ok(())
     }
     #[test]
-    fn cargo_bin_runtime_inventory_keeps_enabled_and_disabled_targets() {
+    fn cargo_bin_runtime_inventory_keeps_enabled_and_disabled_targets() -> Result<()> {
         let package = json!({"targets":[
             {"name":"enabled_probe","kind":["bin"],"required-features":["enabled-bin"]},
             {"name":"unbuilt_probe","kind":["bin"],"required-features":["unbuilt"]},
             {"name":"library","kind":["lib"],"required-features":[]}
         ]});
-        let inventory = binary_runtime_inventory(&package, &[json!("enabled-bin")])
-            .expect("bounded Cargo target inventory");
+        let inventory = binary_runtime_inventory(&package, &[json!("enabled-bin")])?;
         assert_eq!(
             inventory,
             vec![
@@ -995,6 +1011,7 @@ mod tests {
             {"name":"same","kind":["bin"],"required-features":[]}
         ]});
         assert!(binary_runtime_inventory(&duplicate, &[]).is_err());
+        Ok(())
     }
     #[test]
     fn inner_closure_and_cancellation_status_survive_native_wrapper() {
@@ -1012,6 +1029,29 @@ mod tests {
         }
         .into();
         assert_eq!(error.downcast_ref::<BridgeFailure>().map(|failure| failure.status), Some(75));
+    }
+    #[test]
+    fn malformed_claimed_result_preserves_child_failure_and_evidence() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("claimed.json");
+        for bytes in [b"".as_slice(), b"{".as_slice()] {
+            fs::write(&path, bytes)?;
+            for status in [75, 130, 101] {
+                let error = match read_bridge_result(&path, Some(status)) {
+                    Err(error) => error,
+                    Ok(_) => bail!("malformed bridge result was accepted"),
+                };
+                let failure = error
+                    .downcast_ref::<BridgeFailure>()
+                    .ok_or_else(|| eyre!("missing typed bridge failure"))?;
+                assert_eq!(failure.status, status as u8);
+                assert_eq!(failure.evidence, path);
+                assert_eq!(fs::read(&path)?, bytes);
+            }
+        }
+        fs::write(&path, br#"{"status":0}"#)?;
+        assert_eq!(read_bridge_result(&path, Some(0))?, json!({"status":0}));
+        Ok(())
     }
     #[test]
     fn every_original_package_and_feature_switch_preserved() {
