@@ -1130,10 +1130,13 @@ impl BodyLowerer {
                         }),
                         DeclStorageClass::Unknown => None,
                     };
-                    // The write access comes from `access_for_operation`; the
-                    // value context of the declared place is not proven by
-                    // this lowering (scalar versus list assignment shape), so
-                    // it stays `Unknown` rather than the statement's `Void`.
+                    // The write access comes from `access_for_operation` for
+                    // lexical and stash writes; field writes carry no access
+                    // fact (the Field family is ignored by extraction in PR1,
+                    // #13817). The value context of the declared place is not
+                    // proven by this lowering (scalar versus list assignment
+                    // shape), so it stays `Unknown` rather than the
+                    // statement's `Void`.
                     if let Some(op) = op {
                         self.push_body_node(anchor, op, PirContext::Unknown, None, file);
                     }
