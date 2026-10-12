@@ -195,7 +195,8 @@ pub mod semantic_token_classes;
 pub mod session_receipt;
 pub mod shadow_parity;
 pub mod srp_microcrates;
-pub mod staged;
+// Shared staged Git plumbing; retain the legacy module path.
+pub use perl_ci_hygiene::staged;
 pub mod standalone_diagnostics;
 pub mod standalone_vectors;
 pub mod supported_editor_inline_smoke;

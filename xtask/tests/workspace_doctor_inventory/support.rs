@@ -69,7 +69,7 @@ doctor:
     # Check 5: pre-push hook installed
     echo "pre-push hook installed"
     echo "pre-push hook installed but stale"
-    echo "cargo xtask ci-hygiene install-githooks"
+    echo "bash scripts/install-githooks.sh"
 
     # Check 6: Workspace clean
     echo "workspace has $dirty_count uncommitted changes"

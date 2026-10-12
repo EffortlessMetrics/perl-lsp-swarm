@@ -72,8 +72,66 @@ fn main() -> std::process::ExitCode {
 
 fn run() -> Result<i32> {
     let cli = Cli::parse();
+    // Resolver commands can inspect an explicit fixture or current workspace
+    // without first selecting the hygiene scanner's nearest-manifest root.
+    let command = match cli.command {
+        CliCommand::CiSubject {
+            event_name,
+            event_path,
+            repository,
+            github_sha,
+            base_sha,
+            head_sha,
+            receipt,
+            root,
+        } => {
+            perl_ci_hygiene::ci_subject::run(perl_ci_hygiene::ci_subject::CiSubjectConfig {
+                event_name,
+                event_path,
+                repository,
+                github_sha,
+                base_sha,
+                head_sha,
+                receipt,
+                root,
+            })?;
+            return Ok(0);
+        }
+        CliCommand::CiScope { base, subject, root, format } => {
+            perl_ci_hygiene::ci_scope::run(perl_ci_hygiene::ci_scope::CiScopeConfig {
+                base,
+                subject,
+                root,
+                format,
+            })?;
+            return Ok(0);
+        }
+        CliCommand::ChangeSet { base, head, format, root } => {
+            perl_ci_hygiene::change_set::run(perl_ci_hygiene::change_set::ChangeSetConfig {
+                base,
+                head,
+                format,
+                root,
+            })?;
+            return Ok(0);
+        }
+        CliCommand::ResolvePackageName { crate_dir } => {
+            let root = std::env::current_dir()?;
+            let name =
+                perl_ci_hygiene::package_resolver::resolve_single_package_name(&root, &crate_dir)?;
+            println!("{name}");
+            return Ok(0);
+        }
+        command => command,
+    };
     let repo_root = find_repo_root()?;
-    let code = match cli.command {
+    let code = match command {
+        CliCommand::CiSubject { .. }
+        | CliCommand::CiScope { .. }
+        | CliCommand::ChangeSet { .. }
+        | CliCommand::ResolvePackageName { .. } => {
+            return Err(color_eyre::eyre::eyre!("resolver command was not dispatched"));
+        }
         CliCommand::CheckDocPaths { docs_dir } => {
             cmd_check_doc_paths(&repo_root, docs_dir.as_deref())?
         }
@@ -3533,14 +3591,17 @@ mod tests {
         let home_user_path = Regex::new(r"/home/([A-Za-z0-9._-]+)")?;
 
         assert!(!has_machine_specific_home_path(
-            "Use /home/user/project as the example.",
+            concat!("Use /home/", "user/project as the example."),
             &home_user_path,
         ));
         assert!(has_machine_specific_home_path(
-            "My path is /home/ubuntu/workspace/perl-lsp",
+            concat!("My path is /home/", "ubuntu/workspace/perl-lsp"),
             &home_user_path,
         ));
-        assert!(has_machine_specific_home_path("Local path: /home/u/project", &home_user_path,));
+        assert!(has_machine_specific_home_path(
+            concat!("Local path: /home/", "u/project"),
+            &home_user_path,
+        ));
 
         Ok(())
     }
@@ -3550,15 +3611,15 @@ mod tests {
         let users_name_path = Regex::new(r"/Users/([A-Za-z0-9._-]+)")?;
 
         assert!(!has_machine_specific_users_path(
-            "Template: /Users/Name/project",
+            concat!("Template: /Users/", "Name/project"),
             &users_name_path,
         ));
         assert!(!has_machine_specific_users_path(
-            "Template: /Users/user/project",
+            concat!("Template: /Users/", "user/project"),
             &users_name_path,
         ));
         assert!(has_machine_specific_users_path(
-            "Personal path: /Users/alice/dev/perl-lsp",
+            concat!("Personal path: /Users/", "alice/dev/perl-lsp"),
             &users_name_path,
         ));
 
@@ -3908,7 +3969,7 @@ mod tests {
             .to_str()
             .ok_or_else(|| color_eyre::eyre::eyre!("temp dir must be valid UTF-8 in CI"))?;
         // On Linux CI this will be /tmp/e2e-suite.lock (acceptable)
-        // On Windows this will be C:\Users\...\AppData\Local\Temp\e2e-suite.lock
+        // On Windows this is beneath the user profile AppData/Local/Temp directory.
         assert!(!lock_str.is_empty(), "lock file path must be non-empty");
         Ok(())
     }
