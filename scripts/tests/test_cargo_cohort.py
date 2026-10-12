@@ -357,6 +357,41 @@ class PortableControls(unittest.TestCase):
         self.assertTrue(enabled.exists(),'companion Cargo binary must be retained')
         self.assertFalse(disabled.exists(),'disabled Cargo target remains an unbuilt path')
 
+    def test_same_bin_test_harness_does_not_replace_runtime_artifact(self):
+        profile=self.paths['target']/'debug';profile.mkdir(parents=True)
+        public=profile/'enabled_probe';public.write_bytes(b'public binary')
+        harness=self.paths['build']/'enabled-probe-test';harness.write_bytes(b'test harness')
+        instance=self.owner()
+        try:
+            base={'reason':'compiler-artifact','package_id':'fixture-package',
+                  'target':{'name':'enabled_probe','kind':['bin'],'test':True},'features':[],'fresh':False}
+            runtime=dict(base,profile={'test':False},executable=str(public))
+            test=dict(base,profile={'test':True},executable=str(harness))
+            instance._record(test)
+            exact={key:test[key] for key in ('package_id','target','features','profile')}
+            exact_owner=self.owner(expected_targets=[exact],retain_preexisting=True)
+            try:
+                harness.chmod(0o700)
+                exact_owner._record(dict(test,fresh=True))
+                self.assertEqual(exact_owner.captured_targets,exact_owner.expected_targets)
+                self.assertEqual(exact_owner.binary_artifacts,{})
+                self.assertFalse(exact_owner.groups[harness]['reclaimable'])
+            finally:exact_owner.close()
+            with self.assertRaises(cohort.Denied):
+                instance._binary_runtime_environment(harness,'fixture-package',[{'name':'enabled_probe','enabled':True}])
+            instance._record(runtime)
+            self.assertEqual(instance._binary_runtime_environment(harness,'fixture-package',[{'name':'enabled_probe','enabled':True}]),
+                             {'CARGO_BIN_EXE_enabled_probe':str(public)})
+            self.assertTrue(harness.exists());self.assertTrue(public.exists())
+            for value in (None,1,'false'):
+                with self.assertRaises(cohort.Denied):
+                    instance._record(dict(base,profile={'test':value},executable=str(public)))
+            foreign=self.paths['build']/'foreign-bin';foreign.write_bytes(b'foreign')
+            instance._record(dict(runtime,executable=str(foreign)))
+            with self.assertRaises(cohort.Denied):
+                instance._binary_runtime_environment(harness,'fixture-package',[{'name':'enabled_probe','enabled':True}])
+        finally:instance.close()
+
     def test_cargo_bin_environment_disagreement_retains_harness(self):
         profile=self.paths['target']/'debug';deps=profile/'deps';deps.mkdir(parents=True)
         harness=deps/'runtime-1234';package_id='fixture-package'

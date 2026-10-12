@@ -355,7 +355,14 @@ class Cohort:
             path = Path(executable)
             if not path.is_absolute() or native_path(str(path)) != path or not path.is_file() or path.is_symlink():
                 raise Denied('Cargo binary artifact path is not canonical and present')
-            self.binary_artifacts.setdefault((package_id, name), set()).add(path)
+            profile = message.get('profile')
+            if not isinstance(profile, dict) or not isinstance(profile.get('test'), bool):
+                raise Denied('Cargo binary artifact lacks an exact test profile')
+            # A batch can emit both the bin's test harness and its public
+            # executable. Only Cargo's non-test artifact supplies BIN_EXE;
+            # the test artifact still passes through exact harness binding.
+            if profile['test'] is False:
+                self.binary_artifacts.setdefault((package_id, name), set()).add(path)
         if not executable:
             return
         target_binding = {key: message.get(key) for key in ('package_id', 'target', 'features', 'profile')}
