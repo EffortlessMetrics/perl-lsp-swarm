@@ -256,6 +256,25 @@ impl BinaryIdentityPacketV1 {
         Self::server(version, embedded_build_input())
     }
 
+    /// Bind binary-owned source evidence while preserving other embedded build facts.
+    ///
+    /// A missing local field falls back to an explicitly supplied release field.
+    #[must_use]
+    pub fn embedded_server_with_source(
+        version: impl Into<String>,
+        source_revision: Option<&str>,
+        source_tree_digest: Option<&str>,
+    ) -> Self {
+        let mut input = embedded_build_input();
+        if let Some(revision) = source_revision {
+            input.source_revision = Some(revision.to_owned());
+        }
+        if let Some(digest) = source_tree_digest {
+            input.source_tree_digest = Some(digest.to_owned());
+        }
+        Self::server(version, input)
+    }
+
     /// Build a DAP packet from compile-time inputs available to ordinary workspace builds.
     #[must_use]
     pub fn embedded_dap(version: impl Into<String>) -> Self {
@@ -765,7 +784,7 @@ mod tests {
             BinaryIdentityInput {
                 source_revision: Some("abc\nTarget: forged".to_owned()),
                 source_tree_digest: Some("f".repeat(63)),
-                target: Some("/home/user/custom-target.json".to_owned()),
+                target: Some("/fixture/custom-target.json".to_owned()),
                 profile: Some("release\nforged".to_owned()),
                 artifact_role: Some(ArtifactRole::Archive),
                 artifact_digest: Some("sha256:deadbeef".to_owned()),
@@ -798,7 +817,7 @@ mod tests {
         }
         let human = packet.to_human();
         assert!(!human.contains("forged"), "human={human}");
-        assert!(!human.contains("/home/user"), "human={human}");
+        assert!(!human.contains("/fixture"), "human={human}");
         assert!(!human.contains("../../private"), "human={human}");
     }
 

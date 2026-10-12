@@ -47,7 +47,10 @@
     clippy::module_name_repetitions
 )]
 
+#[path = "../../perllsp/src/build_source_identity.rs"]
+mod build_source_identity;
 pub mod client;
+
 pub mod diagnostics;
 pub mod env;
 pub mod observation;
@@ -383,6 +386,7 @@ pub struct UxHarness {
     pub client: UxClient,
     pub workspace: FakeWorkspace,
     config: ScenarioConfig,
+    _binary_evidence: tempfile::TempDir,
     document_versions: Mutex<HashMap<String, i32>>,
 }
 
@@ -400,12 +404,25 @@ impl UxHarness {
             workspace.ensure_dir(path)?;
         }
 
-        let binary_path = resolve_binary()?;
+        let selected = resolve_binary_path()?;
+        let binary_evidence = tempfile::tempdir().context("capture exact UX executable")?;
+        let captured =
+            binary_evidence.path().join(if cfg!(windows) { "perl-lsp.exe" } else { "perl-lsp" });
+        std::fs::copy(&selected, &captured).context("copy exact UX executable")?;
+        let binary_path =
+            captured.to_str().ok_or_else(|| anyhow!("non-UTF8 captured executable path"))?;
+        verify_binary_source(binary_path)?;
 
-        let client = UxClient::spawn(&binary_path, &workspace, &config)
+        let client = UxClient::spawn(binary_path, &workspace, &config)
             .context("Failed to spawn LSP server")?;
 
-        Ok(Self { client, workspace, config, document_versions: Mutex::new(HashMap::new()) })
+        Ok(Self {
+            client,
+            workspace,
+            config,
+            _binary_evidence: binary_evidence,
+            document_versions: Mutex::new(HashMap::new()),
+        })
     }
 
     /// Open a file in the LSP server (textDocument/didOpen).
@@ -1348,7 +1365,7 @@ pub const REQUIRE_BINARY_ENV: &str = "PERL_LSP_UX_REQUIRE_BINARY";
 /// treated as a hard failure (a clear `assert!` panic with an actionable
 /// message) instead of a silent skip. Because every scenario funnels its skip
 /// decision through this single function, setting the env var in a CI job
-/// makes the entire suite fail loud if `cargo build -p perl-lsp-rs` was never
+/// makes the entire suite fail loud if `cargo build -p perllsp` was never
 /// run — see #3596. Uses `assert!` rather than `panic!` directly: this
 /// workspace denies `clippy::panic` in production code, and `assert!` is the
 /// sanctioned hard-failure idiom.
@@ -1359,8 +1376,8 @@ pub fn binary_available() -> bool {
             assert!(
                 !strict_binary_required(),
                 "{REQUIRE_BINARY_ENV}=1 is set, which forbids the silent \
-                 UX-suite SKIP path — perl-lsp binary not built. \
-                 Run `cargo build -p perl-lsp-rs` first. \
+                 UX-suite SKIP path — no current perl-lsp executable evidence. \
+                 Run `cargo build -p perllsp` first. \
                  Resolution error: {err}"
             );
             false
@@ -1404,6 +1421,74 @@ pub fn missing_binary_skip() -> UxScenarioSkip {
 /// 5. `perl-lsp` / `perllsp` in PATH.
 /// 6. Error with actionable message.
 pub fn resolve_binary() -> Result<String> {
+    let binary = resolve_binary_path()?;
+    verify_binary_source(&binary)?;
+    Ok(binary)
+}
+
+/// Reject executable evidence from another product, revision, or dirty source tree.
+pub fn verify_binary_source(binary: &str) -> Result<()> {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(std::path::Path::parent)
+        .ok_or_else(|| anyhow!("UX workspace root unavailable"))?;
+    let (revision, digest) = build_source_identity::source_identity(root)
+        .map_err(|error| anyhow!("cannot establish UX source identity: {error}"))?;
+    let stdout = tempfile::NamedTempFile::new()?;
+    let stderr = tempfile::NamedTempFile::new()?;
+    let child = std::process::Command::new(binary)
+        .args(["--info", "--json"])
+        .stdin(std::process::Stdio::null())
+        .stdout(stdout.reopen()?)
+        .stderr(stderr.reopen()?)
+        .spawn()
+        .with_context(|| format!("identity probe failed for {binary}"))?;
+    let child = Mutex::new(child);
+    let outcome = poll_child_exit(&child, Instant::now() + Duration::from_secs(5));
+    let status = match outcome {
+        Ok(ChildExit::Exited(status)) => status,
+        other => {
+            let mut process = child.lock().unwrap_or_else(|error| error.into_inner());
+            let _ = process.kill();
+            let _ = process.wait();
+            anyhow::bail!(
+                "identity probe did not finish for {binary}: {}",
+                match other {
+                    Err(error) => error.to_string(),
+                    _ => "five-second deadline exceeded".to_owned(),
+                }
+            );
+        }
+    };
+    anyhow::ensure!(status.success(), "identity probe failed for {binary}: {status}");
+    let packet_bytes = std::fs::read(stdout.path())?;
+    let identity: Value = serde_json::from_slice(&packet_bytes)
+        .with_context(|| format!("invalid product_identity from {binary}"))?;
+    anyhow::ensure!(
+        identity.pointer("/product/name").and_then(Value::as_str) == Some("perl-lsp"),
+        "wrong product identity from {binary}"
+    );
+    for (pointer, expected) in [
+        ("/schema_version", "perl_lsp.binary_identity.v1"),
+        ("/binary/role", "server"),
+        ("/binary/cargo_package", "perllsp"),
+    ] {
+        anyhow::ensure!(
+            identity.pointer(pointer).and_then(Value::as_str) == Some(expected),
+            "wrong executable identity from {binary}: {pointer} must be {expected}"
+        );
+    }
+    for (field, expected) in [("source_revision", revision), ("source_tree_digest", digest)] {
+        let observed = identity.pointer(&format!("/build/{field}")).and_then(Value::as_str);
+        anyhow::ensure!(
+            observed == Some(expected.as_str()),
+            "{binary} is not current UX source evidence: {field} expected {expected}, observed {observed:?}; rebuild perllsp"
+        );
+    }
+    Ok(())
+}
+
+fn resolve_binary_path() -> Result<String> {
     // 1. Explicit override
     if let Ok(p) = std::env::var("PERL_LSP_BIN")
         && !p.is_empty()
@@ -1466,7 +1551,7 @@ pub fn resolve_binary() -> Result<String> {
     // 6. No binary found — actionable error message.
     Err(anyhow!(
         "perl-lsp binary not found. \
-        Set PERL_LSP_BIN=/path/to/perl-lsp or run: cargo build -p perl-lsp-rs"
+        Set PERL_LSP_BIN=/path/to/perl-lsp or run: cargo build -p perllsp"
     ))
 }
 
@@ -2065,8 +2150,7 @@ mod strict_binary_guard_subprocess_tests {
             String::from_utf8_lossy(&output.stderr)
         );
         assert!(
-            combined.contains("forbids the silent")
-                && combined.contains("cargo build -p perl-lsp-rs"),
+            combined.contains("forbids the silent") && combined.contains("cargo build -p perllsp"),
             "expected the actionable fail-loud message in child output, got: {combined}"
         );
 
