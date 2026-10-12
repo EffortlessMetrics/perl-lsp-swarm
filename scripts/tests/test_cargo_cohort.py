@@ -119,13 +119,31 @@ class PortableControls(unittest.TestCase):
         metadata = self.paths['build'] / 'shared.rmeta'; metadata.write_bytes(b'metadata')
         instance = self.owner()
         mutation = 'import os\nos.link(p,' + repr(str(alias)) + ')'
-        row = self.run_portable(instance, producer=self.producer(mutation=mutation))
+        observed = {}
+        launch = instance._launch
+        def independent_preconsume_observation(tree, command, env, **kwargs):
+            if command[0] == str(self.exe):
+                metadata = self.exe.stat()
+                observed['file_identity'] = [metadata.st_dev, metadata.st_ino, metadata.st_size,
+                                             metadata.st_mtime_ns, metadata.st_ctime_ns,
+                                             metadata.st_mode, metadata.st_nlink]
+                observed['sha256'] = hashlib.sha256(self.exe.read_bytes()).hexdigest()
+                observed['parents'] = {str(path): [path.parent.stat().st_dev, path.parent.stat().st_ino]
+                                       for path in (self.exe, alias)}
+            return launch(tree, command, env, **kwargs)
+        with patch.object(instance, '_launch', side_effect=independent_preconsume_observation):
+            row = self.run_portable(instance, producer=self.producer(mutation=mutation))
         self.assertEqual(row['consumed'], [str(self.exe)])
         self.assertEqual(set(row['reclaimed']), {str(self.exe), str(alias)})
         self.assertFalse(self.exe.exists()); self.assertFalse(alias.exists())
         self.assertEqual(library.read_bytes(),b'library'); self.assertEqual(metadata.read_bytes(),b'metadata')
         events = [json.loads(line) for line in instance.receipt_path.read_text().splitlines()]
-        self.assertEqual(events[0]['alias_groups'][0]['file_identity'][-1],2)
+        group = events[0]['alias_groups'][0]
+        self.assertEqual(group['file_identity'],observed['file_identity'])
+        self.assertEqual(group['sha256'],observed['sha256'])
+        for entry in group['aliases']:
+            self.assertEqual(entry['parent_identity'],observed['parents'][entry['path']])
+        self.assertEqual(group['file_identity'][-1],2)
         self.assertEqual({entry['path'] for entry in events[0]['alias_groups'][0]['aliases']},{str(self.exe),str(alias)})
         self.assertEqual({entry['path'] for entry in events[1:]},{str(self.exe),str(alias)})
         self.executable()
