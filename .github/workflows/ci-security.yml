@@ -11,6 +11,7 @@ on:
       - 'Cargo.toml'
       - 'Cargo.lock'
       - '**/Cargo.toml'
+      - 'deny.toml'
       - '.github/workflows/ci-security.yml'
       - '.docker/**'
       - 'Dockerfile*'
