@@ -243,6 +243,47 @@ fn native_range_composes_whitespace_options_after_native_formatting()
 }
 
 #[test]
+fn native_range_trim_refuses_heredoc_body_selected_without_opener()
+-> Result<(), Box<dyn std::error::Error>> {
+    let invoked = Arc::new(AtomicBool::new(false));
+    let provider = FormattingProvider::new(RecordingRuntime { invoked: invoked.clone() });
+    let mut formatting_options = options();
+    formatting_options.trim_trailing_whitespace = Some(true);
+    let source = "print <<'EOF';\nraw  \nEOF\n";
+    let range = FormatRange::new(FormatPosition::new(1, 0), FormatPosition::new(1, 5));
+
+    let decision =
+        provider.format_range_decision(source, &range, &formatting_options, &context())?;
+
+    assert_eq!(decision.outcome.disposition, FormatDisposition::Refused);
+    assert_eq!(decision.outcome.reason, FormatReasonCode::LiteralPreservationUnsupported);
+    assert_eq!(decision.document.text, source);
+    assert!(decision.document.edits.is_empty());
+    assert!(!invoked.load(Ordering::SeqCst));
+    Ok(())
+}
+
+#[test]
+fn native_range_trim_refuses_mixed_eol_empty_heredoc_terminator()
+-> Result<(), Box<dyn std::error::Error>> {
+    let provider =
+        FormattingProvider::new(RecordingRuntime { invoked: Arc::new(AtomicBool::new(false)) });
+    let mut formatting_options = options();
+    formatting_options.trim_trailing_whitespace = Some(true);
+    let source = "my $x=1;\rprint <<\"my$x=1;\";\nmy$x=1;\nmy $y=2;\n__DATA__\nmy$x=1;\n";
+    let range = FormatRange::new(FormatPosition::new(2, 0), FormatPosition::new(2, 7));
+
+    let decision =
+        provider.format_range_decision(source, &range, &formatting_options, &context())?;
+
+    assert_eq!(decision.outcome.disposition, FormatDisposition::Refused);
+    assert_eq!(decision.outcome.reason, FormatReasonCode::LiteralPreservationUnsupported);
+    assert_eq!(decision.document.text, source);
+    assert!(decision.document.edits.is_empty());
+    Ok(())
+}
+
+#[test]
 fn native_partial_range_that_widens_is_downgraded_without_edits()
 -> Result<(), Box<dyn std::error::Error>> {
     let provider =

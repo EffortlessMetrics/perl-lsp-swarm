@@ -132,8 +132,12 @@ impl NativeFormatter {
             let (body, line_ending) = split_line_ending(line);
             let generated_line_ending =
                 if line_ending.is_empty() { fallback_line_ending } else { line_ending };
-            let formatted_body =
-                format_simple_line(body, config).unwrap_or_else(|| body.to_string());
+            let rendered = format_simple_line(body, config).unwrap_or_else(|| body.to_string());
+            let formatted_body = if config.trim_trailing_whitespace {
+                rendered.trim_end_matches([' ', '\t']).to_string()
+            } else {
+                rendered
+            };
             formatted
                 .push_str(&preserve_generated_line_endings(formatted_body, generated_line_ending));
             formatted.push_str(line_ending);
@@ -148,19 +152,84 @@ impl NativeFormatter {
         range: TextRange,
         config: &FormatConfig,
     ) -> (String, Vec<TextEdit>) {
+        Self::format_safe_subset_selected(source, config, false, |line, _, _| {
+            range_includes_line(range, line)
+        })
+    }
+
+    fn format_safe_subset_outside_literals(
+        source: &str,
+        config: &FormatConfig,
+    ) -> (String, Vec<TextEdit>, bool) {
+        // The current index stores exclusion regions; its complement-derived
+        // Code classification is not positive proof that a line can be edited.
+        // The formatter's own small-line rewrite and both whole-source parse
+        // gates remain the admission criteria.
+        let index = perl_parser_core::SourceRegionIndex::build(source);
+        let terminator_starts = index.heredoc_terminator_line_starts();
+        let regions = index.regions();
+        let mut region_index = 0_usize;
+        let mut line_admission = Vec::new();
+        let (formatted, edits) = Self::format_safe_subset_selected(
+            source,
+            config,
+            config.trim_trailing_whitespace,
+            |_, start, end| {
+                let line = &source[start..end];
+                let admitted = if terminator_starts.binary_search(&start).is_ok()
+                    || literal_preserve_region(line).is_some()
+                {
+                    false
+                } else {
+                    while let Some(region) = regions.get(region_index)
+                        && region.end <= start
+                    {
+                        region_index += 1;
+                    }
+                    !regions
+                        .get(region_index)
+                        .is_some_and(|region| region.start < end && start < region.end)
+                };
+                line_admission.push((end, admitted));
+                admitted
+            },
+        );
+        let last_content_byte = source.trim_end_matches(['\r', '\n']).len().saturating_sub(1);
+        let first_tail_line = line_admission
+            .iter()
+            .position(|(end, _)| *end > last_content_byte)
+            .unwrap_or(line_admission.len());
+        let safe_eof = !line_admission.is_empty()
+            && line_admission[first_tail_line..].iter().all(|(_, admitted)| *admitted);
+        (formatted, edits, safe_eof)
+    }
+
+    fn format_safe_subset_selected(
+        source: &str,
+        config: &FormatConfig,
+        trim_trailing_whitespace: bool,
+        mut admitted: impl FnMut(u32, usize, usize) -> bool,
+    ) -> (String, Vec<TextEdit>) {
         let mut formatted = String::with_capacity(source.len());
         let mut edits = Vec::new();
         let mut processed_lines = 0_u64;
         let fallback_line_ending = inferred_line_ending(source);
-
-        for (line_index, line) in source.split_inclusive('\n').enumerate() {
+        for (line_index, (byte_offset, body, line_ending)) in physical_lines(source).enumerate() {
             processed_lines = processed_lines.saturating_add(1);
             let line_index = line_index as u32;
-            let (body, line_ending) = split_line_ending(line);
             let generated_line_ending =
                 if line_ending.is_empty() { fallback_line_ending } else { line_ending };
-            let formatted_body = if range_includes_line(range, line_index) {
-                format_simple_line(body, config)
+            let formatted_body = if admitted(
+                line_index,
+                byte_offset,
+                byte_offset + body.len() + line_ending.len(),
+            ) {
+                let rendered = format_simple_line(body, config).unwrap_or_else(|| body.to_string());
+                Some(if trim_trailing_whitespace {
+                    rendered.trim_end_matches([' ', '\t']).to_string()
+                } else {
+                    rendered
+                })
             } else {
                 None
             };
@@ -203,12 +272,43 @@ impl NativeFormatter {
     fn apply_final_newline(formatted: &str, config: &FormatConfig) -> String {
         match config.final_newline {
             FinalNewline::Preserve => formatted.to_string(),
-            FinalNewline::Insert => {
+            FinalNewline::Insert if formatted.ends_with('\r') || formatted.ends_with('\n') => {
+                formatted.to_string()
+            }
+            FinalNewline::Insert | FinalNewline::TrimThenInsert => {
                 let trimmed = formatted.trim_end_matches(['\n', '\r']);
                 format!("{trimmed}{}", inferred_line_ending(formatted))
             }
             FinalNewline::Trim => formatted.trim_end_matches(['\n', '\r']).to_string(),
         }
+    }
+
+    /// Apply the existing final-newline policy only when every physical line
+    /// touching the terminal run was admitted. The edit covers only original
+    /// terminal bytes (or is a zero-width insertion at EOF), so an opaque
+    /// heredoc terminator or DATA tail can never be replaced by this policy.
+    fn apply_safe_final_newline(
+        source: &str,
+        formatted: &mut String,
+        edits: &mut Vec<TextEdit>,
+        config: &FormatConfig,
+        safe_eof: bool,
+    ) {
+        if !safe_eof || config.final_newline == FinalNewline::Preserve {
+            return;
+        }
+        let desired = Self::apply_final_newline(formatted, config);
+        if desired == *formatted {
+            return;
+        }
+        let formatted_terminal_start = formatted.trim_end_matches(['\r', '\n']).len();
+        let source_terminal_start = source.trim_end_matches(['\r', '\n']).len();
+        // whole_document counts bare CR, CRLF, and LF consistently with LSP
+        // positions; at_byte_offset only counts LF and is unsafe for mixed EOLs.
+        let start = TextRange::whole_document(&source[..source_terminal_start]).end;
+        let end = TextRange::whole_document(source).end;
+        edits.push(TextEdit::new(TextRange::new(start, end), &desired[formatted_terminal_start..]));
+        *formatted = desired;
     }
 }
 
@@ -222,11 +322,65 @@ impl PerlFormatter for NativeFormatter {
             return FormatResult::unchanged(source);
         }
 
-        if let Err(diagnostic) = Self::validate_clean_parse(source, counters::ParseGateKind::Source)
-        {
+        let has_format_declaration = contains_format_declaration(source);
+        let literal_kind = literal_preserve_region(source);
+        let source_gate = if has_format_declaration || literal_kind.is_some() {
+            Self::validate_parse_only(source, counters::ParseGateKind::Source)
+        } else {
+            Self::validate_clean_parse(source, counters::ParseGateKind::Source)
+        };
+        if let Err(diagnostic) = source_gate {
             let mut result = FormatResult::unchanged(source);
             result.diagnostics.push(diagnostic);
             return result;
+        }
+
+        // The source-region index does not currently carry `format` bodies.
+        // A body line may look like ordinary Perl code, and declarations need
+        // not begin or end on a physical line. Keep whole-document refusal
+        // for declaration-shaped tokens until a source-owned body exclusion exists.
+        if has_format_declaration {
+            return FormatResult::unsafe_to_format(
+                source,
+                LITERAL_PRESERVE_CODE,
+                "native formatting skipped because format body preservation is not enabled yet",
+            );
+        }
+
+        if let Some(kind) = literal_kind {
+            let (mut formatted, mut edits, safe_eof) =
+                Self::format_safe_subset_outside_literals(source, config);
+            Self::apply_safe_final_newline(source, &mut formatted, &mut edits, config, safe_eof);
+            if edits.is_empty() {
+                let mut result = FormatResult::unchanged(source);
+                result.diagnostics.push(FormatDiagnostic::new(
+                    LITERAL_PRESERVE_CODE,
+                    FormatDiagnosticSeverity::Warning,
+                    None,
+                    format!(
+                        "native formatting skipped because {kind} preservation is not enabled yet"
+                    ),
+                ));
+                return result;
+            }
+            if let Err(diagnostic) =
+                Self::validate_parse_only(&formatted, counters::ParseGateKind::FormattedOutput)
+            {
+                let mut result = FormatResult::unchanged(source);
+                result.diagnostics.push(FormatDiagnostic::new(
+                    PARSE_PRESERVATION_CODE,
+                    FormatDiagnosticSeverity::Warning,
+                    diagnostic.range,
+                    "native formatting skipped because formatted output did not parse cleanly",
+                ));
+                return result;
+            }
+            return FormatResult {
+                formatted,
+                changed: !edits.is_empty(),
+                edits,
+                diagnostics: Vec::new(),
+            };
         }
 
         let formatted =
@@ -324,6 +478,28 @@ fn split_line_ending(line: &str) -> (&str, &str) {
     } else {
         (line, "")
     }
+}
+
+/// Yield physical lines using the same CR, CRLF, and LF coordinates as LSP.
+/// The start offset and both slices always come from the original source.
+fn physical_lines(source: &str) -> impl Iterator<Item = (usize, &str, &str)> {
+    let mut offset = 0_usize;
+    std::iter::from_fn(move || {
+        if offset >= source.len() {
+            return None;
+        }
+        let start = offset;
+        let separator =
+            source.as_bytes()[start..].iter().position(|byte| matches!(byte, b'\r' | b'\n'));
+        let body_end = separator.map_or(source.len(), |relative| start + relative);
+        let ending_len = match source.as_bytes().get(body_end) {
+            Some(b'\r') if source.as_bytes().get(body_end + 1) == Some(&b'\n') => 2,
+            Some(b'\r' | b'\n') => 1,
+            _ => 0,
+        };
+        offset = body_end + ending_len;
+        Some((start, &source[start..body_end], &source[body_end..offset]))
+    })
 }
 
 fn preserve_generated_line_endings(formatted: String, source_line_ending: &str) -> String {
@@ -2056,7 +2232,7 @@ fn literal_preserve_region(source: &str) -> Option<&'static str> {
 /// multi-line constructs that straddle the range boundary.
 fn literal_preserve_region_for_range(source: &str, range: TextRange) -> Option<&'static str> {
     // --- line-based checks (scoped to the requested lines) ---
-    for (line_index, line) in source.lines().enumerate() {
+    for (line_index, (_, line, _)) in physical_lines(source).enumerate() {
         if !range_includes_line(range, line_index as u32) {
             continue;
         }
@@ -2078,6 +2254,18 @@ fn literal_preserve_region_for_range(source: &str, range: TextRange) -> Option<&
     // --- token-based checks (overlap with requested byte range) ---
     // Compute the byte range for the requested lines.
     let (range_byte_start, range_byte_end) = byte_span_for_line_range(source, range);
+    let index = perl_parser_core::SourceRegionIndex::build(source);
+    if index.regions().iter().any(|region| {
+        region.kind == perl_parser_core::SourceRegionKind::Heredoc
+            && region.start < range_byte_end
+            && range_byte_start < region.end
+    }) || index
+        .heredoc_terminator_line_starts()
+        .iter()
+        .any(|start| range_byte_start <= *start && *start < range_byte_end)
+    {
+        return Some("heredoc");
+    }
     token_literal_preserve_region_overlapping(source, range_byte_start, range_byte_end)
 }
 
@@ -2088,32 +2276,22 @@ fn literal_preserve_region_for_range(source: &str, range: TextRange) -> Option<&
 /// `byte_end` is the byte offset one past the last character of the last
 /// included line (including its newline if any).
 fn byte_span_for_line_range(source: &str, range: TextRange) -> (usize, usize) {
-    let mut byte_start = 0_usize;
-    let mut byte_end = source.len();
-    let mut found_start = false;
-
-    let mut byte_offset = 0_usize;
-    for (line_index, line) in source.split_inclusive('\n').enumerate() {
+    let mut byte_start = None;
+    let mut byte_end = None;
+    for (line_index, (start, body, ending)) in physical_lines(source).enumerate() {
         let line_index = line_index as u32;
         if line_index == range.start.line {
-            byte_start = byte_offset;
-            found_start = true;
+            byte_start = Some(start);
         }
         // The last line included in the range is the last line for which
         // `range_includes_line` returns true.
-        let next_offset = byte_offset + line.len();
+        let next_offset = start + body.len() + ending.len();
         if range_includes_line(range, line_index) {
-            byte_end = next_offset;
+            byte_end = Some(next_offset);
         }
-        byte_offset = next_offset;
     }
-
-    if !found_start {
-        // Range starts beyond end of file — nothing to check.
-        return (source.len(), source.len());
-    }
-
-    (byte_start, byte_end)
+    let start = byte_start.unwrap_or(source.len());
+    (start, byte_end.unwrap_or(start))
 }
 
 fn token_literal_preserve_region_overlapping(
@@ -2215,24 +2393,144 @@ fn contains_likely_heredoc_start(line: &str) -> bool {
 }
 
 fn is_format_declaration_start(trimmed_line: &str) -> bool {
-    if !trimmed_line.ends_with('=') {
-        return false;
-    }
-
     let Some(rest) = trimmed_line.strip_prefix("format") else {
         return false;
     };
-    rest.is_empty() || rest.starts_with(char::is_whitespace)
+    if !rest.is_empty() && !rest.starts_with(char::is_whitespace) {
+        return false;
+    }
+    let Some((_, after_equals)) = rest.split_once('=') else {
+        return false;
+    };
+    let trailing = after_equals.trim_start();
+    trailing.is_empty() || trailing.starts_with('#')
+}
+
+fn contains_format_declaration(source: &str) -> bool {
+    use perl_parser_core::TokenKind;
+
+    let mut stream = perl_parser_core::TokenStream::new(source);
+    loop {
+        let Ok(token) = stream.next() else {
+            // A lexer failure cannot establish that format bodies are absent.
+            return true;
+        };
+        match token.kind() {
+            TokenKind::Format => {
+                // The lexer also marks ordinary `format` keys and method names
+                // as Format. The parser's declarations instead have an optional
+                // name followed by a plain assignment token.
+                if source
+                    .get(token.start()..)
+                    .and_then(|tail| tail.lines().next())
+                    .is_some_and(is_format_declaration_start)
+                {
+                    return true;
+                }
+                let Ok(next) = stream.peek() else {
+                    return true;
+                };
+                let next_kind = next.kind();
+                let next_text = next.text.to_string();
+                if next_kind == TokenKind::Assign {
+                    return true;
+                }
+                // The parser also accepts a quoted name and `=` inside one
+                // token, including after a label or another statement.
+                if matches!(next_kind, TokenKind::String | TokenKind::Unknown)
+                    && next_text.starts_with('\'')
+                    && next_text.contains('=')
+                {
+                    return true;
+                }
+                if matches!(next_kind, TokenKind::Identifier | TokenKind::String)
+                    || next_kind == TokenKind::Unknown && next_text.starts_with('\'')
+                {
+                    let Ok(second) = stream.peek_second() else {
+                        return true;
+                    };
+                    if second.kind() == TokenKind::Assign {
+                        return true;
+                    }
+                }
+                if next_text == "'" {
+                    let Ok(third) = stream.peek_third() else {
+                        return true;
+                    };
+                    if third.kind() == TokenKind::Assign {
+                        return true;
+                    }
+                }
+                if next_kind == TokenKind::DoubleColon {
+                    let Ok(second) = stream.peek_second() else {
+                        return true;
+                    };
+                    let second_kind = second.kind();
+                    let Ok(third) = stream.peek_third() else {
+                        return true;
+                    };
+                    if second_kind == TokenKind::Identifier && third.kind() == TokenKind::Assign {
+                        return true;
+                    }
+                }
+            }
+            TokenKind::Eof => return false,
+            _ => {}
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
         FormatConfig, NativeFormatter, PerlFormatter, TextPosition, TextRange,
-        byte_span_for_line_range, literal_preserve_region, literal_preserve_region_for_range,
-        range_includes_line, split_line_ending, split_trailing_comment,
-        token_literal_preserve_region_overlapping,
+        byte_span_for_line_range, contains_format_declaration, literal_preserve_region,
+        literal_preserve_region_for_range, range_includes_line, split_line_ending,
+        split_trailing_comment, token_literal_preserve_region_overlapping,
     };
+
+    #[test]
+    fn format_keyword_gate_distinguishes_declarations_from_ordinary_words() {
+        for source in
+            ["my $record = { format => 1 };\n", "$object->format();\n", "my $format = 1;\n"]
+        {
+            assert!(!contains_format_declaration(source), "ordinary word in {source:?}");
+        }
+        for source in [
+            "format STDOUT =\n@<<<\n$x\n.\n",
+            "format =\n@<<<\n$x\n.\n",
+            "LABEL: format STDOUT =\n@<<<\n$x\n.\n",
+            "LABEL: format 'one =\n@<<<\n$x\n.\n",
+            "my $x=1; format 'one =\n@<<<\n$x\n.\n",
+        ] {
+            assert!(contains_format_declaration(source), "declaration in {source:?}");
+        }
+    }
+
+    #[test]
+    fn ordinary_format_words_do_not_refuse_document_formatting() {
+        for ordinary in ["$object->format();", "my $record = { format => 1 };"] {
+            let source = format!("my$before=1;\n{ordinary}\n");
+            let result = NativeFormatter::new().format_document(&source, &FormatConfig::default());
+
+            assert!(result.changed, "ordinary word must not block safe formatting: {result:?}");
+            assert!(result.formatted.starts_with("my $before = 1;\n"));
+            assert!(result.diagnostics.is_empty(), "ordinary word must not warn: {result:?}");
+        }
+    }
+
+    #[test]
+    fn prefixed_quoted_format_declaration_preserves_body_bytes() {
+        let source = "my$before=1; format 'one =\nmy$x=2;\n.\n";
+        let result = NativeFormatter::new().format_document(source, &FormatConfig::default());
+
+        assert_eq!(result.formatted, source, "format body must remain opaque");
+        assert!(result.edits.is_empty(), "format body must not acquire edits: {result:?}");
+        assert_eq!(
+            result.diagnostics.first().map(|diagnostic| diagnostic.code.as_str()),
+            Some("native.format.literal_preserve_region")
+        );
+    }
 
     #[test]
     fn split_trailing_comment_ignores_hash_inside_backticks()
@@ -2358,10 +2656,20 @@ mod tests {
     #[test]
     fn literal_preserve_region_for_range_ignores_heredoc_outside_range()
     -> Result<(), Box<dyn std::error::Error>> {
-        // Heredoc start on line 0, range is line 1.
+        // The range begins after the heredoc terminator, on an ordinary code line.
+        let source = "print <<'EOF';\nbody\nEOF\nmy $x = 1;\n";
+        let range = TextRange::new(TextPosition::new(3, 0), TextPosition::new(4, 0));
+        assert_eq!(literal_preserve_region_for_range(source, range), None);
+
+        Ok(())
+    }
+
+    #[test]
+    fn literal_preserve_region_for_range_detects_heredoc_body_without_terminator()
+    -> Result<(), Box<dyn std::error::Error>> {
         let source = "print <<'EOF';\nmy $x = 1;\n";
         let range = TextRange::new(TextPosition::new(1, 0), TextPosition::new(2, 0));
-        assert_eq!(literal_preserve_region_for_range(source, range), None);
+        assert_eq!(literal_preserve_region_for_range(source, range), Some("heredoc"));
 
         Ok(())
     }

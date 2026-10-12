@@ -29,10 +29,12 @@ pub enum FinalNewline {
     /// Preserve the input's final newline state.
     #[default]
     Preserve,
-    /// Ensure exactly one final newline when formatting succeeds.
+    /// Add a final newline only when none exists.
     Insert,
     /// Remove trailing final newlines when formatting succeeds.
     Trim,
+    /// Remove the terminal newline run, then insert one final newline.
+    TrimThenInsert,
 }
 
 /// Trailing comma handling for wrapped delimited expressions.
@@ -92,6 +94,9 @@ pub struct FormatConfig {
     pub use_tabs: bool,
     /// Final newline handling.
     pub final_newline: FinalNewline,
+    /// Trim spaces and tabs at the end of admitted physical code lines.
+    #[serde(default)]
+    pub trim_trailing_whitespace: bool,
     /// Trailing comma handling for wrapped delimited expressions.
     pub trailing_comma: TrailingComma,
     /// Opening brace placement for supported block layouts.
@@ -110,6 +115,7 @@ impl Default for FormatConfig {
             indent_width: 4,
             use_tabs: false,
             final_newline: FinalNewline::Preserve,
+            trim_trailing_whitespace: false,
             trailing_comma: TrailingComma::Preserve,
             brace_placement: BracePlacement::SameLine,
             else_placement: ElsePlacement::Cuddled,

@@ -417,6 +417,20 @@ fn project_native_document(
         FormatDisposition::Applied | FormatDisposition::NoChange => {}
     }
 
+    // Literal-adjacent native formatting returns only admitted line/EOF edits.
+    // The native formatter already applied whitespace options within those
+    // intervals. Re-projecting the complete rendered document would trim
+    // opaque heredoc/POD/data bytes and manufacture a whole-document edit.
+    if !result.edits.is_empty()
+        && result
+            .edits
+            .iter()
+            .all(|edit| edit.range != crate::tooling::perltidy::TextRange::whole_document(content))
+    {
+        let edits = result.edits.into_iter().map(native_edit_to_format_edit).collect();
+        return Ok(finalized_decision(outcome, content, result.formatted, edits));
+    }
+
     let formatted = apply_lsp_whitespace_options_from_source(&result.formatted, options, content);
     let edits = if formatted == content {
         Vec::new()
@@ -812,8 +826,13 @@ fn native_format_config(
     let mut config = FormatConfig {
         indent_width: options.tab_size,
         use_tabs: !options.insert_spaces,
+        trim_trailing_whitespace: options.trim_trailing_whitespace.unwrap_or(false),
         final_newline: if allow_final_newline {
-            if options.trim_final_newlines.unwrap_or(false) {
+            if options.trim_final_newlines.unwrap_or(false)
+                && options.insert_final_newline.unwrap_or(false)
+            {
+                FinalNewline::TrimThenInsert
+            } else if options.trim_final_newlines.unwrap_or(false) {
                 FinalNewline::Trim
             } else if options.insert_final_newline.unwrap_or(false) {
                 FinalNewline::Insert

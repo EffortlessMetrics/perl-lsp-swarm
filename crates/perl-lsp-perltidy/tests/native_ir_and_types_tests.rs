@@ -237,6 +237,7 @@ fn format_config_round_trips_through_json() -> Result<(), Box<dyn std::error::Er
         indent_width: 2,
         use_tabs: true,
         final_newline: FinalNewline::Insert,
+        trim_trailing_whitespace: false,
         trailing_comma: TrailingComma::AddWhenWrapped,
         brace_placement: BracePlacement::NextLine,
         else_placement: ElsePlacement::SeparateLine,
@@ -251,6 +252,7 @@ fn format_config_round_trips_through_json() -> Result<(), Box<dyn std::error::Er
     assert_eq!(restored.indent_width, 2);
     assert!(restored.use_tabs);
     assert_eq!(restored.final_newline, FinalNewline::Insert);
+    assert!(!restored.trim_trailing_whitespace);
     assert_eq!(restored.trailing_comma, TrailingComma::AddWhenWrapped);
     assert_eq!(restored.brace_placement, BracePlacement::NextLine);
     assert_eq!(restored.else_placement, ElsePlacement::SeparateLine);

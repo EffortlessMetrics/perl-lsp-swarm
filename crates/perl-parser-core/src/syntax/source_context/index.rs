@@ -141,6 +141,17 @@ impl SourceRegionIndex {
         &self.regions
     }
 
+    /// Byte starts of scanner-closed heredoc terminator lines in this source.
+    ///
+    /// These are source-owned exclusion facts, including a terminator after an
+    /// empty body. The region list cannot represent that empty body after
+    /// normalization, so edit-authorizing consumers must inspect these starts
+    /// when a terminator itself could look like ordinary code.
+    #[must_use]
+    pub fn heredoc_terminator_line_starts(&self) -> Vec<usize> {
+        collector::heredoc_terminator_line_starts(&self.source)
+    }
+
     /// Return a copy with additional override regions merged in.
     ///
     /// PR1 identity stub for future semantic-island overlays: overrides are merged
@@ -302,5 +313,34 @@ mod tests {
         let index = SourceRegionIndex::from_regions("xxxxx", 0, regions);
         assert_eq!(index.region_count(), 1);
         assert_eq!(index.regions()[0].end, 5);
+    }
+
+    #[test]
+    fn terminator_starts_include_empty_and_eof_closed_heredocs_only() -> Result<(), &'static str> {
+        let empty = "print <<'my$x=1;';\nmy$x=1;\n__DATA__\nmy$x=1;\n";
+        let empty_start = empty.find("my$x=1;\n__DATA__").ok_or("missing empty terminator")?;
+        let index = SourceRegionIndex::build(empty);
+        assert_eq!(index.heredoc_terminator_line_starts(), vec![empty_start]);
+        assert!(index.regions().iter().all(|region| {
+            region.kind != SourceRegionKind::Heredoc || region.start != empty_start
+        }));
+
+        let closed_at_eof = "print <<'EOF';\nbody\nEOF";
+        let eof_start = closed_at_eof.rfind("EOF").ok_or("missing EOF terminator")?;
+        assert_eq!(
+            SourceRegionIndex::build(closed_at_eof).heredoc_terminator_line_starts(),
+            vec![eof_start]
+        );
+        assert!(
+            SourceRegionIndex::build("print <<'EOF';\nbody\n")
+                .heredoc_terminator_line_starts()
+                .is_empty()
+        );
+        assert!(
+            SourceRegionIndex::build("my $s = 'print <<EOF';\n")
+                .heredoc_terminator_line_starts()
+                .is_empty()
+        );
+        Ok(())
     }
 }

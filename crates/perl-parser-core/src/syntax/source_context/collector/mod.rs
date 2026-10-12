@@ -29,6 +29,15 @@ pub(crate) fn collect_regions(source: &str) -> Vec<SourceRegion> {
     coalesce_regions(regions, source.len())
 }
 
+/// Byte starts of scanner-closed heredoc terminator lines, including empty
+/// heredocs whose zero-length body span is dropped by index normalization.
+pub(crate) fn heredoc_terminator_line_starts(source: &str) -> Vec<usize> {
+    literal_scan::scan_heredoc_regions(source)
+        .into_iter()
+        .filter_map(|body| (body.end < source.len()).then_some(body.end))
+        .collect()
+}
+
 /// Honor a scanner-closed heredoc when composing lexer recovery.
 ///
 /// `scan_heredoc_regions` already treats trailing spaces/tabs after the label
