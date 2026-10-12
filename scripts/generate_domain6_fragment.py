@@ -2951,21 +2951,23 @@ class RangeHolderCache:
         self.observed_head = observed_head
         self.query = query
         self.max_entries = max_entries
-        self._values: OrderedDict[tuple, tuple[str, ...]] = OrderedDict()
+        self._values: OrderedDict[tuple, tuple[object, tuple[str, ...]]] = OrderedDict()
 
     def holders(self, blob_id: str, path: str) -> tuple[str, ...]:
         key = (str(self.repo_root), self.start_sha, self.observed_head,
                blob_id, path, id(self.query))
         if key in self._values:
             self._values.move_to_end(key)
-            return self._values[key]
+            return self._values[key][1]
         raw = self.query(
             "log", "--format=%H", f"--find-object={blob_id}",
             f"{self.start_sha}..{self.observed_head}", "--", path,
             cwd=self.repo_root,
         )
         value = tuple(sorted({line for line in raw.splitlines() if line.strip()}))
-        self._values[key] = value
+        # Keep the callable alive until eviction so its numeric identity cannot
+        # be recycled while a result for it remains cached.
+        self._values[key] = (self.query, value)
         if len(self._values) > self.max_entries:
             self._values.popitem(last=False)
         return value

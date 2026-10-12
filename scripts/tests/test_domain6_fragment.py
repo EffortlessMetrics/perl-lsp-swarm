@@ -216,6 +216,38 @@ class Domain6FragmentTest(unittest.TestCase):
             ],
         )
 
+    def test_range_holder_cache_retains_query_until_eviction(self) -> None:
+        import gc
+        import importlib.util
+        import weakref
+
+        spec = importlib.util.spec_from_file_location("domain6_query_lifetime", GENERATOR)
+        self.assertIsNotNone(spec)
+        generator = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(generator)
+
+        class Query:
+            __hash__ = None
+
+            def __init__(self, result):
+                self.result = result
+
+            def __call__(self, *args, cwd):
+                return self.result
+
+        first = Query("first\n")
+        first_ref = weakref.ref(first)
+        cache = generator.RangeHolderCache(REPO_ROOT, "start", "head", first, 1)
+        self.assertEqual(cache.holders("blob", "path"), ("first",))
+        cache.query = Query("second\n")
+        del first
+        gc.collect()
+        self.assertIsNotNone(first_ref())
+        self.assertEqual(cache.holders("blob", "path"), ("second",))
+        gc.collect()
+        self.assertIsNone(first_ref())
+        self.assertEqual(len(cache._values), 1)
+
     def test_record_counts(self) -> None:
         counts = self.doc["record_counts"]
         self.assertEqual(counts["non_merge"], 682)
