@@ -18,6 +18,8 @@ import subprocess
 import sys
 from typing import Any
 
+from git_environment import isolated_git_env
+
 try:
     import tomllib
 except ModuleNotFoundError:
@@ -206,6 +208,7 @@ def validate_manifest(data: dict[str, Any]) -> list[str]:
 def _git(repo_root: Path, *args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         ["git", "-C", str(repo_root), *args],
+        env=isolated_git_env(),
         check=False,
         text=True,
         stdout=subprocess.PIPE,
