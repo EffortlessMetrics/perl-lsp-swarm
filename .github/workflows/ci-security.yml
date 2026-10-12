@@ -233,6 +233,9 @@ jobs:
   trivy-docker-scan:
     name: Trivy Rust builder image scan
     runs-on: ubuntu-24.04
+    # #17030, run 38300972665 at a6f3e24fa2: cold image prep 564s,
+    # scan 37s (existing Trivy DB cache), SARIF 19s; job 636s / 1200s.
+    # Observed headroom 564s; one observation, not a worst-case bound.
     timeout-minutes: 20
     needs: preflight-latest-check
     if: (needs.preflight-latest-check.outputs.is_latest == 'true') && (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
