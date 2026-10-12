@@ -39,19 +39,24 @@ carried quote kind, and undef, each with a `synthesized` provenance flag), and
 the [PIR model](../../crates/perl-parser-core/src/pir/model.rs) `Literal`
 operation carries the value, quote and flag through. Families outside that
 cohort still lower to `Opaque`, and no typed same-generation payload relation
-yet qualifies the general body/PIR handoff. That relation belongs to #17512
-under #6658, and must not reparse source, inspect `Opaque` spelling,
-manufacture constants or execute the analysis graph.
+yet qualifies the general body/PIR handoff. That relation belongs to #17512,
+building on #17538's landed #6658-tracked leaf work, and must not reparse
+source, inspect `Opaque` spelling, manufacture constants or execute the
+analysis graph.
 
 Source anchoring does not resolve this: a byte range identifies a location, not
 its runtime value or evaluation rule. The adapter must not reparse source,
 inspect `Opaque` spelling, manufacture constants or execute the analysis graph.
 
-The same body model documents four binding limitations under #14173: an
-initializer reading the newly declared rather than outer binding, same-scope
-redeclaration visibility, foreach iterator scope, and package-scope descent.
-Those exact cases must be fixed or excluded before their executable admission.
-The standalone `lower_body` route is not a substitute for production evidence.
+The same body model documents binding limitations under #14173: foreach
+iterator scope and package-scope descent remain pinned-wrong by current
+tests, while the self-referential initializer now reads the outer binding
+(a pinned positive regression to consume, not replan) and the old bare-block
+blanket prerequisite is retired. Same-scope redeclaration reads have no
+read-specific proof. Those exact remaining cases must be fixed or excluded
+before their executable admission, with each family rechecking this owner
+at admission time. The standalone `lower_body` route is not a substitute
+for production evidence.
 
 ## Proposed ownership and dependency direction
 
@@ -87,8 +92,8 @@ source -> Parser -> lower_ast -> HirFile::bodies + canonical side facts
 ```
 
 No edge runs from parser-core, semantic providers or ordinary LSP requests into
-execution. Dependency tests and an editor-path negative control must prove this
-boundary; architecture prose alone cannot do so.
+execution. Dependency tests and an editor-path negative control (#7422) must
+prove this boundary; architecture prose alone cannot do so.
 
 ## Execution model proposed for the first slice
 
@@ -181,11 +186,11 @@ profile registry. Recheck source and evidence when each family is admitted.
 
 | ADR-0005 concern | Current evidence / missing proposition | Owner and proposed disposition |
 |---|---|---|
-| Canonical body representation | First-cohort literal leaf landed (#17538); dual body lowerers keep managed parity (#5813 completed via #17541) | #6658; unresolved for ordinary-literal execution beyond the cohort |
-| Binding identity | Four limitations documented in the current model | #14173 / #6659; fix or explicitly exclude affected forms |
-| Branch/loop/return/read lowering | Typed source structures exist; this review did not run complete production-path proofs | #2017 / #2277 / #2350; require exact family evidence, not node counts |
+| Canonical body representation | First-cohort literal leaf landed (#17538); dual lowerers on managed parity, two-traversal collapse explicitly still open (#5813 closeout) | #6658; unresolved for ordinary-literal execution beyond the cohort |
+| Binding identity | Iterator/package scope pinned-wrong; initializer fixed (consume, do not replan); redecl reads unproven | #14173 / #6659; fix or explicitly exclude affected forms |
+| Branch/loop/return/read lowering | Typed source structures exist; this review did not run complete production-path proofs | #2017 / #2350; require exact family evidence, not node counts |
 | Context and access | Types are not proof of every projection/call/place composition | #2275 / #5242 / #17513; qualify selected rows |
-| Literal/operator payload | Flat facts and admitted-cohort PIR payloads do not prove the full handoff | #6658 / #17512; typed same-generation relation required |
+| Literal/operator payload | Flat facts and admitted-cohort PIR payloads do not prove the full handoff | #17512 (needs #6658 leaf work); typed same-generation relation required |
 | Real-workspace provider stability | No new qualifying provider receipt established by this work | Remains unresolved under the accepted ADR; proposed amendment below |
 | Dedicated EIR decision | This document is a proposal only | #17510 must obtain accepted architecture and publish exact entry disposition |
 | Profile/unsupported contracts | Required independently of architecture acceptance | #4770 / #4773; no default-admit instruction families |
