@@ -19,6 +19,9 @@ on:
       - 'scripts/cargo_admitted.py'
       - 'scripts/cargo_cohort.py'
       - 'scripts/tests/test_cargo_cohort.py'
+      - 'scripts/tests/test_routed_test_cohorts.py'
+      - 'scripts/tests/fixtures/routed-resolver-2/**'
+      - 'xtask/src/bin/routed-test-cohorts.rs'
       - 'scripts/tests/test_cargo_admitted_storage.py'
       - 'scripts/tests/test_cargo_admitted_budget.py'
       - 'scripts/storage-doctor'
@@ -644,6 +647,8 @@ jobs:
         run: python3 -m unittest discover -s scripts/tests -p 'test_cargo_admitted*.py' -v
       - name: Check cohort ownership and exact reclamation controls
         run: python3 -m unittest discover -s scripts/tests -p 'test_cargo_cohort.py' -v
+      - name: Check staged routed producer source and runtime controls
+        run: python3 -m unittest discover -s scripts/tests -p 'test_routed_test_cohorts.py' -v
       - name: Check retained target measurement failure and threshold controls
         run: python3 -m unittest discover -s scripts/tests -p 'test_storage_doctor.py' -v
 

@@ -183,7 +183,7 @@ Only newly emitted, non-fresh test-harness compiler artifacts matching the
 expected records can become cleanup candidates. Each executable is bound to its
 canonical path, parent directory, device/inode, file metadata, and SHA256. The
 cohort executes that exact path and revalidates it before unlinking. Preexisting,
-pinned, foreign, replaced, symlinked, and multiply linked files refuse. Successful
+pinned, foreign, replaced, and symlinked files refuse. Hardlinks require a complete newly produced private inode group, described below. Successful
 reclamation consumes that path's cleanup authority; repeated cleanup cannot adopt
 a replacement. Before reclamation, producer failure, consumer failure,
 interruption, uncertain settlement, or changed bindings prevents reclamation.
@@ -197,10 +197,7 @@ Failure to persist authorization prevents deletion. The unlink and completion
 record are not an atomic transaction. Inherited diagnostic and consumer streams
 must also be captured by the admitted caller.
 
-This is a lifecycle prerequisite, not the routed-test producer. Cargo's hardlinked
-target/build aliases are deliberately refused until a separately qualified exact
-alias-ownership extension exists. No gate command, package, feature, profile,
-reserve, timeout, or quarantine changes. The API is not an adversarial filesystem
+The staged native producer and complete private alias support described below extend this prerequisite. The routed gate remains on its original command. No gate package, feature, profile, reserve, timeout, or quarantine changes. The API is not an adversarial filesystem
 sandbox: exclusive cooperative ownership is required, and final unlink is not an
 atomic compare-and-delete against hostile concurrent writers. Tests distinguish
 filesystem/interface doubles from actual native process proof:
@@ -221,6 +218,106 @@ Cargo settlement cannot retroactively satisfy it. A terminated but unreaped
 zombie does not satisfy a synchronous-reaping contract, and changing its liveness
 oracle to report dead would weaken that proof. Inner runner failures remain
 product failures even when the cohort subsequently settles successfully.
+
+### Staged routed producer and exact Cargo alias groups
+
+`xtask/src/bin/routed-test-cohorts.rs` is a dedicated native producer, reached only
+through the explicitly staged outer-owner route:
+
+```text
+scripts/cargo-admitted --routed-test-cohorts [--budget-file ABSOLUTE_FILE] run --locked -p xtask --bin routed-test-cohorts -- -p PACKAGE [-p PACKAGE ...] --evidence-dir ABSOLUTE_NEW_WORKTREE_DIRECTORY
+```
+
+Use an already authorized, exact host/task budget; this command provides no new
+reserve or growth allowance. The canonical owner remains `cargo-admitted` and
+`ClippyTree`. The staged selector verifies live-thread child discovery **before
+compiling the native producer**, then holds one original lease through setup,
+public server build, eligibility observation, every cohort, consumer, and cleanup.
+The original descriptor is forced into command-local child configuration; the
+caller cannot replace it with an inherited value. Non-staged invocation remains
+unchanged. The thin Python CLI bridge neither acquires a nested lease nor falls
+back to raw unowned Cargo. It rechecks the original capacity allowance before
+each child launch. A separate observation operation can run metadata/check/build
+setup, but has no consumption or reclamation authority.
+
+The producer builds `perllsp` with the original default build intent once, captures
+its actual private executable from compiler JSON, and retains both that source and
+an exclusive immutable proof copy. Copying uses bounded reads/writes, original
+file descriptor identity, before/after source validation, file/directory fsync,
+and a retained hash/identity receipt. Each subsequent cohort verifies the copied
+product's exact inode metadata and bytes and uses it as `PERL_LSP_BIN`.
+
+Cargo metadata supplies target inventory, not activated-feature authority. An
+admitted `cargo check --locked --tests --profile test` with **every original
+package and feature switch** observes actual eligible harness targets, activated
+features, and effective profiles without bulk test executable codegen. Cargo 1.95
+includes check test units in `ArtifactProfile.test`. Every codegen cohort uses
+`cargo test --no-run` with that same complete selection before a target selector;
+check and build target/feature/profile records must agree exactly. Duplicate
+names are grouped across packages. Selector collisions with `test=false` or
+feature-disabled targets, missing unconditionally eligible targets, or unsupported
+kinds refuse rather than changing the original suite. The newly added native bin
+is included in ordinary `xtask --tests` inventory; it is not exempted.
+
+For each captured executable, the bridge retains the canonical package working
+directory and Cargo's target-process metadata environment. The staged outer owner
+freezes a finite set of original Cargo/loader fields before native bootstrap and
+both producer and consumer launches restore them before Cargo or the consumer applies package context. Registry credentials
+are excluded, and receipts expose only the environment digest. Runtime context
+follows Cargo's order: package build-script environment, `CARGO` and complete
+package metadata, package cwd, and configuration. Native loader paths follow
+Cargo's ordered root/deps/sysroot construction and original loader environment;
+package build-script outputs must match the observed check context. Custom runner,
+external/parent Cargo configuration, configuration includes, cross-target requests,
+custom Cargo environment beyond this repository's `RUST_BACKTRACE`, and compiler/
+loader injection selectors remain unsupported and refuse. The existing native
+compression flags in the source-bound root Cargo configuration remain effective.
+
+The bridge inventories all and ignored cases using the real standard libtest
+`--list` interface, then executes the default unfiltered harness. Successful
+execution must report each listed case exactly once with the same ignored
+population. Unsupported harness output or hidden omissions/duplicates prevents
+cleanup. Inventory and actual consumer stdout remain durable alongside compiler
+JSON; stderr retains the original inherited diagnostic stream. The admitted caller
+must retain that stderr stream as well.
+
+Compiler JSON authorizes an inode candidate, not alias names. The lifecycle owner
+finds all exact device/inode matches only within the two canonical private roots,
+requires every path absent from the pre-production census, rejects any pinned or
+preexisting alias, and requires observed group count equal to kernel `st_nlink`.
+An external or otherwise unobserved hardlink rejects the entire group. It holds
+the original inode and parent descriptors through consumption and closure. After
+each exact relative unlink, it checks the held inode's permitted ctime/nlink change
+and revalidates every remaining alias; content, replacement, new-link, or parent
+changes stop cleanup. The durable pre-delete receipt includes the entire alias
+group, identities, hash, binding, coverage, and kernel settlement. Each successful
+owned unlink is appended and synced. Cleanup remains sequential and nontransactional:
+a later error preserves remaining aliases and evidence, not previously removed
+names. Shared libraries and metadata are never selected by filename patterns.
+
+This source candidate does **not** activate `unit_routed_full`. Local Python
+controls distinguish filesystem/interface doubles and a synthetic finite resolver
+model from real Cargo/native proof. The checked-in two-crate resolver-2 fixture
+contains a development dependency that activates another package's required test
+feature and duplicate test names; its actual Cargo execution is still required.
+Native Rust compilation/unit tests, exact-candidate case/feature equivalence,
+configured runtime contexts, supported-host cancellation, continuous peak/retained
+byte measurements and timings, and reserve qualification remain pending. No
+continuous peak measurement framework or estimated storage bound is asserted. Later storage qualification should reuse the existing retained-target measurement helper and controls, not add a parallel measurement authority.
+Core lifecycle evidence from another candidate cannot substitute for these new
+alias and producer qualifications. Required test gates and existing quarantines
+remain unchanged, as do DAP and inner synchronous-reaping owners.
+
+```bash
+python3 -m unittest discover -s scripts/tests -p 'test_cargo_cohort.py' -v
+python3 -m unittest discover -s scripts/tests -p 'test_routed_test_cohorts.py' -v
+```
+
+The resolver and runtime boundaries follow pinned Cargo 1.95 source:
+[resolution before target filters](https://github.com/rust-lang/cargo/blob/rust-1.95.0/src/cargo/ops/cargo_compile/mod.rs#L271),
+[test/check profile identity](https://github.com/rust-lang/cargo/blob/rust-1.95.0/src/cargo/core/compiler/build_config.rs#L245),
+[alias production](https://github.com/rust-lang/cargo/blob/rust-1.95.0/src/cargo/core/compiler/mod.rs#L589),
+and [target process context](https://github.com/rust-lang/cargo/blob/rust-1.95.0/src/cargo/core/compiler/compilation.rs#L329).
 
 ### Staged native Clippy
 

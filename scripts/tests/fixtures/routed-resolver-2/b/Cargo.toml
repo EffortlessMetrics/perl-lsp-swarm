@@ -1,0 +1,9 @@
+[package]
+name = "cohort-b"
+version = "0.1.0"
+edition = "2024"
+[dev-dependencies]
+cohort-a = { path = "../a", features = ["activated"] }
+[[test]]
+name = "shared"
+path = "tests/shared.rs"

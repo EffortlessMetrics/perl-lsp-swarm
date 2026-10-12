@@ -715,17 +715,45 @@ def release_lease(lock, identity, marker=None, marker_identity=None):
         pass
 
 
+# Only fields Cargo's bootstrap may overwrite for the target process. Registry
+# credentials and unrelated user environment never enter this handoff/receipt.
+COHORT_RUNTIME_KEYS = ('CARGO', 'CARGO_CRATE_NAME', 'CARGO_BIN_NAME',
+    'CARGO_MANIFEST_DIR', 'CARGO_MANIFEST_PATH', 'CARGO_PKG_VERSION',
+    'CARGO_PKG_VERSION_MAJOR', 'CARGO_PKG_VERSION_MINOR', 'CARGO_PKG_VERSION_PATCH',
+    'CARGO_PKG_VERSION_PRE', 'CARGO_PKG_NAME', 'CARGO_PKG_AUTHORS',
+    'CARGO_PKG_DESCRIPTION', 'CARGO_PKG_HOMEPAGE', 'CARGO_PKG_REPOSITORY',
+    'CARGO_PKG_LICENSE', 'CARGO_PKG_LICENSE_FILE', 'CARGO_PKG_README',
+    'CARGO_PKG_RUST_VERSION', 'LD_LIBRARY_PATH')
+
+
 def main(args=None):
     args = sys.argv[1:] if args is None else args
     preflight, scope = False, None
+    staged_cohorts = bool(args and args[0] == '--routed-test-cohorts')
+    if staged_cohorts:
+        args = args[1:]
     try:
         preflight, budget_file, args = admission_options(args)
+        if staged_cohorts:
+            expected = ['run', '--locked', '-p', 'xtask', '--bin', 'routed-test-cohorts', '--']
+            if args[:len(expected)] != expected or sys.platform != 'linux':
+                raise Denied('staged cohorts require the exact dedicated Linux xtask producer invocation')
+            from cargo_cohort import children_capability, Denied as CohortDenied
+            try:
+                children_capability()  # before native producer bootstrap or any build
+            except CohortDenied as error:
+                # The script's __main__ module and imported API have separate
+                # exception identities; preserve native admission status 75.
+                raise Denied(str(error)) from error
         clippy = args[0] == "clippy"
         owned_linux = sys.platform == "linux"
         managed = clippy or owned_linux
         operation = "Clippy" if clippy else "Cargo"
         env = os.environ.copy()
+        runtime_environment = {key: env.get(key) for key in COHORT_RUNTIME_KEYS} if staged_cohorts else None
         env["RUSTUP_AUTO_INSTALL"] = "0"
+        if staged_cohorts:
+            env.pop("CARGO_ADMITTED_COHORT_DESCRIPTOR", None)
         worktree, slot, paths = resource_plan(env)
         if env.get("RUSTC_WRAPPER") or env.get("RUSTC_WORKSPACE_WRAPPER"):
             raise Denied("compiler wrappers have unverified storage; use a separately admitted route")
@@ -795,7 +823,11 @@ def main(args=None):
                 # or reconstruct ownership from age/current contents after death.
                 descriptor.update(lease_identity=list(identity), lease_marker=str(marker),
                                   marker_identity=list(marker_identity))
-            print("cargo-admitted resources: " + json.dumps(descriptor), file=sys.stderr, flush=True)
+            if staged_cohorts:
+                descriptor['runtime_environment'] = runtime_environment
+                descriptor['runtime_environment_sha256'] = hashlib.sha256(json.dumps(runtime_environment, sort_keys=True).encode()).hexdigest()
+                env['CARGO_ADMITTED_COHORT_DESCRIPTOR'] = json.dumps(descriptor, sort_keys=True)
+            print("cargo-admitted resources: " + json.dumps({key: value for key, value in descriptor.items() if key != "runtime_environment"}), file=sys.stderr, flush=True)
             command = ["cargo", "--config", "unstable.unstable-options=false",
                        "--config", "build.build-dir=" + json.dumps(str(paths["build"])),
                        "--config", 'build.rustc-wrapper=""',
@@ -807,6 +839,11 @@ def main(args=None):
                 child_value = "0" if name == "RUSTUP_AUTO_INSTALL" else str(paths["temp"])
                 for field, value in (("value", json.dumps(child_value)), ("force", "true"), ("relative", "false")):
                     command[1:1] = ["--config", "env." + name + "." + field + "=" + value]
+            if staged_cohorts:
+                # Cargo configuration may force [env]; forward only this original
+                # live owner descriptor, never a caller-provided replacement.
+                for field, value in (('value', json.dumps(env['CARGO_ADMITTED_COHORT_DESCRIPTOR'])), ('force', 'true'), ('relative', 'false')):
+                    command[1:1] = ['--config', 'env.CARGO_ADMITTED_COHORT_DESCRIPTOR.' + field + '=' + value]
             if clippy:
                 exact = toolchain["subjects"]
                 controlled = {"CARGO": exact["cargo"]["path"],

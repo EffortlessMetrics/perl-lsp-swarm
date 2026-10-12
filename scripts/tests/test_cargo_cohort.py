@@ -52,14 +52,14 @@ class PortableControls(unittest.TestCase):
         self.descriptor = {'worktree': str(self.root), 'resources': {k: str(v) for k,v in self.paths.items()},
                            'lease': str(self.lease), 'lease_identity': cohort.directory_identity(self.lease),
                            'lease_marker': str(self.marker), 'marker_identity': cohort.directory_identity(self.marker),
-                           'pid': os.getppid()}
+                           'pid': os.getppid(), 'admission': {'policy':'percent','reserve_bytes':1024,'max_used_pct':100}}
         self.exe = self.paths['target'] / 'executable'
 
     def owner(self, **kwargs):
         with patch.object(cohort, 'resource_plan', return_value=(self.root,self.slot,self.paths)):
             instance = cohort.Cohort(self.descriptor, *(hashlib.sha256(p.read_bytes()).hexdigest() for p in self.manifests),
                                 source_subject=self.manifests[0], profile_subject=self.manifests[1], expected_targets=kwargs.pop('expected_targets', [TARGET]), evidence_path=self.root/('evidence-'+str(len(list(self.root.glob('evidence-*'))))), **kwargs)
-        self.addCleanup(lambda: os.close(instance.ancestor_fd) if instance.ancestor_fd is not None else None)
+        self.addCleanup(instance.close)
         return instance
 
     def executable(self, path=None):
@@ -111,6 +111,68 @@ class PortableControls(unittest.TestCase):
         with self.assertRaises(cohort.Denied): instance._reclaim(self.exe)
         self.assertTrue(self.exe.exists())
         with self.assertRaises(cohort.Denied): self.run_portable(instance)
+
+
+    def test_new_private_cargo_alias_group_consumed_once_and_all_names_reclaimed(self):
+        alias = self.paths['build'] / 'cargo-alias'
+        library = self.paths['target'] / 'shared.rlib'; library.write_bytes(b'library')
+        metadata = self.paths['build'] / 'shared.rmeta'; metadata.write_bytes(b'metadata')
+        instance = self.owner()
+        mutation = 'import os\nos.link(p,' + repr(str(alias)) + ')'
+        row = self.run_portable(instance, producer=self.producer(mutation=mutation))
+        self.assertEqual(row['consumed'], [str(self.exe)])
+        self.assertEqual(set(row['reclaimed']), {str(self.exe), str(alias)})
+        self.assertFalse(self.exe.exists()); self.assertFalse(alias.exists())
+        self.assertEqual(library.read_bytes(),b'library'); self.assertEqual(metadata.read_bytes(),b'metadata')
+        events = [json.loads(line) for line in instance.receipt_path.read_text().splitlines()]
+        self.assertEqual(events[0]['alias_groups'][0]['file_identity'][-1],2)
+        self.assertEqual({entry['path'] for entry in events[0]['alias_groups'][0]['aliases']},{str(self.exe),str(alias)})
+        self.assertEqual({entry['path'] for entry in events[1:]},{str(self.exe),str(alias)})
+        self.executable()
+        with self.assertRaises(cohort.Denied): instance._reclaim(self.exe)
+        self.assertTrue(self.exe.exists())
+
+    def test_unknown_preexisting_or_pinned_alias_preserves_entire_group(self):
+        for case in ('foreign','preexisting','pinned'):
+            with self.subTest(case=case):
+                if self.exe.exists(): self.exe.unlink()
+                alias = (self.root if case=='foreign' else self.paths['build']) / ('alias-'+case)
+                if case=='preexisting': alias.write_text('old')
+                instance = self.owner(pinned=[alias] if case=='pinned' else [])
+                mutation = 'import os\n' + ('os.unlink('+repr(str(alias))+')\n' if case=='preexisting' else '') + 'os.link(p,'+repr(str(alias))+')'
+                with self.assertRaises(cohort.Denied): self.run_portable(instance, producer=self.producer(mutation=mutation))
+                self.assertTrue(self.exe.exists()); self.assertTrue(alias.exists())
+                self.assertEqual(self.exe.stat().st_ino,alias.stat().st_ino)
+                self.exe.unlink(); alias.unlink()
+
+    def test_alias_replacement_or_new_link_during_consumption_preserves(self):
+        for case in ('replace','link'):
+            with self.subTest(case=case):
+                if self.exe.exists(): self.exe.unlink()
+                alias = self.paths['build'] / ('consume-'+case)
+                late = self.paths['target'] / ('late-'+case)
+                action = ('os.unlink('+repr(str(alias))+');Path('+repr(str(alias))+').write_text("replacement")' if case=='replace' else 'os.link('+repr(str(self.exe))+','+repr(str(late))+')')
+                body = '#!'+sys.executable+'\nimport os\nfrom pathlib import Path\n'+action+'\n'
+                mutation = 'import os\np.write_text('+repr(body)+')\np.chmod(0o700)\nos.link(p,'+repr(str(alias))+')'
+                instance = self.owner()
+                with self.assertRaises(cohort.Denied): self.run_portable(instance,producer=self.producer(mutation=mutation))
+                self.assertTrue(self.exe.exists()); self.assertTrue(alias.exists())
+                self.exe.unlink(); alias.unlink()
+                if late.exists(): late.unlink()
+
+    def test_interrupted_or_unsettled_alias_group_retains_all_names(self):
+        for settled in (False,True):
+            with self.subTest(settled=settled):
+                alias=self.paths['build']/('interrupted-'+str(settled))
+                instance=self.owner(); launch=instance._launch
+                def interrupt(tree,command,env,**kwargs):
+                    launch(tree,command,env,**kwargs);tree.cancelled=True
+                    raise KeyboardInterrupt('alias interrupted')
+                with patch.object(instance,'_launch',side_effect=interrupt),patch.object(PortableTree,'settled',settled):
+                    row=self.run_portable(instance,producer=self.producer(mutation='import os\nos.link(p,'+repr(str(alias))+')'))
+                self.assertEqual(row['status'],130 if settled else 75)
+                self.assertTrue(self.exe.exists());self.assertTrue(alias.exists())
+                self.exe.unlink();alias.unlink()
 
     def test_manifest_read_failure_or_interrupt_closes_descriptor(self):
         instance = self.owner()
