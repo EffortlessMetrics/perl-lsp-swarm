@@ -1,8 +1,15 @@
-# Proposed EIR entry and runtime boundary
+# PLSP-PROP-0004: EIR entry and runtime boundary
 
 Status: proposed; not an accepted ADR and not implementation authorization.
-Decision owner: #17510. Programme: #17509 / #2559.
-Source baseline: `2f33ac783b5bb0da7c8bc12644bc47d565c21c7c` (2026-10-10).
+Owner: #17510 (dedicated EIR architecture decision).
+Created: 2026-10-10.
+Target milestone: Compiler-program gate (tracker #2559); programme #17509.
+Linked specs: [PLSP-SPEC-0035](../specs/PLSP-SPEC-0035-executable-profile-and-eir.md) (design input, not an implemented runtime contract).
+Linked ADRs: [PLSP-ADR-0005](../adr/PLSP-ADR-0005-hir-body-pir-eir-boundaries.md) (requires this dedicated decision; not amended here).
+Linked plan: #17509 cohort; first-effect vertical #2447.
+Support/status impact: none; no generated status altered.
+Policy impact: none enacted; the provider-prerequisite amendment below is proposed only.
+Source baseline: `83ca29e04fe10df7890372dbc148ff440d1a5ad2` (2026-10-12; refreshed from `2f33ac78` after #17541/#16997/#17538 landed).
 
 ## Decision requested
 
@@ -21,16 +28,20 @@ a design input, not an already implemented runtime contract.
 ## Why the current graph is not executable input
 
 The inspected [body model](../../crates/perl-parser-core/src/hir/body.rs) has typed
-variables, operators, control regions, calls and several specialized expressions,
-but no typed scalar-literal leaf. Its `Assign` carries `lhs`, `rhs` and a coarse
-`AssignMode`; the complete operator handoff therefore needs an explicit audit,
-not an assumption that this node alone is sufficient.
+variables, operators, control regions, calls and several specialized expressions.
+Its `Assign` carries `lhs`, `rhs` and a coarse `AssignMode`; the complete
+operator handoff therefore needs an explicit audit, not an assumption that
+this node alone is sufficient.
 
-The [PIR model](../../crates/perl-parser-core/src/pir/model.rs) has
-`Literal { kind: PirLiteralKind }`, without the literal value on that operation.
-Flat-HIR facts can retain literal payloads. The gap is a qualified body/PIR
-handoff, not an assertion that the entire compiler has lost every literal.
-\#17538, under #6658, owns the first scalar-literal repair and payload relation.
+The first scalar-literal cohort landed in #17538: the canonical body emits a
+typed `HirLiteral` leaf (plain-decimal numbers, non-interpolated strings with
+carried quote kind, and undef, each with a `synthesized` provenance flag), and
+the [PIR model](../../crates/perl-parser-core/src/pir/model.rs) `Literal`
+operation carries the value, quote and flag through. Families outside that
+cohort still lower to `Opaque`, and no typed same-generation payload relation
+yet qualifies the general body/PIR handoff. That relation belongs to #17512
+under #6658, and must not reparse source, inspect `Opaque` spelling,
+manufacture constants or execute the analysis graph.
 
 Source anchoring does not resolve this: a byte range identifies a location, not
 its runtime value or evaluation rule. The adapter must not reparse source,
@@ -170,11 +181,11 @@ profile registry. Recheck source and evidence when each family is admitted.
 
 | ADR-0005 concern | Current evidence / missing proposition | Owner and proposed disposition |
 |---|---|---|
-| Canonical body representation | Literal leaf absent; two body routes need shared construction/parity | #17538 / #6658 / #5813; unresolved for ordinary literal execution |
+| Canonical body representation | First-cohort literal leaf landed (#17538); dual body lowerers keep managed parity (#5813 completed via #17541) | #6658; unresolved for ordinary-literal execution beyond the cohort |
 | Binding identity | Four limitations documented in the current model | #14173 / #6659; fix or explicitly exclude affected forms |
 | Branch/loop/return/read lowering | Typed source structures exist; this review did not run complete production-path proofs | #2017 / #2277 / #2350; require exact family evidence, not node counts |
 | Context and access | Types are not proof of every projection/call/place composition | #2275 / #5242 / #17513; qualify selected rows |
-| Literal/operator payload | Flat facts and category-only PIR do not prove the full handoff | #17538 / #6658 / #17512; typed same-generation relation required |
+| Literal/operator payload | Flat facts and admitted-cohort PIR payloads do not prove the full handoff | #6658 / #17512; typed same-generation relation required |
 | Real-workspace provider stability | No new qualifying provider receipt established by this work | Remains unresolved under the accepted ADR; proposed amendment below |
 | Dedicated EIR decision | This document is a proposal only | #17510 must obtain accepted architecture and publish exact entry disposition |
 | Profile/unsupported contracts | Required independently of architecture acceptance | #4770 / #4773; no default-admit instruction families |
@@ -201,9 +212,9 @@ The #2447 PackageSubTable first-effect vertical and its original-source migratio
 remain separately owned. Sharing EIR foundations does not replace that accepted
 cut line or make wrapper-generated TAP into original-source execution evidence.
 
-Prepare #17538's frontend slice, #17536's attributed workload/admission matrix and
-this architecture review now. After accepted entry, implement the existing EIR,
-value/state and reference-expression leaves. Native scalar lowering may begin
+Prepare #17536's attributed workload/admission matrix and this architecture
+review now. #17538's frontend slice has landed; after accepted entry, implement
+the existing EIR, value/state and reference-expression leaves. Native scalar lowering may begin
 once its pure family is qualified; it need not wait for all loops/calls/closures.
 Advance source/reference integration, native control/calls, then function-entry
 JIT and multi-mode qualification through #17509's existing train.
