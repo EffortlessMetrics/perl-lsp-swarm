@@ -33,22 +33,31 @@ fn test_workspace_symbol_3_17() -> TestResult {
 fn test_workspace_symbol_resolve_3_17() -> TestResult {
     let mut harness = LspHarness::new();
     harness.initialize(None)?;
+    let uri = "file:///test_resolve_3_17.pl";
+    harness.open(uri, "sub test { return 1; }\n")?;
 
-    // Mock workspace symbol to resolve
-    let response = harness.request(
-        "workspaceSymbol/resolve",
-        json!({
-            "name": "test",
-            "kind": 12,
-            "location": {
-                "uri": "file:///test.pl"
-            }
-        }),
-    );
+    // The advertised resolveProvider makes this spec method part of the
+    // contract: it must answer (not -32601) and keep the symbol identity.
+    let symbol = harness
+        .request(
+            "workspaceSymbol/resolve",
+            json!({
+                "name": "test",
+                "kind": 12,
+                "location": {
+                    "uri": uri,
+                    "range": {
+                        "start": { "line": 0, "character": 0 },
+                        "end": { "line": 0, "character": 8 }
+                    }
+                }
+            }),
+        )
+        .map_err(|e| format!("workspaceSymbol/resolve request failed: {e}"))?;
 
-    if let Ok(symbol) = response {
-        assert!(symbol["name"].is_string());
-    }
+    assert_eq!(symbol["name"].as_str(), Some("test"), "got: {symbol:?}");
+    assert_eq!(symbol["kind"].as_i64(), Some(12), "got: {symbol:?}");
+    assert_eq!(symbol["detail"].as_str(), Some("sub test"), "got: {symbol:?}");
     Ok(())
 }
 
