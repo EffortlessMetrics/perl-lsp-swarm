@@ -39,8 +39,10 @@ agent-test:
 agent-clippy:
     {{cargo_safe}} clippy --workspace --all-targets --profile agent --locked -- -D warnings -A missing_docs
 
+# Nextest's runner profile and Cargo's build profile are separate selectors.
+# Match agent-test's build profile so switching runners reuses its test binaries.
 agent-nextest:
-    {{cargo_safe}} nextest run --workspace --profile agent
+    {{cargo_safe}} nextest run --workspace --profile agent --cargo-profile agent
 
 agent-pr-fast:
     {{cargo_safe}} xtask gates --tier pr-fast --receipt
