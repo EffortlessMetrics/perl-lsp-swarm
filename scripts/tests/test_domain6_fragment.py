@@ -176,15 +176,28 @@ class Domain6FragmentTest(unittest.TestCase):
         self.assertEqual(len(calls), 1)
         self.assertEqual(cache.holders("blob-b", "path-a"), ("result-2",))
         self.assertEqual(cache.holders("blob-a", "path-b"), ("result-3",))
-        other_range = generator.RangeHolderCache(root, "start-b", "head-a", query)
-        self.assertEqual(other_range.holders("blob-a", "path-a"), ("result-4",))
-        other_repo = generator.RangeHolderCache(root.parent, "start-a", "head-a", query)
-        self.assertEqual(other_repo.holders("blob-a", "path-a"), ("result-5",))
+        cache.start_sha = "start-b"
+        self.assertEqual(cache.holders("blob-a", "path-a"), ("result-4",))
+        cache.start_sha = "start-a"
+        cache.observed_head = "head-b"
+        self.assertEqual(cache.holders("blob-a", "path-a"), ("result-5",))
+        cache.observed_head = "head-a"
+        cache.repo_root = root.parent
+        self.assertEqual(cache.holders("blob-a", "path-a"), ("result-6",))
+        cache.repo_root = root
+
+        def alternate_query(*args, cwd):
+            calls.append((args, cwd))
+            return "alternate-result\n"
+
+        cache.query = alternate_query
+        self.assertEqual(cache.holders("blob-a", "path-a"), ("alternate-result",))
+        cache.query = query
+        # The original entry was evicted after exceeding the three-entry cap.
+        self.assertEqual(cache.holders("blob-a", "path-a"), ("result-8",))
         fresh_render = generator.RangeHolderCache(root, "start-a", "head-a", query)
-        self.assertEqual(fresh_render.holders("blob-a", "path-a"), ("result-6",))
-        other_head = generator.RangeHolderCache(root, "start-a", "head-b", query)
-        self.assertEqual(other_head.holders("blob-a", "path-a"), ("result-7",))
-        self.assertEqual(len(cache._values), 3)
+        self.assertEqual(fresh_render.holders("blob-a", "path-a"), ("result-9",))
+        self.assertLessEqual(len(cache._values), 3)
         self.assertEqual(calls[0][1], root)
         self.assertEqual(
             self.doc["prefilter_paths"],
