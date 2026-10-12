@@ -2358,7 +2358,8 @@ mod tests {
         // R2). The analyzer adds this count to its unmodeled evidence, so a
         // miscount here (or a dropped bridge) flips a summary facet.
         use crate::hir::HirBodyId;
-        for (src, expected) in [("field $x = 1;", 1), ("field $x;", 1), ("my $x = 1;", 0)] {
+        for (src, expected) in [("field $x = 1;", 1u32), ("field $x;", 1u32), ("my $x = 1;", 0u32)]
+        {
             let mut parser = Parser::new(src);
             let output = parser.parse_with_recovery();
             let file = lower_ast(&output.ast);
