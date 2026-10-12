@@ -62,6 +62,199 @@ def facts(metadata):
             metadata.st_mtime_ns, metadata.st_ctime_ns, metadata.st_mode, metadata.st_nlink)
 
 
+def libtest_text_without_rpc_frames(raw):
+    """Separate exact byte-framed RPC output from libtest's completion lines.
+
+    Keep the original log separately. Never count completion-shaped strings in
+    JSON bodies, or recover from a malformed frame by skipping arbitrary text.
+    """
+    output = bytearray()
+    cursor = 0
+    boundary = True
+    while cursor < len(raw):
+        if boundary and raw.startswith(b'Content-Length:', cursor):
+            end = raw.find(b'\r\n\r\n', cursor)
+            if end < 0:
+                raise Denied('malformed native JSON-RPC frame header')
+            headers = raw[cursor:end].split(b'\r\n')
+            length = re.fullmatch(rb'Content-Length: ([0-9]+)', headers[0])
+            if (length is None or len(headers) > 2
+                    or (len(headers) == 2 and re.fullmatch(rb'Content-Type: [ -~]+', headers[1]) is None)):
+                raise Denied('malformed native JSON-RPC frame header')
+            size = int(length.group(1))
+            start = end + 4
+            if size <= 0 or size > len(raw) - start:
+                raise Denied('truncated native JSON-RPC frame body')
+            def unique_object(pairs):
+                value = {}
+                for key, item in pairs:
+                    if key in value:
+                        raise ValueError('duplicate JSON key')
+                    value[key] = item
+                return value
+            try:
+                message = json.loads(raw[start:start + size].decode('utf-8'), object_pairs_hook=unique_object,
+                                     parse_constant=lambda value: (_ for _ in ()).throw(ValueError(value)))
+            except (ValueError, UnicodeError) as error:
+                raise Denied('malformed native JSON-RPC frame body') from error
+            if (not isinstance(message, dict) or message.get('jsonrpc') != '2.0'
+                    or ('id' in message and (isinstance(message['id'], bool)
+                        or not isinstance(message['id'], (str, int, type(None)))))
+                    or not ((isinstance(message.get('method'), str)
+                             and 'result' not in message and 'error' not in message)
+                            or ('method' not in message and 'id' in message
+                                and (('result' in message) != ('error' in message))))):
+                raise Denied('unsupported native JSON-RPC frame envelope')
+            if ('params' in message and not isinstance(message['params'], (dict, list))):
+                raise Denied('unsupported native JSON-RPC frame params')
+            if 'error' in message:
+                error = message['error']
+                if (not isinstance(error, dict) or isinstance(error.get('code'), bool)
+                        or not isinstance(error.get('code'), int) or not isinstance(error.get('message'), str)):
+                    raise Denied('unsupported native JSON-RPC frame error')
+            cursor = start + size
+            output.extend(b'\n')
+            boundary = True
+        else:
+            byte = raw[cursor]
+            output.append(byte)
+            cursor += 1
+            boundary = byte == 10
+    return output.decode('utf-8')
+
+
+_SOURCE_DIRECTORY_STACK_LIMIT = 128
+
+
+def _source_reject_link(metadata):
+    if (stat.S_ISLNK(metadata.st_mode)
+            or getattr(metadata, 'st_file_attributes', 0)
+            & getattr(stat, 'FILE_ATTRIBUTE_REPARSE_POINT', 0)):
+        raise Denied('linked or reparse source component')
+
+
+def _source_directory_key(metadata):
+    _source_reject_link(metadata)
+    if not stat.S_ISDIR(metadata.st_mode):
+        raise Denied('source ancestor is not a directory')
+    return metadata.st_dev, metadata.st_ino, stat.S_IFMT(metadata.st_mode)
+
+
+def _source_read_and_check(path, expected_hash, directory_fd=None):
+    descriptor = os.open(path if directory_fd is None else path.name,
+                         os.O_RDONLY | os.O_NOFOLLOW, dir_fd=directory_fd)
+    try:
+        before = os.fstat(descriptor)
+        _source_reject_link(before)
+        if not stat.S_ISREG(before.st_mode):
+            raise Denied('nonregular source/profile subject')
+        observed = hashlib.sha256()
+        while chunk := os.read(descriptor, 65536):
+            observed.update(chunk)
+        after = os.fstat(descriptor)
+        current = path.lstat()
+        _source_reject_link(after)
+        _source_reject_link(current)
+        if (facts(before) != facts(after) or facts(before) != facts(current)
+                or observed.hexdigest() != expected_hash):
+            raise Denied('source/profile bytes or current identity changed')
+    finally:
+        os.close(descriptor)
+
+
+def _source_verify_directory_names(bindings):
+    for path, expected in sorted(bindings.items(), key=lambda item: len(item[0].parts)):
+        if _source_directory_key(path.lstat()) != expected:
+            raise Denied('source ancestor current name/type/identity changed')
+
+
+def validate_source_entries(worktree, entries):
+    """Validate every entry afresh; state and descriptors exist only for this call.
+
+    A sorted traversal reuses anchored parent descriptors within this validation
+    epoch. Every source is freshly opened and hashed; every visited ancestor is
+    checked again by its current pathname after the last source. Deeper paths
+    use the existing per-file validator for the entire call, before opening any
+    descriptor, preserving their eligibility without changing descriptor limits.
+    """
+    worktree = Path(worktree)
+    root_text = str(worktree)
+    if (not worktree.is_absolute() or root_text.startswith(('//', '/mnt/'))
+            or '..' in worktree.parts or '{' in root_text or '}' in root_text):
+        raise Denied('noncanonical worktree spelling')
+    subjects = []
+    deepest = len(worktree.parts)
+    for entry in entries:
+        subject = Path(entry['path'])
+        value = str(subject)
+        if (not subject.is_relative_to(worktree) or subject == worktree
+                or not subject.is_absolute() or value.startswith(('//', '/mnt/'))
+                or '..' in subject.parts or '{' in value or '}' in value):
+            raise Denied('foreign or noncanonical source/profile path')
+        subjects.append((subject, entry['sha256']))
+        deepest = max(deepest, len(subject.parent.parts))
+    if deepest >= _SOURCE_DIRECTORY_STACK_LIMIT:
+        for subject, expected_hash in subjects:
+            if not source_path_is_canonical(subject):
+                raise Denied('foreign or noncanonical source/profile path')
+            _source_read_and_check(subject, expected_hash)
+        return
+
+    stack = []
+    bindings = {}
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    try:
+        current = Path('/')
+        descriptor = os.open('/', directory_flags)
+        stack.append((current, descriptor))  # register before even fstat can fail
+        bindings[current] = _source_directory_key(os.fstat(descriptor))
+        for name in worktree.parts[1:]:
+            descriptor = os.open(name, directory_flags, dir_fd=stack[-1][1])
+            try:
+                observed = _source_directory_key(os.fstat(descriptor))
+                current = current / name
+                if _source_directory_key(current.lstat()) != observed:
+                    raise Denied('source root component replaced')
+            except BaseException:
+                os.close(descriptor)
+                raise
+            stack.append((current, descriptor))
+            bindings[current] = observed
+        root_depth = len(stack)
+        previous_directories = ()
+        root_prefix = root_text.rstrip('/') + '/'
+        for subject, expected_hash in sorted(subjects, key=lambda row: str(row[0])):
+            relative_parts = tuple(part for part in str(subject)[len(root_prefix):].split('/')
+                                   if part not in ('', '.'))
+            parent_parts = relative_parts[:-1]
+            common = 0
+            while (common < min(len(previous_directories), len(parent_parts))
+                   and previous_directories[common] == parent_parts[common]):
+                common += 1
+            while len(stack) > root_depth + common:
+                os.close(stack.pop()[1])
+            for name in parent_parts[common:]:
+                current = stack[-1][0] / name
+                descriptor = os.open(name, directory_flags, dir_fd=stack[-1][1])
+                try:
+                    observed = _source_directory_key(os.fstat(descriptor))
+                    if current in bindings and bindings[current] != observed:
+                        raise Denied('source ancestor rebound during validation')
+                    if _source_directory_key(current.lstat()) != observed:
+                        raise Denied('source ancestor current identity differs from anchor')
+                except BaseException:
+                    os.close(descriptor)
+                    raise
+                stack.append((current, descriptor))
+                bindings[current] = observed
+            previous_directories = parent_parts
+            _source_read_and_check(subject, expected_hash, stack[-1][1])
+        _source_verify_directory_names(bindings)
+    finally:
+        while stack:
+            os.close(stack.pop()[1])
+
+
 class Cohort:
     """One producer, its consumers, and one settlement; no recovery adoption API."""
     def __init__(self, descriptor, source_digest, profile_digest, *, source_subject, profile_subject, expected_targets, evidence_path, pinned=(), pinned_subjects=None, retain_preexisting=False):
@@ -211,22 +404,7 @@ class Cohort:
                 entries = json.loads(manifest)['files']
                 if not isinstance(entries, list) or not entries:
                     raise ValueError('empty source/profile manifest')
-                for entry in entries:
-                    subject = Path(entry['path'])
-                    if not subject.is_relative_to(self.worktree) or not source_path_is_canonical(subject):
-                        raise ValueError('foreign source/profile path')
-                    fd = os.open(subject, os.O_RDONLY | os.O_NOFOLLOW)
-                    try:
-                        before = os.fstat(fd)
-                        if not stat.S_ISREG(before.st_mode):
-                            raise ValueError('nonregular source/profile subject')
-                        observed = hashlib.sha256()
-                        while chunk := os.read(fd, 65536):
-                            observed.update(chunk)
-                        if facts(before) != facts(os.fstat(fd)) or facts(before) != facts(subject.lstat()) or observed.hexdigest() != entry['sha256']:
-                            raise ValueError('source/profile file changed')
-                    finally:
-                        os.close(fd)
+                validate_source_entries(self.worktree, entries)
             except (OSError, ValueError, KeyError, TypeError) as error:
                 raise Denied('source/profile manifest invalid or changed') from error
         d = self.descriptor
@@ -630,7 +808,6 @@ class Cohort:
                               ('ignored', ['--ignored', '--list', '--format', 'terse'])]:
             log = self.evidence_path.with_name(self.evidence_path.name + '.harness-' + str(index) + '-' + suffix)
             with log.open('xb+') as output:
-                self._validate_group(self.groups[path])
                 status = self._launch(tree, [str(path), *flags], env, cwd=cwd, stdout=output)
                 output.flush(); os.fsync(output.fileno()); output.seek(0)
                 text = output.read().decode('utf-8')
@@ -650,12 +827,12 @@ class Cohort:
             raise Denied('native ignored inventory differs from full inventory')
         log = self.evidence_path.with_name(self.evidence_path.name + '.harness-' + str(index) + '-run')
         with log.open('xb+') as output:
-            self._validate_group(self.groups[path])
             status = self._launch(tree, [str(path)], env, cwd=cwd, stdout=output)
             output.flush(); os.fsync(output.fileno()); output.seek(0)
-            text = output.read().decode('utf-8')
-            sys.stdout.write(text)
+            raw = output.read()
+            sys.stdout.write(raw.decode('utf-8'))
         if status == 0:
+            text = libtest_text_without_rpc_frames(raw)
             completed = []
             ignored = Counter()
             for line in text.splitlines():
@@ -680,7 +857,14 @@ class Cohort:
                 'ignored_count': sum(ignored_cases.values()), 'logs': [*logs, str(log)]}
 
     def _launch(self, tree, command, env, **kwargs):
-        self._check_owner()
+        # Known captured executables need both current owner/source validation
+        # and a fresh complete alias-group check immediately before Popen.
+        # _validate_group performs the owner check itself; do it once.
+        group = self.groups.get(Path(command[0]))
+        if group is None:
+            self._check_owner()
+        else:
+            self._validate_group(group)
         if env.get('CARGO_ADMITTED_CHILD_DISCOVERY', 'proc-children') != self.child_discovery:
             raise Denied('launch discovery profile differs from original admission')
         if getattr(tree, 'child_discovery', None) != self.child_discovery:

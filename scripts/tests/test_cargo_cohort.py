@@ -260,7 +260,7 @@ class PortableControls(unittest.TestCase):
         self.assertEqual(result.read_text(), 'prior evidence')
 
     def test_duplicate_native_registrations_preserve_exact_multiplicity(self):
-        for variant in ['complete', 'drop', 'extra', 'ignored_drop']:
+        for variant in ['complete', 'framed', 'drop', 'extra', 'ignored_drop']:
             with self.subTest(variant=variant):
                 instance = self.owner()
                 regular = 1 if variant == 'drop' else 3 if variant == 'extra' else 2
@@ -268,6 +268,12 @@ class PortableControls(unittest.TestCase):
                 run_lines = ['test repeated ... ok'] * regular + ['test ignored_repeat ... ignored'] * ignored
                 if variant == 'ignored_drop':
                     run_lines.append('test ignored_repeat ... ok')
+                if variant != 'complete':
+                    payload = json.dumps({'jsonrpc':'2.0', 'method':'fixture',
+                                          'params':{'text':'test repeated ... ok\n雪'}},
+                                         ensure_ascii=False).encode('utf-8')
+                    frame = b'Content-Length: ' + str(len(payload)).encode() + b'\r\n\r\n' + payload
+                    run_lines = [frame.decode('utf-8') + line for line in run_lines]
                 body = ('#!' + sys.executable + '\nimport sys\n'
                         "if '--list' in sys.argv:\n"
                         " print('ignored_repeat: test\\nignored_repeat: test' if '--ignored' in sys.argv else "
@@ -278,7 +284,7 @@ class PortableControls(unittest.TestCase):
                            'print(json.dumps(' + repr(dict(TARGET, reason='compiler-artifact', executable=str(self.exe), fresh=False)) + '))')
                 producer = [sys.executable, '-c', program]
                 consumers = {str(self.exe): {'args': [], 'cwd': str(self.root), 'verify_harness': True}}
-                if variant != 'complete':
+                if variant not in ('complete', 'framed'):
                     with self.assertRaisesRegex(cohort.Denied, 'omitted/duplicated cases or changed ignored population') as failure:
                         self.run_portable(instance, producer=producer, consumers=consumers)
                     detail = json.loads(str(failure.exception).split('population: ', 1)[1])
@@ -298,6 +304,77 @@ class PortableControls(unittest.TestCase):
                     self.assertEqual(coverage['ignored'], ['ignored_repeat'] * 2)
                     self.assertEqual((coverage['case_count'], coverage['ignored_count']), (4, 2))
                     self.assertFalse(self.exe.exists())
+
+    def test_rpc_frames_use_exact_byte_boundaries_and_hide_body_labels(self):
+        payload = json.dumps({'jsonrpc':'2.0', 'id':1, 'result':'test forged ... ok\n雪'},
+                             ensure_ascii=False).encode('utf-8')
+        frame = b'Content-Length: ' + str(len(payload)).encode() + b'\r\nContent-Type: application/json\r\n\r\n' + payload
+        raw = frame + frame + b'test actual ... ok\n'
+        self.assertEqual(cohort.libtest_text_without_rpc_frames(raw), '\n\ntest actual ... ok\n')
+        # Arbitrary diagnostic prefixes never manufacture a completion line.
+        self.assertEqual(cohort.libtest_text_without_rpc_frames(b'prefix test actual ... ok\n'),
+                         'prefix test actual ... ok\n')
+
+    def test_rpc_malformed_frames_fail_closed(self):
+        good = b'{"jsonrpc":"2.0","id":1,"result":null}'
+        bodies = [b'{', b'{"jsonrpc":"1.0","id":1,"result":null}',
+                  b'{"jsonrpc":"2.0","jsonrpc":"2.0","id":1,"result":null}',
+                  b'{"jsonrpc":"2.0","id":true,"result":null}',
+                  b'{"jsonrpc":"2.0","id":1,"error":"bad"}',
+                  b'{"jsonrpc":"2.0","method":"x","params":1}',
+                  b'{"jsonrpc":"2.0","id":1,"result":NaN}',
+                  good + b'test forged ... ok\n']
+        frames = [b'Content-Length: ' + str(len(body)).encode() + b'\r\n\r\n' + body for body in bodies]
+        frames.extend([b'Content-Length: 99\r\n\r\n' + good,
+                       b'Content-Length: 1\r\nContent-Length: 1\r\n\r\n{}',
+                       b'Content-Length: -1\r\n\r\n{}', b'Content-Length: 1\n\n{}'])
+        for frame in frames:
+            with self.subTest(frame=frame), self.assertRaises(cohort.Denied):
+                cohort.libtest_text_without_rpc_frames(frame)
+
+    def test_source_epoch_rechecks_popped_ancestor_names(self):
+        root = self.root / 'epoch'; (root / 'a').mkdir(parents=True); (root / 'z').mkdir()
+        first = root / 'a' / 'first'; last = root / 'z' / 'last'
+        first.write_bytes(b'first'); last.write_bytes(b'last')
+        entries = [{'path':str(p), 'sha256':hashlib.sha256(p.read_bytes()).hexdigest()} for p in (first,last)]
+        original = cohort._source_read_and_check
+        def replace_visited(path, *args):
+            original(path, *args)
+            if path == last:
+                (root / 'a').rename(root / 'old-a'); (root / 'a').mkdir()
+        with patch.object(cohort, '_source_read_and_check', side_effect=replace_visited):
+            with self.assertRaisesRegex(cohort.Denied, 'ancestor current'):
+                cohort.validate_source_entries(root, entries)
+
+    def test_source_epoch_closes_unstacked_descriptor_on_fstat_failure(self):
+        subject = self.root / 'source-fd'; subject.write_bytes(b'source')
+        entry = {'path':str(subject), 'sha256':hashlib.sha256(subject.read_bytes()).hexdigest()}
+        original = os.fstat; count = 0
+        def fail_second(descriptor):
+            nonlocal count
+            count += 1
+            if count == 2:
+                raise OSError('injected ancestor fstat failure')
+            return original(descriptor)
+        with patch.object(cohort.os, 'open', wraps=os.open) as opened, \
+             patch.object(cohort.os, 'close', wraps=os.close) as closed, \
+             patch.object(cohort.os, 'fstat', side_effect=fail_second):
+            with self.assertRaisesRegex(OSError, 'injected'):
+                cohort.validate_source_entries(self.root, [entry])
+            self.assertEqual(opened.call_count, 2)
+            self.assertEqual(closed.call_count, 2)
+
+    def test_source_epoch_fallback_preserves_hash_checks_and_fresh_calls(self):
+        subject = self.root / 'deep-source'; subject.write_bytes(b'original')
+        entry = {'path':str(subject), 'sha256':hashlib.sha256(subject.read_bytes()).hexdigest()}
+        with patch.object(cohort, '_SOURCE_DIRECTORY_STACK_LIMIT', 1), \
+             patch.object(cohort, 'source_path_is_canonical', wraps=cohort.source_path_is_canonical) as canonical:
+            cohort.validate_source_entries(self.root, [entry])
+            canonical.assert_called_once_with(subject)
+            subject.write_bytes(b'changed')
+            with self.assertRaisesRegex(cohort.Denied, 'bytes or current identity'):
+                cohort.validate_source_entries(self.root, [entry])
+            self.assertEqual(canonical.call_count, 2)
 
     def test_success_consumes_exact_executable_then_reclaims_once(self):
         instance = self.owner()
