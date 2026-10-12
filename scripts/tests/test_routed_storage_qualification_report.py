@@ -65,7 +65,7 @@ class QualificationInventory(unittest.TestCase):
                 stem = f'{index:04}'
                 (cohort / (stem + '-request.json')).write_text(json.dumps({'producer': producer, 'evidence_path': '/host/' + stem + '-compiler.jsonl'}))
                 (cohort / (stem + '-compiler.jsonl')).write_text(compiler)
-                receipt = {'status': 0, 'settlement': {'tree_settled': True, 'proof': 'kernel ECHILD (__WALL)', 'errors': [], 'pending_bound_pids': []}, 'coverage': []}
+                receipt = {'status': 0, 'settlement': {'tree_settled': True, 'proof': 'kernel ECHILD (__WALL)', 'errors': [], 'pending_bound_pids': [], 'cancelled': False}, 'coverage': []}
                 if index:
                     receipt['coverage'] = [{'executable': row['executable'], 'cases': ['case', 'case', 'skipped', 'skipped'], 'ignored': ['skipped', 'skipped']} for row in rows]
                 (cohort / (stem + '-result.json')).write_text(json.dumps(receipt))
@@ -85,7 +85,7 @@ class QualificationInventory(unittest.TestCase):
             self.assertFalse(invalid_population['case_receipts_successful_and_settled'])
             self.assertEqual(len(invalid_population['receipt_errors']), 1)
             result_path.write_text(valid_receipt)
-            for field, value in [('pending_bound_pids', [91]), ('errors', ['unproven']), ('proof', 'boolean')]:
+            for field, value in [('pending_bound_pids', [91]), ('errors', ['unproven']), ('proof', 'boolean'), ('cancelled', True), ('cancelled', 0), ('cancelled', None)]:
                 invalid = json.loads(valid_receipt); invalid['settlement'][field] = value
                 result_path.write_text(json.dumps(invalid))
                 partial = subject.report(evidence, 'cohort', Path('/work'))
@@ -126,7 +126,7 @@ class QualificationInventory(unittest.TestCase):
                 (cohort / (stem + '-request.json')).write_text(json.dumps({'producer': producer, 'evidence_path': '/host/' + stem + '-compiler.jsonl'}))
                 (cohort / (stem + '-compiler.jsonl')).write_text('\n'.join(json.dumps(row) for row in [*selected, {'reason': 'build-finished', 'success': True}]))
                 coverage = [] if index == 0 else [{'executable': row['executable'], 'cases': ['case'], 'ignored': []} for row in selected]
-                (cohort / (stem + '-result.json')).write_text(json.dumps({'status': 0, 'settlement': {'tree_settled': True, 'proof': 'kernel ECHILD (__WALL)', 'errors': [], 'pending_bound_pids': []}, 'coverage': coverage}))
+                (cohort / (stem + '-result.json')).write_text(json.dumps({'status': 0, 'settlement': {'tree_settled': True, 'proof': 'kernel ECHILD (__WALL)', 'errors': [], 'pending_bound_pids': [], 'cancelled': False}, 'coverage': coverage}))
             interrupted = cohort / '0002-result.json'
             good = interrupted.read_text()
             for raw in [None, '', '{', 'null', '[]', '{"status":false}',
@@ -250,6 +250,20 @@ class QualificationInventory(unittest.TestCase):
             self.assertFalse(binding(text + 'cargo-admitted Cargo settlement: ' + json.dumps(receipt))['verified'])
             self.assertFalse(binding(prior + text.splitlines()[0] + '\n')['verified'])
             self.assertTrue(binding(prior + text)['verified'])
+            for field, value in [('exit_code', False), ('lease_identity', [True, False]), ('marker_identity', [True, False]), ('lease', 'relative'), ('lease_marker', 'relative')]:
+                with self.subTest(prior_field=field):
+                    parts = [json.loads(line.split(': ', 1)[1]) for line in prior.splitlines()]
+                    if field == 'exit_code':
+                        parts[1][field] = value
+                    else:
+                        parts[0][field] = parts[2][field] = value
+                        if field == 'lease':
+                            parts[1]['lease'] = value
+                    prefixes = ['cargo-admitted resources: ', 'cargo-admitted Cargo product: ', 'cargo-admitted Cargo settlement: ']
+                    forged = ''.join(prefix + json.dumps(part) + '\n' for prefix, part in zip(prefixes, parts))
+                    self.assertFalse(binding(forged + text)['verified'])
+                    cancelled_test = self.owner_log(evidence, 'test', cancelled=True)
+                    self.assertFalse(subject.terminal_owner_binding(forged + cancelled_test, 'ordinary', Path('/work'), evidence / 'cohort', allow_cancelled_build=True)['retry_eligible'])
             missing_prior = '\n'.join(prior.splitlines()[:-1]) + '\n'
             self.assertFalse(binding(missing_prior + text)['verified'])
 

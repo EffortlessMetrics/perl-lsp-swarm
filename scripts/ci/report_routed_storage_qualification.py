@@ -128,6 +128,27 @@ def closed_receipt(receipt):
             and receipt.get('errors') == [] and receipt.get('pending_bound_pids') == [])
 
 
+def successful_receipt(receipt):
+    return closed_receipt(receipt) and receipt.get('cancelled') is False
+
+
+def validate_owner_identity(descriptor, receipt, product):
+    if not isinstance(descriptor, dict) or not isinstance(receipt, dict):
+        raise ValueError('owner descriptor or settlement missing')
+    for key in ('lease', 'lease_identity', 'lease_marker', 'marker_identity'):
+        if key not in descriptor or descriptor[key] != receipt.get(key):
+            raise ValueError('original owner lease identity mismatch')
+    for key in ('lease', 'lease_marker'):
+        if not isinstance(descriptor[key], str) or not Path(descriptor[key]).is_absolute():
+            raise ValueError('invalid original owner lease path')
+    for key in ('lease_identity', 'marker_identity'):
+        value = descriptor[key]
+        if not isinstance(value, list) or len(value) != 2 or any(type(item) is not int or item < 0 for item in value):
+            raise ValueError('invalid original owner inode identity')
+    if product is not None and (not isinstance(product, dict) or product.get('lease') != descriptor['lease'] or type(product.get('exit_code')) is not int):
+        raise ValueError('product belongs to another owner or has invalid status')
+
+
 def argv_digest(argv):
     return hashlib.sha256(json.dumps(argv, ensure_ascii=True, separators=(',', ':')).encode()).hexdigest()
 
@@ -151,6 +172,7 @@ def terminal_owner_binding(stderr, mode, root, cohort_path, resources=None, allo
             if line.startswith('cargo-admitted resources: '):
                 if episode is not None:
                     prior, prior_receipt, prior_product = episode['descriptor'], episode['settlement'], episode['product']
+                    validate_owner_identity(prior, prior_receipt, prior_product)
                     if (mode != 'ordinary' or not isinstance(prior_receipt, dict)
                             or prior.get('scope', {}).get('operation') != 'build'
                             or prior['scope'].get('cargo_argv_sha256') != argv_digest(['build', '-p', 'perllsp', '--locked'])
@@ -196,21 +218,10 @@ def terminal_owner_binding(stderr, mode, root, cohort_path, resources=None, allo
             raise ValueError('invalid terminal operation resource binding')
         if resources is not None and paths != resources:
             raise ValueError('terminal operation resources mismatch')
-        for key in ('lease', 'lease_identity', 'lease_marker', 'marker_identity'):
-            if key not in descriptor or descriptor[key] != receipt.get(key):
-                raise ValueError('original owner lease identity mismatch')
-        for key in ('lease', 'lease_marker'):
-            if not isinstance(descriptor[key], str) or not Path(descriptor[key]).is_absolute():
-                raise ValueError('invalid original owner lease path')
-        for key in ('lease_identity', 'marker_identity'):
-            value = descriptor[key]
-            if not isinstance(value, list) or len(value) != 2 or any(type(item) is not int or item < 0 for item in value):
-                raise ValueError('invalid original owner inode identity')
+        validate_owner_identity(descriptor, receipt, episode['product'])
         if (receipt.get('tree_settled') is not True or receipt.get('proof') != 'kernel ECHILD (__WALL)' or receipt.get('errors') != [] or receipt.get('pending_bound_pids') != [] or receipt.get('lease_released') is not True):
             raise ValueError('terminal owner closure/release unproven')
         product = episode['product']
-        if product is not None and (not isinstance(product, dict) or product.get('lease') != descriptor['lease'] or type(product.get('exit_code')) is not int):
-            raise ValueError('terminal product belongs to another owner')
         current_absence = not any(os.path.lexists(descriptor[key]) for key in ('lease', 'lease_marker'))
         local_host = scope.get('hostname') == socket.gethostname()
         return {'verified': True, 'operation': operation, 'descriptor': descriptor, 'settlement': receipt, 'product': product,
@@ -337,12 +348,12 @@ def report(evidence, mode, root, expected_head=None):
                 if 'check' in request['producer'] and '--tests' in request['producer']:
                     complete = False
                 continue
-            if receipt['status'] != 0 or not closed_receipt(receipt['settlement']):
+            if receipt['status'] != 0 or not successful_receipt(receipt['settlement']):
                 case_receipts_verified = False
             if 'check' in request['producer'] and '--tests' in request['producer']:
-                complete = complete and receipt.get('status') == 0 and closed_receipt(receipt.get('settlement'))
+                complete = complete and receipt.get('status') == 0 and successful_receipt(receipt.get('settlement'))
             for coverage in receipt.get('coverage', []):
-                if receipt.get('status') != 0 or not closed_receipt(receipt.get('settlement')):
+                if receipt.get('status') != 0 or not successful_receipt(receipt.get('settlement')):
                     case_receipts_verified = False
                 matches = [unit for unit in rows if unit.get('executable') == coverage['executable'] and unit.get('profile', {}).get('test') is True]
                 keys = list(units(matches, root, metadata))
