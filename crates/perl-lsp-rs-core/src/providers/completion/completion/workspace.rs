@@ -2944,19 +2944,23 @@ fn indexed_package_model(
     pkg: &str,
     index: &WorkspaceIndex,
 ) -> Option<perl_semantic_analyzer::class_model::ClassModel> {
-    let indexed_text = index.find_definition(pkg).and_then(|pkg_location| {
-        index.document_store().get_text(&pkg_location.uri).or_else(|| {
+    // Try every indexed definition candidate, not just the first: the
+    // definition cache ranks subroutines and methods above package
+    // declarations, so a same-named sub in another file can shadow the real
+    // `package Foo` location and would otherwise drop this package's indexed
+    // parents/roles entirely (#17629 review, PRRT_kwDOSid81M6raYOm).
+    index.find_definitions(pkg).into_iter().find_map(|pkg_location| {
+        let text = index.document_store().get_text(&pkg_location.uri).or_else(|| {
             perl_workspace::workspace_index::uri_to_fs_path(&pkg_location.uri)
                 .and_then(|path| std::fs::read_to_string(path).ok())
-        })
-    });
-    let text = indexed_text?;
-    let mut parser = perl_semantic_analyzer::Parser::new(&text);
-    let ast = parser.parse().ok()?;
-    perl_semantic_analyzer::class_model::ClassModelBuilder::new()
-        .build(&ast)
-        .into_iter()
-        .find(|model| model.name == pkg)
+        })?;
+        let mut parser = perl_semantic_analyzer::Parser::new(&text);
+        let ast = parser.parse().ok()?;
+        perl_semantic_analyzer::class_model::ClassModelBuilder::new()
+            .build(&ast)
+            .into_iter()
+            .find(|model| model.name == pkg)
+    })
 }
 
 fn source_package_facts_from_model(
