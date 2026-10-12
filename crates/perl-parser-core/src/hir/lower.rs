@@ -3430,9 +3430,7 @@ fn declaration_target_compound_op(
     if let NodeKind::Assignment { op, .. } = &target.kind {
         return if op != "=" { Some(op.clone()) } else { None };
     }
-    let Some(range) = target_range else {
-        return None;
-    };
+    let range = target_range?;
     match initializer.map(|node| &node.kind) {
         Some(NodeKind::Assignment { op, lhs, .. })
             if op != "=" && lhs.location.start == range.start && lhs.location.end == range.end =>
