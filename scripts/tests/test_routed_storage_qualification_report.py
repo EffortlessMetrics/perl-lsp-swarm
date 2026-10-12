@@ -41,6 +41,16 @@ class QualificationInventory(unittest.TestCase):
             self.assertTrue(native['case_inventory_complete'])
             self.assertEqual(native['units_sha256'], ordinary['units_sha256'])
             self.assertEqual(native['cases_sha256'], ordinary['cases_sha256'])
+            result_path = cohort / '0001-result.json'
+            for status, settled in [(101, True), (0, False)]:
+                invalid = json.loads(result_path.read_text())
+                invalid.update(status=status, settlement={'tree_settled': settled})
+                result_path.write_text(json.dumps(invalid))
+                failed = subject.report(evidence, 'cohort', Path('/work'))
+                self.assertTrue(failed['observed_case_inventory_complete'])
+                self.assertFalse(failed['case_inventory_complete'])
+                self.assertFalse(failed['case_receipts_successful_and_settled'])
+                self.assertEqual(failed['case_count'], 6)
             (cohort / '0000-compiler.jsonl').write_text('\n'.join(json.dumps(row) for row in [*rows[:-1], {'reason': 'build-finished', 'success': True}]))
             self.assertFalse(subject.report(evidence, 'cohort', Path('/work'))['unit_inventory_complete'])
 

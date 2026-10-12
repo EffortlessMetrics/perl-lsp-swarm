@@ -40,7 +40,10 @@ def facts(metadata):
 
 class Cohort:
     """One producer, its consumers, and one settlement; no recovery adoption API."""
-    def __init__(self, descriptor, source_digest, profile_digest, *, source_subject, profile_subject, expected_targets, evidence_path, pinned=(), pinned_subjects=None):
+    def __init__(self, descriptor, source_digest, profile_digest, *, source_subject, profile_subject, expected_targets, evidence_path, pinned=(), pinned_subjects=None, retain_preexisting=False):
+        if not isinstance(retain_preexisting, bool):
+            raise Denied("retained consumption mode must be boolean")
+        self.retain_preexisting = retain_preexisting
         self.pid = os.getpid()
         self.thread = threading.get_native_id()
         self.descriptor = json.loads(json.dumps(descriptor))
@@ -122,6 +125,8 @@ class Cohort:
     def _process_identity(pid):
         try:
             fields = (Path('/proc') / str(pid) / 'stat').read_text().rsplit(')', 1)[1].split()
+            if fields[0] in ('Z', 'X', 'x'):
+                raise Denied('bound outer owner has exited')
             return int(fields[1]), int(fields[19])  # PPID, kernel starttime
         except (OSError, ValueError, IndexError) as error:
             raise Denied('outer owner identity unavailable') from error
@@ -211,10 +216,10 @@ class Cohort:
             if directory_identity(root) != identity:
                 raise Denied('private root identity changed')
 
-    def _open(self, path, *, allow_links=False):
+    def _open(self, path, *, allow_links=False, allow_preexisting=False):
         self._check_owner()
         path = Path(path)
-        if not path.is_absolute() or path in self.pinned or path in self.preexisting:
+        if not path.is_absolute() or path in self.pinned or (path in self.preexisting and not allow_preexisting):
             raise Denied('pinned/preexisting/nonabsolute executable refused: ' + str(path))
         if not any(path.is_relative_to(root) and path != root for root in self.roots):
             raise Denied('foreign executable refused: ' + str(path))
@@ -248,7 +253,7 @@ class Cohort:
             os.close(parent)
             raise
 
-    def _capture_group(self, path, identity, digest):
+    def _capture_group(self, path, identity, digest, *, reclaimable=True):
         """Discover exact inode names in both roots; never infer foreign aliases."""
         aliases = []
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
@@ -261,7 +266,7 @@ class Cohort:
                     metadata = candidate.lstat()
                     if (metadata.st_dev, metadata.st_ino) != identity[:2]:
                         continue
-                    parent, parent_identity, observed, observed_hash = self._open(candidate, allow_links=True)
+                    parent, parent_identity, observed, observed_hash = self._open(candidate, allow_links=True, allow_preexisting=self.retain_preexisting)
                     parents.append(parent)
                     if observed != identity or observed_hash != digest:
                         raise Denied('alias group changed during capture')
@@ -273,7 +278,8 @@ class Cohort:
             if any(group['identity'][:2] == identity[:2] for group in self.groups.values()):
                 raise Denied('one inode cannot authorize two test targets')
             return {'fd': fd, 'identity': identity, 'initial_identity': identity,
-                    'sha256': digest, 'aliases': aliases, 'remaining': list(aliases)}
+                    'sha256': digest, 'aliases': aliases, 'remaining': list(aliases),
+                    'reclaimable': reclaimable and all(alias['path'] not in self.preexisting for alias in aliases)}
         except BaseException:
             os.close(fd)
             for parent in parents:
@@ -287,7 +293,7 @@ class Cohort:
             raise Denied('owned alias inode or kernel link count changed')
         for alias in group['remaining']:
             path = alias['path']
-            if path in self.pinned or path in self.preexisting or native_path(str(path)) != path:
+            if path in self.pinned or (path in self.preexisting and group['reclaimable']) or native_path(str(path)) != path:
                 raise Denied('alias became pinned/preexisting/noncanonical')
             parent = alias['parent']
             if directory_identity(path.parent) != alias['parent_identity'] or (os.fstat(parent).st_dev, os.fstat(parent).st_ino) != alias['parent_identity']:
@@ -326,20 +332,24 @@ class Cohort:
         target_key = json.dumps(target_binding, sort_keys=True)
         if target_key not in self.expected_targets:
             return  # build scripts/public products never acquire cleanup authority
-        if message.get('fresh') is not False:
+        if not isinstance(message.get('fresh'), bool):
+            raise Denied('compiler artifact must declare a boolean fresh state')
+        if message['fresh'] and not self.retain_preexisting:
             raise Denied('only newly produced compiler executables may be reclaimed')
         path = Path(message['executable'])
         if target_key in self.target_paths and self.target_paths[target_key] != path:
             raise Denied('one target produced multiple executable paths')
         if path in self.path_targets and self.path_targets[path] != target_key:
             raise Denied('multiple targets produced one executable path')
-        parent, parent_identity, identity, digest = self._open(path, allow_links=True)
+        parent, parent_identity, identity, digest = self._open(path, allow_links=True, allow_preexisting=self.retain_preexisting)
         os.close(parent)
         record = (parent_identity, identity, digest, self.binding)
         if path in self.records and self.records[path] != record:
             raise Denied('compiler executable identity changed')
         if path not in self.groups:
-            self.groups[path] = self._capture_group(path, identity, digest)
+            self.groups[path] = self._capture_group(path, identity, digest, reclaimable=not message['fresh'])
+        if message['fresh']:
+            self.groups[path]['reclaimable'] = False
         self.records[path] = record
         self.target_paths[target_key] = path
         self.path_targets[path] = target_key
@@ -458,7 +468,7 @@ class Cohort:
                     raise Denied('consumer coverage differs from captured executables')
                 for path in self.records:
                     self._validate_group(self.groups[path])
-                    parent, _, identity, digest = self._open(path, allow_links=True)
+                    parent, _, identity, digest = self._open(path, allow_links=True, allow_preexisting=self.retain_preexisting)
                     os.close(parent)
                     if (identity, digest) != self.records[path][1:3]:
                         raise Denied('executable changed before consumption')
@@ -503,12 +513,13 @@ class Cohort:
             self.receipt = tree.finish(stop=error is not None, timeout=settlement_timeout)
             self.finished = True
             reclaimed = []
+            retained = [str(path) for path, group in self.groups.items() if not group['reclaimable']]
             if not observation_only and error is None and status == 0 and self.receipt['tree_settled'] and not self.receipt['cancelled']:
                 # Validate all before deleting any; subsequent per-path validation
                 # still fails closed if a cooperative owner contract is violated.
                 for path in self.records:
                     self._validate_group(self.groups[path])
-                    parent, parent_identity, identity, digest = self._open(path, allow_links=True)
+                    parent, parent_identity, identity, digest = self._open(path, allow_links=True, allow_preexisting=self.retain_preexisting)
                     os.close(parent)
                     if (parent_identity, identity, digest, self.binding) != self.records[path]:
                         raise Denied('executable changed before reclaim')
@@ -517,7 +528,7 @@ class Cohort:
                                      'settlement': self.receipt, 'consumed': consumed, 'coverage': coverage,
                                      'source_profile_binding': self.binding, 'pinned_subjects': {str(path): digest for path, digest in self.pinned_subjects.items()}, 'runtime_environment_sha256': self.descriptor.get('runtime_environment_sha256'),
                                      'alias_groups': [{'executable': str(path), 'file_identity': group['initial_identity'],
-                                                       'sha256': group['sha256'], 'aliases': [{'path': str(alias['path']), 'parent_identity': alias['parent_identity']} for alias in group['aliases']]} for path, group in self.groups.items()],
+                                                       'sha256': group['sha256'], 'reclaimable': group['reclaimable'], 'aliases': [{'path': str(alias['path']), 'parent_identity': alias['parent_identity']} for alias in group['aliases']]} for path, group in self.groups.items()],
                                      'records': [{'path': str(path), 'parent_identity': record[0],
                                                   'file_identity': record[1], 'sha256': record[2],
                                                   'binding': record[3]} for path, record in self.records.items()]}
@@ -531,7 +542,8 @@ class Cohort:
                     self._cleanup_authorized = True
                     self._receipt_stream = evidence
                     for path in list(self.records):
-                        reclaimed.extend(str(alias) for alias in self._reclaim(path))
+                        if self.groups[path]['reclaimable']:
+                            reclaimed.extend(str(alias) for alias in self._reclaim(path))
             self._cleanup_authorized = False
             if error is not None:
                 self.receipt['error'] = {'type': type(error).__name__, 'message': str(error)}
@@ -543,7 +555,7 @@ class Cohort:
             if error is not None and self.receipt['tree_settled'] and not isinstance(error, KeyboardInterrupt):
                 raise error
             return {'status': effective, 'product_status': status, 'evidence': str(self.evidence_path), 'authorization_evidence': str(self.receipt_path) if self.receipt_path.exists() else None, 'settlement': self.receipt, 'consumed': consumed,
-                    'reclaimed': reclaimed, 'binding': self.binding, 'coverage': coverage}
+                    'reclaimed': reclaimed, 'retained': retained, 'binding': self.binding, 'coverage': coverage}
         finally:
             self._cleanup_authorized = False
             self.close()
@@ -623,12 +635,16 @@ class Cohort:
 
     def _launch(self, tree, command, env, **kwargs):
         self._check_owner()
+        if not callable(getattr(tree, 'reap_adopted', None)):
+            raise Denied('cohort requires the qualified active adopted-child reaping service')
         admission = self.descriptor['admission']
-        if admission['policy'] == 'byte-budget':
+        if admission['policy'] in ('byte-budget', 'budget-file'):
             check_capacity(list(self.resources.values()), env, admission)
-        else:
+        elif admission['policy'] == 'percent':
             capacity_env = dict(env, MIN_FREE_GB=str(admission['reserve_bytes'] / 1024 ** 3), MAX_USED_PCT=str(admission['max_used_pct']), CARGO_STORAGE_POLICY='percent')
             check_capacity(list(self.resources.values()), capacity_env)
+        else:
+            raise Denied('unsupported original admission policy')
         tree.binding = True
         try:
             process = subprocess.Popen(command, env=env, cwd=kwargs.pop('cwd', self.worktree), **kwargs)
@@ -637,12 +653,31 @@ class Cohort:
             tree.binding = False
         if tree.cancelled:
             raise KeyboardInterrupt('cohort cancelled after child binding')
-        return process.wait()
+        return self._wait_active(tree, process)
+
+    @staticmethod
+    def _wait_active(tree, process):
+        # This worker remains the single-threaded subreaper. Service exited
+        # adopted children while an inner consumer still needs actual reaping;
+        # Popen retains exclusive leader status ownership. No closure or lease
+        # conclusion comes from a service turn: finish() still requires ECHILD.
+        while True:
+            mask = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGINT, signal.SIGTERM})
+            try:
+                tree.reap_adopted()
+                try:
+                    return process.wait(timeout=0.01)
+                except subprocess.TimeoutExpired:
+                    pass
+            finally:
+                signal.pthread_sigmask(signal.SIG_SETMASK, mask)
 
     def _reclaim(self, path):
         if not self._cleanup_authorized or self._receipt_stream is None or path not in self.records or not self.finished or self.receipt is None or not self.receipt['tree_settled']:
             raise Denied('cohort has no successful consumption and kernel closure')
         group = self.groups[path]
+        if not group['reclaimable']:
+            raise Denied('retained compiler executable has no reclamation authority')
         removed = []
         while group['remaining']:
             self._validate_group(group)
@@ -679,19 +714,20 @@ def main(argv=None):
     if options.request.stat().st_size > 8 * 1024 * 1024:
         raise Denied('bridge request exceeds bound')
     request = json.loads(options.request.read_bytes())
-    descriptor = json.loads(os.environ['CARGO_ADMITTED_COHORT_DESCRIPTOR'])
-    instance = Cohort(descriptor, request['source_digest'], request['profile_digest'],
-                      source_subject=request['source_subject'], profile_subject=request['profile_subject'],
-                      expected_targets=request['expected_targets'], evidence_path=request['evidence_path'],
-                      pinned=request.get('pinned', []), pinned_subjects=request.get('pinned_subjects', {}))
-    if request['operation'] == 'observe':
-        result = instance.observe(request['producer'], os.environ.copy())
-    elif request['operation'] == 'run':
-        result = instance.run(request['producer'], request['consumers'], os.environ.copy())
-    else:
-        instance.close()
-        raise Denied('unknown bridge operation')
     with options.result.open('x', encoding='utf-8') as output:
+        descriptor = json.loads(os.environ['CARGO_ADMITTED_COHORT_DESCRIPTOR'])
+        instance = Cohort(descriptor, request['source_digest'], request['profile_digest'],
+                          source_subject=request['source_subject'], profile_subject=request['profile_subject'],
+                          expected_targets=request['expected_targets'], evidence_path=request['evidence_path'],
+                          pinned=request.get('pinned', []), pinned_subjects=request.get('pinned_subjects', {}),
+                          retain_preexisting=request.get('retain_preexisting', False))
+        if request['operation'] == 'observe':
+            result = instance.observe(request['producer'], os.environ.copy())
+        elif request['operation'] == 'run':
+            result = instance.run(request['producer'], request['consumers'], os.environ.copy())
+        else:
+            instance.close()
+            raise Denied('unknown bridge operation')
         json.dump(result, output, sort_keys=True)
         output.flush()
         os.fsync(output.fileno())

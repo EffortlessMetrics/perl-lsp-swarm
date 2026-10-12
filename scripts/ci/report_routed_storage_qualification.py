@@ -96,6 +96,7 @@ def report(evidence, mode, root):
     case_rows = {}
     unit_rows = {}
     complete = False
+    case_receipts_verified = True
     if mode == 'ordinary':
         stdout = (logs / 'route.stdout').read_text()
         rows = messages(logs / 'route.stdout')
@@ -123,6 +124,8 @@ def report(evidence, mode, root):
             if 'check' in request['producer'] and '--tests' in request['producer']:
                 complete = complete and receipt.get('status') == 0 and receipt.get('settlement', {}).get('tree_settled') is True
             for coverage in receipt.get('coverage', []):
+                if receipt.get('status') != 0 or receipt.get('settlement', {}).get('tree_settled') is not True:
+                    case_receipts_verified = False
                 matches = [unit for unit in rows if unit.get('executable') == coverage['executable'] and unit.get('profile', {}).get('test') is True]
                 keys = list(units(matches, root))
                 if len(keys) != 1 or keys[0] in case_rows:
@@ -136,7 +139,11 @@ def report(evidence, mode, root):
                   observed_case_targets=len(case_rows),
                   case_count=sum(len(row['cases']) for row in case_rows.values()),
                   ignored_count=sum(len(row['ignored']) for row in case_rows.values()),
-                  case_inventory_complete=complete and set(case_rows) == set(unit_rows),
+                  observed_case_inventory_complete=complete and set(case_rows) == set(unit_rows),
+                  case_receipts_successful_and_settled=case_receipts_verified,
+                  case_inventory_complete=(complete and set(case_rows) == set(unit_rows)
+                                           and case_receipts_verified
+                                           and result['storage'].get('command_status') == 0),
                   unit_count_by_package=dict(collections.Counter(json.loads(key)[0] for key in unit_rows)))
     return result
 

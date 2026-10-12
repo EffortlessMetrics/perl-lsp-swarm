@@ -8,10 +8,12 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import signal
 import sys
 import tempfile
+import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import cargo_cohort as cohort
@@ -26,9 +28,57 @@ class PortableTree:
     settled = True
     def track(self, pid, process):
         pass
+    def reap_adopted(self):
+        pass  # Explicit service/interface double, not native reaping proof.
     def finish(self, **kwargs):
         return {'tree_settled': self.settled, 'cancelled': self.cancelled,
                 'proof': 'PORTABLE INTERFACE DOUBLE ONLY'}
+
+
+@unittest.skipUnless(sys.platform == 'linux', 'Linux wait-owner service contract')
+class ActiveWaitControls(unittest.TestCase):
+    def test_real_unreaped_zombie_cannot_supply_live_owner_identity(self):
+        child = subprocess.Popen([sys.executable, '-c', 'raise SystemExit(0)'])
+        try:
+            deadline = time.monotonic() + 3
+            while True:
+                fields = Path(f'/proc/{child.pid}/stat').read_text().rsplit(')', 1)[1].split()
+                if fields[0] == 'Z':
+                    break
+                self.assertLess(time.monotonic(), deadline)
+                time.sleep(.01)
+            fd = os.pidfd_open(child.pid)
+            try:
+                signal.pidfd_send_signal(fd, 0)  # This alone still succeeds.
+                with self.assertRaisesRegex(cohort.Denied, 'outer owner has exited'):
+                    cohort.Cohort._process_identity(child.pid)
+            finally:
+                os.close(fd)
+        finally:
+            child.wait()
+
+    def test_service_uses_masked_wait_and_preserves_exact_leader_status(self):
+        original = signal.pthread_sigmask(signal.SIG_BLOCK, set())
+        calls = []
+        def service():
+            blocked = signal.pthread_sigmask(signal.SIG_BLOCK, set())
+            self.assertTrue({signal.SIGINT, signal.SIGTERM} <= blocked)
+            calls.append('service')
+        tree = Mock(); tree.reap_adopted.side_effect = service
+        process = Mock(); process.wait.side_effect = [subprocess.TimeoutExpired('fixture', .01), 37]
+        self.assertEqual(cohort.Cohort._wait_active(tree, process), 37)
+        self.assertEqual(calls, ['service', 'service'])
+        self.assertEqual(signal.pthread_sigmask(signal.SIG_BLOCK, set()), original)
+        self.assertTrue(all(call.kwargs == {'timeout': .01} for call in process.wait.call_args_list))
+
+    def test_service_failure_propagates_and_restores_mask(self):
+        original = signal.pthread_sigmask(signal.SIG_BLOCK, set())
+        tree = Mock(); tree.reap_adopted.side_effect = cohort.Denied('active wait failure')
+        process = Mock()
+        with self.assertRaisesRegex(cohort.Denied, 'active wait failure'):
+            cohort.Cohort._wait_active(tree, process)
+        process.wait.assert_not_called()
+        self.assertEqual(signal.pthread_sigmask(signal.SIG_BLOCK, set()), original)
 
 
 @unittest.skipUnless(sys.platform == 'linux', 'Linux filesystem/interface controls')
@@ -55,6 +105,17 @@ class PortableControls(unittest.TestCase):
                            'pid': os.getppid(), 'admission': {'policy':'percent','reserve_bytes':1024,'max_used_pct':100}}
         self.exe = self.paths['target'] / 'executable'
 
+    def test_missing_active_wait_service_refuses_before_process_launch(self):
+        instance = self.owner()
+        tree = PortableTree(); tree.reap_adopted = None
+        try:
+            with patch.object(cohort.subprocess, 'Popen') as launch:
+                with self.assertRaisesRegex(cohort.Denied, 'active adopted-child reaping service'):
+                    instance._launch(tree, ['must-not-launch'], {})
+                launch.assert_not_called()
+        finally:
+            instance.close()
+
     def owner(self, **kwargs):
         with patch.object(cohort, 'resource_plan', return_value=(self.root,self.slot,self.paths)):
             instance = cohort.Cohort(self.descriptor, *(hashlib.sha256(p.read_bytes()).hexdigest() for p in self.manifests),
@@ -75,6 +136,54 @@ class PortableControls(unittest.TestCase):
                    CARGO_HOME=str(self.paths['cargo_home']), TMPDIR=str(self.paths['temp']))
         with patch.object(cohort, 'children_capability', return_value='PORTABLE DOUBLE'), patch.object(cohort, 'ClippyTree', PortableTree):
             return instance.run(kwargs.pop('producer', self.producer()), kwargs.pop('consumers', {str(self.exe): []}), env, **kwargs)
+
+    def test_retained_mode_consumes_preexisting_without_reclaiming(self):
+        self.executable()
+        before = cohort.facts(self.exe.stat())
+        instance = self.owner(retain_preexisting=True)
+        producer = [sys.executable, '-c', 'import json;print('+repr(json.dumps(dict(TARGET, reason='compiler-artifact', executable=str(self.exe), fresh=True)))+')']
+        row = self.run_portable(instance, producer=producer)
+        self.assertEqual(row['status'], 0)
+        self.assertEqual(row['consumed'], [str(self.exe)])
+        self.assertEqual(row['retained'], [str(self.exe)])
+        self.assertEqual(row['reclaimed'], [])
+        self.assertEqual(cohort.facts(self.exe.stat()), before)
+        authorization = json.loads(instance.receipt_path.read_text().splitlines()[0])
+        self.assertFalse(authorization['alias_groups'][0]['reclaimable'])
+
+    def test_retained_mode_never_reclaims_rebuilt_preexisting_alias(self):
+        self.executable()
+        instance = self.owner(retain_preexisting=True)
+        row = self.run_portable(instance)
+        self.assertEqual(row['status'], 0)
+        self.assertEqual(row['reclaimed'], [])
+        self.assertTrue(self.exe.exists())
+
+    def test_retained_group_cannot_be_reclaimed_by_direct_call(self):
+        self.executable()
+        instance = self.owner(retain_preexisting=True)
+        instance._record(dict(TARGET, reason='compiler-artifact', executable=str(self.exe), fresh=True))
+        instance.finished = True; instance.receipt = {'tree_settled': True}
+        instance._cleanup_authorized = True; instance._receipt_stream = object()
+        with self.assertRaisesRegex(cohort.Denied, 'no reclamation authority'):
+            instance._reclaim(self.exe)
+        self.assertTrue(self.exe.exists())
+
+    def test_budget_file_launch_preserves_exact_admission(self):
+        instance = self.owner()
+        instance.descriptor['admission'] = {'policy': 'budget-file', 'reserve_bytes': 1024}
+        with patch.object(cohort, 'check_capacity') as capacity:
+            self.run_portable(instance)
+        self.assertEqual(capacity.call_args.args[2], instance.descriptor['admission'])
+
+    def test_bridge_claims_result_before_owner_construction(self):
+        request = self.root / 'request.json'; request.write_text('{}')
+        result = self.root / 'result.json'; result.write_text('prior evidence')
+        with patch.object(cohort, 'Cohort') as constructor:
+            with self.assertRaises(FileExistsError):
+                cohort.main(['--request', str(request), '--result', str(result)])
+            constructor.assert_not_called()
+        self.assertEqual(result.read_text(), 'prior evidence')
 
     def test_success_consumes_exact_executable_then_reclaims_once(self):
         instance = self.owner()

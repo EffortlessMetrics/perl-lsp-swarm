@@ -182,8 +182,14 @@ The original outer owner must keep both private resources exclusive throughout.
 Only newly emitted, non-fresh test-harness compiler artifacts matching the
 expected records can become cleanup candidates. Each executable is bound to its
 canonical path, parent directory, device/inode, file metadata, and SHA256. The
-cohort executes that exact path and revalidates it before unlinking. Preexisting,
-pinned, foreign, replaced, and symlinked files refuse. Hardlinks require a complete newly produced private inode group, described below. Successful
+cohort executes that exact path and revalidates it before unlinking. The default
+API refuses preexisting and fresh products. The native producer explicitly enables
+retained consumption: exact fresh or preexisting Cargo harnesses can run under the
+same identity, hash, source/profile and runtime checks, but never acquire cleanup
+authority. A rebuilt preexisting path or any preexisting alias also retains the
+whole group. Receipts distinguish retained products from reclaimed groups. Pinned,
+foreign, replaced and symlinked files still refuse. Reclamation requires a complete
+newly produced private inode group, described below. Successful
 reclamation consumes that path's cleanup authority; repeated cleanup cannot adopt
 a replacement. Before reclamation, producer failure, consumer failure,
 interruption, uncertain settlement, or changed bindings prevents reclamation.
@@ -306,8 +312,10 @@ must retain that stderr stream as well.
 
 Compiler JSON authorizes an inode candidate, not alias names. The lifecycle owner
 finds all exact device/inode matches only within the two canonical private roots,
-requires every path absent from the pre-production census, rejects any pinned or
-preexisting alias, and requires observed group count equal to kernel `st_nlink`.
+requires observed group count equal to kernel `st_nlink` and rejects pinned
+aliases. Cleanup additionally requires every path absent from the pre-production
+census and a non-fresh compiler artifact; retained consumption cannot satisfy or
+override those cleanup requirements.
 An external or otherwise unobserved hardlink rejects the entire group. It holds
 the original inode and parent descriptors through consumption and closure. After
 each exact relative unlink, it checks the held inode's permitted ctime/nlink change
@@ -338,8 +346,8 @@ The first invocation checks paths for two feature-disabled bins, the second chec
 compile-time and runtime paths for one built bin and one disabled bin, and the third
 does the same in Cargo's benchmark environment. These are fixture commands only;
 they do not activate or replace the production route.
-Native producer compilation and all seven unit tests passed in that same hosted
-run. Exact original-suite case/feature equivalence, configured runtime contexts,
+Native producer compilation and all eleven current unit tests passed on
+`52c7a004ef58f8e80fa18de5c1c26ebca004546b` in hosted run `38241188886`. Exact original-suite case/feature equivalence, configured runtime contexts,
 full-route storage/timing measurements, and reserve qualification remain pending.
 
 `scripts/measure_cargo_storage.py` now supplies the previously missing sampled
@@ -358,7 +366,8 @@ observation time. A sampled peak is a lower bound on transient peak, never a
 verified growth bound: scans are non-atomic, sampling can miss short-lived output,
 and filesystem free space includes independent writers. Allocated blocks are not
 exact overlay/reflink physical accounting. The optional `--min-free-bytes` guard
-signals the admitted owner on observed reserve loss or evidence-persistence failure; it
+signals the admitted owner on an invalid scan, observed reserve loss or
+evidence-persistence failure; it
 cannot guarantee continuous reserve preservation between samples. It acquires no
 lease, grants no admission or cleanup authority, and does not replace native
 child settlement. Command failure remains failure; measurement failure is not
@@ -379,7 +388,9 @@ and case/ignored-inventory hashes, package counts, sample gaps and settlement in
 the hosted log. It rejects conflicting unit contexts, extra packages and ambiguous
 or incomplete libtest boundaries; six-package completeness requires all six
 packages and settled compiler observation. Partial inventories cannot establish
-full equivalence. They do not activate or replace the production gate. The existing policy permits
+full equivalence. Successful complete case inventory also requires every native
+receipt to succeed and settle, and the overall command to succeed; failed observed
+populations remain inspectable separately. They do not activate or replace the production gate. The existing policy permits
 one retry; qualification uses one separately measured warm retry only after a
 timeout with proven kernel closure and matching lease release. Each attempt keeps
 the 1,500-second bound. First-attempt artifacts and journals stay preserved, and
@@ -567,3 +578,18 @@ prove concurrent or independent post-lease binary consumption. Production caller
 must still hold ownership through consumers or capture immutable artifacts before
 releasing that ownership. The cleanup sweep fixture checks command-local fetch
 maintenance suppression; it does not change global Git configuration.
+
+The exact-head comparison in run `38241188886` observed the same 1,228 eligible
+unit/features/profile hash in both routes. Ordinary warm execution returned 101
+after 750.493 seconds, with a sampled peak of 26,471,247,872 allocated bytes and
+26,471,211,008 retained bytes. Cohort warm execution refused a fresh retained
+product with status 75 after 322.321 seconds, with a sampled peak of
+3,473,424,384 bytes and 3,440,812,032 retained bytes. Neither completed cases; these
+are partial-work measurements, not completed-work savings or a disk-fit proof.
+The next candidate composes qualified but unmerged owner repair #17640
+(`7124afe5543c6003a02a00f72c3fe14d0bc1e51d`) and refreshed main. Its cohort waits
+service `reap_adopted()` with SIGINT/SIGTERM blocked in the same owning thread;
+that service neither signals live children nor proves closure or releases a lease.
+Final `finish()` remains responsible for ECHILD. Missing service refuses before
+launch. The bridge claims its exclusive result path before constructing the scope
+or running producer/consumers; a collision preserves prior evidence and refuses.

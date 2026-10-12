@@ -145,7 +145,7 @@ def main(argv=None):
                     samples.append({'valid': False, 'error': 'measurement persistence failed'})
                     signal_child(signal.SIGINT)
                     return
-                if reserve_lost(samples[-1]):
+                if not samples[-1]['valid'] or reserve_lost(samples[-1]):
                     signal_child(signal.SIGINT)
                     return
         worker = threading.Thread(target=monitor)

@@ -393,7 +393,7 @@ impl Driver {
         let result = self.evidence.join(format!("{id:04}-result.json"));
         write_new(
             &request,
-            &json!({"operation":operation,"producer":producer,"expected_targets":targets,"consumers":consumers,"pinned":pinned,"pinned_subjects":self.pinned_subjects,
+            &json!({"operation":operation,"retain_preexisting":true,"producer":producer,"expected_targets":targets,"consumers":consumers,"pinned":pinned,"pinned_subjects":self.pinned_subjects,
             "source_subject":self.source,"profile_subject":self.profile,"source_digest":digest(&self.source)?,"profile_digest":digest(&self.profile)?,
             "evidence_path":self.evidence.join(format!("{id:04}-compiler.jsonl"))}),
         )?;

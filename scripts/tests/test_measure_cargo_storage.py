@@ -18,6 +18,33 @@ spec.loader.exec_module(subject)
 
 
 class StorageMeasurement(unittest.TestCase):
+    def test_invalid_periodic_sample_signals_the_running_command(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            ready, signalled = root / 'ready', root / 'signalled'
+            program = ('from pathlib import Path; import signal,time,sys; '
+                       'signal.signal(signal.SIGINT, lambda *_: (Path(' + repr(str(signalled)) + ').touch(), sys.exit(130))); '
+                       'Path(' + repr(str(ready)) + ').touch(); time.sleep(.5)')
+            good = {'allocated_bytes': 0, 'filesystems': {'1': {'free_bytes': 10000}}, 'scan_seconds': 0}
+            calls = 0
+            def observation(*_args):
+                nonlocal calls
+                calls += 1
+                if calls == 2:
+                    deadline = time.monotonic() + 3
+                    while not ready.exists() and time.monotonic() < deadline:
+                        time.sleep(.01)
+                    self.assertTrue(ready.exists())
+                    raise subject.MeasurementError('unreadable allocation')
+                return good
+            with patch.object(subject, 'observe', side_effect=observation):
+                self.assertEqual(subject.main(['--root', str(root / 'target'), '--evidence', str(root / 'receipt'),
+                                               '--interval', '.01', '--', sys.executable, '-c', program]), 75)
+            self.assertTrue(signalled.exists())
+            summary = json.loads((root / 'receipt').read_text().splitlines()[-1])
+            self.assertEqual(summary['command_status'], 130)
+            self.assertFalse(summary['measurement_complete'])
+
     def test_invalid_observation_cannot_certify_success(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
