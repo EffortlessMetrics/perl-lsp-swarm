@@ -83,18 +83,10 @@ jobs:
           echo "Claim validation (including compilation): $((SECONDS - start))s; job budget: 600s" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Check official LSP 3.18 changelog totality
-        run: |
-          # These exact integration sources use only std. Building them with
-          # rustc preserves every assertion without linking xtask's test graph.
-          CARGO_MANIFEST_DIR="$GITHUB_WORKSPACE/xtask" rustc --edition=2024 --test \
-            xtask/tests/lsp_318_changelog_totality.rs -o "$RUNNER_TEMP/lsp-318-changelog-totality"
-          "$RUNNER_TEMP/lsp-318-changelog-totality"
+        run: cargo test -p xtask --test lsp_318_changelog_totality --locked
 
       - name: Check unresolved LSP 3.18 closure ownership
-        run: |
-          CARGO_MANIFEST_DIR="$GITHUB_WORKSPACE/xtask" rustc --edition=2024 --test \
-            xtask/tests/lsp_318_closure_ownership.rs -o "$RUNNER_TEMP/lsp-318-closure-ownership"
-          "$RUNNER_TEMP/lsp-318-closure-ownership"
+        run: cargo test -p xtask --test lsp_318_closure_ownership --locked
 
       - name: Check generated LSP 3.18 matrix
         run: cargo xtask generate-lsp-318-matrix --check
