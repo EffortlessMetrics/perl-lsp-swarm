@@ -1871,6 +1871,7 @@ dependencies = [
  "perl-lexer",
  "perl-lsp-perltidy",
  "perl-lsp-rs-core",
+ "perl-lsp-ux-tests",
  "perl-module",
  "perl-parser",
  "perl-parser-core",
