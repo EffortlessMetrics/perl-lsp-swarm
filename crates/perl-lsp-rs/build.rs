@@ -42,7 +42,13 @@ fn git_path(args: &[&str]) -> Option<PathBuf> {
         .map(|text| text.strip_suffix('\n').unwrap_or(text))
         .filter(|text| !text.contains(['\n', '\r']));
     if let Some(path) = path {
-        Some(PathBuf::from(path))
+        let path = PathBuf::from(path);
+        if path.is_symlink() {
+            // Cargo follows a leaf symlink's target timestamp, so replacing
+            // HEAD with a link to an older ref can otherwise remain fresh.
+            println!("cargo:rerun-if-changed=build.rs/symlink-git-metadata");
+        }
+        Some(path)
     } else {
         // Cargo's line-oriented UTF-8 watcher protocol cannot name these
         // metadata paths. This path below a regular source file cannot exist:

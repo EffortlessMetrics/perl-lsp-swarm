@@ -264,6 +264,20 @@ class RevisionBuildTests(unittest.TestCase):
         self.build(root, "git-created", False, self.revision(crate))
         self.build(root, "created-repeat", True, self.revision(crate))
 
+    @unittest.skipUnless(os.name == "posix", "POSIX symlink refs")
+    def test_symlink_ref_retarget_refreshes(self):
+        root = self.fixture("symlink-chain")
+        self.git(root, "branch", "old-target", "HEAD")
+        self.commit(root)
+        self.git(root, "config", "core.preferSymlinkRefs", "true")
+        self.git(root, "symbolic-ref", "HEAD", "refs/heads/probe")
+        self.assertTrue((root / ".git/HEAD").is_symlink())
+        self.build(root, "cold", False, self.revision(root))
+        self.build(root, "warm", False, self.revision(root))
+        self.git(root, "symbolic-ref", "HEAD", "refs/heads/old-target")
+        self.build(root, "retarget", False, self.revision(root))
+        self.build(root, "retarget-repeat", False, self.revision(root))
+
 
 if __name__ == "__main__":
     unittest.main()
