@@ -8,7 +8,8 @@ the official release asset digest. Its exact `extension/package.json` bytes are
 checked in under `test/fixtures/configuration-migration/`, SHA256
 `3186e23ef455e4111df92711b9b926cfbe68a949db9bc84f536ea8b2908c0e6a`.
 The fixture was extracted from the downloaded VSIX, not reconstructed from git.
-Its exact path is excluded from formatting to preserve the published bytes.
+The `.json.fixture` suffix preserves the published bytes as an opaque fixture,
+without changing the formatter configuration shipped in the VSIX.
 Marketplace package retrieval returned HTTP 403 at the environment proxy;
 Marketplace byte equality is not established.
 
@@ -47,11 +48,20 @@ text and presentation order, conservatively; group titles/order are not setting
 definitions. Arrays retain order. Omitted manifest scope means VS Code `window`;
 runtime `MigrationScope` is unchanged. Valid nonapplicable historical eras are skipped.
 
+The published `featureProfile` and `disabledFeatures` settings explicitly use
+`window`, which the current runtime registry vocabulary cannot represent. Their
+exact #7837 exclusions remain required. A row declaring `workspace`, `resource`,
+or another existing scope is rejected rather than mapped to `window`. Retiring
+those exclusions requires a separately governed registry representation and live
+configuration-reader evidence; cross-scope and trust policy stays with #14968.
+This guard does not claim those dispositions are currently expressible.
+
 Every changed/removed published definition needs exactly one applicable disposition
 or an exact before/after, positive-issue, reason-bearing exclusion. Duplicate coverage,
 invalid rows/exclusions, applicable rows absent from the published inventory, stale
 exclusions, definition drift, wrong scopes, missing rename targets, changed compatible
-rename value constraints/defaults, and changed `unchanged` rows fail with named subjects.
+rename value constraints/defaults (including a retained old-key alias), and changed
+`unchanged` rows fail with named subjects.
 `removed_inert` rows use canonical no-authority/no-read/no-write validation.
 
 The thirteen exclusions in `v017-manifest-exclusions.json` deliberately retain
@@ -73,7 +83,7 @@ curl --fail --location --output /tmp/perl-lsp-rs-0.17.0.vsix \
   https://github.com/EffortlessMetrics/perl-lsp/releases/download/v0.17.0/perl-lsp-rs-0.17.0.vsix
 printf '%s  %s\n' b67d84a149efd99ae26310742bc3773c6a4644258391796489b7a9476d2e47d4 /tmp/perl-lsp-rs-0.17.0.vsix | sha256sum --check
 unzip -p /tmp/perl-lsp-rs-0.17.0.vsix extension/package.json > /tmp/perl-v017-package.json
-cmp /tmp/perl-v017-package.json test/fixtures/configuration-migration/v0.17.0.package.json
+cmp /tmp/perl-v017-package.json test/fixtures/configuration-migration/v0.17.0.package.json.fixture
 npm test -- --runInBand --runTestsByPath src/test/configurationManifestConformance.test.ts
 ```
 

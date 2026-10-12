@@ -1,11 +1,6 @@
 {
   "$schema": "./node_modules/oxfmt/configuration_schema.json",
-  "ignorePatterns": [
-    "syntaxes/**",
-    "test/grammar/fixtures/**",
-    "package-lock.json",
-    "test/fixtures/configuration-migration/v0.17.0.package.json"
-  ],
+  "ignorePatterns": ["syntaxes/**", "test/grammar/fixtures/**", "package-lock.json"],
   "sortPackageJson": false,
   "singleQuote": true
 }

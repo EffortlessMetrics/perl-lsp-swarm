@@ -15,7 +15,7 @@ import {
 
 const extensionRoot = path.resolve(__dirname, '../..');
 const fixtureRoot = path.join(extensionRoot, 'test/fixtures/configuration-migration');
-const fixtureBytes = fs.readFileSync(path.join(fixtureRoot, 'v0.17.0.package.json'));
+const fixtureBytes = fs.readFileSync(path.join(fixtureRoot, 'v0.17.0.package.json.fixture'));
 const released = JSON.parse(fixtureBytes.toString('utf8')) as Record<string, unknown>;
 const candidate = JSON.parse(
   fs.readFileSync(path.join(extensionRoot, 'package.json'), 'utf8'),
@@ -246,6 +246,14 @@ describe('authentic public settings migration conformance (#7837)', () => {
     expect(checkConfigurationManifestConformance(before, after, rows, [])).toContain(
       'published scope mismatch: v017_mcp_servers_removed (window)',
     );
+    expect(
+      checkConfigurationManifestConformance(
+        before,
+        after,
+        { ...registry, rows: [migration({ old_key: 'old', old_scope: 'workspace' })] },
+        [],
+      ),
+    ).toContain('published scope mismatch: v017_mcp_servers_removed (window)');
   });
 
   test('compatible rename must have actual target, matching scope, defaults and nested enum', () => {
@@ -294,6 +302,68 @@ describe('authentic public settings migration conformance (#7837)', () => {
     expect(run({ ...value, scope: 'machine' })).toContain(
       'candidate target scope mismatch: v017_mcp_servers_removed',
     );
+  });
+
+  describe('compatible rename with retained alias', () => {
+    const value = {
+      type: 'array',
+      scope: 'resource',
+      default: ['a'],
+      items: { type: 'string', enum: ['a', 'b'] },
+      description: 'Published setting',
+    };
+    const before = {
+      ...released,
+      contributes: { configuration: { properties: { old: value } } },
+    };
+    const rows = {
+      ...registry,
+      rows: [
+        migration({
+          old_key: 'old',
+          old_scope: 'resource',
+          new_key_or_authority: 'new',
+          new_scope: 'resource',
+          migration_disposition: 'renamed_compatible',
+          security_trust_class: 'ordinary',
+          automatic_read_compatibility: true,
+          old_plus_new_conflict_policy: 'current_wins',
+        }),
+      ],
+    };
+    const run = (alias: Record<string, unknown>): string[] =>
+      checkConfigurationManifestConformance(
+        before,
+        {
+          ...candidate,
+          contributes: { configuration: { properties: { old: alias, new: value } } },
+        },
+        rows,
+        [],
+      );
+
+    test.each([
+      ['narrowed nested enum', { ...value, items: { type: 'string', enum: ['a'] } }],
+      ['changed default', { ...value, default: ['b'] }],
+      ['changed scope', { ...value, scope: 'machine' }],
+    ])('rejects %s while the rename target stays compatible', (_name, alias) => {
+      expect(run(alias)).toContain(
+        'compatible retained alias changes value schema or scope: v017_mcp_servers_removed',
+      );
+    });
+
+    test('accepts unchanged retained alias and presentation-only changes', () => {
+      expect(run(value)).toEqual([]);
+      expect(
+        run({
+          ...value,
+          description: 'Deprecated alias; use new',
+          order: 99,
+          markdownDescription: 'Use `new` instead',
+          deprecationMessage: 'Use new',
+        }),
+      ).toEqual([]);
+    });
   });
 
   test('external authority cannot be fabricated by a target string', () => {

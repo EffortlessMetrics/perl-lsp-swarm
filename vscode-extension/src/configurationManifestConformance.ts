@@ -172,6 +172,14 @@ export function checkConfigurationManifestConformance(
           if (canonicalJson(valueSchema(prior)) !== canonicalJson(valueSchema(target))) {
             errors.push(`compatible rename changes value schema or scope: ${row.migration_id}`);
           }
+          if (
+            current &&
+            canonicalJson(valueSchema(prior)) !== canonicalJson(valueSchema(current))
+          ) {
+            errors.push(
+              `compatible retained alias changes value schema or scope: ${row.migration_id}`,
+            );
+          }
         }
         break;
       }
