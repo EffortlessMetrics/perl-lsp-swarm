@@ -47,6 +47,21 @@ retained worktrees, and the capacity gate remains necessary. Do not repurpose a
 worktree path or restore backdated source over its build state without a separately
 verified fresh qualification; this path partition is not content-addressed state.
 
+For a focused `xtask` gate, use the supported builtin `run` route from the same
+canonical worktree and with the same admitted `DEVPLANE`, Cargo home and temporary-storage
+settings as the earlier producer:
+
+```bash
+scripts/cargo-admitted run -p xtask --locked -- gates --gate perl_token_leaf_contract --receipt --base origin/main
+```
+
+The `xtask` alias itself is refused. A raw `cargo run` retry without the admitted
+target/build settings can rebuild under the repository's `target/`.
+Verify the earlier producer's settlement and released lease before retrying;
+preserve gate profiles, features and timeouts. On constrained hosts, prepare a
+budget and preflight for this exact command as described below. Reusing the same
+paths does not guarantee freshness across different dependency/feature graphs.
+
 The wrapper refuses aliases, arbitrary external subcommands (including nextest), +toolchain,
 clean, manifest/config/path overrides (including output/artifact/build directory
 flags) and job overrides. The staged Linux Clippy route below binds direct installed
