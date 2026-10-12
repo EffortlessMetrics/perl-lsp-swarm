@@ -56,22 +56,6 @@ impl NativeFormatter {
         Self
     }
 
-    fn validate_clean_parse(
-        source: &str,
-        gate_kind: counters::ParseGateKind,
-    ) -> Result<(), FormatDiagnostic> {
-        if let Some(kind) = literal_preserve_region(source) {
-            return Err(FormatDiagnostic::new(
-                LITERAL_PRESERVE_CODE,
-                FormatDiagnosticSeverity::Warning,
-                None,
-                format!("native formatting skipped because {kind} preservation is not enabled yet"),
-            ));
-        }
-
-        Self::validate_parse_only(source, gate_kind)
-    }
-
     /// Check parse correctness only — no literal-preserve check.
     ///
     /// Used by `format_range` where the literal-preserve gate is scoped to the
@@ -138,7 +122,10 @@ impl NativeFormatter {
         // Physical lines inside a multiline literal (string, regex, qw…)
         // are literal bytes, not code: never reindent them and never let
         // their contents move the block stack.
-        let literal_lines = multiline_literal_lines(source);
+        let literal_lines: std::collections::HashSet<usize> = multiline_literal_lines(source)
+            .into_iter()
+            .chain(preserve_region_lines(source))
+            .collect();
 
         for (line_index, line) in source.split_inclusive('\n').enumerate() {
             processed_lines = processed_lines.saturating_add(1);
@@ -318,6 +305,116 @@ fn multiline_literal_lines(source: &str) -> std::collections::HashSet<usize> {
     lines
 }
 
+/// Line indices that belong to a literal-preserve region (regex,
+/// substitution, transliteration, quote-like and format-body tokens, plus
+/// line-detected heredoc/POD/`__DATA__`/`__END__`/format regions).
+/// Formatting emits these lines byte-exact and never lets them move the
+/// block stack (#17708).
+fn preserve_region_lines(source: &str) -> std::collections::HashSet<usize> {
+    use perl_parser_core::TokenKind;
+
+    let mut lines = std::collections::HashSet::new();
+    let line_starts: Vec<usize> =
+        std::iter::once(0).chain(source.match_indices('\n').map(|(index, _)| index + 1)).collect();
+    let line_of = |offset: usize| line_starts.partition_point(|start| *start <= offset) - 1;
+
+    let mut stream = perl_parser_core::TokenStream::new(source);
+    loop {
+        match stream.next() {
+            Ok(token) if token.kind() == TokenKind::Eof => break,
+            Ok(token) => {
+                if matches!(
+                    token.kind(),
+                    TokenKind::Regex
+                        | TokenKind::Substitution
+                        | TokenKind::Transliteration
+                        | TokenKind::QuoteSingle
+                        | TokenKind::QuoteDouble
+                        | TokenKind::QuoteWords
+                        | TokenKind::QuoteCommand
+                        | TokenKind::FormatBody
+                ) {
+                    for line in line_of(token.start())..=line_of(token.end()) {
+                        lines.insert(line);
+                    }
+                }
+            }
+            Err(_) => break,
+        }
+    }
+
+    let source_lines: Vec<&str> = source.lines().collect();
+    let mut index = 0;
+    while index < source_lines.len() {
+        let line = source_lines[index];
+        let trimmed = line.trim_start();
+        if is_pod_start(trimmed) {
+            lines.insert(index);
+            index += 1;
+            while index < source_lines.len() {
+                lines.insert(index);
+                let done = source_lines[index].trim_start().starts_with("=cut");
+                index += 1;
+                if done {
+                    break;
+                }
+            }
+            continue;
+        }
+        if matches!(trimmed.trim_end(), "__DATA__" | "__END__") {
+            for rest in index..source_lines.len() {
+                lines.insert(rest);
+            }
+            break;
+        }
+        if is_format_declaration_start(trimmed) {
+            lines.insert(index);
+            index += 1;
+            while index < source_lines.len() {
+                lines.insert(index);
+                let done = source_lines[index].trim() == ".";
+                index += 1;
+                if done {
+                    break;
+                }
+            }
+            continue;
+        }
+        if contains_likely_heredoc_start(line)
+            && let Some(terminator) = heredoc_terminator(line)
+        {
+            lines.insert(index);
+            index += 1;
+            while index < source_lines.len() {
+                lines.insert(index);
+                let done = source_lines[index].trim() == terminator;
+                index += 1;
+                if done {
+                    break;
+                }
+            }
+            continue;
+        }
+        index += 1;
+    }
+    lines
+}
+
+/// Extract the terminator word from a line containing a `<<TAG`,
+/// `<<'TAG'`, `<<"TAG"` or `<<~TAG` heredoc start.
+fn heredoc_terminator(line: &str) -> Option<String> {
+    let (_, after_marker) = line.split_once("<<")?;
+    if after_marker.starts_with('<') {
+        return None;
+    }
+    let after_indent = after_marker.trim_start();
+    let marker = after_indent.strip_prefix('~').unwrap_or(after_indent).trim_start();
+    let marker = marker.strip_prefix(['\'', '"', '`']).unwrap_or(marker);
+    let word: String =
+        marker.chars().take_while(|ch| *ch == '_' || ch.is_ascii_alphanumeric()).collect();
+    if word.is_empty() { None } else { Some(word) }
+}
+
 impl PerlFormatter for NativeFormatter {
     fn format_document(&self, source: &str, config: &FormatConfig) -> FormatResult {
         // Counted inside the pipeline so an adapter double-invoke — even one
@@ -328,7 +425,10 @@ impl PerlFormatter for NativeFormatter {
             return FormatResult::unchanged(source);
         }
 
-        if let Err(diagnostic) = Self::validate_clean_parse(source, counters::ParseGateKind::Source)
+        // Literal-preserve regions no longer refuse the whole document
+        // (#17708): their lines are emitted byte-exact by
+        // `format_safe_subset`, so only parse correctness gates here.
+        if let Err(diagnostic) = Self::validate_parse_only(source, counters::ParseGateKind::Source)
         {
             let mut result = FormatResult::unchanged(source);
             result.diagnostics.push(diagnostic);
@@ -338,7 +438,7 @@ impl PerlFormatter for NativeFormatter {
         let formatted =
             Self::apply_final_newline(&Self::format_safe_subset(source, config), config);
         if let Err(diagnostic) =
-            Self::validate_clean_parse(&formatted, counters::ParseGateKind::FormattedOutput)
+            Self::validate_parse_only(&formatted, counters::ParseGateKind::FormattedOutput)
         {
             let mut result = FormatResult::unchanged(source);
             result.diagnostics.push(FormatDiagnostic::new(
@@ -2123,6 +2223,7 @@ fn simple_value_text(token: &perl_parser_core::Token) -> Option<&str> {
         .then_some(token.text.as_ref())
 }
 
+#[cfg(test)]
 fn literal_preserve_region(source: &str) -> Option<&'static str> {
     for line in source.lines() {
         let trimmed = line.trim_start();
@@ -2262,6 +2363,7 @@ fn token_literal_preserve_region_overlapping(
     }
 }
 
+#[cfg(test)]
 fn token_literal_preserve_region(source: &str) -> Option<&'static str> {
     use perl_parser_core::TokenKind;
 

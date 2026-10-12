@@ -731,15 +731,18 @@ pub fn generate_invalidation_case(seed: u64, index: usize) -> GeneratedCase {
             "mutator.invalidation.empty_statement",
             true,
         ),
+        // Since #17708, regex literals and __END__ sections are preserved
+        // in place rather than refusing the document, so these arms now
+        // use genuinely unparseable subjects to stay invalidation cases.
         2 => (
-            format!("{base}\nmy$re=qr{{x}};\n"),
+            format!("{base}\nmy $re = qr{{x;\n"),
             Family::PlainAssignment,
             TargetRequest::Document,
             "mutator.invalidation.regex_injection",
             false,
         ),
         3 => (
-            format!("{base}\n__END__\n"),
+            format!("{base}\nsub broken {{\n"),
             Family::ModuleSurface,
             TargetRequest::Document,
             "mutator.invalidation.data_marker",
