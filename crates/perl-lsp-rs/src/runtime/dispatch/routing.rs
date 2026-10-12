@@ -178,7 +178,9 @@ impl LspServer {
                     self.handle_workspace_symbols_dispatch(request.params)
                 });
             }
-            "workspace/symbol/resolve" => {
+            // LSP 3.17 spells the resolve request `workspaceSymbol/resolve`;
+            // `workspace/symbol/resolve` is the legacy internal alias.
+            "workspace/symbol/resolve" | "workspaceSymbol/resolve" => {
                 self.handle_workspace_symbol_resolve_dispatch(request.params)
             }
             "textDocument/rename" => {

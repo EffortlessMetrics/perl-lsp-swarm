@@ -11,7 +11,56 @@ mod support;
 use serde_json::json;
 use support::lsp_harness::LspHarness;
 
-type TestResult = Result<(), Box<dyn std::error::Error>>;
+type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
+
+/// Assert a workspace/symbol response is a non-null array and return its items.
+///
+/// A `null` (or JSON-RPC error surfaced by the caller) must fail the test
+/// rather than skip verification (#17685).
+fn array_symbols(response: &serde_json::Value) -> TestResult<Vec<serde_json::Value>> {
+    assert!(!response.is_null(), "workspace/symbol must not return null, got: {response:?}");
+    let symbols = response
+        .as_array()
+        .ok_or_else(|| format!("workspace/symbol should return an array, got: {response:?}"))?;
+    Ok(symbols.clone())
+}
+
+fn symbol_names(symbols: &[serde_json::Value]) -> Vec<&str> {
+    symbols.iter().filter_map(|s| s["name"].as_str()).collect()
+}
+
+fn find_symbol<'a>(
+    symbols: &'a [serde_json::Value],
+    name: &str,
+) -> TestResult<&'a serde_json::Value> {
+    symbols
+        .iter()
+        .find(|s| s["name"].as_str() == Some(name))
+        .ok_or_else(|| format!("expected symbol '{name}' in {symbols:?}").into())
+}
+
+/// Assert one symbol's exact kind, container, URI, and UTF-16 range.
+fn assert_symbol(
+    sym: &serde_json::Value,
+    kind: u64,
+    container: &str,
+    uri: &str,
+    range: ((u64, u64), (u64, u64)),
+) -> TestResult {
+    let ((start_line, start_char), (end_line, end_char)) = range;
+    assert_eq!(sym["kind"].as_u64(), Some(kind), "symbol kind for {sym:?}");
+    assert_eq!(sym["containerName"].as_str(), Some(container), "symbol containerName for {sym:?}");
+    assert_eq!(sym["location"]["uri"].as_str(), Some(uri), "symbol location uri for {sym:?}");
+    assert_eq!(
+        sym["location"]["range"],
+        json!({
+            "start": { "line": start_line, "character": start_char },
+            "end": { "line": end_line, "character": end_char }
+        }),
+        "symbol location range for {sym:?}"
+    );
+    Ok(())
+}
 
 /// Test workspace symbol search with a specific query
 #[test]
@@ -42,47 +91,35 @@ sub delete_user {
 "#,
     )?;
 
-    // Search for symbols matching "find"
+    // Search for symbols matching "find": exactly find_user and
+    // find_all_users (kind 12, Function), never a null/empty result.
     let response = harness
-        .request(
-            "workspace/symbol",
-            json!({
-                "query": "find"
-            }),
-        )
-        .unwrap_or(json!(null));
+        .request("workspace/symbol", json!({ "query": "find" }))
+        .map_err(|e| format!("workspace/symbol request failed: {e}"))?;
+    let symbols = array_symbols(&response)?;
 
-    if !response.is_null() {
-        assert!(
-            response.is_array(),
-            "workspace/symbol should return an array, got: {:?}",
-            response
-        );
+    let mut names = symbol_names(&symbols);
+    names.sort_unstable();
+    assert_eq!(
+        names,
+        vec!["find_all_users", "find_user"],
+        "query 'find' should return exactly the two find_* subs, got: {symbols:?}"
+    );
 
-        let symbols = response.as_array().ok_or("response is not an array")?;
-        // Should find at least find_user and find_all_users
-        if !symbols.is_empty() {
-            let names: Vec<&str> = symbols.iter().filter_map(|s| s["name"].as_str()).collect();
-            assert!(
-                names.iter().any(|n| n.contains("find")),
-                "Should find symbols matching 'find', got: {:?}",
-                names
-            );
-
-            // Each symbol should have required fields
-            for sym in symbols {
-                assert!(sym["name"].is_string(), "Symbol should have a name");
-                assert!(sym["kind"].is_number(), "Symbol should have a kind");
-                // SymbolInformation has location; WorkspaceSymbol may have location
-                if sym.get("location").is_some() {
-                    assert!(
-                        sym["location"]["uri"].is_string(),
-                        "Symbol location should have a uri"
-                    );
-                }
-            }
-        }
-    }
+    assert_symbol(
+        find_symbol(&symbols, "find_user")?,
+        12,
+        "SearchTarget",
+        doc_uri,
+        ((2, 0), (5, 1)),
+    )?;
+    assert_symbol(
+        find_symbol(&symbols, "find_all_users")?,
+        12,
+        "SearchTarget",
+        doc_uri,
+        ((7, 0), (9, 1)),
+    )?;
 
     Ok(())
 }
@@ -106,25 +143,35 @@ sub gamma { return 3; }
 "#,
     )?;
 
-    // Empty query should return all (or many) symbols
+    // Empty query returns every symbol in the document: the package
+    // (kind 2, Module) plus alpha/beta/gamma (kind 12, Function).
     let response = harness
-        .request(
-            "workspace/symbol",
-            json!({
-                "query": ""
-            }),
-        )
-        .unwrap_or(json!(null));
+        .request("workspace/symbol", json!({ "query": "" }))
+        .map_err(|e| format!("workspace/symbol request failed: {e}"))?;
+    let symbols = array_symbols(&response)?;
 
-    if !response.is_null() {
-        assert!(
-            response.is_array(),
-            "workspace/symbol with empty query should return an array, got: {:?}",
-            response
-        );
-        // Empty query may return all symbols or none depending on implementation
-        // Both are valid per the LSP spec
-    }
+    let mut names = symbol_names(&symbols);
+    names.sort_unstable();
+    assert_eq!(
+        names,
+        vec!["MyModule", "alpha", "beta", "gamma"],
+        "empty query should return exactly the package and three subs, got: {symbols:?}"
+    );
+
+    let package = find_symbol(&symbols, "MyModule")?;
+    assert_eq!(package["kind"].as_u64(), Some(2), "package should have kind 2 (Module)");
+    assert_eq!(package["location"]["uri"].as_str(), Some(doc_uri));
+    assert_eq!(
+        package["location"]["range"],
+        json!({
+            "start": { "line": 0, "character": 0 },
+            "end": { "line": 0, "character": 16 }
+        }),
+        "package location range for {package:?}"
+    );
+    assert_symbol(find_symbol(&symbols, "alpha")?, 12, "MyModule", doc_uri, ((2, 0), (2, 23)))?;
+    assert_symbol(find_symbol(&symbols, "beta")?, 12, "MyModule", doc_uri, ((3, 0), (3, 22)))?;
+    assert_symbol(find_symbol(&symbols, "gamma")?, 12, "MyModule", doc_uri, ((4, 0), (4, 23)))?;
 
     Ok(())
 }
@@ -142,29 +189,17 @@ fn test_workspace_symbol_no_results() -> TestResult {
 "#,
     )?;
 
-    // Search for something that definitely does not exist
+    // Search for something that definitely does not exist: exactly an
+    // empty array (not null, which previously passed this test vacuously).
     let response = harness
-        .request(
-            "workspace/symbol",
-            json!({
-                "query": "zzz_nonexistent_xyzzy_symbol_12345"
-            }),
-        )
-        .unwrap_or(json!(null));
+        .request("workspace/symbol", json!({ "query": "zzz_nonexistent_xyzzy_symbol_12345" }))
+        .map_err(|e| format!("workspace/symbol request failed: {e}"))?;
 
-    if !response.is_null() {
-        assert!(
-            response.is_array(),
-            "workspace/symbol should return an array even with no results, got: {:?}",
-            response
-        );
-        let symbols = response.as_array().ok_or("response is not an array")?;
-        assert!(
-            symbols.is_empty(),
-            "Non-matching query should return empty array, got {} results",
-            symbols.len()
-        );
-    }
+    assert_eq!(
+        response,
+        json!([]),
+        "non-matching query should return exactly an empty array, got: {response:?}"
+    );
 
     Ok(())
 }
@@ -202,34 +237,44 @@ sub target_function {
         }
     });
 
-    // Resolve the symbol for additional detail
-    let response = harness.request("workspaceSymbol/resolve", basic_symbol).unwrap_or(json!(null));
+    // Resolve the symbol for additional detail. The LSP 3.17 method is
+    // `workspaceSymbol/resolve`; the server advertises
+    // `resolveProvider: true`, so this must return the enhanced symbol —
+    // not null and not a method-not-found error (#17685).
+    let response = harness
+        .request("workspaceSymbol/resolve", basic_symbol)
+        .map_err(|e| format!("workspaceSymbol/resolve request failed: {e}"))?;
 
-    if !response.is_null() {
-        // Resolved symbol should retain the original fields
-        assert_eq!(
-            response["name"].as_str(),
-            Some("target_function"),
-            "Resolved symbol should keep its name"
-        );
-        assert_eq!(response["kind"].as_i64(), Some(12), "Resolved symbol should keep its kind");
-
-        // May have additional detail
-        if let Some(detail) = response.get("detail")
-            && detail.is_string()
-        {
-            let detail_str = detail.as_str().ok_or("detail should be a string")?;
-            assert!(!detail_str.is_empty(), "detail should not be empty if provided");
-        }
-
-        // Location should still be present
-        if response.get("location").is_some() {
-            assert!(
-                response["location"]["uri"].is_string(),
-                "Resolved symbol should still have location.uri"
-            );
-        }
-    }
+    assert!(!response.is_null(), "workspaceSymbol/resolve must not return null, got: {response:?}");
+    assert_eq!(
+        response["name"].as_str(),
+        Some("target_function"),
+        "Resolved symbol should keep its name"
+    );
+    assert_eq!(response["kind"].as_u64(), Some(12), "Resolved symbol should keep its kind");
+    assert_eq!(
+        response["detail"].as_str(),
+        Some("sub target_function"),
+        "Resolved symbol should gain its exact detail"
+    );
+    assert_eq!(
+        response["containerName"].as_str(),
+        Some("Resolver"),
+        "Resolved symbol should gain its container"
+    );
+    assert_eq!(
+        response["location"]["uri"].as_str(),
+        Some(doc_uri),
+        "Resolved symbol should keep its location uri"
+    );
+    assert_eq!(
+        response["location"]["range"],
+        json!({
+            "start": { "line": 2, "character": 0 },
+            "end": { "line": 5, "character": 1 }
+        }),
+        "Resolved symbol should keep its exact location range"
+    );
 
     Ok(())
 }
@@ -249,13 +294,13 @@ fn test_workspace_symbol_capability_advertised() -> TestResult {
         capabilities
     );
 
-    // If it is an object (not just true), check for resolveProvider
-    if let Some(wsp) = ws_provider
-        && wsp.is_object()
-        && let Some(resolve) = wsp.get("resolveProvider")
-    {
-        assert!(resolve.is_boolean(), "resolveProvider should be a boolean, got: {:?}", resolve);
-    }
+    // The advertised object is exactly { "resolveProvider": true }, which is
+    // the contract `workspaceSymbol/resolve` routing must honor (#17685).
+    assert_eq!(
+        ws_provider,
+        Some(&json!({ "resolveProvider": true })),
+        "workspaceSymbolProvider should advertise resolve support exactly"
+    );
 
     Ok(())
 }
@@ -294,38 +339,34 @@ sub shared_utility {
 "#,
     )?;
 
-    // Search for "shared" which appears in both documents
+    // Search for "shared" which appears in both documents: exactly one
+    // symbol per document, with exact names, kinds, URIs, and ranges.
     let response = harness
-        .request(
-            "workspace/symbol",
-            json!({
-                "query": "shared"
-            }),
-        )
-        .unwrap_or(json!(null));
+        .request("workspace/symbol", json!({ "query": "shared" }))
+        .map_err(|e| format!("workspace/symbol request failed: {e}"))?;
+    let symbols = array_symbols(&response)?;
 
-    if !response.is_null() {
-        assert!(
-            response.is_array(),
-            "workspace/symbol should return an array, got: {:?}",
-            response
-        );
-
-        let symbols = response.as_array().ok_or("response is not an array")?;
-        if !symbols.is_empty() {
-            // Collect URIs from results
-            let uris: Vec<&str> = symbols
-                .iter()
-                .filter_map(|s| {
-                    s.get("location").and_then(|loc| loc.get("uri")).and_then(|u| u.as_str())
-                })
-                .collect();
-
-            // Should potentially find symbols from both documents
-            let has_any = !uris.is_empty();
-            assert!(has_any, "Should find at least one symbol matching 'shared'");
-        }
-    }
+    let mut names = symbol_names(&symbols);
+    names.sort_unstable();
+    assert_eq!(
+        names,
+        vec!["shared_helper", "shared_utility"],
+        "query 'shared' should return exactly one symbol per document, got: {symbols:?}"
+    );
+    assert_symbol(
+        find_symbol(&symbols, "shared_helper")?,
+        12,
+        "ModuleA",
+        doc1_uri,
+        ((2, 0), (4, 1)),
+    )?;
+    assert_symbol(
+        find_symbol(&symbols, "shared_utility")?,
+        12,
+        "ModuleB",
+        doc2_uri,
+        ((2, 0), (4, 1)),
+    )?;
 
     Ok(())
 }
@@ -345,58 +386,36 @@ fn test_workspace_symbol_finds_native_class_and_method() -> TestResult {
         "class MyPoint {\n    method get_x { return 0; }\n    method get_y { return 0; }\n}\n",
     )?;
 
-    // Search for "get_" — should match both native methods
-    let response =
-        harness.request("workspace/symbol", json!({ "query": "get_" })).unwrap_or(json!(null));
+    // Search for "get_" — exactly both native methods (kind 6, Method).
+    let response = harness
+        .request("workspace/symbol", json!({ "query": "get_" }))
+        .map_err(|e| format!("workspace/symbol request failed: {e}"))?;
+    let symbols = array_symbols(&response)?;
 
-    if !response.is_null() && response.is_array() {
-        let symbols = response.as_array().ok_or("response is not an array")?;
-        let names: Vec<&str> = symbols.iter().filter_map(|s| s["name"].as_str()).collect();
-        assert!(
-            names.iter().any(|n| *n == "get_x" || *n == "get_y"),
-            "workspace/symbol should find native methods 'get_x'/'get_y', got: {:?}",
-            names
-        );
-        // Each found method should report kind 6 (Method)
-        for sym in symbols {
-            if let Some(name) = sym["name"].as_str()
-                && (name == "get_x" || name == "get_y")
-            {
-                assert_eq!(
-                    sym["kind"].as_u64(),
-                    Some(6),
-                    "native method '{}' should have LSP kind 6 (Method), got: {:?}",
-                    name,
-                    sym["kind"]
-                );
-            }
-        }
-    }
+    let mut names = symbol_names(&symbols);
+    names.sort_unstable();
+    assert_eq!(
+        names,
+        vec!["get_x", "get_y"],
+        "workspace/symbol should find exactly the native methods, got: {symbols:?}"
+    );
+    assert_symbol(find_symbol(&symbols, "get_x")?, 6, "MyPoint", doc_uri, ((1, 4), (1, 30)))?;
+    assert_symbol(find_symbol(&symbols, "get_y")?, 6, "MyPoint", doc_uri, ((2, 4), (2, 30)))?;
 
-    // Search for "MyPoint" — should find the class declaration
-    let response2 =
-        harness.request("workspace/symbol", json!({ "query": "MyPoint" })).unwrap_or(json!(null));
+    // Search for "MyPoint" — the class (kind 5) plus its two methods.
+    let response2 = harness
+        .request("workspace/symbol", json!({ "query": "MyPoint" }))
+        .map_err(|e| format!("workspace/symbol request failed: {e}"))?;
+    let symbols2 = array_symbols(&response2)?;
 
-    if !response2.is_null() && response2.is_array() {
-        let symbols2 = response2.as_array().ok_or("response2 is not an array")?;
-        let names2: Vec<&str> = symbols2.iter().filter_map(|s| s["name"].as_str()).collect();
-        assert!(
-            names2.contains(&"MyPoint"),
-            "workspace/symbol should find native class 'MyPoint', got: {:?}",
-            names2
-        );
-        // Class should report kind 5 (Class)
-        for sym in symbols2 {
-            if sym["name"].as_str() == Some("MyPoint") {
-                assert_eq!(
-                    sym["kind"].as_u64(),
-                    Some(5),
-                    "native class 'MyPoint' should have LSP kind 5 (Class), got: {:?}",
-                    sym["kind"]
-                );
-            }
-        }
-    }
+    let mut names2 = symbol_names(&symbols2);
+    names2.sort_unstable();
+    assert_eq!(
+        names2,
+        vec!["MyPoint", "get_x", "get_y"],
+        "workspace/symbol should find the class and its methods, got: {symbols2:?}"
+    );
+    assert_symbol(find_symbol(&symbols2, "MyPoint")?, 5, "main", doc_uri, ((0, 0), (3, 1)))?;
 
     Ok(())
 }

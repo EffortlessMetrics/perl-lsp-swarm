@@ -286,6 +286,7 @@ pub(crate) const REGISTRY: &[MethodDescriptor] = &[
         MethodDirection::ClientToServer,
         LifecyclePhase::RequiresInitialized,
     ),
+    c2s("workspaceSymbol/resolve", EnvelopeKind::Request, LifecyclePhase::RequiresInitialized),
     c2s("workspace/executeCommand", EnvelopeKind::Request, LifecyclePhase::RequiresInitialized),
     c2s(
         "workspace/textDocumentContent",
