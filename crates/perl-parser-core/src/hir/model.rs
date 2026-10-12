@@ -113,10 +113,12 @@ pub enum RecoveryConfidence {
 /// previous `Call { args: [Opaque{Block}, …] }` fallback for
 /// `try`/`catch`/`finally` and, unlike that fallback, retain the statements
 /// inside each region.
+/// v7 retains the `qr//`, `m//`, and bare `/.../` surface form in
+/// [`HirRegex::form`](super::body::HirRegex::form) (#14638).
 ///
 /// [`HirExpr::Try`]: super::body::HirExpr::Try
 /// [`HirCatchHandler`]: super::body::HirCatchHandler
-pub const HIR_BODY_MODEL_VERSION: u32 = 6;
+pub const HIR_BODY_MODEL_VERSION: u32 = 7;
 
 /// HIR for one parsed file.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]

@@ -99,7 +99,7 @@ fn collect_operator_facts(
     // asymmetry is current parser behaviour; pinning it here makes any change
     // to it an explicit decision rather than silent drift.
     match &node.kind {
-        NodeKind::Regex { pattern, replacement, modifiers, has_embedded_code } => {
+        NodeKind::Regex { pattern, replacement, modifiers, has_embedded_code, .. } => {
             facts.push(OperatorFact::new(
                 Family::Regex,
                 &span_text,

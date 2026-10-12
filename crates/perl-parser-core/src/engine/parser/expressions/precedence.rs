@@ -831,6 +831,7 @@ impl<'a> Parser<'a> {
                             replacement,
                             modifiers,
                             has_embedded_code,
+                            ..
                         } = &right.kind
                         {
                             let negated = matches!(op_token.kind(), TokenKind::NotMatch);

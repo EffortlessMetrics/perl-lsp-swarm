@@ -23,8 +23,8 @@
 //! - One [`HirExpr::Assign`] connecting the decl place to the binary value
 //! - All nodes carry exact byte-offset source ranges in [`BodySourceMap`]
 
-use crate::SourceLocation;
 use crate::syntax::regex_analysis::RegexAnalysisFamily;
+use crate::{RegexSurfaceForm, SourceLocation};
 
 use super::model::{
     BranchKeyword, ControlTransferKind, HirBindingId, LoopKind, ReadlineSource, RegexTargetKind,
@@ -861,10 +861,12 @@ impl ReplacementEvaluation {
     }
 }
 
-/// Payload for an unbound regex-family construct — see [`HirExpr::Regex`].
+/// Payload for a regex value or a default-topic match — see [`HirExpr::Regex`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct HirRegex {
+    /// Original operator, so consumers can distinguish construction from matching.
+    pub form: RegexSurfaceForm,
     /// Raw modifiers as written, in source order.
     pub modifiers: String,
     /// Whether the pattern embeds runtime-evaluated code (`(?{…})`/`(??{…})`).

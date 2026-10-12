@@ -1259,6 +1259,7 @@ mod tests {
                 args: vec![],
             },
             NodeKind::Regex {
+                form: crate::ast::RegexSurfaceForm::BarePattern,
                 pattern: "foo".to_string(),
                 replacement: None,
                 modifiers: "".to_string(),
@@ -1832,6 +1833,7 @@ mod tests {
                 args: vec![leaf()],
             }),
             n(NodeKind::Regex {
+                form: crate::ast::RegexSurfaceForm::BarePattern,
                 pattern: "foo".to_string(),
                 replacement: None,
                 modifiers: "".to_string(),

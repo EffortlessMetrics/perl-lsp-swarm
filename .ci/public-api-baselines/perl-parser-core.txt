@@ -6,6 +6,7 @@ pub use perl_parser_core::MissingKind
 pub use perl_parser_core::Node
 pub use perl_parser_core::NodeKind
 pub use perl_parser_core::PositionMapper
+pub use perl_parser_core::RegexSurfaceForm
 pub use perl_parser_core::SourceLocation
 pub use perl_parser_core::Token
 pub use perl_parser_core::TokenKind
@@ -2445,6 +2446,7 @@ pub fn perl_parser_core::hir::HirLoopRegionId::hash<__H: core::hash::Hasher>(&se
 #[non_exhaustive] pub struct perl_parser_core::hir::HirRegex
 pub perl_parser_core::hir::HirRegex::analysis: perl_parser_core::hir::RegexAnalysisAnchor
 pub perl_parser_core::hir::HirRegex::embedded_code: bool
+pub perl_parser_core::hir::HirRegex::form: perl_parser_core::RegexSurfaceForm
 pub perl_parser_core::hir::HirRegex::modifiers: alloc::string::String
 pub fn perl_parser_core::hir::HirRegex::clone(&self) -> perl_parser_core::hir::HirRegex
 pub fn perl_parser_core::hir::HirRegex::eq(&self, other: &perl_parser_core::hir::HirRegex) -> bool
