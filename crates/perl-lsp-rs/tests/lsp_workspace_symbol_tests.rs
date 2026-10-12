@@ -53,6 +53,7 @@ sub delete_user {
         .ok_or_else(|| format!("workspace/symbol must return an array, got: {response:?}"))?;
     let mut names: Vec<&str> = symbols.iter().filter_map(|s| s["name"].as_str()).collect();
     names.sort_unstable();
+    assert_eq!(names.len(), symbols.len(), "every symbol must carry a name: {response:?}");
     assert_eq!(names, vec!["find_all_users", "find_user"], "got: {response:?}");
     for sym in symbols {
         assert_eq!(sym["kind"].as_u64(), Some(12), "sub symbol kind must be Function(12): {sym:?}");
@@ -97,6 +98,7 @@ sub gamma { return 3; }
         .ok_or_else(|| format!("workspace/symbol must return an array, got: {response:?}"))?;
     let mut names: Vec<&str> = symbols.iter().filter_map(|s| s["name"].as_str()).collect();
     names.sort_unstable();
+    assert_eq!(names.len(), symbols.len(), "every symbol must carry a name: {response:?}");
     assert_eq!(names, vec!["MyModule", "alpha", "beta", "gamma"], "got: {response:?}");
     for sym in symbols {
         let want_kind = if sym["name"].as_str() == Some("MyModule") { 2 } else { 12 };
@@ -185,6 +187,45 @@ sub target_function {
     Ok(())
 }
 
+/// Duplicate names in one file resolve to the requested declaration,
+/// not the first name match.
+#[test]
+fn test_workspace_symbol_resolve_prefers_requested_location() -> TestResult {
+    let mut harness = LspHarness::new();
+    let _init = harness.initialize(None)?;
+
+    let doc_uri = "file:///dup_resolve.pl";
+    harness
+        .open(doc_uri, "package Dup;\nsub target { return 1; }\nsub target { return 2; }\n1;\n")?;
+
+    // Ask to resolve the second `target` (line 2); the first shares its name.
+    let response = harness
+        .request(
+            "workspaceSymbol/resolve",
+            json!({
+                "name": "target",
+                "kind": 12,
+                "location": {
+                    "uri": doc_uri,
+                    "range": {
+                        "start": { "line": 2, "character": 0 },
+                        "end": { "line": 2, "character": 24 }
+                    }
+                }
+            }),
+        )
+        .map_err(|e| format!("workspaceSymbol/resolve request failed: {e}"))?;
+
+    assert_eq!(
+        response["location"]["range"]["start"]["line"].as_u64(),
+        Some(2),
+        "resolve must keep the requested declaration, got: {response:?}"
+    );
+    assert_eq!(response["detail"].as_str(), Some("sub target"), "got: {response:?}");
+
+    Ok(())
+}
+
 /// Test that workspaceSymbolProvider capability is advertised
 #[test]
 fn test_workspace_symbol_capability_advertised() -> TestResult {
@@ -252,6 +293,7 @@ sub shared_utility {
         .filter_map(|s| Some((s["name"].as_str()?, s["location"]["uri"].as_str()?)))
         .collect();
     found.sort_unstable();
+    assert_eq!(found.len(), symbols.len(), "every symbol must carry name+uri: {response:?}");
     assert_eq!(
         found,
         vec![("shared_helper", doc1_uri), ("shared_utility", doc2_uri)],
@@ -285,6 +327,7 @@ fn test_workspace_symbol_finds_native_class_and_method() -> TestResult {
         .ok_or_else(|| format!("workspace/symbol must return an array, got: {response:?}"))?;
     let mut names: Vec<&str> = symbols.iter().filter_map(|s| s["name"].as_str()).collect();
     names.sort_unstable();
+    assert_eq!(names.len(), symbols.len(), "every symbol must carry a name: {response:?}");
     assert_eq!(names, vec!["get_x", "get_y"], "got: {response:?}");
     for sym in symbols {
         assert_eq!(sym["kind"].as_u64(), Some(6), "native method kind must be Method(6): {sym:?}");
@@ -302,6 +345,7 @@ fn test_workspace_symbol_finds_native_class_and_method() -> TestResult {
     let mut kinds2: Vec<(&str, u64)> =
         symbols2.iter().filter_map(|s| Some((s["name"].as_str()?, s["kind"].as_u64()?))).collect();
     kinds2.sort_unstable();
+    assert_eq!(kinds2.len(), symbols2.len(), "every symbol must carry name+kind: {response2:?}");
     assert_eq!(kinds2, vec![("MyPoint", 5), ("get_x", 6), ("get_y", 6)], "got: {response2:?}");
 
     Ok(())

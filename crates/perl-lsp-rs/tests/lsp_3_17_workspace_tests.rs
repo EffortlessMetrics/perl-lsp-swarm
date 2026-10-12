@@ -34,6 +34,7 @@ fn test_workspace_symbol_3_17() -> TestResult {
         .as_array()
         .ok_or_else(|| format!("workspace/symbol must return an array, got: {response:?}"))?;
     let names: Vec<&str> = symbols.iter().filter_map(|s| s["name"].as_str()).collect();
+    assert_eq!(names.len(), symbols.len(), "every symbol must carry a name: {response:?}");
     assert_eq!(names, vec!["test"], "got: {response:?}");
     assert_eq!(symbols[0]["kind"].as_u64(), Some(12), "got: {symbols:?}");
     assert_eq!(symbols[0]["location"]["uri"].as_str(), Some(uri), "got: {symbols:?}");
