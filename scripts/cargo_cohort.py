@@ -329,11 +329,15 @@ class Cohort:
                         # append failure stops further deletion, never rolls back.
                         self._persist(evidence, {'event': 'reclaimed', 'path': str(path)})
             self._cleanup_authorized = False
-            if error is not None and not isinstance(error, KeyboardInterrupt):
-                raise error
             if error is not None:
-                self.receipt['interruption'] = str(error)
+                self.receipt['error'] = {'type': type(error).__name__, 'message': str(error)}
+                if isinstance(error, KeyboardInterrupt):
+                    self.receipt['interruption'] = str(error)
+            # Unproven closure owns failure precedence even when parsing or
+            # validation failed first. Keep its cause in the returned settlement.
             effective = 75 if not self.receipt['tree_settled'] else (130 if self.receipt['cancelled'] or isinstance(error, KeyboardInterrupt) else status)
+            if error is not None and self.receipt['tree_settled'] and not isinstance(error, KeyboardInterrupt):
+                raise error
             return {'status': effective, 'product_status': status, 'evidence': str(self.evidence_path), 'authorization_evidence': str(self.receipt_path) if self.receipt_path.exists() else None, 'settlement': self.receipt, 'consumed': consumed,
                     'reclaimed': reclaimed, 'binding': self.binding}
         finally:

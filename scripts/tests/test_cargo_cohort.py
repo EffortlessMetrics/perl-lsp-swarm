@@ -246,6 +246,35 @@ class PortableControls(unittest.TestCase):
         self.assertTrue(instance.evidence_path.exists(), 'incomplete coverage must preserve diagnostics')
 
 
+
+    def test_unsettled_malformed_producer_retains_error_evidence_and_executable(self):
+        # Producer really writes an executable before malformed compiler output;
+        # only settlement is an explicit interface double, not native proof.
+        instance = self.owner()
+        producer = self.producer(mutation="print('not-cargo-json');sys.exit(0)")
+        with patch.object(PortableTree, 'settled', False):
+            row = self.run_portable(instance, producer=producer)
+        self.assertEqual(row['status'], 75)
+        self.assertEqual(row['product_status'], 0)
+        self.assertFalse(row['settlement']['tree_settled'])
+        self.assertEqual(row['settlement']['error']['type'], 'Denied')
+        self.assertIn('not Cargo JSON', row['settlement']['error']['message'])
+        self.assertEqual(row['reclaimed'], []); self.assertEqual(row['consumed'], [])
+        self.assertTrue(self.exe.exists())
+        self.assertIn(b'not-cargo-json', instance.evidence_path.read_bytes())
+        self.assertFalse(instance.receipt_path.exists())
+        json.dumps(row)  # transferable failure context is serializable
+
+    def test_settled_malformed_producer_remains_ordinary_refusal(self):
+        instance = self.owner()
+        producer = self.producer(mutation="print('not-cargo-json');sys.exit(0)")
+        with self.assertRaisesRegex(cohort.Denied, 'not Cargo JSON'):
+            self.run_portable(instance, producer=producer)
+        self.assertTrue(instance.receipt['tree_settled'])
+        self.assertEqual(instance.receipt['error']['type'], 'Denied')
+        self.assertTrue(self.exe.exists())
+        self.assertIn(b'not-cargo-json', instance.evidence_path.read_bytes())
+
     def test_actual_interruption_respects_settlement_status_and_preserves(self):
         # Explicit launch-interface fault, not native cancellation qualification.
         for settled in (False, True):
