@@ -134,19 +134,12 @@ impl CriticAnalyzer {
         // through supply a partial violation set that the caller then caches
         // as complete, and status 1 with empty stdout would report the file
         // as clean - a false all-clear, strictly worse than no message
-        // (#16550).
+        // (#16550). The failure text is bounded: only the first non-empty
+        // stderr line survives, capped to `MAX_STDERR_EXCERPT_CHARS`, so a
+        // chatty or newline-free diagnostic cannot flood the client
+        // (#16550 review).
         if !output.success() && output.status_code != 2 {
-            let detail = output
-                .stderr_lossy()
-                .lines()
-                .map(str::trim)
-                .find(|line| !line.is_empty())
-                .unwrap_or("no diagnostic on stderr")
-                .to_string();
-            return Err(format!(
-                "perlcritic failed (exit {}); check .perlcriticrc: {detail}",
-                output.status_code
-            ));
+            return Err(perlcritic_exit_failure(output.status_code, &output.stderr));
         }
         Ok(violations)
     }
@@ -301,6 +294,34 @@ fn decode_perlcritic_output(output: &[u8]) -> String {
     decode_windows_1252(output)
 }
 
+/// Hard character cap on the stderr excerpt carried in the bounded failure
+/// text. One line of a broken or custom executable's stderr can itself be the
+/// whole payload (no newline at all), so the line cap alone would not bound
+/// the client-facing error (#16550 review).
+const MAX_STDERR_EXCERPT_CHARS: usize = 512;
+
+/// Bounded failure text for a non-zero `perlcritic` exit other than the
+/// violations-only status 2 (#16550).
+///
+/// The dominant real cause is an unparsable `.perlcriticrc` profile, so the
+/// remediation names the profile; only the first non-empty stderr line is
+/// retained, and that line is itself truncated, so the error text stays
+/// bounded no matter how much diagnostic output the subprocess produced.
+fn perlcritic_exit_failure(status_code: i32, stderr: &[u8]) -> String {
+    let first_stderr_line = decode_perlcritic_output(stderr)
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or_default()
+        .chars()
+        .take(MAX_STDERR_EXCERPT_CHARS)
+        .collect::<String>();
+    if first_stderr_line.is_empty() {
+        return format!("perlcritic failed (exit {status_code}); check .perlcriticrc");
+    }
+    format!("perlcritic failed (exit {status_code}); check .perlcriticrc: {first_stderr_line}")
+}
+
 fn decode_windows_1252(bytes: &[u8]) -> String {
     bytes
         .iter()
@@ -358,6 +379,16 @@ mod tests {
         // which parses as zero violations — sufficient for cache behaviour tests.
         let runtime = Arc::new(MockSubprocessRuntime::new());
         CriticAnalyzer::new(config, runtime)
+    }
+
+    /// Analyzer plus a handle to its mock runtime so tests can queue the
+    /// exact subprocess responses (exit status, stderr) they falsify against.
+    fn make_analyzer_with_mock() -> (CriticAnalyzer, Arc<MockSubprocessRuntime>) {
+        let config = CriticConfig::default();
+        let runtime = Arc::new(MockSubprocessRuntime::new());
+        let analyzer =
+            CriticAnalyzer::new(config, Arc::clone(&runtime) as Arc<dyn SubprocessRuntime>);
+        (analyzer, runtime)
     }
 
     // ── perlcritic exit statuses: 0 clean, 2 violations, 1 tool failure (#16550) ──
@@ -461,6 +492,107 @@ mod tests {
         let bytes = b"caf\xe9 \x97 test";
         let decoded = decode_perlcritic_output(bytes);
         assert_eq!(decoded, "café — test");
+    }
+
+    #[test]
+    fn nonzero_exit_with_empty_stdout_is_a_bounded_error() {
+        // The #16550 repro: a broken `.perlcriticrc` makes perlcritic exit 1
+        // (its own failure status) with its complaint on stderr and nothing on
+        // stdout. That must be an error, not a clean result.
+        let (mut analyzer, runtime) = make_analyzer_with_mock();
+        runtime.add_response(MockResponse::failure(
+            "Unable to parse profile .perlcriticrc: syntax error at line 3\n\nmore context\n",
+            1,
+        ));
+
+        // The workspace denies `clippy::expect_used` in test targets too, so
+        // the result is unwrapped through its `Option`/`Result` accessors.
+        let result = analyzer.analyze_file(std::path::Path::new("/tmp/test.pl"));
+        assert!(
+            result.is_err(),
+            "a failed perlcritic run must not report a clean file: {result:?}"
+        );
+        assert_eq!(
+            result.err(),
+            Some(String::from(
+                "perlcritic failed (exit 1); check .perlcriticrc: Unable to parse profile \
+                 .perlcriticrc: syntax error at line 3"
+            )),
+            "the error must pin the exit code and only the first stderr line"
+        );
+    }
+
+    #[test]
+    fn newline_free_stderr_payload_stays_within_the_error_bound() {
+        // A broken or custom executable can exit nonzero after writing one
+        // newline-free stderr payload; `lines()` would then return the whole
+        // payload as the "first line", so the excerpt itself must be capped
+        // to keep the client-facing error bounded (#16550 review).
+        let huge = "x".repeat(MAX_STDERR_EXCERPT_CHARS * 4);
+        let error = perlcritic_exit_failure(2, huge.as_bytes());
+        assert!(
+            error.chars().count() < MAX_STDERR_EXCERPT_CHARS * 2,
+            "a single-line stderr payload must not escape the excerpt bound: {} chars",
+            error.chars().count()
+        );
+        assert!(error.starts_with("perlcritic failed (exit 2); check .perlcriticrc: "));
+        assert_eq!(
+            error.chars().count(),
+            "perlcritic failed (exit 2); check .perlcriticrc: ".chars().count()
+                + MAX_STDERR_EXCERPT_CHARS
+        );
+    }
+
+    #[test]
+    fn nonzero_exit_with_empty_stderr_still_names_the_profile() {
+        let (mut analyzer, runtime) = make_analyzer_with_mock();
+        runtime.add_response(MockResponse::failure("", 1));
+
+        let result = analyzer.analyze_file(std::path::Path::new("/tmp/test.pl"));
+        assert!(
+            result.is_err(),
+            "a failed perlcritic run must not report a clean file: {result:?}"
+        );
+        assert_eq!(
+            result.err(),
+            Some(String::from("perlcritic failed (exit 1); check .perlcriticrc")),
+            "no stderr means no trailing separator"
+        );
+    }
+
+    #[test]
+    fn nonzero_exit_with_parsed_violations_is_still_a_result() {
+        // perlcritic legitimately exits non-zero when it finds violations;
+        // parsed rows must survive as a success, not be converted to an error.
+        let (mut analyzer, runtime) = make_analyzer_with_mock();
+        runtime.add_response(MockResponse {
+            stdout: b"/tmp/test.pl:3:1:5:TestingAndDebugging::RequireUseStrict:Code is not \
+                     strict\n"
+                .to_vec(),
+            stderr: b"some warning\n".to_vec(),
+            status_code: 2,
+        });
+
+        let result = analyzer.analyze_file(std::path::Path::new("/tmp/test.pl"));
+        assert!(
+            result.is_ok(),
+            "violations found at a non-zero exit are a legitimate result: {result:?}"
+        );
+        let violations = result.ok().unwrap_or_default();
+        assert_eq!(violations.len(), 1);
+        assert_eq!(violations[0].policy, "TestingAndDebugging::RequireUseStrict");
+    }
+
+    #[test]
+    fn zero_exit_with_empty_stdout_remains_a_clean_result() {
+        // The genuine all-clear: exit 0 with nothing to report stays Ok(empty),
+        // so the bounded error cannot over-fire onto clean files.
+        let (mut analyzer, _runtime) = make_analyzer_with_mock();
+
+        let result = analyzer.analyze_file(std::path::Path::new("/tmp/test.pl"));
+        assert!(result.is_ok(), "a clean perlcritic run is a success: {result:?}");
+        let violations = result.ok().unwrap_or_default();
+        assert!(violations.is_empty());
     }
 
     #[test]

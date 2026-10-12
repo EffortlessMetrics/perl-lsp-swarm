@@ -77,6 +77,11 @@ pub(crate) enum SessionWarningFamily {
     ClientIncludePath,
     /// AI backend warnings (authentication failures).
     AiBackend,
+    /// External `perlcritic` engine availability (#16550 review). Never
+    /// cleared by critic-configuration transitions: the subject is the
+    /// environment's engine availability for the session, not a critic
+    /// setting, so `clear_family(Critic)` does not touch it.
+    CriticEngineAvailability,
     /// A workspace `.perl-lsp.toml` could not be loaded or applied
     /// (subject: the offending config path, fingerprinted).
     ///
@@ -103,6 +108,11 @@ pub(crate) enum SessionWarningCode {
     /// AI inline-completion backend authentication failed
     /// (no variable subject).
     AiBackendAuthFailure,
+    /// The explicitly configured external `perlcritic` engine could not run
+    /// because the binary is unavailable, so the built-in fallback analyzer
+    /// ran instead (#16550; no variable subject — the condition is
+    /// environment-global for the session).
+    CriticExternalUnavailable,
     /// A workspace `.perl-lsp.toml` failed to load or apply
     /// (subject: the offending config path fingerprint).
     ///
@@ -281,6 +291,7 @@ pub(crate) struct SessionWarningDedupStore {
     client_setting: FamilyStore,
     client_include_path: FamilyStore,
     ai_backend: FamilyStore,
+    critic_engine_availability: FamilyStore,
     #[cfg(not(target_arch = "wasm32"))]
     project_config: FamilyStore,
 }
@@ -293,6 +304,7 @@ impl SessionWarningDedupStore {
             SessionWarningFamily::ClientSetting => &self.client_setting,
             SessionWarningFamily::ClientIncludePath => &self.client_include_path,
             SessionWarningFamily::AiBackend => &self.ai_backend,
+            SessionWarningFamily::CriticEngineAvailability => &self.critic_engine_availability,
             #[cfg(not(target_arch = "wasm32"))]
             SessionWarningFamily::ProjectConfig => &self.project_config,
         }
@@ -490,6 +502,8 @@ pub struct SessionWarningDedupSnapshot {
     pub client_include_path: SessionWarningFamilyCounters,
     /// AI-backend family counters.
     pub ai_backend: SessionWarningFamilyCounters,
+    /// Critic engine-availability family counters (#16550 review).
+    pub critic_engine_availability: SessionWarningFamilyCounters,
     /// Project-config family counters (absent on WASM targets, where the
     /// project-config loaders do not exist).
     #[cfg(not(target_arch = "wasm32"))]
@@ -506,6 +520,7 @@ impl SessionWarningDedupStore {
             client_setting: self.client_setting.counters(),
             client_include_path: self.client_include_path.counters(),
             ai_backend: self.ai_backend.counters(),
+            critic_engine_availability: self.critic_engine_availability.counters(),
             #[cfg(not(target_arch = "wasm32"))]
             project_config: self.project_config.counters(),
         }
