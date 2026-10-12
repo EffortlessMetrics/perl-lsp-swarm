@@ -25,11 +25,12 @@ def allocation(roots, stop=None, diagnostics=None):
     seen = set()
     total = 0
     races = 0
-    pending = list(roots)
+    attributed = [0] * len(roots)
+    pending = list(reversed(list(enumerate(roots))))
     while pending:
         if stop is not None and stop.is_set():
             raise MeasurementError('allocation sample interrupted')
-        path = pending.pop()
+        index, path = pending.pop()
         try:
             metadata = path.lstat()
         except FileNotFoundError:
@@ -40,14 +41,17 @@ def allocation(roots, stop=None, diagnostics=None):
             continue
         seen.add(identity)
         total += metadata.st_blocks * 512
+        attributed[index] += metadata.st_blocks * 512
         if stat.S_ISDIR(metadata.st_mode):
             try:
                 with os.scandir(path) as entries:
-                    pending.extend(Path(entry.path) for entry in entries)
+                    pending.extend((index, Path(entry.path)) for entry in entries)
             except FileNotFoundError:
                 races += 1
     if diagnostics is not None:
         diagnostics['vanished_entries'] = races
+        diagnostics['allocated_by_root'] = [{'root': str(root), 'allocated_bytes': count}
+                                             for root, count in zip(roots, attributed)]
     return total
 
 
@@ -89,6 +93,7 @@ def main(argv=None):
     if any(evidence == root or root in evidence.parents for root in roots):
         parser.error('evidence must be outside observed roots')
     stop = threading.Event()
+    scan_stop = threading.Event()
     samples = []
     cancelled = []
     started = time.monotonic()
@@ -111,13 +116,14 @@ def main(argv=None):
         write({'schema': 'cargo-storage-measurement.v1', 'kind': 'header',
                'roots': [str(root) for root in roots], 'interval_seconds': args.interval,
                'min_free_bytes': args.min_free_bytes,
-               'limitations': 'Sampled allocation is a lower bound on transient peak; scans are non-atomic and vanishing entries are counted. Free-space observations include unrelated writers. Missing roots count as zero only at observation time. No admission, quota, settlement or cleanup authority.'})
+               'limitations': 'Sampled allocation is a lower bound on transient peak; scans are non-atomic and vanishing entries are counted. Per-root hardlink attribution follows root order. Free-space observations include unrelated writers. Missing roots count as zero only at observation time. No admission, quota, settlement or cleanup authority.'})
         sample('initial')
         def reserve_lost(row):
             return row['valid'] and any(fs['free_bytes'] < args.min_free_bytes
                                        for fs in row['filesystems'].values())
         if not samples[-1]['valid'] or reserve_lost(samples[-1]):
             return 75
+        command_started = time.monotonic()
         child = subprocess.Popen(command)
         def signal_child(signum):
             if child.poll() is None:
@@ -127,12 +133,13 @@ def main(argv=None):
                     pass
         def interrupt(signum, _frame):
             cancelled.append(signum)
+            scan_stop.set()
             signal_child(signum)
         old = {sig: signal.signal(sig, interrupt) for sig in (signal.SIGINT, signal.SIGTERM)}
         def monitor():
             while not stop.wait(args.interval):
                 try:
-                    sample('periodic', stop)
+                    sample('periodic', scan_stop)
                 except OSError:
                     # Durable evidence failure must fail the measurement and stop work.
                     samples.append({'valid': False, 'error': 'measurement persistence failed'})
@@ -145,6 +152,7 @@ def main(argv=None):
         worker.start()
         try:
             status = child.wait()
+            command_elapsed = time.monotonic() - command_started
         finally:
             stop.set()
             worker.join()
@@ -155,6 +163,7 @@ def main(argv=None):
         complete = all(row['valid'] for row in samples)
         reserve_preserved = all(not reserve_lost(row) for row in samples)
         write({'kind': 'summary', 'command_status': status, 'cancelled_signals': cancelled,
+               'command_elapsed_seconds': command_elapsed,
                'elapsed_seconds': time.monotonic() - started, 'sample_count': len(samples),
                'measurement_complete': complete,
                'observed_reserve_preserved': reserve_preserved,

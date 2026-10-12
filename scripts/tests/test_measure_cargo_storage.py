@@ -77,6 +77,11 @@ class StorageMeasurement(unittest.TestCase):
             expected = sum(p.stat().st_blocks * 512 for p in (a, b, file))
             self.assertEqual(subject.allocation([a, b]), expected)
             self.assertEqual(subject.allocation([a, a, b]), expected)
+            diagnostics = {}
+            subject.allocation([a, b], diagnostics=diagnostics)
+            self.assertEqual([row['allocated_bytes'] for row in diagnostics['allocated_by_root']],
+                             [(a.stat().st_blocks + file.stat().st_blocks) * 512,
+                              b.stat().st_blocks * 512])
             # Independent existing storage-doctor accounting oracle.
             raw = subprocess.check_output(['du', '-s', '-B1', '-c', '--', str(a), str(b)],
                                           env={**os.environ, 'LC_ALL': 'C'})
@@ -87,6 +92,15 @@ class StorageMeasurement(unittest.TestCase):
             row = subject.observe([Path(directory) / 'missing'])
             self.assertEqual(row['allocated_bytes'], 0)
             self.assertGreater(next(iter(row['filesystems'].values()))['free_bytes'], 0)
+
+    def test_symlink_does_not_adopt_external_tree(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); measured = root / 'measured'; measured.mkdir()
+            external = root / 'external'; external.mkdir()
+            (external / 'payload').write_bytes(b'x' * 65536)
+            link = measured / 'link'; link.symlink_to(external, target_is_directory=True)
+            self.assertEqual(subject.allocation([measured]),
+                             (measured.stat().st_blocks + link.lstat().st_blocks) * 512)
 
     def test_unreadable_or_partial_tree_is_unknown(self):
         with tempfile.TemporaryDirectory() as directory:
