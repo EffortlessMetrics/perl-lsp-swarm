@@ -16,7 +16,7 @@ use std::{
     env, fs,
     io::{Read, Write},
     path::{Path, PathBuf},
-    process::Command,
+    process::{Command, ExitCode},
     time::Instant,
 };
 
@@ -249,6 +249,47 @@ fn cargo_command(operation: &str, arguments: &[String], descriptor: &Value) -> R
     .collect())
 }
 
+#[derive(Debug)]
+struct BridgeFailure {
+    status: u8,
+    evidence: PathBuf,
+    detail: String,
+}
+impl std::fmt::Display for BridgeFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "cohort status {}; retained evidence {}: {}",
+            self.status,
+            self.evidence.display(),
+            self.detail
+        )
+    }
+}
+impl std::error::Error for BridgeFailure {}
+
+fn bridge_failure_status(row: Option<&Value>, child: Option<i32>) -> u8 {
+    if let Some(row) = row {
+        if row["settlement"]["tree_settled"] == false || row["status"] == 75 {
+            return 75;
+        }
+        if row["settlement"]["cancelled"] == true || row["status"] == 130 {
+            return 130;
+        }
+        if let Some(status) = row["status"]
+            .as_u64()
+            .and_then(|value| u8::try_from(value).ok())
+            .filter(|status| *status != 0)
+        {
+            return status;
+        }
+    }
+    child
+        .and_then(|value| u8::try_from(value).ok())
+        .filter(|status| *status != 0)
+        .map_or(1, |status| status)
+}
+
 struct Driver {
     root: PathBuf,
     evidence: PathBuf,
@@ -285,11 +326,21 @@ impl Driver {
             .current_dir(&self.root)
             .status()?;
         if !result.exists() {
-            bail!("cohort bridge failed without a settled result: {status}");
+            return Err(BridgeFailure {
+                status: bridge_failure_status(None, status.code()),
+                evidence: request,
+                detail: format!("bridge failed without result: {status}"),
+            }
+            .into());
         }
         let row: Value = serde_json::from_slice(&fs::read(&result)?)?;
         if !status.success() || row["status"] != 0 || row["settlement"]["tree_settled"] != true {
-            bail!("cohort execution failed; evidence retained at {}: {row}", result.display());
+            return Err(BridgeFailure {
+                status: bridge_failure_status(Some(&row), status.code()),
+                evidence: result,
+                detail: row.to_string(),
+            }
+            .into());
         }
         Ok(row)
     }
@@ -332,7 +383,18 @@ fn source_manifest(root: &Path, evidence: &Path) -> Result<Value> {
     Ok(json!({"files":entries.into_values().collect::<Vec<_>>() }))
 }
 
-fn main() -> Result<()> {
+fn main() -> ExitCode {
+    match run() {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            let status = error.downcast_ref::<BridgeFailure>().map_or(1, |failure| failure.status);
+            eprintln!("{error:?}");
+            ExitCode::from(status)
+        }
+    }
+}
+
+fn run() -> Result<()> {
     color_eyre::install()?;
     let args = Args::parse();
     if cfg!(not(target_os = "linux")) {
@@ -735,6 +797,23 @@ mod tests {
         let (metadata, packages, mut checked) = fixture();
         checked[0]["features"] = json!([]);
         assert!(plan_cohorts(&metadata, &packages, &checked).is_err());
+    }
+    #[test]
+    fn inner_closure_and_cancellation_status_survive_native_wrapper() {
+        let unsettled = json!({"status":75,"product_status":0,"settlement":{"tree_settled":false,"cancelled":false}});
+        let cancelled = json!({"status":130,"product_status":0,"settlement":{"tree_settled":true,"cancelled":true}});
+        let ordinary = json!({"status":101,"product_status":101,"settlement":{"tree_settled":true,"cancelled":false}});
+        assert_eq!(bridge_failure_status(Some(&unsettled), Some(1)), 75);
+        assert_eq!(bridge_failure_status(Some(&cancelled), Some(1)), 130);
+        assert_eq!(bridge_failure_status(Some(&ordinary), Some(1)), 101);
+        assert_eq!(bridge_failure_status(None, Some(75)), 75);
+        let error: color_eyre::eyre::Report = BridgeFailure {
+            status: 75,
+            evidence: PathBuf::from("/retained"),
+            detail: "unproven closure".into(),
+        }
+        .into();
+        assert_eq!(error.downcast_ref::<BridgeFailure>().map(|failure| failure.status), Some(75));
     }
     #[test]
     fn every_original_package_and_feature_switch_preserved() {

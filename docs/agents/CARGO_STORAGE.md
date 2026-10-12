@@ -273,6 +273,8 @@ custom Cargo environment beyond this repository's `RUST_BACKTRACE`, and compiler
 loader injection selectors remain unsupported and refuse. The existing native
 compression flags in the source-bound root Cargo configuration remain effective.
 
+The native wrapper preserves inner effective status 75 for unproven closure and 130 for settled cancellation; later outer settlement cannot upgrade that failure. Original product status remains in retained bridge evidence.
+
 The bridge inventories all and ignored cases using the real standard libtest
 `--list` interface, then executes the default unfiltered harness. Successful
 execution must report each listed case exactly once with the same ignored
