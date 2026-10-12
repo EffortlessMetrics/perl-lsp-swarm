@@ -3673,6 +3673,7 @@ pub fn perl_parser_core::pir::lower_hir_bodies(file: &perl_parser_core::hir::Hir
 pub fn perl_parser_core::pir::lower_hir_bodies_with_identity(file: &perl_parser_core::hir::HirFile, source_identity: core::option::Option<alloc::string::String>) -> perl_parser_core::pir::PirGraph
 pub fn perl_parser_core::pir::lower_hir_with_identity(file: &perl_parser_core::hir::HirFile, source_identity: core::option::Option<alloc::string::String>) -> perl_parser_core::pir::PirGraph
 pub fn perl_parser_core::pir::lower_single_body(body: &perl_parser_core::hir::HirBody, body_id: perl_parser_core::hir::HirBodyId, file: &perl_parser_core::hir::HirFile) -> alloc::vec::Vec<perl_parser_core::pir::PirNode>
+pub fn perl_parser_core::pir::lower_single_body_with_unsupported(body: &perl_parser_core::hir::HirBody, body_id: perl_parser_core::hir::HirBodyId, file: &perl_parser_core::hir::HirFile) -> (alloc::vec::Vec<perl_parser_core::pir::PirNode>, u32)
 pub mod perl_parser_core::position
 pub use perl_parser_core::position::LineEnding
 pub use perl_parser_core::position::LineIndex
