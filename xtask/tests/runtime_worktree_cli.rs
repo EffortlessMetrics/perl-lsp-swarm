@@ -176,6 +176,8 @@ fn copied_runner_selects_root_and_child_cargo_from_different_directories() -> Re
 }
 
 #[test]
+// The parent requires this isolated child's explicit execution marker.
+#[allow(clippy::print_stdout)]
 fn library_selection_child() -> Result<()> {
     let Some(root) = std::env::var_os("XTASK_LIBRARY_ROOT_PROOF") else {
         return Ok(());
