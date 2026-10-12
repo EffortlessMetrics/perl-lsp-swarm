@@ -69,9 +69,10 @@ increment alias, copied argument cells, forced scalar context, swapped ternary
 arms, AND-as-OR, repeated place evaluation, wrong loop update, `next`-as-`last`,
 `redo`-as-`next`, rollback of the pre-failure store, omitted `local`, doubled
 pre-failure effect, unexpected warning, unexpected output, lost shared-alias
-write under failure, copied shared-alias args, replayed post-`eval` effect,
-missing callee `local`, an unset error channel on success, and pre-`eval` error
-capture against a seeded dirty channel. A syntax error or
+write under failure, copied shared-alias args, global rollback of shared
+effects, replayed post-`eval` effect, missing callee `local`, an unset error
+channel on success, and pre-`eval` error capture against a seeded dirty
+channel. A syntax error or
 process timeout was not counted as a semantic mutation kill. These checks do not
 prove the future Rust/native implementation; #17522 owns that qualification.
 
