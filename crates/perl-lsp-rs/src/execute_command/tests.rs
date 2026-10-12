@@ -1481,31 +1481,39 @@ fn run_critic_native_matches_pull_diagnostics_registry() -> Result<(), Box<dyn s
 }
 
 #[test]
-fn run_critic_legacy_profile_carrier_keeps_invalid_case_fallback_strict()
+fn run_critic_profile_token_normalizes_and_defaults_to_recommended()
 -> Result<(), Box<dyn std::error::Error>> {
+    // `native.variables.unused_lexical` is strict-only (see
+    // `for_profile_with_config` docs), so its absence proves the
+    // Recommended rule set ran. Both a case/whitespace variant of a valid
+    // token and a garbage token must resolve to Recommended (#17657):
+    // the diagnostics path parses canonically and defaults to
+    // Recommended, and the command path must agree.
     let source = "use strict;\nuse warnings;\nmy $unused = 1;\nprint 1;\n";
     let tmp = tempdir()?;
     let file = tmp.path().join("unused.pl");
     fs::write(&file, source)?;
 
-    let provider = ExecuteCommandProvider::new().with_native_critic_config(
-        " RECOMMENDED ".to_string(),
-        Vec::new(),
-        Vec::new(),
-        3,
-    );
-    let result = provider.run_native_critic(&file)?;
-    let policies: Vec<&str> = result["violations"]
-        .as_array()
-        .ok_or("violations is not an array")?
-        .iter()
-        .filter_map(|violation| violation["policy"].as_str())
-        .collect();
+    for token in [" RECOMMENDED ", "not-a-profile"] {
+        let provider = ExecuteCommandProvider::new().with_native_critic_config(
+            token.to_string(),
+            Vec::new(),
+            Vec::new(),
+            3,
+        );
+        let result = provider.run_native_critic(&file)?;
+        let policies: Vec<&str> = result["violations"]
+            .as_array()
+            .ok_or("violations is not an array")?
+            .iter()
+            .filter_map(|violation| violation["policy"].as_str())
+            .collect();
 
-    assert!(
-        policies.contains(&"native.variables.unused_lexical"),
-        "legacy invalid profile fallback must remain strict: {policies:?}"
-    );
+        assert!(
+            !policies.contains(&"native.variables.unused_lexical"),
+            "profile token {token:?} must resolve to Recommended, not Strict: {policies:?}"
+        );
+    }
     Ok(())
 }
 
