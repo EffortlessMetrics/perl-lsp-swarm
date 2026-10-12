@@ -10,6 +10,7 @@ import stat
 import subprocess
 import threading
 import time
+import traceback
 
 
 class MeasurementError(RuntimeError):
@@ -96,6 +97,10 @@ def main(argv=None):
     scan_stop = threading.Event()
     samples = []
     cancelled = []
+    worker_state = {'finished': False, 'failed': False}
+    worker_failure = {'kind': 'worker-failure', 'valid': False,
+                      'error': 'periodic measurement worker failed'}
+    sample_phase = 'observation'
     started = time.monotonic()
     with evidence.open('x', encoding='utf-8') as stream:
         def write(row):
@@ -104,6 +109,8 @@ def main(argv=None):
             os.fsync(stream.fileno())
 
         def sample(kind, event=None):
+            nonlocal sample_phase
+            sample_phase = 'observation'
             row = {'kind': kind, 'elapsed_seconds': time.monotonic() - started}
             try:
                 row.update(observe(roots, event))
@@ -111,6 +118,7 @@ def main(argv=None):
             except (OSError, MeasurementError) as error:
                 row.update(valid=False, error=str(error))
             samples.append(row)
+            sample_phase = 'persistence'
             write(row)
 
         write({'schema': 'cargo-storage-measurement.v1', 'kind': 'header',
@@ -137,19 +145,38 @@ def main(argv=None):
             signal_child(signum)
         old = {sig: signal.signal(sig, interrupt) for sig in (signal.SIGINT, signal.SIGTERM)}
         def monitor():
-            while not stop.wait(args.interval):
-                try:
+            try:
+                while not stop.wait(args.interval):
                     sample('periodic', scan_stop)
-                except OSError:
-                    # Durable evidence failure must fail the measurement and stop work.
-                    samples.append({'valid': False, 'error': 'measurement persistence failed'})
-                    if not cancelled:
-                        signal_child(signal.SIGINT)
-                    return
-                if not samples[-1]['valid'] or reserve_lost(samples[-1]):
-                    if not cancelled:
-                        signal_child(signal.SIGINT)
-                    return
+                    if not samples[-1]['valid'] or reserve_lost(samples[-1]):
+                        if not cancelled:
+                            signal_child(signal.SIGINT)
+                        return
+            except BaseException as error:
+                # Mark failure independently of sample allocation/persistence.
+                # Endpoint observations and command exit 0 cannot repair coverage.
+                worker_state['failed'] = True
+                if not cancelled:
+                    signal_child(signal.SIGINT)
+                worker_failure['phase'] = sample_phase
+                worker_failure['error_type'] = type(error).__name__
+                # Do not stringify arbitrary exception payloads on an allocation
+                # failure. Keep a bounded string argument when one is available.
+                if error.args and isinstance(error.args[0], str):
+                    worker_failure['error'] = error.args[0][:1024]
+                try:
+                    traceback.print_exception(type(error), error, error.__traceback__)
+                except BaseException:
+                    pass
+                try:
+                    samples.append(worker_failure)
+                    write(worker_failure)
+                except BaseException:
+                    # Persistence/diagnostic failure cannot upgrade the verdict;
+                    # the independent terminal state remains failed.
+                    pass
+            finally:
+                worker_state['finished'] = True
         worker = threading.Thread(target=monitor)
         worker.start()
         try:
@@ -162,12 +189,14 @@ def main(argv=None):
                 signal.signal(sig, handler)
         sample('retained')
         valid = [row for row in samples if row['valid']]
-        complete = all(row['valid'] for row in samples)
+        complete = (worker_state['finished'] and not worker_state['failed']
+                    and all(row['valid'] for row in samples))
         reserve_preserved = all(not reserve_lost(row) for row in samples)
         write({'kind': 'summary', 'command_status': status, 'cancelled_signals': cancelled,
                'command_elapsed_seconds': command_elapsed,
                'elapsed_seconds': time.monotonic() - started, 'sample_count': len(samples),
                'measurement_complete': complete,
+               'worker_failure': worker_failure if worker_state['failed'] else None,
                'observed_reserve_preserved': reserve_preserved,
                'sampled_peak_allocated_bytes': max(row['allocated_bytes'] for row in valid),
                'retained_allocated_bytes': samples[-1].get('allocated_bytes'),

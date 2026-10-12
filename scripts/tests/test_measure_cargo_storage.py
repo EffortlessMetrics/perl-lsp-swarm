@@ -1,4 +1,6 @@
 import importlib.util
+import contextlib
+import io
 import json
 import os
 from pathlib import Path
@@ -18,6 +20,139 @@ spec.loader.exec_module(subject)
 
 
 class StorageMeasurement(unittest.TestCase):
+    def test_unexpected_periodic_failures_signal_real_child_even_if_it_exits_zero(self):
+        for error_type in (RuntimeError, MemoryError):
+            with self.subTest(error=error_type.__name__), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory); ready = root / 'ready'; signalled = root / 'signalled'
+                natural = root / 'natural'; evidence = root / 'receipt'
+                program = ("from pathlib import Path\nimport signal,time\n"
+                           "def stop(*_):\n Path(" + repr(str(signalled)) + ").touch()\n raise SystemExit(0)\n"
+                           "signal.signal(signal.SIGINT,stop)\nPath(" + repr(str(ready)) + ").touch()\n"
+                           "time.sleep(.4)\nPath(" + repr(str(natural)) + ").touch()\n")
+                real_observe = subject.observe
+                def observation(roots, event=None):
+                    if event is not None:
+                        deadline = time.monotonic() + 2
+                        while not ready.exists() and time.monotonic() < deadline:
+                            time.sleep(.005)
+                        if not ready.exists():
+                            raise AssertionError('real child did not become ready')
+                        raise error_type('injected periodic observer failure')
+                    return real_observe(roots, event)
+                diagnostics = io.StringIO()
+                with patch.object(subject, 'observe', side_effect=observation), contextlib.redirect_stderr(diagnostics):
+                    status = subject.main(['--root', str(root / 'target'), '--evidence', str(evidence),
+                                           '--interval', '.01', '--', sys.executable, '-c', program])
+                summary = json.loads(evidence.read_text().splitlines()[-1])
+                self.assertEqual(status, 75)
+                self.assertFalse(summary['measurement_complete'])
+                self.assertEqual(summary['command_status'], 0)
+                self.assertEqual(summary['cancelled_signals'], [])
+                self.assertTrue(signalled.exists())
+                self.assertFalse(natural.exists())
+                self.assertIn('injected periodic observer failure', diagnostics.getvalue())
+                self.assertEqual(summary['worker_failure']['error_type'], error_type.__name__)
+                self.assertEqual(summary['worker_failure']['phase'], 'observation')
+
+    def test_worker_failure_after_natural_child_completion_is_still_incomplete(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); finished = root / 'finished'; evidence = root / 'receipt'
+            program = 'from pathlib import Path; import time; time.sleep(.1); Path(' + repr(str(finished)) + ').touch()'
+            real_observe = subject.observe; real_popen = subject.subprocess.Popen; children = []
+            def launch(*args, **kwargs):
+                child = real_popen(*args, **kwargs); children.append(child); return child
+            def observation(roots, event=None):
+                if event is not None:
+                    deadline = time.monotonic() + 2
+                    while (not finished.exists() or children[0].poll() is None) and time.monotonic() < deadline:
+                        time.sleep(.005)
+                    if not finished.exists() or children[0].returncode != 0:
+                        raise AssertionError('real child did not finish naturally')
+                    raise RuntimeError('failure concurrent with successful child completion')
+                return real_observe(roots, event)
+            with patch.object(subject, 'observe', side_effect=observation), \
+                 patch.object(subject.subprocess, 'Popen', side_effect=launch), contextlib.redirect_stderr(io.StringIO()):
+                status = subject.main(['--root', str(root / 'target'), '--evidence', str(evidence),
+                                       '--interval', '.01', '--', sys.executable, '-c', program])
+            summary = json.loads(evidence.read_text().splitlines()[-1])
+            self.assertEqual((status, summary['command_status']), (75, 0))
+            self.assertFalse(summary['measurement_complete'])
+            self.assertTrue(finished.exists())
+
+    def test_short_healthy_command_needs_no_periodic_sample(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); evidence = root / 'receipt'
+            status = subject.main(['--root', str(root / 'target'), '--evidence', str(evidence),
+                                   '--interval', '10', '--', sys.executable, '-c', 'pass'])
+            samples = [json.loads(line) for line in evidence.read_text().splitlines()]
+            self.assertEqual(status, 0)
+            self.assertTrue(samples[-1]['measurement_complete'])
+            self.assertEqual([r['kind'] for r in samples], ['header', 'initial', 'retained', 'summary'])
+
+    def test_periodic_persistence_failure_stops_real_child_and_remains_incomplete(self):
+        for error_type in (OSError, RuntimeError, MemoryError):
+            with self.subTest(error=error_type.__name__), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory); ready = root / 'ready'; signalled = root / 'signalled'
+                evidence = root / 'receipt'
+                program = ("from pathlib import Path\nimport signal,time\n"
+                           "def stop(*_):\n Path(" + repr(str(signalled)) + ").touch()\n raise SystemExit(0)\n"
+                           "signal.signal(signal.SIGINT,stop)\nPath(" + repr(str(ready)) + ").touch()\ntime.sleep(.4)\n")
+                real_fsync = subject.os.fsync; calls = 0
+                def fsync(fd):
+                    nonlocal calls
+                    calls += 1
+                    if calls == 3:  # Header + initial durable writes precede periodic write.
+                        deadline = time.monotonic() + 2
+                        while not ready.exists() and time.monotonic() < deadline:
+                            time.sleep(.005)
+                        if not ready.exists():
+                            raise AssertionError('real child did not become ready')
+                        raise error_type('injected periodic persistence failure')
+                    return real_fsync(fd)
+                with patch.object(subject.os, 'fsync', side_effect=fsync), contextlib.redirect_stderr(io.StringIO()):
+                    status = subject.main(['--root', str(root / 'target'), '--evidence', str(evidence),
+                                           '--interval', '.01', '--', sys.executable, '-c', program])
+                summary = json.loads(evidence.read_text().splitlines()[-1])
+                self.assertEqual((status, summary['command_status']), (75, 0))
+                self.assertFalse(summary['measurement_complete'])
+                self.assertTrue(signalled.exists())
+                self.assertEqual(summary['worker_failure']['phase'], 'persistence')
+                self.assertEqual(summary['worker_failure']['error_type'], error_type.__name__)
+
+    def test_healthy_periodic_measurement_stays_complete(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); evidence = root / 'receipt'
+            status = subject.main(['--root', str(root / 'target'), '--evidence', str(evidence),
+                                   '--interval', '.01', '--', sys.executable, '-c', 'import time; time.sleep(.08)'])
+            persisted = [json.loads(line) for line in evidence.read_text().splitlines()]
+            self.assertEqual(status, 0)
+            self.assertTrue(any(row['kind'] == 'periodic' for row in persisted))
+            self.assertTrue(persisted[-1]['measurement_complete'])
+            self.assertIsNone(persisted[-1]['worker_failure'])
+
+    def test_periodic_reserve_loss_still_stops_real_child(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); ready = root / 'ready'; signalled = root / 'signalled'; evidence = root / 'receipt'
+            program = ("from pathlib import Path\nimport signal,time\n"
+                       "def stop(*_):\n Path(" + repr(str(signalled)) + ").touch()\n raise SystemExit(0)\n"
+                       "signal.signal(signal.SIGINT,stop)\nPath(" + repr(str(ready)) + ").touch()\ntime.sleep(.4)\n")
+            def observe(_roots, event=None):
+                if event is not None:
+                    deadline = time.monotonic() + 2
+                    while not ready.exists() and time.monotonic() < deadline:
+                        time.sleep(.005)
+                    if not ready.exists():
+                        raise AssertionError('real child did not become ready')
+                return {'allocated_bytes': 0, 'filesystems': {'1': {'free_bytes': 9 if event is not None else 100}}}
+            with patch.object(subject, 'observe', side_effect=observe):
+                status = subject.main(['--root', str(root / 'target'), '--evidence', str(evidence),
+                                       '--min-free-bytes', '10', '--interval', '.01', '--', sys.executable, '-c', program])
+            summary = json.loads(evidence.read_text().splitlines()[-1])
+            self.assertEqual((status, summary['command_status']), (75, 0))
+            self.assertTrue(signalled.exists())
+            self.assertFalse(summary['observed_reserve_preserved'])
+            self.assertTrue(summary['measurement_complete'])
+
     def test_invalid_periodic_sample_signals_the_running_command(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
