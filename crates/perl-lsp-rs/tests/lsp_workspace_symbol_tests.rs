@@ -224,18 +224,15 @@ sub target_function {
 "#,
     )?;
 
-    // Build a basic symbol as would be returned by workspace/symbol
-    let basic_symbol = json!({
-        "name": "target_function",
-        "kind": 12,
-        "location": {
-            "uri": doc_uri,
-            "range": {
-                "start": { "line": 2, "character": 0 },
-                "end": { "line": 5, "character": 1 }
-            }
-        }
-    });
+    // Take the symbol from an actual workspace/symbol search, as a client
+    // would, instead of constructing one by hand (#17688 review).
+    let search = harness
+        .request("workspace/symbol", json!({ "query": "target_function" }))
+        .map_err(|e| format!("workspace/symbol request failed: {e}"))?;
+    let results = search.as_array().ok_or("workspace/symbol must return an array")?;
+    assert_eq!(results.len(), 1, "expected exactly one target_function, got: {search:?}");
+    let basic_symbol = results[0].clone();
+    assert_eq!(basic_symbol["name"].as_str(), Some("target_function"));
 
     // Resolve the symbol for additional detail. The LSP 3.17 method is
     // `workspaceSymbol/resolve`; the server advertises

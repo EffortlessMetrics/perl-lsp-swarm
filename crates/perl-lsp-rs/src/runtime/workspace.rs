@@ -1488,6 +1488,17 @@ impl LspServer {
 
         let name = symbol.get("name").and_then(|n| n.as_str()).unwrap_or("");
 
+        // When the client supplies a location range, only the declaration at
+        // that range may enhance the symbol; a same-named declaration
+        // elsewhere in the file must not overwrite it (#17688 review).
+        let requested_start = symbol
+            .get("location")
+            .and_then(|l| l.get("range"))
+            .and_then(|r| r.get("start"))
+            .and_then(|s| {
+                Some((s.get("line")?.as_u64()? as u32, s.get("character")?.as_u64()? as u32))
+            });
+
         // Normalize the URI for lookup
         let uri_key = self.normalize_uri_key(uri);
 
@@ -1511,6 +1522,11 @@ impl LspServer {
                                 doc.line_starts.offset_to_position(&doc.text, sym.location.start);
                             let end_pos =
                                 doc.line_starts.offset_to_position(&doc.text, sym.location.end);
+                            if let Some(want) = requested_start {
+                                if start_pos != want {
+                                    continue;
+                                }
+                            }
 
                             // Start with the provided symbol JSON so we can add
                             // additional details without panicking if fields are missing
