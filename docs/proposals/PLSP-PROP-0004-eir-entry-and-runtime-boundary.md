@@ -211,18 +211,18 @@ If rejected, name the exact outstanding provider receipt and its owner; do not
 reinterpret the old condition as already satisfied. Either decision still needs
 the selected frontend families' real proof and #4770/#4773 contracts.
 
-## Execution order and claim limits
+## Claim limits and dependency direction
 
 The #2447 PackageSubTable first-effect vertical and its original-source migration
 remain separately owned. Sharing EIR foundations does not replace that accepted
 cut line or make wrapper-generated TAP into original-source execution evidence.
 
-Prepare #17536's attributed workload/admission matrix and this architecture
-review now. #17538's frontend slice has landed; after accepted entry, implement
-the existing EIR, value/state and reference-expression leaves. Native scalar lowering may begin
-once its pure family is qualified; it need not wait for all loops/calls/closures.
-Advance source/reference integration, native control/calls, then function-entry
-JIT and multi-mode qualification through #17509's existing train.
+\#17536's attributed workload/admission matrix and this architecture review are
+entry-decision inputs. #17538's frontend slice has landed; the EIR, value/state
+and reference-expression leaves additionally require accepted entry. Native
+scalar lowering requires only its qualified pure family, not all
+loops/calls/closures. Source/reference integration and native control/calls
+gate function-entry JIT and multi-mode qualification under #17509's train.
 
 \#17533 measures whether call-count hotness reaches useful work. OSR remains an
 optional measured successor, not a concealed first-JIT requirement. #17527 owns
