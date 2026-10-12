@@ -58,6 +58,10 @@ cached *args:
 check-agent-capabilities:
     {{cargo_safe}} xtask check-agent-capabilities
 
+# Docs gate (#17689): stale product names must not return to user docs.
+check-stale-doc-names:
+    bash scripts/check-stale-doc-names.sh
+
 # ============================================================================
 # Tiered CI Execution (works locally via Nix and in GitHub Actions)
 # ============================================================================

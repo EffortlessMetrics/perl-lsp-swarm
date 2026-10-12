@@ -189,7 +189,7 @@ settings.
 | `perl-lsp.formatOnSave` | boolean | `false` | Format document on save. |
 | `perl-lsp.enableTestIntegration` | boolean | `true` | Enable `Test::More` and `Test2` integration. |
 | `perl-lsp.critic.enabled` | boolean | `true` | Enable native critic diagnostics; this built-in engine needs no external tool. |
-| `perl-lsp.critic.engine` | string | `"native"` | Critic engine: `native` (built-in, default) or `legacy` (external `perlcritic` binary on `PATH`). |
+| `perl-lsp.critic.engine` | string | `"native"` | Critic engine. Only `native` (built-in, default) takes effect from VS Code settings; the server logs and ignores `legacy`/`external`/`perlcritic` on this channel. To select the external `perlcritic` engine, use the `[critic]` settings in `.perl-lsp.toml` instead. |
 | `perl-lsp.critic.severity` | number | `3` | Critic minimum severity, from `1` to `5`. |
 | `perl-lsp.critic.profile` | string | `"recommended"` | Native critic rule profile: `recommended` or `strict`. |
 | `perl-lsp.perlcritic.enabled` | boolean | `false` (deprecated) | Legacy external `perlcritic` compatibility alias. Use `perl-lsp.critic.enabled`; this alias only takes effect when `[critic].engine = "legacy"` is set in `.perl-lsp.toml`. |

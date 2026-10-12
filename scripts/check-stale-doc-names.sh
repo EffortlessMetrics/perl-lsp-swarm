@@ -18,9 +18,10 @@ if ! grep -q 'perl-lsp\.critic\.enabled' "$VS_CODE"; then
 fi
 
 # Every perlcritic.* row must carry "(deprecated" in its default/status
-# column, not merely mention deprecation in prose.
+# column (the 4th pipe-delimited field), not merely in its description.
 while IFS= read -r line; do
-  if ! printf '%s' "$line" | grep -qi '(deprecated'; then
+  default_col="$(printf '%s' "$line" | awk -F'|' '{print $4}')"
+  if ! printf '%s' "$default_col" | grep -qi '(deprecated'; then
     echo "FAIL: perlcritic setting presented as current in $VS_CODE: $line" >&2
     fail=1
   fi
@@ -34,6 +35,13 @@ if grep -n 'perl-lsp' "$EXAMPLES" >/dev/null 2>&1; then
 fi
 if ! grep -q 'perllsp' "$EXAMPLES"; then
   echo "FAIL: shipped binary name 'perllsp' missing from $EXAMPLES" >&2
+  fail=1
+fi
+
+# The runnable example client must launch the shipped binary too.
+CLIENT="$ROOT/examples/lsp_client.rs"
+if [ -f "$CLIENT" ] && grep -n 'Command::new("perl-lsp")' "$CLIENT" >/dev/null 2>&1; then
+  echo "FAIL: examples/lsp_client.rs launches 'perl-lsp', not 'perllsp'" >&2
   fail=1
 fi
 

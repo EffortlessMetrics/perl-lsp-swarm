@@ -482,18 +482,16 @@
           "perl-lsp.critic.engine": {
             "type": "string",
             "enum": [
-              "native",
-              "legacy"
+              "native"
             ],
             "enumDescriptions": [
-              "Native built-in critic (default, no external tools required)",
-              "Legacy external Perl::Critic (requires the perlcritic binary on PATH)"
+              "Native built-in critic (default, no external tools required)"
             ],
             "default": "native",
             "scope": "machine",
             "order": 33,
-            "description": "Critic engine. 'native' uses the built-in critic (default); 'legacy' shells out to an external perlcritic binary for compatibility.",
-            "markdownDescription": "Critic engine. `native` uses the built-in critic (default, no external tools); `legacy` shells out to an external `perlcritic` binary for compatibility and requires it on `PATH`."
+            "description": "Critic engine. Only 'native' (built-in, default) takes effect from VS Code settings; the server logs and ignores 'legacy' on this channel. Select the external perlcritic engine via .perl-lsp.toml instead.",
+            "markdownDescription": "Critic engine. Only `native` (built-in, default, no external tools) takes effect from VS Code settings; the server logs and ignores `legacy` on this channel. Select the external `perlcritic` engine via `.perl-lsp.toml` instead."
           },
           "perl-lsp.critic.profile": {
             "type": "string",
