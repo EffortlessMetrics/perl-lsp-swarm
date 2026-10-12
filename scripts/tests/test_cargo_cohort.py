@@ -219,6 +219,39 @@ class PortableControls(unittest.TestCase):
             constructor.assert_not_called()
         self.assertEqual(result.read_text(), 'prior evidence')
 
+    def test_duplicate_native_registrations_preserve_exact_multiplicity(self):
+        for variant in ['complete', 'drop', 'extra', 'ignored_drop']:
+            with self.subTest(variant=variant):
+                instance = self.owner()
+                regular = 1 if variant == 'drop' else 3 if variant == 'extra' else 2
+                ignored = 1 if variant == 'ignored_drop' else 2
+                run_lines = ['test repeated ... ok'] * regular + ['test ignored_repeat ... ignored'] * ignored
+                if variant == 'ignored_drop':
+                    run_lines.append('test ignored_repeat ... ok')
+                body = ('#!' + sys.executable + '\nimport sys\n'
+                        "if '--list' in sys.argv:\n"
+                        " print('ignored_repeat: test\\nignored_repeat: test' if '--ignored' in sys.argv else "
+                        "'repeated: test\\nrepeated: test\\nignored_repeat: test\\nignored_repeat: test')\n"
+                        'else:\n print(' + repr('\n'.join(run_lines)) + ')\n')
+                program = ('import json\nfrom pathlib import Path\np=Path(' + repr(str(self.exe)) + ')\n'
+                           'p.write_text(' + repr(body) + ');p.chmod(0o700)\n'
+                           'print(json.dumps(' + repr(dict(TARGET, reason='compiler-artifact', executable=str(self.exe), fresh=False)) + '))')
+                producer = [sys.executable, '-c', program]
+                consumers = {str(self.exe): {'args': [], 'cwd': str(self.root), 'verify_harness': True}}
+                if variant != 'complete':
+                    with self.assertRaisesRegex(cohort.Denied, 'omitted/duplicated cases or changed ignored population'):
+                        self.run_portable(instance, producer=producer, consumers=consumers)
+                    self.assertTrue(self.exe.exists())
+                    self.exe.unlink()  # fixture-owned control reset, after settled double
+                else:
+                    row = self.run_portable(instance, producer=producer, consumers=consumers)
+                    self.assertEqual(row['status'], 0)
+                    coverage = row['coverage'][0]
+                    self.assertEqual(coverage['cases'], ['ignored_repeat'] * 2 + ['repeated'] * 2)
+                    self.assertEqual(coverage['ignored'], ['ignored_repeat'] * 2)
+                    self.assertEqual((coverage['case_count'], coverage['ignored_count']), (4, 2))
+                    self.assertFalse(self.exe.exists())
+
     def test_success_consumes_exact_executable_then_reclaims_once(self):
         instance = self.owner()
         expected_bindings = [hashlib.sha256(path.read_bytes()).hexdigest() for path in self.manifests]

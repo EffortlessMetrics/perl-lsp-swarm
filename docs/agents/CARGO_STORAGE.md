@@ -721,3 +721,27 @@ Helper SHA256 `28d9df2f8993aea0cab926edcb4c28406cc54e3f0fdaca75238f241d278c0152`
 benchmark report SHA256
 `68c1125437fa4abd382da1de32f7ba5fba21ded274f115fbba72d6f7d2b20f18`.
 These component results are not whole-route timing or disk-fit qualification.
+
+### Repeated native case registrations
+
+The terminal warm cohort retry in run `38261171453` reached 437 cases across 32
+harnesses, then refused `xtask`'s main test binary because its list contained
+repeated case names. Rust 1.95 permits repeated `#[test]` attributes; the existing
+`module_train_live_tests.rs` source contains such registrations. An isolated real
+Cargo fixture listed each regular and ignored name twice, executed the regular
+function twice in its default four-test run, and executed the ignored function
+twice under `--ignored`. Each operation settled and released its lease. Fixture
+report SHA256:
+`6b5b1a1f94ec21b656df20a730ce58fe46d9af34bb15b348de497fd90ec9670a`.
+
+Inventory now preserves case-name multiplicity within each exact target binding.
+The all, ignored and completed populations use multisets; ignored counts must be
+contained in all counts, and successful execution must match both populations
+exactly. Serialized arrays and hashes retain repeated names. Dropped, added or
+changed ignored occurrences refuse and preserve executable groups. This does
+not deduplicate or alter existing tests, invent distinct occurrence IDs, change
+binary bindings/default arguments, or grant cleanup after partial success.
+Ordinary reporting also preserves legitimate repeated names while refusing
+missing/excess output relative to the native `running N tests` count. Complete
+ordinary/cohort fixture reports agree on 24 occurrences and 12 ignored across
+six targets; ignored multiplicity overflow fails verification.

@@ -23,7 +23,7 @@ class QualificationInventory(unittest.TestCase):
                 row['executable'] = '/private/' + package
                 rows.append(row)
             compiler = '\n'.join(json.dumps(row) for row in [*rows, {'reason': 'build-finished', 'success': True}])
-            (evidence / 'route.stdout').write_text(compiler + '\n' + ('running 1 test\ntest case ... ok\ntest result: ok.\n' * 6))
+            (evidence / 'route.stdout').write_text(compiler + '\n' + ('running 4 tests\ntest case ... ok\ntest case ... ok\ntest skipped ... ignored\ntest skipped ... ignored\ntest result: ok.\n' * 6))
             (evidence / 'route.stderr').write_text(''.join('Running tests/shared.rs (' + row['executable'] + ')\n' for row in rows)
                 + 'cargo-admitted Cargo settlement: {"tree_settled":true}\n')
             ordinary = subject.report(evidence, 'ordinary', Path('/work'))
@@ -35,13 +35,23 @@ class QualificationInventory(unittest.TestCase):
                 (cohort / (stem + '-compiler.jsonl')).write_text(compiler)
                 receipt = {'status': 0, 'settlement': {'tree_settled': True}, 'coverage': []}
                 if index:
-                    receipt['coverage'] = [{'executable': row['executable'], 'cases': ['case'], 'ignored': []} for row in rows]
+                    receipt['coverage'] = [{'executable': row['executable'], 'cases': ['case', 'case', 'skipped', 'skipped'], 'ignored': ['skipped', 'skipped']} for row in rows]
                 (cohort / (stem + '-result.json')).write_text(json.dumps(receipt))
             native = subject.report(evidence, 'cohort', Path('/work'))
             self.assertTrue(native['case_inventory_complete'])
+            self.assertEqual((native['case_count'], native['ignored_count']), (24, 12))
             self.assertEqual(native['units_sha256'], ordinary['units_sha256'])
             self.assertEqual(native['cases_sha256'], ordinary['cases_sha256'])
             result_path = cohort / '0001-result.json'
+            valid_receipt = result_path.read_text()
+            overflow = json.loads(valid_receipt)
+            overflow['coverage'][0]['ignored'].append('skipped')
+            result_path.write_text(json.dumps(overflow))
+            invalid_population = subject.report(evidence, 'cohort', Path('/work'))
+            self.assertFalse(invalid_population['case_inventory_complete'])
+            self.assertFalse(invalid_population['case_receipts_successful_and_settled'])
+            self.assertEqual(len(invalid_population['receipt_errors']), 1)
+            result_path.write_text(valid_receipt)
             for status, settled in [(101, True), (0, False)]:
                 invalid = json.loads(result_path.read_text())
                 invalid.update(status=status, settlement={'tree_settled': settled})
@@ -50,7 +60,7 @@ class QualificationInventory(unittest.TestCase):
                 self.assertTrue(failed['observed_case_inventory_complete'])
                 self.assertFalse(failed['case_inventory_complete'])
                 self.assertFalse(failed['case_receipts_successful_and_settled'])
-                self.assertEqual(failed['case_count'], 6)
+                self.assertEqual(failed['case_count'], 24)
             (cohort / '0000-compiler.jsonl').write_text('\n'.join(json.dumps(row) for row in [*rows[:-1], {'reason': 'build-finished', 'success': True}]))
             self.assertFalse(subject.report(evidence, 'cohort', Path('/work'))['unit_inventory_complete'])
 
@@ -127,9 +137,9 @@ class QualificationInventory(unittest.TestCase):
         changed = {key: {**value, 'ignored': []} for key, value in result.items()}
         self.assertNotEqual(subject.digest(result), subject.digest(changed))
 
-    def test_omissions_duplicates_and_ambiguous_nesting_refuse(self):
+    def test_omissions_excess_occurrences_and_ambiguous_nesting_refuse(self):
         for body in ('running 2 tests\ntest one ... ok\ntest result: ok.\n',
-                     'running 2 tests\ntest one ... ok\ntest one ... ok\ntest result: ok.\n',
+                     'running 1 test\ntest one ... ok\ntest one ... ok\ntest result: ok.\n',
                      'running 1 test\nrunning 1 test\n'):
             with self.assertRaises(ValueError):
                 subject.ordinary_cases(body, 'Running tests/shared.rs (/private/shared)\n', [self.row()], Path('/work'))

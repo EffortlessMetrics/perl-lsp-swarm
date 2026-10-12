@@ -8,6 +8,7 @@ Private roots must remain exclusively owned; unlink is not an atomic conditional
 operation against hostile concurrent writers. Only complete, newly produced private Cargo alias groups may be reclaimed.
 """
 import hashlib
+from collections import Counter
 import re
 import json
 import os
@@ -625,9 +626,9 @@ class Cohort:
                 if match is None:
                     raise Denied('unsupported native libtest list output')
                 names.append(match.group(1))
-            if len(names) != len(set(names)):
-                raise Denied('native harness inventory has duplicate cases')
-            populations.append(set(names)); logs.append(str(log))
+            # Rust permits duplicate #[test] attributes: each registration must
+            # execute, even when its displayed case name is identical.
+            populations.append(Counter(names)); logs.append(str(log))
         all_cases, ignored_cases = populations
         if not ignored_cases <= all_cases:
             raise Denied('native ignored inventory differs from full inventory')
@@ -640,18 +641,18 @@ class Cohort:
             sys.stdout.write(text)
         if status == 0:
             completed = []
-            ignored = set()
+            ignored = Counter()
             for line in text.splitlines():
                 match = re.fullmatch(r'test (.+?)(?: - should panic)? \.\.\. (ok|ignored(?:, .*)?)', line)
                 if match:
                     completed.append(match.group(1))
                     if match.group(2).startswith('ignored'):
-                        ignored.add(match.group(1))
-            if len(completed) != len(set(completed)) or set(completed) != all_cases or ignored != ignored_cases:
+                        ignored[match.group(1)] += 1
+            if Counter(completed) != all_cases or ignored != ignored_cases:
                 raise Denied('native successful harness run omitted/duplicated cases or changed ignored population')
-        return {'executable': str(path), 'status': status, 'cases': sorted(all_cases),
-                'ignored': sorted(ignored_cases), 'case_count': len(all_cases),
-                'ignored_count': len(ignored_cases), 'logs': [*logs, str(log)]}
+        return {'executable': str(path), 'status': status, 'cases': sorted(all_cases.elements()),
+                'ignored': sorted(ignored_cases.elements()), 'case_count': sum(all_cases.values()),
+                'ignored_count': sum(ignored_cases.values()), 'logs': [*logs, str(log)]}
 
     def _launch(self, tree, command, env, **kwargs):
         self._check_owner()

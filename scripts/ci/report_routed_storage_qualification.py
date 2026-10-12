@@ -68,7 +68,7 @@ def ordinary_cases(stdout, stderr, rows, root):
             if case:
                 current.append((case[1], case[2].startswith('ignored')))
             if line.startswith('test result:'):
-                if len(current) != count or len({name for name, _ in current}) != count:
+                if len(current) != count:
                     raise ValueError('incomplete or duplicate ordinary case output')
                 blocks.append({'cases': sorted(name for name, _ in current),
                                'ignored': sorted(name for name, ignored in current if ignored)})
@@ -130,9 +130,7 @@ def report(evidence, mode, root):
                     if (not isinstance(item, dict) or not isinstance(item.get('executable'), str)
                             or not isinstance(item.get('cases'), list) or not isinstance(item.get('ignored'), list)
                             or any(not isinstance(name, str) for name in [*item['cases'], *item['ignored']])
-                            or len(item['cases']) != len(set(item['cases']))
-                            or len(item['ignored']) != len(set(item['ignored']))
-                            or not set(item['ignored']) <= set(item['cases'])):
+                            or not collections.Counter(item['ignored']) <= collections.Counter(item['cases'])):
                         raise ValueError('invalid result coverage shape')
             except (OSError, ValueError) as error:
                 case_receipts_verified = False
