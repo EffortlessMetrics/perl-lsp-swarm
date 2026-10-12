@@ -126,14 +126,95 @@ impl NativeFormatter {
         let mut formatted = String::with_capacity(source.len());
         let mut processed_lines = 0_u64;
         let fallback_line_ending = inferred_line_ending(source);
+        // Block indents from admitted rendered-boundary lines only (#17660).
+        // Each stack entry is the opener line's indent; body lines sit one
+        // unit deeper than their opener, closers return to it. Lines the
+        // boundary recognizer does not admit never move the stack, and
+        // outside any tracked block the original per-line behavior is kept,
+        // so opaque regions (heredocs, POD, regexes, comments) and
+        // intentionally indented top-level code are untouched.
+        let mut indent_stack: Vec<String> = Vec::new();
+        let unit = indent_unit(config);
+        // Physical lines inside a multiline literal (string, regex, qw…)
+        // are literal bytes, not code: never reindent them and never let
+        // their contents move the block stack.
+        let literal_lines = multiline_literal_lines(source);
 
-        for line in source.split_inclusive('\n') {
+        for (line_index, line) in source.split_inclusive('\n').enumerate() {
             processed_lines = processed_lines.saturating_add(1);
             let (body, line_ending) = split_line_ending(line);
+            if literal_lines.contains(&line_index) {
+                formatted.push_str(body);
+                formatted.push_str(line_ending);
+                continue;
+            }
             let generated_line_ending =
                 if line_ending.is_empty() { fallback_line_ending } else { line_ending };
-            let formatted_body =
-                format_simple_line(body, config).unwrap_or_else(|| body.to_string());
+            let formatted_body = if body.trim().is_empty() {
+                body.to_string()
+            } else if is_rendered_block_boundary_line(body, config) {
+                let role = rendered_boundary_role(body);
+                let popped = if role.closes_block { indent_stack.pop() } else { None };
+                let indent = match popped {
+                    Some(opener) => opener,
+                    None => match indent_stack.last() {
+                        Some(opener) => format!("{opener}{unit}"),
+                        None => body[..body.len() - body.trim_start().len()].to_string(),
+                    },
+                };
+                if role.opens_block {
+                    indent_stack.push(indent.clone());
+                }
+                match format_simple_line(&format!("{indent}{}", body.trim_start()), config) {
+                    Some(formatted) => formatted,
+                    None => format!("{indent}{}", body.trim_start()),
+                }
+            } else {
+                // Non-boundary lines can still open or close a block the
+                // boundary recognizer does not admit (anonymous subs,
+                // `eval {`, `do {`, multiline hashes). Track those from the
+                // comment-stripped source shape so nested bodies are not
+                // flattened to the outer level; lines that neither open
+                // nor close keep the original behavior outside a block.
+                let (code, _comment) = split_trailing_comment(body);
+                let code = code.trim();
+                let closes = code.starts_with('}');
+                let opens = code.ends_with('{') && !code.starts_with('{');
+                let popped = if closes { indent_stack.pop() } else { None };
+                let indent =
+                    popped.or_else(|| indent_stack.last().map(|opener| format!("{opener}{unit}")));
+                match indent {
+                    Some(indent) => {
+                        let candidate = format!("{indent}{}", body.trim_start());
+                        let formatted = match format_simple_line(&candidate, config) {
+                            Some(formatted) => formatted,
+                            // Structural lines and lines opening a multiline
+                            // literal only move leading whitespace, which
+                            // cannot change meaning.
+                            None if closes
+                                || opens
+                                || literal_lines.contains(&(line_index + 1)) =>
+                            {
+                                candidate
+                            }
+                            None => body.to_string(),
+                        };
+                        if opens {
+                            indent_stack.push(indent);
+                        }
+                        formatted
+                    }
+                    None => {
+                        let formatted =
+                            format_simple_line(body, config).unwrap_or_else(|| body.to_string());
+                        if opens {
+                            let leading = body[..body.len() - body.trim_start().len()].to_string();
+                            indent_stack.push(leading);
+                        }
+                        formatted
+                    }
+                }
+            };
             formatted
                 .push_str(&preserve_generated_line_endings(formatted_body, generated_line_ending));
             formatted.push_str(line_ending);
@@ -210,6 +291,31 @@ impl NativeFormatter {
             FinalNewline::Trim => formatted.trim_end_matches(['\n', '\r']).to_string(),
         }
     }
+}
+
+/// Line indices (0-based) covered by a multiline literal token, excluding
+/// the line the token starts on. Those lines are literal bytes: the block
+/// stack must ignore them and formatting must preserve them exactly.
+fn multiline_literal_lines(source: &str) -> std::collections::HashSet<usize> {
+    let mut lines = std::collections::HashSet::new();
+    let line_starts: Vec<usize> =
+        std::iter::once(0).chain(source.match_indices('\n').map(|(index, _)| index + 1)).collect();
+    let line_of = |offset: usize| line_starts.partition_point(|start| *start <= offset) - 1;
+    let mut stream = perl_parser_core::TokenStream::new(source);
+    loop {
+        match stream.next() {
+            Ok(token) if token.kind() == perl_parser_core::TokenKind::Eof => break,
+            Ok(token) => {
+                if token.text.contains('\n') {
+                    for line in line_of(token.start()) + 1..=line_of(token.end()) {
+                        lines.insert(line);
+                    }
+                }
+            }
+            Err(_) => break,
+        }
+    }
+    lines
 }
 
 impl PerlFormatter for NativeFormatter {

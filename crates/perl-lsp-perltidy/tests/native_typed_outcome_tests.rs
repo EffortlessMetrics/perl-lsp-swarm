@@ -304,24 +304,18 @@ fn typed_document_result_still_refuses_a_block_whose_body_is_unsupported() {
 }
 
 #[test]
-fn typed_document_result_refuses_a_hand_written_block_the_renderer_never_emitted() {
-    // Class falsifier for the #16708 review: boundary *shape* alone cannot
-    // claim rendered form. `push_simple_block_body_docs` indents every body
-    // line at least one `indent_unit` past its block's header, so an
-    // unindented body under an admitted boundary is hand-written input, not
-    // formatter output. This is the exact subject the `perl-lsp-rs`
-    // formatting-policy receipt tests pin as `Refused/UnsupportedSyntax` with
-    // its unsupported-syntax warning. The safety evidence stays unproven:
-    // no pipeline pass established parse or literal evidence for this input.
+fn typed_document_result_formats_a_hand_written_block() {
+    // #17660 contract change (supersedes the #16708 refusal pin): a
+    // hand-written block under admitted boundaries is now reindented to
+    // the renderer's layout and classifies Applied, instead of refusing
+    // as UnsupportedSyntax. Boundary shape still cannot claim *rendered*
+    // form by itself — the formatted bytes are produced by the pipeline
+    // and parse-gated, and a second pass must reach NoChange.
     let formatter = NativeFormatter::new();
     for source in [
-        // The receipt-policy subject: supported header, supported unindented
-        // body statement, bare tail.
         "sub f {\nreturn 1;\n}\n",
         "while ($ok) {\nreturn 1;\n}\n",
-        // `BracePlacement::NextLine` opener with the same unindented body.
         "if ($ok)\n{\nreturn 1;\n}\n",
-        // Renderer-consistent body, but the tail sits at a foreign indent.
         "sub f {\n    return 1;\n  }\n",
     ] {
         let typed = formatter.format_document_typed(
@@ -332,22 +326,26 @@ fn typed_document_result_refuses_a_hand_written_block_the_renderer_never_emitted
 
         assert_eq!(
             typed.outcome.disposition,
-            FormatDisposition::Refused,
-            "hand-written {source:?} must not classify as already formatted"
+            FormatDisposition::Applied,
+            "hand-written {source:?} must now be formatted"
         );
-        assert_eq!(typed.outcome.reason, FormatReasonCode::UnsupportedSyntax);
-        assert!(!typed.result.changed);
-        assert!(typed.result.diagnostics.is_empty(), "refusal is by admission, not by diagnostic");
-        assert_eq!(typed.outcome.safety.parse_before, FormatEvidenceState::NotRun);
-        assert_eq!(typed.outcome.safety.parse_after, FormatEvidenceState::NotRun);
-        assert_eq!(typed.outcome.safety.literal_preservation, FormatEvidenceState::Refused);
+        assert_eq!(typed.outcome.reason, FormatReasonCode::Applied);
+        assert!(typed.result.changed);
+
+        let second = formatter.format_document_typed(
+            &typed.result.formatted,
+            &FormatConfig::default(),
+            &FormatContext::default(),
+        );
+        assert_eq!(second.outcome.disposition, FormatDisposition::NoChange);
+        assert!(!second.result.changed);
     }
 }
 
 #[test]
 fn typed_document_result_admits_renderer_layout_bytes_without_a_rendering_pass() {
     // The document-level evidence admits exactly the layout the renderer
-    // emits — checked directly against those bytes, not only through a first
+    // emits â€” checked directly against those bytes, not only through a first
     // rendering pass: same block as the refused hand-written subject above,
     // with the body at the renderer's own indent.
     let formatter = NativeFormatter::new();
@@ -442,9 +440,9 @@ fn typed_outcome_serializes_without_parsing_diagnostic_prose() -> Result<(), ser
 fn format_range_typed_refuses_bare_cr_heredoc_as_literal_preservation_not_unsafe_range() {
     let formatter = NativeFormatter::new();
     // Bare-CR document (line endings are bare \r):
-    //   line 0: "print <<EOT;"   — heredoc marker
-    //   line 1: "EOT"            — terminator
-    //   line 2: ""               — trailing empty (after the final \r)
+    //   line 0: "print <<EOT;"   â€” heredoc marker
+    //   line 1: "EOT"            â€” terminator
+    //   line 2: ""               â€” trailing empty (after the final \r)
     let source = "print <<EOT;\rEOT\r";
     // Range covering the heredoc marker (line 0) through the terminator (line 1).
     // Before the fix this produced UnsafeRange because valid_range treated the
@@ -487,7 +485,7 @@ fn format_range_typed_accepts_valid_range_on_bare_cr_document_without_heredoc() 
     //   line 1: "my$y=2;"
     //   line 2: ""
     let source = "my$x=1;\rmy$y=2;\r";
-    // Range covering only line 1 — valid in the CR-aware view.
+    // Range covering only line 1 â€” valid in the CR-aware view.
     let range = TextRange::new(TextPosition::new(1, 0), TextPosition::new(2, 0));
 
     let typed = formatter.format_range_typed(
@@ -498,11 +496,77 @@ fn format_range_typed_accepts_valid_range_on_bare_cr_document_without_heredoc() 
     );
 
     // The range is valid and the source is clean, so the formatter must reach
-    // a formatting decision (Applied or AlreadyFormatted) — not UnsafeRange.
+    // a formatting decision (Applied or AlreadyFormatted) â€” not UnsafeRange.
     assert_ne!(
         typed.outcome.reason,
         FormatReasonCode::UnsafeRange,
         "a valid range on a bare-CR source must not be refused as UnsafeRange; got: {:?}",
         typed.outcome.reason,
     );
+}
+
+#[test]
+fn reindents_misindented_sub_and_conditional_blocks() {
+    let formatter = NativeFormatter::new();
+    let source = "sub foo {\nmy $x = 1;\nif ($x) {\nmy $y = 2;\n}\n}\n";
+    let expected = "sub foo {\n    my $x = 1;\n    if ($x) {\n        my $y = 2;\n    }\n}\n";
+
+    let result = formatter.format_document(source, &FormatConfig::default());
+    assert_eq!(result.formatted, expected);
+
+    let second = formatter.format_document(&result.formatted, &FormatConfig::default());
+    assert_eq!(second.formatted, expected, "reindent must be idempotent");
+    assert!(!second.changed);
+}
+
+#[test]
+fn reindent_leaves_literal_preserve_documents_unchanged() {
+    // The document-level literal-preserve gate still refuses documents
+    // containing heredocs wholesale; relaxing it is a separate claim.
+    let formatter = NativeFormatter::new();
+    let source = "sub foo {\nmy $x = <<'EOF';\n  keep   me\nEOF\nmy $y = 1;\n}\n";
+    let expected = source;
+
+    let result = formatter.format_document(source, &FormatConfig::default());
+    assert_eq!(result.formatted, expected);
+}
+
+#[test]
+fn reindent_keeps_anonymous_sub_bodies_nested() {
+    let formatter = NativeFormatter::new();
+    // Already-correct nesting through a non-boundary opener must be a
+    // no-op (regression: bodies were flattened to the outer level).
+    let correct = "sub outer {\n    my $f = sub {\n        my $x = 1;\n    };\n    my $y = 2;\n}\n";
+    let result = formatter.format_document(correct, &FormatConfig::default());
+    assert_eq!(result.formatted, correct);
+    assert!(!result.changed);
+
+    let misindented = "sub outer {\nmy $f = sub {\nmy $x = 1;\n};\nmy $y = 2;\n}\n";
+    let fixed = formatter.format_document(misindented, &FormatConfig::default());
+    assert_eq!(fixed.formatted, correct);
+    let second = formatter.format_document(&fixed.formatted, &FormatConfig::default());
+    assert!(!second.changed);
+}
+
+#[test]
+fn reindent_preserves_multiline_string_contents() {
+    let formatter = NativeFormatter::new();
+    // The indented `}` is string content, not a block closer.
+    let source = "sub f {\nmy $s = \"hello\n    }\nworld\";\nreturn 1;\n}\n";
+    let expected = "sub f {\n    my $s = \"hello\n    }\nworld\";\n    return 1;\n}\n";
+    let result = formatter.format_document(source, &FormatConfig::default());
+    assert_eq!(result.formatted, expected);
+    let second = formatter.format_document(&result.formatted, &FormatConfig::default());
+    assert!(!second.changed);
+}
+
+#[test]
+fn reindent_survives_unsupported_inline_else_tail() {
+    let formatter = NativeFormatter::new();
+    let source = "sub f {\nif ($x) {\nreturn 1;\n} else { print 2; }\nreturn 3;\n}\n";
+    let result = formatter.format_document(source, &FormatConfig::default());
+    // The unsupported tail line is preserved; following lines must return
+    // to sub level, not stay at if level.
+    assert!(result.formatted.ends_with("return 3;\n}\n"), "got: {:?}", result.formatted);
+    assert!(result.formatted.contains("\n    return 3;\n"), "got: {:?}", result.formatted);
 }
