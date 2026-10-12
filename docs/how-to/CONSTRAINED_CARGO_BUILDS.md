@@ -63,6 +63,43 @@ processes, and independent later artifact consumers are outside that lease.
 The root/native orchestrator must account for those consumers and own the build
 lane. A preflight report cannot be replayed as permission for a later command.
 
+## Prepare historical inputs in a fresh cloud checkout
+
+Cloud clones and saved snapshots may use `remote.origin.tagOpt=--no-tags`.
+Updating `origin/main` alone then leaves release-history gates without their
+required tag refs. From the repository root, run this existing provenance entry
+after refreshing the source and before setup preflight or gate qualification:
+
+```bash
+python3 scripts/check_release_tag_provenance.py --prepare-git --repo-root .
+```
+
+For a cloud environment's setup script, add that command before its existing
+`just devplane-init` / `just agent-preflight` steps. The script is a repository
+entry; the environment's saved setup configuration must separately invoke it.
+No Rust build is needed for this step (Python 3.11+ or `tomli`, and Git are required).
+
+Preparation reads required names and pinned commit identities from
+[`policy/release-tag-provenance.toml`](../../policy/release-tag-provenance.toml).
+It fetches missing declared live tag refs from `origin` with explicit refspecs,
+and restores full history for a shallow clone. It changes no Git configuration,
+preserves `FETCH_HEAD`, and never forces or prunes refs. A conflicting existing
+tag fails before fetching. Unrelated remote tags are not requested. Audited
+`unresolvable = true` lineage records stay governed by the existing manifest;
+preparation does not manufacture tags or declare those records reachable.
+
+Success requires the existing pin, recorded-object and lineage verification.
+An unavailable remote/ref, conflicting pin, or shallow source that cannot provide
+full history remains a failure, even if some objects were downloaded. A failed
+pin verification may leave the fetched ref available for diagnosis; preparation
+does not delete or rewrite it. Once prepared, `--prepare-git` needs no network
+when all declared live refs are present and history is complete.
+
+For an offline readiness check, use `--verify-git` instead. The default command
+without either Git option validates only manifest structure and does not prove
+historical inputs are available. This step prepares release-history inputs; it
+does not qualify Cargo capacity, selected gate coverage, or a release.
+
 ## Supply an explicit host budget when the default does not apply
 
 A host operator may select a smaller reserve only with a defensible sizing basis
