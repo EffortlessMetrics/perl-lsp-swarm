@@ -243,16 +243,23 @@ fn pir_a_ternary_as_bare_assign_rhs_keeps_consumer_reachable() -> TestResult {
     Ok(())
 }
 
-/// A constant/opaque condition (`1 ? $a : $b`) emits no condition node, so the
-/// ternary Branch's condition link stays `None` (fail-closed) — the Branch node
-/// is still emitted with its arm edges.
+/// An admitted constant condition (`1 ? $a : $b`) links to its exact leaf
+/// (#17538); only opaque conditions leave the link `None` (fail-closed). The
+/// Branch node is still emitted with its arm edges either way.
 #[test]
-fn pir_a_ternary_constant_condition_link_is_none() -> TestResult {
+fn pir_a_ternary_constant_condition_links_to_literal() -> TestResult {
     let graph = parse_and_lower("my $x = 1 ? $a : $b;");
     let node = single_branch(&graph)?;
+    let cond_id =
+        branch_condition(node)?.ok_or("constant `1` is an exact leaf, so link must be Some")?;
+    let cond_node = graph.node(cond_id).ok_or("condition link must resolve to a real node")?;
     assert!(
-        branch_condition(node)?.is_none(),
-        "a constant condition emits no node, so the condition link must be None (fail-closed)"
+        matches!(
+            &cond_node.operation,
+            PirOperation::Literal { value: Some(payload), .. } if payload == "1"
+        ),
+        "condition link must point at the `1` leaf, got {:?}",
+        cond_node.operation
     );
     // The arms still lower and are reached by Branch edges.
     for ident in ["a", "b"] {

@@ -10,10 +10,11 @@ use crate::syntax::regex_analysis::RegexAnalysisFamily;
 use super::body::{
     AccessMode, Arena, AssignMode, BinaryOp, BodyOwner, BodyOwnerKind, BodySourceMap,
     DeclStorageClass, HirBlock, HirBlockId, HirBody, HirBodyId, HirCatchHandler, HirExpr,
-    HirExprId, HirLoopLabel, HirLoopRegionId, HirRegex, HirRegexMatch, HirRegexTarget, HirStmt,
-    HirStmtId, HirSubscript, HirSubstitution, HirTransliteration, HirVariable,
-    LoopControlResolution, RegexAnalysisAnchor, ReplacementEvaluation, Sigil, SubscriptKind,
-    UnaryMode, VariableKind, diamond_expr, glob_expr, heredoc_expr, readline_expr,
+    HirExprId, HirLiteral, HirLiteralKind, HirLoopLabel, HirLoopRegionId, HirRegex, HirRegexMatch,
+    HirRegexTarget, HirStmt, HirStmtId, HirSubscript, HirSubstitution, HirTransliteration,
+    HirVariable, LoopControlResolution, RegexAnalysisAnchor, ReplacementEvaluation, Sigil,
+    SubscriptKind, UnaryMode, VariableKind, diamond_expr, glob_expr, heredoc_expr, readline_expr,
+    strip_string_quotes,
 };
 use super::model::{
     AstAnchor, BarewordExpr, BarewordFact, BarewordRole, BarewordTable, Binding, BindingReference,
@@ -3585,6 +3586,26 @@ fn is_synthesized_true_condition(condition: &Node) -> bool {
         && condition.location.start == condition.location.end
 }
 
+/// Whether a numeric token is a plain decimal literal admitted to the first
+/// scalar cohort (#17538). The lexeme must be one or more ASCII digits with no
+/// base prefix, fraction, exponent, or separator: anything else keeps falling
+/// through to `Opaque` so no normalization or coercion is implied.
+fn is_plain_decimal(value: &str) -> bool {
+    !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit())
+}
+
+/// Whether a scalar leaf node was fabricated by parser recovery rather than
+/// written (#17538).
+///
+/// Currently detects only the proven zero-width `Number("1")` shape (orphaned-
+/// `else` shells and the `while ()` empty-condition idiom share it, and a
+/// written token always spans at least one character, so the marker is truthful
+/// in every arm). Any other shape reports `false`; broader fabrication
+/// coverage belongs to #6666's honesty sweep, not to this leaf.
+fn is_fabricated_scalar(node: &Node) -> bool {
+    is_synthesized_true_condition(node)
+}
+
 fn variable_binding(node: &Node) -> Option<VariableBinding> {
     match &node.kind {
         NodeKind::Variable { sigil, name } => {
@@ -5148,6 +5169,48 @@ impl<'a> BodyBuilder2<'a> {
                     range,
                 )
             }
+
+            // First-cohort scalar literals (#17538): typed leaves with exact
+            // source-derived payloads. Anything outside the admitted families
+            // (bases, floats, exponents, interpolated strings, version strings)
+            // keeps falling through to Opaque below.
+            NodeKind::Number { value } if is_plain_decimal(value) => self.alloc_expr(
+                HirExpr::Literal(HirLiteral {
+                    kind: HirLiteralKind::Number,
+                    payload: value.clone(),
+                    quote: None,
+                    synthesized: is_fabricated_scalar(node),
+                }),
+                range,
+            ),
+            NodeKind::String { value, interpolated: false } => {
+                match strip_string_quotes(value) {
+                    Some((content, quote)) => self.alloc_expr(
+                        HirExpr::Literal(HirLiteral {
+                            kind: HirLiteralKind::String,
+                            payload: content.to_string(),
+                            quote: Some(quote),
+                            synthesized: false,
+                        }),
+                        range,
+                    ),
+                    // Unquoted, mismatched, or quote-like spellings stay
+                    // Opaque: same fallback as the catch-all below.
+                    None => self.alloc_expr(
+                        HirExpr::Opaque { ast_kind: node.kind.kind_name().to_string() },
+                        range,
+                    ),
+                }
+            }
+            NodeKind::Undef => self.alloc_expr(
+                HirExpr::Literal(HirLiteral {
+                    kind: HirLiteralKind::Undef,
+                    payload: String::new(),
+                    quote: None,
+                    synthesized: false,
+                }),
+                range,
+            ),
 
             _ => {
                 // Everything else: emit Opaque. This is the "fail closed" path.

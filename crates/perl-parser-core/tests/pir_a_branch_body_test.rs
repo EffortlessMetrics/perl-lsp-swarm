@@ -98,12 +98,23 @@ fn pir_a_branch_condition_links_to_condition_read() -> TestResult {
     Ok(())
 }
 
-/// A constant condition emits no PIR node, so the link stays None (fail-closed).
+/// An admitted constant condition links to its exact leaf (#17538); only opaque
+/// conditions leave the link None (fail-closed).
 #[test]
-fn pir_a_branch_constant_condition_is_none() -> TestResult {
+fn pir_a_branch_constant_condition_links_to_literal() -> TestResult {
     let graph = parse_and_lower("if (1) { my $y = 1; }");
     let branch = single_branch(&graph)?;
-    assert!(branch_condition(branch)?.is_none(), "a constant `1` condition emits no PIR node");
+    let cond_id =
+        branch_condition(branch)?.ok_or("constant `1` is an exact leaf, so link must be Some")?;
+    let cond_node = graph.node(cond_id).ok_or("condition link must resolve to a real node")?;
+    assert!(
+        matches!(
+            &cond_node.operation,
+            PirOperation::Literal { value: Some(payload), .. } if payload == "1"
+        ),
+        "condition link must point at the `1` leaf, got {:?}",
+        cond_node.operation
+    );
     Ok(())
 }
 

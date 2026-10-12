@@ -12,7 +12,7 @@
 //! authoritative contract is [`PLSP-SPEC-0025`](../../../../docs/specs/PLSP-SPEC-0025-pir-v0.md).
 
 use crate::SourceLocation;
-use crate::hir::{DerefAggregateKind, DerefOperandKind, HirId, HirScopeId};
+use crate::hir::{DerefAggregateKind, DerefOperandKind, HirId, HirQuoteKind, HirScopeId};
 use perl_semantic_facts::AnchorId;
 use std::collections::BTreeMap;
 
@@ -624,6 +624,22 @@ pub enum PirOperation {
     Literal {
         /// Literal category preserved from HIR.
         kind: PirLiteralKind,
+        /// Scalar payload when the producing HIR carries one (#17538).
+        /// Producer convention: the body path emits quote-stripped content
+        /// for `Number`/`String` and `None` for `Undef`; the legacy flat path
+        /// passes its token text through verbatim (quotes included). `None`
+        /// means the kind or path has no scalar payload here, never a lost
+        /// value: a first-cohort body leaf always emits `Some` in the same
+        /// lowering generation, so no cross-generation join can mismatch it.
+        value: Option<String>,
+        /// String quoting when known. Body-produced string operations always
+        /// carry it; flat-path operations carry it when the token text admits
+        /// detection. `None` for non-strings or undetectable legacy spellings.
+        quote: Option<HirQuoteKind>,
+        /// Whether the producing HIR node was fabricated by parser recovery
+        /// rather than written. Consumers must treat a flagged payload as
+        /// recovery-supplied.
+        synthesized: bool,
     },
     /// A subroutine or function call.
     Call {
@@ -1119,7 +1135,12 @@ mod tests {
 
     #[test]
     fn pir_operation_literal_name() {
-        let op = PirOperation::Literal { kind: PirLiteralKind::Hash };
+        let op = PirOperation::Literal {
+            kind: PirLiteralKind::Hash,
+            value: None,
+            quote: None,
+            synthesized: false,
+        };
         assert_eq!(op.name(), "Literal");
         assert_eq!(PirLiteralKind::Hash.name(), "Hash");
     }
