@@ -1149,11 +1149,13 @@ def release(
 def stale_slot(slot: dict[str, Any], stale_days: int) -> bool:
     if slot.get("status") not in {"idle", "active", "dirty"}:
         return False
-    last_released = slot.get("last_released_at")
-    if not last_released:
+    # A slot whose lane died before `release` has no release timestamp;
+    # age it from its last allocation/use instead of never going stale.
+    aged_from = slot.get("last_released_at") or slot.get("last_used_at")
+    if not aged_from:
         return False
     try:
-        released = datetime.fromisoformat(last_released.replace("Z", "+00:00"))
+        released = datetime.fromisoformat(aged_from.replace("Z", "+00:00"))
     except ValueError:
         return False
     age = datetime.now(timezone.utc) - released.astimezone(timezone.utc)
