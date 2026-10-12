@@ -46,8 +46,8 @@ def steps(text):
     return result
 
 
-def field(block, name):
-    matches = re.findall(r'^        ' + re.escape(name) + r': (.+)$', block, re.M)
+def field(block, name, indent=8):
+    matches = re.findall(r'^' + ' ' * indent + re.escape(name) + r': (.+)$', block, re.M)
     if len(matches) > 1:
         raise AssertionError('duplicate field: ' + name)
     return matches[0] if matches else None
@@ -70,7 +70,9 @@ def bash_run(block):
 class OrderProof(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.parts = steps(WORKFLOW.read_text())
+        text = WORKFLOW.read_text()
+        cls.parts = steps(text)
+        cls.primary_job = job(text).split('    steps:', 1)[0]
 
     def test_build_follows_container_before_cache_and_baseline(self):
         names = list(self.parts)
@@ -80,6 +82,12 @@ class OrderProof(unittest.TestCase):
 
     def test_package_wide_build_and_conditions(self):
         self.assertEqual(field(self.parts['Build xtask'], 'run'), HOST_COMMAND)
+        self.assertIn(field(self.primary_job, 'continue-on-error', indent=4), (None, 'false'))
+        mandatory = ['Build xtask', 'Run ripr doctor', 'Generate PR evidence',
+                     'Restore memoized ripr-plus receipt'] + ALWAYS
+        for name in mandatory:
+            if name != 'Audit suppression lifecycle':
+                self.assertIn(field(self.parts[name], 'continue-on-error'), (None, 'false'), name)
         for name in ['Build xtask', 'Run ripr doctor', 'Generate PR evidence', 'Restore memoized ripr-plus receipt']:
             self.assertIsNone(field(self.parts[name], 'if'), name)
         self.assertEqual(field(self.parts['Run ripr doctor'], 'run'), 'ripr doctor')
@@ -104,7 +112,7 @@ class OrderProof(unittest.TestCase):
             cargo.chmod(0o700)
             env = os.environ.copy()
             env.pop('BASH_ENV', None)
-            env.update(PATH=str(root) + ':' + env['PATH'], RIPR_FRESHNESS_HANDOFF=str(handoff),
+            env.update(PATH=str(root) + os.pathsep + env['PATH'], RIPR_FRESHNESS_HANDOFF=str(handoff),
                        RIPR_FRESHNESS_TOKEN='current-token', BASE_REF='main', PR_HEAD_SHA='fixed-pr-head',
                        PR_LABELS='proof-label', MOCK_CALLS=str(root / 'calls.jsonl'), MOCK_FAIL_CALL=str(fail_call))
             result = subprocess.run(['bash', '--noprofile', '--norc', '-e', '-o', 'pipefail', '-c',
