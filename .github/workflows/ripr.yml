@@ -642,6 +642,7 @@ jobs:
         run: |
           set -euo pipefail
           handoff="$(mktemp -d "$RUNNER_TEMP/ripr-freshness.XXXXXX")"
+          mkdir -p "$handoff/xtask-builds"
           token="${GITHUB_RUN_ID}/${GITHUB_RUN_ATTEMPT}/$$"
           printf "RIPR_FRESHNESS_HANDOFF=%s\nRIPR_FRESHNESS_TOKEN=%s\n" "$handoff" "$token" >> "$GITHUB_ENV"
 

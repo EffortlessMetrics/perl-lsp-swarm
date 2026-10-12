@@ -80,6 +80,26 @@ class OrderProof(unittest.TestCase):
         self.assertLess(names.index('Build xtask'), names.index('Restore memoized ripr-plus receipt'))
         self.assertLess(names.index('Build xtask'), names.index('Generate repo-wide RIPR+ baseline receipt'))
 
+    def test_prepare_creates_runner_owned_observations_before_container(self):
+        names = list(self.parts)
+        self.assertLess(names.index('Prepare RIPR freshness handoff'), names.index('Generate PR evidence'))
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            env = os.environ.copy()
+            env.pop('BASH_ENV', None)
+            env.update(RUNNER_TEMP=str(root), GITHUB_ENV=str(root / 'github-env'),
+                       GITHUB_RUN_ID='20', GITHUB_RUN_ATTEMPT='3')
+            result = subprocess.run(['bash', '--noprofile', '--norc', '-e', '-o', 'pipefail', '-c',
+                                     bash_run(self.parts['Prepare RIPR freshness handoff'])],
+                                    cwd=root, env=env, text=True, capture_output=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            values = dict(line.split('=', 1) for line in (root / 'github-env').read_text().splitlines())
+            observations = Path(values['RIPR_FRESHNESS_HANDOFF']) / 'xtask-builds'
+            self.assertTrue(observations.is_dir())
+            self.assertEqual(observations.stat().st_uid, os.getuid())
+            self.assertTrue(os.access(observations, os.W_OK))
+            self.assertRegex(values['RIPR_FRESHNESS_TOKEN'], r'^20/3/[0-9]+$')
+
     def test_package_wide_build_and_conditions(self):
         self.assertEqual(field(self.parts['Build xtask'], 'run'), HOST_COMMAND)
         self.assertIn(field(self.primary_job, 'continue-on-error', indent=4), (None, 'false'))
