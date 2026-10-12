@@ -33,6 +33,26 @@ def children_capability():
     return str(path)
 
 
+def source_path_is_canonical(path):
+    """Fresh Linux manifest-path validation, with one stat per current component.
+
+    All subjects are already absolute. Visit every ancestor on every call; no
+    directory or source facts survive into another file, launch or reclaim.
+    Avoid native_path's repeated link stats and second resolve traversal while
+    preserving its rejection of links, junctions and noncanonical spellings.
+    """
+    value = str(path)
+    if (not path.is_absolute() or '..' in path.parts or value.startswith(('//', '/mnt/'))
+            or '{' in value or '}' in value):
+        return False
+    for component in (path, *path.parents):
+        metadata = component.lstat()
+        if (stat.S_ISLNK(metadata.st_mode)
+                or getattr(metadata, 'st_file_attributes', 0) & getattr(stat, 'FILE_ATTRIBUTE_REPARSE_POINT', 0)):
+            return False
+    return True
+
+
 def facts(metadata):
     return (metadata.st_dev, metadata.st_ino, metadata.st_size,
             metadata.st_mtime_ns, metadata.st_ctime_ns, metadata.st_mode, metadata.st_nlink)
@@ -161,7 +181,7 @@ class Cohort:
                 os.close(fd)
         for path, digest in zip(self.subjects, self.binding):
             try:
-                if not path.is_absolute() or native_path(str(path)) != path:
+                if not source_path_is_canonical(path):
                     raise ValueError('noncanonical manifest')
                 manifest_fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
                 try:
@@ -183,7 +203,7 @@ class Cohort:
                     raise ValueError('empty source/profile manifest')
                 for entry in entries:
                     subject = Path(entry['path'])
-                    if not subject.is_absolute() or not subject.is_relative_to(self.worktree) or native_path(str(subject)) != subject:
+                    if not subject.is_relative_to(self.worktree) or not source_path_is_canonical(subject):
                         raise ValueError('foreign source/profile path')
                     fd = os.open(subject, os.O_RDONLY | os.O_NOFOLLOW)
                     try:

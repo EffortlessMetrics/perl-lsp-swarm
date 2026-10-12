@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+import stat
 """Portable filesystem/API controls and separate finite native tree evidence.
 
 PortableTree is an explicit interface double, not host cancellation qualification.
@@ -79,6 +81,38 @@ class ActiveWaitControls(unittest.TestCase):
             cohort.Cohort._wait_active(tree, process)
         process.wait.assert_not_called()
         self.assertEqual(signal.pthread_sigmask(signal.SIG_BLOCK, set()), original)
+
+
+class SourcePathControls(unittest.TestCase):
+    def test_fresh_all_ancestor_link_checks_and_replacement(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            parent = root / 'parent'; parent.mkdir()
+            subject = parent / 'file'; subject.write_text('source')
+            self.assertTrue(cohort.source_path_is_canonical(subject))
+            parent.rename(root / 'old-parent')
+            parent.symlink_to(root / 'old-parent', target_is_directory=True)
+            self.assertFalse(cohort.source_path_is_canonical(subject))
+            parent.unlink(); (root / 'old-parent').rename(parent)
+            subject.rename(parent / 'original')
+            subject.symlink_to(parent / 'original')
+            self.assertFalse(cohort.source_path_is_canonical(subject))
+
+    def test_noncanonical_and_missing_subjects_refuse(self):
+        for path in [Path('relative'), Path('/a/../b'), Path('//host/source'),
+                     Path('/mnt/c/source'), Path('/source/{template}')]:
+            self.assertFalse(cohort.source_path_is_canonical(path), str(path))
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaises(FileNotFoundError):
+                cohort.source_path_is_canonical(Path(directory) / 'missing')
+
+    def test_every_current_component_is_checked_on_every_call(self):
+        path = Path('/source/parent/file')
+        metadata = SimpleNamespace(st_mode=stat.S_IFREG, st_file_attributes=0)
+        with patch.object(Path, 'lstat', return_value=metadata) as observe:
+            self.assertTrue(cohort.source_path_is_canonical(path))
+            self.assertTrue(cohort.source_path_is_canonical(path))
+            self.assertEqual(observe.call_count, 2 * len((path, *path.parents)))
 
 
 @unittest.skipUnless(sys.platform == 'linux', 'Linux filesystem/interface controls')
