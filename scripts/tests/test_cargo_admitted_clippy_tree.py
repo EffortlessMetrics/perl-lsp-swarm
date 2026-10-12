@@ -69,9 +69,13 @@ print(json.dumps(final))
         self.assertTrue(row['tree_settled'])
 
     def test_clippy_nested_cleanup_preserves_nonzero_leader_status(self):
+        fixture_spec = importlib.util.spec_from_file_location(
+            'builtin_tree_fixture', Path(__file__).with_name('test_cargo_admitted_builtin_tree.py'))
+        fixture = importlib.util.module_from_spec(fixture_spec)
+        fixture_spec.loader.exec_module(fixture)
         row = self.worker('''
 import tempfile
-from scripts.tests.test_cargo_admitted_builtin_tree import FAKE
+FAKE=sys.argv[2]
 with tempfile.TemporaryDirectory(prefix='clippy-nested-') as name:
  root=Path(name);(root/'slot/cargo-active').mkdir(parents=True)
  tree=owner.ClippyTree()
@@ -83,7 +87,7 @@ with tempfile.TemporaryDirectory(prefix='clippy-nested-') as name:
  assert status==37 and nested['proc_absent'] and nested['signal_zero_absent'],(status,nested)
  assert final['tree_settled'] and {'pid':nested['pid'],'exit_code':-9} in final['reaped_descendants'],final
  print(json.dumps({'status':status,'nested':nested,'settlement':final}))
-''')
+''', fixture.FAKE)
         self.assertEqual(row['status'],37)
         self.assertTrue(row['nested']['proc_absent'])
 
@@ -95,7 +99,8 @@ with tempfile.TemporaryDirectory(prefix='active-live-control-') as name:
  code="""import os,sys,time
 from pathlib import Path
 if os.fork()==0:
- os.setsid();Path(sys.argv[1]).write_text(str(os.getpid()));time.sleep(3);os._exit(0)
+ os.setsid();pid_path=Path(sys.argv[1]);pending=pid_path.with_name(pid_path.name+'.pending')
+ pending.write_text(str(os.getpid()));os.replace(pending,pid_path);time.sleep(3);os._exit(0)
 os._exit(0)
 """
  p=subprocess.Popen([sys.executable,'-c',code,str(root/'pid')]);tree.track(p.pid,p)
