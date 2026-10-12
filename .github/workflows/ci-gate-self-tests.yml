@@ -881,12 +881,13 @@ jobs:
           cargo_home="$(jq -r .cargo_home qualification-evidence/resources.json)"
           temp="$(jq -r .temp qualification-evidence/resources.json)"
           export QUALIFICATION_TARGET="$target"
+          export QUALIFICATION_COHORT_EVIDENCE="$PWD/qualification-evidence/cohort"
           cat > "$RUNNER_TEMP/production-route.sh" <<'SH'
           #!/usr/bin/env bash
           set -euo pipefail
           packages=(-p perl-dap -p perl-lsp-rs -p perl-parser-core -p perl-semantic-analyzer -p perl-workspace -p xtask)
           if [ "$QUALIFICATION_MODE" = cohort ]; then
-            scripts/cargo-admitted --routed-test-cohorts run --locked -p xtask --bin routed-test-cohorts -- "${packages[@]}" --evidence-dir "$PWD/qualification-evidence/cohort"
+            scripts/cargo-admitted --routed-test-cohorts run --locked -p xtask --bin routed-test-cohorts -- "${packages[@]}" --evidence-dir "$QUALIFICATION_COHORT_EVIDENCE"
           else
             scripts/cargo-admitted build -p perllsp --locked
             env PERL_LSP_BIN="$QUALIFICATION_TARGET/debug/perllsp" scripts/cargo-admitted test --locked --tests "${packages[@]}" --message-format=json-render-diagnostics
@@ -903,14 +904,45 @@ jobs:
           printf '%s\n' "$status" > qualification-evidence/status.txt
           tail -n 1 qualification-evidence/storage.jsonl
           tail -n 120 qualification-evidence/logs/route.stderr
+          # unit_routed_full already allows one retry. Only retry a timed-out
+          # attempt with proven closure/release, never an ownership refusal.
+          if [ "$status" = 124 ] && python3 - <<'PY'
+          import json, re
+          from pathlib import Path
+          text = Path('qualification-evidence/logs/route.stderr').read_text()
+          receipts = re.findall(r'^cargo-admitted .+ settlement: (\{.*\})$', text, re.MULTILINE)
+          receipt = json.loads(receipts[-1]) if receipts else {}
+          raise SystemExit(0 if receipt.get('tree_settled') is True and receipt.get('lease_released') is True and not receipt.get('errors') else 75)
+          PY
+          then
+            python3 scripts/ci/report_routed_storage_qualification.py --mode "$QUALIFICATION_MODE" \
+              --root "$PWD" --evidence "$PWD/qualification-evidence" | tee qualification-evidence/summary.json
+            mkdir -p qualification-evidence/retry/logs
+            cp qualification-evidence/{head.txt,rustc.txt,cargo.txt,resources.json} qualification-evidence/retry/
+            export QUALIFICATION_COHORT_EVIDENCE="$PWD/qualification-evidence/retry/cohort"
+            set +e
+            python3 scripts/measure_cargo_storage.py --root "$target" --root "$build" --root "$cargo_home" --root "$temp" \
+              --root "$PWD/qualification-evidence/cohort" --root "$PWD/qualification-evidence/logs" \
+              --root "$PWD/qualification-evidence/retry/cohort" --root "$PWD/qualification-evidence/retry/logs" \
+              --interval 1 --min-free-bytes 42949672960 --evidence "$PWD/qualification-evidence/retry/storage.jsonl" \
+              -- timeout --signal=INT 1500 bash "$RUNNER_TEMP/production-route.sh" \
+              > qualification-evidence/retry/logs/route.stdout 2> qualification-evidence/retry/logs/route.stderr
+            status=$?
+            set -e
+            printf '%s\n' "$status" > qualification-evidence/retry/status.txt
+            tail -n 1 qualification-evidence/retry/storage.jsonl
+            tail -n 120 qualification-evidence/retry/logs/route.stderr
+          fi
           exit "$status"
       - name: Publish inspectable disk and inventory comparison summary
         if: always()
         env:
           QUALIFICATION_MODE: ${{ matrix.mode }}
         run: |
+          evidence="$PWD/qualification-evidence"
+          if [ -f "$evidence/retry/status.txt" ]; then evidence="$evidence/retry"; fi
           python3 scripts/ci/report_routed_storage_qualification.py --mode "$QUALIFICATION_MODE" \
-            --root "$PWD" --evidence "$PWD/qualification-evidence" | tee qualification-evidence/summary.json
+            --root "$PWD" --evidence "$evidence" | tee "$evidence/summary.json"
       - name: Preserve exact candidate measurements and diagnostics
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0

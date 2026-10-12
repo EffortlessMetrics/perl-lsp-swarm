@@ -237,13 +237,34 @@ fn binary_runtime_inventory(package: &Value, package_features: &[Value]) -> Resu
         if name.is_empty() || name.contains('/') || name.contains('\\') || !names.insert(name) {
             bail!("package metadata has an invalid or repeated binary target name");
         }
-        let required = target["required-features"]
-            .as_array()
-            .ok_or_else(|| eyre!("binary required-features inventory missing"))?;
-        let enabled = required.iter().all(|feature| package_features.contains(feature));
+        // Cargo omits this optional field when the target has no requirement.
+        let enabled = match target.get("required-features") {
+            None => true,
+            Some(required) => {
+                let required = required
+                    .as_array()
+                    .ok_or_else(|| eyre!("invalid binary required-features inventory"))?;
+                if required.iter().any(|feature| !feature.is_string()) {
+                    bail!("invalid binary required-features feature name");
+                }
+                required.iter().all(|feature| package_features.contains(feature))
+            }
+        };
         binaries.push(json!({"name":name,"enabled":enabled}));
     }
     Ok(binaries)
+}
+
+fn target_binary_runtime_inventory(
+    package: &Value,
+    package_features: &[Value],
+    target: &Value,
+) -> Result<Option<Vec<Value>>> {
+    if matches!(target["kind"][0].as_str(), Some("test" | "bench")) {
+        Ok(Some(binary_runtime_inventory(package, package_features)?))
+    } else {
+        Ok(None)
+    }
 }
 
 fn digest(path: &Path) -> Result<String> {
@@ -724,7 +745,8 @@ finally:os.close(source)
             let package_features = target["features"]
                 .as_array()
                 .ok_or_else(|| eyre!("test unit feature set missing"))?;
-            let cargo_bin_exe = binary_runtime_inventory(package, package_features)?;
+            let cargo_bin_exe =
+                target_binary_runtime_inventory(package, package_features, &target["target"])?;
             // Cargo exposes package build-script extra_env to its test process.
             for message in &checked {
                 if message["reason"] == "build-script-executed"
@@ -802,10 +824,11 @@ finally:os.close(source)
             if scripts.len() > 1 {
                 bail!("ambiguous package build-script unit contexts");
             }
-            consumers.insert(
-                artifact_key(target)?,
-                json!({"args":[],"cwd":cwd,"env":runtime,"verify_harness":true,"build_scripts":scripts,"cargo_bin_exe":cargo_bin_exe}),
-            );
+            let mut consumer = json!({"args":[],"cwd":cwd,"env":runtime,"verify_harness":true,"build_scripts":scripts});
+            if let Some(inventory) = cargo_bin_exe {
+                consumer["cargo_bin_exe"] = json!(inventory);
+            }
+            consumers.insert(artifact_key(target)?, consumer);
         }
         let row = driver.bridge(
             "run",
@@ -827,6 +850,38 @@ finally:os.close(source)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn omitted_binary_required_features_means_unconditionally_enabled() -> Result<()> {
+        let package = json!({"targets":[{"name":"ordinary","kind":["bin"]}]});
+        assert_eq!(
+            binary_runtime_inventory(&package, &[])?,
+            vec![json!({"name":"ordinary","enabled":true})]
+        );
+        for invalid in [Value::Null, json!("feature"), json!([false])] {
+            let malformed =
+                json!({"targets":[{"name":"ordinary","kind":["bin"],"required-features":invalid}]});
+            assert!(binary_runtime_inventory(&malformed, &[]).is_err());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn binary_runtime_environment_is_only_for_integration_and_bench_units() -> Result<()> {
+        let package = json!({"targets":[{"name":"ordinary","kind":["bin"]}]});
+        for kind in ["lib", "bin", "example"] {
+            assert!(
+                target_binary_runtime_inventory(&package, &[], &json!({"kind":[kind]}))?.is_none()
+            );
+        }
+        for kind in ["test", "bench"] {
+            assert_eq!(
+                target_binary_runtime_inventory(&package, &[], &json!({"kind":[kind]}))?,
+                Some(vec![json!({"name":"ordinary","enabled":true})])
+            );
+        }
+        Ok(())
+    }
 
     #[test]
     fn compiler_selectors_refuse_cargo_config_environment_aliases() {

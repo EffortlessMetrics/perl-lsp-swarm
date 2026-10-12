@@ -270,7 +270,10 @@ Cargo's ordered root/deps/sysroot construction and original loader environment;
 package build-script outputs must match the observed check context. Cargo's final
 `UnitOutput.env` layer adds `CARGO_BIN_EXE_<name>` paths for package binaries to
 integration and benchmark processes; the runtime map models this separately from
-the earlier `fill_env` context.
+the earlier `fill_env` context. Library, binary and example harnesses preserve the
+original environment without that extra layer. Cargo metadata omits
+`required-features` for an unconditionally enabled binary; absence means no
+requirement, while malformed present values are refused.
 [Cargo documents `CARGO_BIN_EXE_<name>` for integration tests and benchmarks](https://doc.rust-lang.org/cargo/reference/environment-variables.html)
 and says that a binary with unmet `required-features` is not built. Cargo 1.95's
 final unit environment still assigns each package bin its target executable path;
@@ -376,7 +379,12 @@ and case/ignored-inventory hashes, package counts, sample gaps and settlement in
 the hosted log. It rejects conflicting unit contexts, extra packages and ambiguous
 or incomplete libtest boundaries; six-package completeness requires all six
 packages and settled compiler observation. Partial inventories cannot establish
-full equivalence. They do not activate or replace the production gate. Full equivalence
+full equivalence. They do not activate or replace the production gate. The existing policy permits
+one retry; qualification uses one separately measured warm retry only after a
+timeout with proven kernel closure and matching lease release. Each attempt keeps
+the 1,500-second bound. First-attempt artifacts and journals stay preserved, and
+there is no retry after an ownership refusal or new cleanup authority over
+preexisting products. Full equivalence
 and measured fit require completed exact-candidate results; job presence is not
 proof.
 
