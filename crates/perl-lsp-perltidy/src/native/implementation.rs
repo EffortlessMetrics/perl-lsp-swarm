@@ -1462,7 +1462,64 @@ fn format_simple_statement_tokens(
         .or_else(|| format_simple_return_tokens(tokens, config))
         .or_else(|| format_simple_loop_control_tokens(tokens))
         .or_else(|| format_simple_assignment_tokens(tokens, config))
+        .or_else(|| format_simple_list_operator_tokens(tokens, config))
         .or_else(|| format_simple_expression_statement_tokens(tokens, config))
+}
+
+/// Format a bare list-operator statement (`print $x;`, `printf "%d", $n;`,
+/// `say $a, $b;`) whose arguments are simple expressions (#17663).
+/// Parenthesized forms are already handled as simple calls, and the
+/// filehandle form (`print $fh $x;`) stays refused: without parentheses
+/// its first argument would be indistinguishable from a list element here.
+fn format_simple_list_operator_tokens(
+    tokens: &[perl_parser_core::Token],
+    config: &FormatConfig,
+) -> Option<String> {
+    use perl_parser_core::TokenKind;
+
+    let operator = tokens.first()?;
+    if operator.kind() != TokenKind::Identifier
+        || !matches!(operator.text.as_ref(), "print" | "printf" | "say")
+    {
+        return None;
+    }
+    if tokens.last()?.kind() != TokenKind::Semicolon {
+        return None;
+    }
+    let semicolon_index = tokens.len() - 1;
+    if semicolon_index == 1 {
+        return Some(format!("{};", operator.text));
+    }
+    // A second bare identifier/variable argument would be the filehandle
+    // form or a bareword list; only comma-separated expressions are safe.
+    let mut args = Vec::new();
+    let mut index = 1;
+    loop {
+        // Bound the argument at the next top-level comma, then format that
+        // segment as one simple expression.
+        let mut end = index;
+        let mut depth = 0_i32;
+        while end < semicolon_index {
+            match tokens[end].kind() {
+                TokenKind::LeftParen | TokenKind::LeftBracket | TokenKind::LeftBrace => depth += 1,
+                TokenKind::RightParen | TokenKind::RightBracket | TokenKind::RightBrace => {
+                    depth -= 1;
+                }
+                TokenKind::Comma if depth == 0 => break,
+                _ => {}
+            }
+            end += 1;
+        }
+        let arg = format_simple_expression_tokens(tokens, index, end, config, 0)?;
+        args.push(arg);
+        index = end;
+        match tokens.get(index)?.kind() {
+            TokenKind::Comma => index += 1,
+            _ if index == semicolon_index => break,
+            _ => return None,
+        }
+    }
+    Some(format!("{} {};", operator.text, args.join(", ")))
 }
 
 fn format_simple_module_tokens(

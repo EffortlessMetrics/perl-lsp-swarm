@@ -1,4 +1,4 @@
-#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
+﻿#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 use perl_lsp_perltidy::PerlFormatter;
 use perl_lsp_perltidy::native::{
     BracePlacement, ElsePlacement, FormatConfig, FormatContext, FormatDisposition, FormatEngine,
@@ -309,7 +309,7 @@ fn typed_document_result_formats_a_hand_written_block() {
     // hand-written block under admitted boundaries is now reindented to
     // the renderer's layout and classifies Applied, instead of refusing
     // as UnsupportedSyntax. Boundary shape still cannot claim *rendered*
-    // form by itself — the formatted bytes are produced by the pipeline
+    // form by itself â€” the formatted bytes are produced by the pipeline
     // and parse-gated, and a second pass must reach NoChange.
     let formatter = NativeFormatter::new();
     for source in [
@@ -345,7 +345,7 @@ fn typed_document_result_formats_a_hand_written_block() {
 #[test]
 fn typed_document_result_admits_renderer_layout_bytes_without_a_rendering_pass() {
     // The document-level evidence admits exactly the layout the renderer
-    // emits â€” checked directly against those bytes, not only through a first
+    // emits Ã¢â‚¬â€ checked directly against those bytes, not only through a first
     // rendering pass: same block as the refused hand-written subject above,
     // with the body at the renderer's own indent.
     let formatter = NativeFormatter::new();
@@ -440,9 +440,9 @@ fn typed_outcome_serializes_without_parsing_diagnostic_prose() -> Result<(), ser
 fn format_range_typed_refuses_bare_cr_heredoc_as_literal_preservation_not_unsafe_range() {
     let formatter = NativeFormatter::new();
     // Bare-CR document (line endings are bare \r):
-    //   line 0: "print <<EOT;"   â€” heredoc marker
-    //   line 1: "EOT"            â€” terminator
-    //   line 2: ""               â€” trailing empty (after the final \r)
+    //   line 0: "print <<EOT;"   Ã¢â‚¬â€ heredoc marker
+    //   line 1: "EOT"            Ã¢â‚¬â€ terminator
+    //   line 2: ""               Ã¢â‚¬â€ trailing empty (after the final \r)
     let source = "print <<EOT;\rEOT\r";
     // Range covering the heredoc marker (line 0) through the terminator (line 1).
     // Before the fix this produced UnsafeRange because valid_range treated the
@@ -485,7 +485,7 @@ fn format_range_typed_accepts_valid_range_on_bare_cr_document_without_heredoc() 
     //   line 1: "my$y=2;"
     //   line 2: ""
     let source = "my$x=1;\rmy$y=2;\r";
-    // Range covering only line 1 â€” valid in the CR-aware view.
+    // Range covering only line 1 Ã¢â‚¬â€ valid in the CR-aware view.
     let range = TextRange::new(TextPosition::new(1, 0), TextPosition::new(2, 0));
 
     let typed = formatter.format_range_typed(
@@ -496,7 +496,7 @@ fn format_range_typed_accepts_valid_range_on_bare_cr_document_without_heredoc() 
     );
 
     // The range is valid and the source is clean, so the formatter must reach
-    // a formatting decision (Applied or AlreadyFormatted) â€” not UnsafeRange.
+    // a formatting decision (Applied or AlreadyFormatted) Ã¢â‚¬â€ not UnsafeRange.
     assert_ne!(
         typed.outcome.reason,
         FormatReasonCode::UnsafeRange,
@@ -570,3 +570,17 @@ fn reindent_survives_unsupported_inline_else_tail() {
     assert!(result.formatted.ends_with("return 3;\n}\n"), "got: {:?}", result.formatted);
     assert!(result.formatted.contains("\n    return 3;\n"), "got: {:?}", result.formatted);
 }
+#[test]
+fn formats_list_operator_statements_inside_blocks() {
+    let formatter = NativeFormatter::new();
+    let source = "sub f {\nprint$x;\nprintf \"%d\",  42;\nsay $x, $y;\n}\n";
+    let expected = "sub f {\n    print $x;\n    printf \"%d\", 42;\n    say $x, $y;\n}\n";
+
+    let result = formatter.format_document(source, &FormatConfig::default());
+    assert_eq!(result.formatted, expected);
+
+    let second = formatter.format_document(&result.formatted, &FormatConfig::default());
+    assert_eq!(second.formatted, expected);
+    assert!(!second.changed);
+}
+
