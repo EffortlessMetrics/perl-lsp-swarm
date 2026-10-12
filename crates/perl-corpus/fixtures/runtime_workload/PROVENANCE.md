@@ -34,15 +34,15 @@ LF-only, with exactly one final newline.
 
 ## Integrity
 
-- sha256 of `spectralnorm.perl`:
-  `c7ad6bce4e8d44c5dd5892de3e480005d09f4d1eb54a3c3fd125e27facfdbc51`
+- sha256 of `spectralnorm.perl`: `c7ad6bce4e8d44c5dd5892de3e480005d09f4d1eb54a3c3fd125e27facfdbc51`
 - Verify: `sha256sum spectralnorm.perl`
   (Windows: `(Get-FileHash -Algorithm SHA256 spectralnorm.perl).Hash`)
 - The `workload.t` driver recomputes this hash and fails when the bytes differ.
 
 ## License
 
-Revised BSD (3-Clause), confirmed at the project's `license.html` before copying.
+- Grant: Revised BSD (3-Clause), confirmed at the project's `license.html` before copying.
+
 Full text: `LICENSE-benchmarksgame` in this directory. Redistribution retains the
 copyright notice, conditions, and disclaimer; no endorsement use.
 

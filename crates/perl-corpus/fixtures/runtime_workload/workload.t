@@ -37,16 +37,25 @@ sub slurp_raw {
 is(sha256_hex(slurp_raw($workload)), $pinned_sha, 'workload bytes match pinned extraction');
 
 my $prov = slurp_raw(File::Spec->catfile($Bin, 'PROVENANCE.md'));
-my @required = (
-    '40296663ed350d5fe4a6ab5e367bab61cb77c219',
-    'f41b3d7c06ddc809ee8e8b7c16fdcc7f377f7aa5',
-    $pinned_sha,
-    'bytes 1904-7939',
-    'Revised BSD',
-    'Andrew Rodland',
+# Labeled fields, not bare tokens: each pinned value must appear on its own
+# label line, so deleting or unlabeling a field fails the gate.
+my @fields = (
+    ['- Repository:', 'salsa.debian.org/benchmarksgame-team/benchmarksgame'],
+    ['- Commit:', '40296663ed350d5fe4a6ab5e367bab61cb77c219'],
+    ['- File:', 'public/program/spectralnorm-perl-1.html'],
+    ['- Blob:', 'f41b3d7c06ddc809ee8e8b7c16fdcc7f377f7aa5'],
+    ['- Byte range:', '1904-7939'],
+    ['- Contributors', 'Andrew Rodland'],
+    ['- Grant:', 'Revised BSD'],
+    ['- sha256 of', $pinned_sha],
 );
-my @missing = grep { index($prov, $_) < 0 } @required;
-is_deeply(\@missing, [], 'provenance carries repo, commit, blob, range, hash, license, contributors');
+my @missing;
+for my $field (@fields) {
+    my ($label, $token) = @$field;
+    my $found = grep { index($_, $label) == 0 && index($_, $token) >= 0 } split /\n/, $prov;
+    push @missing, $label unless $found;
+}
+is_deeply(\@missing, [], 'provenance carries labeled identity fields with pinned values');
 
 my $license = slurp_raw(File::Spec->catfile($Bin, 'LICENSE-benchmarksgame'));
 ok($license =~ /Brent Fulgham/ && $license =~ /Redistribution and use in source and binary forms/,
@@ -66,7 +75,7 @@ my %holdout = (
 
 is_deeply([sort { $a <=> $b } keys %tuning], [100, 200], 'tuning set is exactly the frozen inputs');
 ok(!exists $tuning{999}, 'unknown input is outside the tuning set');
-is(scalar(keys %holdout), 2, 'hold-out identities reserved with comparison rules');
+is_deeply([sort { $a <=> $b } keys %holdout], [150, 300], 'hold-out identities are exactly the reserved inputs');
 is(scalar(grep { exists $tuning{$_} } keys %holdout), 0, 'hold-out inputs are not tuning inputs');
 
 diag("stock Perl $^V; arch=$Config{archname}; ivsize=$Config{ivsize}; nvsize=$Config{nvsize}");

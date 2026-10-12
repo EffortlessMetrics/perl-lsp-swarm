@@ -25,7 +25,8 @@ env -u PERL5OPT -u PERL5LIB -u PERLLIB LC_ALL=C \
 Windows (PowerShell):
 
 ```powershell
-$env:LC_ALL='C'; prove -v crates/perl-corpus/fixtures/runtime_workload/workload.t
+$env:PERL5OPT=$null; $env:PERL5LIB=$null; $env:PERLLIB=$null; $env:LC_ALL='C'
+prove -v crates/perl-corpus/fixtures/runtime_workload/workload.t
 ```
 
 A workload-byte change, missing provenance field, lost license grant, changed
@@ -75,9 +76,11 @@ family's own proof. Do not read this table as execution readiness.
 | `strict` pragma (load-bearing for the run) | pragma owner | Prerequisite: model or explicitly exclude |
 | Whole workload as one entry | #17511 cohort; oracle #17535 | Candidate; no EIR/native row exists |
 
-The workload was selected to contain no `eval`, regex, objects, magic, module
-loading, XS, or file I/O, so this slice adds no new explicit-boundary rows
-beyond the prerequisites above; later workloads will. For #17533: the
+The workload was selected to contain no `eval`, regex, objects, magic, dynamic
+or general-purpose module loading (`require`/`use` of runtime libraries), XS, or
+file I/O. The only module load is the compile-time `use strict` pragma, which
+has its own prerequisite row. This slice therefore adds no new
+explicit-boundary rows beyond the prerequisites above; later workloads will. For #17533: the
 repeated-call shape is present (`eval_A` runs O(N^2) times per run); a one-shot
 hot-loop shape is absent and remains a recorded gap for a later workload, not an
 implied property of this one.
