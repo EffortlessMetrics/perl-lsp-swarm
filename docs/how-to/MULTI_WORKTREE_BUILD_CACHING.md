@@ -24,18 +24,6 @@ product binary. Qualify the actual ordinary executable and keep an immutable cop
 with its hash before releasing build ownership. Version strings and successful
 Cargo exit status alone are insufficient evidence.
 
-A verified main `xtask` executable can target another worktree explicitly:
-`/path/to/copied-xtask --worktree-root /path/to/worktree change-set --base HEAD^`.
-The target may be a directory inside that worktree. Selection validates the Git
-root, workspace repository identity and xtask package, then uses that root as the
-process working directory and default task project root. Missing,
-non-repository or unrelated workspace targets fail without falling back; inherited
-`GIT_DIR`, `GIT_WORK_TREE` and `GIT_COMMON_DIR` must be unset. Without this option,
-existing defaults remain unchanged. Per-command explicit fixture roots and
-intentional compiled-source manifest/corpus consumers (including CPAN and legacy
-corpus lookup) retain their contracts. This selects a runtime task target; it does
-not make mutable Cargo build outputs transferable between worktrees.
-
 ## Recommended route for agent work
 
 After the root admits host capacity and existing consumers, use the existing
