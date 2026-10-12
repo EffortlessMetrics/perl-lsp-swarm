@@ -3588,10 +3588,14 @@ fn is_synthesized_true_condition(condition: &Node) -> bool {
 
 /// Whether a numeric token is a plain decimal literal admitted to the first
 /// scalar cohort (#17538). The lexeme must be one or more ASCII digits with no
-/// base prefix, fraction, exponent, or separator: anything else keeps falling
-/// through to `Opaque` so no normalization or coercion is implied.
+/// base prefix, fraction, exponent, or separator, and no leading zero: Perl
+/// reads multi-digit leading-zero forms as octal (`010` is 8, `09` is a
+/// syntax error), so only the lone `0` is plain decimal. Anything else keeps
+/// falling through to `Opaque` so no normalization or coercion is implied.
 fn is_plain_decimal(value: &str) -> bool {
-    !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit())
+    !value.is_empty()
+        && value.bytes().all(|byte| byte.is_ascii_digit())
+        && (value == "0" || !value.starts_with('0'))
 }
 
 /// Whether a scalar leaf node is absent from the source text (#17538).

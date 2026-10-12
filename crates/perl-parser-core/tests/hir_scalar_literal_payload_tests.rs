@@ -60,20 +60,25 @@ fn pir_graph(source: &str) -> PirGraph {
 }
 
 #[test]
-fn decimal_leaf_preserves_exact_lexeme() -> TestResult {
-    let body = root_body("my $x = 007;")?;
-    assert_eq!(literal_count(&body), 1, "exactly one leaf expected");
-    let found = body.exprs.iter().any(|expr| {
-        matches!(expr, HirExpr::Literal(lit)
-            if lit.kind == HirLiteralKind::Number && lit.payload == "007" && !lit.synthesized)
-    });
-    assert!(found, "expected a Number leaf with payload \"007\"");
+fn leading_zero_lexemes_stay_opaque() -> TestResult {
+    // Perl reads multi-digit leading-zero forms as octal (`010` is 8), so
+    // they are outside the plain-decimal cohort and must stay Opaque.
+    for source in ["my $x = 007;", "my $x = 010;"] {
+        let body = root_body(source)?;
+        assert_eq!(literal_count(&body), 0, "{source:?} must emit no leaf");
+        assert!(
+            body.exprs
+                .iter()
+                .any(|expr| matches!(expr, HirExpr::Opaque { ast_kind } if ast_kind == "Number")),
+            "{source:?} must retain the Opaque fallback"
+        );
+    }
     Ok(())
 }
 
 #[test]
 fn same_width_values_stay_distinct() -> TestResult {
-    for (source, payload) in [("1;", "1"), ("2;", "2"), ("17;", "17"), ("19;", "19")] {
+    for (source, payload) in [("0;", "0"), ("1;", "1"), ("2;", "2"), ("17;", "17"), ("19;", "19")] {
         let body = root_body(source)?;
         let HirExpr::Literal(lit) = first_expression(&body)? else {
             return Err(format!("{source:?} did not lower to a literal leaf").into());

@@ -697,7 +697,9 @@ pub enum HirExpr {
 /// A first-cohort scalar literal leaf (#17538).
 ///
 /// The payload is source-derived, never normalized: a `Number` keeps its exact
-/// lexeme (leading zeros included); a `String` keeps the parser-produced
+/// lexeme (leading-zero forms never reach the leaf: Perl reads them as octal,
+/// so they stay `Opaque` and only the lone `0` is admitted); a `String` keeps
+/// the parser-produced
 /// content with one quote layer removed and escape sequences verbatim (escape
 /// decoding is a later family); `undef` carries the empty string. No Rust
 /// numeric parsing or rounding is applied, so this leaf makes no Perl
