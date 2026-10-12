@@ -408,15 +408,30 @@ mod tests {
                 entry.class_id
             );
         }
-        // Every neighbor reference must resolve to a different seed class;
-        // a typo would otherwise leave a broken distinction.
-        for entry in &catalog.entries {
-            assert!(
-                entry.distinctions.nearest_neighbor != entry.class_id,
-                "seed class '{}' must not neighbor itself",
-                entry.class_id
+        // Every neighbor reference is pinned exactly: a swap to another
+        // valid class is silent wrong data, not just a typo.
+        let expected_neighbors: [(&str, &str); 14] = [
+            ("ambient_module_resolution", "xs_native_dependency"),
+            ("ambiguous_bareword", "unsupported_parser_construct"),
+            ("autoload", "generated_no_source"),
+            ("compile_time_execution_outside_profile", "runtime_builtin_outside_profile"),
+            ("dynamic_stash_mutation", "symbolic_ref"),
+            ("generated_no_source", "autoload"),
+            ("host_capability_outside_profile", "runtime_builtin_outside_profile"),
+            ("regex_construct_outside_profile", "runtime_builtin_outside_profile"),
+            ("runtime_builtin_outside_profile", "compile_time_execution_outside_profile"),
+            ("source_filter", "unsupported_parser_construct"),
+            ("symbolic_ref", "dynamic_stash_mutation"),
+            ("unknown_boundary_evidence", "unsupported_parser_construct"),
+            ("unsupported_parser_construct", "ambiguous_bareword"),
+            ("xs_native_dependency", "ambient_module_resolution"),
+        ];
+        for (class_id, expected_neighbor) in expected_neighbors {
+            let entry = find_entry(&catalog, class_id)?;
+            assert_eq!(
+                entry.distinctions.nearest_neighbor, expected_neighbor,
+                "seed neighbor for '{class_id}' must not drift silently"
             );
-            find_entry(&catalog, &entry.distinctions.nearest_neighbor)?;
         }
         let source_filter = find_entry(&catalog, "source_filter")?;
         assert!(source_filter.compile_acceptance_blocks);
