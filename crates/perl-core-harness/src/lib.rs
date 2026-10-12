@@ -245,15 +245,15 @@ use perl_core_harness_types::{
     FailureCluster, FailureClusterHistory, FailureClusterHistoryEntry,
     FailureClusterHistoryPresence, FailureClusterHistoryStatus, FailureClusterIdentityQuality,
     FailureClusterReport, FailureClusterSignature, FailureDebtCandidate, GAP_MAP_SCHEMA_VERSION,
-    GapMap, LANDED_LINEAGE_SCHEMA_VERSION, LandedLineage, ObservedSemanticBoundary,
-    PREPARE_SCHEMA_VERSION, PrepareReceipt, PrepareStatus, RUN_REPORT_SCHEMA_VERSION, RunFailure,
-    RunFileResult, RunReport, RunSummary, RunnerRecord, RunnerStatus,
-    SEMANTIC_BOUNDARY_REGISTRY_SCHEMA_VERSION, SMOKE_SCHEMA_VERSION, SemanticBoundaryDisposition,
-    SemanticBoundaryLockScope, SemanticBoundaryRegistry, SemanticBoundaryRegistryEntry,
-    SemanticBoundaryRegistryState, SemanticBoundaryReplacementStrategy, SeriesManifest,
-    SmokeFailureKind, SmokeReport, SmokeStatus, SmokeStructuralFailure, lsp_impact_for_bucket,
-    validate_execution_mechanism, validate_file_result_mechanisms, validate_series_rail_mechanisms,
-    workstream_for_bucket,
+    GapMap, LANDED_LINEAGE_SCHEMA_VERSION, LEGACY_SELECTED_EXECUTE_SCAFFOLD, LandedLineage,
+    ObservedSemanticBoundary, PREPARE_SCHEMA_VERSION, PrepareReceipt, PrepareStatus,
+    RUN_REPORT_SCHEMA_VERSION, RunFailure, RunFileResult, RunReport, RunSummary, RunnerRecord,
+    RunnerStatus, SEMANTIC_BOUNDARY_REGISTRY_SCHEMA_VERSION, SMOKE_SCHEMA_VERSION,
+    SemanticBoundaryDisposition, SemanticBoundaryLockScope, SemanticBoundaryRegistry,
+    SemanticBoundaryRegistryEntry, SemanticBoundaryRegistryState,
+    SemanticBoundaryReplacementStrategy, SeriesManifest, SmokeFailureKind, SmokeReport,
+    SmokeStatus, SmokeStructuralFailure, lsp_impact_for_bucket, validate_execution_mechanism,
+    validate_file_result_mechanisms, validate_series_rail_mechanisms, workstream_for_bucket,
 };
 pub use perl_core_harness_types::{HarnessMode, HarnessProfile, HarnessRunner};
 use run_authority::{
@@ -4519,6 +4519,18 @@ fn mode_mechanism(mode: HarnessMode) -> Option<ExecutionMechanism> {
     }
 }
 
+/// Scaffold stamp implied by the selected mode when no receipt exists to read.
+///
+/// Mirrors [`mode_mechanism`]: a missing execute result still belongs to the
+/// scaffold this run selected, while parse and compile runs stamp nothing
+/// (#4773).
+fn mode_scaffold_stamp(mode: HarnessMode) -> Option<String> {
+    match mode {
+        HarnessMode::Parse | HarnessMode::Compile => None,
+        HarnessMode::Execute => Some(LEGACY_SELECTED_EXECUTE_SCAFFOLD.to_string()),
+    }
+}
+
 fn read_runner_records_or_empty(path: &Path) -> Result<Vec<RunnerRecord>> {
     if !path.is_file() {
         return Ok(Vec::new());
@@ -4565,6 +4577,7 @@ fn build_run_report(input: BuildRunReportInput<'_>) -> RunReport {
                     // Read from the receipt, never inferred from the run's
                     // mode: the receipt is what actually names its rail.
                     mechanism: record.mechanism,
+                    scaffold_stamp: record.scaffold_stamp.clone(),
                 });
                 if record.status == RunnerStatus::Fail {
                     let bucket = record.bucket.clone().unwrap_or_else(|| "unknown".to_string());
@@ -4598,6 +4611,7 @@ fn build_run_report(input: BuildRunReportInput<'_>) -> RunReport {
                     // No receipt exists to read, and the failure still belongs
                     // to the rail this run selected.
                     mechanism: mode_mechanism(input.config.mode),
+                    scaffold_stamp: mode_scaffold_stamp(input.config.mode),
                 });
                 let bucket = "harness_prepare".to_string();
                 *buckets.entry(bucket.clone()).or_insert(0) += 1;
@@ -5149,6 +5163,7 @@ mod tests {
         let records = vec![
             RunnerRecord {
                 mechanism: None,
+                scaffold_stamp: None,
                 schema_version: "perl_core_harness.runner_record.v1".into(),
                 mode: "parse".into(),
                 path: "base/ok.t".into(),
@@ -5173,6 +5188,7 @@ mod tests {
             },
             RunnerRecord {
                 mechanism: None,
+                scaffold_stamp: None,
                 schema_version: "perl_core_harness.runner_record.v1".into(),
                 mode: "parse".into(),
                 path: "base/bad.t".into(),
@@ -5245,6 +5261,7 @@ mod tests {
         };
         let record = |path: &str| RunnerRecord {
             mechanism: None,
+            scaffold_stamp: None,
             schema_version: "perl_core_harness.runner_record.v1".into(),
             mode: "compile".into(),
             path: path.into(),
@@ -5277,6 +5294,7 @@ mod tests {
         let discovered = vec![DiscoveredTest { path: "base/ok.t".into(), root: "base".into() }];
         let record = |path: &str| RunnerRecord {
             mechanism: None,
+            scaffold_stamp: None,
             schema_version: "perl_core_harness.runner_record.v1".into(),
             mode: "compile".into(),
             path: path.into(),
@@ -5336,6 +5354,7 @@ mod tests {
         let discovered = vec![DiscoveredTest { path: "base/ok.t".into(), root: "base".into() }];
         let record = RunnerRecord {
             mechanism: None,
+            scaffold_stamp: None,
             schema_version: "perl_core_harness.runner_record.v1".into(),
             mode: "parse".into(),
             path: "not-a-normalized-test.txt".into(),
@@ -5384,6 +5403,7 @@ mod tests {
         ];
         let upstream_only = RunnerRecord {
             mechanism: None,
+            scaffold_stamp: None,
             schema_version: "perl_core_harness.runner_record.v1".into(),
             mode: "parse".into(),
             path: "base/ok.t".into(),
@@ -5440,6 +5460,7 @@ mod tests {
         let discovered = vec![DiscoveredTest { path: "base/ok.t".into(), root: "base".into() }];
         let payload = RunnerRecord {
             mechanism: None,
+            scaffold_stamp: None,
             schema_version: "perl_core_harness.runner_record.v1".into(),
             mode: "parse".into(),
             path: "base/ok.t".into(),
@@ -5492,6 +5513,7 @@ mod tests {
         let discovered = vec![DiscoveredTest { path: "base/ok.t".into(), root: "base".into() }];
         let record = |path: &str| RunnerRecord {
             mechanism: None,
+            scaffold_stamp: None,
             schema_version: "perl_core_harness.runner_record.v1".into(),
             mode: "parse".into(),
             path: path.into(),
@@ -5537,6 +5559,7 @@ mod tests {
         // present because stale-context removal failed.
         let stale_row = RunnerRecord {
             mechanism: None,
+            scaffold_stamp: None,
             schema_version: "perl_core_harness.runner_record.v1".into(),
             mode: "parse".into(),
             path: "base/gap.t".into(),
@@ -5578,6 +5601,7 @@ mod tests {
         let observation = settle_test_observation(HarnessMode::Parse, &discovered, &[], Some(0))?;
         let record = |path: &str| RunnerRecord {
             mechanism: None,
+            scaffold_stamp: None,
             schema_version: "perl_core_harness.runner_record.v1".into(),
             mode: "parse".into(),
             path: path.into(),
@@ -5692,6 +5716,7 @@ mod tests {
             buckets: BTreeMap::new(),
             file_results: vec![RunFileResult {
                 mechanism: None,
+                scaffold_stamp: None,
                 path: "base/ok.t".into(),
                 status: RunnerStatus::Pass,
                 assertions_passed: 1,
@@ -6171,6 +6196,7 @@ mod tests {
         let mut report = sample_compile_report();
         report.file_results.push(RunFileResult {
             mechanism: None,
+            scaffold_stamp: None,
             path: "base/new.t".into(),
             status: RunnerStatus::Pass,
             assertions_passed: 1,
@@ -7030,6 +7056,7 @@ mod tests {
         let baseline = baseline_from_report(&report)?;
         report.file_results.push(RunFileResult {
             mechanism: None,
+            scaffold_stamp: None,
             path: "base/new.t".into(),
             status: RunnerStatus::Fail,
             assertions_passed: 0,
@@ -7089,6 +7116,7 @@ mod tests {
         let mut current_report = baseline_report.clone();
         current_report.file_results.push(RunFileResult {
             mechanism: None,
+            scaffold_stamp: None,
             path: "base/new.t".into(),
             status: RunnerStatus::Fail,
             assertions_passed: 0,
@@ -7507,6 +7535,7 @@ mod tests {
         let discovered = vec![DiscoveredTest { path: "base/if.t".into(), root: "base".into() }];
         let records = vec![RunnerRecord {
             mechanism: None,
+            scaffold_stamp: None,
             schema_version: "perl_core_harness.runner_record.v1".into(),
             mode: "parse".into(),
             path: "base/if.t".into(),
@@ -7556,6 +7585,7 @@ mod tests {
             file_results: vec![
                 RunFileResult {
                     mechanism: None,
+                    scaffold_stamp: None,
                     path: "base/lex.t".into(),
                     status: RunnerStatus::Pass,
                     assertions_passed: 1,
@@ -7563,6 +7593,7 @@ mod tests {
                 },
                 RunFileResult {
                     mechanism: None,
+                    scaffold_stamp: None,
                     path: "base/ok.t".into(),
                     status: RunnerStatus::Pass,
                     assertions_passed: 1,
@@ -8422,6 +8453,7 @@ mod tests {
             file_results: vec![
                 RunFileResult {
                     mechanism: Some(ExecutionMechanism::FixtureReplay),
+                    scaffold_stamp: None,
                     path: "base/cond.t".into(),
                     status: RunnerStatus::Pass,
                     assertions_passed: 4,
@@ -8429,6 +8461,7 @@ mod tests {
                 },
                 RunFileResult {
                     mechanism: Some(ExecutionMechanism::FixtureReplay),
+                    scaffold_stamp: None,
                     path: "base/if.t".into(),
                     status: RunnerStatus::Pass,
                     assertions_passed: 2,
@@ -8436,6 +8469,7 @@ mod tests {
                 },
                 RunFileResult {
                     mechanism: Some(ExecutionMechanism::FixtureReplay),
+                    scaffold_stamp: None,
                     path: "base/num.t".into(),
                     status: RunnerStatus::Pass,
                     assertions_passed: 56,
@@ -8443,6 +8477,7 @@ mod tests {
                 },
                 RunFileResult {
                     mechanism: Some(ExecutionMechanism::FixtureReplay),
+                    scaffold_stamp: None,
                     path: "base/pat.t".into(),
                     status: RunnerStatus::Pass,
                     assertions_passed: 2,
@@ -8450,6 +8485,7 @@ mod tests {
                 },
                 RunFileResult {
                     mechanism: Some(ExecutionMechanism::FixtureReplay),
+                    scaffold_stamp: None,
                     path: "base/translate.t".into(),
                     status: RunnerStatus::Pass,
                     assertions_passed: 257,
@@ -8457,6 +8493,7 @@ mod tests {
                 },
                 RunFileResult {
                     mechanism: Some(ExecutionMechanism::FixtureReplay),
+                    scaffold_stamp: None,
                     path: "base/while.t".into(),
                     status: RunnerStatus::Pass,
                     assertions_passed: 4,

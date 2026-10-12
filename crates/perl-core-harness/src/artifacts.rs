@@ -1474,6 +1474,9 @@ fn records_from_reports(reports: &[RunReport]) -> Result<Vec<RunnerRecord>> {
                 // mechanism survives the report -> record round trip instead
                 // of silently defaulting to absent (#8254).
                 mechanism: result.mechanism,
+                // Same carry for the scaffold stamp: derivation must preserve
+                // it, never silently drop it (#4773).
+                scaffold_stamp: result.scaffold_stamp.clone(),
                 semantic_boundaries,
             });
         }
@@ -1825,8 +1828,8 @@ mod tests {
     use super::*;
     use perl_core_harness_types::SemanticBoundarySourceSpan;
     use perl_core_harness_types::{
-        ExecutionMechanism, RunSummary, SemanticBoundaryConfidence, SemanticBoundaryDisposition,
-        SemanticBoundaryLockScope,
+        ExecutionMechanism, LEGACY_SELECTED_EXECUTE_SCAFFOLD, RunSummary,
+        SemanticBoundaryConfidence, SemanticBoundaryDisposition, SemanticBoundaryLockScope,
     };
     use std::io::Cursor;
 
@@ -2005,6 +2008,30 @@ mod tests {
                     "report -> record derivation dropped the mechanism for {}: {:?}",
                     record.path,
                     record.mechanism
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn derived_records_preserve_the_scaffold_stamp() -> TestResult {
+        let mut report = sample_execute_report();
+        for result in &mut report.file_results {
+            result.scaffold_stamp = Some(LEGACY_SELECTED_EXECUTE_SCAFFOLD.to_string());
+        }
+
+        let records = records_from_reports(std::slice::from_ref(&report))?;
+
+        if records.is_empty() {
+            bail!("expected derived execute records");
+        }
+        for record in &records {
+            if record.scaffold_stamp.as_deref() != Some(LEGACY_SELECTED_EXECUTE_SCAFFOLD) {
+                bail!(
+                    "report -> record derivation dropped the scaffold stamp for {}: {:?}",
+                    record.path,
+                    record.scaffold_stamp
                 );
             }
         }
@@ -2852,6 +2879,7 @@ mod tests {
             file_results: vec![
                 RunFileResult {
                     mechanism: None,
+                    scaffold_stamp: None,
                     path: "base/ok.t".into(),
                     status: RunnerStatus::Pass,
                     assertions_passed: 1,
@@ -2859,6 +2887,7 @@ mod tests {
                 },
                 RunFileResult {
                     mechanism: None,
+                    scaffold_stamp: None,
                     path: "base/other.t".into(),
                     status: RunnerStatus::Pass,
                     assertions_passed: 1,
