@@ -437,7 +437,7 @@ mod tests {
     fn unsupported_native_syntax_warns_once_per_surface() -> TestResult {
         let (server, output) = server_with_output();
         let uri = "file:///unsupported-native-formatting.pl";
-        server.test_apply_did_open(uri, "sub f {\nreturn 1;\n}\n", 1)?;
+        server.test_apply_did_open(uri, "sub f {\nprint $x;\n}\n", 1)?;
 
         let first_document =
             server.handle_formatting_policy(Some(document_formatting_params(uri, 1)), None)?;
@@ -486,7 +486,7 @@ mod tests {
         let (server, output) = server_with_output();
         server.advertised_feature_ids.lock().push(Surface::Ranges.feature_id());
         let uri = "file:///unsupported-native-multi-range-formatting.pl";
-        server.test_apply_did_open(uri, "sub f {\nreturn 1;\n}\n", 1)?;
+        server.test_apply_did_open(uri, "sub f {\nprint $x;\n}\n", 1)?;
         let params = json!({
             "textDocument": { "uri": uri, "version": 1 },
             "ranges": [
@@ -520,7 +520,7 @@ mod tests {
     fn reopening_document_reenables_unsupported_warning() -> TestResult {
         let (server, output) = server_with_output();
         let uri = "file:///reopened-native-formatting.pl";
-        let source = "sub f {\nreturn 1;\n}\n";
+        let source = "sub f {\nprint $x;\n}\n";
         server.test_apply_did_open(uri, source, 1)?;
         let first =
             server.handle_formatting_policy(Some(document_formatting_params(uri, 1)), None)?;
@@ -546,7 +546,7 @@ mod tests {
         let (server, output) = server_with_output();
         let opened_uri = "file:///C:/workspace/%61lias-formatting.pl";
         let close_uri = "file:///c:/workspace/alias-formatting.pl";
-        let source = "sub f {\nreturn 1;\n}\n";
+        let source = "sub f {\nprint $x;\n}\n";
         // One server owns the document instance across the aliased close and
         // reopen; the second open must not inherit the first instance's receipt.
         server.test_apply_did_open(opened_uri, source, 1)?;
@@ -577,7 +577,7 @@ mod tests {
     fn formatting_configuration_change_reenables_unsupported_warning() -> TestResult {
         let (server, output) = server_with_output();
         let uri = "file:///changed-formatting-config.pl";
-        server.test_apply_did_open(uri, "sub f {\nreturn 1;\n}\n", 1)?;
+        server.test_apply_did_open(uri, "sub f {\nprint $x;\n}\n", 1)?;
         let first =
             server.handle_formatting_policy(Some(document_formatting_params(uri, 1)), None)?;
         server.config.lock().perltidy_indent_columns = Some(8);
@@ -629,7 +629,7 @@ mod tests {
         let (server, output) = server_with_output();
         let first_uri = "file:///first-native-formatting.pl";
         let second_uri = "file:///second-native-formatting.pl";
-        let source = "sub f {\nreturn 1;\n}\n";
+        let source = "sub f {\nprint $x;\n}\n";
         server.test_apply_did_open(first_uri, source, 1)?;
         server.test_apply_did_open(second_uri, source, 1)?;
 
@@ -658,10 +658,10 @@ mod tests {
     fn source_generation_change_reenables_warning() -> TestResult {
         let (server, output) = server_with_output();
         let uri = "file:///changed-native-formatting.pl";
-        server.test_apply_did_open(uri, "sub f {\nreturn 1;\n}\n", 1)?;
+        server.test_apply_did_open(uri, "sub f {\nprint $x;\n}\n", 1)?;
         let first =
             server.handle_formatting_policy(Some(document_formatting_params(uri, 1)), None)?;
-        server.test_apply_did_change(uri, "sub g {\nreturn 2;\n}\n", 2)?;
+        server.test_apply_did_change(uri, "sub g {\nprint $y;\n}\n", 2)?;
         let changed =
             server.handle_formatting_policy(Some(document_formatting_params(uri, 2)), None)?;
 
@@ -682,7 +682,7 @@ mod tests {
     fn stale_projection_does_not_warn_or_retain_unsupported_receipt() -> TestResult {
         let (server, output) = server_with_output();
         let uri = "file:///stale-native-formatting.pl";
-        server.test_apply_did_open(uri, "sub f {\nreturn 1;\n}\n", 1)?;
+        server.test_apply_did_open(uri, "sub f {\nprint $x;\n}\n", 1)?;
 
         let params = document_formatting_params(uri, 1);
         let snapshot = server.admit(Surface::Document, &params)?;
@@ -736,7 +736,7 @@ mod tests {
         let (server, output) = server_with_output();
         let server = Arc::new(server);
         let uri = "file:///post-check-stale-native-formatting.pl";
-        server.test_apply_did_open(uri, "sub f {\nreturn 1;\n}\n", 1)?;
+        server.test_apply_did_open(uri, "sub f {\nprint $x;\n}\n", 1)?;
 
         let params = document_formatting_params(uri, 1);
         let snapshot = server.admit(Surface::Document, &params)?;
@@ -791,7 +791,7 @@ mod tests {
         let (server, output) = server_with_output();
         let refused_uri = "file:///refused-native-formatting.pl";
         let canonical_uri = "file:///canonical-intervening-formatting.pl";
-        server.test_apply_did_open(refused_uri, "sub f {\nreturn 1;\n}\n", 1)?;
+        server.test_apply_did_open(refused_uri, "sub f {\nprint $x;\n}\n", 1)?;
         server.test_apply_did_open(canonical_uri, "use strict;\nmy $x = 1;\n", 1)?;
 
         let first_refusal = server
@@ -878,7 +878,7 @@ mod tests {
         for (label, prior_receipt) in cases {
             let (server, output) = server_with_output();
             let uri = format!("file:///{label}-prior-receipt.pl");
-            server.test_apply_did_open(&uri, "sub f {\nreturn 1;\n}\n", 1)?;
+            server.test_apply_did_open(&uri, "sub f {\nprint $x;\n}\n", 1)?;
             server.provider_decision_traces.lock().insert(PROVIDER.to_string(), prior_receipt);
 
             let response =
@@ -901,7 +901,7 @@ mod tests {
         ] {
             let uri = format!("file:///{label}-prior-receipt.pl");
             let (seed_server, _) = server_with_output();
-            seed_server.test_apply_did_open(&uri, "sub f {\nreturn 1;\n}\n", 1)?;
+            seed_server.test_apply_did_open(&uri, "sub f {\nprint $x;\n}\n", 1)?;
             let _ = seed_server
                 .handle_formatting_policy(Some(document_formatting_params(&uri, 1)), None)?;
             let mut prior_receipt = seed_server
@@ -913,7 +913,7 @@ mod tests {
             prior_receipt[field] = replacement;
 
             let (server, output) = server_with_output();
-            server.test_apply_did_open(&uri, "sub f {\nreturn 1;\n}\n", 1)?;
+            server.test_apply_did_open(&uri, "sub f {\nprint $x;\n}\n", 1)?;
             server.provider_decision_traces.lock().insert(PROVIDER.to_string(), prior_receipt);
 
             let response =
