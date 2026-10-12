@@ -547,3 +547,26 @@ fn reindent_keeps_anonymous_sub_bodies_nested() {
     let second = formatter.format_document(&fixed.formatted, &FormatConfig::default());
     assert!(!second.changed);
 }
+
+#[test]
+fn reindent_preserves_multiline_string_contents() {
+    let formatter = NativeFormatter::new();
+    // The indented `}` is string content, not a block closer.
+    let source = "sub f {\nmy $s = \"hello\n    }\nworld\";\nreturn 1;\n}\n";
+    let expected = "sub f {\n    my $s = \"hello\n    }\nworld\";\n    return 1;\n}\n";
+    let result = formatter.format_document(source, &FormatConfig::default());
+    assert_eq!(result.formatted, expected);
+    let second = formatter.format_document(&result.formatted, &FormatConfig::default());
+    assert!(!second.changed);
+}
+
+#[test]
+fn reindent_survives_unsupported_inline_else_tail() {
+    let formatter = NativeFormatter::new();
+    let source = "sub f {\nif ($x) {\nreturn 1;\n} else { print 2; }\nreturn 3;\n}\n";
+    let result = formatter.format_document(source, &FormatConfig::default());
+    // The unsupported tail line is preserved; following lines must return
+    // to sub level, not stay at if level.
+    assert!(result.formatted.ends_with("return 3;\n}\n"), "got: {:?}", result.formatted);
+    assert!(result.formatted.contains("\n    return 3;\n"), "got: {:?}", result.formatted);
+}

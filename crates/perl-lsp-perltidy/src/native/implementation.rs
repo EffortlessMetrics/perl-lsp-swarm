@@ -135,10 +135,19 @@ impl NativeFormatter {
         // intentionally indented top-level code are untouched.
         let mut indent_stack: Vec<String> = Vec::new();
         let unit = indent_unit(config);
+        // Physical lines inside a multiline literal (string, regex, qw…)
+        // are literal bytes, not code: never reindent them and never let
+        // their contents move the block stack.
+        let literal_lines = multiline_literal_lines(source);
 
-        for line in source.split_inclusive('\n') {
+        for (line_index, line) in source.split_inclusive('\n').enumerate() {
             processed_lines = processed_lines.saturating_add(1);
             let (body, line_ending) = split_line_ending(line);
+            if literal_lines.contains(&line_index) {
+                formatted.push_str(body);
+                formatted.push_str(line_ending);
+                continue;
+            }
             let generated_line_ending =
                 if line_ending.is_empty() { fallback_line_ending } else { line_ending };
             let formatted_body = if body.trim().is_empty() {
@@ -179,7 +188,15 @@ impl NativeFormatter {
                         let candidate = format!("{indent}{}", body.trim_start());
                         let formatted = match format_simple_line(&candidate, config) {
                             Some(formatted) => formatted,
-                            None if closes || opens => candidate,
+                            // Structural lines and lines opening a multiline
+                            // literal only move leading whitespace, which
+                            // cannot change meaning.
+                            None if closes
+                                || opens
+                                || literal_lines.contains(&(line_index + 1)) =>
+                            {
+                                candidate
+                            }
                             None => body.to_string(),
                         };
                         if opens {
@@ -274,6 +291,31 @@ impl NativeFormatter {
             FinalNewline::Trim => formatted.trim_end_matches(['\n', '\r']).to_string(),
         }
     }
+}
+
+/// Line indices (0-based) covered by a multiline literal token, excluding
+/// the line the token starts on. Those lines are literal bytes: the block
+/// stack must ignore them and formatting must preserve them exactly.
+fn multiline_literal_lines(source: &str) -> std::collections::HashSet<usize> {
+    let mut lines = std::collections::HashSet::new();
+    let line_starts: Vec<usize> =
+        std::iter::once(0).chain(source.match_indices('\n').map(|(index, _)| index + 1)).collect();
+    let line_of = |offset: usize| line_starts.partition_point(|start| *start <= offset) - 1;
+    let mut stream = perl_parser_core::TokenStream::new(source);
+    loop {
+        match stream.next() {
+            Ok(token) if token.kind() == perl_parser_core::TokenKind::Eof => break,
+            Ok(token) => {
+                if token.text.contains('\n') {
+                    for line in line_of(token.start()) + 1..=line_of(token.end()) {
+                        lines.insert(line);
+                    }
+                }
+            }
+            Err(_) => break,
+        }
+    }
+    lines
 }
 
 impl PerlFormatter for NativeFormatter {
