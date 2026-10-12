@@ -373,6 +373,41 @@ mod tests {
                 "seed compile flag for '{class_id}' must not drift silently"
             );
         }
+        // The seed fixes each class's permitted provider responses and
+        // oracle projection; drift would silently change consumer behavior.
+        let permissive = vec![ProviderBehavior::Fallback, ProviderBehavior::Advisory];
+        let strict = vec![ProviderBehavior::Block, ProviderBehavior::RequireConfirmation];
+        let generated = vec![ProviderBehavior::Fallback, ProviderBehavior::RequireConfirmation];
+        for entry in &catalog.entries {
+            let expected_behaviors = match entry.class_id.as_str() {
+                "source_filter" | "unknown_boundary_evidence" | "unsupported_parser_construct" => {
+                    &strict
+                }
+                "generated_no_source" => &generated,
+                _ => &permissive,
+            };
+            assert_eq!(
+                &entry.allowed_provider_behaviors, expected_behaviors,
+                "seed behaviors for '{}' must not drift silently",
+                entry.class_id
+            );
+            let expected_result = if entry.class_id == "unknown_boundary_evidence" {
+                OracleResultClass::Unknown
+            } else {
+                OracleResultClass::DynamicOrUnsupported
+            };
+            assert_eq!(
+                entry.oracle_result_class, expected_result,
+                "seed oracle class for '{}' must not drift silently",
+                entry.class_id
+            );
+            assert_eq!(
+                entry.oracle_promotion_effect,
+                OraclePromotionEffect::BlocksPromotion,
+                "seed oracle effect for '{}' must stay blocking",
+                entry.class_id
+            );
+        }
         // Every neighbor reference must resolve to a different seed class;
         // a typo would otherwise leave a broken distinction.
         for entry in &catalog.entries {
