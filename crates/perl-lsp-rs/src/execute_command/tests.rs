@@ -1494,7 +1494,14 @@ fn run_critic_profile_token_normalizes_and_defaults_to_recommended()
     let file = tmp.path().join("unused.pl");
     fs::write(&file, source)?;
 
-    for token in [" RECOMMENDED ", "not-a-profile"] {
+    // Positive control first: explicit strict (exact and padded) must fire
+    // the strict-only rule on this fixture, so its absence below proves the
+    // Recommended rule set ran rather than the fixture not triggering it.
+    // The padded " STRICT " case also separates canonical normalization
+    // from the Recommended fallback.
+    for (token, expect_strict) in
+        [("strict", true), (" STRICT ", true), (" RECOMMENDED ", false), ("not-a-profile", false)]
+    {
         let provider = ExecuteCommandProvider::new().with_native_critic_config(
             token.to_string(),
             Vec::new(),
@@ -1509,9 +1516,10 @@ fn run_critic_profile_token_normalizes_and_defaults_to_recommended()
             .filter_map(|violation| violation["policy"].as_str())
             .collect();
 
-        assert!(
-            !policies.contains(&"native.variables.unused_lexical"),
-            "profile token {token:?} must resolve to Recommended, not Strict: {policies:?}"
+        assert_eq!(
+            policies.contains(&"native.variables.unused_lexical"),
+            expect_strict,
+            "profile token {token:?} resolved to the wrong rule set: {policies:?}"
         );
     }
     Ok(())
