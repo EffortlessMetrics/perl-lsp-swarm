@@ -3,7 +3,7 @@
 use color_eyre::eyre::{Context, Result, bail};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::Output;
 
 pub(crate) fn git_output_with_mount_root(
     root: &Path,
@@ -45,7 +45,7 @@ pub(crate) fn git_stdout_with_mount_root(
 }
 
 fn git_output(root: &Path, args: &[&str], git_dir: Option<&Path>) -> Result<Output> {
-    let mut command = Command::new("git");
+    let mut command = crate::git_environment::command();
     command.args(args).current_dir(root);
     if let Some(git_dir) = git_dir {
         command.env("GIT_DIR", git_dir).env("GIT_WORK_TREE", root);
@@ -262,7 +262,7 @@ mod tests {
     }
 
     fn run_git(repo: &Path, args: &[&str]) -> TestResult<String> {
-        let output = Command::new("git").args(args).current_dir(repo).output()?;
+        let output = crate::git_environment::command().args(args).current_dir(repo).output()?;
         if !output.status.success() {
             return Err(format!("git {:?} failed with status {}", args, output.status).into());
         }

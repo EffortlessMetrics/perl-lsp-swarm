@@ -19,6 +19,8 @@
 //! `perl-test-must` helpers (re-exported by `perl-tdd-support`), which satisfy
 //! the workspace `deny` lints without an `allow` header.
 
+#![deny(clippy::map_err_ignore)]
+
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use perl_ripr_facts::{RiprFactsRequest, build_ripr_facts_packet};
 use perl_tdd_support::{must, must_with};

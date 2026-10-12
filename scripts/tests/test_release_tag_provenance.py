@@ -12,6 +12,8 @@ from unittest.mock import patch
 SCRIPTS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SCRIPTS))
 
+from git_environment import isolated_git_env
+
 from check_release_tag_provenance import (  # noqa: E402
     load_manifest,
     validate_manifest,
@@ -110,6 +112,7 @@ class GitVerificationTests(unittest.TestCase):
     def run_git(self, root: Path, *args: str) -> str:
         result = subprocess.run(
             ["git", "-C", str(root), *args],
+            env=isolated_git_env(),
             check=True,
             text=True,
             stdout=subprocess.PIPE,
@@ -277,10 +280,10 @@ class OrphanClassificationTests(unittest.TestCase):
     """#15263: typed classification of orphaned lineage records."""
 
     def _git(self, repo, *args):
-        return subprocess.run(["git", "-C", repo, *args], capture_output=True, text=True)
+        return subprocess.run(["git", "-C", repo, *args], env=isolated_git_env(), capture_output=True, text=True)
 
     def _init(self, repo):
-        subprocess.run(["git", "init", "-q", repo], check=True)
+        subprocess.run(["git", "init", "-q", repo], env=isolated_git_env(), check=True)
         self._git(repo, "config", "user.name", "t")
         self._git(repo, "config", "user.email", "t@x")
         open(f"{repo}/f", "w").close()
@@ -365,6 +368,7 @@ class OrphanClassificationTests(unittest.TestCase):
             self._init(repo)
             blob = subprocess.run(
                 ["git", "-C", repo, "hash-object", "-w", "--stdin"],
+                env=isolated_git_env(),
                 input="payload", capture_output=True, text=True, check=True,
             ).stdout.strip()
             manifest["tag"][0]["current_sha"] = blob

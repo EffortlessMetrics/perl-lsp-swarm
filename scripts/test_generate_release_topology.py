@@ -33,7 +33,9 @@ def release_selection_fixture(workflow):
     marker = "      - name: Create GitHub Release from terminal candidate"
     start = workflow.index(marker)
     end = workflow.index("\n      - name:", start + len(marker))
-    return "\n  publish-release:\n    steps:\n" + workflow[start:end] + "\n"
+    attest_start = workflow.index("      - name: Attest exact terminal candidate subjects")
+    attest_end = workflow.index("\n      - name:", attest_start + 1)
+    return "\n  publish-release:\n    steps:\n" + workflow[attest_start:attest_end] + "\n" + workflow[start:end] + "\n"
 
 
 class ReleaseTopologyTests(unittest.TestCase):

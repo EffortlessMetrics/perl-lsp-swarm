@@ -1,4 +1,5 @@
 //! Exercise the emitted public CLI completion in a clean native Windows shell.
+#![deny(clippy::map_err_ignore)]
 #![cfg(windows)]
 
 use std::io::Write;

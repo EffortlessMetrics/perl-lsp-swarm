@@ -774,7 +774,7 @@ fn oversized_blob_is_rejected_by_size_before_buffering() {
     let scratch = tempfile::tempdir().expect("tempdir");
     let cwd = scratch.path();
     let git = |args: &[&str]| {
-        let output = std::process::Command::new("git")
+        let output = crate::git_environment::command()
             .args(args)
             .current_dir(cwd)
             .output()
@@ -805,7 +805,7 @@ fn oversized_blob_is_rejected_by_size_before_buffering() {
     git(&["add", "."]);
     git(&["-c", "user.name=t", "-c", "user.email=t@t", "commit", "--quiet", "-m", "files"]);
     let head = String::from_utf8(
-        std::process::Command::new("git")
+        crate::git_environment::command()
             .args(["rev-parse", "HEAD"])
             .current_dir(cwd)
             .output()

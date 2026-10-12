@@ -421,10 +421,9 @@ mod tests {
     use super::*;
     use color_eyre::eyre::ensure;
     use std::fs;
-    use std::process::Command;
 
     fn run_git(dir: &Path, args: &[&str]) -> Result<()> {
-        let status = Command::new("git")
+        let status = crate::git_environment::command()
             .current_dir(dir)
             .args(args)
             .status()

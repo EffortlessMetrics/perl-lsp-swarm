@@ -629,7 +629,7 @@ fn read_changed_files(
             })
             .map_err(|e| format!("failed to read changed-files list {}: {e}", list.display()));
     }
-    let out = Command::new("git")
+    let out = crate::git_environment::command()
         .current_dir(root)
         // Deletions are deliberately included: a deleted fragment is filtered
         // downstream by the `absent_paths` tree read in `check_inner`
@@ -1146,7 +1146,7 @@ fn absent_paths(root: &Path, changed: &[String]) -> std::collections::HashSet<St
 /// a caller-supplied changed-file list to disagree with. `-z` keeps non-ASCII
 /// paths unquoted.
 fn head_tree_paths(root: &Path) -> std::collections::HashSet<String> {
-    let Ok(out) = Command::new("git")
+    let Ok(out) = crate::git_environment::command()
         .current_dir(root)
         .args(["ls-tree", "-r", "--name-only", "-z", "HEAD"])
         .output()
@@ -2034,6 +2034,9 @@ changelog = "vscode-extension/CHANGELOG.md"
         std::fs::write(
             dir.join(CHANGIE_CONFIG),
             r#"
+changesDir: .changes
+unreleasedDir: unreleased
+changeFormat: '- {{.Body}}'
 projects:
   - key: product
   - key: vscode
@@ -3490,7 +3493,7 @@ changelog = "vscode-extension/CHANGELOG.md"
     }
 
     fn run_git(dir: &Path, args: &[&str]) -> std::result::Result<(), String> {
-        let status = Command::new("git")
+        let status = crate::git_environment::command()
             .current_dir(dir)
             .args(args)
             .status()
@@ -3502,7 +3505,7 @@ changelog = "vscode-extension/CHANGELOG.md"
     }
 
     fn run_git_output(dir: &Path, args: &[&str]) -> std::result::Result<String, String> {
-        let out = Command::new("git")
+        let out = crate::git_environment::command()
             .current_dir(dir)
             .args(args)
             .output()
