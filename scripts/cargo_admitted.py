@@ -906,10 +906,6 @@ def main(args=None):
                 # The script's __main__ module and imported API have separate
                 # exception identities; preserve native admission status 75.
                 raise Denied(str(error)) from error
-            # Prefer the lightweight shared-source bootstrap (#17623) when its
-            # crate is present; delete this block to revert to the xtask bin.
-            if expected != bootstrap and (Path(__file__).resolve().parent.parent / 'crates/routed-test-cohorts-bootstrap/Cargo.toml').is_file():
-                args = bootstrap + args[len(expected):]
         clippy = args[0] == "clippy"
         owned_linux = sys.platform == "linux"
         managed = clippy or owned_linux
@@ -925,6 +921,12 @@ def main(args=None):
                 raise Denied('alternate owned-child discovery requires native Linux')
             child_discovery_capability(discovery_mode)  # before scope/lease/allocation
         worktree, slot, paths = resource_plan(env)
+        # Cargo executes in this admitted worktree, which can differ from the
+        # checkout supplying an absolute wrapper path. Bind both preference
+        # and the budget scope to the effective command for this worktree.
+        if (staged_cohorts and expected != bootstrap
+                and (worktree / 'crates/routed-test-cohorts-bootstrap/Cargo.toml').is_file()):
+            args = bootstrap + args[len(expected):]
         if env.get("RUSTC_WRAPPER") or env.get("RUSTC_WORKSPACE_WRAPPER"):
             raise Denied("compiler wrappers have unverified storage; use a separately admitted route")
         toolchain = None

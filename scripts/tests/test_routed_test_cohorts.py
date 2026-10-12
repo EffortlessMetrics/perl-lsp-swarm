@@ -184,6 +184,41 @@ print('test result: ok. 1 passed; 0 failed; 1 ignored')
         with patch.object(owner,'children_capability',side_effect=owner.Denied('native children unavailable')),patch.object(admitted.subprocess,'Popen') as launch,contextlib.redirect_stderr(io.StringIO()):
             self.assertEqual(admitted.main(argv),75);launch.assert_not_called()
 
+    def test_bootstrap_choice_and_scope_use_execution_worktree(self):
+        legacy = ['run','--locked','-p','xtask','--bin','routed-test-cohorts','--']
+        bootstrap = ['run','--locked','-p','routed-test-cohorts-bootstrap','--bin','routed-test-cohorts-bootstrap','--']
+        suffix = ['-p','cohort-a','-p','cohort-b','--evidence-dir','/exact/evidence']
+        other = self.fixture.root / 'other-wrapper'; (other / 'scripts').mkdir(parents=True)
+        manifests = [root / 'crates/routed-test-cohorts-bootstrap/Cargo.toml' for root in (self.fixture.root, other)]
+        for manifest in manifests:
+            manifest.parent.mkdir(parents=True)
+        self.fixture.marker.rmdir(); self.fixture.lease.rmdir()
+        for present, direct in [(False,False),(True,False),(False,True),(True,True)]:
+            with self.subTest(execution_present=present, explicit_bootstrap=direct):
+                # The wrapper checkout has the opposite membership. Absolute
+                # cross-checkout invocation must still use the execution root.
+                for manifest, exists in zip(manifests, (present, not present)):
+                    if manifest.exists(): manifest.unlink()
+                    if exists: manifest.write_text('[package]\n')
+                invocation = (bootstrap if direct else legacy) + suffix
+                effective = (bootstrap if direct or present else legacy) + suffix
+                output = io.StringIO()
+                with patch.dict(os.environ, {}, clear=True), \
+                     patch.object(admitted, '__file__', str(other / 'scripts/cargo_admitted.py')), \
+                     patch.object(owner, 'children_capability', return_value='EXPLICIT INTERFACE DOUBLE'), \
+                     patch.object(admitted, 'resource_plan', return_value=(self.fixture.root,self.fixture.slot,self.fixture.paths)), \
+                     patch.object(admitted, 'check_capacity', return_value={'policy':'percent'}), \
+                     patch.object(admitted, 'budget_scope', wraps=admitted.budget_scope) as scope, \
+                     patch.object(admitted.subprocess, 'Popen') as launch, \
+                     contextlib.chdir(self.fixture.root), contextlib.redirect_stderr(output):
+                    self.assertEqual(admitted.main(['--routed-test-cohorts','--preflight',*invocation]),0)
+                    launch.assert_not_called()
+                    self.assertEqual(scope.call_args.args[0], effective)
+                    receipt = json.loads(output.getvalue().split('cargo-admitted preflight: ',1)[1])
+                    digest = hashlib.sha256(json.dumps(effective,ensure_ascii=True,separators=(',',':')).encode()).hexdigest()
+                    self.assertEqual(receipt['scope']['cargo_argv_sha256'], digest)
+                    self.assertEqual(receipt['scope']['worktree'], str(self.fixture.root))
+
     def test_staged_original_descriptor_overrides_fabricated_environment(self):
         argv=['--routed-test-cohorts','run','--locked','-p','xtask','--bin','routed-test-cohorts','--','-p','cohort-a']
         self.fixture.marker.rmdir();self.fixture.lease.rmdir()
