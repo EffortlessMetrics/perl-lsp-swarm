@@ -158,6 +158,70 @@ represent a Cargo panic: an exit status is not proof that all descendants ended.
 The root must verify independent consumers before assigning the slot again.
 No age/PID-based stealing or automatic deletion exists.
 
+### Cohort lifecycle prerequisite (#17617)
+
+`scripts/cargo_cohort.py` provides a dedicated-process `Cohort` API beneath an
+already admitted Linux outer owner. It neither acquires nor releases the outer
+lease. The original resource descriptor must belong to a live ancestor and match
+the native resource plan, original lease directory, and unique ownership marker.
+The cohort reuses `ClippyTree`; it requires readable child discovery for its
+actual live thread before launching work, then requires kernel `ECHILD (__WALL)`
+before reclamation. A successful producer or consumer exit alone is insufficient.
+Unavailable discovery refuses without starting the producer.
+
+The trusted producer supplies complete source/profile manifests with absolute
+worktree file paths and SHA256 digests, exact expected compiler target/feature/
+profile records, pinned paths, and a new evidence path outside both executable
+roots. The API rechecks manifest digests and each listed file. Manifest
+completeness, command provenance, effective compiler configuration, test selection,
+and absence of independent consumers remain the admitted caller's obligations;
+this library does not authenticate a fabricated descriptor or Cargo JSON. Its
+single producer and exact executable consumers run within one owned child scope.
+The original outer owner must keep both private resources exclusive throughout.
+
+Only newly emitted, non-fresh test-harness compiler artifacts matching the
+expected records can become cleanup candidates. Each executable is bound to its
+canonical path, parent directory, device/inode, file metadata, and SHA256. The
+cohort executes that exact path and revalidates it before unlinking. Preexisting,
+pinned, foreign, replaced, symlinked, and multiply linked files refuse. Successful
+reclamation consumes that path's cleanup authority; repeated cleanup cannot adopt
+a replacement. Before reclamation, producer failure, consumer failure,
+interruption, uncertain settlement, or changed bindings prevents reclamation.
+An error during sequential per-path reclamation stops further deletion and
+preserves remaining artifacts; cleanup is not transactional. Product status and
+effective status are separate: uncertain closure is 75; settled cancellation is 130.
+Producer JSON evidence remains retained. Before deletion, a flushed and synced
+sidecar records captured file identities/hashes, source/profile bindings,
+consumption, and kernel settlement; successful per-path reclamation is appended.
+Failure to persist authorization prevents deletion. The unlink and completion
+record are not an atomic transaction. Inherited diagnostic and consumer streams
+must also be captured by the admitted caller.
+
+This is a lifecycle prerequisite, not the routed-test producer. Cargo's hardlinked
+target/build aliases are deliberately refused until a separately qualified exact
+alias-ownership extension exists. No gate command, package, feature, profile,
+reserve, timeout, or quarantine changes. The API is not an adversarial filesystem
+sandbox: exclusive cooperative ownership is required, and final unlink is not an
+atomic compare-and-delete against hostile concurrent writers. Tests distinguish
+filesystem/interface doubles from actual native process proof:
+
+```bash
+python3 -m unittest discover -s scripts/tests -p 'test_cargo_cohort.py' -v
+```
+
+On a host without readable `/proc/<owner-pid>/task/<owner-tid>/children`, the real
+entrypoint must demonstrate prelaunch refusal. Known-child pidfds and eventual
+subreaper closure do not supply discovery of unknown live detached children.
+End-to-end cohort cancellation and reclamation require a supported native host;
+portable fault-injected controls cannot replace that qualification.
+
+Nested host/test runners that promise reaping before return must own and reap
+their inner child scope before reporting that boundary. Later cohort or outer
+Cargo settlement cannot retroactively satisfy it. A terminated but unreaped
+zombie does not satisfy a synchronous-reaping contract, and changing its liveness
+oracle to report dead would weaken that proof. Inner runner failures remain
+product failures even when the cohort subsequently settles successfully.
+
 ### Staged native Clippy
 
 The existing owner admits only this finite Linux request (optional `--offline`):

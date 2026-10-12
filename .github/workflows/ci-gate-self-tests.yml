@@ -17,6 +17,8 @@ on:
       # Scoped pre-build storage admission; Python fixtures compile no Rust.
       - 'scripts/cargo-admitted'
       - 'scripts/cargo_admitted.py'
+      - 'scripts/cargo_cohort.py'
+      - 'scripts/tests/test_cargo_cohort.py'
       - 'scripts/tests/test_cargo_admitted_storage.py'
       - 'scripts/tests/test_cargo_admitted_budget.py'
       - 'scripts/storage-doctor'
@@ -640,6 +642,8 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - name: Run both admitted storage suites without Rust builds
         run: python3 -m unittest discover -s scripts/tests -p 'test_cargo_admitted*.py' -v
+      - name: Check cohort ownership and exact reclamation controls
+        run: python3 -m unittest discover -s scripts/tests -p 'test_cargo_cohort.py' -v
       - name: Check retained target measurement failure and threshold controls
         run: python3 -m unittest discover -s scripts/tests -p 'test_storage_doctor.py' -v
 
