@@ -682,3 +682,42 @@ seconds. Measurement completed, reserve remained observed, and kernel ECHILD
 preceded lease release. The declaration remains an operator forecast, not an
 empirical upper bound, and applies only to this unit request on the selected
 33,770,192,896-byte filesystem. It is not transferred to full-route sizing.
+
+### Bounded-selector performance candidate
+
+After main `b03bb0e1cdc10dae1c60668ecfa878f948d3d2d7` integrated #17618, the
+producer combines already qualified global selector groups into batches of at
+most eight observed harness targets. A group is indivisible; empty plans/groups
+and oversized groups refuse. Every batch keeps the complete original package
+and feature flags. Expected targets are the exact selector union, still checked
+against actual compiler receipts before any consumption. A failed consumer keeps
+all batch executables, including previously consumed ones. This bounds selected
+harness count, not bytes, companion binaries, retained warm files or peak growth.
+Original capacity admission, diagnostics and watchdog remain authoritative.
+
+A real isolated Cargo 1.95 resolver-2 fixture compared original `--tests`, the
+union of separate selectors, and combined `--lib`, repeated `--bin` and repeated
+`--test` selectors. All three produced identical eight-harness/thirteen-artifact
+package/target/features/profile graphs. Omitting a selector was distinguishable;
+dropping the feature-activating package removed the shared `extra` feature and
+failed with 101. All ordinary-owner operations settled and released their leases.
+Fixture report SHA256:
+`f91c1ef42d1a387dfa81484b8903ca6dc03b3f122a2bd65e968e45214640f4f8`.
+The fixture budget is not the native full-workload sizing proof.
+
+Separately, source manifest/file path checks use one fresh `lstat` per current
+component instead of repeated link stats and a second resolve traversal. Every
+ancestor is checked on every invocation; source hashes and before/after fd/path
+identity checks retain their original frequency. No cached directory or source
+facts authorize another file, launch or reclaim. Independent differential,
+replacement, reparse and permission controls pass; ancestor-omission and cached
+result mutants fail. This preserves the existing cooperative filesystem contract,
+not an atomic snapshot against hostile concurrent writers.
+
+Three alternating warm paired complete-entry component measurements on
+`f0783dcf33` plus the helper diff checked 14,267 files and 189,847,416 logical
+bytes. Original/new medians were 1.725/1.073 seconds, a 37.8 percent reduction.
+Helper SHA256 `28d9df2f8993aea0cab926edcb4c28406cc54e3f0fdaca75238f241d278c0152`;
+benchmark report SHA256
+`68c1125437fa4abd382da1de32f7ba5fba21ded274f115fbba72d6f7d2b20f18`.
+These component results are not whole-route timing or disk-fit qualification.

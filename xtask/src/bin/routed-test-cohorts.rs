@@ -222,6 +222,33 @@ fn plan_cohorts(
     Ok(grouped.into_iter().map(|(selector, targets)| CohortPlan { selector, targets }).collect())
 }
 
+// Bound simultaneously linked harness count; bytes remain subject to original
+// capacity admission and measurement. A shared global selector is indivisible.
+const MAX_COHORT_HARNESSES: usize = 8;
+
+fn bounded_cohorts(groups: Vec<CohortPlan>) -> Result<Vec<CohortPlan>> {
+    if groups.is_empty() {
+        bail!("bounded harness cohort plan is empty");
+    }
+    let mut batches = Vec::new();
+    let mut batch = CohortPlan { selector: Vec::new(), targets: Vec::new() };
+    for group in groups {
+        if group.targets.is_empty() || group.targets.len() > MAX_COHORT_HARNESSES {
+            bail!("global selector group exceeds bounded harness cohort capacity");
+        }
+        if batch.targets.len() + group.targets.len() > MAX_COHORT_HARNESSES {
+            batches.push(batch);
+            batch = CohortPlan { selector: Vec::new(), targets: Vec::new() };
+        }
+        batch.selector.extend(group.selector);
+        batch.targets.extend(group.targets);
+    }
+    if !batch.targets.is_empty() {
+        batches.push(batch);
+    }
+    Ok(batches)
+}
+
 fn binary_runtime_inventory(package: &Value, package_features: &[Value]) -> Result<Vec<Value>> {
     let mut binaries = Vec::new();
     let mut names = BTreeSet::new();
@@ -733,7 +760,7 @@ finally:os.close(source)
         }
     }
     let loader = env::join_paths(dylib_dirs)?.to_string_lossy().into_owned();
-    let cohorts = plan_cohorts(metadata, &args.packages, &checked)?;
+    let cohorts = bounded_cohorts(plan_cohorts(metadata, &args.packages, &checked)?)?;
     let mut receipts = vec![];
     for cohort in cohorts {
         let mut arguments = original_flags(&args);
@@ -952,6 +979,55 @@ mod tests {
         assert_eq!(plan[0].selector, vec!["--test", "shared"]);
         Ok(())
     }
+    #[test]
+    fn bounded_batches_preserve_exact_indivisible_selector_union() -> Result<()> {
+        assert!(bounded_cohorts(vec![]).is_err());
+        let groups: Vec<CohortPlan> = (0..10)
+            .map(|index| CohortPlan {
+                selector: vec!["--test".into(), format!("case_{index}")],
+                targets: vec![
+                    json!({"identity":index,"features":["original"],"profile":{"test":true}}),
+                ],
+            })
+            .collect();
+        let selectors: Vec<String> =
+            groups.iter().flat_map(|group| group.selector.clone()).collect();
+        let targets: Vec<Value> = groups.iter().flat_map(|group| group.targets.clone()).collect();
+        let batches = bounded_cohorts(groups)?;
+        assert_eq!(batches.iter().map(|batch| batch.targets.len()).collect::<Vec<_>>(), vec![8, 2]);
+        assert_eq!(
+            batches.iter().flat_map(|batch| batch.selector.clone()).collect::<Vec<_>>(),
+            selectors
+        );
+        assert_eq!(
+            batches.iter().flat_map(|batch| batch.targets.clone()).collect::<Vec<_>>(),
+            targets
+        );
+        let shared = vec![
+            CohortPlan { selector: vec!["--lib".into()], targets: vec![json!("lib"); 6] },
+            CohortPlan {
+                selector: vec!["--test".into(), "shared".into()],
+                targets: vec![json!("test"); 3],
+            },
+        ];
+        let batches = bounded_cohorts(shared)?;
+        assert_eq!(batches.len(), 2);
+        assert_eq!(batches[0].targets.len(), 6);
+        assert_eq!(batches[1].targets.len(), 3);
+        assert!(
+            bounded_cohorts(vec![CohortPlan {
+                selector: vec!["--lib".into()],
+                targets: vec![json!("lib"); 9]
+            }])
+            .is_err()
+        );
+        assert!(
+            bounded_cohorts(vec![CohortPlan { selector: vec!["--lib".into()], targets: vec![] }])
+                .is_err()
+        );
+        Ok(())
+    }
+
     #[test]
     fn wrong_required_feature_receipt_refused() {
         let (metadata, packages, mut checked) = fixture();
