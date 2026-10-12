@@ -14,6 +14,7 @@ import signal
 import stat
 import subprocess
 import sys
+import threading
 import time
 import uuid
 
@@ -240,21 +241,127 @@ def clippy_configuration(worktree, paths):
     return observed
 
 
+def _proc_read(path, limit):
+    with open(path, 'rb') as stream:
+        data = stream.read(limit + 1)
+    if len(data) > limit:
+        raise Denied('proc-parent observation exceeds byte bound')
+    return data.decode('utf-8', 'surrogateescape')
+
+
+def proc_parent_child_ids():
+    """Nominate visible direct children; only pidfd child waits bind authority."""
+    started = time.monotonic()
+    pid, tid = os.getpid(), threading.get_native_id()
+    if sys.platform != 'linux' or platform.python_implementation() != 'CPython':
+        raise Denied('proc-parent discovery requires native Linux CPython')
+    if pid != tid or [entry.name for entry in Path('/proc/self/task').iterdir()] != [str(tid)]:
+        raise Denied('proc-parent discovery requires the sole native owner thread')
+    if signal.getsignal(signal.SIGCHLD) != signal.SIG_DFL:
+        raise Denied('proc-parent discovery requires default SIGCHLD')
+    try:
+        status = _proc_read('/proc/self/status', 65536)
+        identities = {}
+        for line in status.splitlines():
+            key, separator, value = line.partition(':')
+            if separator and key in ('Pid', 'Tgid', 'NSpid', 'NStgid'):
+                if key in identities or value.split() != [str(pid)]:
+                    raise Denied('proc-parent namespace identity is ambiguous')
+                identities[key] = value
+        if len(identities) != 4 or os.readlink('/proc/self') != str(pid) or os.readlink('/proc/thread-self') != f'{pid}/task/{tid}':
+            raise Denied('proc-parent namespace does not match native owner')
+        if os.readlink('/proc/self/ns/pid') != os.readlink('/proc/self/ns/pid_for_children'):
+            raise Denied('proc-parent child namespace differs from owner')
+        mounts = _proc_read('/proc/self/mountinfo', 1024 * 1024)
+        roots = []
+        for line in mounts.splitlines():
+            before, separator, after = line.partition(' - ')
+            fields, filesystem = before.split(), after.split()
+            if not separator or len(fields) < 6 or len(filesystem) < 3:
+                raise Denied('proc-parent mount observation is malformed')
+            point = fields[4]
+            if re.match(r'^/proc/(?:[0-9]+|self|thread-self)(?:/|$)', point):
+                raise Denied('proc-parent numeric/task projection is overmounted')
+            if point == '/proc':
+                roots.append((fields, filesystem))
+        if len(roots) != 1 or roots[0][0][3] != '/' or roots[0][1][0] != 'proc':
+            raise Denied('proc-parent discovery requires one complete procfs root')
+        options = roots[0][0][5].split(',') + roots[0][1][2].split(',')
+        if any(option.startswith('hidepid=') and option != 'hidepid=0' for option in options):
+            raise Denied('proc-parent discovery refuses hidden PID visibility')
+        root_identity = directory_identity(Path('/proc'))
+        if time.monotonic() - started > 1:
+            raise Denied('proc-parent discovery exceeds bounded turn')
+        children, count = [], 0
+        with os.scandir('/proc') as entries:
+            for entry in entries:
+                if not entry.name.isascii() or not entry.name.isdecimal():
+                    continue
+                count += 1
+                if count > 32768 or time.monotonic() - started > 1:
+                    raise Denied('proc-parent discovery exceeds bounded turn')
+                try:
+                    data = _proc_read('/proc/' + entry.name + '/stat', 65536)
+                except (FileNotFoundError, ProcessLookupError):
+                    continue  # A vanished candidate cannot authorize a signal.
+                name, fields = data.rsplit(')', 1)
+                identity, opening, _ = name.partition('(')
+                native_pid = int(identity.strip())
+                values = fields.split()
+                if not opening or native_pid != int(entry.name) or native_pid <= 0 or len(values) < 20:
+                    raise Denied('proc-parent stat identity is malformed')
+                parent, birth = int(values[1]), int(values[19])
+                if parent < 0 or birth < 0:
+                    raise Denied('proc-parent stat identity is malformed')
+                if parent == pid:
+                    children.append(native_pid)
+        if directory_identity(Path('/proc')) != root_identity:
+            raise Denied('proc-parent root changed during discovery')
+        if time.monotonic() - started > 1:
+            raise Denied('proc-parent discovery exceeds bounded turn')
+        return children
+    except (OSError, ValueError, IndexError) as error:
+        raise Denied('proc-parent ownership observation unavailable or malformed') from error
+
+
+def child_discovery_capability(mode=None):
+    """Probe an explicit discovery profile, not closure or signal authority."""
+    mode = os.environ.get('CARGO_ADMITTED_CHILD_DISCOVERY', 'proc-children') if mode is None else mode
+    if mode == 'proc-parent-pidfd':
+        proc_parent_child_ids()
+        return {'mode': mode, 'source': '/proc/<pid>/stat parent candidates',
+                'authority': 'kernel pidfd child wait; final ECHILD (__WALL)'}
+    if mode != 'proc-children':
+        raise Denied('unsupported owned-child discovery profile')
+    path = Path('/proc/self/task') / str(threading.get_native_id()) / 'children'
+    try:
+        data = path.read_text()
+        if len(data) > 65536 or any(not token.isascii() or not token.isdecimal() for token in data.split()):
+            raise Denied('invalid owned child table')
+    except OSError as error:
+        raise Denied('owned-child discovery requires readable live-thread proc children') from error
+    return {'mode': mode, 'source': str(path),
+            'authority': 'kernel pidfd child wait; final ECHILD (__WALL)'}
+
+
 class ClippyTree:
     """One exclusively owned Linux CLI scope; not a general process executor.
 
     Kernel adoption/waits cover detached descendants. Unrelated daemons need no
-    inspection. Only our own children file may locate cancellation candidates;
-    waitability + pidfds authorize signals, never a numeric PID/PPID guess.
+    inspection in the default profile. An explicit proc-parent profile only
+    nominates candidates; waitability + pidfds authorize signals, never PPID.
     """
     WALL = 0x40000000  # Linux __WALL also includes non-SIGCHLD clone children.
 
-    def __init__(self):
+    def __init__(self, child_discovery=None):
         if platform.python_implementation() != "CPython" or len(list(Path('/proc/self/task').iterdir())) != 1:
             raise Denied("Clippy tree requires a single native CPython thread")
         if (not hasattr(os, "pidfd_open") or not hasattr(signal, "pidfd_send_signal")
                 or not hasattr(os, "P_PIDFD") or signal.getsignal(signal.SIGCHLD) != signal.SIG_DFL):
             raise Denied("Clippy tree requires pidfd waits/signals and default SIGCHLD")
+        self.child_discovery = os.environ.get('CARGO_ADMITTED_CHILD_DISCOVERY', 'proc-children') if child_discovery is None else child_discovery
+        if self.child_discovery != 'proc-children':
+            child_discovery_capability(self.child_discovery)
         self.libc = ctypes.CDLL(None, use_errno=True)
         prior = ctypes.c_int()
         if self.libc.prctl(37, ctypes.byref(prior), 0, 0, 0) != 0 or prior.value != 0:
@@ -298,7 +405,13 @@ class ClippyTree:
 
     def track(self, pid, process=None):
         if pid in self.handles:
-            return
+            fd, prior_process = self.handles[pid]
+            if prior_process is None or prior_process.returncode is None:
+                return
+            # Popen already consumed this leader. Its numeric PID can now name
+            # a new adopted child; never let the stale returncode hide it.
+            self.handles.pop(pid)
+            os.close(fd)
         fd = os.pidfd_open(pid)
         try:
             os.waitid(os.P_PIDFD, fd, os.WEXITED | os.WNOHANG | os.WNOWAIT | self.WALL)
@@ -323,6 +436,8 @@ class ClippyTree:
         return result
 
     def child_ids(self):
+        if self.child_discovery == 'proc-parent-pidfd':
+            return proc_parent_child_ids()
         try:
             text = (Path('/proc/self/task') / str(os.getpid()) / 'children').read_text()
         except FileNotFoundError:
@@ -438,6 +553,7 @@ class ClippyTree:
                 "cancelled": self.cancelled, "termination_requested": self.stopping,
                 "reaped_descendants": self.reaped,
                 "owned_child_table_available": child_table_available,
+                "child_discovery": self.child_discovery,
                 "errors": self.errors, "pending_bound_pids": [pid for pid, (fd, process) in self.handles.items()
                                                                if process is None or process.returncode is None],
                 "reason": "all owned descendants reaped" if settled else "owned descendants unproven; deadline/error retains lease"}
@@ -768,6 +884,11 @@ def main(args=None):
         operation = "Clippy" if clippy else "Cargo"
         env = os.environ.copy()
         env["RUSTUP_AUTO_INSTALL"] = "0"
+        discovery_mode = env.get('CARGO_ADMITTED_CHILD_DISCOVERY', 'proc-children')
+        if discovery_mode != 'proc-children':
+            if not owned_linux:
+                raise Denied('alternate owned-child discovery requires native Linux')
+            child_discovery_capability(discovery_mode)  # before scope/lease/allocation
         worktree, slot, paths = resource_plan(env)
         if env.get("RUSTC_WRAPPER") or env.get("RUSTC_WORKSPACE_WRAPPER"):
             raise Denied("compiler wrappers have unverified storage; use a separately admitted route")
@@ -831,6 +952,8 @@ def main(args=None):
             descriptor = {"worktree": str(worktree), "scope": scope,
                           "resources": {k: str(v) for k, v in paths.items()},
                           "lease": str(lock), "pid": os.getpid(), "admission": admission, "disposition": "retained with reason: reusable bounded slot"}
+            if owned_linux:
+                descriptor['child_discovery'] = discovery_mode
             if managed:
                 # Persist the original owner observation before any setup/product
                 # child starts. Recovery must not adopt a replacement directory
@@ -874,7 +997,7 @@ def main(args=None):
                 revalidate_clippy_toolchain(toolchain)
                 # Version probes are setup, not package work. Hold the same
                 # conservative lease before invoking these installed tools.
-                tree = ClippyTree()
+                tree = ClippyTree(child_discovery=discovery_mode)
                 print("cargo-admitted Clippy tree: " + json.dumps({"owner_pid": os.getpid(),
                       "subreaper": True, "prior_children": "none", "single_native_thread": True,
                       "lease": str(lock)}), file=sys.stderr, flush=True)
@@ -886,7 +1009,7 @@ def main(args=None):
             elif owned_linux:
                 # Reuse the proven owner, without changing builtin Cargo policy,
                 # toolchain resolution or argument/environment construction.
-                tree = ClippyTree()
+                tree = ClippyTree(child_discovery=discovery_mode)
                 print("cargo-admitted Cargo tree: " + json.dumps({"owner_pid": os.getpid(),
                       "subreaper": True, "prior_children": "none", "single_native_thread": True,
                       "lease": str(lock)}), file=sys.stderr, flush=True)

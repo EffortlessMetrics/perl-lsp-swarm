@@ -143,6 +143,47 @@ receipts make product exit independent of terminality. Any product status can be
 returned after proven closure and matching release; cancellation returns 130.
 Incomplete closure or failed release returns 75 and retains ownership.
 
+### Explicit Linux proc-parent/pidfd discovery
+
+`CARGO_ADMITTED_CHILD_DISCOVERY=proc-parent-pidfd` explicitly selects a bounded
+alternative for Linux hosts lacking `CONFIG_PROC_CHILDREN`. The default
+`proc-children` profile is unchanged; no missing-table detection silently selects
+a namespace scan. The alternate profile reads only visible numeric PID `stat`
+records, including their parent and kernel starttime. It does not read process
+environments, command lines, descriptors, mappings or executable paths.
+
+`child_discovery_capability(mode)` validates the live calling owner before any
+lease or allocation. The profile requires one native CPython owner thread, default
+SIGCHLD, matching singleton procfs/native PID identities, the same current and
+child PID namespaces, and one full procfs root without hidepid restrictions or
+numeric/task-path overmounts. It revalidates these observations on discovery
+turns. Unreadable or malformed records, changed roots, more than 32,768 numeric
+entries, or a discovery turn exceeding one second refuse. This elapsed-time
+threshold includes metadata and the final observation; it does not preempt an
+individual blocking procfs syscall. Vanished entries may
+be skipped; no incomplete snapshot claims closure.
+
+PPID only nominates a direct-child candidate. `track()` must bind a pidfd and
+validate kernel child waitability with `__WALL` before that handle may receive a
+signal. An exited Popen leader's stale numeric ledger key is removed before a
+new child is bound; its completed status never hides a reused PID. The exclusive
+single owner does not reap between discovery and binding, so a genuinely owned
+unreaped child retains its PID. A stale or foreign nomination cannot become
+signal authority through PPID alone.
+
+Cancellation repeats discovery between kernel drains to cover new adoption and
+detached generations. Final ECHILD remains the sole closure authority; bounds,
+observation failures and unsettled descendants retain the original lease. The
+selected profile is captured in the native budget environment digest, resource
+descriptor and settlement receipt. Cgroups shared with provider/other tasks do
+not supply exclusive cancellation authority.
+
+A separate cohort consumer must explicitly qualify and select the same admitted
+profile at preflight and owner construction. The public constructor supports
+`ClippyTree(child_discovery=mode)`; a capability descriptor is an observation,
+not a permanent completeness attestation or release permission. This extension
+does not automatically activate a cohort branch or qualify its disk budget.
+
 Other platforms retain the legacy builtin behavior: exit 0/101 releases its
 matching lease, without a descendant-settlement guarantee; abnormal statuses and
 interruption retain it. This Linux correction does not qualify native Windows,
@@ -209,8 +250,9 @@ filesystem/interface doubles from actual native process proof:
 python3 -m unittest discover -s scripts/tests -p 'test_cargo_cohort.py' -v
 ```
 
-On a host without readable `/proc/<owner-pid>/task/<owner-tid>/children`, the real
-entrypoint must demonstrate prelaunch refusal. Known-child pidfds and eventual
+In the default discovery profile, a host without readable
+`/proc/<owner-pid>/task/<owner-tid>/children` must demonstrate prelaunch refusal.
+Known-child pidfds and eventual
 subreaper closure do not supply discovery of unknown live detached children.
 End-to-end cohort cancellation and reclamation require a supported native host;
 portable fault-injected controls cannot replace that qualification.
@@ -267,10 +309,12 @@ unqualified; other platforms are refused.
 Cancellation uses bound pidfds validated as this owner's waitable children.
 The current driver's unreaped native session can receive TERM; owned handles
 receive TERM then KILL after2seconds, with at most30seconds of post-leader drain.
-Only the owner's immediate-child table may discover adopted cancellation
+In the default discovery profile, only the owner's immediate-child table discovers adopted cancellation
 candidates. If that table is unavailable, kernel waits can still prove eventual
 settlement, but unknown surviving detached helpers cannot safely be signaled:
-deadline/error retains the lease. There is no broad /proc fallback. Missing
+deadline/error retains the lease. There is no automatic broad /proc fallback;
+the separately selected proc-parent/pidfd profile above supplies discovery only.
+Missing
 capabilities, existing children/threads, lost subreaper ownership, ambiguous waits,
 owner death and incomplete cancellation never become release authority.
 
