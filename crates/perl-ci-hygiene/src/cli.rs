@@ -14,6 +14,49 @@ pub(crate) struct Cli {
 
 #[derive(Subcommand)]
 pub(crate) enum CliCommand {
+    /// Capture and verify the immutable event subject used by CI selection.
+    CiSubject {
+        #[arg(long)]
+        event_name: Option<String>,
+        #[arg(long)]
+        event_path: Option<PathBuf>,
+        #[arg(long)]
+        repository: Option<String>,
+        #[arg(long)]
+        github_sha: Option<String>,
+        #[arg(long)]
+        base_sha: Option<String>,
+        #[arg(long)]
+        head_sha: Option<String>,
+        #[arg(long)]
+        receipt: PathBuf,
+        #[arg(long)]
+        root: Option<PathBuf>,
+    },
+    /// Classify changed paths using the same policy as cargo xtask ci-scope.
+    CiScope {
+        #[arg(long, default_value = "auto")]
+        base: String,
+        #[arg(long)]
+        subject: Option<PathBuf>,
+        #[arg(long)]
+        root: Option<PathBuf>,
+        #[arg(long, default_value = "json")]
+        format: String,
+    },
+    /// Resolve changed paths using the shared Git subject resolver.
+    ChangeSet {
+        #[arg(long, default_value = "auto")]
+        base: String,
+        #[arg(long, default_value = "HEAD")]
+        head: String,
+        #[arg(long, default_value = "json")]
+        format: String,
+        #[arg(long)]
+        root: Option<PathBuf>,
+    },
+    /// Resolve a crate directory to its authoritative Cargo package name.
+    ResolvePackageName { crate_dir: String },
     /// Benchmark perl-parser against tree-sitter-perl-c for standard cases.
     RunParserComparison,
     /// Print and apply environment caps for local safety checks.

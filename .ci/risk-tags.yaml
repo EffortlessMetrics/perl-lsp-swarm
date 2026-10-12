@@ -1,12 +1,12 @@
 # CI scope risk taxonomy (schema v2)
 #
-# The Rust classifier in xtask/src/tasks/ci_scope.rs is the executable
+# The Rust classifier in crates/perl-ci-hygiene/src/ci_scope.rs is the executable
 # authority. This file is the reviewable policy surface: it records the
 # vocabulary, detection intent, and the existing proof lanes promoted by each
 # risk. Lane names must remain names understood by the gate policy.
 
 schema_version: 1
-authority: xtask/src/tasks/ci_scope.rs
+authority: crates/perl-ci-hygiene/src/ci_scope.rs
 
 detection:
   mode: path_prefix_and_crate
