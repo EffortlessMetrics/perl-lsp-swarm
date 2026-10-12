@@ -68,6 +68,94 @@ print(json.dumps(final))
 ''')
         self.assertTrue(row['tree_settled'])
 
+    def test_clippy_nested_cleanup_preserves_nonzero_leader_status(self):
+        fixture_spec = importlib.util.spec_from_file_location(
+            'builtin_tree_fixture', Path(__file__).with_name('test_cargo_admitted_builtin_tree.py'))
+        fixture = importlib.util.module_from_spec(fixture_spec)
+        fixture_spec.loader.exec_module(fixture)
+        row = self.worker('''
+import tempfile
+FAKE=sys.argv[2]
+with tempfile.TemporaryDirectory(prefix='clippy-nested-') as name:
+ root=Path(name);(root/'slot/cargo-active').mkdir(parents=True)
+ tree=owner.ClippyTree()
+ env=os.environ.copy();env.update(FIXTURE_ROOT=str(root),FIXTURE_STATUS='37',FIXTURE_MODE='nested')
+ try:
+  status=owner.call_clippy([sys.executable,'-c',FAKE],env,root/'slot/cargo-active',tree)
+ finally:final=tree.finish(stop=bool(sys.exc_info()[0]),timeout=2)
+ nested=json.loads((root/'nested-result').read_text())
+ assert status==37 and nested['proc_absent'] and nested['signal_zero_absent'],(status,nested)
+ assert final['tree_settled'] and {'pid':nested['pid'],'exit_code':-9} in final['reaped_descendants'],final
+ print(json.dumps({'status':status,'nested':nested,'settlement':final}))
+''', fixture.FAKE)
+        self.assertEqual(row['status'],37)
+        self.assertTrue(row['nested']['proc_absent'])
+
+    def test_active_reap_leaves_live_adopted_child_untouched(self):
+        row = self.worker('''
+import tempfile
+with tempfile.TemporaryDirectory(prefix='active-live-control-') as name:
+ root=Path(name);tree=owner.ClippyTree();pid=None
+ code="""import os,sys,time
+from pathlib import Path
+if os.fork()==0:
+ os.setsid();pid_path=Path(sys.argv[1]);pending=pid_path.with_name(pid_path.name+'.pending')
+ pending.write_text(str(os.getpid()));os.replace(pending,pid_path);time.sleep(3);os._exit(0)
+os._exit(0)
+"""
+ p=subprocess.Popen([sys.executable,'-c',code,str(root/'pid')]);tree.track(p.pid,p)
+ try:
+  assert p.wait()==0
+  deadline=time.monotonic()+1
+  while not (root/'pid').exists() and time.monotonic()<deadline:time.sleep(.001)
+  pid=int((root/'pid').read_text())
+  # Expose this exact known child even on hosts lacking the children file.
+  # Active service must not borrow cancellation's discovery to signal it.
+  with patch.object(tree,'child_ids',return_value=[pid]):
+   for _ in range(5):tree.reap_adopted();time.sleep(.01)
+  os.kill(pid,0)
+  assert Path(f'/proc/{pid}').exists() and not tree.reaped,tree.reaped
+ finally:
+  if pid is not None:tree.track(pid)
+  final=tree.finish(stop=True,timeout=2,grace=.01)
+ assert final['tree_settled'],final
+ print(json.dumps({'live_control_preserved':True,'settlement':final}))
+''')
+        self.assertTrue(row['live_control_preserved'])
+
+    def test_active_reap_does_not_consume_popen_leader(self):
+        row = self.worker('''
+tree=owner.ClippyTree()
+leader=subprocess.Popen([sys.executable,'-c','import os;os._exit(37)'])
+tree.track(leader.pid,leader)
+try:
+ # Observe the real exited child without consuming Popen's status.
+ event=os.waitid(os.P_PID,leader.pid,os.WEXITED|os.WNOWAIT)
+ assert event.si_pid==leader.pid and event.si_status==37
+ tree.reap_adopted()
+ assert leader.returncode is None
+ assert leader.wait()==37
+finally:final=tree.finish(stop=bool(sys.exc_info()[0]),timeout=1)
+assert final['tree_settled'] and not tree.reaped
+print(json.dumps({'leader_wait_reserved':True}))
+''')
+        self.assertTrue(row['leader_wait_reserved'])
+
+    def test_active_reap_wait_error_propagates_without_false_closure(self):
+        row = self.worker('''
+tree=owner.ClippyTree()
+try:
+ with patch.object(os,'waitid',side_effect=OSError(errno.EIO,'ambiguous active wait')):
+  try:tree.reap_adopted()
+  except OSError as error:assert error.errno==errno.EIO
+  else:raise AssertionError('active wait failure hidden')
+ assert not tree.reaped
+finally:final=tree.finish(timeout=1)
+assert final['tree_settled']
+print(json.dumps({'wait_failure_propagated':True}))
+''')
+        self.assertTrue(row['wait_failure_propagated'])
+
     def test_cancellation_kills_bound_leader_ignoring_term(self):
         row = self.worker('''
 tree=owner.ClippyTree()
