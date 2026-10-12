@@ -3948,25 +3948,30 @@ impl<'a> BodyBuilder2<'a> {
             .map(|binding| binding.id)
     }
 
+    /// Whether a declared binding is a class-field declaration — a `field`
+    /// that is a direct statement of a `class` body (#13817).
+    fn is_class_field_binding(&self, id: HirBindingId) -> bool {
+        self.scope_graph
+            .bindings
+            .iter()
+            .any(|recorded| recorded.id == id && recorded.storage == StorageClass::ClassField)
+    }
+
     /// Storage class for a declaration lowered into a body arena.
     ///
-    /// A `field` that the first pass recorded as a class-field binding — a
-    /// direct statement of a `class` body (#13817) — lowers with
-    /// `DeclStorageClass::Field`. The scope graph is the shared authority, so
-    /// the arena agrees with it by construction. Any other `field`-shaped
-    /// node is a legacy call and keeps `DeclStorageClass::Unknown`.
+    /// A `field` that the first pass recorded as a class-field binding lowers
+    /// with `DeclStorageClass::Field`. The scope graph is the shared
+    /// authority, so the arena agrees with it by construction. Any other
+    /// `field`-shaped node is a legacy call and keeps
+    /// `DeclStorageClass::Unknown`.
     fn body_storage_for_decl(
         &self,
         declarator: &str,
         binding: Option<HirBindingId>,
     ) -> DeclStorageClass {
         if declarator == "field" {
-            if let Some(id) = binding {
-                if self.scope_graph.bindings.iter().any(|recorded| {
-                    recorded.id == id && recorded.storage == StorageClass::ClassField
-                }) {
-                    return DeclStorageClass::Field;
-                }
+            if binding.is_some_and(|id| self.is_class_field_binding(id)) {
+                return DeclStorageClass::Field;
             }
             return DeclStorageClass::Unknown;
         }
@@ -4257,6 +4262,12 @@ impl<'a> BodyBuilder2<'a> {
                 // their argument through the existing scope authority.
                 let place_kind = match declarator {
                     "our" => VariableKind::Package,
+                    // A real field declaration owns a per-object place even
+                    // though the field is not yet visible to ordinary
+                    // resolution at its own initializer (#13844).
+                    "field" if binding.is_some_and(|id| self.is_class_field_binding(id)) => {
+                        VariableKind::Field
+                    }
                     "field" => Self::kind_for(
                         &var_name,
                         self.resolve_visible_binding(sigil_str, &var_name, variable.location.start),

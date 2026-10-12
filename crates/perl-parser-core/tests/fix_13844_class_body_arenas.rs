@@ -8,8 +8,8 @@
 
 use perl_parser_core::Parser;
 use perl_parser_core::hir::{
-    BodyOwnerKind, DeclStorageClass, HirBlockId, HirBody, HirExpr, HirFile, HirStmt, StorageClass,
-    VariableKind, lower_ast,
+    AccessMode, BodyOwnerKind, DeclStorageClass, HirBlockId, HirBody, HirExpr, HirFile, HirStmt,
+    StorageClass, VariableKind, lower_ast,
 };
 use perl_parser_core::pir::{PirOperation, lower_hir_bodies};
 
@@ -153,10 +153,10 @@ fn reads_in_the_class_body_resolve_against_the_class_scope() -> Result<(), Strin
         .exprs
         .iter()
         .find_map(|expr| match expr {
-            HirExpr::Variable(v) if v.name == "lex" => Some(v.kind),
+            HirExpr::Variable(v) if v.name == "lex" && v.access == AccessMode::Read => Some(v.kind),
             _ => None,
         })
-        .ok_or_else(|| "expected a `$lex` reference in the class body".to_string())?;
+        .ok_or_else(|| "expected a `$lex` read in the class body".to_string())?;
     assert!(
         matches!(kind, VariableKind::Lexical),
         "class-body read of a lexical must resolve as Lexical"
@@ -185,6 +185,35 @@ fn field_declaration_reaches_pir_as_a_field_write() -> Result<(), String> {
         )),
         "the field declaration must not publish a lexical write"
     );
+    Ok(())
+}
+
+#[test]
+fn initialized_field_place_is_a_field_write_place() -> Result<(), String> {
+    // `field $x = 1` owns its declaration place even though the field is not
+    // yet visible to ordinary resolution at its own initializer: the init
+    // Assign LHS must be a Field write place, not a package write.
+    let file = parse("use feature 'class';\nclass Point {\n    field $x = 1;\n}\n");
+    let body = class_body(&file, "Point")?;
+    let place = body
+        .exprs
+        .iter()
+        .find_map(|expr| match expr {
+            HirExpr::Assign { lhs, .. } => body.expr(*lhs),
+            _ => None,
+        })
+        .ok_or_else(|| "expected an initializer assignment in the class body".to_string())?;
+    match place {
+        HirExpr::Variable(v) => {
+            assert_eq!(v.name, "x");
+            assert!(matches!(v.access, AccessMode::Write), "init LHS must be a Write place");
+            assert!(
+                matches!(v.kind, VariableKind::Field),
+                "initialized field place must be a field, not a package write"
+            );
+        }
+        other => return Err(format!("expected a Variable init place, got {other:?}").into()),
+    }
     Ok(())
 }
 
