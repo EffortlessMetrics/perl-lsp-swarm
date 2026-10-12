@@ -77,12 +77,35 @@ class PortableControls(unittest.TestCase):
             return instance.run(kwargs.pop('producer', self.producer()), kwargs.pop('consumers', {str(self.exe): []}), env, **kwargs)
 
     def test_success_consumes_exact_executable_then_reclaims_once(self):
-        instance = self.owner(); row = self.run_portable(instance)
+        instance = self.owner()
+        expected_bindings = [hashlib.sha256(path.read_bytes()).hexdigest() for path in self.manifests]
+        observed = {}
+        reclaim = instance._reclaim
+        def observe_then_reclaim(path):
+            metadata = path.lstat()
+            parent = path.parent.stat()
+            observed['file_identity'] = [metadata.st_dev, metadata.st_ino, metadata.st_size,
+                                         metadata.st_mtime_ns, metadata.st_ctime_ns,
+                                         metadata.st_mode, metadata.st_nlink]
+            observed['parent_identity'] = [parent.st_dev, parent.st_ino]
+            observed['sha256'] = hashlib.sha256(path.read_bytes()).hexdigest()
+            return reclaim(path)
+        with patch.object(instance, '_reclaim', side_effect=observe_then_reclaim):
+            row = self.run_portable(instance)
         self.assertEqual(row['consumed'], [str(self.exe)]); self.assertEqual(row['reclaimed'], [str(self.exe)])
         receipts = [json.loads(line) for line in Path(row['authorization_evidence']).read_text().splitlines()]
         self.assertEqual(receipts[0]['event'], 'authorization')
         self.assertEqual(receipts[0]['records'][0]['path'], str(self.exe))
-        self.assertEqual(len(receipts[0]['records'][0]['sha256']),64)
+        record = receipts[0]['records'][0]
+        for field, value in observed.items():
+            self.assertEqual(record[field], value)
+        expected_executable = ('#!' + sys.executable + '\nimport sys\nsys.exit(0)\n').encode()
+        self.assertEqual(record['sha256'], hashlib.sha256(expected_executable).hexdigest())
+        self.assertEqual(record['binding'], expected_bindings)
+        self.assertEqual(receipts[0]['source_profile_binding'], expected_bindings)
+        self.assertEqual(receipts[0]['consumed'], [str(self.exe)])
+        self.assertEqual(receipts[0]['product_status'], 0)
+        self.assertTrue(receipts[0]['settlement']['tree_settled'])
         self.assertEqual(receipts[1], {'event':'reclaimed','path':str(self.exe)})
         self.executable()
         with self.assertRaises(cohort.Denied): instance._reclaim(self.exe)
