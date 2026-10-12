@@ -117,7 +117,7 @@ fn real_declarators_still_declare() -> TestResult {
         ("c", DeclStorageClass::State),
         ("d", DeclStorageClass::Local),
     ] {
-        let found = file.bodies.iter().flat_map(|b| {
+        let mut found = file.bodies.iter().flat_map(|b| {
             b.stmts.iter().filter_map(|s| match s {
                 perl_parser_core::hir::HirStmt::Let { name: n, storage: st, .. } if n == name => {
                     Some(st.clone())
@@ -148,6 +148,43 @@ fn qualified_legacy_call_keeps_stash_effects_in_flat_pir() -> TestResult {
     assert!(
         flat.nodes.iter().any(|n| matches!(n.operation, PirOperation::StashRead { .. })),
         "flat PIR must keep the qualified StashRead: {:?}",
+        flat.nodes
+    );
+    Ok(())
+}
+
+// ── T5b: qualified compound targets keep the read-modify-write ──────────
+
+#[test]
+fn qualified_compound_legacy_call_keeps_modify_in_flat_pir() -> TestResult {
+    // `has_initializer` alone cannot tell `=` from `+=`: flat PIR must keep
+    // the read-modify-write the body path emits instead of degrading the
+    // target to a plain write. The boundary receipt still fires exactly once.
+    let file = parse("field $Foo::bar += 2;\n");
+    let flat = lower_hir(&file);
+    assert!(
+        flat.nodes.iter().any(|n| matches!(
+            &n.operation,
+            PirOperation::StashModify { symbol, op }
+                if symbol.name == "Foo::bar"
+                    && symbol.package.as_deref() == Some("Foo")
+                    && op == "+="
+        )),
+        "flat PIR must keep the qualified StashModify: {:?}",
+        flat.nodes
+    );
+    assert_eq!(
+        flat.receipt.unsupported_construct_counts.get("LegacyFieldCall"),
+        Some(&1),
+        "the compound call keeps its legacy-call receipt"
+    );
+    // A nested operator belongs to the other place: `field $x = ($y += 1)`
+    // is a simple write to `$x`, never a modify of it.
+    let file = parse("field $Foo::bar = ($y += 1);\n");
+    let flat = lower_hir(&file);
+    assert!(
+        flat.nodes.iter().all(|n| !matches!(&n.operation, PirOperation::StashModify { .. })),
+        "a nested compound must not become the target's modify: {:?}",
         flat.nodes
     );
     Ok(())

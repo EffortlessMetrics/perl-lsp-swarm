@@ -1110,6 +1110,11 @@ impl Lowerer {
                         attribute_count: attributes.len(),
                         has_initializer: initializer.is_some(),
                         initializer_range: initializer.map(|initializer| initializer.location),
+                        compound_operator: declaration_target_compound_op(
+                            variable,
+                            initializer,
+                            variables.first().map(|binding| binding.range),
+                        ),
                         is_list: false,
                     }),
                     self.package_context.clone(),
@@ -1163,6 +1168,9 @@ impl Lowerer {
                         initializer_range: initializer
                             .as_deref()
                             .map(|initializer| initializer.location),
+                        // List targets never carry their own assignment
+                        // operator; the shared initializer is a separate node.
+                        compound_operator: None,
                         is_list: true,
                     }),
                     self.package_context.clone(),
@@ -3400,6 +3408,39 @@ fn declaration_initializer_node<'a>(
         }
         _ => None,
     })
+}
+
+/// Compound-assignment operator carried by the declaration target itself.
+///
+/// `local`-shaped targets (`local $x .= ...`) carry the operator on the
+/// target node; otherwise it lives on the initializer (`field $Foo::bar +=
+/// 2`). A simple `=` is never compound. An initializer operator counts only
+/// when its assignment LHS is the declared target token — the same join the
+/// body arena applies — so an operator nested anywhere else
+/// (`field $x = ($y += 1)`) is never attributed to this declaration.
+fn declaration_target_compound_op(
+    variable: &Node,
+    initializer: Option<&Node>,
+    target_range: Option<SourceLocation>,
+) -> Option<String> {
+    let target = match &variable.kind {
+        NodeKind::VariableWithAttributes { variable, .. } => variable.as_ref(),
+        _ => variable,
+    };
+    if let NodeKind::Assignment { op, .. } = &target.kind {
+        return if op != "=" { Some(op.clone()) } else { None };
+    }
+    let Some(range) = target_range else {
+        return None;
+    };
+    match initializer.map(|node| &node.kind) {
+        Some(NodeKind::Assignment { op, lhs, .. })
+            if op != "=" && lhs.location.start == range.start && lhs.location.end == range.end =>
+        {
+            Some(op.clone())
+        }
+        _ => None,
+    }
 }
 
 /// Peel an embedded `Assignment` so the localized lvalue is the declaration target.

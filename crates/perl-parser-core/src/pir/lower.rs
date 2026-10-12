@@ -314,9 +314,20 @@ impl Lowerer {
                     if package_from_name(&variable.name).is_some() =>
                 {
                     // A qualified name is an unambiguous package slot: no
-                    // scope cursor is needed to keep the effect. Initialized
-                    // targets keep the write; bare targets keep the read.
-                    if decl.has_initializer {
+                    // scope cursor is needed to keep the effect. Compound
+                    // targets keep the read-modify-write the body path
+                    // emits; simple initializers keep the write; bare
+                    // targets keep the read.
+                    if let Some(op) = &decl.compound_operator {
+                        PirOperation::StashModify {
+                            symbol: SymbolName {
+                                sigil: variable.sigil.clone(),
+                                name: variable.name.clone(),
+                                package: package_from_name(&variable.name),
+                            },
+                            op: op.clone(),
+                        }
+                    } else if decl.has_initializer {
                         PirOperation::StashWrite {
                             symbol: SymbolName {
                                 sigil: variable.sigil.clone(),

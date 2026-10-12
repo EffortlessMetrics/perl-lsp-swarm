@@ -2893,6 +2893,7 @@ pub fn perl_parser_core::hir::VariableBinding::eq(&self, other: &perl_parser_cor
 pub fn perl_parser_core::hir::VariableBinding::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 #[non_exhaustive] pub struct perl_parser_core::hir::VariableDecl
 pub perl_parser_core::hir::VariableDecl::attribute_count: usize
+pub perl_parser_core::hir::VariableDecl::compound_operator: core::option::Option<alloc::string::String>
 pub perl_parser_core::hir::VariableDecl::declarator: alloc::string::String
 pub perl_parser_core::hir::VariableDecl::has_initializer: bool
 pub perl_parser_core::hir::VariableDecl::initializer_range: core::option::Option<perl_position_tracking::span::SourceLocation>
