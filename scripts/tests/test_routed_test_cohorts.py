@@ -1,8 +1,9 @@
-"""Staged producer/CLI controls. No Cargo execution or resolver qualification.
+"""Staged producer/CLI controls and a checked-in Cargo runtime oracle fixture.
 
 The resolver-2 fixture describes a real two-crate Cargo graph. A finite model
 producer discriminates dropped -p selection through the owner interface here;
-its outputs are explicitly synthetic. The real graph still needs native Cargo.
+its outputs are explicitly synthetic. This suite checks fixture shape only; hosted
+execution against pinned Cargo is still required.
 """
 import contextlib
 import hashlib
@@ -194,6 +195,25 @@ print('test result: ok. 1 passed; 0 failed; 1 ignored')
 
 
 class SourceControls(unittest.TestCase):
+
+    def test_cargo_binary_runtime_fixture_covers_enabled_disabled_and_target_kinds(self):
+        manifest=tomllib.loads((FIXTURE/'b/Cargo.toml').read_text())
+        bins={row['name']:row for row in manifest['bin']}
+        self.assertEqual(bins['enabled_probe']['required-features'],['enabled-bin'])
+        self.assertEqual(bins['unbuilt_probe']['required-features'],['unbuilt'])
+        self.assertFalse(bins['enabled_probe']['test']);self.assertFalse(bins['unbuilt_probe']['test'])
+        targets={row['name']:row for row in manifest['test']}
+        self.assertEqual(targets['runtime_env']['required-features'],['enabled-bin'])
+        benches={row['name']:row for row in manifest['bench']}
+        self.assertFalse(benches['runtime_env']['harness'])
+        self.assertEqual(benches['runtime_env']['required-features'],['enabled-bin'])
+        integration=(FIXTURE/'b/tests/runtime_env.rs').read_text()
+        benchmark=(FIXTURE/'b/benches/runtime_env.rs').read_text()
+        for source in (integration,benchmark):
+            self.assertIn('CARGO_BIN_EXE_enabled_probe',source)
+            self.assertIn('CARGO_BIN_EXE_unbuilt_probe',source)
+            self.assertIn('enabled_probe',source)
+            self.assertIn('unbuilt_probe',source)
 
     @unittest.skipUnless(sys.platform=='linux', 'native entrypoint refusal')
     def test_real_staged_entrypoint_refuses_before_bootstrap_on_missing_capability(self):

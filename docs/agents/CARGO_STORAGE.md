@@ -271,11 +271,19 @@ package build-script outputs must match the observed check context. This covers
 Cargo's `fill_env` layer, not the later `UnitOutput.env` layer. The planner explicitly
 refuses integration/bench targets in any package with bin targets, including
 `test=false` and required-feature-disabled bins, before any test codegen or cleanup.
-Cargo's final layer sets `CARGO_BIN_EXE_<name>` for every such bin; check artifacts
-contain placeholders and cannot establish those runtime paths. The proposed full
-six-package route is therefore blocked by workspace and xtask bin-owning integration
-suites, not just optional custom configuration. Full final-unit environment modeling
-and qualification is a necessary separate slice for the original routed-test goal. Custom runner,
+Cargo documents `CARGO_BIN_EXE_<name>` for integration tests and benchmarks and says
+that a binary with unmet `required-features` is not built. Cargo 1.95's final unit
+environment still assigns each package bin its target executable path; for a
+feature-disabled bin that path can intentionally name a file which does not exist.
+The checked-in resolver-2 fixture now covers enabled and disabled bins in both
+integration-test and benchmark targets, comparing compile-time and run-time paths
+and checking the disabled file remains absent. Until that fixture is actually run
+with pinned Cargo on a supported hosted runner and its observed results are bound
+into the producer, the planner retains its package-wide refusal. The proposed full
+six-package route is therefore still blocked by workspace and xtask bin-owning
+integration suites, not just optional custom configuration. Final-unit environment
+modeling and native qualification remain prerequisites for the original routed-test
+goal. Custom runner,
 external/parent Cargo configuration, configuration includes, cross-target requests,
 custom Cargo environment beyond this repository's `RUST_BACKTRACE`, and compiler/
 loader injection selectors remain unsupported and refuse. The existing native
@@ -309,8 +317,22 @@ This source candidate does **not** activate `unit_routed_full`. Local Python
 controls distinguish filesystem/interface doubles and a synthetic finite resolver
 model from real Cargo/native proof. The checked-in two-crate resolver-2 fixture
 contains a development dependency that activates another package's required test
-feature, duplicate test names, and an unbuilt required-feature-disabled bin whose
-runtime environment must nevertheless be present; its actual Cargo execution is still required.
+feature, duplicate test names, an enabled bin, an unbuilt required-feature-disabled
+bin, and integration/benchmark runtime checks for both binary paths; its actual
+Cargo execution is still required. On an admitted Linux host with the repository's
+existing reserve, run the exact fixture with:
+
+```bash
+cd scripts/tests/fixtures/routed-resolver-2/b
+../../../../cargo-admitted test --locked -p cohort-b --test shared
+../../../../cargo-admitted test --locked -p cohort-b --features enabled-bin --test runtime_env
+../../../../cargo-admitted bench --locked -p cohort-b --features enabled-bin --bench runtime_env
+```
+
+The first invocation checks paths for two feature-disabled bins, the second checks
+compile-time and runtime paths for one built bin and one disabled bin, and the third
+does the same in Cargo's benchmark environment. These are fixture commands only;
+they do not activate or replace the production route.
 Native Rust compilation/unit tests, exact-candidate case/feature equivalence,
 configured runtime contexts, supported-host cancellation, continuous peak/retained
 byte measurements and timings, and reserve qualification remain pending. No

@@ -4,9 +4,11 @@ fn activating_package_is_not_dropped() {
 }
 
 #[test]
-fn disabled_bin_runtime_environment_is_still_present() {
-    let executable = std::env::var("CARGO_BIN_EXE_unbuilt_probe");
-    assert!(executable.as_deref().is_ok_and(
-        |path| path.ends_with("/debug/unbuilt_probe") && !path.starts_with("placeholder:")
-    ));
+fn feature_disabled_bins_still_have_cargo_runtime_paths() {
+    for name in ["enabled_probe", "unbuilt_probe"] {
+        let key = format!("CARGO_BIN_EXE_{name}");
+        let path = std::env::var(&key).unwrap_or_else(|error| panic!("{key}: {error}"));
+        assert!(std::path::Path::new(&path).is_absolute(), "{key} must be absolute");
+        assert!(!std::path::Path::new(&path).exists(), "disabled {name} is not built");
+    }
 }

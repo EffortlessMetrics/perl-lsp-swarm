@@ -822,13 +822,26 @@ mod tests {
         assert!(plan_cohorts(&metadata, &packages, &checked).is_err());
     }
     #[test]
-    fn disabled_unbuilt_bin_still_blocks_integration_runtime_context() {
+    fn every_bin_target_blocks_integration_and_benchmark_until_runtime_is_proved() {
         let (mut metadata, packages, checked) = fixture();
-        let targets = metadata["packages"][1]["targets"].as_array_mut();
-        if let Some(targets) = targets {
-            targets.push(json!({"name":"unbuilt_probe","kind":["bin"],"src_path":"/fixture/b/src/unbuilt_probe.rs","test":false,"required-features":["unbuilt"]}));
+        let targets = metadata["packages"][1]["targets"].as_array_mut().unwrap();
+        targets.extend([
+            json!({"name":"enabled_probe","kind":["bin"],"src_path":"/fixture/b/src/enabled_probe.rs","test":false,"required-features":["enabled-bin"]}),
+            json!({"name":"unbuilt_probe","kind":["bin"],"src_path":"/fixture/b/src/unbuilt_probe.rs","test":false,"required-features":["unbuilt"]}),
+        ]);
+        for kind in ["test", "bench"] {
+            let mut metadata = metadata.clone();
+            metadata["packages"][1]["targets"]
+                .as_array_mut()
+                .unwrap()
+                .retain(|target| target["name"] != "shared");
+            let mut checked = vec![checked[0].clone()];
+            let target = json!({"name":"runtime_env","kind":[kind],"src_path":"/fixture/b/tests/runtime_env.rs","test":true,"required-features":[]});
+            metadata["packages"][1]["targets"].as_array_mut().unwrap().push(target.clone());
+            checked.push(json!({"reason":"compiler-artifact","package_id":"b","target":target,"features":[],"profile":{"test":true}}));
+            let error = plan_cohorts(&metadata, &packages, &checked).unwrap_err();
+            assert!(error.to_string().contains("final Cargo UnitOutput.env"), "{kind}: {error}");
         }
-        assert!(plan_cohorts(&metadata, &packages, &checked).is_err());
     }
     #[test]
     fn inner_closure_and_cancellation_status_survive_native_wrapper() {
