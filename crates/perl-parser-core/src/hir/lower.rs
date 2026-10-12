@@ -3592,21 +3592,24 @@ fn lower_bodies_into_file(ast: &Node, file: &mut HirFile) {
         file.bodies.push(root_body);
     }
 
-    // Sub/method bodies: walk the top-level AST for Subroutine and Method nodes.
-    collect_sub_bodies(ast, file, &mut 0u32, &mut 0u32);
+    // Sub/method/class bodies: walk the top-level AST for Subroutine, Method,
+    // and Class nodes.
+    collect_sub_bodies(ast, file, &mut 0u32, &mut 0u32, &mut 0u32);
 }
 
-/// Walk `node` looking for `Subroutine` and `Method` AST nodes and lower their bodies.
+/// Walk `node` looking for `Subroutine`, `Method`, and `Class` AST nodes and
+/// lower their bodies.
 fn collect_sub_bodies(
     node: &Node,
     file: &mut HirFile,
     sub_ordinal: &mut u32,
     method_ordinal: &mut u32,
+    class_ordinal: &mut u32,
 ) {
     match &node.kind {
         NodeKind::Program { statements } => {
             for stmt in statements {
-                collect_sub_bodies(stmt, file, sub_ordinal, method_ordinal);
+                collect_sub_bodies(stmt, file, sub_ordinal, method_ordinal, class_ordinal);
             }
         }
         NodeKind::Subroutine { name, body, .. } => {
@@ -3622,7 +3625,7 @@ fn collect_sub_bodies(
             file.body_owners.insert(BodyOwner::new(owner_kind, ordinal), body_id);
             file.bodies.push(hir_body);
             // Recurse into the body for nested subs/methods
-            collect_sub_bodies(body, file, sub_ordinal, method_ordinal);
+            collect_sub_bodies(body, file, sub_ordinal, method_ordinal, class_ordinal);
         }
         NodeKind::Method { name, body, .. } => {
             let owner_kind = BodyOwnerKind::Method { name: name.clone() };
@@ -3634,22 +3637,39 @@ fn collect_sub_bodies(
             let body_id = HirBodyId(file.bodies.len() as u32);
             file.body_owners.insert(BodyOwner::new(owner_kind, ordinal), body_id);
             file.bodies.push(hir_body);
-            collect_sub_bodies(body, file, sub_ordinal, method_ordinal);
+            collect_sub_bodies(body, file, sub_ordinal, method_ordinal, class_ordinal);
+        }
+        NodeKind::Class { name, body, .. } => {
+            // A class body is its own body owner (#13844): its direct
+            // statements (`field`, `my`) lower into this arena so the body
+            // graph agrees with the scope graph. The class body block keeps
+            // its `ScopeKind::Class` frame as the lowering start scope, and
+            // nested subs/methods/classes are collected by recursing below.
+            let owner_kind = BodyOwnerKind::Class { name: name.clone() };
+            let ordinal = *class_ordinal;
+            *class_ordinal += 1;
+            let body_scope = find_body_scope(&file.scope_graph, body.location);
+            let hir_body =
+                lower_body_from_ast(body, owner_kind.clone(), body_scope, &file.scope_graph);
+            let body_id = HirBodyId(file.bodies.len() as u32);
+            file.body_owners.insert(BodyOwner::new(owner_kind, ordinal), body_id);
+            file.bodies.push(hir_body);
+            collect_sub_bodies(body, file, sub_ordinal, method_ordinal, class_ordinal);
         }
         NodeKind::Block { statements } => {
             for stmt in statements {
-                collect_sub_bodies(stmt, file, sub_ordinal, method_ordinal);
+                collect_sub_bodies(stmt, file, sub_ordinal, method_ordinal, class_ordinal);
             }
         }
         NodeKind::Package { block, .. } => {
             if let Some(block) = block {
-                collect_sub_bodies(block, file, sub_ordinal, method_ordinal);
+                collect_sub_bodies(block, file, sub_ordinal, method_ordinal, class_ordinal);
             }
         }
         _ => {
             // Recurse into children via the AST's child-iteration.
             node.for_each_child(|child: &Node| {
-                collect_sub_bodies(child, file, sub_ordinal, method_ordinal);
+                collect_sub_bodies(child, file, sub_ordinal, method_ordinal, class_ordinal);
             });
         }
     }
@@ -3928,6 +3948,31 @@ impl<'a> BodyBuilder2<'a> {
             .map(|binding| binding.id)
     }
 
+    /// Storage class for a declaration lowered into a body arena.
+    ///
+    /// A `field` that the first pass recorded as a class-field binding — a
+    /// direct statement of a `class` body (#13817) — lowers with
+    /// `DeclStorageClass::Field`. The scope graph is the shared authority, so
+    /// the arena agrees with it by construction. Any other `field`-shaped
+    /// node is a legacy call and keeps `DeclStorageClass::Unknown`.
+    fn body_storage_for_decl(
+        &self,
+        declarator: &str,
+        binding: Option<HirBindingId>,
+    ) -> DeclStorageClass {
+        if declarator == "field" {
+            if let Some(id) = binding {
+                if self.scope_graph.bindings.iter().any(|recorded| {
+                    recorded.id == id && recorded.storage == StorageClass::ClassField
+                }) {
+                    return DeclStorageClass::Field;
+                }
+            }
+            return DeclStorageClass::Unknown;
+        }
+        storage_class_for_decl(declarator)
+    }
+
     /// Coarse lexical/package classification for an occurrence.
     ///
     /// A qualified name (`Foo::x`) is always `Package`, checked before storage
@@ -4145,11 +4190,12 @@ impl<'a> BodyBuilder2<'a> {
                     &named.var_name,
                     named.binding_node.location,
                 );
+                let storage = self.body_storage_for_decl(declarator, binding);
                 self.alloc_stmt(
                     HirStmt::Let {
                         name: named.var_name,
                         sigil: sigil_from_str(named.sigil_str),
-                        storage: storage_class_for_decl(declarator),
+                        storage,
                         init,
                         binding_range: named.binding_node.location,
                         binding,
@@ -4175,15 +4221,16 @@ impl<'a> BodyBuilder2<'a> {
         range: crate::SourceLocation,
     ) -> HirStmtId {
         let sigil = sigil_from_str(sigil_str);
-        let storage = storage_class_for_decl(declarator);
-        // Unknown storage represents a legacy call. Its argument uses the
-        // visible binding rather than creating a new declaration.
-        let is_legacy_call = storage == DeclStorageClass::Unknown;
         // Canonical identity for the binding this declaration introduces
         // (#14166). Matched on the declaration token's own span, so a nested
         // redeclaration — and a second same-scope declaration of the same
-        // spelling — each name their own binding.
+        // spelling — each name their own binding. Resolved before storage so
+        // a class-body `field` can consult the scope graph's verdict (#13844).
         let binding = self.binding_declared_at(sigil_str, &var_name, binding_node.location);
+        let storage = self.body_storage_for_decl(declarator, binding);
+        // Unknown storage represents a legacy call. Its argument uses the
+        // visible binding rather than creating a new declaration.
+        let is_legacy_call = storage == DeclStorageClass::Unknown;
 
         let init_expr_id = match (initializer, &variable.kind) {
             // An embedded assignment owns its declaration place and RHS. The

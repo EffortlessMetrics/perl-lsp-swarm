@@ -1120,6 +1120,14 @@ impl BodyLowerer {
                                 name: LexicalName { sigil: sigil_str(sigil), name: name.clone() },
                             })
                         }
+                        // A class-body `field` declaration writes per-object
+                        // storage: neither a lexical pad slot nor a package
+                        // stash slot (#13844). The extractor already treats
+                        // `FieldWrite` as a non-lexical fact, so no false
+                        // lexical binding is published.
+                        DeclStorageClass::Field => Some(PirOperation::FieldWrite {
+                            name: LexicalName { sigil: sigil_str(sigil), name: name.clone() },
+                        }),
                         DeclStorageClass::Unknown => None,
                     };
                     // The write access comes from `access_for_operation`; the

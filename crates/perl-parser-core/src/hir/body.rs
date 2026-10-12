@@ -207,6 +207,16 @@ pub enum BodyOwnerKind {
         /// Method name.
         name: String,
     },
+    /// Class body (`class Point { ... }`, #13844).
+    ///
+    /// Statements declared directly in a class body (`field`, `my`) live here
+    /// so the body arena agrees with the scope graph about which class-body
+    /// declarations exist. Methods and subs inside the class keep their own
+    /// bodies; object semantics stay with #6672.
+    Class {
+        /// Class name.
+        name: String,
+    },
 }
 
 /// Stable key for a body in the per-file body registry.
@@ -956,6 +966,14 @@ pub enum DeclStorageClass {
     Local,
     /// `state` — persistent lexical.
     State,
+    /// `field` — per-object storage for a declaration that is a direct
+    /// statement of a `class` body (#13844).
+    ///
+    /// A field is neither a lexical pad slot nor a package stash slot. The
+    /// scope graph records the same declaration as `StorageClass::ClassField`
+    /// (#13817); this variant is the body arena's view of that storage. A
+    /// `field`-shaped node anywhere else stays `DeclStorageClass::Unknown`.
+    Field,
     /// An AST declaration-shaped node whose keyword is not a declaration.
     ///
     /// The parser can represent a legacy subroutine call such as
