@@ -73,7 +73,7 @@ class StaleSlotTests(unittest.TestCase):
 class CleanupDirtyGuardTests(unittest.TestCase):
     """cleanup must keep a dirty worktree even when its slot is stale."""
 
-    def _run_cleanup(self, dirty: bool):
+    def _run_cleanup(self, dirty: bool, removal_ok: bool = True):
         import tempfile
         from types import SimpleNamespace
 
@@ -86,14 +86,18 @@ class CleanupDirtyGuardTests(unittest.TestCase):
                   "last_released_at": None, "last_used_at": ts(90)}
         state = {"slots": [record]}
 
-        real_dirty = WM.worktree_dirty
+        class Result:
+            returncode = 0 if removal_ok else 1
+
+        real_dirty, real_git = WM.worktree_dirty, WM.git
         WM.worktree_dirty = lambda p: dirty
+        WM.git = lambda args, check=False: Result()
         try:
             WM.cleanup(SimpleNamespace(stale_days=7, dry_run=False,
                                        run_low_level=False),
                        state, tmp / "state.json", tmp)
         finally:
-            WM.worktree_dirty = real_dirty
+            WM.worktree_dirty, WM.git = real_dirty, real_git
         return state
 
     def test_cleanup_keeps_dirty_stale_slot(self):
@@ -103,6 +107,10 @@ class CleanupDirtyGuardTests(unittest.TestCase):
     def test_cleanup_prunes_clean_stale_slot(self):
         state = self._run_cleanup(dirty=False)
         self.assertEqual(state["slots"], [])
+
+    def test_cleanup_keeps_slot_when_removal_fails(self):
+        state = self._run_cleanup(dirty=False, removal_ok=False)
+        self.assertEqual([s["slot_id"] for s in state["slots"]], ["slot-a"])
 
 
 if __name__ == "__main__":

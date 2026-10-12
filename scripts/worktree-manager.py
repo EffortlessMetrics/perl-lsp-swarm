@@ -1221,7 +1221,15 @@ def cleanup(
             if args.dry_run:
                 print(f"would prune slot={slot.get('slot_id')} path={slot.get('path')} branch={branch}")
             else:
-                git(["worktree", "remove", "--force", str(slot_path)], check=False)
+                removal = git(["worktree", "remove", str(slot_path)], check=False)
+                if removal.returncode != 0 and not worktree_dirty(slot_path):
+                    # Clean but non-forced removal refused (e.g. ignored
+                    # files): one forced retry, still result-checked.
+                    removal = git(["worktree", "remove", "--force", str(slot_path)], check=False)
+                if removal.returncode != 0:
+                    print(f"kept slot={slot.get('slot_id')} path={slot.get('path')}: worktree removal failed")
+                    kept.append(slot)
+                    continue
                 if branch != "HEAD":
                     git(["branch", "-D", branch], check=False)
             pruned += 1
