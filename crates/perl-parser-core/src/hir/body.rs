@@ -1214,7 +1214,7 @@ use crate::{Node, NodeKind};
 /// - `$a + $b` — [`HirExpr::Binary`] with explicit child IDs
 /// - Variable references — [`HirExpr::Variable`]
 /// - Everything else — [`HirExpr::Opaque`] / [`HirStmt::Expr`] fallback
-pub fn lower_body(ast: &Node) -> HirBody {
+pub(super) fn lower_body(ast: &Node) -> HirBody {
     let mut builder = BodyBuilder::new();
 
     let stmts = match &ast.kind {

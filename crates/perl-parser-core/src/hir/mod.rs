@@ -5,6 +5,7 @@
 //! proof data without changing LSP provider behavior.
 
 mod body;
+mod body_entry;
 pub mod disposition;
 mod lower;
 mod model;
@@ -16,8 +17,9 @@ pub use body::{
     HirExprId, HirLoopLabel, HirLoopRegionId, HirRegex, HirRegexMatch, HirRegexTarget, HirStmt,
     HirStmtId, HirSubscript, HirSubstitution, HirTransliteration, HirVariable,
     LoopControlResolution, LoopControlVerb, RegexAnalysisAnchor, ReplacementEvaluation, Sigil,
-    SubscriptKind, UnaryMode, VariableKind, lower_body,
+    SubscriptKind, UnaryMode, VariableKind,
 };
+pub use body_entry::lower_body;
 pub use lower::lower_ast;
 pub use model::{
     AstAnchor, BarewordExpr, BarewordFact, BarewordRole, BarewordTable, Binding, BindingReference,
