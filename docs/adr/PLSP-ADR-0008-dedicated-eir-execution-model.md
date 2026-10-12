@@ -156,9 +156,13 @@ pass/fail per row; the rules below are durable:
    landed. Static `compiler_profile.v1` and series YAML are not substitutes.
 3. PIR-A-side verification scope re-owned and executed for each admitted
    family (#2277 is closed `not_planned` and contributes zero scope).
-4. Per-family coverage gates bind each lowering slice: documented
-   branch/loop/return/read lowering, binding fix-or-exclude at admission,
-   context/access composition proof where the family needs it.
+4. Per-family coverage gates bind each lowering and evaluation slice:
+   documented branch/loop/return/read lowering, binding fix-or-exclude
+   at admission, context/access composition proof where the family needs
+   it. Evaluation slices additionally need reference-evaluator
+   conformance evidence over their families (differential against the
+   admitted source matrix with fail-closed boundaries); evaluation never
+   precedes its families' lowering coverage.
 5. #4775 (types and construction only, no evaluation, no lowering)
    may proceed once (1) and (2) hold, under the §1 scoping amendment.
    #17512 and later lowering/evaluation slices additionally need (3)
