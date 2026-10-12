@@ -1423,8 +1423,11 @@ test('stays silent when the activation capability is absent from experimental (#
   });
   const workspaceState = makeState();
 
+  // Unlike the preceding test, `experimental` is present but carries no
+  // `perlAiCompletionActivation`, so this exercises the missing-activation
+  // branch rather than the absent-`experimental` branch.
   await suggestAiCompletionIfSupported({ workspaceState } as unknown as vscode.ExtensionContext, {
-    initializeResult: { capabilities: { inlineCompletionProvider: {} } },
+    initializeResult: { capabilities: { experimental: {}, inlineCompletionProvider: {} } },
   });
 
   expect(vscode.window.showInformationMessage).not.toHaveBeenCalled();

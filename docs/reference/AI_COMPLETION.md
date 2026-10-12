@@ -17,14 +17,19 @@ Code settings UI.
 | `perl-lsp.aiCompletion.enabled` | boolean | `false` | Reserved machine-scoped extension preference. The extension does not forward trusted activation and generic server arrivals are rejected, so this key cannot currently enable remote AI. |
 | `perl-lsp.aiCompletion.streaming.enabled` | boolean | `true` | Reserved machine-scoped extension preference for a future trusted adapter. It does not currently authorize server streaming. |
 
-The extension's one-time enable prompt is gated on the experimental
-`perlAiCompletionActivation` capability, not on `inlineCompletionProvider`
-(#16585). `inlineCompletionProvider` is advertised by every shipped profile
-(`features/flags.rs` `production()`/`ga_lock()`), so it selects nothing;
+The extension's one-time enable prompt requires both conditions that
+`serverAdvertisesAiActivation` checks (#16585): the experimental
+`perlAiCompletionActivation` capability must be `true` — that is the
+differentiating capability that selects the journey — and
+`inlineCompletionProvider` must be present and not `false`, because the prompt
+is only worth showing when the client can actually display suggestions.
+`inlineCompletionProvider` alone still selects nothing: it is advertised by
+every shipped profile (`features/flags.rs` `production()`/`ga_lock()`), so
 prompting on it wrote a setting the server rejects and then reported a success
 the server cannot deliver. A server that can honour the setting advertises
-`capabilities.experimental.perlAiCompletionActivation = true` and the journey
-returns on its own.
+`capabilities.experimental.perlAiCompletionActivation = true` (with its
+`inlineCompletionProvider` capability in place) and the journey returns on its
+own.
 
 Where each field can be set:
 
