@@ -23,7 +23,7 @@ ignore = [
     # (publish = false, build-time tooling) through serde_yaml_ng, parsing
     # repository-controlled YAML. No shipped crate depends on it and no
     # safe upgrade exists. Bounded exposure, not a claim of no risk.
-    # Durable fix is the xtask YAML migration tracked in #17643.
+    # Durable fix is the xtask YAML migration off serde_yaml_ng, #17720.
     { id = "RUSTSEC-2024-0449", reason = "unmaintained unsafe-libyaml via serde_yaml_ng in unpublished xtask only; inputs are repository-controlled; no shipped-crate exposure" },
 ]
 
@@ -104,8 +104,9 @@ skip = [
     { crate = "shlex@1.3.0", reason = "bindgen 0.72 (xtask) pins shlex 1.x; cc 1.x build scripts use 2.x" },
 
     # syn: 2.x vs 3.x split (ecosystem transition).
-    # 2.0.119 — most crates use syn 2.x. 3.0.5 — clap_derive (via criterion) pulls syn 3.x.
-    { crate = "syn@2.0.119", reason = "most crates use syn 2.x; clap_derive (criterion) pulls 3.x" },
+    # 2.0.119 — most crates use syn 2.x. 3.0.5 — xtask and perl-ci-hygiene
+    # select syn 3.x directly (verified with cargo tree -i syn@3.0.5).
+    { crate = "syn@2.0.119", reason = "most crates use syn 2.x; xtask and perl-ci-hygiene select syn 3.x directly" },
 
     # similar has no skip entry: 2.7.0 reaches the graph only through insta
     # as a dev-dependency, which the scanned graph excludes, so a skip here
