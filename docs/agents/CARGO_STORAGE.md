@@ -267,7 +267,15 @@ are excluded, and receipts expose only the environment digest. Runtime context
 follows Cargo's order: package build-script environment, `CARGO` and complete
 package metadata, package cwd, and configuration. Native loader paths follow
 Cargo's ordered root/deps/sysroot construction and original loader environment;
-package build-script outputs must match the observed check context. Custom runner,
+package build-script outputs must match the observed check context. This covers
+Cargo's `fill_env` layer, not the later `UnitOutput.env` layer. The planner explicitly
+refuses integration/bench targets in any package with bin targets, including
+`test=false` and required-feature-disabled bins, before any test codegen or cleanup.
+Cargo's final layer sets `CARGO_BIN_EXE_<name>` for every such bin; check artifacts
+contain placeholders and cannot establish those runtime paths. The proposed full
+six-package route is therefore blocked by workspace and xtask bin-owning integration
+suites, not just optional custom configuration. Full final-unit environment modeling
+and qualification is a necessary separate slice for the original routed-test goal. Custom runner,
 external/parent Cargo configuration, configuration includes, cross-target requests,
 custom Cargo environment beyond this repository's `RUST_BACKTRACE`, and compiler/
 loader injection selectors remain unsupported and refuse. The existing native
@@ -301,7 +309,8 @@ This source candidate does **not** activate `unit_routed_full`. Local Python
 controls distinguish filesystem/interface doubles and a synthetic finite resolver
 model from real Cargo/native proof. The checked-in two-crate resolver-2 fixture
 contains a development dependency that activates another package's required test
-feature and duplicate test names; its actual Cargo execution is still required.
+feature, duplicate test names, and an unbuilt required-feature-disabled bin whose
+runtime environment must nevertheless be present; its actual Cargo execution is still required.
 Native Rust compilation/unit tests, exact-candidate case/feature equivalence,
 configured runtime contexts, supported-host cancellation, continuous peak/retained
 byte measurements and timings, and reserve qualification remain pending. No
@@ -319,6 +328,7 @@ The resolver and runtime boundaries follow pinned Cargo 1.95 source:
 [resolution before target filters](https://github.com/rust-lang/cargo/blob/rust-1.95.0/src/cargo/ops/cargo_compile/mod.rs#L271),
 [test/check profile identity](https://github.com/rust-lang/cargo/blob/rust-1.95.0/src/cargo/core/compiler/build_config.rs#L245),
 [alias production](https://github.com/rust-lang/cargo/blob/rust-1.95.0/src/cargo/core/compiler/mod.rs#L589),
+[final unit environment](https://github.com/rust-lang/cargo/blob/rust-1.95.0/src/cargo/core/compiler/artifact.rs#L17),
 and [target process context](https://github.com/rust-lang/cargo/blob/rust-1.95.0/src/cargo/core/compiler/compilation.rs#L329).
 
 ### Staged native Clippy

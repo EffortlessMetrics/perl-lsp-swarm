@@ -7,3 +7,11 @@ cohort-a = { path = "../a", features = ["activated"] }
 [[test]]
 name = "shared"
 path = "tests/shared.rs"
+
+[features]
+unbuilt = []
+[[bin]]
+name = "unbuilt_probe"
+path = "src/unbuilt_probe.rs"
+test = false
+required-features = ["unbuilt"]

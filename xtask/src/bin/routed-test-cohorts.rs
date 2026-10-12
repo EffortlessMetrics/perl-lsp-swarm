@@ -186,6 +186,29 @@ fn plan_cohorts(
                 bail!("global selector collides with ineligible target");
             }
         }
+        if matches!(kind[0].as_str(), Some("test" | "bench")) {
+            let package = selected
+                .values()
+                .find(|package| package["id"] == unit["package_id"])
+                .ok_or_else(|| eyre!("selected package missing"))?;
+            if package["targets"]
+                .as_array()
+                .ok_or_else(|| eyre!("package targets missing"))?
+                .iter()
+                .any(|target| {
+                    target["kind"]
+                        .as_array()
+                        .is_some_and(|kinds| kinds.iter().any(|kind| kind == "bin"))
+                })
+            {
+                // Cargo adds UnitOutput.env AFTER package/config context. Every
+                // package bin participates, even test=false or feature-disabled
+                // bins; check uses placeholders. Do not guess or omit this layer.
+                bail!(
+                    "integration/bench package owns bins: final Cargo UnitOutput.env population requires a separate qualified runtime-environment slice"
+                );
+            }
+        }
         grouped.entry(selector).or_default().push(unit.clone());
     }
     Ok(grouped.into_iter().map(|(selector, targets)| CohortPlan { selector, targets }).collect())
@@ -796,6 +819,15 @@ mod tests {
     fn wrong_required_feature_receipt_refused() {
         let (metadata, packages, mut checked) = fixture();
         checked[0]["features"] = json!([]);
+        assert!(plan_cohorts(&metadata, &packages, &checked).is_err());
+    }
+    #[test]
+    fn disabled_unbuilt_bin_still_blocks_integration_runtime_context() {
+        let (mut metadata, packages, checked) = fixture();
+        let targets = metadata["packages"][1]["targets"].as_array_mut();
+        if let Some(targets) = targets {
+            targets.push(json!({"name":"unbuilt_probe","kind":["bin"],"src_path":"/fixture/b/src/unbuilt_probe.rs","test":false,"required-features":["unbuilt"]}));
+        }
         assert!(plan_cohorts(&metadata, &packages, &checked).is_err());
     }
     #[test]
