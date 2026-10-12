@@ -707,20 +707,18 @@ pub enum HirExpr {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct HirLiteral {
-    /// Admitted literal family.
+    /// Admitted literal family. The `String` family carries its quoting in
+    /// the kind itself so a string leaf without a quote kind is
+    /// unrepresentable.
     pub kind: HirLiteralKind,
     /// Exact source-derived payload: the numeric lexeme, the quote-stripped
     /// string content, or the empty string for `undef`.
     pub payload: String,
-    /// Quoting of an admitted string form. Single- and double-quoted content
-    /// with identical bytes can mean different values once escapes are
-    /// decoded, so the kind is load-bearing and never inferred from payload.
-    /// Always `None` for `Number` and `Undef`, always `Some` for `String`.
-    pub quote: Option<HirQuoteKind>,
-    /// Whether the parser fabricated this node on a recovery path (currently
-    /// only the proven zero-width `Number("1")` shape). Fabricated leaves are
-    /// still real arena entries; consumers must treat the payload as
-    /// recovery-supplied, not written.
+    /// Whether the node behind this leaf is absent from the source text:
+    /// parser recovery fabrication (orphaned-`else` shells, missing operands)
+    /// or valid-idiom desugaring (`while ()` empty condition). Such leaves
+    /// are still real arena entries; consumers must treat the payload as
+    /// supplied, not written.
     pub synthesized: bool,
 }
 
@@ -730,23 +728,27 @@ pub struct HirLiteral {
 pub enum HirLiteralKind {
     /// Plain decimal numeric token.
     Number,
-    /// Noninterpolating string form.
-    String,
+    /// Noninterpolating string form with its quoting. Single- and
+    /// double-quoted content with identical bytes can mean different values
+    /// once escapes are decoded, so the kind is load-bearing and never
+    /// inferred from payload.
+    String(HirQuoteKind),
     /// `undef`.
     Undef,
 }
 
-/// Quoting of an admitted string leaf (#17538).
+/// Quoting of a string token (#17538).
 ///
-/// The parser stores the raw token text including quotes, so the leaf
-/// constructor strips one layer and records which kind it removed. Consumers
-/// must not re-derive the kind from payload bytes.
+/// The parser stores the raw token text including quotes, so producers strip
+/// one layer and record which kind they removed. Consumers must not re-derive
+/// the kind from payload bytes. Whether a given producer admits interpolated
+/// forms is that producer's admission rule, not part of this kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum HirQuoteKind {
     /// Single-quoted (`'...'`).
     Single,
-    /// Double-quoted (`"..."`) without interpolation.
+    /// Double-quoted (`"..."`).
     Double,
 }
 

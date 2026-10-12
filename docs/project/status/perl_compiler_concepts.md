@@ -132,7 +132,7 @@ Initial current-main ownership and stage-state seed for the compiler frontier; n
 - **`regex.transliteration` (#4848):** A flat shell exists; target-place mutation, modifiers, and executable semantics remain incomplete.
 - **`source.data_section` (#6675):** The parser recognizes the marker, but compiler stop/payload identity and runtime DATA capability are not modeled.
 - **`source.ellipsis` (#6675):** Parsed syntax is not yet represented as a deliberate control/runtime boundary.
-- **`values.noninterpolating_string` (#6658):** Quote-stripped content plus load-bearing quote kind; escape sequences pass through verbatim (decoding is a later family). Interpolated, quote-like, and unquoted spellings stay Opaque.
+- **`values.noninterpolating_string` (#6658):** Quote-stripped content plus load-bearing quote kind; escape sequences pass through verbatim (decoding is a later family). Interpolated, quote-like, and unquoted spellings stay Opaque, as do all double-quoted spellings (the parser marks every double-quoted form interpolated and this slice does not second-guess that authority).
 - **`values.plain_decimal` (#6658):** Exact-lexeme typed leaves with fabrication marker; no numeric parsing, rounding, or runtime coercion. Bases, floats, exponents, separators, and version forms stay Opaque.
 - **`values.undef` (#6658):** Absence-of-value leaf, distinct from unresolved barewords and from `undef` parsed as a call. No definedness/truth evaluation semantics.
 - **`values.v_string` (#6658):** Parser classification exists; typed value representation and version-sensitive semantics do not.

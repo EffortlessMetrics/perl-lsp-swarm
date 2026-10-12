@@ -15,7 +15,7 @@ use std::error::Error;
 use perl_parser_core::Parser;
 use perl_parser_core::hir::lower_ast;
 use perl_parser_core::pir::{
-    PirAnchorKind, PirContext, PirEdgeKind, PirGraph, PirId, PirNode, PirOperation,
+    PirAnchorKind, PirContext, PirEdgeKind, PirGraph, PirId, PirLiteralKind, PirNode, PirOperation,
     lower_hir_bodies,
 };
 
@@ -110,10 +110,24 @@ fn pir_a_branch_constant_condition_links_to_literal() -> TestResult {
     assert!(
         matches!(
             &cond_node.operation,
-            PirOperation::Literal { value: Some(payload), .. } if payload == "1"
+            PirOperation::Literal { kind: PirLiteralKind::Number, value: Some(payload), .. }
+                if payload == "1"
         ),
         "condition link must point at the `1` leaf, got {:?}",
         cond_node.operation
+    );
+    Ok(())
+}
+
+/// A non-admitted constant condition (`0x1F` stays outside the #17538 cohort)
+/// emits no node, so the link stays None (fail-closed).
+#[test]
+fn pir_a_branch_opaque_condition_is_none() -> TestResult {
+    let graph = parse_and_lower("if (0x1F) { my $y = 1; }");
+    let branch = single_branch(&graph)?;
+    assert!(
+        branch_condition(branch)?.is_none(),
+        "an opaque condition must leave the link None (fail-closed)"
     );
     Ok(())
 }

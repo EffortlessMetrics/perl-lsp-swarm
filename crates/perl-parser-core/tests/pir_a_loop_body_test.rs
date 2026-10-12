@@ -15,7 +15,7 @@ use std::error::Error;
 use perl_parser_core::Parser;
 use perl_parser_core::hir::lower_ast;
 use perl_parser_core::pir::{
-    PirAnchorKind, PirContext, PirEdgeKind, PirGraph, PirId, PirNode, PirOperation,
+    PirAnchorKind, PirContext, PirEdgeKind, PirGraph, PirId, PirLiteralKind, PirNode, PirOperation,
     lower_hir_bodies,
 };
 
@@ -114,7 +114,8 @@ fn pir_a_c_style_for_emits_loop_with_condition() -> TestResult {
     assert!(
         matches!(
             &cond_node.operation,
-            PirOperation::Literal { value: Some(payload), .. } if payload == "10"
+            PirOperation::Literal { kind: PirLiteralKind::Number, value: Some(payload), .. }
+                if payload == "10"
         ),
         "condition link must point at the trailing `10` leaf, got {:?}",
         cond_node.operation

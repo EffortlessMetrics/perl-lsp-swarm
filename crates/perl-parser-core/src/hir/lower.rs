@@ -3594,16 +3594,16 @@ fn is_plain_decimal(value: &str) -> bool {
     !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit())
 }
 
-/// Whether a scalar leaf node was fabricated by parser recovery rather than
-/// written (#17538).
+/// Whether a scalar leaf node is absent from the source text (#17538).
 ///
-/// Currently detects only the proven zero-width `Number("1")` shape (orphaned-
-/// `else` shells and the `while ()` empty-condition idiom share it, and a
-/// written token always spans at least one character, so the marker is truthful
-/// in every arm). Any other shape reports `false`; broader fabrication
-/// coverage belongs to #6666's honesty sweep, not to this leaf.
+/// Covers parser recovery fabrication (orphaned-`else` shells, missing
+/// operands such as `!;`) and valid-idiom desugaring (`while ()` empty
+/// condition): all share the zero-width point location, and a written token
+/// always spans at least one character, so the marker is truthful for every
+/// scalar arm. Call only with scalar nodes; broader fabrication coverage
+/// belongs to #6666's honesty sweep, not to this leaf.
 fn is_fabricated_scalar(node: &Node) -> bool {
-    is_synthesized_true_condition(node)
+    node.location.start == node.location.end
 }
 
 fn variable_binding(node: &Node) -> Option<VariableBinding> {
@@ -5178,7 +5178,6 @@ impl<'a> BodyBuilder2<'a> {
                 HirExpr::Literal(HirLiteral {
                     kind: HirLiteralKind::Number,
                     payload: value.clone(),
-                    quote: None,
                     synthesized: is_fabricated_scalar(node),
                 }),
                 range,
@@ -5187,10 +5186,9 @@ impl<'a> BodyBuilder2<'a> {
                 match strip_string_quotes(value) {
                     Some((content, quote)) => self.alloc_expr(
                         HirExpr::Literal(HirLiteral {
-                            kind: HirLiteralKind::String,
+                            kind: HirLiteralKind::String(quote),
                             payload: content.to_string(),
-                            quote: Some(quote),
-                            synthesized: false,
+                            synthesized: is_fabricated_scalar(node),
                         }),
                         range,
                     ),
@@ -5206,8 +5204,7 @@ impl<'a> BodyBuilder2<'a> {
                 HirExpr::Literal(HirLiteral {
                     kind: HirLiteralKind::Undef,
                     payload: String::new(),
-                    quote: None,
-                    synthesized: false,
+                    synthesized: is_fabricated_scalar(node),
                 }),
                 range,
             ),

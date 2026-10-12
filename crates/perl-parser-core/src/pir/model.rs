@@ -624,21 +624,21 @@ pub enum PirOperation {
     Literal {
         /// Literal category preserved from HIR.
         kind: PirLiteralKind,
-        /// Scalar payload when the producing HIR carries one (#17538).
-        /// Producer convention: the body path emits quote-stripped content
-        /// for `Number`/`String` and `None` for `Undef`; the legacy flat path
-        /// passes its token text through verbatim (quotes included). `None`
-        /// means the kind or path has no scalar payload here, never a lost
-        /// value: a first-cohort body leaf always emits `Some` in the same
-        /// lowering generation, so no cross-generation join can mismatch it.
+        /// Scalar payload when the producing HIR carries one (#17538). Both
+        /// producers share one convention: numbers keep the exact lexeme,
+        /// strings keep quote-stripped content, and `Undef`/aggregates carry
+        /// `None`. `None` means the kind has no scalar payload here, never a
+        /// lost value: a first-cohort body leaf always emits `Some` in the
+        /// same lowering generation, so no cross-generation join can
+        /// mismatch it.
         value: Option<String>,
-        /// String quoting when known. Body-produced string operations always
-        /// carry it; flat-path operations carry it when the token text admits
-        /// detection. `None` for non-strings or undetectable legacy spellings.
+        /// String quoting when the token text admits detection. Always `Some`
+        /// for body-produced strings; `None` for non-strings and for
+        /// unquoted, mismatched, or quote-like spellings.
         quote: Option<HirQuoteKind>,
-        /// Whether the producing HIR node was fabricated by parser recovery
-        /// rather than written. Consumers must treat a flagged payload as
-        /// recovery-supplied.
+        /// Whether the producing node is absent from the source text (parser
+        /// recovery fabrication or valid-idiom desugaring). Consumers must
+        /// treat a flagged payload as supplied, not written.
         synthesized: bool,
     },
     /// A subroutine or function call.

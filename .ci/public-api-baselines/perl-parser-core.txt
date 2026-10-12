@@ -1786,7 +1786,7 @@ pub fn perl_parser_core::hir::HirKind::eq(&self, other: &perl_parser_core::hir::
 pub fn perl_parser_core::hir::HirKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 #[non_exhaustive] pub enum perl_parser_core::hir::HirLiteralKind
 pub perl_parser_core::hir::HirLiteralKind::Number
-pub perl_parser_core::hir::HirLiteralKind::String
+pub perl_parser_core::hir::HirLiteralKind::String(perl_parser_core::hir::HirQuoteKind)
 pub perl_parser_core::hir::HirLiteralKind::Undef
 pub fn perl_parser_core::hir::HirLiteralKind::clone(&self) -> perl_parser_core::hir::HirLiteralKind
 pub fn perl_parser_core::hir::HirLiteralKind::eq(&self, other: &perl_parser_core::hir::HirLiteralKind) -> bool
@@ -2446,7 +2446,6 @@ pub fn perl_parser_core::hir::HirItem::fmt(&self, f: &mut core::fmt::Formatter<'
 #[non_exhaustive] pub struct perl_parser_core::hir::HirLiteral
 pub perl_parser_core::hir::HirLiteral::kind: perl_parser_core::hir::HirLiteralKind
 pub perl_parser_core::hir::HirLiteral::payload: alloc::string::String
-pub perl_parser_core::hir::HirLiteral::quote: core::option::Option<perl_parser_core::hir::HirQuoteKind>
 pub perl_parser_core::hir::HirLiteral::synthesized: bool
 pub fn perl_parser_core::hir::HirLiteral::clone(&self) -> perl_parser_core::hir::HirLiteral
 pub fn perl_parser_core::hir::HirLiteral::eq(&self, other: &perl_parser_core::hir::HirLiteral) -> bool

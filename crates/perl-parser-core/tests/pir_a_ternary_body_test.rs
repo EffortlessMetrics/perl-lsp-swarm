@@ -19,7 +19,8 @@ use std::error::Error;
 use perl_parser_core::Parser;
 use perl_parser_core::hir::lower_ast;
 use perl_parser_core::pir::{
-    PirContext, PirEdgeKind, PirGraph, PirId, PirNode, PirOperation, lower_hir_bodies,
+    PirContext, PirEdgeKind, PirGraph, PirId, PirLiteralKind, PirNode, PirOperation,
+    lower_hir_bodies,
 };
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -256,7 +257,8 @@ fn pir_a_ternary_constant_condition_links_to_literal() -> TestResult {
     assert!(
         matches!(
             &cond_node.operation,
-            PirOperation::Literal { value: Some(payload), .. } if payload == "1"
+            PirOperation::Literal { kind: PirLiteralKind::Number, value: Some(payload), .. }
+                if payload == "1"
         ),
         "condition link must point at the `1` leaf, got {:?}",
         cond_node.operation
@@ -268,6 +270,19 @@ fn pir_a_ternary_constant_condition_links_to_literal() -> TestResult {
             "arm operand `${ident}` must still lower to a reachable read"
         );
     }
+    Ok(())
+}
+
+/// A non-admitted constant condition (`0x1F` stays outside the #17538 cohort)
+/// emits no node, so the ternary condition link stays None (fail-closed).
+#[test]
+fn pir_a_ternary_opaque_condition_link_is_none() -> TestResult {
+    let graph = parse_and_lower("my $x = 0x1F ? $a : $b;");
+    let node = single_branch(&graph)?;
+    assert!(
+        branch_condition(node)?.is_none(),
+        "an opaque condition must leave the link None (fail-closed)"
+    );
     Ok(())
 }
 

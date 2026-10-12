@@ -602,7 +602,7 @@ composition = "missing"
 provider_eligibility = "fallback_only"
 ownership = "active"
 owner_issue = "#6658"
-claim_boundary = "Quote-stripped content plus load-bearing quote kind; escape sequences pass through verbatim (decoding is a later family). Interpolated, quote-like, and unquoted spellings stay Opaque."
+claim_boundary = "Quote-stripped content plus load-bearing quote kind; escape sequences pass through verbatim (decoding is a later family). Interpolated, quote-like, and unquoted spellings stay Opaque, as do all double-quoted spellings (the parser marks every double-quoted form interpolated and this slice does not second-guess that authority)."
 evidence = ["#17538", "#6658"]
 
 [[concepts]]

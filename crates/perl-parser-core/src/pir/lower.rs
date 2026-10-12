@@ -13,7 +13,7 @@ use crate::hir::{
     DeclStorageClass, DerefExpr, DynamicBoundaryKind, HIR_BODY_MODEL_VERSION, HirBody, HirBodyId,
     HirExpr, HirExprId, HirFile, HirItem, HirKind, HirLiteralKind, HirRegexTarget, HirScopeId,
     HirStmt, LiteralExpr, LiteralKind, LoopShell, RegexTargetKind, Sigil, StatementModifierKind,
-    UnaryMode, VariableKind, hir_quote_kind,
+    UnaryMode, VariableKind, hir_quote_kind, strip_string_quotes,
 };
 
 use super::model::{
@@ -227,15 +227,23 @@ impl Lowerer {
     fn lower_literal(&mut self, item: &HirItem, literal: &LiteralExpr) {
         // HIR preserves the literal category but not the surrounding expression
         // context on this item, so PIR keeps context Unknown rather than guessing
-        // scalar or list behavior. The flat path passes through the payload it
-        // already retains; it does not distinguish fabrication (recovery
-        // confidence is not fabrication provenance), so `synthesized` stays
-        // false here and the body leaf remains the provenance authority (#17538).
+        // scalar or list behavior. The flat path shares the body path's value
+        // convention (#17538): quotable string token text is stripped to
+        // content (interpolated forms included — flat models them, unlike the
+        // body cohort gate), and a zero-width item range marks a node that is
+        // absent from the source text, exactly like the body leaf.
+        let value = match literal.kind {
+            LiteralKind::String => literal.value.as_deref().map(|raw| {
+                strip_string_quotes(raw)
+                    .map_or_else(|| raw.to_string(), |(content, _)| content.to_string())
+            }),
+            _ => literal.value.clone(),
+        };
         let operation = PirOperation::Literal {
             kind: map_literal_kind(literal.kind),
-            value: literal.value.clone(),
+            value,
             quote: literal.value.as_deref().and_then(hir_quote_kind),
-            synthesized: false,
+            synthesized: item.range.start == item.range.end,
         };
         let anchor = PirSourceAnchor::explicit(item.range, item.id);
         self.push_node_maybe_operand(item, anchor, operation, None);
@@ -1632,24 +1640,19 @@ impl BodyLowerer {
                 // the leaf payload in the same lowering generation, so no
                 // cross-generation join can mismatch it. Context stays Unknown
                 // rather than guessing scalar or list behavior.
-                let (kind, value) = match literal.kind {
+                let (kind, value, quote) = match literal.kind {
                     HirLiteralKind::Number => {
-                        (PirLiteralKind::Number, Some(literal.payload.clone()))
+                        (PirLiteralKind::Number, Some(literal.payload.clone()), None)
                     }
-                    HirLiteralKind::String => {
-                        (PirLiteralKind::String, Some(literal.payload.clone()))
+                    HirLiteralKind::String(quote) => {
+                        (PirLiteralKind::String, Some(literal.payload.clone()), Some(quote))
                     }
-                    HirLiteralKind::Undef => (PirLiteralKind::Undef, None),
+                    HirLiteralKind::Undef => (PirLiteralKind::Undef, None, None),
                 };
                 let anchor = self.make_body_anchor(range);
                 self.push_body_node(
                     anchor,
-                    PirOperation::Literal {
-                        kind,
-                        value,
-                        quote: literal.quote,
-                        synthesized: literal.synthesized,
-                    },
+                    PirOperation::Literal { kind, value, quote, synthesized: literal.synthesized },
                     PirContext::Unknown,
                     None,
                     file,
