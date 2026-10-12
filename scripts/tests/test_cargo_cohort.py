@@ -279,8 +279,15 @@ class PortableControls(unittest.TestCase):
                 producer = [sys.executable, '-c', program]
                 consumers = {str(self.exe): {'args': [], 'cwd': str(self.root), 'verify_harness': True}}
                 if variant != 'complete':
-                    with self.assertRaisesRegex(cohort.Denied, 'omitted/duplicated cases or changed ignored population'):
+                    with self.assertRaisesRegex(cohort.Denied, 'omitted/duplicated cases or changed ignored population') as failure:
                         self.run_portable(instance, producer=producer, consumers=consumers)
+                    detail = json.loads(str(failure.exception).split('population: ', 1)[1])
+                    key = {'drop':'missing', 'extra':'excess', 'ignored_drop':'ignored_missing'}[variant]
+                    name = 'ignored_repeat' if variant == 'ignored_drop' else 'repeated'
+                    self.assertEqual(detail[key], {'occurrences':1,'first_names':{name:1}})
+                    self.assertEqual(detail['executable'],str(self.exe))
+                    self.assertEqual(len(detail['logs']),3)
+                    self.assertTrue(all(Path(log).is_file() for log in detail['logs']))
                     self.assertTrue(self.exe.exists())
                     self.exe.unlink()  # fixture-owned control reset, after settled double
                 else:

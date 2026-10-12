@@ -665,7 +665,16 @@ class Cohort:
                     if match.group(2).startswith('ignored'):
                         ignored[match.group(1)] += 1
             if Counter(completed) != all_cases or ignored != ignored_cases:
-                raise Denied('native successful harness run omitted/duplicated cases or changed ignored population')
+                actual = Counter(completed)
+                differences = {'missing': all_cases - actual, 'excess': actual - all_cases,
+                               'ignored_missing': ignored_cases - ignored,
+                               'ignored_excess': ignored - ignored_cases}
+                detail = {key: {'occurrences': sum(value.values()),
+                                'first_names': dict(sorted(value.items())[:16])}
+                          for key, value in differences.items()}
+                detail.update(executable=str(path), logs=[*logs, str(log)])
+                raise Denied('native successful harness run omitted/duplicated cases or changed ignored population: '
+                             + json.dumps(detail, sort_keys=True))
         return {'executable': str(path), 'status': status, 'cases': sorted(all_cases.elements()),
                 'ignored': sorted(ignored_cases.elements()), 'case_count': sum(all_cases.values()),
                 'ignored_count': sum(ignored_cases.values()), 'logs': [*logs, str(log)]}
