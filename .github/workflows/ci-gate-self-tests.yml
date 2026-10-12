@@ -25,6 +25,8 @@ on:
       - 'scripts/tests/test_cargo_admitted_storage.py'
       - 'scripts/tests/test_cargo_admitted_budget.py'
       - 'scripts/storage-doctor'
+      - 'scripts/measure_cargo_storage.py'
+      - 'scripts/tests/test_measure_cargo_storage.py'
       - 'scripts/tests/test_storage_doctor.py'
       - 'justfile'
       - 'scripts/cargo_allow_cadence.py'
@@ -665,6 +667,8 @@ jobs:
         run: scripts/cargo-admitted test --locked -p xtask --bin routed-test-cohorts
       - name: Check retained target measurement failure and threshold controls
         run: python3 -m unittest discover -s scripts/tests -p 'test_storage_doctor.py' -v
+      - name: Check sampled allocation, hardlinks and interrupted measurement
+        run: python3 -m unittest discover -s scripts/tests -p 'test_measure_cargo_storage.py' -v
 
   cargo-toolchain-guard-self-test:
     name: Entrypoint cargo toolchain guard self-test
@@ -823,3 +827,77 @@ jobs:
             echo "" >> "$GITHUB_STEP_SUMMARY"
             echo "The head-name sentinel contract regressed — it could again trigger via a suppressible event, execute or check out any ref, silently pass a SHA-like branch, or drift from its documented surface. Check the step output above." >> "$GITHUB_STEP_SUMMARY"
           fi
+
+  routed-storage-qualification:
+    name: Routed storage qualification (${{ matrix.mode }})
+    # Campaign-only proof: production gate activation and required status are unchanged.
+    if: github.event_name == 'pull_request' && github.event.pull_request.number == 17623
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [ordinary, cohort]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # stable (master)
+        with:
+          toolchain: 1.95.0
+      - name: Native lifecycle controls
+        run: python3 -m unittest discover -s scripts/tests -p 'test_cargo_cohort.py' -v
+      - name: Measure exact six-package route with its original watchdog and reserve
+        shell: bash
+        env:
+          QUALIFICATION_MODE: ${{ matrix.mode }}
+        run: |
+          set -euo pipefail
+          mkdir qualification-evidence
+          git rev-parse HEAD > qualification-evidence/head.txt
+          rustc -vV > qualification-evidence/rustc.txt
+          cargo -vV > qualification-evidence/cargo.txt
+          # Same canonical resource planner as admission; this read allocates no build roots.
+          python3 - <<'PY' > qualification-evidence/resources.json
+          import json, os, sys
+          sys.path.insert(0, 'scripts')
+          from cargo_admitted import resource_plan
+          _, _, resources = resource_plan(os.environ.copy())
+          print(json.dumps({key: str(value) for key, value in resources.items()}))
+          PY
+          target="$(jq -r .target qualification-evidence/resources.json)"
+          build="$(jq -r .build qualification-evidence/resources.json)"
+          cargo_home="$(jq -r .cargo_home qualification-evidence/resources.json)"
+          temp="$(jq -r .temp qualification-evidence/resources.json)"
+          export QUALIFICATION_TARGET="$target"
+          cat > "$RUNNER_TEMP/production-route.sh" <<'SH'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          packages=(-p perl-dap -p perl-lsp-rs -p perl-parser-core -p perl-semantic-analyzer -p perl-workspace -p xtask)
+          if [ "$QUALIFICATION_MODE" = cohort ]; then
+            scripts/cargo-admitted --routed-test-cohorts run --locked -p xtask --bin routed-test-cohorts -- "${packages[@]}" --evidence-dir "$PWD/qualification-evidence/cohort"
+          else
+            scripts/cargo-admitted build -p perllsp --locked
+            env PERL_LSP_BIN="$QUALIFICATION_TARGET/debug/perllsp" scripts/cargo-admitted test --locked --tests "${packages[@]}" --message-format=json-render-diagnostics
+          fi
+          SH
+          set +e
+          python3 scripts/measure_cargo_storage.py --root "$target" --root "$build" --root "$cargo_home" --root "$temp" \
+            --interval 1 --min-free-bytes 42949672960 --evidence "$PWD/qualification-evidence/storage.jsonl" \
+            -- timeout --signal=INT 1500 bash "$RUNNER_TEMP/production-route.sh" \
+            > qualification-evidence/route.stdout 2> qualification-evidence/route.stderr
+          status=$?
+          set -e
+          printf '%s\n' "$status" > qualification-evidence/status.txt
+          tail -n 1 qualification-evidence/storage.jsonl
+          tail -n 30 qualification-evidence/route.stderr
+          exit "$status"
+      - name: Preserve exact candidate measurements and diagnostics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
+        with:
+          name: routed-storage-${{ matrix.mode }}-${{ github.event.pull_request.head.sha }}
+          path: qualification-evidence/
+          if-no-files-found: error
+          retention-days: 14

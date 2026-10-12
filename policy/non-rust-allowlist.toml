@@ -5923,3 +5923,29 @@ reason = "Bounded two-package resolver-2 fixture manifests describe the specific
 covered_by = ["python3 -m unittest discover -s scripts/tests -p test_routed_test_cohorts.py -v"]
 created = "2026-10-12"
 review_after = "2027-01-12"
+
+[[allow]]
+id = "non-rust-cargo-storage-measurement"
+path = "scripts/measure_cargo_storage.py"
+kind = "ci_tooling"
+language = "python"
+surface = "tooling"
+classification = "tooling"
+owner = "tooling/agents"
+reason = "Observe admitted command allocation using storage-doctor GNU du semantics without admission or deletion authority; record honest sampling limits."
+covered_by = ["python3 -m unittest discover -s scripts/tests -p test_measure_cargo_storage.py -v"]
+created = "2026-10-12"
+review_after = "2026-11-12"
+
+[[allow]]
+id = "non-rust-cargo-storage-measurement-tests"
+path = "scripts/tests/test_measure_cargo_storage.py"
+kind = "ci_tooling"
+language = "python"
+surface = "tooling"
+classification = "test"
+owner = "tooling/agents"
+reason = "Discriminate hardlink double counting, partial measurements, interrupted sampler processes and lost product failure status."
+covered_by = ["python3 -m unittest discover -s scripts/tests -p test_measure_cargo_storage.py -v"]
+created = "2026-10-12"
+review_after = "2026-11-12"

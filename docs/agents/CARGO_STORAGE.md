@@ -320,8 +320,8 @@ controls distinguish filesystem/interface doubles and a synthetic finite resolve
 model from real Cargo/native proof. The checked-in two-crate resolver-2 fixture
 contains a development dependency that activates another package's required test
 feature, duplicate test names, an enabled bin, an unbuilt required-feature-disabled
-bin, and integration/benchmark runtime checks for both binary paths; its actual
-Cargo execution is still required. On an admitted Linux host with the repository's
+bin, and integration/benchmark runtime checks for both binary paths; its actual Cargo execution passed in hosted run 38229918719 at candidate
+8604007faaa0ad9dc21d73c8d9b55cef6c1a32a1. On an admitted Linux host with the repository's
 existing reserve, run the exact fixture with:
 
 ```bash
@@ -335,10 +335,42 @@ The first invocation checks paths for two feature-disabled bins, the second chec
 compile-time and runtime paths for one built bin and one disabled bin, and the third
 does the same in Cargo's benchmark environment. These are fixture commands only;
 they do not activate or replace the production route.
-Native Rust compilation/unit tests, exact-candidate case/feature equivalence,
-configured runtime contexts, continuous peak/retained
-byte measurements and timings, and reserve qualification remain pending. No
-continuous peak measurement framework or estimated storage bound is asserted. Later storage qualification should reuse the existing retained-target measurement helper and controls, not add a parallel measurement authority.
+Native producer compilation and all seven unit tests passed in that same hosted
+run. Exact original-suite case/feature equivalence, configured runtime contexts,
+full-route storage/timing measurements, and reserve qualification remain pending.
+
+`scripts/measure_cargo_storage.py` now supplies the previously missing sampled
+allocation measurement path. It reuses `storage-doctor`'s GNU `du` allocated-block
+semantics, with one aggregate traversal across every supplied root so shared
+hardlinks count once. Evidence is exclusive, outside measured roots, flushed and
+synced; failed/partial or interrupted scans are explicit invalid observations.
+Each sample records scan duration and per-filesystem available/total bytes; the
+header records the requested interval. Missing roots contribute zero only at the
+observation time. A sampled peak is a lower bound on transient peak, never a
+verified growth bound: scans are non-atomic, sampling can miss short-lived output,
+and filesystem free space includes independent writers. Allocated blocks are not
+exact overlay/reflink physical accounting. The optional `--min-free-bytes` guard
+signals the admitted owner on observed reserve loss or measurement failure; it
+cannot guarantee continuous reserve preservation between samples. It acquires no
+lease, grants no admission or cleanup authority, and does not replace native
+child settlement. Command failure remains failure; measurement failure is not
+reported as a successful disk qualification.
+
+The campaign-only ordinary/cohort jobs in CI Gate Self-Tests measure the original
+six-package selection (`perl-dap`, `perl-lsp-rs`, `perl-parser-core`,
+`perl-semantic-analyzer`, `perl-workspace`, `xtask`) on separate fresh hosted
+runners. They retain the 1,500-second route watchdog, default features/profile,
+two build jobs and 40 GiB reserve, and preserve measurements and diagnostics as
+artifacts. They do not activate or replace the production gate. Full equivalence
+and measured fit require completed exact-candidate results; job presence is not
+proof.
+
+```bash
+python3 -m unittest discover -s scripts/tests -p 'test_measure_cargo_storage.py' -v
+python3 scripts/measure_cargo_storage.py --root /absolute/private/target \
+  --root /absolute/private/build --interval 1 --min-free-bytes 42949672960 \
+  --evidence /absolute/new/storage.jsonl -- scripts/cargo-admitted test --locked -p PACKAGE
+```
 Core lifecycle evidence from another candidate cannot substitute for these new
 alias and producer qualifications. Required test gates and existing quarantines
 remain unchanged, as do DAP and inner synchronous-reaping owners.
