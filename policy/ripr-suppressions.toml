@@ -4932,6 +4932,46 @@ removal_criteria = "Remove when EffortlessMetrics/ripr#1428 or #1429 connects ha
 
 
 # -----------------------------------------------------------------------------
+# LSP stdio round-trip criterion bench (PR #17179): measurement plumbing.
+#
+# crates/perl-lsp-rs/benches/lsp_stdio_roundtrip_benchmark.rs is a
+# harness=false criterion bench. It only executes under an explicit
+# `cargo bench` run that spawns the real perllsp binary over stdio against the
+# committed mojolicious fixture (baseline recorded in the PR description).
+# Plain `cargo test` cannot reach its internals by construction: a
+# harness=false target is executed as a binary, so #[cfg(test)] units inside
+# it never run, and the receipt pass is deliberately gated off under cargo
+# test. The blocking findings here are the spawn/sample collectors, the
+# receipt writer, and the criterion group closures — measurement plumbing
+# whose honest validation is executing the bench and the committed receipt
+# (.ci/metrics/lsp_roundtrip.json), not static test reachability; focused
+# unit tests would be proof theatre in the same sense the declaration-probe
+# entries below already record.
+#
+# The #17159 benchmark matrix plans further slices in this same file
+# (diagnostics_after_edit_latency, a dedicated startup-to-ready split, server
+# RSS), so the selector is the path plus the two merge-blocking classes, not a
+# frozen gap-id list: new measurement lines must not re-wedge the New Gap
+# Gate. The scope stays deliberately narrower than the ux-receipt-tests entry:
+# exactly one bench file, and only the two classes the gate blocks on, so the
+# weakly_exposed bucket stays visible in telemetry. Any production behavior
+# landing in this file is a narrowing trigger per removal_criteria.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-17179-lsp-stdio-roundtrip-bench-measurement"
+kind = "bench_measurement_surface"
+paths = ["crates/perl-lsp-rs/benches/lsp_stdio_roundtrip_benchmark.rs"]
+classification = ["reachable_unrevealed", "no_static_path"]
+owner = "proof-lane"
+issue = "#17159"
+reason = "PR #17179 (#17159 first slice): all 61 merge-blocking findings on head c4926e25e (ripr run 38090430580, merge preview 192e7cee, base 1f973039d8) sit in the new harness=false criterion bench lsp_stdio_roundtrip_benchmark.rs — 49 no_static_path plus 12 reachable_unrevealed — and none in the PR's production changes (lifecycle.rs is comment-only plus a test-helper migration and carries only non-blocking weakly_gripped annotations). A harness=false bench is executed as a binary, so cargo test cannot reach its internals and the honest proof is running the bench against the real perllsp binary plus the committed receipt. Selector is the path plus the two blocking classes because #17159 slices 2-4 extend this same bench; a frozen gap-id list would re-wedge the gate on every new measurement line."
+created = "2026-10-11"
+review_after = "2026-11-11"
+expires = "2027-01-31"
+removal_criteria = "Remove if this bench ever gains behavior reachable from a shipped target (split that behavior into a tested module and narrow this entry to the residual measurement lines), or at expiry. Re-check at review_after against the newest receipt: if the bench file's blocking buckets reach zero without the entry, retire it."
+
+
+# -----------------------------------------------------------------------------
 # Criterion bench harness, #17159 matrix row 5 (`workspace_index_benchmark`):
 # the bench target is `harness = false` and is only ever compiled as a
 # criterion binary, so no test can statically reach a criterion group body,
