@@ -23,9 +23,19 @@ if boundary == 'production':
     assert result.returncode == 0, result.stderr
 elif boundary == 'verification_fixture':
     GitVerificationTests().run_git(root, 'config', '--local', 'fixture.marker', 'target')
-else:
+elif boundary == 'orphan_fixture':
     result = OrphanClassificationTests()._git(str(root), 'config', '--local', 'fixture.marker', 'target')
     assert result.returncode == 0, result.stderr
+elif boundary == 'orphan_init':
+    OrphanClassificationTests()._init(str(root))
+    result = _git(root, 'rev-parse', 'HEAD')
+    assert result.returncode == 0, result.stderr
+    assert _git(root, 'config', 'user.email').stdout.strip() == 't@x'
+    assert _git(root, 'tag', 'v0.2.0').returncode == 0
+    assert _git(root, 'config', '--local', 'fixture.marker', 'target').returncode == 0
+elif boundary == 'hash_object':
+    OrphanClassificationTests().test_flagged_row_with_non_commit_pin_is_drift()
+    assert _git(root, 'config', '--local', 'fixture.marker', 'target').returncode == 0
 head = _git(root, 'rev-parse', 'HEAD').stdout.strip()
 manifest = {'tag': [{'name': 'v0.2.0', 'current_sha': head, 'lineage': 'root'}]}
 assert verify_git_refs(manifest, root) == ([], []), verify_git_refs(manifest, root)
@@ -61,10 +71,14 @@ class GitEnvironmentTests(unittest.TestCase):
     def test_explicit_roots_preserve_sentinel_under_hook_environment(self):
         # All hostile values exist only in the re-entered child. Neither the
         # test runner nor a parallel test's environment is changed.
-        for boundary in ('production', 'verification_fixture', 'orphan_fixture'):
+        for boundary in ('production', 'verification_fixture', 'orphan_fixture',
+                         'orphan_init', 'hash_object'):
             with self.subTest(boundary=boundary), tempfile.TemporaryDirectory() as temp:
                 target, sentinel = Path(temp) / 'target', Path(temp) / 'sentinel'
-                self.init(target, 'v0.2.0')
+                if boundary == 'orphan_init':
+                    target.mkdir()
+                else:
+                    self.init(target, 'v0.2.0')
                 self.init(sentinel, 'v0.1.0')
                 before = snapshot(sentinel)
                 env = isolated_git_env()
