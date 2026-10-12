@@ -63,14 +63,15 @@ numeric-use-then-increment (`"10"`), truth from definedness, shared `@_` cells f
 copies, and scalar return of a list expression from its length. The same variable
 is not modified twice in a single unspecified-order expression.
 
-Offline one-defect checks against the stock-Perl driver killed 23 syntax-valid
+Offline one-defect checks against the stock-Perl driver killed 24 syntax-valid
 mutations: wrong arithmetic operand, truth-as-definedness, defined-or-as-or, lost
 increment alias, copied argument cells, forced scalar context, swapped ternary
 arms, AND-as-OR, repeated place evaluation, wrong loop update, `next`-as-`last`,
 `redo`-as-`next`, rollback of the pre-failure store, omitted `local`, doubled
 pre-failure effect, unexpected warning, unexpected output, lost shared-alias
 write under failure, copied shared-alias args, replayed post-`eval` effect,
-missing callee `local`, and an unset error channel on success. A syntax error or
+missing callee `local`, an unset error channel on success, and pre-`eval` error
+capture against a seeded dirty channel. A syntax error or
 process timeout was not counted as a semantic mutation kill. These checks do not
 prove the future Rust/native implementation; #17522 owns that qualification.
 

@@ -114,6 +114,8 @@ is($shared, 18, 'caller observes both pre-failure writes exactly once');
     is($RuntimeCohort::Dynamic, 'outer', 'outer localization restored after nested unwind');
 }
 my $cleaned = 7;
+# Seed a dirty error channel so test 53 proves clearing, not a lucky ''.
+$@ = "seeded-failure\n";
 is_deeply([observed { RuntimeCohort::clean_eval_result($cleaned) }], ['done-mark', 9, ''], 'successful eval returns value and clears error channel');
 is($cleaned, 9, 'successful eval effect reaches caller');
 is_deeply(\@warnings, [], 'subjects produce no unexpected warnings');
