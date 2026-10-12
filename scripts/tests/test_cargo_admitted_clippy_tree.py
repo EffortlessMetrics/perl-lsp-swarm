@@ -102,7 +102,9 @@ try:
  with patch.object(Path,'read_text',missing_children),patch.object(Path,'exists',absent_children):
   assert tree.child_ids()==[]
   first=tree.finish(stop=True,timeout=.05,grace=.01)
+  first['reaped_descendants']=list(first['reaped_descendants'])
  assert not first['tree_settled'] and first['proof'] is None
+ assert not first['reaped_descendants']
  assert not first['pending_bound_pids'] and not first['owned_child_table_available']
  os.kill(pid,0)
  owned=ctypes.c_int();tree.libc.prctl(37,ctypes.byref(owned),0,0,0)
