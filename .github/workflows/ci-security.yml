@@ -294,6 +294,10 @@ jobs:
             echo "- Scanner execution: $SCAN_OUTCOME"
             if [ "$SCAN_OUTCOME" != success ]; then
               echo "- No completed vulnerability observation; inspect build/scanner logs for infrastructure errors."
+            elif [ ! -s trivy-docker-results.sarif ]; then
+              echo "- Scanner reported success but produced no SARIF; observation is incomplete."
+              echo "::error::Successful image scanner produced no nonempty SARIF" >&2
+              exit 1
             else
               echo "- Scan executed with reporting-only exit semantics; success does not mean zero findings."
             fi
