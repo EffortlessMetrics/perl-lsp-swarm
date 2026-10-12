@@ -143,3 +143,6 @@ function Write-Success { param([string]$Message) Write-Host $Message }
 }
 if ($Failures) { throw "$Failures installed verification cases failed" }
 Write-Host 'All installed verification cases passed'
+# GitHub's pwsh wrapper exits with LASTEXITCODE after dot-sourcing this file.
+# The last negative control deliberately leaves it at 1; signal suite success.
+exit 0
