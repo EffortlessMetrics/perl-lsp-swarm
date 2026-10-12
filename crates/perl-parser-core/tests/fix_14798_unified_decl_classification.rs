@@ -130,11 +130,11 @@ fn real_declarators_still_declare() -> TestResult {
     Ok(())
 }
 
-// ── T5-target (fails now): qualified legacy effects in flat PIR ──────────
+// ── T5: qualified legacy effects in flat PIR ─────────────────────────────
 
 #[test]
 fn qualified_legacy_call_keeps_stash_effects_in_flat_pir() -> TestResult {
-    // Step 5 target: flat PIR has no scope cursor, but a qualified name is an
+    // Flat PIR has no scope cursor, but a qualified name is an
     // unambiguous package slot, so these facts need no cursor.
     let file = parse("field $Foo::bar = 1;\n");
     let flat = lower_hir(&file);
