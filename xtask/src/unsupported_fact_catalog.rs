@@ -319,6 +319,17 @@ mod tests {
     }
 
     #[test]
+    fn loads_seed_catalog_from_repo_file() -> TestResult {
+        // The file entry point is slice 2's seam; pin it before any CLI
+        // wires it so a path/read regression cannot hide.
+        let root = crate::utils::project_root()?;
+        let catalog = load_catalog_file(&root)?;
+        assert_eq!(catalog.entries.len(), SEED_IDS.len());
+        assert_eq!(catalog.schema_version, SCHEMA_VERSION);
+        Ok(())
+    }
+
+    #[test]
     fn loads_seed_catalog_with_exact_shape() -> TestResult {
         let text = seed_text()?;
         let catalog = parse_catalog(&text)?;
@@ -332,6 +343,46 @@ mod tests {
         let unknown = find_entry(&catalog, "unknown_boundary_evidence")?;
         assert_eq!(unknown.oracle_result_class, OracleResultClass::Unknown);
         assert_eq!(unknown.oracle_promotion_effect, OraclePromotionEffect::BlocksPromotion);
+        // SPEC-0038 V1 assigns each seed ID its recognizing layer, and the
+        // seed fixes each class's compile-acceptance effect; a swap is
+        // silent wrong data, so the seed pins every triple.
+        let expected_layers: [(&str, OwningLayer, bool); 14] = [
+            ("ambient_module_resolution", OwningLayer::Hir, false),
+            ("ambiguous_bareword", OwningLayer::Parser, false),
+            ("autoload", OwningLayer::Hir, false),
+            ("compile_time_execution_outside_profile", OwningLayer::Semantic, false),
+            ("dynamic_stash_mutation", OwningLayer::Hir, false),
+            ("generated_no_source", OwningLayer::Semantic, false),
+            ("host_capability_outside_profile", OwningLayer::Semantic, false),
+            ("regex_construct_outside_profile", OwningLayer::Semantic, false),
+            ("runtime_builtin_outside_profile", OwningLayer::Semantic, false),
+            ("source_filter", OwningLayer::Parser, true),
+            ("symbolic_ref", OwningLayer::Hir, false),
+            ("unknown_boundary_evidence", OwningLayer::Semantic, true),
+            ("unsupported_parser_construct", OwningLayer::Parser, true),
+            ("xs_native_dependency", OwningLayer::Semantic, false),
+        ];
+        for (class_id, layer, compile_blocks) in expected_layers {
+            let entry = find_entry(&catalog, class_id)?;
+            assert_eq!(
+                entry.owning_layer, layer,
+                "seed layer for '{class_id}' must match SPEC-0038 V1"
+            );
+            assert_eq!(
+                entry.compile_acceptance_blocks, compile_blocks,
+                "seed compile flag for '{class_id}' must not drift silently"
+            );
+        }
+        // Every neighbor reference must resolve to a different seed class;
+        // a typo would otherwise leave a broken distinction.
+        for entry in &catalog.entries {
+            assert!(
+                entry.distinctions.nearest_neighbor != entry.class_id,
+                "seed class '{}' must not neighbor itself",
+                entry.class_id
+            );
+            find_entry(&catalog, &entry.distinctions.nearest_neighbor)?;
+        }
         let source_filter = find_entry(&catalog, "source_filter")?;
         assert!(source_filter.compile_acceptance_blocks);
         for entry in &catalog.entries {
@@ -522,6 +573,23 @@ mod tests {
         assert!(
             message.contains("unknown field"),
             "entry-level unknown field must be denied: {message}"
+        );
+        let in_distinctions = text.replacen(
+            "[entries.distinctions]\n",
+            "[entries.distinctions]\nextra_distinction = true\n",
+            1,
+        );
+        let message = parse_failure_text(parse_catalog(&in_distinctions))?;
+        assert!(
+            message.contains("unknown field"),
+            "distinctions-level unknown field must be denied: {message}"
+        );
+        let in_history =
+            text.replacen("[entries.history]\n", "[entries.history]\nextra_history = true\n", 1);
+        let message = parse_failure_text(parse_catalog(&in_history))?;
+        assert!(
+            message.contains("unknown field"),
+            "history-level unknown field must be denied: {message}"
         );
         Ok(())
     }
