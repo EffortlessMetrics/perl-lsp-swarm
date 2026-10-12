@@ -297,7 +297,6 @@ cargo xtask precommit
             "   The pre-push hook refuses token-shaped pushed ranges, then runs 'nix develop -c \
              just pr-fast' before each push"
         );
-        println!("   The pre-push hook runs 'nix develop -c just pr-fast' before each push");
         println!(
             "   The pre-push hook also refuses non-fast-forward updates and protected-ref rewrites \
              (escape hatch: PERL_LSP_ALLOW_HISTORY_REWRITE=\"<remote-ref>\")"
