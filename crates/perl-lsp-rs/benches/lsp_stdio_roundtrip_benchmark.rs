@@ -13,6 +13,13 @@
 //! 3. Warm request lanes — `textDocument/hover`, `textDocument/completion`,
 //!    `textDocument/definition`, `workspace/symbol`, each sampled after a
 //!    warmup burst on a post-initialize/index session.
+//! 4. Completion sub-lanes — `textDocument/completion` at three coordinated
+//!    positions on the entry file (member after `$self->`, package member
+//!    after `Mojolicious::`, lexical after `$`), each probe-validated then
+//!    sampled at a higher request count than the generic lanes (#17159).
+//! 5. `diagnostics_after_edit` — `textDocument/didChange` on a dedicated
+//!    generated document, waiting for the version-matched
+//!    `textDocument/publishDiagnostics` for that exact edit.
 //!
 //! Each lane reports p50/p95/p99 over raw wallclock samples and writes a
 //! receipt to `.ci/metrics/lsp_roundtrip.json` (created relative to the
@@ -67,6 +74,7 @@ use perl_lsp_ux_tests::{
     resolve_binary,
 };
 use serde_json::{Value, json};
+use std::cell::Cell;
 use std::hint::black_box;
 use std::path::PathBuf;
 use std::process::Command;
@@ -92,6 +100,18 @@ const INIT_SAMPLES: usize = 10;
 /// file (a URI is opened at most once, per LSP lifecycle).
 const DID_OPEN_SAMPLES: usize = 12;
 
+/// Timed requests per completion sub-lane. The filed plan (#17159) asks for
+/// N=200 per position kind before any percentile claim.
+const COMPLETION_SUBLANE_SAMPLES: usize = 200;
+
+/// Unrecorded warmup requests per completion sub-lane. The first warmup
+/// response doubles as the coordinate probe (see `measure_completion_sublane`).
+const COMPLETION_SUBLANE_WARMUP: usize = 10;
+
+/// `didChange → version-matched publishDiagnostics` samples, one edit per
+/// sample on the dedicated generated document.
+const DIDCHANGE_EDIT_SAMPLES: usize = 50;
+
 /// Bound for one warm request round trip. Arrival is the assertion; this
 /// bound only fails fast on a wedged binary (see the module timing policy).
 const REQUEST_TIMEOUT: Duration = Duration::from_mins(1);
@@ -115,6 +135,41 @@ const COMPLETION_COL: u32 = 10;
 const DEFINITION_LINE: u32 = 5;
 const DEFINITION_COL: u32 = 4;
 const WORKSPACE_SYMBOL_QUERY: &str = "new";
+
+// ---- Completion sub-lane coordinates ----------------------------------------------
+
+// All coordinates are 0-indexed positions on the already-opened fixture entry
+// file `lib/Mojolicious.pm` (the same file the lanes above mirror
+// `tests/real_project_latency.rs` on; these sub-lane positions are new in
+// #17159 and deliberately reuse that opened document). Each caret sits
+// immediately after an advertised trigger character
+// (`completion_trigger_characters` in perl-lsp-rs-core/src/protocol/
+// capabilities.rs advertises `$ @ % - > : . / \ " '`):
+//
+// - method position: file line 35 `    $self->startup;`, caret after the `>`
+//   of `$self->` (member completion);
+// - package prefix: file line 14 `use Mojolicious::Routes;`, caret after the
+//   second `:` of `Mojolicious::` (package-member completion);
+// - lexical: file line 40 `    my $self = shift;`, caret after the `$`
+//   (lexical-variable completion).
+//
+// Fallback when a warmup probe finds zero items: also open
+// `lib/Mojolicious/Controller.pm` and use the method position after the `>`
+// of `$self->` on file line 19
+// `    return $self->app->routes->continue($self);` (`has app` is declared in
+// the same package at file line 11).
+const COMPLETION_METHOD_LINE: u32 = 34;
+const COMPLETION_METHOD_COL: u32 = 11;
+const COMPLETION_PACKAGE_LINE: u32 = 13;
+const COMPLETION_PACKAGE_COL: u32 = 17;
+const COMPLETION_LEXICAL_LINE: u32 = 39;
+const COMPLETION_LEXICAL_COL: u32 = 8;
+const COMPLETION_FALLBACK_FILE: &str = "lib/Mojolicious/Controller.pm";
+const COMPLETION_FALLBACK_LINE: u32 = 18;
+const COMPLETION_FALLBACK_COL: u32 = 18;
+
+/// Workspace-relative path of the dedicated `diagnostics_after_edit` document.
+const DIDCHANGE_TARGET_PATH: &str = "bench_didchange_target.pl";
 
 /// Criterion round-trip requests that ended in a JSON-RPC error or timeout.
 /// Criterion closures cannot fail, so failures are counted and reported after
@@ -155,6 +210,7 @@ fn create_session(binary: &str) -> Result<RoundTripSession> {
     for index in 0..DID_OPEN_SAMPLES {
         config = config.with_file(did_open_relative_path(index), did_open_source(index));
     }
+    config = config.with_file(DIDCHANGE_TARGET_PATH, didchange_target_source());
 
     let harness = UxHarness::new(config.clone())
         .context("failed to spawn the perl-lsp server for the warm round-trip session")?;
@@ -247,6 +303,265 @@ fn timed_requests(lane: &'static str, mut request: impl FnMut() -> Result<()>) -
     Ok(samples)
 }
 
+// ---- Completion sub-lanes ----------------------------------------------------------
+
+/// One completion sub-lane description: a coordinated position on the entry
+/// file plus its advertised trigger character.
+struct CompletionSublane {
+    lane: &'static str,
+    line: u32,
+    character: u32,
+    trigger: &'static str,
+}
+
+/// The `textDocument/completion` request shape shared by the sub-lanes (the
+/// generic `completion` lane keeps its own inline copy untouched).
+fn completion_request_params(uri: &str, line: u32, character: u32, trigger: &str) -> Value {
+    json!({
+        "textDocument": { "uri": uri },
+        "position": { "line": line, "character": character },
+        "context": { "triggerKind": 2, "triggerCharacter": trigger }
+    })
+}
+
+/// Map a completion response to an error when the server answered with a
+/// JSON-RPC error — the guard copied from the generic completion lane:
+/// `client.request` only fails on transport errors, so an `error` field must
+/// be rejected explicitly or it would silently flatter the numbers.
+fn completion_error_guard(response: &Value) -> Result<()> {
+    if response.get("error").is_some() {
+        bail!("completion returned a JSON-RPC error: {response}");
+    }
+    Ok(())
+}
+
+/// Extract the completion item list with `completion_with_timeout` parse
+/// semantics (`result.items` array, bare `result` array, else empty).
+fn completion_items(response: &Value) -> Vec<Value> {
+    response["result"]["items"]
+        .as_array()
+        .or_else(|| response["result"].as_array())
+        .cloned()
+        .unwrap_or_default()
+}
+
+/// Run one completion sub-lane: a probe-validated warmup burst, then
+/// `COMPLETION_SUBLANE_SAMPLES` timed round trips.
+///
+/// The first warmup response must parse to a non-empty item list: an empty
+/// list means the coordinate is wrong, so the lane falls back to the proven
+/// method position on `lib/Mojolicious/Controller.pm` instead of recording
+/// meaningless samples, and fails outright if the fallback is empty too
+/// (fix the coordinate, never drop the probe).
+fn measure_completion_sublane(
+    session: &RoundTripSession,
+    sublane: &CompletionSublane,
+) -> Result<Vec<u64>> {
+    let entry_uri = session.harness.workspace.uri(ENTRY_FILE);
+    let mut params =
+        completion_request_params(&entry_uri, sublane.line, sublane.character, sublane.trigger);
+
+    let probe = session
+        .harness
+        .client
+        .request("textDocument/completion", params.clone(), REQUEST_TIMEOUT)
+        .with_context(|| format!("{} lane: probe request failed", sublane.lane))?;
+    if completion_items(&probe).is_empty() {
+        eprintln!(
+            "WARNING: {} lane probe at (line {}, char {}) returned zero items; \
+             falling back to the {COMPLETION_FALLBACK_FILE} method position",
+            sublane.lane, sublane.line, sublane.character,
+        );
+        session
+            .harness
+            .open_fixture(COMPLETION_FALLBACK_FILE)
+            .with_context(|| format!("{} lane: failed to open the fallback file", sublane.lane))?;
+        let fallback_uri = session.harness.workspace.uri(COMPLETION_FALLBACK_FILE);
+        params = completion_request_params(
+            &fallback_uri,
+            COMPLETION_FALLBACK_LINE,
+            COMPLETION_FALLBACK_COL,
+            ">",
+        );
+        let fallback_probe = session
+            .harness
+            .client
+            .request("textDocument/completion", params.clone(), REQUEST_TIMEOUT)
+            .with_context(|| format!("{} lane: fallback probe request failed", sublane.lane))?;
+        let items = completion_items(&fallback_probe);
+        anyhow::ensure!(
+            !items.is_empty(),
+            "{} lane: probe at (line {}, char {}) and fallback probe at \
+             (line {COMPLETION_FALLBACK_LINE}, char {COMPLETION_FALLBACK_COL}) both returned \
+             zero completion items — the coordinates are wrong; \
+             fix the coordinate, never drop the probe",
+            sublane.lane,
+            sublane.line,
+            sublane.character,
+        );
+    }
+
+    for _ in 1..COMPLETION_SUBLANE_WARMUP {
+        let response = session
+            .harness
+            .client
+            .request("textDocument/completion", params.clone(), REQUEST_TIMEOUT)
+            .with_context(|| format!("{} lane: warmup request failed", sublane.lane))?;
+        completion_error_guard(&response)
+            .with_context(|| format!("{} lane: warmup request", sublane.lane))?;
+    }
+
+    let mut samples = Vec::with_capacity(COMPLETION_SUBLANE_SAMPLES);
+    for _ in 0..COMPLETION_SUBLANE_SAMPLES {
+        let start = Instant::now();
+        let response = session
+            .harness
+            .client
+            .request("textDocument/completion", params.clone(), REQUEST_TIMEOUT)
+            .with_context(|| format!("{} lane: sampled request failed", sublane.lane))?;
+        completion_error_guard(&response)
+            .with_context(|| format!("{} lane: sampled request", sublane.lane))?;
+        samples.push(millis_since(start));
+    }
+    Ok(samples)
+}
+
+// ---- Diagnostics after edit ----------------------------------------------------------
+
+/// Shared edit cursor for the dedicated `bench_didchange_target.pl` document.
+///
+/// The LSP document version must increase monotonically across
+/// `textDocument/didChange` notifications for one open document, and the
+/// receipt-pass lane and the criterion pass drive the same warm session — so
+/// both passes share one cursor and the counter persists across criterion
+/// iterations.
+struct DiagTargetEditor {
+    /// Current LSP document version; 1 is the `didOpen` version.
+    version: Cell<i32>,
+    /// Whether the document has been opened on this session (the
+    /// diagnostics lane opens it first; criterion test mode opens it lazily).
+    opened: Cell<bool>,
+}
+
+impl DiagTargetEditor {
+    fn new() -> Self {
+        Self { version: Cell::new(1), opened: Cell::new(false) }
+    }
+
+    /// Produce the next edit: the new document version and the full-document
+    /// replacement carrying the matching sentinel revision.
+    fn next_edit(&self) -> (i32, String) {
+        let version = self.version.get() + 1;
+        self.version.set(version);
+        (version, didchange_target_source_with_rev(i64::from(version)))
+    }
+}
+
+/// Open the didChange target on the warm session, untimed.
+///
+/// The `didOpen` establishes document version 1; the first diagnostics
+/// publish for the fresh URI is drained here so no timed sample ever
+/// includes it. Idempotent: the diagnostics lane calls this before its own
+/// samples, and the criterion pass calls it again so test mode (which skips
+/// the receipt pass) still measures an opened, warm document.
+fn ensure_didchange_target_open(
+    session: &RoundTripSession,
+    editor: &DiagTargetEditor,
+) -> Result<()> {
+    if editor.opened.get() {
+        return Ok(());
+    }
+    session
+        .harness
+        .open_file(DIDCHANGE_TARGET_PATH, &didchange_target_source())
+        .context("failed to open the didChange target document")?;
+    let uri = session.harness.workspace.uri(DIDCHANGE_TARGET_PATH);
+    let arrival = session.harness.client.wait_for_events(DIAGNOSTICS_ARRIVAL_BUDGET, |events| {
+        events.iter().find_map(|event| match event {
+            LspEvent::Diagnostics { uri: published, .. } if published == &uri => Some(()),
+            _ => None,
+        })
+    });
+    arrival.map_err(|end| {
+        anyhow!(
+            "didChange target: initial publishDiagnostics did not arrive for \
+             {DIDCHANGE_TARGET_PATH}: {}",
+            end.describe()
+        )
+    })?;
+    editor.opened.set(true);
+    Ok(())
+}
+
+/// Run the `diagnostics_after_edit` lane: `DIDCHANGE_EDIT_SAMPLES` samples,
+/// each one edit followed by the version-matched diagnostics publish.
+///
+/// One sample = client-side wallclock from immediately before the framed
+/// `textDocument/didChange` is written until the `publishDiagnostics` for
+/// that exact document version arrives. A late publication for a previous
+/// version does not satisfy the wait, and a timeout is a lane failure, never
+/// a sample. Also reports the duplicate-push count: publications observed
+/// beyond the first for an already-published version.
+fn measure_didchange_to_diagnostics(
+    session: &RoundTripSession,
+    editor: &DiagTargetEditor,
+) -> Result<(Vec<u64>, usize)> {
+    ensure_didchange_target_open(session, editor)?;
+    let uri = session.harness.workspace.uri(DIDCHANGE_TARGET_PATH);
+    let mut samples = Vec::with_capacity(DIDCHANGE_EDIT_SAMPLES);
+    let mut duplicate_pushes = 0usize;
+    for _ in 0..DIDCHANGE_EDIT_SAMPLES {
+        let (version, source) = editor.next_edit();
+
+        let start = Instant::now();
+        session
+            .harness
+            .client
+            .did_change_full(&uri, version, &source)
+            .with_context(|| format!("didChange lane: failed to send version {version}"))?;
+        let arrival =
+            session.harness.client.wait_for_events(DIAGNOSTICS_ARRIVAL_BUDGET, |events| {
+                events.iter().find_map(|event| match event {
+                    LspEvent::Diagnostics {
+                        uri: published,
+                        version: Some(published_version),
+                        ..
+                    } if published == &uri && *published_version == i64::from(version) => Some(()),
+                    _ => None,
+                })
+            });
+        match arrival {
+            Ok(()) => samples.push(millis_since(start)),
+            Err(end) => bail!(
+                "didChange lane: no version-{version} publishDiagnostics arrived for \
+                 {DIDCHANGE_TARGET_PATH}: {}",
+                end.describe()
+            ),
+        }
+        duplicate_pushes += duplicate_pushes_for_version(&session.harness.client, &uri, version);
+    }
+    Ok((samples, duplicate_pushes))
+}
+
+/// Count buffered publications for `uri` beyond the first one carrying
+/// `version` — each extra push for an already-published version is a
+/// duplicate push. Events are never consumed by a wait, so the whole buffer
+/// is observable here.
+fn duplicate_pushes_for_version(client: &UxClient, uri: &str, version: i32) -> usize {
+    let pushes = client
+        .peek_events()
+        .iter()
+        .filter(|event| {
+            matches!(
+                event,
+                LspEvent::Diagnostics { uri: published, version: Some(published_version), .. }
+                    if published == uri && *published_version == i64::from(version)
+            )
+        })
+        .count();
+    pushes.saturating_sub(1)
+}
+
 // ---- Receipt ---------------------------------------------------------------------
 
 #[derive(Debug, Clone, Copy)]
@@ -315,6 +630,36 @@ fn did_open_source(index: usize) -> String {
     )
 }
 
+/// The initial `bench_didchange_target.pl` document (sentinel revision 0).
+fn didchange_target_source() -> String {
+    didchange_target_source_with_rev(0)
+}
+
+/// The didChange target regenerated for one sentinel revision.
+///
+/// Deliberately generated rather than a committed fixture: every edit is a
+/// full-document replacement that changes only the `our $BENCH_REV` sentinel,
+/// so successive edits stay parseable, differ byte-wise, and keep the
+/// document identity stable across the whole warm session.
+fn didchange_target_source_with_rev(rev: i64) -> String {
+    let mut source = String::new();
+    source.push_str("package Bench::DiagTarget;\n");
+    source.push_str("use strict;\n");
+    source.push_str("use warnings;\n");
+    source.push('\n');
+    source.push_str(&format!("our $BENCH_REV = {rev};\n"));
+    source.push('\n');
+    for index in 0..12 {
+        source.push_str(&format!("sub record_{index} {{\n"));
+        source.push_str("    my ($self, $value) = @_;\n");
+        source.push_str(&format!("    return ($value // 0) + {index} + $BENCH_REV;\n"));
+        source.push_str("}\n");
+        source.push('\n');
+    }
+    source.push_str("1;\n");
+    source
+}
+
 fn binary_profile_hint(binary_path: &str) -> &'static str {
     let normalized = binary_path.replace('\\', "/");
     for profile in ["release", "agent", "debug"] {
@@ -365,6 +710,9 @@ fn write_receipt(session: &RoundTripSession, lanes: &[(&'static str, Value)]) ->
             "request_warmup_per_lane": REQUEST_WARMUP,
             "initialize_samples": INIT_SAMPLES,
             "did_open_samples": DID_OPEN_SAMPLES,
+            "completion_sublane_samples": COMPLETION_SUBLANE_SAMPLES,
+            "completion_sublane_warmup": COMPLETION_SUBLANE_WARMUP,
+            "didchange_edit_samples": DIDCHANGE_EDIT_SAMPLES,
         },
         "lanes": Value::Object(lanes_map),
         "timing_policy": "client-side wallclock send→response over stdio on a warm session; \
@@ -409,7 +757,7 @@ fn print_lane_summary(lane: &'static str, summary: Value) {
 
 // ---- Criterion regression groups ---------------------------------------------------
 
-fn run_criterion_pass(session: &RoundTripSession) {
+fn run_criterion_pass(session: &RoundTripSession, editor: &DiagTargetEditor) {
     let mut criterion = Criterion::default().configure_from_args();
     let mut group = criterion.benchmark_group("lsp_stdio_roundtrip");
     group.measurement_time(Duration::from_secs(10));
@@ -478,6 +826,92 @@ fn run_criterion_pass(session: &RoundTripSession) {
         })
     });
 
+    // Completion sub-lanes: same triggerKind-2 request shape as the generic
+    // `completion` group above, at the coordinated positions from the
+    // receipt pass. The guard additionally rejects zero-item responses: a
+    // wrong coordinate would otherwise record fast empty round trips and
+    // flatter the numbers.
+    let method_params = completion_request_params(
+        &session.harness.workspace.uri(ENTRY_FILE),
+        COMPLETION_METHOD_LINE,
+        COMPLETION_METHOD_COL,
+        ">",
+    );
+    group.bench_function("completion_method_position", |b| {
+        b.iter(criterion_completion_body(session, &method_params, "completion_method_position"))
+    });
+
+    let package_params = completion_request_params(
+        &session.harness.workspace.uri(ENTRY_FILE),
+        COMPLETION_PACKAGE_LINE,
+        COMPLETION_PACKAGE_COL,
+        ":",
+    );
+    group.bench_function("completion_package_prefix", |b| {
+        b.iter(criterion_completion_body(session, &package_params, "completion_package_prefix"))
+    });
+
+    let lexical_params = completion_request_params(
+        &session.harness.workspace.uri(ENTRY_FILE),
+        COMPLETION_LEXICAL_LINE,
+        COMPLETION_LEXICAL_COL,
+        "$",
+    );
+    group.bench_function("completion_lexical", |b| {
+        b.iter(criterion_completion_body(session, &lexical_params, "completion_lexical"))
+    });
+
+    // The receipt pass opens the didChange target untimed before its own
+    // lane; criterion test mode (no receipt pass) opens it here so the
+    // iterations still measure an opened, warm document. The version counter
+    // persists across criterion iterations via the shared editor cursor.
+    match ensure_didchange_target_open(session, editor) {
+        Ok(()) => {
+            let uri = session.harness.workspace.uri(DIDCHANGE_TARGET_PATH);
+            group.bench_function("didchange_to_diagnostics", |b| {
+                b.iter(|| {
+                    let (version, source) = editor.next_edit();
+                    let start = Instant::now();
+                    let outcome =
+                        session.harness.client.did_change_full(&uri, version, &source).and_then(
+                            |()| {
+                                session
+                                    .harness
+                                    .client
+                                    .wait_for_events(DIAGNOSTICS_ARRIVAL_BUDGET, |events| {
+                                        events.iter().find_map(|event| match event {
+                                            LspEvent::Diagnostics {
+                                                uri: published,
+                                                version: Some(published_version),
+                                                ..
+                                            } if published == &uri
+                                                && *published_version == i64::from(version) =>
+                                            {
+                                                Some(())
+                                            }
+                                            _ => None,
+                                        })
+                                    })
+                                    .map_err(|end| {
+                                        anyhow!(
+                                            "no version-{version} publishDiagnostics arrived: {}",
+                                            end.describe()
+                                        )
+                                    })
+                            },
+                        );
+                    let elapsed = millis_since(start);
+                    record_criterion_outcome("didchange_to_diagnostics", &outcome);
+                    black_box(elapsed);
+                })
+            });
+        }
+        Err(error) => {
+            eprintln!("SKIP didchange_to_diagnostics criterion group: {error:#}");
+            CRITERION_ROUND_TRIP_FAILURES.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
     group.finish();
     criterion.final_summary();
 
@@ -494,6 +928,35 @@ fn record_criterion_outcome<T>(lane: &'static str, outcome: &Result<T>) {
     if outcome.is_err() {
         CRITERION_ROUND_TRIP_FAILURES.fetch_add(1, Ordering::Relaxed);
         eprintln!("criterion round trip failed in the {lane} lane");
+    }
+}
+
+/// The per-iteration body shared by the criterion completion sub-lanes:
+/// raw request timed from write to decoded response, then the JSON-RPC-error
+/// guard plus the zero-items guard (both counted as round-trip failures
+/// rather than silently flattering the numbers).
+fn criterion_completion_body<'a>(
+    session: &'a RoundTripSession,
+    params: &'a Value,
+    lane: &'static str,
+) -> impl FnMut() + 'a {
+    move || {
+        let start = Instant::now();
+        let outcome = session
+            .harness
+            .client
+            .request("textDocument/completion", params.clone(), REQUEST_TIMEOUT)
+            .and_then(|response| {
+                completion_error_guard(&response)?;
+                anyhow::ensure!(
+                    !completion_items(&response).is_empty(),
+                    "{lane} returned zero completion items"
+                );
+                Ok(())
+            });
+        let elapsed = millis_since(start);
+        record_criterion_outcome(lane, &outcome);
+        black_box(elapsed);
     }
 }
 
@@ -540,12 +1003,17 @@ fn run() -> Result<()> {
         SessionStart::Running(session) => session,
     };
 
+    // Shared didChange edit cursor: created before the mode split so test
+    // mode (criterion groups only) and bench mode drive the same monotonic
+    // document versioning.
+    let editor = DiagTargetEditor::new();
+
     if !bench_mode {
         eprintln!(
             "SKIP receipt pass lsp_stdio_roundtrip_benchmark: no --bench (test mode); \
              criterion groups still run once in test mode"
         );
-        run_criterion_pass(&session);
+        run_criterion_pass(&session, &editor);
         return Ok(());
     }
 
@@ -608,6 +1076,52 @@ fn run() -> Result<()> {
             .context("workspace/symbol request errored")
     });
 
+    // Completion sub-lanes: higher sample counts at coordinated positions
+    // (see the coordinate provenance block at the top of this file). The
+    // generic `completion` lane above stays untouched for comparability with
+    // the committed receipt.
+    let method_position = measure_completion_sublane(
+        &session,
+        &CompletionSublane {
+            lane: "completion_method_position",
+            line: COMPLETION_METHOD_LINE,
+            character: COMPLETION_METHOD_COL,
+            trigger: ">",
+        },
+    );
+    let package_prefix = measure_completion_sublane(
+        &session,
+        &CompletionSublane {
+            lane: "completion_package_prefix",
+            line: COMPLETION_PACKAGE_LINE,
+            character: COMPLETION_PACKAGE_COL,
+            trigger: ":",
+        },
+    );
+    let lexical = measure_completion_sublane(
+        &session,
+        &CompletionSublane {
+            lane: "completion_lexical",
+            line: COMPLETION_LEXICAL_LINE,
+            character: COMPLETION_LEXICAL_COL,
+            trigger: "$",
+        },
+    );
+
+    // The didChange editor cursor (created above, before the mode split) is
+    // shared with the criterion pass so the document version increases
+    // monotonically for the whole session.
+    let didchange = measure_didchange_to_diagnostics(&session, &editor);
+
+    let didchange_lane = match didchange {
+        Ok((samples, duplicate_pushes)) => {
+            let mut value = summarise(samples).to_json();
+            value["duplicate_pushes"] = json!(duplicate_pushes);
+            Ok(("diagnostics_after_edit", value))
+        }
+        Err(error) => Err(error.context("diagnostics_after_edit lane")),
+    };
+
     let lanes = vec![
         ("initialize", summary_to_value(initialize, "initialize lane")?),
         ("did_open_to_diagnostics", summary_to_value(did_open, "did_open_to_diagnostics lane")?),
@@ -615,6 +1129,16 @@ fn run() -> Result<()> {
         ("completion", summary_to_value(completion, "completion lane")?),
         ("definition", summary_to_value(definition, "definition lane")?),
         ("workspace_symbol", summary_to_value(workspace_symbol, "workspace_symbol lane")?),
+        (
+            "completion_method_position",
+            summary_to_value(method_position, "completion_method_position lane")?,
+        ),
+        (
+            "completion_package_prefix",
+            summary_to_value(package_prefix, "completion_package_prefix lane")?,
+        ),
+        ("completion_lexical", summary_to_value(lexical, "completion_lexical lane")?),
+        didchange_lane?,
     ];
 
     println!("lsp_stdio_roundtrip baseline (mojolicious_skeleton, warm session):");
@@ -624,7 +1148,7 @@ fn run() -> Result<()> {
     let receipt_path = write_receipt(&session, &lanes)?;
     eprintln!("receipt written to {}", receipt_path.display());
 
-    run_criterion_pass(&session);
+    run_criterion_pass(&session, &editor);
     Ok(())
 }
 
