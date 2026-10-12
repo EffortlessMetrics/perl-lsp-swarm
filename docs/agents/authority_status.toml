@@ -54,6 +54,12 @@ successor = ""
 notes = "Durable GitHub surface and label-authority boundary."
 
 [[documents]]
+path = "docs/agents/CARGO_STORAGE.md"
+status = "current"
+successor = ""
+notes = "Cargo storage admission, capacity policy, and worktree-private build-state contract."
+
+[[documents]]
 path = "docs/agents/SKILL_CONTRACT.md"
 status = "current"
 successor = ""
