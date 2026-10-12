@@ -267,10 +267,10 @@ are excluded, and receipts expose only the environment digest. Runtime context
 follows Cargo's order: package build-script environment, `CARGO` and complete
 package metadata, package cwd, and configuration. Native loader paths follow
 Cargo's ordered root/deps/sysroot construction and original loader environment;
-package build-script outputs must match the observed check context. This covers
-Cargo's `fill_env` layer, not the later `UnitOutput.env` layer. The planner explicitly
-refuses integration/bench targets in any package with bin targets, including
-`test=false` and required-feature-disabled bins, before any test codegen or cleanup.
+package build-script outputs must match the observed check context. Cargo's final
+`UnitOutput.env` layer adds `CARGO_BIN_EXE_<name>` paths for package binaries to
+integration and benchmark processes; the runtime map models this separately from
+the earlier `fill_env` context.
 [Cargo documents `CARGO_BIN_EXE_<name>` for integration tests and benchmarks](https://doc.rust-lang.org/cargo/reference/environment-variables.html)
 and says that a binary with unmet `required-features` is not built. Cargo 1.95's
 final unit environment still assigns each package bin its target executable path;
