@@ -99,10 +99,13 @@ jobs:
         run: ./scripts/tests/test-install-ps1-product-unit-promotion.ps1
 
       - name: Run target-retention controls under PowerShell 7
+        id: target-retention-pwsh7
         shell: pwsh
         run: ./scripts/tests/test-agent-cleanup-target-retention.ps1 -ProofRoot (Join-Path $env:RUNNER_TEMP 'target-retention-pwsh7')
 
       - name: Run target-retention controls under Windows PowerShell 5.1
+        # Collect both runtime results without bypassing a failed earlier setup.
+        if: ${{ !cancelled() && (steps.target-retention-pwsh7.outcome == 'success' || steps.target-retention-pwsh7.outcome == 'failure') }}
         shell: powershell
         run: ./scripts/tests/test-agent-cleanup-target-retention.ps1 -ProofRoot (Join-Path $env:RUNNER_TEMP 'target-retention-windows51')
 
