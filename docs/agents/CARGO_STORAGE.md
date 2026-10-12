@@ -271,22 +271,21 @@ package build-script outputs must match the observed check context. This covers
 Cargo's `fill_env` layer, not the later `UnitOutput.env` layer. The planner explicitly
 refuses integration/bench targets in any package with bin targets, including
 `test=false` and required-feature-disabled bins, before any test codegen or cleanup.
-Cargo documents `CARGO_BIN_EXE_<name>` for integration tests and benchmarks and says
-that a binary with unmet `required-features` is not built. Cargo 1.95's final unit
-environment still assigns each package bin its target executable path; for a
-feature-disabled bin that path can intentionally name a file which does not exist.
+[Cargo documents `CARGO_BIN_EXE_<name>` for integration tests and benchmarks](https://doc.rust-lang.org/cargo/reference/environment-variables.html)
+and says that a binary with unmet `required-features` is not built. Cargo 1.95's
+final unit environment still assigns each package bin its target executable path;
+for a feature-disabled bin that path can intentionally name a file which does not exist.
 The checked-in resolver-2 fixture covers enabled and disabled bins in both
 integration-test and benchmark targets, comparing compile-time and run-time paths
 and checking the disabled file remains absent. Pinned Cargo 1.95 executed all three
 fixture commands successfully on the supported hosted runner with the existing
 40 GiB reserve. The producer now derives each package binary's runtime path from
-the captured harness profile directory, matches enabled paths to exact Cargo
-compiler-artifact records, and represents disabled bins as absent-path placeholders.
-The planner remains fail-closed until the updated native producer and its lifecycle
-tests compile and pass, and the full route proves exact suite equivalence. The
-proposed full six-package route is therefore still blocked by the not-yet-qualified
-workspace and xtask bin-owning integration suites, not just optional custom
-configuration. Custom runner,
+the admitted Cargo target root. The hosted fixture confirmed that Cargo's
+`CARGO_BIN_EXE_*` paths can be under `target/debug` while test harnesses are under a
+separate `build/debug/deps` root. The bridge matches enabled paths to exact Cargo
+compiler-artifact records and represents disabled bins as absent-path placeholders;
+it refuses path or artifact disagreement. Full lifecycle and exact-suite equivalence
+remain required before route activation. Custom runner,
 external/parent Cargo configuration, configuration includes, cross-target requests,
 custom Cargo environment beyond this repository's `RUST_BACKTRACE`, and compiler/
 loader injection selectors remain unsupported and refuse. The existing native
