@@ -91,7 +91,8 @@ Each catalog entry carries all of:
   `require_confirmation`.
 - `curated_gold_treatment`: expected gold handling for the class.
 - `oracle_result_class` / `oracle_promotion_effect`: expected oracle
-  projection; `unknown` result class never projects to agreement.
+  projection; `unknown` result class projects to `blocks_promotion`, never
+  to agreement, support, or known limitation.
 - `profile_boundary_behavior`: executable-profile boundary behavior.
 - `owner_issue`: owning issue or permanent claim boundary.
 - `history`: introduction version and any migration record.
@@ -160,8 +161,9 @@ and candidate-resolution outcomes never stand in for intent classes.
 
 Unless an entry states otherwise, a class projects to oracle result class
 `dynamic_or_unsupported` with promotion effect `blocks_promotion`.
-`unknown_boundary_evidence` projects to `unknown` / `unknown`: unknown is
-never agreement.
+`unknown_boundary_evidence` projects to `unknown` / `blocks_promotion`:
+per PLSP-SPEC-0027, `unknown` blocks promotion. Unknown is never agreement,
+never a known limitation, and never support.
 
 ## Contract — Validation
 
@@ -176,6 +178,16 @@ without a stable catalog ID; any entry violating E0–E3, I1–I4, or P1–P4.
 
 `--report` output is deterministic for identical catalog input: sorted IDs,
 stable counts, no host paths, no timestamps.
+
+## Claim boundaries
+
+- Docs: this spec plus the generated catalog artifacts are the only doc
+  claims. No generated status surface moves on spec acceptance.
+- Releases: no release-notes claim, no version-bump requirement, no
+  compatibility claim follows from this spec.
+- User-facing behavior: no provider, editor-visible, or CLI-default change.
+  The slice-2 validator is a new opt-in command; no existing command
+  changes behavior.
 
 ## Non-goals
 
