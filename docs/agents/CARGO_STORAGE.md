@@ -271,7 +271,18 @@ Only the owner's immediate-child table may discover adopted cancellation
 candidates. If that table is unavailable, kernel waits can still prove eventual
 settlement, but unknown surviving detached helpers cannot safely be signaled:
 deadline/error retains the lease. There is no broad /proc fallback. Missing
-capabilities, existing children/threads, lost subreaper ownership, ambiguous waits,
+`/proc/self/task/<native-tid>/children` can be a kernel capability boundary,
+not a wrong PID or namespace: Linux builds this entry only with
+[`CONFIG_PROC_CHILDREN`](https://github.com/torvalds/linux/blob/v6.18/fs/proc/Kconfig).
+The calling thread and its procfs task identity must be checked before drawing
+that conclusion. Known pidfds and an empty live-handle ledger do not replace
+the table: nonblocking exited-child waits return no identity for a running
+unknown adopted child. They must not promote missing discovery to ECHILD or
+authorize release. A staged consumer that requires this capability must refuse
+before launch when it is unavailable; a mount or alternate task path cannot
+restore an entry compiled out of the running kernel.
+
+Missing capabilities, existing children/threads, lost subreaper ownership, ambiguous waits,
 owner death and incomplete cancellation never become release authority.
 
 The opt-in `scripts/tests/qualify_admitted_clippy.py --proof-root ABSOLUTE_DIR`

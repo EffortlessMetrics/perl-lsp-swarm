@@ -68,6 +68,58 @@ print(json.dumps(final))
 ''')
         self.assertTrue(row['tree_settled'])
 
+    def test_missing_child_table_empty_ledger_does_not_authorize_settlement(self):
+        row = self.worker('''
+tree=owner.ClippyTree()
+code="""import os,time
+if os.fork()==0:
+ os.setsid();print(os.getpid(),flush=True)
+ for fd in (0,1,2):os.close(fd)
+ time.sleep(5);os._exit(0)
+os._exit(0)
+"""
+p=subprocess.Popen([sys.executable,'-c',code],stdout=subprocess.PIPE)
+tree.track(p.pid,p)
+pid=None
+try:
+ pid=int(p.stdout.readline());assert p.wait()==0
+ # The fixture receipt names this exact adopted child for observation and
+ # final test cleanup only. It is deliberately absent from the owner ledger.
+ assert int(Path(f'/proc/{pid}/stat').read_text().rsplit(')',1)[1].split()[1])==os.getpid()
+ assert not [child for child,(_,process) in tree.handles.items()
+             if process is None or process.returncode is None]
+ event=os.waitid(os.P_ALL,0,os.WEXITED|os.WNOHANG|os.WNOWAIT|tree.WALL)
+ assert event is None  # Live unknown child: neither an identity nor ECHILD.
+ child_path=Path('/proc/self/task')/str(os.getpid())/'children'
+ read_text,exists=Path.read_text,Path.exists
+ def missing_children(path,*args,**kwargs):
+  if path==child_path:raise FileNotFoundError(errno.ENOENT,'child table unavailable',str(path))
+  return read_text(path,*args,**kwargs)
+ def absent_children(path):
+  return False if path==child_path else exists(path)
+ # The same missing-capability boundary is deterministic on supported hosts.
+ # Kernel waits, adoption, pidfds, signals and closure are never mocked.
+ with patch.object(Path,'read_text',missing_children),patch.object(Path,'exists',absent_children):
+  assert tree.child_ids()==[]
+  first=tree.finish(stop=True,timeout=.05,grace=.01)
+  first['reaped_descendants']=list(first['reaped_descendants'])
+ assert not first['tree_settled'] and first['proof'] is None
+ assert not first['reaped_descendants']
+ assert not first['pending_bound_pids'] and not first['owned_child_table_available']
+ os.kill(pid,0)
+ owned=ctypes.c_int();tree.libc.prctl(37,ctypes.byref(owned),0,0,0)
+ assert owned.value==1  # Unproven scope keeps its ownership.
+finally:
+ if pid is not None:tree.track(pid)
+ final=tree.finish(stop=True,timeout=2,grace=.01)
+ if p.stdout is not None:p.stdout.close()
+assert final['tree_settled'] and final['proof']=='kernel ECHILD (__WALL)'
+assert any(child['pid']==pid for child in final['reaped_descendants'])
+print(json.dumps({'missing_table':first,'bound_pid_cleanup':final}))
+''')
+        self.assertFalse(row['missing_table']['tree_settled'])
+        self.assertTrue(row['bound_pid_cleanup']['tree_settled'])
+
     def test_clippy_nested_cleanup_preserves_nonzero_leader_status(self):
         fixture_spec = importlib.util.spec_from_file_location(
             'builtin_tree_fixture', Path(__file__).with_name('test_cargo_admitted_builtin_tree.py'))
