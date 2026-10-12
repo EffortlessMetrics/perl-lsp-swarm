@@ -1432,6 +1432,8 @@ pub fn perl_parser_core::hir::BinaryOp::clone(&self) -> perl_parser_core::hir::B
 pub fn perl_parser_core::hir::BinaryOp::eq(&self, other: &perl_parser_core::hir::BinaryOp) -> bool
 pub fn perl_parser_core::hir::BinaryOp::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub enum perl_parser_core::hir::BodyOwnerKind
+pub perl_parser_core::hir::BodyOwnerKind::Class
+pub perl_parser_core::hir::BodyOwnerKind::Class::name: alloc::string::String
 pub perl_parser_core::hir::BodyOwnerKind::Method
 pub perl_parser_core::hir::BodyOwnerKind::Method::name: alloc::string::String
 pub perl_parser_core::hir::BodyOwnerKind::ProgramRoot
@@ -1590,6 +1592,7 @@ pub fn perl_parser_core::hir::DataSectionMarker::eq(&self, other: &perl_parser_c
 pub fn perl_parser_core::hir::DataSectionMarker::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_parser_core::hir::DataSectionMarker::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
 pub enum perl_parser_core::hir::DeclStorageClass
+pub perl_parser_core::hir::DeclStorageClass::Field
 pub perl_parser_core::hir::DeclStorageClass::Local
 pub perl_parser_core::hir::DeclStorageClass::My
 pub perl_parser_core::hir::DeclStorageClass::Our
