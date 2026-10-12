@@ -132,10 +132,10 @@ fn plan_cohorts(
         }
         let key = artifact_key(artifact)?;
         let exact = json!({"package_id": artifact["package_id"], "target": artifact["target"], "features": artifact["features"], "profile": artifact["profile"]});
-        if let Some(previous) = units.insert(key, exact.clone()) {
-            if previous != exact {
-                bail!("same checked target has conflicting features/profile");
-            }
+        if let Some(previous) = units.insert(key, exact.clone())
+            && previous != exact
+        {
+            bail!("same checked target has conflicting features/profile");
         }
     }
     if units.is_empty() {
@@ -790,22 +790,21 @@ finally:os.close(source)
             for message in &checked {
                 if message["reason"] == "build-script-executed"
                     && message["package_id"] == target["package_id"]
+                    && let Some(pairs) = message["env"].as_array()
                 {
-                    if let Some(pairs) = message["env"].as_array() {
-                        for pair in pairs {
-                            let pair =
-                                pair.as_array().ok_or_else(|| eyre!("invalid build-script env"))?;
-                            if pair.len() != 2 {
-                                bail!("invalid build-script env pair");
-                            }
-                            runtime.insert(
-                                pair[0]
-                                    .as_str()
-                                    .ok_or_else(|| eyre!("invalid build-script env key"))?
-                                    .into(),
-                                pair[1].clone(),
-                            );
+                    for pair in pairs {
+                        let pair =
+                            pair.as_array().ok_or_else(|| eyre!("invalid build-script env"))?;
+                        if pair.len() != 2 {
+                            bail!("invalid build-script env pair");
                         }
+                        runtime.insert(
+                            pair[0]
+                                .as_str()
+                                .ok_or_else(|| eyre!("invalid build-script env key"))?
+                                .into(),
+                            pair[1].clone(),
+                        );
                     }
                 }
             }

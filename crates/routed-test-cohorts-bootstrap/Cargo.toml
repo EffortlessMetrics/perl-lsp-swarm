@@ -1,0 +1,34 @@
+[package]
+name = "routed-test-cohorts-bootstrap"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+publish = false
+license.workspace = true
+description = "Lightweight bootstrap for the routed-test-cohorts producer (shared source, minimal deps)"
+repository.workspace = true
+homepage.workspace = true
+
+# Single shared source: this binary IS xtask's routed-test-cohorts producer.
+# The [[bin]] path points at the canonical file in xtask so the two binaries
+# can never diverge; producer logic, package/feature/profile selection, and
+# inventory semantics live only in that one file. See README.md.
+[[bin]]
+name = "routed-test-cohorts-bootstrap"
+path = "../../xtask/src/bin/routed-test-cohorts.rs"
+
+# Only the crates xtask/src/bin/routed-test-cohorts.rs actually imports
+# (clap, color-eyre, serde_json, sha2, toml), not xtask's full graph.
+[dependencies]
+clap = { workspace = true }
+color-eyre = "0.6.5"
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+toml = "1.1.2"
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true
