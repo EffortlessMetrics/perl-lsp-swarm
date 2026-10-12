@@ -13,7 +13,7 @@ This page answers one bounded question:
 Use the machine registry for the path-by-path classification. It is not yet a closed
 inventory of every agent-facing document: it classifies the root provider routes, the
 current method contracts, the known transitional current-main defects, and the legacy
-doctrine/ADR/design graph. Nine files under `docs/agents/` remain unclassified, and
+doctrine/ADR/design graph. Ten files under `docs/agents/` remain unclassified, and
 `ORCHESTRATION_ROLES.md` is the one that matters most — it routes readers to the
 superseded `ORCHESTRATION_DOCTRINE.md` and `PIPELINE_GATES.md`. Classifying the
 remainder is named residual work on #4555. An unclassified path does not thereby become
