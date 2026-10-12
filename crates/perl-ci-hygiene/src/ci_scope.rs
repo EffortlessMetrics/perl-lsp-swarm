@@ -227,6 +227,12 @@ pub fn requires_windows_runner(files: &[String]) -> bool {
             || (normalized.starts_with("scripts/") && normalized.ends_with(".sh"))
             || normalized == "crates/perl-ci-hygiene/src/process.rs"
             || normalized.starts_with("crates/perl-ci-hygiene/src/process/")
+            // Windows drive/UNC metadata-path normalization
+            // (`normalize_metadata_path`) and the classifier that consumes it
+            // live in these two shared files; either alone controls the
+            // Windows-specific scope decision (#17624).
+            || normalized == "crates/perl-ci-hygiene/src/package_resolver.rs"
+            || normalized == "crates/perl-ci-hygiene/src/ci_scope.rs"
             // The `perl-dap` reload module owns `probe_with_deadline`
             // (`runtime.rs`) and the bounded probe decision
             // (`Usable` / `Refused` / `TimedOut` / `InstrumentFailed`).
@@ -1042,6 +1048,23 @@ pub fn scope_from_range(root: &Path, base: &str, head: &str) -> Result<ScopeOutp
     classify_resolved_paths(root, base_identity, head_sha, resolved.changed_paths, false)
 }
 
+/// Canonical spelling of the selected root for manifest-prefix matching.
+///
+/// `cargo metadata` emits absolute manifest paths, while a caller-supplied
+/// `--root` may use a relative, trailing-separator, or otherwise non-canonical
+/// spelling; matching `manifest_path` against that raw text silently drops
+/// every package (#17624). Canonicalize the supplied root locally — borrowing
+/// `metadata.workspace_root` instead could attribute packages from an outer
+/// workspace Cargo discovered above the selected Git subject. The shared
+/// `normalize_metadata_path` aligns the canonical Windows drive/UNC spellings
+/// with the emitted manifests.
+fn canonical_workspace_root(root: &Path) -> Result<String> {
+    let canonical = root
+        .canonicalize()
+        .with_context(|| format!("Failed to canonicalize repository root {}", root.display()))?;
+    Ok(crate::package_resolver::normalize_metadata_path(&canonical.to_string_lossy()))
+}
+
 fn classify_resolved_paths(
     root: &Path,
     base: String,
@@ -1050,7 +1073,7 @@ fn classify_resolved_paths(
     immutable_subject: bool,
 ) -> Result<ScopeOutput> {
     let metadata = load_metadata(root)?;
-    let workspace_root = root.to_string_lossy().replace('\\', "/");
+    let workspace_root = canonical_workspace_root(root)?;
     let mut output = classify_files(&changed_files, &metadata, &workspace_root)?;
     output.base = base;
     output.head_sha = head_sha;
@@ -1239,6 +1262,70 @@ mod tests {
     }
 
     #[test]
+    fn canonical_workspace_root_resolves_relative_and_non_normal_spellings() -> Result<()> {
+        let cwd = std::env::current_dir()?;
+        // A relative spelling of the selected root canonicalizes to the same
+        // absolute prefix as a non-normal absolute spelling (#17624).
+        let relative = canonical_workspace_root(Path::new("."))?;
+        let non_normal = canonical_workspace_root(&cwd.join("crates").join(".."))?;
+        assert!(Path::new(&relative).is_absolute(), "root={relative}");
+        assert_eq!(relative, non_normal, "equivalent spellings must agree");
+        assert!(
+            relative.chars().last().is_some_and(|c| c != '/'),
+            "no trailing separator survives: {relative}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn classify_resolved_paths_retains_packages_for_non_normal_root() -> Result<()> {
+        // A non-normal `--root` spelling (dot segments) must not silently
+        // drop every package: the raw-text prefix never matches absolute
+        // `cargo metadata` manifests (#17624). Runs the real metadata loader
+        // against this workspace; the test harness anchors at the package
+        // root, so `../..` is the workspace root.
+        let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..");
+        let files = vec!["crates/perl-ci-hygiene/src/ci_scope.rs".to_string()];
+        let output = classify_resolved_paths(
+            &workspace,
+            "test-base".to_string(),
+            "test-head".to_string(),
+            files,
+            false,
+        )?;
+        assert!(
+            output.direct_crates.iter().any(|c| c.name == "perl-ci-hygiene"),
+            "non-normal root must retain direct crates: {:?}",
+            output.direct_crates
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn canonical_root_prefix_excludes_outer_workspace_packages() -> Result<()> {
+        // The prefix stays the selected Git subject: a package under an
+        // outer discovered workspace (the parent directory) is never
+        // attributed, even when the root arrives as `.` (#17624).
+        let canonical = canonical_workspace_root(Path::new("."))?;
+        let parent = Path::new(&canonical)
+            .parent()
+            .ok_or_else(|| eyre!("canonical root has no parent: {canonical}"))?
+            .to_string_lossy()
+            .into_owned();
+        let files = vec!["crates/alpha/src/lib.rs".to_string()];
+        let outer = serde_json::json!({"packages": [
+            {"name": "outer-pkg", "manifest_path": format!("{parent}/elsewhere/Cargo.toml")}
+        ]});
+        assert!(crates_from_files(&files, &outer, &canonical)?.is_empty());
+        let inner = serde_json::json!({"packages": [
+            {"name": "alpha", "manifest_path": format!("{canonical}/crates/alpha/Cargo.toml")}
+        ]});
+        let names = crates_from_files(&files, &inner, &canonical)?;
+        assert_eq!(names.iter().cloned().collect::<Vec<_>>(), vec!["alpha"]);
+        Ok(())
+    }
+
+    #[test]
     fn test_classify_diff_prose_only() {
         let files = vec!["docs/reference/STABILITY.md".to_string(), "README.md".to_string()];
         assert_eq!(classify_diff(&files), "prose_only");
@@ -1277,6 +1364,10 @@ mod tests {
             "scripts/check-shell.sh",
             "crates/perl-ci-hygiene/src/process.rs",
             "crates/perl-ci-hygiene/src/process/tests.rs",
+            // Single-file controls: each shared owner alone must rerun the
+            // Windows library smoke (#17624).
+            "crates/perl-ci-hygiene/src/package_resolver.rs",
+            "crates/perl-ci-hygiene/src/ci_scope.rs",
             "crates/perl-dap/src/reload/mod.rs",
             "crates/perl-dap/src/reload/runtime.rs",
             "crates/perl-dap/src/reload/measurement.rs",

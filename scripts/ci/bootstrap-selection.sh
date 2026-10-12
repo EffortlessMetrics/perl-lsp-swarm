@@ -14,7 +14,9 @@ elif [[ $# != 0 ]]; then
 fi
 artifact_log=$(mktemp)
 trap 'rm -f -- "$artifact_log"' EXIT
-"$repo_root/scripts/cargo-admitted" "${admission_args[@]}" build --locked \
+# Guarded expansion: Bash older than 4.4 treats an empty array as unbound
+# under `set -u` (#17624); same idiom as scripts/install.sh.
+"$repo_root/scripts/cargo-admitted" ${admission_args[@]+"${admission_args[@]}"} build --locked \
   -p perl-ci-hygiene --bin perl-ci-hygiene --message-format=json > "$artifact_log"
 python3 - "$repo_root" "$artifact_log" <<'PY'
 import json

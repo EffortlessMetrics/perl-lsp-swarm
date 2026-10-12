@@ -89,6 +89,18 @@ pub fn resolve_package_names(
     Ok(names)
 }
 
+/// Resolve one changed crate directory to its authoritative Cargo package name.
+pub fn resolve_single_package_name(project_root: &Path, crate_dir: &str) -> Result<String> {
+    let normalized = crate_dir.replace('\\', "/");
+    let mut dirs = BTreeSet::new();
+    dirs.insert(normalized.trim_end_matches('/').to_string());
+    let names = resolve_package_names(project_root, &dirs)?;
+    names
+        .into_iter()
+        .next()
+        .ok_or_else(|| eyre!("No workspace package found for crate directory: {crate_dir}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::normalize_metadata_path;
@@ -112,16 +124,4 @@ mod tests {
             assert_eq!(normalize_metadata_path(unsupported), unsupported);
         }
     }
-}
-
-/// Resolve one changed crate directory to its authoritative Cargo package name.
-pub fn resolve_single_package_name(project_root: &Path, crate_dir: &str) -> Result<String> {
-    let normalized = crate_dir.replace('\\', "/");
-    let mut dirs = BTreeSet::new();
-    dirs.insert(normalized.trim_end_matches('/').to_string());
-    let names = resolve_package_names(project_root, &dirs)?;
-    names
-        .into_iter()
-        .next()
-        .ok_or_else(|| eyre!("No workspace package found for crate directory: {crate_dir}"))
 }

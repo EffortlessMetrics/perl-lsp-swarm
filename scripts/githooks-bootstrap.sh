@@ -24,4 +24,6 @@ cd -- "$REPO_ROOT"
 # Script identity selects this worktree. Clear selectors only in this child;
 # the invoking hook keeps its Git environment, and admission sees no redirect.
 unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR
-exec "$REPO_ROOT/scripts/cargo-admitted" "${admission_args[@]}" run --locked -p perl-ci-hygiene -- "$command" "$@"
+# Guarded expansion: Bash older than 4.4 treats an empty array as unbound
+# under `set -u` (#17624); same idiom as scripts/install.sh.
+exec "$REPO_ROOT/scripts/cargo-admitted" ${admission_args[@]+"${admission_args[@]}"} run --locked -p perl-ci-hygiene -- "$command" "$@"
