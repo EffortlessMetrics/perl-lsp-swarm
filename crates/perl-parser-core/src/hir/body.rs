@@ -776,8 +776,12 @@ pub(crate) fn hir_quote_kind(value: &str) -> Option<HirQuoteKind> {
 /// verbatim; decoding them is a later family, not this leaf.
 pub(crate) fn strip_string_quotes(value: &str) -> Option<(&str, HirQuoteKind)> {
     let quote = hir_quote_kind(value)?;
-    let bytes = value.as_bytes();
-    value.get(1..bytes.len() - 1).map(|content| (content, quote))
+    let quote_char = match quote {
+        HirQuoteKind::Single => '\'',
+        HirQuoteKind::Double => '"',
+    };
+    let content = value.strip_prefix(quote_char)?.strip_suffix(quote_char)?;
+    Some((content, quote))
 }
 
 /// One `catch` handler of a [`HirExpr::Try`] region (#15567).
