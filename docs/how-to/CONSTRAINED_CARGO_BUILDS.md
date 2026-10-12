@@ -123,8 +123,10 @@ scripts/cargo-admitted \
 
 Wrapper options precede the Cargo command. Arguments after Cargo's `--` remain
 program/test arguments, not wrapper options. The existing supported-command and
-path/job-override refusals remain: Clippy, nextest, arbitrary aliases, and `xtask`
-require separately admitted routes rather than raw-Cargo fallback.
+path/job-override refusals remain: Clippy and nextest require separately admitted
+routes, as do arbitrary aliases. For focused `xtask` gates, use the supported
+builtin `run` command described in [Cargo storage guidance](../agents/CARGO_STORAGE.md)
+rather than a raw-Cargo fallback.
 
 `--budget-file` conflicts with **any presence**, including an empty value, of
 `CARGO_STORAGE_POLICY`, `MIN_FREE_GB`, `MAX_USED_PCT`,
