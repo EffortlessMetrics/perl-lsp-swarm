@@ -331,6 +331,43 @@ class ClippyTree:
             raise Denied("owned child table exceeds observation bound")
         return [int(pid) for pid in text.split()]
 
+    def reap_adopted(self):
+        """Drain exited adopted children while a Popen leader is still running.
+
+        Nested tests cannot wait for an orphan adopted by this subreaper. Leaving
+        that zombie until Cargo exits makes their synchronous cleanup impossible.
+        WNOWAIT locates an exited, kernel-owned child without consuming Popen's
+        leader status. Its unreaped PID remains reserved through the exact wait.
+        No process-table scan, live-child signal, or whole-tree closure is implied.
+        Call with cancellation blocked, in the same single-threaded wait owner.
+        """
+        if len(list(Path('/proc/self/task').iterdir())) != 1:
+            raise Denied("Clippy tree acquired a competing native thread")
+        owned = ctypes.c_int()
+        if (self.libc.prctl(37, ctypes.byref(owned), 0, 0, 0) != 0 or owned.value != 1
+                or signal.getsignal(signal.SIGCHLD) != signal.SIG_DFL):
+            raise Denied("Clippy tree lost subreaper/reaping ownership")
+        # Bound each service turn so a stream of exited descendants cannot
+        # starve leader polling or pending cancellation. Final ECHILD still
+        # belongs exclusively to finish(), after Popen has returned/unwound.
+        for _ in range(128):
+            try:
+                event = os.waitid(os.P_ALL, 0, os.WEXITED | os.WNOHANG | os.WNOWAIT | self.WALL)
+            except ChildProcessError:
+                return
+            if event is None:
+                return
+            handle = self.handles.get(event.si_pid)
+            if handle is not None and handle[1] is not None and handle[1].returncode is None:
+                return  # Popen exclusively owns its leader's wait and status.
+            pid, status = os.waitpid(event.si_pid, os.WNOHANG | self.WALL)
+            if pid != event.si_pid:
+                raise Denied("adopted-child wait did not consume the observed exited child")
+            self.reaped.append({"pid": pid, "exit_code": os.waitstatus_to_exitcode(status)})
+            if handle is not None:
+                self.handles.pop(pid)
+                os.close(handle[0])
+
     def finish(self, stop=False, timeout=30, grace=2):
         self.stopping |= stop or self.cancelled
         started = time.monotonic()
@@ -450,12 +487,17 @@ def call_clippy(command, env, lock, tree=None, operation="Clippy"):
             # Block delivery only across bounded wait/reap and returncode update.
             # Otherwise a signal between waitpid and that update could target a
             # recycled numeric group ID. A timed-out leader remains unreaped and
-            # reserves its PID until the next masked wait. Cancellation latency
-            # from this critical section is bounded to 0.2 seconds.
+            # reserves its PID until the next masked wait.
+            # The Popen wait holds the mask for at most 0.01 seconds; the
+            # adopted-child drain adds at most 128 nonblocking reaps per turn.
+            # Service them while nested consumers can still require actual
+            # reaping before their own return.
             mask = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGINT, signal.SIGTERM})
             try:
+                if tree is not None:
+                    tree.reap_adopted()
                 try:
-                    return process.wait(timeout=0.2)
+                    return process.wait(timeout=0.01)
                 except subprocess.TimeoutExpired:
                     pass
             finally:
