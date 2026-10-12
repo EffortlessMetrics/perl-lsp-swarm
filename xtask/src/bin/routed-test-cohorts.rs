@@ -226,7 +226,11 @@ fn digest(path: &Path) -> Result<String> {
         }
         digest.update(&buffer[..count]);
     }
-    Ok(format!("{:x}", digest.finalize()))
+    let mut encoded = String::with_capacity(64);
+    for byte in digest.finalize() {
+        encoded.push_str(&format!("{byte:02x}"));
+    }
+    Ok(encoded)
 }
 fn write_new(path: &Path, value: &Value) -> Result<()> {
     let mut file = fs::OpenOptions::new().write(true).create_new(true).open(path)?;
@@ -865,10 +869,10 @@ mod tests {
             .expect("bounded Cargo target inventory");
         assert_eq!(
             inventory,
-            json!([
-                {"name":"enabled_probe","enabled":true},
-                {"name":"unbuilt_probe","enabled":false}
-            ])
+            vec![
+                json!({"name":"enabled_probe","enabled":true}),
+                json!({"name":"unbuilt_probe","enabled":false})
+            ]
         );
         let duplicate = json!({"targets":[
             {"name":"same","kind":["bin"],"required-features":[]},
