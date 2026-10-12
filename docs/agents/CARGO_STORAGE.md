@@ -586,8 +586,14 @@ after 750.493 seconds, with a sampled peak of 26,471,247,872 allocated bytes and
 product with status 75 after 322.321 seconds, with a sampled peak of
 3,473,424,384 bytes and 3,440,812,032 retained bytes. Neither completed cases; these
 are partial-work measurements, not completed-work savings or a disk-fit proof.
-The next candidate composes qualified but unmerged owner repair #17640
-(`7124afe5543c6003a02a00f72c3fe14d0bc1e51d`) and refreshed main. Its cohort waits
+The first composition used owner repair #17640
+(`7124afe5543c6003a02a00f72c3fe14d0bc1e51d`) and refreshed main. Its positive
+qualification was withdrawn after PID-publication and cwd-dependent-import test
+defects. Corrected dependency `e0da55faaaafd62632bc4512678809a5f8881a1c`
+repairs one test file, with production/consumer bytes unchanged; it passed root,
+alternate-cwd and independent affected tests, and the owner suite. It merged with all five required contexts as main
+`e38d936e9ba9333858a631cd6c6aff55a8a8a431`; the candidate incorporates that
+main version. Its cohort waits
 service `reap_adopted()` with SIGINT/SIGTERM blocked in the same owning thread;
 that service neither signals live children nor proves closure or releases a lease.
 Final `finish()` remains responsible for ECHILD. Missing service refuses before
@@ -602,3 +608,77 @@ The real single-signal control asserts exactly one delivered SIGINT and both chi
 and measurement status 130. A native result-decoding control retains malformed
 evidence and checks typed 75/130/101 propagation. The repository-supported `xtask --all-targets --profile agent` Clippy shape is
 a named hosted check through the original admitted owner, without lint overrides.
+
+### Reserve provenance and native sizing
+
+The 42,949,672,960-byte threshold in this campaign is 40 GiB. Its source is the
+legacy `MIN_FREE_GB` default in `scripts/cargo-safe:25`, carried into
+`scripts/cargo_admitted.py:626` (percent mode). Environment byte-budget mode also
+requires at least 40 GiB at line 634. The campaign observer explicitly retains
+that threshold for comparable hosted measurements; it is not a field in
+`unit_routed_full`. That gate's policy specifies a 1,500-second watchdog, one
+retry and `budgets.max_duration_ms: 1320000`, with no disk-reserve field.
+
+These inherited thresholds do not establish a universal reserve for every
+filesystem. The constrained-host route introduced in #17478 supports an explicit
+operator-owned budget file bound to the complete request scope. Its
+`reserve_bytes` and `expected_growth_bytes` are independent positive byte counts;
+execution requires their sum at every destination and rechecks inside the lease.
+It leaves the legacy defaults and unrelated gates unchanged. A fit obtained from
+invented growth or copied test-fixture values is not qualified sizing. See
+[the budget schema and sizing obligations](../how-to/CONSTRAINED_CARGO_BUILDS.md#supply-an-explicit-host-budget-when-the-default-does-not-apply).
+
+Report observed demand, the fixed reserve of the actually selected policy and
+available capacity separately. A sampled peak is not a conservative growth bound.
+The selected local filesystem has 33,770,192,896 total bytes, but comparing that
+number with a default 40 GiB threshold alone does not prove native execution
+impossible under a supported scoped declaration. Current partial measurements
+do not yet qualify a complete cold/warm/edit growth envelope for a new native
+budget. No smaller host declaration is silently selected from free space.
+
+Independently, this selected runtime lacks its own live-thread proc children
+entry. Actual staged `--preflight` refuses at that capability check before
+budget scope, lease acquisition or allocation. A read-only escalated probe
+confirms the same missing entry. Budget sizing does not remove that capability
+requirement; an alternative ownership/cancellation route would require its own
+qualification rather than dropping the guard.
+
+### Terminal comparison and native unit calibration
+
+Run [38248428802](https://github.com/EffortlessMetrics/perl-lsp-swarm/actions/runs/38248428802)
+measured candidate `d1f450b0505343b53f6e9055d94c1a6415f30ba0` through terminal
+status. Both routes reported the same 1,228 eligible compiler units and
+unit/features/profile SHA256
+`2a76b7f053ad37e28e556b2912ca92e71d11a6dd48e425db7ff0f6595d07c74f`.
+Ordinary cold execution timed out after 1,500.070 seconds with sampled peak and
+retained bytes 12,225,478,656. Its settled warm retry returned 101 after 753.632
+seconds, with sampled peak and retained bytes 26,476,785,664, and minimum observed
+free bytes 64,957,505,536. It observed 1,799 cases, four ignored, across 27
+harnesses before `perl-dap --test dap_exact_session_matrix` failed.
+
+Cohort cold execution timed out after 1,500.059 seconds, with sampled peak
+3,399,639,040 and retained bytes 3,372,441,600. It observed 60 cases across seven
+harnesses, with minimum observed free bytes 88,031,166,464. The settled warm
+retry timed out after 1,500.213 seconds, with sampled peak 3,603,644,416 and
+retained bytes 3,592,376,320. Its reporter encountered an interrupted empty
+preclaimed result; no warm case count is claimed. The reporter repair preserves
+partial measurement evidence, emits receipt errors and refuses complete coverage
+for missing, malformed or unsettled receipts. Both attempts ended with ECHILD and
+lease release. The hosted observer's 40 GiB reserve remained observed throughout.
+These are partial-work measurements: no completed-work savings, complete case
+equivalence or native full-route budget is proven.
+
+Evidence artifacts: [ordinary 11748391967](https://github.com/EffortlessMetrics/perl-lsp-swarm/actions/runs/38248428802/artifacts/11748391967),
+SHA256 `702e2b642ce355d70792d6be98b7672446c923efd8256a59a599201eda03861f`;
+[cohort 11748214280](https://github.com/EffortlessMetrics/perl-lsp-swarm/actions/runs/38248428802/artifacts/11748214280),
+SHA256 `94c92c594e88b5c7b5ac9ab1112e74c1f452b2b97b4bef30bb0108dcc0b27dc9`.
+
+The isolated native unit request at candidate `4f95fbc7d661b3fde0d212fd9359533a43379f9b`
+passed all 12 routed-producer Rust tests in 592.618 seconds. Its scoped operator
+budget declared 6,442,450,944 reserve bytes and 8,589,934,592 forecast growth
+bytes. Actual sampled peak and retained bytes were 1,805,938,688; minimum observed
+free bytes were 29,741,273,088, with 491 samples and maximum sample gap 1.797
+seconds. Measurement completed, reserve remained observed, and kernel ECHILD
+preceded lease release. The declaration remains an operator forecast, not an
+empirical upper bound, and applies only to this unit request on the selected
+33,770,192,896-byte filesystem. It is not transferred to full-route sizing.

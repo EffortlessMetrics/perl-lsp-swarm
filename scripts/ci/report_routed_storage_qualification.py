@@ -97,6 +97,7 @@ def report(evidence, mode, root):
     unit_rows = {}
     complete = False
     case_receipts_verified = True
+    receipt_errors = []
     if mode == 'ordinary':
         stdout = (logs / 'route.stdout').read_text()
         rows = messages(logs / 'route.stdout')
@@ -118,9 +119,29 @@ def report(evidence, mode, root):
                 unit_rows = units(rows, root)
                 complete = any(row.get('reason') == 'build-finished' and row.get('success') is True for row in rows)
             result_path = request_path.with_name(request_path.name.replace('-request.json', '-result.json'))
-            if not result_path.exists():
+            try:
+                receipt = json.loads(result_path.read_text())
+                if (not isinstance(receipt, dict) or type(receipt.get('status')) is not int
+                        or not isinstance(receipt.get('settlement'), dict)
+                        or type(receipt['settlement'].get('tree_settled')) is not bool
+                        or not isinstance(receipt.get('coverage'), list)):
+                    raise ValueError('invalid result receipt shape')
+                for item in receipt['coverage']:
+                    if (not isinstance(item, dict) or not isinstance(item.get('executable'), str)
+                            or not isinstance(item.get('cases'), list) or not isinstance(item.get('ignored'), list)
+                            or any(not isinstance(name, str) for name in [*item['cases'], *item['ignored']])
+                            or len(item['cases']) != len(set(item['cases']))
+                            or len(item['ignored']) != len(set(item['ignored']))
+                            or not set(item['ignored']) <= set(item['cases'])):
+                        raise ValueError('invalid result coverage shape')
+            except (OSError, ValueError) as error:
+                case_receipts_verified = False
+                receipt_errors.append({'path': result_path.name, 'type': type(error).__name__, 'message': str(error)})
+                if 'check' in request['producer'] and '--tests' in request['producer']:
+                    complete = False
                 continue
-            receipt = json.loads(result_path.read_text())
+            if receipt['status'] != 0 or receipt['settlement']['tree_settled'] is not True:
+                case_receipts_verified = False
             if 'check' in request['producer'] and '--tests' in request['producer']:
                 complete = complete and receipt.get('status') == 0 and receipt.get('settlement', {}).get('tree_settled') is True
             for coverage in receipt.get('coverage', []):
@@ -145,6 +166,7 @@ def report(evidence, mode, root):
                                            and case_receipts_verified
                                            and result['storage'].get('command_status') == 0),
                   unit_count_by_package=dict(collections.Counter(json.loads(key)[0] for key in unit_rows)))
+    result['receipt_errors'] = receipt_errors
     return result
 
 
