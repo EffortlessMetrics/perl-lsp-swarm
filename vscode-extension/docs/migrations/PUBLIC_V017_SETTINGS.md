@@ -91,11 +91,17 @@ display server, or PowerShell. Official host download/catalog requests returned 
 `EAI_AGAIN`. No install, activation, upgrade, downgrade, rollback, or GUI observation
 ran. Existing mocks and receipt fixtures do not establish those behaviors.
 
-A parent-arranged disposable Windows GUI executor needs the authentic prior VSIX
-above and an exact candidate VSIX plus matching server/DAP hashes and artifact-set
-identity. Neither the source version string nor this manifest fixture supplies that
-candidate. Run minimum-supported host 1.125.0 and independently resolved current
-stable in separate temporary user-data/extensions/workspace/cache roots. Use supported
+A parent-arranged disposable GUI executor needs the authentic prior VSIX above
+and an exact candidate VSIX plus matching platform-native server/DAP hashes and
+artifact-set identity. A private Linux artifact handoff is available from its owner,
+but transfer into this executor failed before any candidate bytes were verified.
+Neither the source version string nor this manifest fixture supplies that candidate.
+The execution matrix requires Linux minimum-supported host 1.125.0 and current
+stable, and Windows x64 current stable, each in separate temporary
+user-data/extensions/workspace/cache roots. This Linux executor cannot own native
+Windows cells; the existing Windows source-review context is not an upgrade/rollback
+execution claim. #16408 remains unclaimed for execution and #6056 names the
+accountable owner. Use supported
 CLI local VSIX installation with both isolated roots and `--force`, verify actual
 activation/process identities and per-scope configured choices in the GUI, install
 the exact candidate into the same roots, reload/reopen and observe idempotence.
