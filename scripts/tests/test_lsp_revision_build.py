@@ -69,8 +69,17 @@ class RevisionBuildTests(unittest.TestCase):
                    if os.name == "nt" else [str(REPO / "scripts/cargo-admitted")])
         pre = subprocess.run([*wrapper, "--preflight", *args], cwd=root, env=self.env,
                              text=True, capture_output=True, errors="backslashreplace")
-        report = json.loads(next(line.split(": ", 1)[1] for line in pre.stderr.splitlines()
-                                 if line.startswith("cargo-admitted preflight:")))
+        line = next((line for line in pre.stderr.splitlines()
+                     if line.startswith("cargo-admitted preflight:")), None)
+        self.assertIsNotNone(line, pre.stderr[-6000:])
+        report = json.loads(line.split(": ", 1)[1])
+        # The default 40 GiB floor can refuse this constrained fixture host.
+        # Only its capacity refusal supplies scope for an explicit budget;
+        # guard/lease/argument failures must retain their original diagnosis.
+        if pre.returncode:
+            self.assertEqual(pre.returncode, 75, pre.stderr[-6000:])
+            self.assertIn("insufficient disk headroom", report.get("reason", ""), pre.stderr[-6000:])
+        self.assertIsInstance(report.get("scope"), dict, pre.stderr[-6000:])
         budget = root / "budget.json"
         budget.write_text(json.dumps(dict(schema_version=1, scope=report["scope"],
             reserve_bytes=8 * 1024**3, expected_growth_bytes=1024**3,
@@ -100,6 +109,8 @@ class RevisionBuildTests(unittest.TestCase):
         row = dict(fixture=root.name, label=label, elapsed_seconds=elapsed,
                    compiled=compiled, output=output, logical_bytes=sizes, allocated_bytes=allocated,
                    script_ran="cargo:rustc-env=BUILD_REVISION=" in run.stdout,
+                   watchers=[line.split("cargo:rerun-if-changed=", 1)[1]
+                             for line in run.stdout.splitlines() if "cargo:rerun-if-changed=" in line],
                    dirty=[line.strip() for line in run.stderr.splitlines() if "Dirty revision-probe" in line])
         self.rows.append(row)
         (self.proof / "measurements.json").write_text(json.dumps(dict(
@@ -160,7 +171,8 @@ class RevisionBuildTests(unittest.TestCase):
         original = self.fixture("original")
         root = self.proof / "linked"
         self.git(original, "worktree", "add", "-q", "-b", "linked-probe", str(root))
-        self.build(root, "cold", False, self.revision(root))
+        cold = self.build(root, "cold", False, self.revision(root))
+        self.assertIn(str(root / ".git"), cold["watchers"])
         self.build(root, "warm", True, self.revision(root))
         self.commit(root)
         self.build(root, "commit", False, self.revision(root))
@@ -180,13 +192,13 @@ class RevisionBuildTests(unittest.TestCase):
         # stops below it, exercising the same no-Git fallback as an export.
         self.env = dict(self.env, GIT_CEILING_DIRECTORIES=str(root))
         self.build(root, "cold", False, "unknown unknown")
-        self.build(root, "warm", True, "unknown unknown")
+        self.build(root, "warm", False, "unknown unknown")
         self.env.pop("GIT_CEILING_DIRECTORIES")
         self.build(root, "discovery-restored", False, self.revision(root))
         self.build(root, "discovery-repeat", True, self.revision(root))
         self.env["GIT_CEILING_DIRECTORIES"] = str(root)
         self.build(root, "discovery-removed", False, "unknown unknown")
-        self.build(root, "removed-repeat", True, "unknown unknown")
+        self.build(root, "removed-repeat", False, "unknown unknown")
 
     @unittest.skipUnless(os.name == "posix", "POSIX byte-path control")
     def test_non_utf8_common_directory_refreshes_conservatively(self):
@@ -226,6 +238,31 @@ class RevisionBuildTests(unittest.TestCase):
         self.env = dict(self.env, PATH=str(root) + os.pathsep + self.env["PATH"])
         self.build(root, "path-changed", False, self.revision(root))
         self.build(root, "path-repeat", True, self.revision(root))
+
+    def test_symbolic_ref_chain_retarget_refreshes(self):
+        root = self.fixture("symbolic-chain")
+        self.git(root, "branch", "old-target", "HEAD")
+        self.commit(root)
+        self.git(root, "symbolic-ref", "refs/heads/alias-two", "refs/heads/old-target")
+        self.git(root, "symbolic-ref", "refs/heads/alias-one", "refs/heads/alias-two")
+        self.git(root, "symbolic-ref", "HEAD", "refs/heads/alias-one")
+        self.build(root, "cold", False, self.revision(root))
+        self.build(root, "warm", True, self.revision(root))
+        self.git(root, "symbolic-ref", "refs/heads/alias-two", "refs/heads/probe")
+        self.build(root, "retarget", False, self.revision(root))
+        self.build(root, "retarget-repeat", True, self.revision(root))
+
+    def test_repository_creation_after_export_refreshes(self):
+        root = self.fixture("discovery-created")
+        self.env = dict(self.env, GIT_CEILING_DIRECTORIES=str(root))
+        self.build(root, "cold", False, "unknown unknown")
+        crate = root / "crates/probe"
+        self.git(crate, "init", "-q", "-b", "created-probe")
+        self.git(crate, "add", "Cargo.toml", "build.rs", "src")
+        self.git(crate, "-c", "user.name=Revision Probe", "-c", "user.email=probe@example.invalid",
+                 "commit", "-qm", "discovery created")
+        self.build(root, "git-created", False, self.revision(crate))
+        self.build(root, "created-repeat", True, self.revision(crate))
 
 
 if __name__ == "__main__":

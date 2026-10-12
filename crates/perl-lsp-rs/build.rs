@@ -31,9 +31,8 @@ fn git(args: &[&str]) -> Option<String> {
 
 /// Resolve metadata through Git so linked worktrees use their own HEAD and
 /// their common refs. Preserve path whitespace rather than trimming it.
-fn git_path(name: &str) -> Option<PathBuf> {
-    let output =
-        std::process::Command::new("git").args(["rev-parse", "--git-path", name]).output().ok()?;
+fn git_path(args: &[&str]) -> Option<PathBuf> {
+    let output = std::process::Command::new("git").args(args).output().ok()?;
     if !output.status.success() {
         return None;
     }
@@ -54,8 +53,8 @@ fn git_path(name: &str) -> Option<PathBuf> {
 }
 
 fn track_revision_inputs() {
-    // Missing rerun-if-changed paths are always dirty in Cargo. Exports need
-    // only the script; Git repositories additionally track existing metadata.
+    // Missing rerun-if-changed paths are always dirty in Cargo. Use that only
+    // for inputs we cannot watch accurately, not optional ordinary ref files.
     println!("cargo:rerun-if-changed=build.rs");
     for name in [
         "PATH",
@@ -67,6 +66,17 @@ fn track_revision_inputs() {
     ] {
         println!("cargo:rerun-if-env-changed={name}");
     }
+    if let Some(root) = git_path(&["rev-parse", "--show-toplevel"]) {
+        let entry = root.join(".git");
+        if entry.is_file() {
+            // Observe linked/separate-git-dir pointer changes without scanning
+            // ordinary repositories' entire Git administration directory.
+            println!("cargo:rerun-if-changed={}", entry.display());
+        }
+    } else {
+        // Discovery can appear later without changing source or environment.
+        println!("cargo:rerun-if-changed=build.rs/git-discovery-unavailable");
+    }
     // Files-layout watchers cannot observe a reftable database or namespaced
     // refs. Preserve label freshness through conservative reruns in those cases.
     if git(&["config", "--get", "extensions.refStorage"]).is_some_and(|format| format != "files")
@@ -75,7 +85,9 @@ fn track_revision_inputs() {
         println!("cargo:rerun-if-changed=build.rs/unsupported-git-ref-layout");
     }
     for name in ["HEAD", "packed-refs", "config", "config.worktree"] {
-        if let Some(path) = git_path(name).filter(|path| path.exists()) {
+        if let Some(path) =
+            git_path(&["rev-parse", "--git-path", name]).filter(|path| path.exists())
+        {
             println!("cargo:rerun-if-changed={}", path.display());
         }
     }
@@ -87,13 +99,31 @@ fn track_revision_inputs() {
     if git(&["config", "--bool", "--get", "extensions.worktreeConfig"])
         .is_some_and(|enabled| enabled == "true")
     {
-        names.push("config.worktree".to_string());
+        if git_path(&["rev-parse", "--git-path", "config.worktree"])
+            .is_none_or(|path| !path.exists())
+        {
+            // An enabled but absent config must be sampled until it appears.
+            // Avoid a recursive watch of index/logs/objects just for creation.
+            println!("cargo:rerun-if-changed=build.rs/worktree-config-unavailable");
+        }
     }
-    if let Some(reference) = git(&["symbolic-ref", "-q", "HEAD"]) {
-        names.push(reference);
+    let mut reference = "HEAD".to_string();
+    for depth in 0..16 {
+        let Some(next) = git(&["symbolic-ref", "--no-recurse", "-q", &reference]) else {
+            break;
+        };
+        if names.contains(&next) {
+            println!("cargo:rerun-if-changed=build.rs/cyclic-symbolic-ref");
+            break;
+        }
+        names.push(next.clone());
+        reference = next;
+        if depth == 15 {
+            println!("cargo:rerun-if-changed=build.rs/deep-symbolic-ref");
+        }
     }
     for name in names {
-        if let Some(mut path) = git_path(&name) {
+        if let Some(mut path) = git_path(&["rev-parse", "--git-path", &name]) {
             while !path.exists() {
                 if !path.pop() {
                     break;
