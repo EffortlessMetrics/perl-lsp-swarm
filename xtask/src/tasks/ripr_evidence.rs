@@ -516,11 +516,7 @@ fn optional_sha_value(value: Option<&str>) -> Value {
 }
 
 fn repo_root() -> Result<PathBuf> {
-    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-    manifest_dir
-        .parent()
-        .map(Path::to_path_buf)
-        .ok_or_else(|| eyre!("failed to resolve repository root from {}", manifest_dir.display()))
+    crate::utils::project_root()
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

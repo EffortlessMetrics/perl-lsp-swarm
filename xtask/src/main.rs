@@ -18,7 +18,6 @@ mod tasks;
 #[cfg(test)]
 mod test_support;
 mod types;
-mod utils;
 #[cfg(feature = "legacy")]
 use tasks::corpus;
 use tasks::dead_code::{DeadCodeConfig, DeadCodeMode};
@@ -78,11 +77,18 @@ use tasks::{bindings, compare_parsers, highlight};
 use types::TestSuite;
 #[cfg(any(feature = "legacy", feature = "parser-tasks"))]
 use types::*;
+use xtask::utils;
 
 #[derive(Parser)]
 #[command(name = "xtask")]
 #[command(about = "Custom tasks for perl-lsp")]
 struct Cli {
+    /// Select a validated runtime worktree (or a directory inside it).
+    /// Relative task paths and child commands are resolved from its Git root.
+    /// Without this option, existing compiled-source defaults are preserved.
+    #[arg(long, global = true)]
+    worktree_root: Option<PathBuf>,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -5488,6 +5494,9 @@ fn run_cli_main() -> Result<()> {
 }
 
 fn run_cli(cli: Cli) -> Result<()> {
+    if let Some(root) = cli.worktree_root {
+        utils::select_worktree_root(&root)?;
+    }
     match cli.command {
         Commands::List => {
             print_top_level_commands();
@@ -8136,9 +8145,12 @@ mod tests {
         ];
 
         for (command, expected) in cases {
-            let err = run_cli(Cli { command: Commands::PerlCoreHarness { command } })
-                .err()
-                .ok_or_else(|| std::io::Error::other("perl-core-harness command should fail"))?;
+            let err = run_cli(Cli {
+                worktree_root: None,
+                command: Commands::PerlCoreHarness { command },
+            })
+            .err()
+            .ok_or_else(|| std::io::Error::other("perl-core-harness command should fail"))?;
 
             assert!(err.to_string().contains(expected), "expected {expected:?}, got {err:?}");
         }
@@ -8152,6 +8164,7 @@ mod tests {
         let missing_tree = temp.path().join("missing-perl-tree");
 
         let err = run_cli(Cli {
+            worktree_root: None,
             command: Commands::PerlCoreHarness {
                 command: PerlCoreHarnessCommand::Discover {
                     perl_tree: missing_tree,
