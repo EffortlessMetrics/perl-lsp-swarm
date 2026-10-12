@@ -131,3 +131,11 @@ arbitrary executable or an attestation of the compiler/environment.
 same copy. Rebuild with `cargo build -p perllsp` after changing source or committing
 it. The paired `just ux-tests` recipes already rebuild and require a binary; these
 checks additionally protect direct harness and override use from stale evidence.
+
+Use `ScenarioConfig::default().without_workspace_root()` to initialize a
+single-file session with `rootUri: null` and `workspaceFolders: []`. The explicit
+empty folder array avoids legacy CWD fallback. Combining
+that policy with explicit workspace folders is an error. Scenario05 creates
+project configuration after an initialization response barrier, checks that a
+subsequent `didOpen` discovers `[perl].version`, and opens two files against the
+same malformed config before counting its deduplicated warning.

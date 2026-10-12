@@ -14,10 +14,11 @@
 
 use anyhow::{Context, Result};
 use perl_lsp_ux_tests::{
-    FormatResult, LspEvent, ScenarioConfig, UxCiTier, UxComponent, UxEvidenceClass, UxHarness,
-    binary_available, missing_binary_skip, run_ux_scenario_with_evidence_class,
+    DiagnosticsTracker, FormatResult, LspEvent, ScenarioConfig, UxCiTier, UxComponent,
+    UxEvidenceClass, UxHarness, binary_available, missing_binary_skip,
+    run_ux_scenario_with_evidence_class,
 };
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::time::Duration;
 
 const WORKFLOW_ID: &str = "bad_config_resilience";
@@ -42,8 +43,30 @@ fn config_with_bad_tool_paths() -> ScenarioConfig {
         .env("PERLCRITIC_PATH", "/nonexistent/path/to/perlcritic")
 }
 
-fn config_with_malformed_project_toml() -> ScenarioConfig {
-    ScenarioConfig::default().with_file(".perl-lsp.toml", MALFORMED_PROJECT_CONFIG)
+/// Response barrier after initialized: inspect server state without scanning or
+/// creating configuration, so later discovery cannot have happened at startup.
+fn ensure_rootless_initialized(harness: &UxHarness) -> Result<()> {
+    let report = harness.client.request(
+        "workspace/executeCommand",
+        json!({"command": "perl.workspaceTrustReport", "arguments": []}),
+        CONFIG_WARNING_WAIT,
+    )?;
+    anyhow::ensure!(report.get("error").is_none(), "rootless state report failed: {report}");
+    let workspace =
+        report.pointer("/result/workspace").context("server workspace report missing")?;
+    anyhow::ensure!(
+        workspace["workspace_folder_count"] == 0,
+        "server retained workspace folders: {report}"
+    );
+    anyhow::ensure!(
+        workspace.get("root_path").is_some_and(Value::is_null),
+        "server retained a root: {report}"
+    );
+    anyhow::ensure!(
+        workspace["open_document_count"] == 0,
+        "initialization unexpectedly opened a document: {report}"
+    );
+    Ok(())
 }
 
 fn config_message_events(events: &[LspEvent]) -> Vec<&LspEvent> {
@@ -225,12 +248,18 @@ fn scenario_05_malformed_project_config_emits_one_bounded_warning_naming_the_fil
             }
 
             let source = "my $x = 1;\n";
-            let harness = UxHarness::new(config_with_malformed_project_toml())
+            let harness = UxHarness::new(ScenarioConfig::default().without_workspace_root())
                 .context("Failed to create UX harness with malformed .perl-lsp.toml")?;
 
-            // Single-file mode: the didOpen-time project config refresh parses
-            // the seeded `.perl-lsp.toml`, fails, and must surface one bounded
-            // Warning naming the file.
+            ensure_rootless_initialized(&harness)?;
+            anyhow::ensure!(
+                config_message_events(&harness.client.peek_events()).is_empty(),
+                "configuration warning preceded didOpen-time discovery"
+            );
+            harness.workspace.write(".perl-lsp.toml", MALFORMED_PROJECT_CONFIG)?;
+
+            // Only didOpen can discover this newly created config: initialization
+            // completed with rootUri:null, no folders, and no open documents.
             harness
                 .open_file("config_warning.pl", source)
                 .context("didOpen should succeed even with a malformed project config")?;
@@ -253,23 +282,32 @@ fn scenario_05_malformed_project_config_emits_one_bounded_warning_naming_the_fil
             recorder.check("config warning observed after didOpen", observed.is_ok())?;
             observed?;
 
-            // Hover round-trip proves the server processed the didOpen before the
-            // final count, and that it stays responsive after the config failure.
+            // A second unique document in the same directory discovers the same
+            // selected malformed config. Its diagnostics and request response
+            // establish processing before counting all warning channels.
+            harness.open_file("config_warning_second.pl", source)?;
             harness
-                .hover("config_warning.pl", 0, 3)
+                .wait_for_diagnostics_event("config_warning_second.pl", CONFIG_WARNING_WAIT)
+                .map_err(|end| {
+                    anyhow::anyhow!("second didOpen did not publish diagnostics: {end:?}")
+                })?;
+            harness
+                .hover("config_warning_second.pl", 0, 3)
                 .context("server became unresponsive after the malformed config warning")?;
-            recorder.check("hover round-trip completed after config warning", true)?;
+            recorder.check(
+                "second didOpen diagnostics and hover completed before warning count",
+                true,
+            )?;
 
             let events = harness.client.peek_events();
             let warnings = config_message_events(&events);
 
             recorder
-                .check("exactly one config warning naming .perl-lsp.toml", warnings.len() == 1)?;
-            anyhow::ensure!(
-                warnings.len() == 1,
-                "expected exactly one .perl-lsp.toml message, got {}: {warnings:?}",
-                warnings.len()
-            );
+                .check("exactly one config warning naming .perl-lsp.toml after two opens", warnings.len() == 1)
+                .with_context(|| format!(
+                    "expected exactly one .perl-lsp.toml message after two opens, got {}: {warnings:?}",
+                    warnings.len()
+                ))?;
             let Some(LspEvent::WindowMessage { message_type: 2, message }) =
                 warnings.first().copied()
             else {
@@ -288,6 +326,58 @@ fn scenario_05_malformed_project_config_emits_one_bounded_warning_naming_the_fil
 
             harness.assert_no_crash();
             recorder.check("no crash signatures in event log", true)?;
+            Ok(())
+        },
+    );
+}
+
+#[test]
+fn scenario_05_rootless_did_open_discovers_new_project_version() {
+    run_ux_scenario_with_evidence_class(
+        WORKFLOW_ID,
+        SCENARIO_FILE,
+        "scenario_05_rootless_did_open_discovers_new_project_version",
+        UxCiTier::Pr,
+        Some(UxComponent::Diagnostics),
+        UxEvidenceClass::SemanticProof,
+        |recorder| {
+            if !binary_available() {
+                return Err(missing_binary_skip().into());
+            }
+            let harness = UxHarness::new(ScenarioConfig::default().without_workspace_root())?;
+            ensure_rootless_initialized(&harness)?;
+            let source = "use builtin 'inf'; builtin::inf();\n";
+            harness.open_file("version_control.pl", source)?;
+            let before = harness
+                .wait_for_diagnostics("version_control.pl", CONFIG_WARNING_WAIT)
+                .map_err(|end| anyhow::anyhow!("no-config control did not publish: {end:?}"))?;
+            anyhow::ensure!(
+                !before.iter().any(|diagnostic| diagnostic["code"] == "PL900"),
+                "no-config control already carried PL900: {before:?}"
+            );
+            recorder.check("no-config rootless control has no project-version diagnostic", true)?;
+            harness.workspace.write(".perl-lsp.toml", "[perl]\nversion = \"5.20\"\n")?;
+            harness.open_file("version_configured.pl", source)?;
+            let after = DiagnosticsTracker::wait_for_uri_matching(
+                &harness.client,
+                &harness.workspace.uri("version_configured.pl"),
+                CONFIG_WARNING_WAIT,
+                |diagnostics| diagnostics.iter().any(|diagnostic| diagnostic["code"] == "PL900"),
+            )
+            .map_err(|end| anyhow::anyhow!("configured didOpen did not publish PL900: {end:?}"))?;
+            let diagnostic = after
+                .iter()
+                .find(|diagnostic| diagnostic["code"] == "PL900")
+                .context("didOpen did not discover project Perl5.20 for builtin inf")?;
+            anyhow::ensure!(
+                diagnostic["message"].as_str().is_some_and(|message| message.contains("5.20")),
+                "PL900 must name discovered project version5.20: {diagnostic}"
+            );
+            recorder.check(
+                "post-initialization config discovered by didOpen emits PL900 for5.20",
+                true,
+            )?;
+            harness.assert_no_crash();
             Ok(())
         },
     );

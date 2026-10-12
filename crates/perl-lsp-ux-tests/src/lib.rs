@@ -278,6 +278,9 @@ pub struct ScenarioConfig {
     /// Optional workspace folders for multi-root initialization.
     /// Each entry is `(relative_path, name)`.
     pub workspace_folders: Vec<(String, String)>,
+    /// Initialize with `rootUri: null` and `workspaceFolders: []`.
+    /// Incompatible with nonempty `workspace_folders`.
+    pub rootless: bool,
     /// Extra client capabilities to merge into the initialize request.
     pub client_capability_overrides: Value,
     /// Optional `initialize` request `initializationOptions`.
@@ -298,6 +301,7 @@ impl Default for ScenarioConfig {
             extra_env: Vec::new(),
             workspace_files: Vec::new(),
             workspace_folders: Vec::new(),
+            rootless: false,
             client_capability_overrides: Value::Object(Map::new()),
             initialization_options: Value::Null,
         }
@@ -331,6 +335,20 @@ impl ScenarioConfig {
     pub fn with_file(mut self, path: impl Into<String>, content: impl Into<String>) -> Self {
         self.workspace_files.push((path.into(), content.into()));
         self
+    }
+
+    /// Select single-file initialization with no workspace root or folders.
+    pub fn without_workspace_root(mut self) -> Self {
+        self.rootless = true;
+        self
+    }
+
+    pub(crate) fn validate(&self) -> Result<()> {
+        anyhow::ensure!(
+            !self.rootless || self.workspace_folders.is_empty(),
+            "rootless initialization cannot include workspace folders"
+        );
+        Ok(())
     }
 
     /// Add a workspace folder for multi-root initialization.
@@ -393,6 +411,7 @@ pub struct UxHarness {
 impl UxHarness {
     /// Spawn a fresh LSP server and set up a clean workspace.
     pub fn new(config: ScenarioConfig) -> Result<Self> {
+        config.validate()?;
         let workspace = FakeWorkspace::new()?;
 
         // Write any pre-seeded workspace files.
@@ -2106,14 +2125,10 @@ mod strict_binary_guard_subprocess_tests {
     ///    real binary. The child remains launchable because `isolated_exe` is
     ///    an absolute path.
     ///
-    /// Note: merely pointing `PERL_LSP_BIN` at a nonexistent path does NOT
-    /// exercise this guard — `resolve_binary()`'s step 1 returns `Ok` for
-    /// any non-empty `PERL_LSP_BIN` without checking the path actually
-    /// exists, so that approach "resolves" to a bogus path and fails later
-    /// via a completely different error surface (a process-launch failure
-    /// elsewhere in the harness), not this guard's `assert!`. Removing the
-    /// var entirely is what forces a genuine `resolve_binary()` `Err`, which
-    /// is what this test needs to exercise.
+    /// Clearing `PERL_LSP_BIN` together with the Cargo hints and `PATH`
+    /// exercises discovery with every fallback denied. The public resolver
+    /// also rejects a missing explicit override; this test establishes the
+    /// strict guard when no override or fallback can select an executable.
     #[test]
     fn strict_mode_fails_loud_in_subprocess_when_binary_missing() -> anyhow::Result<()> {
         let current_exe = std::env::current_exe()?;

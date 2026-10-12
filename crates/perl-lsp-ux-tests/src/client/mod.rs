@@ -34,6 +34,46 @@ const STDERR_TAIL_LINES: usize = 20;
 /// Reaching it means the server did not close its stream and is force-killed.
 const SHUTDOWN_GRACE: Duration = Duration::from_millis(500);
 
+fn initialize_params(
+    workspace: &FakeWorkspace,
+    config: &ScenarioConfig,
+    client_capabilities: &Value,
+) -> Result<Value> {
+    config.validate()?;
+    let workspace_folders = config
+        .workspace_folders
+        .iter()
+        .map(|(relative_path, name)| {
+            Ok(json!({
+                "uri": workspace.dir_uri(relative_path)?,
+                "name": name,
+            }))
+        })
+        .collect::<Result<Vec<Value>>>()?;
+
+    let root_uri = if !config.rootless && workspace_folders.is_empty() {
+        Value::String(workspace.root_uri.clone())
+    } else {
+        Value::Null
+    };
+
+    let mut params = json!({
+        "processId": null,
+        "rootUri": root_uri,
+        "capabilities": client_capabilities.clone(),
+    });
+    if config.rootless || !workspace_folders.is_empty() {
+        // An explicit empty folder array prevents the server's legacy CWD
+        // compatibility fallback when rootUri is null.
+        params["workspaceFolders"] = Value::Array(workspace_folders);
+    }
+    if !config.initialization_options.is_null() {
+        params["initializationOptions"] = config.initialization_options.clone();
+    }
+
+    Ok(params)
+}
+
 fn next_id() -> u64 {
     NEXT_ID.fetch_add(1, Ordering::Relaxed)
 }
@@ -353,34 +393,7 @@ impl UxClient {
         client_capabilities: &Value,
         timeout: Duration,
     ) -> Result<Value> {
-        let workspace_folders = config
-            .workspace_folders
-            .iter()
-            .map(|(relative_path, name)| {
-                Ok(json!({
-                    "uri": workspace.dir_uri(relative_path)?,
-                    "name": name,
-                }))
-            })
-            .collect::<Result<Vec<Value>>>()?;
-
-        let root_uri = if workspace_folders.is_empty() {
-            Value::String(workspace.root_uri.clone())
-        } else {
-            Value::Null
-        };
-
-        let mut params = json!({
-            "processId": null,
-            "rootUri": root_uri,
-            "capabilities": client_capabilities.clone(),
-        });
-        if !workspace_folders.is_empty() {
-            params["workspaceFolders"] = Value::Array(workspace_folders);
-        }
-        if !config.initialization_options.is_null() {
-            params["initializationOptions"] = config.initialization_options.clone();
-        }
+        let params = initialize_params(workspace, config, client_capabilities)?;
 
         let init_resp = self.request("initialize", params, timeout)?;
 
@@ -2512,6 +2525,49 @@ mod server_request_tests {
 
         let expected = format!("Content-Length: {}\r\n\r\n{body}", body.len());
         assert_eq!(framed, expected.as_bytes());
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod rootless_initialization_tests {
+    use super::initialize_params;
+    use crate::{FakeWorkspace, ScenarioConfig, UxHarness};
+    use anyhow::Result;
+    use serde_json::json;
+
+    #[test]
+    fn rootless_initialize_sends_null_root_and_no_folders() -> Result<()> {
+        let workspace = FakeWorkspace::new()?;
+        let params = initialize_params(
+            &workspace,
+            &ScenarioConfig::default().without_workspace_root(),
+            &json!({}),
+        )?;
+        assert!(params.get("rootUri").is_some_and(|value| value.is_null()));
+        assert_eq!(params["workspaceFolders"], json!([]));
+        let ordinary = initialize_params(&workspace, &ScenarioConfig::default(), &json!({}))?;
+        assert_eq!(ordinary["rootUri"], workspace.root_uri);
+        Ok(())
+    }
+
+    #[test]
+    fn rootless_initialize_rejects_contradictory_folders() -> Result<()> {
+        let workspace = FakeWorkspace::new()?;
+        let config =
+            ScenarioConfig::default().without_workspace_root().with_workspace_folder("lib", "lib");
+        let error = initialize_params(&workspace, &config, &json!({}))
+            .err()
+            .ok_or_else(|| anyhow::anyhow!("rootless folder contradiction must fail"))?;
+        assert!(
+            error.to_string().contains("rootless initialization cannot include workspace folders")
+        );
+        let early = UxHarness::new(config).err().ok_or_else(|| {
+            anyhow::anyhow!("contradictory harness must fail before executable selection")
+        })?;
+        assert!(
+            early.to_string().contains("rootless initialization cannot include workspace folders")
+        );
         Ok(())
     }
 }
