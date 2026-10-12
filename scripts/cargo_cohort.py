@@ -114,6 +114,8 @@ class Cohort:
     def _process_identity(pid):
         try:
             fields = (Path('/proc') / str(pid) / 'stat').read_text().rsplit(')', 1)[1].split()
+            if fields[0] in ('Z', 'X', 'x'):
+                raise Denied('bound outer owner has exited')
             return int(fields[1]), int(fields[19])  # PPID, kernel starttime
         except (OSError, ValueError, IndexError) as error:
             raise Denied('outer owner identity unavailable') from error

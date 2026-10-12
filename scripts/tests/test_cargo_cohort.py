@@ -7,6 +7,8 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import signal
+import time
 import subprocess
 import sys
 import tempfile
@@ -33,6 +35,26 @@ class PortableTree:
 
 @unittest.skipUnless(sys.platform == 'linux', 'Linux filesystem/interface controls')
 class PortableControls(unittest.TestCase):
+    def test_real_unreaped_zombie_cannot_supply_live_owner_identity(self):
+        child = subprocess.Popen([sys.executable, '-c', 'raise SystemExit(0)'])
+        try:
+            deadline = time.monotonic() + 3
+            while True:
+                fields = Path(f'/proc/{child.pid}/stat').read_text().rsplit(')', 1)[1].split()
+                if fields[0] == 'Z':
+                    break
+                self.assertLess(time.monotonic(), deadline)
+                time.sleep(.01)
+            fd = os.pidfd_open(child.pid)
+            try:
+                signal.pidfd_send_signal(fd, 0)  # This alone still succeeds.
+                with self.assertRaisesRegex(cohort.Denied, 'outer owner has exited'):
+                    cohort.Cohort._process_identity(child.pid)
+            finally:
+                os.close(fd)
+        finally:
+            child.wait()
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(); self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
