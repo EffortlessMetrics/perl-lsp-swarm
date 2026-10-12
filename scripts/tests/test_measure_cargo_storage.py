@@ -22,7 +22,13 @@ class StorageMeasurement(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             good = {'allocated_bytes': 4096, 'filesystems': {'1': {'free_bytes': 10000}}, 'scan_seconds': 0}
-            with patch.object(subject, 'observe', side_effect=[good, subject.MeasurementError('partial scan'), good]):
+            calls = iter([good, subject.MeasurementError('partial scan')])
+            def observations(*_args):
+                row = next(calls, good)
+                if isinstance(row, Exception):
+                    raise row
+                return row
+            with patch.object(subject, 'observe', side_effect=observations):
                 result = subject.main(['--root', str(root / 'target'), '--evidence', str(root / 'receipt'),
                                        '--interval', '.01', '--', sys.executable, '-c', 'import time; time.sleep(.1)'])
             self.assertEqual(result, 75)
@@ -71,6 +77,10 @@ class StorageMeasurement(unittest.TestCase):
             expected = sum(p.stat().st_blocks * 512 for p in (a, b, file))
             self.assertEqual(subject.allocation([a, b]), expected)
             self.assertEqual(subject.allocation([a, a, b]), expected)
+            # Independent existing storage-doctor accounting oracle.
+            raw = subprocess.check_output(['du', '-s', '-B1', '-c', '--', str(a), str(b)],
+                                          env={**os.environ, 'LC_ALL': 'C'})
+            self.assertEqual(subject.allocation([a, b]), int(raw.splitlines()[-1].split(b'\t')[0]))
 
     def test_missing_roots_and_filesystem_observations(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -78,25 +88,25 @@ class StorageMeasurement(unittest.TestCase):
             self.assertEqual(row['allocated_bytes'], 0)
             self.assertGreater(next(iter(row['filesystems'].values()))['free_bytes'], 0)
 
-    def test_failed_and_partial_output_is_unknown(self):
+    def test_unreadable_or_partial_tree_is_unknown(self):
         with tempfile.TemporaryDirectory() as directory:
-            for code, stdout in ((1, b'12\tpartial\n'), (0, b'12\twrong\n')):
-                with patch.object(subject.subprocess, 'Popen') as constructor:
-                    constructor.return_value.returncode = code
-                    constructor.return_value.communicate.return_value = (stdout, b'error')
-                    with self.assertRaises(subject.MeasurementError):
-                        subject.allocation([Path(directory)])
+            with patch.object(subject.os, 'scandir', side_effect=PermissionError('unreadable tree')):
+                with self.assertRaises(PermissionError):
+                    subject.allocation([Path(directory)])
 
-    def test_interrupted_scan_is_invalid_and_sampler_reaped(self):
+    def test_interrupted_scan_is_invalid(self):
+        stop = threading.Event(); stop.set()
+        with self.assertRaisesRegex(subject.MeasurementError, 'interrupted'):
+            subject.allocation([Path('/unused')], stop)
+
+    def test_vanishing_entries_are_reported_sampling_limit(self):
         with tempfile.TemporaryDirectory() as directory:
-            stop = threading.Event(); stop.set()
-            with patch.object(subject.subprocess, 'Popen') as constructor:
-                process = constructor.return_value
-                process.communicate.side_effect = [subprocess.TimeoutExpired('du', .1), (b'', b'')]
-                with self.assertRaisesRegex(subject.MeasurementError, 'interrupted'):
-                    subject.allocation([Path(directory)], stop)
-                process.terminate.assert_called_once()
-                self.assertEqual(process.communicate.call_count, 2)
+            root = Path(directory)
+            diagnostics = {}
+            with patch.object(subject.os, 'scandir', side_effect=FileNotFoundError('concurrent removal')):
+                count = subject.allocation([root], diagnostics=diagnostics)
+            self.assertEqual(count, root.stat().st_blocks * 512)
+            self.assertEqual(diagnostics['vanished_entries'], 1)
 
     def test_command_status_retention_and_exclusive_evidence(self):
         with tempfile.TemporaryDirectory() as directory:

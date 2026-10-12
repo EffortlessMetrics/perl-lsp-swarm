@@ -6,6 +6,7 @@ import math
 import os
 from pathlib import Path
 import signal
+import stat
 import subprocess
 import threading
 import time
@@ -15,41 +16,39 @@ class MeasurementError(RuntimeError):
     pass
 
 
-def allocation(roots, stop=None):
-    """GNU du allocation semantics, one traversal to deduplicate shared hardlinks."""
-    present = []
-    for root in roots:
+def allocation(roots, stop=None, diagnostics=None):
+    """GNU du semantics: unique (device, inode) allocated blocks, no followed links.
+
+    Vanishing entries are a reported concurrent-scan limitation, not an unreadable
+    tree. Other I/O errors remain fatal. This is never an atomic filesystem snapshot.
+    """
+    seen = set()
+    total = 0
+    races = 0
+    pending = list(roots)
+    while pending:
+        if stop is not None and stop.is_set():
+            raise MeasurementError('allocation sample interrupted')
+        path = pending.pop()
         try:
-            root.lstat()
+            metadata = path.lstat()
         except FileNotFoundError:
+            races += 1
             continue
-        present.append(str(root))
-    if not present:
-        return 0
-    process = subprocess.Popen(['du', '--summarize', '--block-size=1', '--total', '--', *present],
-                               stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                               env={**os.environ, 'LC_ALL': 'C'})
-    while True:
-        try:
-            stdout, stderr = process.communicate(timeout=0.1)
-            break
-        except subprocess.TimeoutExpired:
-            if stop is not None and stop.is_set():
-                process.terminate()
-                try:
-                    process.communicate(timeout=2)
-                except subprocess.TimeoutExpired:
-                    process.kill()
-                    process.communicate()
-                raise MeasurementError('allocation sample interrupted')
-    if process.returncode:
-        raise MeasurementError(f'du failed ({process.returncode}): {stderr.decode(errors="replace")}')
-    # Only parse the aggregate, never parse filename-bearing rows.
-    final = stdout.rsplit(b'\n', 2)[-2]
-    count, separator, label = final.partition(b'\t')
-    if not separator or label != b'total' or not count.isdigit():
-        raise MeasurementError('invalid du aggregate')
-    return int(count)
+        identity = (metadata.st_dev, metadata.st_ino)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        total += metadata.st_blocks * 512
+        if stat.S_ISDIR(metadata.st_mode):
+            try:
+                with os.scandir(path) as entries:
+                    pending.extend(Path(entry.path) for entry in entries)
+            except FileNotFoundError:
+                races += 1
+    if diagnostics is not None:
+        diagnostics['vanished_entries'] = races
+    return total
 
 
 def observe(roots, stop=None):
@@ -66,8 +65,10 @@ def observe(roots, stop=None):
         filesystems.setdefault(str(identity), {'observed_at': str(ancestor),
             'free_bytes': stat.f_bavail * stat.f_frsize,
             'total_bytes': stat.f_blocks * stat.f_frsize})
-    return {'allocated_bytes': allocation(roots, stop), 'filesystems': filesystems,
-            'scan_seconds': time.monotonic() - started}
+    diagnostics = {}
+    allocated = allocation(roots, stop, diagnostics)
+    return {'allocated_bytes': allocated, 'filesystems': filesystems,
+            'scan_seconds': time.monotonic() - started, **diagnostics}
 
 
 def main(argv=None):
@@ -110,7 +111,7 @@ def main(argv=None):
         write({'schema': 'cargo-storage-measurement.v1', 'kind': 'header',
                'roots': [str(root) for root in roots], 'interval_seconds': args.interval,
                'min_free_bytes': args.min_free_bytes,
-               'limitations': 'Sampled allocation is a lower bound on transient peak; scans are non-atomic. Free-space observations include unrelated writers. Missing roots count as zero only at observation time. No admission, quota, settlement or cleanup authority.'})
+               'limitations': 'Sampled allocation is a lower bound on transient peak; scans are non-atomic and vanishing entries are counted. Free-space observations include unrelated writers. Missing roots count as zero only at observation time. No admission, quota, settlement or cleanup authority.'})
         sample('initial')
         def reserve_lost(row):
             return row['valid'] and any(fs['free_bytes'] < args.min_free_bytes
@@ -137,7 +138,7 @@ def main(argv=None):
                     samples.append({'valid': False, 'error': 'measurement persistence failed'})
                     signal_child(signal.SIGINT)
                     return
-                if not samples[-1]['valid'] or reserve_lost(samples[-1]):
+                if reserve_lost(samples[-1]):
                     signal_child(signal.SIGINT)
                     return
         worker = threading.Thread(target=monitor)

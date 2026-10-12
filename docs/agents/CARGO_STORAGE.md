@@ -341,16 +341,19 @@ full-route storage/timing measurements, and reserve qualification remain pending
 
 `scripts/measure_cargo_storage.py` now supplies the previously missing sampled
 allocation measurement path. It reuses `storage-doctor`'s GNU `du` allocated-block
-semantics, with one aggregate traversal across every supplied root so shared
-hardlinks count once. Evidence is exclusive, outside measured roots, flushed and
-synced; failed/partial or interrupted scans are explicit invalid observations.
+semantics: unique `(device, inode)` identities contribute `st_blocks * 512`,
+including directories and symlinks without following links. One traversal across
+every supplied root counts shared hardlinks once. Vanishing entries during an
+active build are explicitly counted as a scan limitation; other I/O errors make
+the sample invalid. Evidence is exclusive, outside measured roots, flushed and
+synced; unreadable/partial or interrupted scans are explicit invalid observations.
 Each sample records scan duration and per-filesystem available/total bytes; the
 header records the requested interval. Missing roots contribute zero only at the
 observation time. A sampled peak is a lower bound on transient peak, never a
 verified growth bound: scans are non-atomic, sampling can miss short-lived output,
 and filesystem free space includes independent writers. Allocated blocks are not
 exact overlay/reflink physical accounting. The optional `--min-free-bytes` guard
-signals the admitted owner on observed reserve loss or measurement failure; it
+signals the admitted owner on observed reserve loss or evidence-persistence failure; it
 cannot guarantee continuous reserve preservation between samples. It acquires no
 lease, grants no admission or cleanup authority, and does not replace native
 child settlement. Command failure remains failure; measurement failure is not

@@ -854,6 +854,8 @@ jobs:
           QUALIFICATION_MODE: ${{ matrix.mode }}
         run: |
           set -euo pipefail
+          # Runtime evidence is not source; prevent source-manifest capture of growing logs.
+          printf '/qualification-evidence/\n' >> .git/info/exclude
           mkdir qualification-evidence
           git rev-parse HEAD > qualification-evidence/head.txt
           rustc -vV > qualification-evidence/rustc.txt
