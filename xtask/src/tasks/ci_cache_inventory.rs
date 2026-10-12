@@ -2432,10 +2432,10 @@ jobs:
 "#;
 
     /// 2. The optional `sccache` step inside `setup-rust` must never be counted
-    ///   as an active (or dormant) cache site, even though the composite action
-    ///   that embeds it has an active caller. The composite's Swatinem step
-    ///   itself has an active caller, so it is an active-site row (`families`),
-    ///   not dormant.
+    ///    as an active (or dormant) cache site, even though the composite action
+    ///    that embeds it has an active caller. The composite's Swatinem step
+    ///    itself has an active caller, so it is an active-site row (`families`),
+    ///    not dormant.
     #[test]
     fn negative_control_2_dormant_optional_sccache_is_never_a_cache_site() {
         let tmp = must_with(tempfile::tempdir(), "tempdir");
@@ -2486,7 +2486,7 @@ jobs:
 "#;
 
     /// 3. A run-unique checkpoint output path must not be silently dropped from
-    ///   a row: a manifest that only lists the stable path is drift.
+    ///    a row: a manifest that only lists the stable path is drift.
     #[test]
     fn negative_control_3_run_unique_output_path_omission_is_drift() {
         let tmp = must_with(tempfile::tempdir(), "tempdir");
@@ -2505,8 +2505,8 @@ jobs:
     }
 
     /// 4. A direct `actions/cache/save` writer omitted from the manifest must
-    ///   drift, and it must be visible in `direct_save_writers`, not silently
-    ///   folded into the Swatinem-implicit count.
+    ///    drift, and it must be visible in `direct_save_writers`, not silently
+    ///    folded into the Swatinem-implicit count.
     #[test]
     fn negative_control_4_direct_save_writer_omission_is_drift_and_counted() {
         let tmp = must_with(tempfile::tempdir(), "tempdir");
@@ -2538,8 +2538,8 @@ jobs:
 "#;
 
     /// 5. Losing `pull_request_target` reachability (a manifest row claiming
-    ///   `not_candidate_event` for a `pull_request_target`-triggered site) must
-    ///   drift.
+    ///    `not_candidate_event` for a `pull_request_target`-triggered site) must
+    ///    drift.
     #[test]
     fn negative_control_5_pull_request_target_reachability_loss_is_drift() {
         let tmp = must_with(tempfile::tempdir(), "tempdir");
@@ -2558,8 +2558,8 @@ jobs:
     }
 
     /// 6. A canonical-looking ref-only guard under `pull_request_target` must
-    ///   classify as `not_proven`, never `trusted_guarded` — `github.ref` reports
-    ///   the *base* ref under `pull_request_target`, not proof of which tree ran.
+    ///    classify as `not_proven`, never `trusted_guarded` — `github.ref` reports
+    ///    the *base* ref under `pull_request_target`, not proof of which tree ran.
     #[test]
     fn negative_control_6_pull_request_target_ref_only_guard_is_not_proven() {
         let workflow = r#"
@@ -2685,8 +2685,8 @@ jobs:
     }
 
     /// 7. A checked-in row asserting trusted producer state (`trusted_tree` +
-    ///   a fabricated producer) for a real candidate-writer violation must be
-    ///   rejected as drift, not accepted as a laundering of candidate bytes.
+    ///    a fabricated producer) for a real candidate-writer violation must be
+    ///    rejected as drift, not accepted as a laundering of candidate bytes.
     #[test]
     fn negative_control_7_fabricated_trusted_provenance_is_rejected() {
         // Anchor on a fixture-derived violation row, not a live workflow:
@@ -2722,7 +2722,7 @@ jobs:
     }
 
     /// 8. An ambiguous save guard (no event, ref, or content-success anchor)
-    ///   must classify as `not_proven`, never `trusted_guarded`.
+    ///    must classify as `not_proven`, never `trusted_guarded`.
     #[test]
     fn negative_control_8_ambiguous_save_authority_is_not_proven() {
         let workflow = r#"
@@ -2748,8 +2748,8 @@ jobs:
     }
 
     /// 9. Nothing in the receipt path may auto-label a restore/save as work
-    ///   avoided: every observation must stay `not_proven`, because there is no
-    ///   live telemetry hook behind it.
+    ///    avoided: every observation must stay `not_proven`, because there is no
+    ///    live telemetry hook behind it.
     #[test]
     fn negative_control_9_work_avoided_never_auto_labels() {
         let root = project_root();
@@ -2772,8 +2772,8 @@ jobs:
     }
 
     /// 10. The manifest never stores a hand-coded denominator total, and
-    ///    changing exactly one row's classification changes only that row's diff
-    ///    plus the derived counts — never a hidden second row.
+    ///     changing exactly one row's classification changes only that row's diff
+    ///     plus the derived counts — never a hidden second row.
     #[test]
     fn negative_control_10_no_hard_coded_denominator_and_isolated_row_drift() {
         let root = project_root();
@@ -2823,9 +2823,9 @@ jobs:
     }
 
     /// 11. A stale receipt (built against a workflow tree that has since
-    ///    changed) must carry a different `workflow_tree_digest` — a consumer
-    ///    diffing digests must be able to reject it rather than accept it as
-    ///    current.
+    ///     changed) must carry a different `workflow_tree_digest` — a consumer
+    ///     diffing digests must be able to reject it rather than accept it as
+    ///     current.
     #[test]
     fn negative_control_11_stale_tree_digest_mismatch_is_detectable() {
         let tmp_a = must_with(tempfile::tempdir(), "tempdir a");
@@ -2845,8 +2845,8 @@ jobs:
     }
 
     /// 12. A parser/instrument failure must error out of derivation — it must
-    ///    never be silently represented as `status: ok` with an empty `families`
-    ///    array, which would read as "no caches" instead of "no evidence".
+    ///     never be silently represented as `status: ok` with an empty `families`
+    ///     array, which would read as "no caches" instead of "no evidence".
     #[test]
     fn negative_control_12_instrument_failure_never_reads_as_no_caches() {
         let tmp = must_with(tempfile::tempdir(), "tempdir");
