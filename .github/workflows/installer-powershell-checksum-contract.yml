@@ -5,6 +5,8 @@ on:
     branches: [main, master]
     paths:
       - 'install.ps1'
+      - 'scripts/agent-cleanup.ps1'
+      - 'scripts/tests/test-agent-cleanup-target-retention.ps1'
       - 'scripts/install.sh'
       - 'scripts/tests/test-install-ps1-checksum-required.ps1'
       - 'scripts/tests/test-install-ps1-archive-safety.ps1'
@@ -16,6 +18,8 @@ on:
     branches: [main, master]
     paths:
       - 'install.ps1'
+      - 'scripts/agent-cleanup.ps1'
+      - 'scripts/tests/test-agent-cleanup-target-retention.ps1'
       - 'scripts/install.sh'
       - 'scripts/tests/test-install-ps1-checksum-required.ps1'
       - 'scripts/tests/test-install-ps1-archive-safety.ps1'
@@ -54,6 +58,8 @@ jobs:
         run: |
           foreach ($Path in @(
               'install.ps1',
+              'scripts/agent-cleanup.ps1',
+              'scripts/tests/test-agent-cleanup-target-retention.ps1',
               'scripts/tests/test-install-ps1-checksum-required.ps1',
               'scripts/tests/test-install-ps1-archive-safety.ps1',
               'scripts/tests/test-install-ps1-product-unit-promotion.ps1'
@@ -91,3 +97,24 @@ jobs:
       - name: Run product-unit promotion controls
         shell: pwsh
         run: ./scripts/tests/test-install-ps1-product-unit-promotion.ps1
+
+      - name: Run target-retention controls under PowerShell 7
+        id: target-retention-pwsh7
+        shell: pwsh
+        run: ./scripts/tests/test-agent-cleanup-target-retention.ps1 -ProofRoot (Join-Path $env:RUNNER_TEMP 'target-retention-pwsh7')
+
+      - name: Run target-retention controls under Windows PowerShell 5.1
+        # Collect both runtime results without bypassing a failed earlier setup.
+        if: ${{ !cancelled() && (steps.target-retention-pwsh7.outcome == 'success' || steps.target-retention-pwsh7.outcome == 'failure') }}
+        shell: powershell
+        run: ./scripts/tests/test-agent-cleanup-target-retention.ps1 -ProofRoot (Join-Path $env:RUNNER_TEMP 'target-retention-windows51')
+
+      - name: Preserve target-retention results
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: windows-target-retention-results
+          path: |
+            ${{ runner.temp }}/target-retention-pwsh7/results.json
+            ${{ runner.temp }}/target-retention-windows51/results.json
+          if-no-files-found: warn
