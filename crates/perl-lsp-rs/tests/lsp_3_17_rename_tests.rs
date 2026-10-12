@@ -107,7 +107,7 @@ fn test_prepare_rename_3_17() -> TestResult {
 // On line 1 the prefix before `$counter` is `print "` (7 UTF-16 units) +
 // `🎉` (2 UTF-16 units, 1 char, 4 bytes) + `漢` (1 UTF-16 unit, 1 char,
 // 3 bytes) + `"; ` (3 units), so `$counter` starts at UTF-16 character 13.
-// A char-counting handler would say 12 and a byte-counting handler 18; only
+// A char-counting handler would say 12 and a byte-counting handler 17; only
 // UTF-16 gives 13. `$counter` spans 8 UTF-16 units including the sigil.
 
 const EMOJI_FIXTURE: &str =
