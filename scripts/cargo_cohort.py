@@ -19,11 +19,14 @@ import subprocess
 import signal
 import threading
 
-from cargo_admitted import ClippyTree, Denied, directory_identity, native_path, owns_lease, resource_plan, check_capacity, COHORT_RUNTIME_KEYS
+from cargo_admitted import ClippyTree, Denied, directory_identity, native_path, owns_lease, resource_plan, check_capacity, COHORT_RUNTIME_KEYS, child_discovery_capability
 
 
-def children_capability():
+def children_capability(mode=None):
     """Probe the live calling Linux thread, never another process's proc entry."""
+    mode = os.environ.get('CARGO_ADMITTED_CHILD_DISCOVERY', 'proc-children') if mode is None else mode
+    if mode != 'proc-children':
+        return child_discovery_capability(mode)
     path = Path('/proc/self/task') / str(threading.get_native_id()) / 'children'
     try:
         data = path.read_text()
@@ -68,6 +71,9 @@ class Cohort:
         self.pid = os.getpid()
         self.thread = threading.get_native_id()
         self.descriptor = json.loads(json.dumps(descriptor))
+        self.child_discovery = self.descriptor.get('child_discovery', 'proc-children')
+        if self.child_discovery != os.environ.get('CARGO_ADMITTED_CHILD_DISCOVERY', 'proc-children'):
+            raise Denied('cohort discovery profile differs from admitted environment')
         for key in ('worktree', 'resources', 'lease', 'lease_identity',
                     'lease_marker', 'marker_identity', 'pid', 'admission'):
             if key not in self.descriptor:
@@ -153,6 +159,9 @@ class Cohort:
             raise Denied('outer owner identity unavailable') from error
 
     def _check_owner(self):
+        if (self.descriptor.get('child_discovery', 'proc-children') != self.child_discovery
+                or os.environ.get('CARGO_ADMITTED_CHILD_DISCOVERY', 'proc-children') != self.child_discovery):
+            raise Denied('cohort discovery profile binding changed')
         if os.getpid() != self.pid or threading.get_native_id() != self.thread:
             raise Denied('cohort ownership cannot transfer across process/thread')
         if self._process_identity(self.ancestor) != self.ancestor_identity:
@@ -435,8 +444,8 @@ class Cohort:
         self.used = True
         try:
             self._check_owner()
-            children_capability()  # fail before any resource-bearing process
-            tree = ClippyTree()
+            children_capability(self.child_discovery)  # before any resource-bearing process
+            tree = ClippyTree(child_discovery=self.child_discovery)
         except BaseException:
             self.close()
             raise
@@ -656,6 +665,10 @@ class Cohort:
 
     def _launch(self, tree, command, env, **kwargs):
         self._check_owner()
+        if env.get('CARGO_ADMITTED_CHILD_DISCOVERY', 'proc-children') != self.child_discovery:
+            raise Denied('launch discovery profile differs from original admission')
+        if getattr(tree, 'child_discovery', None) != self.child_discovery:
+            raise Denied('wait owner discovery profile differs from original admission')
         if not callable(getattr(tree, 'reap_adopted', None)):
             raise Denied('cohort requires the qualified active adopted-child reaping service')
         admission = self.descriptor['admission']

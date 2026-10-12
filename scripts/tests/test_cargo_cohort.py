@@ -25,6 +25,8 @@ TARGET = {'package_id':'fixture', 'target': {'name':'fixture','kind':['test'],'t
 
 
 class PortableTree:
+    def __init__(self, *, child_discovery='proc-children'):
+        self.child_discovery = child_discovery
     cancelled = False
     binding = False
     settled = True
@@ -138,6 +140,44 @@ class PortableControls(unittest.TestCase):
                            'lease_marker': str(self.marker), 'marker_identity': cohort.directory_identity(self.marker),
                            'pid': os.getppid(), 'admission': {'policy':'percent','reserve_bytes':1024,'max_used_pct':100}}
         self.exe = self.paths['target'] / 'executable'
+
+    def test_discovery_profile_is_explicit_bound_and_shared_by_tree(self):
+        instance = self.owner()
+        with patch.dict(os.environ, {'CARGO_ADMITTED_CHILD_DISCOVERY': 'proc-parent-pidfd'}):
+            with self.assertRaisesRegex(cohort.Denied, 'profile binding changed'):
+                instance._check_owner()
+            with self.assertRaisesRegex(cohort.Denied, 'differs from admitted environment'):
+                self.owner()
+            self.descriptor['child_discovery'] = 'proc-parent-pidfd'
+            alternate = self.owner()
+            with patch.object(cohort, 'child_discovery_capability', return_value={'mode': 'proc-parent-pidfd'}) as probe:
+                self.assertEqual(cohort.children_capability('proc-parent-pidfd'), {'mode': 'proc-parent-pidfd'})
+                probe.assert_called_once_with('proc-parent-pidfd')
+            env = dict(os.environ, CARGO_TARGET_DIR=str(self.paths['target']),
+                       CARGO_BUILD_BUILD_DIR=str(self.paths['build']), CARGO_HOME=str(self.paths['cargo_home']),
+                       TMPDIR=str(self.paths['temp']))
+            with patch.object(cohort, 'children_capability', return_value='PORTABLE DOUBLE') as capability, \
+                    patch.object(cohort, 'ClippyTree', wraps=PortableTree) as tree:
+                alternate.run(self.producer(), {str(self.exe): []}, env)
+                capability.assert_called_once_with('proc-parent-pidfd')
+                tree.assert_called_once_with(child_discovery='proc-parent-pidfd')
+            alternate.descriptor['child_discovery'] = 'proc-children'
+            with self.assertRaisesRegex(cohort.Denied, 'profile binding changed'):
+                alternate._check_owner()
+
+    def test_launch_profile_mismatch_refuses_before_process(self):
+        instance = self.owner()
+        with patch.object(cohort.subprocess, 'Popen') as launch:
+            with self.assertRaisesRegex(cohort.Denied, 'launch discovery profile differs'):
+                instance._launch(PortableTree(), ['must-not-launch'], {'CARGO_ADMITTED_CHILD_DISCOVERY': 'proc-parent-pidfd'})
+            launch.assert_not_called()
+
+    def test_wait_owner_profile_mismatch_refuses_before_process(self):
+        instance = self.owner()
+        with patch.object(cohort.subprocess, 'Popen') as launch:
+            with self.assertRaisesRegex(cohort.Denied, 'wait owner discovery profile differs'):
+                instance._launch(PortableTree(child_discovery='proc-parent-pidfd'), ['must-not-launch'], {})
+            launch.assert_not_called()
 
     def test_missing_active_wait_service_refuses_before_process_launch(self):
         instance = self.owner()
