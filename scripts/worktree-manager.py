@@ -1149,8 +1149,12 @@ def release(
 def stale_slot(slot: dict[str, Any], stale_days: int) -> bool:
     if slot.get("status") not in {"idle", "active", "dirty"}:
         return False
+    # A recorded owner is a live lease: never stale-prune an owned slot,
+    # however old. Only `release` (or an explicit --force) ends that lease.
+    if slot.get("owner"):
+        return False
     # A slot whose lane died before `release` has no release timestamp;
-    # age it from its last allocation/use instead of never going stale.
+    # age ownerless slots from last allocation/use instead of never stale.
     aged_from = slot.get("last_released_at") or slot.get("last_used_at")
     if not aged_from:
         return False
@@ -1205,6 +1209,13 @@ def cleanup(
         should_prune = slot.get("status") == "retired" or stale_slot(slot, args.stale_days)
         if not should_prune and slot.get("status") == "idle" and branch != "HEAD":
             should_prune = branch_merged(branch) and open_pr_number(branch) is None
+
+        if should_prune and worktree_dirty(slot_path):
+            # Re-checked immediately before removal: uncommitted work is
+            # never discarded by automatic pruning, however stale the slot.
+            print(f"kept dirty slot={slot.get('slot_id')} path={slot.get('path')} branch={branch}")
+            kept.append(slot)
+            continue
 
         if should_prune:
             if args.dry_run:
