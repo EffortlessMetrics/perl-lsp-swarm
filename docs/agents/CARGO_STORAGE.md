@@ -158,7 +158,7 @@ represent a Cargo panic: an exit status is not proof that all descendants ended.
 The root must verify independent consumers before assigning the slot again.
 No age/PID-based stealing or automatic deletion exists.
 
-### Cohort lifecycle prerequisite (#17617)
+## Cohort lifecycle prerequisite (#17617)
 
 `scripts/cargo_cohort.py` provides a dedicated-process `Cohort` API beneath an
 already admitted Linux outer owner. It neither acquires nor releases the outer
@@ -219,7 +219,7 @@ zombie does not satisfy a synchronous-reaping contract, and changing its livenes
 oracle to report dead would weaken that proof. Inner runner failures remain
 product failures even when the cohort subsequently settles successfully.
 
-### Staged routed producer and exact Cargo alias groups
+## Staged routed producer and exact Cargo alias groups
 
 `xtask/src/bin/routed-test-cohorts.rs` is a dedicated native producer, reached only
 through the explicitly staged outer-owner route:
@@ -326,9 +326,9 @@ existing reserve, run the exact fixture with:
 
 ```bash
 cd scripts/tests/fixtures/routed-resolver-2/b
-../../../../cargo-admitted test --locked -p cohort-b --test shared
-../../../../cargo-admitted test --locked -p cohort-b --features enabled-bin --test runtime_env
-../../../../cargo-admitted bench --locked -p cohort-b --features enabled-bin --bench runtime_env
+../../../../cargo-admitted test --locked --offline -p cohort-b --test shared
+../../../../cargo-admitted test --locked --offline -p cohort-b --features enabled-bin --test runtime_env -- --nocapture
+../../../../cargo-admitted bench --locked --offline -p cohort-b --features enabled-bin --bench runtime_env
 ```
 
 The first invocation checks paths for two feature-disabled bins, the second checks
@@ -348,7 +348,9 @@ active build are explicitly counted as a scan limitation; other I/O errors make
 the sample invalid. Evidence is exclusive, outside measured roots, flushed and
 synced; unreadable/partial or interrupted scans are explicit invalid observations.
 Each sample records scan duration and per-filesystem available/total bytes; the
-header records the requested interval. Missing roots contribute zero only at the
+header records the requested interval. Per-root hardlink attribution follows root
+order; the aggregate is deduplicated across all roots. Command-only timing is
+recorded separately from the final retained scan. Missing roots contribute zero only at the
 observation time. A sampled peak is a lower bound on transient peak, never a
 verified growth bound: scans are non-atomic, sampling can miss short-lived output,
 and filesystem free space includes independent writers. Allocated blocks are not
@@ -364,7 +366,17 @@ six-package selection (`perl-dap`, `perl-lsp-rs`, `perl-parser-core`,
 `perl-semantic-analyzer`, `perl-workspace`, `xtask`) on separate fresh hosted
 runners. They retain the 1,500-second route watchdog, default features/profile,
 two build jobs and 40 GiB reserve, and preserve measurements and diagnostics as
-artifacts. They do not activate or replace the production gate. Full equivalence
+artifacts. The measured roots include admitted target/build, Cargo home, temporary
+storage, the immutable public proof copy and cohort evidence, and command logs.
+The observer journal is outside these roots; its own small allocation and later
+report/artifact packaging overhead are excluded and must not be called total host
+allocation. Per-filesystem free-space samples still observe those bytes.
+`report_routed_storage_qualification.py` publishes source-bound unit/features/profile
+and case/ignored-inventory hashes, package counts, sample gaps and settlement into
+the hosted log. It rejects conflicting unit contexts, extra packages and ambiguous
+or incomplete libtest boundaries; six-package completeness requires all six
+packages and settled compiler observation. Partial inventories cannot establish
+full equivalence. They do not activate or replace the production gate. Full equivalence
 and measured fit require completed exact-candidate results; job presence is not
 proof.
 
@@ -390,7 +402,7 @@ The resolver and runtime boundaries follow pinned Cargo 1.95 source:
 [final unit environment](https://github.com/rust-lang/cargo/blob/rust-1.95.0/src/cargo/core/compiler/artifact.rs#L17),
 and [target process context](https://github.com/rust-lang/cargo/blob/rust-1.95.0/src/cargo/core/compiler/compilation.rs#L329).
 
-### Staged native Clippy
+## Staged native Clippy
 
 The existing owner admits only this finite Linux request (optional `--offline`):
 
@@ -450,7 +462,7 @@ budget/volume observations and original-owner kernel settlement/release receipts
 It independently records exact-group absence; that additional observation does
 not authorize arbitrary workload cleanup or cover independent consumers.
 
-#### Recovering a retained Clippy lease
+### Recovering a retained Clippy lease
 
 Capture the `cargo-admitted resources:` JSON before setup starts, together with
 launch/product/cancellation logs and the exact owner revision. It records the

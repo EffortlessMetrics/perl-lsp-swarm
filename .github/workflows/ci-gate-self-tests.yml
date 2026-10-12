@@ -27,6 +27,8 @@ on:
       - 'scripts/storage-doctor'
       - 'scripts/measure_cargo_storage.py'
       - 'scripts/tests/test_measure_cargo_storage.py'
+      - 'scripts/ci/report_routed_storage_qualification.py'
+      - 'scripts/tests/test_routed_storage_qualification_report.py'
       - 'scripts/tests/test_storage_doctor.py'
       - 'justfile'
       - 'scripts/cargo_allow_cadence.py'
@@ -662,6 +664,7 @@ jobs:
           cd scripts/tests/fixtures/routed-resolver-2/b
           ../../../../cargo-admitted test --locked --offline -p cohort-b --test shared
           ../../../../cargo-admitted test --locked --offline -p cohort-b --features enabled-bin --test runtime_env -- --nocapture
+          ../../../../cargo-admitted test --locked --offline -p cohort-b --features enabled-bin --tests
           ../../../../cargo-admitted bench --locked --offline -p cohort-b --features enabled-bin --bench runtime_env
       - name: Run the native producer unit tests through admitted Cargo
         run: scripts/cargo-admitted test --locked -p xtask --bin routed-test-cohorts
@@ -669,6 +672,8 @@ jobs:
         run: python3 -m unittest discover -s scripts/tests -p 'test_storage_doctor.py' -v
       - name: Check sampled allocation, hardlinks and interrupted measurement
         run: python3 -m unittest discover -s scripts/tests -p 'test_measure_cargo_storage.py' -v
+      - name: Check ordinary and cohort inventory report discriminators
+        run: python3 -m unittest discover -s scripts/tests -p 'test_routed_storage_qualification_report.py' -v
 
   cargo-toolchain-guard-self-test:
     name: Entrypoint cargo toolchain guard self-test
@@ -834,6 +839,8 @@ jobs:
     if: github.event_name == 'pull_request' && github.event.pull_request.number == 17623
     runs-on: ubuntu-24.04
     timeout-minutes: 60
+    env:
+      RUSTUP_AUTO_INSTALL: '0'
     strategy:
       fail-fast: false
       matrix:
@@ -846,6 +853,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # stable (master)
         with:
           toolchain: 1.95.0
+          components: clippy,rustfmt
       - name: Native lifecycle controls
         run: python3 -m unittest discover -s scripts/tests -p 'test_cargo_cohort.py' -v
       - name: Measure exact six-package route with its original watchdog and reserve
@@ -856,7 +864,7 @@ jobs:
           set -euo pipefail
           # Runtime evidence is not source; prevent source-manifest capture of growing logs.
           printf '/qualification-evidence/\n' >> .git/info/exclude
-          mkdir qualification-evidence
+          mkdir -p qualification-evidence/logs
           git rev-parse HEAD > qualification-evidence/head.txt
           rustc -vV > qualification-evidence/rustc.txt
           cargo -vV > qualification-evidence/cargo.txt
@@ -886,15 +894,23 @@ jobs:
           SH
           set +e
           python3 scripts/measure_cargo_storage.py --root "$target" --root "$build" --root "$cargo_home" --root "$temp" \
+            --root "$PWD/qualification-evidence/cohort" --root "$PWD/qualification-evidence/logs" \
             --interval 1 --min-free-bytes 42949672960 --evidence "$PWD/qualification-evidence/storage.jsonl" \
             -- timeout --signal=INT 1500 bash "$RUNNER_TEMP/production-route.sh" \
-            > qualification-evidence/route.stdout 2> qualification-evidence/route.stderr
+            > qualification-evidence/logs/route.stdout 2> qualification-evidence/logs/route.stderr
           status=$?
           set -e
           printf '%s\n' "$status" > qualification-evidence/status.txt
           tail -n 1 qualification-evidence/storage.jsonl
-          tail -n 30 qualification-evidence/route.stderr
+          tail -n 120 qualification-evidence/logs/route.stderr
           exit "$status"
+      - name: Publish inspectable disk and inventory comparison summary
+        if: always()
+        env:
+          QUALIFICATION_MODE: ${{ matrix.mode }}
+        run: |
+          python3 scripts/ci/report_routed_storage_qualification.py --mode "$QUALIFICATION_MODE" \
+            --root "$PWD" --evidence "$PWD/qualification-evidence" | tee qualification-evidence/summary.json
       - name: Preserve exact candidate measurements and diagnostics
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0

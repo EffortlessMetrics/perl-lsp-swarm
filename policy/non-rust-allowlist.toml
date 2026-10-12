@@ -5949,3 +5949,29 @@ reason = "Discriminate hardlink double counting, partial measurements, interrupt
 covered_by = ["python3 -m unittest discover -s scripts/tests -p test_measure_cargo_storage.py -v"]
 created = "2026-10-12"
 review_after = "2026-11-12"
+
+[[allow]]
+id = "non-rust-routed-storage-qualification-report"
+path = "scripts/ci/report_routed_storage_qualification.py"
+kind = "ci_tooling"
+language = "python"
+surface = "tooling"
+classification = "tooling"
+owner = "tooling/agents"
+reason = "Read persisted Cargo and cohort receipts without another Rust build; expose exact inventory hashes and sampling limits for campaign comparison, with no admission or deletion authority."
+covered_by = ["python3 -m unittest discover -s scripts/tests -p test_routed_storage_qualification_report.py -v"]
+created = "2026-10-12"
+review_after = "2026-11-12"
+
+[[allow]]
+id = "non-rust-routed-storage-qualification-report-tests"
+path = "scripts/tests/test_routed_storage_qualification_report.py"
+kind = "ci_tooling"
+language = "python"
+surface = "tooling"
+classification = "test"
+owner = "tooling/agents"
+reason = "Reject extra/missing packages, feature drift, duplicate or incomplete cases and ambiguous nested harness output in qualification comparisons."
+covered_by = ["python3 -m unittest discover -s scripts/tests -p test_routed_storage_qualification_report.py -v"]
+created = "2026-10-12"
+review_after = "2026-11-12"

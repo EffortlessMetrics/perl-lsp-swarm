@@ -610,7 +610,7 @@ class Cohort:
             completed = []
             ignored = set()
             for line in text.splitlines():
-                match = re.fullmatch(r'test (.+) \.\.\. (ok|ignored(?:, .*)?)', line)
+                match = re.fullmatch(r'test (.+?)(?: - should panic)? \.\.\. (ok|ignored(?:, .*)?)', line)
                 if match:
                     completed.append(match.group(1))
                     if match.group(2).startswith('ignored'):

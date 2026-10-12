@@ -51,6 +51,37 @@ fn artifact_key(value: &Value) -> Result<String> {
     }))?)
 }
 
+fn unsupported_environment_selector(key: &str, value: &std::ffi::OsStr) -> bool {
+    key.ends_with("_RUNNER")
+        || key == "CARGO_BUILD_TARGET"
+        || (!value.is_empty()
+            && (key.starts_with("CARGO_TARGET_") && key.ends_with("_RUSTFLAGS")
+                || matches!(
+                    key,
+                    "LD_PRELOAD"
+                        | "DYLD_INSERT_LIBRARIES"
+                        | "RUSTFLAGS"
+                        | "CARGO_ENCODED_RUSTFLAGS"
+                        | "CARGO_BUILD_RUSTFLAGS"
+                        | "RUSTC_WRAPPER"
+                        | "RUSTC_WORKSPACE_WRAPPER"
+                        | "CARGO_BUILD_RUSTC_WRAPPER"
+                        | "CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER"
+                )))
+}
+
+fn validate_evidence_directory(root: &Path, evidence: &Path) -> Result<()> {
+    let canonical_parent = evidence.parent().and_then(|parent| parent.canonicalize().ok());
+    let parent_ok = canonical_parent.is_some_and(|parent| {
+        evidence.file_name().is_some_and(|name| parent.join(name) == evidence)
+            && parent.starts_with(root)
+    });
+    if !evidence.is_absolute() || !parent_ok || fs::symlink_metadata(evidence).is_ok() {
+        bail!("evidence directory must be an exclusive new absolute worktree path");
+    }
+    Ok(())
+}
+
 /// Metadata inventory + real check artifacts, never metadata.resolve.features.
 fn plan_cohorts(
     metadata: &Value,
@@ -416,6 +447,7 @@ fn main() -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             let status = error.downcast_ref::<BridgeFailure>().map_or(1, |failure| failure.status);
+            eprintln!("routed-cohort failure: {error}");
             eprintln!("{error:?}");
             ExitCode::from(status)
         }
@@ -443,14 +475,9 @@ fn run() -> Result<()> {
     if !capability.success() {
         bail!("native cancellation capability missing before setup/build");
     }
-    for (key, value) in env::vars() {
-        if key.ends_with("_RUNNER")
-            || key == "CARGO_BUILD_TARGET"
-            || matches!(
-                key.as_str(),
-                "LD_PRELOAD" | "DYLD_INSERT_LIBRARIES" | "RUSTFLAGS" | "CARGO_ENCODED_RUSTFLAGS"
-            ) && !value.is_empty()
-        {
+    for (key, value) in env::vars_os() {
+        let key = key.to_str().ok_or_else(|| eyre!("non-UTF8 environment key unsupported"))?;
+        if unsupported_environment_selector(key, &value) {
             bail!("unsupported runner/compiler/loader selector: {key}");
         }
     }
@@ -487,12 +514,7 @@ fn run() -> Result<()> {
             bail!("parent Cargo configuration needs separate qualification");
         }
     }
-    if !args.evidence_dir.is_absolute()
-        || !args.evidence_dir.starts_with(&root)
-        || args.evidence_dir.exists()
-    {
-        bail!("evidence directory must be an exclusive new absolute worktree path");
-    }
+    validate_evidence_directory(&root, &args.evidence_dir)?;
     fs::create_dir(&args.evidence_dir)?;
     let intent = args.evidence_dir.join("intent.json");
     write_new(
@@ -805,6 +827,45 @@ finally:os.close(source)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compiler_selectors_refuse_cargo_config_environment_aliases() {
+        for key in [
+            "RUSTFLAGS",
+            "CARGO_ENCODED_RUSTFLAGS",
+            "CARGO_BUILD_RUSTFLAGS",
+            "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS",
+            "CARGO_BUILD_RUSTC_WRAPPER",
+            "CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER",
+        ] {
+            assert!(unsupported_environment_selector(key, std::ffi::OsStr::new("value")));
+            assert!(!unsupported_environment_selector(key, std::ffi::OsStr::new("")));
+        }
+        for key in ["CARGO_BUILD_TARGET", "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER"] {
+            assert!(unsupported_environment_selector(key, std::ffi::OsStr::new("")));
+        }
+        assert!(!unsupported_environment_selector(
+            "CARGO_TERM_COLOR",
+            std::ffi::OsStr::new("always")
+        ));
+    }
+
+    #[test]
+    fn evidence_parent_must_be_canonical_and_inside_worktree() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let root = directory.path().canonicalize()?;
+        assert!(validate_evidence_directory(&root, &root.join("new")).is_ok());
+        assert!(validate_evidence_directory(&root, &root.join("../outside")).is_err());
+        assert!(validate_evidence_directory(&root, &root).is_err());
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&root, root.join("parent-alias"))?;
+            assert!(validate_evidence_directory(&root, &root.join("parent-alias/new")).is_err());
+            std::os::unix::fs::symlink(root.join("missing"), root.join("dangling"))?;
+            assert!(validate_evidence_directory(&root, &root.join("dangling")).is_err());
+        }
+        Ok(())
+    }
     fn fixture() -> (Value, Vec<String>, Vec<Value>) {
         let a = json!({"name":"shared","kind":["test"],"src_path":"/fixture/a/tests/shared.rs","test":true,"required-features":["activated"]});
         let b = json!({"name":"shared","kind":["test"],"src_path":"/fixture/b/tests/shared.rs","test":true,"required-features":[]});

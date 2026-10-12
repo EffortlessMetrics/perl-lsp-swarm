@@ -33,7 +33,7 @@ class ProducerControls(unittest.TestCase):
         self.fixture=fixtures.PortableControls();self.fixture.setUp();self.addCleanup(self.fixture.doCleanups)
         self.env=dict(os.environ,CARGO_TARGET_DIR=str(self.fixture.paths['target']),CARGO_BUILD_BUILD_DIR=str(self.fixture.paths['build']),CARGO_HOME=str(self.fixture.paths['cargo_home']),TMPDIR=str(self.fixture.paths['temp']))
 
-    def harness_producer(self, *, omission=False, duplicate=False):
+    def harness_producer(self, *, omission=False, duplicate=False, should_panic=False):
         body='''import os,sys
 if '--list' in sys.argv:
  print('ignored: test')
@@ -48,6 +48,7 @@ print('test result: ok. 1 passed; 0 failed; 1 ignored')
 '''
         if omission: body=body.replace("print('test cwd_and_feature ... ok')",'pass')
         if duplicate: body=body.replace("print('test cwd_and_feature ... ok')", "print('test cwd_and_feature ... ok')\nprint('test cwd_and_feature ... ok')")
+        if should_panic: body=body.replace("test cwd_and_feature ... ok", "test cwd_and_feature - should panic ... ok")
         body='#!'+sys.executable+'\n'+body
         return self.fixture.producer(mutation='p.write_text('+repr(body)+');p.chmod(0o700)')
 
@@ -67,6 +68,13 @@ print('test result: ok. 1 passed; 0 failed; 1 ignored')
         self.assertFalse(self.fixture.exe.exists())
         authorization=json.loads(instance.receipt_path.read_text().splitlines()[0])
         self.assertEqual(authorization['coverage'],row['coverage'])
+
+    def test_should_panic_display_suffix_preserves_inventory_identity(self):
+        instance=self.fixture.owner()
+        row=self.invoke(instance,self.harness_producer(should_panic=True),{str(self.fixture.exe):self.context(self.fixture.root)})
+        self.assertEqual(row['status'],0)
+        self.assertEqual(row['coverage'][0]['cases'],['cwd_and_feature','ignored'])
+        self.assertFalse(self.fixture.exe.exists())
 
     def test_wrong_cwd_is_real_consumer_failure_and_retains_executable(self):
         package=self.fixture.root/'package';package.mkdir()
