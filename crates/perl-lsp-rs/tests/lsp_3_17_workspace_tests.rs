@@ -16,16 +16,27 @@ type TestResult = Result<(), Box<dyn std::error::Error>>;
 fn test_workspace_symbol_3_17() -> TestResult {
     let mut harness = LspHarness::new();
     harness.initialize(None)?;
+    let uri = "file:///test_symbol_3_17.pl";
+    harness.open(uri, "sub test { return 1; }\nsub other { return 2; }\n")?;
 
-    let response = harness.request(
-        "workspace/symbol",
-        json!({
-            "query": "test",
-            "workDoneToken": "symbol-1"
-        }),
-    )?;
+    let response = harness
+        .request(
+            "workspace/symbol",
+            json!({
+                "query": "test",
+                "workDoneToken": "symbol-1"
+            }),
+        )
+        .map_err(|e| format!("workspace/symbol request failed: {e}"))?;
 
-    assert!(response.is_null() || response.is_array());
+    // Exact: only the `test` sub matches; null or empty fails (#17685).
+    let symbols = response
+        .as_array()
+        .ok_or_else(|| format!("workspace/symbol must return an array, got: {response:?}"))?;
+    let names: Vec<&str> = symbols.iter().filter_map(|s| s["name"].as_str()).collect();
+    assert_eq!(names, vec!["test"], "got: {response:?}");
+    assert_eq!(symbols[0]["kind"].as_u64(), Some(12), "got: {symbols:?}");
+    assert_eq!(symbols[0]["location"]["uri"].as_str(), Some(uri), "got: {symbols:?}");
     Ok(())
 }
 
