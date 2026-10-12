@@ -233,18 +233,83 @@ impl NativeFormatter {
         let mut edits = Vec::new();
         let mut processed_lines = 0_u64;
         let fallback_line_ending = inferred_line_ending(source);
+        // Same opener-indent stack as document formatting (#17664), tracked
+        // over the whole document so a range starting mid-block indents
+        // relative to its enclosing block; only in-range lines are emitted.
+        let mut indent_stack: Vec<String> = Vec::new();
+        let unit = indent_unit(config);
+        let literal_lines = multiline_literal_lines(source);
 
         for (line_index, line) in source.split_inclusive('\n').enumerate() {
             processed_lines = processed_lines.saturating_add(1);
-            let line_index = line_index as u32;
+            let in_range = range_includes_line(range, line_index as u32);
+            let line_index_u32 = line_index as u32;
             let (body, line_ending) = split_line_ending(line);
             let generated_line_ending =
                 if line_ending.is_empty() { fallback_line_ending } else { line_ending };
-            let formatted_body = if range_includes_line(range, line_index) {
-                format_simple_line(body, config)
-            } else {
+            let formatted_body = if literal_lines.contains(&line_index) || body.trim().is_empty() {
                 None
+            } else if is_rendered_block_boundary_line(body, config) {
+                let role = rendered_boundary_role(body);
+                let popped = if role.closes_block { indent_stack.pop() } else { None };
+                let indent = match popped {
+                    Some(opener) => opener,
+                    None => match indent_stack.last() {
+                        Some(opener) => format!("{opener}{unit}"),
+                        None => body[..body.len() - body.trim_start().len()].to_string(),
+                    },
+                };
+                if role.opens_block {
+                    indent_stack.push(indent.clone());
+                }
+                if in_range {
+                    match format_simple_line(&format!("{indent}{}", body.trim_start()), config) {
+                        Some(formatted) => Some(formatted),
+                        None => Some(format!("{indent}{}", body.trim_start())),
+                    }
+                } else {
+                    None
+                }
+            } else {
+                let (code, _comment) = split_trailing_comment(body);
+                let code = code.trim();
+                let closes = code.starts_with('}');
+                let opens = code.ends_with('{') && !code.starts_with('{');
+                let popped = if closes { indent_stack.pop() } else { None };
+                let indent =
+                    popped.or_else(|| indent_stack.last().map(|opener| format!("{opener}{unit}")));
+                match indent {
+                    Some(indent) => {
+                        let candidate = format!("{indent}{}", body.trim_start());
+                        let formatted = if in_range {
+                            match format_simple_line(&candidate, config) {
+                                Some(formatted) => Some(formatted),
+                                None if closes
+                                    || opens
+                                    || literal_lines.contains(&(line_index + 1)) =>
+                                {
+                                    Some(candidate)
+                                }
+                                None => None,
+                            }
+                        } else {
+                            None
+                        };
+                        if opens {
+                            indent_stack.push(indent);
+                        }
+                        formatted
+                    }
+                    None => {
+                        if opens {
+                            indent_stack
+                                .push(body[..body.len() - body.trim_start().len()].to_string());
+                        }
+                        if in_range { format_simple_line(body, config) } else { None }
+                    }
+                }
             };
+            let line_index = line_index_u32;
 
             if let Some(formatted_line) = formatted_body {
                 let formatted_line =
