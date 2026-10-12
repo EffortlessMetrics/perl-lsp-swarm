@@ -1,12 +1,7 @@
 #[test]
 fn enabled_and_disabled_binary_environment_matches_cargo_paths() {
-    let current = std::env::current_exe().expect("integration test executable");
-    let parent = current.parent().expect("integration test parent");
-    let profile_dir = if parent.file_name().is_some_and(|name| name == "deps") {
-        parent.parent().expect("Cargo profile directory")
-    } else {
-        parent
-    };
+    let enabled = std::path::Path::new(env!("CARGO_BIN_EXE_enabled_probe"));
+    let profile_dir = enabled.parent().expect("Cargo binary profile directory");
     for name in ["enabled_probe", "unbuilt_probe"] {
         let key = format!("CARGO_BIN_EXE_{name}");
         let compiled = match name {

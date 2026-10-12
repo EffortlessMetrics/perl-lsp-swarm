@@ -199,14 +199,10 @@ fn binary_runtime_inventory(package: &Value, package_features: &[Value]) -> Resu
         .ok_or_else(|| eyre!("package targets missing"))?
         .iter()
         .filter(|target| {
-            target["kind"].as_array().is_some_and(|kinds| {
-                kinds.iter().any(|kind| kind == "bin")
-            })
+            target["kind"].as_array().is_some_and(|kinds| kinds.iter().any(|kind| kind == "bin"))
         })
     {
-        let name = target["name"]
-            .as_str()
-            .ok_or_else(|| eyre!("binary target name missing"))?;
+        let name = target["name"].as_str().ok_or_else(|| eyre!("binary target name missing"))?;
         if name.is_empty() || name.contains('/') || name.contains('\\') || !names.insert(name) {
             bail!("package metadata has an invalid or repeated binary target name");
         }
@@ -850,7 +846,12 @@ mod tests {
             checked.push(json!({"reason":"compiler-artifact","package_id":"b","target":target,"features":[],"profile":{"test":true}}));
             let plan = plan_cohorts(&metadata, &packages, &checked)
                 .unwrap_or_else(|error| panic!("{kind} target was dropped: {error}"));
-            assert!(plan.iter().any(|cohort| cohort.targets.iter().any(|unit| unit["target"]["kind"][0] == kind)));
+            assert!(
+                plan.iter().any(|cohort| cohort
+                    .targets
+                    .iter()
+                    .any(|unit| unit["target"]["kind"][0] == kind))
+            );
         }
     }
     #[test]
@@ -862,10 +863,13 @@ mod tests {
         ]});
         let inventory = binary_runtime_inventory(&package, &[json!("enabled-bin")])
             .expect("bounded Cargo target inventory");
-        assert_eq!(inventory, json!([
-            {"name":"enabled_probe","enabled":true},
-            {"name":"unbuilt_probe","enabled":false}
-        ]));
+        assert_eq!(
+            inventory,
+            json!([
+                {"name":"enabled_probe","enabled":true},
+                {"name":"unbuilt_probe","enabled":false}
+            ])
+        );
         let duplicate = json!({"targets":[
             {"name":"same","kind":["bin"],"required-features":[]},
             {"name":"same","kind":["bin"],"required-features":[]}

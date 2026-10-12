@@ -2,13 +2,9 @@ const ENABLED_COMPILE_PATH: &str = env!("CARGO_BIN_EXE_enabled_probe");
 const DISABLED_COMPILE_PATH: &str = env!("CARGO_BIN_EXE_unbuilt_probe");
 
 fn main() {
-    let current = std::env::current_exe().expect("benchmark executable");
-    let parent = current.parent().expect("benchmark parent");
-    let profile_dir = if parent.file_name().is_some_and(|name| name == "deps") {
-        parent.parent().expect("Cargo profile directory")
-    } else {
-        parent
-    };
+    let profile_dir = std::path::Path::new(ENABLED_COMPILE_PATH)
+        .parent()
+        .expect("Cargo binary profile directory");
     for name in ["enabled_probe", "unbuilt_probe"] {
         let key = format!("CARGO_BIN_EXE_{name}");
         let path = std::env::var(&key).unwrap_or_else(|error| panic!("{key}: {error}"));

@@ -348,8 +348,11 @@ class Cohort:
     def _binary_runtime_environment(self, executable, package_id, targets):
         if not isinstance(targets, list) or len(targets) > 256:
             raise Denied('Cargo binary runtime inventory must be a bounded list')
-        parent = executable.parent
-        profile_dir = parent.parent if parent.name == 'deps' else parent
+        # Cargo's build.build-dir can differ from CARGO_TARGET_DIR: test
+        # harnesses land under the private build root while CARGO_BIN_EXE_*
+        # points into the target root. Derive the latter from the admitted
+        # target resource, never from the harness executable path.
+        profile_dir = self.resources['target'] / 'debug'
         if (not profile_dir.is_dir() or native_path(str(profile_dir)) != profile_dir
                 or not any(profile_dir.is_relative_to(root) for root in self.roots)):
             raise Denied('Cargo test executable has no canonical private profile directory')
