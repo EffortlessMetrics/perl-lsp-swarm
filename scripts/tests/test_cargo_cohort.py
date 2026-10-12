@@ -211,6 +211,30 @@ class PortableControls(unittest.TestCase):
         with patch.object(cohort, 'children_capability', return_value='PORTABLE DOUBLE'), patch.object(cohort, 'ClippyTree', PortableTree):
             return instance.run(kwargs.pop('producer', self.producer()), kwargs.pop('consumers', {str(self.exe): []}), env, **kwargs)
 
+    def test_invalid_eighth_final_record_blocks_authorization_and_every_unlink(self):
+        targets = [dict(TARGET, target=dict(TARGET['target'], name='fixture'+str(i))) for i in range(8)]
+        paths = [self.paths['target'] / ('image'+str(i)) for i in range(8)]
+        aliases = [self.paths['build'] / ('alias'+str(i)) / 'image' for i in range(8)]
+        instance = self.owner(expected_targets=targets)
+        program = 'import json,os\nfrom pathlib import Path\n'
+        for path, alias, target in zip(paths, aliases, targets):
+            program += ('p=Path(' + repr(str(path)) + ');p.write_text(' + repr('#!'+sys.executable+'\nraise SystemExit(0)\n') + ');p.chmod(0o700)\n'
+                        + 'a=Path(' + repr(str(alias)) + ');a.parent.mkdir();os.link(p,a)\n'
+                        + 'print(' + repr(json.dumps(dict(target, reason='compiler-artifact', executable=str(path), fresh=False))) + ')\n')
+        original_finish = PortableTree.finish
+        def finish(tree, **kwargs):
+            parent = aliases[-1].parent; held = parent.with_name('held-parent')
+            parent.rename(held); parent.symlink_to(held, target_is_directory=True)
+            return original_finish(tree, **kwargs)
+        with patch.object(PortableTree, 'finish', finish), patch.object(cohort.os, 'unlink', wraps=os.unlink) as unlink:
+            with self.assertRaises((cohort.Denied, OSError)):
+                self.run_portable(instance, producer=[sys.executable, '-c', program], consumers={str(path): [] for path in paths})
+            unlink.assert_not_called()
+        self.assertFalse(instance._cleanup_authorized)
+        self.assertFalse(instance.receipt_path.exists())
+        self.assertTrue(all(path.is_file() for path in paths))
+        self.assertTrue(all(alias.is_file() for alias in aliases))
+
     def test_retained_mode_consumes_preexisting_without_reclaiming(self):
         self.executable()
         before = cohort.facts(self.exe.stat())
@@ -941,6 +965,143 @@ class WorkflowControls(unittest.TestCase):
                 self.assertEqual(log.read_text().splitlines(),
                                  ['-m', 'unittest', 'discover', '-s', 'scripts/tests',
                                   '-p', 'test_cargo_cohort.py', '-v'])
+
+
+
+
+def record_sha(path):
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+class RecordInterfaceFixture(cohort.Cohort):
+    def __init__(self, root, count=1):
+        self.worktree = root; self.roots = (root/'target', root/'build')
+        for p in self.roots: p.mkdir()
+        self.source = root/'source'; self.source.write_bytes(b'bound source')
+        self.pin = root/'public'; self.pin.write_bytes(b'bound public product')
+        self.lease = root/'lease'; self.lease.mkdir()
+        self.owner_expected = (record_sha(self.source), record_sha(self.pin), cohort.directory_identity(self.lease))
+        self.root_expected = {p:cohort.directory_identity(p) for p in self.roots}
+        self.pinned = {self.pin}; self.preexisting = set(); self.retain_preexisting = False
+        self.binding = (record_sha(self.source), 'profile declaration')
+        self.records = {}; self.groups = {}; self.owner_calls = 0
+        self.paths = []; self.aliases = []
+        for i in range(count):
+            a = self.roots[0]/('p'+str(i)); a.mkdir()
+            b = self.roots[1]/('a'+str(i)); b.mkdir()
+            p = a/'image'; p.write_bytes(b'exact executable bytes\n'*500); p.chmod(0o700)
+            alias = b/'alias'; os.link(p, alias)
+            self.paths.append(p); self.aliases.append(alias)
+        for p in self.paths:
+            parent, parent_id, identity, digest = self._open(p, allow_links=True)
+            os.close(parent)
+            self.records[p] = (parent_id, identity, digest, self.binding)
+            self.groups[p] = self._capture_group(p, identity, digest)
+        self.owner_calls = 0
+    def _check_owner(self):
+        # Explicit interface double. Real filesystem source/pin/lease facts;
+        # no PID, subreaper, kernel settlement or native owner qualification.
+        self.owner_calls += 1
+        if (record_sha(self.source), record_sha(self.pin), cohort.directory_identity(self.lease)) != self.owner_expected:
+            raise cohort.Denied('interface source/pin/lease changed')
+        if any(cohort.directory_identity(p) != key for p,key in self.root_expected.items()):
+            raise cohort.Denied('interface root changed')
+    def close_fixture(self):
+        for group in self.groups.values():
+            os.close(group['fd'])
+            for alias in group['aliases']: os.close(alias['parent'])
+
+
+@unittest.skipUnless(sys.platform.startswith('linux'), 'Linux filesystem/API controls; no native lifecycle proof')
+class RecordValidationControls(unittest.TestCase):
+    def fixture(self, count=1):
+        temporary = tempfile.TemporaryDirectory(); self.addCleanup(temporary.cleanup)
+        instance = RecordInterfaceFixture(Path(temporary.name), count)
+        self.addCleanup(instance.close_fixture)
+        return instance
+
+    def exact_record(self, instance, path):
+        if instance._validate_record(path) != instance.records[path]:
+            raise cohort.Denied('fresh primary record differs')
+
+    def corrupt_alias_parent(self, instance, index=0):
+        parent = instance.aliases[index].parent
+        old = parent.with_name(parent.name + '-held')
+        parent.rename(old); parent.symlink_to(old, target_is_directory=True)
+
+    def test_two_sites_keep_all_32_image_reads_and_reduce_owner_checks_32_to_16(self):
+        instance = self.fixture(8); real_read = os.read
+        image_ids = {group['identity'][:2] for group in instance.groups.values()}
+        reads = []
+        def read(fd, size):
+            chunk = real_read(fd, size)
+            if chunk and (os.fstat(fd).st_dev, os.fstat(fd).st_ino) in image_ids:
+                reads.append(fd)
+            return chunk
+        observed = []
+        for baseline in (True, False):
+            instance.owner_calls = 0; reads.clear()
+            with patch.object(cohort.os, 'read', side_effect=read):
+                for site in ('preconsumption', 'preauthorization'):
+                    for path in instance.paths:
+                        if baseline:
+                            instance._validate_group(instance.groups[path])
+                            parent, parent_id, identity, digest = instance._open(path, allow_links=True)
+                            try:
+                                self.assertEqual((parent_id, identity, digest, instance.binding), instance.records[path])
+                            finally:
+                                os.close(parent)
+                        else:
+                            self.exact_record(instance, path)
+            observed.append((instance.owner_calls, len(reads)))
+        self.assertEqual(observed, [(32, 32), (16, 32)])
+
+    def test_fresh_open_refuses_after_observation_source_pin_lease_primary_parent_mutations(self):
+        for kind in ('source', 'pin', 'lease', 'primary', 'parent'):
+            with self.subTest(kind=kind):
+                instance = self.fixture(); path = instance.paths[0]
+                original = instance._validate_group_observation
+                def observation(group):
+                    original(group)
+                    if kind in ('source', 'pin'):
+                        getattr(instance, kind).write_bytes(b'changed')
+                    elif kind == 'lease':
+                        instance.lease.rename(instance.worktree / 'held-lease'); instance.lease.mkdir()
+                    elif kind == 'primary':
+                        path.rename(path.with_name('held-image')); path.write_bytes(b'changed'); path.chmod(0o700)
+                    else:
+                        path.parent.rename(path.parent.with_name('held-parent'))
+                        path.parent.mkdir(); path.write_bytes(b'changed'); path.chmod(0o700)
+                with patch.object(instance, '_validate_group_observation', side_effect=observation):
+                    with self.assertRaises((cohort.Denied, OSError)):
+                        self.exact_record(instance, path)
+                self.assertTrue(path.exists())
+
+    def test_observation_refuses_alias_bytes_or_path_mutation_during_read(self):
+        for kind in ('bytes', 'alias'):
+            with self.subTest(kind=kind):
+                instance = self.fixture(); path = instance.paths[0]
+                fd = instance.groups[path]['fd']; real_read = os.read; changed = []
+                def read(handle, size):
+                    chunk = real_read(handle, size)
+                    if handle == fd and chunk and not changed:
+                        changed.append(True)
+                        if kind == 'bytes':
+                            path.write_bytes(b'changed bytes')
+                        else:
+                            alias = instance.aliases[0]
+                            alias.rename(alias.with_name('held-alias')); alias.write_bytes(b'replacement')
+                    return chunk
+                with patch.object(cohort.os, 'read', side_effect=read):
+                    with self.assertRaises((cohort.Denied, OSError)):
+                        self.exact_record(instance, path)
+                self.assertTrue(changed); self.assertTrue(path.is_file())
+
+    def test_other_alias_parent_requires_observation_even_when_primary_open_valid(self):
+        instance = self.fixture(); self.corrupt_alias_parent(instance)
+        parent, *_ = instance._open(instance.paths[0], allow_links=True)
+        os.close(parent)
+        with self.assertRaises((cohort.Denied, OSError)):
+            self.exact_record(instance, instance.paths[0])
 
 
 if __name__ == '__main__': unittest.main()

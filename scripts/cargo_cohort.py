@@ -522,6 +522,9 @@ class Cohort:
 
     def _validate_group(self, group):
         self._check_owner()
+        self._validate_group_observation(group)
+
+    def _validate_group_observation(self, group):
         expected = group['identity']
         if facts(os.fstat(group['fd'])) != expected or expected[-1] != len(group['remaining']):
             raise Denied('owned alias inode or kernel link count changed')
@@ -542,6 +545,17 @@ class Cohort:
             observed.update(chunk)
         if observed.hexdigest() != group['sha256'] or facts(os.fstat(group['fd'])) != expected:
             raise Denied('owned alias bytes changed')
+
+    def _validate_record(self, path):
+        # Paired record sites observe every alias before the unchanged _open
+        # performs a fresh owner/source/pin and primary-image validation.
+        self._validate_group_observation(self.groups[path])
+        parent, parent_identity, identity, digest = self._open(
+            path, allow_links=True, allow_preexisting=self.retain_preexisting)
+        try:
+            return parent_identity, identity, digest, self.binding
+        finally:
+            os.close(parent)
 
     def _record(self, message):
         if message.get('reason') == 'build-script-executed':
@@ -708,10 +722,8 @@ class Cohort:
                 if self.captured_targets != self.expected_targets or not self.records or {str(path) for path in self.records} != set(consumer_args):
                     raise Denied('consumer coverage differs from captured executables')
                 for path in self.records:
-                    self._validate_group(self.groups[path])
-                    parent, _, identity, digest = self._open(path, allow_links=True, allow_preexisting=self.retain_preexisting)
-                    os.close(parent)
-                    if (identity, digest) != self.records[path][1:3]:
+                    current = self._validate_record(path)
+                    if current[1:3] != self.records[path][1:3]:
                         raise Denied('executable changed before consumption')
                     specification = consumer_args[str(path)]
                     consumer_env = dict(child_env)
@@ -759,10 +771,7 @@ class Cohort:
                 # Validate all before deleting any; subsequent per-path validation
                 # still fails closed if a cooperative owner contract is violated.
                 for path in self.records:
-                    self._validate_group(self.groups[path])
-                    parent, parent_identity, identity, digest = self._open(path, allow_links=True, allow_preexisting=self.retain_preexisting)
-                    os.close(parent)
-                    if (parent_identity, identity, digest, self.binding) != self.records[path]:
+                    if self._validate_record(path) != self.records[path]:
                         raise Denied('executable changed before reclaim')
                 with self.receipt_path.open('xb') as evidence:
                     authorization = {'event': 'authorization', 'product_status': status,
