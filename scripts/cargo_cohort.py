@@ -168,15 +168,8 @@ def _source_verify_directory_names(bindings):
             raise Denied('source ancestor current name/type/identity changed')
 
 
-def validate_source_entries(worktree, entries):
-    """Validate every entry afresh; state and descriptors exist only for this call.
-
-    A sorted traversal reuses anchored parent descriptors within this validation
-    epoch. Every source is freshly opened and hashed; every visited ancestor is
-    checked again by its current pathname after the last source. Deeper paths
-    use the existing per-file validator for the entire call, before opening any
-    descriptor, preserving their eligibility without changing descriptor limits.
-    """
+def _prepare_source_declaration(worktree, entries):
+    """Retain only lexical manifest declarations, never observed filesystem facts."""
     worktree = Path(worktree)
     root_text = str(worktree)
     if (not worktree.is_absolute() or root_text.startswith(('//', '/mnt/'))
@@ -193,6 +186,32 @@ def validate_source_entries(worktree, entries):
             raise Denied('foreign or noncanonical source/profile path')
         subjects.append((subject, entry['sha256']))
         deepest = max(deepest, len(subject.parent.parts))
+    root_prefix = root_text.rstrip('/') + '/'
+    ordered = tuple((subject, expected_hash,
+                     tuple(part for part in str(subject)[len(root_prefix):].split('/')
+                           if part not in ('', '.'))[:-1])
+                    for subject, expected_hash in sorted(subjects, key=lambda row: str(row[0])))
+    return (root_text, tuple(subjects), deepest, ordered)
+
+
+def validate_source_entries(worktree, entries):
+    """Prepare the caller's declaration and validate all filesystem facts afresh."""
+    _validate_source_declaration(worktree, _prepare_source_declaration(worktree, entries))
+
+
+def _validate_source_declaration(worktree, entries):
+    """Validate every entry afresh; state and descriptors exist only for this call.
+
+    A sorted traversal reuses anchored parent descriptors within this validation
+    epoch. Every source is freshly opened and hashed; every visited ancestor is
+    checked again by its current pathname after the last source. Deeper paths
+    use the existing per-file validator for the entire call, before opening any
+    descriptor, preserving their eligibility without changing descriptor limits.
+    """
+    root_text, subjects, deepest, ordered = entries
+    worktree = Path(worktree)
+    if root_text != str(worktree):
+        raise Denied('prepared declaration worktree changed')
     if deepest >= _SOURCE_DIRECTORY_STACK_LIMIT:
         for subject, expected_hash in subjects:
             if not source_path_is_canonical(subject):
@@ -222,11 +241,7 @@ def validate_source_entries(worktree, entries):
             bindings[current] = observed
         root_depth = len(stack)
         previous_directories = ()
-        root_prefix = root_text.rstrip('/') + '/'
-        for subject, expected_hash in sorted(subjects, key=lambda row: str(row[0])):
-            relative_parts = tuple(part for part in str(subject)[len(root_prefix):].split('/')
-                                   if part not in ('', '.'))
-            parent_parts = relative_parts[:-1]
+        for subject, expected_hash, parent_parts in ordered:
             common = 0
             while (common < min(len(previous_directories), len(parent_parts))
                    and previous_directories[common] == parent_parts[common]):
@@ -401,10 +416,21 @@ class Cohort:
                         raise ValueError('manifest changed')
                 finally:
                     os.close(manifest_fd)
-                entries = json.loads(manifest)['files']
-                if not isinstance(entries, list) or not entries:
-                    raise ValueError('empty source/profile manifest')
-                validate_source_entries(self.worktree, entries)
+                # Reuse only declaration geometry after freshly authenticating the
+                # complete current manifest above. Source bytes, identities and
+                # ancestor bindings are checked again below on every cache hit.
+                cache = getattr(self, '_authenticated_declarations', None)
+                if cache is None:
+                    cache = self._authenticated_declarations = {}
+                key = (str(path), digest, str(self.worktree))
+                entries = cache.get(key)
+                if entries is None:
+                    parsed = json.loads(manifest)['files']
+                    if not isinstance(parsed, list) or not parsed:
+                        raise ValueError('empty source/profile manifest')
+                    entries = _prepare_source_declaration(self.worktree, parsed)
+                    cache[key] = entries
+                _validate_source_declaration(self.worktree, entries)
             except (OSError, ValueError, KeyError, TypeError) as error:
                 raise Denied('source/profile manifest invalid or changed') from error
         d = self.descriptor

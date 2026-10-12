@@ -332,6 +332,36 @@ class PortableControls(unittest.TestCase):
             with self.subTest(frame=frame), self.assertRaises(cohort.Denied):
                 cohort.libtest_text_without_rpc_frames(frame)
 
+    def test_authenticated_declaration_reuse_never_reuses_source_observations(self):
+        with patch.object(cohort, '_prepare_source_declaration', wraps=cohort._prepare_source_declaration) as prepare, \
+             patch.object(cohort, '_source_read_and_check', wraps=cohort._source_read_and_check) as read:
+            instance = self.owner()
+            prepared = prepare.call_count
+            reads = read.call_count
+            self.assertEqual(prepared, 2)
+            instance._check_owner()
+            self.assertEqual(prepare.call_count, prepared)
+            self.assertEqual(read.call_count, 2 * reads)
+            self.source.write_text('changed after declaration reuse')
+            with self.assertRaisesRegex(cohort.Denied, 'source/profile bytes'):
+                instance._check_owner()
+            self.source.write_text('original')
+            instance._check_owner()
+            manifest = self.manifests[0]
+            original = manifest.read_bytes()
+            manifest.write_bytes(original + b' ')
+            with self.assertRaisesRegex(cohort.Denied, 'manifest invalid or changed'):
+                instance._check_owner()
+            manifest.write_bytes(original)
+            self.source.rename(self.root / 'original-source')
+            self.source.symlink_to(self.root / 'original-source')
+            with self.assertRaises(cohort.Denied):
+                instance._check_owner()
+            self.source.unlink()
+            (self.root / 'original-source').rename(self.source)
+            instance._check_owner()
+            self.assertEqual(prepare.call_count, prepared)
+
     def test_source_epoch_rechecks_popped_ancestor_names(self):
         root = self.root / 'epoch'; (root / 'a').mkdir(parents=True); (root / 'z').mkdir()
         first = root / 'a' / 'first'; last = root / 'z' / 'last'
