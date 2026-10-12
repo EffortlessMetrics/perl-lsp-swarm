@@ -16,7 +16,15 @@ fn git(args: &[&str]) -> Option<String> {
     if !output.status.success() {
         return None;
     }
-    let text = String::from_utf8(output.stdout).ok()?;
+    let text = match String::from_utf8(output.stdout) {
+        Ok(text) => text,
+        Err(_) => {
+            // A byte-valued symbolic branch cannot be named by a UTF-8 Cargo
+            // watcher either. Keep the existing label fallback, but rerun it.
+            println!("cargo:rerun-if-changed=build.rs/unrepresentable-git-output");
+            return None;
+        }
+    };
     let text = text.trim();
     if text.is_empty() { None } else { Some(text.to_string()) }
 }
@@ -29,15 +37,44 @@ fn git_path(name: &str) -> Option<PathBuf> {
     if !output.status.success() {
         return None;
     }
-    let text = String::from_utf8(output.stdout).ok()?;
-    Some(PathBuf::from(text.strip_suffix('\n').unwrap_or(&text)))
+    let text = String::from_utf8(output.stdout).ok();
+    let path = text
+        .as_deref()
+        .map(|text| text.strip_suffix('\n').unwrap_or(text))
+        .filter(|text| !text.contains(['\n', '\r']));
+    if let Some(path) = path {
+        Some(PathBuf::from(path))
+    } else {
+        // Cargo's line-oriented UTF-8 watcher protocol cannot name these
+        // metadata paths. This path below a regular source file cannot exist:
+        // stay conservatively dirty rather than retaining a stale revision.
+        println!("cargo:rerun-if-changed=build.rs/unrepresentable-git-path");
+        None
+    }
 }
 
 fn track_revision_inputs() {
     // Missing rerun-if-changed paths are always dirty in Cargo. Exports need
     // only the script; Git repositories additionally track existing metadata.
     println!("cargo:rerun-if-changed=build.rs");
-    for name in ["HEAD", "packed-refs"] {
+    for name in [
+        "PATH",
+        "GIT_CEILING_DIRECTORIES",
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_COMMON_DIR",
+        "GIT_NAMESPACE",
+    ] {
+        println!("cargo:rerun-if-env-changed={name}");
+    }
+    // Files-layout watchers cannot observe a reftable database or namespaced
+    // refs. Preserve label freshness through conservative reruns in those cases.
+    if git(&["config", "--get", "extensions.refStorage"]).is_some_and(|format| format != "files")
+        || std::env::var_os("GIT_NAMESPACE").is_some_and(|namespace| !namespace.is_empty())
+    {
+        println!("cargo:rerun-if-changed=build.rs/unsupported-git-ref-layout");
+    }
+    for name in ["HEAD", "packed-refs", "config", "config.worktree"] {
         if let Some(path) = git_path(name).filter(|path| path.exists()) {
             println!("cargo:rerun-if-changed={}", path.display());
         }
@@ -47,6 +84,11 @@ fn track_revision_inputs() {
     // without declaring a missing path permanently dirty. Other branches and
     // remote refs do not affect the reported source revision.
     let mut names = vec!["refs/tags".to_string()];
+    if git(&["config", "--bool", "--get", "extensions.worktreeConfig"])
+        .is_some_and(|enabled| enabled == "true")
+    {
+        names.push("config.worktree".to_string());
+    }
     if let Some(reference) = git(&["symbolic-ref", "-q", "HEAD"]) {
         names.push(reference);
     }

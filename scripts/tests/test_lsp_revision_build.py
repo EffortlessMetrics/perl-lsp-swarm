@@ -14,6 +14,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import time
 import unittest
 
@@ -37,12 +38,12 @@ class RevisionBuildTests(unittest.TestCase):
 
     def command(self, cwd, args):
         return subprocess.run(args, cwd=cwd, env=self.env, text=True,
-                              capture_output=True, check=True).stdout.strip()
+                              capture_output=True, errors="backslashreplace", check=True).stdout.strip()
 
     def git(self, root, *args):
         return self.command(root, ["git", *args])
 
-    def fixture(self, name, git=True):
+    def fixture(self, name, ref_format=None):
         root = self.proof / name
         crate = root / "crates/probe"
         (crate / "src").mkdir(parents=True)
@@ -50,9 +51,9 @@ class RevisionBuildTests(unittest.TestCase):
         (crate / "Cargo.toml").write_text('[package]\nname="revision-probe"\nversion="0.1.0"\nedition="2021"\n')
         (crate / "build.rs").write_bytes(self.script.read_bytes())
         (crate / "src/main.rs").write_text('fn main() { println!("{} {}", env!("BUILD_REVISION_KIND"), env!("BUILD_REVISION")); }\n')
-        if git:
-            self.git(root, "init", "-q", "-b", "probe")
-            self.commit(root)
+        flags = ["--ref-format=" + ref_format] if ref_format else []
+        self.git(root, "init", "-q", "-b", "probe", *flags)
+        self.commit(root)
         return root
 
     def commit(self, root):
@@ -62,9 +63,12 @@ class RevisionBuildTests(unittest.TestCase):
 
     def build(self, root, label, fresh, expected):
         args = ["run", "-p", "revision-probe", "--offline", "-vv"]
-        wrapper = str(REPO / "scripts/cargo-admitted")
-        pre = subprocess.run([wrapper, "--preflight", *args], cwd=root, env=self.env,
-                             text=True, capture_output=True)
+        # Native Windows uses the existing Python entrypoint; the extensionless
+        # Bash entrypoint is not a native Windows executable.
+        wrapper = ([sys.executable, str(REPO / "scripts/cargo_admitted.py")]
+                   if os.name == "nt" else [str(REPO / "scripts/cargo-admitted")])
+        pre = subprocess.run([*wrapper, "--preflight", *args], cwd=root, env=self.env,
+                             text=True, capture_output=True, errors="backslashreplace")
         report = json.loads(next(line.split(": ", 1)[1] for line in pre.stderr.splitlines()
                                  if line.startswith("cargo-admitted preflight:")))
         budget = root / "budget.json"
@@ -72,8 +76,8 @@ class RevisionBuildTests(unittest.TestCase):
             reserve_bytes=8 * 1024**3, expected_growth_bytes=1024**3,
             basis="Operator sizing: dependency-free revision build script and tiny binary; installed toolchain, offline, no download. Conservative 1 GiB additional growth and 8 GiB reserve. Actual bytes captured each run.")))
         start = time.monotonic()
-        run = subprocess.run([wrapper, "--budget-file", str(budget), *args], cwd=root,
-                             env=self.env, text=True, capture_output=True)
+        run = subprocess.run([*wrapper, "--budget-file", str(budget), *args], cwd=root,
+                             env=self.env, text=True, capture_output=True, errors="backslashreplace")
         elapsed = time.monotonic() - start
         log = run.stdout + run.stderr
         (root / f"{label}.log").write_text(log)
@@ -148,6 +152,9 @@ class RevisionBuildTests(unittest.TestCase):
         self.git(root, "checkout", "-q", "--detach", "HEAD")
         self.build(root, "detach", False, "edited " + self.revision(root))
         self.build(root, "detach-repeat", True, "edited " + self.revision(root))
+        self.git(root, "config", "core.abbrev", "17")
+        self.build(root, "local-config", False, "edited " + self.revision(root))
+        self.build(root, "config-repeat", True, "edited " + self.revision(root))
 
     def test_linked_worktree(self):
         original = self.fixture("original")
@@ -158,6 +165,11 @@ class RevisionBuildTests(unittest.TestCase):
         self.commit(root)
         self.build(root, "commit", False, self.revision(root))
         self.build(root, "commit-repeat", True, self.revision(root))
+        self.git(original, "config", "extensions.worktreeConfig", "true")
+        self.build(root, "worktree-config-enabled", False, self.revision(root))
+        self.git(root, "config", "--worktree", "core.abbrev", "13")
+        self.build(root, "worktree-config-created", False, self.revision(root))
+        self.build(root, "worktree-config-repeat", True, self.revision(root))
         self.git(original, "tag", "linked-tag", self.git(root, "rev-parse", "HEAD"))
         self.build(root, "common-tag", False, "tag linked-tag")
         self.build(root, "tag-repeat", True, "tag linked-tag")
@@ -169,6 +181,51 @@ class RevisionBuildTests(unittest.TestCase):
         self.env = dict(self.env, GIT_CEILING_DIRECTORIES=str(root))
         self.build(root, "cold", False, "unknown unknown")
         self.build(root, "warm", True, "unknown unknown")
+        self.env.pop("GIT_CEILING_DIRECTORIES")
+        self.build(root, "discovery-restored", False, self.revision(root))
+        self.build(root, "discovery-repeat", True, self.revision(root))
+        self.env["GIT_CEILING_DIRECTORIES"] = str(root)
+        self.build(root, "discovery-removed", False, "unknown unknown")
+        self.build(root, "removed-repeat", True, "unknown unknown")
+
+    @unittest.skipUnless(os.name == "posix", "POSIX byte-path control")
+    def test_non_utf8_common_directory_refreshes_conservatively(self):
+        original = self.fixture(os.fsdecode(b"original-\xff"))
+        root = self.proof / "byte-path-linked"
+        self.git(original, "worktree", "add", "-q", "-b", "byte-path-probe", str(root))
+        self.build(root, "cold", False, self.revision(root))
+        # Unrepresentable metadata intentionally trades reuse for freshness.
+        self.build(root, "repeat", False, self.revision(root))
+        self.commit(root)
+        self.build(root, "commit", False, self.revision(root))
+        self.git(original, "tag", "byte-path-tag", self.git(root, "rev-parse", "HEAD"))
+        self.build(root, "tag", False, "tag byte-path-tag")
+
+    def test_reftable_refreshes_conservatively(self):
+        root = self.fixture("reftable", ref_format="reftable")
+        self.build(root, "cold", False, self.revision(root))
+        self.build(root, "repeat", False, self.revision(root))
+        self.commit(root)
+        self.build(root, "commit", False, self.revision(root))
+        self.git(root, "tag", "reftable-tag")
+        self.build(root, "tag", False, "tag reftable-tag")
+
+    @unittest.skipUnless(os.name == "posix", "POSIX byte-ref control")
+    def test_non_utf8_branch_refreshes_conservatively(self):
+        root = self.fixture("byte-branch")
+        self.git(root, "checkout", "-q", "-b", os.fsdecode(b"branch-\xff"))
+        self.build(root, "cold", False, self.revision(root))
+        self.build(root, "repeat", False, self.revision(root))
+        self.commit(root)
+        self.build(root, "commit", False, self.revision(root))
+
+    def test_git_path_environment_refreshes(self):
+        root = self.fixture("git-path-env")
+        self.build(root, "cold", False, self.revision(root))
+        self.build(root, "warm", True, self.revision(root))
+        self.env = dict(self.env, PATH=str(root) + os.pathsep + self.env["PATH"])
+        self.build(root, "path-changed", False, self.revision(root))
+        self.build(root, "path-repeat", True, self.revision(root))
 
 
 if __name__ == "__main__":
