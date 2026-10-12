@@ -15,7 +15,16 @@ import subprocess
 from pathlib import Path
 import shutil
 import sys
-import tomllib
+try:
+    import tomllib
+except ModuleNotFoundError:
+    try:
+        import tomli as tomllib
+    except ModuleNotFoundError as error:
+        raise ImportError(
+            "Producer proof tests require tomli on Python 3.10; "
+            "install scripts/requirements.txt test dependencies"
+        ) from error
 import unittest
 from unittest.mock import Mock, patch
 
@@ -25,6 +34,16 @@ import cargo_admitted as admitted
 
 ROOT=Path(__file__).resolve().parents[2]
 FIXTURE=Path(__file__).parent/'fixtures/routed-resolver-2'
+
+
+@contextlib.contextmanager
+def working_directory(path):
+    previous = os.getcwd()
+    os.chdir(path)
+    try:
+        yield
+    finally:
+        os.chdir(previous)
 
 
 @unittest.skipUnless(sys.platform=='linux', 'Linux ownership interface')
@@ -210,7 +229,7 @@ print('test result: ok. 1 passed; 0 failed; 1 ignored')
                      patch.object(admitted, 'check_capacity', return_value={'policy':'percent'}), \
                      patch.object(admitted, 'budget_scope', wraps=admitted.budget_scope) as scope, \
                      patch.object(admitted.subprocess, 'Popen') as launch, \
-                     contextlib.chdir(self.fixture.root), contextlib.redirect_stderr(output):
+                     working_directory(self.fixture.root), contextlib.redirect_stderr(output):
                     self.assertEqual(admitted.main(['--routed-test-cohorts','--preflight',*invocation]),0)
                     launch.assert_not_called()
                     self.assertEqual(scope.call_args.args[0], effective)

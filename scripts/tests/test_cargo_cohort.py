@@ -544,6 +544,101 @@ class PortableControls(unittest.TestCase):
         self.assertTrue(harness.exists(),'missing enabled-bin artifact must refuse cleanup')
 
 
+    def observed_capture(self, instance, path):
+        parent, _, identity, digest = instance._open(path, allow_links=True)
+        os.close(parent)
+        group = instance._capture_group(path, identity, digest)
+        instance.groups[path] = group
+        return group
+
+    def test_single_link_capture_avoids_scan_but_reopens_hashes_and_binds_exact_primary(self):
+        instance = self.owner(); self.executable()
+        parent, parent_id, identity, digest = instance._open(self.exe, allow_links=True)
+        os.close(parent)
+        real_read = os.read; image_reads = []
+        def read(fd, size):
+            chunk = real_read(fd, size)
+            if chunk and cohort.facts(os.fstat(fd))[:2] == identity[:2]:
+                image_reads.append(fd)
+            return chunk
+        with patch.object(Path, 'rglob', side_effect=AssertionError('single-link capture scanned')), \
+                patch.object(instance, '_check_owner', wraps=instance._check_owner) as owner, \
+                patch.object(cohort.os, 'read', side_effect=read):
+            group = instance._capture_group(self.exe, identity, digest)
+        instance.groups[self.exe] = group
+        self.assertEqual(owner.call_count, 1)
+        self.assertEqual(len(image_reads), 1)
+        self.assertEqual(group['identity'], identity)
+        self.assertEqual(group['initial_identity'], identity)
+        self.assertEqual(group['sha256'], digest)
+        self.assertEqual(cohort.facts(os.fstat(group['fd'])), identity)
+        self.assertEqual(identity[-1], 1)
+        self.assertEqual(group['remaining'], group['aliases'])
+        self.assertTrue(group['reclaimable'])
+        self.assertEqual(len(group['aliases']), 1)
+        alias = group['aliases'][0]
+        self.assertEqual(alias['path'], self.exe)
+        self.assertEqual(alias['parent_identity'], parent_id)
+        self.assertEqual(cohort.directory_identity(self.exe.parent), parent_id)
+        self.assertEqual((os.fstat(alias['parent']).st_dev, os.fstat(alias['parent']).st_ino), parent_id)
+
+    def test_multi_link_capture_keeps_both_root_scans_and_every_alias_fresh_open(self):
+        instance = self.owner(); self.executable()
+        aliases = [self.paths['target']/'second', self.paths['build']/'third']
+        for alias in aliases: os.link(self.exe, alias)
+        scanned = []; original = Path.rglob
+        def scan(root, pattern):
+            scanned.append(root)
+            return original(root, pattern)
+        with patch.object(Path, 'rglob', scan), patch.object(instance, '_check_owner', wraps=instance._check_owner) as owner:
+            group = self.observed_capture(instance, self.exe)
+        self.assertEqual(scanned, list(instance.roots))
+        self.assertEqual(owner.call_count, 4)  # Initial observation + three alias opens.
+        self.assertEqual(group['identity'][-1], 3)
+        self.assertEqual({entry['path'] for entry in group['aliases']}, {self.exe, *aliases})
+        self.assertEqual(cohort.facts(os.fstat(group['fd'])), group['identity'])
+
+    def test_capture_final_held_inode_check_refuses_link_added_after_fresh_open(self):
+        instance = self.owner(); self.executable()
+        parent, _, identity, digest = instance._open(self.exe, allow_links=True); os.close(parent)
+        late = self.paths['build']/'late-after-open'; original = instance._open
+        def opened(path, **kwargs):
+            result = original(path, **kwargs)
+            os.link(path, late)
+            return result
+        with patch.object(instance, '_open', side_effect=opened):
+            with self.assertRaisesRegex(cohort.Denied, 'changed during capture'):
+                instance._capture_group(self.exe, identity, digest)
+        self.assertTrue(self.exe.is_file()); self.assertTrue(late.is_file())
+
+    def test_capture_refuses_late_link_path_parent_pin_preexisting_or_source_changes(self):
+        for change in ('add', 'add-remove', 'remove', 'alias-replace', 'primary', 'parent', 'pin', 'preexisting', 'source'):
+            with self.subTest(change=change):
+                directory = self.paths['target']/change; directory.mkdir()
+                path = directory/'image'
+                instance = self.owner(); self.executable(path)
+                alias = self.paths['build']/change
+                if change in ('remove', 'alias-replace'): os.link(path, alias)
+                parent, _, identity, digest = instance._open(path, allow_links=True); os.close(parent)
+                if change in ('add', 'add-remove'):
+                    os.link(path, alias)
+                    if change == 'add-remove': alias.unlink()
+                elif change == 'remove': alias.unlink()
+                elif change == 'alias-replace': alias.unlink(); alias.write_bytes(b'replaced')
+                elif change == 'primary': path.rename(path.with_name('held-image')); self.executable(path)
+                elif change == 'parent':
+                    directory.rename(directory.with_name(change+'-held'))
+                    directory.symlink_to(directory.with_name(change+'-held'), target_is_directory=True)
+                elif change == 'pin': instance.pinned.add(path)
+                elif change == 'preexisting': instance.preexisting.add(path)
+                elif change == 'source': self.source.write_text('changed')
+                with patch.object(cohort.os, 'unlink', wraps=os.unlink) as unlink:
+                    with self.assertRaises((cohort.Denied, OSError)):
+                        instance._capture_group(path, identity, digest)
+                    unlink.assert_not_called()
+                self.assertTrue(path.is_file())
+                if change == 'source': self.source.write_text('original')
+
     def test_new_private_cargo_alias_group_consumed_once_and_all_names_reclaimed(self):
         alias = self.paths['build'] / 'cargo-alias'
         library = self.paths['target'] / 'shared.rlib'; library.write_bytes(b'library')

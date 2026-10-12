@@ -495,16 +495,20 @@ class Cohort:
         try:
             if facts(os.fstat(fd)) != identity:
                 raise Denied('alias inode changed before capture')
-            for root in self.roots:
-                for candidate in root.rglob('*'):
-                    metadata = candidate.lstat()
-                    if (metadata.st_dev, metadata.st_ino) != identity[:2]:
-                        continue
-                    parent, parent_identity, observed, observed_hash = self._open(candidate, allow_links=True, allow_preexisting=self.retain_preexisting)
-                    parents.append(parent)
-                    if observed != identity or observed_hash != digest:
-                        raise Denied('alias group changed during capture')
-                    aliases.append({'path': candidate, 'parent': parent, 'parent_identity': parent_identity})
+            # A freshly observed nlink of one has exactly one inode name.
+            # Reopen that precise path through every existing owner/path/hash
+            # check; held-fd facts below still reject intervening link changes.
+            candidates = ((path,) if identity[-1] == 1 else
+                          (candidate for root in self.roots for candidate in root.rglob('*')))
+            for candidate in candidates:
+                metadata = candidate.lstat()
+                if (metadata.st_dev, metadata.st_ino) != identity[:2]:
+                    continue
+                parent, parent_identity, observed, observed_hash = self._open(candidate, allow_links=True, allow_preexisting=self.retain_preexisting)
+                parents.append(parent)
+                if observed != identity or observed_hash != digest:
+                    raise Denied('alias group changed during capture')
+                aliases.append({'path': candidate, 'parent': parent, 'parent_identity': parent_identity})
             if len(aliases) != identity[-1] or not aliases:
                 raise Denied('alias count differs from kernel nlink; foreign or unobserved alias')
             if facts(os.fstat(fd)) != identity:
