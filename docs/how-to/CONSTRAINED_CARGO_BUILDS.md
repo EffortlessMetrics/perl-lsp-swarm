@@ -82,7 +82,11 @@ No Rust build is needed for this step (Python 3.11+ or `tomli`, and Git are requ
 Preparation reads required names and pinned commit identities from
 [`policy/release-tag-provenance.toml`](../../policy/release-tag-provenance.toml).
 It fetches missing declared live tag refs from `origin` with explicit refspecs,
-and restores full history for a shallow clone. It changes no Git configuration,
+and restores full history for a shallow clone. Existing pinned tags are requested
+without destinations during shallow recovery, preserving their tag objects even
+if origin has reannotated the same commit. Configured tracking refmaps are disabled
+for this fetch so they cannot update existing refs implicitly.
+It changes no Git configuration,
 preserves `FETCH_HEAD`, and never forces or prunes refs. A conflicting existing
 tag fails before fetching. Unrelated remote tags are not requested. Audited
 `unresolvable = true` lineage records stay governed by the existing manifest;

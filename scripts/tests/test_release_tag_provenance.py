@@ -128,7 +128,9 @@ class GitVerificationTests(unittest.TestCase):
         self.run_git(root, "config", "user.name", "Tag Provenance Test")
         self.run_git(root, "config", "user.email", "test@example.invalid")
 
-    def cloud_fixture(self, root: Path, *, shallow: bool = False) -> tuple[Path, Path, Path]:
+    def cloud_fixture(
+        self, root: Path, *, shallow: bool = False, untagged_tip: bool = False
+    ) -> tuple[Path, Path, Path]:
         upstream = root / "upstream"
         upstream.mkdir()
         self.init_repo(upstream)
@@ -137,6 +139,8 @@ class GitVerificationTests(unittest.TestCase):
         second = self.write_commit(upstream, "second")
         self.run_git(upstream, "tag", "-a", "v0.2.0", "-m", "annotated release")
         self.run_git(upstream, "tag", "v9.9.9")  # Undeclared remote tag must stay absent.
+        if untagged_tip:
+            self.write_commit(upstream, "untagged-tip")
         checkout = root / "cloud"
         args = ["clone", "--no-tags"]
         if shallow:
@@ -219,7 +223,9 @@ class GitVerificationTests(unittest.TestCase):
 
     def test_cloud_shallow_history_is_explicit_then_restored(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
-            _, checkout, manifest = self.cloud_fixture(Path(temp), shallow=True)
+            _, checkout, manifest = self.cloud_fixture(
+                Path(temp), shallow=True, untagged_tip=True
+            )
             self.assertEqual("true", self.run_git(checkout, "rev-parse", "--is-shallow-repository"))
             missing = self.cloud_command(checkout, manifest, "--verify-git")
             self.assertNotEqual(0, missing.returncode)
@@ -227,8 +233,42 @@ class GitVerificationTests(unittest.TestCase):
             restored = self.cloud_command(checkout, manifest, "--prepare-git")
             self.assertEqual(0, restored.returncode, restored.stderr)
             self.assertEqual("false", self.run_git(checkout, "rev-parse", "--is-shallow-repository"))
+            self.assertEqual("3", self.run_git(checkout, "rev-list", "--count", "HEAD"))
+            self.run_git(checkout, "fsck", "--connectivity-only")
             verified = self.cloud_command(checkout, manifest, "--verify-git")
             self.assertEqual(0, verified.returncode, verified.stderr)
+
+    def test_cloud_shallow_reannotation_preserves_existing_tag_objects(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            upstream, checkout, manifest = self.cloud_fixture(
+                Path(temp), shallow=True, untagged_tip=True
+            )
+            self.run_git(
+                checkout, "fetch", "--no-tags", "origin",
+                "refs/tags/v0.1.0:refs/tags/v0.1.0",
+                "refs/tags/v0.2.0:refs/tags/v0.2.0",
+            )
+            self.assertEqual("true", self.run_git(checkout, "rev-parse", "--is-shallow-repository"))
+            original = self.run_git(checkout, "rev-parse", "refs/tags/v0.2.0")
+            commit = self.run_git(checkout, "rev-parse", "refs/tags/v0.2.0^{commit}")
+            self.run_git(upstream, "tag", "-f", "-a", "v0.2.0", "-m", "new annotation", commit)
+            self.assertNotEqual(original, self.run_git(upstream, "rev-parse", "refs/tags/v0.2.0"))
+            # Configured refmaps must not turn a source-only request into a
+            # forced tag update behind the preparation command's back.
+            self.run_git(checkout, "config", "--add", "remote.origin.fetch", "+refs/tags/*:refs/tags/*")
+            git_dir = checkout / ".git"
+            config = (git_dir / "config").read_bytes()
+            (git_dir / "FETCH_HEAD").write_text("preserved reannotation receipt\n")
+            restored = self.cloud_command(checkout, manifest, "--prepare-git")
+            self.assertEqual(0, restored.returncode, restored.stderr)
+            self.assertEqual(original, self.run_git(checkout, "rev-parse", "refs/tags/v0.2.0"))
+            self.assertEqual(commit, self.run_git(checkout, "rev-parse", "refs/tags/v0.2.0^{commit}"))
+            self.assertEqual(["v0.1.0", "v0.2.0"], self.run_git(checkout, "tag", "--list").splitlines())
+            self.assertEqual(config, (git_dir / "config").read_bytes())
+            self.assertEqual("preserved reannotation receipt\n", (git_dir / "FETCH_HEAD").read_text())
+            self.assertEqual("false", self.run_git(checkout, "rev-parse", "--is-shallow-repository"))
+            self.assertEqual("3", self.run_git(checkout, "rev-list", "--count", "HEAD"))
+            self.run_git(checkout, "fsck", "--connectivity-only")
 
     def test_local_ref_drift_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

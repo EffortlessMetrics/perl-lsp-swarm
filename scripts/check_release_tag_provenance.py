@@ -417,13 +417,15 @@ def prepare_git_refs(data: dict[str, Any], repo_root: Path) -> list[str]:
             if pinned.returncode != 0 or pinned.stdout.strip() != row["current_sha"]:
                 errors.append(f"{ref} conflicts with manifest pin; existing tag preserved")
             elif is_shallow:
-                refs.append(f"{ref}:{ref}")
+                # Fetch history without updating a valid local tag object,
+                # even if origin has reannotated the same pinned commit.
+                refs.append(ref)
     if errors:
         return errors
     if refs:
         options = [
             "--atomic", "--no-tags", "--no-prune",
-            "--no-recurse-submodules", "--no-write-fetch-head",
+            "--no-recurse-submodules", "--no-write-fetch-head", "--refmap=",
         ]
         if is_shallow:
             options.append("--unshallow")
