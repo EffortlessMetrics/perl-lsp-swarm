@@ -144,6 +144,42 @@ class StorageDoctorTests(unittest.TestCase):
         self.assertIn(str(path), result.stdout)
         self.assertEqual(payload.stat(), before)
 
+    @unittest.skipUnless(os.name == "posix" and shutil.which("du"), "requires POSIX du accounting")
+    def test_devplane_hardlinks_are_labeled_as_order_dependent_batch_attribution(self):
+        (self.bin / "du").unlink()
+        devplane = Path(self.env["DEVPLANE"])
+        first = devplane / "a-build"
+        later = devplane / "z-target"
+        first.mkdir(parents=True)
+        later.mkdir()
+        payload = first / "shared-output"
+        payload.write_bytes(b"x" * (128 * 1024))
+        os.link(payload, later / payload.name)
+        self.env["LC_ALL"] = "C"
+
+        def du(*paths, human=False):
+            return subprocess.check_output(
+                ["du", "-sh" if human else "-sk", *map(str, paths)],
+                env=self.env, text=True)
+
+        batch = du(first, later)
+        reverse = du(later, first)
+        independent = [int(du(path).split("\t", 1)[0]) for path in (first, later)]
+        def sizes(text):
+            return [int(row.split("\t", 1)[0]) for row in text.splitlines()]
+        # Real nonempty inode sharing distinguishes unique batch attribution
+        # from summing both standalone footprints without relying on timings.
+        self.assertGreater(payload.stat().st_blocks, 0)
+        self.assertLess(sum(sizes(batch)), sum(independent))
+        self.assertGreater(sizes(batch)[0], sizes(batch)[1])
+        self.assertGreater(sizes(reverse)[0], sizes(reverse)[1])
+
+        result = self.run_doctor()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        section = result.stdout.split("== devplane ==\n", 1)[1].split("\n== cargo env ==", 1)[0]
+        note = "Batch du counts shared hardlinks once; per-path sizes depend on traversal order."
+        self.assertEqual(section, note + "\n" + du(first, later, human=True))
+
 
 if __name__ == "__main__":
     unittest.main()
