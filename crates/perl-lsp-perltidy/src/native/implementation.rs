@@ -160,14 +160,43 @@ impl NativeFormatter {
                     Some(formatted) => formatted,
                     None => format!("{indent}{}", body.trim_start()),
                 }
-            } else if let Some(opener) = indent_stack.last() {
-                let indent = format!("{opener}{unit}");
-                match format_simple_line(&format!("{indent}{}", body.trim_start()), config) {
-                    Some(formatted) => formatted,
-                    None => body.to_string(),
-                }
             } else {
-                format_simple_line(body, config).unwrap_or_else(|| body.to_string())
+                // Non-boundary lines can still open or close a block the
+                // boundary recognizer does not admit (anonymous subs,
+                // `eval {`, `do {`, multiline hashes). Track those from the
+                // comment-stripped source shape so nested bodies are not
+                // flattened to the outer level; lines that neither open
+                // nor close keep the original behavior outside a block.
+                let (code, _comment) = split_trailing_comment(body);
+                let code = code.trim();
+                let closes = code.starts_with('}');
+                let opens = code.ends_with('{') && !code.starts_with('{');
+                let popped = if closes { indent_stack.pop() } else { None };
+                let indent =
+                    popped.or_else(|| indent_stack.last().map(|opener| format!("{opener}{unit}")));
+                match indent {
+                    Some(indent) => {
+                        let candidate = format!("{indent}{}", body.trim_start());
+                        let formatted = match format_simple_line(&candidate, config) {
+                            Some(formatted) => formatted,
+                            None if closes || opens => candidate,
+                            None => body.to_string(),
+                        };
+                        if opens {
+                            indent_stack.push(indent);
+                        }
+                        formatted
+                    }
+                    None => {
+                        let formatted =
+                            format_simple_line(body, config).unwrap_or_else(|| body.to_string());
+                        if opens {
+                            let leading = body[..body.len() - body.trim_start().len()].to_string();
+                            indent_stack.push(leading);
+                        }
+                        formatted
+                    }
+                }
             };
             formatted
                 .push_str(&preserve_generated_line_endings(formatted_body, generated_line_ending));

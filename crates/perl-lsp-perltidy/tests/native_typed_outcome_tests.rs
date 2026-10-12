@@ -530,3 +530,20 @@ fn reindent_leaves_literal_preserve_documents_unchanged() {
     let result = formatter.format_document(source, &FormatConfig::default());
     assert_eq!(result.formatted, expected);
 }
+
+#[test]
+fn reindent_keeps_anonymous_sub_bodies_nested() {
+    let formatter = NativeFormatter::new();
+    // Already-correct nesting through a non-boundary opener must be a
+    // no-op (regression: bodies were flattened to the outer level).
+    let correct = "sub outer {\n    my $f = sub {\n        my $x = 1;\n    };\n    my $y = 2;\n}\n";
+    let result = formatter.format_document(correct, &FormatConfig::default());
+    assert_eq!(result.formatted, correct);
+    assert!(!result.changed);
+
+    let misindented = "sub outer {\nmy $f = sub {\nmy $x = 1;\n};\nmy $y = 2;\n}\n";
+    let fixed = formatter.format_document(misindented, &FormatConfig::default());
+    assert_eq!(fixed.formatted, correct);
+    let second = formatter.format_document(&fixed.formatted, &FormatConfig::default());
+    assert!(!second.changed);
+}
