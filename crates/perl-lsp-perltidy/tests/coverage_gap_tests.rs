@@ -13,7 +13,7 @@ use perl_subprocess_runtime::mock::{MockResponse, MockSubprocessRuntime};
 use perl_tdd_support::must;
 use std::sync::Arc;
 
-// ── TextPosition ─────────────────────────────────────────────────────────────
+// â”€â”€ TextPosition â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 #[test]
 fn text_position_new_stores_line_and_character() {
@@ -22,7 +22,7 @@ fn text_position_new_stores_line_and_character() {
     assert_eq!(pos.character, 7);
 }
 
-// ── TextRange ────────────────────────────────────────────────────────────────
+// â”€â”€ TextRange â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 #[test]
 fn text_range_new_stores_start_and_end() {
@@ -43,7 +43,7 @@ fn text_range_whole_document_empty_string() {
 
 #[test]
 fn text_range_whole_document_single_line_no_newline() {
-    // "hello" has 5 chars, no newline — whole doc is line 0, char 5.
+    // "hello" has 5 chars, no newline â€” whole doc is line 0, char 5.
     let range = TextRange::whole_document("hello");
     assert_eq!(range.start, TextPosition::new(0, 0));
     assert_eq!(range.end, TextPosition::new(0, 5));
@@ -51,7 +51,7 @@ fn text_range_whole_document_single_line_no_newline() {
 
 #[test]
 fn text_range_whole_document_multi_line() {
-    // Three lines: "a\nb\nc" — last line is index 2, length 1.
+    // Three lines: "a\nb\nc" â€” last line is index 2, length 1.
     let range = TextRange::whole_document("a\nb\nc");
     assert_eq!(range.start, TextPosition::new(0, 0));
     assert_eq!(range.end, TextPosition::new(2, 1));
@@ -66,7 +66,7 @@ fn text_range_whole_document_trailing_newline_ends_on_final_empty_line() {
     assert_eq!(range.end, TextPosition::new(1, 0));
 }
 
-// ── TextEdit ─────────────────────────────────────────────────────────────────
+// â”€â”€ TextEdit â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 #[test]
 fn text_edit_new_stores_range_and_text() {
@@ -76,7 +76,7 @@ fn text_edit_new_stores_range_and_text() {
     assert_eq!(edit.new_text, "replacement");
 }
 
-// ── FormatDiagnostic ─────────────────────────────────────────────────────────
+// â”€â”€ FormatDiagnostic â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 #[test]
 fn format_diagnostic_new_without_range() {
@@ -116,7 +116,7 @@ fn format_diagnostic_severity_warning_variant() {
     assert_eq!(diag.severity, FormatDiagnosticSeverity::Warning);
 }
 
-// ── FormatResult ─────────────────────────────────────────────────────────────
+// â”€â”€ FormatResult â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 #[test]
 fn format_result_unchanged_has_no_edits_or_diagnostics() {
@@ -127,7 +127,7 @@ fn format_result_unchanged_has_no_edits_or_diagnostics() {
     assert!(result.diagnostics.is_empty());
 }
 
-// ── FormatDoc IR ─────────────────────────────────────────────────────────────
+// â”€â”€ FormatDoc IR â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 #[test]
 fn format_doc_hardline_renders_newline_with_indent() {
@@ -211,7 +211,7 @@ fn format_doc_indent_indents_parts_at_next_level() {
     assert!(rendered.contains("\n  x"), "rendered: {rendered:?}");
 }
 
-// ── FormatterMode / enum serde roundtrips ────────────────────────────────────
+// â”€â”€ FormatterMode / enum serde roundtrips â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 #[test]
 fn formatter_mode_serde_roundtrip() -> Result<(), Box<dyn std::error::Error>> {
@@ -297,7 +297,7 @@ fn keyword_spacing_serde_roundtrip() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-// ── NativeFormatter — apply_final_newline edge cases ─────────────────────────
+// â”€â”€ NativeFormatter â€” apply_final_newline edge cases â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 #[test]
 fn native_formatter_insert_final_newline_on_crlf_source() {
@@ -331,7 +331,7 @@ fn native_formatter_preserve_final_newline_keeps_source_unchanged() {
     assert_eq!(result.formatted, source);
 }
 
-// ── PerlTidyFormatter — cache_len ────────────────────────────────────────────
+// â”€â”€ PerlTidyFormatter â€” cache_len â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 #[test]
 fn cache_len_grows_with_each_unique_format_call() {
@@ -373,7 +373,7 @@ fn cache_len_resets_after_clear_cache() {
     assert_eq!(formatter.cache_len(), 0);
 }
 
-// ── BuiltInFormatter — net_delimiter_delta escape handling ───────────────────
+// â”€â”€ BuiltInFormatter â€” net_delimiter_delta escape handling â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 #[test]
 fn builtin_formatter_does_not_count_braces_inside_single_quoted_strings() {
@@ -414,7 +414,7 @@ fn builtin_formatter_stops_counting_at_comment_hash() {
     assert_eq!(lines[2], "}");
 }
 
-// ── BuiltInFormatter — indent_columns=None fallback ──────────────────────────
+// â”€â”€ BuiltInFormatter â€” indent_columns=None fallback â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 #[test]
 fn builtin_formatter_default_indent_when_indent_columns_none() {
@@ -426,10 +426,10 @@ fn builtin_formatter_default_indent_when_indent_columns_none() {
     assert_eq!(lines[1], "    print;");
 }
 
-// ── NativeFormatter — literal preserve regions ───────────────────────────────
+// â”€â”€ NativeFormatter â€” literal preserve regions â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 #[test]
-fn native_formatter_refuses_format_declaration_start() {
+fn native_formatter_preserves_format_declaration() {
     // "format NAME =" at start of line triggers format body detection.
     let formatter = NativeFormatter::new();
     let source = "format REPORT =\n@<<<\n$name\n.\n";
@@ -438,54 +438,57 @@ fn native_formatter_refuses_format_declaration_start() {
     let result = formatter.format_document(source, &config);
 
     assert!(!result.changed);
-    assert_eq!(result.diagnostics[0].code, "native.format.literal_preserve_region");
-    assert!(result.diagnostics[0].message.contains("format body"));
+    assert_eq!(result.formatted, source);
+    assert!(result.diagnostics.is_empty());
 }
 
 #[test]
-fn native_formatter_refuses_pod_head2_and_other_pod_markers() {
+fn native_formatter_preserves_pod_head2_and_other_pod_markers() {
     // =head2 is a valid POD start marker.
     let formatter = NativeFormatter::new();
     let source = "=head2 SYNOPSIS\n\nSome text.\n\n=cut\n\nmy $x = 1;\n";
     let result = formatter.format_document(source, &FormatConfig::default());
 
     assert!(!result.changed);
-    assert_eq!(result.diagnostics[0].code, "native.format.literal_preserve_region");
-    assert!(result.diagnostics[0].message.contains("POD"));
+    assert_eq!(result.formatted, source);
+    assert!(result.diagnostics.is_empty());
 }
 
 #[test]
-fn native_formatter_refuses_pod_encoding_marker() {
+fn native_formatter_preserves_pod_encoding_marker() {
     let formatter = NativeFormatter::new();
     let source = "=encoding utf-8\n\n=cut\n\nmy $x = 1;\n";
     let result = formatter.format_document(source, &FormatConfig::default());
 
     assert!(!result.changed);
-    assert!(result.diagnostics[0].message.contains("POD"));
+    assert_eq!(result.formatted, source);
+    assert!(result.diagnostics.is_empty());
 }
 
 #[test]
-fn native_formatter_refuses_indented_heredoc() {
+fn native_formatter_preserves_indented_heredoc() {
     // <<~ is the indented heredoc introduced in Perl 5.26.
     let formatter = NativeFormatter::new();
     let source = "print <<~END;\n  body\nEND\n";
     let result = formatter.format_document(source, &FormatConfig::default());
 
     assert!(!result.changed);
-    assert!(result.diagnostics[0].message.contains("heredoc"));
+    assert_eq!(result.formatted, source);
+    assert!(result.diagnostics.is_empty());
 }
 
 #[test]
-fn native_formatter_refuses_double_quoted_heredoc_marker() {
+fn native_formatter_preserves_double_quoted_heredoc_marker() {
     let formatter = NativeFormatter::new();
     let source = "print <<\"HEREDOC\";\nbody\nHEREDOC\n";
     let result = formatter.format_document(source, &FormatConfig::default());
 
     assert!(!result.changed);
-    assert!(result.diagnostics[0].message.contains("heredoc"));
+    assert_eq!(result.formatted, source);
+    assert!(result.diagnostics.is_empty());
 }
 
-// ── NativeFormatter — format_range parse gate ────────────────────────────────
+// â”€â”€ NativeFormatter â€” format_range parse gate â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 #[test]
 fn native_format_range_off_mode_returns_unchanged() {
@@ -512,7 +515,7 @@ fn native_format_range_skips_when_source_has_parse_error() {
     assert_eq!(result.diagnostics[0].code, "native.format.parse_error");
 }
 
-// ── PerlTidyConfig — serialization roundtrip ─────────────────────────────────
+// â”€â”€ PerlTidyConfig â€” serialization roundtrip â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 #[test]
 fn perl_tidy_config_pbp_serializes_and_deserializes() -> Result<(), Box<dyn std::error::Error>> {
@@ -534,7 +537,7 @@ fn perl_tidy_config_gnu_to_args_contains_expected_flags() {
     assert!(args.contains(&"--no-vertical-alignment".to_string()));
 }
 
-// ── PerlTidyConfig — block_comment_indentation flag ─────────────────────────
+// â”€â”€ PerlTidyConfig â€” block_comment_indentation flag â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 #[test]
 fn config_to_args_includes_block_comment_indentation_flag() {
@@ -543,7 +546,7 @@ fn config_to_args_includes_block_comment_indentation_flag() {
     assert!(args.contains(&"--block-comment-indentation=2".to_string()));
 }
 
-// ── FormatSuggestion struct fields ───────────────────────────────────────────
+// â”€â”€ FormatSuggestion struct fields â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 #[test]
 fn format_suggestion_description_field_for_line_unchanged_case() {

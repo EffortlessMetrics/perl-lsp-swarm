@@ -520,12 +520,12 @@ fn reindents_misindented_sub_and_conditional_blocks() {
 }
 
 #[test]
-fn reindent_leaves_literal_preserve_documents_unchanged() {
-    // The document-level literal-preserve gate still refuses documents
-    // containing heredocs wholesale; relaxing it is a separate claim.
+fn formats_around_literal_preserve_regions() {
+    // #17708: heredoc lines stay byte-exact while surrounding code is
+    // formatted and reindented.
     let formatter = NativeFormatter::new();
     let source = "sub foo {\nmy $x = <<'EOF';\n  keep   me\nEOF\nmy $y = 1;\n}\n";
-    let expected = source;
+    let expected = "sub foo {\nmy $x = <<'EOF';\n  keep   me\nEOF\n    my $y = 1;\n}\n";
 
     let result = formatter.format_document(source, &FormatConfig::default());
     assert_eq!(result.formatted, expected);
