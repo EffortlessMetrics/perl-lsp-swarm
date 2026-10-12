@@ -48,8 +48,8 @@ worktree path or restore backdated source over its build state without a separat
 verified fresh qualification; this path partition is not content-addressed state.
 
 For a focused `xtask` gate, use the supported builtin `run` route from the same
-canonical worktree and with the same admitted `DEVPLANE`, Cargo home and temporary
-storage settings as the earlier producer:
+canonical worktree and with the same admitted `DEVPLANE`, Cargo home and temporary-storage
+settings as the earlier producer:
 
 ```bash
 scripts/cargo-admitted run -p xtask --locked -- gates --gate perl_token_leaf_contract --receipt --base origin/main
