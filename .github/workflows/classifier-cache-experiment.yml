@@ -1,0 +1,40 @@
+name: Classifier cache experiment
+
+# Issue17613: branch-only diagnostic. Push proves the supported trigger cheaply;
+# measurements will use explicit dispatch after that proof. No release path.
+on:
+  push:
+    branches: [perf/classifier-cache-17613]
+    paths:
+      - .github/workflows/classifier-cache-experiment.yml
+      - scripts/ci/classifier_cache_experiment.py
+      - scripts/ci/test_classifier_cache_experiment.py
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Diagnostic phase
+        type: choice
+        default: probe
+        options: [probe, experiment]
+
+permissions:
+  contents: read
+
+jobs:
+  trigger-probe:
+    name: Branch-only classifier experiment trigger
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+      - name: Bind the non-release probe to its checked-out subject
+        env:
+          EXPECTED_HEAD: ${{ github.sha }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          python3 -c 'import json,os; print(json.dumps({"kind":"classifier-cache-trigger-probe","head":os.environ["EXPECTED_HEAD"],"event":os.environ["EVENT_NAME"],"cargo_build_launched":False}))'
