@@ -226,16 +226,9 @@ impl LspServer {
                         }
                     }
 
-                    // If no signature found, return a generic one
-                    return Ok(Some(json!({
-                        "signatures": [json!({
-                            "label": format!("{}(...)", function_name),
-                            "documentation": null,
-                            "parameters": []
-                        })],
-                        "activeSignature": active_signature,
-                        "activeParameter": active_param
-                    })));
+                    // A call's spelling alone does not establish a signature.
+                    // Complete the request without inventing a callable contract.
+                    return Ok(Some(Value::Null));
                 }
             }
         } else {
