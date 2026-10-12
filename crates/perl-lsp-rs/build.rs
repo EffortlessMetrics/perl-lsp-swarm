@@ -2,6 +2,7 @@
 #![allow(clippy::pedantic, clippy::panic)]
 
 use std::error::Error;
+use std::path::PathBuf;
 
 /// Run a git command, returning its trimmed stdout only when it actually
 /// succeeded and produced something.
@@ -18,6 +19,49 @@ fn git(args: &[&str]) -> Option<String> {
     let text = String::from_utf8(output.stdout).ok()?;
     let text = text.trim();
     if text.is_empty() { None } else { Some(text.to_string()) }
+}
+
+/// Resolve metadata through Git so linked worktrees use their own HEAD and
+/// their common refs. Preserve path whitespace rather than trimming it.
+fn git_path(name: &str) -> Option<PathBuf> {
+    let output =
+        std::process::Command::new("git").args(["rev-parse", "--git-path", name]).output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8(output.stdout).ok()?;
+    Some(PathBuf::from(text.strip_suffix('\n').unwrap_or(&text)))
+}
+
+fn track_revision_inputs() {
+    // Missing rerun-if-changed paths are always dirty in Cargo. Exports need
+    // only the script; Git repositories additionally track existing metadata.
+    println!("cargo:rerun-if-changed=build.rs");
+    for name in ["HEAD", "packed-refs"] {
+        if let Some(path) = git_path(name).filter(|path| path.exists()) {
+            println!("cargo:rerun-if-changed={}", path.display());
+        }
+    }
+    // Watch tag creation/deletion and the current branch, including a loose
+    // ref appearing after it was packed. An existing ancestor detects creation
+    // without declaring a missing path permanently dirty. Other branches and
+    // remote refs do not affect the reported source revision.
+    let mut names = vec!["refs/tags".to_string()];
+    if let Some(reference) = git(&["symbolic-ref", "-q", "HEAD"]) {
+        names.push(reference);
+    }
+    for name in names {
+        if let Some(mut path) = git_path(&name) {
+            while !path.exists() {
+                if !path.pop() {
+                    break;
+                }
+            }
+            if path.exists() {
+                println!("cargo:rerun-if-changed={}", path.display());
+            }
+        }
+    }
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -45,10 +89,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     // Configure check-cfg for test-only cfg attributes
     println!("cargo:rustc-check-cfg=cfg(ci)");
 
-    // Re-run build script when HEAD or refs change, so the revision stays fresh
-    println!("cargo:rerun-if-changed=../../.git/HEAD");
-    println!("cargo:rerun-if-changed=../../.git/refs/");
-    println!("cargo:rerun-if-changed=../../.git/packed-refs");
+    track_revision_inputs();
 
     Ok(())
 }
