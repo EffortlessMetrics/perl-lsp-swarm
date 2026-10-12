@@ -215,6 +215,13 @@ subreaper closure do not supply discovery of unknown live detached children.
 End-to-end cohort cancellation and reclamation require a supported native host;
 portable fault-injected controls cannot replace that qualification.
 
+Nested host/test runners that promise reaping before return must own and reap
+their inner child scope before reporting that boundary. Later cohort or outer
+Cargo settlement cannot retroactively satisfy it. A terminated but unreaped
+zombie does not satisfy a synchronous-reaping contract, and changing its liveness
+oracle to report dead would weaken that proof. Inner runner failures remain
+product failures even when the cohort subsequently settles successfully.
+
 ### Staged native Clippy
 
 The existing owner admits only this finite Linux request (optional `--offline`):

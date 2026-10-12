@@ -112,6 +112,16 @@ class PortableControls(unittest.TestCase):
         self.assertTrue(self.exe.exists())
         with self.assertRaises(cohort.Denied): self.run_portable(instance)
 
+    def test_manifest_read_failure_or_interrupt_closes_descriptor(self):
+        instance = self.owner()
+        before = len(list(Path('/proc/self/fd').iterdir()))
+        for error, outcome in ((OSError('read control'), cohort.Denied),
+                               (KeyboardInterrupt('interrupt control'), KeyboardInterrupt)):
+            with patch.object(cohort.os, 'read', side_effect=error):
+                with self.assertRaises(outcome):
+                    instance._check_owner()
+            self.assertEqual(len(list(Path('/proc/self/fd').iterdir())), before)
+
     def test_failed_producer_consumer_unsettled_or_interrupted_preserve(self):
         for producer_status, consumer_status, settled, cancelled in [(17,0,True,False), (0,19,True,False), (0,0,False,False)]:
             with self.subTest(values=(producer_status,consumer_status,settled,cancelled)):

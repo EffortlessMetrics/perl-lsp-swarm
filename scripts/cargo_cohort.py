@@ -11,6 +11,7 @@ import hashlib
 import re
 import json
 import os
+import sys
 from pathlib import Path
 import stat
 import subprocess
@@ -135,8 +136,12 @@ class Cohort:
                     before = os.fstat(manifest_fd)
                     if not stat.S_ISREG(before.st_mode) or before.st_size > 8 * 1024 * 1024:
                         raise ValueError('manifest must be bounded regular file')
-                    with os.fdopen(os.dup(manifest_fd), 'rb') as stream:
-                        manifest = stream.read(8 * 1024 * 1024 + 1)
+                    manifest = bytearray()
+                    while len(manifest) <= 8 * 1024 * 1024:
+                        chunk = os.read(manifest_fd, min(65536, 8 * 1024 * 1024 + 1 - len(manifest)))
+                        if not chunk:
+                            break
+                        manifest.extend(chunk)
                     if facts(before) != facts(os.fstat(manifest_fd)) or facts(before) != facts(path.lstat()) or hashlib.sha256(manifest).hexdigest() != digest:
                         raise ValueError('manifest changed')
                 finally:
@@ -267,7 +272,6 @@ class Cohort:
                 status = self._launch(tree, producer, child_env, stdout=output)
                 output.seek(0)
                 for line in output:
-                    import sys
                     sys.stdout.buffer.write(line)
                     if status == 0:
                         try:
