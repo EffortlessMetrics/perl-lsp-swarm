@@ -3,7 +3,7 @@
 Owner: #17532 under #17511 / #17509. **Synthetic reference cases, not an
 executable profile, real-project benchmark, or EIR/native conformance result.**
 
-`semantics.t` runs the supplied source on stock Perl against 50 fixed expectations.
+`semantics.t` runs the supplied source on stock Perl against 56 fixed expectations.
 The six `.pl` files contain the computation. The separate driver loads those exact
 files, supplies arguments and caller context, captures results/warnings/output, and
 emits TAP. Its use of `Test::More`, `FindBin`, `File::Spec`, `Config`, `do`, capture
@@ -27,8 +27,11 @@ It is an explicit proof route, not yet an automated CI gate.
 
 The driver reports Perl version, architecture, IV width and NV width. Retain the
 full `perl -V` result when comparing hosts. Current local proof is Perl 5.40.1,
-`x86_64-linux-gnu-thread-multi`, 8-byte IV and NV. This is not a supported-version
-matrix or a claim about Perl's internal scalar representation.
+`x86_64-linux-gnu-thread-multi`, 8-byte IV and NV. The unwind extension
+(assertions 49-54) is proven on stock Perl v5.42.0 `MSWin32-x64-multi-thread`
+and v5.38.2 `x86_64-linux-gnu-thread-multi`, both 8-byte IV and NV. This is
+not a supported-version matrix or a claim about Perl's internal scalar
+representation.
 
 ## Source families and remaining owners
 
@@ -43,7 +46,7 @@ The combined driver is not the source unit for a first EIR admission test.
 | `control.pl` | selected-arm effects, short circuit, zero/multiple loop iterations, `next`/`last`/`redo` and `continue` | #2350 / #2017 / #2275; exact control families must be independently admitted |
 | `places.pl` | evaluated-once compound place, `foreach` element alias | #2413 / #4847 / #5244 / #2350; aggregate and alias obligations may extend beyond the first scalar slice |
 | `context.pl` | scalar/list/void caller context through `wantarray` and a caller-visible write | #2351 / #2448 / #17513; later-family obligation unless explicitly admitted |
-| `unwind.pl` | ordinary store survives `die`, nested `local` restoration, return cleanup, no post-failure fallthrough | #2354 / #6661 / #17534; later-family obligation, not implicit v1 exception admission |
+| `unwind.pl` | ordinary store survives `die`, nested `local` restoration, return cleanup, no post-failure fallthrough, shared-alias exactly-once under failure, cross-frame local unwind, clean-eval error channel | #2354 / #6661 / #17534; later-family obligation, not implicit v1 exception admission |
 
 A future runtime must consume the original selected file and explicit entry and
 inputs through canonical lowering. Admission must account for all represented
@@ -60,12 +63,16 @@ numeric-use-then-increment (`"10"`), truth from definedness, shared `@_` cells f
 copies, and scalar return of a list expression from its length. The same variable
 is not modified twice in a single unspecified-order expression.
 
-Offline one-defect checks against the stock-Perl driver killed 17 syntax-valid
+Offline one-defect checks against the stock-Perl driver killed 24 syntax-valid
 mutations: wrong arithmetic operand, truth-as-definedness, defined-or-as-or, lost
 increment alias, copied argument cells, forced scalar context, swapped ternary
 arms, AND-as-OR, repeated place evaluation, wrong loop update, `next`-as-`last`,
 `redo`-as-`next`, rollback of the pre-failure store, omitted `local`, doubled
-pre-failure effect, unexpected warning and unexpected output. A syntax error or
+pre-failure effect, unexpected warning, unexpected output, lost shared-alias
+write under failure, copied shared-alias args, global rollback of shared
+effects, replayed post-`eval` effect, missing callee `local`, an unset error
+channel on success, and pre-`eval` error capture against a seeded dirty
+channel. A syntax error or
 process timeout was not counted as a semantic mutation kill. These checks do not
 prove the future Rust/native implementation; #17522 owns that qualification.
 
