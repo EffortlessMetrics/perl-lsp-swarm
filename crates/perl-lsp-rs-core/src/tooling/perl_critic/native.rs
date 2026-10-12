@@ -879,6 +879,41 @@ impl CriticRule for ProhibitLeadingZerosRule {
     }
 }
 
+/// Default maximum number of body lines allowed for one named subroutine
+/// before [`SubTooLongRule`] reports it.
+///
+/// No per-rule threshold exists under `[critic.rules.*]` in
+/// [`CriticConfig`](super::CriticConfig) today, so this named constant is
+/// the single source for the limit until such plumbing exists.
+pub const DEFAULT_MAX_SUB_LINES: usize = 50;
+
+/// Native rule that reports named subroutines whose body is too long.
+///
+/// The body line count runs from the opening-brace line to the
+/// closing-brace line inclusive, using the subroutine body node's span.
+/// A subroutine whose count is exactly [`DEFAULT_MAX_SUB_LINES`] passes;
+/// only a count above it fires, once, at the sub header span.
+/// Anonymous subroutines have no name to report against and are ignored.
+pub struct SubTooLongRule;
+
+impl CriticRule for SubTooLongRule {
+    fn id(&self) -> &'static str {
+        "native.maintainability.sub_too_long"
+    }
+
+    fn category(&self) -> CriticCategory {
+        CriticCategory::Maintainability
+    }
+
+    fn default_severity(&self) -> Severity {
+        Severity::Stern
+    }
+
+    fn check(&self, ctx: &CriticContext<'_>, out: &mut Vec<CriticFinding>) {
+        collect_sub_too_long_findings(self, ctx.source, ctx.ast, out);
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct MissingPodSection {
     name: &'static str,
@@ -2483,6 +2518,42 @@ fn position_for_byte_offset(content: &str, offset: usize) -> Position {
 
 fn usize_to_u32(value: usize) -> u32 {
     value.min(u32::MAX as usize) as u32
+}
+
+fn collect_sub_too_long_findings(
+    rule: &SubTooLongRule,
+    source: &str,
+    node: &Node,
+    out: &mut Vec<CriticFinding>,
+) {
+    if let NodeKind::Subroutine { name: Some(name), name_span, body, .. } = &node.kind {
+        let body_range = range_for_byte_span(source, body.location.start, body.location.end);
+        let line_count = (body_range.end.line.saturating_sub(body_range.start.line) + 1) as usize;
+        if line_count > DEFAULT_MAX_SUB_LINES {
+            let header_end = name_span.map_or(body.location.start, |span| span.end);
+            let range = range_for_byte_span(source, node.location.start, header_end);
+            out.push(CriticFinding {
+                rule_id: rule.id().to_string(),
+                category: rule.category(),
+                severity: rule.default_severity(),
+                range,
+                message: format!(
+                    "Subroutine '{name}' is too long ({line_count} lines, maximum is {DEFAULT_MAX_SUB_LINES})"
+                ),
+                explanation: format!(
+                    "Subroutine '{name}' spans {line_count} lines, which exceeds the maximum of {DEFAULT_MAX_SUB_LINES}. Split it into smaller subroutines."
+                ),
+                suppression_key: rule.id().to_string(),
+                observed_shape: CriticFindingShape::General,
+                related: Vec::new(),
+                fix: None,
+            });
+        }
+    }
+
+    for child in node.children() {
+        collect_sub_too_long_findings(rule, source, child, out);
+    }
 }
 
 fn collect_leading_zeros_findings(
@@ -5769,5 +5840,116 @@ if ($x = 1) { print $x; }
         );
         assert_eq!(violations[0].severity, Severity::Stern);
         assert_eq!(violations[0].file, "lib/App.pm");
+    }
+
+    fn long_sub_source(name: &str, interior_lines: usize) -> String {
+        let mut source = format!("use strict;\nuse warnings;\nsub {name} {{\n");
+        for _ in 0..interior_lines {
+            source.push_str("    print 1;\n");
+        }
+        source.push_str("}\n");
+        source
+    }
+
+    #[test]
+    fn native_sub_too_long_rule_reports_sub_over_the_limit() {
+        // 1 opening line + 49 interior lines + 1 closing line = 51 body lines.
+        let source = long_sub_source("too_long", DEFAULT_MAX_SUB_LINES - 1);
+        let ast = parse_source(&source);
+        let config = CriticConfig::default();
+        let ctx = CriticContext::new(&source, &ast, &config);
+        let registry = NativeCriticRegistry::with_rules(vec![Box::new(SubTooLongRule)]);
+
+        let findings = registry.check(&ctx);
+
+        assert_eq!(findings.len(), 1);
+        let finding = &findings[0];
+        assert_eq!(finding.rule_id, "native.maintainability.sub_too_long");
+        assert_eq!(finding.category, CriticCategory::Maintainability);
+        assert_eq!(finding.severity, Severity::Stern);
+        assert_eq!(finding.suppression_key, "native.maintainability.sub_too_long");
+        assert_eq!(
+            &source[finding.range.start.byte..finding.range.end.byte],
+            "sub too_long",
+            "finding must anchor at the sub header span"
+        );
+        assert!(
+            finding.message.contains("too_long") && finding.message.contains("51"),
+            "message should name the sub and its line count: {}",
+            finding.message
+        );
+    }
+
+    #[test]
+    fn native_sub_too_long_rule_accepts_sub_at_the_limit() {
+        // 1 opening line + 48 interior lines + 1 closing line = 50 body lines.
+        let source = long_sub_source("at_limit", DEFAULT_MAX_SUB_LINES - 2);
+        let ast = parse_source(&source);
+        let config = CriticConfig::default();
+        let ctx = CriticContext::new(&source, &ast, &config);
+        let registry = NativeCriticRegistry::with_rules(vec![Box::new(SubTooLongRule)]);
+
+        assert!(registry.check(&ctx).is_empty(), "a sub at exactly the limit must pass");
+    }
+
+    #[test]
+    fn native_sub_too_long_rule_accepts_short_sub() {
+        let source = "use strict;\nuse warnings;\nsub short { return 1; }\n";
+        let ast = parse_source(source);
+        let config = CriticConfig::default();
+        let ctx = CriticContext::new(source, &ast, &config);
+        let registry = NativeCriticRegistry::with_rules(vec![Box::new(SubTooLongRule)]);
+
+        assert!(registry.check(&ctx).is_empty());
+    }
+
+    #[test]
+    fn native_sub_too_long_rule_ignores_anonymous_subs() {
+        let mut source = String::from("use strict;\nuse warnings;\nmy $handler = sub {\n");
+        for _ in 0..DEFAULT_MAX_SUB_LINES {
+            source.push_str("    print 1;\n");
+        }
+        source.push_str("};\n");
+        let ast = parse_source(&source);
+        let config = CriticConfig::default();
+        let ctx = CriticContext::new(&source, &ast, &config);
+        let registry = NativeCriticRegistry::with_rules(vec![Box::new(SubTooLongRule)]);
+
+        assert!(registry.check(&ctx).is_empty(), "anonymous subs have no header to report");
+    }
+
+    #[test]
+    fn native_sub_too_long_rule_composes_with_config_and_suppressions() {
+        let source = long_sub_source("too_long", DEFAULT_MAX_SUB_LINES - 1);
+        let ast = parse_source(&source);
+        let excluded_config = CriticConfig {
+            exclude: vec!["native.maintainability.sub_too_long".to_string()],
+            ..Default::default()
+        };
+        let excluded_ctx = CriticContext::new(&source, &ast, &excluded_config);
+        let registry = NativeCriticRegistry::with_rules(vec![Box::new(SubTooLongRule)]);
+
+        assert!(registry.check(&excluded_ctx).is_empty());
+
+        let suppressed_source = format!(
+            "## no critic native.maintainability.sub_too_long -- legacy fixture\n{}",
+            long_sub_source("too_long", DEFAULT_MAX_SUB_LINES - 1)
+        );
+        let suppressed_ast = parse_source(&suppressed_source);
+        let config = CriticConfig::default();
+        let suppressed_ctx = CriticContext::new(&suppressed_source, &suppressed_ast, &config);
+
+        assert!(registry.check(&suppressed_ctx).is_empty());
+    }
+
+    #[test]
+    fn native_sub_too_long_rule_is_strict_only() {
+        let recommended = NativeCriticRegistry::for_profile(NativeCriticProfile::Recommended);
+        let strict = NativeCriticRegistry::for_profile(NativeCriticProfile::Strict);
+
+        assert!(!recommended.rule_ids().contains(&"native.maintainability.sub_too_long"));
+        assert!(strict.rule_ids().contains(&"native.maintainability.sub_too_long"));
+        assert_eq!(strict.len(), 29);
+        assert_eq!(recommended.len(), 16);
     }
 }
