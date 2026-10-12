@@ -3,7 +3,7 @@ use warnings;
 use FindBin qw($Bin);
 use File::Spec;
 use Config;
-use Test::More tests => 50;
+use Test::More tests => 56;
 
 # Linux proof cell: bound regressions such as a lost loop update.
 $SIG{ALRM} = sub { BAIL_OUT('runtime-semantic fixture exceeded 10 seconds') };
@@ -105,6 +105,17 @@ is_deeply([observed { RuntimeCohort::nested_localization() }], ['middle', 'outer
     my $inside = observed { RuntimeCohort::return_from_local() };
     is_deeply([$inside, $RuntimeCohort::Dynamic], ['temporary', 'caller'], 'return also restores localization');
 }
+my $shared = 10;
+is_deeply([observed { RuntimeCohort::shared_alias_before_failure($shared, $shared) }], [undef, 18, "shared-stop\n"], 'repeated aliases share one cell through caught failure');
+is($shared, 18, 'caller observes both pre-failure writes exactly once');
+{
+    local $RuntimeCohort::Dynamic = 'outer';
+    is_deeply([observed { RuntimeCohort::caller_local_catches_callee() }], [undef, 'caller-mark', "callee-stop\n"], 'callee local unwinds while caller local survives');
+    is($RuntimeCohort::Dynamic, 'outer', 'outer localization restored after nested unwind');
+}
+my $cleaned = 7;
+is_deeply([observed { RuntimeCohort::clean_eval_result($cleaned) }], ['done-mark', 9, ''], 'successful eval returns value and clears error channel');
+is($cleaned, 9, 'successful eval effect reaches caller');
 is_deeply(\@warnings, [], 'subjects produce no unexpected warnings');
 is_deeply([$subject_stdout, $subject_stderr], ['', ''], 'subjects produce no output; TAP belongs to driver');
 alarm 0;
