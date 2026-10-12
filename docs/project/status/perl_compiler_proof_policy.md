@@ -16,7 +16,7 @@ Closed proof-class, composition-dimension, and campaign vocabulary for the curre
 - Campaigns: `7`
 - Retained dispositions: `0`
 - Policy digest: `236f9ab0697d9d8f078befca41fd4604341cf3632d9a01c7d01933d3a20a93d5`
-- Concept projection digest: `935b925a2cbe8c35178c46cbff913ef45b6a50cba1d29bedd34f008ace53ee0d`
+- Concept projection digest: `584f5f690da3d80cd5ab8bec293a02474ea0facfd850833049c0a69c8762b90c`
 
 **Claim boundary:** This policy defines admissible proof shapes. It does not satisfy any concept obligation or authorize provider promotion.
 
@@ -132,4 +132,4 @@ None. Every declared item is exercised, so the policy retains no unresolved obli
 | Proof classes applying to `pir_a` | 6 |
 | Proof classes applying to `provider` | 8 |
 | Distinct concept families in campaigns | 15 |
-| Concept rows in consumed seed | 28 |
+| Concept rows in consumed seed | 31 |

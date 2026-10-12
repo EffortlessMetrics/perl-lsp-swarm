@@ -14,11 +14,12 @@ mod sub_exporter;
 pub use body::{
     AccessMode, Arena, AssignMode, BinaryOp, BodyOwner, BodyOwnerKind, BodySourceMap,
     DeclStorageClass, HirBlock, HirBlockId, HirBody, HirBodyId, HirCatchHandler, HirExpr,
-    HirExprId, HirLoopLabel, HirLoopRegionId, HirRegex, HirRegexMatch, HirRegexTarget, HirStmt,
-    HirStmtId, HirSubscript, HirSubstitution, HirTransliteration, HirVariable,
-    LoopControlResolution, LoopControlVerb, RegexAnalysisAnchor, ReplacementEvaluation, Sigil,
-    SubscriptKind, UnaryMode, VariableKind,
+    HirExprId, HirLiteral, HirLiteralKind, HirLoopLabel, HirLoopRegionId, HirQuoteKind, HirRegex,
+    HirRegexMatch, HirRegexTarget, HirStmt, HirStmtId, HirSubscript, HirSubstitution,
+    HirTransliteration, HirVariable, LoopControlResolution, LoopControlVerb, RegexAnalysisAnchor,
+    ReplacementEvaluation, Sigil, SubscriptKind, UnaryMode, VariableKind,
 };
+pub(crate) use body::{hir_quote_kind, strip_string_quotes};
 pub use body_entry::lower_body;
 pub use lower::lower_ast;
 pub use model::{

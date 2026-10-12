@@ -48,6 +48,10 @@
       "invocation_sha256": "cfa2459045abfd0ac2ed2268eecf2a73e7b8d3daedfca278eea5bd99aeb55155"
     },
     {
+      "id": "parser.hir.scalar_literal_payloads",
+      "invocation_sha256": "019e0b5c3e5f5a7aebd947137c83abb04323627e47360b6a16d897a0192d65a2"
+    },
+    {
       "id": "parser.incremental.accuracy",
       "invocation_sha256": "187f9c074665fa77b5902bb020f90aec379011508c78667d5d7b1a53039960d9"
     },
