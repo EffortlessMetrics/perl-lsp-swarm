@@ -4865,6 +4865,52 @@ gates:
     }
 
     #[test]
+    fn vscode_types_inputs_reach_routed_fence_test() -> color_eyre::eyre::Result<()> {
+        let root = crate::utils::project_root()?;
+        let policy = load_policy_for_inspection(&root.join(".ci/gate-policy.yaml"))?;
+        let gate = policy
+            .gates
+            .iter()
+            .find(|gate| gate.name == "unit_routed_full")
+            .cloned()
+            .ok_or_else(|| color_eyre::eyre::eyre!("missing routed test gate"))?;
+        let metadata = serde_json::json!({
+            "packages": [{"name": "xtask", "id": "xtask 0.1.0",
+                "manifest_path": "/workspace/xtask/Cargo.toml"}],
+            "resolve": {"nodes": [{"id": "xtask 0.1.0", "deps": []}]}
+        });
+        for (file, selected) in [
+            ("vscode-extension/package.json", true),
+            (".github/dependabot.yml", true),
+            ("vscode-extension/README.md", false),
+            ("vscode-extension/tsconfig.json", false),
+        ] {
+            let scope = crate::tasks::ci_scope::classify_files(
+                &[file.to_string()],
+                &metadata,
+                "/workspace",
+            )?;
+            let plan = build_pr_fast_plan_from_scope(
+                GateTier::PrFast,
+                "origin/main".to_string(),
+                vec![gate.clone()],
+                Some(scope),
+                true,
+                false,
+                None,
+            )?;
+            assert_eq!(!plan.selected.is_empty(), selected, "wrong routing for {file}");
+            if selected {
+                assert!(
+                    plan.selected[0].gate.command.contains("--tests -p xtask"),
+                    "{file} must run xtask integration tests, including the types fence"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
     fn pr_fast_docs_as_code_keeps_always_on_and_skips_rust_lanes() -> color_eyre::eyre::Result<()> {
         let gates = vec![
             pr_gate("fmt", GatePlanningRole::AlwaysOn, "cargo xtask fmt --check"),
