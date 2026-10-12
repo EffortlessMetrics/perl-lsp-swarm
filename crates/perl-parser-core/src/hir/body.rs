@@ -681,11 +681,109 @@ pub enum HirExpr {
     /// because its search/replace lists are character lists, not patterns.
     Transliteration(HirTransliteration),
 
+    /// First-cohort scalar literal with its source-derived payload (#17538).
+    ///
+    /// Only plain decimal numeric tokens, noninterpolating strings, and `undef`
+    /// lower here. All other literal forms stay [`HirExpr::Opaque`].
+    Literal(HirLiteral),
+
     /// Opaque expression — used when the AST shape is not yet modeled.
     Opaque {
         /// The AST node kind name for diagnostics.
         ast_kind: String,
     },
+}
+
+/// A first-cohort scalar literal leaf (#17538).
+///
+/// The payload is source-derived, never normalized: a `Number` keeps its exact
+/// lexeme (leading-zero forms never reach the leaf: Perl reads them as octal,
+/// so they stay `Opaque` and only the lone `0` is admitted); a `String` keeps
+/// the parser-produced
+/// content with one quote layer removed and escape sequences verbatim (escape
+/// decoding is a later family); `undef` carries the empty string. No Rust
+/// numeric parsing or rounding is applied, so this leaf makes no Perl
+/// runtime-coercion claim. Only the canonical body constructor emits leaves;
+/// legacy non-Program fragment lowering keeps emitting `Opaque` for these
+/// shapes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct HirLiteral {
+    /// Admitted literal family. The `String` family carries its quoting in
+    /// the kind itself so a string leaf without a quote kind is
+    /// unrepresentable.
+    pub kind: HirLiteralKind,
+    /// Exact source-derived payload: the numeric lexeme, the quote-stripped
+    /// string content, or the empty string for `undef`.
+    pub payload: String,
+    /// Whether the node behind this leaf is absent from the source text:
+    /// parser recovery fabrication (orphaned-`else` shells, missing operands)
+    /// or valid-idiom desugaring (`while ()` empty condition). Such leaves
+    /// are still real arena entries; consumers must treat the payload as
+    /// supplied, not written.
+    pub synthesized: bool,
+}
+
+/// Admitted first-cohort scalar literal families (#17538).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum HirLiteralKind {
+    /// Plain decimal numeric token.
+    Number,
+    /// Noninterpolating string form with its quoting. Single- and
+    /// double-quoted content with identical bytes can mean different values
+    /// once escapes are decoded, so the kind is load-bearing and never
+    /// inferred from payload.
+    String(HirQuoteKind),
+    /// `undef`.
+    Undef,
+}
+
+/// Quoting of a string token (#17538).
+///
+/// The parser stores the raw token text including quotes, so producers strip
+/// one layer and record which kind they removed. Consumers must not re-derive
+/// the kind from payload bytes. Whether a given producer admits interpolated
+/// forms is that producer's admission rule, not part of this kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum HirQuoteKind {
+    /// Single-quoted (`'...'`).
+    Single,
+    /// Double-quoted (`"..."`).
+    Double,
+}
+
+/// Detect the quoting of a parser-produced string token (#17538).
+///
+/// Returns the kind when the value is wrapped in one matching `'` or `"`
+/// pair, `None` otherwise (unquoted, mismatched, or quote-like forms such as
+/// `q{}`, which stay outside the admitted cohort).
+pub(crate) fn hir_quote_kind(value: &str) -> Option<HirQuoteKind> {
+    let bytes = value.as_bytes();
+    if bytes.len() < 2 {
+        return None;
+    }
+    match (bytes[0], bytes[bytes.len() - 1]) {
+        (b'\'', b'\'') => Some(HirQuoteKind::Single),
+        (b'"', b'"') => Some(HirQuoteKind::Double),
+        _ => None,
+    }
+}
+
+/// Strip one detected quote layer from a parser-produced string token (#17538).
+///
+/// Returns `None` when [`hir_quote_kind`] does not apply, so the caller falls
+/// through to `Opaque` instead of guessing. Escape sequences pass through
+/// verbatim; decoding them is a later family, not this leaf.
+pub(crate) fn strip_string_quotes(value: &str) -> Option<(&str, HirQuoteKind)> {
+    let quote = hir_quote_kind(value)?;
+    let quote_char = match quote {
+        HirQuoteKind::Single => '\'',
+        HirQuoteKind::Double => '"',
+    };
+    let content = value.strip_prefix(quote_char)?.strip_suffix(quote_char)?;
+    Some((content, quote))
 }
 
 /// One `catch` handler of a [`HirExpr::Try`] region (#15567).

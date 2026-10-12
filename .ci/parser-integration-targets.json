@@ -462,6 +462,21 @@
       "reason": "Execute the Program-root body slice with exact source ranges, arena edges and canonical declaration identity.",
       "disposition": "execute",
       "boundedness": "focused"
+    },
+    {
+      "id": "parser.hir.scalar_literal_payloads",
+      "package": "perl-parser-core",
+      "target": "hir_scalar_literal_payload_tests",
+      "features": [],
+      "no_default_features": false,
+      "cargo_args": [],
+      "test_args": [
+        "--test-threads=4"
+      ],
+      "owner": "#17538",
+      "reason": "Execute the first-cohort scalar literal payload proof: exact Number, String, and Undef leaves with fabrication markers through canonical body construction, public-entry parity, and the PIR-A handoff join.",
+      "disposition": "execute",
+      "boundedness": "focused"
     }
   ]
 }
