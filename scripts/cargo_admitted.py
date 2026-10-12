@@ -894,8 +894,11 @@ def main(args=None):
         preflight, budget_file, args = admission_options(args)
         if staged_cohorts:
             expected = ['run', '--locked', '-p', 'xtask', '--bin', 'routed-test-cohorts', '--']
+            bootstrap = ['run', '--locked', '-p', 'routed-test-cohorts-bootstrap', '--bin', 'routed-test-cohorts-bootstrap', '--']
+            if args[:len(bootstrap)] == bootstrap:
+                expected = bootstrap
             if args[:len(expected)] != expected or sys.platform != 'linux':
-                raise Denied('staged cohorts require the exact dedicated Linux xtask producer invocation')
+                raise Denied('staged cohorts require the exact dedicated Linux producer invocation')
             from cargo_cohort import children_capability, Denied as CohortDenied
             try:
                 children_capability()  # before native producer bootstrap or any build
@@ -903,6 +906,10 @@ def main(args=None):
                 # The script's __main__ module and imported API have separate
                 # exception identities; preserve native admission status 75.
                 raise Denied(str(error)) from error
+            # Prefer the lightweight shared-source bootstrap (#17623) when its
+            # crate is present; delete this block to revert to the xtask bin.
+            if expected != bootstrap and (Path(__file__).resolve().parent.parent / 'crates/routed-test-cohorts-bootstrap/Cargo.toml').is_file():
+                args = bootstrap + args[len(expected):]
         clippy = args[0] == "clippy"
         owned_linux = sys.platform == "linux"
         managed = clippy or owned_linux
