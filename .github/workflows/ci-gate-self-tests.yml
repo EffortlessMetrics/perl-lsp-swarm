@@ -661,8 +661,8 @@ jobs:
           ../../../../cargo-admitted test --locked --offline -p cohort-b --test shared
           ../../../../cargo-admitted test --locked --offline -p cohort-b --features enabled-bin --test runtime_env -- --nocapture
           ../../../../cargo-admitted bench --locked --offline -p cohort-b --features enabled-bin --bench runtime_env
-      - name: Compile the native producer unit tests through admitted Cargo
-        run: scripts/cargo-admitted test --locked -p xtask --bin routed-test-cohorts --no-run
+      - name: Run the native producer unit tests through admitted Cargo
+        run: scripts/cargo-admitted test --locked -p xtask --bin routed-test-cohorts
       - name: Check retained target measurement failure and threshold controls
         run: python3 -m unittest discover -s scripts/tests -p 'test_storage_doctor.py' -v
 
