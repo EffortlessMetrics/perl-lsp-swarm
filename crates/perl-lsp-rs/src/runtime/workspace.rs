@@ -1491,13 +1491,20 @@ impl LspServer {
         // When the client supplies a location range, only the declaration at
         // that range may enhance the symbol; a same-named declaration
         // elsewhere in the file must not overwrite it (#17688 review).
-        let requested_start = symbol
-            .get("location")
-            .and_then(|l| l.get("range"))
-            .and_then(|r| r.get("start"))
-            .and_then(|s| {
-                Some((s.get("line")?.as_u64()? as u32, s.get("character")?.as_u64()? as u32))
-            });
+        // `None` means no range was supplied; a supplied but invalid start
+        // must not fall back to name-only matching, so it is kept distinct.
+        let supplied_start =
+            symbol.get("location").and_then(|l| l.get("range")).and_then(|r| r.get("start"));
+        let requested_start: Option<(u32, u32)> = supplied_start.and_then(|s| {
+            let line = u32::try_from(s.get("line")?.as_u64()?).ok()?;
+            let character = u32::try_from(s.get("character")?.as_u64()?).ok()?;
+            Some((line, character))
+        });
+        if supplied_start.is_some() && requested_start.is_none() {
+            // Supplied but invalid position: return the symbol unenhanced
+            // rather than enhancing it from an arbitrary same-named decl.
+            return Ok(Some(json!(symbol)));
+        }
 
         // Normalize the URI for lookup
         let uri_key = self.normalize_uri_key(uri);

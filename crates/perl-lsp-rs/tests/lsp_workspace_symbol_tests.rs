@@ -276,6 +276,38 @@ sub target_function {
     Ok(())
 }
 
+/// Two same-named subs in different packages: resolving the second must
+/// enhance the second declaration, never the first (#17688 review).
+#[test]
+fn test_workspace_symbol_resolve_duplicate_names() -> TestResult {
+    let mut harness = LspHarness::new();
+    let _init = harness.initialize(None)?;
+    let doc_uri = "file:///test_ws_resolve_dup.pl";
+    harness.open(
+        doc_uri,
+        "package First;\nsub target_function { return 1; }\npackage Second;\nsub target_function { return 2; }\n1;\n",
+    )?;
+    let search = harness
+        .request("workspace/symbol", json!({ "query": "target_function" }))
+        .map_err(|e| format!("workspace/symbol request failed: {e}"))?;
+    let results = search.as_array().ok_or("workspace/symbol must return an array")?;
+    assert_eq!(results.len(), 2, "expected both same-named subs, got: {search:?}");
+    let second = results
+        .iter()
+        .find(|r| r["location"]["range"]["start"]["line"].as_u64() == Some(3))
+        .ok_or("second declaration at line 3 missing from search results")?;
+    let response = harness
+        .request("workspaceSymbol/resolve", second.clone())
+        .map_err(|e| format!("workspaceSymbol/resolve request failed: {e}"))?;
+    assert_eq!(response["containerName"].as_str(), Some("Second"));
+    assert_eq!(
+        response["location"]["range"]["start"],
+        json!({ "line": 3, "character": 0 }),
+        "resolve must keep the second declaration range, got: {response:?}"
+    );
+    Ok(())
+}
+
 /// Test that workspaceSymbolProvider capability is advertised
 #[test]
 fn test_workspace_symbol_capability_advertised() -> TestResult {
