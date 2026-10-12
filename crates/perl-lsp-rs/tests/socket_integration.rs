@@ -288,3 +288,213 @@ fn stdio_required_response_failure_terminates_with_stdin_open()
     }
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// Per-connection `exit` scope (#17331)
+//
+// Socket mode is a multi-session listener: one connection's protocol-clean
+// `exit` must end only that connection, never the process. These tests drive
+// the real binary over real TCP with the same Content-Length framing the
+// issue reporter used.
+// ---------------------------------------------------------------------------
+
+/// A framed LSP session over one TCP connection.
+struct SocketSession {
+    stream: TcpStream,
+    reader: BufReader<TcpStream>,
+}
+
+impl SocketSession {
+    fn connect(port: u16) -> Result<Self, Box<dyn std::error::Error>> {
+        let stream = connect_with_deadline(port)?;
+        stream.set_read_timeout(Some(Duration::from_secs(10)))?;
+        stream.set_write_timeout(Some(Duration::from_secs(10)))?;
+        let reader = BufReader::new(stream.try_clone()?);
+        Ok(Self { stream, reader })
+    }
+
+    fn send(&mut self, body: &str) -> io::Result<()> {
+        let message = format!("Content-Length: {}\r\n\r\n{}", body.len(), body);
+        self.stream.write_all(message.as_bytes())?;
+        self.stream.flush()
+    }
+
+    /// Read frames until the response with `id` arrives. Id-less
+    /// notifications and unrelated id-bearing frames are skipped.
+    fn read_response(&mut self, id: i64) -> Result<serde_json::Value, String> {
+        loop {
+            let mut content_length = None;
+            loop {
+                let mut line = String::new();
+                match self.reader.read_line(&mut line) {
+                    Ok(0) => return Err(format!("socket EOF before response id {id}")),
+                    Ok(_) => {}
+                    Err(error) => {
+                        return Err(format!("read failed before response id {id}: {error}"));
+                    }
+                }
+                if line == "\r\n" {
+                    break;
+                }
+                if let Some(length) = line.strip_prefix("Content-Length: ") {
+                    content_length = Some(length.trim().parse::<usize>().map_err(|error| {
+                        format!("response id {id} had bad Content-Length: {error}")
+                    })?);
+                }
+            }
+            let length = content_length
+                .ok_or_else(|| format!("response id {id} frame lacked Content-Length"))?;
+            let mut body = vec![0; length];
+            self.reader
+                .read_exact(&mut body)
+                .map_err(|error| format!("read failed for response id {id} body: {error}"))?;
+            let frame: serde_json::Value = serde_json::from_slice(&body)
+                .map_err(|error| format!("response id {id} body was not JSON: {error}"))?;
+            if frame.get("method").is_some() {
+                continue; // server-to-client notification
+            }
+            if frame.get("id").and_then(serde_json::Value::as_i64) == Some(id) {
+                return Ok(frame);
+            }
+        }
+    }
+
+    /// Bring one session up: initialize -> initialized. The session is left
+    /// mid-flight (not yet shut down).
+    fn open_initialized_session(&mut self, id: i64) -> Result<(), String> {
+        let initialize = format!(
+            r#"{{"jsonrpc":"2.0","id":{id},"method":"initialize","params":{{"processId":null,"rootUri":null,"capabilities":{{}}}}}}"#
+        );
+        self.send(&initialize).map_err(|error| error.to_string())?;
+        let response = self.read_response(id)?;
+        if response.get("result").is_none() {
+            return Err(format!("initialize id {id} did not succeed: {response}"));
+        }
+        let initialized = r#"{"jsonrpc":"2.0","method":"initialized","params":{"__test__":true}}"#;
+        self.send(initialized).map_err(|error| error.to_string())?;
+        Ok(())
+    }
+
+    /// Send `shutdown` and require its (single, idempotence-guarded) null
+    /// result.
+    fn send_shutdown(&mut self, id: i64) -> Result<(), String> {
+        let shutdown =
+            format!(r#"{{"jsonrpc":"2.0","id":{id},"method":"shutdown","params":{{}}}}"#);
+        self.send(&shutdown).map_err(|error| error.to_string())?;
+        let response = self.read_response(id)?;
+        if response.get("result").is_none() {
+            return Err(format!("shutdown id {id} did not succeed: {response}"));
+        }
+        Ok(())
+    }
+
+    /// The exit teardown must end this connection: either a clean EOF or a
+    /// connection reset. Windows delivers a reset rather than a FIN when a
+    /// peer process dies or unread data precedes a shutdown, so both mean
+    /// "the peer stopped serving this connection". Whether anything beyond
+    /// this one connection survived is asserted by the callers.
+    fn expect_connection_end(&mut self, what: &str) -> Result<(), String> {
+        let mut line = String::new();
+        loop {
+            match self.reader.read_line(&mut line) {
+                Ok(0) => return Ok(()),
+                Ok(_) => {
+                    line.clear();
+                }
+                Err(error) if error.kind() == io::ErrorKind::ConnectionReset => {
+                    return Ok(());
+                }
+                Err(error) => {
+                    return Err(format!("{what}: expected connection end, read failed: {error}"));
+                }
+            }
+        }
+    }
+}
+
+fn spawn_socket_server(port: u16) -> Result<ChildGuard, Box<dyn std::error::Error>> {
+    let bin_path = support::product_binary_path()?;
+    let child = Command::new(&bin_path)
+        .arg("--socket")
+        .arg("--port")
+        .arg(port.to_string())
+        .env("PERL_LSP_QUIET", "1")
+        .stderr(Stdio::null())
+        .stdout(Stdio::null())
+        .spawn()?;
+    Ok(ChildGuard::new(child))
+}
+
+/// Issue #17331 repro 3: two concurrent sessions; client A follows the
+/// spec-clean `shutdown` -> `exit` teardown; client B must keep its session.
+#[test]
+fn socket_exit_ends_only_sending_connection_among_concurrent_sessions()
+-> Result<(), Box<dyn std::error::Error>> {
+    let port = reserve_local_port()?;
+    let mut child = spawn_socket_server(port)?;
+
+    let mut client_a = SocketSession::connect(port)?;
+    let mut client_b = SocketSession::connect(port)?;
+
+    client_a
+        .open_initialized_session(1)
+        .map_err(|error| format!("client A failed to open an initialized session: {error}"))?;
+    client_a.send_shutdown(2).map_err(|error| format!("client A shutdown failed: {error}"))?;
+    client_b
+        .open_initialized_session(11)
+        .map_err(|error| format!("client B failed to open an initialized session: {error}"))?;
+
+    // Client A: protocol-clean exit.
+    let exit = r#"{"jsonrpc":"2.0","method":"exit"}"#;
+    client_a.send(exit)?;
+
+    // A's connection must be torn down...
+    client_a
+        .expect_connection_end("client A after exit")
+        .map_err(|error| format!("A's exit did not end A's connection: {error}"))?;
+
+    // ...and B's session must still work end to end: its shutdown request
+    // was never sent before A exited, so a null result proves the whole
+    // per-connection pipeline survived A's exit.
+    client_b
+        .send_shutdown(12)
+        .map_err(|error| format!("client B lost its session after client A's exit: {error}"))?;
+
+    if child.child.try_wait()?.is_some() {
+        return Err("server process terminated after one connection's exit".into());
+    }
+    Ok(())
+}
+
+/// Issue #17331 repro 1: after one client's protocol-clean exit, the
+/// listener must still accept and serve a brand-new session.
+#[test]
+fn socket_exit_keeps_listener_accepting_new_sessions() -> Result<(), Box<dyn std::error::Error>> {
+    let port = reserve_local_port()?;
+    let mut child = spawn_socket_server(port)?;
+
+    let mut client_a = SocketSession::connect(port)?;
+    client_a
+        .open_initialized_session(1)
+        .map_err(|error| format!("client A failed to open an initialized session: {error}"))?;
+    client_a.send_shutdown(2).map_err(|error| format!("client A shutdown failed: {error}"))?;
+    let exit = r#"{"jsonrpc":"2.0","method":"exit"}"#;
+    client_a.send(exit)?;
+    client_a
+        .expect_connection_end("client A after exit")
+        .map_err(|error| format!("A's exit did not end A's connection: {error}"))?;
+
+    // The listener and process must both still be alive.
+    let mut client_c = SocketSession::connect(port)?;
+    client_c
+        .open_initialized_session(21)
+        .map_err(|error| format!("fresh session failed after client A's exit: {error}"))?;
+    client_c
+        .send_shutdown(22)
+        .map_err(|error| format!("fresh session shutdown failed: {error}"))?;
+
+    if child.child.try_wait()?.is_some() {
+        return Err("server process terminated after one connection's exit".into());
+    }
+    Ok(())
+}

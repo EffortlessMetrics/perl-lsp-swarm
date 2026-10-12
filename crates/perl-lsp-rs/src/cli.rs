@@ -585,12 +585,17 @@ fn run_server(command_name: &str, launch_config: LaunchConfig) {
                                 ));
 
                                 let mut conn_timer = StartupTimer::new();
-                                let server =
-                                    Arc::new(LspServer::with_output_feature_profile_and_tuning(
+                                // Socket mode is multi-session (#17331): one
+                                // connection's `exit` ends that connection,
+                                // not the listener or sibling sessions.
+                                let server = Arc::new(
+                                    LspServer::with_output_feature_profile_and_tuning(
                                         output,
                                         profile,
                                         runtime_tuning,
-                                    ));
+                                    )
+                                    .exit_ends_connection(),
+                                );
                                 conn_timer.checkpoint("server_construction");
 
                                 let (tx, rx) = tokio::sync::mpsc::channel(64);
@@ -613,9 +618,17 @@ fn run_server(command_name: &str, launch_config: LaunchConfig) {
                                     let _ = failure_shutdown.shutdown(std::net::Shutdown::Both);
                                 });
                                 Arc::clone(&server).serve_async(rx).await;
-                                if server.response_delivery_failed() {
-                                    let _ = peer_shutdown.shutdown(std::net::Shutdown::Both);
-                                }
+                                // Whatever ended this session's serve loop —
+                                // peer EOF, a failed required response, or a
+                                // protocol-clean `exit` (#17331) — this
+                                // connection is finished. Settle the outbound
+                                // writer first so responses accepted by the
+                                // drained workers still reach the peer, then
+                                // shut the peer socket down so the reader
+                                // thread cannot stay blocked and hold the dead
+                                // session open.
+                                server.settle_outbound_for_teardown();
+                                let _ = peer_shutdown.shutdown(std::net::Shutdown::Both);
                                 failure_task.abort();
                             });
                         }
