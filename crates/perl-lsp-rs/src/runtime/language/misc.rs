@@ -2037,6 +2037,131 @@ impl LspServer {
         Ok(Some(json!([])))
     }
 
+    /// Run `perl.runCritic` for an open document through
+    /// [`NativeCriticService::analyze`] (#6969).
+    ///
+    /// Returns `None` when the target is not an open document, so the caller
+    /// keeps the existing provider (disk) path for unopened files. For an
+    /// open document the analyzed subject is the in-memory text and its
+    /// current-generation parse snapshot, bound to the accepted critic
+    /// snapshot captured for that document — the same subject composition
+    /// pull diagnostics use. A run that is not publishable, or whose subject
+    /// moved while rules evaluated, yields an explicit non-success `status`
+    /// with no violations rather than stale findings.
+    fn run_critic_for_open_document(
+        &self,
+        arguments: &[Value],
+    ) -> Option<Result<Option<Value>, JsonRpcError>> {
+        use perl_lsp_rs_core::tooling::perl_critic::{
+            NativeCriticRunCompleteness, NativeCriticService, NativeCriticSubject, RunGate,
+            critic_source_identity_for_uri,
+        };
+
+        let raw_target = arguments.first()?.as_str()?;
+        let candidate_uri = if raw_target.starts_with("file://") {
+            raw_target.to_string()
+        } else {
+            url::Url::from_file_path(std::path::Path::new(raw_target)).ok()?.to_string()
+        };
+
+        // Clone the document snapshot under a brief lock; rule evaluation
+        // below runs with no document lock held (#9062).
+        let (doc_uri, doc) = {
+            let documents = self.documents.lock();
+            let mut found = None;
+            for key in Self::uri_key_variants(&candidate_uri) {
+                if let Some(doc) = documents.get(&key) {
+                    found = Some((key, doc.clone()));
+                    break;
+                }
+            }
+            found?
+        };
+
+        let stale_result = |status: &str, reason: &str| {
+            Some(Ok(Some(json!({
+                "status": status,
+                "error": reason,
+                "violations": [],
+                "violationCount": 0,
+                "analyzerUsed": "native"
+            }))))
+        };
+
+        let Some(parsed) = doc.current_parsed() else {
+            return stale_result("stale", "open document has no current-generation parse snapshot");
+        };
+        let Some(ast) = parsed.ast().cloned() else {
+            return stale_result("stale", "open document parse produced no AST");
+        };
+        let source_text: std::sync::Arc<str> = std::sync::Arc::from(parsed.source());
+        let generation = doc.current_generation();
+        let document_instance = std::sync::Arc::clone(&doc.generation);
+        let diagnostic_analysis = parsed.diagnostic_analysis();
+
+        let snapshot = self.capture_accepted_critic(&doc_uri);
+        let documents_handle = std::sync::Arc::clone(&self.documents);
+        let gate_uri = doc_uri.clone();
+        let gate_snapshot = snapshot.clone();
+        let is_current = || {
+            let doc_still_current = {
+                let documents = documents_handle.lock();
+                documents.get(&gate_uri).is_some_and(|live| {
+                    std::sync::Arc::ptr_eq(&live.generation, &document_instance)
+                        && live.current_generation() == generation
+                })
+            };
+            doc_still_current && self.capture_accepted_critic(&gate_uri) == gate_snapshot
+        };
+
+        let subject = NativeCriticSubject::accepted(
+            &doc_uri,
+            critic_source_identity_for_uri(&doc_uri, generation),
+            &ast,
+            &source_text,
+            snapshot.state().clone(),
+            Vec::new(),
+            RunGate::open(),
+            RunGate::new(&is_current),
+        );
+        let run = NativeCriticService::analyze(match diagnostic_analysis.as_deref() {
+            Some(analysis) => subject.with_analysis(analysis),
+            None => subject,
+        });
+
+        if !run.is_publishable() || !is_current() {
+            let status = match run.completeness() {
+                NativeCriticRunCompleteness::Cancelled => "cancelled",
+                _ => "stale",
+            };
+            return stale_result(status, "native critic run is not publishable for current text");
+        }
+
+        let violations: Vec<Value> = run
+            .findings()
+            .iter()
+            .map(|finding| {
+                json!({
+                    "policy": finding.public_code(),
+                    "description": finding.user_visible_message(),
+                    "explanation": finding.explanation().unwrap_or_default(),
+                    "severity": finding.severity() as u8,
+                    "line": (finding.range().start.line + 1) as usize,
+                    "column": (finding.range().start.column + 1) as usize,
+                    "file": doc_uri
+                })
+            })
+            .collect();
+
+        let violation_count = violations.len();
+        Some(Ok(Some(json!({
+            "status": "success",
+            "violations": violations,
+            "violationCount": violation_count,
+            "analyzerUsed": "native"
+        }))))
+    }
+
     /// Handle execute command request
     pub(crate) fn handle_execute_command(
         &self,
@@ -2065,6 +2190,16 @@ impl LspServer {
             }
 
             tracing::debug!(command, "Executing command");
+
+            // #6969: an open document is analyzed from its in-memory text
+            // through the native critic service (the pull-diagnostics
+            // entrypoint), never from disk. Unopened targets fall through to
+            // the provider path unchanged.
+            if command == "perl.runCritic"
+                && let Some(result) = self.run_critic_for_open_document(&arguments)
+            {
+                return result;
+            }
 
             // Use the new execute command provider for new commands
             // Collect workspace roots, deduplicating to avoid redundant security checks

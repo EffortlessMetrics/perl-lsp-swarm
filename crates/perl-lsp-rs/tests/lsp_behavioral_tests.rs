@@ -495,6 +495,100 @@ sub calculate {
     Ok(())
 }
 
+// #6969: `perl.runCritic` on an OPEN document must analyze the in-memory
+// (dirty) text through NativeCriticService, matching pull diagnostics for
+// the same text and differing from the on-disk content.
+#[test]
+fn run_critic_open_dirty_document_matches_pull_and_differs_from_disk() -> TestResult {
+    use std::collections::BTreeSet;
+
+    let disk_text = "use strict;\nuse warnings;\nmy $x = 1;\nprint $x;\n";
+    let dirty_text = "my $c = '1';\neval $c;\nprint $c;\n";
+    let (mut harness, workspace) = LspHarness::with_workspace(&[("dirty.pl", disk_text)])?;
+    let uri = workspace.uri("dirty.pl");
+
+    harness.open_document(&uri, dirty_text)?;
+    harness.wait_for_idle(Duration::from_millis(200));
+
+    // Pull diagnostics for the same dirty text: the native critic codes.
+    let report = harness.request(
+        "textDocument/diagnostic",
+        json!({
+            "textDocument": { "uri": uri },
+            "identifier": "perl-lsp",
+            "previousResultId": null
+        }),
+    )?;
+    let pull_codes: BTreeSet<String> = report
+        .get("items")
+        .and_then(Value::as_array)
+        .ok_or("pull diagnostics must include items")?
+        .iter()
+        .filter_map(|item| item.get("code").and_then(Value::as_str))
+        .filter(|code| code.starts_with("native."))
+        .map(ToOwned::to_owned)
+        .collect();
+    assert!(
+        pull_codes.contains("native.security.string_eval"),
+        "pull diagnostics for dirty text must include string_eval: {pull_codes:?}"
+    );
+
+    let result = harness.request_with_timeout(
+        "workspace/executeCommand",
+        json!({
+            "command": "perl.runCritic",
+            "arguments": [uri]
+        }),
+        Duration::from_secs(5),
+    )?;
+    assert_eq!(result["status"].as_str(), Some("success"), "open runCritic: {result}");
+    assert_eq!(result["analyzerUsed"].as_str(), Some("native"));
+    let command_codes: BTreeSet<String> = result
+        .get("violations")
+        .and_then(Value::as_array)
+        .ok_or("runCritic must include violations")?
+        .iter()
+        .filter_map(|violation| violation.get("policy").and_then(Value::as_str))
+        .filter(|code| code.starts_with("native."))
+        .map(ToOwned::to_owned)
+        .collect();
+    assert_eq!(
+        command_codes, pull_codes,
+        "open-document runCritic must match pull critic codes for the same text"
+    );
+    assert!(
+        command_codes.contains("native.security.string_eval"),
+        "dirty-only finding must come from in-memory text, not disk: {command_codes:?}"
+    );
+
+    // After close, the same command falls back to the disk path and the
+    // dirty-only finding disappears, proving the open result was not disk.
+    harness.close(&uri)?;
+    harness.wait_for_idle(Duration::from_millis(200));
+    let disk_result = harness.request_with_timeout(
+        "workspace/executeCommand",
+        json!({
+            "command": "perl.runCritic",
+            "arguments": [uri]
+        }),
+        Duration::from_secs(5),
+    )?;
+    let disk_codes: BTreeSet<String> = disk_result
+        .get("violations")
+        .and_then(Value::as_array)
+        .ok_or("disk runCritic must include violations")?
+        .iter()
+        .filter_map(|violation| violation.get("policy").and_then(Value::as_str))
+        .map(ToOwned::to_owned)
+        .collect();
+    assert!(
+        !disk_codes.contains("native.security.string_eval"),
+        "unopened runCritic must reflect on-disk text: {disk_codes:?}"
+    );
+    assert_ne!(command_codes, disk_codes);
+    Ok(())
+}
+
 #[cfg(feature = "lsp-extras")]
 #[test]
 fn test_test_generation_actions_present() -> TestResult {
