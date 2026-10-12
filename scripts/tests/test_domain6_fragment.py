@@ -155,6 +155,22 @@ class Domain6FragmentTest(unittest.TestCase):
         self.assertEqual(
             self.doc["parent_denominator"]["observed_head"], OBSERVED_HEAD
         )
+        self.assertEqual(
+            self.doc["prefilter_paths"],
+            [
+                "vscode-extension",
+                "distribution",
+                "clients",
+                "crates/perl-install",
+                "docs/install",
+                "docs/tutorials",
+                "book",
+                "CONTRIBUTING.md",
+                "scripts",
+                "Formula",
+                "man",
+            ],
+        )
 
     def test_range_holder_cache_is_bounded_and_exactly_scoped(self) -> None:
         import importlib.util
@@ -199,22 +215,6 @@ class Domain6FragmentTest(unittest.TestCase):
         self.assertEqual(fresh_render.holders("blob-a", "path-a"), ("result-9",))
         self.assertLessEqual(len(cache._values), 3)
         self.assertEqual(calls[0][1], root)
-        self.assertEqual(
-            self.doc["prefilter_paths"],
-            [
-                "vscode-extension",
-                "distribution",
-                "clients",
-                "crates/perl-install",
-                "docs/install",
-                "docs/tutorials",
-                "book",
-                "CONTRIBUTING.md",
-                "scripts",
-                "Formula",
-                "man",
-            ],
-        )
 
     def test_range_holder_cache_retains_query_until_eviction(self) -> None:
         import gc
