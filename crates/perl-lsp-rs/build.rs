@@ -104,14 +104,12 @@ fn track_revision_inputs() {
     let mut names = vec!["refs/tags".to_string()];
     if git(&["config", "--bool", "--get", "extensions.worktreeConfig"])
         .is_some_and(|enabled| enabled == "true")
-    {
-        if git_path(&["rev-parse", "--git-path", "config.worktree"])
+        && git_path(&["rev-parse", "--git-path", "config.worktree"])
             .is_none_or(|path| !path.exists())
-        {
-            // An enabled but absent config must be sampled until it appears.
-            // Avoid a recursive watch of index/logs/objects just for creation.
-            println!("cargo:rerun-if-changed=build.rs/worktree-config-unavailable");
-        }
+    {
+        // An enabled but absent config must be sampled until it appears.
+        // Avoid a recursive watch of index/logs/objects just for creation.
+        println!("cargo:rerun-if-changed=build.rs/worktree-config-unavailable");
     }
     let mut reference = "HEAD".to_string();
     for depth in 0..16 {

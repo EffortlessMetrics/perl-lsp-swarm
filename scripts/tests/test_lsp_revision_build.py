@@ -38,7 +38,7 @@ class RevisionBuildTests(unittest.TestCase):
 
     def command(self, cwd, args):
         return subprocess.run(args, cwd=cwd, env=self.env, text=True,
-                              capture_output=True, errors="backslashreplace", check=True).stdout.strip()
+                              capture_output=True, encoding="utf-8", errors="backslashreplace", check=True).stdout.strip()
 
     def git(self, root, *args):
         return self.command(root, ["git", *args])
@@ -68,7 +68,7 @@ class RevisionBuildTests(unittest.TestCase):
         wrapper = ([sys.executable, str(REPO / "scripts/cargo_admitted.py")]
                    if os.name == "nt" else [str(REPO / "scripts/cargo-admitted")])
         pre = subprocess.run([*wrapper, "--preflight", *args], cwd=root, env=self.env,
-                             text=True, capture_output=True, errors="backslashreplace")
+                             text=True, capture_output=True, encoding="utf-8", errors="backslashreplace")
         line = next((line for line in pre.stderr.splitlines()
                      if line.startswith("cargo-admitted preflight:")), None)
         self.assertIsNotNone(line, pre.stderr[-6000:])
@@ -86,7 +86,7 @@ class RevisionBuildTests(unittest.TestCase):
             basis="Operator sizing: dependency-free revision build script and tiny binary; installed toolchain, offline, no download. Conservative 1 GiB additional growth and 8 GiB reserve. Actual bytes captured each run.")))
         start = time.monotonic()
         run = subprocess.run([*wrapper, "--budget-file", str(budget), *args], cwd=root,
-                             env=self.env, text=True, capture_output=True, errors="backslashreplace")
+                             env=self.env, text=True, capture_output=True, encoding="utf-8", errors="backslashreplace")
         elapsed = time.monotonic() - start
         log = run.stdout + run.stderr
         (root / f"{label}.log").write_text(log)
@@ -172,7 +172,7 @@ class RevisionBuildTests(unittest.TestCase):
         root = self.proof / "linked"
         self.git(original, "worktree", "add", "-q", "-b", "linked-probe", str(root))
         cold = self.build(root, "cold", False, self.revision(root))
-        self.assertIn(str(root / ".git"), cold["watchers"])
+        self.assertIn(root / ".git", [Path(path) for path in cold["watchers"]])
         self.build(root, "warm", True, self.revision(root))
         self.commit(root)
         self.build(root, "commit", False, self.revision(root))
