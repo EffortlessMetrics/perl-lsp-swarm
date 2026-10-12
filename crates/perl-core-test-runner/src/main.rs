@@ -92,18 +92,27 @@ fn main() {
             let args = env::args_os().skip(1).collect::<Vec<_>>();
             let display_path =
                 infer_display_path(&args).unwrap_or_else(|| "perl-core-test-runner".to_string());
-            let mut result = ModeRunResult::fail("cli_switch", err.to_string());
-            if mode == HarnessMode::Execute.as_str() {
-                result = result
-                    .with_mechanism(ExecutionMechanism::FixtureReplay)
-                    .with_scaffold_stamp(LEGACY_SELECTED_EXECUTE_SCAFFOLD);
-            }
+            let result = cli_failure_result(&mode, err.to_string());
             emit_internal_failure(&err);
             let _ = append_context_record(&mode, &display_path, &result);
             1
         }
     };
     std::process::exit(code);
+}
+
+/// Failure result for an invocation that dies before reaching its rail.
+///
+/// Separated from [`main`] so the execute backstop stamp is unit-testable:
+/// `main` exits the process and cannot be called from tests (#4773).
+fn cli_failure_result(mode: &str, detail: String) -> ModeRunResult {
+    let mut result = ModeRunResult::fail("cli_switch", detail);
+    if mode == HarnessMode::Execute.as_str() {
+        result = result
+            .with_mechanism(ExecutionMechanism::FixtureReplay)
+            .with_scaffold_stamp(LEGACY_SELECTED_EXECUTE_SCAFFOLD);
+    }
+    result
 }
 
 fn run() -> Result<RunnerStatus> {
@@ -5799,9 +5808,27 @@ while ($x != 1) { $x = 1; }
     }
 
     #[test]
+    fn cli_failure_backstop_stamps_execute_and_not_parse() -> TestResult {
+        // The only failure path that never reaches a rail: `main` builds it
+        // via `cli_failure_result`, so the helper carries the proof.
+        let failed_execute = cli_failure_result("execute", "boom".to_string());
+        assert_eq!(failed_execute.status, RunnerStatus::Fail);
+        assert_eq!(failed_execute.mechanism, Some(ExecutionMechanism::FixtureReplay));
+        assert_eq!(
+            failed_execute.scaffold_stamp.as_deref(),
+            Some(LEGACY_SELECTED_EXECUTE_SCAFFOLD)
+        );
+
+        let failed_parse = cli_failure_result("parse", "boom".to_string());
+        assert_eq!(failed_parse.mechanism, None);
+        assert!(failed_parse.scaffold_stamp.is_none(), "parse backstop must not stamp");
+        Ok(())
+    }
+
+    #[test]
     fn failure_execute_records_write_the_scaffold_stamp() -> TestResult {
-        // The execute failure backstop stamps before writing; the stamp must
-        // reach disk on failure records, not just on passes.
+        // Write-through of a pre-stamped failure struct; the backstop's own
+        // stamping is proven by `cli_failure_backstop_stamps_execute_and_not_parse`.
         let temp = tempfile::tempdir()?;
         let context = temp.path().join("records.jsonl");
         let failed = ModeRunResult::fail("cli_switch", "boom".to_string())

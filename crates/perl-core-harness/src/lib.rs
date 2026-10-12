@@ -5232,6 +5232,123 @@ mod tests {
     }
 
     #[test]
+    fn run_report_carries_receipt_stamp_and_implies_it_when_missing() -> TestResult {
+        // Assembly reads the stamp from the receipt when one exists (present
+        // stays present, absent stays absent) and implies it from execute
+        // mode only when no receipt exists (#4773).
+        let temp = tempfile::tempdir()?;
+        let config = RunConfig {
+            perl_tree: temp.path().join("perl"),
+            host_perl: None,
+            runner: HarnessRunner::Test,
+            mode: HarnessMode::Execute,
+            profile: HarnessProfile::Base,
+            tests: Vec::new(),
+            output: None,
+            runner_binary: Some(PathBuf::from("runner")),
+            diagnostic_probes: false,
+        };
+        let discovered = vec![
+            DiscoveredTest { path: "base/if.t".into(), root: "base".into() },
+            DiscoveredTest { path: "base/legacy.t".into(), root: "base".into() },
+            DiscoveredTest { path: "base/missing.t".into(), root: "base".into() },
+        ];
+        let records = vec![
+            RunnerRecord {
+                mechanism: Some(ExecutionMechanism::FixtureReplay),
+                scaffold_stamp: Some(LEGACY_SELECTED_EXECUTE_SCAFFOLD.to_string()),
+                schema_version: "perl_core_harness.runner_record.v1".into(),
+                mode: "execute".into(),
+                path: "base/if.t".into(),
+                status: RunnerStatus::Pass,
+                assertions_passed: 1,
+                assertions_total: 1,
+                bucket: None,
+                first_diagnostic: None,
+                semantic_boundaries: Vec::new(),
+            },
+            RunnerRecord {
+                mechanism: Some(ExecutionMechanism::FixtureReplay),
+                scaffold_stamp: None,
+                schema_version: "perl_core_harness.runner_record.v1".into(),
+                mode: "execute".into(),
+                path: "base/legacy.t".into(),
+                status: RunnerStatus::Pass,
+                assertions_passed: 1,
+                assertions_total: 1,
+                bucket: None,
+                first_diagnostic: None,
+                semantic_boundaries: Vec::new(),
+            },
+        ];
+        let run_tree = temp.path().join("run");
+        let observation =
+            settle_test_observation(HarnessMode::Execute, &discovered, &records, Some(1))?;
+
+        let report = build_run_report(BuildRunReportInput {
+            config: &config,
+            perl_tree: temp.path(),
+            run_tree: &run_tree,
+            host_perl: Path::new("perl"),
+            observation: &observation,
+        });
+
+        assert_eq!(report.file_results.len(), 3);
+        let mut stamped: Vec<&str> = report
+            .file_results
+            .iter()
+            .filter(|result| {
+                result.scaffold_stamp.as_deref() == Some(LEGACY_SELECTED_EXECUTE_SCAFFOLD)
+            })
+            .map(|result| result.path.as_str())
+            .collect();
+        stamped.sort_unstable();
+        assert_eq!(stamped, vec!["base/if.t", "base/missing.t"]);
+        let unstamped: Vec<&str> = report
+            .file_results
+            .iter()
+            .filter(|result| result.scaffold_stamp.is_none())
+            .map(|result| result.path.as_str())
+            .collect();
+        assert_eq!(unstamped, vec!["base/legacy.t"]);
+        Ok(())
+    }
+
+    #[test]
+    fn run_report_stamps_nothing_for_parse_mode_without_receipt() -> TestResult {
+        // The mode-implied stamp is execute-only; a missing parse receipt
+        // stays unstamped (#4773).
+        let temp = tempfile::tempdir()?;
+        let config = RunConfig {
+            perl_tree: temp.path().join("perl"),
+            host_perl: None,
+            runner: HarnessRunner::Test,
+            mode: HarnessMode::Parse,
+            profile: HarnessProfile::Base,
+            tests: Vec::new(),
+            output: None,
+            runner_binary: Some(PathBuf::from("runner")),
+            diagnostic_probes: false,
+        };
+        let discovered =
+            vec![DiscoveredTest { path: "base/missing.t".into(), root: "base".into() }];
+        let run_tree = temp.path().join("run");
+        let observation = settle_test_observation(HarnessMode::Parse, &discovered, &[], Some(1))?;
+
+        let report = build_run_report(BuildRunReportInput {
+            config: &config,
+            perl_tree: temp.path(),
+            run_tree: &run_tree,
+            host_perl: Path::new("perl"),
+            observation: &observation,
+        });
+
+        assert_eq!(report.file_results.len(), 1);
+        assert_eq!(report.file_results[0].scaffold_stamp, None);
+        Ok(())
+    }
+
+    #[test]
     fn run_report_scopes_and_deduplicates_semantic_boundaries() -> TestResult {
         let temp = tempfile::tempdir()?;
         let config = RunConfig {
