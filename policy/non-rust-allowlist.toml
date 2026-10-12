@@ -58,6 +58,32 @@ review_after = "2026-11-04"
 # =============================================================================
 
 [[allow]]
+id = "non-rust-cargo-cohort-owner"
+path = "scripts/cargo_cohort.py"
+kind = "ci_tooling"
+language = "python"
+surface = "tooling"
+classification = "tooling"
+owner = "tooling/agents"
+reason = "The cohort lifecycle prerequisite reuses the existing native Python subreaper/pidfd owner before Rust production work; it must refuse missing ownership capabilities without compiling a replacement supervisor."
+covered_by = ["python3 -m unittest discover -s scripts/tests -p test_cargo_cohort.py -v"]
+created = "2026-10-12"
+review_after = "2027-01-12"
+
+[[allow]]
+id = "non-rust-cargo-cohort-proof"
+path = "scripts/tests/test_cargo_cohort.py"
+kind = "ci_tooling"
+language = "python"
+surface = "tooling"
+classification = "test"
+owner = "tooling/agents"
+reason = "Portable filesystem controls and bounded native child fixtures challenge exact reclamation and preserve unsupported-host refusal without Rust builds."
+covered_by = ["python3 -m unittest discover -s scripts/tests -p test_cargo_cohort.py -v"]
+created = "2026-10-12"
+review_after = "2027-01-12"
+
+[[allow]]
 id = "non-rust-agent-nextest-profile-proof"
 path = "scripts/tests/test_just_agent_nextest.py"
 kind = "ci_tooling"
