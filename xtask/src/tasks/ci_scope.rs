@@ -134,6 +134,10 @@ pub fn classify_diff(files: &[String]) -> String {
             has_prose = true;
         } else if is_ci_config_file(file) {
             has_ci_config = true;
+        } else if is_vscode_types_contract_input(file) {
+            // These JSON/YAML inputs carry an executable Rust policy guard;
+            // docs_as_code would skip RustScoped gates even with xtask selected.
+            has_code = true;
         } else if is_docs_as_code_file(file) {
             has_docs_as_code = true;
         } else {
@@ -482,6 +486,10 @@ fn has_features_toml_change(files: &[String]) -> bool {
     files.iter().any(|f| f == "features.toml")
 }
 
+fn is_vscode_types_contract_input(file: &str) -> bool {
+    matches!(file, "vscode-extension/package.json" | ".github/dependabot.yml")
+}
+
 /// Repository inputs that xtask's policy guards assert over, but which are not
 /// xtask source.
 ///
@@ -521,6 +529,9 @@ fn is_xtask_policy_guarded_input(file: &str) -> bool {
         // routing, a gate-policy-only PR would skip both focused owner gates
         // and the very proof that pins the policy's shape (#14409 review).
         || file == ".ci/gate-policy.yaml"
+        // vscode_extension_types_fence reads both inputs (#13476). Route
+        // manifest-only and Dependabot-only edits to its owning test package.
+        || is_vscode_types_contract_input(file)
         // The required-context ledger is asserted by
         // `xtask/tests/required_context_binding_contract.rs` (#15348): a
         // required row's producer binding (`ruleset_integration_id`,
@@ -1339,6 +1350,27 @@ mod tests {
             crates.contains("xtask"),
             "changing the hermetic Vim lane must route to the contract tests that assert on it"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn vscode_types_contract_inputs_select_xtask() -> Result<()> {
+        let metadata = fake_metadata(&[("xtask", "xtask")]);
+        for file in ["vscode-extension/package.json", ".github/dependabot.yml"] {
+            let scope = classify_files(&[file.to_string()], &metadata, "/workspace")?;
+            assert_eq!(scope.diff_class, "code", "{file} must not skip Rust gates");
+            assert!(
+                scope.direct_crates.iter().any(|krate| krate.name == "xtask"),
+                "{file} must select its types fence"
+            );
+            assert!(!scope.lanes.parser_ratchet.selected, "{file} is not parser work");
+        }
+        let crates = crates_from_files(
+            &["vscode-extension/README.md".to_string()],
+            &metadata,
+            "/workspace",
+        )?;
+        assert!(!crates.contains("xtask"), "unrelated extension docs must not widen scope");
         Ok(())
     }
 
