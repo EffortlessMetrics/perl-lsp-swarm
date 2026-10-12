@@ -52,6 +52,7 @@ fi
 
 echo
 echo "== devplane =="
+echo "Batch du counts shared hardlinks once; per-path sizes depend on traversal order."
 du -sh "$devplane"/* 2>/dev/null || echo "devplane not initialized: $devplane"
 
 echo
