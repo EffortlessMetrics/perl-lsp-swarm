@@ -5,6 +5,29 @@ A generic repository or writer preflight does not establish that a Cargo build
 fits. Moving output under `DEVPLANE` does not add capacity unless it changes the
 actual filesystem. Do not lower `MIN_FREE_GB` merely to make a command run.
 
+## Native Linux linked output
+
+The repository compresses ELF debug sections with zlib for
+`x86_64-unknown-linux-gnu`. This lossless linker setting retains the existing
+dev/agent line tables and source-line backtraces. It applies to all profiles on
+that exact target; it does not thin profiles, remove tests, or compress ordinary
+rlib/rmeta intermediates. Other targets retain their existing configuration.
+
+The setting uses the pinned Rust toolchain's GCC/Clang-compatible linker-driver
+route (`-Wl,--compress-debug-sections=zlib`). Custom direct linkers must supply
+their own compatible flags. Cargo target-specific flags supersede
+`build.rustflags`; `RUSTFLAGS` or `CARGO_ENCODED_RUSTFLAGS` supersede this setting.
+Include the compression flag in custom flags when desired. The staged admitted
+Clippy route explicitly clears encoded flags and does not use this setting.
+See [Cargo flag precedence](https://doc.rust-lang.org/cargo/reference/config.html#buildrustflags)
+and [GNU ld debug compression](https://sourceware.org/binutils/docs/ld/Options.html#compress-debug-sections).
+
+Keep flags stable to preserve reuse. Changing them can rebuild dependencies and
+retain both old and new output variants; no existing artifacts are reclaimed.
+Compression savings do not replace capacity admission. Budget total additional
+peak output, downloads and temporary storage for the exact workload, then
+measure both sampled peak and retained allocated bytes with hardlinks deduplicated.
+
 ## Inspect the exact operation before building
 
 After selecting the host's storage root and the smallest relevant proof command:
