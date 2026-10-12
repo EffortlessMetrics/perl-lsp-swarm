@@ -302,7 +302,7 @@ def install(snapshot: Path, root: Path, value: dict) -> None:
 
 
 def check_receipts(subject: dict, scope: dict, binding: dict) -> None:
-    if subject.get("schema_version") != "ci-subject.v1" or subject.get("status") != "resolved":
+    if subject.get("schema_version") != "ci-subject.v1" or subject.get("status") != "RESOLVED":
         raise ValueError("invalid subject receipt")
     if subject.get("head_sha") != binding["head"] or subject.get("base_sha") != binding["base"]:
         raise ValueError("wrong subject binding")

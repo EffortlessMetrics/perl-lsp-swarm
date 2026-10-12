@@ -207,12 +207,16 @@ class OverlayControls(unittest.TestCase):
             experiment.safe_file(self.home, "link")
 
     def test_scope_and_subject_fail_closed_controls(self):
-        subject = {"schema_version": "ci-subject.v1", "status": "resolved", "head_sha": self.binding["head"], "base_sha": self.binding["base"]}
+        subject = {"schema_version": "ci-subject.v1", "status": "RESOLVED", "head_sha": self.binding["head"], "base_sha": self.binding["base"]}
         scope = {"schema_version": 2, "head_sha": self.binding["head"], "platform_overrides": {"windows_runner": False}}
         experiment.check_receipts(subject, scope, self.binding)
         empty = copy.deepcopy(scope)
         empty["platform_overrides"]["windows_test_crates"] = []
         experiment.check_receipts(subject, empty, self.binding)
+        for status in ["resolved", "NOT_PROVEN", None]:
+            altered_subject = dict(subject, status=status)
+            with self.assertRaises(ValueError):
+                experiment.check_receipts(altered_subject, scope, self.binding)
         # serde skips an empty crate vector; production jq also accepts omission.
         missing = copy.deepcopy(scope)
         missing["platform_overrides"].pop("windows_runner")
@@ -235,6 +239,21 @@ class OverlayControls(unittest.TestCase):
         altered["platform_overrides"]["windows_test_crates"] = None
         with self.assertRaises(ValueError):
             experiment.check_receipts(subject, altered, self.binding)
+
+    def test_subject_status_matches_actual_rust_producer_contract(self):
+        # Independent serializer oracle: the failed hosted run emitted RESOLVED.
+        # Read the production enum rather than deriving a fixture from the helper.
+        root = Path(__file__).resolve().parents[2]
+        source = (root / "xtask/src/tasks/ci_subject.rs").read_text(encoding="utf-8")
+        marker = '#[serde(rename_all = "SCREAMING_SNAKE_CASE")]\npub enum SubjectStatus {'
+        self.assertIn(marker, source)
+        enum = source.split(marker, 1)[1].split("}", 1)[0]
+        self.assertIn("Resolved,", enum)
+        subject = {"schema_version": "ci-subject.v1", "status": "RESOLVED",
+                   "head_sha": self.binding["head"], "base_sha": self.binding["base"]}
+        scope = {"schema_version": 2, "head_sha": self.binding["head"],
+                 "platform_overrides": {"windows_runner": False}}
+        experiment.check_receipts(subject, scope, self.binding)
 
 
 if __name__ == "__main__":
