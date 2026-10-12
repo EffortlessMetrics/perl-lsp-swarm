@@ -112,6 +112,48 @@ class PortableControls(unittest.TestCase):
         self.assertTrue(self.exe.exists())
         with self.assertRaises(cohort.Denied): self.run_portable(instance)
 
+    def test_cargo_bin_environment_uses_observed_enabled_and_disabled_profile_paths(self):
+        profile = self.paths['target'] / 'debug'; deps = profile / 'deps'
+        deps.mkdir(parents=True)
+        harness = deps / 'runtime-1234'
+        enabled = profile / 'enabled_probe'
+        disabled = profile / 'unbuilt_probe'
+        package_id = 'fixture-package'
+        target = {'package_id':package_id,'target':{'name':'runtime','kind':['test'],'src_path':str(self.root/'tests/runtime.rs'),'test':True},'features':[],'profile':{'test':True}}
+        enabled.write_text('#!'+sys.executable+'\nraise SystemExit(0)\n'); enabled.chmod(0o700)
+        consumer = '#!'+sys.executable+'\nimport os\nfrom pathlib import Path\n'+\
+                   'assert os.environ["CARGO_BIN_EXE_enabled_probe"]=='+repr(str(enabled))+'\n'+\
+                   'assert os.environ["CARGO_BIN_EXE_unbuilt_probe"]=='+repr(str(disabled))+'\n'+\
+                   'assert Path(os.environ["CARGO_BIN_EXE_enabled_probe"]).is_file()\n'+\
+                   'assert not Path(os.environ["CARGO_BIN_EXE_unbuilt_probe"]).exists()\n'
+        producer = 'from pathlib import Path\nimport json,sys\n'+\
+                   'h=Path('+repr(str(harness))+')\n'+\
+                   'h.write_text('+repr(consumer)+')\nh.chmod(0o700)\n'+\
+                   'print(json.dumps('+repr(dict(target,reason='compiler-artifact',executable=str(harness),fresh=False))+'))\n'+\
+                   'print(json.dumps('+repr({'package_id':package_id,'target':{'name':'enabled_probe','kind':['bin'],'test':False},'features':[],'profile':{'test':False},'reason':'compiler-artifact','executable':str(enabled),'fresh':True})+'))\n'
+        command = [sys.executable,'-c',producer]
+        instance = self.owner(expected_targets=[target])
+        consumers = {str(harness):{'args':[],'cwd':str(self.root),'env':{},'verify_harness':False,
+                    'cargo_bin_exe':[{'name':'enabled_probe','enabled':True},{'name':'unbuilt_probe','enabled':False}]}}
+        row = self.run_portable(instance,producer=command,consumers=consumers)
+        self.assertEqual(row['status'],0)
+        self.assertEqual(row['reclaimed'],[str(harness)])
+        self.assertTrue(enabled.exists(),'companion Cargo binary must be retained')
+        self.assertFalse(disabled.exists(),'disabled Cargo target remains an unbuilt path')
+
+    def test_cargo_bin_environment_disagreement_retains_harness(self):
+        profile=self.paths['target']/'debug';deps=profile/'deps';deps.mkdir(parents=True)
+        harness=deps/'runtime-1234';package_id='fixture-package'
+        target={'package_id':package_id,'target':{'name':'runtime','kind':['test'],'src_path':str(self.root/'tests/runtime.rs'),'test':True},'features':[],'profile':{'test':True}}
+        producer='from pathlib import Path\nimport json\n'+\
+                'h=Path('+repr(str(harness))+')\nh.write_text('+repr('#!'+sys.executable+'\nraise SystemExit(0)\n')+')\nh.chmod(0o700)\n'+\
+                'print(json.dumps('+repr(dict(target,reason='compiler-artifact',executable=str(harness),fresh=False))+'))\n'
+        instance=self.owner(expected_targets=[target])
+        consumers={str(harness):{'args':[],'cwd':str(self.root),'env':{},'verify_harness':False,
+                    'cargo_bin_exe':[{'name':'enabled_probe','enabled':True}]}}
+        with self.assertRaises(cohort.Denied):self.run_portable(instance,producer=[sys.executable,'-c',producer],consumers=consumers)
+        self.assertTrue(harness.exists(),'missing enabled-bin artifact must refuse cleanup')
+
 
     def test_new_private_cargo_alias_group_consumed_once_and_all_names_reclaimed(self):
         alias = self.paths['build'] / 'cargo-alias'

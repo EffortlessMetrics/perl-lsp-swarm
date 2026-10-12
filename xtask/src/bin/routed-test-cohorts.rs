@@ -186,32 +186,37 @@ fn plan_cohorts(
                 bail!("global selector collides with ineligible target");
             }
         }
-        if matches!(kind[0].as_str(), Some("test" | "bench")) {
-            let package = selected
-                .values()
-                .find(|package| package["id"] == unit["package_id"])
-                .ok_or_else(|| eyre!("selected package missing"))?;
-            if package["targets"]
-                .as_array()
-                .ok_or_else(|| eyre!("package targets missing"))?
-                .iter()
-                .any(|target| {
-                    target["kind"]
-                        .as_array()
-                        .is_some_and(|kinds| kinds.iter().any(|kind| kind == "bin"))
-                })
-            {
-                // Cargo adds UnitOutput.env AFTER package/config context. Every
-                // package bin participates, even test=false or feature-disabled
-                // bins; check uses placeholders. Do not guess or omit this layer.
-                bail!(
-                    "integration/bench package owns bins: final Cargo UnitOutput.env population requires a separate qualified runtime-environment slice"
-                );
-            }
-        }
         grouped.entry(selector).or_default().push(unit.clone());
     }
     Ok(grouped.into_iter().map(|(selector, targets)| CohortPlan { selector, targets }).collect())
+}
+
+fn binary_runtime_inventory(package: &Value, package_features: &[Value]) -> Result<Vec<Value>> {
+    let mut binaries = Vec::new();
+    let mut names = BTreeSet::new();
+    for target in package["targets"]
+        .as_array()
+        .ok_or_else(|| eyre!("package targets missing"))?
+        .iter()
+        .filter(|target| {
+            target["kind"].as_array().is_some_and(|kinds| {
+                kinds.iter().any(|kind| kind == "bin")
+            })
+        })
+    {
+        let name = target["name"]
+            .as_str()
+            .ok_or_else(|| eyre!("binary target name missing"))?;
+        if name.is_empty() || name.contains('/') || name.contains('\\') || !names.insert(name) {
+            bail!("package metadata has an invalid or repeated binary target name");
+        }
+        let required = target["required-features"]
+            .as_array()
+            .ok_or_else(|| eyre!("binary required-features inventory missing"))?;
+        let enabled = required.iter().all(|feature| package_features.contains(feature));
+        binaries.push(json!({"name":name,"enabled":enabled}));
+    }
+    Ok(binaries)
 }
 
 fn digest(path: &Path) -> Result<String> {
@@ -694,6 +699,10 @@ finally:os.close(source)
             .ok_or_else(|| eyre!("manifest parent missing"))?
             .to_path_buf();
             let mut runtime = serde_json::Map::new();
+            let package_features = target["features"]
+                .as_array()
+                .ok_or_else(|| eyre!("test unit feature set missing"))?;
+            let cargo_bin_exe = binary_runtime_inventory(package, package_features)?;
             // Cargo exposes package build-script extra_env to its test process.
             for message in &checked {
                 if message["reason"] == "build-script-executed"
@@ -773,7 +782,7 @@ finally:os.close(source)
             }
             consumers.insert(
                 artifact_key(target)?,
-                json!({"args":[],"cwd":cwd,"env":runtime,"verify_harness":true,"build_scripts":scripts}),
+                json!({"args":[],"cwd":cwd,"env":runtime,"verify_harness":true,"build_scripts":scripts,"cargo_bin_exe":cargo_bin_exe}),
             );
         }
         let row = driver.bridge(
@@ -822,7 +831,7 @@ mod tests {
         assert!(plan_cohorts(&metadata, &packages, &checked).is_err());
     }
     #[test]
-    fn every_bin_target_blocks_integration_and_benchmark_until_runtime_is_proved() {
+    fn bin_owning_integration_and_benchmark_targets_keep_their_selectors() {
         let (mut metadata, packages, checked) = fixture();
         let targets = metadata["packages"][1]["targets"].as_array_mut().unwrap();
         targets.extend([
@@ -839,9 +848,29 @@ mod tests {
             let target = json!({"name":"runtime_env","kind":[kind],"src_path":"/fixture/b/tests/runtime_env.rs","test":true,"required-features":[]});
             metadata["packages"][1]["targets"].as_array_mut().unwrap().push(target.clone());
             checked.push(json!({"reason":"compiler-artifact","package_id":"b","target":target,"features":[],"profile":{"test":true}}));
-            let error = plan_cohorts(&metadata, &packages, &checked).unwrap_err();
-            assert!(error.to_string().contains("final Cargo UnitOutput.env"), "{kind}: {error}");
+            let plan = plan_cohorts(&metadata, &packages, &checked)
+                .unwrap_or_else(|error| panic!("{kind} target was dropped: {error}"));
+            assert!(plan.iter().any(|cohort| cohort.targets.iter().any(|unit| unit["target"]["kind"][0] == kind)));
         }
+    }
+    #[test]
+    fn cargo_bin_runtime_inventory_keeps_enabled_and_disabled_targets() {
+        let package = json!({"targets":[
+            {"name":"enabled_probe","kind":["bin"],"required-features":["enabled-bin"]},
+            {"name":"unbuilt_probe","kind":["bin"],"required-features":["unbuilt"]},
+            {"name":"library","kind":["lib"],"required-features":[]}
+        ]});
+        let inventory = binary_runtime_inventory(&package, &[json!("enabled-bin")])
+            .expect("bounded Cargo target inventory");
+        assert_eq!(inventory, json!([
+            {"name":"enabled_probe","enabled":true},
+            {"name":"unbuilt_probe","enabled":false}
+        ]));
+        let duplicate = json!({"targets":[
+            {"name":"same","kind":["bin"],"required-features":[]},
+            {"name":"same","kind":["bin"],"required-features":[]}
+        ]});
+        assert!(binary_runtime_inventory(&duplicate, &[]).is_err());
     }
     #[test]
     fn inner_closure_and_cancellation_status_survive_native_wrapper() {

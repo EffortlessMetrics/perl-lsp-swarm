@@ -639,7 +639,7 @@ jobs:
   cargo-admitted-storage-self-test:
     name: Cargo admitted storage self-test
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -659,8 +659,10 @@ jobs:
           set -euo pipefail
           cd scripts/tests/fixtures/routed-resolver-2/b
           ../../../../cargo-admitted test --locked --offline -p cohort-b --test shared
-          ../../../../cargo-admitted test --locked --offline -p cohort-b --features enabled-bin --test runtime_env
+          ../../../../cargo-admitted test --locked --offline -p cohort-b --features enabled-bin --test runtime_env -- --nocapture
           ../../../../cargo-admitted bench --locked --offline -p cohort-b --features enabled-bin --bench runtime_env
+      - name: Compile the native producer unit tests through admitted Cargo
+        run: ./cargo-admitted test --locked -p xtask --bin routed-test-cohorts --no-run
       - name: Check retained target measurement failure and threshold controls
         run: python3 -m unittest discover -s scripts/tests -p 'test_storage_doctor.py' -v
 

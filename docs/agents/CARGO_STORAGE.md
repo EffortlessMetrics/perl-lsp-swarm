@@ -275,15 +275,18 @@ Cargo documents `CARGO_BIN_EXE_<name>` for integration tests and benchmarks and 
 that a binary with unmet `required-features` is not built. Cargo 1.95's final unit
 environment still assigns each package bin its target executable path; for a
 feature-disabled bin that path can intentionally name a file which does not exist.
-The checked-in resolver-2 fixture now covers enabled and disabled bins in both
+The checked-in resolver-2 fixture covers enabled and disabled bins in both
 integration-test and benchmark targets, comparing compile-time and run-time paths
-and checking the disabled file remains absent. Until that fixture is actually run
-with pinned Cargo on a supported hosted runner and its observed results are bound
-into the producer, the planner retains its package-wide refusal. The proposed full
-six-package route is therefore still blocked by workspace and xtask bin-owning
-integration suites, not just optional custom configuration. Final-unit environment
-modeling and native qualification remain prerequisites for the original routed-test
-goal. Custom runner,
+and checking the disabled file remains absent. Pinned Cargo 1.95 executed all three
+fixture commands successfully on the supported hosted runner with the existing
+40 GiB reserve. The producer now derives each package binary's runtime path from
+the captured harness profile directory, matches enabled paths to exact Cargo
+compiler-artifact records, and represents disabled bins as absent-path placeholders.
+The planner remains fail-closed until the updated native producer and its lifecycle
+tests compile and pass, and the full route proves exact suite equivalence. The
+proposed full six-package route is therefore still blocked by the not-yet-qualified
+workspace and xtask bin-owning integration suites, not just optional custom
+configuration. Custom runner,
 external/parent Cargo configuration, configuration includes, cross-target requests,
 custom Cargo environment beyond this repository's `RUST_BACKTRACE`, and compiler/
 loader injection selectors remain unsupported and refuse. The existing native
@@ -334,7 +337,7 @@ compile-time and runtime paths for one built bin and one disabled bin, and the t
 does the same in Cargo's benchmark environment. These are fixture commands only;
 they do not activate or replace the production route.
 Native Rust compilation/unit tests, exact-candidate case/feature equivalence,
-configured runtime contexts, supported-host cancellation, continuous peak/retained
+configured runtime contexts, continuous peak/retained
 byte measurements and timings, and reserve qualification remain pending. No
 continuous peak measurement framework or estimated storage bound is asserted. Later storage qualification should reuse the existing retained-target measurement helper and controls, not add a parallel measurement authority.
 Core lifecycle evidence from another candidate cannot substitute for these new

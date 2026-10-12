@@ -94,6 +94,7 @@ class Cohort:
         self.captured_targets = set()
         self.target_paths = {}
         self.path_targets = {}
+        self.binary_artifacts = {}
         self.worktree_identity = directory_identity(self.worktree)
         self.root_identity = {path: directory_identity(path) for path in self.roots}
         self.pinned = {native_path(str(path)) for path in pinned}
@@ -306,7 +307,20 @@ class Cohort:
         if message.get('reason') == 'build-script-executed':
             self.build_scripts.append({key: message.get(key) for key in ('package_id', 'env', 'linked_paths', 'out_dir')})
             return
-        if message.get('reason') != 'compiler-artifact' or not message.get('executable'):
+        if message.get('reason') != 'compiler-artifact':
+            return
+        executable = message.get('executable')
+        target = message.get('target') or {}
+        if executable and target.get('kind') == ['bin']:
+            package_id = message.get('package_id')
+            name = target.get('name')
+            if not isinstance(package_id, str) or not isinstance(name, str) or not name or '/' in name or '\\' in name:
+                raise Denied('Cargo binary artifact lacks a safe package/target identity')
+            path = Path(executable)
+            if not path.is_absolute() or native_path(str(path)) != path or not path.is_file() or path.is_symlink():
+                raise Denied('Cargo binary artifact path is not canonical and present')
+            self.binary_artifacts.setdefault((package_id, name), set()).add(path)
+        if not executable:
             return
         target_binding = {key: message.get(key) for key in ('package_id', 'target', 'features', 'profile')}
         target_key = json.dumps(target_binding, sort_keys=True)
@@ -330,6 +344,39 @@ class Cohort:
         self.target_paths[target_key] = path
         self.path_targets[path] = target_key
         self.captured_targets.add(target_key)
+
+    def _binary_runtime_environment(self, executable, package_id, targets):
+        if not isinstance(targets, list) or len(targets) > 256:
+            raise Denied('Cargo binary runtime inventory must be a bounded list')
+        parent = executable.parent
+        profile_dir = parent.parent if parent.name == 'deps' else parent
+        if (not profile_dir.is_dir() or native_path(str(profile_dir)) != profile_dir
+                or not any(profile_dir.is_relative_to(root) for root in self.roots)):
+            raise Denied('Cargo test executable has no canonical private profile directory')
+        resolved = {}
+        seen = set()
+        for item in targets:
+            if not isinstance(item, dict) or not isinstance(item.get('name'), str) or not item['name'] or not isinstance(item.get('enabled'), bool):
+                raise Denied('Cargo binary runtime inventory has an invalid row')
+            name = item['name']
+            key = 'CARGO_BIN_EXE_' + name
+            candidate = profile_dir / name
+            if ('/' in name or '\\' in name or name in seen or candidate.name != name
+                    or native_path(str(candidate)) != candidate):
+                raise Denied('Cargo binary runtime inventory has an unsafe or duplicate target name')
+            seen.add(name)
+            artifacts = self.binary_artifacts.get((package_id, name), set())
+            if item['enabled']:
+                if artifacts != {candidate} or not candidate.is_file() or candidate.is_symlink():
+                    raise Denied('enabled Cargo binary path differs from the exact compiler artifact')
+            elif candidate in artifacts:
+                raise Denied('feature-disabled Cargo binary unexpectedly produced an executable artifact')
+            if os.path.lexists(candidate):
+                metadata = candidate.lstat()
+                if not stat.S_ISREG(metadata.st_mode) or candidate.is_symlink():
+                    raise Denied('Cargo binary runtime path is not a regular non-symlink file')
+            resolved[key] = str(candidate)
+        return resolved
 
     def observe(self, producer, env, *, settlement_timeout=30):
         """Supervise setup/metadata/check/public build; observation cannot reclaim."""
@@ -416,6 +463,7 @@ class Cohort:
                     consumer_env = dict(child_env)
                     cwd = self.worktree
                     arguments = specification
+                    binary_environment = {}
                     if isinstance(specification, dict):
                         arguments = specification['args']
                         if 'build_scripts' in specification:
@@ -430,8 +478,15 @@ class Cohort:
                             if key in expected or key in ('TEMP', 'TMP', 'CARGO_ADMITTED_COHORT_DESCRIPTOR'):
                                 raise Denied('consumer cannot override admitted resource/owner environment')
                             consumer_env[key] = value
+                        if 'cargo_bin_exe' in specification:
+                            package_id = json.loads(self.path_targets[path])['package_id']
+                            binary_environment = self._binary_runtime_environment(
+                                path, package_id, specification['cargo_bin_exe'])
+                            consumer_env.update(binary_environment)
                     if isinstance(specification, dict) and specification.get('verify_harness') is True:
                         row = self._consume_harness(tree, path, arguments, consumer_env, cwd)
+                        if binary_environment:
+                            row['cargo_bin_exe'] = binary_environment
                         status = row['status']
                         coverage.append(row)
                     else:
