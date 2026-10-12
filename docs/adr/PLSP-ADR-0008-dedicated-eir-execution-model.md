@@ -47,6 +47,16 @@ execution lane**. It does not waive documented family coverage, the
 #4770/#4773 contracts, or verifier scope. Until this ADR is accepted, the
 existing provider-receipt gate remains in force everywhere.
 
+A second, narrower scoping amendment: ADR-0005's "EIR work" start
+precondition is scoped to lowering and evaluation work. Type-and-
+construction-only work (#4775: model types plus total constructors, no
+evaluation, no lowering) is admitted once this ADR is accepted and
+#4770/#4773 land, because inert types carry no lowering semantics and
+demanding lowering coverage before the model inverts the build order.
+Every lowering and evaluation slice still needs its family's documented
+coverage at admission. This is an explicit amendment of the start
+precondition for type-only work, not a silent bypass.
+
 Falsifiers: a qualifying provider receipt surfacing (moots the amendment);
 any execution effect on ordinary editor requests (voids the lane's
 isolation premise); any attempt to stretch this amendment to provider
@@ -112,11 +122,12 @@ shape above is fixed at acceptance.
   plus the #7422 editor-path negative control prove the boundary.
   Architecture prose alone is not proof.
 - Only the verifier constructs the public verified-module wrapper
-  (schema/profile identity, complete references, ownership, CFG,
-  place/access consistency, terminators, call closure, admitted
-  capabilities). Never deserialize a purported verified bit and skip
-  verification. Module entry binds source/generation and lowering/profile
-  versions; external entry/input/context/state limits validate separately.
+  (schema/profile identity, complete references, ownership,
+  defined-before-use/CFG, place/access consistency, terminators, call
+  closure, admitted capabilities). Never deserialize a purported
+  verified bit and skip verification. Module entry binds
+  source/generation and lowering/profile versions; external
+  entry/input/context/state limits validate separately.
 
 ### 5. Claim limits
 
@@ -148,9 +159,10 @@ pass/fail per row; the rules below are durable:
 4. Per-family coverage gates bind each lowering slice: documented
    branch/loop/return/read lowering, binding fix-or-exclude at admission,
    context/access composition proof where the family needs it.
-5. #4775 (types and construction only, no evaluation) may proceed once (1)
-   and (2) hold. #17512 and later lowering/evaluation slices additionally
-   need (3) and (4) for their families.
+5. #4775 (types and construction only, no evaluation, no lowering)
+   may proceed once (1) and (2) hold, under the §1 scoping amendment.
+   #17512 and later lowering/evaluation slices additionally need (3)
+   and (4) for their families.
 
 ## Non-goals
 
