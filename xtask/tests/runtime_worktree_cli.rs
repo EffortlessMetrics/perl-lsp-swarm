@@ -231,18 +231,27 @@ fn invalid_explicit_targets_refuse_before_dispatch_without_fallback() -> Result<
         assert!(result.stdout.is_empty(), "invalid target reached dispatch");
         assert!(String::from_utf8_lossy(&result.stderr).contains("--worktree-root"));
     }
-    for selector in ["GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR"] {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_xtask"));
-        isolated(&mut command)
-            .current_dir(&outside)
-            .env(selector, "")
-            .arg("--worktree-root")
-            .arg(&valid)
-            .arg("list-commands");
-        let result = command.output()?;
-        assert!(!result.status.success(), "ambient {selector} passed");
-        assert!(String::from_utf8_lossy(&result.stderr).contains(selector));
-        assert!(result.stdout.is_empty());
+    for selector in [
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_COMMON_DIR",
+        "GIT_INDEX_FILE",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    ] {
+        for value in [std::ffi::OsStr::new(""), valid.as_os_str()] {
+            let mut command = Command::new(env!("CARGO_BIN_EXE_xtask"));
+            isolated(&mut command)
+                .current_dir(&outside)
+                .env(selector, value)
+                .arg("--worktree-root")
+                .arg(&valid)
+                .arg("list-commands");
+            let result = command.output()?;
+            assert!(!result.status.success(), "ambient {selector} passed");
+            assert!(String::from_utf8_lossy(&result.stderr).contains(selector));
+            assert!(result.stdout.is_empty());
+        }
     }
     Ok(())
 }

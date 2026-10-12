@@ -27,7 +27,14 @@ pub fn select_worktree_root(path: &Path) -> Result<()> {
     if WORKTREE_ROOT.get().is_some() {
         bail!("runtime worktree has already been selected");
     }
-    for name in ["GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR"] {
+    for name in [
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_COMMON_DIR",
+        "GIT_INDEX_FILE",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    ] {
         if std::env::var_os(name).is_some() {
             bail!("--worktree-root requires {name} to be unset; refusing an ambiguous repository");
         }

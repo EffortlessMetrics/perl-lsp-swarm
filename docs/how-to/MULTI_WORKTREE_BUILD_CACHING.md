@@ -30,7 +30,9 @@ The target may be a directory inside that worktree. Selection validates the Git
 root, workspace repository identity and xtask package, then uses that root as the
 process working directory and default task project root. Missing,
 non-repository or unrelated workspace targets fail without falling back; inherited
-`GIT_DIR`, `GIT_WORK_TREE` and `GIT_COMMON_DIR` must be unset. Without this option,
+`GIT_DIR`, `GIT_WORK_TREE`, `GIT_COMMON_DIR`, `GIT_INDEX_FILE`,
+`GIT_OBJECT_DIRECTORY` and `GIT_ALTERNATE_OBJECT_DIRECTORIES` must be unset,
+including empty values. Without this option,
 existing defaults remain unchanged. Per-command explicit fixture roots and
 intentional compiled-source manifest/corpus consumers (including CPAN and legacy
 corpus lookup) retain their contracts. The option is global; invoking a copied
