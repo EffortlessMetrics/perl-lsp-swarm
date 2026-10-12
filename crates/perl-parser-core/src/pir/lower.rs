@@ -1137,12 +1137,23 @@ impl BodyLowerer {
                                 name: LexicalName { sigil: sigil_str(sigil), name: name.clone() },
                             })
                         }
+                        // A class-body `field` declaration writes per-object
+                        // storage: neither a lexical pad slot nor a package
+                        // stash slot (#13844). The extractor already treats
+                        // `FieldWrite` as a non-lexical fact, so no false
+                        // lexical binding is published.
+                        DeclStorageClass::Field => Some(PirOperation::FieldWrite {
+                            name: LexicalName { sigil: sigil_str(sigil), name: name.clone() },
+                        }),
                         DeclStorageClass::Unknown => None,
                     };
-                    // The write access comes from `access_for_operation`; the
-                    // value context of the declared place is not proven by
-                    // this lowering (scalar versus list assignment shape), so
-                    // it stays `Unknown` rather than the statement's `Void`.
+                    // The write access comes from `access_for_operation` for
+                    // lexical and stash writes; field writes carry no access
+                    // fact (the Field family is ignored by extraction in PR1,
+                    // #13817). The value context of the declared place is not
+                    // proven by this lowering (scalar versus list assignment
+                    // shape), so it stays `Unknown` rather than the
+                    // statement's `Void`.
                     if let Some(op) = op {
                         self.push_body_node(anchor, op, PirContext::Unknown, None, file);
                     }
