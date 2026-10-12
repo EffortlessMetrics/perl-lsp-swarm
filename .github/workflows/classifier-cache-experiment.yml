@@ -19,6 +19,17 @@ on:
 
 permissions:
   contents: read
+  actions: read
+
+concurrency:
+  group: classifier-cache-experiment-17613
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  CARGO_INCREMENTAL: 0
+  DEPENDENCY_KEY: v0-rust-ci-platform-scope-7e6547106fbfe5fc2dcfef40df96fb2c8c04770ef1b958f47d362aed75ddf921-Linux-x64-0c7f9597-df4e1969
 
 jobs:
   trigger-probe:
@@ -38,3 +49,248 @@ jobs:
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
           python3 -c 'import json,os; print(json.dumps({"kind":"classifier-cache-trigger-probe","head":os.environ["EXPECTED_HEAD"],"event":os.environ["EVENT_NAME"],"cargo_build_launched":False}))'
+      - name: Check exact dependency archive compatibility without downloading
+        id: compatible
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          key: ${{ env.DEPENDENCY_KEY }}
+          lookup-only: true
+          path: |
+            /home/runner/.cargo/bin
+            /home/runner/.cargo/.crates.toml
+            /home/runner/.cargo/.crates2.json
+            /home/runner/.cargo/registry
+            /home/runner/.cargo/git
+            ${{ github.workspace }}/target
+      - name: Require exact cache compatibility before any measurements
+        env:
+          CACHE_HIT: ${{ steps.compatible.outputs.cache-hit }}
+        run: test "$CACHE_HIT" = true
+
+  producer:
+    name: Classifier overlay producer
+    if: github.event_name == 'workflow_dispatch' && inputs.mode == 'experiment'
+    needs: [trigger-probe]
+    runs-on: ubuntu-24.04
+    # Independent diagnostic bound; production's eight-minute policy is untouched.
+    timeout-minutes: 20
+    outputs:
+      overlay_key: ${{ steps.prepare.outputs.overlay_key }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
+        with:
+          toolchain: 1.95.0
+      - name: Negative controls under the hosted native filesystem
+        run: python3 -m unittest discover -s scripts/ci -p test_classifier_cache_experiment.py -v
+      - name: Start total cost observation
+        run: python3 scripts/ci/classifier_cache_experiment.py start --output "$RUNNER_TEMP/classifier-results"
+      - name: Bind exact dependency archive and trial
+        id: prepare
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/actions/caches?key=$DEPENDENCY_KEY&per_page=100" > "$RUNNER_TEMP/classifier-results/dependency-api.json"
+          python3 scripts/ci/classifier_cache_experiment.py prepare --output "$RUNNER_TEMP/classifier-results" --dependency-info "$RUNNER_TEMP/classifier-results/dependency-api.json"
+      - name: Restore only the exact existing dependency archive
+        id: dependencies
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          key: ${{ env.DEPENDENCY_KEY }}
+          path: |
+            /home/runner/.cargo/bin
+            /home/runner/.cargo/.crates.toml
+            /home/runner/.cargo/.crates2.json
+            /home/runner/.cargo/registry
+            /home/runner/.cargo/git
+            ${{ github.workspace }}/target
+      - name: Require a full dependency hit
+        env:
+          CACHE_HIT: ${{ steps.dependencies.outputs.cache-hit }}
+        run: test "$CACHE_HIT" = true
+      - name: Workspace-cold classification
+        run: python3 scripts/ci/classifier_cache_experiment.py classify --output "$RUNNER_TEMP/classifier-results" --phase cold
+      - name: Same-checkout warm classification
+        run: python3 scripts/ci/classifier_cache_experiment.py classify --output "$RUNNER_TEMP/classifier-results" --phase warm --reference "$RUNNER_TEMP/classifier-results"
+      - name: Capture exact selected units and support files
+        run: python3 scripts/ci/classifier_cache_experiment.py capture --output "$RUNNER_TEMP/classifier-results" --snapshot "$RUNNER_TEMP/classifier-overlay"
+      - name: Reject changed inputs against the actual overlay
+        run: python3 scripts/ci/classifier_cache_experiment.py controls --output "$RUNNER_TEMP/classifier-results" --snapshot "$RUNNER_TEMP/classifier-overlay"
+      - name: Save only the isolated trial overlay
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          key: ${{ steps.prepare.outputs.overlay_key }}
+          path: ${{ runner.temp }}/classifier-overlay
+      - name: Record saved archive bytes and full producer cost
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OVERLAY_KEY: ${{ steps.prepare.outputs.overlay_key }}
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/actions/caches?key=$OVERLAY_KEY&per_page=100" > "$RUNNER_TEMP/classifier-results/overlay-api.json"
+          python3 scripts/ci/classifier_cache_experiment.py finish --output "$RUNNER_TEMP/classifier-results" --archive-info "$RUNNER_TEMP/classifier-results/overlay-api.json"
+      - name: Preserve producer observations even on failure
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: classifier-producer-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/classifier-results
+          retention-days: 14
+          if-no-files-found: warn
+
+  baseline:
+    name: Fresh classifier baseline (${{ matrix.repeat }})
+    needs: [producer]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        repeat: [1, 2]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
+        with:
+          toolchain: 1.95.0
+      - name: Start total restore/build/classify observation
+        run: python3 scripts/ci/classifier_cache_experiment.py start --output "$RUNNER_TEMP/classifier-results"
+      - name: Bind exact dependency archive and trial
+        id: prepare
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/actions/caches?key=$DEPENDENCY_KEY&per_page=100" > "$RUNNER_TEMP/classifier-results/dependency-api.json"
+          python3 scripts/ci/classifier_cache_experiment.py prepare --output "$RUNNER_TEMP/classifier-results" --dependency-info "$RUNNER_TEMP/classifier-results/dependency-api.json"
+      - name: Require the producer trial identity
+        env:
+          ACTUAL_KEY: ${{ steps.prepare.outputs.overlay_key }}
+          EXPECTED_KEY: ${{ needs.producer.outputs.overlay_key }}
+        run: test "$ACTUAL_KEY" = "$EXPECTED_KEY"
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: classifier-producer-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/classifier-reference
+      - name: Restore exact dependency archive without an overlay
+        id: dependencies
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          key: ${{ env.DEPENDENCY_KEY }}
+          path: |
+            /home/runner/.cargo/bin
+            /home/runner/.cargo/.crates.toml
+            /home/runner/.cargo/.crates2.json
+            /home/runner/.cargo/registry
+            /home/runner/.cargo/git
+            ${{ github.workspace }}/target
+      - name: Require a full dependency hit
+        env:
+          CACHE_HIT: ${{ steps.dependencies.outputs.cache-hit }}
+        run: test "$CACHE_HIT" = true
+      - name: Classify with the existing dependency cache
+        run: python3 scripts/ci/classifier_cache_experiment.py classify --output "$RUNNER_TEMP/classifier-results" --phase baseline --reference "$RUNNER_TEMP/classifier-reference"
+      - name: Finish baseline cost observation
+        run: python3 scripts/ci/classifier_cache_experiment.py finish --output "$RUNNER_TEMP/classifier-results"
+      - name: Preserve fresh baseline observations
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: classifier-baseline-${{ github.run_attempt }}-${{ matrix.repeat }}
+          path: ${{ runner.temp }}/classifier-results
+          retention-days: 14
+          if-no-files-found: warn
+
+  overlay:
+    name: Fresh classifier overlay (${{ matrix.repeat }})
+    needs: [producer, baseline]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        repeat: [1, 2]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
+        with:
+          toolchain: 1.95.0
+      - name: Start total restore/build/classify observation
+        run: python3 scripts/ci/classifier_cache_experiment.py start --output "$RUNNER_TEMP/classifier-results"
+      - name: Bind exact dependency archive and trial
+        id: prepare
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/actions/caches?key=$DEPENDENCY_KEY&per_page=100" > "$RUNNER_TEMP/classifier-results/dependency-api.json"
+          python3 scripts/ci/classifier_cache_experiment.py prepare --output "$RUNNER_TEMP/classifier-results" --dependency-info "$RUNNER_TEMP/classifier-results/dependency-api.json"
+      - name: Require the producer trial identity
+        env:
+          ACTUAL_KEY: ${{ steps.prepare.outputs.overlay_key }}
+          EXPECTED_KEY: ${{ needs.producer.outputs.overlay_key }}
+        run: test "$ACTUAL_KEY" = "$EXPECTED_KEY"
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: classifier-producer-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/classifier-reference
+      - name: Restore exact dependency archive
+        id: dependencies
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          key: ${{ env.DEPENDENCY_KEY }}
+          path: |
+            /home/runner/.cargo/bin
+            /home/runner/.cargo/.crates.toml
+            /home/runner/.cargo/.crates2.json
+            /home/runner/.cargo/registry
+            /home/runner/.cargo/git
+            ${{ github.workspace }}/target
+      - name: Require a full dependency hit
+        env:
+          CACHE_HIT: ${{ steps.dependencies.outputs.cache-hit }}
+        run: test "$CACHE_HIT" = true
+      - name: Restore only the exact producer overlay
+        id: selected
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          key: ${{ steps.prepare.outputs.overlay_key }}
+          path: ${{ runner.temp }}/classifier-overlay
+      - name: Require an actual overlay hit
+        env:
+          CACHE_HIT: ${{ steps.selected.outputs.cache-hit }}
+        run: test "$CACHE_HIT" = true
+      - name: Validate and install exact producer artifact closure
+        run: python3 scripts/ci/classifier_cache_experiment.py install --output "$RUNNER_TEMP/classifier-results" --snapshot "$RUNNER_TEMP/classifier-overlay" --reference "$RUNNER_TEMP/classifier-reference"
+      - name: Let ordinary Cargo revalidate and classify
+        run: python3 scripts/ci/classifier_cache_experiment.py classify --output "$RUNNER_TEMP/classifier-results" --phase overlay --reference "$RUNNER_TEMP/classifier-reference"
+      - name: Finish overlay cost and byte observation
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OVERLAY_KEY: ${{ steps.prepare.outputs.overlay_key }}
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/actions/caches?key=$OVERLAY_KEY&per_page=100" > "$RUNNER_TEMP/classifier-results/overlay-api.json"
+          python3 scripts/ci/classifier_cache_experiment.py finish --output "$RUNNER_TEMP/classifier-results" --archive-info "$RUNNER_TEMP/classifier-results/overlay-api.json"
+      - name: Preserve restored overlay observations even on failure
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: classifier-overlay-${{ github.run_attempt }}-${{ matrix.repeat }}
+          path: ${{ runner.temp }}/classifier-results
+          retention-days: 14
+          if-no-files-found: warn
