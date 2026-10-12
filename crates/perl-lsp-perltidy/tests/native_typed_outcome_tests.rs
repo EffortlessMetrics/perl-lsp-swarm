@@ -609,3 +609,14 @@ fn comment_braces_do_not_open_blocks() {
     );
     assert_eq!(ranged.formatted, "# note {\nmy $x = 1;\n");
 }
+
+#[test]
+fn reindents_comment_lines_inside_blocks() {
+    let formatter = NativeFormatter::new();
+    let source = "sub f {\n# explain\nmy $x = 1;\n}\n# top level\n";
+    let expected = "sub f {\n    # explain\n    my $x = 1;\n}\n# top level\n";
+    let result = formatter.format_document(source, &FormatConfig::default());
+    assert_eq!(result.formatted, expected);
+    let second = formatter.format_document(&result.formatted, &FormatConfig::default());
+    assert!(!second.changed);
+}

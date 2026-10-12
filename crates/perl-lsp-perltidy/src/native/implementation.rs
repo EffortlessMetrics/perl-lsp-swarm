@@ -195,6 +195,7 @@ impl NativeFormatter {
                             // cannot change meaning.
                             None if closes
                                 || opens
+                                || body.trim_start().starts_with('#')
                                 || literal_lines.contains(&(line_index + 1)) =>
                             {
                                 candidate
@@ -290,6 +291,7 @@ impl NativeFormatter {
                                 Some(formatted) => Some(formatted),
                                 None if closes
                                     || opens
+                                    || body.trim_start().starts_with('#')
                                     || literal_lines.contains(&(line_index + 1)) =>
                                 {
                                     Some(candidate)
