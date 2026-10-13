@@ -28,12 +28,12 @@
 //! # Output (human, default)
 //!
 //! ```text
-//! LANDING-PROVEN   sha abc1234 is ancestor of origin/main
+//! LANDING-PROVEN   <full commit SHA> is ancestor of <resolved main SHA>
 //!                  semantic_completion: not_evaluated
 //! ```
 //! or
 //! ```text
-//! NOT-REACHABLE   sha abc1234 is NOT ancestor of origin/main
+//! NOT-REACHABLE   <full commit SHA> is NOT ancestor of <resolved main SHA>
 //!                 semantic_completion: not_evaluated
 //! ```
 //!
@@ -43,13 +43,16 @@
 //! {
 //!   "schema_version": "landing_proof.v1",
 //!   "commit_reachable": true,
-//!   "commit": "abc1234",
-//!   "canonical_main": "origin/main",
+//!   "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+//!   "canonical_main": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
 //!   "content_survives": null,
 //!   "semantic_completion": "not_evaluated"
 //! }
 //! ```
 //! `content_survives` is only present when `--substance-grep` is passed.
+//! `commit` and `canonical_main` contain full resolved SHAs, even when input
+//! uses a short SHA or mutable ref. Ancestry and content use the same observed
+//! main commit; later ref movement requires a new receipt/currentness check.
 
 use color_eyre::eyre::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -110,9 +113,9 @@ pub struct CloseProofOutput {
     pub schema_version: String,
     /// Whether `commit` is an ancestor of `canonical_main`.
     pub commit_reachable: bool,
-    /// The commit SHA that was checked.
+    /// The full resolved commit SHA that was checked.
     pub commit: String,
-    /// The canonical main ref that was checked against.
+    /// The full resolved canonical main SHA used for both ancestry and content.
     pub canonical_main: String,
     /// Whether the substance grep string still exists in `canonical_main`.
     /// `None` when `--substance-grep` was not provided.
@@ -161,16 +164,22 @@ fn output_from_ancestry(
     ancestry: &AncestryReceipt,
 ) -> Result<CloseProofOutput> {
     let reachable = interpret_ancestry(ancestry, &config.commit, &config.canonical_main)?;
+    // The ancestry owner resolves refs once. Do not re-resolve caller strings:
+    // a moving main ref must not join ancestry and content from different trees.
+    let commit =
+        ancestry.base_sha.as_deref().context("ancestry receipt omitted resolved commit SHA")?;
+    let canonical_main =
+        ancestry.head_sha.as_deref().context("ancestry receipt omitted resolved main SHA")?;
     let content_survives = config
         .substance_grep
         .as_deref()
-        .map(|needle| check_substance_in(repository, needle, &config.canonical_main))
+        .map(|needle| check_substance_in(repository, needle, canonical_main))
         .transpose()?;
     Ok(CloseProofOutput {
         schema_version: LANDING_PROOF_SCHEMA_V1.to_string(),
         commit_reachable: reachable,
-        commit: config.commit.clone(),
-        canonical_main: config.canonical_main.clone(),
+        commit: commit.to_string(),
+        canonical_main: canonical_main.to_string(),
         content_survives,
         semantic_completion: SEMANTIC_COMPLETION_NOT_EVALUATED.to_string(),
     })
@@ -190,6 +199,7 @@ fn output_from_ancestry(
 /// `Err` means the relation is not proven — incomplete evidence, invalid
 /// input, or a git failure — which the caller surfaces as exit 1, never as
 /// exit 2 ("not reachable").
+#[cfg(test)]
 fn check_ancestry(commit: &str, canonical_main: &str) -> Result<bool> {
     validate_sha_format(commit)?;
 
@@ -232,6 +242,7 @@ fn interpret_ancestry(
 /// The `:/` pathspec anchors the search at the repository root: without it
 /// `git grep` silently limits the search to the caller's current directory,
 /// which would make `content_survives` depend on where the command was run.
+#[cfg(test)]
 fn check_substance(grep_str: &str, canonical_main: &str) -> Result<bool> {
     check_substance_in(Path::new("."), grep_str, canonical_main)
 }
@@ -393,6 +404,35 @@ mod tests {
         };
         let ancestry = is_ancestor(dir.path(), &config.commit, &config.canonical_main);
         assert!(output_from_ancestry(dir.path(), &config, &ancestry).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn landing_subject_negative_ancestry_and_missing_identity_controls() -> Result<()> {
+        let (dir, before, after) = landing_subject_fixture()?;
+        let config = CloseProofConfig {
+            commit: after[..12].to_string(),
+            canonical_main: "refs/heads/observed-main".to_string(),
+            substance_grep: None,
+            format: CloseProofFormat::Json,
+        };
+        let ancestry = is_ancestor(dir.path(), &config.commit, &config.canonical_main);
+        let output = output_from_ancestry(dir.path(), &config, &ancestry)?;
+        assert!(!output.commit_reachable);
+        assert_eq!(output.commit, after);
+        assert_eq!(output.canonical_main, before);
+        assert_eq!(output.content_survives, None);
+        assert_eq!(output.semantic_completion, SEMANTIC_COMPLETION_NOT_EVALUATED);
+        assert!(!serde_json::to_string(&output)?.contains("content_survives"));
+        for missing_base in [true, false] {
+            let mut incomplete = ancestry.clone();
+            if missing_base {
+                incomplete.base_sha = None;
+            } else {
+                incomplete.head_sha = None;
+            }
+            assert!(output_from_ancestry(dir.path(), &config, &incomplete).is_err());
+        }
         Ok(())
     }
 
