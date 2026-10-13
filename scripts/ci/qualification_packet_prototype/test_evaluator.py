@@ -337,6 +337,24 @@ class Controls(unittest.TestCase):
         self.reject(d)
         with self.assertRaises(ValueError): digest({'opt_level': float('nan')})
 
+    def test_execution_requires_nonempty_case_map_for_both_routes(self):
+        for route, index in (('ordinary', 0), ('cohort', 1)):
+            for bad in ({}, [], ['unexpected'], 'unexpected', None, False, 0):
+                with self.subTest(route=route, bad=bad):
+                    d = fixture(); d['packets'][index]['report']['case_outcomes'] = bad
+                    result = self.reject(d)
+                    self.assertEqual(result['cells']['cold'][route]['execution'], 'REFUSED')
+                    self.assertNotIn('cold', result['savings'])
+                    self.assertEqual(result['cells']['cold'][route]['storage'], 'PASS')
+
+    def test_execution_requires_case_map_presence_for_both_routes(self):
+        for route, index in (('ordinary', 0), ('cohort', 1)):
+            with self.subTest(route=route):
+                d = fixture(); del d['packets'][index]['report']['case_outcomes']
+                result = self.reject(d)
+                self.assertEqual(result['cells']['cold'][route]['execution'], 'NOT_PROVEN')
+                self.assertNotIn('cold', result['savings'])
+
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)

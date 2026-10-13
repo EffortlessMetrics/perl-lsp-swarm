@@ -175,8 +175,10 @@ def evaluate(document):
                     for field in ('unit_inventory_complete', 'observed_case_inventory_complete', 'case_inventory_complete', 'case_execution_successful', 'case_receipts_successful_and_settled'):
                         require(r[field] is True, field)
                     require(r['receipt_errors'] == [], 'receipt errors')
+                    outcomes = r['case_outcomes']
+                    require(isinstance(outcomes, dict) and bool(outcomes), 'nonempty case outcomes map')
                     if route == 'ordinary':
-                        for row in r['case_outcomes'].values():
+                        for row in outcomes.values():
                             ordinary_outcome_consistent(row)
                 plane('execution', execution)
                 status = r.get('storage', {}).get('command_status')

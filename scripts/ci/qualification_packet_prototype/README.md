@@ -74,8 +74,11 @@ python3 -B scripts/ci/qualification_packet_prototype/fixtures.py > /tmp/qualific
 python3 -B scripts/ci/qualification_packet_prototype/evaluator.py /tmp/qualification-synthetic.json --check
 ```
 
-The suite has 26 test groups. All passed in the reviewed prototype and repository
-placement. Five new groups produced 30 assertion failures, zero instrument errors,
+The suite has 28 test groups. The original 26 and two new execution-plane
+groups pass. The new groups observed nine assertion failures, zero errors, on the
+previous revision: both routes now require a present, nonempty dictionary of
+case outcomes before execution can pass, while independent storage remains
+inspectable. Five new groups produced 30 assertion failures, zero instrument errors,
 against the earlier prototype. The public `prove_discrimination.py` command
 executes a controlled always-pass consumer that ignores its input against the same oracle;
 it returns success only when the positive fixture passes and the mutant produces
