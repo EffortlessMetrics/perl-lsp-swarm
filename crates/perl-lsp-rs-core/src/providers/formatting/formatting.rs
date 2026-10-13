@@ -633,6 +633,18 @@ fn projected_native_range(
     }
     let formatted_end = formatted.len().checked_sub(suffix.len())?;
     let native_slice = formatted.get(admitted.start_byte..formatted_end)?;
+    // If the admitted slice overlaps a preserve region, whitespace options
+    // must not touch it: keep the native bytes verbatim (#17710-6).
+    let preserve = crate::tooling::perltidy::preserve_region_line_indices(content);
+    let first_line = content[..admitted.start_byte].bytes().filter(|byte| *byte == b'\n').count();
+    let slice_lines = native_slice.lines().count().max(1);
+    if (first_line..first_line + slice_lines).any(|line| preserve.contains(&line)) {
+        let mut updated = String::with_capacity(formatted.len());
+        updated.push_str(&formatted[..admitted.start_byte]);
+        updated.push_str(native_slice);
+        updated.push_str(suffix);
+        return Some((native_slice.to_string(), updated));
+    }
     let projected = apply_lsp_whitespace_options_with_eof(
         native_slice,
         options,
@@ -664,16 +676,22 @@ fn whitespace_within_admitted(
     // final-newline option exactly like the applied-native projection of the
     // same request.
     let slice = content.get(admitted.start_byte..admitted.end_byte)?;
+    let preserve = crate::tooling::perltidy::preserve_region_line_indices(content);
+    let first_line = content[..admitted.start_byte].bytes().filter(|byte| *byte == b'\n').count();
+    let last_line_index = first_line + slice.lines().count().saturating_sub(1);
+    let last_preserved = admitted.end_byte == content.len() && preserve.contains(&last_line_index);
     let mut projected = String::with_capacity(slice.len());
     if options.trim_trailing_whitespace.unwrap_or(false) {
-        projected.push_str(&trim_trailing_whitespace_in_slice(
+        projected.push_str(&trim_trailing_whitespace_preserving(
             slice,
+            &preserve,
+            first_line,
             admitted_end_is_line_end(content, admitted.end_byte),
         ));
     } else {
         projected.push_str(slice);
     }
-    if admitted.end_byte == content.len() {
+    if admitted.end_byte == content.len() && !last_preserved {
         if options.trim_final_newlines.unwrap_or(false) {
             // A bare CR ends a line under the shared geometry, so strip the
             // complete trailing terminator â€” never leave a dangling CR after
@@ -895,14 +913,20 @@ fn apply_lsp_whitespace_options_with_eof(
 ) -> String {
     let mut output = content.to_string();
     let document_line_ending = inferred_line_ending(line_ending_source);
+    // Preserve-region lines keep their bytes: whitespace policy applies only
+    // outside them, and final-newline policy never alters region bytes (#17710-6).
+    let preserve = crate::tooling::perltidy::preserve_region_line_indices(content);
+    let last_preserved =
+        !content.is_empty() && preserve.contains(&content.lines().count().saturating_sub(1));
 
     if options.trim_trailing_whitespace.unwrap_or(false) {
-        output = trim_trailing_whitespace_in_slice(&output, trim_tail);
+        output = trim_trailing_whitespace_preserving(&output, &preserve, 0, trim_tail);
     }
-    if allow_final_newline && options.trim_final_newlines.unwrap_or(false) {
+    if allow_final_newline && !last_preserved && options.trim_final_newlines.unwrap_or(false) {
         output.truncate(output.trim_end_matches(['\r', '\n']).len());
     }
     if allow_final_newline
+        && !last_preserved
         && options.insert_final_newline.unwrap_or(false)
         && !projected_tail_is_terminated(&output, prefix_terminated)
     {
@@ -910,6 +934,43 @@ fn apply_lsp_whitespace_options_with_eof(
     }
 
     output
+}
+
+/// Trim trailing whitespace line-by-line, skipping preserve-region lines.
+/// `first_line` is the document line index of `content`'s first line.
+fn trim_trailing_whitespace_preserving(
+    content: &str,
+    preserve: &std::collections::HashSet<usize>,
+    first_line: usize,
+    trim_tail: bool,
+) -> String {
+    let mut result = String::with_capacity(content.len());
+    let bytes = content.as_bytes();
+    let mut line_start = 0;
+    let mut line = first_line;
+    while let Some(offset) =
+        bytes[line_start..].iter().position(|byte| matches!(byte, b'\r' | b'\n'))
+    {
+        let newline = line_start + offset;
+        let ending_len =
+            usize::from(bytes[newline] == b'\r' && bytes.get(newline + 1) == Some(&b'\n')) + 1;
+        let body = &content[line_start..newline];
+        if preserve.contains(&line) {
+            result.push_str(body);
+        } else {
+            result.push_str(body.trim_end_matches([' ', '\t']));
+        }
+        result.push_str(&content[newline..newline + ending_len]);
+        line_start = newline + ending_len;
+        line += 1;
+    }
+    let tail = &content[line_start..];
+    if preserve.contains(&line) || !trim_tail {
+        result.push_str(tail);
+    } else {
+        result.push_str(tail.trim_end_matches([' ', '\t']));
+    }
+    result
 }
 
 /// Whether the document tail is already line-terminated after projection.
@@ -923,36 +984,6 @@ fn projected_tail_is_terminated(projected: &str, prefix_terminated: bool) -> boo
         Some(byte) => matches!(byte, b'\r' | b'\n'),
         None => prefix_terminated,
     }
-}
-
-/// Trim trailing spaces and tabs before every line separator fully contained
-/// in the slice.
-///
-/// The residual tail after the last contained separator counts as trailing
-/// only when `trim_tail` holds — that is, when the admitted interval ends at
-/// a true document line boundary (EOF or directly before a separator).
-/// Otherwise the tail continues mid-line in the surrounding document and its
-/// whitespace is interior content that must survive.
-fn trim_trailing_whitespace_in_slice(content: &str, trim_tail: bool) -> String {
-    let mut result = String::with_capacity(content.len());
-    let bytes = content.as_bytes();
-    let mut line_start = 0;
-    while let Some(offset) =
-        bytes[line_start..].iter().position(|byte| matches!(byte, b'\r' | b'\n'))
-    {
-        let newline = line_start + offset;
-        let ending_len =
-            usize::from(bytes[newline] == b'\r' && bytes.get(newline + 1) == Some(&b'\n')) + 1;
-        result.push_str(content[line_start..newline].trim_end_matches([' ', '\t']));
-        result.push_str(&content[newline..newline + ending_len]);
-        line_start = newline + ending_len;
-    }
-    if trim_tail {
-        result.push_str(content[line_start..].trim_end_matches([' ', '\t']));
-    } else {
-        result.push_str(&content[line_start..]);
-    }
-    result
 }
 
 /// True when `end_byte` ends the last line's content of `content`: either the
@@ -1477,6 +1508,33 @@ mod decision_projection_tests {
         assert_eq!(decision.document.edits[0].range.end.character, 13);
         assert_eq!(decision.document.edits[0].new_text, "# trailing");
         assert_eq!(decision.document.text, "# trailing\nsecond\n");
+    }
+
+    #[test]
+    fn partial_formatting_preserves_region_bytes_under_whitespace_options() {
+        // Heredoc body trailing whitespace is payload, not trailing
+        // whitespace: a partial (range) projection must keep it (#17710-6).
+        let source = "print <<'EOF';\nbody   \nEOF\n";
+        let geometry = SourceGeometry::new(source);
+        let mut options = range_options();
+        options.trim_trailing_whitespace = Some(true);
+        options.trim_final_newlines = Some(true);
+        let admitted = admitted_fixture(source, 0, 0, 2, 3);
+        let decision =
+            project_native_range(source, &geometry, &admitted, &options, no_change_typed(source))
+                .expect("projection must not error");
+        assert_eq!(decision.document.text, source, "region bytes must survive partial formatting");
+        assert!(decision.document.edits.is_empty());
+
+        // Whole-document whitespace projection likewise protects DATA bytes.
+        let data_source = "my $x = 1;   \n__DATA__\npayload   \n";
+        let mut options = range_options();
+        options.trim_trailing_whitespace = Some(true);
+        options.trim_final_newlines = Some(true);
+        assert_eq!(
+            apply_lsp_whitespace_options(data_source, &options),
+            "my $x = 1;\n__DATA__\npayload   \n"
+        );
     }
 
     #[test]
