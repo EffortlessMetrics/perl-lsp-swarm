@@ -858,6 +858,7 @@ fn classify_selected_components(
     classify_layer_component(layer, leaf)
 }
 
+#[cfg(test)]
 fn unclassified_reason_for(layer: CorpusAssetLayer, path: &Path) -> UnclassifiedReason {
     unclassified_components_reason(layer, &selected_components(path))
 }
@@ -929,6 +930,7 @@ fn classify_layer_component(
     }
 }
 
+#[cfg(test)]
 fn classify_layer_asset(layer: CorpusAssetLayer, path: &Path) -> Option<CorpusAssetKind> {
     path.file_name().and_then(|name| classify_layer_component(layer, name))
 }
