@@ -12,12 +12,10 @@ use perl_tdd_support::must_with;
 
 fn find_function_call<'a>(node: &'a Node, name: &str) -> Option<(&'a str, Vec<String>)> {
     match &node.kind {
-        NodeKind::FunctionCall { name: call_name, args } if call_name == name => {
-            Some((
-                call_name.as_str(),
-                args.iter().map(|arg| arg.kind.kind_name().to_string()).collect(),
-            ))
-        }
+        NodeKind::FunctionCall { name: call_name, args } if call_name == name => Some((
+            call_name.as_str(),
+            args.iter().map(|arg| arg.kind.kind_name().to_string()).collect(),
+        )),
         _ => node.children().into_iter().find_map(|child| find_function_call(child, name)),
     }
 }
@@ -28,10 +26,9 @@ fn assert_parses_as_call(source: &str, name: &str, expected_args: usize) -> Vec<
     let found = find_function_call(&ast, name);
     let (found_name, arg_kinds) = match found {
         Some(pair) => pair,
-        None => panic!(
-            "expected FunctionCall {name} for source:\n{source}\n\nsexp:\n{}",
-            ast.to_sexp()
-        ),
+        None => {
+            panic!("expected FunctionCall {name} for source:\n{source}\n\nsexp:\n{}", ast.to_sexp())
+        }
     };
     assert_eq!(found_name, name);
     assert_eq!(
@@ -48,8 +45,7 @@ fn declared_bareword_call_with_coderef_arg_parses_as_two_arg_call() {
     let source = "sub testing { } sub no_proto { } testing \\&no_proto, undef;";
     let arg_kinds = assert_parses_as_call(source, "testing", 2);
     assert_eq!(
-        arg_kinds[0],
-        "Unary",
+        arg_kinds[0], "Unary",
         "first arg should be the reference expression: {arg_kinds:?}"
     );
     assert_clean_parse(source);
@@ -107,7 +103,8 @@ fn operandless_backslash_is_not_a_call_argument() {
 #[test]
 fn uppercase_indirect_and_concat_forms_are_not_bare_calls() {
     // Negative pins: these must not be re-read as bare calls by the new arm.
-    for (source, excluded_owner) in [("print STDOUT \\$x;", "STDOUT"), ("$z = foo . \\$x;", "foo")] {
+    for (source, excluded_owner) in [("print STDOUT \\$x;", "STDOUT"), ("$z = foo . \\$x;", "foo")]
+    {
         let mut parser = Parser::new(source);
         let ast = must_with(parser.parse(), format!("parse failed for {source:?}"));
         assert!(
