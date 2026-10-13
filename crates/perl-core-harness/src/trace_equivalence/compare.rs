@@ -24,6 +24,16 @@ pub fn equivalence_payload_digest(payload: &TraceEquivalencePayload) -> Result<S
     Ok(sha256_bytes(&bytes))
 }
 
+/// The exact dedicated trace-channel environment variables (#12285). Only
+/// these five keys are channel framing; any other variable is behavior.
+const CHANNEL_ENV: [&str; 5] = [
+    crate::invocation_trace::instrument::TRACE_ENV_FILE,
+    crate::invocation_trace::instrument::TRACE_ENV_SESSION,
+    crate::invocation_trace::instrument::TRACE_ENV_ARTIFACT,
+    crate::invocation_trace::instrument::TRACE_ENV_TARGET,
+    crate::invocation_trace::instrument::TRACE_ENV_INSTRUMENTATION,
+];
+
 fn digest_of(value: &impl serde::Serialize) -> String {
     match serde_json::to_vec(value) {
         Ok(bytes) => sha256_bytes(&bytes),
@@ -287,6 +297,14 @@ pub fn build_trace_equivalence(
     if work.payload.process_nonce != instrumented.payload.terminal.process_nonce {
         reasons.push("work receipt does not bind the instrumented process".to_string());
     }
+    if work.payload.trace_session_id != trace.payload.subject.trace_session_id {
+        reasons.push("work receipt does not bind the trace session".to_string());
+    }
+    if work.payload.target_id != instrumented.payload.subject.target_id
+        || work.payload.runner != instrumented.payload.invocation.runner
+    {
+        reasons.push("work receipt target or runner differs from the pair".to_string());
+    }
     if !reasons.is_empty() {
         return finish(
             subjects,
@@ -296,6 +314,18 @@ pub fn build_trace_equivalence(
             EquivalenceVerdict::NotComparable,
             Vec::new(),
             reasons,
+        );
+    }
+
+    if work.payload.state != InstrumentationState::ObservedComplete {
+        return finish(
+            subjects,
+            target_id,
+            perl_ref,
+            repository_commit,
+            EquivalenceVerdict::NotProven,
+            Vec::new(),
+            vec!["instrumented capture is not observed_complete".to_string()],
         );
     }
 
@@ -339,7 +369,7 @@ pub fn build_trace_equivalence(
                     .environment
                     .variables
                     .iter()
-                    .filter(|(key, _)| !key.starts_with("PERL_CORE_HARNESS_TRACE"))
+                    .filter(|(key, _)| !CHANNEL_ENV.contains(&key.as_str()))
                     .map(|(key, value)| (key.clone(), value.clone()))
                     .collect::<std::collections::BTreeMap<_, _>>(),
             )
@@ -398,10 +428,13 @@ pub fn build_trace_equivalence(
         && cleanup.trace_file_removed
         && cleanup.run_directory_removed
         && cleanup.failures.is_empty();
+    // Plane identity on both sides is the same proposition: cleanup proven.
+    // The ordinary side creates nothing disposable, so its terminal record
+    // proves it; the instrumented side must prove disposable cleanup.
     planes.push(PlaneComparison {
         plane: ComparisonPlane::Cleanup,
-        ordinary_digest: digest_of(&ordinary.payload.terminal),
-        instrumented_digest: digest_of(&cleanup),
+        ordinary_digest: digest_of(&true),
+        instrumented_digest: digest_of(&cleanup_proven),
         matched: cleanup_proven,
         differences: if cleanup_proven {
             Vec::new()
@@ -425,7 +458,7 @@ pub fn build_trace_equivalence(
     planes.push(PlaneComparison {
         plane: ComparisonPlane::InvocationRows,
         ordinary_digest: digest_of(&ordinary_members),
-        instrumented_digest: digest_of(&trace.payload.rows),
+        instrumented_digest: digest_of(&row_members),
         matched: rows_matched,
         differences: if rows_matched {
             Vec::new()
@@ -444,6 +477,21 @@ pub fn build_trace_equivalence(
         EquivalenceVerdict::MeasuredDifference
     };
     finish(subjects, target_id, perl_ref, repository_commit, verdict, planes, differences)
+}
+
+/// Provenance entry point for consumers: rebuild the receipt from the exact
+/// paired inputs and require byte-level agreement. Shape validation alone
+/// (`validate_trace_equivalence`) never grants a transfer relation.
+pub fn check_trace_equivalence(
+    input: &TraceEquivalenceInput,
+    receipt: &UpstreamTraceEquivalenceV1,
+) -> Result<(), String> {
+    super::validate::validate_trace_equivalence(receipt)?;
+    let rebuilt = build_trace_equivalence(input)?;
+    if rebuilt != *receipt {
+        return Err("equivalence receipt does not reproduce from its paired inputs".to_string());
+    }
+    Ok(())
 }
 
 /// CLI route (`compare-equivalence`): read the paired receipts, emit and

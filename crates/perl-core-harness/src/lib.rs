@@ -209,7 +209,9 @@ pub mod trace_equivalence {
     #[path = "tests.rs"]
     mod tests;
 
-    pub use compare::{build_trace_equivalence, equivalence_payload_digest};
+    pub use compare::{
+        build_trace_equivalence, check_trace_equivalence, equivalence_payload_digest,
+    };
     pub use model::{
         ComparisonPlane, EquivalenceSubjects, EquivalenceVerdict, NON_TRANSFERABLE_PROPOSITIONS,
         PlaneComparison, TRACE_EQUIVALENCE_CLAIM_BOUNDARY, TRANSFERABLE_PROPOSITION,

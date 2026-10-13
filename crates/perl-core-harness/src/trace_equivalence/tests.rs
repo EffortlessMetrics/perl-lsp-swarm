@@ -305,6 +305,27 @@ fn validator_rejects_invented_matched_plane() -> Result<()> {
 }
 
 #[test]
+fn forged_receipt_fails_provenance_check() -> Result<()> {
+    // Regression for re-review finding (1b): a shape-valid forged receipt
+    // with invented plane digests must fail the provenance entry point,
+    // which rebuilds the receipt from the exact paired inputs.
+    let input = pair(STDOUT, &MEMBERS)?;
+    let mut forged =
+        build_trace_equivalence(&input).map_err(|error| color_eyre::eyre::eyre!(error))?;
+    for plane in &mut forged.payload.planes {
+        plane.ordinary_digest = "a".repeat(64);
+        plane.instrumented_digest = "a".repeat(64);
+    }
+    forged.payload_digest = super::compare::equivalence_payload_digest(&forged.payload)
+        .map_err(|error| color_eyre::eyre::eyre!(error))?;
+    assert!(super::compare::check_trace_equivalence(&input, &forged).is_err());
+    let honest = build_trace_equivalence(&input).map_err(|error| color_eyre::eyre::eyre!(error))?;
+    super::compare::check_trace_equivalence(&input, &honest)
+        .map_err(|error| color_eyre::eyre::eyre!(error))?;
+    Ok(())
+}
+
+#[test]
 fn cross_subject_reuse_is_not_comparable() -> Result<()> {
     let mut input = pair(STDOUT, &MEMBERS)?;
     if let Some(ordinary) = &mut input.ordinary {

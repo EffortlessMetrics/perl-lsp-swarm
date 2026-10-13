@@ -62,6 +62,9 @@ pub fn validate_trace_equivalence(receipt: &UpstreamTraceEquivalenceV1) -> Resul
         if plane.matched != plane.differences.is_empty() {
             return Err("plane matched flag contradicts its differences".to_string());
         }
+        if plane.matched && plane.ordinary_digest != plane.instrumented_digest {
+            return Err("matched plane must carry equal plane identities".to_string());
+        }
         if !is_digest(&plane.ordinary_digest) || !is_digest(&plane.instrumented_digest) {
             return Err("plane digests must be lowercase SHA-256".to_string());
         }
