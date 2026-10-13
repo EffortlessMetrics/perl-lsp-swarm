@@ -709,8 +709,11 @@ impl<'a> Parser<'a> {
             let end = stmt.location.end.min(self.src_bytes.len());
             // Same inverted-span guard as the semicolon path above: an
             // inverted range slices to nothing rather than panicking.
-            let source =
-                if start <= end { std::str::from_utf8(&self.src_bytes[start..end]).unwrap_or("") } else { "" };
+            let source = if start <= end {
+                std::str::from_utf8(&self.src_bytes[start..end]).unwrap_or("")
+            } else {
+                ""
+            };
             if source.trim() == tag {
                 // Pure delimiter line: the body ends here; skip it.
                 self.heredoc_recovery_tag = None;
