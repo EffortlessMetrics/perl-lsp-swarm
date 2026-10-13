@@ -111,6 +111,103 @@ fn declaration_names_readonly_keeps_wrapper_count_and_named_argument() {
     assert_wrapper_preserves_named_argument("Readonly", "Readonly");
 }
 
+fn assert_wrapper_preserves_initializer(module: &str, call: &str, list: bool) {
+    let variable =
+        Node::new(NodeKind::Variable { sigil: "$".into(), name: "VALUE".into() }, loc(25, 31));
+    let initializer = Some(Box::new(Node::new(
+        NodeKind::Subroutine {
+            name: None,
+            name_span: None,
+            declarator: None,
+            prototype: None,
+            signature: None,
+            attributes: vec![],
+            body: Box::new(Node::new(
+                NodeKind::Block { statements: vec![named_sub("ub", 43, 54)] },
+                loc(41, 56),
+            )),
+        },
+        loc(37, 56),
+    )));
+    let declaration = if list {
+        NodeKind::VariableListDeclaration {
+            declarator: "my".into(),
+            variables: vec![
+                variable,
+                Node::new(
+                    NodeKind::Variable { sigil: "$".into(), name: "COUNT".into() },
+                    loc(33, 39),
+                ),
+            ],
+            attributes: vec![],
+            initializer,
+        }
+    } else {
+        NodeKind::VariableDeclaration {
+            declarator: "my".into(),
+            variable: Box::new(variable),
+            attributes: vec![],
+            initializer,
+        }
+    };
+    let root = Node::new(
+        NodeKind::Program {
+            statements: vec![
+                Node::new(
+                    NodeKind::Use { module: module.into(), args: vec![], has_filter_risk: false },
+                    loc(0, 15),
+                ),
+                Node::new(
+                    NodeKind::FunctionCall {
+                        name: call.into(),
+                        args: vec![Node::new(declaration, loc(22, 56))],
+                    },
+                    loc(16, 57),
+                ),
+            ],
+        },
+        loc(0, 57),
+    );
+    let declarations = extract_symbol_decls(&root, Some("Outer"));
+    let constants = if list { 2 } else { 1 };
+    assert_eq!(declarations.len(), constants + 1, "wrapper constants and initializer sub only");
+    assert_eq!(declarations[0].kind, SymbolKind::Constant);
+    assert_eq!(declarations[0].name, "VALUE");
+    assert_eq!(declarations[0].anchor_span, Some((25, 31)));
+    if list {
+        assert_eq!(declarations[1].kind, SymbolKind::Constant);
+        assert_eq!(declarations[1].name, "COUNT");
+        assert_eq!(declarations[1].anchor_span, Some((33, 39)));
+    }
+    let nested = &declarations[constants];
+    assert_eq!(nested.kind, SymbolKind::Subroutine);
+    assert_eq!(nested.name, "ub");
+    assert_eq!(nested.qualified_name, "Outer::ub");
+    assert_eq!(nested.container.as_deref(), Some("Outer"));
+    assert_eq!(nested.full_span, (43, 54));
+    assert_eq!(nested.anchor_span, Some((47, 49)));
+}
+
+#[test]
+fn declaration_names_const_fast_preserves_single_initializer() {
+    assert_wrapper_preserves_initializer("Const::Fast", "const", false);
+}
+
+#[test]
+fn declaration_names_const_fast_preserves_list_initializer() {
+    assert_wrapper_preserves_initializer("Const::Fast", "const", true);
+}
+
+#[test]
+fn declaration_names_readonly_preserves_single_initializer() {
+    assert_wrapper_preserves_initializer("Readonly", "Readonly", false);
+}
+
+#[test]
+fn declaration_names_readonly_preserves_list_initializer() {
+    assert_wrapper_preserves_initializer("Readonly", "Readonly", true);
+}
+
 // ── Package ──────────────────────────────────────────────────────────────────
 
 #[test]

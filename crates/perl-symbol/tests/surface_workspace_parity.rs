@@ -20,6 +20,31 @@ fn parse(src: &str) -> Result<perl_parser_core::Node> {
     Ok(parser.parse()?)
 }
 
+fn assert_parsed_wrapper_initializer(source: &str) -> Result<()> {
+    let ast = parse(source)?;
+    let declarations = extract_symbol_decls(&ast, Some("main"));
+    assert_eq!(declarations.len(), 2, "one constant and one nested named sub");
+    assert_eq!(declarations[0].kind, SymbolKind::Constant);
+    assert_eq!(declarations[0].name, "X");
+    assert_eq!(declarations[0].anchor_span, Some((26, 28)));
+    assert_eq!(declarations[1].kind, SymbolKind::Subroutine);
+    assert_eq!(declarations[1].name, "ub");
+    assert_eq!(declarations[1].qualified_name, "main::ub");
+    assert_eq!(declarations[1].full_span, (37, 46));
+    assert_eq!(declarations[1].anchor_span, Some((41, 43)));
+    Ok(())
+}
+
+#[test]
+fn const_fast_real_parser_preserves_initializer_declarations() -> Result<()> {
+    assert_parsed_wrapper_initializer("use Const::Fast; const my $X = sub { sub ub {} };")
+}
+
+#[test]
+fn readonly_real_parser_preserves_initializer_declarations() -> Result<()> {
+    assert_parsed_wrapper_initializer("use Readonly; Readonly my $X = sub { sub ub {} };")
+}
+
 #[test]
 fn surface_bank_covers_representative_workspace_parity_constructs() -> Result<()> {
     let cases = vec![
