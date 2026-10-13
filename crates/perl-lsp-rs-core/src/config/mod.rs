@@ -293,12 +293,14 @@ pub struct AiCompletionConfig {
 pub(crate) const DEFAULT_AI_API_KEY_HEADER: &str = "Authorization";
 pub(crate) const DEFAULT_AI_API_KEY_PREFIX: &str = "Bearer";
 
+#[cfg(feature = "ai-provider")]
 pub(crate) fn normalize_ai_api_key_header(value: &str) -> Option<String> {
     let trimmed = value.trim();
     (!trimmed.is_empty() && trimmed.bytes().all(is_http_header_name_byte))
         .then(|| trimmed.to_string())
 }
 
+#[cfg(feature = "ai-provider")]
 pub(crate) fn normalize_ai_api_key_prefix(value: &str) -> Option<Option<String>> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
@@ -308,10 +310,12 @@ pub(crate) fn normalize_ai_api_key_prefix(value: &str) -> Option<Option<String>>
     is_safe_http_header_value_part(trimmed).then(|| Some(trimmed.to_string()))
 }
 
+#[cfg(feature = "ai-provider")]
 pub(crate) fn is_safe_http_header_value_part(value: &str) -> bool {
     !value.bytes().any(|byte| byte < 0x20 || byte == 0x7f)
 }
 
+#[cfg(feature = "ai-provider")]
 fn is_http_header_name_byte(byte: u8) -> bool {
     byte.is_ascii_alphanumeric()
         || matches!(
