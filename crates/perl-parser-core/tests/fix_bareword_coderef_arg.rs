@@ -13,7 +13,10 @@ use perl_tdd_support::must_with;
 fn find_function_call<'a>(node: &'a Node, name: &str) -> Option<(&'a str, Vec<String>)> {
     match &node.kind {
         NodeKind::FunctionCall { name: call_name, args } if call_name == name => {
-            Some((call_name.as_str(), args.iter().map(|arg| arg.kind.kind_name().to_string()).collect()))
+            Some((
+                call_name.as_str(),
+                args.iter().map(|arg| arg.kind.kind_name().to_string()).collect(),
+            ))
         }
         _ => node.children().into_iter().find_map(|child| find_function_call(child, name)),
     }
@@ -25,7 +28,10 @@ fn assert_parses_as_call(source: &str, name: &str, expected_args: usize) -> Vec<
     let found = find_function_call(&ast, name);
     let (found_name, arg_kinds) = match found {
         Some(pair) => pair,
-        None => panic!("expected FunctionCall {name} for source:\n{source}\n\nsexp:\n{}", ast.to_sexp()),
+        None => panic!(
+            "expected FunctionCall {name} for source:\n{source}\n\nsexp:\n{}",
+            ast.to_sexp()
+        ),
     };
     assert_eq!(found_name, name);
     assert_eq!(
@@ -41,7 +47,11 @@ fn assert_parses_as_call(source: &str, name: &str, expected_args: usize) -> Vec<
 fn declared_bareword_call_with_coderef_arg_parses_as_two_arg_call() {
     let source = "sub testing { } sub no_proto { } testing \\&no_proto, undef;";
     let arg_kinds = assert_parses_as_call(source, "testing", 2);
-    assert_eq!(arg_kinds[0], "Unary", "first arg should be the reference expression: {arg_kinds:?}");
+    assert_eq!(
+        arg_kinds[0],
+        "Unary",
+        "first arg should be the reference expression: {arg_kinds:?}"
+    );
     assert_clean_parse(source);
     assert_no_blocking_diagnostics(source);
 }
@@ -51,6 +61,21 @@ fn bareword_call_reference_arg_forms_parse() {
     assert_parses_as_call("sub foo { } foo \\&x;", "foo", 1);
     assert_parses_as_call("sub foo { } foo \\@a;", "foo", 1);
     assert_parses_as_call("sub foo { } foo \\\\$x;", "foo", 1);
+}
+
+#[test]
+fn repeated_backslashes_with_operands_are_call_arguments() {
+    for source in [
+        r"sub foo { } foo \\$x;",
+        r"sub foo { } foo \\\$x;",
+        r"sub foo { } sub cb { } foo \\&cb;",
+        r"sub foo { } sub cb { } foo \\\&cb;",
+    ] {
+        let arg_kinds = assert_parses_as_call(source, "foo", 1);
+        assert_eq!(arg_kinds[0], "Unary");
+        assert_clean_parse(source);
+        assert_no_blocking_diagnostics(source);
+    }
 }
 
 #[test]
@@ -67,22 +92,32 @@ fn uppercase_declared_call_with_reference_arg_parses() {
 
 #[test]
 fn operandless_backslash_is_not_a_call_argument() {
-    // `foo \;` has no reference operand: it must not become a clean call.
-    let source = "sub foo { } foo \\;";
-    let mut parser = Parser::new(source);
-    let ast = must_with(parser.parse(), format!("parse failed for {source:?}"));
-    assert!(
-        ast.to_sexp().contains("ERROR") || !parser.get_errors().is_empty(),
-        "operandless backslash must stay an error, got:\n{}",
-        ast.to_sexp()
-    );
+    // Perl rejects each sibling: nesting references does not supply an operand.
+    for source in [r"sub foo { } foo \;", r"sub foo { } foo \\;", r"sub foo { } foo \\\;"] {
+        let mut parser = Parser::new(source);
+        let ast = must_with(parser.parse(), format!("parse failed for {source:?}"));
+        assert!(
+            ast.to_sexp().contains("ERROR") || !parser.get_errors().is_empty(),
+            "operandless backslash must stay an error for {source:?}, got:\n{}",
+            ast.to_sexp()
+        );
+    }
 }
 
 #[test]
 fn uppercase_indirect_and_concat_forms_are_not_bare_calls() {
     // Negative pins: these must not be re-read as bare calls by the new arm.
-    assert_clean_parse("print STDOUT \\$x;");
-    assert_clean_parse("$z = foo . \\$x;");
+    for (source, excluded_owner) in [("print STDOUT \\$x;", "STDOUT"), ("$z = foo . \\$x;", "foo")] {
+        let mut parser = Parser::new(source);
+        let ast = must_with(parser.parse(), format!("parse failed for {source:?}"));
+        assert!(
+            find_function_call(&ast, excluded_owner).is_none(),
+            "unexpected FunctionCall {excluded_owner} for source:\n{source}\n\nsexp:\n{}",
+            ast.to_sexp()
+        );
+        assert_clean_parse(source);
+        assert_no_blocking_diagnostics(source);
+    }
 }
 
 #[test]
