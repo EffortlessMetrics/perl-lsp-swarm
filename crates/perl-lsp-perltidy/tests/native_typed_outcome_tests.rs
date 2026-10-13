@@ -583,3 +583,29 @@ fn formats_list_operator_statements_inside_blocks() {
     assert_eq!(second.formatted, expected);
     assert!(!second.changed);
 }
+
+#[test]
+fn range_format_reindents_relative_to_enclosing_block() {
+    let formatter = NativeFormatter::new();
+    let source = "sub f {\nmy $x = 1;\nmy $y = 2;\n}\n";
+    // Range covering only the two body lines (lines 1..2).
+    let range = TextRange::new(TextPosition::new(1, 0), TextPosition::new(2, 10));
+    let result = formatter.format_range(source, range, &FormatConfig::default());
+    assert_eq!(result.formatted, "sub f {\n    my $x = 1;\n    my $y = 2;\n}\n");
+    assert_eq!(result.edits.len(), 2);
+}
+
+#[test]
+fn comment_braces_do_not_open_blocks() {
+    let formatter = NativeFormatter::new();
+    let source = "# note {\nmy$x=1;\n";
+    let result = formatter.format_document(source, &FormatConfig::default());
+    assert_eq!(result.formatted, "# note {\nmy $x = 1;\n");
+
+    let ranged = formatter.format_range(
+        source,
+        TextRange::new(TextPosition::new(1, 0), TextPosition::new(1, 7)),
+        &FormatConfig::default(),
+    );
+    assert_eq!(ranged.formatted, "# note {\nmy $x = 1;\n");
+}

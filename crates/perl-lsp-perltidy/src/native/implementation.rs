@@ -72,7 +72,7 @@ impl NativeFormatter {
         Self::validate_parse_only(source, gate_kind)
     }
 
-    /// Check parse correctness only — no literal-preserve check.
+    /// Check parse correctness only â€” no literal-preserve check.
     ///
     /// Used by `format_range` where the literal-preserve gate is scoped to the
     /// requested line range rather than the whole document.
@@ -135,7 +135,7 @@ impl NativeFormatter {
         // intentionally indented top-level code are untouched.
         let mut indent_stack: Vec<String> = Vec::new();
         let unit = indent_unit(config);
-        // Physical lines inside a multiline literal (string, regex, qw…)
+        // Physical lines inside a multiline literal (string, regex, qwâ€¦)
         // are literal bytes, not code: never reindent them and never let
         // their contents move the block stack.
         let literal_lines = multiline_literal_lines(source);
@@ -177,7 +177,9 @@ impl NativeFormatter {
                 // flattened to the outer level; lines that neither open
                 // nor close keep the original behavior outside a block.
                 let (code, _comment) = split_trailing_comment(body);
-                let code = code.trim();
+                // Comment-only lines carry no code: braces in comment
+                // text must not move the block stack.
+                let code = if body.trim_start().starts_with('#') { "" } else { code.trim() };
                 let closes = code.starts_with('}');
                 let opens = code.ends_with('{') && !code.starts_with('{');
                 let popped = if closes { indent_stack.pop() } else { None };
@@ -233,18 +235,85 @@ impl NativeFormatter {
         let mut edits = Vec::new();
         let mut processed_lines = 0_u64;
         let fallback_line_ending = inferred_line_ending(source);
+        // Same opener-indent stack as document formatting (#17664), tracked
+        // over the whole document so a range starting mid-block indents
+        // relative to its enclosing block; only in-range lines are emitted.
+        let mut indent_stack: Vec<String> = Vec::new();
+        let unit = indent_unit(config);
+        let literal_lines = multiline_literal_lines(source);
 
         for (line_index, line) in source.split_inclusive('\n').enumerate() {
             processed_lines = processed_lines.saturating_add(1);
-            let line_index = line_index as u32;
+            let in_range = range_includes_line(range, line_index as u32);
+            let line_index_u32 = line_index as u32;
             let (body, line_ending) = split_line_ending(line);
             let generated_line_ending =
                 if line_ending.is_empty() { fallback_line_ending } else { line_ending };
-            let formatted_body = if range_includes_line(range, line_index) {
-                format_simple_line(body, config)
-            } else {
+            let formatted_body = if literal_lines.contains(&line_index) || body.trim().is_empty() {
                 None
+            } else if is_rendered_block_boundary_line(body, config) {
+                let role = rendered_boundary_role(body);
+                let popped = if role.closes_block { indent_stack.pop() } else { None };
+                let indent = match popped {
+                    Some(opener) => opener,
+                    None => match indent_stack.last() {
+                        Some(opener) => format!("{opener}{unit}"),
+                        None => body[..body.len() - body.trim_start().len()].to_string(),
+                    },
+                };
+                if role.opens_block {
+                    indent_stack.push(indent.clone());
+                }
+                if in_range {
+                    match format_simple_line(&format!("{indent}{}", body.trim_start()), config) {
+                        Some(formatted) => Some(formatted),
+                        None => Some(format!("{indent}{}", body.trim_start())),
+                    }
+                } else {
+                    None
+                }
+            } else {
+                let (code, _comment) = split_trailing_comment(body);
+                // Comment-only lines carry no code: braces in comment
+                // text must not move the block stack.
+                let code = if body.trim_start().starts_with('#') { "" } else { code.trim() };
+                let closes = code.starts_with('}');
+                let opens = code.ends_with('{') && !code.starts_with('{');
+                let popped = if closes { indent_stack.pop() } else { None };
+                let indent =
+                    popped.or_else(|| indent_stack.last().map(|opener| format!("{opener}{unit}")));
+                match indent {
+                    Some(indent) => {
+                        let candidate = format!("{indent}{}", body.trim_start());
+                        let formatted = if in_range {
+                            match format_simple_line(&candidate, config) {
+                                Some(formatted) => Some(formatted),
+                                None if closes
+                                    || opens
+                                    || literal_lines.contains(&(line_index + 1)) =>
+                                {
+                                    Some(candidate)
+                                }
+                                None => None,
+                            }
+                        } else {
+                            None
+                        };
+                        if opens {
+                            indent_stack.push(indent);
+                        }
+                        formatted
+                    }
+                    None => {
+                        if opens {
+                            indent_stack
+                                .push(body[..body.len() - body.trim_start().len()].to_string());
+                        }
+                        if in_range { format_simple_line(body, config) } else { None }
+                    }
+                }
             };
+            let line_index = line_index_u32;
 
             if let Some(formatted_line) = formatted_body {
                 let formatted_line =
@@ -276,7 +345,7 @@ impl NativeFormatter {
     /// The argument is [`Self::format_safe_subset`]'s output, not the caller's
     /// original document, so the terminator appended here is the line-ending
     /// convention [`inferred_line_ending`] infers from the *formatted* text's
-    /// last LF — not what that text happens to end with, which may be an
+    /// last LF â€” not what that text happens to end with, which may be an
     /// unterminated final line. That convention matches the caller's document
     /// only because `format_safe_subset` preserves each line's existing
     /// terminator; it is not independently guaranteed. Hence `formatted`
@@ -320,8 +389,8 @@ fn multiline_literal_lines(source: &str) -> std::collections::HashSet<usize> {
 
 impl PerlFormatter for NativeFormatter {
     fn format_document(&self, source: &str, config: &FormatConfig) -> FormatResult {
-        // Counted inside the pipeline so an adapter double-invoke — even one
-        // that bypasses the counters-aware typed entry — records a second
+        // Counted inside the pipeline so an adapter double-invoke â€” even one
+        // that bypasses the counters-aware typed entry â€” records a second
         // pipeline invocation (NPC-003 mutation control).
         counters::record_with(|counters| counters.observe_pipeline_invocation());
         if matches!(config.mode, FormatterMode::Off) {
@@ -362,13 +431,13 @@ impl PerlFormatter for NativeFormatter {
 
         // Scope the literal-preserve gate to only the requested line range.
         // If the range itself contains a preservable construct (regex, heredoc,
-        // qw, POD, __DATA__/__END__, or format body), bail unchanged — that is
+        // qw, POD, __DATA__/__END__, or format body), bail unchanged â€” that is
         // correct and safe. Constructs that exist *outside* the requested range
         // do not block formatting of the clean range.
         //
         // Overlap detection strategy: line-based constructs are checked only on
         // lines within the range; token-based constructs compare token byte spans
-        // against the byte interval of the requested lines (conservative — a token
+        // against the byte interval of the requested lines (conservative â€” a token
         // that merely starts before the range but ends inside it is considered an
         // overlap and causes a bail-out).
         if let Some(kind) = literal_preserve_region_for_range(source, range) {
@@ -384,7 +453,7 @@ impl PerlFormatter for NativeFormatter {
             return result;
         }
 
-        // Parse-error gate still covers the full document — we cannot safely
+        // Parse-error gate still covers the full document â€” we cannot safely
         // format any range of a document that does not parse.
         if let Err(diagnostic) = Self::validate_parse_only(source, counters::ParseGateKind::Source)
         {
@@ -405,7 +474,7 @@ impl PerlFormatter for NativeFormatter {
         if let Err(diagnostic) =
             Self::validate_parse_only(&formatted, counters::ParseGateKind::FormattedOutput)
         {
-            // LCOV_EXCL_START — genuinely unreachable: format_safe_subset_range
+            // LCOV_EXCL_START â€” genuinely unreachable: format_safe_subset_range
             // only applies spacing rewrites that cannot corrupt a clean parse.
             let mut result = FormatResult::unchanged(source);
             result.diagnostics.push(FormatDiagnostic::new(
@@ -491,9 +560,9 @@ pub(super) fn format_simple_line(line: &str, config: &FormatConfig) -> Option<St
 ///
 /// A boundary shape is *necessary but not sufficient* for rendered form: a
 /// hand-written block reuses exactly the header and tail shapes the renderers
-/// emit, so line shape alone cannot claim it. The document-level evidence —
+/// emit, so line shape alone cannot claim it. The document-level evidence â€”
 /// every `}`-prefixed tail closing the block opened at the same indent, and
-/// every body line sitting one [`indent_unit`] deeper than its block — is
+/// every body line sitting one [`indent_unit`] deeper than its block â€” is
 /// established by the target walk in `outcome::target_has_only_supported_lines`,
 /// which consumes [`rendered_boundary_role`] for the admitted lines.
 pub(super) fn is_rendered_block_boundary_line(line: &str, config: &FormatConfig) -> bool {
@@ -514,7 +583,7 @@ pub(super) fn is_rendered_block_boundary_line(line: &str, config: &FormatConfig)
     // Rendered tails: `}`, `} else {`, `} elsif (...) {`, `} continue {`, and
     // their `BracePlacement::NextLine` forms, where the clause header loses
     // its brace (`} else`, `} elsif (...)`, `} continue`) and the opening
-    // brace becomes its own line — and nothing else. A tail carrying tokens
+    // brace becomes its own line â€” and nothing else. A tail carrying tokens
     // past the clause's opening brace (`} else { stmt; }`) is a shape no
     // renderer emits, so it stays refused.
     if first.kind() == TokenKind::RightBrace {
@@ -580,7 +649,7 @@ pub(super) fn is_rendered_block_boundary_line(line: &str, config: &FormatConfig)
 
 /// Which sides of a block one admitted rendered boundary line sits on.
 ///
-/// Shape facts only — this says nothing about rendered form (see
+/// Shape facts only â€” this says nothing about rendered form (see
 /// [`is_rendered_block_boundary_line`]). The outcome admission walk uses the
 /// two flags to check the layout the renderers emit: a `closes_block` tail
 /// must match the indent of the block it closes, and an `opens_block` line
@@ -2272,7 +2341,7 @@ fn byte_span_for_line_range(source: &str, range: TextRange) -> (usize, usize) {
     }
 
     if !found_start {
-        // Range starts beyond end of file — nothing to check.
+        // Range starts beyond end of file â€” nothing to check.
         return (source.len(), source.len());
     }
 
@@ -2478,7 +2547,7 @@ mod tests {
     fn literal_preserve_region_for_range_ignores_constructs_outside_range()
     -> Result<(), Box<dyn std::error::Error>> {
         // Document: line 0 has a regex, line 1 is clean.
-        // Range covers only line 1 → should not detect the regex.
+        // Range covers only line 1 â†’ should not detect the regex.
         let source = "my $x = $t =~ /pat/;\nmy $y = 2;\n";
         let range = TextRange::new(TextPosition::new(1, 0), TextPosition::new(2, 0));
         assert_eq!(literal_preserve_region_for_range(source, range), None);
@@ -2489,7 +2558,7 @@ mod tests {
     #[test]
     fn literal_preserve_region_for_range_detects_constructs_inside_range()
     -> Result<(), Box<dyn std::error::Error>> {
-        // Range covers the line with the regex → should detect it.
+        // Range covers the line with the regex â†’ should detect it.
         let source = "my $y = 2;\nmy $x = $t =~ /pat/;\n";
         let range = TextRange::new(TextPosition::new(1, 0), TextPosition::new(2, 0));
         assert_eq!(literal_preserve_region_for_range(source, range), Some("regex literal"));
@@ -2529,7 +2598,7 @@ mod tests {
         Ok(())
     }
 
-    // ── additional inline lib tests for Codecov patch coverage ──
+    // â”€â”€ additional inline lib tests for Codecov patch coverage â”€â”€
 
     #[test]
     fn literal_preserve_region_for_range_detects_data_end_inside_range()
@@ -2571,7 +2640,7 @@ mod tests {
     #[test]
     fn byte_span_for_line_range_returns_whole_len_when_range_starts_beyond_eof()
     -> Result<(), Box<dyn std::error::Error>> {
-        // Range starting beyond end of file → (source.len(), source.len()) defensive return.
+        // Range starting beyond end of file â†’ (source.len(), source.len()) defensive return.
         let source = "my $x = 1;\n";
         // Line 100 doesn't exist in a 1-line source.
         let range = TextRange::new(TextPosition::new(100, 0), TextPosition::new(101, 0));
@@ -2613,7 +2682,7 @@ mod tests {
     #[test]
     fn token_literal_preserve_region_overlapping_detects_quote_like_operators_in_range()
     -> Result<(), Box<dyn std::error::Error>> {
-        // qw() — QuoteWords
+        // qw() â€” QuoteWords
         let source_qw = "my @w = qw(alpha beta);\n";
         let (start, end) = (0, source_qw.len());
         assert_eq!(
@@ -2621,21 +2690,21 @@ mod tests {
             Some("quote-like operator")
         );
 
-        // q() — QuoteSingle
+        // q() â€” QuoteSingle
         let source_q = "my $s = q(hello);\n";
         assert_eq!(
             token_literal_preserve_region_overlapping(source_q, 0, source_q.len()),
             Some("quote-like operator")
         );
 
-        // qq() — QuoteDouble
+        // qq() â€” QuoteDouble
         let source_qq = "my $s = qq(hello $x);\n";
         assert_eq!(
             token_literal_preserve_region_overlapping(source_qq, 0, source_qq.len()),
             Some("quote-like operator")
         );
 
-        // qx() — QuoteCommand
+        // qx() â€” QuoteCommand
         let source_qx = "my $out = qx(ls -la);\n";
         assert_eq!(
             token_literal_preserve_region_overlapping(source_qx, 0, source_qx.len()),
@@ -2725,8 +2794,8 @@ mod tests {
         Ok(())
     }
 
-    /// Exercises validate_clean_parse → validate_parse_only call chain (lines 62-63)
-    /// by calling format_document with clean source (literal_preserve_region → None,
+    /// Exercises validate_clean_parse â†’ validate_parse_only call chain (lines 62-63)
+    /// by calling format_document with clean source (literal_preserve_region â†’ None,
     /// so the call falls through to validate_parse_only).
     #[test]
     fn format_document_calls_validate_parse_only_for_clean_source()
@@ -2736,7 +2805,7 @@ mod tests {
 
         let result = formatter.format_document(source, &FormatConfig::default());
 
-        // Clean source → no diagnostics, parser ran cleanly.
+        // Clean source â†’ no diagnostics, parser ran cleanly.
         assert!(
             result.diagnostics.is_empty(),
             "clean source should produce no diagnostics; got: {:?}",
@@ -2771,7 +2840,7 @@ mod tests {
     /// `token_literal_preserve_region_overlapping`) is not required for normal
     /// format detection: the line-based check in `literal_preserve_region_for_range`
     /// catches `format X =` declaration lines first. This test documents the
-    /// observable behaviour — i.e. that a range covering only the format *body*
+    /// observable behaviour â€” i.e. that a range covering only the format *body*
     /// content (not the declaration line) is currently not detected by the
     /// token-based path (because the lexer requires the declaration line to be
     /// lexed first to enter format mode), and therefore returns `None`.
