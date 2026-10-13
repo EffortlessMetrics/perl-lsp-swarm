@@ -219,6 +219,48 @@ fn cli_rejects_nonlexical_output_alias_without_touching_inputs() -> Result<()> {
 }
 
 #[test]
+fn cli_without_ordinary_emits_not_proven_receipt() -> Result<()> {
+    // The missing-pair falsifier at the CLI surface: no --ordinary must
+    // still produce the typed not_proven receipt, never a silent absence
+    // and never a passing relation.
+    let instrumented_temp = tempfile::tempdir()?;
+    let instrumented = instrumented_side(instrumented_temp.path(), "clean")?;
+    fs::write(
+        instrumented_temp.path().join("parent-receipt.json"),
+        serde_json::to_vec(&instrumented.parent)?,
+    )?;
+    fs::write(
+        instrumented_temp.path().join("trace-receipt.json"),
+        serde_json::to_vec(&instrumented.trace)?,
+    )?;
+    fs::write(
+        instrumented_temp.path().join("work-receipt.json"),
+        serde_json::to_vec(&instrumented.work)?,
+    )?;
+    let output = instrumented_temp.path().join("equivalence.json");
+    let status = std::process::Command::new(env!("CARGO_BIN_EXE_perl-core-harness-artifacts"))
+        .args([
+            "compare-equivalence",
+            "--matrix",
+            &matrix_path().to_string_lossy(),
+            "--instrumented-parent",
+            &instrumented_temp.path().join("parent-receipt.json").to_string_lossy(),
+            "--trace",
+            &instrumented_temp.path().join("trace-receipt.json").to_string_lossy(),
+            "--work",
+            &instrumented_temp.path().join("work-receipt.json").to_string_lossy(),
+            "--output",
+            &output.to_string_lossy(),
+        ])
+        .status()?;
+    assert!(status.success(), "missing-pair comparison must still emit its receipt");
+    let receipt: serde_json::Value = serde_json::from_slice(&fs::read(&output)?)?;
+    assert_eq!(receipt["payload"]["verdict"], "not_proven");
+    assert_eq!(receipt["payload"]["transferable"], serde_json::json!([]));
+    Ok(())
+}
+
+#[test]
 fn stderr_bearing_ordinary_run_is_measured_difference() -> Result<()> {
     // Falsifier 5: instrumentation must not change ordinary stdout/stderr
     // beyond the isolated trace channel; stderr drift is measured, not hidden.
