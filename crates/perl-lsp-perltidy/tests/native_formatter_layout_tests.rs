@@ -281,13 +281,14 @@ fn native_formatter_is_idempotent_for_simple_lexical_layout() {
 }
 
 #[test]
-fn native_formatter_keeps_unsupported_lines_unchanged() {
+fn native_formatter_formats_print_statements() {
+    // #17663: bare print statements are now formattable.
     let formatter = NativeFormatter::new();
     let source = "my $x=1;\nprint$x;\n";
 
     let result = formatter.format_document(source, &FormatConfig::default());
 
-    assert_eq!(result.formatted, "my $x = 1;\nprint$x;\n");
+    assert_eq!(result.formatted, "my $x = 1;\nprint $x;\n");
 }
 
 #[test]
