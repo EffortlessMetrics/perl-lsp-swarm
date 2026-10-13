@@ -1280,7 +1280,9 @@ pub fn add_method_completions(
             .is_some_and(|catalog| catalog.iter().any(|(name, _)| *name == method));
         let is_instance_api_method = instance_api_methods
             .is_some_and(|catalog| catalog.iter().any(|(name, _)| *name == method));
-        if (is_static_api_method || is_instance_api_method)
+        let is_generic_object_method =
+            GENERIC_OBJECT_METHODS.iter().any(|(name, _)| *name == method);
+        if (is_static_api_method || is_instance_api_method || is_generic_object_method)
             && !method_prefix.is_empty()
             && !method.starts_with(method_prefix)
         {
