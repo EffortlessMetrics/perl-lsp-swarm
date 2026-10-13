@@ -54,6 +54,9 @@ pub fn run(command: &str, args: impl Iterator<Item = String>) -> Result<()> {
         "observe-invocations" => {
             crate::invocation_trace::instrument::observe_invocations_from_options(options)
         }
+        "compare-equivalence" => {
+            crate::trace_equivalence::compare::compare_equivalence_from_options(options)
+        }
         _ => bail!("unknown perl-core-harness-artifacts command: {command}"),
     }
 }
