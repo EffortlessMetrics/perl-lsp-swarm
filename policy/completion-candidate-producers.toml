@@ -153,7 +153,15 @@ outcome_owner = "#10230"
 # channels, entry routes, delegations or finalizer seam. Runtime and XS row notes
 # now describe caller-specific ranges; identity, insertion compatibility,
 # evidence, rank, completeness and migration owners retain their prior ceilings.
-source_digest = "sha256:e643ed3a7a897ae56b54f16845483ec112a87b979da4f83ccbf05b54c106b8f9"
+# Re-anchor 2026-10-13 (#17160/#17161/#17162 repair): member-collection and
+# catalog filtering changed inside existing producers (direct-membership query
+# in the workspace MRO walk, lexical and nested-package handling in
+# add_package_completions, prefix filtering in the generic/DBI method catalogs).
+# No producer add/remove/re-channel and no entry/finalizer change. Also absorbs
+# the un-anchored surface movement #17834 left in
+# perl-lsp-rs/src/runtime/language/completion.rs (its state/document.rs edit is
+# outside the scan roots; its completion.rs test-body edits are scanned).
+source_digest = "sha256:60270c4fa2c84817fb66cfb001b45bbb28ccc9eef7039d429c19a57cef7b0a9b"
 
 [[delegations]]
 module = "dancer2"

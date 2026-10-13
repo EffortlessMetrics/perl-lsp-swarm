@@ -2791,7 +2791,11 @@ fn collect_all_package_members_with_source(
         // authoritative facts for this package, persisted explicit members
         // anchored to the edited document itself are an older generation and
         // must not resurrect deleted or renamed bindings (#17084).
-        let mut persisted_members = index.get_package_members(pkg);
+        // Direct members only: the MRO walk reaches ancestors via explicit
+        // `@ISA`/parent/role edges, so a nested-namespace descendant must not
+        // ride along as an own-package member — a shared namespace root is not
+        // an inheritance edge (#17160).
+        let mut persisted_members = index.get_direct_package_members(pkg);
         if facts.from_current_document && !current_document_uri.is_empty() {
             persisted_members.retain(|symbol| symbol.uri != current_document_uri);
         }
