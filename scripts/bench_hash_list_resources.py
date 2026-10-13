@@ -36,6 +36,7 @@ def observe(command, stdout_path, stderr_path):
     with stdout_path.open("w") as stdout, stderr_path.open("w") as stderr:
         child = subprocess.Popen(command, stdout=stdout, stderr=stderr)
         deadline = time.monotonic() + 60
+        memory = {"samples": 0, "observed_rss_kib": 0, "observed_hwm_kib": 0}
         while True:
             pid, status, usage = os.wait4(child.pid, os.WNOHANG)
             if pid:
@@ -46,10 +47,28 @@ def observe(command, stdout_path, stderr_path):
                 _, status, _ = os.wait4(child.pid, 0)
                 child.returncode = os.waitstatus_to_exitcode(status)
                 raise RuntimeError("owned benchmark child exceeded 60 seconds")
-            time.sleep(0.01)
+            # wait4's lifetime maximum can include this Python parent's
+            # inherited footprint before exec. Sample the child's current mm
+            # only after its actual executable matches the immutable subject.
+            try:
+                proc = pathlib.Path(f"/proc/{child.pid}")
+                if (proc / "exe").resolve(strict=True) == pathlib.Path(command[0]):
+                    status_text = (proc / "status").read_text()
+                    values = {line.split()[0][:-1]: int(line.split()[1])
+                              for line in status_text.splitlines()
+                              if line.startswith(("VmRSS:", "VmHWM:"))}
+                    if "VmRSS" in values and "VmHWM" in values:
+                        memory["samples"] += 1
+                        memory["observed_rss_kib"] = max(memory["observed_rss_kib"], values["VmRSS"])
+                        memory["observed_hwm_kib"] = max(memory["observed_hwm_kib"], values["VmHWM"])
+            except (FileNotFoundError, ProcessLookupError):
+                pass  # An owned child can exit between the two observations.
+            time.sleep(0.001)
     if child.returncode != 0:
         raise subprocess.CalledProcessError(child.returncode, command)
-    return usage
+    if memory["samples"] == 0:
+        raise RuntimeError("native memory unavailable: no sample after exact executable identity")
+    return usage, memory
 
 
 def main():
@@ -112,13 +131,15 @@ def main():
                 command = [str(binaries[label]), str(path), str(args.iterations)]
                 stdout_path = args.output / f"{name}.{label}.{round_number}.stdout.txt"
                 stderr_path = args.output / f"{name}.{label}.{round_number}.stderr.txt"
-                usage = observe(command, stdout_path, stderr_path)
+                usage, memory = observe(command, stdout_path, stderr_path)
                 timing.write_text(json.dumps({"user_seconds": usage.ru_utime,
-                    "system_seconds": usage.ru_stime, "max_rss_kib": usage.ru_maxrss}))
+                    "system_seconds": usage.ru_stime, "wait4_max_rss_kib": usage.ru_maxrss, **memory}))
                 metrics = dict(piece.split("=", 1) for piece in stdout_path.read_text().split())
                 rows.append({"case": name, "binary": label, "round": round_number,
                              "command": command, "user_seconds": usage.ru_utime, "system_seconds": usage.ru_stime,
-                             "max_rss_kib": usage.ru_maxrss, **{key: int(value) for key, value in metrics.items()}})
+                             "cpu_seconds": usage.ru_utime + usage.ru_stime,
+                             "wait4_max_rss_kib": usage.ru_maxrss, **memory,
+                             **{key: int(value) for key, value in metrics.items()}})
         (args.output / "raw.json").write_text(json.dumps(rows, indent=2))
         print(f"observed {name}: oracle agrees; {args.rounds} paired rounds", flush=True)
     summary = []
@@ -127,7 +148,7 @@ def main():
         for label in binaries:
             observations = [row for row in rows if row["case"] == case["name"] and row["binary"] == label]
             item[label] = {key: statistics.median(row[key] for row in observations)
-                           for key in ("parse_ns", "drop_ns", "allocation_calls", "requested_bytes", "user_seconds", "system_seconds", "max_rss_kib")}
+                           for key in ("parse_ns", "drop_ns", "allocation_calls", "requested_bytes", "user_seconds", "system_seconds", "cpu_seconds", "wait4_max_rss_kib", "samples", "observed_rss_kib", "observed_hwm_kib")}
         summary.append(item)
     (args.output / "summary.json").write_text(json.dumps(summary, indent=2))
     (args.output / "manifest.json").write_text(json.dumps({"binaries": identities, "cases": manifest,

@@ -30,6 +30,24 @@ fn nested_source(depth: usize, width: usize) -> String {
     source
 }
 
+fn nested_key_source(depth: usize, width: usize) -> String {
+    let mut source = String::from("my $h = ");
+    source.extend(std::iter::repeat_n('(', depth));
+    source.push('[');
+    for number in 0..width {
+        if number != 0 {
+            source.push(',');
+        }
+        source.push_str(&number.to_string());
+    }
+    source.push(']');
+    for _ in 0..depth {
+        source.push_str(" => 0)");
+    }
+    source.push_str("; my $after = 7;");
+    source
+}
+
 fn initializer(ast: &Node) -> Result<&Node, String> {
     let NodeKind::Program { statements } = &ast.kind else {
         return Err("expected a program".into());
@@ -205,5 +223,51 @@ fn even_comma_only_list_stays_an_array() -> Result<(), String> {
             matches!(&node.kind, NodeKind::Number { value } if value == &(index + 1).to_string())
         );
     }
+    Ok(())
+}
+
+#[test]
+fn nested_fat_arrow_keys_do_not_recopy_the_wide_leaf() -> Result<(), String> {
+    let mut observations = Vec::new();
+    for depth in [4, 8, 16] {
+        let source = nested_key_source(depth, 256);
+        let (output, work) = measure(|| Parser::new(&source).parse_with_recovery());
+        assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+        assert!(output.stop_cause().is_none());
+        let mut key = initializer(&output.ast)?;
+        let outer_end = source.find("; my $after").ok_or("missing generated trailer")?;
+        for level in 0..depth {
+            let end = outer_end - 6 * level;
+            assert_eq!((key.location.start, key.location.end), (8 + level, end));
+            let NodeKind::HashLiteral { pairs } = &key.kind else {
+                return Err("expected the nested key hash".into());
+            };
+            assert_eq!(pairs.len(), 1);
+            assert!(matches!(&pairs[0].1.kind, NodeKind::Number { value } if value == "0"));
+            assert_eq!((pairs[0].1.location.start, pairs[0].1.location.end), (end - 2, end - 1));
+            key = &pairs[0].0;
+        }
+        let NodeKind::ArrayLiteral { elements } = &key.kind else {
+            return Err("expected the wide key leaf".into());
+        };
+        assert_eq!(elements.len(), 256);
+        for (number, element) in elements.iter().enumerate() {
+            assert!(
+                matches!(&element.kind, NodeKind::Number { value } if value == &number.to_string())
+            );
+            assert_eq!(&source[element.location.start..element.location.end], number.to_string());
+        }
+        assert!(work.calls > 0 && work.requested_bytes > 0);
+        eprintln!(
+            "key_depth={depth} calls={} requested_bytes={}",
+            work.calls, work.requested_bytes
+        );
+        observations.push(work);
+    }
+    assert!(observations[2].calls < 2 * observations[0].calls, "{observations:?}");
+    assert!(
+        observations[2].requested_bytes < 2 * observations[0].requested_bytes,
+        "{observations:?}"
+    );
     Ok(())
 }
