@@ -61,6 +61,24 @@ fn bareword_call_other_args_still_parse() {
 }
 
 #[test]
+fn uppercase_declared_call_with_reference_arg_parses() {
+    assert_parses_as_call("sub T { } T \\&cb;", "T", 1);
+}
+
+#[test]
+fn operandless_backslash_is_not_a_call_argument() {
+    // `foo \;` has no reference operand: it must not become a clean call.
+    let source = "sub foo { } foo \\;";
+    let mut parser = Parser::new(source);
+    let ast = must_with(parser.parse(), format!("parse failed for {source:?}"));
+    assert!(
+        ast.to_sexp().contains("ERROR") || !parser.get_errors().is_empty(),
+        "operandless backslash must stay an error, got:\n{}",
+        ast.to_sexp()
+    );
+}
+
+#[test]
 fn uppercase_indirect_and_concat_forms_are_not_bare_calls() {
     // Negative pins: these must not be re-read as bare calls by the new arm.
     assert_clean_parse("print STDOUT \\$x;");
