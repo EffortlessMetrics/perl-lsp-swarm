@@ -5,7 +5,7 @@ Summary:        __PACKAGE_SUMMARY__
 License:        __PACKAGE_LICENSE__
 URL:            __PACKAGE_HOMEPAGE__
 BuildArch:      __RPM_ARCH__
-Source0:        __SOURCE_TARBALL__
+Source0:        __DOWNLOAD_URL__
 
 %description
 perl-lsp is a public-beta Perl language server written in Rust.
