@@ -1258,10 +1258,7 @@ mod decision_projection_tests {
             "my $r = qr/a/;\n".to_string(),
             Vec::new(),
         );
-        assert_eq!(
-            unchanged.outcome.reason,
-            FormatReasonCode::AlreadyFormattedPreservingLiterals
-        );
+        assert_eq!(unchanged.outcome.reason, FormatReasonCode::AlreadyFormattedPreservingLiterals);
     }
 
     /// The external adapter's envelope is validated, not trusted.
