@@ -52,8 +52,8 @@ fn rule_mut<'a>(manifest: &'a mut Value, rule_id: &str) -> Option<&'a mut Value>
 #[test]
 fn committed_manifest_and_live_critic_proof_pass() -> TestResult {
     let manifest = proof::check(&repo_root()).map_err(|error| error.to_string())?;
-    assert_eq!(manifest.rules.len(), 8);
-    assert_eq!(manifest.cases.len(), 40);
+    assert_eq!(manifest.rules.len(), 16);
+    assert_eq!(manifest.cases.len(), 80);
     assert!(
         manifest
             .cases
@@ -505,8 +505,8 @@ fn extra_catalog_rule_outside_pilot_fails_check() -> TestResult {
     let mut extra =
         must_some_with(rule_mut(&mut manifest, "native.testing.require_use_strict"), "strict")
             .clone();
-    extra["rule_id"] = json!("native.io.pipe_open");
-    extra["canonical_id"] = json!("critic.io.pipe_open");
+    extra["rule_id"] = json!("native.common.undef_comparison");
+    extra["canonical_id"] = json!("critic.common.undef_comparison");
     must_some_with(manifest["rules"].as_array_mut(), "rules").push(extra);
     let error = match validate_manifest_value(&repo_root(), &manifest) {
         Ok(_) => "manifest unexpectedly validated".to_string(),
@@ -539,7 +539,7 @@ fn advisory_lane_covers_execute_live_owners() -> TestResult {
             "ci-lanes critic_rule_proof paths missing execute live owner `{path}`:\n{lanes}"
         );
     }
-    assert_eq!(PILOT_RULES.len(), 8, "closed PILOT_RULES must stay the eight-rule cohort");
+    assert_eq!(PILOT_RULES.len(), 16, "closed PILOT_RULES must stay the sixteen-rule cohort");
     Ok(())
 }
 
