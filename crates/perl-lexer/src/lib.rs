@@ -1714,9 +1714,38 @@ impl<'a> PerlLexer<'a> {
                         }
                     }
                 }
-                // Parse regular variable name
+                // Legacy package separator with an empty first segment:
+                // `$'b` is `$main::b`, not the `$'` postmatch variable.
+                // Real Perl decides by what follows the apostrophe: an
+                // identifier start opens a package segment (verified
+                // against perl 5.42.2: `$main::b = 42; print $'b` prints
+                // 42, while bare `$'` after a match stays postmatch).
                 else if let Some(ch) = self.current_char() {
-                    if is_perl_identifier_start(ch) {
+                    if ch == '\''
+                        && matches!(sigil, '$' | '@' | '%' | '*' | '&')
+                        && self.apostrophe_starts_legacy_package_segment(self.position)
+                    {
+                        self.advance(); // consume '
+                        while let Some(ch) = self.current_char() {
+                            if is_perl_identifier_continue(ch) {
+                                self.advance();
+                            } else {
+                                break;
+                            }
+                        }
+                        // Handle package-qualified segments like Foo::bar
+                        while self.current_char() == Some(':') && self.peek_char(1) == Some(':') {
+                            self.advance();
+                            self.advance();
+                            while let Some(ch) = self.current_char() {
+                                if is_perl_identifier_continue(ch) {
+                                    self.advance();
+                                } else {
+                                    break;
+                                }
+                            }
+                        }
+                    } else if is_perl_identifier_start(ch) {
                         while let Some(ch) = self.current_char() {
                             if is_perl_identifier_continue(ch) {
                                 self.advance();

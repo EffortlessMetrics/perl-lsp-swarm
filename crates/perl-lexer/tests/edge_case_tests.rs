@@ -75,6 +75,37 @@ fn split_adjacent_single_quote_pattern_keeps_quote_for_string() -> R {
 }
 
 #[test]
+fn leading_apostrophe_variable_is_one_identifier() -> R {
+    // `$'b` is `$main::b` (empty first package segment), not the `$'`
+    // postmatch variable plus a bareword. Verified against perl 5.42.2:
+    // `$main::b = 42; print $'b` prints 42.
+    let sig = significant("$x = $'b;");
+    assert!(
+        sig.iter().any(|token| token.text.as_ref() == "$'b"),
+        "leading apostrophe variable should stay one token: {sig:?}"
+    );
+    assert!(
+        !sig.iter().any(|token| token.text.as_ref() == "$'"),
+        "postmatch token must not split the qualified name: {sig:?}"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn bare_postmatch_apostrophe_stays_special_variable() -> R {
+    // Bare `$'` with no identifier start after it remains the postmatch
+    // special variable.
+    let sig = significant("print $';");
+    assert!(
+        sig.iter().any(|token| token.text.as_ref() == "$'"),
+        "bare postmatch should stay one special-variable token: {sig:?}"
+    );
+
+    Ok(())
+}
+
+#[test]
 fn legacy_apostrophe_package_separator_stays_identifier() -> R {
     let first = first_significant("Foo'Bar::baz").ok_or("missing identifier")?;
     assert!(
