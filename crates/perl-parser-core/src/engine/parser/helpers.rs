@@ -1450,6 +1450,10 @@ impl<'a> Parser<'a> {
     /// reading is the sole valid Perl parse, #16373) and must NOT be a string
     /// comparison operator (`eq`, `ne`, `lt`, `gt`, etc.) or a keyword token.
     fn looks_like_bare_call(&mut self, name: &str) -> bool {
+        // A sort comparator names a sub; it is never a call site.
+        if self.in_sort_comparator {
+            return false;
+        }
         if self.peek_kind().is_some_and(|kind| {
             matches!(kind, TokenKind::My | TokenKind::Our | TokenKind::Local | TokenKind::State)
         }) {
@@ -1603,9 +1607,16 @@ impl<'a> Parser<'a> {
                 if next_text.contains("::") {
                     // Qualified name — check that the following token is `->`, `(`,
                     // or another explicit argument in a list-operator style call.
+                    // A comma, fat arrow, or closing paren also proves the
+                    // qualified name sits in argument position: upstream
+                    // t/comp/parser.t has `is CORE::print::foo, 43, ...`,
+                    // where the qualified bareword is the first list item.
                     if let Ok(third) = self.tokens.peek_second() {
                         return third.kind() == TokenKind::Arrow
+                            || third.kind() == TokenKind::Comma
                             || third.kind() == TokenKind::LeftParen
+                            || third.kind() == TokenKind::FatArrow
+                            || third.kind() == TokenKind::RightParen
                             || Self::is_sigil_argument_start(third.kind(), third.text.as_ref());
                     }
                     return false;

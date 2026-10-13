@@ -1714,9 +1714,55 @@ impl<'a> PerlLexer<'a> {
                         }
                     }
                 }
-                // Parse regular variable name
+                // Legacy package separator with an empty first segment:
+                // `$'b` is `$main::b`, not the `$'` postmatch variable.
+                // Real Perl decides by what follows the apostrophe: an
+                // identifier start opens a package segment (verified
+                // against perl 5.42.2: `$main::b = 42; print $'b` prints
+                // 42, while bare `$'` after a match stays postmatch).
                 else if let Some(ch) = self.current_char() {
-                    if is_perl_identifier_start(ch) {
+                    if ch == '\''
+                        && matches!(sigil, '$' | '@' | '%' | '*')
+                        && self.apostrophe_starts_legacy_package_segment(self.position)
+                    {
+                        self.advance(); // consume '
+                        while let Some(ch) = self.current_char() {
+                            if ch == '\'' {
+                                // A further separator is consumed only
+                                // when another segment follows it; otherwise
+                                // the apostrophe opens a string in Perl.
+                                if self.apostrophe_starts_legacy_package_segment(self.position) {
+                                    self.advance();
+                                } else {
+                                    break;
+                                }
+                            } else if is_perl_identifier_continue(ch) {
+                                self.advance();
+                            } else {
+                                break;
+                            }
+                        }
+                        // Handle package-qualified segments like Foo::bar.
+                        // A trailing apostrophe needs the same segment gate
+                        // as above: without an identifier start after it,
+                        // it opens a string instead of joining the name.
+                        while self.current_char() == Some(':') && self.peek_char(1) == Some(':') {
+                            self.advance();
+                            self.advance();
+                            while let Some(ch) = self.current_char() {
+                                if ch == '\''
+                                    && !self.apostrophe_starts_legacy_package_segment(self.position)
+                                {
+                                    break;
+                                }
+                                if is_perl_identifier_continue(ch) {
+                                    self.advance();
+                                } else {
+                                    break;
+                                }
+                            }
+                        }
+                    } else if is_perl_identifier_start(ch) {
                         while let Some(ch) = self.current_char() {
                             if is_perl_identifier_continue(ch) {
                                 self.advance();
