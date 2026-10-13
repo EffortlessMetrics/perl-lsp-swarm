@@ -556,6 +556,12 @@ static IDENTITIES: &[CriticIdentityEntry] = &[
         "no built-in diagnostic has the same checked-call contract",
         &[CriticAlias::new(NATIVE, "native.io.unchecked_open_close", GENERAL)],
     ),
+    CriticIdentityEntry::distinct(
+        "critic.maintainability.too_many_branches",
+        CriticIdentityCategory::Maintainability,
+        "no built-in diagnostic has the same branch-count policy",
+        &[CriticAlias::new(NATIVE, "native.maintainability.too_many_branches", GENERAL)],
+    ),
     CriticIdentityEntry::equivalent(
         "critic.regex.capture_without_match",
         CriticIdentityCategory::Semantic,
