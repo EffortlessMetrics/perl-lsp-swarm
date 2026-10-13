@@ -4970,17 +4970,17 @@ gates:
             .collect();
         assert_eq!(gates.len(), 2, "both library and integration selectors must be present");
         let metadata = serde_json::json!({
-            "packages": [{"name": "perllsp", "id": "perllsp 0.1.0",
-                "manifest_path": "/workspace/crates/perllsp/Cargo.toml"}],
-            "resolve": {"nodes": [{"id": "perllsp 0.1.0", "deps": []}]}
+            "packages": [{"name": "perl-core-test-runner", "id": "perl-core-test-runner 0.1.0",
+                "manifest_path": "/workspace/crates/perl-core-test-runner/Cargo.toml"}],
+            "resolve": {"nodes": [{"id": "perl-core-test-runner 0.1.0", "deps": []}]}
         });
         let scope = crate::tasks::ci_scope::classify_files(
-            &["crates/perllsp/tests/fixtures/selector_input.json".to_string()],
+            &["crates/perl-core-test-runner/tests/fixtures/selector_input.json".to_string()],
             &metadata,
             "/workspace",
         )?;
         assert_eq!(scope.diff_class, "docs_as_code");
-        assert_eq!(super::selected_package_names(&scope), vec!["perllsp"]);
+        assert_eq!(super::selected_package_names(&scope), vec!["perl-core-test-runner"]);
 
         // A partial repair that honors ownership but omits target indexing
         // wrongly selects --lib for this package, which has only bin targets.
@@ -4997,7 +4997,7 @@ gates:
 
         let plan = super::plan_pr_fast_gates(&root, gates, "origin/main".to_string(), Some(scope))?;
         assert_eq!(selected_gate_names(&plan), vec!["unit_routed_full"]);
-        assert!(plan.selected[0].gate.command.contains("--tests -p perllsp"));
+        assert!(plan.selected[0].gate.command.contains("--tests -p perl-core-test-runner"));
         assert_eq!(skipped_gate_names(&plan), vec!["unit_scoped"]);
         assert!(plan.skipped[0].reason.contains("no ci-scope selected packages have a lib target"));
         assert!(!plan.fallback_used);
