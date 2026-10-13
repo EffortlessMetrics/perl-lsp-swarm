@@ -35,8 +35,9 @@ class RpmDebugContract(unittest.TestCase):
             "--output-dir", str(output),
         ], check=True, capture_output=True)
         self.spec = (output / "dnf/perl-lsp.spec").read_text()
-        build = self.spec.split("%build\n", 1)[1].split("%install\n", 1)[0]
-        self.guard = build
+        build = re.search(r"(?ms)^%build[ \t]*\n(.*?)^%install[ \t]*$", self.spec)
+        self.assertIsNotNone(build, "spec must have a %build section before %install")
+        self.guard = build.group(1)
         self.payload = self.work / "payload"
         self.payload.mkdir()
         for name in ("perllsp", "perl-dap"):
