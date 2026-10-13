@@ -116,6 +116,23 @@ fn second_apostrophe_without_segment_opens_string() -> R {
 }
 
 #[test]
+fn colon_tail_apostrophe_without_segment_opens_string() -> R {
+    // `$'b::c';` must end the variable at `c`: the trailing apostrophe
+    // opens a string, it does not join the qualified name.
+    let sig = significant("$'b::c';");
+    assert!(
+        sig.iter().any(|token| token.text.as_ref() == "$'b::c"),
+        "qualified name should end before the string apostrophe: {sig:?}"
+    );
+    assert!(
+        !sig.iter().any(|token| token.text.as_ref() == "$'b::c'"),
+        "trailing apostrophe must not join the variable token: {sig:?}"
+    );
+
+    Ok(())
+}
+
+#[test]
 fn bare_postmatch_apostrophe_stays_special_variable() -> R {
     // Bare `$'` with no identifier start after it remains the postmatch
     // special variable.

@@ -1742,11 +1742,19 @@ impl<'a> PerlLexer<'a> {
                                 break;
                             }
                         }
-                        // Handle package-qualified segments like Foo::bar
+                        // Handle package-qualified segments like Foo::bar.
+                        // A trailing apostrophe needs the same segment gate
+                        // as above: without an identifier start after it,
+                        // it opens a string instead of joining the name.
                         while self.current_char() == Some(':') && self.peek_char(1) == Some(':') {
                             self.advance();
                             self.advance();
                             while let Some(ch) = self.current_char() {
+                                if ch == '\''
+                                    && !self.apostrophe_starts_legacy_package_segment(self.position)
+                                {
+                                    break;
+                                }
                                 if is_perl_identifier_continue(ch) {
                                     self.advance();
                                 } else {
