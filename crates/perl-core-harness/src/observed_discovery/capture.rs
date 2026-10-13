@@ -126,8 +126,24 @@ pub(crate) fn selector_arguments(
     // target inherit a manifest population with their own switches
     // (`--utf8`, `--deparse`, ...) and must keep refusing, because their
     // zero-argument population is platform- and build-dependent.
-    let upstream_internal = entry.contract.runner_switches.as_slice() == ["--core"]
-        && selectors.iter().any(|selector| {
+    // The complete upstream core root set at the pinned revision. The
+    // switches-only form is admitted only for exactly this population: a
+    // narrower target carrying --core plus a subset of roots would
+    // silently widen to the full core selection upstream performs.
+    const CORE_ROOTS: [&str; 13] = [
+        "base", "comp", "run", "cmd", "io", "re", "opbasic", "op", "uni", "mro", "class", "perf",
+        "test_pl",
+    ];
+    let root_paths: std::collections::BTreeSet<&str> = selectors
+        .iter()
+        .filter_map(|selector| match selector {
+            TargetSelector::RecursiveRoot { path } => Some(path.as_str()),
+            _ => None,
+        })
+        .collect();
+    let manifest_count = selectors
+        .iter()
+        .filter(|selector| {
             matches!(
                 selector,
                 TargetSelector::ManifestPopulation {
@@ -135,9 +151,11 @@ pub(crate) fn selector_arguments(
                 }
             )
         })
-        && selectors
-            .iter()
-            .any(|selector| matches!(selector, TargetSelector::RecursiveRoot { .. }))
+        .count();
+    let upstream_internal = entry.contract.runner_switches.as_slice() == ["--core"]
+        && manifest_count == 1
+        && root_paths.len() == CORE_ROOTS.len()
+        && CORE_ROOTS.iter().all(|root| root_paths.contains(root))
         && selectors.iter().all(|selector| {
             matches!(
                 selector,
