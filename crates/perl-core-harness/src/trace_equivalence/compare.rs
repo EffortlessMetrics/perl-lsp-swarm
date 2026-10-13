@@ -121,6 +121,66 @@ pub fn build_trace_equivalence(
     let perl_ref = instrumented.payload.subject.perl_ref.clone();
     let repository_commit = instrumented.payload.subject.repository_commit.clone();
 
+    // Provenance: every input receipt must re-prove its own digest and pass
+    // its strict upstream validator before any plane is judged. Stored
+    // digest strings alone never grant a relation.
+    let mut provenance_errors = Vec::new();
+    let mut check_digest =
+        |label: &str, stored: &str, recomputed: Result<String, String>| match recomputed {
+            Ok(digest) if digest == stored => {}
+            _ => provenance_errors.push(format!("{label} payload digest does not recompute")),
+        };
+    check_digest(
+        "instrumented parent",
+        &instrumented.payload_digest,
+        crate::observed_discovery::build::discovery_payload_digest(&instrumented.payload),
+    );
+    check_digest(
+        "trace",
+        &trace.payload_digest,
+        crate::invocation_trace::build::trace_payload_digest(&trace.payload),
+    );
+    check_digest(
+        "work",
+        &work.payload_digest,
+        crate::invocation_trace::instrument::instrumentation_payload_digest(&work.payload),
+    );
+    if let Some(receipt) = &input.ordinary {
+        check_digest(
+            "ordinary",
+            &receipt.payload_digest,
+            crate::observed_discovery::build::discovery_payload_digest(&receipt.payload),
+        );
+        if let Err(error) = crate::observed_discovery::validate::validate_observed_discovery_receipt(
+            &input.matrix,
+            receipt,
+        ) {
+            provenance_errors.push(format!("ordinary receipt fails strict validation: {error}"));
+        }
+    }
+    if let Err(error) = crate::observed_discovery::validate::validate_observed_discovery_receipt(
+        &input.matrix,
+        instrumented,
+    ) {
+        provenance_errors.push(format!("instrumented parent fails strict validation: {error}"));
+    }
+    if let Err(error) =
+        crate::invocation_trace::validate::validate_invocation_trace_receipt(instrumented, trace)
+    {
+        provenance_errors.push(format!("trace receipt fails strict validation: {error}"));
+    }
+    if !provenance_errors.is_empty() {
+        return finish(
+            subjects,
+            target_id,
+            perl_ref,
+            repository_commit,
+            EquivalenceVerdict::NotProven,
+            Vec::new(),
+            provenance_errors,
+        );
+    }
+
     // Falsifier 1: no ordinary paired run, no relation.
     let Some(ordinary) = &input.ordinary else {
         return finish(
@@ -219,6 +279,14 @@ pub fn build_trace_equivalence(
     {
         reasons.push("instrumented runner artifact differs from the work receipt".to_string());
     }
+    // One process cannot be both sides of the pair (falsifiers 9 and 15):
+    // nonces are process identities, and reuse is stale evidence.
+    if ordinary.payload.terminal.process_nonce == instrumented.payload.terminal.process_nonce {
+        reasons.push("pair sides share one process nonce".to_string());
+    }
+    if work.payload.process_nonce != instrumented.payload.terminal.process_nonce {
+        reasons.push("work receipt does not bind the instrumented process".to_string());
+    }
     if !reasons.is_empty() {
         return finish(
             subjects,
@@ -248,19 +316,48 @@ pub fn build_trace_equivalence(
 
     let mut planes = Vec::new();
 
-    // Discovery bytes: the trace channel is isolated, so stdout must match
-    // byte-for-byte; only the envelope nonce identity is process-local.
-    let ordinary_stdout = ordinary.payload.stdout.bytes().unwrap_or_default();
-    let instrumented_stdout = instrumented.payload.stdout.bytes().unwrap_or_default();
+    // Discovery plane: the trace channel is isolated, so both raw streams,
+    // truncation flags, argv, working directory, environment, runner, and
+    // frame must match. The envelope nonce is process-local and excluded.
+    let stream_identity =
+        |receipt: &crate::observed_discovery::model::UpstreamDiscoveryReceiptV1| {
+            let payload = &receipt.payload;
+            (
+                payload.stdout.bytes().map_err(|error| error.to_string()),
+                payload.stderr.bytes().map_err(|error| error.to_string()),
+                payload.stdout.truncated,
+                payload.stderr.truncated,
+                payload.invocation.argv.clone(),
+                payload.invocation.working_directory.clone(),
+                format!("{:?}", payload.invocation.runner),
+                format!("{:?}", payload.discovery_frame),
+                // Only the dedicated trace channel may differ: the
+                // instrument's PERL_CORE_HARNESS_TRACE_* variables are
+                // channel framing; every other variable must match exactly.
+                payload
+                    .invocation
+                    .environment
+                    .variables
+                    .iter()
+                    .filter(|(key, _)| !key.starts_with("PERL_CORE_HARNESS_TRACE"))
+                    .map(|(key, value)| (key.clone(), value.clone()))
+                    .collect::<std::collections::BTreeMap<_, _>>(),
+            )
+        };
+    let ordinary_identity = stream_identity(ordinary);
+    let instrumented_identity = stream_identity(instrumented);
     planes.push(PlaneComparison {
         plane: ComparisonPlane::DiscoveryBytes,
-        ordinary_digest: sha256_bytes(&ordinary_stdout),
-        instrumented_digest: sha256_bytes(&instrumented_stdout),
-        matched: ordinary_stdout == instrumented_stdout,
-        differences: if ordinary_stdout == instrumented_stdout {
+        ordinary_digest: digest_of(&ordinary_identity),
+        instrumented_digest: digest_of(&instrumented_identity),
+        matched: ordinary_identity == instrumented_identity,
+        differences: if ordinary_identity == instrumented_identity {
             Vec::new()
         } else {
-            vec!["raw discovery stdout bytes differ".to_string()]
+            vec![
+                "raw streams, truncation, argv, directory, environment, runner, or frame differ"
+                    .to_string(),
+            ]
         },
     });
 
@@ -303,7 +400,7 @@ pub fn build_trace_equivalence(
         && cleanup.failures.is_empty();
     planes.push(PlaneComparison {
         plane: ComparisonPlane::Cleanup,
-        ordinary_digest: digest_of(&"ordinary run needs no disposable cleanup"),
+        ordinary_digest: digest_of(&ordinary.payload.terminal),
         instrumented_digest: digest_of(&cleanup),
         matched: cleanup_proven,
         differences: if cleanup_proven {
@@ -313,18 +410,21 @@ pub fn build_trace_equivalence(
         },
     });
 
-    // Invocation rows: exactly the accepted instrumented members, each once.
-    // A hidden or extra child shows up here even when membership matches.
-    let mut row_members: Vec<String> =
+    // Invocation rows: exactly the accepted instrumented members, in the
+    // members' original order, each accepted and complete. Sorting is
+    // forbidden: child order is behavior. A hidden or extra child shows up
+    // here even when membership matches.
+    let row_members: Vec<String> =
         trace.payload.rows.iter().map(|row| row.subject.parent_member_path.clone()).collect();
-    let row_count = row_members.len();
-    row_members.sort();
-    let mut expected_members = instrumented_members.clone();
-    expected_members.sort();
-    let rows_matched = row_members == expected_members && row_count == instrumented_members.len();
+    let rows_complete = trace.payload.rows.iter().all(|row| {
+        matches!(row.disposition, crate::invocation_trace::model::TraceRowDisposition::Accepted)
+            && row.state
+                == crate::invocation_trace::model::InvocationObservationState::ObservedComplete
+    });
+    let rows_matched = row_members == instrumented_members && rows_complete;
     planes.push(PlaneComparison {
         plane: ComparisonPlane::InvocationRows,
-        ordinary_digest: digest_of(&instrumented_members),
+        ordinary_digest: digest_of(&ordinary_members),
         instrumented_digest: digest_of(&trace.payload.rows),
         matched: rows_matched,
         differences: if rows_matched {
@@ -353,6 +453,8 @@ pub(crate) fn compare_equivalence_from_options(
     mut options: Options,
 ) -> color_eyre::eyre::Result<()> {
     use std::path::PathBuf;
+    let matrix = crate::io::read_matrix(&PathBuf::from(options.required("--matrix")?))
+        .map_err(|error| color_eyre::eyre::eyre!(error))?;
     let ordinary = match options.optional("--ordinary")? {
         Some(path) => Some(read_receipt(&PathBuf::from(path))?),
         None => None,
@@ -362,7 +464,7 @@ pub(crate) fn compare_equivalence_from_options(
     let trace = read_receipt(&PathBuf::from(options.required("--trace")?))?;
     let work = read_receipt(&PathBuf::from(options.required("--work")?))?;
     let output = PathBuf::from(options.required("--output")?);
-    let input = TraceEquivalenceInput { ordinary, instrumented_parent, trace, work };
+    let input = TraceEquivalenceInput { matrix, ordinary, instrumented_parent, trace, work };
     let receipt =
         build_trace_equivalence(&input).map_err(|error| color_eyre::eyre::eyre!(error))?;
     super::validate::validate_trace_equivalence(&receipt)

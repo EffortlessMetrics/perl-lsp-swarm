@@ -92,6 +92,14 @@ fn run_mode(mode: &str, selectors: &[String]) -> io::Result<i32> {
             write_rows(&rows)?;
             Ok(7)
         }
+        "select_stderr" => {
+            // Same selection on stdout, plus ordinary stderr output: paired
+            // equivalence must type this as a measured difference (#12286).
+            let rows = selected_rows(selectors)?;
+            write_rows(&rows)?;
+            eprintln!("fixture warning on ordinary stderr");
+            Ok(0)
+        }
         "duplicate_first" => {
             let mut rows = selected_rows(selectors)?;
             if let Some(first) = rows.first().cloned() {

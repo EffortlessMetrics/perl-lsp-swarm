@@ -146,6 +146,8 @@ fn paired_input(ordinary_mode: &str, instrumented_mode: &str) -> Result<TraceEqu
     drop(ordinary_temp);
     drop(instrumented_temp);
     Ok(TraceEquivalenceInput {
+        matrix: perl_core_harness::io::read_matrix(&matrix_path())
+            .map_err(|error| color_eyre::eyre::eyre!(error))?,
         ordinary: Some(ordinary),
         instrumented_parent: parent,
         trace,
@@ -166,6 +168,18 @@ fn clean_pair_grants_bounded_transfer() -> Result<()> {
         );
     }
     validate_trace_equivalence(&receipt).map_err(|error| color_eyre::eyre::eyre!(error))?;
+    Ok(())
+}
+
+#[test]
+fn stderr_bearing_ordinary_run_is_measured_difference() -> Result<()> {
+    // Falsifier 5: instrumentation must not change ordinary stdout/stderr
+    // beyond the isolated trace channel; stderr drift is measured, not hidden.
+    let input = paired_input("select_stderr", "clean")?;
+    let receipt =
+        build_trace_equivalence(&input).map_err(|error| color_eyre::eyre::eyre!(error))?;
+    assert_eq!(receipt.payload.verdict, EquivalenceVerdict::MeasuredDifference);
+    assert!(receipt.payload.transferable.is_empty());
     Ok(())
 }
 

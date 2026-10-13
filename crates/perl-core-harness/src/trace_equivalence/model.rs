@@ -145,6 +145,8 @@ pub struct UpstreamTraceEquivalenceV1 {
 /// Inputs to one comparison. Runtime-only: never serialized.
 #[derive(Clone, Debug)]
 pub struct TraceEquivalenceInput {
+    /// Pinned target matrix the paired receipts are validated against.
+    pub matrix: crate::model::UpstreamTargetMatrix,
     /// Ordinary discovery receipt; `None` is the missing-pair falsifier.
     pub ordinary: Option<crate::observed_discovery::model::UpstreamDiscoveryReceiptV1>,
     /// Instrumented parent discovery receipt (#12285).

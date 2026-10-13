@@ -29,6 +29,10 @@ fn refresh_discovery(receipt: &mut UpstreamDiscoveryReceiptV1) -> Result<()> {
 fn ordinary_from(fixture: &TraceFixture) -> Result<UpstreamDiscoveryReceiptV1> {
     let mut ordinary = fixture.parent.clone();
     ordinary.payload.subject.instrumentation_id = None;
+    // The ordinary side is its own process: distinct nonce on every envelope.
+    ordinary.payload.terminal.process_nonce = "capture-ordinary-0001".to_string();
+    ordinary.payload.stdout.process_nonce = "capture-ordinary-0001".to_string();
+    ordinary.payload.stderr.process_nonce = "capture-ordinary-0001".to_string();
     refresh_discovery(&mut ordinary)?;
     Ok(ordinary)
 }
@@ -128,6 +132,7 @@ fn pair(stdout: &str, members: &[&str]) -> Result<TraceEquivalenceInput> {
     let work = work_for(&fixture, &trace.payload_digest.clone())?;
     let ordinary = ordinary_from(&fixture)?;
     Ok(TraceEquivalenceInput {
+        matrix: crate::invocation_trace::test_support::matrix()?,
         ordinary: Some(ordinary),
         instrumented_parent: fixture.parent.clone(),
         trace,
@@ -179,7 +184,10 @@ fn member_order_perturbation_is_measured_difference() -> Result<()> {
 }
 
 #[test]
-fn terminal_difference_is_measured_difference() -> Result<()> {
+fn terminal_difference_is_never_equivalent() -> Result<()> {
+    // A hand-mutated terminal fails strict upstream validation, so the pair
+    // is not_proven here; plane-level terminal discrimination is proven with
+    // real processes in tests/trace_equivalence_capture.rs.
     let mut input = pair(STDOUT, &MEMBERS)?;
     if let Some(ordinary) = &mut input.ordinary {
         ordinary.payload.terminal.completion = ProcessCompletion::ExitStatus { code: 7 };
@@ -187,7 +195,8 @@ fn terminal_difference_is_measured_difference() -> Result<()> {
     }
     let receipt =
         build_trace_equivalence(&input).map_err(|error| color_eyre::eyre::eyre!(error))?;
-    assert_eq!(receipt.payload.verdict, EquivalenceVerdict::MeasuredDifference);
+    assert_ne!(receipt.payload.verdict, EquivalenceVerdict::EquivalentForDeclaredPlanes);
+    assert!(receipt.payload.transferable.is_empty());
     Ok(())
 }
 
@@ -245,6 +254,53 @@ fn receipt_satisfies_registered_schema_and_rejects_unknown_fields() -> Result<()
     mutated["payload"]["surprise"] = serde_json::json!("field");
     assert!(crate::schema_check::validate(&schema, &mutated).is_err());
     assert!(serde_json::from_value::<super::model::UpstreamTraceEquivalenceV1>(mutated).is_err());
+    Ok(())
+}
+
+#[test]
+fn forged_input_digest_is_not_proven() -> Result<()> {
+    // Regression for review finding (1): stored digest strings alone must
+    // never grant a relation; the comparator recomputes every input digest.
+    let mut input = pair(STDOUT, &MEMBERS)?;
+    if let Some(ordinary) = &mut input.ordinary {
+        ordinary.payload_digest = "0".repeat(64);
+    }
+    let receipt =
+        build_trace_equivalence(&input).map_err(|error| color_eyre::eyre::eyre!(error))?;
+    assert_eq!(receipt.payload.verdict, EquivalenceVerdict::NotProven);
+    assert!(receipt.payload.transferable.is_empty());
+    Ok(())
+}
+
+#[test]
+fn stderr_difference_is_never_equivalent() -> Result<()> {
+    // Regression for review finding (2): stderr is ordinary behavior too.
+    // A hand-mutated receipt fails strict upstream validation, so the pair
+    // is not_proven here; plane-level stderr discrimination is proven with
+    // real processes in tests/trace_equivalence_capture.rs.
+    let mut input = pair(STDOUT, &MEMBERS)?;
+    if let Some(ordinary) = &mut input.ordinary {
+        ordinary.payload.stderr.bytes_hex = "7761726e0a".to_string();
+        refresh_discovery(ordinary)?;
+    }
+    let receipt =
+        build_trace_equivalence(&input).map_err(|error| color_eyre::eyre::eyre!(error))?;
+    assert_ne!(receipt.payload.verdict, EquivalenceVerdict::EquivalentForDeclaredPlanes);
+    assert!(receipt.payload.transferable.is_empty());
+    Ok(())
+}
+
+#[test]
+fn validator_rejects_invented_matched_plane() -> Result<()> {
+    // Regression for review finding (1): a hand-written passing receipt with
+    // one invented plane must not validate.
+    let input = pair(STDOUT, &MEMBERS)?;
+    let mut receipt =
+        build_trace_equivalence(&input).map_err(|error| color_eyre::eyre::eyre!(error))?;
+    receipt.payload.planes.truncate(1);
+    receipt.payload_digest = super::compare::equivalence_payload_digest(&receipt.payload)
+        .map_err(|error| color_eyre::eyre::eyre!(error))?;
+    assert!(validate_trace_equivalence(&receipt).is_err());
     Ok(())
 }
 
