@@ -5,7 +5,7 @@ use super::implementation::{
     BracePlacement, ElsePlacement, FinalNewline, FormatConfig, FormatDiagnosticSeverity,
     FormatResult, FormatterMode, KeywordSpacing, NativeFormatter, PerlFormatter, TextEdit,
     TextRange, TrailingComma, format_simple_line, indent_unit, is_rendered_block_boundary_line,
-    range_includes_line, rendered_boundary_role,
+    multiline_literal_lines, range_includes_line, rendered_boundary_role, split_trailing_comment,
 };
 use serde::{Deserialize, Serialize};
 
@@ -540,13 +540,28 @@ fn utf16_len(source: &str) -> u32 {
 ///   [`indent_unit`] past that block's indent — a body at or above its
 ///   header's indent (`sub f {` / `return 1;` / `}`) is hand-written, not
 ///   rendered;
-/// - the included lines end with every opened block closed. Document targets
-///   always balance (this walk runs only after a clean parse); a range that
-///   stops inside a block has no closing evidence in scope and stays refused,
-///   exactly as before boundary admission existed.
+/// - the walked lines end with every opened block closed. Document targets
+///   always balance (this walk runs only after a clean parse).
 ///
-/// Blank and comment lines impose no indent constraint: they pass the
-/// formatter through unchanged wherever they appear.
+/// A range target is judged with its enclosing block context (#17713): the
+/// walk covers the whole document with an opener stack like the document
+/// formatter's `format_safe_subset` walk — the range formatter's
+/// `format_safe_subset_range` keeps no opener stack and only rewrites
+/// selected lines with `format_simple_line` — so blocks opened before the
+/// range seed the stack and blocks closed after it balance it. Only lines
+/// inside the range are adjudicated: an out-of-range line can neither
+/// refuse the range nor be excused by it, it only moves the stack. Before
+/// this, a range was judged on its selected lines alone, so a no-change
+/// range inside an already-formatted block (a body plus its tail, a header
+/// plus its body, a lone tail) still reported `UnsupportedSyntax` on the
+/// second pass.
+///
+/// Blank, comment, and multiline-literal continuation lines impose no
+/// indent constraint: they pass the formatter through unchanged wherever
+/// they appear. Context lines that are not rendered boundaries still move
+/// the stack with the same comment-stripped close/open shape
+/// `format_safe_subset` uses, so an inline `} else { ... }` tail closes its
+/// block instead of leaving a stale opener for a later range.
 fn target_has_only_supported_lines(
     source: &str,
     config: &FormatConfig,
@@ -554,14 +569,19 @@ fn target_has_only_supported_lines(
 ) -> bool {
     let body_indent = indent_unit(config);
     let mut open_blocks: Vec<&str> = Vec::new();
+    // Physical lines inside a multiline literal are literal bytes, not
+    // code: exactly as in `format_safe_subset`, they never move the block
+    // stack and are never adjudicated, so string content shaped like a
+    // block header cannot invent an opener for a later range.
+    let literal_lines = multiline_literal_lines(source);
     for (line, text) in split_lines_for_range_validation(source).into_iter().enumerate() {
+        if literal_lines.contains(&line) {
+            continue;
+        }
         let included = match target {
             FormatRequestTarget::Document => true,
             FormatRequestTarget::Range { range } => range_includes_line(range, line as u32),
         };
-        if !included {
-            continue;
-        }
         let trimmed = text.trim();
         if trimmed.is_empty() || trimmed.starts_with('#') {
             continue;
@@ -573,6 +593,17 @@ fn target_has_only_supported_lines(
         // header or tail line is a `format_simple_line` candidate.
         if is_rendered_block_boundary_line(text, config) {
             let role = rendered_boundary_role(text);
+            if !included {
+                // Context only: track the enclosing stack without judging
+                // lines the caller did not ask about.
+                if role.closes_block {
+                    open_blocks.pop();
+                }
+                if role.opens_block {
+                    open_blocks.push(indent);
+                }
+                continue;
+            }
             if role.closes_block {
                 let closes_matched_block = open_blocks.last().is_some_and(|open| *open == indent);
                 if !closes_matched_block {
@@ -587,6 +618,21 @@ fn target_has_only_supported_lines(
                 return false;
             }
             if role.opens_block {
+                open_blocks.push(indent);
+            }
+        } else if !included {
+            // Context only: a non-boundary line can still close or open a
+            // block (an inline `} else { ... }` tail, an anonymous-sub
+            // opener). Track that with the same comment-stripped shape
+            // `format_safe_subset` uses, without judging the line's support
+            // or layout — lines the caller did not ask about must not leave
+            // a stale opener behind for the selected range.
+            let (code, _comment) = split_trailing_comment(text);
+            let code = code.trim();
+            if code.starts_with('}') {
+                open_blocks.pop();
+            }
+            if code.ends_with('{') && !code.starts_with('{') {
                 open_blocks.push(indent);
             }
         } else if format_simple_line(text, config).is_none()
