@@ -1,3 +1,8 @@
+# This scaffold repackages release binaries built with strip = "debuginfo".
+# There is no DWARF to split; the prep guard refuses unexpected debug inputs
+# before the standard RPM strip/policy scripts can discard their information.
+%global debug_package %{nil}
+
 Name:           __PACKAGE_NAME__
 Version:        __RELEASE_VERSION__
 Release:        1%{?dist}
@@ -6,6 +11,7 @@ License:        __PACKAGE_LICENSE__
 URL:            __PACKAGE_HOMEPAGE__
 BuildArch:      __RPM_ARCH__
 Source0:        __SOURCE_TARBALL__
+BuildRequires:  binutils
 
 %description
 perl-lsp is a public-beta Perl language server written in Rust.
@@ -13,6 +19,23 @@ This package installs the perllsp and perl-dap executables from the public-beta 
 
 %prep
 %autosetup -n __SOURCE_DIR__
+
+for binary in perllsp perl-dap; do
+    header=$(LC_ALL=C readelf -h "$binary") || {
+        echo "Release binary $binary is not a readable ELF executable" >&2
+        exit 1
+    }
+    if ! echo "$header" | grep -Eq 'Type:[[:space:]]+(EXEC|DYN)[[:space:]]' ||
+       echo "$header" | grep -Eq 'Entry point address:[[:space:]]+0x0+$'; then
+        echo "Release binary $binary is not a readable ELF executable" >&2
+        exit 1
+    fi
+    sections=$(LC_ALL=C readelf -SW "$binary") || exit 1
+    if echo "$sections" | grep -Eq '[[:space:]](\.debug_|\.zdebug_|\.gnu_debug(data|link|altlink))'; then
+        echo "Release binary $binary contains debug information; use debug-preserving packaging" >&2
+        exit 1
+    fi
+done
 
 %build
 true
