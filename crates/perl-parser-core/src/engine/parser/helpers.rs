@@ -1543,6 +1543,13 @@ impl<'a> Parser<'a> {
             }
             TokenKind::ScalarSigil | TokenKind::ArraySigil | TokenKind::HashSigil => true,
 
+            // `func \&name`, `func \@arr`, `func \\$x` — a reference-taking
+            // unary expression is a valid bare-call argument (upstream
+            // t/comp/proto.t: `testing \&no_proto, undef;`). Without this
+            // arm the call loses its argument uptake and the reference is
+            // left as same-line residue.
+            TokenKind::Backslash => true,
+
             // Imported Test::More-style helpers can take typeglob expressions
             // as list arguments. Keep this scoped to known helper names so
             // ordinary lowercase barewords followed by `*` still prefer infix
