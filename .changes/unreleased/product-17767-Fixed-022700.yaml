@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: "Filter generic object-method completion candidates by the typed method prefix, retaining matching methods and the empty-prefix catalog."
+time: 2026-10-13T02:27:00Z
+custom:
+  PR: "17767"
+  Slug: generic-method-prefix
+  Breaking: "no"
