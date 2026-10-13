@@ -68,6 +68,98 @@ fn open_trace_fixture(client: &mut RealProcessClient) -> Result<&'static str> {
     Ok(uri)
 }
 
+/// Aggregate declarations and scalar element accesses share a binding, but
+/// retain different sigils. Complete literal edits also exclude unrelated
+/// scalars and aggregates shadowed in an inner block (#17777).
+#[test]
+fn rename_lexical_aggregate_occurrence_sigils() -> Result<()> {
+    let mut client = RealProcessClient::spawn_exact()?;
+    assert_public_candidate(&client)?;
+    initialize_and_notify(&mut client, json!("initialize-aggregate-rename"))?;
+    let edit = |line, start, end, replacement| {
+        json!({
+            "range": {
+                "start": {"line": line, "character": start},
+                "end": {"line": line, "character": end}
+            },
+            "newText": replacement
+        })
+    };
+    let cases = [
+        (
+            "array",
+            "@items",
+            "@total",
+            "my @items = (10, 20);\nmy $items = 99;\nprint $items[0], \"\\n\";\nprint $items, \"\\n\";\n{\n    my @items = (30, 40);\n    print $items[0], \"\\n\";\n}\nprint $items[1], \"\\n\";\n",
+            vec![edit(0, 3, 9, "@total"), edit(2, 6, 12, "$total"), edit(8, 6, 12, "$total")],
+        ),
+        (
+            "hash",
+            "%items",
+            "%total",
+            "my %items = (key => 10);\nmy $items = 99;\nprint $items{key}, \"\\n\";\nprint $items, \"\\n\";\n{\n    my %items = (key => 30);\n    print $items{key}, \"\\n\";\n}\nprint $items{key}, \"\\n\";\n",
+            vec![edit(0, 3, 9, "%total"), edit(2, 6, 12, "$total"), edit(8, 6, 12, "$total")],
+        ),
+        (
+            "scalar",
+            "$items",
+            "$total",
+            "my $items = 10;\nprint $items, \"\\n\";\n{\n    my $items = 30;\n    print $items, \"\\n\";\n}\nprint $items, \"\\n\";\n",
+            vec![edit(0, 3, 9, "$total"), edit(1, 6, 12, "$total"), edit(6, 6, 12, "$total")],
+        ),
+        (
+            "array-exists",
+            "@items",
+            "@total",
+            "my @items = (10, 20);\nprint exists($items[0]), \"\\n\";\n",
+            vec![edit(0, 3, 9, "@total"), edit(1, 13, 19, "$total")],
+        ),
+    ];
+    for (name, placeholder, sigiled_name, source, expected_edits) in cases {
+        let uri = format!("file:///workspace/rename-{name}.pl");
+        client.notify(
+            "textDocument/didOpen",
+            json!({"textDocument": {
+                "uri": uri, "languageId": "perl", "version": 1, "text": source
+            }}),
+        )?;
+        let params = json!({"textDocument": {"uri": uri},
+                           "position": {"line": 0, "character": 4}});
+        let prepared = client.request(
+            json!(format!("prepare-{name}")),
+            "textDocument/prepareRename",
+            params.clone(),
+            timeout(),
+        )?;
+        ensure!(prepared.get("error").is_none(), "{name} prepare failed: {prepared}");
+        ensure!(
+            prepared["result"]
+                == json!({
+                    "range": {"start": {"line": 0, "character": 3},
+                              "end": {"line": 0, "character": 9}},
+                    "placeholder": placeholder
+                }),
+            "{name} prepare must select the literal declaration range: {prepared}"
+        );
+        for new_name in ["total", sigiled_name] {
+            let mut rename_params = params.clone();
+            rename_params["newName"] = json!(new_name);
+            let response = client.request(
+                json!(format!("rename-{name}-{new_name}")),
+                "textDocument/rename",
+                rename_params,
+                timeout(),
+            )?;
+            ensure!(response.get("error").is_none(), "{name} rename failed: {response}");
+            ensure!(
+                response["result"] == json!({"changes": {&uri: expected_edits}}),
+                "{name} rename to {new_name} must preserve occurrence sigils and exact edit membership: {response}"
+            );
+        }
+    }
+    shutdown_and_exit(&mut client, json!("shutdown-aggregate-rename"))
+}
+
 #[test]
 fn generic_trace_success_does_not_invent_freshness() -> Result<()> {
     let mut client = RealProcessClient::spawn_exact()?;
