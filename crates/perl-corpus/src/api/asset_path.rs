@@ -191,6 +191,13 @@ impl CorpusAssetPath {
     pub fn to_host_path(&self) -> Result<PathBuf, CorpusAssetPathError> {
         let mut path = PathBuf::new();
         for component in &self.components {
+            if component.contains('\0') {
+                return Err(CorpusAssetPathError::UnsupportedOnHost);
+            }
+            #[cfg(windows)]
+            if !windows_component_supported(component) {
+                return Err(CorpusAssetPathError::UnsupportedOnHost);
+            }
             path.push(component);
         }
 
@@ -265,4 +272,28 @@ fn looks_absolute_or_prefixed(value: &str) -> bool {
     value.starts_with('/')
         || value.starts_with(r"\\")
         || (bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':')
+}
+
+// Win32 names can alias despite a syntactically identical Path round trip:
+// trailing dots/spaces normalize, reserved names address devices, and ':'
+// selects alternate streams. Refuse those components before materialization.
+#[cfg(windows)]
+fn windows_component_supported(component: &str) -> bool {
+    if component.ends_with(['.', ' '])
+        || component.chars().any(|ch| {
+            ch < ' ' || matches!(ch, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*')
+        })
+    {
+        return false;
+    }
+    let stem = component.split('.').next().unwrap_or_default().to_ascii_uppercase();
+    !matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$")
+        && !["COM", "LPT"].iter().any(|prefix| {
+            stem.strip_prefix(prefix).is_some_and(|suffix| {
+                matches!(
+                    suffix,
+                    "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "¹" | "²" | "³"
+                )
+            })
+        })
 }

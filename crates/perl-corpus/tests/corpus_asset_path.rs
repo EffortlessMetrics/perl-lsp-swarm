@@ -21,9 +21,9 @@ fn fixed_portable_vector_round_trips_transparently_through_serde()
 fn every_component_constructed_value_round_trips_through_transparent_serde()
 -> Result<(), Box<dyn std::error::Error>> {
     let paths = [
-        CorpusAssetPath::try_from_components(["test_corpus", "nested", "case.pl"])? ,
-        CorpusAssetPath::try_from_components(["test_corpus", r"a\b.pl"])? ,
-        CorpusAssetPath::try_from_components([r"\literal", "case.pl"])? ,
+        CorpusAssetPath::try_from_components(["test_corpus", "nested", "case.pl"])?,
+        CorpusAssetPath::try_from_components(["test_corpus", r"a\b.pl"])?,
+        CorpusAssetPath::try_from_components([r"\literal", "case.pl"])?,
     ];
 
     for path in paths {
@@ -170,5 +170,41 @@ fn topology_membership_and_portable_shape_remain_distinct_facts()
         topology.member_path(&outsider),
         Err(CorpusTopologyError::AssetNotInTopology { id: "test_corpus/outsider.pl".to_owned() })
     );
+    Ok(())
+}
+
+#[test]
+fn portable_nul_identity_round_trips_but_cannot_materialize()
+-> Result<(), Box<dyn std::error::Error>> {
+    let path = CorpusAssetPath::parse("test_corpus/a\0.pl")?;
+    assert_eq!(serde_json::from_str::<CorpusAssetPath>(&serde_json::to_string(&path)?)?, path);
+    assert_eq!(path.to_host_path(), Err(CorpusAssetPathError::UnsupportedOnHost));
+    Ok(())
+}
+
+#[test]
+fn portable_classification_does_not_reinterpret_backslash_components()
+-> Result<(), Box<dyn std::error::Error>> {
+    // A host parser on Windows would treat `_hidden` as a separate ignored component.
+    let asset: CorpusAsset = serde_json::from_value(serde_json::json!({
+        "id": "test_corpus/visible\\_hidden.pl", "relative_path": "test_corpus/visible\\_hidden.pl",
+        "layer": "test_corpus", "kind": "perl_source", "requirement": "required"
+    }))?;
+    assert_eq!(
+        asset.portable_path()?.components().collect::<Vec<_>>(),
+        vec!["test_corpus", "visible\\_hidden.pl"]
+    );
+    Ok(())
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_names_that_alias_or_address_streams_are_unsupported()
+-> Result<(), Box<dyn std::error::Error>> {
+    for name in ["a.", "a ", "file:stream", "CON.pl", "nul", "LPT1.pl", "COM¹.txt", "a?b.pl"] {
+        let path = CorpusAssetPath::try_from_components(["test_corpus", name])?;
+        assert_eq!(path.to_host_path(), Err(CorpusAssetPathError::UnsupportedOnHost), "{name}");
+    }
+    assert!(CorpusAssetPath::parse("test_corpus/ordinary.pl")?.to_host_path().is_ok());
     Ok(())
 }

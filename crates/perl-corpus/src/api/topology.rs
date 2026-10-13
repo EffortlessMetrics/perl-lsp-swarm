@@ -495,34 +495,41 @@ fn asset_from_path(
 
 /// Validate syntax, v1 identity equality, layer selection, and declared kind.
 fn validate_asset_identity(asset: &CorpusAsset) -> Result<CorpusAssetPath, CorpusTopologyError> {
-    let id = CorpusAssetPath::parse(&asset.id)
-        .map_err(|error| invalid_asset_path(&asset.id, error))?;
+    let id =
+        CorpusAssetPath::parse(&asset.id).map_err(|error| invalid_asset_path(&asset.id, error))?;
     let relative_path = CorpusAssetPath::parse(&asset.relative_path)
         .map_err(|error| invalid_asset_path(&asset.relative_path, error))?;
     if id != relative_path {
         return Err(CorpusTopologyError::AssetIdentityMismatch {
-            id: asset.id.clone(), relative_path: asset.relative_path.clone(),
+            id: asset.id.clone(),
+            relative_path: asset.relative_path.clone(),
         });
     }
     let required_prefix = layer_prefix(asset.layer);
     let prefix = layer_prefix_components(asset.layer);
     if !relative_path.starts_with_components(prefix) {
         return Err(CorpusTopologyError::LayerPathMismatch {
-            id: asset.id.clone(), layer: asset.layer, required_prefix,
+            id: asset.id.clone(),
+            layer: asset.layer,
+            required_prefix,
         });
     }
     // Interpret durable components directly, even when they cannot be materialized
     // on this host. Host support is checked only by asset_path after membership.
-    let components = relative_path.components().skip(prefix.len()).map(std::ffi::OsStr::new)
-        .collect::<Vec<_>>();
-    let classified = classify_selected_components(asset.layer, &components).ok_or_else(||
+    let components =
+        relative_path.components().skip(prefix.len()).map(std::ffi::OsStr::new).collect::<Vec<_>>();
+    let classified = classify_selected_components(asset.layer, &components).ok_or_else(|| {
         CorpusTopologyError::UnclassifiedAssetPath {
-            id: asset.id.clone(), layer: asset.layer,
+            id: asset.id.clone(),
+            layer: asset.layer,
             reason: unclassified_components_reason(asset.layer, &components),
-        })?;
+        }
+    })?;
     if classified != asset.kind {
         return Err(CorpusTopologyError::AssetKindMismatch {
-            id: asset.id.clone(), declared: asset.kind, classified,
+            id: asset.id.clone(),
+            declared: asset.kind,
+            classified,
         });
     }
     Ok(relative_path)
@@ -823,20 +830,25 @@ fn is_ignored_path(path: &Path) -> bool {
 /// through directories that classify as `None`, so no entry it reaches can have a
 /// classifying ancestor.
 fn selected_components(path: &Path) -> Vec<&std::ffi::OsStr> {
-    path.components().filter_map(|component| match component {
-        Component::Normal(name) => Some(name),
-        _ => None,
-    }).collect()
+    path.components()
+        .filter_map(|component| match component {
+            Component::Normal(name) => Some(name),
+            _ => None,
+        })
+        .collect()
 }
 
 fn classify_selected_asset(layer: CorpusAssetLayer, path: &Path) -> Option<CorpusAssetKind> {
     classify_selected_components(layer, &selected_components(path))
 }
 
-fn classify_selected_components(layer: CorpusAssetLayer, components: &[&std::ffi::OsStr])
-    -> Option<CorpusAssetKind> {
-    if components.iter().any(|name| name.as_encoded_bytes().first()
-        .is_some_and(|byte| *byte == b'.' || *byte == b'_')) {
+fn classify_selected_components(
+    layer: CorpusAssetLayer,
+    components: &[&std::ffi::OsStr],
+) -> Option<CorpusAssetKind> {
+    if components.iter().any(|name| {
+        name.as_encoded_bytes().first().is_some_and(|byte| *byte == b'.' || *byte == b'_')
+    }) {
         return None;
     }
     let (leaf, ancestors) = components.split_last()?;
@@ -850,8 +862,10 @@ fn unclassified_reason_for(layer: CorpusAssetLayer, path: &Path) -> Unclassified
     unclassified_components_reason(layer, &selected_components(path))
 }
 
-fn unclassified_components_reason(layer: CorpusAssetLayer, components: &[&std::ffi::OsStr])
-    -> UnclassifiedReason {
+fn unclassified_components_reason(
+    layer: CorpusAssetLayer,
+    components: &[&std::ffi::OsStr],
+) -> UnclassifiedReason {
     for name in components {
         if name.as_encoded_bytes().first().is_some_and(|byte| *byte == b'.' || *byte == b'_') {
             return UnclassifiedReason::IgnoredPathComponent {
@@ -863,16 +877,21 @@ fn unclassified_components_reason(layer: CorpusAssetLayer, components: &[&std::f
         for name in ancestors {
             if let Some(kind) = classify_layer_component(layer, name) {
                 return UnclassifiedReason::ClassifyingAncestor {
-                    ancestor: name.to_string_lossy().into_owned(), classified_as: kind,
+                    ancestor: name.to_string_lossy().into_owned(),
+                    classified_as: kind,
                 };
             }
         }
     }
-    let extension = components.last().and_then(|name| component_extension(name))
+    let extension = components
+        .last()
+        .and_then(|name| component_extension(name))
         .and_then(|extension| std::str::from_utf8(extension).ok())
         .map(str::to_ascii_lowercase);
     match (layer, extension) {
-        (CorpusAssetLayer::Fuzz, None) => UnclassifiedReason::UnsupportedShape { expected: "crash-*" },
+        (CorpusAssetLayer::Fuzz, None) => {
+            UnclassifiedReason::UnsupportedShape { expected: "crash-*" }
+        }
         (_, extension) => UnclassifiedReason::UnsupportedExtension { extension },
     }
 }
@@ -885,34 +904,33 @@ fn component_extension(name: &std::ffi::OsStr) -> Option<&[u8]> {
     (index > 0).then_some(&bytes[index + 1..])
 }
 
-fn classify_layer_component(layer: CorpusAssetLayer, name: &std::ffi::OsStr)
-    -> Option<CorpusAssetKind> {
+fn classify_layer_component(
+    layer: CorpusAssetLayer,
+    name: &std::ffi::OsStr,
+) -> Option<CorpusAssetKind> {
     match (layer, component_extension(name)) {
-        (CorpusAssetLayer::TestCorpus, Some(extension)) if TEST_EXTENSIONS.iter()
-            .any(|allowed| extension.eq_ignore_ascii_case(allowed.as_bytes())) => Some(CorpusAssetKind::PerlSource),
-        (CorpusAssetLayer::Fuzz, Some(extension)) if extension.eq_ignore_ascii_case(b"pl") => Some(CorpusAssetKind::PerlSource),
-        (CorpusAssetLayer::Fuzz, Some(extension)) if extension.eq_ignore_ascii_case(b"txt") => Some(CorpusAssetKind::TextFixture),
-        (CorpusAssetLayer::Fuzz, None) if name.as_encoded_bytes().starts_with(b"crash-") => Some(CorpusAssetKind::PerlSource),
+        (CorpusAssetLayer::TestCorpus, Some(extension))
+            if TEST_EXTENSIONS
+                .iter()
+                .any(|allowed| extension.eq_ignore_ascii_case(allowed.as_bytes())) =>
+        {
+            Some(CorpusAssetKind::PerlSource)
+        }
+        (CorpusAssetLayer::Fuzz, Some(extension)) if extension.eq_ignore_ascii_case(b"pl") => {
+            Some(CorpusAssetKind::PerlSource)
+        }
+        (CorpusAssetLayer::Fuzz, Some(extension)) if extension.eq_ignore_ascii_case(b"txt") => {
+            Some(CorpusAssetKind::TextFixture)
+        }
+        (CorpusAssetLayer::Fuzz, None) if name.as_encoded_bytes().starts_with(b"crash-") => {
+            Some(CorpusAssetKind::PerlSource)
+        }
         _ => None,
     }
 }
 
 fn classify_layer_asset(layer: CorpusAssetLayer, path: &Path) -> Option<CorpusAssetKind> {
     path.file_name().and_then(|name| classify_layer_component(layer, name))
-}
-
-fn classify_test_asset(path: &Path) -> Option<CorpusAssetKind> {
-    classify_layer_asset(CorpusAssetLayer::TestCorpus, path)
-}
-
-fn classify_fuzz_asset(path: &Path) -> Option<CorpusAssetKind> {
-    classify_layer_asset(CorpusAssetLayer::Fuzz, path)
-}
-
-fn has_allowed_extension(path: &Path, extensions: &[&str]) -> bool {
-    path.extension().and_then(|extension| extension.to_str()).is_some_and(|extension| {
-        extensions.iter().any(|allowed| extension.eq_ignore_ascii_case(allowed))
-    })
 }
 
 #[cfg(test)]
