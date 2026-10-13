@@ -15,6 +15,9 @@
 mod real_process;
 
 use anyhow::{Context, Result, bail, ensure};
+use perllsp::protocol::schema::{
+    Direction, MessageKind, ProtocolSchemaValidator, ProtocolVersion, ValidationContext,
+};
 use real_process::RealProcessClient;
 use serde_json::{Value, json};
 use std::path::Path;
@@ -190,6 +193,65 @@ fn collect_symbol_names(value: &Value, names: &mut Vec<String>) {
         }
         _ => {}
     }
+}
+
+/// Validate the exact client frame sent to the public process, after observing
+/// the save's live effect. This is one method/direction row, not an all-frame
+/// capture receipt or schema proof for the documentSymbol observation itself.
+#[test]
+fn did_save_exact_process_payloads_match_authoritative_schema() -> Result<()> {
+    let mut client = RealProcessClient::spawn_exact()?;
+    initialize(&mut client)?;
+    did_open(&mut client, 1, "sub before_save { return 1; }\n")?;
+    wait_for_current_parse_tokens(&mut client, "save-open")?;
+    ensure!(document_symbol_names(&mut client, "save-before")? == ["before_save"]);
+
+    let mut frames = Vec::new();
+    for (index, params, expected_name) in [
+        (0, json!({"textDocument": {"uri": URI}}), "before_save"),
+        (
+            1,
+            json!({"textDocument": {"uri": URI}, "text": "sub after_save { return 2; }\n"}),
+            "after_save",
+        ),
+    ] {
+        let message =
+            RealProcessClient::method_message_for_test(None, "textDocument/didSave", params)?;
+        let wire = RealProcessClient::encode_message(&message);
+        let captured = RealProcessClient::parse_stdout_frame_for_test(&wire)?
+            .context("save frame must round-trip through strict Content-Length parsing")?;
+        ensure!(captured == message, "serialized save frame changed payload");
+        client.send_raw_bytes(&wire)?;
+
+        let deadline = Instant::now() + timeout();
+        let mut attempt = 0;
+        loop {
+            let names = document_symbol_names(&mut client, &format!("save-{index}-{attempt}"))?;
+            if names == [expected_name] {
+                break;
+            }
+            ensure!(Instant::now() < deadline, "save did not expose {expected_name}: {names:?}");
+            attempt += 1;
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        client.assert_no_response_pending()?;
+        frames.push(captured);
+    }
+
+    // Complete the observed production lifecycle even when the schema is
+    // missing, so the regression distinguishes schema coverage from support.
+    finish(&mut client)?;
+    for frame in frames {
+        let validated = ProtocolSchemaValidator::default().validate(
+            &frame,
+            ValidationContext { direction: Direction::ClientToServer, method: None },
+        )?;
+        ensure!(validated.method == "textDocument/didSave");
+        ensure!(validated.direction == Direction::ClientToServer);
+        ensure!(validated.kind == MessageKind::Notification);
+        ensure!(validated.version == ProtocolVersion::Lsp317);
+    }
+    Ok(())
 }
 
 fn wait_for_current_parse_tokens(

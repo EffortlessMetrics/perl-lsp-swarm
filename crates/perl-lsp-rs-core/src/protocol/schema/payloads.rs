@@ -315,3 +315,13 @@ pub(super) fn did_close_params(method: &str, value: &Value) -> Result<(), Schema
     let object = expect_object(Some(method), "$.params", value)?;
     text_document_identifier(method, "$.params.textDocument", object.get("textDocument"))
 }
+
+/// LSP 3.17 `DidSaveTextDocumentParams`: an identifier and optional saved text.
+pub(super) fn did_save_params(method: &str, value: &Value) -> Result<(), SchemaError> {
+    let object = expect_object(Some(method), "$.params", value)?;
+    text_document_identifier(method, "$.params.textDocument", object.get("textDocument"))?;
+    if let Some(text) = object.get("text") {
+        expect_string(Some(method), "$.params.text", Some(text))?;
+    }
+    Ok(())
+}
