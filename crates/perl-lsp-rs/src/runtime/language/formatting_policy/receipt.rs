@@ -437,7 +437,14 @@ mod tests {
     fn unsupported_native_syntax_warns_once_per_surface() -> TestResult {
         let (server, output) = server_with_output();
         let uri = "file:///unsupported-native-formatting.pl";
-        server.test_apply_did_open(uri, "sub f {\nprint $fh $x;\n}\n", 1)?;
+        // `print 1;;;` stays outside the native formatter's supported
+        // envelope (see `unsupported_unchanged_source_is_refused` in
+        // perl-lsp-perltidy), so both surfaces refuse with
+        // `unsupported_syntax`. The previous fixture (`print $fh $x;`
+        // inside a sub) became supported and canonical after the
+        // block/print formatter slices, which made this test's premise
+        // stale on main.
+        server.test_apply_did_open(uri, "print 1;;;\nsub f {\nprint $fh $x;\n}\n", 1)?;
 
         let first_document =
             server.handle_formatting_policy(Some(document_formatting_params(uri, 1)), None)?;

@@ -38,6 +38,19 @@ covered_by = ["python3 scripts/tests/test_xtask_ai_dependencies.py"]
 created = "2026-10-13"
 review_after = "2027-01-13"
 
+[[allow]]
+id = "non-rust-xtask-parser-dependency-proof"
+path = "scripts/tests/test_xtask_parser_dependencies.py"
+kind = "ci_tooling"
+language = "python"
+surface = "tooling"
+classification = "test"
+owner = "tooling/agents"
+reason = "Locked Cargo graph controls protect xtask's parser-only dependency boundary without compiling the task runner just to inspect its dependencies."
+covered_by = ["python3 scripts/tests/test_xtask_parser_dependencies.py"]
+created = "2026-10-13"
+review_after = "2027-01-13"
+
 # Optional upstream-equivalent advisory capture admitted under #15304. Native cadence
 # and policy/allow.toml classification/promotion remain outside this adapter.
 [[allow]]
