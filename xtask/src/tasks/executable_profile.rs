@@ -120,8 +120,12 @@ impl ExecutableProfile {
         if self.predecessor_profile.as_deref().is_some_and(|value| value.trim().is_empty()) {
             bail!("executable profile field predecessor_profile must not be empty when present");
         }
-        if !is_snake_case_id(&self.profile_id) || !self.profile_id.ends_with("_v1") {
-            bail!("profile_id must be lowercase snake_case ASCII with the _v1 suffix");
+        let has_name_and_suffix =
+            self.profile_id.strip_suffix("_v1").is_some_and(|prefix| !prefix.is_empty());
+        if !is_snake_case_id(&self.profile_id) || !has_name_and_suffix {
+            bail!(
+                "profile_id must be lowercase snake_case ASCII with a non-empty name and the _v1 suffix"
+            );
         }
         if !is_profile_version(&self.profile_version) {
             bail!("profile_version must be 'v' followed by version characters (no whitespace)");
@@ -455,12 +459,25 @@ claim_boundary: Fixture only; admits no evaluation and claims no EIR conformance
         );
 
         let builtins_dup = VALID_MINIMAL.replace(
-            "  - name: length",
-            "  - name: length\n  - name: length\n    behavior: Duplicated entry.",
+            "supported_builtins:\n  - name: length\n    behavior: Returns the character length of a defined scalar; boundary on undef.\n",
+            "supported_builtins:\n  - name: length\n    behavior: A.\n  - name: length\n    behavior: B.\n",
         );
+        assert_ne!(
+            builtins_dup, VALID_MINIMAL,
+            "the duplicate-builtin replacement must modify the manifest"
+        );
+        let error = ExecutableProfile::from_str(&builtins_dup)
+            .expect_err("a manifest with duplicate builtin names must fail closed")
+            .to_string();
         assert!(
-            ExecutableProfile::from_str(&builtins_dup).is_err(),
-            "a manifest with duplicate builtin names must fail closed"
+            error.contains("supported_builtins") && error.contains("duplicate"),
+            "duplicate builtin error should name the field: {error}"
+        );
+
+        let empty_name = VALID_MINIMAL.replace("profile_id: narrow_eval_v1", "profile_id: _v1");
+        assert!(
+            ExecutableProfile::from_str(&empty_name).is_err(),
+            "a profile id with an empty name part must fail closed"
         );
         Ok(())
     }
