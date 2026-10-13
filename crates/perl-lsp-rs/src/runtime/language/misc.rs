@@ -2058,25 +2058,145 @@ impl LspServer {
         };
 
         let raw_target = arguments.first()?.as_str()?;
-        let candidate_uri = if raw_target.starts_with("file://") {
-            raw_target.to_string()
+        // Same argument-length rejection as the provider disk path
+        // (`resolve_path_from_args`), applied before any open-document match.
+        const MAX_ARG_LENGTH: usize = 4096;
+        if raw_target.len() > MAX_ARG_LENGTH {
+            let original = format!(
+                "Path resolution failed: Argument too long ({} bytes, max {})",
+                raw_target.len(),
+                MAX_ARG_LENGTH
+            );
+            return Some(Err(JsonRpcError {
+                code: -32603,
+                message: format!("Execute command failed: {original}"),
+                data: Some(json!({
+                    "command": "perl.runCritic",
+                    "errorType": "executeCommand",
+                    "originalError": original
+                })),
+            }));
+        }
+
+        // Workspace roots, collected the same way `handle_execute_command`
+        // collects them for the provider.
+        let mut workspace_roots: Vec<PathBuf> = Vec::new();
+        if let Some(root_path) = self.root_path.lock().clone() {
+            workspace_roots.push(root_path);
+        }
+        {
+            let folders = self.workspace_folders.lock();
+            for folder in folders.iter() {
+                if let Ok(parsed) = url::Url::parse(&folder.uri)
+                    && let Ok(path) = parsed.to_file_path()
+                    && !workspace_roots.contains(&path)
+                {
+                    workspace_roots.push(path);
+                }
+            }
+        }
+
+        // Candidate URIs for open-document matching. Relative targets are
+        // normalized against the current directory and each workspace root
+        // (the provider canonicalizes relative paths), so dirty buffers
+        // addressed by a relative path are found instead of falling through
+        // to disk.
+        let candidate_uris: Vec<String> = if raw_target.starts_with("file://") {
+            vec![raw_target.to_string()]
         } else {
-            url::Url::from_file_path(std::path::Path::new(raw_target)).ok()?.to_string()
+            let raw_path = PathBuf::from(raw_target);
+            let bases: Vec<PathBuf> = if raw_path.is_absolute() {
+                vec![raw_path]
+            } else {
+                let mut bases = Vec::new();
+                if let Ok(cwd) = std::env::current_dir() {
+                    bases.push(cwd.join(&raw_path));
+                }
+                for root in &workspace_roots {
+                    bases.push(root.join(&raw_path));
+                }
+                bases.push(raw_path);
+                bases
+            };
+            let mut uris = Vec::new();
+            for base in bases {
+                let resolved = base.canonicalize().unwrap_or(base);
+                if let Ok(url) = url::Url::from_file_path(&resolved)
+                    && !uris.contains(&url.to_string())
+                {
+                    uris.push(url.to_string());
+                }
+            }
+            uris
         };
+        if candidate_uris.is_empty() {
+            return None;
+        }
 
         // Clone the document snapshot under a brief lock; rule evaluation
         // below runs with no document lock held (#9062).
         let (doc_uri, doc) = {
             let documents = self.documents.lock();
             let mut found = None;
-            for key in Self::uri_key_variants(&candidate_uri) {
-                if let Some(doc) = documents.get(&key) {
-                    found = Some((key, doc.clone()));
-                    break;
+            'outer: for candidate_uri in &candidate_uris {
+                for key in Self::uri_key_variants(candidate_uri) {
+                    if let Some(doc) = documents.get(&key) {
+                        found = Some((key, doc.clone()));
+                        break 'outer;
+                    }
                 }
             }
             found?
         };
+
+        // Filesystem-path form for this document, matching the provider disk
+        // path's `file` field (canonical path, not a URI), plus the workspace
+        // containment check the provider enforces.
+        let doc_fs_path: PathBuf = url::Url::parse(&doc_uri)
+            .ok()
+            .and_then(|url| url.to_file_path().ok())
+            .or_else(|| crate::workspace_index::uri_to_fs_path(&doc_uri))?;
+        let canonical_doc_path = doc_fs_path.canonicalize().unwrap_or_else(|_| doc_fs_path.clone());
+        let display_file = canonical_doc_path.to_string_lossy().into_owned();
+        let effective_roots: Vec<PathBuf> = if workspace_roots.is_empty() {
+            match std::env::current_dir() {
+                Ok(cwd) => vec![cwd],
+                Err(_) => Vec::new(),
+            }
+        } else {
+            workspace_roots.clone()
+        };
+        // Compare with extended-length (`\\?\`) prefixes stripped so an
+        // unsaved dirty buffer (whose path cannot canonicalize) inside a
+        // workspace root is not spuriously rejected.
+        let strip_extended = |path: &Path| -> PathBuf {
+            let text = path.to_string_lossy();
+            let stripped = text
+                .strip_prefix(r"\\?\UNC\")
+                .map(|rest| format!(r"\\{rest}"))
+                .or_else(|| text.strip_prefix(r"\\?\").map(ToOwned::to_owned));
+            stripped.map(PathBuf::from).unwrap_or_else(|| path.to_path_buf())
+        };
+        let comparable_doc = strip_extended(&canonical_doc_path);
+        let inside_workspace = effective_roots.iter().any(|root| {
+            let canonical_root = root.canonicalize().unwrap_or_else(|_| root.clone());
+            comparable_doc.starts_with(strip_extended(&canonical_root))
+                || doc_fs_path.starts_with(root)
+        });
+        if !inside_workspace {
+            let original = format!(
+                "Path resolution failed: Path traversal detected: {display_file} is outside workspace boundaries"
+            );
+            return Some(Err(JsonRpcError {
+                code: -32603,
+                message: format!("Execute command failed: {original}"),
+                data: Some(json!({
+                    "command": "perl.runCritic",
+                    "errorType": "executeCommand",
+                    "originalError": original
+                })),
+            }));
+        }
 
         let stale_result = |status: &str, reason: &str| {
             Some(Ok(Some(json!({
@@ -2092,7 +2212,33 @@ impl LspServer {
             return stale_result("stale", "open document has no current-generation parse snapshot");
         };
         let Some(ast) = parsed.ast().cloned() else {
-            return stale_result("stale", "open document parse produced no AST");
+            // No AST: the disk provider path reports a Syntax::ParseError
+            // violation for this case; emit the equivalent here.
+            if parsed.parse_errors().is_empty() {
+                return stale_result("stale", "open document parse produced no AST");
+            }
+            let violations: Vec<Value> = parsed
+                .parse_errors()
+                .iter()
+                .map(|error| {
+                    json!({
+                        "policy": "Syntax::ParseError",
+                        "description": format!("Syntax error: {error}"),
+                        "explanation": "This code contains a syntax error that prevents parsing. Fix the syntax error before running additional checks.",
+                        "severity": 1,
+                        "line": 1,
+                        "column": 1,
+                        "file": display_file
+                    })
+                })
+                .collect();
+            let violation_count = violations.len();
+            return Some(Ok(Some(json!({
+                "status": "success",
+                "violations": violations,
+                "violationCount": violation_count,
+                "analyzerUsed": "native"
+            }))));
         };
         let source_text: std::sync::Arc<str> = std::sync::Arc::from(parsed.source());
         let generation = doc.current_generation();
@@ -2114,13 +2260,39 @@ impl LspServer {
             doc_still_current && self.capture_accepted_critic(&gate_uri) == gate_snapshot
         };
 
+        // Merged lint contributors (#11918): pull diagnostics feed the
+        // service the core diagnostics' critic-overlap observations, so a
+        // built-in finding (e.g. PL603 for `system($cmd)`) merges with its
+        // native alias into one logical row. Compute the same core set for
+        // this document and offer its observations, for pull parity.
+        let overlap_observations = {
+            use perl_lsp_rs_core::providers::diagnostics::{
+                DiagnosticsProvider, critic_overlap_observations,
+            };
+            let provider = match parsed.regex_analysis().cloned() {
+                Some(table) => DiagnosticsProvider::new().with_regex_analysis(table),
+                None => DiagnosticsProvider::new(),
+            };
+            let core_diagnostics = provider.get_diagnostics_with_path_with_analysis(
+                &ast,
+                parsed.parse_errors(),
+                &source_text,
+                None,
+                &[],
+                Some(&canonical_doc_path),
+                None,
+                diagnostic_analysis.as_deref(),
+            );
+            critic_overlap_observations(&core_diagnostics)
+        };
+
         let subject = NativeCriticSubject::accepted(
             &doc_uri,
             critic_source_identity_for_uri(&doc_uri, generation),
             &ast,
             &source_text,
             snapshot.state().clone(),
-            Vec::new(),
+            overlap_observations,
             RunGate::open(),
             RunGate::new(&is_current),
         );
@@ -2148,7 +2320,7 @@ impl LspServer {
                     "severity": finding.severity() as u8,
                     "line": (finding.range().start.line + 1) as usize,
                     "column": (finding.range().start.column + 1) as usize,
-                    "file": doc_uri
+                    "file": display_file
                 })
             })
             .collect();

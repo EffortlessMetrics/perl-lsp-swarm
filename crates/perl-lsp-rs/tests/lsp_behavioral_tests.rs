@@ -589,6 +589,131 @@ fn run_critic_open_dirty_document_matches_pull_and_differs_from_disk() -> TestRe
     Ok(())
 }
 
+fn run_critic_policies(result: &Value) -> Vec<String> {
+    result
+        .get("violations")
+        .and_then(Value::as_array)
+        .map(|vs| {
+            vs.iter()
+                .filter_map(|v| v.get("policy").and_then(Value::as_str).map(ToOwned::to_owned))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[test]
+fn run_critic_open_document_includes_merged_pl603_and_fs_file_path() -> TestResult {
+    let disk_text = "use strict;\nuse warnings;\nmy $x = 1;\nprint $x;\n";
+    let dirty_text = "use strict;\nuse warnings;\nsystem('ls');\n";
+    let (mut harness, workspace) = LspHarness::with_workspace(&[("merged.pl", disk_text)])?;
+    let uri = workspace.uri("merged.pl");
+    harness.open_document(&uri, dirty_text)?;
+    harness.wait_for_idle(Duration::from_millis(200));
+    let result = harness.request_with_timeout(
+        "workspace/executeCommand",
+        json!({"command": "perl.runCritic", "arguments": [uri]}),
+        Duration::from_secs(5),
+    )?;
+    assert_eq!(result["status"].as_str(), Some("success"), "open runCritic: {result}");
+    let policies = run_critic_policies(&result);
+    assert!(
+        policies.iter().any(|p| p == "PL603"),
+        "merged PL603 expected: {policies:?} result={result}"
+    );
+    let violations = result["violations"].as_array().ok_or("violations array")?;
+    for v in violations {
+        let file = v["file"].as_str().ok_or("file str")?;
+        assert!(!file.starts_with("file://"), "file must be fs path, got {file}");
+        assert!(file.ends_with("merged.pl"), "file must name document, got {file}");
+    }
+    Ok(())
+}
+
+#[test]
+fn run_critic_open_document_parse_failure_reports_syntax_violation() -> TestResult {
+    let disk_text = "use strict;\nuse warnings;\nmy $x = 1;\nprint $x;\n";
+    // Input whose parse fails completely (no AST) on the disk provider path:
+    // nesting beyond the parser recursion limit makes `Parser::parse` Err.
+    let dirty_text = format!("my $x = {}1{};\n", "(".repeat(200), ")".repeat(200));
+    let dirty_text = dirty_text.as_str();
+    let (mut harness, workspace) = LspHarness::with_workspace(&[("broken.pl", disk_text)])?;
+    let uri = workspace.uri("broken.pl");
+    harness.open_document(&uri, dirty_text)?;
+    harness.wait_for_idle(Duration::from_millis(200));
+    let result = harness.request_with_timeout(
+        "workspace/executeCommand",
+        json!({"command": "perl.runCritic", "arguments": [uri]}),
+        Duration::from_secs(5),
+    )?;
+    // Disk path for the same text would report Syntax::ParseError; open path must too.
+    let policies = run_critic_policies(&result);
+    assert!(
+        policies.iter().any(|p| p == "Syntax::ParseError"),
+        "expected Syntax::ParseError, got status={:?} policies={policies:?} result={result}",
+        result["status"].as_str()
+    );
+    Ok(())
+}
+
+#[test]
+fn run_critic_open_document_relative_path_target_uses_dirty_buffer() -> TestResult {
+    let disk_text = "use strict;\nuse warnings;\nmy $x = 1;\nprint $x;\n";
+    let dirty_text = "my $c = '1';\neval $c;\nprint $c;\n";
+    let (mut harness, workspace) = LspHarness::with_workspace(&[("rel.pl", disk_text)])?;
+    let uri = workspace.uri("rel.pl");
+    harness.open_document(&uri, dirty_text)?;
+    harness.wait_for_idle(Duration::from_millis(200));
+    // Bare relative filename target, as editors may pass it.
+    let result = harness.request_with_timeout(
+        "workspace/executeCommand",
+        json!({"command": "perl.runCritic", "arguments": ["rel.pl"]}),
+        Duration::from_secs(5),
+    )?;
+    assert_eq!(result["status"].as_str(), Some("success"), "relative runCritic: {result}");
+    let policies = run_critic_policies(&result);
+    assert!(
+        policies.iter().any(|p| p == "native.security.string_eval"),
+        "dirty buffer must be analyzed via relative target: {policies:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn run_critic_open_document_outside_workspace_is_rejected() -> TestResult {
+    let (mut harness, workspace) = LspHarness::with_workspace(&[(
+        "inside.pl",
+        "use strict;\nuse warnings;\nmy $x=1;\nprint $x;\n",
+    )])?;
+    let outside_path =
+        workspace.dir.path().parent().ok_or("temp parent")?.join("perl_lsp_outside_6969.pl");
+    std::fs::write(&outside_path, "use strict;\nuse warnings;\nmy $x=1;\nprint $x;\n")?;
+    let outside_uri = path_to_uri(&outside_path)?;
+    let dirty = "my $c='1';\neval $c;\nprint $c;\n";
+    harness.open_document(&outside_uri, dirty)?;
+    harness.wait_for_idle(Duration::from_millis(200));
+    let result = harness.request_with_timeout(
+        "workspace/executeCommand",
+        json!({"command": "perl.runCritic", "arguments": [outside_uri]}),
+        Duration::from_secs(5),
+    );
+    let _ = std::fs::remove_file(&outside_path);
+    assert!(result.is_err(), "outside-workspace open doc must be rejected, got: {result:?}");
+    Ok(())
+}
+
+#[test]
+fn run_critic_overlong_argument_is_rejected() -> TestResult {
+    let (mut harness, _workspace) = LspHarness::with_workspace(&[("a.pl", "use strict;\n")])?;
+    let long_arg = "a".repeat(4097);
+    let result = harness.request_with_timeout(
+        "workspace/executeCommand",
+        json!({"command": "perl.runCritic", "arguments": [long_arg]}),
+        Duration::from_secs(5),
+    );
+    assert!(result.is_err(), "overlong argument must be rejected, got: {result:?}");
+    Ok(())
+}
+
 #[cfg(feature = "lsp-extras")]
 #[test]
 fn test_test_generation_actions_present() -> TestResult {
