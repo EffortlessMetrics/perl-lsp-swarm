@@ -1160,7 +1160,7 @@ fn plan_pr_fast_gates(
         }
     };
 
-    let non_rust_diff = is_non_rust_diff(&scope);
+    let non_rust_diff = is_unowned_non_rust_diff(&scope);
     let fallback_used = !non_rust_diff && selected_package_names(&scope).is_empty();
     let fallback_reason = if fallback_used {
         Some("ci-scope produced no package scope for a Rust-relevant diff".to_string())
@@ -1236,7 +1236,7 @@ fn build_pr_fast_plan_from_scope_with_targets(
     fallback_reason: Option<String>,
     target_index: Option<&PackageTargetIndex>,
 ) -> Result<GatePlan> {
-    let non_rust_diff = scope.as_ref().is_some_and(is_non_rust_diff);
+    let non_rust_diff = scope.as_ref().is_some_and(is_unowned_non_rust_diff);
     let package_names = scope.as_ref().map(selected_package_names).unwrap_or_default();
     let package_args = package_args_from_names(&package_names);
 
@@ -1282,7 +1282,7 @@ fn build_pr_fast_plan_from_scope_with_targets(
                         selected.push(PlannedGate {
                             role,
                             reason: format!(
-                                "code diff selected packages: {}",
+                                "scope selected packages: {}",
                                 gate_package_names.join(", ")
                             ),
                             gate: render_package_args(gate, &gate_package_args)?,
@@ -1363,8 +1363,11 @@ fn pr_fast_role(gate: &GateDefinition) -> Result<GatePlanningRole> {
     })
 }
 
-fn is_non_rust_diff(scope: &ScopeOutput) -> bool {
+/// Filename class can skip Rust proof only when ci-scope selected no owner.
+/// Policy/fixture inputs can be non-Rust while their contracts belong to Rust packages.
+fn is_unowned_non_rust_diff(scope: &ScopeOutput) -> bool {
     matches!(scope.diff_class.as_str(), "prose_only" | "docs_as_code" | "ci_config")
+        && selected_package_names(scope).is_empty()
 }
 
 fn scope_skip_reason(scope: Option<&ScopeOutput>) -> String {
@@ -1478,7 +1481,7 @@ fn package_scoped_reason(gate: &GateDefinition, package_names: &[String]) -> Opt
 }
 
 fn package_scoped_skip_reason(gate: &GateDefinition, scope: Option<&ScopeOutput>) -> String {
-    if scope.is_some_and(is_non_rust_diff) {
+    if scope.is_some_and(is_unowned_non_rust_diff) {
         return scope_skip_reason(scope);
     }
     let packages =
