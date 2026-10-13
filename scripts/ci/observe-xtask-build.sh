@@ -139,15 +139,39 @@ LC_ALL=C exec awk -v trace="$prefix.trace.log" -v reasons="$prefix.dirty.log" -v
 exec {stderr_fd}> >(collect_stderr)
 reader=$!
 start=$(date +%s)
+# The long repo-wide scan captures RIPR output until it exits. Report only that
+# this observer is waiting, never analyzer progress or successful proof. A pipe
+# timeout needs no timer child; EOF also stops it if only the wrapper is killed.
+baseline_liveness() {
+    local read_status
+    SECONDS=0
+    while :; do
+        printf 'ripr baseline liveness: waiting elapsed_seconds=%d; semantic_progress=not_proven\n' "$SECONDS" >&2 || return
+        IFS= read -r -t 30 && return
+        read_status=$?
+        (( read_status > 128 )) || return 0
+    done
+}
+liveness_reader=''
+if [[ "$phase" == host-baseline ]]; then
+    # Do not retain the stderr collector's pipe in the heartbeat subprocess.
+    exec {liveness_fd}> >(baseline_liveness {stderr_fd}>&-)
+    liveness_reader=$!
+else
+    exec {liveness_fd}> /dev/null
+fi
 export CARGO_LOG=cargo::core::compiler::fingerprint=trace
 if [[ -x /usr/bin/time ]]; then
-    /usr/bin/time -v -o "$prefix.time.txt" "$@" 2>&"$stderr_fd"
+    /usr/bin/time -v -o "$prefix.time.txt" "$@" 2>&"$stderr_fd" {liveness_fd}>&-
     status=$?
 else
-    "$@" 2>&"$stderr_fd"
+    "$@" 2>&"$stderr_fd" {liveness_fd}>&-
     status=$?
     printf 'GNU time unavailable; CPU and peak RSS NOT_PROVEN\n' > "$prefix.time.txt"
 fi
+# Neither the measured command nor its descendants inherit this private writer.
+exec {liveness_fd}>&-
+if [[ -n "$liveness_reader" ]]; then wait "$liveness_reader" || true; fi
 stop=$(date +%s)
 exec {stderr_fd}>&-
 # A detached command descendant can retain stderr after Cargo exits. Observation
