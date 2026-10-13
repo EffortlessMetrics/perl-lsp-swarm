@@ -27,14 +27,18 @@ TARGET = {'package_id':'fixture', 'target': {'name':'fixture','kind':['test'],'t
 class PortableTree:
     def __init__(self, *, child_discovery='proc-children'):
         self.child_discovery = child_discovery
+        self.leaders = []
     cancelled = False
     binding = False
     settled = True
     def track(self, pid, process):
-        pass
+        self.leaders.append(process)
     def reap_adopted(self):
         pass  # Explicit service/interface double, not native reaping proof.
     def finish(self, **kwargs):
+        for process in self.leaders:
+            if kwargs.get('stop') and process.poll() is None: process.terminate()
+            process.wait(timeout=5)
         return {'tree_settled': self.settled, 'cancelled': self.cancelled,
                 'proof': 'PORTABLE INTERFACE DOUBLE ONLY'}
 
@@ -568,6 +572,113 @@ class PortableControls(unittest.TestCase):
         with self.assertRaises(cohort.Denied):self.run_portable(instance,producer=[sys.executable,'-c',producer],consumers=consumers)
         self.assertTrue(harness.exists(),'missing enabled-bin artifact must refuse cleanup')
 
+
+    def phase_journal(self, instance):
+        request_path = self.root/('request-'+str(len(list(self.root.glob('request-*'))))+'.json')
+        request = {'evidence_path': str(instance.evidence_path), 'source_digest': instance.binding[0],
+                   'profile_digest': instance.binding[1], 'expected_targets': [TARGET]}
+        raw = json.dumps(request).encode(); request_path.write_bytes(raw)
+        journal = cohort.PhaseJournal(request_path, raw, request, self.descriptor)
+        self.addCleanup(journal.close); instance.journal = journal
+        return journal, request_path
+
+    def test_phase_journal_constructor_enter_precedes_expensive_owner_validation(self):
+        instance = self.owner(); request_path = self.root/'original-request.json'
+        request = {'evidence_path': str(instance.evidence_path), 'source_digest': instance.binding[0],
+                   'profile_digest': instance.binding[1], 'source_subject': str(self.manifests[0]),
+                   'profile_subject': str(self.manifests[1]), 'expected_targets': [TARGET], 'operation': 'observe'}
+        request_path.write_text(json.dumps(request)); result_path = self.root/'original-result.json'
+        def blocked(*args, **kwargs):
+            rows = [json.loads(line) for line in kwargs['journal'].path.read_text().splitlines()]
+            self.assertEqual(rows[-1]['phase'], 'construction')
+            self.assertEqual(rows[-1]['event'], 'started')
+            raise cohort.Denied('constructor refused')
+        with patch.dict(os.environ, CARGO_ADMITTED_COHORT_DESCRIPTOR=json.dumps(self.descriptor)), patch.object(cohort, 'Cohort', side_effect=blocked):
+            with self.assertRaisesRegex(cohort.Denied, 'constructor refused'):
+                cohort.main(['--request',str(request_path),'--result',str(result_path)])
+        self.assertEqual(result_path.read_bytes(), b'')
+
+    def test_phase_journal_records_fast_child_and_real_failure_status_without_authority(self):
+        instance = self.owner(); journal, _ = self.phase_journal(instance)
+        row = self.run_portable(instance, producer=self.producer(status=101))
+        self.assertEqual(row['status'], 101); self.assertEqual(row['reclaimed'], [])
+        rows = [json.loads(line) for line in journal.path.read_text().splitlines()]
+        children = [r for r in rows if r['event']=='child']
+        self.assertEqual(len(children), 1)
+        self.assertIs(type(children[0]['kernel_starttime']), int)
+        self.assertEqual(next(r['exit_status'] for r in rows if r['event']=='completed' and r['phase']=='producer'), 101)
+        self.assertTrue(self.exe.exists()); self.assertFalse(instance._cleanup_authorized)
+
+    def test_phase_journal_write_or_fsync_failure_prevents_launch_and_preserves_settlement(self):
+        for failing in ('write','fsync'):
+            with self.subTest(failing=failing):
+                instance = self.owner(); journal, _ = self.phase_journal(instance)
+                with patch.object(cohort.os, failing, side_effect=OSError('journal persistence failed')), patch.object(cohort.subprocess, 'Popen') as launch:
+                    with self.assertRaisesRegex(OSError, 'persistence'):
+                        self.run_portable(instance)
+                    launch.assert_not_called()
+                self.assertFalse(instance._cleanup_authorized)
+
+    def test_phase_journal_failure_after_child_binding_finishes_tree_and_retains(self):
+        instance = self.owner(); journal, _ = self.phase_journal(instance)
+        finish = Mock(wraps=PortableTree.finish)
+        original_finish = PortableTree.finish
+        settled = []
+        def finished(tree, **kwargs):
+            settled.append(kwargs['stop']);return original_finish(tree, **kwargs)
+        with patch.object(journal, 'child', side_effect=OSError('child journal failed')), patch.object(PortableTree, 'finish', finished):
+            with self.assertRaisesRegex(OSError, 'child journal failed'):
+                self.run_portable(instance)
+        self.assertEqual(settled, [True]); self.assertFalse(instance._cleanup_authorized)
+        self.assertFalse(instance.receipt_path.exists())
+
+    def test_phase_journal_persistence_error_does_not_mask_settled_or_unsettled_interrupt(self):
+        for settled in (True, False):
+            with self.subTest(settled=settled):
+                instance = self.owner(); journal, _ = self.phase_journal(instance)
+                original = journal.end
+                def end(token, *args, **kwargs):
+                    if token['phase']=='producer': raise OSError('interrupt journal failed')
+                    return original(token, *args, **kwargs)
+                with patch.object(journal,'end',side_effect=end), patch.object(instance,'_launch_impl',side_effect=KeyboardInterrupt('original interrupt')), patch.object(PortableTree,'settled',settled), patch.object(PortableTree,'cancelled',True):
+                    row = self.run_portable(instance)
+                self.assertEqual(row['status'],130 if settled else 75)
+                self.assertEqual(row['settlement']['interruption'],'original interrupt')
+                self.assertEqual(row['settlement']['journal_error']['type'],'OSError')
+                self.assertFalse(instance._cleanup_authorized);self.assertEqual(row['reclaimed'],[])
+
+    def test_phase_journal_interrupted_live_child_preserves_enter_identity_and_artifact(self):
+        instance = self.owner(); journal, _ = self.phase_journal(instance)
+        original = journal.child
+        def interrupted(process):
+            original(process)
+            deadline = time.monotonic()+3
+            while not self.exe.exists():
+                self.assertLess(time.monotonic(),deadline);time.sleep(.01)
+            raise KeyboardInterrupt('explicit interrupted-child interface control')
+        program = [sys.executable,'-c','from pathlib import Path;import time;p=Path('+repr(str(self.exe))+');p.write_text("retained");time.sleep(5)']
+        with patch.object(journal,'child',side_effect=interrupted):
+            row = self.run_portable(instance,producer=program)
+        self.assertEqual(row['status'],130);self.assertEqual(row['reclaimed'],[])
+        self.assertTrue(self.exe.exists());self.assertFalse(instance._cleanup_authorized)
+        records = [json.loads(l) for l in journal.path.read_text().splitlines()]
+        self.assertTrue(any(r['event']=='child' for r in records))
+        self.assertTrue(any(r['event']=='completed' and r['outcome']=='raised' for r in records))
+
+    def test_phase_child_identity_accepts_observed_zombie_without_reaping(self):
+        instance = self.owner(); journal, _ = self.phase_journal(instance)
+        child = subprocess.Popen([sys.executable,'-c','raise SystemExit(0)'])
+        try:
+            deadline = time.monotonic()+3
+            while Path('/proc/{}/stat'.format(child.pid)).read_text().rsplit(')',1)[1].split()[0] != 'Z':
+                self.assertLess(time.monotonic(),deadline);time.sleep(.01)
+            with journal.phase('consumer'):
+                journal.child(child)
+            row = next(json.loads(line) for line in journal.path.read_text().splitlines() if json.loads(line)['event']=='child')
+            self.assertEqual(row['state'],'Z');self.assertIs(type(row['kernel_starttime']),int)
+            self.assertEqual(child.wait(timeout=3),0)
+        finally:
+            if child.poll() is None: child.terminate();child.wait(timeout=3)
 
     def observed_capture(self, instance, path):
         parent, _, identity, digest = instance._open(path, allow_links=True)

@@ -273,6 +273,83 @@ def captured_metadata(evidence, mode):
     return None
 
 
+
+def phase_diagnostics(request_path, outer_descriptor=None):
+    """Validate observational progress, never completion/cleanup authority."""
+    result = {'authority': 'observations only; NOT_PROVEN source/attempt/settlement', 'available': False}
+    try:
+        request_bytes = request_path.read_bytes()
+        request = json.loads(request_bytes)
+        path = Path(request['evidence_path']).with_name(Path(request['evidence_path']).name + '.phases.jsonl')
+        # A downloaded archive may relocate the entire evidence directory.
+        path = request_path.parent / path.name
+        result['path'] = str(path)
+        if path.stat().st_size > 8 * 1024 * 1024:
+            raise ValueError('phase journal byte bound exceeded')
+        raw = path.read_bytes()
+        result.update(raw_sha256=hashlib.sha256(raw).hexdigest(), raw_bytes=len(raw))
+        split = raw.splitlines(keepends=True)
+        truncated = bool(split and not split[-1].endswith(b'\n'))
+        if truncated: split.pop()
+        if not split or len(split) > 65536:
+            raise ValueError('phase journal empty or record bound exceeded')
+        rows = [json.loads(line) for line in split]
+        header = rows[0]
+        if header.get('event') != 'header' or header.get('advisory_only') is not True:
+            raise ValueError('phase header missing')
+        binding = header['binding']
+        if (binding['request_sha256'] != hashlib.sha256(request_bytes).hexdigest()
+                or binding['evidence_path'] != request['evidence_path']
+                or any(binding[key] != request[key] for key in ('source_digest','profile_digest','expected_targets'))):
+            raise ValueError('phase request/source/target binding differs')
+        if outer_descriptor is not None and binding['original_descriptor'] != outer_descriptor:
+            raise ValueError('phase original owner differs')
+        expected = hashlib.sha256(json.dumps(binding, sort_keys=True).encode()).hexdigest()
+        stack = []; totals = {}; last_time = -1; last_child = None
+        for sequence, row in enumerate(rows):
+            if (type(row.get('sequence')) is not int or row['sequence'] != sequence
+                    or type(row.get('version')) is not int or row['version'] != 1
+                    or row.get('binding_sha256') != expected
+                    or type(row.get('monotonic_ns')) is not int or row['monotonic_ns'] < 0 or row['monotonic_ns'] < last_time):
+                raise ValueError('phase sequence/time/binding invalid')
+            last_time = row['monotonic_ns']
+            event = row['event']
+            if sequence == 0: continue
+            if event == 'started':
+                if type(row.get('phase_id')) is not int or row['phase_id'] != sequence or not isinstance(row.get('phase'), str) or not isinstance(row.get('context'), dict):
+                    raise ValueError('phase start invalid')
+                stack.append(row)
+            elif event == 'completed':
+                if not stack or type(row.get('phase_id')) is not int or row['phase_id'] != stack[-1]['phase_id'] or row.get('phase') != stack[-1]['phase']:
+                    raise ValueError('phase completion order invalid')
+                started = stack.pop()
+                if row.get('exit_status') is not None and type(row['exit_status']) is not int:
+                    raise ValueError('phase exit status invalid')
+                if type(row.get('duration_ns')) is not int or row['duration_ns'] != row['monotonic_ns'] - started['monotonic_ns'] or row.get('outcome') not in ('returned','raised'):
+                    raise ValueError('phase duration/outcome invalid')
+                totals[row['phase']] = totals.get(row['phase'], 0) + row['duration_ns']
+            elif event == 'child':
+                if (not stack or type(row.get('phase_id')) is not int or row['phase_id'] != stack[-1]['phase_id']
+                        or type(row.get('pid')) is not int or row['pid'] <= 0
+                        or (row.get('kernel_starttime') is not None and (type(row['kernel_starttime']) is not int or row['kernel_starttime'] < 0))
+                        or not isinstance(row.get('state'), str)):
+                    raise ValueError('phase child identity invalid')
+                last_child = {key: row[key] for key in ('pid','kernel_starttime','state','phase_id')}
+            else:
+                raise ValueError('unknown phase event')
+        if last_child is not None:
+            last_child['phase_currently_open'] = any(row['phase_id'] == last_child['phase_id'] for row in stack)
+        active_context = next((row['context'] for row in reversed(stack) if row['context'].get('argv') or row['context'].get('executable')), None)
+        result.update(binding_summary={key: binding[key] for key in ('request_sha256','source_digest','profile_digest','core_source_sha256','expected_targets')},
+                      last_entered_phase=stack[-1] if stack else None, active_command_context=active_context,
+                      available=True, truncated_tail=truncated, last_complete_record=rows[-1], active_phases=stack,
+                      last_child=last_child, cumulative_completed_duration_ns=totals,
+                      duration_semantics='nested/inclusive; owner includes source and pin; do not sum overlapping phases',
+                      original_owner_binding='matched declared outer descriptor' if outer_descriptor is not None else 'NOT_PROVEN: outer descriptor unavailable')
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        result['error'] = str(error)
+    return result
+
 def report(evidence, mode, root, expected_head=None):
     storage = [json.loads(line) for line in (evidence / 'storage.jsonl').read_text().splitlines()]
     samples = [row for row in storage if row.get('valid') is True]
@@ -308,6 +385,7 @@ def report(evidence, mode, root, expected_head=None):
     complete = False
     case_receipts_verified = True
     receipt_errors = []
+    result['phase_diagnostics'] = []
     if mode == 'ordinary':
         stdout = (logs / 'route.stdout').read_bytes()
         try:
@@ -328,6 +406,7 @@ def report(evidence, mode, root, expected_head=None):
             if 'check' in request['producer'] and '--tests' in request['producer']:
                 unit_rows = units(rows, root, metadata)
                 complete = any(row.get('reason') == 'build-finished' and row.get('success') is True for row in rows)
+            result['phase_diagnostics'].append(phase_diagnostics(request_path, binding.get('descriptor')))
             result_path = request_path.with_name(request_path.name.replace('-request.json', '-result.json'))
             try:
                 receipt = json.loads(result_path.read_text())

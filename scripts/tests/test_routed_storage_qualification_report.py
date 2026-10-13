@@ -16,6 +16,65 @@ subject = importlib.util.module_from_spec(spec); spec.loader.exec_module(subject
 
 class QualificationInventory(unittest.TestCase):
     # All owner/kernel records here are explicit doubles, never native closure proof.
+    def journal_fixture(self, root):
+        from cargo_cohort import PhaseJournal
+        owner = json.loads(self.owner_log(root).splitlines()[0].split(': ',1)[1])
+        path = root/'0000-request.json'
+        request = {'evidence_path': str(root/'0000-compiler.jsonl'), 'source_digest':'a'*64,
+                   'profile_digest':'b'*64, 'expected_targets':[], 'producer':['cargo','check','--tests']}
+        raw = json.dumps(request).encode();path.write_bytes(raw)
+        journal = PhaseJournal(path,raw,request,owner);self.addCleanup(journal.close)
+        return path,journal,owner
+
+    def test_phase_journal_durations_nested_and_empty_result_never_authority(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory);request,journal,owner = self.journal_fixture(root)
+            with journal.phase('producer',argv=['cargo','test'],target=None):
+                with journal.phase('owner_validation'):
+                    with journal.phase('source_validation'): pass
+            token = journal.begin('harness_run',argv=['/exact/image'],target='declared target')
+            report = subject.phase_diagnostics(request,owner)
+            self.assertTrue(report['available'])
+            self.assertEqual(report['active_phases'][-1]['phase'],'harness_run')
+            self.assertIn('source_validation',report['cumulative_completed_duration_ns'])
+            self.assertIn('NOT_PROVEN',report['authority'])
+            self.assertNotIn('verified',report)
+            journal.end(token)
+
+    def test_phase_journal_stale_reordered_counter_and_duration_forgeries_refused(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory);request,journal,owner = self.journal_fixture(root)
+            with journal.phase('producer'): pass
+            rows = [json.loads(line) for line in journal.path.read_text().splitlines()]
+            raw = journal.path.read_bytes()
+            for mutation in ('counter','duration','binding','reorder','boolean_time','owner'):
+                with self.subTest(mutation=mutation):
+                    forged = copy.deepcopy(rows)
+                    other_owner = owner
+                    if mutation=='counter': forged[-1]['sequence'] += 1
+                    elif mutation=='duration': forged[-1]['duration_ns'] += 1
+                    elif mutation=='binding': forged[0]['binding']['source_digest']='foreign'
+                    elif mutation=='reorder': forged[-2],forged[-1]=forged[-1],forged[-2]
+                    elif mutation=='boolean_time': forged[-1]['monotonic_ns']=True
+                    else: other_owner=dict(owner,pid=owner.get('pid',0)+1)
+                    journal.path.write_text(''.join(json.dumps(row)+'\n' for row in forged))
+                    self.assertFalse(subject.phase_diagnostics(request,other_owner)['available'])
+            journal.path.write_bytes(raw)
+            request.write_bytes(request.read_bytes()+b' ')
+            self.assertFalse(subject.phase_diagnostics(request,owner)['available'])
+
+    def test_phase_journal_truncated_tail_retains_only_complete_observations(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory);request,journal,owner = self.journal_fixture(root)
+            journal.begin('producer',argv=['cargo','test'])
+            raw = journal.path.read_bytes();journal.path.write_bytes(raw+b'{"event":"completed"')
+            result = subject.phase_diagnostics(request,owner)
+            self.assertTrue(result['available']);self.assertTrue(result['truncated_tail'])
+            self.assertEqual(result['active_phases'][-1]['phase'],'producer')
+            self.assertEqual(result['cumulative_completed_duration_ns'],{})
+            journal.path.write_bytes(b'x'*(8*1024*1024+1))
+            self.assertFalse(subject.phase_diagnostics(request,owner)['available'])
+
     def metadata(self, root='/work'):
         names = [*subject.PACKAGES, 'routed-test-cohorts-bootstrap', 'unselected']
         packages = [{'id': self.package_id(name, root), 'name': name} for name in names]
@@ -127,6 +186,15 @@ class QualificationInventory(unittest.TestCase):
                 (cohort / (stem + '-compiler.jsonl')).write_text('\n'.join(json.dumps(row) for row in [*selected, {'reason': 'build-finished', 'success': True}]))
                 coverage = [] if index == 0 else [{'executable': row['executable'], 'cases': ['case'], 'ignored': []} for row in selected]
                 (cohort / (stem + '-result.json')).write_text(json.dumps({'status': 0, 'settlement': {'tree_settled': True, 'proof': 'kernel ECHILD (__WALL)', 'errors': [], 'pending_bound_pids': [], 'cancelled': False}, 'coverage': coverage}))
+            from cargo_cohort import PhaseJournal
+            original_request = cohort/'0002-request.json'
+            declared = json.loads(original_request.read_bytes())
+            declared.update(evidence_path=str(cohort/'0002-compiler.jsonl'), source_digest='a'*64, profile_digest='b'*64, expected_targets=[])
+            original_request.write_text(json.dumps(declared))
+            original_owner = json.loads((evidence/'route.stderr').read_text().splitlines()[0].split(': ',1)[1])
+            journal = PhaseJournal(original_request,original_request.read_bytes(),declared,original_owner)
+            journal.begin('harness_run',argv=['/private/exact-image'],target='exact declared target')
+            journal.close()
             interrupted = cohort / '0002-result.json'
             good = interrupted.read_text()
             for raw in [None, '', '{', 'null', '[]', '{"status":false}',
@@ -143,6 +211,9 @@ class QualificationInventory(unittest.TestCase):
                 self.assertFalse(partial['case_receipts_successful_and_settled'])
                 self.assertFalse(partial['case_inventory_complete'])
                 self.assertEqual(len(partial['receipt_errors']), 1)
+                progress = partial['phase_diagnostics'][-1]
+                self.assertTrue(progress['available'])
+                self.assertEqual(progress['last_entered_phase']['phase'],'harness_run')
             interrupted.write_text(good)
             check = cohort / '0000-result.json'; check.unlink()
             incomplete_check = subject.report(evidence, 'cohort', Path('/work'))

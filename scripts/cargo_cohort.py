@@ -18,6 +18,8 @@ import stat
 import subprocess
 import signal
 import threading
+import time
+from contextlib import contextmanager, nullcontext
 
 from cargo_admitted import ClippyTree, Denied, directory_identity, native_path, owns_lease, resource_plan, check_capacity, COHORT_RUNTIME_KEYS, child_discovery_capability
 
@@ -281,12 +283,105 @@ def _validate_source_declaration(worktree, entries):
             os.close(stack.pop()[1])
 
 
+class PhaseJournal:
+    """Bounded durable observations, never settlement or cleanup authority."""
+    MAX_BYTES = 8 * 1024 * 1024
+    MAX_RECORDS = 65536
+
+    def __init__(self, request_path, request_bytes, request, descriptor):
+        evidence = Path(request['evidence_path'])
+        if (not evidence.is_absolute() or native_path(str(evidence)) != evidence
+                or evidence.parent != request_path.parent
+                or any(evidence.is_relative_to(Path(value)) for key, value in descriptor['resources'].items() if key in ('target', 'build'))):
+            raise Denied('journal evidence must be canonical, beside original request and outside executable roots')
+        self.path = evidence.with_name(evidence.name + '.phases.jsonl')
+        self.sequence = 0; self.bytes = 0; self.stack = []; self.fd = None; self.failure = None
+        binding = {'request_sha256': hashlib.sha256(request_bytes).hexdigest(),
+                   'evidence_path': str(evidence), 'source_digest': request['source_digest'],
+                   'profile_digest': request['profile_digest'], 'expected_targets': request['expected_targets'],
+                   'original_descriptor': descriptor,
+                   'core_source_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}
+        self.binding = hashlib.sha256(json.dumps(binding, sort_keys=True).encode()).hexdigest()
+        self.fd = os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        try:
+            self._write('header', binding=binding, advisory_only=True)
+            parent = os.open(self.path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            try: os.fsync(parent)
+            finally: os.close(parent)
+        except BaseException:
+            self.close(); raise
+
+    def _write(self, event, **fields):
+        row = {'version': 1, 'sequence': self.sequence, 'monotonic_ns': time.monotonic_ns(),
+               'binding_sha256': self.binding, 'event': event, **fields}
+        if '_duration_start_ns' in fields:
+            row.pop('_duration_start_ns')
+            row['duration_ns'] = row['monotonic_ns'] - fields['_duration_start_ns']
+        encoded = (json.dumps(row, sort_keys=True) + '\n').encode()
+        if self.sequence >= self.MAX_RECORDS or self.bytes + len(encoded) > self.MAX_BYTES:
+            raise Denied('phase journal bound exceeded')
+        cursor = 0
+        while cursor < len(encoded):
+            written = os.write(self.fd, encoded[cursor:])
+            if written <= 0: raise OSError('phase journal short write')
+            cursor += written
+        os.fsync(self.fd)
+        self.sequence += 1; self.bytes += len(encoded)
+        return row
+
+    def begin(self, phase, **context):
+        token = {'phase_id': self.sequence, 'phase': phase, 'started_ns': time.monotonic_ns()}
+        row = self._write('started', phase_id=token['phase_id'], phase=phase, context=context)
+        token['started_ns'] = row['monotonic_ns']
+        self.stack.append(token)
+        return token
+
+    def end(self, token, outcome='returned', error=None):
+        if not self.stack or self.stack[-1] != token:
+            raise Denied('phase journal nesting changed')
+        self._write('completed', phase_id=token['phase_id'], phase=token['phase'],
+                    _duration_start_ns=token['started_ns'], outcome=outcome, error=error, exit_status=token.get('exit_status'))
+        self.stack.pop()
+
+    @contextmanager
+    def phase(self, phase, **context):
+        token = self.begin(phase, **context)
+        try:
+            yield token
+        except BaseException as error:
+            try:
+                self.end(token, 'raised', {'type': type(error).__name__, 'message': str(error)[:1024]})
+            except BaseException as persistence_error:
+                # Preserve the original interruption/error and its existing
+                # settlement precedence; progress cannot override that status.
+                self.failure = {'type': type(persistence_error).__name__, 'message': str(persistence_error)[:1024]}
+            raise
+        else:
+            self.end(token)
+
+    def child(self, process):
+        # A fast child may already be a zombie. Observational starttime permits
+        # that state; it never substitutes for existing leader wait ownership.
+        identity = {'pid': process.pid, 'kernel_starttime': None, 'state': 'NOT_OBSERVED'}
+        try:
+            fields = Path('/proc/{}/stat'.format(process.pid)).read_text().rsplit(')', 1)[1].split()
+            identity.update(kernel_starttime=int(fields[19]), state=fields[0])
+        except (OSError, ValueError, IndexError):
+            pass
+        self._write('child', phase_id=self.stack[-1]['phase_id'], **identity)
+
+    def close(self):
+        if self.fd is not None:
+            os.close(self.fd); self.fd = None
+
+
 class Cohort:
     """One producer, its consumers, and one settlement; no recovery adoption API."""
-    def __init__(self, descriptor, source_digest, profile_digest, *, source_subject, profile_subject, expected_targets, evidence_path, pinned=(), pinned_subjects=None, retain_preexisting=False):
+    def __init__(self, descriptor, source_digest, profile_digest, *, source_subject, profile_subject, expected_targets, evidence_path, pinned=(), pinned_subjects=None, retain_preexisting=False, journal=None):
         if not isinstance(retain_preexisting, bool):
             raise Denied("retained consumption mode must be boolean")
         self.retain_preexisting = retain_preexisting
+        self.journal = journal
         self.pid = os.getpid()
         self.thread = threading.get_native_id()
         self.descriptor = json.loads(json.dumps(descriptor))
@@ -377,18 +472,7 @@ class Cohort:
         except (OSError, ValueError, IndexError) as error:
             raise Denied('outer owner identity unavailable') from error
 
-    def _check_owner(self):
-        if (self.descriptor.get('child_discovery', 'proc-children') != self.child_discovery
-                or os.environ.get('CARGO_ADMITTED_CHILD_DISCOVERY', 'proc-children') != self.child_discovery):
-            raise Denied('cohort discovery profile binding changed')
-        if os.getpid() != self.pid or threading.get_native_id() != self.thread:
-            raise Denied('cohort ownership cannot transfer across process/thread')
-        if self._process_identity(self.ancestor) != self.ancestor_identity:
-            raise Denied('outer owner PID identity changed')
-        try:
-            signal.pidfd_send_signal(self.ancestor_fd, 0)
-        except OSError as error:
-            raise Denied('bound outer owner no longer live') from error
+    def _pin_validation(self):
         for path, expected_subject in self.pinned_subjects.items():
             if native_path(str(path)) != path:
                 raise Denied('pinned product path is no longer canonical')
@@ -408,6 +492,8 @@ class Cohort:
                     raise Denied('pinned public executable changed')
             finally:
                 os.close(fd)
+
+    def _source_validation(self):
         for path, digest in zip(self.subjects, self.binding):
             try:
                 if not source_path_is_canonical(path):
@@ -444,6 +530,31 @@ class Cohort:
                 _validate_source_declaration(self.worktree, entries)
             except (OSError, ValueError, KeyError, TypeError) as error:
                 raise Denied('source/profile manifest invalid or changed') from error
+
+    def _phase(self, phase, **context):
+        journal = getattr(self, 'journal', None)
+        return journal.phase(phase, **context) if journal is not None else nullcontext()
+
+    def _check_owner(self):
+        with self._phase('owner_validation'):
+            self._check_owner_impl()
+
+    def _check_owner_impl(self):
+        if (self.descriptor.get('child_discovery', 'proc-children') != self.child_discovery
+                or os.environ.get('CARGO_ADMITTED_CHILD_DISCOVERY', 'proc-children') != self.child_discovery):
+            raise Denied('cohort discovery profile binding changed')
+        if os.getpid() != self.pid or threading.get_native_id() != self.thread:
+            raise Denied('cohort ownership cannot transfer across process/thread')
+        if self._process_identity(self.ancestor) != self.ancestor_identity:
+            raise Denied('outer owner PID identity changed')
+        try:
+            signal.pidfd_send_signal(self.ancestor_fd, 0)
+        except OSError as error:
+            raise Denied('bound outer owner no longer live') from error
+        with self._phase('pin_validation'):
+            self._pin_validation()
+        with self._phase('source_validation'):
+            self._source_validation()
         d = self.descriptor
         runtime = d.get('runtime_environment')
         if runtime is not None:
@@ -460,6 +571,7 @@ class Cohort:
         for root, identity in self.root_identity.items():
             if directory_identity(root) != identity:
                 raise Denied('private root identity changed')
+
 
     def _open(self, path, *, allow_links=False, allow_preexisting=False):
         self._check_owner()
@@ -562,6 +674,10 @@ class Cohort:
             raise Denied('owned alias bytes changed')
 
     def _validate_record(self, path):
+        with self._phase('record_validation', executable=str(path), target=getattr(self, 'path_targets', {}).get(path)):
+            return self._validate_record_impl(path)
+
+    def _validate_record_impl(self, path):
         # Paired record sites observe every alias before the unchanged _open
         # performs a fresh owner/source/pin and primary-image validation.
         self._validate_group_observation(self.groups[path])
@@ -573,6 +689,14 @@ class Cohort:
             os.close(parent)
 
     def _record(self, message):
+        target = {key: message.get(key) for key in ('package_id','target','features','profile')}
+        if (message.get('reason') == 'compiler-artifact' and message.get('executable')
+                and json.dumps(target, sort_keys=True) in self.expected_targets):
+            with self._phase('artifact_capture', executable=message['executable'], target=target):
+                return self._record_impl(message)
+        return self._record_impl(message)
+
+    def _record_impl(self, message):
         if message.get('reason') == 'build-script-executed':
             self.build_scripts.append({key: message.get(key) for key in ('package_id', 'env', 'linked_paths', 'out_dir')})
             return
@@ -709,7 +833,7 @@ class Cohort:
             # A private disk spool preserves diagnostics without pipe deadlocks or
             # accumulating compiler output in memory. It remains retained evidence.
             with self.evidence_path.open('xb+') as output:
-                status = self._launch(tree, producer, child_env, stdout=output)
+                status = self._launch(tree, producer, child_env, stdout=output, journal_phase='producer')
                 output.seek(0)
                 for line in output:
                     sys.stdout.buffer.write(line)
@@ -778,8 +902,17 @@ class Cohort:
         except BaseException as exception:
             error = exception
         try:
+            settlement_token = None
+            if self.journal is not None:
+                try: settlement_token = self.journal.begin('settlement')
+                except BaseException as failure: error = error or failure
             self.receipt = tree.finish(stop=error is not None, timeout=settlement_timeout)
+            if settlement_token is not None:
+                try: self.journal.end(settlement_token)
+                except BaseException as failure: error = error or failure
             self.finished = True
+            if self.journal is not None and self.journal.failure is not None:
+                self.receipt['journal_error'] = self.journal.failure
             reclaimed = []
             retained = [str(path) for path, group in self.groups.items() if not group['reclaimable']]
             if not observation_only and error is None and status == 0 and self.receipt['tree_settled'] and not self.receipt['cancelled']:
@@ -789,21 +922,22 @@ class Cohort:
                     if self._validate_record(path) != self.records[path]:
                         raise Denied('executable changed before reclaim')
                 with self.receipt_path.open('xb') as evidence:
-                    authorization = {'event': 'authorization', 'product_status': status,
-                                     'settlement': self.receipt, 'consumed': consumed, 'coverage': coverage,
-                                     'source_profile_binding': self.binding, 'pinned_subjects': {str(path): digest for path, digest in self.pinned_subjects.items()}, 'runtime_environment_sha256': self.descriptor.get('runtime_environment_sha256'),
-                                     'alias_groups': [{'executable': str(path), 'file_identity': group['initial_identity'],
-                                                       'sha256': group['sha256'], 'reclaimable': group['reclaimable'], 'aliases': [{'path': str(alias['path']), 'parent_identity': alias['parent_identity']} for alias in group['aliases']]} for path, group in self.groups.items()],
-                                     'records': [{'path': str(path), 'parent_identity': record[0],
-                                                  'file_identity': record[1], 'sha256': record[2],
-                                                  'binding': record[3]} for path, record in self.records.items()]}
-                    self._persist(evidence, authorization)
-                    # New file names need directory durability as well as data.
-                    evidence_parent = os.open(self.receipt_path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-                    try:
-                        os.fsync(evidence_parent)
-                    finally:
-                        os.close(evidence_parent)
+                    with self._phase('authorization', targets=list(self.path_targets.values())):
+                        authorization = {'event': 'authorization', 'product_status': status,
+                                         'settlement': self.receipt, 'consumed': consumed, 'coverage': coverage,
+                                         'source_profile_binding': self.binding, 'pinned_subjects': {str(path): digest for path, digest in self.pinned_subjects.items()}, 'runtime_environment_sha256': self.descriptor.get('runtime_environment_sha256'),
+                                         'alias_groups': [{'executable': str(path), 'file_identity': group['initial_identity'],
+                                                           'sha256': group['sha256'], 'reclaimable': group['reclaimable'], 'aliases': [{'path': str(alias['path']), 'parent_identity': alias['parent_identity']} for alias in group['aliases']]} for path, group in self.groups.items()],
+                                         'records': [{'path': str(path), 'parent_identity': record[0],
+                                                      'file_identity': record[1], 'sha256': record[2],
+                                                      'binding': record[3]} for path, record in self.records.items()]}
+                        self._persist(evidence, authorization)
+                        # New file names need directory durability as well as data.
+                        evidence_parent = os.open(self.receipt_path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+                        try:
+                            os.fsync(evidence_parent)
+                        finally:
+                            os.close(evidence_parent)
                     self._cleanup_authorized = True
                     self._receipt_stream = evidence
                     for path in list(self.records):
@@ -858,7 +992,7 @@ class Cohort:
                               ('ignored', ['--ignored', '--list', '--format', 'terse'])]:
             log = self.evidence_path.with_name(self.evidence_path.name + '.harness-' + str(index) + '-' + suffix)
             with log.open('xb+') as output:
-                status = self._launch(tree, [str(path), *flags], env, cwd=cwd, stdout=output)
+                status = self._launch(tree, [str(path), *flags], env, cwd=cwd, stdout=output, journal_phase=suffix+'_list')
                 output.flush(); os.fsync(output.fileno()); output.seek(0)
                 text = output.read().decode('utf-8')
             if status:
@@ -877,7 +1011,7 @@ class Cohort:
             raise Denied('native ignored inventory differs from full inventory')
         log = self.evidence_path.with_name(self.evidence_path.name + '.harness-' + str(index) + '-run')
         with log.open('xb+') as output:
-            status = self._launch(tree, [str(path)], env, cwd=cwd, stdout=output)
+            status = self._launch(tree, [str(path)], env, cwd=cwd, stdout=output, journal_phase='harness_run')
             output.flush(); os.fsync(output.fileno()); output.seek(0)
             raw = output.read()
             sys.stdout.write(raw.decode('utf-8'))
@@ -907,6 +1041,14 @@ class Cohort:
                 'ignored_count': sum(ignored_cases.values()), 'logs': [*logs, str(log)]}
 
     def _launch(self, tree, command, env, **kwargs):
+        phase = kwargs.pop('journal_phase', 'consumer')
+        target = self.path_targets.get(Path(command[0]))
+        with self._phase(phase, argv=command, target=target) as token:
+            status = self._launch_impl(tree, command, env, **kwargs)
+            if token is not None: token['exit_status'] = status
+            return status
+
+    def _launch_impl(self, tree, command, env, **kwargs):
         # Known captured executables need both current owner/source validation
         # and a fresh complete alias-group check immediately before Popen.
         # _validate_group performs the owner check itself; do it once.
@@ -933,6 +1075,7 @@ class Cohort:
         try:
             process = subprocess.Popen(command, env=env, cwd=kwargs.pop('cwd', self.worktree), **kwargs)
             tree.track(process.pid, process)
+            if self.journal is not None: self.journal.child(process)
         finally:
             tree.binding = False
         if tree.cancelled:
@@ -957,6 +1100,10 @@ class Cohort:
                 signal.pthread_sigmask(signal.SIG_SETMASK, mask)
 
     def _reclaim(self, path):
+        with self._phase('reclaim', executable=str(path), target=self.path_targets.get(path)):
+            return self._reclaim_impl(path)
+
+    def _reclaim_impl(self, path):
         if not self._cleanup_authorized or self._receipt_stream is None or path not in self.records or not self.finished or self.receipt is None or not self.receipt['tree_settled']:
             raise Denied('cohort has no successful consumption and kernel closure')
         group = self.groups[path]
@@ -997,21 +1144,27 @@ def main(argv=None):
         raise Denied('bridge requires request and exclusive result paths')
     if options.request.stat().st_size > 8 * 1024 * 1024:
         raise Denied('bridge request exceeds bound')
-    request = json.loads(options.request.read_bytes())
+    request_bytes = options.request.read_bytes()
+    request = json.loads(request_bytes)
     with options.result.open('x', encoding='utf-8') as output:
         descriptor = json.loads(os.environ['CARGO_ADMITTED_COHORT_DESCRIPTOR'])
-        instance = Cohort(descriptor, request['source_digest'], request['profile_digest'],
-                          source_subject=request['source_subject'], profile_subject=request['profile_subject'],
-                          expected_targets=request['expected_targets'], evidence_path=request['evidence_path'],
-                          pinned=request.get('pinned', []), pinned_subjects=request.get('pinned_subjects', {}),
-                          retain_preexisting=request.get('retain_preexisting', False))
-        if request['operation'] == 'observe':
-            result = instance.observe(request['producer'], os.environ.copy())
-        elif request['operation'] == 'run':
-            result = instance.run(request['producer'], request['consumers'], os.environ.copy())
-        else:
-            instance.close()
-            raise Denied('unknown bridge operation')
+        journal = PhaseJournal(options.request, request_bytes, request, descriptor)
+        try:
+            with journal.phase('construction'):
+                instance = Cohort(descriptor, request['source_digest'], request['profile_digest'],
+                                  source_subject=request['source_subject'], profile_subject=request['profile_subject'],
+                                  expected_targets=request['expected_targets'], evidence_path=request['evidence_path'],
+                                  pinned=request.get('pinned', []), pinned_subjects=request.get('pinned_subjects', {}),
+                                  retain_preexisting=request.get('retain_preexisting', False), journal=journal)
+            if request['operation'] == 'observe':
+                result = instance.observe(request['producer'], os.environ.copy())
+            elif request['operation'] == 'run':
+                result = instance.run(request['producer'], request['consumers'], os.environ.copy())
+            else:
+                instance.close()
+                raise Denied('unknown bridge operation')
+        finally:
+            journal.close()
         json.dump(result, output, sort_keys=True)
         output.flush()
         os.fsync(output.fileno())
