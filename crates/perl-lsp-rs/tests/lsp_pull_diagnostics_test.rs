@@ -432,7 +432,7 @@ fn test_pull_diagnostics_suppressed_until_full_resync() -> Result<(), Box<dyn st
         Ok(response.result.ok_or("response missing result")?)
     };
 
-    let before = pull(2)?;
+    let before = pull(2).map_err(|e| format!("initial pull failed: {e}"))?;
     assert_eq!(before["kind"], "full");
     assert!(before["resultId"].is_string(), "current document must mint a resultId");
     assert!(
@@ -454,7 +454,7 @@ fn test_pull_diagnostics_suppressed_until_full_resync() -> Result<(), Box<dyn st
         })),
     });
 
-    let desynced = pull(3)?;
+    let desynced = pull(3).map_err(|e| format!("pull during desync failed: {e}"))?;
     assert_eq!(desynced["kind"], "full");
     assert!(
         desynced["items"].as_array().ok_or("items array")?.is_empty(),
@@ -473,7 +473,7 @@ fn test_pull_diagnostics_suppressed_until_full_resync() -> Result<(), Box<dyn st
         })),
     });
 
-    let recovered = pull(4)?;
+    let recovered = pull(4).map_err(|e| format!("pull after recovery failed: {e}"))?;
     assert!(recovered["resultId"].is_string(), "resync must restore resultId minting");
     assert!(
         !recovered["items"].as_array().ok_or("items array")?.is_empty(),
