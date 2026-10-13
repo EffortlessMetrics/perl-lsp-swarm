@@ -52,7 +52,7 @@ def observe(command, stdout_path, stderr_path):
             # only after its actual executable matches the immutable subject.
             try:
                 proc = pathlib.Path(f"/proc/{child.pid}")
-                if (proc / "exe").resolve(strict=True) == pathlib.Path(command[0]):
+                if os.path.samefile(proc / "exe", command[0]):
                     status_text = (proc / "status").read_text()
                     values = {line.split()[0][:-1]: int(line.split()[1])
                               for line in status_text.splitlines()

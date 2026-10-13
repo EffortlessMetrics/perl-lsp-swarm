@@ -17,11 +17,22 @@ static ALLOCATOR: CountingAllocator = CountingAllocator;
 fn main() -> Result<(), Box<dyn Error>> {
     let mut args = std::env::args().skip(1);
     let path = args.next().ok_or("usage: parser_resources FILE [ITERATIONS] [--oracle]")?;
-    let iterations: usize = args.next().as_deref().unwrap_or("1").parse()?;
+    let mut iterations = 1usize;
+    let mut count_supplied = false;
+    let mut oracle = false;
+    for argument in args {
+        if argument == "--oracle" && !oracle {
+            oracle = true;
+        } else if !count_supplied {
+            iterations = argument.parse()?;
+            count_supplied = true;
+        } else {
+            return Err("usage: parser_resources FILE [ITERATIONS] [--oracle]".into());
+        }
+    }
     if iterations == 0 {
         return Err("iterations must be positive".into());
     }
-    let oracle = args.next().as_deref() == Some("--oracle");
     let source = std::fs::read_to_string(&path)?;
     let mut parse_ns = 0u128;
     let mut drop_ns = 0u128;

@@ -160,3 +160,19 @@ zero bytes cannot stand in for unavailable memory evidence.
 The packet is saved environment evidence, not a remotely uploaded artifact.
 Hosted qualification and protected integration are separate from these local
 measurements; their current status belongs on the PR.
+
+After the recorded campaign, review repaired the example's optional-count
+argument handling (`FILE --oracle`) and the sampler's executable comparison
+under filesystem aliases (`os.path.samefile`). A separately captured executable,
+SHA256 `51962b451acb14a2c19fc2b08c8edd537f053e22cff004eb5b6efbfa5ad264af`,
+passes ten real CLI controls and agrees with the earlier repair executable on
+all 33 projections and allocation counters. Recorded CPU/RSS values remain
+bound to the two original measured executables; no new performance campaign
+or speed claim follows from this tool-only repair.
+
+A real child executing one hardlink while the control names another link to
+the same inode rejects the old path comparison and yields native samples with
+the repaired comparison. The test injects only that launch alias; an actual
+bind mount was not created or qualified. Original executable inodes remain
+unchanged; the control uses a separate image copy. No mount, privilege or access
+configuration changed.
