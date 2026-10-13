@@ -4,8 +4,9 @@ use super::implementation::counters::{self, NativePipelineCounters, PipelineColl
 use super::implementation::{
     BracePlacement, ElsePlacement, FinalNewline, FormatConfig, FormatDiagnosticSeverity,
     FormatResult, FormatterMode, KeywordSpacing, NativeFormatter, PerlFormatter, TextEdit,
-    TextRange, TrailingComma, format_simple_line, indent_unit, is_rendered_block_boundary_line,
-    range_includes_line, rendered_boundary_role,
+    TextRange, TrailingComma, format_simple_line, indent_unit, is_perl_line_directive,
+    is_rendered_block_boundary_line, multiline_literal_lines, range_includes_line,
+    rendered_boundary_role,
 };
 use serde::{Deserialize, Serialize};
 
@@ -496,6 +497,38 @@ fn split_lines_for_range_validation(source: &str) -> Vec<&str> {
 }
 
 #[cfg(test)]
+mod supported_lines_comment_tests {
+    use super::{FormatConfig, FormatRequestTarget, target_has_only_supported_lines};
+
+    fn supported(source: &str) -> bool {
+        target_has_only_supported_lines(
+            source,
+            &FormatConfig::default(),
+            FormatRequestTarget::Document,
+        )
+    }
+
+    #[test]
+    fn comment_layout_inside_blocks_is_part_of_the_support_check() {
+        // A comment left at the enclosing statement indent inside a block is
+        // not in rendered form: the formatter would reindent it, so the
+        // support check must not certify the document as already formatted.
+        assert!(!supported("sub f {\n# explain\n    my $x = 1;\n}\n"));
+        assert!(supported("sub f {\n    # explain\n    my $x = 1;\n}\n"));
+        // Comments outside any block impose no layout constraint.
+        assert!(supported("# top level\nmy $x = 1;\n"));
+    }
+
+    #[test]
+    fn preserved_lines_are_exempt_from_comment_layout() {
+        // Column-zero Perl line directives are preserved byte-for-byte by
+        // the formatter wherever they appear, so they certify as-is.
+        assert!(supported("sub f {\n#line 100 \"generated.pl\"\n    my $x = 1;\n}\n"));
+        assert!(supported("sub f {\n# line 42 \"other.pl\"\n    my $x = 1;\n}\n"));
+    }
+}
+
+#[cfg(test)]
 mod line_geometry_tests {
     use super::split_lines_for_range_validation;
 
@@ -545,14 +578,19 @@ fn utf16_len(source: &str) -> u32 {
 ///   stops inside a block has no closing evidence in scope and stays refused,
 ///   exactly as before boundary admission existed.
 ///
-/// Blank and comment lines impose no indent constraint: they pass the
-/// formatter through unchanged wherever they appear.
+/// Blank lines impose no indent constraint. Comment lines follow the layout
+/// the formatter emits: inside a tracked block a comment must sit at least
+/// one [`indent_unit`] past that block's indent, matching the body-line
+/// evidence below. Comments outside any tracked block, Perl line directives,
+/// and lines inside multiline literals are preserved byte-for-byte by the
+/// formatter, so they impose no constraint.
 fn target_has_only_supported_lines(
     source: &str,
     config: &FormatConfig,
     target: FormatRequestTarget,
 ) -> bool {
     let body_indent = indent_unit(config);
+    let literal_lines = multiline_literal_lines(source);
     let mut open_blocks: Vec<&str> = Vec::new();
     for (line, text) in split_lines_for_range_validation(source).into_iter().enumerate() {
         let included = match target {
@@ -563,11 +601,28 @@ fn target_has_only_supported_lines(
             continue;
         }
         let trimmed = text.trim();
-        if trimmed.is_empty() || trimmed.starts_with('#') {
+        if trimmed.is_empty() {
             continue;
         }
         let indent_len = text.len() - text.trim_start_matches([' ', '\t']).len();
         let indent = &text[..indent_len];
+        if trimmed.starts_with('#') {
+            // Comment layout inside a tracked block is part of the rendered
+            // form (PR #17704 review): the formatter reindents comment-only
+            // lines to the block body indent, so a comment at or above its
+            // header's indent is hand-written, not rendered. Preserved
+            // lines (directives, literal content) and comments outside any
+            // tracked block certify at whatever indent they carry.
+            let preserved = is_perl_line_directive(text) || literal_lines.contains(&line);
+            if !preserved
+                && open_blocks
+                    .last()
+                    .is_some_and(|open| !indent.starts_with(&format!("{open}{body_indent}")))
+            {
+                return false;
+            }
+            continue;
+        }
         // Block boundaries the renderers own. Without this a block the
         // formatter itself rendered refused on the second pass, because no
         // header or tail line is a `format_simple_line` candidate.
