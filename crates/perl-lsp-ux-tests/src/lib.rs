@@ -395,6 +395,33 @@ pub(crate) fn poll_child_exit(child: &Mutex<Child>, deadline: Instant) -> Result
     }
 }
 
+/// A concurrent fork can briefly retain a copied executable's writable descriptor.
+/// Retry that Unix exec failure alone, bounded by both caller time and 500ms.
+pub(crate) fn spawn_executable(
+    mut spawn: impl FnMut() -> std::io::Result<Child>,
+    deadline: Instant,
+) -> std::io::Result<Child> {
+    let deadline = deadline.min(Instant::now() + Duration::from_millis(500));
+    loop {
+        match spawn() {
+            Err(error)
+                if cfg!(unix) && error.raw_os_error() == Some(26) && Instant::now() < deadline =>
+            {
+                // ux-timing: product-retry — a fork-inherited write descriptor
+                // has no close notification; retry only ETXTBSY until deadline.
+                std::thread::sleep(
+                    Duration::from_millis(10)
+                        .min(deadline.saturating_duration_since(Instant::now())),
+                );
+                if Instant::now() >= deadline {
+                    return Err(error);
+                }
+            }
+            result => return result,
+        }
+    }
+}
+
 /// The main UX test harness.
 ///
 /// Wraps a spawned LSP server process and a temporary workspace.
@@ -1457,15 +1484,17 @@ pub fn verify_binary_source(binary: &str) -> Result<()> {
     .map_err(|error| anyhow!("cannot establish UX source identity: {error}"))?;
     let stdout = tempfile::NamedTempFile::new()?;
     let stderr = tempfile::NamedTempFile::new()?;
-    let child = std::process::Command::new(binary)
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut command = std::process::Command::new(binary);
+    command
         .args(["--info", "--json"])
         .stdin(std::process::Stdio::null())
         .stdout(stdout.reopen()?)
-        .stderr(stderr.reopen()?)
-        .spawn()
+        .stderr(stderr.reopen()?);
+    let child = spawn_executable(|| command.spawn(), deadline)
         .with_context(|| format!("identity probe failed for {binary}"))?;
     let child = Mutex::new(child);
-    let outcome = poll_child_exit(&child, Instant::now() + Duration::from_secs(5));
+    let outcome = poll_child_exit(&child, deadline);
     let status = match outcome {
         Ok(ChildExit::Exited(status)) => status,
         other => {
@@ -2141,8 +2170,8 @@ mod strict_binary_guard_subprocess_tests {
         let isolated_exe = isolated_dir.path().join(exe_name);
         std::fs::copy(&current_exe, &isolated_exe)?;
 
-        let output = Command::new(&isolated_exe)
-            .args([
+        let mut command = Command::new(&isolated_exe);
+        command.args([
                 // `--exact` matches on the FULLY QUALIFIED name (module path
                 // included) — the bare function name alone matches nothing.
                 "strict_binary_guard_subprocess_tests::binary_available_panics_when_strict_and_missing",
@@ -2151,7 +2180,14 @@ mod strict_binary_guard_subprocess_tests {
             ])
             .env_clear()
             .env(REQUIRE_BINARY_ENV, "1")
-            .output()?;
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        let output = crate::spawn_executable(
+            || command.spawn(),
+            std::time::Instant::now() + std::time::Duration::from_millis(500),
+        )?
+        .wait_with_output()?;
 
         assert!(
             !output.status.success(),
@@ -2171,6 +2207,152 @@ mod strict_binary_guard_subprocess_tests {
             "expected the actionable fail-loud message in child output, got: {combined}"
         );
 
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod executable_busy_retry_tests {
+    use super::spawn_executable;
+    use std::io;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn nonbusy_spawn_errors_are_returned_without_retry() {
+        for error in [
+            io::Error::from_raw_os_error(2),
+            io::Error::from_raw_os_error(13),
+            io::Error::other("transport failure"),
+        ] {
+            let expected = (error.kind(), error.raw_os_error());
+            let mut error = Some(error);
+            let mut attempts = 0;
+            let result = spawn_executable(
+                || {
+                    attempts += 1;
+                    Err(error.take().unwrap_or_else(|| io::Error::other("unexpected retry")))
+                },
+                Instant::now() + Duration::from_secs(30),
+            );
+            let error = result.err().unwrap_or_else(|| io::Error::other("unexpected child"));
+            assert_eq!((error.kind(), error.raw_os_error()), expected);
+            assert_eq!(attempts, 1, "nonbusy error must not be retried");
+        }
+    }
+
+    #[test]
+    fn actual_missing_executable_fails_without_retry() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let mut command = std::process::Command::new(dir.path().join("missing-executable"));
+        let mut attempts = 0;
+        let error = spawn_executable(
+            || {
+                attempts += 1;
+                command.spawn()
+            },
+            Instant::now() + Duration::from_secs(2),
+        )
+        .err()
+        .ok_or_else(|| anyhow::anyhow!("missing executable unexpectedly spawned"))?;
+        assert_eq!(error.kind(), io::ErrorKind::NotFound);
+        assert_eq!(attempts, 1);
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    fn busy_copy() -> anyhow::Result<(tempfile::TempDir, std::process::Command, std::fs::File)> {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("copied-test-executable");
+        std::fs::copy(std::env::current_exe()?, &path)?;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))?;
+        let writer = std::fs::OpenOptions::new().write(true).open(&path)?;
+        let mut command = std::process::Command::new(path);
+        command
+            .arg("--list")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        let initial = match command.spawn() {
+            Err(error) => error,
+            Ok(mut child) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                anyhow::bail!("writer did not prevent exec");
+            }
+        };
+        assert_eq!(initial.raw_os_error(), Some(26), "real writable ELF must be busy");
+        Ok((dir, command, writer))
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn actual_busy_executable_recovers_after_writer_release() -> anyhow::Result<()> {
+        let (_dir, mut command, writer) = busy_copy()?;
+        let (send, receive) = std::sync::mpsc::channel();
+        let release = std::thread::spawn(move || {
+            let signaled = receive.recv_timeout(Duration::from_secs(2)).is_ok();
+            if signaled {
+                std::thread::sleep(Duration::from_millis(40));
+            }
+            drop(writer);
+            signaled
+        });
+        let mut attempts = 0;
+        let result = spawn_executable(
+            || {
+                attempts += 1;
+                let result = command.spawn();
+                if attempts == 1 {
+                    assert_eq!(result.as_ref().err().and_then(io::Error::raw_os_error), Some(26));
+                    let _ = send.send(());
+                }
+                result
+            },
+            Instant::now() + Duration::from_secs(2),
+        );
+        assert!(release.join().map_err(|_| anyhow::anyhow!("writer thread failed"))?);
+        let mut child = result?;
+        assert!(child.wait()?.success());
+        assert!(attempts > 1, "success must follow an actual busy refusal");
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn actual_persistent_busy_executable_honors_shorter_deadline() -> anyhow::Result<()> {
+        let (_dir, mut command, _writer) = busy_copy()?;
+        let deadline = Instant::now() + Duration::from_millis(60);
+        let mut attempted_after_deadline = false;
+        let mut attempts = 0;
+        let error = spawn_executable(
+            || {
+                attempted_after_deadline |= attempts > 0 && Instant::now() >= deadline;
+                attempts += 1;
+                command.spawn()
+            },
+            deadline,
+        )
+        .err()
+        .ok_or_else(|| anyhow::anyhow!("persistent writer unexpectedly allowed exec"))?;
+        assert_eq!(error.raw_os_error(), Some(26));
+        assert!(!attempted_after_deadline, "must not spawn again after retry deadline");
+        assert!(Instant::now() >= deadline, "persistent busy must reach the retry bound");
+        Ok(())
+    }
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn actual_persistent_busy_executable_is_capped_at_500ms() -> anyhow::Result<()> {
+        let (_dir, mut command, _writer) = busy_copy()?;
+        let start = Instant::now();
+        let error = spawn_executable(|| command.spawn(), start + Duration::from_secs(2))
+            .err()
+            .ok_or_else(|| anyhow::anyhow!("persistent writer unexpectedly allowed exec"))?;
+        assert_eq!(error.raw_os_error(), Some(26));
+        // Monotonic observation with 1s scheduling tolerance above the 500ms
+        // cap; a retry until the caller's 2s deadline must still fail.
+        assert!(start.elapsed() >= Duration::from_millis(450));
+        assert!(start.elapsed() < Duration::from_millis(1500));
         Ok(())
     }
 }

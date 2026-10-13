@@ -9,7 +9,7 @@
 #![allow(clippy::print_stderr)]
 
 use crate::observation::{Inbox, StreamEnd, WaitEnd};
-use crate::{ChildExit, FakeWorkspace, ScenarioConfig, poll_child_exit};
+use crate::{ChildExit, FakeWorkspace, ScenarioConfig, poll_child_exit, spawn_executable};
 use anyhow::{Context, Result, anyhow};
 use serde_json::{Value, json};
 use server_request_script::{
@@ -246,11 +246,8 @@ impl UxClient {
     ) -> Result<Self> {
         let mut cmd = build_command(binary_path, config)?;
 
-        let mut child = cmd
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
+        cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+        let mut child = spawn_executable(|| cmd.spawn(), Instant::now() + config.timeout)
             .with_context(|| format!("Failed to spawn perl-lsp from {:?}", binary_path))?;
 
         let stdin = child
