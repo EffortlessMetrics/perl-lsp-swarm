@@ -5,7 +5,7 @@ use super::implementation::{
     BracePlacement, ElsePlacement, FinalNewline, FormatConfig, FormatDiagnosticSeverity,
     FormatResult, FormatterMode, KeywordSpacing, NativeFormatter, PerlFormatter, TextEdit,
     TextRange, TrailingComma, format_simple_line, indent_unit, is_rendered_block_boundary_line,
-    range_includes_line, rendered_boundary_role,
+    preserve_region_line_indices, range_includes_line, rendered_boundary_role,
 };
 use serde::{Deserialize, Serialize};
 
@@ -553,8 +553,14 @@ fn target_has_only_supported_lines(
     target: FormatRequestTarget,
 ) -> bool {
     let body_indent = indent_unit(config);
+    let preserve_lines = preserve_region_line_indices(source);
     let mut open_blocks: Vec<&str> = Vec::new();
     for (line, text) in split_lines_for_range_validation(source).into_iter().enumerate() {
+        // Preserve-region lines are supported by byte-exact preservation
+        // (#17708), not by the simple-line renderers.
+        if preserve_lines.contains(&line) {
+            continue;
+        }
         let included = match target {
             FormatRequestTarget::Document => true,
             FormatRequestTarget::Range { range } => range_includes_line(range, line as u32),

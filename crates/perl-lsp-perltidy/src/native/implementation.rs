@@ -122,15 +122,32 @@ impl NativeFormatter {
         // Physical lines inside a multiline literal (string, regex, qw…)
         // are literal bytes, not code: never reindent them and never let
         // their contents move the block stack.
+        let token_lines = token_preserve_lines(source);
+        let line_lines = line_preserve_lines(source);
         let literal_lines: std::collections::HashSet<usize> = multiline_literal_lines(source)
             .into_iter()
-            .chain(preserve_region_lines(source))
+            .chain(token_lines.iter().copied())
+            .chain(line_lines.iter().copied())
             .collect();
 
         for (line_index, line) in source.split_inclusive('\n').enumerate() {
             processed_lines = processed_lines.saturating_add(1);
             let (body, line_ending) = split_line_ending(line);
             if literal_lines.contains(&line_index) {
+                // A preserved *code* header (e.g. `if ($x =~ /}/) {`) still
+                // opens/closes the block stack for following body lines, even
+                // though its own bytes are emitted verbatim (#17710-4).
+                if token_lines.contains(&line_index) && !line_lines.contains(&line_index) {
+                    let (code, _comment) = split_trailing_comment(body);
+                    let code = code.trim();
+                    if code.starts_with('}') {
+                        indent_stack.pop();
+                    }
+                    if code == "{" || (code.ends_with('{') && !code.starts_with('{')) {
+                        let leading = body[..body.len() - body.trim_start().len()].to_string();
+                        indent_stack.push(leading);
+                    }
+                }
                 formatted.push_str(body);
                 formatted.push_str(line_ending);
                 continue;
@@ -268,7 +285,14 @@ impl NativeFormatter {
     /// only because `format_safe_subset` preserves each line's existing
     /// terminator; it is not independently guaranteed. Hence `formatted`
     /// rather than `source`.
-    fn apply_final_newline(formatted: &str, config: &FormatConfig) -> String {
+    fn apply_final_newline(formatted: &str, config: &FormatConfig, source: &str) -> String {
+        // If the document's last line is inside a preserve region (e.g. a
+        // `__DATA__`/`__END__` payload), the final-newline policy must not
+        // alter those bytes (#17710-1).
+        let last_line = source.lines().count().saturating_sub(1);
+        if !source.is_empty() && preserve_region_lines(source).contains(&last_line) {
+            return formatted.to_string();
+        }
         match config.final_newline {
             FinalNewline::Preserve => formatted.to_string(),
             FinalNewline::Insert => {
@@ -311,6 +335,17 @@ fn multiline_literal_lines(source: &str) -> std::collections::HashSet<usize> {
 /// Formatting emits these lines byte-exact and never lets them move the
 /// block stack (#17708).
 fn preserve_region_lines(source: &str) -> std::collections::HashSet<usize> {
+    token_preserve_lines(source).into_iter().chain(line_preserve_lines(source)).collect()
+}
+
+/// Public preserve-region line indices for downstream consumers that apply
+/// whitespace policy after formatting (#17710-6).
+#[must_use]
+pub fn preserve_region_line_indices(source: &str) -> std::collections::HashSet<usize> {
+    preserve_region_lines(source)
+}
+
+fn token_preserve_lines(source: &str) -> std::collections::HashSet<usize> {
     use perl_parser_core::TokenKind;
 
     let mut lines = std::collections::HashSet::new();
@@ -342,18 +377,38 @@ fn preserve_region_lines(source: &str) -> std::collections::HashSet<usize> {
             Err(_) => break,
         }
     }
+    lines
+}
 
+fn line_preserve_lines(source: &str) -> std::collections::HashSet<usize> {
+    let mut lines = std::collections::HashSet::new();
     let source_lines: Vec<&str> = source.lines().collect();
+    let mut heredoc_queue: std::collections::VecDeque<HeredocMarker> =
+        std::collections::VecDeque::new();
     let mut index = 0;
     while index < source_lines.len() {
         let line = source_lines[index];
+        if let Some(front) = heredoc_queue.front() {
+            lines.insert(index);
+            let done = if front.allow_indent {
+                line.trim_start_matches([' ', '\t']) == front.label
+            } else {
+                line == front.label
+            };
+            if done {
+                heredoc_queue.pop_front();
+            }
+            index += 1;
+            continue;
+        }
         let trimmed = line.trim_start();
         if is_pod_start(trimmed) {
             lines.insert(index);
             index += 1;
             while index < source_lines.len() {
                 lines.insert(index);
-                let done = source_lines[index].trim_start().starts_with("=cut");
+                // POD ends only at an exact `=cut` token (#17710-3).
+                let done = source_lines[index].split_whitespace().next() == Some("=cut");
                 index += 1;
                 if done {
                     break;
@@ -380,19 +435,11 @@ fn preserve_region_lines(source: &str) -> std::collections::HashSet<usize> {
             }
             continue;
         }
-        if contains_likely_heredoc_start(line)
-            && let Some(terminator) = heredoc_terminator(line)
-        {
+        let markers = heredoc_markers(line);
+        if !markers.is_empty() {
             lines.insert(index);
+            heredoc_queue.extend(markers);
             index += 1;
-            while index < source_lines.len() {
-                lines.insert(index);
-                let done = source_lines[index].trim() == terminator;
-                index += 1;
-                if done {
-                    break;
-                }
-            }
             continue;
         }
         index += 1;
@@ -400,19 +447,64 @@ fn preserve_region_lines(source: &str) -> std::collections::HashSet<usize> {
     lines
 }
 
-/// Extract the terminator word from a line containing a `<<TAG`,
-/// `<<'TAG'`, `<<"TAG"` or `<<~TAG` heredoc start.
-fn heredoc_terminator(line: &str) -> Option<String> {
-    let (_, after_marker) = line.split_once("<<")?;
-    if after_marker.starts_with('<') {
-        return None;
+#[derive(Debug, Clone)]
+struct HeredocMarker {
+    label: String,
+    allow_indent: bool,
+}
+
+/// All heredoc markers on a line, in order (`print <<A, <<B;` queues both,
+/// FIFO). Quoted labels accept any characters up to the closing quote, per
+/// lexer rules (`<<"="` is valid); bare labels are identifier tokens.
+fn heredoc_markers(line: &str) -> Vec<HeredocMarker> {
+    let mut markers = Vec::new();
+    let mut search_from = 0;
+    while let Some(rel) = line[search_from..].find("<<") {
+        let start = search_from + rel;
+        search_from = start + 2;
+        let after = &line[start + 2..];
+        if after.starts_with('<') {
+            continue;
+        }
+        let (allow_indent, after) =
+            if let Some(rest) = after.strip_prefix('~') { (true, rest) } else { (false, after) };
+        let after = after.trim_start_matches([' ', '\t']);
+        let after = after.strip_prefix('\\').unwrap_or(after);
+        let Some(first) = after.chars().next() else { continue };
+        if matches!(first, '\'' | '"' | '`') {
+            let mut label = String::new();
+            let mut rest = &after[first.len_utf8()..];
+            let mut closed = false;
+            while let Some(ch) = rest.chars().next() {
+                if ch == first {
+                    closed = true;
+                    break;
+                }
+                if ch == '\\' {
+                    rest = &rest[ch.len_utf8()..];
+                    let Some(escaped) = rest.chars().next() else { break };
+                    if first == '\'' && !matches!(escaped, '\'' | '\\') {
+                        label.push('\\');
+                    }
+                    label.push(escaped);
+                    rest = &rest[escaped.len_utf8()..];
+                    continue;
+                }
+                label.push(ch);
+                rest = &rest[ch.len_utf8()..];
+            }
+            if closed && !label.is_empty() {
+                markers.push(HeredocMarker { label, allow_indent });
+            }
+        } else if first == '_' || first.is_ascii_alphabetic() {
+            let label: String =
+                after.chars().take_while(|ch| *ch == '_' || ch.is_ascii_alphanumeric()).collect();
+            if !label.is_empty() {
+                markers.push(HeredocMarker { label, allow_indent });
+            }
+        }
     }
-    let after_indent = after_marker.trim_start();
-    let marker = after_indent.strip_prefix('~').unwrap_or(after_indent).trim_start();
-    let marker = marker.strip_prefix(['\'', '"', '`']).unwrap_or(marker);
-    let word: String =
-        marker.chars().take_while(|ch| *ch == '_' || ch.is_ascii_alphanumeric()).collect();
-    if word.is_empty() { None } else { Some(word) }
+    markers
 }
 
 impl PerlFormatter for NativeFormatter {
@@ -436,7 +528,7 @@ impl PerlFormatter for NativeFormatter {
         }
 
         let formatted =
-            Self::apply_final_newline(&Self::format_safe_subset(source, config), config);
+            Self::apply_final_newline(&Self::format_safe_subset(source, config), config, source);
         if let Err(diagnostic) =
             Self::validate_parse_only(&formatted, counters::ParseGateKind::FormattedOutput)
         {
@@ -2409,17 +2501,7 @@ fn is_pod_start(trimmed_line: &str) -> bool {
 }
 
 fn contains_likely_heredoc_start(line: &str) -> bool {
-    let Some((_, after_marker)) = line.split_once("<<") else {
-        return false;
-    };
-    if after_marker.starts_with('<') {
-        return false;
-    }
-
-    let after_indent = after_marker.trim_start();
-    let marker = after_indent.strip_prefix('~').unwrap_or(after_indent).trim_start();
-    let marker = marker.strip_prefix(['\'', '"', '`']).unwrap_or(marker);
-    marker.chars().next().is_some_and(|ch| ch == '_' || ch.is_ascii_alphabetic())
+    !heredoc_markers(line).is_empty()
 }
 
 fn is_format_declaration_start(trimmed_line: &str) -> bool {

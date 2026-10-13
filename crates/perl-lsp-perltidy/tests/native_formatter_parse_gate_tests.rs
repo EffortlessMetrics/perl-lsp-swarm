@@ -59,21 +59,21 @@ fn native_formatter_reports_utf16_parse_error_range() {
 }
 
 #[test]
-fn native_formatter_refuses_pod_until_preservation_pass_exists() {
+fn native_formatter_preserves_pod_in_document() {
     let formatter = NativeFormatter::new();
     let source = "=pod\n\n=head1 NAME\n\n=cut\n\nmy $x = 1;\n";
     let config = FormatConfig { final_newline: FinalNewline::Trim, ..FormatConfig::default() };
 
     let result = formatter.format_document(source, &config);
 
-    assert!(!result.changed);
-    assert_eq!(result.formatted, source);
-    assert_eq!(result.diagnostics[0].code, "native.format.literal_preserve_region");
-    assert!(result.diagnostics[0].message.contains("POD"));
+    // POD bytes are preserved; only the trailing code line loses its final
+    // newline under Trim (#17708).
+    assert_eq!(result.formatted, "=pod\n\n=head1 NAME\n\n=cut\n\nmy $x = 1;");
+    assert!(result.diagnostics.is_empty());
 }
 
 #[test]
-fn native_formatter_refuses_heredoc_until_preservation_pass_exists() {
+fn native_formatter_preserves_heredoc_in_document() {
     let formatter = NativeFormatter::new();
     let source = "print <<'EOF';\nraw { text }\nEOF\n";
     let config = FormatConfig { final_newline: FinalNewline::Trim, ..FormatConfig::default() };
@@ -82,12 +82,11 @@ fn native_formatter_refuses_heredoc_until_preservation_pass_exists() {
 
     assert!(!result.changed);
     assert_eq!(result.formatted, source);
-    assert_eq!(result.diagnostics[0].code, "native.format.literal_preserve_region");
-    assert!(result.diagnostics[0].message.contains("heredoc"));
+    assert!(result.diagnostics.is_empty());
 }
 
 #[test]
-fn native_formatter_refuses_data_section_until_preservation_pass_exists() {
+fn native_formatter_preserves_data_section_in_document() {
     let formatter = NativeFormatter::new();
     let source = "my $x = 1;\n__DATA__\nraw\n";
     let config = FormatConfig { final_newline: FinalNewline::Trim, ..FormatConfig::default() };
@@ -96,12 +95,11 @@ fn native_formatter_refuses_data_section_until_preservation_pass_exists() {
 
     assert!(!result.changed);
     assert_eq!(result.formatted, source);
-    assert_eq!(result.diagnostics[0].code, "native.format.literal_preserve_region");
-    assert!(result.diagnostics[0].message.contains("DATA/END section"));
+    assert!(result.diagnostics.is_empty());
 }
 
 #[test]
-fn native_formatter_refuses_end_section_until_preservation_pass_exists() {
+fn native_formatter_preserves_end_section_in_document() {
     let formatter = NativeFormatter::new();
     let source = "my $x = 1;\n__END__   \nraw\n";
     let config = FormatConfig { final_newline: FinalNewline::Trim, ..FormatConfig::default() };
@@ -110,12 +108,11 @@ fn native_formatter_refuses_end_section_until_preservation_pass_exists() {
 
     assert!(!result.changed);
     assert_eq!(result.formatted, source);
-    assert_eq!(result.diagnostics[0].code, "native.format.literal_preserve_region");
-    assert!(result.diagnostics[0].message.contains("DATA/END section"));
+    assert!(result.diagnostics.is_empty());
 }
 
 #[test]
-fn native_formatter_refuses_regex_until_preservation_pass_exists() {
+fn native_formatter_preserves_regex_in_document() {
     let formatter = NativeFormatter::new();
     let source = "my $matched = $text =~ /needle/i;\n";
     let config = FormatConfig { final_newline: FinalNewline::Trim, ..FormatConfig::default() };
@@ -124,12 +121,11 @@ fn native_formatter_refuses_regex_until_preservation_pass_exists() {
 
     assert!(!result.changed);
     assert_eq!(result.formatted, source);
-    assert_eq!(result.diagnostics[0].code, "native.format.literal_preserve_region");
-    assert!(result.diagnostics[0].message.contains("regex literal"));
+    assert!(result.diagnostics.is_empty());
 }
 
 #[test]
-fn native_formatter_refuses_substitution_until_preservation_pass_exists() {
+fn native_formatter_preserves_substitution_in_document() {
     let formatter = NativeFormatter::new();
     let source = "$text =~ s/foo/bar/g;\n";
     let config = FormatConfig { final_newline: FinalNewline::Trim, ..FormatConfig::default() };
@@ -138,12 +134,11 @@ fn native_formatter_refuses_substitution_until_preservation_pass_exists() {
 
     assert!(!result.changed);
     assert_eq!(result.formatted, source);
-    assert_eq!(result.diagnostics[0].code, "native.format.literal_preserve_region");
-    assert!(result.diagnostics[0].message.contains("substitution operator"));
+    assert!(result.diagnostics.is_empty());
 }
 
 #[test]
-fn native_formatter_refuses_transliteration_until_preservation_pass_exists() {
+fn native_formatter_preserves_transliteration_in_document() {
     let formatter = NativeFormatter::new();
     let source = "$text =~ tr/a-z/A-Z/;\n";
     let config = FormatConfig { final_newline: FinalNewline::Trim, ..FormatConfig::default() };
@@ -152,12 +147,11 @@ fn native_formatter_refuses_transliteration_until_preservation_pass_exists() {
 
     assert!(!result.changed);
     assert_eq!(result.formatted, source);
-    assert_eq!(result.diagnostics[0].code, "native.format.literal_preserve_region");
-    assert!(result.diagnostics[0].message.contains("transliteration operator"));
+    assert!(result.diagnostics.is_empty());
 }
 
 #[test]
-fn native_formatter_refuses_quote_like_until_preservation_pass_exists() {
+fn native_formatter_preserves_quote_like_in_document() {
     let formatter = NativeFormatter::new();
     let source = "my @words = qw(alpha beta gamma);\n";
     let config = FormatConfig { final_newline: FinalNewline::Trim, ..FormatConfig::default() };
@@ -166,12 +160,11 @@ fn native_formatter_refuses_quote_like_until_preservation_pass_exists() {
 
     assert!(!result.changed);
     assert_eq!(result.formatted, source);
-    assert_eq!(result.diagnostics[0].code, "native.format.literal_preserve_region");
-    assert!(result.diagnostics[0].message.contains("quote-like operator"));
+    assert!(result.diagnostics.is_empty());
 }
 
 #[test]
-fn native_formatter_refuses_format_body_until_preservation_pass_exists() {
+fn native_formatter_preserves_format_body_in_document() {
     let formatter = NativeFormatter::new();
     let source = "format STDOUT =\n@<<<<\n$name\n.\n";
     let config = FormatConfig { final_newline: FinalNewline::Trim, ..FormatConfig::default() };
@@ -180,8 +173,7 @@ fn native_formatter_refuses_format_body_until_preservation_pass_exists() {
 
     assert!(!result.changed);
     assert_eq!(result.formatted, source);
-    assert_eq!(result.diagnostics[0].code, "native.format.literal_preserve_region");
-    assert!(result.diagnostics[0].message.contains("format body"));
+    assert!(result.diagnostics.is_empty());
 }
 
 #[test]
@@ -279,22 +271,20 @@ fn range_format_bails_when_range_itself_contains_regex() {
     );
 }
 
-/// Whole-document formatting behavior is unregressed: a document with a regex
-/// anywhere must still produce a literal_preserve_region diagnostic when
-/// format_document is called.
+/// Whole-document formatting behavior (#17708): a document with a regex
+/// anywhere is preserved in place rather than refused.
 #[test]
-fn document_format_still_bails_on_regex_anywhere_in_document() {
+fn document_format_preserves_regex_anywhere_in_document() {
     let formatter = NativeFormatter::new();
     let source = "my $x = 1;\nmy $ok = $t =~ /needle/;\n";
 
     let result = formatter.format_document(source, &FormatConfig::default());
 
-    assert!(!result.changed);
-    assert!(result.edits.is_empty());
+    // #17708: document formatting preserves the regex line instead of bailing.
+    assert_eq!(result.formatted, source);
     assert!(
-        result.diagnostics.iter().any(|d| d.code == "native.format.literal_preserve_region"),
-        "format_document should still bail for regex anywhere in the document; \
-         got diagnostics: {:?}",
+        result.diagnostics.iter().all(|d| d.code != "native.format.literal_preserve_region"),
+        "format_document should preserve, not bail; got diagnostics: {:?}",
         result.diagnostics,
     );
 }

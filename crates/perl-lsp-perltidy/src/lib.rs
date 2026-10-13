@@ -27,7 +27,7 @@ pub use native::{
     FormatterMode, KeywordSpacing, MAX_REPLACEMENT_BYTES_PER_SOURCE_BYTE_V1, NativeFormatter,
     NativePipelineCounters, PerlFormatter, PipelineCollectorScope, SCALING_ABSOLUTE_SLACK_V1,
     SCALING_RATIO_BOUND_V1, TextEdit, TextPosition, TextRange, TrailingComma,
-    exceeds_replacement_envelope_v1,
+    exceeds_replacement_envelope_v1, preserve_region_line_indices,
 };
 
 /// Configuration for perltidy.

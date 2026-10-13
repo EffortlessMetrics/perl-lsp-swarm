@@ -68,6 +68,8 @@ fn typed_document_result_does_not_flatten_disabled_mode_to_no_change() {
 
 #[test]
 fn typed_document_result_does_not_flatten_literal_refusal_to_no_change() {
+    // #17708: a regex line is preserved in place, so an already-formatted
+    // document is a legitimate NoChange, not a literal-preservation refusal.
     let formatter = NativeFormatter::new();
     let source = "my $matched = $text =~ /needle/i;\n";
 
@@ -77,12 +79,12 @@ fn typed_document_result_does_not_flatten_literal_refusal_to_no_change() {
         &FormatContext::default(),
     );
 
-    assert_eq!(typed.outcome.disposition, FormatDisposition::Refused);
-    assert_eq!(typed.outcome.reason, FormatReasonCode::LiteralPreservationUnsupported,);
-    assert_eq!(typed.outcome.safety.literal_preservation, FormatEvidenceState::Refused,);
+    assert_eq!(typed.outcome.disposition, FormatDisposition::NoChange);
+    assert_eq!(typed.outcome.reason, FormatReasonCode::AlreadyFormatted);
+    assert_eq!(typed.outcome.safety.literal_preservation, FormatEvidenceState::Proven);
     assert_eq!(typed.result.formatted, source);
     assert!(typed.result.edits.is_empty());
-    assert_eq!(typed.result.diagnostics[0].code, "native.format.literal_preserve_region");
+    assert!(typed.result.diagnostics.is_empty());
 }
 
 #[test]
