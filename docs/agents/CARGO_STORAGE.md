@@ -19,12 +19,12 @@ cores and memory headroom for parallel rustc processes, setting
 `CARGO_BUILD_JOBS=4` in the shell environment (never in tracked config,
 #5204) is the supported faster profile. Measured on an 8-core/16-thread,
 80 GiB host (fresh target, shared cargo-home, `check -p perl-parser`,
-n=1 per cell): cold 80.2s at jobs=2 versus 31.9s at jobs=4; warm and
+one run per setting): cold 80.2s at jobs=2 versus 31.9s at jobs=4; warm and
 single-crate edited checks are under two seconds at either setting, so the
 win is concentrated in cold and multi-crate work. Peak memory at jobs=4
 was not captured, so treat the profile as unqualified on memory-tight
-hosts and on hosted CI runners, whose core/memory envelopes differ and
-keep the default.
+hosts and on hosted CI runners, which have different core/memory envelopes
+and should keep the default.
 
 One admission/lease slot is keyed by canonical Git common directory, hostname and
 OS, under `DEVPLANE` (default `~/.cache/devplane`). Sibling worktrees share this
