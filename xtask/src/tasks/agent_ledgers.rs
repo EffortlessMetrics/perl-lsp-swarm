@@ -1730,6 +1730,76 @@ mod tests {
 
     // ----- registry ---------------------------------------------------------
 
+    fn content_proof_row(classification: &str, content: Option<Value>) -> Result<String> {
+        let mut row: Value = serde_json::from_str(valid_row())?;
+        row["classification"] = Value::String(classification.to_string());
+        let mut proof: Value = serde_json::from_str(STRUCTURED_CLOSE_PROOF)?;
+        if let Some(content) = content {
+            proof["receipt"]["content_survives"] = content;
+        }
+        row["close_proof"] = proof;
+        Ok(serde_json::to_string(&row)?)
+    }
+
+    #[test]
+    fn content_proof_overwritten_receipt_is_refused() -> Result<()> {
+        for classification in CLOSE_PROOF_REQUIRED {
+            let row = content_proof_row(classification, Some(Value::Bool(false)))?;
+            let errors = line_errors(&row);
+            assert_eq!(errors.len(), 1, "{classification}: {errors:?}");
+            assert_eq!(
+                errors[0].message,
+                "field `close_proof.receipt.content_survives` must not be false; overwritten content cannot support close proof (CLOSE_PROOF_POLICY.md Rule 3)"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn content_proof_omitted_and_surviving_controls_remain_valid() -> Result<()> {
+        for classification in CLOSE_PROOF_REQUIRED {
+            for content in [None, Some(Value::Bool(true))] {
+                let row = content_proof_row(classification, content)?;
+                assert!(line_errors(&row).is_empty(), "representation control: {row}");
+                assert!(row.contains("not_evaluated"));
+            }
+            for content in [Value::Null, Value::String("false".to_string())] {
+                let row = content_proof_row(classification, Some(content))?;
+                let errors = line_errors(&row);
+                assert_eq!(errors.len(), 1);
+                assert!(
+                    errors[0]
+                        .message
+                        .contains("does not match the structured close-proof contract")
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn content_proof_file_entrypoint_refuses_both_output_formats() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let row = content_proof_row("close-superseded", Some(Value::Bool(false)))?;
+        write_ledger(
+            &dir.path().join("content.jsonl"),
+            &format!("#!ledger-schema: pr-triage.v1\n{row}\n"),
+        )?;
+        let mut accepted = Vec::new();
+        for format in [ValidateFormat::Human, ValidateFormat::Json] {
+            let result = validate(ValidateConfig {
+                ledger_dir: Some(dir.path().to_path_buf()),
+                format: format.clone(),
+                expected_schema: Some("pr-triage.v1".to_string()),
+            });
+            if result.is_ok() {
+                accepted.push(format);
+            }
+        }
+        assert!(accepted.is_empty(), "overwritten content accepted by {accepted:?}");
+        Ok(())
+    }
+
     // ----- close-proof contract (structured form) --------------------------
 
     /// The structured `close_proof` contract must be accepted.
