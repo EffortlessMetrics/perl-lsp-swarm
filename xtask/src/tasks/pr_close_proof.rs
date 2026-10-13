@@ -54,7 +54,7 @@
 //! uses a short SHA or mutable ref. Ancestry and content use the same observed
 //! main commit; later ref movement requires a new receipt/currentness check.
 
-use color_eyre::eyre::{Context, Result};
+use color_eyre::eyre::{Context, ContextCompat, Result};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::process::Command;
