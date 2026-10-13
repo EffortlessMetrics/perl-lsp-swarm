@@ -178,8 +178,7 @@ pub(crate) fn read_perl_source_file_with_byte_limit(
     // directly. Classification still decides from actual bytes below, so an
     // object swapped into this screen window stays fail-closed.
     if let Ok(metadata) = std::fs::metadata(path)
-        && (!metadata.is_file()
-            || byte_limit.is_some_and(|limit| metadata.len() > limit as u64))
+        && (!metadata.is_file() || byte_limit.is_some_and(|limit| metadata.len() > limit as u64))
     {
         return Ok(None);
     }
