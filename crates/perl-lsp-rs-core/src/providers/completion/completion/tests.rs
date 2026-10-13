@@ -9987,15 +9987,15 @@ fn test_removed_lexical_is_absent_on_requery() {
 fn same_root_sibling_package_members_never_appear_as_inherited_methods()
 -> Result<(), Box<dyn std::error::Error>> {
     let index = Arc::new(WorkspaceIndex::new());
-    index.index_file(
+    index.index_initial_file(
         Url::parse("file:///lib/Animal.pm")?,
         "package Animal;\nuse strict; use warnings;\nsub new { 1 }\nsub name { 1 }\nsub speak { 1 }\n1;\n".to_string(),
     )?;
-    index.index_file(
+    index.index_initial_file(
         Url::parse("file:///lib/Animal/Dog.pm")?,
         "package Animal::Dog;\nuse strict; use warnings;\nuse parent -norequire, 'Animal';\nsub speak { 1 }\nsub fetch { 1 }\n1;\n".to_string(),
     )?;
-    index.index_file(
+    index.index_initial_file(
         Url::parse("file:///lib/Animal/Kennel.pm")?,
         "package Animal::Kennel;\nuse strict; use warnings;\nsub new { 1 }\nsub capacity { 1 }\nsub admit { 1 }\n1;\n".to_string(),
     )?;
@@ -10038,7 +10038,7 @@ fn same_root_sibling_package_members_never_appear_as_inherited_methods()
 #[test]
 fn generic_object_methods_respect_typed_method_prefix() -> Result<(), Box<dyn std::error::Error>> {
     let index = Arc::new(WorkspaceIndex::new());
-    index.index_file(
+    index.index_initial_file(
         Url::parse("file:///lib/Animal/Dog.pm")?,
         "package Animal::Dog;\nuse strict; use warnings;\nsub speak { 1 }\nsub fetch { 1 }\n1;\n"
             .to_string(),
@@ -10097,15 +10097,15 @@ fn generic_object_methods_remain_available_without_typed_prefix()
 fn package_qualified_completion_offers_members_nested_packages_and_no_lexicals()
 -> Result<(), Box<dyn std::error::Error>> {
     let index = Arc::new(WorkspaceIndex::new());
-    index.index_file(
+    index.index_initial_file(
         Url::parse("file:///lib/Animal.pm")?,
         "package Animal;\nuse strict; use warnings;\nsub new { my ($class, %args) = @_; return bless {}, $class; }\nsub name { my ($self) = @_; return 'x'; }\n1;\n".to_string(),
     )?;
-    index.index_file(
+    index.index_initial_file(
         Url::parse("file:///lib/Animal/Dog.pm")?,
         "package Animal::Dog;\nuse strict; use warnings;\nsub fetch { 1 }\n1;\n".to_string(),
     )?;
-    index.index_file(
+    index.index_initial_file(
         Url::parse("file:///lib/Animal/Kennel.pm")?,
         "package Animal::Kennel;\nuse strict; use warnings;\nsub admit { 1 }\n1;\n".to_string(),
     )?;
