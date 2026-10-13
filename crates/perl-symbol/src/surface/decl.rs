@@ -185,7 +185,7 @@ fn walk(node: &Node, ctx: &mut WalkCtx, out: &mut Vec<SymbolDecl>) {
         }
 
         // ── Subroutine ─────────────────────────────────────────────────────
-        NodeKind::Subroutine { name: Some(sub_name), name_span, body, .. } => {
+        NodeKind::Subroutine { name: Some(sub_name), name_span, declarator, body, .. } => {
             let anchor = name_span.as_ref().map(|s| (s.start, s.end));
             let container = ctx.current_package.clone();
             let qualified_name = ctx.qualify(sub_name);
@@ -196,7 +196,7 @@ fn walk(node: &Node, ctx: &mut WalkCtx, out: &mut Vec<SymbolDecl>) {
                 full_span: (node.location.start, node.location.end),
                 anchor_span: anchor,
                 container,
-                declarator: None,
+                declarator: declarator.clone(),
             });
             // Walk the body — may contain nested subs or closures.
             walk(body, ctx, out);
