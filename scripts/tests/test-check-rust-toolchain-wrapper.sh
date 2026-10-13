@@ -168,6 +168,7 @@ GUARD_BIN="${TMPDIR_BASE}/guard-bin"
 mkdir -p "$GUARD_BIN" "${TMPDIR_BASE}/guard-home"
 cat > "${GUARD_BIN}/cargo" <<STUB
 #!/usr/bin/env bash
+printf '%s\n' "\$*" >> "${TMPDIR_BASE}/cargo-probes.txt"
 if [ "\${1:-}" = "--version" ]; then
   printf 'cargo 1.75.0 (apt stub 2023-11-01)\n'
   exit 0
@@ -202,11 +203,12 @@ for cargo_state in missing stale; do
   else
     usage_path="${GUARD_BIN}:${SYS_BIN}:/usr/bin:/bin"
   fi
+  : > "${TMPDIR_BASE}/cargo-probes.txt"
   code=0
   PATH="$usage_path" HOME="${TMPDIR_BASE}/guard-home" CARGO_HOME="" \
     bash "$WRAPPER" unknown > "${USAGE_DIR}/out.txt" 2> "${USAGE_DIR}/err.txt" || code=$?
   if [[ "$code" -eq 2 ]] && grep -Fq "Usage:" "${USAGE_DIR}/err.txt" && \
-      [[ ! -s "${USAGE_DIR}/out.txt" ]] && \
+      [[ ! -s "${USAGE_DIR}/out.txt" && ! -s "${TMPDIR_BASE}/cargo-probes.txt" ]] && \
       ! grep -Fq "cargo-toolchain-guard:" "${USAGE_DIR}/err.txt"; then
     pass "usage error precedes $cargo_state Cargo probe (stderr, exit 2)"
   else
