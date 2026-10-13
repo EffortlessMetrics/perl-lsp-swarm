@@ -161,7 +161,14 @@ outcome_owner = "#10230"
 # the un-anchored surface movement #17834 left in
 # perl-lsp-rs/src/runtime/language/completion.rs (its state/document.rs edit is
 # outside the scan roots; its completion.rs test-body edits are scanned).
-source_digest = "sha256:60270c4fa2c84817fb66cfb001b45bbb28ccc9eef7039d429c19a57cef7b0a9b"
+# Re-audit 2026-10-13 (#17840, merged as #17841 between this branch's base and
+# its merge): the landed #17834 snapshot selector admits current or same-text
+# predecessor ASTs and reports a pending parse gap through the response flag;
+# it adds no candidate channel or post-finalizer append. The fallback fixtures
+# now require both current and latest snapshots absent. All 42 scan files,
+# 59 producers, routes, finalizer seams, classifications and migration owners
+# retain their prior ceilings. Digest recomputed over the merged tree.
+source_digest = "sha256:4ebc16dfb046ef5e6ee7baea7b800db3a57be830febcd4916d3080eeb38ad7ff"
 
 [[delegations]]
 module = "dancer2"
