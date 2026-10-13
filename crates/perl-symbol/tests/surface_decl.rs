@@ -14,6 +14,103 @@ fn loc(start: usize, end: usize) -> SourceLocation {
     SourceLocation { start, end }
 }
 
+fn named_sub(name: &str, start: usize, end: usize) -> Node {
+    Node::new(
+        NodeKind::Subroutine {
+            name: Some(name.to_string()),
+            name_span: Some(loc(start + 4, start + 4 + name.len())),
+            declarator: None,
+            prototype: None,
+            signature: None,
+            attributes: vec![],
+            body: Box::new(Node::new(NodeKind::Block { statements: vec![] }, loc(end - 2, end))),
+        },
+        loc(start, end),
+    )
+}
+
+#[test]
+fn declaration_names_conditional_package_context_does_not_leak() {
+    let outer = Node::new(
+        NodeKind::Package { name: "Outer".into(), name_span: loc(8, 13), block: None },
+        loc(0, 14),
+    );
+    let inner = Node::new(
+        NodeKind::Package { name: "Inner".into(), name_span: loc(30, 35), block: None },
+        loc(22, 36),
+    );
+    let conditional = Node::new(
+        NodeKind::If {
+            condition: Box::new(Node::new(NodeKind::Number { value: "1".into() }, loc(18, 19))),
+            then_branch: Box::new(Node::new(
+                NodeKind::Block { statements: vec![inner, named_sub("same", 37, 49)] },
+                loc(21, 51),
+            )),
+            elsif_branches: vec![],
+            else_branch: None,
+            keyword: None,
+        },
+        loc(15, 51),
+    );
+    let root = Node::new(
+        NodeKind::Program { statements: vec![outer, conditional, named_sub("same", 52, 64)] },
+        loc(0, 64),
+    );
+    let declarations = extract_symbol_decls(&root, None);
+    assert_eq!(declarations.len(), 4);
+    let subs: Vec<_> = declarations.iter().filter(|d| d.kind == SymbolKind::Subroutine).collect();
+    assert_eq!(subs.len(), 2);
+    assert_eq!(subs[0].qualified_name, "Inner::same");
+    assert_eq!(subs[0].container.as_deref(), Some("Inner"));
+    assert_eq!(subs[0].anchor_span, Some((41, 45)));
+    assert_eq!(subs[1].qualified_name, "Outer::same");
+    assert_eq!(subs[1].container.as_deref(), Some("Outer"));
+    assert_eq!(subs[1].anchor_span, Some((56, 60)));
+}
+
+fn assert_wrapper_preserves_named_argument(module: &str, call: &str) {
+    let import = Node::new(
+        NodeKind::Use { module: module.into(), args: vec![], has_filter_risk: false },
+        loc(0, 15),
+    );
+    let variable = Node::new(
+        NodeKind::VariableDeclaration {
+            declarator: "my".into(),
+            variable: Box::new(Node::new(
+                NodeKind::Variable { sigil: "$".into(), name: "VALUE".into() },
+                loc(25, 31),
+            )),
+            attributes: vec![],
+            initializer: None,
+        },
+        loc(22, 31),
+    );
+    let invocation = Node::new(
+        NodeKind::FunctionCall { name: call.into(), args: vec![variable, named_sub("ub", 33, 44)] },
+        loc(16, 45),
+    );
+    let root = Node::new(NodeKind::Program { statements: vec![import, invocation] }, loc(0, 45));
+    let declarations = extract_symbol_decls(&root, None);
+    assert_eq!(declarations.len(), 2, "one constant wrapper and one named argument");
+    assert_eq!(declarations[0].kind, SymbolKind::Constant);
+    assert_eq!(declarations[0].name, "VALUE");
+    assert_eq!(declarations[0].anchor_span, Some((25, 31)));
+    assert_eq!(declarations[0].declarator.as_deref(), Some(call));
+    assert_eq!(declarations[1].kind, SymbolKind::Subroutine);
+    assert_eq!(declarations[1].name, "ub");
+    assert_eq!(declarations[1].anchor_span, Some((37, 39)));
+}
+
+#[test]
+fn declaration_names_const_fast_keeps_wrapper_count_and_named_argument() {
+    assert_wrapper_preserves_named_argument("Const::Fast", "const");
+}
+
+#[test]
+fn declaration_names_readonly_keeps_wrapper_count_and_named_argument() {
+    assert_wrapper_preserves_named_argument("Readonly", "Readonly");
+}
+
 // ── Package ──────────────────────────────────────────────────────────────────
 
 #[test]

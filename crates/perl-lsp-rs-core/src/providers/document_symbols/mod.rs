@@ -487,6 +487,45 @@ mod tests {
     use perl_workspace::semantic_shadow_compare::ShadowCompareVerdict;
 
     #[test]
+    fn name_anchor_control_omits_missing_or_invalid_canonical_names() {
+        let source = "sub ub { 'ub' }";
+        for anchor in [None, Some((99, 101)), Some((4, 4)), Some((6, 4))] {
+            let mut ast = must(Parser::new(source).parse());
+            let baseline = source_backed_document_symbols_from_ast(&ast, source);
+            assert_eq!(baseline.symbols.len(), 1);
+            assert_eq!(baseline.symbols[0].name, "ub");
+            let mut changed = false;
+            ast.for_each_child_mut(|node| {
+                if let perl_parser_core::ast::NodeKind::Subroutine { name_span, .. } =
+                    &mut node.kind
+                {
+                    *name_span = anchor
+                        .map(|(start, end)| perl_parser_core::ast::SourceLocation { start, end });
+                    changed = true;
+                }
+            });
+            assert!(changed, "the real parsed declaration must be mutated");
+            let result = source_backed_document_symbols_from_ast(&ast, source);
+            assert!(
+                result.symbols.is_empty(),
+                "invalid name anchor {anchor:?} must not be guessed"
+            );
+            assert!(result.fact_traces.is_empty(), "omitted names must not claim exact facts");
+        }
+    }
+
+    #[test]
+    fn name_anchor_control_retains_unported_phase_and_typeglob_symbols() {
+        for (source, expected) in [("BEGIN { 1 }", "BEGIN"), ("*helper = sub { 2 };", "helper")] {
+            let ast = must(Parser::new(source).parse());
+            let result = source_backed_document_symbols_from_ast(&ast, source);
+            assert_eq!(result.symbols.len(), 1);
+            assert_eq!(result.symbols[0].name, expected);
+            assert!(!result.fact_traces.is_empty());
+        }
+    }
+
+    #[test]
     fn source_backed_document_symbols_emit_fresh_primary_traces()
     -> Result<(), Box<dyn std::error::Error>> {
         let source = "package Foo;\n\nsub greet {\n    return 1;\n}\n";
