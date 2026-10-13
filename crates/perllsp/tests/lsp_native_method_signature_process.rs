@@ -155,3 +155,51 @@ fn ordinary_sub_signature_retained_over_utf16_process() -> Result<()> {
     )?;
     finish(&mut client)
 }
+
+#[test]
+fn method_invocant_separator_and_self_name_over_utf16_process() -> Result<()> {
+    let mut client = session()?;
+    // Colon invocants are an accepted parser dialect, not core perlclass syntax.
+    // Names and colons inside parameter defaults/comments must not imply a receiver.
+    for (index, (declaration, label, parameters)) in [
+        ("$self: $arg, $tail = 2", "method run($arg, $tail = 2)", vec!["$arg", "$tail = 2"]),
+        (
+            "$receiver # 😀 : comment\n : $arg, $tail = 2",
+            "method run($arg, $tail = 2)",
+            vec!["$arg", "$tail = 2"],
+        ),
+        ("$self, $arg", "method run($self, $arg)", vec!["$self", "$arg"]),
+        ("$self # : comment\n , $arg", "method run($self, $arg)", vec!["$self", "$arg"]),
+        ("$value :param, $arg", "method run($value, $arg)", vec!["$value", "$arg"]),
+        (
+            "$value = 'a:b', $arg = 2",
+            "method run($value = 'a:b', $arg = 2)",
+            vec!["$value = 'a:b'", "$arg = 2"],
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let source = format!(
+            "use v5.40;\nuse feature 'class';\nclass Gadget {{ method run ({declaration}) {{ }} }}\nmy $object = Gadget->new;\nmy $banner = '😀'; $object->run(11, 22);\n"
+        );
+        publish(&mut client, &source, (index + 1) as i32)?;
+        for (needle, active) in [("$object->run(", 0), ("$object->run(11, ", 1)] {
+            let value =
+                signature(&mut client, &source, needle, &format!("invocant-{index}-{active}"))?;
+            assert_signature(&value, label, &parameters, active)?;
+        }
+    }
+    let source = "use v5.40;\nuse feature 'class';\nclass Gadget { method run ($receiver:) { } }\nmy $object = Gadget->new;\nmy $banner = '😀'; $object->run(";
+    publish(&mut client, source, 7)?;
+    let value = signature(&mut client, source, "$object->run(", "invocant-only")?;
+    assert_signature(&value, "method run", &[], 0)?;
+    // A real framework spelling of the dialect, without a native class declaration.
+    let source = "use Function::Parameters;\npackage Gadget;\nmethod run ($this: $arg, $tail = 2) { }\nmy $object = bless {}, 'Gadget';\nmy $banner = '😀'; $object->run(11, 22);\n";
+    publish(&mut client, source, 8)?;
+    for (needle, active) in [("$object->run(", 0), ("$object->run(11, ", 1)] {
+        let value = signature(&mut client, source, needle, &format!("framework-{active}"))?;
+        assert_signature(&value, "method run($arg, $tail = 2)", &["$arg", "$tail = 2"], active)?;
+    }
+    finish(&mut client)
+}
