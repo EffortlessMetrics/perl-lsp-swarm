@@ -1648,3 +1648,17 @@ fn sigil_deref_chained_does_not_suppress_regex_after_brace() -> R {
     );
     Ok(())
 }
+
+#[test]
+fn apostrophe_digit_suffix_does_not_swallow_string() -> R {
+    let sig = significant("$'b'9';");
+    assert!(
+        sig.iter().any(|token| token.text.as_ref() == "$'b"),
+        "variable should end at the second apostrophe: {sig:?}"
+    );
+    assert!(
+        !sig.iter().any(|token| token.text.as_ref() == "$'b'9'"),
+        "string quote must not be swallowed into the variable: {sig:?}"
+    );
+    Ok(())
+}
