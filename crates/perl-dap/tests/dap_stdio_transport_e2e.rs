@@ -364,7 +364,6 @@ fn stdio_transport_native_port_refusal_and_defaults() -> Result<()> {
         port_proof_disconnect(&mut dap, 3, true)?;
         port_proof_no_contact(&listener)?;
     }
-    eprintln!("native port omitted/null controls both connected and exited cleanly");
     let mut dap = DapProcess::spawn_binary(&binary)?;
     port_proof_initialize(&mut dap)?;
     let malformed = [
