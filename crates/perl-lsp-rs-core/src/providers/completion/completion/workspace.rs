@@ -3331,8 +3331,7 @@ sub real_method { 1 }
 1;
 "#;
         let index = Arc::new(WorkspaceIndex::new());
-        let members =
-            collect_all_package_members_with_source(index.as_ref(), "User", source, "");
+        let members = collect_all_package_members_with_source(index.as_ref(), "User", source, "");
         let names: Vec<_> = members.iter().map(|member| member.name.as_str()).collect();
         assert!(names.contains(&"real_method"), "package sub must be offered, got {names:?}");
         assert!(!names.contains(&"lexical_helper"), "my sub must not be a method, got {names:?}");
