@@ -454,7 +454,8 @@ pub fn build_trace_equivalence(
             && row.state
                 == crate::invocation_trace::model::InvocationObservationState::ObservedComplete
     });
-    let rows_matched = row_members == instrumented_members && rows_complete;
+    let rows_matched =
+        row_members == instrumented_members && row_members == ordinary_members && rows_complete;
     planes.push(PlaneComparison {
         plane: ComparisonPlane::InvocationRows,
         ordinary_digest: digest_of(&ordinary_members),
@@ -501,17 +502,32 @@ pub(crate) fn compare_equivalence_from_options(
     mut options: Options,
 ) -> color_eyre::eyre::Result<()> {
     use std::path::PathBuf;
-    let matrix = crate::io::read_matrix(&PathBuf::from(options.required("--matrix")?))
-        .map_err(|error| color_eyre::eyre::eyre!(error))?;
-    let ordinary = match options.optional("--ordinary")? {
-        Some(path) => Some(read_receipt(&PathBuf::from(path))?),
+    let matrix_path = PathBuf::from(options.required("--matrix")?);
+    let ordinary_path = options.optional("--ordinary")?.map(PathBuf::from);
+    let instrumented_path = PathBuf::from(options.required("--instrumented-parent")?);
+    let trace_path = PathBuf::from(options.required("--trace")?);
+    let work_path = PathBuf::from(options.required("--work")?);
+    let output = PathBuf::from(options.required("--output")?);
+    options.finish()?;
+    // The output is evidence, never an input: aliasing would destroy a
+    // paired receipt, and a failed rerun must not leave stale proof behind.
+    for input_path in [&matrix_path, &instrumented_path, &trace_path, &work_path] {
+        if output == *input_path || ordinary_path.as_ref() == Some(&output) {
+            return Err(color_eyre::eyre::eyre!("--output must not alias an input receipt"));
+        }
+    }
+    if output.exists() {
+        std::fs::remove_file(&output)?;
+    }
+    let matrix =
+        crate::io::read_matrix(&matrix_path).map_err(|error| color_eyre::eyre::eyre!(error))?;
+    let ordinary = match &ordinary_path {
+        Some(path) => Some(read_receipt(path)?),
         None => None,
     };
-    let instrumented_parent =
-        read_receipt(&PathBuf::from(options.required("--instrumented-parent")?))?;
-    let trace = read_receipt(&PathBuf::from(options.required("--trace")?))?;
-    let work = read_receipt(&PathBuf::from(options.required("--work")?))?;
-    let output = PathBuf::from(options.required("--output")?);
+    let instrumented_parent = read_receipt(&instrumented_path)?;
+    let trace = read_receipt(&trace_path)?;
+    let work = read_receipt(&work_path)?;
     let input = TraceEquivalenceInput { matrix, ordinary, instrumented_parent, trace, work };
     let receipt =
         build_trace_equivalence(&input).map_err(|error| color_eyre::eyre::eyre!(error))?;
