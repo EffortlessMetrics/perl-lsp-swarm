@@ -85,8 +85,11 @@ class RpmDebugContract(unittest.TestCase):
             command.append("--build-in-place")
         command.extend(["--define", f"_topdir {top}", str(spec_path)])
         result = subprocess.run(command, cwd=cwd, text=True, capture_output=True)
-        installed = list(top.glob("BUILDROOT/*/usr/bin/perllsp"))
-        installed.extend(top.glob("BUILD/*/BUILDROOT/usr/bin/perllsp"))
+        installed = {}
+        for name in ("perllsp", "perl-dap"):
+            paths = list(top.glob(f"BUILDROOT/*/usr/bin/{name}"))
+            paths.extend(top.glob(f"BUILD/*/BUILDROOT/usr/bin/{name}"))
+            installed[name] = paths
         if route == "normal":
             unchanged = hashlib.sha256(archive_path.read_bytes()).hexdigest() == source_hash
         else:
@@ -206,11 +209,14 @@ int main(void) { return 0; }
                 self.assertIn("Executing(%install)", output)
                 if route == "normal":
                     self.assertIn("Executing(%prep)", output)
-                self.assertEqual(len(installed), 1, output)
+                for name, paths in installed.items():
+                    self.assertEqual(len(paths), 1, f"expected one installed {name}: {output}")
                 self.assertTrue(unchanged, "RPM must not mutate the release input")
-                self.assertNotIn(".debug_info", subprocess.check_output(
-                    ["readelf", "-SW", str(installed[0])], text=True
-                ))
+                for name, paths in installed.items():
+                    with self.subTest(route=route, case="stripped", binary=name):
+                        self.assertNotIn(".debug_info", subprocess.check_output(
+                            ["readelf", "-SW", str(paths[0])], text=True
+                        ))
 
             for name in ("perllsp", "perl-dap"):
                 with self.subTest(route=route, case="debug", binary=name):
@@ -221,7 +227,7 @@ int main(void) { return 0; }
                         self.assertIn("Executing(%build)", output)
                     self.assertIn("debug information", output)
                     self.assertNotIn("Executing(%install)", output)
-                    self.assertEqual(installed, [], output)
+                    self.assertEqual(installed, {"perllsp": [], "perl-dap": []}, output)
                     self.assertTrue(unchanged, "refusal must preserve the source input")
 
 
