@@ -43,6 +43,7 @@ on:
       - 'scripts/windows_fresh_path_oracle.py'
       - 'scripts/tests/test-windows-fresh-path-oracle.sh'
       - 'scripts/tests/test-distribution-manifest-consistency.sh'
+      - 'scripts/tests/test_linux_package_sources.py'
       - 'scripts/maintenance/verify_11983_reject_identities.py'
       - 'scripts/tests/test-rebuild-11983-reject-identities.py'
       - 'scripts/maintenance/rebuild_11983_current_main.sh'
@@ -348,6 +349,9 @@ jobs:
 
       - name: Run distribution manifest consistency self-test
         run: bash scripts/tests/test-distribution-manifest-consistency.sh
+
+      - name: Test rendered Linux package sources and archive staging
+        run: python3 -B scripts/tests/test_linux_package_sources.py -v
 
       - name: Summary
         if: always()
