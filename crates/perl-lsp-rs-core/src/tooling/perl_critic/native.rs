@@ -914,6 +914,47 @@ impl CriticRule for SubTooLongRule {
     }
 }
 
+/// Default maximum block nesting depth allowed inside one named
+/// subroutine before [`TooManyNestedBlocksRule`] reports it.
+///
+/// No per-rule threshold exists under `[critic.rules.*]` in
+/// [`CriticConfig`](super::CriticConfig) today, so this named constant is
+/// the single source for the limit until such plumbing exists.
+pub const DEFAULT_MAX_NESTED_BLOCKS: usize = 4;
+
+/// Native rule that reports named subroutines whose blocks nest too deep.
+///
+/// Depth counts [`NodeKind::Block`] nesting inside the subroutine body;
+/// the subroutine's own body block is the baseline and is not counted, so
+/// a flat subroutine has depth 0 and each nested block (an `if`/`while`/
+/// `for` body, a bare block, a `do`/`eval` block, and so on) adds one.
+/// Hash and array literals are not blocks and never add depth. A nested
+/// subroutine or method starts a fresh measurement: its blocks do not
+/// inflate the enclosing subroutine, and a named nested subroutine is
+/// measured on its own. A subroutine whose depth is exactly
+/// [`DEFAULT_MAX_NESTED_BLOCKS`] passes; only a depth above it fires,
+/// once, at the sub header span. Anonymous subroutines have no name to
+/// report against and are ignored.
+pub struct TooManyNestedBlocksRule;
+
+impl CriticRule for TooManyNestedBlocksRule {
+    fn id(&self) -> &'static str {
+        "native.maintainability.too_many_nested_blocks"
+    }
+
+    fn category(&self) -> CriticCategory {
+        CriticCategory::Maintainability
+    }
+
+    fn default_severity(&self) -> Severity {
+        Severity::Stern
+    }
+
+    fn check(&self, ctx: &CriticContext<'_>, out: &mut Vec<CriticFinding>) {
+        collect_too_many_nested_blocks_findings(self, ctx.source, ctx.ast, out);
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct MissingPodSection {
     name: &'static str,
@@ -2577,6 +2618,60 @@ fn collect_sub_too_long_findings(
 
     for child in node.children() {
         collect_sub_too_long_findings(rule, source, child, out);
+    }
+}
+
+fn collect_too_many_nested_blocks_findings(
+    rule: &TooManyNestedBlocksRule,
+    source: &str,
+    node: &Node,
+    out: &mut Vec<CriticFinding>,
+) {
+    if let NodeKind::Subroutine { name: Some(name), name_span, body, .. } = &node.kind {
+        let depth =
+            body.children().iter().map(|child| max_block_depth(child, 0)).max().unwrap_or(0);
+        if depth > DEFAULT_MAX_NESTED_BLOCKS {
+            let header_end = name_span.map_or(body.location.start, |span| span.end);
+            let range = range_for_byte_span(source, node.location.start, header_end);
+            out.push(CriticFinding {
+                rule_id: rule.id().to_string(),
+                category: rule.category(),
+                severity: rule.default_severity(),
+                range,
+                message: format!(
+                    "Subroutine '{name}' has blocks nested too deeply ({depth} levels, maximum is {DEFAULT_MAX_NESTED_BLOCKS})"
+                ),
+                explanation: format!(
+                    "Subroutine '{name}' nests blocks {depth} levels deep, which exceeds the maximum of {DEFAULT_MAX_NESTED_BLOCKS}. Extract the innermost logic into a helper subroutine."
+                ),
+                suppression_key: rule.id().to_string(),
+                observed_shape: CriticFindingShape::General,
+                related: Vec::new(),
+                fix: None,
+            });
+        }
+    }
+
+    for child in node.children() {
+        collect_too_many_nested_blocks_findings(rule, source, child, out);
+    }
+}
+
+/// Deepest [`NodeKind::Block`] nesting at or below `node`, where entering
+/// a block adds one level to `depth`. A nested subroutine or method is a
+/// separate measurement and is never descended into.
+fn max_block_depth(node: &Node, depth: usize) -> usize {
+    match &node.kind {
+        NodeKind::Subroutine { .. } | NodeKind::Method { .. } => depth,
+        NodeKind::Block { .. } => node
+            .children()
+            .iter()
+            .map(|child| max_block_depth(child, depth + 1))
+            .max()
+            .unwrap_or(depth + 1),
+        _ => {
+            node.children().iter().map(|child| max_block_depth(child, depth)).max().unwrap_or(depth)
+        }
     }
 }
 
@@ -5986,7 +6081,139 @@ if ($x = 1) { print $x; }
 
         assert!(!recommended.rule_ids().contains(&"native.maintainability.sub_too_long"));
         assert!(strict.rule_ids().contains(&"native.maintainability.sub_too_long"));
-        assert_eq!(strict.len(), 29);
+        assert_eq!(strict.len(), 30);
         assert_eq!(recommended.len(), 16);
+    }
+
+    fn nested_blocks_source(name: &str, depth: usize) -> String {
+        let mut source = format!("use strict;\nuse warnings;\nsub {name} {{\n");
+        for level in 0..depth {
+            source.push_str(&format!("{}if (1) {{\n", "    ".repeat(level + 1)));
+        }
+        source.push_str(&format!("{}print 1;\n", "    ".repeat(depth + 1)));
+        for level in (0..depth).rev() {
+            source.push_str(&format!("{}}}\n", "    ".repeat(level + 1)));
+        }
+        source.push_str("}\n");
+        source
+    }
+
+    #[test]
+    fn native_too_many_nested_blocks_rule_reports_sub_over_the_limit() {
+        let source = nested_blocks_source("too_deep", DEFAULT_MAX_NESTED_BLOCKS + 1);
+        let ast = parse_source(&source);
+        let config = CriticConfig::default();
+        let ctx = CriticContext::new(&source, &ast, &config);
+        let registry = NativeCriticRegistry::with_rules(vec![Box::new(TooManyNestedBlocksRule)]);
+
+        let findings = registry.check(&ctx);
+
+        assert_eq!(findings.len(), 1);
+        let finding = &findings[0];
+        assert_eq!(finding.rule_id, "native.maintainability.too_many_nested_blocks");
+        assert_eq!(finding.category, CriticCategory::Maintainability);
+        assert_eq!(finding.severity, Severity::Stern);
+        assert_eq!(finding.suppression_key, "native.maintainability.too_many_nested_blocks");
+        assert_eq!(
+            &source[finding.range.start.byte..finding.range.end.byte],
+            "sub too_deep",
+            "finding must anchor at the sub header span"
+        );
+        assert!(
+            finding.message.contains("too_deep") && finding.message.contains("5"),
+            "message should name the sub and its depth: {}",
+            finding.message
+        );
+    }
+
+    #[test]
+    fn native_too_many_nested_blocks_rule_accepts_sub_at_the_limit() {
+        let source = nested_blocks_source("at_limit", DEFAULT_MAX_NESTED_BLOCKS);
+        let ast = parse_source(&source);
+        let config = CriticConfig::default();
+        let ctx = CriticContext::new(&source, &ast, &config);
+        let registry = NativeCriticRegistry::with_rules(vec![Box::new(TooManyNestedBlocksRule)]);
+
+        assert!(registry.check(&ctx).is_empty(), "a sub at exactly the limit must pass");
+    }
+
+    #[test]
+    fn native_too_many_nested_blocks_rule_accepts_flat_sub() {
+        let source =
+            "use strict;\nuse warnings;\nsub flat { my $x = { a => [1, 2] }; return $x; }\n";
+        let ast = parse_source(source);
+        let config = CriticConfig::default();
+        let ctx = CriticContext::new(source, &ast, &config);
+        let registry = NativeCriticRegistry::with_rules(vec![Box::new(TooManyNestedBlocksRule)]);
+
+        assert!(registry.check(&ctx).is_empty(), "hash/array literals are not blocks");
+    }
+
+    #[test]
+    fn native_too_many_nested_blocks_rule_ignores_anonymous_subs() {
+        let mut source = String::from("use strict;\nuse warnings;\nmy $handler = sub {\n");
+        for level in 0..DEFAULT_MAX_NESTED_BLOCKS + 2 {
+            source.push_str(&format!("{}if (1) {{\n", "    ".repeat(level + 1)));
+        }
+        source.push_str("    print 1;\n");
+        for _ in 0..DEFAULT_MAX_NESTED_BLOCKS + 2 {
+            source.push_str("}\n");
+        }
+        source.push_str("};\n");
+        let ast = parse_source(&source);
+        let config = CriticConfig::default();
+        let ctx = CriticContext::new(&source, &ast, &config);
+        let registry = NativeCriticRegistry::with_rules(vec![Box::new(TooManyNestedBlocksRule)]);
+
+        assert!(registry.check(&ctx).is_empty(), "anonymous subs have no header to report");
+    }
+
+    #[test]
+    fn native_too_many_nested_blocks_rule_measures_nested_subs_separately() {
+        let inner = nested_blocks_source("inner_deep", DEFAULT_MAX_NESTED_BLOCKS + 1);
+        let inner_body = inner.strip_prefix("use strict;\nuse warnings;\n").unwrap_or(&inner);
+        let source = format!("use strict;\nuse warnings;\nsub outer {{\n{inner_body}}}\n");
+        let ast = parse_source(&source);
+        let config = CriticConfig::default();
+        let ctx = CriticContext::new(&source, &ast, &config);
+        let registry = NativeCriticRegistry::with_rules(vec![Box::new(TooManyNestedBlocksRule)]);
+
+        let findings = registry.check(&ctx);
+
+        assert_eq!(findings.len(), 1, "only the nested sub itself fires");
+        assert!(findings[0].message.contains("inner_deep"), "got: {}", findings[0].message);
+    }
+
+    #[test]
+    fn native_too_many_nested_blocks_rule_composes_with_config_and_suppressions() {
+        let source = nested_blocks_source("too_deep", DEFAULT_MAX_NESTED_BLOCKS + 1);
+        let ast = parse_source(&source);
+        let excluded_config = CriticConfig {
+            exclude: vec!["native.maintainability.too_many_nested_blocks".to_string()],
+            ..Default::default()
+        };
+        let excluded_ctx = CriticContext::new(&source, &ast, &excluded_config);
+        let registry = NativeCriticRegistry::with_rules(vec![Box::new(TooManyNestedBlocksRule)]);
+
+        assert!(registry.check(&excluded_ctx).is_empty());
+
+        let suppressed_source = format!(
+            "## no critic native.maintainability.too_many_nested_blocks -- legacy fixture\n{}",
+            nested_blocks_source("too_deep", DEFAULT_MAX_NESTED_BLOCKS + 1)
+        );
+        let suppressed_ast = parse_source(&suppressed_source);
+        let config = CriticConfig::default();
+        let suppressed_ctx = CriticContext::new(&suppressed_source, &suppressed_ast, &config);
+
+        assert!(registry.check(&suppressed_ctx).is_empty());
+    }
+
+    #[test]
+    fn native_too_many_nested_blocks_rule_is_strict_only() {
+        let recommended = NativeCriticRegistry::for_profile(NativeCriticProfile::Recommended);
+        let strict = NativeCriticRegistry::for_profile(NativeCriticProfile::Strict);
+
+        assert!(!recommended.rule_ids().contains(&"native.maintainability.too_many_nested_blocks"));
+        assert!(strict.rule_ids().contains(&"native.maintainability.too_many_nested_blocks"));
     }
 }
