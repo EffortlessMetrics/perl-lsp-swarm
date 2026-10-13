@@ -164,6 +164,30 @@ pub fn classify_diff(files: &[String]) -> String {
     "code".to_string()
 }
 
+/// Prove the bounded prose/script composition admitted by PR-fast (#17825).
+/// Keep aggregate `mixed` semantics: machine configuration and unknown inputs
+/// do not acquire this optimization. `scripts/` is the existing governed CI
+/// tooling root; only its Python/shell surface is admitted here. Package
+/// ownership must still be checked by the consumer.
+pub(crate) fn is_known_non_rust_composition(files: &[String]) -> bool {
+    !files.is_empty()
+        && files.iter().all(|file| {
+            if crate::tasks::file_policy::is_rust_file(file) {
+                return false;
+            }
+            match classify_diff(std::slice::from_ref(file)).as_str() {
+                "prose_only" => {
+                    PROSE_EXTENSIONS.iter().any(|ext| file.ends_with(ext))
+                        || matches!(file.as_str(), "LICENSE" | "CHANGELOG")
+                }
+                "ci_config" => {
+                    file.starts_with("scripts/") && (file.ends_with(".py") || file.ends_with(".sh"))
+                }
+                _ => false,
+            }
+        })
+}
+
 fn is_prose_file(file: &str) -> bool {
     PROSE_EXTENSIONS.iter().any(|ext| file.ends_with(ext))
         || file.starts_with("docs/")
