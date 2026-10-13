@@ -16,9 +16,12 @@ subject = importlib.util.module_from_spec(spec); spec.loader.exec_module(subject
 
 class QualificationInventory(unittest.TestCase):
     # All owner/kernel records here are explicit doubles, never native closure proof.
-    def journal_fixture(self, root):
+    def journal_fixture(self, root, runtime=None):
         from cargo_cohort import PhaseJournal
         owner = json.loads(self.owner_log(root).splitlines()[0].split(': ',1)[1])
+        if runtime is not None:
+            owner['runtime_environment'] = runtime
+            owner['runtime_environment_sha256'] = subject.hashlib.sha256(json.dumps(runtime, sort_keys=True).encode()).hexdigest()
         path = root/'0000-request.json'
         request = {'evidence_path': str(root/'0000-compiler.jsonl'), 'source_digest':'a'*64,
                    'profile_digest':'b'*64, 'expected_targets':[], 'producer':['cargo','check','--tests']}
@@ -62,6 +65,21 @@ class QualificationInventory(unittest.TestCase):
             journal.path.write_bytes(raw)
             request.write_bytes(request.read_bytes()+b' ')
             self.assertFalse(subject.phase_diagnostics(request,owner)['available'])
+
+    def test_phase_journal_matches_original_redacted_runtime_descriptor(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            request, journal, owner = self.journal_fixture(root, {'PERL_DAP_TEST_BINARY': None})
+            with journal.phase('producer'): pass
+            redacted = dict(owner); redacted.pop('runtime_environment')
+            self.assertTrue(subject.phase_diagnostics(request, redacted)['available'])
+            self.assertTrue(subject.phase_diagnostics(request, owner)['available'])
+            for change in ({'runtime_environment_sha256': '0'*64},
+                           {'pid': owner.get('pid', 0)+1}, {'unrecognized_field': 'foreign'}):
+                with self.subTest(change=change):
+                    diagnostic = subject.phase_diagnostics(request, dict(redacted, **change))
+                    self.assertFalse(diagnostic['available'])
+                    self.assertIn('error', diagnostic)
 
     def test_phase_journal_nonobject_records_and_binding_refuse(self):
         with tempfile.TemporaryDirectory() as directory:

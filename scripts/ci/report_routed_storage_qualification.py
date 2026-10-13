@@ -306,8 +306,21 @@ def phase_diagnostics(request_path, outer_descriptor=None):
                 or binding['evidence_path'] != request['evidence_path']
                 or any(binding[key] != request[key] for key in ('source_digest','profile_digest','expected_targets'))):
             raise ValueError('phase request/source/target binding differs')
-        if outer_descriptor is not None and binding['original_descriptor'] != outer_descriptor:
-            raise ValueError('phase original owner differs')
+        declared_owner = binding['original_descriptor']
+        if not isinstance(declared_owner, dict):
+            raise ValueError('phase original owner must be an object')
+        if outer_descriptor is not None:
+            observed_owner = dict(declared_owner)
+            # The original owner's log deliberately retains the runtime digest
+            # without printing its values; its child descriptor carries both.
+            if 'runtime_environment' in observed_owner and 'runtime_environment' not in outer_descriptor:
+                runtime = observed_owner.pop('runtime_environment')
+                if (not isinstance(runtime, dict)
+                        or hashlib.sha256(json.dumps(runtime, sort_keys=True).encode()).hexdigest()
+                        != outer_descriptor.get('runtime_environment_sha256')):
+                    raise ValueError('phase runtime environment digest differs')
+            if observed_owner != outer_descriptor:
+                raise ValueError('phase original owner differs')
         expected = hashlib.sha256(json.dumps(binding, sort_keys=True).encode()).hexdigest()
         stack = []; totals = {}; last_time = -1; last_child = None
         for sequence, row in enumerate(rows):
