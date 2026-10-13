@@ -1588,9 +1588,16 @@ impl<'a> Parser<'a> {
                 if next_text.contains("::") {
                     // Qualified name — check that the following token is `->`, `(`,
                     // or another explicit argument in a list-operator style call.
+                    // A comma, fat arrow, or closing paren also proves the
+                    // qualified name sits in argument position: upstream
+                    // t/comp/parser.t has `is CORE::print::foo, 43, ...`,
+                    // where the qualified bareword is the first list item.
                     if let Ok(third) = self.tokens.peek_second() {
                         return third.kind() == TokenKind::Arrow
                             || third.kind() == TokenKind::LeftParen
+                            || third.kind() == TokenKind::Comma
+                            || third.kind() == TokenKind::FatArrow
+                            || third.kind() == TokenKind::RightParen
                             || Self::is_sigil_argument_start(third.kind(), third.text.as_ref());
                     }
                     return false;
