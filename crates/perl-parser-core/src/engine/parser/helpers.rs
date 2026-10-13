@@ -1593,9 +1593,25 @@ impl<'a> Parser<'a> {
                     // t/comp/parser.t has `is CORE::print::foo, 43, ...`,
                     // where the qualified bareword is the first list item.
                     if let Ok(third) = self.tokens.peek_second() {
+                        if third.kind() == TokenKind::Comma {
+                            // `sort mycmp Foo::Bar, Baz::Qux` is a comparator
+                            // plus a qualified-bareword list, not a call:
+                            // a qualified name followed by another qualified
+                            // name keeps the conservative reading. A qualified
+                            // name followed by a plain list item (`is
+                            // CORE::print::foo, 43`) is a call argument.
+                            let after_comma_is_qualified = self
+                                .tokens
+                                .peek_third()
+                                .ok()
+                                .is_some_and(|fourth| {
+                                    fourth.kind() == TokenKind::Identifier
+                                        && fourth.text.contains("::")
+                                });
+                            return !after_comma_is_qualified;
+                        }
                         return third.kind() == TokenKind::Arrow
                             || third.kind() == TokenKind::LeftParen
-                            || third.kind() == TokenKind::Comma
                             || third.kind() == TokenKind::FatArrow
                             || third.kind() == TokenKind::RightParen
                             || Self::is_sigil_argument_start(third.kind(), third.text.as_ref());
