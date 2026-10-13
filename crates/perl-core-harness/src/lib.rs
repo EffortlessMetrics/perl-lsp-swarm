@@ -190,6 +190,35 @@ pub mod invocation_trace {
     pub use validate::{validate_invocation_trace_receipt, validate_trace_receipt_subject_binding};
 }
 
+/// Strict ordinary/instrumented `t/TEST` equivalence receipt
+/// (`upstream_trace_equivalence.v1`, #12286): paired exact subjects, per-plane
+/// comparisons, and one bounded transfer relation. Representation only: no
+/// upstream execution, production cutover, or compiler scoring.
+pub mod trace_equivalence {
+    /// Comparator and strict receipt constructor.
+    #[path = "compare.rs"]
+    pub mod compare;
+    /// Receipt, verdict, plane, and work types.
+    #[path = "model.rs"]
+    pub mod model;
+    /// Fail-closed validation re-proving receipt consistency.
+    #[path = "validate.rs"]
+    pub mod validate;
+
+    #[cfg(test)]
+    #[path = "tests.rs"]
+    mod tests;
+
+    pub use compare::{build_trace_equivalence, equivalence_payload_digest};
+    pub use model::{
+        ComparisonPlane, EquivalenceSubjects, EquivalenceVerdict, NON_TRANSFERABLE_PROPOSITIONS,
+        PlaneComparison, TRACE_EQUIVALENCE_CLAIM_BOUNDARY, TRANSFERABLE_PROPOSITION,
+        TraceEquivalenceInput, TraceEquivalencePayload, UPSTREAM_TRACE_EQUIVALENCE_SCHEMA_VERSION,
+        UpstreamTraceEquivalenceV1,
+    };
+    pub use validate::validate_trace_equivalence;
+}
+
 /// Strict pure fan-in join proving one complete observed runner subject
 /// (`observed_runner_subject.v1`, #12287): the observed `t/TEST` membership
 /// (#12281/#12283), its independently reconstructed plan (#7737), and the
