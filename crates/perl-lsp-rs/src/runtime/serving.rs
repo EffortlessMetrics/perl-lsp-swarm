@@ -9,7 +9,8 @@ use super::{
     Arc, BufRead, BufReader, ContentLengthMessageReader, JsonRpcRequest, LspServer, Ordering, Read,
     io, log_response, scheduler,
 };
-use crate::protocol::JsonRpcId;
+use crate::protocol::{JsonRpcError, JsonRpcId, JsonRpcResponse, PARSE_ERROR};
+use crate::transport::IncomingMessageError;
 
 const CANCELLED_SET_CAP: usize = 256;
 
@@ -28,9 +29,8 @@ impl LspServer {
         let mut message_reader = ContentLengthMessageReader::new();
 
         loop {
-            // Read LSP message using transport module. Typed decode failures are
-            // logged with payload-private metadata and skipped; exact respond/
-            // close/exit disposition remains #6720.
+            // The codec preserves frame boundaries; application policy owns
+            // error responses and continuation at the next frame.
             match message_reader.read_next_outcome(reader)? {
                 Some(Ok(request)) => {
                     tracing::trace!(method = %request.method, "Received request");
@@ -43,11 +43,7 @@ impl LspServer {
                     }
                 }
                 Some(Err(error)) => {
-                    tracing::warn!(
-                        stage = error.stage().as_str(),
-                        payload_bytes = error.payload_bytes(),
-                        "incoming message rejected"
-                    );
+                    self.reject_incoming_message(&error)?;
                 }
                 None => {
                     // EOF reached, exit cleanly
@@ -57,6 +53,25 @@ impl LspServer {
             }
         }
 
+        Ok(())
+    }
+
+    /// Apply the bounded malformed-JSON disposition shared by CLI ingress
+    /// and synchronous serving. Other decode failures retain their policy.
+    pub(crate) fn reject_incoming_message(&self, error: &IncomingMessageError) -> io::Result<()> {
+        tracing::warn!(
+            stage = error.stage().as_str(),
+            payload_bytes = error.payload_bytes(),
+            "incoming message rejected"
+        );
+        if matches!(error, IncomingMessageError::MalformedJson { .. }) {
+            // Invalid JSON cannot supply a trustworthy request ID. Do not
+            // recover an ID from a prefix or echo malformed private content.
+            self.outbound_sink().send_response(JsonRpcResponse::error(
+                None,
+                JsonRpcError::new(PARSE_ERROR, "Parse error"),
+            ))?;
+        }
         Ok(())
     }
 

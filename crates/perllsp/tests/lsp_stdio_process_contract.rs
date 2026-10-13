@@ -738,6 +738,108 @@ fn preinitialize_duplicate_initialize_and_post_shutdown_are_deterministic() -> R
 }
 
 #[test]
+fn synchronous_serving_reports_malformed_json_and_continues() -> Result<()> {
+    use std::io::{Cursor, Write};
+    use std::sync::{Arc, Mutex};
+
+    struct Capture(Arc<Mutex<Vec<u8>>>);
+    impl Write for Capture {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0
+                .lock()
+                .map_err(|_| std::io::Error::other("capture lock poisoned"))?
+                .extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    let output = Arc::new(Mutex::new(Vec::new()));
+    let server = perllsp::LspServer::with_io(
+        Box::new(Cursor::new(Vec::<u8>::new())),
+        Box::new(Capture(Arc::clone(&output))),
+    );
+    let mut input = b"Content-Length: 1\r\n\r\n{".to_vec();
+    input.extend_from_slice(&RealProcessClient::encode_message(&json!({
+        "jsonrpc": "2.0", "id": 75, "method": "$/perl-lsp/watchdog", "params": {}
+    })));
+    server.serve(&mut Cursor::new(input))?;
+    drop(server); // Close and drain the existing outbound writer before inspection.
+    let bytes = output.lock().map_err(|_| anyhow::anyhow!("capture lock poisoned"))?.clone();
+    let mut reader = Cursor::new(bytes);
+    let mut codec = perllsp::transport::ContentLengthMessageReader::new();
+    let first = codec
+        .read_next_outcome(&mut reader)?
+        .ok_or_else(|| anyhow::anyhow!("missing parse error"))??;
+    let second = codec
+        .read_next_outcome(&mut reader)?
+        .ok_or_else(|| anyhow::anyhow!("missing following response"))??;
+    // The shared codec projects responses onto the internal clientResponse envelope.
+    let first = first.params.ok_or_else(|| anyhow::anyhow!("missing response envelope"))?;
+    let second = second.params.ok_or_else(|| anyhow::anyhow!("missing response envelope"))?;
+    ensure!(first.get("id") == Some(&Value::Null), "{first}");
+    ensure!(first.pointer("/error/code") == Some(&json!(-32700)), "{first}");
+    ensure!(second.get("id") == Some(&json!(75)), "{second}");
+    ensure!(second.pointer("/error/code") == Some(&json!(-32002)), "{second}");
+    ensure!(codec.read_next_outcome(&mut reader)?.is_none(), "unexpected extra response");
+    Ok(())
+}
+
+#[test]
+fn malformed_json_returns_parse_error_and_preserves_following_frames() -> Result<()> {
+    for initialized in [false, true] {
+        let mut client = RealProcessClient::spawn_exact()?;
+        assert_public_candidate(&client)?;
+        if initialized {
+            initialize_and_notify(&mut client, json!("initialize-before-malformed"))?;
+        }
+
+        // A syntactically visible id is not recoverable from invalid JSON.
+        // Both bad bodies have complete, correct byte-length framing.
+        let mut bytes = Vec::new();
+        for body in [r#"{"jsonrpc":"2.0","id":71,"method":"initialize",}"#, "{"] {
+            bytes.extend_from_slice(
+                format!("Content-Length: {}\r\n\r\n{}", body.len(), body).as_bytes(),
+            );
+        }
+        bytes.extend_from_slice(&RealProcessClient::encode_message(&json!({
+            "jsonrpc": "2.0", "id": 72, "method": "$/perl-lsp/watchdog", "params": {}
+        })));
+        client.send_raw_bytes(&bytes)?;
+        for _ in 0..2 {
+            let response = client.receive_response(&Value::Null, timeout())?;
+            ensure!(response.get("jsonrpc") == Some(&json!("2.0")), "{response}");
+            ensure!(response.get("id") == Some(&Value::Null), "{response}");
+            ensure!(response.pointer("/error/code") == Some(&json!(-32700)), "{response}");
+            ensure!(
+                response.pointer("/error/message") == Some(&json!("Parse error")),
+                "{response}"
+            );
+            ensure!(response.get("result").is_none(), "{response}");
+        }
+
+        let following = client.receive_response(&json!(72), timeout())?;
+        if initialized {
+            ensure!(following.get("result") == Some(&Value::Null), "{following}");
+        } else {
+            ensure!(following.pointer("/error/code") == Some(&json!(-32002)), "{following}");
+        }
+
+        // Recovery must retain the session, not merely return an error then close.
+        if !initialized {
+            initialize_and_notify(&mut client, json!("initialize-after-malformed"))?;
+        }
+        let response = client.request(json!(74), "$/perl-lsp/watchdog", json!({}), timeout())?;
+        ensure!(response.get("result") == Some(&Value::Null), "{response}");
+        client.assert_no_response_pending()?;
+        shutdown_and_exit(&mut client, json!(73))?;
+    }
+    Ok(())
+}
+
+#[test]
 fn public_candidate_preserves_fragmented_coalesced_and_utf8_frames() -> Result<()> {
     let mut client = RealProcessClient::spawn_exact()?;
     assert_public_candidate(&client)?;
