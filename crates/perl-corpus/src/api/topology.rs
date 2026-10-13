@@ -858,11 +858,6 @@ fn classify_selected_components(
     classify_layer_component(layer, leaf)
 }
 
-#[cfg(test)]
-fn unclassified_reason_for(layer: CorpusAssetLayer, path: &Path) -> UnclassifiedReason {
-    unclassified_components_reason(layer, &selected_components(path))
-}
-
 fn unclassified_components_reason(
     layer: CorpusAssetLayer,
     components: &[&std::ffi::OsStr],
@@ -928,11 +923,6 @@ fn classify_layer_component(
         }
         _ => None,
     }
-}
-
-#[cfg(test)]
-fn classify_layer_asset(layer: CorpusAssetLayer, path: &Path) -> Option<CorpusAssetKind> {
-    path.file_name().and_then(|name| classify_layer_component(layer, name))
 }
 
 #[cfg(test)]
