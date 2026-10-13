@@ -1,0 +1,9 @@
+project: product
+component: Compatibility
+kind: Changed
+body: "Pragma snapshots expose distinct bounded Perl 5.42/5.44 declaration profiles and explicit enhanced_xx state. Tracker-produced version admission is now unknown for decimal, patch, developer, future and conditional declarations; require VERSION no longer changes lexical pragma state. The public major/minor type remains a lossy compatibility projection, not an exact version model."
+time: 2026-09-09T03:50:00Z
+custom:
+  PR: "13149"
+  Slug: pragma-profile-containment
+  Breaking: "yes"

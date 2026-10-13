@@ -1,0 +1,12 @@
+project: product
+component: Editor behavior
+kind: Fixed
+body: >-
+  Publish DAP stopOnEntry only after the Perl debugger provides a real source
+  frame and ordered prompt evidence, preserving event ordering and exact entry
+  frame identity.
+time: 2026-09-13T00:00:00Z
+custom:
+  PR: "15220"
+  Slug: dap-entry-frame
+  Breaking: "no"

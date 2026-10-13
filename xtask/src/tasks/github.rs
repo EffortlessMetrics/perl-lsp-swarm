@@ -7,6 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
+use xtask::release_live_controls::encode_path_segment;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RequiredContext {
@@ -250,25 +251,6 @@ fn merge_required_contexts(
             app_id,
         })
         .collect()
-}
-
-fn encode_path_segment(value: &str) -> String {
-    let mut encoded = String::with_capacity(value.len());
-    for &byte in value.as_bytes() {
-        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
-            encoded.push(byte as char);
-        } else {
-            encoded.push('%');
-            encoded.push(hex_digit(byte >> 4));
-            encoded.push(hex_digit(byte & 0x0f));
-        }
-    }
-    encoded
-}
-
-fn hex_digit(value: u8) -> char {
-    const HEX: &[u8; 16] = b"0123456789ABCDEF";
-    HEX[usize::from(value & 0x0f)] as char
 }
 
 pub(crate) fn command_text(program: &str, args: &[&str]) -> Result<String> {

@@ -1,7 +1,9 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import type { Readable } from 'stream';
 import * as zlib from 'zlib';
+import yauzl from 'yauzl';
 import { extractManagedArchive } from '../managedArchiveExtract';
 import type { CancellationTokenLike, DisposableLike } from '../boundedHttpJson';
 import type { ManagedArchiveSafetyLimits } from '../managedArchiveSafetyPolicy';
@@ -144,6 +146,17 @@ function storedZip(entries: ReadonlyArray<[string, string]>, uncompressedLies?: 
   end.writeUInt32LE(centralBytes.length, 12);
   end.writeUInt32LE(offset, 16);
   return Buffer.concat([...locals, centralBytes, end]);
+}
+
+function storedZipWithDosAttributes(name: string, contents: string, attributes: number): Buffer {
+  const bytes = storedZip([[name, contents]]);
+  const eocd = bytes.lastIndexOf(Buffer.from([0x50, 0x4b, 0x05, 0x06]));
+  if (eocd < 0) {
+    throw new Error('stored ZIP fixture has no end of central directory');
+  }
+  const centralOffset = bytes.readUInt32LE(eocd + 16);
+  bytes.writeUInt32LE(attributes, centralOffset + 38);
+  return bytes;
 }
 
 function unixSymlinkZip(name: string, target: string): Buffer {
@@ -342,7 +355,7 @@ describe('extractManagedArchive', () => {
     assertOutsideUnchanged();
   });
 
-  test('rejects zip64 entry-count sentinels before AdmZip materializes the table', async () => {
+  test('rejects zip64 entry-count sentinels before materializing the table', async () => {
     const archivePath = path.join(tmpDir, 'zip64.zip');
     const bytes = Buffer.from(
       storedZip([
@@ -417,6 +430,42 @@ describe('extractManagedArchive', () => {
         limits: { ...TEST_LIMITS, maxUncompressedBytes: 1024, maxEntries: 8 },
       }),
     ).rejects.toThrow(/unsafe archive member path/);
+    assertOutsideUnchanged();
+  });
+
+  test('rejects a zip member containing a backslash before extraction', async () => {
+    const archivePath = path.join(tmpDir, 'backslash.zip');
+    fs.writeFileSync(
+      archivePath,
+      storedZip([
+        ['perllsp.exe', 'srv'],
+        ['nested\\outside', 'escaped'],
+      ]),
+    );
+    await expect(
+      extractManagedArchive({
+        archivePath,
+        extractDir,
+        format: 'zip',
+        windows: true,
+        limits: { ...TEST_LIMITS, maxUncompressedBytes: 1024, maxEntries: 8 },
+      }),
+    ).rejects.toThrow(/unsafe archive member path/);
+    assertOutsideUnchanged();
+  });
+
+  test('rejects a DOS directory-bit executable member without a trailing slash', async () => {
+    const archivePath = path.join(tmpDir, 'dos-directory.zip');
+    fs.writeFileSync(archivePath, storedZipWithDosAttributes('perllsp.exe', '', 0x10));
+    await expect(
+      extractManagedArchive({
+        archivePath,
+        extractDir,
+        format: 'zip',
+        windows: true,
+        limits: { ...TEST_LIMITS, maxUncompressedBytes: 1024, maxEntries: 8 },
+      }),
+    ).rejects.toThrow('Binary not found in archive');
     assertOutsideUnchanged();
   });
 
@@ -584,6 +633,179 @@ describe('extractManagedArchive', () => {
         cancellationToken: token,
       }),
     ).rejects.toThrow('Archive extraction cancelled');
+    assertOutsideUnchanged();
+  });
+
+  test('cancels after ZIP streaming begins and destroys the extraction tree', async () => {
+    const archivePath = path.join(tmpDir, 'cancelled.zip');
+    fs.writeFileSync(archivePath, storedZip([['perllsp.exe', 'x'.repeat(256 * 1024)]]));
+    const token = new TestCancellationToken();
+    let streamStarted = false;
+    const originalOpenReadStream = yauzl.ZipFile.prototype.openReadStreamPromise;
+    const openReadStream = jest.spyOn(yauzl.ZipFile.prototype, 'openReadStreamPromise');
+    openReadStream.mockImplementation(async function (this: yauzl.ZipFile, entry) {
+      const stream = await originalOpenReadStream.call(this, entry);
+      stream.once('data', () => {
+        streamStarted = true;
+        token.cancel();
+      });
+      return stream;
+    });
+    try {
+      await expect(
+        extractManagedArchive({
+          archivePath,
+          extractDir,
+          format: 'zip',
+          windows: true,
+          limits: {
+            ...TEST_LIMITS,
+            maxUncompressedBytes: 512 * 1024,
+            maxEntryBytes: 512 * 1024,
+          },
+          cancellationToken: token,
+        }),
+      ).rejects.toThrow('Archive extraction cancelled');
+    } finally {
+      openReadStream.mockRestore();
+    }
+    expect(streamStarted).toBe(true);
+    expect(token.isCancellationRequested).toBe(true);
+    assertOutsideUnchanged();
+  });
+
+  test('cancels while opening a ZIP stream and destroys a late stream', async () => {
+    const archivePath = path.join(tmpDir, 'cancelled-before-stream.zip');
+    fs.writeFileSync(archivePath, storedZip([['perllsp.exe', 'x'.repeat(256 * 1024)]]));
+    const token = new TestCancellationToken();
+    let enterOpen: () => void = () => {};
+    const openEntered = new Promise<void>((resolve) => {
+      enterOpen = resolve;
+    });
+    let releaseOpen: () => void = () => {};
+    const openReleased = new Promise<void>((resolve) => {
+      releaseOpen = resolve;
+    });
+    let streamReady: () => void = () => {};
+    const streamOpened = new Promise<void>((resolve) => {
+      streamReady = resolve;
+    });
+    let lateStream: Readable | undefined;
+    const originalOpenReadStream = yauzl.ZipFile.prototype.openReadStreamPromise;
+    const openReadStream = jest.spyOn(yauzl.ZipFile.prototype, 'openReadStreamPromise');
+    openReadStream.mockImplementation(async function (this: yauzl.ZipFile, entry) {
+      enterOpen();
+      const opened = await originalOpenReadStream.call(this, entry);
+      streamReady();
+      await openReleased;
+      lateStream = opened;
+      return opened;
+    });
+    const extraction = extractManagedArchive({
+      archivePath,
+      extractDir,
+      format: 'zip',
+      windows: true,
+      limits: {
+        ...TEST_LIMITS,
+        maxUncompressedBytes: 512 * 1024,
+        maxEntryBytes: 512 * 1024,
+      },
+      cancellationToken: token,
+    });
+    const bounded = async <T>(promise: Promise<T>): Promise<T | 'timeout'> => {
+      let watchdog: ReturnType<typeof setTimeout> | undefined;
+      try {
+        return await Promise.race([
+          promise,
+          new Promise<'timeout'>((resolve) => {
+            watchdog = setTimeout(() => resolve('timeout'), 1000);
+          }),
+        ]);
+      } finally {
+        if (watchdog !== undefined) {
+          clearTimeout(watchdog);
+        }
+      }
+    };
+    let outcome: 'rejected' | 'resolved' | 'timeout' = 'timeout';
+    try {
+      const entered = await bounded(openEntered);
+      const opened = entered === 'timeout' ? 'timeout' : await bounded(streamOpened);
+      if (opened !== 'timeout') {
+        token.cancel();
+        const result = await bounded(
+          extraction.then(
+            () => 'resolved' as const,
+            () => 'rejected' as const,
+          ),
+        );
+        outcome = result === 'timeout' ? 'timeout' : result;
+      }
+    } finally {
+      releaseOpen();
+      await bounded(
+        extraction.then(
+          () => undefined,
+          () => undefined,
+        ),
+      );
+      for (let attempt = 0; attempt < 5 && lateStream === undefined; attempt += 1) {
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      }
+      openReadStream.mockRestore();
+    }
+    expect(outcome).toBe('rejected');
+    expect(lateStream?.destroyed).toBe(true);
+    assertOutsideUnchanged();
+  });
+
+  test('cancels when ZIP enumeration completes after streaming the selected member', async () => {
+    const archivePath = path.join(tmpDir, 'cancelled-after-enumeration.zip');
+    fs.writeFileSync(archivePath, storedZip([['perllsp.exe', 'x'.repeat(256 * 1024)]]));
+    const token = new TestCancellationToken();
+    let streamOpened = false;
+    const originalOpenReadStream = yauzl.ZipFile.prototype.openReadStreamPromise;
+    const openReadStream = jest.spyOn(yauzl.ZipFile.prototype, 'openReadStreamPromise');
+    openReadStream.mockImplementation(async function (this: yauzl.ZipFile, entry) {
+      const stream = await originalOpenReadStream.call(this, entry);
+      streamOpened = true;
+      return stream;
+    });
+    const originalEachEntry = yauzl.ZipFile.prototype.eachEntry;
+    const eachEntry = jest.spyOn(yauzl.ZipFile.prototype, 'eachEntry');
+    eachEntry.mockImplementation(function (this: yauzl.ZipFile) {
+      const iterator = originalEachEntry.call(this);
+      return (async function* () {
+        for await (const entry of iterator) {
+          yield entry;
+        }
+        if (streamOpened) {
+          token.cancel();
+        }
+      })();
+    });
+    try {
+      await expect(
+        extractManagedArchive({
+          archivePath,
+          extractDir,
+          format: 'zip',
+          windows: true,
+          limits: {
+            ...TEST_LIMITS,
+            maxUncompressedBytes: 512 * 1024,
+            maxEntryBytes: 512 * 1024,
+          },
+          cancellationToken: token,
+        }),
+      ).rejects.toThrow('Archive extraction cancelled');
+    } finally {
+      eachEntry.mockRestore();
+      openReadStream.mockRestore();
+    }
+    expect(streamOpened).toBe(true);
+    expect(token.isCancellationRequested).toBe(true);
     assertOutsideUnchanged();
   });
 

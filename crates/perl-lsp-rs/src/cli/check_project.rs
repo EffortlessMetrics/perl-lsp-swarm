@@ -1,3 +1,14 @@
+//! Renders the `check-project` parsability report to the terminal.
+
+#![expect(
+    clippy::print_stdout,
+    reason = "CLI report module — the parsability report is the command's product"
+)]
+#![expect(
+    clippy::print_stderr,
+    reason = "CLI report module — user-facing directory and read errors go to stderr"
+)]
+
 use std::collections::HashMap;
 use std::path::Path;
 

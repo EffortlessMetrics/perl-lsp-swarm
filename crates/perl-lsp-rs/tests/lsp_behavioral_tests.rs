@@ -6,8 +6,9 @@
 /// Behavioral tests for LSP functionality
 /// These tests verify actual functionality, not just response shapes
 /// They ensure the wired infrastructure produces real results
-use serde_json::json;
+use serde_json::{Value, json};
 use std::path::Path;
+use std::process::{Command, Output};
 use std::time::Duration;
 use url::Url;
 
@@ -16,6 +17,38 @@ mod support;
 use support::lsp_harness::{LspHarness, TempWorkspace};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
+type ChildResult<T> = Result<T, Box<dyn std::error::Error>>;
+
+const FALLBACK_CHILD_MODE: &str = "PERL_LSP_BEHAVIORAL_FALLBACK_CHILD";
+const FALLBACK_CHILD_MARKER: &str = "PERL_LSP_BEHAVIORAL_FALLBACK_CHILD_RAN";
+
+fn in_fallback_child(selector: &str) -> bool {
+    std::env::var_os(FALLBACK_CHILD_MODE).is_some_and(|value| value.to_string_lossy() == selector)
+}
+
+fn run_fallback_child(selector: &str) -> ChildResult<Output> {
+    let mut command = Command::new(std::env::current_exe()?);
+    command.args(["--exact", selector, "--nocapture"]);
+    command.env(FALLBACK_CHILD_MODE, selector);
+    command.env("LSP_TEST_FALLBACKS", "1");
+    command.env("LSP_TEST_TIMEOUT_MS", "15000");
+    command.env("LSP_TEST_SHORT_MS", "5000");
+    Ok(command.output()?)
+}
+
+fn assert_fallback_child_ran(output: &Output, selector: &str) -> TestResult {
+    let expected = format!("{FALLBACK_CHILD_MARKER}={selector}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let count = stdout.lines().filter(|line| *line == expected).count();
+    if count != 1 {
+        return Err(format!(
+            "expected one fallback child marker {expected:?}, found {count}; stdout={stdout} stderr={}",
+            String::from_utf8_lossy(&output.stderr)
+        )
+        .into());
+    }
+    Ok(())
+}
 
 /// Convert a path to a file:// URI string, cross-platform safe
 fn path_to_uri(path: &Path) -> Result<String, Box<dyn std::error::Error>> {
@@ -34,6 +67,123 @@ fn uri_matches(expected: &str, actual: &str) -> bool {
     }
 
     false
+}
+
+fn workspace_edit_has_text_edits(edit: &Value, target_uri: &str) -> bool {
+    fn valid_text_edit(edit: &Value) -> bool {
+        let Some(range) = edit.get("range") else {
+            return false;
+        };
+        let position = |position: &Value| {
+            Some((
+                position.get("line").and_then(Value::as_u64)?,
+                position.get("character").and_then(Value::as_u64)?,
+            ))
+        };
+        let Some(start) = range.get("start").and_then(position) else {
+            return false;
+        };
+        let Some(end) = range.get("end").and_then(position) else {
+            return false;
+        };
+
+        start <= end && edit.get("newText").and_then(Value::as_str).is_some()
+    }
+
+    if edit.get("changes").and_then(Value::as_object).is_some_and(|changes| {
+        changes.iter().any(|(uri, edits)| {
+            uri_matches(target_uri, uri)
+                && edits.as_array().is_some_and(|edits| edits.iter().any(valid_text_edit))
+        })
+    }) {
+        return true;
+    }
+
+    edit.get("documentChanges").and_then(Value::as_array).is_some_and(|document_changes| {
+        document_changes.iter().any(|change| {
+            let Some(text_document) = change.get("textDocument") else {
+                return false;
+            };
+            let valid_version = text_document
+                .get("version")
+                .is_some_and(|version| version.is_null() || version.is_i64() || version.is_u64());
+            change
+                .pointer("/textDocument/uri")
+                .and_then(Value::as_str)
+                .is_some_and(|uri| uri_matches(target_uri, uri))
+                && valid_version
+                && change
+                    .get("edits")
+                    .and_then(Value::as_array)
+                    .is_some_and(|edits| edits.iter().any(valid_text_edit))
+        })
+    })
+}
+
+#[test]
+fn workspace_edit_requires_well_formed_text_edits() {
+    let target_uri = "file:///workspace/script.pl";
+    let range = json!({
+        "start": { "line": 0, "character": 0 },
+        "end": { "line": 0, "character": 4 }
+    });
+    let valid = json!({
+        "changes": {
+            (target_uri): [{ "range": range.clone(), "newText": "my $x" }]
+        }
+    });
+    assert!(workspace_edit_has_text_edits(&valid, target_uri));
+    let valid_document_changes = json!({
+        "documentChanges": [{
+            "textDocument": { "uri": target_uri, "version": null },
+            "edits": [{ "range": range.clone(), "newText": "my $x" }]
+        }]
+    });
+    assert!(workspace_edit_has_text_edits(&valid_document_changes, target_uri));
+
+    for malformed in [
+        json!({ "changes": { (target_uri): [null] } }),
+        json!({ "changes": { (target_uri): [{}] } }),
+        json!({
+            "changes": {
+                (target_uri): [{ "range": range.clone(), "newText": 42 }]
+            }
+        }),
+        json!({
+            "changes": {
+                (target_uri): [{
+                    "range": {
+                        "start": { "line": 2, "character": 0 },
+                        "end": { "line": 1, "character": 0 }
+                    },
+                    "newText": "my $x"
+                }]
+            }
+        }),
+        json!({
+            "documentChanges": [{
+                "textDocument": { "uri": target_uri },
+                "edits": [null]
+            }]
+        }),
+        json!({
+            "documentChanges": [{
+                "textDocument": { "uri": target_uri, "version": "1" },
+                "edits": [{ "range": range.clone(), "newText": "my $x" }]
+            }]
+        }),
+        json!({
+            "documentChanges": [{
+                "textDocument": { "uri": target_uri, "version": 1.5 },
+                "edits": [{ "range": range.clone(), "newText": "my $x" }]
+            }]
+        }),
+    ] {
+        assert!(
+            !workspace_edit_has_text_edits(&malformed, target_uri),
+            "malformed workspace edit must not satisfy the behavioral oracle: {malformed}"
+        );
+    }
 }
 
 mod test_fixtures {
@@ -186,25 +336,20 @@ fn test_cross_file_references() -> TestResult {
 
 #[test]
 fn test_workspace_symbol_search() -> TestResult {
-    // Ensure we use fast, deterministic fallbacks to avoid long waits
-    unsafe {
-        std::env::set_var("LSP_TEST_FALLBACKS", "1");
-    }
-    let (mut harness, workspace) = create_test_server()?;
-
-    // Search for symbols across workspace
-    let result = harness.request("workspace/symbol", json!({"query": "process"}))?;
-
-    {
+    const SELECTOR: &str = "test_workspace_symbol_search";
+    if in_fallback_child(SELECTOR) {
+        let (mut harness, workspace) = create_test_server()?;
+        let result = harness.request_with_timeout(
+            "workspace/symbol",
+            json!({"query": "process"}),
+            Duration::from_secs(10),
+        )?;
         let symbols = result.as_array().ok_or("Should return symbol array")?;
         assert!(!symbols.is_empty(), "Should find 'process' method");
-
-        // Verify process method is found
-        let process_symbol = symbols.iter().find(|s| s["name"].as_str() == Some("process"));
-        assert!(process_symbol.is_some(), "Should find process method");
-
-        // Verify it's in the module file
-        let process_symbol = process_symbol.ok_or("Should find process method")?;
+        let process_symbol = symbols
+            .iter()
+            .find(|symbol| symbol["name"].as_str() == Some("process"))
+            .ok_or("Should find process method")?;
         assert!(
             process_symbol["location"]["uri"].as_str().is_some_and(|actual| uri_matches(
                 workspace.uri("lib/My/Module.pm").as_str(),
@@ -212,53 +357,51 @@ fn test_workspace_symbol_search() -> TestResult {
             )),
             "Process method should be in Module.pm"
         );
+        println!("{FALLBACK_CHILD_MARKER}={SELECTOR}");
+        return Ok(());
     }
-    Ok(())
+    let output = run_fallback_child(SELECTOR)?;
+    assert!(output.status.success(), "fallback child failed: {output:?}");
+    assert_fallback_child_ran(&output, SELECTOR)
 }
 
 #[test]
 fn test_extract_variable_returns_edits() -> TestResult {
-    // Ensure we use fast, deterministic fallbacks to avoid long waits
-    unsafe {
-        std::env::set_var("LSP_TEST_FALLBACKS", "1");
-    }
-    let (mut harness, workspace) = create_test_server()?;
-
-    // Request code actions for expression extraction
-    let result = harness.request(
-        "textDocument/codeAction",
-        json!({
-            "textDocument": {"uri": workspace.uri("script.pl")},
-            "range": {
-                "start": {"line": 11, "character": 11},
-                "end": {"line": 11, "character": 18} // Select "$x + $y"
-            },
-            "context": {"diagnostics": []}
-        }),
-    )?;
-
-    {
+    const SELECTOR: &str = "test_extract_variable_returns_edits";
+    if in_fallback_child(SELECTOR) {
+        let (mut harness, workspace) = create_test_server()?;
+        let result = harness.request_with_timeout(
+            "textDocument/codeAction",
+            json!({
+                "textDocument": {"uri": workspace.uri("script.pl")},
+                "range": {
+                    "start": {"line": 11, "character": 11},
+                    "end": {"line": 11, "character": 18}
+                },
+                "context": {"diagnostics": []}
+            }),
+            Duration::from_secs(10),
+        )?;
         let actions = result.as_array().ok_or("Should return action array")?;
-
-        // Find extract variable action
-        let extract_action =
-            actions.iter().find(|a| a["title"].as_str().is_some_and(|t| t.contains("Extract")));
-
-        if let Some(action) = extract_action {
-            // Verify it has actual edits
-            if let Some(edit) = action.get("edit") {
-                let changes = &edit["changes"];
-                assert!(!changes.is_null(), "Should have workspace edit changes");
-
-                // Check for edits in the file
-                let file_uri = workspace.uri("script.pl");
-                let file_edits = &changes[file_uri.as_str()];
-                let edits = file_edits.as_array().ok_or("Should have edits array")?;
-                assert!(!edits.is_empty(), "Should have actual text edits");
-            }
+        if let Some(extract_action) = actions
+            .iter()
+            .find(|action| action["title"].as_str().is_some_and(|title| title.contains("Extract")))
+        {
+            let edit = extract_action
+                .get("edit")
+                .ok_or("Extract variable action should include a workspace edit")?;
+            let file_uri = workspace.uri("script.pl");
+            assert!(
+                workspace_edit_has_text_edits(edit, &file_uri),
+                "Extract variable action should include at least one well-formed text edit for {file_uri}; got {edit}"
+            );
         }
+        println!("{FALLBACK_CHILD_MARKER}={SELECTOR}");
+        return Ok(());
     }
-    Ok(())
+    let output = run_fallback_child(SELECTOR)?;
+    assert!(output.status.success(), "fallback child failed: {output:?}");
+    assert_fallback_child_ran(&output, SELECTOR)
 }
 
 #[test]
@@ -402,47 +545,38 @@ fn test_test_generation_actions_present() -> TestResult {
 
 #[test]
 fn test_completion_detail_formatting() -> TestResult {
-    // Ensure we use fast, deterministic fallbacks to avoid long waits
-    unsafe {
-        std::env::set_var("LSP_TEST_FALLBACKS", "1");
-    }
-    let (mut harness, workspace) = create_test_server()?;
-
-    // Request completion after $obj->
-    let result = harness.request(
-        "textDocument/completion",
-        json!({
-            "textDocument": {"uri": workspace.uri("script.pl")},
-            "position": {"line": 7, "character": 6} // After "$obj->"
-        }),
-    )?;
-
-    {
+    const SELECTOR: &str = "test_completion_detail_formatting";
+    if in_fallback_child(SELECTOR) {
+        let (mut harness, workspace) = create_test_server()?;
+        let result = harness.request_with_timeout(
+            "textDocument/completion",
+            json!({
+                "textDocument": {"uri": workspace.uri("script.pl")},
+                "position": {"line": 7, "character": 6}
+            }),
+            Duration::from_secs(10),
+        )?;
         let items = if result.is_array() {
             result.as_array().ok_or("Expected array")?
-        } else if let Some(items) = result["items"].as_array() {
-            items
         } else {
-            return Err("Expected completion items array".into());
+            result["items"].as_array().ok_or("Expected completion items array")?
         };
-
         assert!(!items.is_empty(), "Should have completion items");
-
-        // Check that detail field is concise
         let typed_items = items
             .iter()
             .filter(|item| {
-                if let Some(detail) = item["detail"].as_str() {
-                    // Should be concise like "scalar", "array", not debug dumps
-                    detail.len() < 50 && !detail.contains("InferredType")
-                } else {
-                    false
-                }
+                item["detail"]
+                    .as_str()
+                    .is_some_and(|detail| detail.len() < 50 && !detail.contains("InferredType"))
             })
             .count();
         assert!(typed_items > 0, "Should have type information in completion details");
+        println!("{FALLBACK_CHILD_MARKER}={SELECTOR}");
+        return Ok(());
     }
-    Ok(())
+    let output = run_fallback_child(SELECTOR)?;
+    assert!(output.status.success(), "fallback child failed: {output:?}");
+    assert_fallback_child_ran(&output, SELECTOR)
 }
 
 #[test]

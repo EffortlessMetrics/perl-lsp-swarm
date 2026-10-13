@@ -1,0 +1,18 @@
+---
+project: product
+component: Tooling
+kind: Fixed
+body: >
+  Clause-scope the CP00-PROOF-LEVEL-CONTRADICTION PR-side term check so
+  that a Claim Boundary which *asserts* a public/installed/packaged/
+  released surface is covered does not arm the rule merely because a
+  sibling sentence excludes an unrelated surface or because the section
+  carries the template's exclusion vocabulary. The proof-level term and
+  the explicit-exclusion marker now must share a sentence, list item,
+  or coordinate clause. Resolves the false positives on #15621 and
+  #15633.
+time: 2026-09-15T20:00:00Z
+custom:
+  PR: "15627"
+  Slug: cp00-pr-side-polarity
+  Breaking: "no"

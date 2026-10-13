@@ -234,7 +234,8 @@ mod tests {
             GateStub::with_definitions(vec![make_candidate("Foo::bar", 10, 100, Confidence::High)]);
         let ctx = QueryContext::new(FileId(1), None, None);
 
-        let outcome = goto_definition_cutover(&index, &stub, "Foo::bar", &ctx);
+        let outcome =
+            goto_definition_cutover(index.find_definition("Foo::bar"), &stub, "Foo::bar", &ctx);
         assert!(
             matches!(outcome.result, DefinitionCutoverResult::Exact(_)),
             "single high-confidence candidate should be Exact"
@@ -249,7 +250,8 @@ mod tests {
         let stub = GateStub::with_definitions(vec![]);
         let ctx = QueryContext::new(FileId(1), None, None);
 
-        let outcome = goto_definition_cutover(&index, &stub, "missing", &ctx);
+        let outcome =
+            goto_definition_cutover(index.find_definition("missing"), &stub, "missing", &ctx);
         assert!(
             matches!(outcome.result, DefinitionCutoverResult::LegacyFallback(_)),
             "no candidates should fall back to legacy"
@@ -267,7 +269,7 @@ mod tests {
         ]);
         let ctx = QueryContext::new(FileId(1), None, None);
 
-        let outcome = goto_definition_cutover(&index, &stub, "bar", &ctx);
+        let outcome = goto_definition_cutover(index.find_definition("bar"), &stub, "bar", &ctx);
         assert!(
             matches!(outcome.result, DefinitionCutoverResult::Ambiguous(_)),
             "multiple candidates should be Ambiguous"
@@ -288,7 +290,12 @@ mod tests {
             make_ref_occurrence(2, 20, 100),
         ]);
 
-        let outcome = find_references_cutover(&index, &stub, "Foo::bar", EntityId(100));
+        let outcome = find_references_cutover(
+            index.find_references("Foo::bar"),
+            &stub,
+            "Foo::bar",
+            EntityId(100),
+        );
         assert!(
             matches!(outcome.result, ReferencesCutoverResult::Exact(_)),
             "typed references should produce Exact result"
@@ -302,7 +309,12 @@ mod tests {
         let index = WorkspaceIndex::new();
         let stub = GateStub::with_references(vec![]);
 
-        let outcome = find_references_cutover(&index, &stub, "missing", EntityId(100));
+        let outcome = find_references_cutover(
+            index.find_references("missing"),
+            &stub,
+            "missing",
+            EntityId(100),
+        );
         assert!(
             matches!(outcome.result, ReferencesCutoverResult::LegacyFallback(_)),
             "no occurrences should fall back to legacy"
@@ -613,7 +625,7 @@ mod tests {
         let stub =
             GateStub::with_definitions(vec![make_candidate("Foo::bar", 10, 100, Confidence::High)]);
         let outcome = goto_definition_cutover(
-            &index,
+            index.find_definition("Foo::bar"),
             &stub,
             "Foo::bar",
             &QueryContext::new(FileId(1), None, None),
@@ -622,7 +634,12 @@ mod tests {
 
         // Find-references: typed refs
         let stub = GateStub::with_references(vec![make_ref_occurrence(1, 10, 100)]);
-        let outcome = find_references_cutover(&index, &stub, "Foo::bar", EntityId(100));
+        let outcome = find_references_cutover(
+            index.find_references("Foo::bar"),
+            &stub,
+            "Foo::bar",
+            EntityId(100),
+        );
         scorecard.add_receipt(outcome.receipt);
 
         // Completion: explicit import

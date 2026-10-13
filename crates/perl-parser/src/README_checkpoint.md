@@ -4,18 +4,11 @@ The v3 Perl parser now supports **lexer checkpointing**, enabling efficient incr
 
 ## Features
 
-### 1. Complete State Capture
-```rust
-pub struct LexerCheckpoint {
-    pub position: usize,
-    pub mode: LexerMode,
-    pub delimiter_stack: Vec<char>,
-    pub in_prototype: bool,
-    pub prototype_depth: usize,
-    pub current_pos: Position,
-    pub context: CheckpointContext,
-}
-```
+### 1. Opaque live capture
+`LexerCheckpoint` is an opaque snapshot captured from a live lexer boundary
+(`PerlLexer::checkpoint()` or `LexerCheckpoint::origin(source)`). Fields are
+private. Restore is fallible and atomic; caller-selected `at_position` labels
+are not restart authority.
 
 ### 2. Context-Aware Checkpointing
 - **Lexer Mode**: ExpectTerm vs ExpectOperator (for slash disambiguation)
@@ -73,8 +66,8 @@ println!("Checkpoints used: {}", stats.checkpoints_used);
 1. **Context Preservation**: Maintains lexer mode for correct parsing
 2. **Minimal Re-lexing**: Only processes changed regions
 3. **Stateful Constructs**: Handles heredocs, formats, nested delimiters
-4. **Performance**: 100% checkpoint usage in incremental parses
-5. **Correctness**: Ensures context-sensitive features work correctly
+4. **Correctness**: Ensures context-sensitive features work correctly; overlapping
+   edits invalidate rather than fabricating a default origin.
 
 ## Example: Context-Sensitive Edit
 

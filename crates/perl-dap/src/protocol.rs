@@ -317,7 +317,9 @@ pub struct LaunchRequestArguments {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AttachRequestArguments {
-    /// Process ID to attach to
+    /// Legacy process ID input retained for serialized configuration
+    /// compatibility. The runtime preserves this field for deterministic
+    /// #8109 refusal; TCP host/port attachment is the only supported mode.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub process_id: Option<u32>,
     /// Host to connect to (for TCP attachment)
@@ -329,7 +331,9 @@ pub struct AttachRequestArguments {
     /// Connection timeout in milliseconds
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timeout: Option<u32>,
-    /// If true, pause at the first available program location after attaching.
+    /// Request a pause at the first available program location after attaching.
+    /// TCP attachments reject true because the peer protocol cannot request or
+    /// acknowledge this pause; set it to false and configure the peer instead.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stop_on_entry: Option<bool>,
 }

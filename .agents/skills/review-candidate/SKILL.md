@@ -24,9 +24,9 @@ issue preparation.
 
 ## Orchestration affordances
 
-### Lane-root decisions
+### Root decisions
 
-The lane root retains candidate sufficiency, finding dispositions, material
+The accountable root retains candidate sufficiency, finding dispositions, material
 claim/authority/proof corrections, risk/rollback decisions, and whether the candidate
 returns to build, proof, issue preparation, or PR convergence.
 
@@ -53,9 +53,9 @@ Reviewers are read-only by default. One candidate writer integrates accepted rep
 If a reviewer is explicitly reassigned as writer, the resulting head returns through
 affected proof and review.
 
-Join when the lane root has verified load-bearing evidence, preserved and resolved
-material contradictions, dispositioned findings, and can state what the candidate does
-and does not prove.
+Join when the accountable root has verified load-bearing evidence, preserved and
+resolved material contradictions, dispositioned findings, and can state what the
+candidate does and does not prove.
 
 ### Return packet
 
@@ -83,15 +83,16 @@ a diff impression, green CI, or an ungrounded delegate verdict.
 
 ## GitHub boundary
 
-The integrating lane owner posts. A skill run that only answers a bounded review
-question returns file/line-anchored findings as evidence and does not write to GitHub.
+The accountable root posts the joined durable conclusion. A skill run that only answers
+a bounded review question returns file/line-anchored findings as evidence and does not
+write to GitHub unless its brief grants one specific bounded finding publication.
 
 Use inline review for localized candidate findings and a PR comment/review summary for
 cross-cutting claim, authority, proof, risk, or production-route conclusions. Preserve
 an evidence-backed disposition before resolving substantive findings.
 
 Keep reviewer topology, raw exploration, temporary tests, duplicate clean reports,
-retries, and routine review progress runtime-local. One cumulative lane-root conclusion
+retries, and routine review progress runtime-local. One cumulative root conclusion
 joins the useful evidence.
 
 ## Routes

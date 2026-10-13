@@ -8,8 +8,20 @@
       "invocation_sha256": "04a692651ff6257474f4d8b7552eea2ab0b259ce9b0c1fc2596a1a9e77f03517"
     },
     {
+      "id": "parser.class_grammar.admission",
+      "invocation_sha256": "731a607dbc8091921422ba5886475241bfd2e3b93a545c0bbd9192cb13151338"
+    },
+    {
+      "id": "parser.cli.continued_read_failure_stats",
+      "invocation_sha256": "0d1ed3f64b8f8c25c2f878bbacf3eec77662b91319c4329b85b5832a6cdb26c6"
+    },
+    {
       "id": "parser.command_line.oneliners",
       "invocation_sha256": "562d66111ff70e436552bfb60f662804c475f19d5d22beb7227028128cdf9349"
+    },
+    {
+      "id": "parser.command_line.regex_modifier_matrix",
+      "invocation_sha256": "612c3748f429a49411b0d18af1bf5b576c88442de9639a72500af2abec6850f4"
     },
     {
       "id": "parser.concepts.magic_token_arguments",
@@ -18,6 +30,26 @@
     {
       "id": "parser.concepts.magic_token_fat_arrow_pairs",
       "invocation_sha256": "89a8d90d0dc752d12e064b1702b4faabf0c0f60bc26f332c9eb86a43cca00faf"
+    },
+    {
+      "id": "parser.hir.postfix_modifiers",
+      "invocation_sha256": "0fee291736275420f9ae5585dc370bc6f42cc37990f5b6c27c3edf7d26ff3f9e"
+    },
+    {
+      "id": "parser.hir.program_body_geometry",
+      "invocation_sha256": "ac08211a9da5df905d3b9e3f8dec9b215503a1ad6a6ebb1404326ede42892af0"
+    },
+    {
+      "id": "parser.hir.program_body_parity",
+      "invocation_sha256": "7ca2ad26ba07a0df246e74e8098de6e5e808266bfb321e2af0d888b044e74859"
+    },
+    {
+      "id": "parser.hir.program_body_regex",
+      "invocation_sha256": "cfa2459045abfd0ac2ed2268eecf2a73e7b8d3daedfca278eea5bd99aeb55155"
+    },
+    {
+      "id": "parser.hir.scalar_literal_payloads",
+      "invocation_sha256": "019e0b5c3e5f5a7aebd947137c83abb04323627e47360b6a16d897a0192d65a2"
     },
     {
       "id": "parser.incremental.accuracy",
@@ -48,12 +80,28 @@
       "invocation_sha256": "fced33575430f695ffe154bbbcf0fdb3fe026c6bed9a1ce116dd8927c9cd013c"
     },
     {
+      "id": "parser.loops.c_style_separator_recovery",
+      "invocation_sha256": "8ec1ec0814cba27119a4f1e036ecc056eeeaed6f234ab25388da16cf00a25b7b"
+    },
+    {
+      "id": "parser.loops.foreach_declaration_list",
+      "invocation_sha256": "2cd42c7d4fa70b28541edfec54093f23c25557dc5d6758b942a300e784ada9c6"
+    },
+    {
+      "id": "parser.output.adjacent_call",
+      "invocation_sha256": "e554a06ded99768caa9108ed255b09ba7f367bed72727628f96f7c913bca920c"
+    },
+    {
       "id": "parser.pir.branch_body",
       "invocation_sha256": "a75a559622e0bd1c033b4cb144ea7baed2fe52da06055135ae74c30a0bb01de9"
     },
     {
       "id": "parser.pir.loop_body",
       "invocation_sha256": "d2c564eb6c78a731ad3ddfcc882da2b30fa7dc86e660940742d61925526135bf"
+    },
+    {
+      "id": "parser.postfix.dereference_matrix",
+      "invocation_sha256": "f0c3148a2b728538edff1e8210a653c9b9d4b70676860ccf5a52f20ca2d0ecc2"
     },
     {
       "id": "parser.recovery.incomplete_brace",
@@ -66,6 +114,10 @@
     {
       "id": "parser.red_black_tree_access_paths",
       "invocation_sha256": "bda2415c986c80554803c795134977c94e6052d57d6782c5dc4cf217932f2e0d"
+    },
+    {
+      "id": "parser.red_black_tree_delete_fixup",
+      "invocation_sha256": "3c3cbd0ebcac31428f7890ed4e11af02b54841b6b36cb1e41be0374478563f57"
     },
     {
       "id": "parser.ripr.seam_proof",

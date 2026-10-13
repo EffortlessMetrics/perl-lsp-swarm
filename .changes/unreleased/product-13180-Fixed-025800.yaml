@@ -1,0 +1,14 @@
+project: product
+component: Parser and lexer
+kind: Fixed
+body: >-
+  Incremental parsing now reuses the prior tree for exact whitespace-only edits
+  without shifting nodes that precede the edit. The fast path verifies the full
+  source transition and lexer token identity, preserves fresh-parse span
+  geometry, and leaves comments or structural replacements on the conservative
+  fallback path.
+time: 2026-08-28T02:58:00Z
+custom:
+  PR: "13180"
+  Slug: incremental-whitespace-selective-spans
+  Breaking: "no"

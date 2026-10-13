@@ -1,0 +1,9 @@
+project: vscode
+component: Performance and reliability
+kind: Fixed
+body: Restored watchdog recovery of a hung language server; a shutdown-timeout stop rejection from an already-stopped client no longer blocks the replacement as incomplete cleanup.
+time: 2026-09-05T22:15:00Z
+custom:
+  PR: 14155
+  Slug: vscode-hung-server-watchdog-replacement
+  Breaking: "no"

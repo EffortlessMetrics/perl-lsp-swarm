@@ -1495,7 +1495,7 @@ mod tests {
         ) -> Self {
             Self {
                 invocations: AtomicUsize::new(0),
-                adjust: Box::new(move |inputs, mut bundle| {
+                adjust: Box::new(move |_inputs, mut bundle| {
                     bundle = adjust(bundle);
                     FreshFullProducerOutcome::Complete(bundle)
                 }),
@@ -1512,10 +1512,6 @@ mod tests {
             + 'static,
         ) -> Self {
             Self { invocations: AtomicUsize::new(0), adjust: Box::new(make) }
-        }
-
-        fn count(&self) -> usize {
-            self.invocations.load(std::sync::atomic::Ordering::SeqCst)
         }
     }
 

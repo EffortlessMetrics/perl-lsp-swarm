@@ -1,0 +1,2235 @@
+# Canonical parser-accuracy metric registry.
+#
+# Authored policy: declares what each emitted parser-accuracy metric MEANS.
+# `.ci/schemas/parser-accuracy.schema.json` stays structural; metric semantics live here.
+# Consumed by `xtask/src/tasks/metrics/parser_accuracy/registry.rs`, which derives each
+# emitted row's `direction` and `confidence` and fails the artifact build closed when a
+# row violates its entry. See issue #14553 (parent #8189).
+#
+# Fields per metric:
+#   family                       evidence plane that owns the metric
+#   kind                         ratio | count | duration_ms | bytes | scalar
+#   direction                    up | down | flat | neutral (which way is better)
+#   min / max                    inclusive valid range for a measured value
+#   zero_budget                  a measured value other than 0 is a hard violation
+#   min_sample_count             below this a row must be insufficient_data
+#   high_confidence_sample_count below this a row must not claim `high` confidence
+#   cadences                     cadences this metric may be emitted at
+
+schema_version = 1
+
+[[metric]]
+name = "allocated_bytes"
+family = "cost"
+kind = "bytes"
+direction = "down"
+min = 0.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 1
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "allocation_count"
+family = "cost"
+kind = "count"
+direction = "down"
+min = 0.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 1
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "ast_delimiter_pairing_accuracy"
+family = "ast"
+kind = "ratio"
+direction = "up"
+min = 0.0
+max = 1.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 5
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "ast_hash_stability_rate"
+family = "determinism"
+kind = "ratio"
+direction = "up"
+min = 0.0
+max = 1.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 5
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "ast_missing_expected_node_count"
+family = "ast"
+kind = "count"
+direction = "down"
+min = 0.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 1
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "ast_node_kind_f1"
+family = "ast"
+kind = "ratio"
+direction = "up"
+min = 0.0
+max = 1.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 5
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "ast_node_kind_precision"
+family = "ast"
+kind = "ratio"
+direction = "up"
+min = 0.0
+max = 1.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 5
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "ast_node_kind_recall"
+family = "ast"
+kind = "ratio"
+direction = "up"
+min = 0.0
+max = 1.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 5
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "ast_node_span_exact_rate"
+family = "ast"
+kind = "ratio"
+direction = "up"
+min = 0.0
+max = 1.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 5
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "ast_node_span_near_rate"
+family = "ast"
+kind = "ratio"
+direction = "up"
+min = 0.0
+max = 1.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 5
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "ast_operator_precedence_accuracy"
+family = "ast"
+kind = "ratio"
+direction = "up"
+min = 0.0
+max = 1.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 5
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "ast_parent_child_edge_accuracy"
+family = "ast"
+kind = "ratio"
+direction = "up"
+min = 0.0
+max = 1.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 5
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "ast_projection_ms_p95"
+# A stage timing emitted by the cost plane, not an AST accuracy score.
+family = "cost"
+kind = "duration_ms"
+direction = "down"
+min = 0.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 1
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "ast_tree_depth_accuracy"
+family = "ast"
+kind = "ratio"
+direction = "up"
+min = 0.0
+max = 1.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 5
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "ast_unexpected_error_node_count"
+family = "ast"
+kind = "count"
+direction = "down"
+min = 0.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 1
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "byte_span_exact_rate"
+family = "span"
+kind = "ratio"
+direction = "up"
+min = 0.0
+max = 1.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 5
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "comment_invariance_rate"
+family = "determinism"
+kind = "ratio"
+direction = "up"
+min = 0.0
+max = 1.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 5
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "completion_query_ms_p95"
+family = "cost"
+kind = "duration_ms"
+direction = "down"
+min = 0.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 1
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "confidence_calibration_error"
+family = "confidence"
+kind = "ratio"
+direction = "down"
+min = 0.0
+max = 1.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 5
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "content_hash_hit_rate"
+family = "cache_reuse"
+kind = "ratio"
+direction = "up"
+min = 0.0
+max = 1.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 5
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "crlf_position_error_count"
+family = "span"
+kind = "count"
+direction = "down"
+min = 0.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 1
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "definition_query_ms_p95"
+family = "cost"
+kind = "duration_ms"
+direction = "down"
+min = 0.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 1
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "denominator_fixture_count"
+family = "denominator"
+kind = "count"
+direction = "neutral"
+min = 0.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 1
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "diagnostic_dynamic_boundary_false_positive_count"
+family = "provider"
+kind = "count"
+direction = "down"
+min = 0.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 1
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "diagnostic_hash_stability_rate"
+family = "determinism"
+kind = "ratio"
+direction = "up"
+min = 0.0
+max = 1.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 5
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "diagnostic_undefined_symbol_false_negative_count"
+family = "provider"
+kind = "count"
+direction = "down"
+min = 0.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 1
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "diagnostic_undefined_symbol_false_positive_count"
+family = "provider"
+kind = "count"
+direction = "down"
+min = 0.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 1
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "document_symbol_span_exact_rate"
+family = "provider"
+kind = "ratio"
+direction = "up"
+min = 0.0
+max = 1.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 5
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "dynamic_boundary_precision"
+family = "confidence"
+kind = "ratio"
+direction = "up"
+min = 0.0
+max = 1.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 5
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "dynamic_false_precision_count"
+family = "safety"
+kind = "count"
+direction = "down"
+min = 0.0
+zero_budget = true
+min_sample_count = 1
+high_confidence_sample_count = 1
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "exact_fact_precision"
+family = "confidence"
+kind = "ratio"
+direction = "up"
+min = 0.0
+max = 1.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 5
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "false_declaration_count"
+family = "safety"
+kind = "count"
+direction = "down"
+min = 0.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 1
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "false_dynamic_resolution_count"
+family = "safety"
+kind = "count"
+direction = "down"
+min = 0.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 1
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "false_exact_resolution_count"
+family = "safety"
+kind = "count"
+direction = "down"
+min = 0.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 1
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "false_export_count"
+family = "safety"
+kind = "count"
+direction = "down"
+min = 0.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 1
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "false_import_count"
+family = "safety"
+kind = "count"
+direction = "down"
+min = 0.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 1
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "false_parse_error_count"
+family = "safety"
+kind = "count"
+direction = "down"
+min = 0.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 1
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "false_reference_count"
+family = "safety"
+kind = "count"
+direction = "down"
+min = 0.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 1
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "false_symbol_count"
+family = "safety"
+kind = "count"
+direction = "down"
+min = 0.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 1
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "fast_path_attempt_count"
+family = "cache_reuse"
+kind = "count"
+direction = "neutral"
+min = 0.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 1
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "fast_path_fallback_count"
+family = "cache_reuse"
+kind = "count"
+direction = "down"
+min = 0.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 1
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "fast_path_success_count"
+family = "cache_reuse"
+kind = "count"
+direction = "up"
+min = 0.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 1
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "fast_path_wrong_result_count"
+family = "cache_reuse"
+kind = "count"
+direction = "down"
+min = 0.0
+zero_budget = true
+min_sample_count = 1
+high_confidence_sample_count = 1
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "gold_added_expectation_count"
+family = "gold_drift"
+kind = "count"
+direction = "down"
+min = 0.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 1
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "gold_changed_line_count"
+family = "gold_drift"
+kind = "count"
+direction = "down"
+min = 0.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 1
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "gold_changed_symbol_count"
+family = "gold_drift"
+kind = "count"
+direction = "down"
+min = 0.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 1
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "gold_duplicate_symbol_ids"
+family = "gold_drift"
+kind = "count"
+direction = "down"
+min = 0.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 1
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "gold_dynamic_expectation_change_count"
+family = "gold_drift"
+kind = "count"
+direction = "down"
+min = 0.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 1
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "gold_missing_resolves_to_targets"
+family = "gold_drift"
+kind = "count"
+direction = "down"
+min = 0.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 1
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "gold_removed_expectation_count"
+family = "gold_drift"
+kind = "count"
+direction = "down"
+min = 0.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 1
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "gold_schema_errors"
+family = "gold_drift"
+kind = "count"
+direction = "down"
+min = 0.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 1
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "gold_span_errors"
+family = "gold_drift"
+kind = "count"
+direction = "down"
+min = 0.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 1
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "gold_weakening_explanation_required_count"
+family = "gold_drift"
+kind = "count"
+direction = "down"
+min = 0.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 1
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "goto_definition_false_target_count"
+family = "provider"
+kind = "count"
+direction = "down"
+min = 0.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 1
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "goto_definition_hit_rate"
+family = "provider"
+kind = "ratio"
+direction = "up"
+min = 0.0
+max = 1.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 5
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "goto_definition_span_exact_rate"
+family = "provider"
+kind = "ratio"
+direction = "up"
+min = 0.0
+max = 1.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 5
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "heuristic_fact_precision"
+family = "confidence"
+kind = "ratio"
+direction = "up"
+min = 0.0
+max = 1.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 5
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "high_confidence_precision"
+family = "confidence"
+kind = "ratio"
+direction = "up"
+min = 0.0
+max = 1.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 5
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "hover_origin_accuracy"
+family = "provider"
+kind = "ratio"
+direction = "up"
+min = 0.0
+max = 1.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 5
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "incremental_changed_range_accuracy"
+family = "incremental"
+kind = "ratio"
+direction = "up"
+min = 0.0
+max = 1.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 5
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "incremental_checkpoint_hit_rate"
+family = "incremental"
+kind = "ratio"
+direction = "up"
+min = 0.0
+max = 1.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 5
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "incremental_checkpoint_miss_rate"
+family = "incremental"
+kind = "ratio"
+direction = "down"
+min = 0.0
+max = 1.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 5
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "incremental_edit_apply_equivalence_rate"
+family = "incremental"
+kind = "ratio"
+direction = "up"
+min = 0.0
+max = 1.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 5
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "incremental_full_parse_equivalence_rate"
+family = "incremental"
+kind = "ratio"
+direction = "up"
+min = 0.0
+max = 1.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 5
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "incremental_full_reparse_fallback_rate"
+family = "incremental"
+kind = "ratio"
+direction = "down"
+min = 0.0
+max = 1.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 5
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "incremental_no_panic_rate"
+family = "incremental"
+kind = "ratio"
+direction = "up"
+min = 0.0
+max = 1.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 5
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "incremental_no_progress_count"
+family = "incremental"
+kind = "count"
+direction = "down"
+min = 0.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 1
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+# Not a bounded ratio: `total_reparsed_bytes` accumulates across every edit in an
+# incremental expectation while the denominator is only the final source length, so a
+# multi-edit expectation whose edits each fall back to a full reparse legitimately exceeds
+# 1.0. Declared scalar so authored policy does not encode a bound the emitter cannot honour.
+name = "incremental_reparse_byte_ratio_p95"
+family = "incremental"
+kind = "scalar"
+direction = "down"
+min = 0.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 5
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "incremental_reused_node_ratio"
+family = "incremental"
+kind = "ratio"
+direction = "up"
+min = 0.0
+max = 1.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 5
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "incremental_reused_token_ratio"
+family = "incremental"
+kind = "ratio"
+direction = "up"
+min = 0.0
+max = 1.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 5
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "incremental_timeout_count"
+family = "incremental"
+kind = "count"
+direction = "down"
+min = 0.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 1
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "lex_ms_p95"
+family = "cost"
+kind = "duration_ms"
+direction = "down"
+min = 0.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 1
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "lexer_checkpoint_reuse_rate"
+family = "cache_reuse"
+kind = "ratio"
+direction = "up"
+min = 0.0
+max = 1.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 5
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "line_construct_exact_match_rate"
+family = "line"
+kind = "ratio"
+direction = "up"
+min = 0.0
+max = 1.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 5
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "line_construct_f1"
+family = "line"
+kind = "ratio"
+direction = "up"
+min = 0.0
+max = 1.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 5
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "line_construct_false_negative_count"
+family = "line"
+kind = "count"
+direction = "down"
+min = 0.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 1
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "line_construct_false_positive_count"
+family = "line"
+kind = "count"
+direction = "down"
+min = 0.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 1
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "line_construct_precision"
+family = "line"
+kind = "ratio"
+direction = "up"
+min = 0.0
+max = 1.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 5
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "line_construct_recall"
+family = "line"
+kind = "ratio"
+direction = "up"
+min = 0.0
+max = 1.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 5
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "line_construct_true_positive_count"
+family = "line"
+kind = "count"
+direction = "up"
+min = 0.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 1
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "line_dynamic_boundary_correct_rate"
+family = "line"
+kind = "ratio"
+direction = "up"
+min = 0.0
+max = 1.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 5
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "line_error_false_negative_rate"
+family = "line"
+kind = "ratio"
+direction = "down"
+min = 0.0
+max = 1.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 5
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "line_error_false_positive_rate"
+family = "line"
+kind = "ratio"
+direction = "down"
+min = 0.0
+max = 1.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 5
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "line_span_exact_rate"
+family = "span"
+kind = "ratio"
+direction = "up"
+min = 0.0
+max = 1.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 5
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "line_unsupported_detection_rate"
+family = "line"
+kind = "ratio"
+direction = "up"
+min = 0.0
+max = 1.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 5
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "low_confidence_precision"
+family = "confidence"
+kind = "ratio"
+direction = "up"
+min = 0.0
+max = 1.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 5
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "medium_confidence_precision"
+family = "confidence"
+kind = "ratio"
+direction = "up"
+min = 0.0
+max = 1.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 5
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "method_completion_dynamic_receiver_fallback_count"
+family = "provider"
+kind = "count"
+direction = "down"
+min = 0.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 1
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "method_completion_false_receiver_count"
+family = "provider"
+kind = "count"
+direction = "down"
+min = 0.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 1
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "method_completion_receiver_hit_rate"
+family = "provider"
+kind = "ratio"
+direction = "up"
+min = 0.0
+max = 1.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 5
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "method_completion_visible_symbol_relevance"
+family = "provider"
+kind = "ratio"
+direction = "up"
+min = 0.0
+max = 1.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 5
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "metric_artifact_size_bytes"
+family = "runtime"
+kind = "bytes"
+direction = "down"
+min = 0.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 1
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "metric_cache_hit_rate"
+family = "runtime"
+kind = "ratio"
+direction = "up"
+min = 0.0
+max = 1.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 5
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "metric_ci_runner_failure_count"
+family = "runtime"
+kind = "count"
+direction = "down"
+min = 0.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 1
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "metric_flake_count"
+family = "runtime"
+kind = "count"
+direction = "down"
+min = 0.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 1
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "metric_orphan_process_count"
+family = "runtime"
+kind = "count"
+direction = "down"
+min = 0.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 1
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "metric_runtime_ms"
+family = "runtime"
+kind = "duration_ms"
+direction = "down"
+min = 0.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 1
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "metric_timeout_count"
+family = "runtime"
+kind = "count"
+direction = "down"
+min = 0.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 1
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "newline_style_invariance_rate"
+family = "determinism"
+kind = "ratio"
+direction = "up"
+min = 0.0
+max = 1.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 5
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "parse_hash_stability_rate"
+family = "determinism"
+kind = "ratio"
+direction = "up"
+min = 0.0
+max = 1.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 5
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "parse_ms_p95"
+family = "cost"
+kind = "duration_ms"
+direction = "down"
+min = 0.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 1
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "parser_checkpoint_reuse_rate"
+family = "cache_reuse"
+kind = "ratio"
+direction = "up"
+min = 0.0
+max = 1.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 5
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "peak_rss_mb"
+family = "cost"
+kind = "scalar"
+direction = "down"
+min = 0.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 1
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "provider_completion_import_visibility_accuracy"
+family = "provider"
+kind = "ratio"
+direction = "up"
+min = 0.0
+max = 1.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 5
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "provider_completion_visible_symbol_relevance"
+family = "provider"
+kind = "ratio"
+direction = "up"
+min = 0.0
+max = 1.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 5
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "provider_diagnostic_false_negative_rate"
+family = "provider"
+kind = "ratio"
+direction = "down"
+min = 0.0
+max = 1.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 5
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "provider_diagnostic_false_positive_rate"
+family = "provider"
+kind = "ratio"
+direction = "down"
+min = 0.0
+max = 1.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 5
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "provider_document_symbol_precision"
+family = "provider"
+kind = "ratio"
+direction = "up"
+min = 0.0
+max = 1.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 5
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "provider_document_symbol_recall"
+family = "provider"
+kind = "ratio"
+direction = "up"
+min = 0.0
+max = 1.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 5
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "provider_goto_definition_hit_rate"
+family = "provider"
+kind = "ratio"
+direction = "up"
+min = 0.0
+max = 1.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 5
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "provider_hover_symbol_origin_accuracy"
+family = "provider"
+kind = "ratio"
+direction = "up"
+min = 0.0
+max = 1.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 5
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "provider_references_precision"
+family = "provider"
+kind = "ratio"
+direction = "up"
+min = 0.0
+max = 1.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 5
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "provider_references_recall"
+family = "provider"
+kind = "ratio"
+direction = "up"
+min = 0.0
+max = 1.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 5
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "provider_rename_safe_edit_accuracy"
+family = "provider"
+kind = "ratio"
+direction = "up"
+min = 0.0
+max = 1.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 5
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "provider_safe_delete_blocker_accuracy"
+family = "provider"
+kind = "ratio"
+direction = "up"
+min = 0.0
+max = 1.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 5
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "recovery_error_region_precision"
+family = "recovery"
+kind = "ratio"
+direction = "up"
+min = 0.0
+max = 1.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 5
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "recovery_error_region_recall"
+family = "recovery"
+kind = "ratio"
+direction = "up"
+min = 0.0
+max = 1.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 5
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "recovery_first_error_line_accuracy"
+family = "recovery"
+kind = "ratio"
+direction = "up"
+min = 0.0
+max = 1.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 5
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "recovery_ms_p95"
+family = "cost"
+kind = "duration_ms"
+direction = "down"
+min = 0.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 1
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "recovery_post_error_line_f1"
+family = "recovery"
+kind = "ratio"
+direction = "up"
+min = 0.0
+max = 1.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 5
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "recovery_post_error_symbol_recall"
+family = "recovery"
+kind = "ratio"
+direction = "up"
+min = 0.0
+max = 1.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 5
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "recovery_salvaged_lines_after_error"
+family = "recovery"
+kind = "count"
+direction = "up"
+min = 0.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 1
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "recovery_salvaged_symbols_after_error"
+family = "recovery"
+kind = "count"
+direction = "up"
+min = 0.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 1
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "recovery_spillover_max_lines"
+family = "recovery"
+kind = "scalar"
+direction = "down"
+min = 0.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 1
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "recovery_spillover_mean_lines"
+family = "recovery"
+kind = "scalar"
+direction = "down"
+min = 0.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 1
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "recovery_spillover_p95_lines"
+family = "recovery"
+kind = "scalar"
+direction = "down"
+min = 0.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 1
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "reference_query_ms_p95"
+family = "cost"
+kind = "duration_ms"
+direction = "down"
+min = 0.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 1
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "references_false_positive_count"
+family = "provider"
+kind = "count"
+direction = "down"
+min = 0.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 1
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "references_precision"
+family = "provider"
+kind = "ratio"
+direction = "up"
+min = 0.0
+max = 1.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 5
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "references_recall"
+family = "provider"
+kind = "ratio"
+direction = "up"
+min = 0.0
+max = 1.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 5
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "repeated_parse_determinism_rate"
+family = "determinism"
+kind = "ratio"
+direction = "up"
+min = 0.0
+max = 1.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 5
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "scale_ast_node_count"
+family = "scale"
+kind = "count"
+direction = "neutral"
+min = 0.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 1
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "scale_dynamic_boundary_count"
+family = "scale"
+kind = "count"
+direction = "neutral"
+min = 0.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 1
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "scale_export_count"
+family = "scale"
+kind = "count"
+direction = "neutral"
+min = 0.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 1
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "scale_file_bytes"
+family = "scale"
+kind = "bytes"
+direction = "neutral"
+min = 0.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 1
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "scale_import_count"
+family = "scale"
+kind = "count"
+direction = "neutral"
+min = 0.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 1
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "scale_line_count"
+family = "scale"
+kind = "count"
+direction = "neutral"
+min = 0.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 1
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "scale_max_brace_depth"
+family = "scale"
+kind = "count"
+direction = "neutral"
+min = 0.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 1
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "scale_max_heredoc_body_bytes"
+family = "scale"
+kind = "bytes"
+direction = "neutral"
+min = 0.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 1
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "scale_max_nesting_depth"
+family = "scale"
+kind = "count"
+direction = "neutral"
+min = 0.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 1
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "scale_max_regex_length"
+family = "scale"
+kind = "count"
+direction = "neutral"
+min = 0.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 1
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "scale_package_count"
+family = "scale"
+kind = "count"
+direction = "neutral"
+min = 0.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 1
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "scale_quote_like_count"
+family = "scale"
+kind = "count"
+direction = "neutral"
+min = 0.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 1
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "scale_sub_count"
+family = "scale"
+kind = "count"
+direction = "neutral"
+min = 0.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 1
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "scale_symbol_count"
+family = "scale"
+kind = "count"
+direction = "neutral"
+min = 0.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 1
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "scale_token_count"
+family = "scale"
+kind = "count"
+direction = "neutral"
+min = 0.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 1
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "semantic_extraction_ms_p95"
+family = "cost"
+kind = "duration_ms"
+direction = "down"
+min = 0.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 1
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "semantic_fact_cache_hit_rate"
+family = "cache_reuse"
+kind = "ratio"
+direction = "up"
+min = 0.0
+max = 1.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 5
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "semantic_fact_hash_stability_rate"
+family = "determinism"
+kind = "ratio"
+direction = "up"
+min = 0.0
+max = 1.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 5
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "span_invalid_count"
+family = "span"
+kind = "count"
+direction = "down"
+min = 0.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 1
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "span_inverted_count"
+family = "span"
+kind = "count"
+direction = "down"
+min = 0.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 1
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "span_near_rate"
+family = "span"
+kind = "ratio"
+direction = "up"
+min = 0.0
+max = 1.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 5
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "span_non_char_boundary_count"
+family = "span"
+kind = "count"
+direction = "down"
+min = 0.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 1
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "span_out_of_bounds_count"
+family = "span"
+kind = "count"
+direction = "down"
+min = 0.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 1
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "symbol_decl_f1"
+family = "symbol"
+kind = "ratio"
+direction = "up"
+min = 0.0
+max = 1.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 5
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "symbol_decl_generated_accessor_f1"
+family = "symbol"
+kind = "ratio"
+direction = "up"
+min = 0.0
+max = 1.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 5
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "symbol_decl_global_variable_f1"
+family = "symbol"
+kind = "ratio"
+direction = "up"
+min = 0.0
+max = 1.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 5
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "symbol_decl_inherited_method_f1"
+family = "symbol"
+kind = "ratio"
+direction = "up"
+min = 0.0
+max = 1.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 5
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "symbol_decl_lexical_variable_f1"
+family = "symbol"
+kind = "ratio"
+direction = "up"
+min = 0.0
+max = 1.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 5
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "symbol_decl_method_f1"
+family = "symbol"
+kind = "ratio"
+direction = "up"
+min = 0.0
+max = 1.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 5
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "symbol_decl_package_f1"
+family = "symbol"
+kind = "ratio"
+direction = "up"
+min = 0.0
+max = 1.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 5
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "symbol_decl_precision"
+family = "symbol"
+kind = "ratio"
+direction = "up"
+min = 0.0
+max = 1.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 5
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "symbol_decl_recall"
+family = "symbol"
+kind = "ratio"
+direction = "up"
+min = 0.0
+max = 1.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 5
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "symbol_decl_role_method_f1"
+family = "symbol"
+kind = "ratio"
+direction = "up"
+min = 0.0
+max = 1.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 5
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "symbol_decl_subroutine_f1"
+family = "symbol"
+kind = "ratio"
+direction = "up"
+min = 0.0
+max = 1.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 5
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "symbol_edge_f1"
+family = "symbol"
+kind = "ratio"
+direction = "up"
+min = 0.0
+max = 1.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 5
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "symbol_edge_precision"
+family = "symbol"
+kind = "ratio"
+direction = "up"
+min = 0.0
+max = 1.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 5
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "symbol_edge_recall"
+family = "symbol"
+kind = "ratio"
+direction = "up"
+min = 0.0
+max = 1.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 5
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "symbol_ref_dynamic_boundary_f1"
+family = "symbol"
+kind = "ratio"
+direction = "up"
+min = 0.0
+max = 1.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 5
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "symbol_ref_export_f1"
+family = "symbol"
+kind = "ratio"
+direction = "up"
+min = 0.0
+max = 1.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 5
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "symbol_ref_f1"
+family = "symbol"
+kind = "ratio"
+direction = "up"
+min = 0.0
+max = 1.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 5
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "symbol_ref_import_f1"
+family = "symbol"
+kind = "ratio"
+direction = "up"
+min = 0.0
+max = 1.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 5
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "symbol_ref_precision"
+family = "symbol"
+kind = "ratio"
+direction = "up"
+min = 0.0
+max = 1.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 5
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "symbol_ref_recall"
+family = "symbol"
+kind = "ratio"
+direction = "up"
+min = 0.0
+max = 1.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 5
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "symbol_ref_typeglob_alias_f1"
+family = "symbol"
+kind = "ratio"
+direction = "up"
+min = 0.0
+max = 1.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 5
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "symbols_emitted_in_comments"
+family = "safety"
+kind = "count"
+direction = "down"
+min = 0.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 1
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "symbols_emitted_in_pod"
+family = "safety"
+kind = "count"
+direction = "down"
+min = 0.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 1
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "symbols_emitted_in_strings"
+family = "safety"
+kind = "count"
+direction = "down"
+min = 0.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 1
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "symbols_emitted_in_unknown_regions"
+family = "safety"
+kind = "count"
+direction = "down"
+min = 0.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 1
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "tab_column_mismatch_count"
+family = "span"
+kind = "count"
+direction = "down"
+min = 0.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 1
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "token_stream_hash_stability_rate"
+family = "determinism"
+kind = "ratio"
+direction = "up"
+min = 0.0
+max = 1.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 5
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "unchanged_file_skip_rate"
+family = "cache_reuse"
+kind = "ratio"
+direction = "up"
+min = 0.0
+max = 1.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 5
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "unicode_position_error_count"
+family = "span"
+kind = "count"
+direction = "down"
+min = 0.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 1
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "unsupported_but_salvaged_count"
+family = "unsupported"
+kind = "count"
+direction = "up"
+min = 0.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 1
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "unsupported_construct_detected_count"
+family = "unsupported"
+kind = "count"
+direction = "up"
+min = 0.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 1
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "unsupported_construct_false_exact_count"
+family = "unsupported"
+kind = "count"
+direction = "down"
+min = 0.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 1
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "unsupported_construct_family_count"
+family = "unsupported"
+kind = "count"
+direction = "neutral"
+min = 0.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 1
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "unsupported_construct_missed_count"
+family = "unsupported"
+kind = "count"
+direction = "down"
+min = 0.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 1
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "utf16_range_exact_rate"
+family = "span"
+kind = "ratio"
+direction = "up"
+min = 0.0
+max = 1.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 5
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "whitespace_invariance_rate"
+family = "determinism"
+kind = "ratio"
+direction = "up"
+min = 0.0
+max = 1.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 5
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "workspace_insert_ms_p95"
+family = "cost"
+kind = "duration_ms"
+direction = "down"
+min = 0.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 1
+cadences = ["pr", "merge_gate", "nightly", "release"]
+
+[[metric]]
+name = "workspace_shard_reuse_rate"
+family = "cache_reuse"
+kind = "ratio"
+direction = "up"
+min = 0.0
+max = 1.0
+zero_budget = false
+min_sample_count = 1
+high_confidence_sample_count = 5
+cadences = ["pr", "merge_gate", "nightly", "release"]

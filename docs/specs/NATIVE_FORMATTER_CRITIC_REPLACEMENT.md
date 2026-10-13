@@ -50,10 +50,19 @@ depending on external binaries:
 
 ```text
 native            default when the native engine is production-ready
-compat            native behavior tuned toward common perltidy/perlcritic profiles
 external-legacy   explicit opt-in shell-out to traditional tools
 off               disabled
 ```
+
+A `compat` formatter mode was specified here and implemented as a bare alias
+for `native`: it selected the same engine and produced byte-identical output.
+#7129 retired it rather than leave a public distinction the formatter could
+not defend, and #15624 closed the deprecation window, so the retired tokens
+are rejected outright. A future compatibility profile must arrive as its own
+behavior-backed contract — profile identity and version, a reviewed mapping
+table from named legacy conventions, declared supported/approximated/
+unsupported dispositions, and behavior fixtures distinguishing it from native
+defaults. It does not inherit authority from the removed alias.
 
 ```text
 default editor path: native
@@ -297,7 +306,7 @@ surface, with legacy external modes explicit:
 
 ```toml
 [format]
-engine = "native"          # native | compat | external-legacy | off
+engine = "native"          # native | external-legacy | off
 line_width = 100
 indent = 4
 tabs = false
@@ -365,7 +374,7 @@ The native path must work through existing user surfaces:
 | LSP | `textDocument/formatting`, `textDocument/rangeFormatting`, and format-on-save edits. | Push diagnostics, pull diagnostics, code actions, and `perl.runCritic` compatibility. |
 | CLI | Check and apply modes for local/CI use. | Check mode with structured output and optional SARIF if adopted. |
 | CI | Idempotence, parse-preservation, and compatibility receipts. | Rule matrix, suppression matrix, code-action matrix, and policy receipts. |
-| Config | Native/compat/external modes and imported profile reports. | Native/compat/external modes, profile import, severity remapping, suppressions. |
+| Config | Native/external modes and imported profile reports. | Native/compat/external modes, profile import, severity remapping, suppressions. |
 
 Editor-only and CI-only paths are not allowed. A rule or formatter behavior must
 be testable outside the editor.

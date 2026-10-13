@@ -1,9 +1,18 @@
+import { isPerlLanguageId } from './languageIdentity';
+
 export interface OpenTextDocumentSnapshot {
   readonly uri: string;
   readonly languageId: string;
   readonly version: number;
   readonly text: string;
 }
+
+/** v0.18 selected text/position envelope (#8129). vscode-languageclient follows advertised Full + UTF-16. */
+export const V0_18_TEXT_SYNC_ENVELOPE = {
+  decision: 'full_document_utf16',
+  textSyncKind: 'Full',
+  positionEncoding: 'utf-16',
+} as const;
 
 export interface TextDocumentNotificationClient {
   sendNotification(method: string, params: unknown): Promise<void>;
@@ -87,7 +96,7 @@ export async function replayOpenPerlDocuments(
   documents: readonly OpenTextDocumentSnapshot[],
 ): Promise<void> {
   for (const document of documents) {
-    if (document.languageId !== 'perl') {
+    if (!isPerlLanguageId(document.languageId)) {
       continue;
     }
 
@@ -115,7 +124,7 @@ export async function replayOpenPerlDocumentsWhenReady(
   assertCurrentGeneration(isCurrent);
 
   for (const document of documents) {
-    if (document.languageId !== 'perl') {
+    if (!isPerlLanguageId(document.languageId)) {
       continue;
     }
     assertCurrentGeneration(isCurrent);

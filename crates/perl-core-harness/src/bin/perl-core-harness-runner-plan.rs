@@ -29,7 +29,10 @@ mod normalize;
 #[path = "../runner_plan/model.rs"]
 mod runner_model;
 
-use build::{build_runner_plan_with_frame, validate_runner_plan, validate_runner_plan_against};
+use build::{
+    DeclaredPlanInputs, build_runner_plan_with_frame, validate_runner_plan,
+    validate_runner_plan_against,
+};
 use color_eyre::eyre::{Context, ContextCompat, Result, bail};
 use compare::{compare_runner_plans_against, validate_runner_parity_against};
 use io::read_matrix;
@@ -65,7 +68,7 @@ fn build_command(args: Vec<OsString>) -> Result<()> {
         .map_err(|error| color_eyre::eyre::eyre!(error))?;
     let discovery_path = PathBuf::from(&args[3]);
     let output_path = PathBuf::from(&args[4]);
-    let (discovery_frame, scheduling) = parse_build_options(&args[5..])?;
+    let (discovery_frame, scheduling) = parse_declaration_options(&args[5..], "")?;
     let matrix = read_matrix(&matrix_path)?;
     let raw = read_bytes(&discovery_path)?;
     let plan = build_runner_plan_with_frame(
@@ -88,18 +91,18 @@ fn build_command(args: Vec<OsString>) -> Result<()> {
 }
 
 fn compare_command(args: Vec<OsString>) -> Result<()> {
-    if args.len() != 6 {
-        bail!(usage());
-    }
-    let matrix = read_matrix(Path::new(&args[0]))?;
-    let left = read_plan(Path::new(&args[1]))?;
-    let left_raw = read_bytes(Path::new(&args[2]))?;
-    let right = read_plan(Path::new(&args[3]))?;
-    let right_raw = read_bytes(Path::new(&args[4]))?;
-    let output = PathBuf::from(&args[5]);
-    let report = compare_runner_plans_against(&matrix, &left, &left_raw, &right, &right_raw)
-        .map_err(|error| color_eyre::eyre::eyre!(error))?;
-    write_json(&output, &report)?;
+    let sides = read_two_sided_arguments(&args)?;
+    let report = compare_runner_plans_against(
+        &sides.matrix,
+        &sides.left.declared,
+        &sides.left.plan,
+        &sides.left.raw,
+        &sides.right.declared,
+        &sides.right.plan,
+        &sides.right.raw,
+    )
+    .map_err(|error| color_eyre::eyre::eyre!(error))?;
+    write_json(&sides.tail, &report)?;
     println!(
         "runner parity valid: target={} status={:?}",
         report.target_id, report.membership_status
@@ -108,39 +111,140 @@ fn compare_command(args: Vec<OsString>) -> Result<()> {
 }
 
 fn check_plan_command(args: Vec<OsString>) -> Result<()> {
-    if args.len() != 3 {
+    if args.len() < 5 {
         bail!(usage());
     }
     let matrix = read_matrix(Path::new(&args[0]))?;
-    let raw = read_bytes(Path::new(&args[1]))?;
-    let plan = read_plan(Path::new(&args[2]))?;
-    validate_runner_plan_against(&matrix, &raw, &plan)
+    let target_id = args[1].to_string_lossy().into_owned();
+    let runner = RunnerKind::parse(&args[2].to_string_lossy())
         .map_err(|error| color_eyre::eyre::eyre!(error))?;
-    println!("runner plan authority valid: {}", Path::new(&args[2]).display());
+    let raw = read_bytes(Path::new(&args[3]))?;
+    let plan_path = PathBuf::from(&args[4]);
+    let plan = read_plan(&plan_path)?;
+    let (discovery_frame, scheduling) = parse_declaration_options(&args[5..], "")?;
+    let declared = DeclaredPlanInputs::new(target_id, runner, discovery_frame, scheduling);
+    validate_runner_plan_against(&matrix, &raw, &declared, &plan)
+        .map_err(|error| color_eyre::eyre::eyre!(error))?;
+    println!("runner plan authority valid: {}", plan_path.display());
     Ok(())
 }
 
 fn check_parity_command(args: Vec<OsString>) -> Result<()> {
-    if args.len() != 6 {
-        bail!(usage());
-    }
-    let matrix = read_matrix(Path::new(&args[0]))?;
-    let left = read_plan(Path::new(&args[1]))?;
-    let left_raw = read_bytes(Path::new(&args[2]))?;
-    let right = read_plan(Path::new(&args[3]))?;
-    let right_raw = read_bytes(Path::new(&args[4]))?;
-    validate_runner_plan_against(&matrix, &left_raw, &left)
+    let sides = read_two_sided_arguments(&args)?;
+    validate_runner_plan_against(
+        &sides.matrix,
+        &sides.left.raw,
+        &sides.left.declared,
+        &sides.left.plan,
+    )
+    .map_err(|error| color_eyre::eyre::eyre!(error))?;
+    validate_runner_plan_against(
+        &sides.matrix,
+        &sides.right.raw,
+        &sides.right.declared,
+        &sides.right.plan,
+    )
+    .map_err(|error| color_eyre::eyre::eyre!(error))?;
+    let report = read_parity(&sides.tail)?;
+    validate_runner_parity_against(&report, &sides.left.plan, &sides.right.plan)
         .map_err(|error| color_eyre::eyre::eyre!(error))?;
-    validate_runner_plan_against(&matrix, &right_raw, &right)
-        .map_err(|error| color_eyre::eyre::eyre!(error))?;
-    let report = read_parity(Path::new(&args[5]))?;
-    validate_runner_parity_against(&report, &left, &right)
-        .map_err(|error| color_eyre::eyre::eyre!(error))?;
-    println!("runner parity authority valid: {}", Path::new(&args[5]).display());
+    println!("runner parity authority valid: {}", sides.tail.display());
     Ok(())
 }
 
-fn parse_scheduling(args: &[OsString]) -> Result<RunnerScheduling> {
+/// One side of a two-sided command: its candidate plan, the exact raw
+/// discovery bytes it claims, and the caller's declared reconstruction inputs.
+struct SideArguments {
+    declared: DeclaredPlanInputs,
+    plan: RunnerPlan,
+    raw: Vec<u8>,
+}
+
+/// The complete argument set of `compare` and `check-parity`.
+struct TwoSidedArguments {
+    matrix: model::UpstreamTargetMatrix,
+    left: SideArguments,
+    right: SideArguments,
+    /// Output receipt for `compare`; parity receipt under check for
+    /// `check-parity`.
+    tail: PathBuf,
+}
+
+fn read_two_sided_arguments(args: &[OsString]) -> Result<TwoSidedArguments> {
+    if args.len() < 9 {
+        bail!(usage());
+    }
+    let matrix = read_matrix(Path::new(&args[0]))?;
+    let target_id = args[1].to_string_lossy().into_owned();
+    let left_runner = RunnerKind::parse(&args[2].to_string_lossy())
+        .map_err(|error| color_eyre::eyre::eyre!(error))?;
+    let left_plan = read_plan(Path::new(&args[3]))?;
+    let left_raw = read_bytes(Path::new(&args[4]))?;
+    let right_runner = RunnerKind::parse(&args[5].to_string_lossy())
+        .map_err(|error| color_eyre::eyre::eyre!(error))?;
+    let right_plan = read_plan(Path::new(&args[6]))?;
+    let right_raw = read_bytes(Path::new(&args[7]))?;
+    let tail = PathBuf::from(&args[8]);
+    let (left_options, right_options) = split_side_options(&args[9..])?;
+    let (left_frame, left_scheduling) = parse_declaration_options(&left_options, "left-")?;
+    let (right_frame, right_scheduling) = parse_declaration_options(&right_options, "right-")?;
+    Ok(TwoSidedArguments {
+        matrix,
+        left: SideArguments {
+            declared: DeclaredPlanInputs::new(
+                target_id.clone(),
+                left_runner,
+                left_frame,
+                left_scheduling,
+            ),
+            plan: left_plan,
+            raw: left_raw,
+        },
+        right: SideArguments {
+            declared: DeclaredPlanInputs::new(
+                target_id,
+                right_runner,
+                right_frame,
+                right_scheduling,
+            ),
+            plan: right_plan,
+            raw: right_raw,
+        },
+        tail,
+    })
+}
+
+/// Route `--left-*` and `--right-*` options to their side, keeping each flag
+/// with the value it owns. Both sides declare independently: neither may
+/// inherit the other's frame or scheduling.
+fn split_side_options(args: &[OsString]) -> Result<(Vec<OsString>, Vec<OsString>)> {
+    let mut left = Vec::new();
+    let mut right = Vec::new();
+    let mut index = 0;
+    while index < args.len() {
+        let arg = args[index].to_string_lossy().into_owned();
+        let (side, flag) = if let Some(rest) = arg.strip_prefix("--left-") {
+            (&mut left, format!("--{rest}"))
+        } else if let Some(rest) = arg.strip_prefix("--right-") {
+            (&mut right, format!("--{rest}"))
+        } else {
+            bail!("unsupported option {arg}; declare each side with --left-* and --right-*");
+        };
+        side.push(OsString::from(&flag));
+        if matches!(flag.as_str(), "--frame" | "--jobs" | "--property") {
+            index += 1;
+            let value = args.get(index).with_context(|| format!("{arg} requires a value"))?;
+            side.push(value.clone());
+        }
+        index += 1;
+    }
+    Ok((left, right))
+}
+
+/// Parse declared scheduling inputs. `prefix` is the side marker the operator
+/// actually typed (`""`, `"left-"`, `"right-"`), so every error names the
+/// option as it appeared on the command line rather than its stripped form.
+fn parse_scheduling(args: &[OsString], prefix: &str) -> Result<RunnerScheduling> {
     let mut scheduling = RunnerScheduling::default();
     let mut index = 0;
     while index < args.len() {
@@ -150,44 +254,56 @@ fn parse_scheduling(args: &[OsString]) -> Result<RunnerScheduling> {
             "--state-ordering" => scheduling.state_ordering = true,
             "--jobs" => {
                 index += 1;
-                let value = args.get(index).context("--jobs requires a positive integer")?;
-                let jobs = value
-                    .to_string_lossy()
-                    .parse::<u32>()
-                    .context("--jobs requires a positive integer")?;
+                let jobs_requirement = format!("--{prefix}jobs requires a positive integer");
+                let value = args.get(index).context(jobs_requirement.clone())?;
+                let jobs =
+                    value.to_string_lossy().parse::<u32>().context(jobs_requirement.clone())?;
                 if jobs == 0 {
-                    bail!("--jobs requires a positive integer");
+                    bail!(jobs_requirement);
                 }
                 scheduling.jobs = Some(jobs);
             }
             "--property" => {
                 index += 1;
-                let value = args.get(index).context("--property requires key=value")?;
+                let property_requirement = format!("--{prefix}property requires key=value");
+                let value = args.get(index).context(property_requirement.clone())?;
                 let value = value.to_string_lossy();
                 let (key, property) =
-                    value.split_once('=').context("--property requires key=value")?;
+                    value.split_once('=').context(property_requirement.clone())?;
                 if key.trim().is_empty() || property.trim().is_empty() {
-                    bail!("--property requires non-empty key=value");
+                    bail!("--{prefix}property requires non-empty key=value");
                 }
                 if scheduling.properties.insert(key.to_string(), property.to_string()).is_some() {
                     bail!("duplicate scheduling property {key}");
                 }
             }
-            other => bail!("unsupported scheduling option {other}"),
+            other => {
+                let other = other.strip_prefix("--").unwrap_or(other);
+                bail!("unsupported scheduling option --{prefix}{other}");
+            }
         }
         index += 1;
     }
     Ok(scheduling)
 }
 
-fn parse_build_options(args: &[OsString]) -> Result<(DiscoveryFrame, RunnerScheduling)> {
+/// Parse one side's declared reconstruction options: the discovery frame the
+/// raw bytes are spelled in plus the declared scheduling inputs. Both `build`
+/// and the checking commands consume the same declaration, so a plan is
+/// checked against what its operator declared rather than against itself.
+fn parse_declaration_options(
+    args: &[OsString],
+    prefix: &str,
+) -> Result<(DiscoveryFrame, RunnerScheduling)> {
     let mut frame = None;
     let mut scheduling_args = Vec::new();
     let mut index = 0;
     while index < args.len() {
         if args[index].to_string_lossy() == "--frame" {
             index += 1;
-            let value = args.get(index).context("--frame requires a discovery frame")?;
+            let value = args
+                .get(index)
+                .with_context(|| format!("--{prefix}frame requires a discovery frame"))?;
             frame = Some(match value.to_string_lossy().as_ref() {
                 "runner_t_directory_relative" => DiscoveryFrame::RunnerTDirectoryRelative,
                 "repository_root_relative" => DiscoveryFrame::RepositoryRootRelative,
@@ -199,8 +315,10 @@ fn parse_build_options(args: &[OsString]) -> Result<(DiscoveryFrame, RunnerSched
         }
         index += 1;
     }
-    let frame = frame.context("--frame is required; declare the raw discovery path frame")?;
-    Ok((frame, parse_scheduling(&scheduling_args)?))
+    let frame = frame.with_context(|| {
+        format!("--{prefix}frame is required; declare the raw discovery path frame")
+    })?;
+    Ok((frame, parse_scheduling(&scheduling_args, prefix)?))
 }
 
 fn read_bytes(path: &Path) -> Result<Vec<u8>> {
@@ -231,7 +349,7 @@ fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
 }
 
 fn usage() -> &'static str {
-    "usage: perl-core-harness-runner-plan build <matrix> <target-id> <test|harness|direct_fallback> <raw-discovery> <output> --frame runner_t_directory_relative|repository_root_relative|canonical_repository_path [--jobs N] [--asap] [--state-ordering] [--property key=value] | compare <matrix> <left-plan> <left-raw-discovery> <right-plan> <right-raw-discovery> <output> | check-plan <matrix> <raw-discovery> <plan> | check-parity <matrix> <left-plan> <left-raw-discovery> <right-plan> <right-raw-discovery> <parity-report>"
+    "usage: perl-core-harness-runner-plan build <matrix> <target-id> <test|harness|direct_fallback> <raw-discovery> <output> --frame runner_t_directory_relative|repository_root_relative|canonical_repository_path [--jobs N] [--asap] [--state-ordering] [--property key=value] | check-plan <matrix> <target-id> <test|harness|direct_fallback> <raw-discovery> <plan> --frame <frame> [--jobs N] [--asap] [--state-ordering] [--property key=value] | compare <matrix> <target-id> <left-runner> <left-plan> <left-raw-discovery> <right-runner> <right-plan> <right-raw-discovery> <output> --left-frame <frame> --right-frame <frame> [--left-jobs N] [--left-asap] [--left-state-ordering] [--left-property key=value] [--right-jobs N] [--right-asap] [--right-state-ordering] [--right-property key=value] | check-parity <matrix> <target-id> <left-runner> <left-plan> <left-raw-discovery> <right-runner> <right-plan> <right-raw-discovery> <parity-report> --left-frame <frame> --right-frame <frame> [side scheduling options]"
 }
 
 #[cfg(test)]

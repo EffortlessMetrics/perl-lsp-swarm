@@ -544,10 +544,8 @@ pub fn is_valid_dep_name(name: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    #![expect(clippy::unwrap_used, reason = "test assertions on fixture parsing")]
-    #![expect(clippy::expect_used, reason = "test assertions on fixture parsing")]
-
     use super::*;
+    use perl_tdd_support::{must_err_with, must_some_with, must_with};
 
     const REAL_MACHETE_OUTPUT: &str =
         include_str!("../../tests/fixtures/dependency-hygiene/machete-findings.json");
@@ -557,6 +555,65 @@ mod tests {
         include_str!("../../tests/fixtures/dependency-hygiene/machete-missing-unused.json");
     const MISSING_IGNORED_USED_MACHETE_OUTPUT: &str =
         include_str!("../../tests/fixtures/dependency-hygiene/machete-missing-ignored-used.json");
+    const MACHETE_NATIVE_REF: &str = "target/machete-output.txt";
+    const MACHETE_VERSION: &str = "cargo-machete 0.9.2";
+
+    #[track_caller]
+    fn serialize_outcome(outcome: &DependencyHygieneOutcome) -> String {
+        must_with(serde_json::to_string(outcome), "serialize outcome")
+    }
+
+    #[track_caller]
+    fn deserialize_outcome(json: &str) -> DependencyHygieneOutcome {
+        must_with(serde_json::from_str(json), "deserialize outcome")
+    }
+
+    #[track_caller]
+    fn classify_documented_json(exit_code: Option<i32>, stdout: &str) -> Vec<DependencyFinding> {
+        must_with(
+            classify_machete_output(
+                exit_code,
+                stdout,
+                MACHETE_NATIVE_REF,
+                MACHETE_VERSION,
+                COMMAND_IDENTITY,
+            ),
+            "documented cargo-machete JSON should parse",
+        )
+    }
+
+    #[track_caller]
+    fn classify_documented_clean_json(stdout: &str) -> Vec<DependencyFinding> {
+        must_with(
+            classify_machete_output(
+                Some(0),
+                stdout,
+                MACHETE_NATIVE_REF,
+                MACHETE_VERSION,
+                COMMAND_IDENTITY,
+            ),
+            "documented clean JSON should parse",
+        )
+    }
+
+    #[track_caller]
+    fn classify_closed(exit_code: Option<i32>, stdout: &str, context: &'static str) -> String {
+        must_err_with(
+            classify_machete_output(
+                exit_code,
+                stdout,
+                MACHETE_NATIVE_REF,
+                MACHETE_VERSION,
+                COMMAND_IDENTITY,
+            ),
+            context,
+        )
+    }
+
+    #[track_caller]
+    fn first_finding(findings: &[DependencyFinding]) -> &DependencyFinding {
+        must_some_with(findings.first(), "fixture finding")
+    }
 
     // ── Outcome display ───────────────────────────────────────────────────────
 
@@ -584,20 +641,14 @@ mod tests {
 
     #[test]
     fn test_outcome_serializes_to_screaming_snake_case() {
+        assert_eq!(serialize_outcome(&DependencyHygieneOutcome::Success), "\"SUCCESS\"");
         assert_eq!(
-            serde_json::to_string(&DependencyHygieneOutcome::Success).unwrap(),
-            "\"SUCCESS\""
-        );
-        assert_eq!(
-            serde_json::to_string(&DependencyHygieneOutcome::PolicyFinding).unwrap(),
+            serialize_outcome(&DependencyHygieneOutcome::PolicyFinding),
             "\"POLICY_FINDING\""
         );
+        assert_eq!(serialize_outcome(&DependencyHygieneOutcome::NotProven), "\"NOT_PROVEN\"");
         assert_eq!(
-            serde_json::to_string(&DependencyHygieneOutcome::NotProven).unwrap(),
-            "\"NOT_PROVEN\""
-        );
-        assert_eq!(
-            serde_json::to_string(&DependencyHygieneOutcome::NotApplicable).unwrap(),
+            serialize_outcome(&DependencyHygieneOutcome::NotApplicable),
             "\"NOT_APPLICABLE\""
         );
     }
@@ -610,8 +661,8 @@ mod tests {
             DependencyHygieneOutcome::NotProven,
             DependencyHygieneOutcome::NotApplicable,
         ] {
-            let json = serde_json::to_string(&outcome).unwrap();
-            let decoded: DependencyHygieneOutcome = serde_json::from_str(&json).unwrap();
+            let json = serialize_outcome(&outcome);
+            let decoded = deserialize_outcome(&json);
             assert_eq!(outcome, decoded);
         }
     }
@@ -650,36 +701,23 @@ mod tests {
 
     #[test]
     fn test_classify_current_json_finding_fixture() {
-        let findings = classify_machete_output(
-            Some(1),
-            REAL_MACHETE_OUTPUT,
-            "target/machete-output.txt",
-            "cargo-machete 0.9.2",
-            COMMAND_IDENTITY,
-        )
-        .expect("documented cargo-machete JSON should parse");
+        let findings = classify_documented_json(Some(1), REAL_MACHETE_OUTPUT);
+        let finding = first_finding(&findings);
 
         assert_eq!(findings.len(), 1);
-        assert_eq!(findings[0].crate_name, "fixture-crate");
-        assert_eq!(findings[0].manifest_path, "crates/fixture-crate/Cargo.toml");
-        assert_eq!(findings[0].dep_name, "unused-dependency");
-        assert_eq!(findings[0].dep_section, None);
-        assert_eq!(findings[0].command_identity, COMMAND_IDENTITY);
+        assert_eq!(finding.crate_name, "fixture-crate");
+        assert_eq!(finding.manifest_path, "crates/fixture-crate/Cargo.toml");
+        assert_eq!(finding.dep_name, "unused-dependency");
+        assert_eq!(finding.dep_section, None);
+        assert_eq!(finding.command_identity, COMMAND_IDENTITY);
     }
 
     #[test]
     fn test_json_finding_has_required_metadata() {
-        let findings = classify_machete_output(
-            Some(1),
-            REAL_MACHETE_OUTPUT,
-            "target/machete-output.txt",
-            "cargo-machete 0.9.2",
-            COMMAND_IDENTITY,
-        )
-        .expect("documented cargo-machete JSON should parse");
+        let findings = classify_documented_json(Some(1), REAL_MACHETE_OUTPUT);
 
         assert_eq!(findings.len(), 1, "fixture declares exactly one unused dependency");
-        let finding = &findings[0];
+        let finding = first_finding(&findings);
         assert!(!finding.crate_name.is_empty(), "crate_name must not be empty");
         assert!(!finding.manifest_path.is_empty(), "manifest_path must not be empty");
         assert!(!finding.dep_name.is_empty(), "dep_name must not be empty");
@@ -700,33 +738,22 @@ mod tests {
 
     #[test]
     fn test_json_findings_document_false_positive_limitation() {
-        let findings = classify_machete_output(
-            Some(1),
-            REAL_MACHETE_OUTPUT,
-            "target/machete-output.txt",
-            "cargo-machete 0.9.2",
-            COMMAND_IDENTITY,
-        )
-        .expect("documented cargo-machete JSON should parse");
+        let findings = classify_documented_json(Some(1), REAL_MACHETE_OUTPUT);
 
         assert_eq!(findings.len(), 1, "fixture declares exactly one unused dependency");
         assert!(
-            findings[0].limitations.iter().any(|limitation| limitation.contains("proc-macro")
-                || limitation.contains("build script")),
+            first_finding(&findings)
+                .limitations
+                .iter()
+                .any(|limitation| limitation.contains("proc-macro")
+                    || limitation.contains("build script")),
             "limitations must document false-positive risk from macros/build scripts"
         );
     }
 
     #[test]
     fn test_json_findings_attribute_to_primary_instrument() {
-        let findings = classify_machete_output(
-            Some(1),
-            REAL_MACHETE_OUTPUT,
-            "target/machete-output.txt",
-            "cargo-machete 0.9.2",
-            COMMAND_IDENTITY,
-        )
-        .expect("documented cargo-machete JSON should parse");
+        let findings = classify_documented_json(Some(1), REAL_MACHETE_OUTPUT);
 
         assert!(!findings.is_empty(), "fixture must produce at least one finding to attribute");
         for finding in &findings {
@@ -742,14 +769,7 @@ mod tests {
         let stdout = r#"{"crates":[{"package_name":"fixture-crate",
             "manifest_path":"crates/fixture-crate/Cargo.toml",
             "unused":[],"ignored_used":["suppressed-dependency"]}]}"#;
-        let findings = classify_machete_output(
-            Some(0),
-            stdout,
-            "target/machete-output.txt",
-            "cargo-machete 0.9.2",
-            COMMAND_IDENTITY,
-        )
-        .expect("documented cargo-machete JSON should parse");
+        let findings = classify_documented_json(Some(0), stdout);
 
         assert!(
             findings.is_empty(),
@@ -759,68 +779,45 @@ mod tests {
 
     #[test]
     fn test_classify_current_json_clean_result() {
-        let findings = classify_machete_output(
-            Some(0),
-            "{}",
-            "target/machete-output.txt",
-            "cargo-machete 0.9.2",
-            COMMAND_IDENTITY,
-        )
-        .expect("documented clean JSON should parse");
+        let findings = classify_documented_clean_json("{}");
 
         assert!(findings.is_empty(), "documented clean `{{}}` result must yield no findings");
     }
 
     #[test]
     fn test_malformed_exit_zero_json_is_not_proven() {
-        let result = classify_machete_output(
+        let _ = classify_closed(
             Some(0),
             MALFORMED_MACHETE_OUTPUT,
-            "target/machete-output.txt",
-            "cargo-machete 0.9.2",
-            COMMAND_IDENTITY,
+            "malformed exit-0 output must fail closed",
         );
-
-        assert!(result.is_err(), "malformed exit-0 output must fail closed");
     }
 
     #[test]
     fn test_missing_unused_field_is_not_proven() {
-        let result = classify_machete_output(
+        let _ = classify_closed(
             Some(0),
             MISSING_UNUSED_MACHETE_OUTPUT,
-            "target/machete-output.txt",
-            "cargo-machete 0.9.2",
-            COMMAND_IDENTITY,
+            "missing unused must fail closed",
         );
-
-        assert!(result.is_err(), "missing unused must fail closed");
     }
 
     #[test]
     fn test_missing_ignored_used_field_is_not_proven() {
-        let result = classify_machete_output(
+        let _ = classify_closed(
             Some(0),
             MISSING_IGNORED_USED_MACHETE_OUTPUT,
-            "target/machete-output.txt",
-            "cargo-machete 0.9.2",
-            COMMAND_IDENTITY,
+            "missing ignored_used must fail closed",
         );
-
-        assert!(result.is_err(), "missing ignored_used must fail closed");
     }
 
     #[test]
     fn test_unrecognized_exit_zero_json_is_not_proven() {
-        let result = classify_machete_output(
+        let _ = classify_closed(
             Some(0),
             "{\"diagnostic\":\"clean\"}",
-            "target/machete-output.txt",
-            "cargo-machete 0.9.2",
-            COMMAND_IDENTITY,
+            "unrecognized exit-0 output must fail closed",
         );
-
-        assert!(result.is_err(), "unrecognized exit-0 output must fail closed");
     }
 
     /// Negative control #1 (variant): probe with a non-existent binary → NOT_PROVEN path.
@@ -901,5 +898,67 @@ mod tests {
             !matches!(outcome, ProbeOutcome::Available(_)),
             "a missing binary must not become Available"
         );
+    }
+
+    #[test]
+    fn dependency_hygiene_converted_must_wrappers_carry_track_caller() {
+        let src = include_str!("dependency_hygiene.rs");
+        let mut failures = Vec::new();
+        for helper in [
+            "fn serialize_outcome(",
+            "fn deserialize_outcome(",
+            "fn classify_documented_json(",
+            "fn classify_documented_clean_json(",
+            "fn classify_closed(",
+            "fn first_finding(",
+        ] {
+            let Some(idx) = src.find(helper) else {
+                failures.push(format!("missing wrapper {helper}"));
+                continue;
+            };
+            let preceding = src.get(..idx).unwrap_or("");
+            let last_attr_line =
+                preceding.lines().rev().find(|line| !line.trim().is_empty()).unwrap_or("");
+            if last_attr_line.trim() != "#[track_caller]" {
+                failures.push(format!(
+                    "{helper} is not immediately preceded by #[track_caller] (found {last_attr_line:?})"
+                ));
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    #[test]
+    #[should_panic(expected = "must: deserialize outcome:")]
+    fn dependency_hygiene_converted_deserialize_still_fails_when_json_is_invalid() {
+        let _ = deserialize_outcome("{");
+    }
+
+    #[test]
+    #[should_panic(expected = "must: documented cargo-machete JSON should parse:")]
+    fn dependency_hygiene_converted_classify_still_fails_when_json_is_malformed() {
+        let _ = classify_documented_json(Some(0), MALFORMED_MACHETE_OUTPUT);
+    }
+
+    #[test]
+    #[should_panic(expected = "must: documented clean JSON should parse:")]
+    fn dependency_hygiene_converted_clean_classify_still_fails_when_json_is_malformed() {
+        let _ = classify_documented_clean_json(MALFORMED_MACHETE_OUTPUT);
+    }
+
+    #[test]
+    #[should_panic(expected = "must_err: malformed exit-0 output must fail closed:")]
+    fn dependency_hygiene_converted_err_assertion_still_fails_when_json_parses() {
+        let _ = classify_closed(
+            Some(1),
+            REAL_MACHETE_OUTPUT,
+            "malformed exit-0 output must fail closed",
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "must_some: fixture finding:")]
+    fn dependency_hygiene_converted_first_finding_still_fails_when_findings_are_empty() {
+        let _ = first_finding(&[]);
     }
 }

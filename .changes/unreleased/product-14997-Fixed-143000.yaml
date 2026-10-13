@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: "Explicitly named `field` traits are no longer discarded. The compatibility class model compared attribute spellings against exact bare strings, so `field $x :reader(read_x)` generated no reader at all and `field $x :param(external)` left the field out of the constructor entirely; only `:writer` had named support, on its own inline parser. One decoder now owns argument identity for `:param`, `:reader`, `:writer`, `:accessor`, and `:mutator`, distinguishing bare, static-identifier, literal-text, empty, and unclosed forms. A `:param` argument is treated as a constructor key rather than a method name, since Perl accepts arbitrary key text there (`:param(foo-bar)` and `C->new('foo-bar' => 1)` compile on 5.38), while a generated method still requires a callable identifier. The default key for a bare `:param` is framework-specific: Object::Pad removes one leading underscore, the core `class` feature keeps the name the source wrote. Constructor-parameter completion now offers the key `new` actually accepts and quotes it when it is not a bareword, so selecting a non-identifier key no longer inserts Perl that fails to compile or silently names a different argument. Profile admission is unchanged — a named form is admitted exactly where its family's bare form already was, so `:writer` keeps its existing gating."
+time: 2026-09-07T14:30:00Z
+custom:
+  PR: "14997"
+  Slug: field-trait-argument-identity-13449
+  Breaking: "no"

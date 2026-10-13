@@ -1,0 +1,116 @@
+schema_version = "kubernetes_dap_workspace_profile_fixture.v1"
+fixture_id = "negative-digest-only-injection-source"
+expectation = "reject"
+expected_rejection = "injection_source_unbound"
+
+[profile]
+profile_id = "acme-dev-injected-tool"
+install_mode = "injected_tool"
+deployment_mode = "workspace_container_process"
+sharing_mode = "dedicated_workspace"
+resource_profile = "dap-subject-medium"
+
+[profile.transport]
+transport = "stdio"
+stream_owner = "parent"
+tty = false
+shell = false
+
+[profile.workspace]
+root = "/workspace"
+
+[profile.workspace.source_paths]
+client = "/workspace/src"
+adapter = "/workspace/src"
+debuggee = "/workspace/src"
+
+[profile.loader]
+os = "linux"
+libc = "glibc"
+architecture = "amd64"
+container_matches = true
+
+[profile.perl]
+authority = "project_container"
+interpreter_path = "/usr/local/bin/perl"
+version = "5.38.2"
+include_roots = ["/workspace/lib"]
+dependency_authority = "carton.snapshot@sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+
+[profile.launch_plan]
+authority = "#4841-launch-plan-v3"
+perl_identity = "/usr/local/bin/perl@5.38.2"
+
+[profile.artifact]
+source_identity = "@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+build_revision = "artifact-2026-08-25-9f8e7d"
+artifact_digest = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+copied_digest = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+post_copy_verified = true
+exec_mode = "0555"
+tool_mount = "read_only"
+tool_volume_owner = "init-container:perl-dap-inject"
+target_arch = "amd64"
+os = "linux"
+libc = "glibc"
+
+[profile.security]
+run_as_non_root = true
+uid = 10001
+gid = 10001
+service_account_token = "absent"
+kubernetes_credentials = false
+network_listener = false
+writable_paths_declared = true
+secrets_redacted_from_receipts = true
+adapter_selection_isolation = true
+
+[[profile.dap_claims]]
+cell_id = "initialize"
+claimed_state = "evidence_backed"
+evidence = ["crates/perl-dap/tests/dap_capability_advertising_tests.rs"]
+
+[[profile.dap_claims]]
+cell_id = "launch"
+claimed_state = "evidence_backed"
+evidence = ["crates/perl-dap/tests/config_launch_config_tests.rs", "crates/perl-dap/tests/dap_smoke_e2e.rs"]
+
+[[profile.dap_claims]]
+cell_id = "configurationDone"
+claimed_state = "evidence_backed"
+evidence = ["crates/perl-dap/tests/dap_lifecycle_matrix_tests.rs"]
+
+[[profile.dap_claims]]
+cell_id = "source_breakpoint_install_exact_stop"
+claimed_state = "evidence_backed"
+evidence = ["crates/perl-dap/tests/dap_breakpoint_matrix_tests.rs"]
+
+[[profile.dap_claims]]
+cell_id = "threads_stack_source"
+claimed_state = "evidence_backed"
+evidence = ["crates/perl-dap/tests/dap_e2e_workflow_tests.rs"]
+
+[[profile.dap_claims]]
+cell_id = "bounded_current_frame_scopes_variables"
+claimed_state = "evidence_backed"
+evidence = ["crates/perl-dap/tests/dap_scope_filtering_tests.rs", "crates/perl-dap/tests/dap_variables_pagination_tests.rs"]
+
+[[profile.dap_claims]]
+cell_id = "one_continue_step"
+claimed_state = "evidence_backed"
+evidence = ["crates/perl-dap/tests/dap_step_through_tests.rs"]
+
+[[profile.dap_claims]]
+cell_id = "termination_disconnect_cleanup"
+claimed_state = "evidence_backed"
+evidence = ["crates/perl-dap/tests/dap_session_cleanup_e2e.rs"]
+
+[profile.adapter]
+binary_path = "/usr/local/bin/perl-dap"
+version = "0.17.0"
+hash = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+target = "x86_64-unknown-linux-gnu"
+
+[profile.cleanup_owner]
+process_tree = "adapter-parent"
+pod = "kubelet"

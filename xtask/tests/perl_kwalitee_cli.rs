@@ -1,6 +1,6 @@
 //! CLI integration tests for `cargo xtask perl-kwalitee`.
 //!
-//! Unit tests for the pure evaluation logic live in the `perl-kwalitee` crate.
+//! Unit tests for the pure evaluation logic live in the `perl-release-readiness` crate.
 //! These tests exercise the actual built `xtask` binary end-to-end: the
 //! `explain` / `report` / `check` subcommands, the emitted schema-v1 JSON, exit
 //! codes, and profile scoping. `report`/`check` are driven against a hermetic

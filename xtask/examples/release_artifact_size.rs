@@ -10,29 +10,32 @@ use clap::Parser;
 use color_eyre::eyre::{Result, bail};
 use std::path::{Component, Path, PathBuf};
 
+#[path = "../src/bin/release_artifact_size/disposition.rs"]
+mod disposition;
 #[path = "../src/bin/release_artifact_size/measure.rs"]
 mod measure;
 #[path = "../src/bin/release_artifact_size/model.rs"]
 mod model;
+#[path = "../src/bin/release_artifact_size/policy.rs"]
+mod policy;
 #[path = "../src/bin/release_artifact_size/render.rs"]
 mod render;
 
 use model::{DecisionPolicy, Receipt};
 
+// Re-exported so `measure` keeps resolving them through `super`, and so the
+// shadow-lane contract proof can bind the workflow to the same constants
+// instead of restating them.
+pub(crate) use policy::{
+    BINARY_NAMES, GOVERNED_TARGETS, REPOSITORY, SAFE_ICF_RUSTFLAGS, SCHEMA_VERSION,
+};
+
 pub(crate) const CHECK_NAME: &str = "release-artifact-size";
-pub(crate) const SCHEMA_VERSION: &str = "release_artifact_size.v1";
-pub(crate) const REPOSITORY: &str = "EffortlessMetrics/perl-lsp-swarm";
 pub(crate) const CLAIM_BOUNDARY: &str = concat!(
     "same-SHA post-strip size and packaged-binary smoke comparison for perllsp ",
     "and perl-dap on one native macOS target; does not prove startup/RSS ",
     "improvement, other targets, publication, or general release readiness"
 );
-pub(crate) const SAFE_ICF_RUSTFLAGS: &str =
-    "-C linker=rust-lld -C linker-flavor=ld64.lld -C link-arg=--icf=safe";
-pub(crate) const BINARY_NAMES: [&str; 2] = ["perllsp", "perl-dap"];
-/// The exact native macOS target triples governed by issue #5432. Adoption is
-/// restricted to these; no other triple may earn `adopt`.
-pub(crate) const GOVERNED_TARGETS: [&str; 2] = ["aarch64-apple-darwin", "x86_64-apple-darwin"];
 
 #[derive(Debug, Parser)]
 #[command(name = "release-artifact-size")]
@@ -82,10 +85,13 @@ struct Args {
     #[arg(long)]
     candidate_source_sha: String,
 
-    /// Declares that the confirming repeat measurement required by #5432 for a
-    /// 0.5%-1.0% combined reduction has been performed.
+    /// Previous same-subject `release_artifact_size.v1` receipt. This is the
+    /// only way to confirm a 0.5%–1.0% combined reduction: the instrument
+    /// verifies target, source SHA, lock digest, flags, policy, a valid first
+    /// measurement, and a distinct `GITHUB_RUN_ID`. A dispatcher checkbox is
+    /// not a second measurement.
     #[arg(long)]
-    repeat_confirmed: bool,
+    prior_receipt: Option<PathBuf>,
 
     /// Minimum combined reduction, in basis points, required for adoption.
     #[arg(long, default_value_t = 50)]
@@ -113,10 +119,7 @@ struct Args {
     baseline_rustflags: String,
 
     /// Declared candidate linker flags. Must equal the safe-ICF policy.
-    #[arg(
-        long,
-        default_value = "-C linker=rust-lld -C linker-flavor=ld64.lld -C link-arg=--icf=safe"
-    )]
+    #[arg(long, default_value = SAFE_ICF_RUSTFLAGS)]
     candidate_rustflags: String,
 
     /// JSON receipt output path.
@@ -200,6 +203,9 @@ fn check_output_paths(root: &Path, args: &Args) -> Result<()> {
         args.baseline_dap_smoke.clone(),
         args.candidate_dap_smoke.clone(),
     ];
+    if let Some(prior) = &args.prior_receipt {
+        inputs.push(prior.clone());
+    }
     for directory in [&args.baseline_dir, &args.candidate_dir] {
         inputs.push(directory.clone());
         for name in BINARY_NAMES {
@@ -239,6 +245,34 @@ fn evaluate(root: &Path, args: &Args) -> Result<Receipt> {
         &args.candidate_rustflags,
         &mut limitations,
     )?;
+    let repeat_confirmed = match &args.prior_receipt {
+        Some(path) => {
+            let path = measure::resolve_path(root, path);
+            match disposition::load_prior_receipt(&path) {
+                Ok(prior) => match disposition::confirm_repeat(
+                    &args.target,
+                    &subject.git_sha,
+                    &subject.cargo_lock_sha256,
+                    &args.candidate_rustflags,
+                    &policy,
+                    &subject.environment,
+                    &prior,
+                ) {
+                    Ok(()) => true,
+                    Err(denial) => {
+                        limitations.push(denial.as_limitation());
+                        false
+                    }
+                },
+                Err(error) => {
+                    limitations.push(format!("prior receipt could not be loaded: {error}"));
+                    false
+                }
+            }
+        }
+        None => false,
+    };
+
     let baseline = measure::measure_variant(
         root,
         &args.baseline_dir,
@@ -266,7 +300,7 @@ fn evaluate(root: &Path, args: &Args) -> Result<Receipt> {
         &subject,
         &policy,
         &args.target,
-        args.repeat_confirmed,
+        repeat_confirmed,
         &mut limitations,
     );
     let recommendation = measure::recommend(
@@ -319,7 +353,7 @@ mod tests {
             candidate_dap_smoke: PathBuf::from("evidence/candidate-dap.json"),
             baseline_source_sha: SHA.to_string(),
             candidate_source_sha: SHA.to_string(),
-            repeat_confirmed: false,
+            prior_receipt: None,
             minimum_reduction_basis_points: 50,
             minimum_reduction_bytes: 131_072,
             maximum_component_growth_basis_points: 25,
@@ -382,6 +416,16 @@ mod tests {
                 "`{aliased}` must be rejected as an output path"
             );
         }
+    }
+
+    #[test]
+    fn an_output_that_aliases_a_prior_receipt_is_rejected() {
+        let mut args = args("evidence/prior.json", None);
+        args.prior_receipt = Some(PathBuf::from("evidence/prior.json"));
+        assert!(
+            check_output_paths(Path::new(ROOT), &args).is_err(),
+            "writing over the confirming prior receipt would destroy the evidence the repeat used"
+        );
     }
 
     #[test]

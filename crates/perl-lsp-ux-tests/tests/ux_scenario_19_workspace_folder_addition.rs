@@ -1,5 +1,7 @@
-// Test infrastructure — allow test-friendly patterns.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![expect(
+    clippy::print_stderr,
+    reason = "Workspace-folder addition scenarios report a local non-execution reason when the required perllsp binary is unavailable."
+)]
 
 //! Scenario 19 — workspace folder addition lifecycle coverage.
 //!
@@ -11,7 +13,7 @@
 //!   reflected in `workspace/symbol` results disambiguated by
 //!   `workspaceFolderUri`.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use perl_lsp_ux_tests::binary_available;
 use perl_lsp_ux_tests::{ScenarioConfig, UxHarness};
 use serde_json::Value;
@@ -69,10 +71,10 @@ fn contains_symbol_in_folder(symbols: &[Value], symbol_name: &str, folder_fragme
 }
 
 #[test]
-fn scenario_19_added_workspace_folder_symbols_appear() {
+fn scenario_19_added_workspace_folder_symbols_appear() -> Result<()> {
     if !binary_available() {
         eprintln!("SKIP scenario_19: perl-lsp binary not found");
-        return;
+        return Ok(());
     }
 
     let harness = UxHarness::new(
@@ -82,11 +84,12 @@ fn scenario_19_added_workspace_folder_symbols_appear() {
             .with_file("svc-core/lib/CoreModule.pm", CORE_MODULE)
             .with_file("svc-ext/lib/ExtModule.pm", EXT_MODULE),
     )
-    .expect("Failed to create UX harness");
+    .context("Failed to create UX harness")?;
 
+    let ready = harness.wait_for_index_ready(Duration::from_secs(20));
     assert!(
-        harness.wait_for_index_ready(Duration::from_secs(20)),
-        "Expected initial workspace index to become ready before querying svc-core symbols"
+        ready.is_ok(),
+        "Expected initial workspace index to become ready before querying svc-core symbols: {ready:?}"
     );
 
     let before_deadline = Instant::now() + Duration::from_secs(20);
@@ -94,7 +97,7 @@ fn scenario_19_added_workspace_folder_symbols_appear() {
     while Instant::now() < before_deadline {
         symbols_before = harness
             .workspace_symbols("CoreModule")
-            .expect("workspace/symbol must not error before folder addition");
+            .context("workspace/symbol failed for CoreModule before folder addition")?;
         if contains_symbol_in_folder(&symbols_before, "CoreModule", "/svc-core/") {
             break;
         }
@@ -109,7 +112,7 @@ fn scenario_19_added_workspace_folder_symbols_appear() {
 
     let symbols_before_ext = harness
         .workspace_symbols("ExtModule")
-        .expect("workspace/symbol must not error before folder addition");
+        .context("workspace/symbol failed for ExtModule before folder addition")?;
     assert!(
         !contains_symbol_in_folder(&symbols_before_ext, "ExtModule", "/svc-ext/"),
         "Expected ExtModule to be absent before folder addition, got: {:?}",
@@ -119,8 +122,10 @@ fn scenario_19_added_workspace_folder_symbols_appear() {
     let ready_events_before_add = harness.index_ready_event_count();
     harness
         .change_workspace_folders(&[("svc-ext", "svc-ext")], &[])
-        .expect("workspace folder addition notification must not fail");
-    let _ =
+        .context("workspace folder addition notification failed")?;
+    // The symbol query below is the success predicate; retain this observation
+    // for a useful failure message without making it a separate readiness gate.
+    let index_ready_after_add =
         harness.wait_for_index_ready_event_after(ready_events_before_add, Duration::from_secs(20));
 
     let after_deadline = Instant::now() + Duration::from_secs(20);
@@ -128,7 +133,7 @@ fn scenario_19_added_workspace_folder_symbols_appear() {
     while Instant::now() < after_deadline {
         symbols_after = harness
             .workspace_symbols("ExtModule")
-            .expect("workspace/symbol must not error after folder addition");
+            .context("workspace/symbol failed for ExtModule after folder addition")?;
 
         if contains_symbol_in_folder(&symbols_after, "ExtModule", "/svc-ext/") {
             break;
@@ -138,13 +143,13 @@ fn scenario_19_added_workspace_folder_symbols_appear() {
 
     assert!(
         contains_symbol_in_folder(&symbols_after, "ExtModule", "/svc-ext/"),
-        "Expected ExtModule symbols to appear after adding svc-ext, got: {:?}",
+        "Expected ExtModule symbols to appear after adding svc-ext, index readiness {index_ready_after_add:?}, got: {:?}",
         symbols_after
     );
 
     let symbols_after_core = harness
         .workspace_symbols("CoreModule")
-        .expect("workspace/symbol must not error after folder addition");
+        .context("workspace/symbol failed for CoreModule after folder addition")?;
     assert!(
         contains_symbol_in_folder(&symbols_after_core, "CoreModule", "/svc-core/"),
         "Expected CoreModule to remain after adding svc-ext, got: {:?}",
@@ -152,6 +157,7 @@ fn scenario_19_added_workspace_folder_symbols_appear() {
     );
 
     harness.assert_no_crash();
+    Ok(())
 }
 
 fn folder_uris_for(symbols: &[Value], symbol_name: &str) -> BTreeSet<String> {
@@ -178,9 +184,10 @@ fn scenario_19_workspace_folder_addition_surfaces_new_symbols() -> Result<()> {
             .with_file("svc-a/lib/ServiceA.pm", SERVICE_A),
     )?;
 
+    let ready = harness.wait_for_index_ready(Duration::from_secs(20));
     assert!(
-        harness.wait_for_index_ready(Duration::from_secs(20)),
-        "Expected initial workspace index to become ready before querying svc-a symbols"
+        ready.is_ok(),
+        "Expected initial workspace index to become ready before querying svc-a symbols: {ready:?}"
     );
 
     let before = harness.wait_for_workspace_symbols(
@@ -206,7 +213,8 @@ fn scenario_19_workspace_folder_addition_surfaces_new_symbols() -> Result<()> {
     harness.workspace.write("svc-b/lib/ServiceB.pm", SERVICE_B)?;
     let ready_events_before_add = harness.index_ready_event_count();
     harness.change_workspace_folders(&[("svc-b", "svc-b")], &[])?;
-    let _ =
+    // The symbol query below is the success predicate; retain the observation.
+    let index_ready_after_add =
         harness.wait_for_index_ready_event_after(ready_events_before_add, Duration::from_secs(20));
 
     // Then: workspace/symbol eventually includes both workspace roots.
@@ -229,7 +237,7 @@ fn scenario_19_workspace_folder_addition_surfaces_new_symbols() -> Result<()> {
     );
     assert!(
         after_folders.iter().any(|uri| uri.contains("/svc-b/")),
-        "Expected newly added svc-b symbols after addition, got: {:?}",
+        "Expected newly added svc-b symbols after addition, index readiness {index_ready_after_add:?}, got: {:?}",
         after
     );
 

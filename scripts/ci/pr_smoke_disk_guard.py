@@ -23,8 +23,9 @@ Two modes backing the two acceptance arms of issue #11943:
     ``::error`` annotations that name the offending log and the filled target
     directory, and appends a decision-grade verdict plus a fresh free-bytes
     snapshot to ``pr-fast-disk-pressure.log`` (composing with #11977's raw
-    capture). Only ENOSPC / os-error-28 matches earn the definitive "not
-    candidate defects" verdict. A linker SIGBUS or a lone rustc-LLVM
+    capture). Only ENOSPC / os-error-28 matches earn the resource-exhaustion
+    verdict, which names the matched logs and leaves other failure causes
+    unattributed. A linker SIGBUS or a lone rustc-LLVM
     output-stream failure is recorded as corroborating evidence under a
     distinct ``not_proven_io_failure`` verdict that does not exonerate the
     candidate: signal 7 identifies a bus error, not its cause (truncated or
@@ -83,9 +84,9 @@ EXHAUSTION_SIGNATURES: tuple[tuple[str, str], ...] = (
 # objects, and hardware faults produce it without any ENOSPC condition — and
 # "IO failure on output stream" names no errno at all. A lone match of either
 # class is recorded and annotated as corroborating evidence under the
-# non-exonerating ``not_proven_io_failure`` verdict; the definitive "not
-# candidate defects" classification additionally requires an ENOSPC /
-# os-error-28 match in the same run's logs (review #12183).
+# non-exonerating ``not_proven_io_failure`` verdict; the resource-exhaustion
+# classification requires an ENOSPC / os-error-28 match and applies only to
+# the matched logs (review #12183).
 STRONG_EXHAUSTION_CLASSES = frozenset({"enospc"})
 
 Probe = Callable[[str], shutil._ntuple_diskusage]
@@ -332,8 +333,9 @@ def run_classify(args: argparse.Namespace) -> int:
     if strong:
         body_lines.append(
             "VERDICT: resource-exhaustion detected in gate logs "
-            "(ENOSPC / os-error-28 class); the gate failures above are disk "
-            "exhaustion, not candidate defects."
+            "(ENOSPC / os-error-28 class); matched logs: "
+            f"{', '.join(finding.log_path for finding in strong)}. "
+            "Other gate failure causes remain unattributed."
         )
         for finding in (*strong, *corroborating):
             annotation = finding.annotation(target_dir)

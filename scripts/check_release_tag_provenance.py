@@ -4,7 +4,9 @@
 The default mode is network-free and validates the manifest's shape and internal
 contracts. `--verify-git` additionally resolves local tag refs and checks the
 pinned commit and predecessor relationship. CI callers using that mode must
-fetch tags and full history first.
+fetch tags and full history first. `--prepare-git` fetches only the required
+manifest refs from origin, then runs the same verification; it changes no Git
+configuration and never replaces an existing tag.
 """
 
 from __future__ import annotations
@@ -17,6 +19,8 @@ import shutil
 import subprocess
 import sys
 from typing import Any
+
+from git_environment import isolated_git_env
 
 try:
     import tomllib
@@ -206,6 +210,7 @@ def validate_manifest(data: dict[str, Any]) -> list[str]:
 def _git(repo_root: Path, *args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         ["git", "-C", str(repo_root), *args],
+        env=isolated_git_env(),
         check=False,
         text=True,
         stdout=subprocess.PIPE,
@@ -213,16 +218,31 @@ def _git(repo_root: Path, *args: str) -> subprocess.CompletedProcess[str]:
     )
 
 
-def verify_git_refs(data: dict[str, Any], repo_root: Path) -> list[str]:
-    """Compare the manifest against refs in a local full-history checkout."""
+def verify_git_refs(data: dict[str, Any], repo_root: Path) -> tuple[list[str], list[str]]:
+    """Compare the manifest against refs in a local full-history checkout.
+
+    Returns (drift_errors, unresolvable_records): drift errors fail the
+    check; unresolvable records are manifest rows flagged
+    `unresolvable = true` whose tag and pinned object are BOTH absent
+    locally - audited orphaned lineage rows reported as warnings, not
+    drift (#15263). A flagged row whose tag or pinned object survives
+    locally is drift, so the flag cannot hide a deleted release tag.
+    """
 
     if shutil.which("git") is None:
-        return ["git executable not found on PATH"]
+        return (["git executable not found on PATH"], [])
 
-    errors: list[str] = []
+    shallow = _git(repo_root, "rev-parse", "--is-shallow-repository")
+    if shallow.returncode != 0:
+        return ([f"cannot inspect git history: {shallow.stderr.strip()}"], [])
+    if shallow.stdout.strip() != "false":
+        return (["full history unavailable: shallow checkout; run --prepare-git first"], [])
+
+    drift_errors: list[str] = []
+    unresolvable: list[str] = []
     tags = data.get("tag", [])
     if not isinstance(tags, list):
-        return ["cannot verify git refs: tag records are not a list"]
+        return (["cannot verify git refs: tag records are not a list"], [])
 
     manifest_names = {
         raw["name"]
@@ -231,7 +251,7 @@ def verify_git_refs(data: dict[str, Any], repo_root: Path) -> list[str]:
     }
     list_result = _git(repo_root, "tag", "--list", "v*")
     if list_result.returncode != 0:
-        errors.append(f"cannot list local tags: {list_result.stderr.strip()}")
+        drift_errors.append(f"cannot list local tags: {list_result.stderr.strip()}")
     else:
         local_release_tags = {
             line.strip()
@@ -239,7 +259,7 @@ def verify_git_refs(data: dict[str, Any], repo_root: Path) -> list[str]:
             if TAG_RE.fullmatch(line.strip()) is not None
         }
         for extra_tag in sorted(local_release_tags - manifest_names):
-            errors.append(f"local release tag is missing from manifest: {extra_tag}")
+            drift_errors.append(f"local release tag is missing from manifest: {extra_tag}")
 
     resolved: dict[str, str] = {}
     for raw in tags:
@@ -252,12 +272,54 @@ def verify_git_refs(data: dict[str, Any], repo_root: Path) -> list[str]:
 
         result = _git(repo_root, "rev-parse", "--verify", f"{name}^{{commit}}")
         if result.returncode != 0:
-            errors.append(f"{name} cannot be resolved locally: {result.stderr.strip()}")
+            # Typed classification (#15263): manifest rows flagged
+            # `unresolvable = true` are audited orphaned lineage records -
+            # their commit objects are known-unreachable, preserved as
+            # evidence and reported as warnings, not drift. Unflagged rows
+            # that fail to resolve remain drift errors.
+            if raw.get("unresolvable") is True:
+                # The flag vouches that BOTH the tag and the pinned object
+                # are gone. Probe each so a surviving tag or a locally
+                # reachable pin cannot hide behind the flag (#15263): any
+                # survivor is deleted-release-tag drift, not an orphan.
+                tag_probe = _git(
+                    repo_root, "rev-parse", "--verify", f"refs/tags/{name}"
+                )
+                if tag_probe.returncode == 0:
+                    drift_errors.append(
+                        f"{name} is flagged unresolvable, but the tag exists "
+                        f"locally at {tag_probe.stdout.strip()[:12]}"
+                    )
+                else:
+                    pinned = _git(repo_root, "cat-file", "-t", expected)
+                    if pinned.returncode == 0:
+                        object_type = pinned.stdout.strip()
+                        if object_type == "commit":
+                            drift_errors.append(
+                                f"{name} is flagged unresolvable, but pinned "
+                                f"commit {expected[:12]} is locally reachable: "
+                                "deleted-release-tag drift, not an orphan"
+                            )
+                        else:
+                            drift_errors.append(
+                                f"{name} is flagged unresolvable, but pinned "
+                                f"sha {expected[:12]} resolves to a local "
+                                f"{object_type} object, not an absent commit"
+                            )
+                    else:
+                        unresolvable.append(
+                            f"{name} ({expected[:12]}): audited orphaned "
+                            "lineage record"
+                        )
+            else:
+                drift_errors.append(
+                    f"{name} cannot be resolved locally: {result.stderr.strip()}"
+                )
             continue
         actual = result.stdout.strip().lower()
         resolved[name] = actual
         if actual != expected:
-            errors.append(f"{name} drifted: manifest={expected} local={actual}")
+            drift_errors.append(f"{name} drifted: manifest={expected} local={actual}")
 
         recorded_sha = raw.get("recorded_sha")
         recorded_reachable = raw.get("recorded_reachable")
@@ -278,7 +340,7 @@ def verify_git_refs(data: dict[str, Any], repo_root: Path) -> list[str]:
                     if actually_reachable
                     else "not a reachable commit object"
                 )
-                errors.append(
+                drift_errors.append(
                     f"{name} recorded_sha {recorded_sha} is claimed {claim}, "
                     f"but local git says it is {actual}"
                 )
@@ -299,14 +361,14 @@ def verify_git_refs(data: dict[str, Any], repo_root: Path) -> list[str]:
 
         forward = _git(repo_root, "merge-base", "--is-ancestor", predecessor, name)
         if forward.returncode not in (0, 1):
-            errors.append(
+            drift_errors.append(
                 f"git merge-base failed for {predecessor} and {name}: "
                 f"{forward.stderr.strip()}"
             )
             continue
         reverse = _git(repo_root, "merge-base", "--is-ancestor", name, predecessor)
         if reverse.returncode not in (0, 1):
-            errors.append(
+            drift_errors.append(
                 f"git merge-base failed for {name} and {predecessor}: "
                 f"{reverse.stderr.strip()}"
             )
@@ -316,15 +378,64 @@ def verify_git_refs(data: dict[str, Any], repo_root: Path) -> list[str]:
         tag_is_ancestor = reverse.returncode == 0
 
         if lineage == "linear" and not predecessor_is_ancestor:
-            errors.append(f"{name} is not linear from predecessor {predecessor}")
+            drift_errors.append(f"{name} is not linear from predecessor {predecessor}")
         elif lineage == "diverged" and (
             predecessor_is_ancestor or tag_is_ancestor
         ):
-            errors.append(
+            drift_errors.append(
                 f"{name} is marked diverged from {predecessor}, but one ref is ancestral"
             )
 
-    return errors
+    return drift_errors, unresolvable
+
+
+def prepare_git_refs(data: dict[str, Any], repo_root: Path) -> list[str]:
+    """Restore declared live refs without changing config or replacing local tags.
+
+    Audited orphan rows remain the verifier's responsibility. Fetch failures and
+    subsequent pin/lineage drift must remain failures, even if Git fetched objects.
+    """
+    errors = validate_manifest(data)
+    if errors:
+        return errors
+    if shutil.which("git") is None:
+        return ["git executable not found on PATH"]
+
+    shallow = _git(repo_root, "rev-parse", "--is-shallow-repository")
+    if shallow.returncode != 0:
+        return [f"cannot inspect git history: {shallow.stderr.strip()}"]
+    is_shallow = shallow.stdout.strip() == "true"
+    refs: list[str] = []
+    for row in data["tag"]:
+        if row.get("unresolvable") is True:
+            continue
+        ref = f"refs/tags/{row['name']}"
+        present = _git(repo_root, "show-ref", "--verify", "--quiet", ref)
+        if present.returncode == 1:
+            refs.append(f"{ref}:{ref}")
+        elif present.returncode != 0:
+            errors.append(f"cannot inspect {ref}: {present.stderr.strip()}")
+        else:
+            pinned = _git(repo_root, "rev-parse", "--verify", f"{ref}^{{commit}}")
+            if pinned.returncode != 0 or pinned.stdout.strip() != row["current_sha"]:
+                errors.append(f"{ref} conflicts with manifest pin; existing tag preserved")
+            elif is_shallow:
+                # Fetch history without updating a valid local tag object,
+                # even if origin has reannotated the same pinned commit.
+                refs.append(ref)
+    if errors:
+        return errors
+    if refs:
+        options = [
+            "--atomic", "--no-tags", "--no-prune",
+            "--no-recurse-submodules", "--no-write-fetch-head", "--refmap=",
+        ]
+        if is_shallow:
+            options.append("--unshallow")
+        fetched = _git(repo_root, "fetch", *options, "origin", *refs)
+        if fetched.returncode != 0:
+            return [f"required release refs unavailable from origin: {fetched.stderr.strip()}"]
+    return []
 
 
 def parse_args() -> argparse.Namespace:
@@ -334,16 +445,22 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         default=Path("policy/release-tag-provenance.toml"),
     )
-    parser.add_argument(
+    git_mode = parser.add_mutually_exclusive_group()
+    git_mode.add_argument(
         "--verify-git",
         action="store_true",
         help="resolve local tags and verify pinned SHA and ancestry",
+    )
+    git_mode.add_argument(
+        "--prepare-git",
+        action="store_true",
+        help="fetch required manifest refs/full history from origin, then verify locally",
     )
     parser.add_argument(
         "--repo-root",
         type=Path,
         default=Path("."),
-        help="local git checkout used by --verify-git",
+        help="local git checkout used by --verify-git or --prepare-git",
     )
     return parser.parse_args()
 
@@ -356,9 +473,11 @@ def main() -> int:
         print(f"release-tag provenance: ERROR: {exc}", file=sys.stderr)
         return 1
 
-    errors = validate_manifest(data)
-    if args.verify_git and not errors:
-        errors.extend(verify_git_refs(data, args.repo_root))
+    unresolvable: list[str] = []
+    errors = prepare_git_refs(data, args.repo_root) if args.prepare_git else validate_manifest(data)
+    if (args.verify_git or args.prepare_git) and not errors:
+        drift, unresolvable = verify_git_refs(data, args.repo_root)
+        errors.extend(drift)
 
     if errors:
         print("release-tag provenance validation failed:", file=sys.stderr)
@@ -367,8 +486,16 @@ def main() -> int:
         return 1
 
     tag_count = len(data.get("tag", []))
-    mode = "manifest + local git" if args.verify_git else "manifest"
-    print(f"release-tag provenance OK: {tag_count} tags ({mode})")
+    mode = "manifest + local git" if args.verify_git or args.prepare_git else "manifest"
+    unresolvable_note = ""
+    if unresolvable:
+        unresolvable_note = (
+            f"; {len(unresolvable)} orphaned lineage records unresolvable "
+            "(evidence preserved in manifest)"
+        )
+        for record in unresolvable:
+            print(f"WARN: release-tag provenance unresolvable: {record}", file=sys.stderr)
+    print(f"release-tag provenance OK: {tag_count} tags ({mode}){unresolvable_note}")
     return 0
 
 

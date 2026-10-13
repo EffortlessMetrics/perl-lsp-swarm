@@ -263,6 +263,22 @@ mod tests {
     }
 
     #[test]
+    fn malformed_and_unknown_commands_are_total_through_production_projection()
+    -> Result<(), &'static str> {
+        let src = "package App;\n\n=head1 DESCRIPTION\n\nBefore.\n\n=\n=unknown value\n=headache\n=☃\n\nAfter.\n\n=cut trailing explanation\n\n=head1 NAME\n\nNot captured.\n";
+        let f = facts(src).ok_or("malformed POD fixture must produce facts")?;
+
+        assert_eq!(f.description.as_deref(), Some("Before."));
+        assert_eq!(
+            f.sections.iter().filter(|section| section.kind == PodSectionKind::Head1).count(),
+            2,
+            "only exact head1 commands should become ranged sections"
+        );
+        assert_eq!(f.name.as_deref(), Some("Not captured."));
+        Ok(())
+    }
+
+    #[test]
     fn is_cut_directive_matches_exact_token_only() {
         // Direct unit coverage of the token-boundary fix: `=cut` (with or
         // without trailing text — only the first token is the directive name)

@@ -1,46 +1,46 @@
 {
   "schema_version": 1,
-  "generated_at_epoch_s": 1777040135,
+  "generated_at_epoch_s": 1788476559,
   "metrics": {
     "eof_synthetic_token_construction": {
       "iterations": 5000,
-      "median_ns": 90,
-      "p95_ns": 117
+      "median_ns": 100,
+      "p95_ns": 200
     },
     "lexer_to_parser_token_conversion": {
       "iterations": 3000,
-      "median_ns": 226,
-      "p95_ns": 253
+      "median_ns": 200,
+      "p95_ns": 300
     },
     "token_clone": {
       "iterations": 5000,
-      "median_ns": 47,
-      "p95_ns": 59
+      "median_ns": 0,
+      "p95_ns": 100
     },
     "token_equality": {
       "iterations": 5000,
-      "median_ns": 30,
-      "p95_ns": 39
+      "median_ns": 0,
+      "p95_ns": 100
     },
     "token_kind_category_predicates": {
       "iterations": 5000,
-      "median_ns": 29,
-      "p95_ns": 40
+      "median_ns": 0,
+      "p95_ns": 100
     },
     "token_kind_display_name": {
       "iterations": 5000,
-      "median_ns": 29,
-      "p95_ns": 40
+      "median_ns": 0,
+      "p95_ns": 100
     },
     "token_new_long": {
       "iterations": 5000,
-      "median_ns": 60,
-      "p95_ns": 85
+      "median_ns": 100,
+      "p95_ns": 100
     },
     "token_new_short": {
       "iterations": 5000,
-      "median_ns": 62,
-      "p95_ns": 63
+      "median_ns": 100,
+      "p95_ns": 100
     }
   }
 }

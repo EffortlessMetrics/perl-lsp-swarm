@@ -1,0 +1,12 @@
+project: product
+component: Compatibility
+kind: Fixed
+body: >-
+  Classify tree-sitter-perl-rs expression-recursion exhaustion as
+  ParseFailure::RecursionLimit instead of the unclassified Other, without
+  relabeling it as structural NestingTooDeep.
+time: 2026-09-14T03:45:00Z
+custom:
+  PR: "15593"
+  Slug: tree-sitter-rs-recursion-failure-taxonomy
+  Breaking: "no"

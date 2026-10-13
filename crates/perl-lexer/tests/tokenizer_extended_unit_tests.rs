@@ -585,7 +585,6 @@ fn ext_trivia_clone_and_eq() -> Result<(), Box<dyn std::error::Error>> {
     let t3 = Trivia::LineComment("# x".into());
     assert_ne!(t1, t3);
 
-    assert_eq!(Trivia::Newline, Trivia::Newline);
     Ok(())
 }
 

@@ -64,6 +64,15 @@ fn test_launch_allows_valid_path() -> Result<(), Box<dyn std::error::Error>> {
     let temp_dir = tempfile::tempdir()?;
     let workspace_root = temp_dir.path().to_path_buf();
 
+    // #8656: a launch is admitted only through explicit startup authority, so
+    // this test trusts the temp workspace at startup.
+    adapter.set_launch_authority(perl_dap::LaunchAuthority::resolve(
+        &perl_dap::LaunchAuthorityStartup {
+            trusted_roots: vec![workspace_root.clone()],
+            allow_unbounded: None,
+        },
+    )?);
+
     // Create a file *inside* the workspace
     let inside_script = workspace_root.join("good.pl");
     fs::write(&inside_script, "print 'good';")?;
@@ -157,8 +166,9 @@ fn test_configured_workspace_root_accepts_inside_script() -> Result<(), Box<dyn 
     Ok(())
 }
 
-/// A `workspaceRoot` field in the launch args provides the boundary when no
-/// server-configured root is present. Scripts outside the declared root are rejected.
+/// A `workspaceRoot` field in the launch args can no longer create a boundary
+/// when no server-configured root or startup authority is present (#8656):
+/// the launch is refused outright instead of trusting launch-controlled roots.
 #[test]
 fn test_launch_workspace_root_field_rejects_outside_script()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -182,11 +192,11 @@ fn test_launch_workspace_root_field_rejects_outside_script()
 
     match response {
         DapMessage::Response { success, message, .. } => {
-            assert!(!success, "Launch of out-of-workspace script must be rejected");
+            assert!(!success, "Launch with a launch-args-only root must be rejected");
             let msg = message.unwrap_or_default();
             assert!(
-                msg.contains("outside your workspace") || msg.contains("outside workspace"),
-                "Expected workspace-boundary rejection, got: {msg}"
+                msg.contains("cannot create one"),
+                "Expected launch-args-cannot-create-authority refusal, got: {msg}"
             );
         }
         other => return Err(format!("Expected Response, got: {other:?}").into()),
@@ -232,6 +242,186 @@ fn test_launch_workspace_root_field_cannot_widen_server_root()
             assert!(
                 msg.contains("outside your workspace") || msg.contains("outside workspace"),
                 "Expected workspace-boundary rejection, got: {msg}"
+            );
+        }
+        other => return Err(format!("Expected Response, got: {other:?}").into()),
+    }
+    Ok(())
+}
+
+/// N1 (#14523 review): the relative-program refusal must be proven with
+/// authority installed. A wrong implementation that admits relative programs
+/// would pass every existing test (unbounded bypasses the gate; legacy
+/// paths never install authority).
+#[test]
+fn test_workspace_bound_authority_rejects_relative_program()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut adapter = DebugAdapter::new();
+    initialize_adapter(&mut adapter);
+
+    let workspace_dir = tempfile::tempdir()?;
+    let workspace_root = workspace_dir.path().to_path_buf();
+    adapter.set_launch_authority(perl_dap::LaunchAuthority::resolve(
+        &perl_dap::LaunchAuthorityStartup {
+            trusted_roots: vec![workspace_root],
+            allow_unbounded: None,
+        },
+    )?);
+
+    let args = json!({
+        "program": "script.pl",
+        "args": []
+    });
+    let response = adapter.handle_request(2, "launch", Some(args));
+
+    match response {
+        DapMessage::Response { success, message, .. } => {
+            assert!(!success, "authority-backed relative program must be refused");
+            let msg = message.unwrap_or_default();
+            assert!(
+                msg.contains("absolute"),
+                "refusal must name the absolute-path requirement, got: {msg}"
+            );
+        }
+        other => return Err(format!("Expected Response, got: {other:?}").into()),
+    }
+    Ok(())
+}
+
+/// N2 (#14523 review): per-request narrowing must not leak into the next
+/// launch. The first launch narrows the defense-in-depth workspace root to
+/// subdir A; the second launch of B must still be admitted. Without the
+/// restore, the spawner re-validates B against stale A and refuses it as
+/// outside the workspace.
+#[test]
+fn test_sequential_launches_do_not_inherit_narrowed_root() -> Result<(), Box<dyn std::error::Error>>
+{
+    let mut adapter = DebugAdapter::new();
+    initialize_adapter(&mut adapter);
+
+    let workspace_dir = tempfile::tempdir()?;
+    let root = workspace_dir.path().to_path_buf();
+    let dir_a = root.join("aaa");
+    let dir_b = root.join("bbb");
+    std::fs::create_dir_all(&dir_a)?;
+    std::fs::create_dir_all(&dir_b)?;
+    let script_a = dir_a.join("a.pl");
+    let script_b = dir_b.join("b.pl");
+    fs::write(&script_a, "print 'a';")?;
+    fs::write(&script_b, "print 'b';")?;
+    adapter.set_launch_authority(perl_dap::LaunchAuthority::resolve(
+        &perl_dap::LaunchAuthorityStartup { trusted_roots: vec![root], allow_unbounded: None },
+    )?);
+
+    let first = json!({
+        "program": must_some(script_a.to_str()),
+        "workspaceRoot": must_some(dir_a.to_str()),
+        "args": []
+    });
+    match adapter.handle_request(2, "launch", Some(first)) {
+        DapMessage::Response { success, message, .. } => {
+            assert!(success, "first narrowed launch must succeed, got: {message:?}");
+        }
+        other => return Err(format!("Expected Response, got: {other:?}").into()),
+    }
+
+    let second = json!({
+        "program": must_some(script_b.to_str()),
+        "args": []
+    });
+    match adapter.handle_request(3, "launch", Some(second)) {
+        DapMessage::Response { success, message, .. } => {
+            assert!(
+                success,
+                "second launch must not inherit the first narrowing, got: {message:?}"
+            );
+        }
+        other => return Err(format!("Expected Response, got: {other:?}").into()),
+    }
+    // T8/T13 (#14523 review): the admitted launch must retain its
+    // path-free authority receipt instead of discarding the session record.
+    let receipt = adapter
+        .last_authority_receipt()
+        .ok_or("admitted launch must retain an authority receipt")?;
+    assert_eq!(receipt.trusted_root_count, 1);
+    assert!(
+        receipt.session_generation >= 2,
+        "two begun sessions, got {}",
+        receipt.session_generation
+    );
+    Ok(())
+}
+
+/// T7a (#14523 review): the authority decision is the sole boundary. A
+/// preset legacy root covering only subdir A must not refuse a program in
+/// subdir B that workspace-bound authority admits.
+#[test]
+fn test_authority_admission_overrides_preset_legacy_root() -> Result<(), Box<dyn std::error::Error>>
+{
+    let mut adapter = DebugAdapter::new();
+    initialize_adapter(&mut adapter);
+
+    let workspace_dir = tempfile::tempdir()?;
+    let root = workspace_dir.path().to_path_buf();
+    let dir_a = root.join("aaa");
+    let dir_b = root.join("bbb");
+    std::fs::create_dir_all(&dir_a)?;
+    std::fs::create_dir_all(&dir_b)?;
+    let script_b = dir_b.join("b.pl");
+    fs::write(&script_b, "print 'b';")?;
+    adapter.set_workspace_root(dir_a.clone());
+    adapter.set_launch_authority(perl_dap::LaunchAuthority::resolve(
+        &perl_dap::LaunchAuthorityStartup { trusted_roots: vec![root], allow_unbounded: None },
+    )?);
+
+    let args = json!({
+        "program": must_some(script_b.to_str()),
+        "args": []
+    });
+    match adapter.handle_request(2, "launch", Some(args)) {
+        DapMessage::Response { success, message, .. } => {
+            assert!(
+                success,
+                "admitted program must survive a preset legacy root, got: {message:?}"
+            );
+        }
+        other => return Err(format!("Expected Response, got: {other:?}").into()),
+    }
+    Ok(())
+}
+
+/// T7b (#14523 review): explicitly unbounded authority sets no boundary, so
+/// a preset legacy root must not refuse an admitted program either.
+#[test]
+fn test_unbounded_authority_clears_preset_legacy_root_for_launch()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut adapter = DebugAdapter::new();
+    initialize_adapter(&mut adapter);
+
+    let workspace_dir = tempfile::tempdir()?;
+    let elsewhere = tempfile::tempdir()?;
+    let script = elsewhere.path().join("free.pl");
+    fs::write(&script, "print 'free';")?;
+    adapter.set_workspace_root(workspace_dir.path().to_path_buf());
+    adapter.set_launch_authority(perl_dap::LaunchAuthority::resolve(
+        &perl_dap::LaunchAuthorityStartup {
+            trusted_roots: Vec::new(),
+            allow_unbounded: Some(perl_dap::UnboundedAcknowledgement::new(
+                perl_dap::LaunchAuthoritySource::CommandLine,
+                "operator accepts unbounded launches for this session",
+            )),
+        },
+    )?);
+
+    let args = json!({
+        "program": must_some(script.to_str()),
+        "args": []
+    });
+    match adapter.handle_request(2, "launch", Some(args)) {
+        DapMessage::Response { success, message, .. } => {
+            assert!(
+                success,
+                "unbounded launch must survive a preset legacy root, got: {message:?}"
             );
         }
         other => return Err(format!("Expected Response, got: {other:?}").into()),

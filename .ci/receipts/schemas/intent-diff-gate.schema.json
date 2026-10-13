@@ -8,6 +8,7 @@
     "claimed_closeout_issues",
     "expected_paths",
     "actual_paths",
+    "source_state",
     "evidence",
     "verdict",
     "violations"
@@ -27,6 +28,39 @@
     "actual_paths": {
       "type": "array",
       "items": { "type": "string", "minLength": 1 }
+    },
+    "source_state": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["kind", "base_sha", "head_sha"],
+          "properties": {
+            "kind": { "const": "complete" },
+            "base_sha": { "type": ["string", "null"] },
+            "head_sha": { "type": ["string", "null"] }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["kind", "reason"],
+          "properties": {
+            "kind": { "const": "partial" },
+            "reason": { "type": "string", "minLength": 1 }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["kind", "reason"],
+          "properties": {
+            "kind": { "const": "unavailable" },
+            "reason": { "type": "string", "minLength": 1 }
+          },
+          "additionalProperties": false
+        }
+      ],
+      "description": "Typed state of the PR change-set observation (#15384). Only `complete` may authorise a closeout verdict; `partial`/`unavailable` sources force a `closeout_with_incomplete_source` fail when the PR body uses a closing keyword."
     },
     "evidence": {
       "type": "object",

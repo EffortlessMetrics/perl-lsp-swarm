@@ -1,12 +1,18 @@
-//! Import-spec extractor for workspace-level `ImportExportIndex` population.
+//! Workspace adapter from canonical HIR import facts into `ImportExportIndex`
+//! rows.
 //!
-//! Recognizes `use`, `require`, `require + Module->import(...)`, and
-//! standalone `ClassName->import(@names)` patterns in an AST and produces
-//! [`ImportSpec`] entries for each.
+//! Directive `use` / `require` meaning comes from
+//! [`perl_parser_core::hir::CompileEnvironment::import_specs`]. This module
+//! does not reclassify flattened `Use.args`. It only overlays patterns the
+//! current HIR projection does not emit: `require Module; Module->import(...)`
+//! pairing and standalone `ClassName->import(@names)`.
+//!
+//! `use lib` / `no lib` remain a separate [`UseLibFact`] walk; that is not
+//! import-argument classification.
 //!
 //! # Placement note — circular dependency debt
 //!
-//! This extractor lives in `perl-workspace` rather than
+//! This adapter lives in `perl-workspace` rather than
 //! `perl-semantic-analyzer` because of a circular dependency:
 //! `perl-semantic-analyzer/Cargo.toml` declares `perl-workspace` as a
 //! dependency, so moving any producer into `perl-semantic-analyzer` would
@@ -19,38 +25,51 @@
 //!
 //! **Follow-up**: invert or remove the `perl-semantic-analyzer → perl-workspace`
 //! dependency (possibly by introducing a `perl-workspace-types` leaf crate for
-//! the fact types), then consolidate this extractor into `perl-semantic-analyzer`.
+//! the fact types), then consolidate this adapter into `perl-semantic-analyzer`.
 //! Track as a follow-up after the dynamic-boundary suppression PRs merge.
 //!
 //! # Supported patterns
 //!
-//! | Perl source                                | `ImportKind`        | `ImportSymbols`          |
-//! |--------------------------------------------|---------------------|--------------------------|
-//! | `use Module qw(a b)`                       | `UseExplicitList`   | `Explicit(["a","b"])`    |
-//! | `use Module ()`                            | `UseEmpty`          | `None`                   |
-//! | `use Module ':tag'`                        | `UseTag`            | `Tags(["tag"])`          |
-//! | `use Module` (bare)                        | `Use`               | `Default`                |
-//! | `use constant { FOO => 1 }`                | `UseConstant`       | `Explicit(["FOO"])`      |
-//! | `use constant PI => 3.14`                  | `UseConstant`       | `Explicit(["PI"])`       |
-//! | `require Module`                           | `Require`           | `Default`                |
-//! | `require Module; Module->import(...)`      | `RequireThenImport` | per args                 |
-//! | `require $var`                             | `DynamicRequire`    | `Dynamic`                |
-//! | `Foo->import(@names)` (standalone)         | `ManualImport`      | `Dynamic`                |
-
+//! | Perl source                                | `ImportKind`        | `ImportSymbols`          | Source |
+//! |--------------------------------------------|---------------------|--------------------------|--------|
+//! | `use Module qw(a b)`                       | `UseExplicitList`   | `Explicit(["a","b"])`    | HIR    |
+//! | `use Module ()`                            | `UseEmpty`          | `None`                   | HIR    |
+//! | `use Module ':tag'`                        | `UseTag`            | `Tags(["tag"])`          | HIR    |
+//! | `use Module` (bare)                        | `Use`               | `Default`                | HIR    |
+//! | `use constant { FOO => 1 }`                | `UseConstant`       | `Explicit(["FOO"])`      | HIR    |
+//! | `use constant PI => 3.14`                  | `UseConstant`       | `Explicit(["PI"])`       | HIR    |
+//! | `require Module`                           | `Require`           | `Default`                | HIR    |
+//! | `require Module; Module->import(...)`      | `RequireThenImport` | per args                 | overlay |
+//! | `require $var`                             | `DynamicRequire`    | `Dynamic`                | HIR    |
+//! | `Foo->import(@names)` (standalone)         | `ManualImport`      | `Dynamic`                | overlay |
 use crate::ast::{Node, NodeKind};
+use perl_parser_core::hir::{HirFile, lower_ast};
 use perl_semantic_facts::{
     AnchorId, Confidence, FileId, ImportKind, ImportSpec, ImportSymbols, Provenance, UseLibFact,
 };
 
-/// Walk the AST and return one [`ImportSpec`] per import site.
+/// Project canonical HIR import facts, then overlay patterns HIR does not emit.
 ///
 /// Each spec carries the supplied `file_id` and an `anchor_id` derived from
 /// the statement's byte-offset (for incremental invalidation).
 ///
 /// See the module-level doc for the full list of recognised patterns.
 pub fn extract_import_specs(ast: &Node, file_id: FileId) -> Vec<ImportSpec> {
-    let mut out = Vec::new();
-    walk(ast, file_id, &mut out);
+    extract_import_specs_from_hir(&lower_ast(ast), ast, file_id)
+}
+
+/// Project [`HirFile::compile_environment`] import facts for `file_id`.
+///
+/// Callers that already lowered HIR (the production indexer) should use this
+/// entry so workspace rows come from the same compile-environment projection
+/// rather than a second argument classifier.
+pub fn extract_import_specs_from_hir(
+    hir: &HirFile,
+    ast: &Node,
+    file_id: FileId,
+) -> Vec<ImportSpec> {
+    let mut out = hir.compile_environment.import_specs(file_id);
+    overlay_non_directive_imports(ast, file_id, &mut out);
     out
 }
 
@@ -164,42 +183,29 @@ fn parse_use_lib_literal(s: &str) -> Option<UseLibLiteral<'_>> {
     None
 }
 
-// ── AST walker ──────────────────────────────────────────────────────────────
+// ── Overlay for patterns current HIR import_specs do not emit ───────────────
 
-fn walk(node: &Node, file_id: FileId, out: &mut Vec<ImportSpec>) {
-    // Handle `use` statements.
-    if let NodeKind::Use { module, args, .. } = &node.kind
-        && let Some(spec) = classify_use(module, args, file_id, node)
+fn overlay_non_directive_imports(node: &Node, file_id: FileId, out: &mut Vec<ImportSpec>) {
+    if let Some(spec) = try_classify_standalone_class_import(node, file_id)
+        && !already_has_span(out, spec.span_start_byte)
     {
         out.push(spec);
     }
 
-    // Detect standalone `ClassName->import(@names)` method calls where the
-    // object is a static identifier (not a variable). These are NOT preceded
-    // by a `require` statement. The exported symbol list is often dynamic
-    // (e.g. `Foo->import(@names)`), so we emit `ImportSymbols::Dynamic`
-    // conservatively.
-    if let Some(spec) = try_classify_standalone_class_import(node, file_id) {
-        out.push(spec);
-    }
-
-    // For statement-list containers, scan consecutive statements to detect
-    // `require Module; Module->import(...)` pairs and standalone `require`s.
     match &node.kind {
         NodeKind::Program { statements } | NodeKind::Block { statements } => {
-            walk_statements(statements, file_id, out);
-        }
-        NodeKind::Package { block: Some(block), .. } => {
-            if let NodeKind::Block { statements } = &block.kind {
-                walk_statements(statements, file_id, out);
-            }
+            overlay_require_then_import(statements, file_id, out);
         }
         _ => {}
     }
 
     for child in node.children() {
-        walk(child, file_id, out);
+        overlay_non_directive_imports(child, file_id, out);
     }
+}
+
+fn already_has_span(specs: &[ImportSpec], span_start_byte: Option<u32>) -> bool {
+    specs.iter().any(|spec| spec.span_start_byte == span_start_byte)
 }
 
 // ── Standalone ClassName->import(@names) detection ──────────────────────────
@@ -245,7 +251,7 @@ fn try_classify_standalone_class_import(node: &Node, file_id: FileId) -> Option<
 
 // ── Statement-list scanner for require patterns ──────────────────────────────
 
-fn walk_statements(statements: &[Node], file_id: FileId, out: &mut Vec<ImportSpec>) {
+fn overlay_require_then_import(statements: &[Node], file_id: FileId, out: &mut Vec<ImportSpec>) {
     let mut consumed: std::collections::HashSet<usize> = std::collections::HashSet::new();
 
     for (i, stmt) in statements.iter().enumerate() {
@@ -260,57 +266,56 @@ fn walk_statements(statements: &[Node], file_id: FileId, out: &mut Vec<ImportSpe
             _ => continue,
         };
 
-        // Dynamic require: `require $var`
         if is_dynamic_require(require_args) {
-            out.push(make_dynamic_require(file_id, require_node));
             consumed.insert(i);
             continue;
         }
 
-        // Static require: extract module name.
         let module_name = match extract_require_module_name(require_args) {
             Some(name) => name,
             None => continue,
         };
 
-        // Look ahead for `Module->import(...)`.
         let import_spec = statements.get(i + 1).and_then(|next_stmt| {
             let next_expr = unwrap_expression_statement(next_stmt);
             try_match_import_call(next_expr, &module_name)
         });
 
         if let Some((symbols, _import_node)) = import_spec {
-            let anchor_id = anchor_from_node(require_node);
+            let require_span = some_span_start(require_node);
             let confidence = confidence_for_symbols(&symbols);
-            out.push(ImportSpec {
-                module: module_name,
-                kind: ImportKind::RequireThenImport,
-                symbols,
-                provenance: Provenance::ExactAst,
-                confidence,
-                file_id: Some(file_id),
-                anchor_id: Some(anchor_id),
-                scope_id: None,
-                span_start_byte: Some(require_node.location.start.min(u32::MAX as usize) as u32),
-            });
+            if let Some(existing) = out.iter_mut().find(|spec| {
+                spec.span_start_byte == require_span
+                    && matches!(spec.kind, ImportKind::Require | ImportKind::RequireThenImport)
+            }) {
+                existing.kind = ImportKind::RequireThenImport;
+                existing.module = module_name;
+                existing.symbols = symbols;
+                existing.confidence = confidence;
+            } else {
+                let anchor_id = anchor_from_node(require_node);
+                out.push(ImportSpec {
+                    module: module_name,
+                    kind: ImportKind::RequireThenImport,
+                    symbols,
+                    provenance: Provenance::ExactAst,
+                    confidence,
+                    file_id: Some(file_id),
+                    anchor_id: Some(anchor_id),
+                    scope_id: None,
+                    span_start_byte: require_span,
+                });
+            }
             consumed.insert(i);
             consumed.insert(i + 1);
         } else {
-            let anchor_id = anchor_from_node(require_node);
-            out.push(ImportSpec {
-                module: module_name,
-                kind: ImportKind::Require,
-                symbols: ImportSymbols::Default,
-                provenance: Provenance::ExactAst,
-                confidence: Confidence::High,
-                file_id: Some(file_id),
-                anchor_id: Some(anchor_id),
-                scope_id: None,
-                span_start_byte: Some(require_node.location.start.min(u32::MAX as usize) as u32),
-            });
             consumed.insert(i);
         }
     }
+}
+
+fn some_span_start(node: &Node) -> Option<u32> {
+    Some(node.location.start.min(u32::MAX as usize) as u32)
 }
 
 // ── require helpers ──────────────────────────────────────────────────────────
@@ -337,21 +342,6 @@ fn extract_require_module_name(args: &[Node]) -> Option<String> {
             Some(module)
         }
         _ => None,
-    }
-}
-
-fn make_dynamic_require(file_id: FileId, node: &Node) -> ImportSpec {
-    let anchor_id = anchor_from_node(node);
-    ImportSpec {
-        module: String::new(),
-        kind: ImportKind::DynamicRequire,
-        symbols: ImportSymbols::Dynamic,
-        provenance: Provenance::DynamicBoundary,
-        confidence: Confidence::Low,
-        file_id: Some(file_id),
-        anchor_id: Some(anchor_id),
-        scope_id: None,
-        span_start_byte: Some(node.location.start.min(u32::MAX as usize) as u32),
     }
 }
 
@@ -455,181 +445,10 @@ fn collect_import_arg_symbols(arg: &Node, names: &mut Vec<String>, tags: &mut Ve
     }
 }
 
-// ── use-statement classification ─────────────────────────────────────────────
-
-fn classify_use(module: &str, args: &[String], file_id: FileId, node: &Node) -> Option<ImportSpec> {
-    if is_version_pragma(module) {
-        return None;
-    }
-
-    let anchor_id = anchor_from_node(node);
-
-    if module == "constant" {
-        return Some(classify_use_constant(args, file_id, anchor_id));
-    }
-
-    let (kind, symbols) = classify_args(args, module, node);
-
-    Some(ImportSpec {
-        module: module.to_string(),
-        kind,
-        symbols,
-        provenance: Provenance::ExactAst,
-        confidence: Confidence::High,
-        file_id: Some(file_id),
-        anchor_id: Some(anchor_id),
-        scope_id: None,
-        span_start_byte: Some(node.location.start.min(u32::MAX as usize) as u32),
-    })
-}
-
-fn classify_args(args: &[String], module: &str, node: &Node) -> (ImportKind, ImportSymbols) {
-    if args.is_empty() {
-        let bare_len = "use ".len() + module.len() + 1; // +1 for ';'
-        let span_len = node.location.end.saturating_sub(node.location.start);
-        if span_len > bare_len {
-            return (ImportKind::UseEmpty, ImportSymbols::None);
-        }
-        return (ImportKind::Use, ImportSymbols::Default);
-    }
-
-    let mut explicit_names: Vec<String> = Vec::new();
-    let mut tags: Vec<String> = Vec::new();
-
-    for arg in args {
-        let trimmed = arg.trim();
-
-        if let Some(inner) = parse_qw_content(trimmed) {
-            for word in inner.split_whitespace() {
-                if let Some(tag) = word.strip_prefix(':') {
-                    tags.push(tag.to_string());
-                } else {
-                    explicit_names.push(word.to_string());
-                }
-            }
-            continue;
-        }
-
-        let unquoted = unquote(trimmed);
-        if let Some(tag) = unquoted.strip_prefix(':') {
-            tags.push(tag.to_string());
-            continue;
-        }
-
-        if trimmed == "=>" || trimmed == "," || trimmed == "\\" {
-            continue;
-        }
-
-        if looks_like_symbol_name(trimmed) {
-            explicit_names.push(unquote(trimmed).to_string());
-        }
-    }
-
-    if explicit_names.is_empty() && tags.is_empty() && !args.is_empty() {
-        let has_any_symbol = args.iter().any(|a| {
-            let t = a.trim();
-            looks_like_symbol_name(t) || parse_qw_content(t).is_some()
-        });
-        if !has_any_symbol {
-            return (ImportKind::UseEmpty, ImportSymbols::None);
-        }
-    }
-
-    if !tags.is_empty() && explicit_names.is_empty() {
-        return (ImportKind::UseTag, ImportSymbols::Tags(tags));
-    }
-
-    if !tags.is_empty() && !explicit_names.is_empty() {
-        return (ImportKind::UseExplicitList, ImportSymbols::Mixed { tags, names: explicit_names });
-    }
-
-    if !explicit_names.is_empty() {
-        return (ImportKind::UseExplicitList, ImportSymbols::Explicit(explicit_names));
-    }
-
-    (ImportKind::Use, ImportSymbols::Default)
-}
-
-fn classify_use_constant(args: &[String], file_id: FileId, anchor_id: AnchorId) -> ImportSpec {
-    let mut constant_names: Vec<String> = Vec::new();
-
-    if args.is_empty() {
-        return ImportSpec {
-            module: "constant".to_string(),
-            kind: ImportKind::UseConstant,
-            symbols: ImportSymbols::None,
-            provenance: Provenance::ExactAst,
-            confidence: Confidence::High,
-            file_id: Some(file_id),
-            anchor_id: Some(anchor_id),
-            scope_id: None,
-            span_start_byte: None,
-        };
-    }
-
-    if args.first().map(|a| a.as_str()) == Some("{") {
-        let mut i = 1;
-        while i < args.len() {
-            let token = args[i].trim();
-            if token == "}" || token == "=>" || token == "," {
-                i += 1;
-                continue;
-            }
-            if i + 1 < args.len() && args[i + 1].trim() == "=>" {
-                constant_names.push(token.to_string());
-                i += 3;
-            } else {
-                i += 1;
-            }
-        }
-    } else if let Some(inner) = args.first().and_then(|a| parse_qw_content(a.trim())) {
-        constant_names.extend(inner.split_whitespace().map(|w| w.to_string()));
-    } else if let Some(name) = args.first() {
-        let trimmed = name.trim();
-        if looks_like_constant_name(trimmed) {
-            constant_names.push(trimmed.to_string());
-        }
-    }
-
-    let mut seen = std::collections::HashSet::new();
-    constant_names.retain(|n| seen.insert(n.clone()));
-
-    let symbols = if constant_names.is_empty() {
-        ImportSymbols::None
-    } else {
-        ImportSymbols::Explicit(constant_names)
-    };
-
-    ImportSpec {
-        module: "constant".to_string(),
-        kind: ImportKind::UseConstant,
-        symbols,
-        provenance: Provenance::ExactAst,
-        confidence: Confidence::High,
-        file_id: Some(file_id),
-        anchor_id: Some(anchor_id),
-        scope_id: None,
-        span_start_byte: None,
-    }
-}
-
 // ── Utility helpers ──────────────────────────────────────────────────────────
 
 fn anchor_from_node(node: &Node) -> AnchorId {
     AnchorId(node.location.start as u64)
-}
-
-fn is_version_pragma(module: &str) -> bool {
-    if module.chars().next().is_some_and(|c| c.is_ascii_digit()) {
-        return true;
-    }
-    if module.starts_with('v')
-        && module.len() > 1
-        && module[1..].chars().all(|c| c.is_ascii_digit() || c == '.')
-    {
-        return true;
-    }
-    false
 }
 
 fn parse_qw_content(s: &str) -> Option<&str> {
@@ -647,32 +466,6 @@ fn unquote(s: &str) -> &str {
         return &s[1..s.len() - 1];
     }
     s
-}
-
-fn looks_like_symbol_name(s: &str) -> bool {
-    let s = unquote(s);
-    if s.is_empty() {
-        return false;
-    }
-    if s.starts_with(':') {
-        return true;
-    }
-    if s.starts_with('$')
-        || s.starts_with('@')
-        || s.starts_with('%')
-        || s.starts_with('&')
-        || s.starts_with('*')
-    {
-        return true;
-    }
-    s.chars().next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
-}
-
-fn looks_like_constant_name(s: &str) -> bool {
-    if s.is_empty() {
-        return false;
-    }
-    s.chars().next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
 }
 
 fn confidence_for_symbols(symbols: &ImportSymbols) -> Confidence {
@@ -960,6 +753,148 @@ mod tests {
             dynamic_specs.is_empty(),
             "explicit import args must not produce a Dynamic spec, got: {dynamic_specs:#?}"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn trailing_configuration_hash_contributes_no_imported_symbols()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // These specs populate the live `ImportExportIndex`, so a key or value
+        // read out of a configuration hash resolves as a symbol the file
+        // imported. The statement asks for `param1` and `param2`; `key` and
+        // `value` configure the module.
+        let specs = parse_and_extract("use Another::Module 'param1', 'param2', {key => 'value'};");
+        let spec = specs
+            .iter()
+            .find(|spec| spec.module == "Another::Module")
+            .ok_or("expected an ImportSpec for Another::Module")?;
+
+        assert_eq!(
+            spec.symbols,
+            ImportSymbols::Explicit(vec!["param1".to_string(), "param2".to_string()])
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_configuration_only_use_is_an_empty_import_not_a_default_one()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Asserting the kind, not just the absence of leaked names. Skipping the
+        // hash body leaves nothing that looks like a symbol, and the
+        // empty-result fallback must reach `UseEmpty` on that basis rather than
+        // finding `exports` inside the skipped hash and falling through to
+        // `Use`/`Default` — which would claim this file receives Sub::Exporter's
+        // default exports.
+        let specs = parse_and_extract("use Sub::Exporter -setup => { exports => [qw(foo bar)] };");
+        let spec = specs
+            .iter()
+            .find(|spec| spec.module == "Sub::Exporter")
+            .ok_or("expected an ImportSpec for Sub::Exporter")?;
+
+        assert_eq!(spec.kind, ImportKind::UseEmpty);
+        assert_eq!(spec.symbols, ImportSymbols::None);
+        Ok(())
+    }
+
+    #[test]
+    fn a_per_symbol_option_hash_keeps_the_installed_name() -> Result<(), Box<dyn std::error::Error>>
+    {
+        // `foo => { -as => 'bar' }` installs `bar`, not `foo`. This pass does not
+        // model the rename — that is a stated non-goal — but skipping the option
+        // hash would drop `bar` and keep only `foo`, turning an imprecise answer
+        // into a wrong one. Only the documented option names retain the body;
+        // a dashed first key alone does not mark the per-symbol form.
+        let specs = parse_and_extract("use Module foo => { -as => 'bar' };");
+        let spec = specs
+            .iter()
+            .find(|spec| spec.module == "Module")
+            .ok_or("expected an ImportSpec for Module")?;
+
+        match &spec.symbols {
+            ImportSymbols::Explicit(names) => {
+                assert!(
+                    names.iter().any(|name| name == "bar"),
+                    "the installed name must survive: {names:?}"
+                );
+                // Retaining the body must publish neither the option keyword nor
+                // the name that was renamed away — only `bar` is installed.
+                assert!(
+                    !names.iter().any(|name| name == "as"),
+                    "an option keyword is not an imported symbol: {names:?}"
+                );
+                assert!(
+                    !names.iter().any(|name| name == "foo"),
+                    "a renamed name is not installed under its own name: {names:?}"
+                );
+            }
+            other => return Err(format!("expected an explicit list, got {other:?}").into()),
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn an_affix_rename_hash_publishes_neither_the_fragment_nor_a_composed_name()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // `-postfix` carries a fragment, not a name: `ok => { -postfix => '_ok' }`
+        // installs `ok_ok`, as `perl-lsp-rs-core`'s Test2 provider composes it.
+        // Keeping the hash would publish `_ok`, which is nothing at all, so the
+        // affix options are skipped like any other configuration. Composing the
+        // alias is rename modelling and is not done here.
+        let specs = parse_and_extract("use Test2::V0 ok => { -postfix => '_ok' };");
+        let spec = specs
+            .iter()
+            .find(|spec| spec.module == "Test2::V0")
+            .ok_or("expected an ImportSpec for Test2::V0")?;
+
+        match &spec.symbols {
+            ImportSymbols::Explicit(names) => {
+                assert!(
+                    !names.iter().any(|name| name == "_ok"),
+                    "a fragment is not an imported symbol: {names:?}"
+                );
+                assert!(
+                    !names.iter().any(|name| name == "postfix"),
+                    "an option key is not an imported symbol: {names:?}"
+                );
+            }
+            other => return Err(format!("expected an explicit list, got {other:?}").into()),
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_configuration_hash_opening_with_a_dashed_key_is_still_skipped()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // The converse of the per-symbol case. A dashed first key alone does not
+        // make a hash per-symbol options — an ordinary module configuration may
+        // open with one — so only the documented option names retain the body.
+        // `-config` is not one, so `config` and `value` stay out of the imports.
+        let specs = parse_and_extract("use Module 'foo', { -config => 'value' };");
+        let spec = specs
+            .iter()
+            .find(|spec| spec.module == "Module")
+            .ok_or("expected an ImportSpec for Module")?;
+
+        assert_eq!(spec.symbols, ImportSymbols::Explicit(vec!["foo".to_string()]));
+        Ok(())
+    }
+
+    #[test]
+    fn a_setup_hash_contributes_no_imported_symbols() -> Result<(), Box<dyn std::error::Error>> {
+        // A module configuring its own exports requests nothing, so neither the
+        // setup keys nor the names it exports are symbols this file imports.
+        let specs = parse_and_extract("use Sub::Exporter -setup => { exports => [qw(foo bar)] };");
+        let spec = specs
+            .iter()
+            .find(|spec| spec.module == "Sub::Exporter")
+            .ok_or("expected an ImportSpec for Sub::Exporter")?;
+
+        if let ImportSymbols::Explicit(names) = &spec.symbols {
+            assert!(
+                !names.iter().any(|name| ["exports", "foo", "bar"].contains(&name.as_str())),
+                "setup configuration leaked into the imported symbols: {names:?}"
+            );
+        }
         Ok(())
     }
 }

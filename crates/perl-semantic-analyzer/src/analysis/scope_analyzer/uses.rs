@@ -73,23 +73,61 @@ pub(super) fn handle_variable<'a>(
     false
 }
 
+/// Split a braced typeglob body into a single simple variable use — one sigil
+/// plus a plain identifier (`$x`, `@a`, `%h`) and nothing else.
+///
+/// Compound computed bodies (`*{$x . $y}`, `*{foo()}`, `*{$h{key}}`) have no
+/// single variable name; recording the raw body text as one variable would
+/// fabricate a name like `x . $y` and raise a false undeclared-variable
+/// diagnostic under strict mode (#15712). This shortcut only applies when the
+/// `Typeglob` node carries no structured body child; with one, the child is
+/// walked instead (#15731).
+fn split_simple_variable_body(body: &str) -> Option<(&str, &str)> {
+    let (sigil, var_name) = split_variable_name(body);
+    if sigil.is_empty()
+        || var_name.is_empty()
+        || !var_name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+    {
+        return None;
+    }
+    Some((sigil, var_name))
+}
+
 /// Handle `NodeKind::Typeglob`.
-pub(super) fn handle_typeglob(
+#[allow(clippy::too_many_arguments)]
+pub(super) fn handle_typeglob<'a>(
     analyzer: &ScopeAnalyzer,
-    node: &Node,
+    node: &'a Node,
     name: &str,
+    body: Option<&'a Node>,
     scope: &Rc<Scope>,
+    ancestors: &mut Vec<&'a Node>,
     issues: &mut Vec<ScopeIssue>,
-    context: &AnalysisContext<'_>,
+    context: &AnalysisContext<'a>,
     strict_vars_mode: bool,
 ) {
     // `Typeglob { name }` stores the name without its leading `*`, unlike the
     // equivalent `Variable { sigil: "*", name }` shape.  Reconstruct the
     // sigil here so typeglob aliases participate in the same scope/use ledger.
     // Brace-delimited names remain dynamic and must not become literal symbols.
+    if let Some(body) = body {
+        // A structured computed body (`*{$x . $y} = ...`) is authoritative:
+        // walk it so each used variable is recorded with its own node —
+        // declared variables count as used and undeclared variables earn
+        // individual strict-mode issues (#15731). Variables are never
+        // synthesized from the raw body text.
+        ancestors.push(node);
+        analyzer.analyze_node(body, scope, ancestors, issues, context);
+        ancestors.pop();
+        return;
+    }
+
     if let Some(expression) = name.strip_prefix('{').and_then(|name| name.strip_suffix('}')) {
-        let (sigil, var_name) = split_variable_name(expression);
-        if !sigil.is_empty() && !var_name.is_empty() && !var_name.contains("::") {
+        // Only a body that is exactly one simple variable (`*{$x}`) is a single
+        // recorded use; any other computed body must not be recorded as one
+        // fabricated variable name (#15712). This string-level shortcut stays
+        // for Typeglob nodes parsed without a structured body child.
+        if let Some((sigil, var_name)) = split_simple_variable_body(expression) {
             analyzer.record_variable_use(
                 scope,
                 strict_vars_mode,
@@ -152,12 +190,12 @@ pub(super) fn handle_assignment<'a>(
 
     // Optimization: Handle simple scalar assignment directly to avoid double lookup
     // (mark_initialized + analyze_node both perform lookups)
-    if let NodeKind::Variable { sigil, name } = &lhs.kind {
-        if !name.contains("::") && !is_builtin_global(sigil, name) {
-            if analyzer.initialize_and_use_variable_parts_in_context(scope, sigil, name, context) {
-                return true;
-            }
-        }
+    if let NodeKind::Variable { sigil, name } = &lhs.kind
+        && !name.contains("::")
+        && !is_builtin_global(sigil, name)
+        && analyzer.initialize_and_use_variable_parts_in_context(scope, sigil, name, context)
+    {
+        return true;
     }
 
     // Then analyze LHS
@@ -220,6 +258,11 @@ pub(super) fn handle_untie<'a>(
 }
 
 /// Handle `NodeKind::Identifier`.
+///
+/// Strict-subs UnquotedBareword applies only to expression-position
+/// identifiers. Module-request operands (`require DBI`), autoquoted hash
+/// keys, method receivers, known functions, and imported names have a
+/// different syntactic or semantic role and are not fed through that check.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn handle_identifier(
     analyzer: &ScopeAnalyzer,
@@ -231,21 +274,151 @@ pub(super) fn handle_identifier(
     pragma_state: &PragmaState,
     strict_subs_mode: bool,
 ) {
-    // Check for barewords under strict mode, excluding hash keys
-    // Hybrid check: Fast path for immediate hash keys (depth 1), then known functions, then deep check
-    if strict_subs_mode
-        && !analyzer.is_in_hash_key_context(node, ancestors, 1)
-        && !is_known_function(name)
-        && !pragma_state.has_builtin_import(name)
-        && !context.has_imported_bareword(name)
-        && !analyzer.is_in_hash_key_context(node, ancestors, 10)
+    if !strict_subs_mode {
+        return;
+    }
+    if analyzer.is_require_module_operand(node, ancestors, context.code) {
+        return;
+    }
+    // Hybrid check: immediate hash-key / method-receiver, then known
+    // functions and imports, then a deeper hash-key walk.
+    if analyzer.is_in_hash_key_context(node, ancestors, 1)
+        || is_known_function(name)
+        || pragma_state.has_builtin_import(name)
+        || context.has_imported_bareword(name)
+        || analyzer.is_in_hash_key_context(node, ancestors, 10)
     {
-        issues.push(ScopeIssue {
-            kind: super::IssueKind::UnquotedBareword,
-            variable_name: name.to_string(),
-            line: context.get_line(node.location.start),
-            range: (node.location.start, node.location.end),
-            description: format!("Bareword '{}' not allowed under 'use strict'", name),
-        });
+        return;
+    }
+    issues.push(ScopeIssue {
+        kind: super::IssueKind::UnquotedBareword,
+        variable_name: name.to_string(),
+        line: context.get_line(node.location.start),
+        range: (node.location.start, node.location.end),
+        description: format!("Bareword '{}' not allowed under 'use strict'", name),
+    });
+}
+
+// ============================================================================
+// #16670 — call-observation for `handle_identifier`.
+// Integration tests drive `analyze()`; these `--lib` tests invoke the
+// production handler directly so RIPR can grip the `strict_subs_mode`
+// early return and the UnquotedBareword `issues.push` (hosted receipt
+// classified both as no_static_path on this file).
+// ============================================================================
+#[cfg(test)]
+mod tests {
+    use super::super::IssueKind;
+    use super::{AnalysisContext, PragmaState, ScopeAnalyzer, ScopeIssue, handle_identifier};
+    use crate::Parser;
+    use crate::ast::{Node, NodeKind};
+    use perl_tdd_support::{must, must_some_with};
+
+    fn parse(code: &str) -> Node {
+        let mut parser = Parser::new(code);
+        must(parser.parse())
+    }
+
+    fn identifier_hits<'a>(root: &'a Node, name: &str) -> Vec<(&'a Node, Vec<&'a Node>)> {
+        let mut found = Vec::new();
+        collect_identifiers(root, name, &mut Vec::new(), &mut found);
+        found
+    }
+
+    fn collect_identifiers<'a>(
+        node: &'a Node,
+        name: &str,
+        ancestors: &mut Vec<&'a Node>,
+        found: &mut Vec<(&'a Node, Vec<&'a Node>)>,
+    ) {
+        if let NodeKind::Identifier { name: ident } = &node.kind
+            && ident == name
+        {
+            found.push((node, ancestors.clone()));
+        }
+        ancestors.push(node);
+        node.for_each_child(|child| collect_identifiers(child, name, ancestors, found));
+        ancestors.pop();
+    }
+
+    fn first_named<'a>(root: &'a Node, name: &str) -> (&'a Node, Vec<&'a Node>) {
+        must_some_with(
+            identifier_hits(root, name).into_iter().next(),
+            "expected Identifier with that spelling",
+        )
+    }
+
+    fn diagnose(code: &str, ident_name: &str, strict_subs_mode: bool) -> Vec<ScopeIssue> {
+        let ast = parse(code);
+        let analyzer = ScopeAnalyzer::new();
+        let (node, ancestors) = first_named(&ast, ident_name);
+        let name = must_some_with(
+            match &node.kind {
+                NodeKind::Identifier { name } => Some(name.as_str()),
+                _ => None,
+            },
+            "first_named must return an Identifier",
+        );
+        let pragma_map: &[(std::ops::Range<usize>, PragmaState)] = &[];
+        let context = AnalysisContext::new(&ast, code, pragma_map);
+        let pragma_state = PragmaState::default();
+        let mut issues = Vec::new();
+        handle_identifier(
+            &analyzer,
+            node,
+            name,
+            &mut issues,
+            &context,
+            &ancestors,
+            &pragma_state,
+            strict_subs_mode,
+        );
+        issues
+    }
+
+    fn unquoted_barewords(issues: &[ScopeIssue]) -> Vec<&str> {
+        issues
+            .iter()
+            .filter(|issue| issue.kind == IssueKind::UnquotedBareword)
+            .map(|issue| issue.variable_name.as_str())
+            .collect()
+    }
+
+    #[test]
+    fn strict_subs_off_does_not_emit_unquoted_bareword() {
+        let issues = diagnose("my $x = DBI;", "DBI", false);
+        assert!(
+            unquoted_barewords(&issues).is_empty(),
+            "strict_subs_mode=false must take the early return; got: {issues:?}"
+        );
+    }
+
+    #[test]
+    fn unparenthesized_require_dbi_does_not_emit_unquoted_bareword() {
+        let issues = diagnose("require DBI;", "DBI", true);
+        assert!(
+            unquoted_barewords(&issues).is_empty(),
+            "unparenthesized require DBI must skip UnquotedBareword; got: {issues:?}"
+        );
+    }
+
+    #[test]
+    fn expression_dbi_emits_unquoted_bareword() {
+        let issues = diagnose("my $x = DBI;", "DBI", true);
+        assert_eq!(
+            unquoted_barewords(&issues),
+            ["DBI"],
+            "expression-position DBI under strict must push UnquotedBareword; got: {issues:?}"
+        );
+    }
+
+    #[test]
+    fn parenthesized_require_dbi_emits_unquoted_bareword() {
+        let issues = diagnose("require(DBI);", "DBI", true);
+        assert_eq!(
+            unquoted_barewords(&issues),
+            ["DBI"],
+            "require(DBI) under strict must still push UnquotedBareword; got: {issues:?}"
+        );
     }
 }

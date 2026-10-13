@@ -1,5 +1,7 @@
-// Test infrastructure — allow test-friendly patterns.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![expect(
+    clippy::print_stderr,
+    reason = "Scenario 07 reports a local non-execution reason when the required perllsp binary is unavailable."
+)]
 
 //! Scenario 07 — Multi-file workspace / cross-file navigation.
 //!
@@ -16,10 +18,10 @@ use perl_lsp_ux_tests::{ScenarioConfig, UxHarness};
 use std::time::Duration;
 
 #[test]
-fn scenario_07_multi_file_workspace_opens_without_crash() {
+fn scenario_07_multi_file_workspace_opens_without_crash() -> Result<(), String> {
     if !binary_available() {
         eprintln!("SKIP scenario_07: perl-lsp binary not found");
-        return;
+        return Ok(());
     }
 
     let module_a = "package MyProject::Utils;\nuse strict;\nuse warnings;\n\n\
@@ -37,20 +39,27 @@ fn scenario_07_multi_file_workspace_opens_without_crash() {
             .with_file("script.pl", script)
             .with_file("cpanfile", "requires 'Moo', '2.0';\n"),
     )
-    .expect("Failed to create multi-file harness");
+    .map_err(|error| format!("Failed to create multi-file harness: {error}"))?;
 
-    harness.open_file("lib/MyProject/Utils.pm", module_a).expect("Utils.pm should open");
-    harness.open_file("lib/MyProject/Config.pm", module_b).expect("Config.pm should open");
-    harness.open_file("script.pl", script).expect("script.pl should open");
+    harness
+        .open_file("lib/MyProject/Utils.pm", module_a)
+        .map_err(|error| format!("Utils.pm should open: {error}"))?;
+    harness
+        .open_file("lib/MyProject/Config.pm", module_b)
+        .map_err(|error| format!("Config.pm should open: {error}"))?;
+    harness
+        .open_file("script.pl", script)
+        .map_err(|error| format!("script.pl should open: {error}"))?;
 
     harness.assert_no_crash();
+    Ok(())
 }
 
 #[test]
-fn scenario_07_definition_request_does_not_crash() {
+fn scenario_07_definition_request_does_not_crash() -> Result<(), String> {
     if !binary_available() {
         eprintln!("SKIP scenario_07: perl-lsp binary not found");
-        return;
+        return Ok(());
     }
 
     let module = "package Counter;\nuse strict;\nuse warnings;\n\n\
@@ -65,16 +74,22 @@ fn scenario_07_definition_request_does_not_crash() {
             .with_file("lib/Counter.pm", module)
             .with_file("main.pl", script),
     )
-    .expect("Failed to create harness");
+    .map_err(|error| format!("Failed to create harness: {error}"))?;
 
-    harness.open_file("lib/Counter.pm", module).expect("Counter.pm should open");
-    harness.open_file("main.pl", script).expect("main.pl should open");
+    harness
+        .open_file("lib/Counter.pm", module)
+        .map_err(|error| format!("Counter.pm should open: {error}"))?;
+    harness
+        .open_file("main.pl", script)
+        .map_err(|error| format!("main.pl should open: {error}"))?;
 
     // Allow workspace index to build.
     std::thread::sleep(Duration::from_secs(2));
 
-    let defs = harness.definition("main.pl", 3, 4);
-    assert!(defs.is_ok(), "definition request crashed server — UX regression: {:?}", defs);
+    harness
+        .definition("main.pl", 3, 4)
+        .map_err(|error| format!("definition request crashed server — UX regression: {error}"))?;
 
     harness.assert_no_crash();
+    Ok(())
 }

@@ -23,6 +23,11 @@ problem is usually in editor integration, workspace roots, or a stale cache.
    perllsp --stdio
    ```
 
+   Expected: the command blocks silently awaiting framed LSP input — that
+   silence is normal, not a hang. It prints nothing until it receives a
+   `Content-Length`-framed request (see
+   [Verify a Manual Installation](../tutorials/GETTING_STARTED.md#verify-a-manual-installation)).
+
 2. Turn on logging and read stderr:
 
    ```bash
@@ -138,7 +143,8 @@ If the editor is using a helper extension or plugin, check its own logs too.
    vim.lsp.enable('perllsp')
    ```
 
-5. Use `perllsp --check path/to/file.pl` for manual diagnostics.
+5. Use `perllsp --check path/to/file.pl` for a native listed-file parser check
+   (it does not execute project Perl).
    Do not test stdio mode by piping unframed JSON.
 
 ## coc.nvim Does Not Start `perllsp`

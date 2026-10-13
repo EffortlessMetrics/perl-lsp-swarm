@@ -56,8 +56,8 @@ fn declaration_target_is_not_treated_as_reference() -> Result<()> {
 
 #[test]
 fn localized_typeglob_alias_emits_both_boundary_names() -> Result<()> {
-    let lhs = Node::new(NodeKind::Typeglob { name: "ALIAS".to_string() }, loc(7, 13));
-    let rhs = Node::new(NodeKind::Typeglob { name: "STDERR".to_string() }, loc(16, 23));
+    let lhs = Node::new(NodeKind::Typeglob { name: "ALIAS".to_string(), body: None }, loc(7, 13));
+    let rhs = Node::new(NodeKind::Typeglob { name: "STDERR".to_string(), body: None }, loc(16, 23));
     let alias = Node::new(
         NodeKind::Assignment { lhs: Box::new(lhs), rhs: Box::new(rhs), op: "=".to_string() },
         loc(7, 23),
@@ -445,7 +445,7 @@ fn non_ampersand_call_targets_stay_call_refs() -> Result<()> {
 
 #[test]
 fn typeglob_alias_boundary_is_classified() -> Result<()> {
-    let typeglob = Node::new(NodeKind::Typeglob { name: "foo".to_string() }, loc(0, 4));
+    let typeglob = Node::new(NodeKind::Typeglob { name: "foo".to_string(), body: None }, loc(0, 4));
     let program = Node::new(NodeKind::Program { statements: vec![typeglob] }, loc(0, 4));
 
     let refs = extract_symbol_refs(&program);
@@ -458,7 +458,7 @@ fn typeglob_alias_boundary_is_classified() -> Result<()> {
 
 #[test]
 fn typeglob_assignment_keeps_rhs_coderef_reference() -> Result<()> {
-    let lhs = Node::new(NodeKind::Typeglob { name: "alias".to_string() }, loc(0, 6));
+    let lhs = Node::new(NodeKind::Typeglob { name: "alias".to_string(), body: None }, loc(0, 6));
     let rhs_target =
         Node::new(NodeKind::FunctionCall { name: "target".to_string(), args: vec![] }, loc(10, 17));
     let rhs = Node::new(
@@ -499,6 +499,8 @@ fn signature_parameters_are_not_emitted_as_refs() -> Result<()> {
     );
     let optional = Node::new(
         NodeKind::OptionalParameter {
+            default_operator: "=".into(),
+            default_operator_span: Default::default(),
             variable: Box::new(param_y),
             default_value: Box::new(default_var),
         },
@@ -557,7 +559,8 @@ fn signature_parameters_are_not_emitted_as_refs() -> Result<()> {
 fn dynamic_typeglob_brace_name_is_not_emitted_as_static_symbol() -> Result<()> {
     // Simulate the AST shape the parser produces for `*{$var} = \&func;`.
     // The LHS typeglob carries the brace-delimited text as its name.
-    let typeglob = Node::new(NodeKind::Typeglob { name: "{$var}".to_string() }, loc(0, 8));
+    let typeglob =
+        Node::new(NodeKind::Typeglob { name: "{$var}".to_string(), body: None }, loc(0, 8));
     let program = Node::new(NodeKind::Program { statements: vec![typeglob] }, loc(0, 8));
 
     let refs = extract_symbol_refs(&program);
@@ -576,7 +579,7 @@ fn dynamic_typeglob_brace_name_is_not_emitted_as_static_symbol() -> Result<()> {
 /// Guard: static typeglob `*foo` is unaffected by the dynamic-name check.
 #[test]
 fn static_typeglob_is_still_emitted_after_dynamic_fix() -> Result<()> {
-    let typeglob = Node::new(NodeKind::Typeglob { name: "foo".to_string() }, loc(0, 4));
+    let typeglob = Node::new(NodeKind::Typeglob { name: "foo".to_string(), body: None }, loc(0, 4));
     let program = Node::new(NodeKind::Program { statements: vec![typeglob] }, loc(0, 4));
 
     let refs = extract_symbol_refs(&program);

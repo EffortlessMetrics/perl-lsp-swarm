@@ -24,8 +24,14 @@ doctest = false
 
 [dependencies]
 perl-parser-core = { workspace = true }
+# Canonical LF source-line geometry (ADR-0048) and byte-span types for the
+# reference edit transaction model. Already in the graph via perl-parser-core.
+perl-position-tracking = { workspace = true }
+# Canonical content-digest identity for reference source subjects.
+perl-source-identity = { workspace = true }
 perl-test-must = { workspace = true }
 serde = { workspace = true }
+thiserror = { workspace = true }
 serde_json.workspace = true
 lsp-types = { workspace = true, optional = true }
 url = { workspace = true, optional = true }

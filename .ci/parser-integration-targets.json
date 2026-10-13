@@ -17,6 +17,23 @@
       "boundedness": "focused"
     },
     {
+      "id": "parser.cli.continued_read_failure_stats",
+      "package": "perl-parser",
+      "target": "perl_parse_cli",
+      "features": [
+        "cli"
+      ],
+      "no_default_features": false,
+      "cargo_args": [],
+      "test_args": [
+        "--test-threads=4"
+      ],
+      "owner": "#13060",
+      "reason": "Execute the feature-gated perl-parse binary regression so continued read failures remain counted and visible.",
+      "disposition": "execute",
+      "boundedness": "focused"
+    },
+    {
       "id": "parser.recovery.regression",
       "package": "perl-parser-core",
       "target": "error_recovery_regression",
@@ -43,6 +60,21 @@
       ],
       "owner": "#6629",
       "reason": "Protect the incomplete-brace recovery marker and source geometry contract.",
+      "disposition": "execute",
+      "boundedness": "focused"
+    },
+    {
+      "id": "parser.hir.postfix_modifiers",
+      "package": "perl-parser-core",
+      "target": "hir_statement_modifier_proof",
+      "features": [],
+      "no_default_features": false,
+      "cargo_args": [],
+      "test_args": [
+        "--test-threads=4"
+      ],
+      "owner": "#6689",
+      "reason": "Execute exact flat- and body-HIR postfix statement-modifier topology, source geometry, access-mode, label-disposition, and prefix-control negative proof.",
       "disposition": "execute",
       "boundedness": "focused"
     },
@@ -122,6 +154,21 @@
       ],
       "owner": "#4847",
       "reason": "Pin red-black-tree rotation and fix-up access paths: container reads, terminal writes, and single ReadModifyWrite places.",
+      "disposition": "execute",
+      "boundedness": "focused"
+    },
+    {
+      "id": "parser.red_black_tree_delete_fixup",
+      "package": "perl-parser-core",
+      "target": "red_black_tree_delete_fixup_tests",
+      "features": [],
+      "no_default_features": false,
+      "cargo_args": [],
+      "test_args": [
+        "--test-threads=4"
+      ],
+      "owner": "#13600",
+      "reason": "Pin red-black deletion, transplant, successor-search, and mirrored double-black fix-up access paths.",
       "disposition": "execute",
       "boundedness": "focused"
     },
@@ -278,6 +325,156 @@
       ],
       "owner": "#13114",
       "reason": "Keep representative source bodies used with Perl command-line switches executable as clean parser contracts.",
+      "disposition": "execute",
+      "boundedness": "focused"
+    },
+    {
+      "id": "parser.command_line.regex_modifier_matrix",
+      "package": "perl-parser-core",
+      "target": "command_line_regex_modifier_matrix",
+      "features": [],
+      "no_default_features": false,
+      "cargo_args": [],
+      "test_args": [
+        "--test-threads=4"
+      ],
+      "owner": "#13663",
+      "reason": "Prove compact regex-family operators retain their modifier payload in author order, keep their byte range bounded to the operator, and diagnose invalid s///-and-tr/// modifiers inside that range.",
+      "disposition": "execute",
+      "boundedness": "focused"
+    },
+    {
+      "id": "parser.class_grammar.admission",
+      "package": "perl-parser-core",
+      "target": "class_grammar_context",
+      "features": [],
+      "no_default_features": false,
+      "cargo_args": [],
+      "test_args": [
+        "--test-threads=4"
+      ],
+      "owner": "#10740",
+      "reason": "Pin class-grammar admission boundaries: ADJUST admitted only inside class grammar, exact enclosing-frame restoration, statement-form rejection, and fresh/incremental equivalence.",
+      "disposition": "execute",
+      "boundedness": "focused"
+    },
+    {
+      "id": "parser.postfix.dereference_matrix",
+      "package": "perl-parser-core",
+      "target": "postfix_dereference_matrix_tests",
+      "features": [],
+      "no_default_features": false,
+      "cargo_args": [],
+      "test_args": [
+        "--test-threads=4"
+      ],
+      "owner": "#13760",
+      "reason": "Keep the complete non-interpolated postfix-dereference matrix executable: exact AST identity, receiver/selector ownership, byte geometry, children() reachability, HIR disposition, and the #13891/#14174 defect pins.",
+      "disposition": "execute",
+      "boundedness": "focused"
+    },
+    {
+      "id": "parser.output.adjacent_call",
+      "package": "perl-parser-core",
+      "target": "output_adjacent_call_17078",
+      "features": [],
+      "no_default_features": false,
+      "cargo_args": [],
+      "test_args": [
+        "--test-threads=4"
+      ],
+      "owner": "#17078",
+      "reason": "Keep adjacent uppercase and qualified output-call arguments distinct from spaced, scalar, and braced filehandles.",
+      "disposition": "execute",
+      "boundedness": "focused"
+    },
+    {
+      "id": "parser.loops.foreach_declaration_list",
+      "package": "perl-parser-core",
+      "target": "foreach_my_list_17082",
+      "features": [],
+      "no_default_features": false,
+      "cargo_args": [],
+      "test_args": [
+        "--test-threads=4"
+      ],
+      "owner": "#17082",
+      "reason": "Distinguish implicit-topic declaration lists from C-style for/foreach headers while preserving declarations, source geometry, and malformed-separator diagnostics.",
+      "disposition": "execute",
+      "boundedness": "focused"
+    },
+    {
+      "id": "parser.loops.c_style_separator_recovery",
+      "package": "perl-parser-core",
+      "target": "fix_expected_semicolon_for_loop",
+      "features": [],
+      "no_default_features": false,
+      "cargo_args": [],
+      "test_args": [
+        "--test-threads=4"
+      ],
+      "owner": "#17082",
+      "reason": "Retain malformed C-style separator recovery and following statements alongside the valid declaration-list distinction.",
+      "disposition": "execute",
+      "boundedness": "focused"
+    },
+    {
+      "id": "parser.hir.program_body_parity",
+      "package": "perl-parser-core",
+      "target": "hir_body_lowerer_parity_tests",
+      "features": [],
+      "no_default_features": false,
+      "cargo_args": [],
+      "test_args": [
+        "--test-threads=4"
+      ],
+      "owner": "#5813",
+      "reason": "Execute all thirteen original Program-root specimens with canonical body equality and independent shape, operand, access and binding expectations.",
+      "disposition": "execute",
+      "boundedness": "focused"
+    },
+    {
+      "id": "parser.hir.program_body_regex",
+      "package": "perl-parser-core",
+      "target": "hir_regex_lowerer_boundary_test",
+      "features": [],
+      "no_default_features": false,
+      "cargo_args": [],
+      "test_args": [
+        "--test-threads=4"
+      ],
+      "owner": "#5813",
+      "reason": "Execute public-entry versus canonical regex-family parity with the original retained modifier and family specimens.",
+      "disposition": "execute",
+      "boundedness": "focused"
+    },
+    {
+      "id": "parser.hir.program_body_geometry",
+      "package": "perl-parser-core",
+      "target": "hir_body_slice_test",
+      "features": [],
+      "no_default_features": false,
+      "cargo_args": [],
+      "test_args": [
+        "--test-threads=4"
+      ],
+      "owner": "#5813",
+      "reason": "Execute the Program-root body slice with exact source ranges, arena edges and canonical declaration identity.",
+      "disposition": "execute",
+      "boundedness": "focused"
+    },
+    {
+      "id": "parser.hir.scalar_literal_payloads",
+      "package": "perl-parser-core",
+      "target": "hir_scalar_literal_payload_tests",
+      "features": [],
+      "no_default_features": false,
+      "cargo_args": [],
+      "test_args": [
+        "--test-threads=4"
+      ],
+      "owner": "#17538",
+      "reason": "Execute the first-cohort scalar literal payload proof: exact Number, String, and Undef leaves with fabrication markers through canonical body construction, public-entry parity, and the PIR-A handoff join.",
       "disposition": "execute",
       "boundedness": "focused"
     }

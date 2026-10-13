@@ -811,10 +811,13 @@ fn test_dap_mode_clone_and_debug() {
 
 #[test]
 fn test_dap_server_creation_native() -> Result<(), Box<dyn std::error::Error>> {
+    // The trusted root must exist so the #8656 startup authority resolves.
+    let root = tempfile::tempdir()?;
     let config = DapConfig {
         log_level: "info".to_string(),
         mode: DapMode::Native,
-        workspace_root: Some(PathBuf::from("/workspace")),
+        workspace_root: Some(root.path().to_path_buf()),
+        launch_authority: perl_dap::LaunchAuthorityStartup::default(),
     };
     let server = DapServer::new(config)?;
     assert_eq!(server.config.mode, DapMode::Native);
@@ -1134,6 +1137,15 @@ fn test_feature_catalog_has_feature_known() {
 
 #[test]
 fn test_feature_catalog_all_dap_features_registered() {
+    // `has_feature` reports the *advertised* set. #9089 floors the routed
+    // inlineValues extension: its catalog row stays registered for inventory
+    // honesty while `advertised = false`, so it is deliberately absent here
+    // (the goto rows #9064 likewise). The unadvertised value is pinned by the
+    // coverage suite's feature-gate test.
+    //
+    // #9091: `dap.watchpoints` is deliberately excluded — the row remains in
+    // features.toml with full maturity metadata, but it is no longer advertised
+    // until watchpoint identity/install/hit proof exists.
     let all_ids = [
         "dap.core",
         "dap.breakpoints.basic",
@@ -1142,9 +1154,7 @@ fn test_feature_catalog_all_dap_features_registered() {
         "dap.completions",
         "dap.exceptions.die",
         "dap.exceptions.warn",
-        "dap.inline_values",
         "dap.modules",
-        "dap.watchpoints",
     ];
     for id in all_ids {
         assert!(
@@ -1152,6 +1162,20 @@ fn test_feature_catalog_all_dap_features_registered() {
             "feature `{id}` should be registered in the DAP catalog"
         );
     }
+    assert!(
+        !perl_dap::feature_catalog::has_feature("dap.inline_values"),
+        "dap.inline_values must stay unadvertised until #9089's negotiation gate passes"
+    );
+}
+
+/// #9091: watchpoints stay unadvertised while the re-enable gate
+/// (identity/install/hit proof) is unmet.
+#[test]
+fn test_feature_catalog_watchpoints_not_advertised() {
+    assert!(
+        !perl_dap::feature_catalog::has_feature("dap.watchpoints"),
+        "dap.watchpoints must not be advertised while the #9091 re-enable gate (watchpoint identity/install/hit proof) is unmet"
+    );
 }
 
 #[test]

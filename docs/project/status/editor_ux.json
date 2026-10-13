@@ -10,18 +10,18 @@
       "name": "first_five_minutes_harness",
       "owner": "perl-lsp-ux-tests",
       "state": "tracked",
-      "workflow_count": 75
+      "workflow_count": 76
     },
     {
       "name": "issue_burndown_regression_guard",
       "owner": "perl-lsp-ux-tests",
       "state": "tracked",
-      "workflow_count": 65
+      "workflow_count": 66
     }
   ],
   "harness": {
     "crate": "crates/perl-lsp-ux-tests",
-    "scenario_count": 78,
+    "scenario_count": 79,
     "scenario_files": [
       "crates/perl-lsp-ux-tests/tests/ux_scenario_01_simple_file.rs",
       "crates/perl-lsp-ux-tests/tests/ux_scenario_02_missing_perltidy.rs",
@@ -100,7 +100,8 @@
       "crates/perl-lsp-ux-tests/tests/ux_scenario_67_code_action_quick_fix_e2e.rs",
       "crates/perl-lsp-ux-tests/tests/ux_scenario_67_golden_editor_workload.rs",
       "crates/perl-lsp-ux-tests/tests/ux_scenario_68_strict_warnings_guided_edit.rs",
-      "crates/perl-lsp-ux-tests/tests/ux_scenario_69_dancer2_provider_cutover.rs"
+      "crates/perl-lsp-ux-tests/tests/ux_scenario_69_dancer2_provider_cutover.rs",
+      "crates/perl-lsp-ux-tests/tests/ux_scenario_70_htmx_server_header_workflows.rs"
     ]
   },
   "integration_points": {

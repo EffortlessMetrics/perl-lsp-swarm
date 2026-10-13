@@ -39,10 +39,10 @@ can tell the difference.
 
 ## Orchestration affordances
 
-### Lane-root decisions
+### Root decisions
 
-The lane root retains proof sufficiency and decides whether findings require proof
-repair, issue correction, candidate work, or an explicit `NOT_PROVEN` boundary. A
+The main Claude thread retains proof sufficiency and decides whether findings require
+proof repair, issue correction, candidate work, or an explicit `NOT_PROVEN` boundary. A
 subagent verdict does not approve the claim.
 
 ### Useful review contexts
@@ -64,10 +64,10 @@ conclusions from one source are not separate evidence.
 Review contexts are read-only by default. Accepted proof changes return to the current
 proof writer through `spec-to-test` or `prepare-proof`.
 
-Join when the lane root can state which wrong implementations are excluded, which
-oracle and production seam apply, how vacuity is controlled, what evidence conflicts or
-remains absent, and whether the result is adequate, weak, unavailable, or has no
-executable subject.
+Join when the main Claude thread can state which wrong implementations are excluded,
+which oracle and production seam apply, how vacuity is controlled, what evidence
+conflicts or remains absent, and whether the result is adequate, weak, unavailable, or
+has no executable subject.
 
 ### Return packet
 
@@ -81,8 +81,9 @@ Post when a proof defect, external oracle, production-path fact, or `NOT_PROVEN`
 boundary affects implementation, review, support, or later resumption. Localized
 candidate-test findings may use inline review.
 
-The lane root posts. Focused subagents and Team members return file/line-anchored proof
-findings as evidence and do not write to GitHub themselves.
+The main Claude thread posts the joined durable conclusion. Focused subagents and Team
+members return file/line-anchored proof findings as evidence and do not write to GitHub
+unless their brief grants one specific bounded finding publication.
 
 Keep reviewer identity/topology, raw logs, temporary mutants, retries, and clean routine
 results runtime-local. Do not post one summary per reviewer or proof run.

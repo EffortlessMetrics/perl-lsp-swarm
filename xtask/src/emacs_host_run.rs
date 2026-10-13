@@ -9,8 +9,9 @@
 //! `build_emacs_command`/`HermeticLayout`/`run_owned_process`.
 //!
 //! The generic process-tree cleanup boundary (owned-process-tree semantics,
-//! descendant verification, truncation metadata) is #8734's claim; this module
-//! consumes the current cleanup semantics without weakening or widening them.
+//! descendant verification, truncation metadata) is owned by #8734's runner
+//! substrate. This module consumes those fail-closed semantics without
+//! claiming Emacs, Eglot, lsp-mode, diagnostic, root, or install support.
 
 use anyhow::{Context, Result, bail, ensure};
 use std::fmt;
@@ -663,6 +664,7 @@ fn current_platform() -> Result<PlatformIdentity> {
 /// The typed outcome of one host run.  The receipt is written for every run
 /// that reached the process stage, including failed ones; absence of a
 /// receipt means the run never launched.
+#[derive(Debug)]
 pub struct HostRunOutcome {
     pub receipt_path: PathBuf,
     pub result: ObservationResult,
@@ -672,8 +674,10 @@ pub struct HostRunOutcome {
 
 /// CLI entry: validate the subject id, resolve the client source when the
 /// subject allows installation resolution, and execute the run.
+#[allow(clippy::too_many_arguments)]
 pub fn host_run_from_cli(
     repo_root: &Path,
+    api_version: &str,
     subject: &str,
     emacs_executable: PathBuf,
     candidate_executable: PathBuf,
@@ -682,6 +686,7 @@ pub fn host_run_from_cli(
     out_root: PathBuf,
     timeout_ms: u64,
 ) -> Result<HostRunOutcome> {
+    xtask::editor_client_compat::ensure_api_version(api_version)?;
     let subject = EmacsClientSubject::from_id(subject)?;
     // Exact inputs are checked before any installation walk or launch: an
     // unavailable host or candidate is a typed error here, never a skip and
@@ -809,8 +814,8 @@ pub fn host_run(
     let mut limitations = vec![
         "substrate lifecycle proof only: client support verdicts belong to #7126/#7721/#7727"
             .to_string(),
-        "process-tree cleanup verification is #8734's owned boundary; this receipt consumes the \
-         current runner cleanup semantics unchanged"
+        "process-tree cleanup is independently observed by the shared runner; this receipt copies \
+         that disposition and does not re-judge it"
             .to_string(),
     ];
     if !snapshot.is_file() {
@@ -1018,8 +1023,9 @@ fn outcome_journey(observation: &ProcessObservation) -> Vec<JourneyCell> {
         },
         evidence: vec!["emacs/process-ledger.json".to_string()],
         limitation: Some(
-            "cleanup pass today means a driver-complete status-0 host exit; descendant-process \
-             verification lands with #8734"
+            "cleanup pass requires a driver-complete status-0 host exit and an independently \
+             observed empty candidate process set; timeout/force cleanup reaps this-run \
+             candidate survivors by pid (never image-wide); an unusable probe is not_proven"
                 .to_string(),
         ),
     });
@@ -1029,4 +1035,60 @@ fn outcome_journey(observation: &ProcessObservation) -> Vec<JourneyCell> {
 fn file_sha256_of_empty() -> Result<String> {
     let empty = tempfile::NamedTempFile::new()?;
     file_sha256(empty.path())
+}
+
+#[cfg(test)]
+mod api_version_pin_tests {
+    use super::*;
+
+    /// Negative control (#15340): an unknown `--api-version` is refused
+    /// fail-closed before the subject id or any host input is touched.
+    #[test]
+    fn unknown_api_version_is_refused_before_any_work() -> anyhow::Result<()> {
+        let error = super::host_run_from_cli(
+            Path::new("."),
+            "editor_client_compat.v999",
+            "eglot-bundled",
+            PathBuf::from("not-absolute"),
+            PathBuf::from("not-absolute"),
+            None,
+            None,
+            PathBuf::from("not-absolute"),
+            1,
+        )
+        .err()
+        .ok_or_else(|| anyhow::anyhow!("unknown envelope version must be refused"))?;
+        let message = error.to_string();
+        anyhow::ensure!(
+            message.contains("unsupported editor_client_compat envelope version")
+                && message.contains("editor_client_compat.v999"),
+            "refusal must name the rejected version, got: {message}"
+        );
+        Ok(())
+    }
+
+    /// The current envelope version clears the pin and reaches the next
+    /// validation gate — never the version refusal.
+    #[test]
+    fn current_api_version_clears_the_pin() -> anyhow::Result<()> {
+        let error = super::host_run_from_cli(
+            Path::new("."),
+            xtask::editor_client_compat::SCHEMA_VERSION,
+            "eglot-bundled",
+            PathBuf::from("not-absolute"),
+            PathBuf::from("not-absolute"),
+            None,
+            None,
+            PathBuf::from("not-absolute"),
+            1,
+        )
+        .err()
+        .ok_or_else(|| anyhow::anyhow!("invalid inputs must still be refused"))?;
+        let message = error.to_string();
+        anyhow::ensure!(
+            !message.contains("unsupported editor_client_compat envelope version"),
+            "current version must pass the pin, got: {message}"
+        );
+        Ok(())
+    }
 }

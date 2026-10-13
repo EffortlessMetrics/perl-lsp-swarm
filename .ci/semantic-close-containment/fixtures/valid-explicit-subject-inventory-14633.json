@@ -1,0 +1,38 @@
+{
+  "schema_version": "semantic_close_containment_fixture.v1",
+  "provenance": {
+    "captured_at": "2026-09-09",
+    "sources": [
+      "https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/14551",
+      "https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/14633"
+    ],
+    "subject_shas": [
+      "873fb9f00063f5c9ce50d81bff65d236b31a9cf5"
+    ],
+    "boundary": "Bounded excerpts from the historical PR claim boundary; surrounding prose and issue body are omitted. The synthetic issue acceptance isolates CP00-003; this is not full historical PR replay."
+  },
+  "repository": "effortlessmetrics/perl-lsp-swarm",
+  "pull_request": {
+    "number": 14633,
+    "title": "fix: bounded required-work subject control",
+    "body": "## Claim Boundary\n\n**Provably true:** every row's authority, consumer, and proof-reference path is checked to exist on disk.\n\n**Explicitly not claimed:** that any row is correctly *activated*. Every row carries `promotion.state = \"not_evaluated\"`.\n\nCloses #9204."
+  },
+  "issues": [
+    {
+      "repository": "effortlessmetrics/perl-lsp-swarm",
+      "number": 9204,
+      "title": "Complete the named bounded change",
+      "body": "## Acceptance\nThe named change and its focused regression control are established."
+    }
+  ],
+  "expected": {
+    "aggregate_code": "PASS_NO_HIGH_CONFIDENCE_CONTRADICTION",
+    "rows": [
+      {
+        "repository": "effortlessmetrics/perl-lsp-swarm",
+        "issue_number": 9204,
+        "code": "PASS_NO_HIGH_CONFIDENCE_CONTRADICTION"
+      }
+    ]
+  }
+}

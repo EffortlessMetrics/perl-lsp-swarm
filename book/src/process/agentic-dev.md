@@ -144,6 +144,6 @@ flowchart TD
 
 ## See Also
 
-- [`INDEX.md`](INDEX.md) - Documentation front door
-- [`LESSONS.md`](LESSONS.md) - Wrongness log
-- [`FORENSICS_SCHEMA.md`](../reference/FORENSICS_SCHEMA.md) - PR analysis template
+- [`INDEX.md`](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/INDEX.md) - Documentation front door
+- [`LESSONS.md`](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/project/LESSONS.md) - Wrongness log
+- [`FORENSICS_SCHEMA.md`](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/reference/FORENSICS_SCHEMA.md) - PR analysis template

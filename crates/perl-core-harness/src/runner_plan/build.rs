@@ -19,6 +19,36 @@ const DISCOVERY_DECLARATION_LIMITATION: &str =
 const DIRECT_FALLBACK_LIMITATION: &str = "direct_fallback_missing_upstream_selection_context";
 const ALTERNATE_RUNNER_LIMITATION: &str = "alternate_runner_requires_membership_parity_evidence";
 
+/// The reconstruction inputs a validating caller must supply independently of
+/// the candidate receipt (#7737).
+///
+/// A runner plan is not authoritative because it is internally consistent: a
+/// producer can change target, runner, discovery frame, or declared scheduling
+/// and recompute every digest it owns. Validation therefore rebuilds the
+/// canonical plan from the matrix, the exact raw discovery bytes, and these
+/// caller-declared inputs, and only then compares the candidate. Callers must
+/// source these values from their own authority — an observed discovery
+/// subject, a target contract, or an operator declaration — never from the
+/// candidate being checked.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct DeclaredPlanInputs {
+    pub(crate) target_id: String,
+    pub(crate) runner: RunnerKind,
+    pub(crate) discovery_frame: DiscoveryFrame,
+    pub(crate) scheduling: RunnerScheduling,
+}
+
+impl DeclaredPlanInputs {
+    pub(crate) fn new(
+        target_id: impl Into<String>,
+        runner: RunnerKind,
+        discovery_frame: DiscoveryFrame,
+        scheduling: RunnerScheduling,
+    ) -> Self {
+        Self { target_id: target_id.into(), runner, discovery_frame, scheduling }
+    }
+}
+
 #[cfg(test)]
 pub(crate) fn build_runner_plan(
     matrix: &UpstreamTargetMatrix,
@@ -229,25 +259,58 @@ pub(crate) fn validate_runner_plan(plan: &RunnerPlan) -> Result<(), String> {
     Ok(())
 }
 
+/// Validate one candidate plan by reconstructing the canonical plan from the
+/// supplied authorities (#7737).
+///
+/// Every reconstruction input is caller-declared: the candidate supplies none
+/// of them. A plan that changes its target, runner, discovery frame, or
+/// declared scheduling and recomputes each digest it owns therefore fails here
+/// even though `validate_runner_plan` accepts it in isolation.
 pub(crate) fn validate_runner_plan_against(
     matrix: &UpstreamTargetMatrix,
     raw_discovery: &[u8],
+    declared: &DeclaredPlanInputs,
     plan: &RunnerPlan,
 ) -> Result<(), String> {
     validate_runner_plan(plan)?;
+    validate_declared_plan_inputs(declared, plan)?;
     let rebuilt = build_runner_plan_with_frame(
         matrix,
-        &plan.target_id,
-        plan.runner,
+        &declared.target_id,
+        declared.runner,
         raw_discovery,
-        plan.discovery_frame,
-        plan.scheduling.clone(),
+        declared.discovery_frame,
+        declared.scheduling.clone(),
     )?;
     if rebuilt != *plan {
         return Err(
-            "runner plan does not match the supplied matrix, target contract, raw discovery, and declared scheduling inputs"
+            "runner plan does not match the supplied matrix, target contract, raw discovery, and independently declared reconstruction inputs"
                 .to_string(),
         );
+    }
+    Ok(())
+}
+
+/// Name the first declared reconstruction input the candidate disagrees with.
+///
+/// The rebuild below would reject the same candidate, but only as one opaque
+/// semantic mismatch; naming the field keeps a forged declaration surface
+/// diagnosable.
+fn validate_declared_plan_inputs(
+    declared: &DeclaredPlanInputs,
+    plan: &RunnerPlan,
+) -> Result<(), String> {
+    let disagreements = [
+        ("target_id", plan.target_id != declared.target_id),
+        ("runner", plan.runner != declared.runner),
+        ("discovery_frame", plan.discovery_frame != declared.discovery_frame),
+        ("scheduling", plan.scheduling != declared.scheduling),
+    ];
+    if let Some((field, _)) = disagreements.iter().find(|(_, disagrees)| *disagrees) {
+        return Err(format!(
+            "runner plan field {field} disagrees with the independently declared reconstruction \
+             input; the plan cannot supply its own reconstruction authority"
+        ));
     }
     Ok(())
 }

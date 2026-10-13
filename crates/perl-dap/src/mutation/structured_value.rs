@@ -151,7 +151,10 @@ pub enum StructuredRefusal {
     /// Text was not valid structured data.
     #[error("invalid structured data at byte {offset}")]
     InvalidSyntax {
-        /// Byte offset where parsing stopped.
+        /// Byte offset where parsing stopped, measured in the structured
+        /// payload — the text *after* the `json:` prefix — not in the raw
+        /// envelope. Callers reporting against the envelope must add
+        /// [`STRUCTURED_PREFIX`]'s length.
         offset: usize,
     },
     /// Caller-supplied limits exceeded the pinned profile-v1 maxima; the
@@ -403,24 +406,22 @@ impl<'a> Parser<'a> {
                         .input
                         .get(self.pos + 1)
                         .ok_or(StructuredRefusal::InvalidSyntax { offset: self.pos })?;
-                    let replacement = match escape {
-                        b'"' => '"',
-                        b'\\' => '\\',
-                        b'/' => '/',
-                        b'b' => '\u{0008}',
-                        b'f' => '\u{000C}',
-                        b'n' => '\n',
-                        b'r' => '\r',
-                        b't' => '\t',
-                        b'u' => {
-                            return Err(StructuredRefusal::InvalidSyntax { offset: self.pos });
-                        }
+                    let (replacement, consumed) = match escape {
+                        b'"' => ('"', 2),
+                        b'\\' => ('\\', 2),
+                        b'/' => ('/', 2),
+                        b'b' => ('\u{0008}', 2),
+                        b'f' => ('\u{000C}', 2),
+                        b'n' => ('\n', 2),
+                        b'r' => ('\r', 2),
+                        b't' => ('\t', 2),
+                        b'u' => self.decode_unicode_escape()?,
                         _ => {
                             return Err(StructuredRefusal::InvalidSyntax { offset: self.pos });
                         }
                     };
                     decoded.push(replacement);
-                    self.pos += 2;
+                    self.pos += consumed;
                 }
                 _ => {
                     if b.is_ascii() {
@@ -451,6 +452,61 @@ impl<'a> Parser<'a> {
             }
         }
         Err(StructuredRefusal::InvalidSyntax { offset: self.pos })
+    }
+
+    /// Decode one `\uXXXX` escape whose backslash sits at `self.pos`, returning
+    /// the decoded scalar and the consumed byte count (`6`, or `12` for an
+    /// exact surrogate pair). Strict JSON: every non-surrogate unit must be a
+    /// valid scalar, a lone low surrogate refuses, and a high surrogate must be
+    /// followed by an adjacent `\uDC00..=DFFF` continuation.
+    ///
+    /// Refusal offsets are payload-relative and name the escape that is
+    /// actually malformed: a bad or truncated *continuation* `hex4` reports the
+    /// continuation backslash (`backslash + 6`), while a continuation that is
+    /// well-formed hex but not a low surrogate is a defect of the pair, so it
+    /// reports the leading backslash.
+    fn decode_unicode_escape(&self) -> Result<(char, usize), StructuredRefusal> {
+        let backslash = self.pos;
+        let refused_at = |offset: usize| StructuredRefusal::InvalidSyntax { offset };
+        let unit = Self::hex4(self.input, backslash + 2, backslash)?;
+        if (0xDC00..=0xDFFF).contains(&unit) {
+            return Err(refused_at(backslash));
+        }
+        if (0xD800..=0xDBFF).contains(&unit) {
+            if self.input.get(backslash + 6) != Some(&b'\\')
+                || self.input.get(backslash + 7) != Some(&b'u')
+            {
+                return Err(refused_at(backslash));
+            }
+            let low = Self::hex4(self.input, backslash + 8, backslash + 6)?;
+            if !(0xDC00..=0xDFFF).contains(&low) {
+                return Err(refused_at(backslash));
+            }
+            let combined = 0x1_0000 + ((unit - 0xD800) << 10) + (low - 0xDC00);
+            let scalar = char::from_u32(combined).ok_or_else(|| refused_at(backslash))?;
+            return Ok((scalar, 12));
+        }
+        let scalar = char::from_u32(unit).ok_or_else(|| refused_at(backslash))?;
+        Ok((scalar, 6))
+    }
+
+    /// Read exactly four hex digits starting at `start`, refusing at
+    /// `error_offset` on any truncation or non-hex byte.
+    fn hex4(input: &[u8], start: usize, error_offset: usize) -> Result<u32, StructuredRefusal> {
+        let mut value = 0u32;
+        for step in 0..4 {
+            let byte = *input
+                .get(start + step)
+                .ok_or(StructuredRefusal::InvalidSyntax { offset: error_offset })?;
+            let digit = match byte {
+                b'0'..=b'9' => u32::from(byte - b'0'),
+                b'a'..=b'f' => u32::from(byte - b'a') + 10,
+                b'A'..=b'F' => u32::from(byte - b'A') + 10,
+                _ => return Err(StructuredRefusal::InvalidSyntax { offset: error_offset }),
+            };
+            value = value * 16 + digit;
+        }
+        Ok(value)
     }
 
     fn parse_array(&mut self, depth: usize) -> Result<StructuredValue, StructuredRefusal> {

@@ -50,11 +50,18 @@ changie new    # interactive: pick project, component, kind; write the body
 This writes `.changes/unreleased/<project>-<PR>-<kind>-<HHMMSS>.yaml`. Fragments
 carry a `project:` field (`product` → `CHANGELOG.md`, `vscode` →
 `vscode-extension/CHANGELOG.md`), a `component`, a `kind`
-(Added/Changed/Fixed/Performance/Deprecated/Removed/Security), a body, and custom
-metadata (`PR`, optional `Slug`, `Breaking: no|yes`). See `.changes/samples/`
-for two worked examples. Do **not** hand-edit `CHANGELOG.md` /
-`vscode-extension/CHANGELOG.md` directly in a feature PR — add a fragment
-instead; those files are generated.
+(Added/Changed/Fixed/Performance/Deprecated/Removed/Security), a body, an RFC
+3339 `time:` stamp, and custom metadata (`PR`, optional `Slug`,
+`Breaking: no|yes`). See `.changes/samples/` for two worked examples. Do **not**
+hand-edit `CHANGELOG.md` / `vscode-extension/CHANGELOG.md` directly in a feature
+PR — add a fragment instead; those files are generated.
+
+> **Hand-authoring fragments:** write `time:` as a single RFC 3339 line (e.g.
+> `time: 2026-08-30T12:34:56Z`). An empty `time:` value or an orphaned bare
+> `HH:MM:SS` line crashes `changie batch` repo-wide (issues #12648, #12549,
+> #13484). The fragment checks now reject that shape *before* it can land and
+> skip the render with a finding naming the fragment, so a malformed fragment
+> is reported as "fragment X is malformed", never as a tool crash.
 
 **Option B — declare an exemption** (no user-facing change). Add a marker line
 to the **PR body**:
@@ -89,8 +96,9 @@ cargo xtask changelog check --self-test
 
 The check, for a PR's changed files, verifies that: (a) a valid fragment was
 added, OR (b) an explicit exemption is present, OR (c) the PR is a recognized
-release-prep. It validates each fragment's project/kind/component/PR metadata,
-confirms it renders via `changie batch --dry-run --keep`, and warns when a
+release-prep. It validates each fragment's project/kind/component/PR/`time:`
+metadata, confirms it renders via `changie batch --dry-run --keep` (skipped
+with a named finding when any added fragment is malformed), and warns when a
 feature PR hand-edits a generated changelog. It runs in CI as the non-required
 **Changelog Ledger (Advisory)** workflow (`.github/workflows/changelog-advisory.yml`).
 
@@ -309,20 +317,17 @@ cargo xtask release-turnkey <0.x.y>
 ### Alternative Manual Release Process
 
 ```bash
-# 1. Generate changelog content
-# Use the same canonical flow entrypoint:
-cargo xtask release-turnkey <0.x.y> --no-auto-merge --no-wait-release
+# 1. Generate the version-bump PR and stop at a typed manual-merge handoff.
+#    This does not dispatch Release Orchestration.
+cargo xtask release-turnkey <0.x.y> --no-auto-merge
 
-# 2. Manually review and merge the generated version bump PR.
+# 2. Manually review and merge the generated version bump PR at the expected head.
 
-# 3. Dispatch Release Orchestration manually
-gh workflow run "Release Orchestration" \
-  --ref master \
-  --field version=<0.x.y> \
-  --field prerelease=false \
-  --field skip_crates=false \
-  --field skip_extension=false \
-  --field skip_docker=false
+# 3. After the PR has landed and origin has moved, resume the same transaction.
+#    This is the next_safe_action written into the handoff record. Do not
+#    dispatch a second Version Bump, and do not dispatch Release Orchestration
+#    by hand against an assumed branch name.
+cargo xtask release-turnkey <0.x.y> --transaction target/release-turnkey/<0.x.y>/transaction.json
 
 # 4. Optionally monitor release/publish workflows in GitHub Actions.
 

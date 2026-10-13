@@ -1,0 +1,1421 @@
+{
+  "actions": [
+    {
+      "action_id": "no_action_required",
+      "action_kind": "none",
+      "applicability": "The reported outcome needs nothing from the user.",
+      "destructive": false,
+      "elevated": false,
+      "external": false,
+      "forbidden_substitutions": [],
+      "manual": false,
+      "platform_scope": "any",
+      "public_rendering_ceiling": "public_safe"
+    },
+    {
+      "action_id": "retry_same_exact_subject",
+      "action_kind": "retry",
+      "applicability": "The same immutable subject may be attempted again unchanged.",
+      "destructive": false,
+      "elevated": false,
+      "external": false,
+      "forbidden_substitutions": [
+        "retry_with_different_release",
+        "retry_with_different_target",
+        "retry_with_source_fallback",
+        "retry_with_different_product_unit"
+      ],
+      "manual": false,
+      "platform_scope": "any",
+      "public_rendering_ceiling": "public_safe"
+    },
+    {
+      "action_id": "start_documented_new_session",
+      "action_kind": "user_step",
+      "applicability": "PATH persistence succeeded but the current process cannot observe it.",
+      "destructive": false,
+      "elevated": false,
+      "external": false,
+      "forbidden_substitutions": [
+        "claim_immediate_visibility_in_current_session",
+        "modify_running_shell_environment"
+      ],
+      "manual": false,
+      "platform_scope": "any",
+      "public_rendering_ceiling": "public_safe"
+    },
+    {
+      "action_id": "manual_path_persistence_required",
+      "action_kind": "manual",
+      "applicability": "PATH persistence failed and the user owns the resolution.",
+      "destructive": false,
+      "elevated": false,
+      "external": false,
+      "forbidden_substitutions": [
+        "edit_unrelated_profile_files",
+        "disable_shell_protections",
+        "claim_immediate_visibility_in_current_session"
+      ],
+      "manual": true,
+      "platform_scope": "any",
+      "public_rendering_ceiling": "public_safe"
+    },
+    {
+      "action_id": "resolve_wrong_ambient_binary",
+      "action_kind": "guidance",
+      "applicability": "A command resolved from a location this transaction does not own.",
+      "destructive": false,
+      "elevated": false,
+      "external": false,
+      "forbidden_substitutions": [
+        "delete_foreign_installation",
+        "overwrite_unknown_state",
+        "switch_release_or_target"
+      ],
+      "manual": false,
+      "platform_scope": "any",
+      "public_rendering_ceiling": "public_safe"
+    },
+    {
+      "action_id": "run_explicit_repair",
+      "action_kind": "repair_operation",
+      "applicability": "An exact bounded repair of the owned installation is available.",
+      "destructive": false,
+      "elevated": false,
+      "external": false,
+      "forbidden_substitutions": [
+        "reinstall_everything",
+        "delete_unknown_state",
+        "switch_release_or_target",
+        "switch_source_mode"
+      ],
+      "manual": false,
+      "platform_scope": "any",
+      "public_rendering_ceiling": "public_safe"
+    },
+    {
+      "action_id": "inspect_exact_receipt",
+      "action_kind": "inspect",
+      "applicability": "The exact typed transaction receipt explains the outcome.",
+      "destructive": false,
+      "elevated": false,
+      "external": false,
+      "forbidden_substitutions": [
+        "render_raw_tool_output",
+        "render_raw_paths"
+      ],
+      "manual": false,
+      "platform_scope": "any",
+      "public_rendering_ceiling": "operator_only"
+    },
+    {
+      "action_id": "report_instrument_failure",
+      "action_kind": "report",
+      "applicability": "Evidence or the instrument itself failed, not the product.",
+      "destructive": false,
+      "elevated": false,
+      "external": false,
+      "forbidden_substitutions": [
+        "treat_as_product_failure",
+        "treat_as_user_error"
+      ],
+      "manual": false,
+      "platform_scope": "any",
+      "public_rendering_ceiling": "operator_only"
+    },
+    {
+      "action_id": "await_publication",
+      "action_kind": "none",
+      "applicability": "A verified candidate has not reached the publication stage.",
+      "destructive": false,
+      "elevated": false,
+      "external": false,
+      "forbidden_substitutions": [],
+      "manual": false,
+      "platform_scope": "any",
+      "public_rendering_ceiling": "operator_only"
+    },
+    {
+      "action_id": "await_selection",
+      "action_kind": "none",
+      "applicability": "A published candidate has not reached the selection stage.",
+      "destructive": false,
+      "elevated": false,
+      "external": false,
+      "forbidden_substitutions": [],
+      "manual": false,
+      "platform_scope": "any",
+      "public_rendering_ceiling": "operator_only"
+    },
+    {
+      "action_id": "manual_owned_state_resolution",
+      "action_kind": "manual",
+      "applicability": "Residual state owned by this transaction needs manual resolution.",
+      "destructive": false,
+      "elevated": false,
+      "external": false,
+      "forbidden_substitutions": [
+        "recursive_delete_unknown_state",
+        "delete_foreign_installation",
+        "delete_unowned_paths"
+      ],
+      "manual": true,
+      "platform_scope": "any",
+      "public_rendering_ceiling": "operator_only"
+    }
+  ],
+  "additional_reasons": [
+    {
+      "action_ids": [
+        "manual_owned_state_resolution",
+        "inspect_exact_receipt"
+      ],
+      "claim_consequence": "residual_state_requires_manual_resolution",
+      "classification": "filesystem",
+      "owner": "#11493",
+      "reason_id": "cleanup_incomplete_residue_retained",
+      "redaction_policy": "bounded_typed_fields_only",
+      "required_limitations": [
+        "cleanup_incomplete"
+      ],
+      "retryability": "retryable_after_user_action",
+      "selector": {
+        "cleanup": [
+          "failed_preserved"
+        ]
+      },
+      "side_effect_disposition": "residue_present",
+      "summary_template_id": "t_cleanup_residue",
+      "terminality": "nonterminal_actionable"
+    },
+    {
+      "action_ids": [
+        "no_action_required"
+      ],
+      "claim_consequence": "cleanup_pending_no_user_action",
+      "classification": "process",
+      "owner": "#11493",
+      "reason_id": "cleanup_deferred_pending",
+      "redaction_policy": "bounded_typed_fields_only",
+      "required_limitations": [
+        "cleanup_deferred"
+      ],
+      "retryability": "not_retryable",
+      "selector": {
+        "cleanup": [
+          "deferred"
+        ]
+      },
+      "side_effect_disposition": "residue_present",
+      "summary_template_id": "t_cleanup_deferred",
+      "terminality": "nonterminal_awaiting_next_stage"
+    },
+    {
+      "action_ids": [
+        "report_instrument_failure",
+        "inspect_exact_receipt"
+      ],
+      "claim_consequence": "cleanup_completion_not_proven",
+      "classification": "instrument",
+      "owner": "#11493",
+      "reason_id": "cleanup_not_proven",
+      "redaction_policy": "bounded_typed_fields_only",
+      "required_limitations": [
+        "cleanup_not_proven"
+      ],
+      "retryability": "retry_forbidden_requires_replan",
+      "selector": {
+        "cleanup": [
+          "not_proven"
+        ]
+      },
+      "side_effect_disposition": "residue_present",
+      "summary_template_id": "t_cleanup_not_proven",
+      "terminality": "nonterminal_actionable"
+    },
+    {
+      "action_ids": [
+        "manual_path_persistence_required",
+        "inspect_exact_receipt"
+      ],
+      "claim_consequence": "command_availability_unproven",
+      "classification": "filesystem",
+      "owner": "#11493",
+      "reason_id": "path_persistence_failed_with_preserved_current",
+      "redaction_policy": "bounded_typed_fields_only",
+      "required_limitations": [
+        "path_persistence_failed"
+      ],
+      "retryability": "retryable_after_user_action",
+      "selector": {
+        "disposition": [
+          "failed_preserved_current",
+          "cancelled_preserved_current",
+          "not_proven_preserved_current"
+        ],
+        "path_persistence": [
+          "failed"
+        ]
+      },
+      "side_effect_disposition": "current_preserved_known_good",
+      "summary_template_id": "t_path_failed_secondary",
+      "terminality": "nonterminal_actionable"
+    }
+  ],
+  "claim_boundary": {
+    "claims": [
+      "One ordered reason/action registry maps every typed standalone_install_transition.v1 outcome to a bounded user consequence.",
+      "Projection is a pure total function of typed selector fields only.",
+      "Unknown or unmapped typed combinations are registry gaps that fail validation."
+    ],
+    "does_not_claim": [
+      "No installer, adapter, shell, or PowerShell behavior is changed by this registry.",
+      "No user-visible documentation, copy, or route guidance is generated here.",
+      "No release, publication, or channel mutation is authorized by any action.",
+      "Reason domains whose stage results are not yet typed on main are deferred, not covered."
+    ]
+  },
+  "claim_consequences_requiring_limitations": [
+    "command_available_after_new_session",
+    "command_availability_unproven",
+    "product_change_not_proven",
+    "support_claim_withheld",
+    "residual_state_requires_manual_resolution",
+    "cleanup_completion_not_proven"
+  ],
+  "deferred_action_ids": [
+    {
+      "action_id": "check_network_or_proxy",
+      "owner_issue": "#9088"
+    },
+    {
+      "action_id": "install_or_select_supported_target",
+      "owner_issue": "#10243"
+    },
+    {
+      "action_id": "review_integrity_or_provenance_failure",
+      "owner_issue": "#9017"
+    },
+    {
+      "action_id": "select_advanced_source_mode_with_consent",
+      "owner_issue": "#8367"
+    }
+  ],
+  "deferred_reason_domains": [
+    {
+      "domain_id": "release_discovery_and_transport",
+      "owner_issue": "#9088",
+      "why_deferred": "No typed standalone transport stage result exists on main; network, TLS, proxy, timeout, redirect, and size-limit outcomes are untyped."
+    },
+    {
+      "domain_id": "release_integrity_metadata",
+      "owner_issue": "#9017",
+      "why_deferred": "No typed checksum metadata stage result exists on main."
+    },
+    {
+      "domain_id": "independent_provenance",
+      "owner_issue": "#9090",
+      "why_deferred": "No typed provenance verification stage result exists on main."
+    },
+    {
+      "domain_id": "source_fallback_subject_binding",
+      "owner_issue": "#8367",
+      "why_deferred": "No typed source-mode consent or subject-binding stage result exists on main."
+    },
+    {
+      "domain_id": "product_unit_pair_promotion",
+      "owner_issue": "#8359",
+      "why_deferred": "standalone_install_transition.v1 reports aggregate product_units only; per-unit pair promotion is untyped."
+    },
+    {
+      "domain_id": "owned_state_uninstall",
+      "owner_issue": "#8372",
+      "why_deferred": "No typed removal stage result exists on main; ownership, manifest, and foreign-state outcomes are untyped."
+    },
+    {
+      "domain_id": "archive_safety_rejection_results",
+      "owner_issue": "#8352",
+      "why_deferred": "policy/standalone-archive-safety.v1.toml states limits and membership rules but emits no typed per-rejection stage result for projection."
+    }
+  ],
+  "input_contract": {
+    "forbidden_selector_fields": [
+      "bounded_reason",
+      "transaction_id",
+      "attempt_id",
+      "candidate_id",
+      "prior_current_candidate_id"
+    ],
+    "forbidden_selector_reason": "Diagnostic identity must follow typed results. Free-text reasons and per-attempt identifiers must never select a reason.",
+    "schema_path": "schemas/standalone_install_transition.v1.schema.json",
+    "schema_version": "standalone_install_transition.v1",
+    "selector_fields": [
+      "operation",
+      "disposition",
+      "product_units",
+      "cleanup",
+      "process_startup",
+      "path_persistence"
+    ]
+  },
+  "issue": "#11493",
+  "owner": "distribution/install",
+  "primary_reasons": [
+    {
+      "action_ids": [
+        "report_instrument_failure",
+        "inspect_exact_receipt"
+      ],
+      "claim_consequence": "support_claim_withheld",
+      "classification": "instrument",
+      "owner": "#10243",
+      "reason_id": "inv_preserved_current_with_product_mutation",
+      "redaction_policy": "bounded_typed_fields_only",
+      "required_limitations": [
+        "packet_self_contradictory",
+        "product_effect_unproven"
+      ],
+      "retryability": "retry_forbidden_requires_replan",
+      "selector": {
+        "disposition": [
+          "failed_preserved_current",
+          "cancelled_preserved_current",
+          "not_proven_preserved_current"
+        ],
+        "product_units": [
+          "installed",
+          "repaired",
+          "updated",
+          "rolled_back"
+        ]
+      },
+      "side_effect_disposition": "current_unknown_after_contradiction",
+      "summary_template_id": "t_packet_inconsistent",
+      "terminality": "nonterminal_actionable"
+    },
+    {
+      "action_ids": [
+        "report_instrument_failure",
+        "inspect_exact_receipt"
+      ],
+      "claim_consequence": "support_claim_withheld",
+      "classification": "instrument",
+      "owner": "#10243",
+      "reason_id": "inv_rollback_committed_without_rolled_back_units",
+      "redaction_policy": "bounded_typed_fields_only",
+      "required_limitations": [
+        "packet_self_contradictory",
+        "product_effect_unproven"
+      ],
+      "retryability": "retry_forbidden_requires_replan",
+      "selector": {
+        "disposition": [
+          "rollback_committed"
+        ],
+        "product_units": [
+          "installed",
+          "repaired",
+          "updated",
+          "unchanged",
+          "preserved_prior",
+          "not_applicable"
+        ]
+      },
+      "side_effect_disposition": "current_unknown_after_contradiction",
+      "summary_template_id": "t_packet_inconsistent",
+      "terminality": "nonterminal_actionable"
+    },
+    {
+      "action_ids": [
+        "report_instrument_failure",
+        "inspect_exact_receipt"
+      ],
+      "claim_consequence": "support_claim_withheld",
+      "classification": "instrument",
+      "owner": "#10243",
+      "reason_id": "inv_rollback_committed_requires_rollback_operation",
+      "redaction_policy": "bounded_typed_fields_only",
+      "required_limitations": [
+        "packet_self_contradictory",
+        "product_effect_unproven"
+      ],
+      "retryability": "retry_forbidden_requires_replan",
+      "selector": {
+        "disposition": [
+          "rollback_committed"
+        ],
+        "operation": [
+          "install",
+          "repair",
+          "update"
+        ]
+      },
+      "side_effect_disposition": "current_unknown_after_contradiction",
+      "summary_template_id": "t_packet_inconsistent",
+      "terminality": "nonterminal_actionable"
+    },
+    {
+      "action_ids": [
+        "report_instrument_failure",
+        "inspect_exact_receipt"
+      ],
+      "claim_consequence": "support_claim_withheld",
+      "classification": "instrument",
+      "owner": "#10243",
+      "reason_id": "inv_selection_committed_without_product_effect",
+      "redaction_policy": "bounded_typed_fields_only",
+      "required_limitations": [
+        "packet_self_contradictory",
+        "product_effect_unproven"
+      ],
+      "retryability": "retry_forbidden_requires_replan",
+      "selector": {
+        "disposition": [
+          "selection_committed"
+        ],
+        "product_units": [
+          "rolled_back",
+          "unchanged",
+          "preserved_prior",
+          "not_applicable"
+        ]
+      },
+      "side_effect_disposition": "current_unknown_after_contradiction",
+      "summary_template_id": "t_packet_inconsistent",
+      "terminality": "nonterminal_actionable"
+    },
+    {
+      "action_ids": [
+        "report_instrument_failure",
+        "inspect_exact_receipt"
+      ],
+      "claim_consequence": "support_claim_withheld",
+      "classification": "instrument",
+      "owner": "#10243",
+      "reason_id": "inv_unselected_stage_claims_path_persistence",
+      "redaction_policy": "bounded_typed_fields_only",
+      "required_limitations": [
+        "packet_self_contradictory",
+        "path_result_not_owned_by_stage"
+      ],
+      "retryability": "retry_forbidden_requires_replan",
+      "selector": {
+        "disposition": [
+          "candidate_verified",
+          "candidate_published_unselected"
+        ],
+        "path_persistence": [
+          "persisted",
+          "failed"
+        ]
+      },
+      "side_effect_disposition": "no_side_effect",
+      "summary_template_id": "t_packet_inconsistent",
+      "terminality": "nonterminal_actionable"
+    },
+    {
+      "action_ids": [
+        "report_instrument_failure",
+        "inspect_exact_receipt"
+      ],
+      "claim_consequence": "support_claim_withheld",
+      "classification": "instrument",
+      "owner": "#10243",
+      "reason_id": "inv_rollback_operation_reported_as_forward_selection",
+      "redaction_policy": "bounded_typed_fields_only",
+      "required_limitations": [
+        "packet_self_contradictory",
+        "product_effect_unproven"
+      ],
+      "retryability": "retry_forbidden_requires_replan",
+      "selector": {
+        "disposition": [
+          "selection_committed"
+        ],
+        "operation": [
+          "rollback"
+        ]
+      },
+      "side_effect_disposition": "current_unknown_after_contradiction",
+      "summary_template_id": "t_packet_inconsistent",
+      "terminality": "nonterminal_actionable"
+    },
+    {
+      "action_ids": [
+        "manual_path_persistence_required",
+        "inspect_exact_receipt"
+      ],
+      "claim_consequence": "command_availability_unproven",
+      "classification": "filesystem",
+      "owner": "#11493",
+      "reason_id": "sel_committed_path_persistence_failed",
+      "redaction_policy": "bounded_typed_fields_only",
+      "required_limitations": [
+        "path_persistence_failed",
+        "fresh_process_visibility_unproven"
+      ],
+      "retryability": "retryable_after_user_action",
+      "selector": {
+        "disposition": [
+          "selection_committed"
+        ],
+        "path_persistence": [
+          "failed"
+        ]
+      },
+      "side_effect_disposition": "current_advanced",
+      "summary_template_id": "t_selection_committed_path_failed",
+      "terminality": "terminal_success_pending_user_step"
+    },
+    {
+      "action_ids": [
+        "resolve_wrong_ambient_binary",
+        "run_explicit_repair",
+        "inspect_exact_receipt"
+      ],
+      "claim_consequence": "command_availability_unproven",
+      "classification": "environment",
+      "owner": "#11493",
+      "reason_id": "sel_committed_startup_failed",
+      "redaction_policy": "bounded_typed_fields_only",
+      "required_limitations": [
+        "fresh_process_startup_failed"
+      ],
+      "retryability": "retryable_after_user_action",
+      "selector": {
+        "disposition": [
+          "selection_committed"
+        ],
+        "path_persistence": [
+          "persisted",
+          "unchanged",
+          "not_applicable"
+        ],
+        "process_startup": [
+          "failed"
+        ]
+      },
+      "side_effect_disposition": "current_advanced",
+      "summary_template_id": "t_startup_failed",
+      "terminality": "nonterminal_actionable"
+    },
+    {
+      "action_ids": [
+        "no_action_required"
+      ],
+      "claim_consequence": "command_available_now",
+      "classification": "product",
+      "owner": "#11493",
+      "reason_id": "sel_committed_path_persisted_startup_verified",
+      "redaction_policy": "bounded_typed_fields_only",
+      "required_limitations": [],
+      "retryability": "not_retryable",
+      "selector": {
+        "disposition": [
+          "selection_committed"
+        ],
+        "path_persistence": [
+          "persisted"
+        ],
+        "process_startup": [
+          "verified"
+        ]
+      },
+      "side_effect_disposition": "current_advanced",
+      "summary_template_id": "t_selection_committed_visible",
+      "terminality": "terminal_success"
+    },
+    {
+      "action_ids": [
+        "start_documented_new_session",
+        "inspect_exact_receipt"
+      ],
+      "claim_consequence": "command_available_after_new_session",
+      "classification": "product",
+      "owner": "#11493",
+      "reason_id": "sel_committed_path_persisted_new_session_required",
+      "redaction_policy": "bounded_typed_fields_only",
+      "required_limitations": [
+        "fresh_process_visibility_unproven"
+      ],
+      "retryability": "not_retryable",
+      "selector": {
+        "disposition": [
+          "selection_committed"
+        ],
+        "path_persistence": [
+          "persisted"
+        ],
+        "process_startup": [
+          "unproven",
+          "not_applicable"
+        ]
+      },
+      "side_effect_disposition": "current_advanced",
+      "summary_template_id": "t_selection_committed_new_session",
+      "terminality": "terminal_success_pending_user_step"
+    },
+    {
+      "action_ids": [
+        "no_action_required"
+      ],
+      "claim_consequence": "command_available_now",
+      "classification": "product",
+      "owner": "#11493",
+      "reason_id": "sel_committed_path_already_visible",
+      "redaction_policy": "bounded_typed_fields_only",
+      "required_limitations": [],
+      "retryability": "not_retryable",
+      "selector": {
+        "disposition": [
+          "selection_committed"
+        ],
+        "path_persistence": [
+          "unchanged",
+          "not_applicable"
+        ],
+        "process_startup": [
+          "verified"
+        ]
+      },
+      "side_effect_disposition": "current_advanced",
+      "summary_template_id": "t_selection_committed_visible",
+      "terminality": "terminal_success"
+    },
+    {
+      "action_ids": [
+        "inspect_exact_receipt"
+      ],
+      "claim_consequence": "command_availability_unproven",
+      "classification": "product",
+      "owner": "#11493",
+      "reason_id": "sel_committed_startup_not_observed",
+      "redaction_policy": "bounded_typed_fields_only",
+      "required_limitations": [
+        "fresh_process_visibility_unproven"
+      ],
+      "retryability": "not_retryable",
+      "selector": {
+        "disposition": [
+          "selection_committed"
+        ],
+        "path_persistence": [
+          "unchanged",
+          "not_applicable"
+        ],
+        "process_startup": [
+          "unproven",
+          "not_applicable"
+        ]
+      },
+      "side_effect_disposition": "current_advanced",
+      "summary_template_id": "t_startup_not_observed",
+      "terminality": "terminal_success"
+    },
+    {
+      "action_ids": [
+        "manual_path_persistence_required",
+        "inspect_exact_receipt"
+      ],
+      "claim_consequence": "command_availability_unproven",
+      "classification": "filesystem",
+      "owner": "#11493",
+      "reason_id": "rollback_committed_path_persistence_failed",
+      "redaction_policy": "bounded_typed_fields_only",
+      "required_limitations": [
+        "path_persistence_failed",
+        "fresh_process_visibility_unproven"
+      ],
+      "retryability": "retryable_after_user_action",
+      "selector": {
+        "disposition": [
+          "rollback_committed"
+        ],
+        "path_persistence": [
+          "failed"
+        ]
+      },
+      "side_effect_disposition": "current_restored",
+      "summary_template_id": "t_selection_committed_path_failed",
+      "terminality": "terminal_success_pending_user_step"
+    },
+    {
+      "action_ids": [
+        "resolve_wrong_ambient_binary",
+        "run_explicit_repair",
+        "inspect_exact_receipt"
+      ],
+      "claim_consequence": "command_availability_unproven",
+      "classification": "environment",
+      "owner": "#11493",
+      "reason_id": "rollback_committed_startup_failed",
+      "redaction_policy": "bounded_typed_fields_only",
+      "required_limitations": [
+        "fresh_process_startup_failed"
+      ],
+      "retryability": "retryable_after_user_action",
+      "selector": {
+        "disposition": [
+          "rollback_committed"
+        ],
+        "path_persistence": [
+          "persisted",
+          "unchanged",
+          "not_applicable"
+        ],
+        "process_startup": [
+          "failed"
+        ]
+      },
+      "side_effect_disposition": "current_restored",
+      "summary_template_id": "t_startup_failed",
+      "terminality": "nonterminal_actionable"
+    },
+    {
+      "action_ids": [
+        "no_action_required"
+      ],
+      "claim_consequence": "command_available_now",
+      "classification": "product",
+      "owner": "#11493",
+      "reason_id": "rollback_committed_current_restored_startup_verified",
+      "redaction_policy": "bounded_typed_fields_only",
+      "required_limitations": [],
+      "retryability": "not_retryable",
+      "selector": {
+        "disposition": [
+          "rollback_committed"
+        ],
+        "process_startup": [
+          "verified"
+        ]
+      },
+      "side_effect_disposition": "current_restored",
+      "summary_template_id": "t_rollback_restored",
+      "terminality": "terminal_success"
+    },
+    {
+      "action_ids": [
+        "start_documented_new_session",
+        "inspect_exact_receipt"
+      ],
+      "claim_consequence": "command_available_after_new_session",
+      "classification": "product",
+      "owner": "#11493",
+      "reason_id": "rollback_committed_path_persisted_new_session_required",
+      "redaction_policy": "bounded_typed_fields_only",
+      "required_limitations": [
+        "fresh_process_visibility_unproven"
+      ],
+      "retryability": "not_retryable",
+      "selector": {
+        "disposition": [
+          "rollback_committed"
+        ],
+        "path_persistence": [
+          "persisted"
+        ],
+        "process_startup": [
+          "unproven",
+          "not_applicable"
+        ]
+      },
+      "side_effect_disposition": "current_restored",
+      "summary_template_id": "t_rollback_restored_new_session",
+      "terminality": "terminal_success_pending_user_step"
+    },
+    {
+      "action_ids": [
+        "inspect_exact_receipt"
+      ],
+      "claim_consequence": "command_availability_unproven",
+      "classification": "product",
+      "owner": "#11493",
+      "reason_id": "rollback_committed_current_restored",
+      "redaction_policy": "bounded_typed_fields_only",
+      "required_limitations": [
+        "fresh_process_visibility_unproven"
+      ],
+      "retryability": "not_retryable",
+      "selector": {
+        "disposition": [
+          "rollback_committed"
+        ]
+      },
+      "side_effect_disposition": "current_restored",
+      "summary_template_id": "t_rollback_restored",
+      "terminality": "terminal_success"
+    },
+    {
+      "action_ids": [
+        "manual_path_persistence_required",
+        "inspect_exact_receipt"
+      ],
+      "claim_consequence": "command_availability_unproven",
+      "classification": "filesystem",
+      "owner": "#11493",
+      "reason_id": "sel_unchanged_path_persistence_failed",
+      "redaction_policy": "bounded_typed_fields_only",
+      "required_limitations": [
+        "path_persistence_failed"
+      ],
+      "retryability": "retryable_after_user_action",
+      "selector": {
+        "disposition": [
+          "selection_unchanged"
+        ],
+        "path_persistence": [
+          "failed"
+        ]
+      },
+      "side_effect_disposition": "current_preserved_known_good",
+      "summary_template_id": "t_path_failed_secondary",
+      "terminality": "nonterminal_actionable"
+    },
+    {
+      "action_ids": [
+        "resolve_wrong_ambient_binary",
+        "run_explicit_repair",
+        "inspect_exact_receipt"
+      ],
+      "claim_consequence": "command_availability_unproven",
+      "classification": "environment",
+      "owner": "#11493",
+      "reason_id": "sel_unchanged_startup_failed",
+      "redaction_policy": "bounded_typed_fields_only",
+      "required_limitations": [
+        "fresh_process_startup_failed"
+      ],
+      "retryability": "retryable_after_user_action",
+      "selector": {
+        "disposition": [
+          "selection_unchanged"
+        ],
+        "path_persistence": [
+          "persisted",
+          "unchanged",
+          "not_applicable"
+        ],
+        "process_startup": [
+          "failed"
+        ]
+      },
+      "side_effect_disposition": "current_preserved_but_unproven",
+      "summary_template_id": "t_startup_failed",
+      "terminality": "nonterminal_actionable"
+    },
+    {
+      "action_ids": [
+        "no_action_required"
+      ],
+      "claim_consequence": "command_available_now",
+      "classification": "product",
+      "owner": "#11493",
+      "reason_id": "sel_unchanged_already_current_and_visible",
+      "redaction_policy": "bounded_typed_fields_only",
+      "required_limitations": [],
+      "retryability": "not_retryable",
+      "selector": {
+        "disposition": [
+          "selection_unchanged"
+        ],
+        "process_startup": [
+          "verified"
+        ]
+      },
+      "side_effect_disposition": "current_preserved_known_good",
+      "summary_template_id": "t_no_selection_change",
+      "terminality": "terminal_success"
+    },
+    {
+      "action_ids": [
+        "start_documented_new_session",
+        "inspect_exact_receipt"
+      ],
+      "claim_consequence": "command_available_after_new_session",
+      "classification": "product",
+      "owner": "#11493",
+      "reason_id": "sel_unchanged_path_persisted_new_session_required",
+      "redaction_policy": "bounded_typed_fields_only",
+      "required_limitations": [
+        "fresh_process_visibility_unproven"
+      ],
+      "retryability": "not_retryable",
+      "selector": {
+        "disposition": [
+          "selection_unchanged"
+        ],
+        "path_persistence": [
+          "persisted"
+        ],
+        "process_startup": [
+          "unproven",
+          "not_applicable"
+        ]
+      },
+      "side_effect_disposition": "current_preserved_known_good",
+      "summary_template_id": "t_no_selection_change_new_session",
+      "terminality": "terminal_success_pending_user_step"
+    },
+    {
+      "action_ids": [
+        "inspect_exact_receipt"
+      ],
+      "claim_consequence": "command_availability_unproven",
+      "classification": "product",
+      "owner": "#11493",
+      "reason_id": "sel_unchanged_no_selection_change",
+      "redaction_policy": "bounded_typed_fields_only",
+      "required_limitations": [
+        "fresh_process_visibility_unproven"
+      ],
+      "retryability": "not_retryable",
+      "selector": {
+        "disposition": [
+          "selection_unchanged"
+        ]
+      },
+      "side_effect_disposition": "current_preserved_known_good",
+      "summary_template_id": "t_no_selection_change",
+      "terminality": "terminal_success"
+    },
+    {
+      "action_ids": [
+        "retry_same_exact_subject",
+        "inspect_exact_receipt"
+      ],
+      "claim_consequence": "product_change_not_proven",
+      "classification": "product",
+      "owner": "#11493",
+      "reason_id": "candidate_verified_startup_failed",
+      "redaction_policy": "bounded_typed_fields_only",
+      "required_limitations": [
+        "fresh_process_startup_failed",
+        "candidate_not_published"
+      ],
+      "retryability": "retryable_same_subject",
+      "selector": {
+        "disposition": [
+          "candidate_verified"
+        ],
+        "process_startup": [
+          "failed"
+        ]
+      },
+      "side_effect_disposition": "no_side_effect",
+      "summary_template_id": "t_candidate_verified_startup_failed",
+      "terminality": "nonterminal_actionable"
+    },
+    {
+      "action_ids": [
+        "await_publication",
+        "inspect_exact_receipt"
+      ],
+      "claim_consequence": "no_product_change_claimed",
+      "classification": "process",
+      "owner": "#11493",
+      "reason_id": "candidate_verified_awaiting_publication",
+      "redaction_policy": "bounded_typed_fields_only",
+      "required_limitations": [
+        "candidate_not_published"
+      ],
+      "retryability": "not_retryable",
+      "selector": {
+        "disposition": [
+          "candidate_verified"
+        ]
+      },
+      "side_effect_disposition": "no_side_effect",
+      "summary_template_id": "t_candidate_awaiting_publication",
+      "terminality": "nonterminal_awaiting_next_stage"
+    },
+    {
+      "action_ids": [
+        "retry_same_exact_subject",
+        "inspect_exact_receipt"
+      ],
+      "claim_consequence": "product_change_not_proven",
+      "classification": "product",
+      "owner": "#11493",
+      "reason_id": "candidate_published_startup_failed",
+      "redaction_policy": "bounded_typed_fields_only",
+      "required_limitations": [
+        "fresh_process_startup_failed",
+        "candidate_not_selected"
+      ],
+      "retryability": "retryable_same_subject",
+      "selector": {
+        "disposition": [
+          "candidate_published_unselected"
+        ],
+        "process_startup": [
+          "failed"
+        ]
+      },
+      "side_effect_disposition": "candidate_published_not_current",
+      "summary_template_id": "t_candidate_published_startup_failed",
+      "terminality": "nonterminal_actionable"
+    },
+    {
+      "action_ids": [
+        "await_selection",
+        "inspect_exact_receipt"
+      ],
+      "claim_consequence": "no_product_change_claimed",
+      "classification": "process",
+      "owner": "#11493",
+      "reason_id": "candidate_published_awaiting_selection",
+      "redaction_policy": "bounded_typed_fields_only",
+      "required_limitations": [
+        "candidate_not_selected"
+      ],
+      "retryability": "not_retryable",
+      "selector": {
+        "disposition": [
+          "candidate_published_unselected"
+        ]
+      },
+      "side_effect_disposition": "candidate_published_not_current",
+      "summary_template_id": "t_candidate_awaiting_selection",
+      "terminality": "nonterminal_awaiting_next_stage"
+    },
+    {
+      "action_ids": [
+        "run_explicit_repair",
+        "inspect_exact_receipt",
+        "report_instrument_failure"
+      ],
+      "claim_consequence": "support_claim_withheld",
+      "classification": "product",
+      "owner": "#11493",
+      "reason_id": "failed_preserved_current_known_good_startup_failed",
+      "redaction_policy": "bounded_typed_fields_only",
+      "required_limitations": [
+        "known_good_startup_unproven",
+        "fresh_process_startup_failed"
+      ],
+      "retryability": "retry_forbidden_requires_replan",
+      "selector": {
+        "disposition": [
+          "failed_preserved_current"
+        ],
+        "process_startup": [
+          "failed"
+        ]
+      },
+      "side_effect_disposition": "current_preserved_but_unproven",
+      "summary_template_id": "t_known_good_unproven",
+      "terminality": "nonterminal_actionable"
+    },
+    {
+      "action_ids": [
+        "retry_same_exact_subject",
+        "inspect_exact_receipt"
+      ],
+      "claim_consequence": "no_product_change_claimed",
+      "classification": "product",
+      "owner": "#11493",
+      "reason_id": "failed_preserved_current",
+      "redaction_policy": "bounded_typed_fields_only",
+      "required_limitations": [
+        "product_change_not_applied"
+      ],
+      "retryability": "retryable_same_subject",
+      "selector": {
+        "disposition": [
+          "failed_preserved_current"
+        ]
+      },
+      "side_effect_disposition": "current_preserved_known_good",
+      "summary_template_id": "t_failed_current_preserved",
+      "terminality": "terminal_failure"
+    },
+    {
+      "action_ids": [
+        "run_explicit_repair",
+        "inspect_exact_receipt"
+      ],
+      "claim_consequence": "support_claim_withheld",
+      "classification": "process",
+      "owner": "#11493",
+      "reason_id": "cancelled_preserved_current_known_good_startup_failed",
+      "redaction_policy": "bounded_typed_fields_only",
+      "required_limitations": [
+        "known_good_startup_unproven",
+        "fresh_process_startup_failed"
+      ],
+      "retryability": "retry_forbidden_requires_replan",
+      "selector": {
+        "disposition": [
+          "cancelled_preserved_current"
+        ],
+        "process_startup": [
+          "failed"
+        ]
+      },
+      "side_effect_disposition": "current_preserved_but_unproven",
+      "summary_template_id": "t_known_good_unproven",
+      "terminality": "nonterminal_actionable"
+    },
+    {
+      "action_ids": [
+        "retry_same_exact_subject"
+      ],
+      "claim_consequence": "no_product_change_claimed",
+      "classification": "user_input",
+      "owner": "#11493",
+      "reason_id": "cancelled_preserved_current",
+      "redaction_policy": "bounded_typed_fields_only",
+      "required_limitations": [
+        "product_change_not_applied"
+      ],
+      "retryability": "retryable_same_subject",
+      "selector": {
+        "disposition": [
+          "cancelled_preserved_current"
+        ]
+      },
+      "side_effect_disposition": "current_preserved_known_good",
+      "summary_template_id": "t_cancelled_current_preserved",
+      "terminality": "terminal_cancelled"
+    },
+    {
+      "action_ids": [
+        "report_instrument_failure",
+        "run_explicit_repair",
+        "inspect_exact_receipt"
+      ],
+      "claim_consequence": "support_claim_withheld",
+      "classification": "instrument",
+      "owner": "#11493",
+      "reason_id": "not_proven_preserved_current_known_good_startup_failed",
+      "redaction_policy": "bounded_typed_fields_only",
+      "required_limitations": [
+        "known_good_startup_unproven",
+        "evidence_not_proven"
+      ],
+      "retryability": "retry_forbidden_requires_replan",
+      "selector": {
+        "disposition": [
+          "not_proven_preserved_current"
+        ],
+        "process_startup": [
+          "failed"
+        ]
+      },
+      "side_effect_disposition": "current_preserved_but_unproven",
+      "summary_template_id": "t_known_good_unproven",
+      "terminality": "nonterminal_actionable"
+    },
+    {
+      "action_ids": [
+        "report_instrument_failure",
+        "inspect_exact_receipt"
+      ],
+      "claim_consequence": "support_claim_withheld",
+      "classification": "instrument",
+      "owner": "#11493",
+      "reason_id": "not_proven_preserved_current",
+      "redaction_policy": "bounded_typed_fields_only",
+      "required_limitations": [
+        "evidence_not_proven"
+      ],
+      "retryability": "retry_forbidden_requires_replan",
+      "selector": {
+        "disposition": [
+          "not_proven_preserved_current"
+        ]
+      },
+      "side_effect_disposition": "current_preserved_known_good",
+      "summary_template_id": "t_not_proven_current_preserved",
+      "terminality": "terminal_failure"
+    }
+  ],
+  "registry": "standalone-diagnostics",
+  "render": {
+    "allowed_parameters": [
+      "operation",
+      "route_mode",
+      "disposition",
+      "product_units",
+      "cleanup",
+      "process_startup",
+      "path_persistence"
+    ],
+    "forbidden_parameters": [
+      "bounded_reason",
+      "install_root",
+      "path_value",
+      "tool_output",
+      "stderr",
+      "stdout",
+      "credentials",
+      "evidence_body",
+      "transaction_id",
+      "attempt_id",
+      "candidate_id",
+      "prior_current_candidate_id"
+    ],
+    "forbidden_reason": "Rendered diagnostics must not carry free text, raw paths, complete PATH values, credentials, evidence bodies, tool output, or per-attempt identity."
+  },
+  "schema_version": "standalone_diagnostics.v1",
+  "status": "active",
+  "summary_templates": [
+    {
+      "template_id": "t_packet_inconsistent",
+      "text": "The {operation} attempt reported an internally inconsistent result ({disposition} with product units {product_units}). No product change is claimed."
+    },
+    {
+      "template_id": "t_selection_committed_visible",
+      "text": "The {operation} completed and the installed command is available in this session."
+    },
+    {
+      "template_id": "t_selection_committed_new_session",
+      "text": "The {operation} completed. Start a new shell session before running the installed command."
+    },
+    {
+      "template_id": "t_selection_committed_path_failed",
+      "text": "The {operation} completed, but the PATH entry could not be persisted."
+    },
+    {
+      "template_id": "t_startup_failed",
+      "text": "The {operation} finished, but starting the installed command from a fresh process failed."
+    },
+    {
+      "template_id": "t_startup_not_observed",
+      "text": "The {operation} completed. Fresh-process startup was not observed."
+    },
+    {
+      "template_id": "t_rollback_restored",
+      "text": "The {operation} was rolled back and the previous installation is current again."
+    },
+    {
+      "template_id": "t_rollback_restored_new_session",
+      "text": "The {operation} was rolled back and the previous installation is current again. Start a new shell session before running the restored command."
+    },
+    {
+      "template_id": "t_no_selection_change",
+      "text": "The {operation} made no selection change."
+    },
+    {
+      "template_id": "t_no_selection_change_new_session",
+      "text": "The {operation} made no selection change. Start a new shell session before running the installed command."
+    },
+    {
+      "template_id": "t_candidate_awaiting_publication",
+      "text": "A verified candidate exists but has not been published."
+    },
+    {
+      "template_id": "t_candidate_awaiting_selection",
+      "text": "A published candidate exists but is not the current selection."
+    },
+    {
+      "template_id": "t_candidate_verified_startup_failed",
+      "text": "A verified candidate exists, but starting it from a fresh process failed. Nothing was installed or selected by this attempt."
+    },
+    {
+      "template_id": "t_candidate_published_startup_failed",
+      "text": "A published candidate exists, but starting it from a fresh process failed. It is not the current selection, and nothing was installed by this attempt."
+    },
+    {
+      "template_id": "t_failed_current_preserved",
+      "text": "The {operation} failed. The previously installed version is still current."
+    },
+    {
+      "template_id": "t_cancelled_current_preserved",
+      "text": "The {operation} was cancelled. The previously installed version is still current."
+    },
+    {
+      "template_id": "t_not_proven_current_preserved",
+      "text": "The {operation} could not be proven. The previously installed version is still current."
+    },
+    {
+      "template_id": "t_known_good_unproven",
+      "text": "The {operation} did not complete, and the retained installation did not start from a fresh process."
+    },
+    {
+      "template_id": "t_cleanup_residue",
+      "text": "Temporary installation state was left behind and needs manual resolution."
+    },
+    {
+      "template_id": "t_cleanup_deferred",
+      "text": "Temporary installation state cleanup is deferred."
+    },
+    {
+      "template_id": "t_cleanup_not_proven",
+      "text": "Temporary installation state cleanup could not be proven."
+    },
+    {
+      "template_id": "t_path_failed_secondary",
+      "text": "The PATH entry could not be persisted."
+    }
+  ],
+  "updated": "2026-08-29",
+  "vocabulary": {
+    "action_kind": [
+      "none",
+      "retry",
+      "user_step",
+      "manual",
+      "guidance",
+      "repair_operation",
+      "inspect",
+      "report"
+    ],
+    "claim_consequence": [
+      "command_available_now",
+      "command_available_after_new_session",
+      "command_availability_unproven",
+      "no_product_change_claimed",
+      "product_change_not_proven",
+      "support_claim_withheld",
+      "residual_state_requires_manual_resolution",
+      "cleanup_pending_no_user_action",
+      "cleanup_completion_not_proven"
+    ],
+    "classification": [
+      "product",
+      "user_input",
+      "environment",
+      "network",
+      "trust",
+      "filesystem",
+      "process",
+      "concurrency",
+      "instrument"
+    ],
+    "platform_scope": [
+      "any",
+      "posix",
+      "powershell"
+    ],
+    "public_rendering_ceiling": [
+      "public_safe",
+      "operator_only"
+    ],
+    "retryability": [
+      "not_retryable",
+      "retryable_same_subject",
+      "retryable_after_user_action",
+      "retry_forbidden_requires_replan"
+    ],
+    "side_effect_disposition": [
+      "candidate_published_not_current",
+      "current_advanced",
+      "current_preserved_but_unproven",
+      "current_preserved_known_good",
+      "current_restored",
+      "current_unknown_after_contradiction",
+      "no_side_effect",
+      "residue_present"
+    ],
+    "terminality": [
+      "terminal_success",
+      "terminal_success_pending_user_step",
+      "terminal_failure",
+      "terminal_cancelled",
+      "nonterminal_actionable",
+      "nonterminal_awaiting_next_stage"
+    ]
+  }
+}

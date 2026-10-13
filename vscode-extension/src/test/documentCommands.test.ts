@@ -127,7 +127,13 @@ describe('document command implementations', () => {
     await showIncPathsCommand(execFile);
 
     expect(outputChannel.clear).toHaveBeenCalledTimes(1);
-    expect(outputChannel.appendLine).toHaveBeenCalledWith('Perl @INC paths:');
+    // The header was `Perl @INC paths:`, which presented bare PATH-perl's @INC as
+    // *the* @INC. It now names its scope, because a reader asking "why can't the
+    // LSP find my module?" is exactly the reader an unqualified list misleads
+    // (#16581). The trailing lines are asserted in
+    // documentCommandsIncPaths.test.ts; the scope string is pinned here too so
+    // this test cannot silently regress to a bare header.
+    expect(outputChannel.appendLine).toHaveBeenCalledWith('Perl @INC of the `perl` found on PATH:');
     expect(outputChannel.appendLine).toHaveBeenCalledWith('  /one');
     expect(outputChannel.appendLine).toHaveBeenCalledWith('  /two');
     expect(outputChannel.show).toHaveBeenCalledTimes(1);
@@ -197,5 +203,23 @@ describe('document command implementations', () => {
     await formatDocumentCommand();
 
     expect(vscode.commands.executeCommand).toHaveBeenCalledWith('editor.action.formatDocument');
+  });
+
+  test('delegates formatting for an active perl5 alias editor (#7699)', async () => {
+    setActiveEditor(makeEditor({ languageId: 'perl5' }));
+
+    await formatDocumentCommand();
+
+    expect(vscode.commands.executeCommand).toHaveBeenCalledWith('editor.action.formatDocument');
+    expect(vscode.window.showErrorMessage).not.toHaveBeenCalled();
+  });
+
+  test('still refuses formatting for a non-Perl editor', async () => {
+    setActiveEditor(makeEditor({ languageId: 'javascript' }));
+
+    await formatDocumentCommand();
+
+    expect(vscode.commands.executeCommand).not.toHaveBeenCalledWith('editor.action.formatDocument');
+    expect(vscode.window.showErrorMessage).toHaveBeenCalledWith('No active Perl file to format');
   });
 });

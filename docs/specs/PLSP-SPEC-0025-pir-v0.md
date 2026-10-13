@@ -29,12 +29,14 @@ The implemented slice lives in `crates/perl-parser-core/src/pir/` and lowers a
 [`HirFile`](../../crates/perl-parser-core/src/hir/mod.rs) into a `PirGraph`:
 
 - the PIR v0 data model from the [Target Code Shape](#target-code-shape)
-  (`PirNode`, `PirId`, `PirContext`, `PirOperation`, `PirCallee`/`PirReceiver`/
+  (`PirNode`, `PirId`, `PirContext`, `PirEvaluationDemand`, `PirAccessMode`, `PirOperation`, `PirCallee`/`PirReceiver`/
   `PirMethod`, `PirSourceAnchor`, `PirEdge`, `PirReceipt`);
-- HIR-to-PIR lowering for the data-access, call, and dynamic-boundary operation
-  families HIR can prove from source (`LexicalWrite`, `StashWrite`, `Assign`,
-  `Call`, `MethodCall`, `Literal`, `DynamicBoundary`), with every source-derived
-  node anchored and visible `Unknown` context where context is not provable;
+- HIR-to-PIR lowering for the operation families HIR can prove from source, with
+  every source-derived node anchored and visible `Unknown` context where context
+  is not provable. Which families are modeled is
+  `PirOperation::ALL_OPERATION_NAMES` in
+  [`crates/perl-parser-core/src/pir/model.rs`](../../crates/perl-parser-core/src/pir/model.rs);
+  lowering coverage of that set is reported by receipts, not restated here;
 - dynamic-boundary preservation, including the link from a coderef `Call` to the
   HIR-emitted boundary, plus dynamic-exit CFG edges;
 - a conservative first control-flow graph (intra-scope fallthrough edges and
@@ -46,10 +48,11 @@ The implemented slice lives in `crates/perl-parser-core/src/pir/` and lowers a
 
 Branch lowering from HIR `BranchShell` (`if`/`unless`/ternary) is now
 implemented (PR #8196): an `if`/`unless` statement lowers to a
-`PirOperation::Branch { condition: None }` node in `PirContext::Void`, while a
+`PirOperation::Branch { condition: None }` node in `PirContext::Void` with
+`PirEvaluationDemand::TruthTest`, while a
 ternary lowers to the same operation in `PirContext::Unknown`. A ternary is a
 value-producing conditional expression that may participate in an lvalue
-context, but the flat path cannot prove its enclosing Scalar/List/Lvalue
+context, but the flat path cannot prove its enclosing Scalar/List
 context, so `Unknown` is the fail-closed context. The condition
 expression and then/else arm edges (`PirEdgeKind::Branch`) are named follow-ups;
 the node records that a branch exists and anchors it.
@@ -73,13 +76,13 @@ silently dropped. The returned expression (`return $x`) and the HIR
 named follow-up, mirroring the deferred condition lowering for Branch/Loop.
 
 Condition-expression lowering, branch arm edges, loop back-edges, non-return
-control-transfer lowering, read-side (`LexicalRead`/`StashRead`) lowering,
-retained PIR caches, and any provider cutover remain out of scope and are tracked
-separately (provider cutover stays gated by
+control-transfer lowering, retained PIR caches, and any provider cutover remain
+out of scope and are tracked separately (provider cutover stays gated by
 [#8197](https://github.com/EffortlessMetrics/perl-lsp/issues/8197)).
-The `PirOperation` contract reserves the `LexicalRead` and `StashRead` families
-so later passes populate them without a model break; the receipt makes the
-current gap visible rather than guessing.
+`LexicalRead` and `StashRead` are in the model and lowering already emits them;
+they are not reserved for a later pass. Coverage gaps stay visible in receipts
+rather than in a restated enum listing. The live operation-name registry is
+`PirOperation::ALL_OPERATION_NAMES`; see [Target Code Shape](#target-code-shape).
 
 This spec defines the PIR v0 contract. The data model and lowering above honor
 it without adding provider behavior, retained cache behavior, determinism
@@ -94,7 +97,9 @@ PIR v0 must:
 
 - preserve source anchors for every node that comes from source
 - preserve dynamic-boundary links instead of guessing exact behavior
-- preserve scalar, list, void, and lvalue context where known
+- preserve scalar, list, void, and unknown value context where known
+- represent evaluation demand (`Value`, `TruthTest`, `DefinednessTest`) separately
+- represent place access (`Read`, `Write`, `ReadModifyWrite`) separately from value context
 - model lexical and stash reads and writes
 - model calls and method calls without executing Perl
 - model branches, loops, assignment, returns, and control-flow edges
@@ -112,7 +117,15 @@ PIR v0 must not:
 
 ## Target Code Shape
 
-Future code may introduce types with this shape:
+The implemented types have this shape. The block below is **illustrative**: it
+shows node, context, demand, and access shape. It is not the live
+`PirOperation` inventory.
+
+The live operation-family names used by receipts and status generators are
+`PirOperation::ALL_OPERATION_NAMES` in
+[`crates/perl-parser-core/src/pir/model.rs`](../../crates/perl-parser-core/src/pir/model.rs).
+A hand-maintained copy of that list in this spec is not authoritative and must
+not be treated as complete.
 
 ```rust
 pub struct PirNode {
@@ -120,6 +133,8 @@ pub struct PirNode {
     pub source_anchor: Option<SourceRange>,
     pub operation: PirOperation,
     pub context: PirContext,
+    pub demand: PirEvaluationDemand,
+    pub access: Option<PirAccessMode>,
     pub dynamic_boundary: Option<DynamicBoundaryId>,
 }
 
@@ -127,28 +142,34 @@ pub enum PirContext {
     Scalar,
     List,
     Void,
-    Lvalue,
     Unknown,
 }
 
+pub enum PirEvaluationDemand {
+    Value,
+    TruthTest,
+    DefinednessTest,
+}
+
+pub enum PirAccessMode {
+    Read,
+    Write,
+    ReadModifyWrite,
+}
+
+// Illustrative shape only. See PirOperation::ALL_OPERATION_NAMES for the live
+// operation-family registry. Do not treat the variants sketched here as the
+// complete or current set.
 pub enum PirOperation {
     LexicalRead { name: LexicalName },
     LexicalWrite { name: LexicalName },
-    StashRead { symbol: SymbolName },
-    StashWrite { symbol: SymbolName },
-    Literal { kind: PirLiteralKind },
-    Assign,
-    Call { callee: PirCallee },
-    MethodCall { receiver: PirReceiver, method: PirMethod },
-    Deref { aggregate: DerefAggregateKind, operand: DerefOperandKind },
-    Branch { condition: PirId },
-    Loop { condition: Option<PirId> },
-    Return,
-    DynamicBoundary { kind: DynamicBoundaryKind },
+    // ...
 }
 ```
 
-The exact Rust names may differ. The semantics above are the contract.
+The exact Rust names may differ. The semantics of the modeled families are the
+contract. The operation-name registry is `ALL_OPERATION_NAMES`, not the sketch
+above.
 
 ## Required Node Identity
 
@@ -187,9 +208,20 @@ PIR v0 must model these contexts:
 - scalar
 - list
 - void
-- lvalue
 - unknown
 
+Place access is not a value context: assignment targets are represented by
+`PirAccessMode`, while `PirContext` remains limited to value-context facts.
+Only operations that name a place carry an access fact (`LexicalRead`/`StashRead`
+read; `LexicalWrite`/`StashWrite` write; `Modify`/`StashModify` and in-place
+`s///`/`tr///` on a place read-modify-write; a match or `/r` copy on a place
+reads). Literals, calls, assignment expressions, branches, loops, returns,
+dynamic boundaries, regex literals, expression-target regex operations, and
+dereferences carry `None` rather than a fabricated `Read`, and
+`PirReceipt::access_counts` counts place-accessing nodes only.
+`DefinednessTest` is reserved in this slice: the public vocabulary is stable,
+but flat HIR lowering does not yet identify the operand of `defined` or the
+definedness arm of `//`. Those activations require a separate lowering claim.
 Unknown context is allowed when the compiler substrate cannot prove context
 without executing Perl. Unknown context must be visible in receipts and must not
 be silently promoted to scalar or list.

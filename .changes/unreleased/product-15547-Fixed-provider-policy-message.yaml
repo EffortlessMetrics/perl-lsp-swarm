@@ -1,0 +1,9 @@
+project: product
+component: Editor behavior
+kind: Fixed
+body: "Explain Provider Decision now separates provider policy from attached request evidence and leads with request freshness or its absence."
+time: 2026-09-13T20:07:25Z
+custom:
+  PR: "15547"
+  Slug: provider-policy-message
+  Breaking: "no"

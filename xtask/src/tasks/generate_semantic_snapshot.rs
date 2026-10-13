@@ -535,16 +535,21 @@ fn run_check(snapshot_path: &Path, fresh: &[SnapshotEntry]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use perl_tdd_support::{must_err_with, must_with};
     use std::io::Write as _;
     use tempfile::TempDir;
+
+    fn tempdir() -> TempDir {
+        must_with(TempDir::new(), "tempdir")
+    }
 
     fn write_fixture(dir: &Path, name: &str, content: &str) -> PathBuf {
         let path = dir.join(name);
         if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).expect("create fixture parent");
+            must_with(fs::create_dir_all(parent), "create fixture parent");
         }
-        let mut file = fs::File::create(&path).expect("create fixture");
-        file.write_all(content.as_bytes()).expect("write fixture");
+        let mut file = must_with(fs::File::create(&path), "create fixture");
+        must_with(file.write_all(content.as_bytes()), "write fixture");
         path
     }
 
@@ -557,7 +562,7 @@ mod tests {
     }
 
     fn generate_snapshot(fixture_dir: &Path, output: &Path) {
-        generate_snapshot_result(fixture_dir, output).expect("generate snapshot");
+        must_with(generate_snapshot_result(fixture_dir, output), "generate snapshot");
     }
 
     fn check_snapshot(fixture_dir: &Path, output: &Path) -> Result<()> {
@@ -568,17 +573,23 @@ mod tests {
         })
     }
 
+    fn read_manifest(path: &Path) -> SnapshotManifest {
+        let json = must_with(fs::read_to_string(path), "read snapshot");
+        must_with(serde_json::from_str(&json), "parse snapshot")
+    }
+
     #[test]
     fn generates_snapshot_for_minimal_source() {
-        let temporary = TempDir::new().expect("tempdir");
+        let temporary = tempdir();
         let source = "package Foo;\nsub bar { return 1; }\n1;\n";
         write_fixture(temporary.path(), "minimal.pl", source);
 
         let output = temporary.path().join("snapshot.json");
         generate_snapshot(temporary.path(), &output);
 
-        let json = fs::read_to_string(&output).expect("read output");
-        let manifest: SnapshotManifest = serde_json::from_str(&json).expect("deserialize manifest");
+        let json = must_with(fs::read_to_string(&output), "read output");
+        let manifest: SnapshotManifest =
+            must_with(serde_json::from_str(&json), "deserialize manifest");
 
         assert_eq!(manifest.schema, SNAPSHOT_SCHEMA);
         assert_eq!(manifest.kpi, SNAPSHOT_KPI);
@@ -595,30 +606,34 @@ mod tests {
 
     #[test]
     fn output_cannot_overwrite_a_fixture_directly() {
-        let temporary = TempDir::new().expect("tempdir");
+        let temporary = tempdir();
         let fixture_dir = temporary.path().join("fixtures");
         let fixture = write_fixture(&fixture_dir, "source.pl", "my $value = 1;\n");
-        let original = fs::read(&fixture).expect("read fixture before generate");
+        let original = must_with(fs::read(&fixture), "read fixture before generate");
 
-        let error = generate_snapshot_result(&fixture_dir, &fixture)
-            .expect_err("fixture path must not be accepted as output");
+        let error = must_err_with(
+            generate_snapshot_result(&fixture_dir, &fixture),
+            "fixture path must not be accepted as output",
+        );
         assert!(
             error.to_string().contains("fixture population")
                 || error.to_string().contains("aliases fixture"),
             "unexpected error: {error}"
         );
-        assert_eq!(fs::read(&fixture).expect("read fixture after rejection"), original);
+        assert_eq!(must_with(fs::read(&fixture), "read fixture after rejection"), original);
     }
 
     #[test]
     fn output_cannot_create_a_new_perl_fixture() {
-        let temporary = TempDir::new().expect("tempdir");
+        let temporary = tempdir();
         let fixture_dir = temporary.path().join("fixtures");
         write_fixture(&fixture_dir, "source.pl", "1;\n");
         let output = fixture_dir.join("snapshot.pl");
 
-        let error = generate_snapshot_result(&fixture_dir, &output)
-            .expect_err("new .pl output must not enter the measured population");
+        let error = must_err_with(
+            generate_snapshot_result(&fixture_dir, &output),
+            "new .pl output must not enter the measured population",
+        );
         assert!(error.to_string().contains("fixture population"), "unexpected error: {error}");
         assert!(!output.exists(), "rejected output must not be created");
     }
@@ -628,59 +643,66 @@ mod tests {
     fn output_symlink_cannot_target_a_fixture() {
         use std::os::unix::fs::symlink;
 
-        let temporary = TempDir::new().expect("tempdir");
+        let temporary = tempdir();
         let fixture_dir = temporary.path().join("fixtures");
         let fixture = write_fixture(&fixture_dir, "source.pl", "1;\n");
-        let original = fs::read(&fixture).expect("read fixture before generate");
+        let original = must_with(fs::read(&fixture), "read fixture before generate");
         let output = temporary.path().join("snapshot.json");
-        symlink(&fixture, &output).expect("create output symlink");
+        must_with(symlink(&fixture, &output), "create output symlink");
 
-        let error = generate_snapshot_result(&fixture_dir, &output)
-            .expect_err("symlinked output must fail closed");
+        let error = must_err_with(
+            generate_snapshot_result(&fixture_dir, &output),
+            "symlinked output must fail closed",
+        );
         assert!(error.to_string().contains("symlink is unsupported"), "unexpected error: {error}");
-        assert_eq!(fs::read(&fixture).expect("read fixture after rejection"), original);
+        assert_eq!(must_with(fs::read(&fixture), "read fixture after rejection"), original);
     }
 
     #[cfg(any(unix, windows))]
     #[test]
     fn output_hard_link_cannot_alias_a_fixture() {
-        let temporary = TempDir::new().expect("tempdir");
+        let temporary = tempdir();
         let fixture_dir = temporary.path().join("fixtures");
         let fixture = write_fixture(&fixture_dir, "source.pl", "1;\n");
-        let original = fs::read(&fixture).expect("read fixture before generate");
+        let original = must_with(fs::read(&fixture), "read fixture before generate");
         let output = temporary.path().join("snapshot.json");
-        fs::hard_link(&fixture, &output).expect("create output hard link");
+        must_with(fs::hard_link(&fixture, &output), "create output hard link");
 
-        let error = generate_snapshot_result(&fixture_dir, &output)
-            .expect_err("hard-linked output must fail closed");
+        let error = must_err_with(
+            generate_snapshot_result(&fixture_dir, &output),
+            "hard-linked output must fail closed",
+        );
         assert!(error.to_string().contains("hard-links fixture"), "unexpected error: {error}");
-        assert_eq!(fs::read(&fixture).expect("read fixture after rejection"), original);
+        assert_eq!(must_with(fs::read(&fixture), "read fixture after rejection"), original);
     }
 
     #[test]
     fn output_rejects_parent_directory_components() {
-        let temporary = TempDir::new().expect("tempdir");
+        let temporary = tempdir();
         let fixture_dir = temporary.path().join("fixtures");
         write_fixture(&fixture_dir, "source.pl", "1;\n");
         let output = fixture_dir.join("missing").join("..").join("snapshot.pl");
 
-        let error = generate_snapshot_result(&fixture_dir, &output)
-            .expect_err("parent-directory output must fail closed");
+        let error = must_err_with(
+            generate_snapshot_result(&fixture_dir, &output),
+            "parent-directory output must fail closed",
+        );
         assert!(error.to_string().contains("not canonical"), "unexpected error: {error}");
         assert!(!fixture_dir.join("snapshot.pl").exists());
     }
 
     #[test]
     fn snapshot_names_typed_dereference_items() {
-        let temporary = TempDir::new().expect("tempdir");
+        let temporary = tempdir();
         let source = "my @arr = @{\"foo\"};\n";
         write_fixture(temporary.path(), "deref.pl", source);
 
         let output = temporary.path().join("snapshot.json");
         generate_snapshot(temporary.path(), &output);
 
-        let json = fs::read_to_string(&output).expect("read output");
-        let manifest: SnapshotManifest = serde_json::from_str(&json).expect("deserialize manifest");
+        let json = must_with(fs::read_to_string(&output), "read output");
+        let manifest: SnapshotManifest =
+            must_with(serde_json::from_str(&json), "deserialize manifest");
         assert!(
             manifest.entries[0]
                 .hir_summary
@@ -693,25 +715,30 @@ mod tests {
 
     #[test]
     fn check_mode_passes_when_snapshot_matches() {
-        let temporary = TempDir::new().expect("tempdir");
+        let temporary = tempdir();
         let source = "package Bar;\nsub baz { 0 }\n1;\n";
         write_fixture(temporary.path(), "bar.pl", source);
         let output = temporary.path().join("snapshot.json");
 
         generate_snapshot(temporary.path(), &output);
-        check_snapshot(temporary.path(), &output).expect("check should pass on unchanged source");
+        must_with(
+            check_snapshot(temporary.path(), &output),
+            "check should pass on unchanged source",
+        );
     }
 
     #[test]
     fn check_mode_fails_on_source_change() {
-        let temporary = TempDir::new().expect("tempdir");
+        let temporary = tempdir();
         let path =
             write_fixture(temporary.path(), "changed.pl", "package Changed; sub first { 1 } 1;");
         let output = temporary.path().join("snapshot.json");
         generate_snapshot(temporary.path(), &output);
 
-        fs::write(&path, "package Changed; sub first { 1 } sub second { 2 } 1;")
-            .expect("write changed source");
+        must_with(
+            fs::write(&path, "package Changed; sub first { 1 } sub second { 2 } 1;"),
+            "write changed source",
+        );
 
         assert!(
             check_snapshot(temporary.path(), &output).is_err(),
@@ -721,7 +748,7 @@ mod tests {
 
     #[test]
     fn check_mode_fails_when_fresh_fixture_is_added() {
-        let temporary = TempDir::new().expect("tempdir");
+        let temporary = tempdir();
         write_fixture(temporary.path(), "first.pl", "1;");
         let output = temporary.path().join("snapshot.json");
         generate_snapshot(temporary.path(), &output);
@@ -736,13 +763,13 @@ mod tests {
 
     #[test]
     fn check_mode_fails_when_recorded_fixture_is_removed() {
-        let temporary = TempDir::new().expect("tempdir");
+        let temporary = tempdir();
         let first = write_fixture(temporary.path(), "first.pl", "1;");
         write_fixture(temporary.path(), "second.pl", "2;");
         let output = temporary.path().join("snapshot.json");
         generate_snapshot(temporary.path(), &output);
 
-        fs::remove_file(first).expect("remove recorded fixture");
+        must_with(fs::remove_file(first), "remove recorded fixture");
 
         assert!(
             check_snapshot(temporary.path(), &output).is_err(),
@@ -752,19 +779,20 @@ mod tests {
 
     #[test]
     fn check_mode_fails_on_duplicate_recorded_id() {
-        let temporary = TempDir::new().expect("tempdir");
+        let temporary = tempdir();
         write_fixture(temporary.path(), "fixture.pl", "1;");
         let output = temporary.path().join("snapshot.json");
         generate_snapshot(temporary.path(), &output);
 
-        let json = fs::read_to_string(&output).expect("read snapshot");
-        let mut manifest: SnapshotManifest = serde_json::from_str(&json).expect("parse snapshot");
+        let mut manifest = read_manifest(&output);
         manifest.entries.push(manifest.entries[0].clone());
-        fs::write(
-            &output,
-            serde_json::to_string_pretty(&manifest).expect("serialize duplicate snapshot"),
-        )
-        .expect("write duplicate snapshot");
+        must_with(
+            fs::write(
+                &output,
+                must_with(serde_json::to_string_pretty(&manifest), "serialize duplicate snapshot"),
+            ),
+            "write duplicate snapshot",
+        );
 
         assert!(
             check_snapshot(temporary.path(), &output).is_err(),
@@ -777,25 +805,27 @@ mod tests {
     fn fixture_collection_rejects_perl_symlinks() {
         use std::os::unix::fs::symlink;
 
-        let temporary = TempDir::new().expect("tempdir");
+        let temporary = tempdir();
         let target = write_fixture(temporary.path(), "target.pl", "1;");
         let link = temporary.path().join("linked.pl");
-        symlink(&target, &link).expect("create fixture symlink");
+        must_with(symlink(&target, &link), "create fixture symlink");
 
-        let error = collect_fixtures(temporary.path())
-            .expect_err("symlinked Perl fixtures must fail closed");
+        let error = must_err_with(
+            collect_fixtures(temporary.path()),
+            "symlinked Perl fixtures must fail closed",
+        );
         assert!(error.to_string().contains("symlink is unsupported"), "unexpected error: {error}");
     }
 
     #[test]
     fn recursive_fixture_ids_preserve_relative_paths() {
-        let temporary = TempDir::new().expect("tempdir");
+        let temporary = tempdir();
         write_fixture(temporary.path(), "first/same.pl", "1;");
         write_fixture(temporary.path(), "second/same.pl", "2;");
 
-        let fixtures = collect_fixtures(temporary.path()).expect("collect recursive fixtures");
+        let fixtures = must_with(collect_fixtures(temporary.path()), "collect recursive fixtures");
         let entries =
-            compute_snapshot_entries(temporary.path(), &fixtures).expect("compute entries");
+            must_with(compute_snapshot_entries(temporary.path(), &fixtures), "compute entries");
         let ids = entries.iter().map(|entry| entry.fixture_id.as_str()).collect::<Vec<_>>();
         assert_eq!(ids, vec!["first/same.pl", "second/same.pl"]);
     }
@@ -805,19 +835,21 @@ mod tests {
     fn fixture_collection_rejects_non_regular_perl_entries() {
         use std::process::Command;
 
-        let temporary = TempDir::new().expect("tempdir");
+        let temporary = tempdir();
         let fifo = temporary.path().join("blocked.pl");
-        let status = Command::new("mkfifo").arg(&fifo).status().expect("run mkfifo");
+        let status = must_with(Command::new("mkfifo").arg(&fifo).status(), "run mkfifo");
         assert!(status.success(), "mkfifo must create the negative-control fixture");
 
-        let error = collect_fixtures(temporary.path())
-            .expect_err("non-regular Perl fixtures must fail closed");
+        let error = must_err_with(
+            collect_fixtures(temporary.path()),
+            "non-regular Perl fixtures must fail closed",
+        );
         assert!(error.to_string().contains("not a regular file"), "unexpected error: {error}");
     }
 
     #[test]
     fn check_mode_rejects_legacy_v1_before_payload_deserialization() {
-        let temporary = TempDir::new().expect("tempdir");
+        let temporary = tempdir();
         write_fixture(temporary.path(), "fixture.pl", "1;");
         let output = temporary.path().join("snapshot.json");
         let legacy = serde_json::json!({
@@ -828,14 +860,18 @@ mod tests {
             "generated_on": "2026-08-11",
             "entries": []
         });
-        fs::write(
-            &output,
-            serde_json::to_string_pretty(&legacy).expect("serialize legacy snapshot"),
-        )
-        .expect("write legacy snapshot");
+        must_with(
+            fs::write(
+                &output,
+                must_with(serde_json::to_string_pretty(&legacy), "serialize legacy snapshot"),
+            ),
+            "write legacy snapshot",
+        );
 
-        let error = check_snapshot(temporary.path(), &output)
-            .expect_err("legacy schema must be rejected before v2 payload parsing");
+        let error = must_err_with(
+            check_snapshot(temporary.path(), &output),
+            "legacy schema must be rejected before v2 payload parsing",
+        );
         let message = error.to_string();
         assert!(message.contains("Snapshot schema mismatch"), "unexpected error: {error}");
         assert!(message.contains("semantic_snapshot.v1"), "unexpected error: {error}");
@@ -844,40 +880,44 @@ mod tests {
 
     #[test]
     fn check_mode_rejects_claim_boundary_mismatch() {
-        let temporary = TempDir::new().expect("tempdir");
+        let temporary = tempdir();
         write_fixture(temporary.path(), "fixture.pl", "1;");
         let output = temporary.path().join("snapshot.json");
         generate_snapshot(temporary.path(), &output);
 
-        let json = fs::read_to_string(&output).expect("read snapshot");
-        let mut manifest: SnapshotManifest = serde_json::from_str(&json).expect("parse snapshot");
+        let mut manifest = read_manifest(&output);
         manifest.claim_boundary = "Snapshot proves semantic correctness.".to_string();
-        fs::write(
-            &output,
-            serde_json::to_string_pretty(&manifest).expect("serialize strengthened claim"),
-        )
-        .expect("write strengthened claim");
+        must_with(
+            fs::write(
+                &output,
+                must_with(serde_json::to_string_pretty(&manifest), "serialize strengthened claim"),
+            ),
+            "write strengthened claim",
+        );
 
-        let error = check_snapshot(temporary.path(), &output)
-            .expect_err("check must reject a non-canonical claim boundary");
+        let error = must_err_with(
+            check_snapshot(temporary.path(), &output),
+            "check must reject a non-canonical claim boundary",
+        );
         assert!(error.to_string().contains("claim boundary mismatch"), "unexpected error: {error}");
     }
 
     #[test]
     fn check_mode_rejects_hash_algorithm_mismatch() {
-        let temporary = TempDir::new().expect("tempdir");
+        let temporary = tempdir();
         write_fixture(temporary.path(), "fixture.pl", "1;");
         let output = temporary.path().join("snapshot.json");
         generate_snapshot(temporary.path(), &output);
 
-        let json = fs::read_to_string(&output).expect("read snapshot");
-        let mut manifest: SnapshotManifest = serde_json::from_str(&json).expect("parse snapshot");
+        let mut manifest = read_manifest(&output);
         manifest.source_hash_algorithm = "legacy-unstable.v0".to_string();
-        fs::write(
-            &output,
-            serde_json::to_string_pretty(&manifest).expect("serialize mismatched snapshot"),
-        )
-        .expect("write mismatched snapshot");
+        must_with(
+            fs::write(
+                &output,
+                must_with(serde_json::to_string_pretty(&manifest), "serialize mismatched snapshot"),
+            ),
+            "write mismatched snapshot",
+        );
 
         assert!(
             check_snapshot(temporary.path(), &output).is_err(),
@@ -896,10 +936,11 @@ mod tests {
             fixture_dir.display()
         );
 
-        let fixtures = collect_fixtures(&fixture_dir).expect("collect fixtures");
+        let fixtures = must_with(collect_fixtures(&fixture_dir), "collect fixtures");
         assert!(fixtures.len() >= 3, "expected at least 3 slice fixtures, got {}", fixtures.len());
 
-        let entries = compute_snapshot_entries(&fixture_dir, &fixtures).expect("compute entries");
+        let entries =
+            must_with(compute_snapshot_entries(&fixture_dir, &fixtures), "compute entries");
         for entry in &entries {
             assert!(
                 entry.hir_summary.item_count > 0,
@@ -908,5 +949,24 @@ mod tests {
             );
             assert_eq!(entry.hir_schema_version, HIR_SCHEMA_VERSION);
         }
+    }
+
+    #[test]
+    #[should_panic(expected = "must: generate snapshot:")]
+    fn generate_semantic_snapshot_converted_result_assertion_still_fails_when_generate_is_err() {
+        let temporary = tempdir();
+        generate_snapshot(temporary.path(), &temporary.path().join("snapshot.json"));
+    }
+
+    #[test]
+    #[should_panic(expected = "must_err:")]
+    fn generate_semantic_snapshot_converted_err_assertion_still_fails_when_generate_is_ok() {
+        let temporary = tempdir();
+        write_fixture(temporary.path(), "ok.pl", "1;\n");
+        let output = temporary.path().join("snapshot.json");
+        let _ = must_err_with(
+            generate_snapshot_result(temporary.path(), &output),
+            "successful generate must not be treated as rejection",
+        );
     }
 }

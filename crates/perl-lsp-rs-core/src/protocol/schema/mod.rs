@@ -18,6 +18,11 @@ use std::fmt;
 
 pub use methods::registered_schema_identities;
 
+/// Validate the content-change union without applying document version policy.
+pub fn validate_did_change_content_changes(value: &Value) -> Result<(), SchemaError> {
+    payloads::did_change_content_changes("textDocument/didChange", value)
+}
+
 /// Pinned upstream protocol source used by the checked registry.
 pub const SCHEMA_SOURCE_JSON: &str = include_str!("../../../protocol_schema_source.json");
 /// Upstream `gh-pages` commit containing the pinned 3.17 and 3.18 specifications.

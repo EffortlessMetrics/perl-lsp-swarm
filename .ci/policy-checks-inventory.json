@@ -122,6 +122,30 @@
       "working_directory": "repository_root"
     },
     {
+      "claim": "The code-action provider-generation disposition ledger, its parity corpus, and current orchestrator source remain coherent, with no duplicate canonical authority for one action family.",
+      "command": "cargo xtask check-code-action-generation-ledger",
+      "overlap": {
+        "disposition": "migrate_here",
+        "reason": "No independent policy row/result identity is established by the current composite.",
+        "targets": []
+      },
+      "owner": "xtask command check-code-action-generation-ledger",
+      "policy_role": "advisory",
+      "position": 6,
+      "profile": "merge_gate",
+      "receipt": {
+        "schema": null,
+        "status": "composite_only"
+      },
+      "selector": "composite_only_no_independent_selector",
+      "stable_id": "code_action_generation_ledger",
+      "timeout": {
+        "kind": "shared_composite",
+        "seconds": 240
+      },
+      "working_directory": "repository_root"
+    },
+    {
       "claim": "Provider-confidence matrix rows remain complete and consistent with their governed vocabulary.",
       "command": "cargo xtask check-provider-confidence-matrix",
       "overlap": {
@@ -131,7 +155,7 @@
       },
       "owner": "xtask command check-provider-confidence-matrix",
       "policy_role": "advisory",
-      "position": 6,
+      "position": 7,
       "profile": "merge_gate",
       "receipt": {
         "schema": null,
@@ -155,7 +179,7 @@
       },
       "owner": "xtask command check-native-product-surface",
       "policy_role": "advisory",
-      "position": 7,
+      "position": 8,
       "profile": "merge_gate",
       "receipt": {
         "schema": null,
@@ -181,7 +205,7 @@
       },
       "owner": "scripts/check-version-sync.sh",
       "policy_role": "advisory",
-      "position": 8,
+      "position": 9,
       "profile": "merge_gate",
       "receipt": {
         "schema": null,
@@ -208,7 +232,7 @@
       },
       "owner": "scripts/check_release_history.sh",
       "policy_role": "advisory",
-      "position": 9,
+      "position": 10,
       "profile": "merge_gate",
       "receipt": {
         "schema": null,
@@ -232,7 +256,7 @@
       },
       "owner": "ci/check_missing_docs.sh",
       "policy_role": "advisory",
-      "position": 10,
+      "position": 11,
       "profile": "merge_gate",
       "receipt": {
         "schema": null,
@@ -256,7 +280,7 @@
       },
       "owner": "ci/check_parse_errors.sh",
       "policy_role": "advisory",
-      "position": 11,
+      "position": 12,
       "profile": "merge_gate",
       "receipt": {
         "schema": null,
@@ -280,7 +304,7 @@
       },
       "owner": "scripts/check_features_invariants.py",
       "policy_role": "advisory",
-      "position": 12,
+      "position": 13,
       "profile": "merge_gate",
       "receipt": {
         "schema": null,
@@ -298,7 +322,7 @@
   "schema_version": 1,
   "source": {
     "budget_ms": 220000,
-    "command_fingerprint_sha256": "a6bd1e56fe7407417d954df99ebb63450ec13de30b84af5287840518fe8f987a",
+    "command_fingerprint_sha256": "bdabf4268fdf3f2d44473c4ec1a32eae69426b4ff5ade6ff59fc6ce05d7d4873",
     "execution_semantics": "ordered_aborting_shell_chain",
     "gate_id": "policy_checks",
     "path": ".ci/gate-policy.yaml",

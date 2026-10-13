@@ -28,8 +28,11 @@ type TestResult = Result<(), Box<dyn std::error::Error>>;
 /// Tests feature spec: ROADMAP.md#deep-nesting-boundedness
 #[test]
 fn parser_hang_risk_nested_blocks_exceed_limit() -> TestResult {
-    // Create nested blocks beyond the limit (300 levels exceeds 256 limit)
-    let depth = 300;
+    // Create nested blocks beyond the limit. MAX_BLOCK_NESTING_DEPTH is 512
+    // (perl-parser-core/src/engine/parser/mod.rs:174) - it was raised from the
+    // 256 these depths were originally calibrated against (#15432): keep the
+    // test depth above the current constant, not a stale magic number.
+    let depth = 600;
     let mut code = String::new();
 
     for _ in 0..depth {
@@ -46,7 +49,12 @@ fn parser_hang_risk_nested_blocks_exceed_limit() -> TestResult {
     assert!(result.is_err(), "Expected RecursionLimit error for {} nested blocks", depth);
     let err = result.err().ok_or("Expected error but got Ok")?;
     assert!(
-        matches!(err, ParseError::RecursionLimit | ParseError::NestingTooDeep { .. }),
+        matches!(
+            err,
+            ParseError::RecursionLimit
+                | ParseError::RecursionDepthExhausted { .. }
+                | ParseError::NestingTooDeep { .. }
+        ),
         "Expected RecursionLimit or NestingTooDeep error, got different error type: {:?}",
         err
     );
@@ -75,8 +83,13 @@ fn parser_hang_risk_nested_parentheses_exceed_limit() -> TestResult {
     assert!(result.is_err(), "Expected RecursionLimit error for deeply nested parentheses");
     let err = result.err().ok_or("Expected error but got Ok")?;
     assert!(
-        matches!(err, ParseError::RecursionLimit | ParseError::NestingTooDeep { .. }),
-        "Expected RecursionLimit error for nested parentheses"
+        matches!(
+            err,
+            ParseError::RecursionLimit
+                | ParseError::RecursionDepthExhausted { .. }
+                | ParseError::NestingTooDeep { .. }
+        ),
+        "Expected a recursion-limit error for nested parentheses, got: {err:?}"
     );
     Ok(())
 }
@@ -446,7 +459,8 @@ fn parser_hang_risk_boundary_just_below_limit() {
 /// Tests feature spec: ROADMAP.md#deep-nesting-boundedness
 #[test]
 fn parser_hang_risk_boundary_just_above_limit() -> TestResult {
-    let depth = 260; // Just above 256 limit
+    // Just above MAX_BLOCK_NESTING_DEPTH (512, was 256 when authored - #15432)
+    let depth = 513;
     let mut code = String::new();
 
     for _ in 0..depth {
@@ -463,7 +477,12 @@ fn parser_hang_risk_boundary_just_above_limit() -> TestResult {
     assert!(result.is_err(), "Expected RecursionLimit error for nesting just above limit");
     let err = result.err().ok_or("Expected error but got Ok")?;
     assert!(
-        matches!(err, ParseError::RecursionLimit | ParseError::NestingTooDeep { .. }),
+        matches!(
+            err,
+            ParseError::RecursionLimit
+                | ParseError::RecursionDepthExhausted { .. }
+                | ParseError::NestingTooDeep { .. }
+        ),
         "Expected RecursionLimit error type"
     );
     Ok(())
@@ -474,7 +493,10 @@ fn parser_hang_risk_boundary_just_above_limit() -> TestResult {
 /// Tests feature spec: ROADMAP.md#deep-nesting-boundedness
 #[test]
 fn parser_hang_risk_mixed_control_flow_nesting() {
-    let depth = 100;
+    // Deep enough to exceed MAX_BLOCK_NESTING_DEPTH (512) so the boundedness
+    // error fires; 100 was calibrated against the old 256-block regime - and
+    // even then it asserted an error the current limit never produces (#15432).
+    let depth = 600;
     let mut code = String::new();
 
     for i in 0..depth {

@@ -9,10 +9,6 @@
 //!
 //! AC:3486 — End-to-end workflow: launch -> breakpoint -> inspect -> step -> continue -> exit
 
-#![expect(
-    clippy::print_stderr,
-    reason = "Integration-test diagnostic and skip output; tracing is not the harness logger."
-)]
 mod common;
 
 use common::{DapWorkflowSession, debuggee_perl_or_typed_skip, workflow_timeout};
@@ -224,6 +220,85 @@ fn test_e2e_multi_breakpoint_sequence() -> TestResult {
     Ok(())
 }
 
+// ─── Test 2b: suspension inside a called sub reports the suspension line ──────
+
+/// Script with one sub and one call site:
+///
+///   Line 1: use strict;
+///   Line 2: use warnings;
+///   Line 3: (blank)
+///   Line 4: sub add {
+///   Line 5:     my ( $a, $b ) = @_;  <- BP_IN_SUB (breakpoint inside the sub)
+///   Line 6:     return $a + $b;
+///   Line 7: }
+///   Line 8: (blank)
+///   Line 9: my $sum = add( 2, 3 );  <- the call site
+///   Line 10: print "$sum\n";
+const SUB_CALL_SCRIPT: &str = "use strict;\nuse warnings;\n\nsub add {\n    my ( $a, $b ) = @_;\n    return $a + $b;\n}\n\nmy $sum = add( 2, 3 );\nprint \"$sum\\n\";\n";
+const SUB_BODY_LINE: u64 = 5;
+
+/// Regression for #17171: when the debuggee is suspended *inside* a called
+/// sub, `stackTrace` must report the sub's current source position (the line
+/// that will execute next), not the caller's line. perl5db's `T` report
+/// carries the true suspension position on the debugger's own `DB::DB` frame;
+/// the first user frame's `called from` position names the call site
+/// (line 9 here), which is what the adapter used to report.
+#[test]
+fn test_e2e_stack_trace_reports_suspension_line_inside_sub() -> TestResult {
+    let Some(debuggee_perl) =
+        debuggee_perl_or_typed_skip("test_e2e_stack_trace_reports_suspension_line_inside_sub")
+    else {
+        return Ok(());
+    };
+
+    let workspace = tempdir()?;
+    let script = workspace.path().join("workflow_sub_call.pl");
+    write(&script, SUB_CALL_SCRIPT)?;
+
+    let script_str = script.to_str().ok_or("script path is not valid UTF-8")?.to_string();
+
+    let timeout = workflow_timeout();
+    let mut session = DapWorkflowSession::new(timeout)?;
+
+    session.launch_pinned(&debuggee_perl.binary, &script_str)?;
+
+    // DAP ordering: setBreakpoints BEFORE configurationDone. The implicit
+    // first stop of this script is line 9 (the call site), so the `c` from
+    // configurationDone runs into `add` and hits the sub-body breakpoint.
+    let resolved = session.set_breakpoints_checked(&script_str, &[SUB_BODY_LINE])?;
+    let resolved_line =
+        resolved.first().copied().ok_or("set_breakpoints_checked returned empty resolved lines")?;
+
+    session.configuration_done()?;
+
+    let stopped = session.wait_stopped()?;
+    assert_eq!(
+        stopped.reason, "breakpoint",
+        "stop reason must be `breakpoint`, got `{}`",
+        stopped.reason
+    );
+
+    // The suspension is inside `add`: the top frame must sit on the
+    // breakpoint line, not on the call site (line 9).
+    let (_frame_id, source_path, frame_line) = session.stack_trace(stopped.thread_id)?;
+    assert!(
+        source_path.contains("workflow_sub_call"),
+        "stack frame source path `{source_path}` should refer to the sub-call fixture"
+    );
+    assert_eq!(
+        frame_line, resolved_line,
+        "top frame must report the suspension line inside the sub \
+         (resolved={resolved_line}, call site=9), got {frame_line}"
+    );
+
+    // Continue to script exit.
+    session.continue_exec(stopped.thread_id)?;
+    let _ = session.drain_until_event("terminated");
+    session.disconnect()?;
+
+    Ok(())
+}
+
 // ─── Test 3: step-over changes line ───────────────────────────────────────────
 
 /// Validates that `next` (step-over) advances execution:
@@ -288,81 +363,37 @@ fn test_e2e_step_over_changes_execution() -> TestResult {
     Ok(())
 }
 
-// ─── Test 4: attach workflow with stopOnEntry=false ────────────────────────────
+// ─── Test 4: native PID attach refusal ─────────────────────────────────────────
 
-/// Validates the attach workflow:
-/// initialize → attach(pid, stopOnEntry=false) → wait for stopped(reason=attach) →
-/// set breakpoints → disconnect.
+/// Validates that a syntactically valid native PID is rejected without a
+/// synthetic stopped event or a process-backed workflow.
 #[test]
 fn test_e2e_attach_workflow_stopped_event() -> TestResult {
-    let timeout = workflow_timeout();
-    let mut session = DapWorkflowSession::new(timeout)?;
-
-    // Use the current process PID — the adapter validates that the PID exists
-    // (#5553), so a hardcoded non-existent PID like 12345 now fails.
-    let test_pid = std::process::id();
-
-    // Attach without stopOnEntry — should emit stopped(reason=attach)
-    session.attach(test_pid, false)?;
-
-    // Wait for the attach stopped event
-    let attached = session.wait_stopped()?;
-    assert_eq!(
-        attached.reason, "attach",
-        "stopped reason after attach must be `attach`, got `{}`",
-        attached.reason
-    );
-
-    let _thread_id = attached.thread_id;
-
-    // After attach, we can set breakpoints (the adapter accepts them).
-    // Use set_breakpoints_checked to assert verified=true for all entries.
-    let workspace = tempdir()?;
-    let script = workspace.path().join("dummy.pl");
-    write(&script, workflow_script_content())?;
-    let script_str = script.to_str().ok_or("script path is not valid UTF-8")?.to_string();
-
-    let resolved = session.set_breakpoints_checked(&script_str, &[BP_LINE_2])?;
-    assert!(
-        !resolved.is_empty(),
-        "setBreakpoints after attach must return at least one verified breakpoint"
-    );
-
-    session.disconnect()?;
-
+    let mut session = DapWorkflowSession::new(workflow_timeout())?;
+    let error = match session.attach(std::process::id(), false) {
+        Ok(()) => return Err("native PID attach unexpectedly succeeded".into()),
+        Err(error) => error,
+    };
+    if !error.contains("not supported") {
+        return Err(format!("unexpected refusal: {error}").into());
+    }
     Ok(())
 }
 
-// ─── Test 5: attach workflow with stopOnEntry=true ──────────────────────────────
+// ─── Test 5: native PID attach refusal is independent of stopOnEntry ───────────
 
-/// Validates attach with stopOnEntry=true:
-/// attach(pid, stopOnEntry=true) should emit both "attach" and "entry" stopped events.
+/// `stopOnEntry` cannot turn an unsupported PID request into a debugger
+/// session or cause a synthetic entry event.
 #[test]
 fn test_e2e_attach_workflow_stop_on_entry() -> TestResult {
-    let timeout = workflow_timeout();
-    let mut session = DapWorkflowSession::new(timeout)?;
-
-    let test_pid = std::process::id();
-
-    // Attach with stopOnEntry=true
-    session.attach(test_pid, true)?;
-
-    // Should receive "attach" stopped event first
-    let first_stop = session.wait_stopped()?;
-    assert_eq!(
-        first_stop.reason, "attach",
-        "first stopped event after attach(stopOnEntry=true) must be reason=attach"
-    );
-
-    // Then should receive "entry" stopped event
-    let entry_stop = session.wait_stopped()?;
-    assert_eq!(
-        entry_stop.reason, "entry",
-        "second stopped event after attach(stopOnEntry=true) must be reason=entry"
-    );
-
-    session.disconnect()?;
-
+    let mut session = DapWorkflowSession::new(workflow_timeout())?;
+    let error = match session.attach(std::process::id(), true) {
+        Ok(()) => return Err("native PID attach unexpectedly succeeded".into()),
+        Err(error) => error,
+    };
+    if !error.contains("not supported") {
+        return Err(format!("unexpected refusal: {error}").into());
+    }
     Ok(())
 }
 
@@ -602,10 +633,26 @@ fn test_e2e_evaluate_expression_in_stopped_frame() -> TestResult {
         arithmetic_result.contains("15"),
         "watch evaluate should include the arithmetic result in debugger output, got `{arithmetic_result}`"
     );
+
+    let (spaced_arithmetic_result, _) = session.evaluate_expression("6 * 7", frame_id)?;
+    if !spaced_arithmetic_result.split_whitespace().eq(["0", "42"]) {
+        return Err(format!(
+            "watch evaluate should return the exact spaced arithmetic result, got `{spaced_arithmetic_result}`"
+        )
+        .into());
+    }
     assert!(
         matches!(arithmetic_type.as_deref(), Some("scalar" | "integer" | "string")),
         "arithmetic evaluate should include a scalar-like result type, got {arithmetic_type:?}"
     );
+
+    let (leading_space_result, _) = session.evaluate_expression(" 6 * 7", frame_id)?;
+    if !leading_space_result.split_whitespace().eq(["0", "42"]) {
+        return Err(format!(
+            "watch evaluate should preserve leading whitespace numeric arithmetic, got `{leading_space_result}`"
+        )
+        .into());
+    }
 
     let (string_result, string_type) = session.evaluate_expression("'dap-e2e'", frame_id)?;
     assert!(

@@ -1,0 +1,33 @@
+name: fixture-xtask-cli-default-bin-and-long-package
+# `xtask/src/main.rs` *is* the `xtask` bin, so `--bin xtask` reaches the same
+# dispatch as an invocation without it. `--package` is the long spelling of
+# `-p`, and a command may be split across backslash continuations.
+on:
+  pull_request:
+    paths:
+      - 'xtask/src/tasks/example_contract.rs'
+permissions:
+  contents: read
+jobs:
+  default-bin:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - run: cargo run -p xtask --bin xtask --locked -- example-contract check
+  long-package:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - run: cargo run --package xtask --locked -- example-contract check
+  continued:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - run: |
+          cargo run \
+            -p xtask \
+            --locked \
+            -- example-contract check

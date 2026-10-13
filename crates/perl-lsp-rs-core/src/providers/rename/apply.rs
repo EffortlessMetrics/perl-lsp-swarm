@@ -2,6 +2,7 @@
 //!
 //! This module provides methods for applying rename edits.
 
+use perl_module::is_module_identifier_char;
 use perl_parser_core::SourceLocation;
 use perl_parser_core::syntax::source_context::{
     RangeClassification, SourceRegionIndex, SourceRegionKind,
@@ -79,11 +80,17 @@ pub fn find_occurrences_in_text(
         );
 
         if (is_comment && options.rename_in_comments) || (is_string && options.rename_in_strings) {
-            // Make sure it's a whole word using byte-level checks (not
-            // char::nth which is O(n) per call).
-            let bytes = source.as_bytes();
-            let before_ok = absolute_pos == 0 || !bytes[absolute_pos - 1].is_ascii_alphanumeric();
-            let after_ok = match_end >= source.len() || !bytes[match_end].is_ascii_alphanumeric();
+            // Make sure it's a whole identifier using the canonical Perl
+            // identifier class. Inspecting adjacent bytes is incorrect for
+            // UTF-8: a continuation byte can make a Unicode identifier look
+            // like it has a boundary immediately before or after the match.
+            let before_ok = kind.sigil().is_some()
+                || source[..absolute_pos]
+                    .chars()
+                    .next_back()
+                    .is_none_or(|ch| !is_module_identifier_char(ch));
+            let after_ok =
+                source[match_end..].chars().next().is_none_or(|ch| !is_module_identifier_char(ch));
 
             if before_ok && after_ok {
                 let start = if let Some(sigil) = kind.sigil() {
@@ -103,30 +110,6 @@ pub fn find_occurrences_in_text(
     }
 
     edits
-}
-
-/// Check if position is in a comment
-pub fn is_in_comment(position: usize, source: &str) -> bool {
-    let line_start =
-        if position == 0 { 0 } else { source[..position].rfind('\n').map_or(0, |p| p + 1) };
-    let line = &source[line_start..];
-
-    if let Some(comment_pos) = line.find('#') {
-        let comment_absolute = line_start + comment_pos;
-        position >= comment_absolute
-    } else {
-        false
-    }
-}
-
-/// Check if position is in a string
-pub fn is_in_string(position: usize, source: &str) -> bool {
-    // Simple heuristic - count quotes before position
-    let before = &source[..position];
-    let single_quotes = before.matches('\'').count();
-    let double_quotes = before.matches('"').count();
-
-    single_quotes % 2 == 1 || double_quotes % 2 == 1
 }
 
 /// Apply rename edits to source text
@@ -156,7 +139,7 @@ mod tests {
 
     use super::{
         RenameOptions, TextEdit, adjust_location_for_sigil, apply_rename_edits,
-        find_occurrences_in_text, is_in_comment, is_in_string,
+        find_occurrences_in_text,
     };
 
     #[test]
@@ -165,21 +148,6 @@ mod tests {
         let adjusted = adjust_location_for_sigil(location, SymbolKind::Variable(VarKind::Scalar));
         assert_eq!(adjusted.start, 11);
         assert_eq!(adjusted.end, 14);
-        Ok(())
-    }
-
-    #[test]
-    fn comment_and_string_detection_respects_line_and_quote_boundaries()
-    -> Result<(), Box<dyn Error>> {
-        let source = "my $x = 1;\n# comment with $x\nmy $s = \"$x\";\n";
-        let declaration_pos = source.find("$x =").ok_or("missing declaration")?;
-        let comment_pos = source.find("# comment with $x").ok_or("missing comment")? + 15;
-        let string_pos = source.rfind("$x\"").ok_or("missing string use")?;
-
-        assert!(!is_in_comment(declaration_pos, source));
-        assert!(is_in_comment(comment_pos, source));
-        assert!(!is_in_string(declaration_pos, source));
-        assert!(is_in_string(string_pos, source));
         Ok(())
     }
 
@@ -228,6 +196,26 @@ mod tests {
     }
 
     #[test]
+    fn find_occurrences_rejects_unicode_identifier_neighbors() -> Result<(), Box<dyn Error>> {
+        let source = "# 語$x $x語\n\"語$x $x語\"\n";
+        let options = RenameOptions {
+            rename_in_comments: true,
+            rename_in_strings: true,
+            validate_new_name: true,
+        };
+
+        let edits = find_occurrences_in_text(
+            "x",
+            "renamed",
+            SymbolKind::Variable(VarKind::Scalar),
+            &options,
+            source,
+        );
+        assert_eq!(edits.len(), 2, "Unicode prefixes do not join sigiled names: {edits:?}");
+        Ok(())
+    }
+
+    #[test]
     fn apply_rename_edits_applies_in_reverse_order() -> Result<(), Box<dyn Error>> {
         let source = "my $x = $x + 1;";
         let edits = vec![
@@ -270,44 +258,6 @@ mod tests {
         let location = SourceLocation { start: 10, end: 20 };
         let adjusted = adjust_location_for_sigil(location, SymbolKind::Subroutine);
         assert_eq!(adjusted.start, 10);
-        Ok(())
-    }
-
-    #[test]
-    fn is_in_comment_empty_source() -> Result<(), Box<dyn Error>> {
-        assert!(!is_in_comment(0, ""));
-        Ok(())
-    }
-
-    #[test]
-    fn is_in_comment_single_hash() -> Result<(), Box<dyn Error>> {
-        assert!(is_in_comment(0, "#"));
-        Ok(())
-    }
-
-    #[test]
-    fn is_in_comment_multiline_no_hash_on_second_line() -> Result<(), Box<dyn Error>> {
-        let source = "my $var\n$value";
-        let pos = source.find("\n").ok_or("newline not found")? + 1;
-        assert!(!is_in_comment(pos, source));
-        Ok(())
-    }
-
-    #[test]
-    fn is_in_string_empty_source() -> Result<(), Box<dyn Error>> {
-        assert!(!is_in_string(0, ""));
-        Ok(())
-    }
-
-    #[test]
-    fn is_in_string_before_open_quote() -> Result<(), Box<dyn Error>> {
-        assert!(!is_in_string(0, "'string'"));
-        Ok(())
-    }
-
-    #[test]
-    fn is_in_string_inside_quotes() -> Result<(), Box<dyn Error>> {
-        assert!(is_in_string(1, "'string'"));
         Ok(())
     }
 

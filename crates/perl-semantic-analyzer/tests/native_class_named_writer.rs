@@ -75,6 +75,60 @@ fn native_bare_writer_requires_perl_5_42() {
 }
 
 #[test]
+fn native_writer_follows_parsed_declaration_authority() -> Result<(), Box<dyn std::error::Error>> {
+    for (declaration, expected) in [
+        ("use v5.42;", true),
+        ("use v5.44;", true),
+        ("use v5.42; use Foo;", true),
+        ("use v5.42; use if $enabled, Foo, v5.44, extra;", true),
+        ("use v5.42; use unless $enabled, Foo, v5.44, extra;", true),
+        ("use v5.44; use v5Foo;", true),
+        ("use v5.42; require v5.44;", true),
+        ("use v5.40;", false),
+        ("use v5.14;", false),
+        ("require v5.44;", false),
+        ("use v5.44.1;", false),
+        ("use 5.044;", false),
+        ("use 5.044001;", false),
+        ("use 5.043008;", false),
+        ("use v5.43;", false),
+        ("use v5.46;", false),
+        ("use v5;", false),
+        ("use feature ':all';", false),
+        ("use v5.44; use 5.044001;", false),
+        ("use v5.44; use v5.46;", false),
+        ("use if 0, v5.44;", false),
+        ("use if 1, v5.44;", false),
+        ("use unless 0, v5.44;", false),
+        ("use v5.42; use if 1, v5.44;", false),
+        ("use v5.42; use unless 0, v5.44;", false),
+        ("use if $enabled, v5.44;", false),
+        ("use v5.42; use if $enabled, v5.44;", false),
+        ("use v5.42; use if $enabled, v5.bad;", false),
+        ("use v5.42; use unless $enabled, v5.bad;", false),
+        ("use v5.42; use if $enabled, Foo, v5.44;", false),
+        ("use v5.42; use unless $enabled, Foo, v5.44;", false),
+    ] {
+        let source =
+            format!("{declaration} class Profiled {{ field $value :writer(write_value); }}");
+        let ast = Parser::new(&source).parse()?;
+        let models = ClassModelBuilder::new().build(&ast);
+        let model = models.iter().find(|model| model.name == "Profiled").ok_or("missing class")?;
+        let field = model.fields.first().ok_or("missing field")?;
+        let expected_name = expected.then_some("write_value");
+        if field.writer.as_deref() != expected_name {
+            return Err(format!("wrong native writer admission for {declaration}").into());
+        }
+        let generated =
+            model.methods.iter().any(|method| method.synthetic && method.name == "write_value");
+        if generated != expected {
+            return Err(format!("wrong generated method admission for {declaration}").into());
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn native_writer_is_rejected_for_non_scalar_fields() {
     let mut parser = Parser::new(
         r#"

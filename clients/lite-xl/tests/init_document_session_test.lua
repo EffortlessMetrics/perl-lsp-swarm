@@ -34,6 +34,17 @@
 -- Remaining cases may pass on pristine where upstream already behaved
 -- compatibly; they pin the contract against regression.
 --
+-- CURRENTNESS (NOT_PROVEN): that pristine baseline no longer RUNS. The
+-- runtime fakes below have tracked the staged module's seams (#11165
+-- util.path_to_uri, #11172 capability manifest, ...), so loading the
+-- pristine blob now dies in the fakes (`common.touri` nil, plus pristine-era
+-- requires) before any case is evaluated. A crash is instrument failure, not
+-- a red-first result, so the list above is retained as the recorded history
+-- of that baseline and NOT as a currently reproducible claim. Restoring a
+-- pristine-compatible fake set spans several other modules' staged patches
+-- and is tracked separately; the mutation falsifiers below are this suite's
+-- currently reproducible discrimination evidence.
+--
 -- Single-behavior mutation falsifiers of the PATCHED module (each verified
 -- to be caught; named case families fail):
 --   1. restore didOpen `version = doc.clean_change_id` ->
@@ -42,11 +53,27 @@
 --      allocation -> every emitted batch repeats version 0 ->
 --      all stream-ordering cases fail;
 --   3. delete the terminate-first step in
---      lsp.create_document_session -> close/reopen and Save As cases fail
---      (stale session_generation/uri survive);
+--      lsp.create_document_session -> the Save As case fails (a stale
+--      session_generation/uri survives the URI transition);
 --   4. diverge the ranged-sync branch's wire-version source from the shared
 --      session stream -> full_and_ranged_branches_share_one_version_owner
---      fails.
+--      fails;
+--   5. rewind the owning session's version inside lsp.save_document ->
+--      case 3 fails (didSave must not reset or reuse the stream);
+--   6. replace the per-session allocation with a process-global
+--      ever-increasing counter -> cases 3, 4, 6, 7 and 8 fail (a global
+--      counter is monotonic but is not owned by the session, so fresh
+--      origins and per-session continuity are lost);
+--   7. derive the batch version from the editor's undo identity
+--      (`session.version = doc:get_change_id()`) -> case 4 fails, because
+--      undo moves undo_stack.idx backward and redo revisits a value the
+--      stream already used.
+--
+-- Falsifier 7 is why the Doc fake models `undo_stack`/`get_change_id()`
+-- rather than `clean_change_id` alone: #11115 names get_change_id()
+-- explicitly in its negative controls, and a mutant reading a surface the
+-- instrument does not model fails by crashing (instrument failure), which
+-- is NOT a caught falsifier.
 --
 -- No framework: plain soft asserts, one process, deterministic, exit code
 -- carries the result. Compatible with the Lite XL Lua runtime family
@@ -161,9 +188,33 @@ end
 ---Fake Doc class. init.lua wraps raw_insert/raw_remove over whatever base
 ---implementations exist here; fresh_module_load() restores the pristine
 ---bases so repeated module loads never chain wrappers.
+---
+---The base raw_* implementations model Lite XL's UNDO IDENTITY, which the
+---#11115 negative controls name explicitly ("no protocol version is derived
+---from clean_change_id, get_change_id(), ..."). Upstream Lite XL keeps
+---`Doc.undo_stack = { idx = ... }` and defines
+---`Doc:get_change_id() -> self.undo_stack.idx`; every accepted mutation
+---pushes onto the stack passed as the `undo_stack` argument (defaulting to
+---the document's own undo stack), and `pop_undo` applies an inverse command
+---through these SAME entry points while targeting the redo stack, so
+---`get_change_id()` moves BACKWARD across an undo. Bytes stay owned by each
+---case (the fakes are line-poked deliberately); only the editor-history
+---identity is modeled here, because that identity is the thing the protocol
+---version must never be derived from.
 local Doc = { __index = Doc }
-Doc.raw_insert = function(self, line, col, text) end
-Doc.raw_remove = function(self, line1, col1, line2, col2) end
+local function push_change(self, stack)
+  local target = stack or self.undo_stack
+  if target then
+    target.idx = target.idx + 1
+  end
+end
+Doc.raw_insert = function(self, line, col, text, undo_stack, time)
+  push_change(self, undo_stack)
+end
+Doc.raw_remove = function(self, line1, col1, line2, col2, undo_stack, time)
+  push_change(self, undo_stack)
+end
+Doc.get_change_id = function(self) return self.undo_stack.idx end
 Doc.get_selection = function(self) return 1, 1, 1, 1 end
 Doc.get_char = function() return "" end
 package.preload["core.doc"] = function() return Doc end
@@ -291,6 +342,10 @@ local function make_doc(filename, lines)
     abs_filename = filename,
     lines = lines,
     clean_change_id = 1,
+    -- Lite XL editor-history identity (see the Doc fake above). 1-based idx
+    -- exactly like upstream's freshly constructed undo/redo stacks.
+    undo_stack = { idx = 1 },
+    redo_stack = { idx = 1 },
     lsp_open = false,
   }, { __index = Doc })
 end
@@ -502,22 +557,43 @@ do
   doc:raw_insert(1, 2, "y", nil, 0)
   ok(batch_version(drain(server, "textDocument/didChange")[1]) == 1,
     "case4: version 1 before undo")
+  local change_id_after_edit = doc:get_change_id()
 
-  -- Simulate editor undo: undo_stack.idx/clean identity moves backward and
-  -- bytes revisit a prior state.
+  -- Real Lite XL undo: pop_undo decrements undo_stack.idx and replays the
+  -- inverse command through this SAME overridden Doc:raw_remove, targeting
+  -- the REDO stack. get_change_id() therefore moves backward while the LSP
+  -- plugin still observes an ordinary accepted mutation. Bytes revisit the
+  -- prior state, and clean_change_id regresses with them.
+  doc.undo_stack.idx = doc.undo_stack.idx - 1
   doc.clean_change_id = -7
   doc.lines[1] = "x\n"
-  doc:raw_remove(1, 2, 1, 3, nil, 0)
+  doc:raw_remove(1, 2, 1, 3, doc.redo_stack, 0)
+  -- Instrument control: the editor identity really did move backward, so the
+  -- assertions below are not vacuously true of a monotonic change id.
+  ok(doc:get_change_id() < change_id_after_edit,
+    "case4: editor get_change_id() moved BACKWARD across the undo")
   local batches = drain(server, "textDocument/didChange")
   ok(batch_version(batches[1]) == 2,
     "case4: undo still advances the protocol version to 2")
 
+  -- Real Lite XL redo: pop_undo against the redo stack, replaying through
+  -- Doc:raw_insert with the undo stack as the target.
+  local change_id_after_undo = doc:get_change_id()
+  doc.redo_stack.idx = doc.redo_stack.idx - 1
   doc.clean_change_id = 0
   doc.lines[1] = "xy\n"
-  doc:raw_insert(1, 3, "y", nil, 0)
+  doc:raw_insert(1, 3, "y", doc.undo_stack, 0)
+  ok(doc:get_change_id() == change_id_after_undo + 1,
+    "case4: editor get_change_id() REVISITS a previously seen value on redo")
   batches = drain(server, "textDocument/didChange")
   ok(batch_version(batches[1]) == 3,
     "case4: redo keeps increasing despite change-id revisiting prior values")
+  -- Deliberately NOT asserted here: `version ~= doc:get_change_id()`. Two
+  -- independent counters may legitimately coincide, so that oracle would
+  -- fail a correct implementation on an accident of fixture arithmetic. The
+  -- discrimination this case needs comes from the two controls above (the
+  -- change id verifiably moved backward, then revisited a used value) while
+  -- the version stream did neither.
   local session = get_session(lsp, doc, server)
   ok(session ~= nil and session.server_generation ~= nil,
     "case4: session exposes explicit server generation identity")
@@ -734,11 +810,19 @@ do
   register(lsp, "perllsp", server)
   local doc = make_doc("C:/proj/api.pl", { "api\n" })
   doc.clean_change_id = 42
+  -- Both editor-history identities are far from the session origin, so a
+  -- version derived from either is distinguishable from the honest 0.
+  doc.undo_stack.idx = 17
 
   lsp.open_document(doc)
   local opened = drain(server, "textDocument/didOpen")
   ok(opened[1].params.textDocument.version == 0,
     "api: didOpen ignores a nonzero editor clean_change_id as version source")
+  -- Instrument control rather than a second `version ~= change_id` oracle:
+  -- pin that the fixture really did seed both editor identities away from
+  -- the session origin, which is what makes the assertion above meaningful.
+  ok(doc:get_change_id() == 17 and doc.clean_change_id == 42,
+    "api: both editor identities were seeded away from the session origin")
   local session = get_session(lsp, doc, server)
   ok(session ~= nil and type(session.version) == "number" and session.version == 0,
     "api: session owns the version field explicitly")

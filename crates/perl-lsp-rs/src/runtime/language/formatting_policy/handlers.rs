@@ -2,7 +2,6 @@ use super::{
     FormatContext, FormatterMode, JsonRpcError, JsonRpcId, LspServer, RequestCleanupGuard, Surface,
     Value, actual_engine_for_mode, cancellation_token, invalid_params, json, req_position,
 };
-
 #[path = "multi_range.rs"]
 mod multi_range;
 
@@ -149,7 +148,7 @@ impl LspServer {
             self.record_formatting_receipt(
                 &snapshot,
                 "blocked",
-                json!("unsupported_syntax"),
+                json!("tabs_requested"),
                 "on_type_indentation",
                 "no_edit",
                 0,

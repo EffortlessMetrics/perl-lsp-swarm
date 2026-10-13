@@ -331,9 +331,6 @@ Editor settings:
       "resolutionTimeout": 100
     },
     "limits": {
-      "maxIndexedFiles": 50000,
-      "maxTotalSymbols": 2000000,
-      "workspaceScanDeadlineMs": 120000,
       "workspaceSymbolCap": 300,
       "referencesCap": 1000
     }
@@ -343,7 +340,6 @@ Editor settings:
 
 Tips for large codebases:
 - Keep `useSystemInc: false` — system `@INC` queries block on network filesystems
-- Increase `workspaceScanDeadlineMs` to give the initial index time to complete
 - If the server feels slow on first open, it is indexing. Subsequent opens are fast.
 
 ---
@@ -364,13 +360,9 @@ Running on a VM, container, or remote SSH session with limited RAM or slow I/O:
       "enabled": false
     },
     "limits": {
-      "maxIndexedFiles": 3000,
-      "maxTotalSymbols": 100000,
-      "astCacheMaxEntries": 30,
       "workspaceSymbolCap": 100,
       "referencesCap": 200,
       "completionCap": 50,
-      "workspaceScanDeadlineMs": 15000,
       "referenceSearchDeadlineMs": 1000
     }
   }
@@ -381,17 +373,19 @@ Running on a VM, container, or remote SSH session with limited RAM or slow I/O:
 
 ### CI / headless environment
 
-Running `perllsp --check` in CI pipelines or pre-commit hooks:
+Native CLI checking does not execute project Perl. See
+[Checking Perl files](CHECKING.md) for the validator/claim split and exits.
 
 ```bash
-# Check a single file
+# Native listed-file parser check (exit 1 on blocking findings)
 perllsp --check lib/MyModule.pm
 
-# Check all Perl files in a directory
+# Native project parsability report (exit 0 at ≥80% scanned-file clean)
 perllsp --check-project lib/
 
-# Check with exit code (non-zero on parse errors)
-perllsp --check-project . && echo "All files parse clean"
+# Wrong: --check-project can PASS with unclean files, so this is not
+# "all files parse clean"
+perllsp --check-project .
 ```
 
 For a project that also uses critic checks in CI, use the `perl.perlcritic`
@@ -430,7 +424,7 @@ Every `.perl-lsp.toml` setting has a VSCode `settings.json` counterpart. The tab
 | `[critic] engine = "native"` | `"critic": {"engine": "native"}` | Use `"legacy"` or `"external"` for Perl::Critic shell-out compatibility |
 | `[critic] profile = "recommended"` | `"critic": {"profile": "recommended"}` | Lower-noise native rule bundle |
 | `[formatting] enabled = true` | `"formatting": {"enabled": true}` | |
-| `[formatting] engine = "native"` | `"formatting": {"engine": "native"}` | Generic LSP settings accept native, compat, or off; external-perltidy is project-only |
+| `[formatting] engine = "native"` | `"formatting": {"engine": "native"}` | Generic LSP settings accept native or off; external-perltidy is project-only |
 | `[formatting] perltidy_profile = ".perltidyrc"` | — | Profile paths and external formatter arguments are project-only |
 | `[features] inlay_hints = true` | `"inlayHints": {"enabled": true}` | TOML is global toggle; LSP has finer-grained control |
 
@@ -471,9 +465,6 @@ Every `.perl-lsp.toml` setting has a VSCode `settings.json` counterpart. The tab
       "workspaceSymbolCap": 200,
       "referencesCap": 500,
       "completionCap": 100,
-      "maxIndexedFiles": 10000,
-      "maxTotalSymbols": 500000,
-      "workspaceScanDeadlineMs": 30000
     }
   },
 
@@ -532,7 +523,7 @@ perllsp --features-json --feature-profile production | python3 -m json.tool
 3. Verify the TOML is valid:
 
    ```bash
-   perllsp --check-project .  # will warn about bad .perl-lsp.toml
+   perllsp --doctor .  # reports whether .perl-lsp.toml loaded
    ```
 
 ### Module resolution not finding your modules
@@ -556,17 +547,7 @@ perllsp --features-json --feature-profile production | python3 -m json.tool
 
 ### Server is slow to start on a large project
 
-This is expected on first open — the server is indexing your workspace. Subsequent opens are fast (the index is cached). If it is taking more than a few minutes, raise `workspaceScanDeadlineMs`:
-
-```json
-{
-  "perl": {
-    "limits": {
-      "workspaceScanDeadlineMs": 120000
-    }
-  }
-}
-```
+This is expected on first open — the server is indexing your workspace. Subsequent opens are fast (the index is cached). If it is taking more than a few minutes, check whether the editor opened a broad repository or parent directory. Open a narrower workspace folder containing the project area you need; workspace indexing scans the folders opened in the editor.
 
 ---
 

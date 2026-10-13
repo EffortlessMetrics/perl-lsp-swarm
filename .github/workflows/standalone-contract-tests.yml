@@ -1,0 +1,67 @@
+# Standalone owned-state contract tests (#11470 / #11527).
+#
+# Runs the checked validator battery and the schema-only parity harness on
+# PRs that touch the standalone owned-state contract packet, so the contract's
+# proof cannot drift without a hosted run noticing.
+
+name: Standalone contract tests
+
+on:
+  pull_request:
+    paths:
+      - 'schemas/standalone_owned_state.v1.schema.json'
+      - 'schemas/standalone_removal_plan.v1.schema.json'
+      - 'schemas/standalone_uninstall_result.v1.schema.json'
+      - 'fixtures/experience/install_owned_state/**'
+      - 'xtask/examples/standalone_owned_state.rs'
+      - 'scripts/ci/test_standalone_contract_schemas.py'
+      - '.github/workflows/standalone-contract-tests.yml'
+  workflow_dispatch: {}
+
+concurrency:
+  group: standalone-contract-tests-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event.action == 'synchronize' }}
+
+permissions:
+  contents: read
+
+jobs:
+  validator-battery:
+    name: Checked validator battery (xtask example)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+
+      - name: Install stable toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --no-self-update
+          rustup default stable
+
+      - name: Run the contract battery
+        run: cargo test -p xtask --example standalone_owned_state --locked
+
+  schema-harness:
+    name: Schema-only parity harness
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+
+      - name: Install schema libraries
+        run: |
+          python3 -m venv .venv-schema-harness
+          .venv-schema-harness/bin/pip install --quiet jsonschema referencing
+
+      - name: Run the schema harness
+        run: .venv-schema-harness/bin/python -m unittest scripts.ci.test_standalone_contract_schemas

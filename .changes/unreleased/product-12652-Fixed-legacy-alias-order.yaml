@@ -1,0 +1,12 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: >-
+  Legacy source-symbol search retains the strongest matching alias before
+  geometry deduplication, so an exact bare name does not lose its ranking
+  to a weaker qualified alias visited first.
+time: 2026-09-08T00:00:00Z
+custom:
+  PR: "12652"
+  Slug: legacy-alias-order
+  Breaking: "no"

@@ -1,0 +1,40 @@
+[package]
+name = "perl-evidence-envelope"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+description = "evidence_envelope.v1 domain-neutral outer evidence record and deterministic envelope identity (internal evidence infrastructure, no external consumers yet)"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+keywords = ["perl", "evidence", "envelope", "receipt", "provenance"]
+categories = ["data-structures", "development-tools"]
+publish = false
+include = ["src/**", "tests/**", "Cargo.toml", "README.md"]
+
+[lib]
+# Doctests stay ON for this crate. The README quick start is compiled as a
+# doctest via the `ReadmeDoctests` harness in src/lib.rs; disabling doctests
+# would leave that consumer-facing example unchecked, which is exactly how it
+# went stale when `ReceiptId`'s constructor changed.
+doctest = true
+
+[dependencies]
+# serde: stable serialization for all envelope/identity/classification types.
+serde = { workspace = true }
+# sha2: reviewed collision-resistant digest for the domain-separated
+# EnvelopeFingerprint. ContentDigest's own hasher is private to
+# perl-source-identity, so the fingerprint's distinct domain tag needs its
+# own small hashing primitive rather than reusing an unexported one.
+sha2 = { workspace = true }
+# perl-source-identity: reused for ContentDigest and ProjectId so this crate
+# does not reinvent domain-separated content/project identity (#7652).
+perl-source-identity = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+
+[lints]
+workspace = true

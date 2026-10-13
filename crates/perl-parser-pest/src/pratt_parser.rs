@@ -1,3 +1,5 @@
+use crate::error::ParseError;
+use crate::outcome::ParserFailure;
 use crate::pure_rust_parser::AstNode;
 use crate::pure_rust_parser::Rule;
 use pest::iterators::Pair;
@@ -367,16 +369,23 @@ impl PrattParser {
         &self,
         pairs: Vec<Pair<'a, Rule>>,
         parser: &mut crate::pure_rust_parser::PureRustPerlParser,
-    ) -> Result<AstNode, Box<dyn std::error::Error>> {
+    ) -> Result<AstNode, ParseError> {
         if pairs.is_empty() {
             return Err("Empty expression".into());
         }
 
         // Simple implementation for now - handle binary expressions
         if pairs.len() == 1 {
-            // Single element, just parse it
+            // Single element, just parse it. `pairs.len() == 1` was just
+            // checked, so a missing first element here is an internal
+            // invariant violation, not a source-domain rejection: Pest
+            // already produced this pair list successfully.
             parser
-                .build_node(pairs.into_iter().next().ok_or(crate::error::ParseError::ParseFailed)?)?
+                .build_node(pairs.into_iter().next().ok_or_else(|| {
+                    ParseError::Failed(ParserFailure::instrument(
+                        "expected one pest pair but iterator was empty",
+                    ))
+                })?)?
                 .ok_or_else(|| "Failed to parse".into())
         } else if pairs.len() >= 3 {
             // Binary expression - use precedence parsing
@@ -384,7 +393,11 @@ impl PrattParser {
         } else {
             // Fallback
             parser
-                .build_node(pairs.into_iter().next().ok_or(crate::error::ParseError::ParseFailed)?)?
+                .build_node(pairs.into_iter().next().ok_or_else(|| {
+                    ParseError::Failed(ParserFailure::instrument(
+                        "expected at least one pest pair but iterator was empty",
+                    ))
+                })?)?
                 .ok_or_else(|| "Failed to parse".into())
         }
     }
@@ -394,7 +407,7 @@ impl PrattParser {
         pairs: Vec<Pair<'_, Rule>>,
         index: usize,
         parser: &mut crate::pure_rust_parser::PureRustPerlParser,
-    ) -> Result<AstNode, Box<dyn std::error::Error>> {
+    ) -> Result<AstNode, ParseError> {
         if index >= pairs.len() {
             return Err("Invalid expression".into());
         }

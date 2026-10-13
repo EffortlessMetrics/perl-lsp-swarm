@@ -1,0 +1,9 @@
+project: product
+component: Editor behavior
+kind: Fixed
+body: "Completion-item and code-action resolve requests now reject missing parameters and invalid required labels or titles with useful errors, while preserving valid lazy resolution and extension fields."
+time: 2026-09-13T19:20:49Z
+custom:
+  PR: "15543"
+  Slug: resolve-missing-parameters
+  Breaking: "no"

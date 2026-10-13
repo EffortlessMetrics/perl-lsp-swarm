@@ -1,0 +1,9 @@
+project: vscode
+component: Editor behavior
+kind: Fixed
+body: "Run Health Check now keeps binary presence separate from runtime startup, reports cleanup-blocked failures with reload guidance, prevents stale startup diagnoses from overwriting a recovered server generation, and keeps transport-write failures on the public request path without orphaned rejections."
+time: 2026-09-08T00:00:00Z
+custom:
+  PR: "15158"
+  Slug: truthful-health-check-startup-recovery
+  Breaking: "no"

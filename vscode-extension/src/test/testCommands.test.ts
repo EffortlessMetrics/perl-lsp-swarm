@@ -128,6 +128,30 @@ describe('test command implementations', () => {
     expect(vscode.commands.executeCommand).toHaveBeenCalledWith('perl.runTest', 't/example.t');
   });
 
+  test('saves and requests code lenses for a perl5 alias editor (#7699)', async () => {
+    const editor = makeEditor({ languageId: 'perl5', isDirty: true });
+    setActiveEditor(editor);
+    const sendRequest = jest.fn(async () => [
+      {
+        range: {
+          start: { line: 3, character: 0 },
+          end: { line: 4, character: 10 },
+        },
+        command: { command: 'perl.runTest', arguments: ['t/example.t'] },
+      },
+    ]);
+
+    await runTestAtCursorCommand({
+      activeClient: { sendRequest },
+      serverNotRunningMessage: () => 'server unavailable',
+    });
+
+    expect(editor.document.save).toHaveBeenCalledTimes(1);
+    expect(sendRequest).toHaveBeenCalledWith('textDocument/codeLens', {
+      textDocument: { uri: 'file:///workspace/t/example.t' },
+    });
+  });
+
   test('reports server availability before requesting code lenses', async () => {
     setActiveEditor(makeEditor());
     const sendRequest = jest.fn(async () => []);

@@ -1,0 +1,21 @@
+project: product
+component: Developer experience
+kind: Added
+body: >-
+  Add perl-operation-trace, a leaf crate owning the versioned operation_trace.v1
+  correlation contract: ephemeral session-scoped operation identity that never
+  uses the sha256: durable-identity prefix and depends on no hash function,
+  an OperationContext threaded across call and background boundaries, closed
+  operation/event/identity-reference vocabularies that fail closed on unknown
+  input, a three-tier privacy model (public, private redacted with length,
+  secret redacted with nothing), a field registry enforcing each field's
+  declared tier, and a bounded in-memory recorder that rejects duplicate
+  terminals, conflicting parents or kinds, and parent cycles, and marks
+  truncation explicitly rather than dropping events silently. Nothing is
+  instrumented yet: this defines the vocabulary the existing per-subsystem
+  operation identities can later be correlated through.
+time: 2026-09-07T00:00:00Z
+custom:
+  PR: "15021"
+  Slug: operation-trace-contract-15021
+  Breaking: "no"

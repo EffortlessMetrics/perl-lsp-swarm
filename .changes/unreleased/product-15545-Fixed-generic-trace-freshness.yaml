@@ -1,0 +1,9 @@
+project: product
+component: Editor behavior
+kind: Fixed
+body: "Provider explanations no longer mark generic request traces fresh when dispatch has no freshness evidence."
+time: 2026-09-13T19:52:17Z
+custom:
+  PR: "15545"
+  Slug: generic-trace-freshness
+  Breaking: "no"

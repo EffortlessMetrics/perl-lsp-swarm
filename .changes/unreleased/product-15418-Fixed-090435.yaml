@@ -1,0 +1,9 @@
+project: product
+component: Editor behavior
+kind: Fixed
+body: "Diagnostics and code actions now share native Critic settings and service routing; the public pull-diagnostics context API now accepts per-URI context factories so multi-root results preserve configured profiles and result identity."
+time: 2026-09-13T09:04:35Z
+custom:
+  PR: "15418"
+  Slug: native-critic-consumer-routing
+  Breaking: "yes"

@@ -1,7 +1,7 @@
 project: product
 component: Compatibility
 kind: Fixed
-body: "The server now advertises perl.debugTests and protocolVersion 3.18 in its LSP capabilities (both were implemented but undiscoverable by clients), tolerates unknown $-prefixed client notifications instead of erroring, adds __CLASS__ (Perl 5.38) keyword support, and adds the previously-wired --ripr-facts and runtime-tuning flags to --help and all four shell completion scripts."
+body: "The server now advertises perl.debugTests in its LSP capabilities, tolerates unknown $-prefixed client notifications instead of erroring, adds __CLASS__ (Perl 5.38) keyword support, and adds the previously-wired --ripr-facts and runtime-tuning flags to --help and all four shell completion scripts."
 time: 2026-07-29T09:53:53Z
 custom:
   PR: "5280"

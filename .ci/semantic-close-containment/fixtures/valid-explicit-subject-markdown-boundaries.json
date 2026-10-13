@@ -1,0 +1,35 @@
+{
+  "schema_version": "semantic_close_containment_fixture.v1",
+  "provenance": {
+    "captured_at": "2026-09-09",
+    "sources": [
+      "https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/14551"
+    ],
+    "subject_shas": [],
+    "boundary": "Synthetic CP00-003 boundary control: absent punctuation must not join separate paragraphs or list items into an exclusion about required acceptance."
+  },
+  "repository": "effortlessmetrics/perl-lsp-swarm",
+  "pull_request": {
+    "number": 990101,
+    "title": "fix: bounded required-work subject control",
+    "body": "## Claim Boundary\n\nFull acceptance criteria\n\nare not established for this guard\n\n- Full acceptance criteria\n- are not established for this guard\n\nCloses #9001201."
+  },
+  "issues": [
+    {
+      "repository": "effortlessmetrics/perl-lsp-swarm",
+      "number": 9001201,
+      "title": "Complete the named bounded change",
+      "body": "## Acceptance\nThe named change and its focused regression control are established."
+    }
+  ],
+  "expected": {
+    "aggregate_code": "PASS_NO_HIGH_CONFIDENCE_CONTRADICTION",
+    "rows": [
+      {
+        "repository": "effortlessmetrics/perl-lsp-swarm",
+        "issue_number": 9001201,
+        "code": "PASS_NO_HIGH_CONFIDENCE_CONTRADICTION"
+      }
+    ]
+  }
+}

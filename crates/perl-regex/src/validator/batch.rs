@@ -26,25 +26,23 @@ pub(crate) fn analyze(
     let mut facts = RegexFacts::default();
 
     for finding in code_execution::find_code_executions(&stream) {
-        let (kind, code, width) = match finding.kind {
+        let (kind, code) = match finding.kind {
             code_execution::EmbeddedCodeKind::Immediate => {
-                (EmbeddedCodeKind::Immediate, RegexDiagnosticCode::EmbeddedCodeImmediate, 3)
+                (EmbeddedCodeKind::Immediate, RegexDiagnosticCode::EmbeddedCodeImmediate)
             }
             code_execution::EmbeddedCodeKind::Deferred => {
-                (EmbeddedCodeKind::Deferred, RegexDiagnosticCode::EmbeddedCodeDeferred, 4)
+                (EmbeddedCodeKind::Deferred, RegexDiagnosticCode::EmbeddedCodeDeferred)
             }
         };
-        if let Some(range) = RegexRange::anchored(finding.offset, width, pattern.len()) {
-            facts.embedded_code.push(EmbeddedCodeFact { kind, range });
-            facts.dynamic_regions.push(RegexDynamicRegionFact {
-                kind: match kind {
-                    EmbeddedCodeKind::Immediate => RegexDynamicRegionKind::EmbeddedCodeImmediate,
-                    EmbeddedCodeKind::Deferred => RegexDynamicRegionKind::EmbeddedCodeDeferred,
-                },
-                range,
-            });
-            diagnostics.push(RegexDiagnostic::new(code, range, None));
-        }
+        facts.embedded_code.push(EmbeddedCodeFact { kind, range: finding.construct_range });
+        facts.dynamic_regions.push(RegexDynamicRegionFact {
+            kind: match kind {
+                EmbeddedCodeKind::Immediate => RegexDynamicRegionKind::EmbeddedCodeImmediate,
+                EmbeddedCodeKind::Deferred => RegexDynamicRegionKind::EmbeddedCodeDeferred,
+            },
+            range: finding.construct_range,
+        });
+        diagnostics.push(RegexDiagnostic::new(code, finding.opener_range, None));
     }
 
     // Source interpolation is a dynamic boundary: the pattern text that reaches the

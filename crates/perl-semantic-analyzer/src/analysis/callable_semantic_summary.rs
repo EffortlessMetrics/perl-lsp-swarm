@@ -38,10 +38,11 @@
 //!   to the innermost callable through the HIR scope graph, and referenced
 //!   by [`CallableFactRef::HirItem`] identity.
 //! - HIR body expressions the per-body PIR lowering does not model
-//!   ([`HirExpr::Opaque`], subscripts, heredocs, readlines, globs) are
-//!   counted as declared `missing` evidence in the `Place`/`Effect` facets,
-//!   so a body containing unmodeled expressions can never report those
-//!   facets `Complete`.
+//!   ([`HirExpr::Opaque`], subscripts, heredocs, readlines, globs, and the
+//!   regex families — regex literals, matches, substitutions and
+//!   transliterations) are counted as declared `missing` evidence in the
+//!   `Place`/`Effect` facets, so a body containing unmodeled expressions can
+//!   never report those facets `Complete`.
 //! - Phase blocks (`BEGIN`/`CHECK`/`UNITCHECK`/...) own neither a
 //!   `SubDecl`/`MethodDecl` item nor an [`HirBody`] in this substrate, so
 //!   they are not admitted callables; every admitted callable is a runtime
@@ -53,8 +54,8 @@
 
 use perl_parser_core::Parser;
 use perl_parser_core::hir::{
-    BodyOwnerKind, DynamicBoundaryKind as HirDynamicBoundaryKind, HirBody, HirExpr, HirExprId,
-    HirFile, HirItem, HirKind, HirScopeId, ScopeKind, lower_ast,
+    BodyOwnerKind, DeclStorageClass, DynamicBoundaryKind as HirDynamicBoundaryKind, HirBody,
+    HirExpr, HirExprId, HirFile, HirItem, HirKind, HirScopeId, HirStmt, lower_ast,
 };
 use perl_parser_core::pir::{PirNode, PirOperation, lower_single_body};
 use perl_semantic_facts::interprocedural::{
@@ -301,7 +302,9 @@ fn owning_callable_scope(file: &HirFile, start: HirScopeId) -> Option<HirScopeId
         }
         remaining -= 1;
         let frame = file.scope_graph.scopes.iter().find(|scope| scope.id == id)?;
-        if matches!(frame.kind, ScopeKind::Subroutine | ScopeKind::Method) {
+        // Anonymous subs are callable frames too; `is_callable` keeps this
+        // from having to enumerate them (#13817).
+        if frame.kind.is_callable() {
             return Some(id);
         }
         current = frame.parent;
@@ -427,7 +430,7 @@ fn map_boundary_link(kind: HirDynamicBoundaryKind) -> BoundaryLink {
     BoundaryLink::new(None, kind, BoundaryDisposition::Degrade, reason)
 }
 
-/// Count HIR body expressions the per-body PIR lowering does not model.
+/// Count HIR body constructs the per-body PIR lowering does not model.
 /// These are declared `missing` evidence in the Place/Effect facets so an
 /// unmodeled body can never report those facets Complete (law 7).
 fn count_unmodeled(body: &HirBody) -> u32 {
@@ -438,8 +441,57 @@ fn count_unmodeled(body: &HirBody) -> u32 {
             | HirExpr::Subscript(_)
             | HirExpr::Heredoc { .. }
             | HirExpr::Readline { .. }
-            | HirExpr::Glob { .. } => count = count.saturating_add(1),
+            | HirExpr::Glob { .. }
+            // Regex families (#7136). Canonical body HIR models these as typed
+            // forms, but per-body PIR lowering still records all four as
+            // unsupported (canonical PIR-A regex operations are #7137), so they
+            // remain unmodeled for this law.
+            //
+            // This is deliberately wider than restoring the previous behavior,
+            // and the difference is worth stating: before the families were
+            // typed, only the unbound form was counted (`qr//` and bare
+            // `/.../` lowered to `Opaque`), while a bound `$x =~ …` lowered to
+            // `HirExpr::Call` and was not counted. A callable whose only
+            // unmodeled content is a bound match, substitution or
+            // transliteration therefore reported `Complete` before and reports
+            // `Limited` now.
+            //
+            // That downgrade is the honest reading of this law rather than an
+            // accident of the refactor: `s///` and `tr///` write a place PIR
+            // does not record, and a match writes capture/match state, so a
+            // body containing one has evidence this assembler cannot see. The
+            // contrast with `HirExpr::Call` — which is also PIR-unsupported yet
+            // still leaves `Place` complete — is consistent for the same
+            // reason: a call's places are its arguments, which *are* modeled,
+            // and its `Effect` facet is already blocked separately by the
+            // unresolved outbound-call dependency.
+            | HirExpr::Regex(_)
+            | HirExpr::Match(_)
+            | HirExpr::Substitution(_)
+            | HirExpr::Transliteration(_)
+            // `try`/`catch`/`finally` (#15567). Canonical body HIR now models
+            // the regions and PIR-A lowers the statements inside them, so the
+            // three childless `Opaque` blocks that used to be counted here are
+            // gone. The construct must still count: PIR-A does not model
+            // exceptional control flow, so it cannot see that the try body may
+            // abort partway, that a handler runs only on a throw, or that
+            // `finally` runs on every exit path. Dropping the count when the
+            // `Opaque` blocks disappeared would silently flip a try-containing
+            // callable from `Limited` to `Complete` over evidence this
+            // assembler still cannot see.
+            | HirExpr::Try { .. } => count = count.saturating_add(1),
             _ => {}
+        }
+    }
+    // Declaration-shaped legacy calls (`field $x = 1`) parse as a declaration
+    // but invoke an arbitrary subroutine. PIR lowers the argument effects and
+    // records the callee as unsupported, but that receipt does not reach this
+    // path: `lower_single_body` returns nodes only. Counting the statement
+    // here is what keeps Result/Place/Effect from reporting Complete over a
+    // call whose behaviour is not modelled at all.
+    for stmt in body.stmts.iter() {
+        if matches!(stmt, HirStmt::Let { storage: DeclStorageClass::Unknown, .. }) {
+            count = count.saturating_add(1);
         }
     }
     count
@@ -515,6 +567,15 @@ fn body_identity(
         // Full operation payload (Debug covers names/operators/kinds — never
         // source text): two equal-length but different operations are
         // different bodies.
+        //
+        // Scope limit: this holds for operations that *become* PIR nodes. A
+        // construct the per-body lowering records as unsupported emits no node
+        // and so contributes nothing here — regex-family operations are the
+        // clearest case, and `/foo/i`, `/foo/g` and `/bar/i` in an otherwise
+        // identical callable currently share one identity. That predates the
+        // typed regex variants (a bound match was previously an unsupported
+        // `Call`, an unbound one an `Opaque`) and is tracked by #14645. Do not
+        // read the sentence above as covering every edit to a body.
         fingerprint = fingerprint.field("op", &format!("{:?}", node.operation)).field(
             "op-anchor",
             &node
@@ -810,6 +871,32 @@ fn build_packet(
                     anchor,
                 ));
                 effects.push(EffectRef::new(EffectKind::Modify, op_ref(node), anchor));
+            }
+            // A `field` access is a named place the callable reads or writes,
+            // like a lexical and unlike a stash symbol — the place facet has to
+            // count it, or the summary declares completeness while missing a
+            // real access. Identity comes from `source`, not from the name
+            // string, so recording the place claims no storage class.
+            PirOperation::FieldRead { name } => bindings.push(BindingPlaceRef::new(
+                format!("{}{}", name.sigil, name.name),
+                PlaceRole::Read,
+                op_ref(node),
+                anchor,
+            )),
+            PirOperation::FieldWrite { name } => bindings.push(BindingPlaceRef::new(
+                format!("{}{}", name.sigil, name.name),
+                PlaceRole::Write,
+                op_ref(node),
+                anchor,
+            )),
+            PirOperation::FieldModify { name, .. } => {
+                bindings.push(BindingPlaceRef::new(
+                    format!("{}{}", name.sigil, name.name),
+                    PlaceRole::Modify,
+                    op_ref(node),
+                    anchor,
+                ));
+                effects.push(EffectRef::new(EffectKind::FieldModify, op_ref(node), anchor));
             }
             PirOperation::Assign => {
                 effects.push(EffectRef::new(EffectKind::Assign, op_ref(node), anchor));

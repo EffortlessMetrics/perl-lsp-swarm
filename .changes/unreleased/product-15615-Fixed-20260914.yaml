@@ -1,0 +1,9 @@
+project: product
+component: Performance and reliability
+kind: Fixed
+body: "Required LSP response delivery failures now close ingress instead of leaving requests waiting; normal EOF drains accepted responses, and cancelled queue admission clears pending state."
+time: 2026-09-14T00:00:00Z
+custom:
+  PR: "15615"
+  Slug: outbound-response-settlement-14168
+  Breaking: "no"

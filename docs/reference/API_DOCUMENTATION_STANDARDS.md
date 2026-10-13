@@ -313,7 +313,13 @@ Systematic validation using property-based tests ensures:
 
 - **Documentation Coverage**: All public APIs must have documentation
 - **Style Validation**: Automated checking of documentation formatting
-- **Doctest Execution**: All doctests must compile and pass
+- **Doctest Execution**: doctests are executed by the `doctest_contract_proof`
+  merge gate for the packages that route names — *not* for the whole
+  workspace. A workspace-wide `cargo test --doc` currently has failures
+  outside that list. See
+  [`../ci/test-evidence-lanes.md`](../ci/test-evidence-lanes.md#doctests-as-proof)
+  for which packages are enforced and where a negative type-level contract
+  belongs (#13774).
 - **Cross-Reference Validation**: Links must resolve correctly
 
 ### Development Workflow
@@ -364,6 +370,9 @@ cargo test -p perl-parser --test missing_docs_ac_tests -- property_test_cross_re
 
 # Documentation generation and validation
 cargo doc --no-deps --package perl-parser
+# Note: perl-parser is not on the doctest_contract_proof route, and its
+# `incremental` doctests are behind a non-default feature, so this command
+# does not reach them. See docs/ci/test-evidence-lanes.md (#13774).
 cargo test --doc -p perl-parser
 ```
 

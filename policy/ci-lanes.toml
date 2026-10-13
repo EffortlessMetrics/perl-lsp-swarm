@@ -13,7 +13,7 @@ schema_version = 1
 policy = "ci-lanes"
 owner = "EffortlessMetrics"
 status = "advisory"
-updated = "2026-08-07"
+updated = "2026-09-29"
 
 # -----------------------------------------------------------------------------
 # Frontdoor / control lanes
@@ -216,15 +216,30 @@ labels = ["ci:vscode-matrix", "full-ci"]
 branches = ["master"]
 duplicate_of = []
 
+[lane.vscode_installed_first_hour_windows]
+description = "Hosted Windows first-hour installed LSP/VSIX byte identity."
+intent = "installed distribution evidence"
+runner = "windows_latest"
+base_lem = 70
+default_pr = false
+blocking = false
+labels = []
+branches = ["main", "master", "codex/6056-installed-identity"]
+paths = ["vscode-extension/**", "crates/perl-lsp*/**", "crates/perllsp/**", "crates/perl-dap/**", "Cargo.toml", "Cargo.lock", ".github/workflows/vscode-installed-first-hour-windows.yml"]
+outputs = ["target/receipts/vscode-smoke/installed-first-hour-windows/**"]
+duplicate_of = []
+
 [lane.coverage]
-description = "Coverage collection."
+description = "Coverage collection for scheduled nightly or explicitly manual runs."
 intent = "execution-surface measurement"
+workflow = ".github/workflows/ci-nightly.yml"
+job = "test-coverage"
 runner = "ubuntu_24_04"
 base_lem = 45
 default_pr = false
 blocking = false
-labels = ["ci:coverage", "coverage", "full-ci"]
-branches = ["master"]
+labels = []
+branches = []
 duplicate_of = []
 
 [lane.mutation]
@@ -282,6 +297,39 @@ duplicate_of = []
 # -----------------------------------------------------------------------------
 # Automation / external review lanes
 # -----------------------------------------------------------------------------
+
+[lane.critic_rule_proof]
+description = "Path-filtered critic rule-proof schema, fixture, and live checker."
+intent = "rule-proof correctness"
+runner = "ubuntu_24_04"
+base_lem = 8
+default_pr = false
+blocking = false
+paths = [
+  "schemas/critic_rule_proof.v1.schema.json",
+  "fixtures/critic-rule-proof/**",
+  "docs/project/status/critic_rule_proof.md",
+  "xtask/src/critic_rule_proof/**",
+  "xtask/src/tasks/critic_rule_proof.rs",
+  "xtask/tests/critic_rule_proof.rs",
+  "crates/perl-lsp-rs-core/src/tooling/perl_critic/identity.rs",
+  "crates/perl-lsp-rs-core/src/tooling/perl_critic/remediation.rs",
+  "crates/perl-lsp-rs-core/src/tooling/perl_critic/types.rs",
+  "crates/perl-lsp-rs-core/src/tooling/perl_critic/native.rs",
+  "crates/perl-lsp-rs-core/src/tooling/perl_critic/native/**",
+  "crates/perl-parser/**",
+  "crates/perl-parser-core/**",
+  "crates/perl-lexer/**",
+  "crates/perl-ast/**",
+  "crates/perl-semantic-analyzer/**",
+  "crates/perl-pragma/**",
+  "crates/perl-module/**",
+  "crates/perl-workspace/**",
+  "crates/perl-tdd-support/**",
+  ".github/workflows/critic-rule-proof.yml",
+]
+outputs = ["job output"]
+duplicate_of = []
 
 [lane.droid_auto_review]
 description = "Paused historical Droid PR review lane; automatic execution is disabled."

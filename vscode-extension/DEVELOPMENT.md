@@ -50,6 +50,7 @@ npm run bundle     # One-shot Rolldown production bundle only (out/extension.js 
 npm run sample:published:local # Repeat exact-source VSIX smoke and write p50/p95 receipt summary
 npm run watch:bundle # Rebuild out/extension.js on every file change (use during active development)
 npm run watch:types # Optional companion: authority preflight, then live tsc --noEmit watch in a separate terminal
+npm run dev        # ONE fail-closed dev service: both watchers supervised together (preferred over the two commands above)
 ```
 
 Every TypeScript execution above — and in `compile:test`, `test:integration`,
@@ -58,6 +59,17 @@ gate runs to completion first, and a red gate refuses to compile rather than
 running whatever `tsc` happens to resolve to. No public command reaches `tsc`
 without that preflight, and `scripts/checked-command-contract.test.js` keeps it
 that way structurally.
+
+`npm run dev` starts `watch:bundle` and `watch:types` together under
+`scripts/dev-supervisor.js`, which makes them one fail-closed service: it
+reports readiness only after the governed TypeScript watcher has finished its
+first pass AND Rolldown has completed its first build (spawn is not readiness);
+if either watcher dies — before or after readiness — the supervisor stops the
+sibling and exits non-zero; and stopping the service (Ctrl+C or task kill)
+terminates the POSIX watcher process groups and Windows watcher trees while
+their leaders remain live. A Windows descendant that survives its leader is
+reported as a cleanup failure because this supervisor does not retain a
+post-exit tree handle.
 
 `npm run typecheck:authority` (also the first stage of `build`, and blocking
 in the extension PR gate) proves the claim above rather than restating it: that
@@ -75,11 +87,6 @@ options. All source, test, integration, published-smoke, and script authority
 configurations reject these forms of type drift directly through
 `npm run typecheck:all`.
 
-The shared TypeScript configuration also enables `noImplicitOverride` as a
-blocking check. All source, test, integration, published-smoke, and script
-authority configurations are clean under this policy, so it does not need a
-debt baseline.
-
 `npm run sample:published:local` runs the exact-source local VSIX smoke three
 times by default, stores each receipt in a separate sample directory, and
 writes the combined p50/p95 summary. Set `PERL_LSP_VSCODE_SAMPLE_RUNS` or pass
@@ -88,11 +95,90 @@ current-source server variables as `npm run test:published:local`.
 
 ## Run and test in VS Code
 
-1. Open the `vscode-extension/` folder in VS Code.
-2. Press **F5** — this opens an Extension Development Host window with your local build loaded.
-3. Open any `.pl` or `.pm` file in the host window and verify the server starts (check the Output panel → "Perl LSP").
+The extension folder owns its own checked F5 workflow (`.vscode/launch.json` +
+`.vscode/tasks.json`); the repository-root `.vscode` files keep their separate
+Rust LLDB and Jest meanings and are unrelated to extension development.
 
-To reload after code changes: **Ctrl+Shift+P** → "Developer: Reload Window" in the host window.
+1. Open the `vscode-extension/` folder in VS Code.
+2. Press **F5** and pick a launch:
+   - **Run Extension (checked build)** — runs the checked `build` task first
+     (compiler authority, config inventory, all-config type-check, then the
+     bundle), so the host always loads current checked output; a type error
+     keeps the host from starting.
+   - **Run Extension (dev watch)** — starts the `npm run dev` supervisor task
+     and waits for its `[dev-supervisor] ready` line before starting the host,
+     then code changes rebuild in the background without relaunching.
+3. Both launches open the bounded workspace at
+   `.vscode/dev-workspace/` (one minimal `sample.pl`), never an arbitrary user
+   workspace. Open `sample.pl` in the host window and verify the server starts
+   (check the Output panel → "Perl LSP").
+
+The development bundle keeps its source map. Set a breakpoint in
+`src/extension.ts` on the activation path and confirm that it binds in the
+Extension Development Host; the checked launch contract alone cannot prove
+interactive debugger binding. To stop the watch launch, stop the
+`perl-lsp: dev watch (supervisor)` task (or terminate the debug session and
+then the task); the supervisor forwards the stop to both watcher trees. POSIX
+process-group ownership covers descendants, while Windows `taskkill /T /F`
+owns a tree only while its watcher leader remains live; a surviving
+post-exit descendant is surfaced as a cleanup failure. A non-zero `taskkill`
+result, including the normal Windows code-128 race after a leader exits, is
+reported as cleanup not proven; only a successful helper can support a green
+stop.
+
+To reload after code changes in the one-shot flow: **Ctrl+Shift+P** →
+"Developer: Reload Window" in the host window.
+
+## Check which TypeScript the editor uses
+
+The checked build uses the TypeScript 7 compiler installed by `npm ci` in this
+folder. `npm run typecheck:authority` verifies that CLI path. VS Code's
+TypeScript and JavaScript IntelliSense is a separate editor service: a green
+CLI check does not say which service handles `src/extension.ts` in the editor.
+
+For a supported VS Code build, open `src/extension.ts` in the **extension
+folder** window (not the Extension Development Host, which opens a Perl
+fixture). Then check the editor service:
+
+1. In the Extensions view, inspect whether the official
+   [TypeScript 7](https://marketplace.visualstudio.com/items?itemName=TypeScriptTeam.native-preview)
+   extension is installed, enabled, and compatible with your VS Code build.
+   VS Code 1.125 is the published minimum for _our_ extension, but that does
+   not establish that its built-in editor service is TypeScript 7 or that the
+   latest TypeScript 7 extension supports 1.125. If you want native TS7
+   IntelliSense and the extension supports your editor, run **TypeScript:
+   Enable TypeScript 7** from the Command Palette with the `.ts` file open.
+   Follow the [current extension instructions](https://marketplace.visualstudio.com/items?itemName=TypeScriptTeam.native-preview).
+2. Open **View → Output** and select the **TypeScript 7** output channel.
+   Check for a running language server and any disabled, failed, or
+   fallback message for this workspace. Record the VS Code version, preview
+   extension version (Extensions view), active service, and output result.
+   An installed extension alone does not prove that it is serving this file.
+   If no **TypeScript 7** channel is listed, the preview extension is absent,
+   disabled, or incompatible (step 1), and the editor is served by the
+   built-in/workspace TypeScript service: record that identity from the
+   built-in **TypeScript** output channel and the language status entry's
+   TypeScript version instead, and skip the TypeScript 7 log cross-check
+   below.
+3. With the `.ts` file open, run **TypeScript: Select TypeScript Version** or
+   inspect the TypeScript item in the language status bar as a cross-check.
+   The selector can offer **Use TypeScript 7** as well as built-in/workspace
+   versions. Record what it shows, but when the **TypeScript 7** output
+   channel exists, verify the active service against that log: a selectable
+   option or installed extension alone does not establish that its server
+   started for this workspace. See
+   [VS Code's version selector](https://code.visualstudio.com/docs/typescript/typescript-transpiling#_using-the-workspace-version-of-typescript).
+
+If the output and editor indicators disagree, report the editor identity as
+unverified and include both observations. Recheck after switching services or
+reloading the editor. Keep this choice in the editor; no global setting or
+published VS Code engine change is required for the CLI build.
+
+The F5 launches above debug this extension's TypeScript client through the
+generated bundle/source map. The repository-root **Debug Extension (Jest)**
+launch instead runs unit tests under Node. The root LLDB launches debug
+sessions for the Rust LSP server (`perllsp`) or Rust DAP adapter (`perl-dap`).
+The native TypeScript editor service is separate from those processes.
 
 ## Run the test suite
 
@@ -142,12 +228,17 @@ The `.vsix` file can be installed directly in VS Code via **Extensions → Insta
 
 ## Common tasks
 
+Run `npm run package` before `npm run check:package-inventory`; packaging creates the
+deterministic versioned `perl-lsp-rs-<version>.vsix`, and the standalone check
+revalidates that existing archive.
+
 | Task                           | Command                           |
 | ------------------------------ | --------------------------------- |
 | Checked build (types + bundle) | `npm run build`                   |
 | Bundle only (Rolldown)         | `npm run bundle`                  |
-| Watch bundle                   | `npm run watch:bundle`            |
-| Watch types                    | `npm run watch:types`             |
+| Combined dev watch service     | `npm run dev`                     |
+| Watch bundle (standalone)      | `npm run watch:bundle`            |
+| Watch types (standalone)       | `npm run watch:types`             |
 | Run unit tests                 | `npm test`                        |
 | Lint                           | `npm run lint`                    |
 | Build `.vsix` package          | `npm run package`                 |

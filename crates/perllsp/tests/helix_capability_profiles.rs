@@ -12,7 +12,10 @@ const PROCESS_TIMEOUT: Duration = Duration::from_secs(10);
 const ABSENCE_TIMEOUT: Duration = Duration::from_millis(250);
 const STABLE_PROFILE: &str = include_str!("fixtures/helix/25.07.1.initialize.json");
 const MASTER_PROFILE: &str = include_str!("fixtures/helix/master-079a789e.initialize.json");
-const WATCH_PATTERNS: &[&str] = &["**/*.pl", "**/*.pm", "**/*.t", "**/*.psgi"];
+// #13308: the server advertises one catch-all glob; extensionless shebang
+// scripts have no extension glob, and handler-side Perl classification
+// keeps non-Perl events inert.
+const WATCH_PATTERNS: &[&str] = &["**/*"];
 
 fn profile(raw: &str) -> Result<Value> {
     serde_json::from_str(raw).context("parse checked-in Helix initialize profile")

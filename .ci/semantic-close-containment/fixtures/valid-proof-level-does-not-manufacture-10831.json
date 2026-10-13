@@ -1,0 +1,37 @@
+{
+  "schema_version": "semantic_close_containment_fixture.v1",
+  "provenance": {
+    "captured_at": "2026-09-18",
+    "sources": [
+      "https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/15463",
+      "https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/10831",
+      "https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/15458"
+    ],
+    "subject_shas": [],
+    "boundary": "Immutable bounded structured excerpts; canonical GitHub subjects and exact candidate SHAs are retained. The fixture proves CP00-PROOF-LEVEL-CONTRADICTION does not arm when the issue pairs an installed/public/packaged proof-level term with a verb-phrase negation that the existing 21-entry marker list does not enumerate (here: 'does not manufacture'). The structural clause-scoped negation tokens detect the 'not' in 'does not manufacture' without enumerating every auxiliary+verb pairing. See #14821 for the polarity mechanism and #15463 for the verb-vocabulary gap."
+  },
+  "repository": "effortlessmetrics/perl-lsp-swarm",
+  "pull_request": {
+    "number": 990020,
+    "title": "contract(distribution): bridge install surface product units (#10831)",
+    "body": "## Claim Boundary\n\nInstalled evidence is explicitly out of scope.\n\nCloses #10831."
+  },
+  "issues": [
+    {
+      "repository": "effortlessmetrics/perl-lsp-swarm",
+      "number": 10831,
+      "title": "contract(distribution): bridge install surface product units",
+      "body": "## Acceptance\n\n- [ ] Mapping does not manufacture currentness, publication, installed proof, or support."
+    }
+  ],
+  "expected": {
+    "aggregate_code": "PASS_NO_HIGH_CONFIDENCE_CONTRADICTION",
+    "rows": [
+      {
+        "repository": "effortlessmetrics/perl-lsp-swarm",
+        "issue_number": 10831,
+        "code": "PASS_NO_HIGH_CONFIDENCE_CONTRADICTION"
+      }
+    ]
+  }
+}

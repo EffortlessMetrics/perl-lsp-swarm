@@ -5,6 +5,7 @@
   "type": "object",
   "additionalProperties": false,
   "required": [
+    "schema_version",
     "worktree_id",
     "path",
     "pr",
@@ -15,6 +16,10 @@
     "lease_expiry"
   ],
   "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "worktree_lease_receipt.v1"
+    },
     "worktree_id": {
       "type": "string",
       "minLength": 1

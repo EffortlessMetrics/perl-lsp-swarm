@@ -34,7 +34,7 @@ impl Drop for TempRepo {
 }
 
 fn perl_ci_hygiene_binary() -> TestResult<PathBuf> {
-    env::var_os("CARGO_BIN_EXE_perl-ci-hygiene").map(PathBuf::from).ok_or_else(|| {
+    option_env!("CARGO_BIN_EXE_perl-ci-hygiene").map(PathBuf::from).ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::NotFound,
             "CARGO_BIN_EXE_perl-ci-hygiene was not set by cargo",
@@ -145,5 +145,50 @@ fn generate_badges_check_accepts_current_badges() -> TestResult {
     assert!(output.status.success());
     let stdout = String::from_utf8(output.stdout)?;
     assert!(stdout.contains("VS Marketplace badge check passed"));
+    Ok(())
+}
+
+#[test]
+fn generated_markdown_preserves_formatter_separator_and_html_on_repeat() -> TestResult {
+    let repo = TempRepo::new("formatter-separator")?;
+    write_publication_facts(repo.path(), 287)?;
+    fs::write(repo.path().join("README.md"), html_readme(277))?;
+    let extension = repo.path().join("vscode-extension");
+    fs::create_dir(&extension)?;
+    fs::write(extension.join("README.md"), markdown_readme(277))?;
+
+    let first = run_generate_badges(repo.path(), &[])?;
+    if !first.status.success() {
+        return Err(io::Error::other(format!(
+            "first generation failed: {}",
+            String::from_utf8_lossy(&first.stderr)
+        ))
+        .into());
+    }
+    let root = fs::read_to_string(repo.path().join("README.md"))?;
+    let markdown = fs::read_to_string(extension.join("README.md"))?;
+    if root != html_readme(287) {
+        return Err(io::Error::other("root HTML badge changed beyond its install count").into());
+    }
+    let expected = markdown_readme(287).replacen("start -->\n", "start -->\n\n", 1);
+    if markdown != expected {
+        return Err(io::Error::other("generated Markdown must preserve the formatter-required blank line after the badge start marker").into());
+    }
+    let second = run_generate_badges(repo.path(), &[])?;
+    if !second.status.success() {
+        return Err(io::Error::other(format!(
+            "repeat generation failed: {}",
+            String::from_utf8_lossy(&second.stderr)
+        ))
+        .into());
+    }
+    if fs::read_to_string(repo.path().join("README.md"))? != root
+        || fs::read_to_string(extension.join("README.md"))? != markdown
+    {
+        return Err(io::Error::other(
+            "repeat badge generation must preserve both README files byte-for-byte",
+        )
+        .into());
+    }
     Ok(())
 }

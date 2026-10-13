@@ -36,6 +36,15 @@ EXECUTION_POLICY_SCHEMA_VERSION = 1
 EXECUTION_POLICY_SOURCE = "gate-shard-execution"
 GATE_ID = re.compile(r"^[A-Za-z0-9_.-]+$")
 SEMVER = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
+# Schema versions accepted from the `cargo xtask gates` producer. The
+# producer emits a single authoritative value (`GATES_RECEIPT_SCHEMA_VERSION`
+# in `xtask/src/tasks/gates.rs`); `ci_explain::SUPPORTED_SCHEMA_VERSION`
+# resolves to the same constant. The Python shard validator mirrors the
+# producer's accepted shape here so a producer bump that updates only the
+# Rust consumer does not silently fail every CI gate shard.
+# See #15337.
+GATES_PRODUCER_SCHEMA_VERSION = "gates.v1"
+GATES_PRODUCER_SCHEMA_VERSION_PATTERN = re.compile(r"^gates\.v\d+$")
 PASS_STATUSES = {"pass"}
 SKIPPED_STATUSES = {"skip"}
 TIMEOUT_STATUSES = {"timeout"}
@@ -1303,6 +1312,8 @@ def _validate_receipt(
     if not (
         (isinstance(version, int) and not isinstance(version, bool) and version >= 1)
         or (isinstance(version, str) and SEMVER.fullmatch(version))
+        or (isinstance(version, str)
+            and GATES_PRODUCER_SCHEMA_VERSION_PATTERN.fullmatch(version))
     ):
         raise ValueError(f"receipt has unsupported schema_version {version!r}")
 

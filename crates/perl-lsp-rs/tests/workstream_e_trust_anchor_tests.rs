@@ -439,7 +439,7 @@ mod caps_enforcement_tests {
 #[cfg(all(feature = "workspace", feature = "expose_lsp_test_api"))]
 #[cfg(test)]
 mod deadline_enforcement_tests {
-    //! Tests that verify deadline enforcement returns partial results, not errors.
+    //! Lightweight reference and workspace-symbol response-shape controls.
 
     use crate::support::env_guard::EnvGuard;
     use perl_lsp::LspServer;
@@ -469,16 +469,16 @@ mod deadline_enforcement_tests {
     }
 
     // =========================================================================
-    // Test: References with complex content returns partial, not timeout error
+    // Test: References with complex content return locations at the default deadline
     // =========================================================================
     #[test]
     #[serial]
-    fn test_references_returns_partial_not_timeout_error() -> Result<(), Box<dyn std::error::Error>>
-    {
+    fn test_references_with_default_deadline_return_locations()
+    -> Result<(), Box<dyn std::error::Error>> {
         let _guard = unsafe { EnvGuard::set("PERL_LSP_WORKSPACE", "1") };
         let srv = create_test_server();
 
-        // Create a file with enough content to potentially stress deadlines
+        // This fixture does not exhaust the default deadline.
         let mut content = String::from("my $target = 'x';\n");
         for i in 0..100 {
             content.push_str(&format!("my $other_{} = $target; $target = $other_{};\n", i, i));
@@ -487,17 +487,18 @@ mod deadline_enforcement_tests {
         let uri = "file:///test/deadline.pm";
         open_test_document(&srv, uri, &content)?;
 
-        // Request references - should return partial results on deadline, not error
-        let result = srv.test_handle_references(Some(json!({
-            "textDocument": {"uri": uri},
-            "position": {"line": 0, "character": 4}, // On $target
-            "context": {"includeDeclaration": true}
-        })))?;
+        // Request references with the default deadline.
+        let result = srv
+            .test_handle_references(Some(json!({
+                "textDocument": {"uri": uri},
+                "position": {"line": 0, "character": 4}, // On $target
+                "context": {"includeDeclaration": true}
+            })))?
+            .ok_or("completed references request returned no locations")?;
 
-        // The result should be a valid response (array of locations)
-        if let Some(result) = result {
-            assert!(result.is_array(), "References result should be an array, not an error");
-        }
+        // A completed request should return an array of locations.
+        let locations = result.as_array().ok_or("completed references result was not an array")?;
+        assert!(!locations.is_empty(), "completed references result should contain locations");
         Ok(())
     }
 
@@ -577,7 +578,7 @@ mod windows_uri_path_tests {
 
     use crate::support::env_guard::EnvGuard;
     use perl_lsp::LspServer;
-    use perl_parser::workspace_index::{fs_path_to_uri, uri_to_fs_path};
+    use perl_workspace::workspace_index::{fs_path_to_uri, uri_to_fs_path};
     use serde_json::json;
     use serial_test::serial;
     use std::sync::Arc;
@@ -816,10 +817,10 @@ sub process {
 // ============================================================================
 #[cfg(test)]
 mod workspace_index_unit_tests {
-    use perl_parser::workspace_index::{
+    use perl_tdd_support::must;
+    use perl_workspace::workspace_index::{
         DegradationReason, IndexCoordinator, IndexResourceLimits, IndexState, ResourceKind,
     };
-    use perl_tdd_support::must;
 
     // =========================================================================
     // Test: IndexCoordinator query dispatch based on state
@@ -871,11 +872,19 @@ mod workspace_index_unit_tests {
         let coordinator = IndexCoordinator::with_limits(limits);
         coordinator.transition_to_ready(0, 0);
 
-        // Index 5 files (exceeds limit of 2)
+        // Index 5 files (exceeds limit of 2). Files beyond the limit are
+        // rejected with the rejection recorded; the degradation surfaces on
+        // the next state observation, so the rejection must not propagate
+        // (#15428/C5).
         for i in 0..5 {
             let uri = format!("file:///test{}.pl", i);
             let url = url::Url::parse(&uri)?;
-            coordinator.index().index_file(url, "sub test { }".into())?;
+            let result = coordinator.index().index_file(url, "sub test { }".into());
+            if i < 2 {
+                assert!(result.is_ok(), "file {uri} should be admitted within the limit");
+            } else {
+                assert!(result.is_err(), "file {uri} should be rejected beyond the limit");
+            }
         }
 
         coordinator.enforce_limits();
@@ -907,7 +916,12 @@ sub f { } sub g { } sub h { } sub i { } sub j { }
 1;
 "#;
         let url = url::Url::parse("file:///test.pm")?;
-        coordinator.index().index_file(url, content.into())?;
+        // The over-limit file is REJECTED by admission (recorded as a
+        // resource-limit rejection), not admitted with a partial index: the
+        // rejection must surface as typed degradation on the next state
+        // observation, not as a propagated error (#15428/C5).
+        let result = coordinator.index().index_file(url.clone(), content.into());
+        assert!(result.is_err(), "the over-limit file must be rejected, not admitted: {url}");
 
         coordinator.enforce_limits();
 

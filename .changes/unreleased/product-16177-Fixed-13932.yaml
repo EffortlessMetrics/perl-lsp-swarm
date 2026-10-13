@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: Preserve Perl word-not operand boundaries in string repetition, including nested lists, assignments, explicit parentheses, and malformed-operand recovery.
+time: 2026-09-20T12:00:00Z
+custom:
+  PR: "16177"
+  Slug: repetition-word-not
+  Breaking: "no"

@@ -62,10 +62,9 @@ print $x + $y;
         assert!(doc.content().contains("99"));
         assert!(ast_contains_variable(&ast2), "AST does not contain a Variable node");
 
-        // Check incremental parsing metrics
+        // Experimental IncrementalDocument fail-closes to a full fresh parse.
         if let Some(metrics) = doc.metrics() {
-            assert!(metrics.nodes_reused > 0);
-            assert!(metrics.last_parse_time_ms < 2.0);
+            assert_eq!(metrics.nodes_reused, 0);
         }
 
         unsafe { std::env::remove_var("PERL_LSP_INCREMENTAL") };

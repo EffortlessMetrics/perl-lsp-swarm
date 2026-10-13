@@ -8,7 +8,7 @@ The project uses **GitHub Dependabot** to automatically check for and propose de
 
 - Check for updates weekly (every Monday at 09:00 UTC)
 - Group related dependencies together to reduce PR noise
-- Automatically label PRs for easy filtering
+- Disable Dependabot labels explicitly and expose updates through the `app/dependabot` author filter
 - Apply appropriate commit message prefixes for changelog generation
 
 ## Configuration
@@ -18,6 +18,38 @@ The Dependabot configuration is located at `.github/dependabot.yml` and manages 
 1. **Cargo** (Rust dependencies)
 2. **GitHub Actions** (workflow dependencies)
 3. **npm** (VS Code extension dependencies)
+
+## Release-age boundary
+
+Normal Dependabot version updates wait 14 days after publication in all three
+ecosystems (`cooldown.default-days: 14`). Dependabot security updates bypass that
+updater cooldown; review security fixes promptly.
+
+Extension resolution has a separate project setting in `vscode-extension/.npmrc`:
+`min-release-age=14`. Use the pinned npm 11.18.0 from `package.json`; this value is
+in **days**, not seconds. The setting filters newly resolved versions, including
+transitive dependencies. A successful locked install alone does not prove that
+new-version admission was exercised. Higher-priority npm configuration can override
+the project setting.
+
+If this resolver window blocks a required younger security fix, record a reviewed,
+package-scoped temporary `min-release-age-exclude[]` exception with owner, reason,
+and removal condition. Dependabot's security bypass does not bypass npm's separate
+resolver gate. Do not disable the window globally to make an update pass.
+
+Cargo-native release-age filtering is deferred until Cargo 1.100 is admitted by
+the existing toolchain policy; this change does not raise MSRV or change toolchains.
+
+Sources: [npm v11 configuration](https://docs.npmjs.com/cli/v11/commands/npm-install/#min-release-age),
+[implementation plan #15107](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/15107).
+Run `python scripts/ci/test_validate_dependabot_contract.py` and
+`python scripts/ci/validate_dependabot_contract.py --repo-root .` to check the
+Dependabot scalars and existing guidance contract, and
+`python scripts/ci/test_validate_dependabot_cooldown.py` plus
+`python scripts/ci/validate_dependabot_cooldown.py --repo-root .` to check the
+`default-days: 14` cooldown rows, the `vscode-extension/.npmrc` `min-release-age=14`
+gate, and cooldown guidance against drift. These validators do not execute
+npm resolution or prove GitHub's hosted cooldown behavior.
 
 ## Update Strategy
 
@@ -29,7 +61,7 @@ The Dependabot configuration is located at `.github/dependabot.yml` and manages 
 - `serde` - All serde-related crates (serde, serde_json, etc.)
 - `tokio` - All tokio async runtime crates
 - `tracing` - All tracing/logging crates
-- `lsp` - LSP protocol crates (lsp-types, lsp-server, tower-lsp)
+- `lsp` - LSP protocol crates (lsp-types)
 - `testing` - Test framework crates (proptest, criterion, rstest, etc.)
 - `tree-sitter` - Tree-sitter parser crates
 - `pest` - Pest parser generator crates
@@ -39,7 +71,6 @@ The Dependabot configuration is located at `.github/dependabot.yml` and manages 
 Major version updates are **excluded** for these critical dependencies:
 - `tree-sitter` - Core parser infrastructure
 - `lsp-types` - LSP protocol types
-- `tower-lsp` - LSP server framework
 - `tokio` - Async runtime
 
 **Rationale**: Major version updates require careful manual review, comprehensive testing, and may involve breaking API changes.
@@ -132,40 +163,39 @@ Major updates require careful review:
 
 ### Auto-merge Configuration (Optional)
 
-For low-risk updates, you can enable auto-merge:
+Auto-merge is a per-PR merge mode, not an update-type classifier. For a
+low-risk update:
 
-1. **Enable Dependabot auto-merge** in repository settings
-2. **Configure branch protection** to require status checks
-3. **Dependabot will auto-merge** patch updates that pass CI
+1. **Inspect the exact version delta** - For grouped PRs, use the highest semver
+   impact in the PR body/version table.
+2. **Review the changelog and diff** - A passing check suite does not establish
+   that an update is a patch.
+3. **Confirm required checks pass** - Then enable auto-merge for that PR.
 
-Example configuration for auto-merge via CLI:
 ```bash
-# Enable auto-merge for specific PR
+gh pr view <pr-number>
+gh pr checks <pr-number>
 gh pr merge <pr-number> --auto --squash
-
-# Enable for all patch updates from Dependabot
-gh pr list --author "app/dependabot" --label "patch" --json number --jq '.[].number' | \
-  xargs -I {} gh pr merge {} --auto --squash
 ```
 
-## Labels and Filtering
+Do not pipe an `app/dependabot` plus `status:success` query into `gh pr merge`.
+That query also selects passing minor and major updates, which require the
+stronger review paths above.
 
-Dependabot PRs are automatically labeled:
+## Filtering
 
-- `dependencies` - All dependency updates
-- `cargo` - Rust dependencies
-- `github-actions` - Workflow dependencies
-- `npm` - Node.js dependencies
-- `vscode-extension` - VS Code extension specific
-- `automated` - Automated PRs
+Dependabot labels are explicitly disabled with `labels: []` in each ecosystem
+entry. Omitting the option would restore GitHub's default `dependencies` and
+ecosystem labels, and Dependabot may create those labels if they are missing.
+The empty lists are therefore part of the no-label contract, not equivalent to
+deleting the setting.
 
-**Filter examples**:
+Use the author filter for discovery only. It identifies Dependabot PRs but does
+not classify their ecosystem, semver impact, or security status:
+
 ```bash
 # View all dependency PRs
-gh pr list --label "dependencies"
-
-# View only Cargo updates
-gh pr list --label "cargo"
+gh pr list --author "app/dependabot"
 
 # View Dependabot PRs ready to merge
 gh pr list --author "app/dependabot" --search "status:success"
@@ -201,7 +231,8 @@ Every Monday after Dependabot runs:
    - Patch updates: Quick merge if CI passes
    - Minor updates: Review changelog, merge within week
    - Major updates: Schedule for dedicated review
-3. **Merge approved PRs** - Batch merge to reduce CI load
+3. **Merge approved PRs individually** - Batch review reduces scan overhead;
+   it does not justify batch-enabling auto-merge
 
 ### Monthly Audit
 
@@ -322,13 +353,14 @@ schedule:
 ```
 
 **After making changes**:
-1. Commit and push to master
+1. Commit and push to main
 2. Changes take effect on next scheduled run
 3. Test by manually triggering: Repository Settings → Code Security → Dependabot → Check for updates
 
 ## Related Documentation
 
 - [GitHub Dependabot Documentation](https://docs.github.com/en/code-security/dependabot)
+- [Dependabot Options Reference](https://docs.github.com/en/code-security/reference/supply-chain-security/dependabot-options-reference)
 - [Cargo Dependency Management](https://doc.rust-lang.org/cargo/reference/specifying-dependencies.html)
 - [Semantic Versioning](https://semver.org/)
 - [Security Audit with cargo-audit](https://github.com/rustsec/rustsec)
@@ -391,6 +423,6 @@ For issues with dependency updates:
 
 ---
 
-**Last Updated**: 2026-01-28
+**Last Updated**: 2026-08-27
 **Configuration Version**: 1.0
 **Dependabot Version**: v2

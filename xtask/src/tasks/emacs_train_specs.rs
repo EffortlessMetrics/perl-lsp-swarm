@@ -513,7 +513,7 @@ impl SpecsLedger {
 
     /// Canonical deterministic serialization: fixed field order, manifest
     /// record order, no timestamps, exactly one trailing newline.
-    fn to_canonical_bytes(&self) -> Result<String> {
+    pub(crate) fn to_canonical_bytes(&self) -> Result<String> {
         let mut out = serde_json::to_string_pretty(self)
             .with_context(|| format!("serializing {LEDGER_SCHEMA} ledger"))?;
         out.push('\n');
@@ -1424,6 +1424,38 @@ fn render_check(report: &CheckReport) -> String {
         let _ = writeln!(out, "  {violation}");
     }
     out
+}
+
+/// Reusable fail-closed E02 load for consumers that must gate admission on a
+/// fully checked ledger (the E06 packet adapter gates coding-profile admission
+/// on it): parses the ledger and runs every `check_ledger` law against the
+/// manifest the same tree carries, then returns the validated ledger plus the
+/// digest of the exact validated bytes. A ledger that `emacs train specs
+/// check` would reject never reaches the caller.
+pub fn load_checked_ledger(root: &Path) -> Result<(SpecsLedger, String)> {
+    let manifest_path = root.join(DEFAULT_MANIFEST_PATH);
+    let ledger_path = root.join(DEFAULT_LEDGER_PATH);
+    let manifest = read_manifest(&manifest_path)?;
+    let ledger_bytes = fs::read_to_string(&ledger_path).with_context(|| {
+        format!("reading the E02 checked disposition ledger {}", ledger_path.display())
+    })?;
+    let ledger = SpecsLedger::parse(&ledger_bytes)?;
+    let repo_root = spec_tree_root(&manifest_path)?;
+    let consumed = consumed_manifest_ref(&manifest_path, root);
+    let violations = check_ledger(&manifest, &ledger, &ledger_bytes, &repo_root, &consumed);
+    ensure!(
+        violations.is_empty(),
+        "E02 ledger {} fails the {LEDGER_SCHEMA} laws:\n{}",
+        ledger_path.display(),
+        violations.iter().map(|v| v.to_string()).collect::<Vec<_>>().join("\n")
+    );
+    let digest = {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(ledger_bytes.as_bytes());
+        hasher.finalize().iter().map(|b| format!("{b:02x}")).collect::<String>()
+    };
+    Ok((ledger, digest))
 }
 
 fn check_ledger(

@@ -1,3 +1,5 @@
+import { compareStrictSemver, parseStrictSemver, type ParsedSemver } from './strictSemver';
+
 export type ManagedReleaseChannel = 'stable' | 'latest' | 'tag';
 export type ManagedReleaseTrack = 'stable' | 'prerelease';
 export type ManagedCompatibilityState = 'compatible' | 'incompatible' | 'not_proven';
@@ -61,20 +63,10 @@ export interface RefusedManagedRelease {
 
 export type ManagedReleaseSelection = SelectedManagedRelease | RefusedManagedRelease;
 
-interface ParsedSemver {
-  readonly major: number;
-  readonly minor: number;
-  readonly patch: number;
-  readonly prerelease: readonly string[];
-}
-
 interface PreparedRelease {
   readonly release: ManagedReleaseRecord;
   readonly version: ParsedSemver;
 }
-
-const SEMVER_PATTERN =
-  /^v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
 
 function nonEmpty(value: string): boolean {
   return value.trim().length > 0;
@@ -123,89 +115,6 @@ function refuse(
     blockingReleaseId: options.blockingReleaseId,
     configuredTag: options.configuredTag,
   };
-}
-
-function parseSemver(value: string): ParsedSemver | null {
-  const match = SEMVER_PATTERN.exec(value);
-  if (!match) {
-    return null;
-  }
-
-  const majorText = match[1];
-  const minorText = match[2];
-  const patchText = match[3];
-  if (majorText === undefined || minorText === undefined || patchText === undefined) {
-    return null;
-  }
-
-  const major = Number(majorText);
-  const minor = Number(minorText);
-  const patch = Number(patchText);
-  if (![major, minor, patch].every(Number.isSafeInteger)) {
-    return null;
-  }
-
-  const prereleaseText = match[4];
-  const prerelease = prereleaseText ? prereleaseText.split('.') : [];
-  if (
-    prerelease.some(
-      (identifier) =>
-        /^\d+$/.test(identifier) && identifier.length > 1 && identifier.startsWith('0'),
-    )
-  ) {
-    return null;
-  }
-
-  return { major, minor, patch, prerelease };
-}
-
-function comparePrereleaseIdentifiers(left: string, right: string): number {
-  const leftNumeric = /^\d+$/.test(left);
-  const rightNumeric = /^\d+$/.test(right);
-  if (leftNumeric && rightNumeric) {
-    if (left.length !== right.length) {
-      return Math.sign(left.length - right.length);
-    }
-    return left < right ? -1 : left > right ? 1 : 0;
-  }
-  if (leftNumeric !== rightNumeric) {
-    return leftNumeric ? -1 : 1;
-  }
-  return left < right ? -1 : left > right ? 1 : 0;
-}
-
-function compareSemver(left: ParsedSemver, right: ParsedSemver): number {
-  for (const [leftPart, rightPart] of [
-    [left.major, right.major],
-    [left.minor, right.minor],
-    [left.patch, right.patch],
-  ] as const) {
-    if (leftPart !== rightPart) {
-      return Math.sign(leftPart - rightPart);
-    }
-  }
-
-  if (left.prerelease.length === 0 || right.prerelease.length === 0) {
-    if (left.prerelease.length === right.prerelease.length) {
-      return 0;
-    }
-    return left.prerelease.length === 0 ? 1 : -1;
-  }
-
-  const sharedLength = Math.min(left.prerelease.length, right.prerelease.length);
-  for (let index = 0; index < sharedLength; index += 1) {
-    const leftIdentifier = left.prerelease[index];
-    const rightIdentifier = right.prerelease[index];
-    if (leftIdentifier === undefined || rightIdentifier === undefined) {
-      return 0;
-    }
-    const comparison = comparePrereleaseIdentifiers(leftIdentifier, rightIdentifier);
-    if (comparison !== 0) {
-      return comparison;
-    }
-  }
-
-  return Math.sign(left.prerelease.length - right.prerelease.length);
 }
 
 function validatePolicy(input: ManagedReleaseSelectionInput): string | null {
@@ -317,7 +226,7 @@ function prepareReleases(
       };
     }
 
-    const version = parseSemver(release.version);
+    const version = parseStrictSemver(release.version);
     if (!version) {
       return {
         error: refuse(
@@ -432,7 +341,7 @@ export function selectManagedRelease(input: ManagedReleaseSelectionInput): Manag
   const eligible = preparedResult.releases
     .filter(({ release }) => !release.draft)
     .filter(({ release }) => input.channel === 'latest' || !release.prerelease)
-    .sort((left, right) => compareSemver(right.version, left.version));
+    .sort((left, right) => compareStrictSemver(right.version, left.version));
 
   let newerUnknown: ManagedReleaseRecord | undefined;
   for (const { release } of eligible) {

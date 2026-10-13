@@ -559,18 +559,36 @@ pub enum InterproceduralOutcome {
     /// Composition completed with facts.
     Composed,
     /// Composition refused at the certainty boundary, with the reason.
-    Refused { reason: SemanticReasonCode },
+    Refused {
+        /// Certainty-boundary refusal reason.
+        reason: SemanticReasonCode,
+    },
     /// Composition completed conservatively; every affected facet is
     /// provisional, with the reason recorded.
-    Conservative { reason: SemanticReasonCode },
+    Conservative {
+        /// Why the composition degraded to conservative.
+        reason: SemanticReasonCode,
+    },
     /// The summary is known older than the subject's generation.
-    Stale { reason: SemanticReasonCode },
+    Stale {
+        /// Reason code describing the staleness.
+        reason: SemanticReasonCode,
+    },
     /// The subject or summary failed validation.
-    Invalid { reason: String },
+    Invalid {
+        /// Description of the validation failure.
+        reason: String,
+    },
     /// The work budget was exhausted before completion.
-    ResourceExhausted { units_consumed: u32 },
+    ResourceExhausted {
+        /// Work units consumed before exhaustion.
+        units_consumed: u32,
+    },
     /// The instrument itself failed — no semantic verdict exists.
-    InstrumentError { reason: String },
+    InstrumentError {
+        /// Description of the instrument failure.
+        reason: String,
+    },
 }
 
 /// The composition result envelope (`interprocedural_fact_result.v1`).
@@ -1100,6 +1118,13 @@ pub enum EffectKind {
     StashWrite,
     /// Compound read-modify-write on a package/stash symbol.
     StashModify,
+    /// Compound read-modify-write on a per-object `field` of a `class`.
+    ///
+    /// Separate from [`Modify`](Self::Modify), which names a lexical place, and
+    /// from [`StashModify`](Self::StashModify), which names a package slot: a
+    /// field is neither, and folding it into either would misreport what the
+    /// callable mutates.
+    FieldModify,
 }
 
 /// One effect of the callable, in source (lowered) order.

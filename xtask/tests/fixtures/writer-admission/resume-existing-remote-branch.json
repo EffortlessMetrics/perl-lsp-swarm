@@ -19,7 +19,10 @@
   },
   "worktree_mapping": {
     "entries": [
-      { "path": "/repo", "branch": "main" }
+      {
+        "path": "/repo",
+        "branch": "main"
+      }
     ],
     "error": null
   },
@@ -41,6 +44,7 @@
   },
   "remote_branch": {
     "sha": "9c1c9c1c9c1c9c1c9c1c9c1c9c1c9c1c9c1c9c1c",
-    "error": null
+    "error": null,
+    "observed": true
   }
 }

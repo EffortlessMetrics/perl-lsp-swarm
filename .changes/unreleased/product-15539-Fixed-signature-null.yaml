@@ -1,0 +1,9 @@
+project: product
+component: Editor behavior
+kind: Fixed
+body: "Signature-help requests with no available signature now receive an explicit null result instead of leaving the editor waiting for a response."
+time: 2026-09-13T18:42:30Z
+custom:
+  PR: "15539"
+  Slug: signature-help-terminal-null
+  Breaking: "no"

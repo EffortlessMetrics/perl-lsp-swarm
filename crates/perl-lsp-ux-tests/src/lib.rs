@@ -50,15 +50,26 @@
 pub mod client;
 pub mod diagnostics;
 pub mod env;
+pub mod observation;
 pub mod project_fixture;
 pub mod recorder;
+/// Structured evidence for an exact-subject UX regression run.
+pub mod regression_receipt;
+pub mod reverse_request_fixture;
 pub mod scorecard;
+pub mod server_request_fixture;
 pub mod taxonomy;
 pub mod workspace;
 
-pub use client::{LspEvent, UxClient};
+pub use client::{
+    CapabilityViolation, LspEvent, UxClient,
+    server_request_script::{
+        ObservedServerRequest, ScriptedServerRequest, ScriptedServerResponse, ServerRequestDelivery,
+    },
+};
 pub use diagnostics::DiagnosticsTracker;
 pub use env::{PathGuard, RestrictedPath};
+pub use observation::{Inbox, InboxSnapshot, ObservationId, StreamEnd, WaitEnd};
 pub use project_fixture::{
     ProjectFixtureFile, create_fixture_harness, fixture_content, fixture_scenario_config,
     load_catalyst_fixture_files, load_dancer2_fixture_files, load_mojolicious_fixture_files,
@@ -66,12 +77,16 @@ pub use project_fixture::{
 };
 pub use recorder::{
     AssertionBasis, AssertionCounts, OperationTiming, RunIdentity, UxCheckFailure, UxRunRecorder,
-    UxScenarioRunReceipt, UxScenarioSkip, run_ux_scenario,
+    UxScenarioRunReceipt, UxScenarioSkip, iso8601_now, run_ux_scenario,
+    run_ux_scenario_with_evidence_class,
 };
-pub use scorecard::{EditorUxScorecard, ScenarioScore, aggregate_editor_ux_scorecard};
+pub use scorecard::{
+    EditorUxScorecard, ScenarioScore, aggregate_editor_ux_scorecard,
+    ensure_score_evidence_consistent,
+};
 pub use taxonomy::{
-    MetricState, UxCiTier, UxComponent, UxFailureClass, UxRoute, UxScenarioResult,
-    route_for_failure_class,
+    MetricState, UxCiTier, UxComponent, UxEvidenceClass, UxFailureClass, UxRoute, UxScenarioResult,
+    ensure_evidence_supports_projection, route_for_failure_class,
 };
 pub use workspace::FakeWorkspace;
 
@@ -80,8 +95,9 @@ use serde_json::map::Map;
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::path::Path;
+use std::process::{Child, ExitStatus};
 use std::sync::Mutex;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use url::Url;
 
 /// Canonical cursor position for editor-facing UX requests.
@@ -131,12 +147,107 @@ fn is_index_ready_event(event: &LspEvent) -> bool {
     method == "perl-lsp/index-ready" && params.get("ready").and_then(Value::as_bool) == Some(true)
 }
 
+/// An index wait's terminal reason and the latest index-readiness notification
+/// actually observed while evaluating that wait.
+#[derive(Debug, Clone, PartialEq)]
+pub struct IndexReadyWaitEnd {
+    /// The exact terminal reason returned by the observation stream.
+    pub end: WaitEnd,
+    /// Latest observed `perl-lsp/index-ready` params, including limited states.
+    pub last_observed: Option<Value>,
+}
+
+/// Add the awaited subject to a typed wait outcome at a scenario assertion boundary.
+pub fn wait_with_subject<T, E: std::error::Error + Send + Sync + 'static>(
+    subject: &str,
+    observed: std::result::Result<T, E>,
+) -> Result<T> {
+    observed.map_err(|end| {
+        let context = format!("wait for {subject}: {end}");
+        anyhow::Error::new(end).context(context)
+    })
+}
+
+/// Emit the accepted-absence breadcrumb for an optional wait to stderr so a
+/// later starved assertion keeps the terminal reason in CI test logs (#15870).
+#[expect(
+    clippy::print_stderr,
+    reason = "the breadcrumb must survive into cargo test output for starved-\
+              completion triage; the harness initializes no tracing subscriber, \
+              so a tracing event would be invisible (issue #16952 review)"
+)]
+fn trace_accepted_absence(subject: &str, reason: &str) {
+    eprintln!("wait for {subject}: {reason} (accepted as absence)");
+}
+
+/// Retain an optional readiness wait without hiding a closed or failed stream.
+/// A live deadline leaves the later useful-result predicate in charge.
+pub fn optional_wait_with_subject<T>(
+    subject: &str,
+    observed: std::result::Result<T, WaitEnd>,
+) -> Result<Option<T>> {
+    match observed {
+        Ok(value) => Ok(Some(value)),
+        // A live deadline is accepted as absence, but not silently: a later
+        // starved assertion keeps the terminal reason as a breadcrumb (#15870).
+        Err(end @ WaitEnd::Deadline { .. }) => {
+            trace_accepted_absence(subject, &end.describe());
+            Ok(None)
+        }
+        Err(end) => {
+            let context = format!("wait for {subject}: {end}");
+            Err(anyhow::Error::new(end).context(context))
+        }
+    }
+}
+
+impl std::fmt::Display for IndexReadyWaitEnd {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}; latest index-readiness notification: {:?}", self.end, self.last_observed)
+    }
+}
+
+impl std::error::Error for IndexReadyWaitEnd {}
+
+fn wait_for_index_ready_event(
+    events: &impl client::EventSource,
+    already_seen: usize,
+    timeout: Duration,
+) -> std::result::Result<(), IndexReadyWaitEnd> {
+    let mut last_observed = None;
+    events
+        .wait_for_events(timeout, |observed| {
+            last_observed = observed
+                .iter()
+                .filter_map(|event| match event {
+                    LspEvent::Other { method, params } if method == "perl-lsp/index-ready" => {
+                        Some(params.clone())
+                    }
+                    _ => None,
+                })
+                .next_back();
+            let seen = observed.iter().filter(|event| is_index_ready_event(event)).count();
+            (seen > already_seen).then_some(())
+        })
+        .map_err(|end| IndexReadyWaitEnd { end, last_observed })
+}
+
 fn is_active_document_ready_event(event: &LspEvent, uri: &str) -> bool {
     let LspEvent::Other { method, params } = event else {
         return false;
     };
     method == "perl-lsp/active-document-ready"
         && params.get("uri").and_then(Value::as_str) == Some(uri)
+}
+
+fn wait_for_active_document_ready_event(
+    events: &impl client::EventSource,
+    uri: &str,
+    timeout: Duration,
+) -> std::result::Result<(), WaitEnd> {
+    events.wait_for_events(timeout, |observed| {
+        observed.iter().any(|event| is_active_document_ready_event(event, uri)).then_some(())
+    })
 }
 
 /// Configuration for a UX scenario.
@@ -230,6 +341,39 @@ impl ScenarioConfig {
     }
 }
 
+/// Outcome of [`poll_child_exit`].
+pub(crate) enum ChildExit {
+    /// The child exited; carries its observed status.
+    Exited(ExitStatus),
+    /// The deadline passed with the child still alive.
+    TimedOut,
+}
+
+/// Re-poll a spawned child for exit until `deadline`, then report the outcome.
+///
+/// Process exit has no push notification to wait on, so unlike the
+/// observation waits this polls `try_wait` on a bounded 10ms quantum. The
+/// quantum keeps detection latency flat while the deadline keeps every call
+/// bounded; destructor cleanup still reaps a hung child.
+pub(crate) fn poll_child_exit(child: &Mutex<Child>, deadline: Instant) -> Result<ChildExit> {
+    loop {
+        if let Some(status) = child
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .try_wait()
+            .context("failed to poll child process exit")?
+        {
+            return Ok(ChildExit::Exited(status));
+        }
+        if Instant::now() >= deadline {
+            return Ok(ChildExit::TimedOut);
+        }
+        // ux-timing: product-retry — process exit has no push notification to
+        // wait on; re-poll on a bounded quantum until the deadline above.
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
 /// The main UX test harness.
 ///
 /// Wraps a spawned LSP server process and a temporary workspace.
@@ -294,17 +438,22 @@ impl UxHarness {
 
     /// Apply a full-document text replacement and send `textDocument/didChange`.
     ///
+    /// Returns the document version carried by the notification so callers can
+    /// await the matching `textDocument/publishDiagnostics` payload instead of
+    /// any later publication for the file.
+    ///
     /// The version-ownership lock is held across the notification so legacy and
     /// buffer-only lifecycle sends share one serialization boundary and cannot
     /// interleave out of version order.
-    pub fn change_file_full(&self, relative_path: &str, updated_content: &str) -> Result<()> {
+    pub fn change_file_full(&self, relative_path: &str, updated_content: &str) -> Result<i32> {
         self.workspace.write(relative_path, updated_content)?;
         let uri = self.workspace.uri(relative_path);
         let mut versions = self.document_versions.lock().unwrap_or_else(|e| e.into_inner());
         let entry = versions.entry(uri.clone()).or_insert(1);
         *entry += 1;
         let version = *entry;
-        self.client.did_change_full(&uri, version, updated_content)
+        self.client.did_change_full(&uri, version, updated_content)?;
+        Ok(version)
     }
 
     /// Open a file in the LSP server with an explicit language identifier.
@@ -517,6 +666,9 @@ impl UxHarness {
     /// or an empty vec if the server returned null/empty. `DocumentSymbol`
     /// objects may include nested `children`; use [`document_symbol_names`] for
     /// recursive name assertions.
+    ///
+    /// The LSP result envelope is exactly one array variant or `null`; a bare
+    /// object is a malformed envelope and is rejected rather than normalized.
     pub fn document_symbols(&self, relative_path: &str) -> Result<Vec<Value>> {
         let uri = self.workspace.uri(relative_path);
         let resp = self.client.request(
@@ -529,16 +681,7 @@ impl UxHarness {
         if resp.get("error").is_some() {
             return Err(anyhow!("documentSymbol returned error: {}", resp["error"]));
         }
-        match resp["result"].as_array() {
-            Some(syms) => Ok(syms.clone()),
-            None => {
-                if resp["result"].is_null() {
-                    Ok(Vec::new())
-                } else {
-                    Ok(vec![resp["result"].clone()])
-                }
-            }
-        }
+        normalize_document_symbol_result(&resp["result"])
     }
 
     /// Request workspace symbols (`workspace/symbol`).
@@ -546,12 +689,22 @@ impl UxHarness {
     /// Returns the flat list of workspace symbol objects, or an empty vec if
     /// the server returned null/empty.
     pub fn workspace_symbols(&self, query: &str) -> Result<Vec<Value>> {
+        self.workspace_symbols_with_timeout(query, self.config.timeout)
+    }
+
+    /// Request workspace symbols with a caller-supplied RPC deadline budget.
+    /// Useful when an overall scenario deadline must also bound this request.
+    pub fn workspace_symbols_with_timeout(
+        &self,
+        query: &str,
+        timeout: Duration,
+    ) -> Result<Vec<Value>> {
         let resp = self.client.request(
             "workspace/symbol",
             json!({
                 "query": query
             }),
-            self.config.timeout,
+            timeout,
         )?;
         if resp.get("error").is_some() {
             return Err(anyhow!("workspace/symbol returned error: {}", resp["error"]));
@@ -568,10 +721,18 @@ impl UxHarness {
         }
     }
 
-    /// Poll `workspace/symbol` until `predicate` returns true or `timeout`
-    /// elapses.
+    /// Re-request `workspace/symbol` until `predicate` returns true or
+    /// `timeout` elapses.
     ///
     /// Returns the last observed symbol list in both success and timeout paths.
+    ///
+    /// # Timing disposition: product-owned retry, not harness synchronization
+    ///
+    /// `workspace/symbol` is a request/response contract with no server-pushed
+    /// "symbols changed" notification, so there is no observable event a wait
+    /// could block on. Each attempt must issue a *new request*; `poll_interval`
+    /// paces those requests rather than standing in for a missing signal. This
+    /// is deliberately not migrated to the event-driven substrate.
     pub fn wait_for_workspace_symbols(
         &self,
         query: &str,
@@ -587,6 +748,8 @@ impl UxHarness {
             if predicate(&latest) {
                 return Ok(latest);
             }
+            // ux-timing: product-retry — `workspace/symbol` publishes no
+            // notification to wait on; each attempt must issue a new request.
             std::thread::sleep(poll_interval);
         }
 
@@ -594,7 +757,10 @@ impl UxHarness {
     }
 
     /// Wait until the harness observes a ready workspace index.
-    pub fn wait_for_index_ready(&self, timeout: Duration) -> bool {
+    pub fn wait_for_index_ready(
+        &self,
+        timeout: Duration,
+    ) -> std::result::Result<(), IndexReadyWaitEnd> {
         self.wait_for_index_ready_event_after(0, timeout)
     }
 
@@ -603,39 +769,36 @@ impl UxHarness {
         self.client.peek_events().iter().filter(|event| is_index_ready_event(event)).count()
     }
 
-    /// Wait until the server confirms that a specific active document has
-    /// completed its E2E background indexing pass.
-    pub fn wait_for_active_document_ready(&self, uri: &str, timeout: Duration) -> bool {
-        let deadline = std::time::Instant::now() + timeout;
-        loop {
-            if self
-                .client
-                .peek_events()
-                .iter()
-                .any(|event| is_active_document_ready_event(event, uri))
-            {
-                return true;
-            }
-            if std::time::Instant::now() >= deadline {
-                return false;
-            }
-            std::thread::sleep(Duration::from_millis(50));
-        }
+    /// Wait until the server confirms parser-core readiness for a specific
+    /// active document's diagnostics and document-symbol effects.
+    pub fn wait_for_active_document_ready(
+        &self,
+        uri: &str,
+        timeout: Duration,
+    ) -> std::result::Result<(), WaitEnd> {
+        self.wait_for_active_document_ready_result(uri, timeout)
+    }
+
+    /// Wait for active-document readiness while retaining the reason a wait ended.
+    /// A live-stream deadline and a closed or failed stream have different causes.
+    pub fn wait_for_active_document_ready_result(
+        &self,
+        uri: &str,
+        timeout: Duration,
+    ) -> std::result::Result<(), observation::WaitEnd> {
+        wait_for_active_document_ready_event(&self.client, uri, timeout)
     }
 
     /// Wait until a ready-index notification arrives after `already_seen` events.
-    pub fn wait_for_index_ready_event_after(&self, already_seen: usize, timeout: Duration) -> bool {
-        let deadline = std::time::Instant::now() + timeout;
-        loop {
-            if self.index_ready_event_count() > already_seen {
-                std::thread::sleep(Duration::from_millis(50));
-                return true;
-            }
-            if std::time::Instant::now() >= deadline {
-                return false;
-            }
-            std::thread::sleep(Duration::from_millis(50));
-        }
+    ///
+    /// The wait is event-driven: it blocks on the notification rather than
+    /// sampling a counter on a timer.
+    pub fn wait_for_index_ready_event_after(
+        &self,
+        already_seen: usize,
+        timeout: Duration,
+    ) -> std::result::Result<(), IndexReadyWaitEnd> {
+        wait_for_index_ready_event(&self.client, already_seen, timeout)
     }
 
     /// Notify the server that workspace folders changed.
@@ -706,66 +869,44 @@ impl UxHarness {
     /// for the given file, then return the first published diagnostics collected
     /// for it.
     ///
-    /// Returns an empty vec if the deadline expires with no diagnostics published.
+    /// Returns the typed reason if no publication was observed.
     /// To get the most recently published diagnostics instead, use
     /// [`UxHarness::wait_for_latest_diagnostics`].
     pub fn wait_for_diagnostics(
         &self,
         relative_path: &str,
         timeout: std::time::Duration,
-    ) -> Vec<Value> {
+    ) -> std::result::Result<Vec<Value>, WaitEnd> {
         let uri = self.workspace.uri(relative_path);
-        let deadline = std::time::Instant::now() + timeout;
-        loop {
-            {
-                let events = self.client.peek_events();
-                for ev in events.iter() {
-                    if let LspEvent::Diagnostics { uri: diag_uri, diagnostics, .. } = ev
-                        && diag_uri == &uri
-                    {
-                        return diagnostics.clone();
-                    }
-                }
-            }
-            if std::time::Instant::now() >= deadline {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(50));
-        }
-        Vec::new()
+        DiagnosticsTracker::wait_for_first_uri_event(&self.client, &uri, timeout)
+    }
+
+    /// Wait for the first diagnostics publication for a file, preserving a
+    /// matching empty payload as success and the typed reason for no event.
+    /// Use this for readiness gates where absence must fail closed.
+    pub fn wait_for_diagnostics_event(
+        &self,
+        relative_path: &str,
+        timeout: std::time::Duration,
+    ) -> std::result::Result<Vec<Value>, WaitEnd> {
+        let uri = self.workspace.uri(relative_path);
+        DiagnosticsTracker::wait_for_first_uri_event(&self.client, &uri, timeout)
     }
 
     /// Wait up to `timeout` for a `textDocument/publishDiagnostics` notification
     /// for the given file, then return the most recently published diagnostics
     /// for the URI, ignoring earlier buffered publications.
     ///
-    /// Returns an empty vec if the deadline expires with no diagnostics published.
+    /// Returns the typed reason if no publication was observed.
     /// Use this when you need the latest server state after an edit; for the
     /// initial (first published) diagnostics use [`UxHarness::wait_for_diagnostics`].
     pub fn wait_for_latest_diagnostics(
         &self,
         relative_path: &str,
         timeout: std::time::Duration,
-    ) -> Vec<Value> {
+    ) -> std::result::Result<Vec<Value>, WaitEnd> {
         let uri = self.workspace.uri(relative_path);
-        let deadline = std::time::Instant::now() + timeout;
-        loop {
-            {
-                let events = self.client.peek_events();
-                for ev in events.iter().rev() {
-                    if let LspEvent::Diagnostics { uri: diag_uri, diagnostics, .. } = ev
-                        && diag_uri == &uri
-                    {
-                        return diagnostics.clone();
-                    }
-                }
-            }
-            if std::time::Instant::now() >= deadline {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(50));
-        }
-        Vec::new()
+        DiagnosticsTracker::wait_for_latest_uri_event(&self.client, &uri, timeout)
     }
 
     /// Count diagnostics notifications already observed for a file.
@@ -781,39 +922,53 @@ impl UxHarness {
         relative_path: &str,
         already_seen: usize,
         timeout: std::time::Duration,
-    ) -> Option<Vec<Value>> {
+    ) -> std::result::Result<Vec<Value>, WaitEnd> {
         let uri = self.workspace.uri(relative_path);
-        DiagnosticsTracker::wait_for_uri_after_count(
-            || self.client.peek_events(),
+        DiagnosticsTracker::wait_for_uri_after_count(&self.client, &uri, already_seen, timeout)
+    }
+
+    /// Wait for a diagnostics notification after `already_seen` prior
+    /// notifications for the file whose publication carries the
+    /// `textDocument/didChange` version `expected_version`.
+    ///
+    /// A delayed publication for a previous document version does not satisfy
+    /// this wait; only the publication sent for the awaited edit does.
+    pub fn wait_for_diagnostics_after_count_and_version(
+        &self,
+        relative_path: &str,
+        already_seen: usize,
+        expected_version: i32,
+        timeout: std::time::Duration,
+    ) -> std::result::Result<Vec<Value>, WaitEnd> {
+        let uri = self.workspace.uri(relative_path);
+        DiagnosticsTracker::wait_for_uri_after_count_and_version(
+            &self.client,
             &uri,
             already_seen,
+            i64::from(expected_version),
             timeout,
         )
     }
 
     /// Wait for diagnostics to become empty for a file (cleared UX state).
     ///
-    /// Returns `true` if an explicit `textDocument/publishDiagnostics` with an
+    /// Returns success if an explicit `textDocument/publishDiagnostics` with an
     /// **empty** diagnostics array arrives within `timeout`, or if the latest
     /// buffered notification for that URI already has an empty array.
     ///
-    /// Returns `false` on timeout.  Note that if the server clears diagnostics
-    /// silently (no explicit notification) this method will timeout and return
-    /// `false`.  In that case prefer checking that no *new* non-empty
+    /// Returns the typed reason on timeout or stream end. Note that if the server clears diagnostics
+    /// silently (no explicit notification) this method will time out. In that case prefer checking that no *new* non-empty
     /// notifications arrive within the deadline instead.
     pub fn wait_for_no_diagnostics(
         &self,
         relative_path: &str,
         timeout: std::time::Duration,
-    ) -> bool {
+    ) -> std::result::Result<(), WaitEnd> {
         let uri = self.workspace.uri(relative_path);
-        DiagnosticsTracker::wait_for_uri_matching(
-            || self.client.peek_events(),
-            &uri,
-            timeout,
-            |diagnostics| diagnostics.is_empty(),
-        )
-        .is_some()
+        DiagnosticsTracker::wait_for_uri_matching(&self.client, &uri, timeout, |diagnostics| {
+            diagnostics.is_empty()
+        })
+        .map(|_| ())
     }
 
     /// Request go-to-definition.
@@ -853,6 +1008,15 @@ impl UxHarness {
     /// Returns immediately when the first non-empty response is observed, or after
     /// `attempts` tries (minimum 1). This keeps UX scenarios deterministic without
     /// forcing each test to hand-roll sleep/retry loops.
+    ///
+    /// # Timing disposition: product-owned retry, not harness synchronization
+    ///
+    /// `textDocument/definition` is request/response; a stale empty answer is
+    /// only superseded by issuing another request. `pause` paces those product
+    /// requests and is not a substitute for an observable signal, so this is
+    /// deliberately not migrated to the event-driven substrate. Scenarios that
+    /// can instead wait for index readiness should prefer
+    /// [`UxHarness::wait_for_index_ready_event_after`], which is event-driven.
     pub fn definition_with_retry(
         &self,
         relative_path: &str,
@@ -872,6 +1036,8 @@ impl UxHarness {
 
             last = current;
             if idx + 1 < max_attempts {
+                // ux-timing: product-retry — a stale empty `definition` answer
+                // is only superseded by issuing another request.
                 std::thread::sleep(pause);
             }
         }
@@ -1049,7 +1215,10 @@ impl UxHarness {
         timeout: Duration,
     ) -> Result<Vec<Value>> {
         self.change_file_full(relative_path, updated_content)?;
-        Ok(self.wait_for_diagnostics(relative_path, timeout))
+        wait_with_subject(
+            &format!("diagnostics for {relative_path}"),
+            self.wait_for_diagnostics(relative_path, timeout),
+        )
     }
 
     /// Normalize LSP payloads for platform-stable expectations.
@@ -1389,6 +1558,19 @@ pub fn find_perlcritic() -> Option<String> {
     which::which("perlcritic").ok().map(|p| p.to_string_lossy().to_string())
 }
 
+/// Normalize a `textDocument/documentSymbol` result envelope. The LSP result is
+/// exactly one array variant or `null`; a bare object is a malformed envelope
+/// and is rejected instead of being silently wrapped into a one-element array.
+fn normalize_document_symbol_result(result: &Value) -> Result<Vec<Value>> {
+    match result.as_array() {
+        Some(syms) => Ok(syms.clone()),
+        None if result.is_null() => Ok(Vec::new()),
+        None => Err(anyhow!(
+            "documentSymbol result must be DocumentSymbol[] | SymbolInformation[] | null, got: {result}"
+        )),
+    }
+}
+
 #[cfg(test)]
 mod normalize_tests {
     #![expect(
@@ -1397,13 +1579,130 @@ mod normalize_tests {
     )]
     use super::{
         document_symbol_names, find_binary_near_exe, is_active_document_ready_event,
-        is_index_ready_event, is_truthy_env_value, normalize_lsp_payload,
-        normalize_uri_for_expectations,
+        is_index_ready_event, is_truthy_env_value, normalize_document_symbol_result,
+        normalize_lsp_payload, normalize_uri_for_expectations,
+        wait_for_active_document_ready_event, wait_for_index_ready_event, wait_with_subject,
     };
-    use crate::LspEvent;
+    use crate::{Inbox, LspEvent, StreamEnd, WaitEnd};
+    use perl_test_must::must_err_with;
     use serde_json::{Value, json};
     use std::path::Path;
+    use std::time::Duration;
     use tempfile::TempDir;
+
+    #[test]
+    fn index_wait_retains_limited_state_and_typed_terminal_reason() -> anyhow::Result<()> {
+        let limited = json!({"ready": false, "state": "ready_limited"});
+        let inbox = Inbox::new();
+        inbox.push_event(json!({
+            "jsonrpc": "2.0", "method": "perl-lsp/index-ready", "params": limited
+        }));
+        let timeout = Duration::from_millis(20);
+        let deadline = wait_for_index_ready_event(&inbox, 0, timeout);
+        let Err(deadline) = deadline else {
+            anyhow::bail!("limited state must not satisfy ready:true: {deadline:?}");
+        };
+        anyhow::ensure!(deadline.end == WaitEnd::Deadline { timeout }, "{deadline:?}");
+        anyhow::ensure!(deadline.last_observed == Some(limited.clone()), "{deadline:?}");
+        let assertion =
+            wait_with_subject::<(), _>("index readiness for workspace", Err(deadline.clone()))
+                .err()
+                .map(|error| error.to_string())
+                .ok_or_else(|| anyhow::anyhow!("expected index readiness assertion failure"))?;
+        anyhow::ensure!(
+            assertion.contains("ready_limited")
+                && assertion.contains("deadline expired")
+                && assertion.contains("workspace"),
+            "assertion lost subject or observed outcome: {assertion}"
+        );
+
+        let absent = Inbox::new();
+        absent.close(StreamEnd::ServerClosed);
+        let closed = wait_for_index_ready_event(&absent, 0, timeout);
+        let Err(closed) = closed else {
+            anyhow::bail!("closed stream must not satisfy readiness: {closed:?}");
+        };
+        anyhow::ensure!(
+            closed.end == WaitEnd::Ended(StreamEnd::ServerClosed) && closed.last_observed.is_none(),
+            "{closed:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn index_wait_keeps_ready_predicate_and_transport_end() -> anyhow::Result<()> {
+        let inbox = Inbox::new();
+        inbox.push_event(json!({
+            "jsonrpc": "2.0", "method": "perl-lsp/index-ready",
+            "params": {"ready": false, "state": "building"}
+        }));
+        inbox.push_event(json!({
+            "jsonrpc": "2.0", "method": "perl-lsp/index-ready",
+            "params": {"ready": true, "state": "ready"}
+        }));
+        anyhow::ensure!(
+            wait_for_index_ready_event(&inbox, 0, Duration::ZERO) == Ok(()),
+            "an observed ready:true must satisfy readiness"
+        );
+
+        let failed = Inbox::new();
+        failed.push_event(json!({
+            "jsonrpc": "2.0", "method": "perl-lsp/other",
+            "params": {"ready": true}
+        }));
+        failed.close(StreamEnd::TransportFailure { detail: "invalid frame".to_string() });
+        let result = wait_for_index_ready_event(&failed, 0, Duration::from_secs(1));
+        let Err(end) = result else {
+            anyhow::bail!("unrelated event must not satisfy readiness: {result:?}");
+        };
+        anyhow::ensure!(
+            end.end
+                == WaitEnd::Ended(StreamEnd::TransportFailure {
+                    detail: "invalid frame".to_string()
+                })
+                && end.last_observed.is_none(),
+            "transport failure must remain typed and unrelated event ignored: {end:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn active_document_wait_keeps_uri_and_terminal_reason() -> anyhow::Result<()> {
+        let inbox = Inbox::new();
+        inbox.push_event(json!({
+            "jsonrpc": "2.0", "method": "perl-lsp/active-document-ready",
+            "params": {"uri": "file:///other.pl", "generation": 1}
+        }));
+        inbox.close(StreamEnd::ServerClosed);
+        let result = wait_for_active_document_ready_event(
+            &inbox,
+            "file:///wanted.pl",
+            Duration::from_secs(1),
+        );
+        anyhow::ensure!(
+            result == Err(WaitEnd::Ended(StreamEnd::ServerClosed)),
+            "other URI cannot satisfy readiness and orderly close must remain typed: {result:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn document_symbol_result_accepts_arrays_and_null_only() {
+        let array = json!([{ "name": "greet", "kind": 12 }]);
+        assert_eq!(
+            normalize_document_symbol_result(&array).unwrap(),
+            vec![json!({ "name": "greet", "kind": 12 })]
+        );
+        assert!(normalize_document_symbol_result(&Value::Null).unwrap().is_empty());
+        let bare = json!({ "name": "greet", "kind": 12 });
+        let error = must_err_with(
+            normalize_document_symbol_result(&bare),
+            "a bare object is a malformed result envelope",
+        );
+        assert!(
+            error.to_string().contains("must be DocumentSymbol[] | SymbolInformation[] | null")
+        );
+    }
 
     #[test]
     fn document_symbol_names_collects_top_level_and_nested_names() -> anyhow::Result<()> {
@@ -1714,11 +2013,13 @@ mod strict_binary_guard_subprocess_tests {
     ///    `current_exe()`-walk fallback (it would otherwise find the real,
     ///    already-built `perl-lsp` sitting next to this same test binary in
     ///    a normal CI run).
-    /// 2. Clears `PERL_LSP_BIN`, `CARGO_TARGET_DIR`, and `CARGO_MANIFEST_DIR`
-    ///    in the CHILD's environment only (never the parent's — this crate
-    ///    denies `unsafe_code`, and `std::env::set_var` on the parent
-    ///    process is `unsafe`) so none of `resolve_binary()`'s other
-    ///    fallbacks can find a real binary either.
+    /// 2. Clears the CHILD's entire inherited environment before enabling
+    ///    strict mode (never the parent's — this crate denies `unsafe_code`,
+    ///    and `std::env::set_var` on the parent process is `unsafe`). This
+    ///    removes the explicit override, Cargo directory/profile hints, and
+    ///    `PATH`, so none of `resolve_binary()`'s ambient fallbacks can find a
+    ///    real binary. The child remains launchable because `isolated_exe` is
+    ///    an absolute path.
     ///
     /// Note: merely pointing `PERL_LSP_BIN` at a nonexistent path does NOT
     /// exercise this guard — `resolve_binary()`'s step 1 returns `Ok` for
@@ -1746,9 +2047,7 @@ mod strict_binary_guard_subprocess_tests {
                 "--exact",
                 "--nocapture",
             ])
-            .env_remove("PERL_LSP_BIN")
-            .env_remove("CARGO_TARGET_DIR")
-            .env_remove("CARGO_MANIFEST_DIR")
+            .env_clear()
             .env(REQUIRE_BINARY_ENV, "1")
             .output()?;
 

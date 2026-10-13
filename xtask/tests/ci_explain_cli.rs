@@ -163,3 +163,48 @@ fn ci_explain_unsupported_schema_prints_distinct_inconclusive() {
     assert!(stdout.contains("gates.v99"), "expected version in: {stdout}");
     assert!(stdout.contains("upgrade xtask"), "expected upgrade hint in: {stdout}");
 }
+
+/// Producer/consumer roundtrip — `#15337`.
+///
+/// The `gates` producer must emit a `schema_version` that the `ci_explain`
+/// consumer accepts. This test pins that contract by feeding the consumer a
+/// receipt with the exact value the producer emits and confirming it loads
+/// without the `UnsupportedSchema` path. The literal is duplicated from
+/// `gates::GATES_RECEIPT_SCHEMA_VERSION` because integration tests under
+/// `xtask/tests/` cannot reach the `tasks` module (it lives behind the
+/// `xtask` binary's `main.rs`). The companion unit test
+/// `load_receipt_accepts_producer_emitted_schema_version` inside
+/// `ci_explain.rs` uses the constant directly and would catch any drift
+/// before this integration test could be re-recorded.
+#[test]
+fn ci_explain_accepts_producer_emitted_schema_version() {
+    // Must equal `gates::GATES_RECEIPT_SCHEMA_VERSION`. If you bump the
+    // producer constant, update this literal in lock-step (or rely on the
+    // unit test in `ci_explain.rs` to fail in CI first).
+    const PRODUCER_VERSION: &str = "gates.v1";
+
+    let temp = TempDir::new().expect("create temp dir");
+    let receipt_path = temp.path().join("receipt.json");
+    let json = format!(r#"{{"schema_version":"{PRODUCER_VERSION}","gates":[]}}"#);
+    fs::write(&receipt_path, json).expect("write producer-shaped receipt");
+
+    let output = cargo_bin_cmd!("xtask")
+        .args(["ci", "explain", "--receipt", receipt_path.to_str().unwrap()])
+        .output()
+        .expect("run xtask ci explain");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "exit code: {:?}", output.status);
+    assert!(
+        !stdout.contains("unsupported receipt schema"),
+        "producer-emitted schema_version {PRODUCER_VERSION:?} was rejected as unsupported; \
+         the consumer has drifted from the producer. stdout: {stdout} stderr: {stderr}",
+    );
+    assert!(
+        !stdout.contains("upgrade xtask"),
+        "consumer emitted the upgrade-xtask hint for the producer's own \
+         emitted schema_version; producer/consumer are out of sync. \
+         stdout: {stdout} stderr: {stderr}",
+    );
+}

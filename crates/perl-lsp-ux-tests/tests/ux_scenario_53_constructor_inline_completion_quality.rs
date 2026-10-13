@@ -10,7 +10,7 @@
 
 use anyhow::{Context, Result};
 use perl_lsp_ux_tests::{
-    LspEvent, ScenarioConfig, UxCiTier, UxComponent, UxHarness, binary_available,
+    LspEvent, ScenarioConfig, UxCiTier, UxComponent, UxHarness, WaitEnd, binary_available,
     missing_binary_skip, run_ux_scenario,
 };
 use serde::Serialize;
@@ -134,7 +134,10 @@ fn probe_constructor_inline_completion(
     forbidden: &[&'static str],
 ) -> Result<ConstructorProbeReport> {
     let (line, character) = cursor_at_end(source)?;
-    let deadline = Instant::now() + Duration::from_secs(5);
+    // The quality budget must tolerate analysis lag on cold CI runners:
+    // post-diagnostics, completion facts can land after the previous 5s
+    // window closed (observed as a one-probe zero on a refreshed-base run).
+    let deadline = Instant::now() + Duration::from_secs(30);
     let items = loop {
         let items = harness.inline_completion_with_trigger_kind(file, line, character, 1)?;
         for item in &items {
@@ -176,6 +179,45 @@ fn insert_texts_for(items: &[Value]) -> Vec<String> {
     items.iter().filter_map(inline_insert_text).collect()
 }
 
+fn require_constructor_readiness(
+    path: &str,
+    event: std::result::Result<Vec<Value>, WaitEnd>,
+) -> Result<()> {
+    let diagnostics = event.map_err(|end| {
+        anyhow::anyhow!(
+            "analysis readiness: no publishDiagnostics for {path}: {}; \
+             completion probes would poll blind (#15899)",
+            end.describe()
+        )
+    })?;
+    anyhow::ensure!(
+        !diagnostics.is_empty(),
+        "analysis readiness: publishDiagnostics for {path} contained zero diagnostics; \
+         incomplete constructor source did not establish analysis readiness"
+    );
+    Ok(())
+}
+
+#[test]
+fn constructor_readiness_distinguishes_empty_publication_from_no_event() -> Result<()> {
+    let path = SHIFT_STYLE_PATH;
+    let Err(empty) = require_constructor_readiness(path, Ok(vec![])) else {
+        anyhow::bail!("an empty publication must not begin completion probes");
+    };
+    anyhow::ensure!(empty.to_string().contains("contained zero diagnostics"));
+
+    let Err(missing) = require_constructor_readiness(
+        path,
+        Err(WaitEnd::Deadline { timeout: Duration::from_secs(30) }),
+    ) else {
+        anyhow::bail!("a missing publication must not begin completion probes");
+    };
+    anyhow::ensure!(missing.to_string().contains("deadline expired after 30000ms"));
+    anyhow::ensure!(missing.to_string().contains(path));
+
+    require_constructor_readiness(path, Ok(vec![json!({"message": "incomplete constructor"})]))
+}
+
 #[test]
 fn scenario_53_constructor_inline_completion_quality_receipt() {
     run_ux_scenario(
@@ -192,7 +234,14 @@ fn scenario_53_constructor_inline_completion_quality_receipt() {
             let harness = create_harness()?;
             harness.open_file(SHIFT_STYLE_PATH, SHIFT_STYLE_SOURCE)?;
             harness.open_file(SIGNATURE_STYLE_PATH, SIGNATURE_STYLE_SOURCE)?;
-            std::thread::sleep(Duration::from_millis(250));
+            // Same readiness race as #15870: synchronize on the server's own
+            // analysis-readiness signal instead of a fixed sleep.
+            for path in [SHIFT_STYLE_PATH, SIGNATURE_STYLE_PATH] {
+                require_constructor_readiness(
+                    path,
+                    harness.wait_for_diagnostics_event(path, Duration::from_secs(30)),
+                )?;
+            }
 
             recorder.mark_request_start("dynamic_inline_registration");
             let dynamic_registration_seen = wait_for_inline_registration(&harness);

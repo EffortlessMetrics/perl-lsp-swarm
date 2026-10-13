@@ -3,7 +3,10 @@
 //! Replays a VS Code mock-debug-style request stream and verifies the adapter
 //! returns spec-shaped responses across the command surface.
 
+mod common;
+
 use anyhow::{Result, anyhow};
+use perl_dap::debug_adapter::DapMessageWithEpoch;
 use perl_dap::{DapMessage, DebugAdapter};
 use serde_json::Value;
 use std::path::PathBuf;
@@ -34,15 +37,18 @@ fn load_fixtures() -> Result<Vec<(String, Value)>> {
     Ok(fixtures)
 }
 
-fn collect_events(rx: &Receiver<DapMessage>, timeout_ms: u64) -> Vec<(String, Option<Value>)> {
+fn collect_events(
+    rx: &Receiver<DapMessageWithEpoch>,
+    timeout_ms: u64,
+) -> Vec<(String, Option<Value>)> {
     let mut events = Vec::new();
     if let Ok(message) = rx.recv_timeout(Duration::from_millis(timeout_ms))
-        && let DapMessage::Event { event, body, .. } = message
+        && let (DapMessage::Event { event, body, .. }, _) = message
     {
         events.push((event, body));
     }
     while let Ok(message) = rx.try_recv() {
-        if let DapMessage::Event { event, body, .. } = message {
+        if let (DapMessage::Event { event, body, .. }, _) = message {
             events.push((event, body));
         }
     }
@@ -96,6 +102,62 @@ fn assert_expected_events(
 }
 
 #[test]
+fn forbidden_terminal_event_is_rejected() -> Result<()> {
+    let request = serde_json::json!({"forbiddenEventsAfter": ["terminated"]});
+    check_request_events("control", "disconnect", 0, &request, &[])?;
+    let observed = vec![("terminated".to_string(), None)];
+    let error = check_request_events("control", "disconnect", 0, &request, &observed)
+        .err()
+        .ok_or_else(|| anyhow!("forbidden terminated event was accepted"))?;
+    if !error.to_string().contains("forbidden event 'terminated'") {
+        return Err(anyhow!("unexpected event rejection: {error}"));
+    }
+    let initialized = serde_json::json!({"expectedEventsAfter": [{"event": "initialized"}]});
+    check_request_events(
+        "control",
+        "initialize",
+        0,
+        &initialized,
+        &[("initialized".to_string(), None)],
+    )?;
+    if check_request_events("control", "initialize", 0, &initialized, &[]).is_ok() {
+        return Err(anyhow!("missing initialized event was accepted"));
+    }
+    Ok(())
+}
+
+fn check_request_events(
+    fixture_name: &str,
+    command: &str,
+    idx: usize,
+    request: &Value,
+    observed: &[(String, Option<Value>)],
+) -> Result<()> {
+    if let Some(expected) = request.get("expectedEventsAfter") {
+        let expected = expected
+            .as_array()
+            .ok_or_else(|| anyhow!("{fixture_name}[{idx}] expectedEventsAfter must be an array"))?;
+        assert_expected_events(fixture_name, command, idx, expected, observed)?;
+    }
+    if let Some(forbidden) = request.get("forbiddenEventsAfter") {
+        let forbidden = forbidden.as_array().ok_or_else(|| {
+            anyhow!("{fixture_name}[{idx}] forbiddenEventsAfter must be an array")
+        })?;
+        for name in forbidden {
+            let name = name.as_str().ok_or_else(|| {
+                anyhow!("{fixture_name}[{idx}] forbiddenEventsAfter entries must be strings")
+            })?;
+            if observed.iter().any(|(event, _)| event == name) {
+                return Err(anyhow!(
+                    "{fixture_name}[{idx}] {command}: forbidden event '{name}' was observed"
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn vscode_mock_debug_surface_conformance() -> Result<()> {
     let fixtures = load_fixtures()?;
     for (fixture_name, fixture) in fixtures {
@@ -107,6 +169,9 @@ fn vscode_mock_debug_surface_conformance() -> Result<()> {
         let (tx, rx) = sync_channel(64);
         let mut adapter = DebugAdapter::new();
         adapter.set_event_sender(tx);
+        // These fixtures replay reference-client request streams (including
+        // launch) to check response shapes, not launch-authority semantics.
+        common::install_unbounded_test_authority(&adapter);
         let mut prev_response_seq = 0_i64;
 
         for (idx, request) in requests.iter().enumerate() {
@@ -194,17 +259,11 @@ fn vscode_mock_debug_surface_conformance() -> Result<()> {
                 }
             }
 
-            if let Some(expected_events) =
-                request.get("expectedEventsAfter").and_then(Value::as_array)
+            if request.get("expectedEventsAfter").is_some()
+                || request.get("forbiddenEventsAfter").is_some()
             {
                 let observed_events = collect_events(&rx, 100);
-                assert_expected_events(
-                    &fixture_name,
-                    command,
-                    idx,
-                    expected_events,
-                    &observed_events,
-                )?;
+                check_request_events(&fixture_name, command, idx, request, &observed_events)?;
             }
         }
     }

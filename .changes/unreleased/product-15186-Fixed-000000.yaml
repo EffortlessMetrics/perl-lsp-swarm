@@ -1,0 +1,9 @@
+project: product
+component: Performance and reliability
+kind: Fixed
+body: "The LSP process now closes outbound message admission and waits for already-accepted frames to settle before exit, while reporting writer failures and settlement timeouts separately from the protocol exit status."
+time: 2026-09-08T00:00:00Z
+custom:
+  PR: "15186"
+  Slug: outbound-frame-settlement-before-exit
+  Breaking: "no"

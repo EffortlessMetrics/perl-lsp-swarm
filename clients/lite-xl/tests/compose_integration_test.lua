@@ -32,6 +32,32 @@
 local here = debug.getinfo(1, "S").source:sub(2):match("^(.*)[/\\]") or "."
 local repo_root = here .. "/../../.."
 
+-- Prefer a real OS temp dir, then fall back to "target" (a sibling of
+-- CWD). The documented proof command runs from the repository root, so
+-- this resolves to the repo's gitignored target/ directory. Anchoring
+-- the fallback to a gitignored location rather than "." keeps the
+-- documented commands from leaking scratch into a clean working tree on
+-- non-Windows hosts where $TEMP is normally unset. See issue #15517.
+--
+-- Note: the prefix "./" is intentionally absent. compose.lua's
+-- list_files_relative helper normalizes its own path against CWD, but a
+-- leading "./" survives in the prefix it strips and breaks the round-trip
+-- against Windows `dir /s /b` (which reports the resolved path without
+-- "./" components), so the file enumeration comes back empty and verify
+-- reports phantom unowned_diff failures.
+--
+-- An env var set to the empty string is treated the same as unset: Lua's
+-- `os.getenv` returns "" for a present-but-empty var, and the `or` chain
+-- would otherwise pass that empty string through to the path join.
+local function portable_temp_root()
+  local function env(name)
+    local v = os.getenv(name)
+    if v == nil or v == "" then return nil end
+    return v
+  end
+  return env("TMPDIR") or env("TEMP") or env("TMP") or "target"
+end
+
 local passed, failed = 0, 0
 local function ok(condition, message)
   if condition then
@@ -42,8 +68,11 @@ local function ok(condition, message)
   end
 end
 
-local scratch = (os.getenv("TEMP") or ".") .. "/compose_integration_scratch"
-os.execute('mkdir "' .. scratch .. '" 2>nul')
+local scratch = portable_temp_root() .. "/compose_integration_scratch"
+local IS_WINDOWS = package.config:sub(1, 1) == "\\"
+os.execute(IS_WINDOWS
+  and ('mkdir "' .. scratch .. '" 2>nul')
+  or ('mkdir -p "' .. scratch .. '" 2>/dev/null'))
 
 local function write_file(path, bytes)
   local f = io.open(path, "wb")
@@ -64,6 +93,15 @@ local function run_exit(cmd)
   if okk == true then return 0 end
   if kind == "exit" then return code end
   return 1
+end
+
+local function run_capture(cmd)
+  local ph = io.popen(cmd .. " 2>&1", "r")
+  local output = ph:read("*a") or ""
+  local okk, kind, code = ph:close()
+  if okk == true then return 0, output end
+  if kind == "exit" then return code, output end
+  return 1, output
 end
 
 local function staged_blobs()
@@ -318,6 +356,104 @@ do
   local r2, _, p2 = materialize("lite_xl_protocol_baseline", "det_b")
   ok(r1.receipt_json == r2.receipt_json, "I6 library receipts identical")
   ok(read_file(p1) == read_file(p2), "I6 written receipt files byte-identical")
+end
+
+-- ---------------------------------------------------------------------------
+-- P1: optional pre-merge composition binds one immutable source snapshot to
+-- the reconciled landed profile.  The source suites are staged from that
+-- same commit beside the generated upstream tree; they are not borrowed
+-- from this checkout's moving test directory.
+-- ---------------------------------------------------------------------------
+
+if os.getenv("COMPOSE_PENDING_REAL_PROOF") == "1" then
+  local pending_root = scratch .. "/pending"
+  local pending_tree = pending_root .. "/upstream"
+  local pending_receipt = pending_root .. "/receipt.json"
+  local pending = compose.materialize_pending({
+    manifest = manifest,
+    adapter = adapter,
+    profile = "lite_xl_exact_source_core",
+    base_dir = here .. "/../leaves/base",
+    out_dir = pending_tree,
+    receipt_path = pending_receipt,
+    base_ref = "03cc7c17921a74482772441583d2e3b75b26fc75",
+    source_ref = "4efc4dce2d024f551941a44f01a5a01e8fca7c88",
+    issue = 14468,
+    pull_request = 14468,
+    required_modules = {
+      "init.lua", "json.lua", "util.lua", "capability_manifest.lua",
+    },
+    declared_delta = {
+      { status = "M", path = "upstream/init.lua",
+        base_blob = "7f5cbd31210f78709b6aadb3e1d2c7ac2362a97f",
+        source_blob = "90c2a720c369a4a2a4e47a9e9084c782643cba6e" },
+    },
+    suite_specs = {
+      { path = "tests/init_completion_collision_test.lua",
+        source_blob = "67a229c8b86aa67d8712130af033c4a22e7a5154",
+        modules = { "init.lua" } },
+      { path = "tests/init_completion_resolve_test.lua",
+        source_blob = "ec5e92e2d7369ba9fa89347b75e57ca444e60a61",
+        modules = { "init.lua" } },
+    },
+  })
+  ok(pending.tree["init.lua"] ==
+    "90c2a720c369a4a2a4e47a9e9084c782643cba6e",
+    "P1 pending source blob owns generated init.lua")
+  local pending_suites = {}
+  for _, suite in ipairs(pending.suites) do pending_suites[suite.suite] = suite end
+  local collision = pending_suites["init_completion_collision_test.lua"]
+  local resolve = pending_suites["init_completion_resolve_test.lua"]
+  ok(collision ~= nil and collision.source_blob ==
+    "67a229c8b86aa67d8712130af033c4a22e7a5154"
+    and collision.exit_code == 0
+    and collision.modules[1] == "init.lua",
+    "P1 source-bound collision suite is green with exact source/module")
+  ok(resolve ~= nil and resolve.source_blob ==
+    "ec5e92e2d7369ba9fa89347b75e57ca444e60a61"
+    and resolve.exit_code == 0
+    and resolve.modules[1] == "init.lua",
+    "P1 source-bound resolve suite is green with exact source/module")
+  local pending_receipt_text = read_file(pending_receipt)
+  ok(pending_receipt_text:find('"schema":"pending-composed-candidate-receipt.v1"', 1, true),
+    "P1 receipt has distinct pre-merge schema")
+  ok(pending_receipt_text:find('"admission":"pre-merge"', 1, true),
+    "P1 receipt records pre-merge admission")
+
+  local rejected, rejection_output = run_capture(string.format(
+    'lua "%s/clients/lite-xl/compose.lua" verify lite_xl_exact_source_core' ..
+    ' --tree "%s" --receipt "%s"', repo_root, pending_tree, pending_receipt))
+  ok(rejected ~= 0 and rejection_output:find(
+    "pending pre-merge receipt is not landed/support evidence", 1, true),
+    "P1 landed verify rejects a pending receipt by admission")
+
+  local pending_again = compose.materialize_pending({
+    manifest = manifest, adapter = adapter,
+    profile = "lite_xl_exact_source_core",
+    base_dir = here .. "/../leaves/base", out_dir = pending_tree,
+    receipt_path = pending_receipt,
+    base_ref = "03cc7c17921a74482772441583d2e3b75b26fc75",
+    source_ref = "4efc4dce2d024f551941a44f01a5a01e8fca7c88",
+    issue = 14468, pull_request = 14468,
+    required_modules = { "init.lua", "json.lua", "util.lua", "capability_manifest.lua" },
+    declared_delta = {
+      { status = "M", path = "upstream/init.lua",
+        base_blob = "7f5cbd31210f78709b6aadb3e1d2c7ac2362a97f",
+        source_blob = "90c2a720c369a4a2a4e47a9e9084c782643cba6e" },
+    },
+    suite_specs = {
+      { path = "tests/init_completion_collision_test.lua",
+        source_blob = "67a229c8b86aa67d8712130af033c4a22e7a5154",
+        modules = { "init.lua" } },
+      { path = "tests/init_completion_resolve_test.lua",
+        source_blob = "ec5e92e2d7369ba9fa89347b75e57ca444e60a61",
+        modules = { "init.lua" } },
+    },
+  })
+  ok(pending.receipt_json == pending_again.receipt_json,
+    "P1 repeated pending composition is byte-identical")
+else
+  print("P1 pending real-source proof: NOT RUN (set COMPOSE_PENDING_REAL_PROOF=1)")
 end
 
 print(string.format("compose_integration_test: %d passed, %d failed", passed, failed))

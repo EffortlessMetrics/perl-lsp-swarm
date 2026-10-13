@@ -11,7 +11,7 @@ const SCHEMA_VERSION: u32 = 1;
 const CHECK_NAME: &str = "merge-readiness";
 const DEFAULT_RECEIPT_PATH: &str = "target/receipts/merge-readiness.json";
 const REQUIRED_CHECKS_PATH: &str = ".ci/policies/required-checks.toml";
-const FAN_IN_SCHEMA_VERSION: u32 = 1;
+const FAN_IN_SCHEMA_VERSION: u32 = 2;
 const FAN_IN_CHECK_NAME: &str = "merge-readiness-fan-in";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -60,10 +60,34 @@ pub enum EvidenceClass {
     Pending,
 }
 
+/// Subject class a required-check result was produced against (#15343).
+///
+/// A result can satisfy only the exact subject class it declares. A
+/// `CandidateHead` result is candidate evidence, not integration evidence;
+/// an integration result against base B is stale for a B2+H merge subject;
+/// a merge-group result binds one queue-generated subject.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CheckSubject {
+    /// Evaluated against the raw PR head only (candidate evidence).
+    CandidateHead,
+    /// Evaluated against the exact base + head PR integration tree.
+    PullRequestIntegration {
+        /// Base SHA the integration tree was built against.
+        base_sha: String,
+    },
+    /// Evaluated against a merge-queue-generated integration subject.
+    MergeGroup {
+        /// Queue-generated merge-group SHA that was evaluated.
+        merge_group_sha: String,
+    },
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RequiredCheckEvidence {
     pub name: String,
     pub evaluated_sha: String,
+    pub subject: CheckSubject,
     pub result: EvidenceClass,
 }
 
@@ -250,6 +274,18 @@ pub fn evaluate_snapshot(snapshot: &MergeReadinessSnapshot) -> Result<MergeReadi
             bail!("merge-readiness snapshot contains a blank check name");
         }
         validate_object_id("checks[].evaluated_sha", &check.evaluated_sha)?;
+        match &check.subject {
+            CheckSubject::CandidateHead => {}
+            CheckSubject::PullRequestIntegration { base_sha } => {
+                validate_object_id("checks[].subject.pull_request_integration.base_sha", base_sha)?;
+            }
+            CheckSubject::MergeGroup { merge_group_sha } => {
+                validate_object_id(
+                    "checks[].subject.merge_group.merge_group_sha",
+                    merge_group_sha,
+                )?;
+            }
+        }
     }
     validate_object_id("review.evaluated_sha", &snapshot.review.evaluated_sha)?;
     validate_object_id("changelog.evaluated_sha", &snapshot.changelog.evaluated_sha)?;
@@ -298,6 +334,13 @@ pub fn evaluate_snapshot(snapshot: &MergeReadinessSnapshot) -> Result<MergeReadi
                         ),
                     });
                 }
+                Some([check])
+                    if check_subject_finding(required_name, check, &snapshot).is_some() =>
+                {
+                    if let Some(finding) = check_subject_finding(required_name, check, &snapshot) {
+                        findings.push(finding);
+                    }
+                }
                 Some([check]) if check.result != EvidenceClass::Success => {
                     findings.push(MergeReadinessFinding {
                         source: format!("required_check:{required_name}"),
@@ -332,6 +375,61 @@ pub fn evaluate_snapshot(snapshot: &MergeReadinessSnapshot) -> Result<MergeReadi
         status,
         findings,
     })
+}
+
+/// #15343 subject-binding rule for one required-check row.
+///
+/// A row satisfies merge admission only when the subject it declares is the
+/// snapshot's current subject: a candidate-head row cannot satisfy a declared
+/// merge-group integration subject, a base-bound integration row is stale
+/// once the base moves, and a merge-group row must bind the snapshot's
+/// current merge group.
+fn check_subject_finding(
+    required_name: &str,
+    check: &RequiredCheckEvidence,
+    snapshot: &MergeReadinessSnapshot,
+) -> Option<MergeReadinessFinding> {
+    let stale = |detail: String| MergeReadinessFinding {
+        source: format!("required_check:{required_name}"),
+        class: EvidenceClass::Stale,
+        blocking: true,
+        detail,
+    };
+    match &check.subject {
+        CheckSubject::CandidateHead => snapshot.merge_group_sha.as_deref().map(|merge_group_sha| {
+            stale(format!(
+                "snapshot declares merge group {merge_group_sha} but the check is candidate-head \
+                 evidence; a raw-head result cannot satisfy the integration subject"
+            ))
+        }),
+        CheckSubject::PullRequestIntegration { base_sha } => {
+            if let Some(merge_group_sha) = snapshot.merge_group_sha.as_deref() {
+                Some(stale(format!(
+                    "snapshot declares merge group {merge_group_sha} but the check is ordinary \
+                     pull-request integration evidence; a B+H result cannot satisfy the \
+                     queue-generated merge-group subject, require a merge-group row instead"
+                )))
+            } else if base_sha != &snapshot.base_sha {
+                Some(stale(format!(
+                    "check was integrated against base {base_sha} but the current base is {}",
+                    snapshot.base_sha
+                )))
+            } else {
+                None
+            }
+        }
+        CheckSubject::MergeGroup { merge_group_sha } => {
+            if snapshot.merge_group_sha.as_deref() != Some(merge_group_sha.as_str()) {
+                Some(stale(format!(
+                    "check evaluated merge group {merge_group_sha} but the current merge group \
+                     is {}",
+                    snapshot.merge_group_sha.as_deref().unwrap_or("none"),
+                )))
+            } else {
+                None
+            }
+        }
+    }
 }
 
 fn evaluate_review(
@@ -1261,11 +1359,13 @@ mod tests {
                 RequiredCheckEvidence {
                     name: "rust".to_string(),
                     evaluated_sha: SHA_A.to_string(),
+                    subject: CheckSubject::PullRequestIntegration { base_sha: SHA_B.to_string() },
                     result: EvidenceClass::Success,
                 },
                 RequiredCheckEvidence {
                     name: "ripr".to_string(),
                     evaluated_sha: SHA_A.to_string(),
+                    subject: CheckSubject::PullRequestIntegration { base_sha: SHA_B.to_string() },
                     result: EvidenceClass::Success,
                 },
             ],
@@ -1397,6 +1497,124 @@ mod tests {
                 && finding.detail.contains(SHA_C)
         }));
         Ok(())
+    }
+
+    #[test]
+    fn fan_in_integration_row_on_old_base_is_stale() -> color_eyre::eyre::Result<()> {
+        // #15343: B+H checks passed, then only the base moved (B=SHA_B →
+        // B2=SHA_C). The old integration evidence must not authorize the
+        // B2+H merge subject even though the head and results are unchanged.
+        let mut snapshot = fan_in_snapshot();
+        snapshot.base_sha = SHA_C.to_string();
+        let evaluation = evaluate_snapshot(&snapshot)?;
+        color_eyre::eyre::ensure!(evaluation.status == MergeReadinessStatus::Stale);
+        color_eyre::eyre::ensure!(evaluation.findings.iter().any(|finding| {
+            finding.source == "required_check:rust"
+                && finding.class == EvidenceClass::Stale
+                && finding.detail.contains(SHA_B)
+                && finding.detail.contains(SHA_C)
+        }));
+        Ok(())
+    }
+
+    #[test]
+    fn fan_in_head_only_row_cannot_satisfy_declared_merge_group() -> color_eyre::eyre::Result<()> {
+        // #15343: once the snapshot declares a merge-group integration
+        // subject, raw-head candidate evidence cannot satisfy the required
+        // row even though it evaluates the exact current head.
+        let mut snapshot = fan_in_snapshot();
+        snapshot.merge_group_sha = Some(SHA_C.to_string());
+        snapshot.protection.evaluated_merge_group_sha = Some(SHA_C.to_string());
+        for check in &mut snapshot.checks {
+            check.subject = CheckSubject::CandidateHead;
+        }
+        let evaluation = evaluate_snapshot(&snapshot)?;
+        color_eyre::eyre::ensure!(evaluation.status == MergeReadinessStatus::Stale);
+        color_eyre::eyre::ensure!(evaluation.findings.iter().any(|finding| {
+            finding.source == "required_check:rust"
+                && finding.class == EvidenceClass::Stale
+                && finding.detail.contains("candidate-head")
+        }));
+        Ok(())
+    }
+
+    #[test]
+    fn fan_in_integration_row_cannot_satisfy_declared_merge_group() -> color_eyre::eyre::Result<()>
+    {
+        // #15343 follow-up: once the snapshot declares a merge-group
+        // integration subject, an ordinary B+H integration row cannot
+        // satisfy the required row even though its base matches — the
+        // required checks ran on the B+H tree, not the queue-generated
+        // merge-group subject. Require a merge-group row instead.
+        let mut snapshot = fan_in_snapshot();
+        snapshot.merge_group_sha = Some(SHA_C.to_string());
+        snapshot.protection.evaluated_merge_group_sha = Some(SHA_C.to_string());
+        let evaluation = evaluate_snapshot(&snapshot)?;
+        color_eyre::eyre::ensure!(evaluation.status == MergeReadinessStatus::Stale);
+        color_eyre::eyre::ensure!(evaluation.findings.iter().any(|finding| {
+            finding.source == "required_check:rust"
+                && finding.class == EvidenceClass::Stale
+                && finding.detail.contains("merge-group row instead")
+        }));
+        Ok(())
+    }
+
+    #[test]
+    fn fan_in_merge_group_row_with_wrong_group_is_stale() -> color_eyre::eyre::Result<()> {
+        let mut snapshot = fan_in_snapshot();
+        snapshot.merge_group_sha = Some(SHA_C.to_string());
+        snapshot.protection.evaluated_merge_group_sha = Some(SHA_C.to_string());
+        for check in &mut snapshot.checks {
+            check.subject = CheckSubject::MergeGroup { merge_group_sha: SHA_B.to_string() };
+        }
+        let evaluation = evaluate_snapshot(&snapshot)?;
+        color_eyre::eyre::ensure!(evaluation.status == MergeReadinessStatus::Stale);
+        color_eyre::eyre::ensure!(evaluation.findings.iter().any(|finding| {
+            finding.source == "required_check:ripr" && finding.class == EvidenceClass::Stale
+        }));
+        Ok(())
+    }
+
+    #[test]
+    fn fan_in_merge_group_row_on_current_group_is_ready() -> color_eyre::eyre::Result<()> {
+        // Positive control: merge-group-bound rows matching the declared
+        // subject remain merge-ready.
+        let mut snapshot = fan_in_snapshot();
+        snapshot.merge_group_sha = Some(SHA_C.to_string());
+        snapshot.protection.evaluated_merge_group_sha = Some(SHA_C.to_string());
+        for check in &mut snapshot.checks {
+            check.subject = CheckSubject::MergeGroup { merge_group_sha: SHA_C.to_string() };
+        }
+        let evaluation = evaluate_snapshot(&snapshot)?;
+        color_eyre::eyre::ensure!(evaluation.status == MergeReadinessStatus::Ready);
+        color_eyre::eyre::ensure!(evaluation.findings.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn fan_in_head_subject_row_stays_ready_without_merge_group() -> color_eyre::eyre::Result<()> {
+        // Candidate-head rows remain acceptable while no integration subject
+        // is declared (the non-queue flow); protection evidence still owns
+        // live admission state.
+        let mut snapshot = fan_in_snapshot();
+        for check in &mut snapshot.checks {
+            check.subject = CheckSubject::CandidateHead;
+        }
+        let evaluation = evaluate_snapshot(&snapshot)?;
+        color_eyre::eyre::ensure!(evaluation.status == MergeReadinessStatus::Ready);
+        Ok(())
+    }
+
+    #[test]
+    fn fan_in_v1_check_row_without_subject_fails_closed() {
+        // A v1 snapshot row (no subject) must fail deserialization: old
+        // head-only snapshots cannot silently re-enter admission.
+        let raw = concat!(
+            r#"{"name":"rust","evaluated_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","#,
+            r#""result":"SUCCESS"}"#
+        );
+        let parsed: Result<RequiredCheckEvidence, _> = serde_json::from_str(raw);
+        assert!(parsed.is_err(), "v1 row without subject must fail closed");
     }
 
     #[test]

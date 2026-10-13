@@ -321,10 +321,10 @@ runtime. Ambient env leakage here affects CI reproducibility but not end-user se
 | Field | Value |
 |---|---|
 | **Call site** | `xtask/src/tasks/compiler_oracle.rs:run_perl_oracle` |
-| **Spawn mechanism** | `Command::new("perl")` with explicit `env_remove("PERL5OPT")`, `env_remove("PERL5LIB")`, and `env("LC_ALL", "C")` |
+| **Spawn mechanism** | `isolated_perl_command()` builds the partially stripped `Command`; `run_bounded_command()` owns spawn, deadline polling, direct-child kill/reap, and output collection |
 | **Current env** | Partial strip: `PERL5OPT` and `PERL5LIB` removed; `LC_ALL` forced to `C`; remaining ambient variables (HOME, PATH, etc.) inherited |
 | **Desired contract** | Partial strip is intentional — oracle requires a predictable locale and no runtime module injection. Remaining ambient vars are acceptable for a corpus tool. |
-| **Timeout** | None |
+| **Timeout** | 10 s (`ORACLE_TIMEOUT`); a timed-out direct child is killed and reaped before the oracle returns an error |
 | **Cache key** | Source file content hash (oracle is deterministic for the same source) |
 | **Internalization path** | **Oracle** — differential test evidence; never editor-runtime |
 
@@ -356,10 +356,10 @@ infrastructure, not a production subprocess seam.
 | Field | Value |
 |---|---|
 | **Call site** | `xtask/src/tasks/compiler_oracle.rs:query_perl_version` |
-| **Spawn mechanism** | `Command::new("perl")` with explicit `env_remove("PERL5OPT")`, `env_remove("PERL5LIB")`, and `env("LC_ALL", "C")` |
+| **Spawn mechanism** | Same `isolated_perl_command()` + `run_bounded_command()` path as §3.6 |
 | **Current env** | Same as §3.6 |
 | **Desired contract** | Same as §3.6 |
-| **Timeout** | None |
+| **Timeout** | 10 s (`ORACLE_TIMEOUT`); direct-child timeout cleanup is the same as §3.6 |
 | **Cache key** | None — called once per oracle run |
 | **Internalization path** | **Oracle** — CI tooling |
 
@@ -389,8 +389,8 @@ Quick-reference. Sorted by internalization path priority (gaps first).
 | 3.4 | `ci_doctor.rs:check_perl` | Bare `Command::new("perl")` | ⚠ ambient | ⚠ ambient | ⚠ ambient | none | Oracle |
 | 3.5 | `cpan_corpus.rs:CpanmLauncher` | Bare `Command::new("perl")` | ⚠ ambient | ⚠ ambient | ⚠ ambient | per-module | Bridge |
 | 3.6a | `cpan_corpus.rs` (test-only) | Bare `Command::new("perl")` | ⚠ ambient | ⚠ ambient | ⚠ ambient | 2 s / 200 ms | Oracle |
-| 3.6 | `compiler_oracle.rs:run_perl_oracle` | Bare `Command::new("perl")` (partial strip) | ✓ removed | ✓ removed | ⚠ ambient | none | Oracle |
-| 3.7 | `compiler_oracle.rs:query_perl_version` | Bare `Command::new("perl")` (partial strip) | ✓ removed | ✓ removed | ⚠ ambient | none | Oracle |
+| 3.6 | `compiler_oracle.rs:run_perl_oracle` | `isolated_perl_command()` + bounded runner | ✓ removed | ✓ removed | ⚠ ambient | 10 s | Oracle |
+| 3.7 | `compiler_oracle.rs:query_perl_version` | `isolated_perl_command()` + bounded runner | ✓ removed | ✓ removed | ⚠ ambient | 10 s | Oracle |
 
 Legend: ✓ denied/removed = no leak · user-gated = follows `usePerl5lib` config · ⚠ ambient = inherits from LSP/xtask process
 

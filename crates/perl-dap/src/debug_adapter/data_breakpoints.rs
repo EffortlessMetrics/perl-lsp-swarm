@@ -1,5 +1,5 @@
 /// Stored data breakpoint record for watchpoint management
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct DataBreakpointRecord {
     // Retained for future watchpoint lifecycle correlation.
     #[allow(dead_code)]

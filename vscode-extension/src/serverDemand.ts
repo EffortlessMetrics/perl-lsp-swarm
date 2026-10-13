@@ -22,6 +22,8 @@
  *    server command, a restored editor). All of them must join one start.
  */
 
+import { SUPPORTED_PERL_LANGUAGE_IDS, SUPPORTED_PERL_URI_SCHEMES } from './languageIdentity';
+
 /** Whether a trigger needs a given managed process, and when. */
 export type ServerDemandDisposition = 'immediate' | 'on-first-use' | 'never';
 
@@ -32,6 +34,7 @@ export type ActivationTriggerId =
   | 'onLanguage:gherkin'
   | 'onWalkthrough:perl-lsp.gettingStarted'
   | 'onDebugResolve:perl'
+  | 'onDebugResolve:perl5'
   | 'onDebugInitialConfigurations';
 
 /**
@@ -67,9 +70,10 @@ export const ACTIVATION_TRIGGER_LEDGER: readonly ActivationTriggerRow[] = [
     perllsp: 'immediate',
     perlDap: 'never',
     note:
-      'Retained alias trigger. This extension contributes no `perl5` language id, ' +
-      'so the event only fires when another extension contributes one; treat such a ' +
-      'document as an ordinary eligible Perl buffer rather than silently ignoring it.',
+      'Supported language-ID alias (#7699, languageIdentity.ts). This extension contributes ' +
+      'no `perl5` language, so the event fires when another extension or an explicit user ' +
+      'classification labels a buffer `perl5`; the alias shares the one client selector, ' +
+      'grammar, semantic model, and server process — it is never an activation-only gesture.',
   },
   {
     trigger: 'onLanguage:gherkin',
@@ -88,6 +92,15 @@ export const ACTIVATION_TRIGGER_LEDGER: readonly ActivationTriggerRow[] = [
     perllsp: 'on-first-use',
     perlDap: 'immediate',
     note: 'Debugging owns its own adapter process; the language server is not required to debug.',
+  },
+  {
+    trigger: 'onDebugResolve:perl5',
+    perllsp: 'on-first-use',
+    perlDap: 'immediate',
+    note:
+      'Debug-config resolution for an alias-classified buffer (#7699): the alias shares the ' +
+      'canonical onDebugResolve:perl disposition — DAP starts immediately, the language server ' +
+      'only on first use.',
   },
   {
     trigger: 'onDebugInitialConfigurations',
@@ -178,10 +191,10 @@ export interface ServerDemandHooks {
 }
 
 /** Language ids that make a document a server-dependent surface. */
-const ELIGIBLE_LANGUAGE_IDS: ReadonlySet<string> = new Set(['perl', 'perl5']);
+const ELIGIBLE_LANGUAGE_IDS: ReadonlySet<string> = new Set(SUPPORTED_PERL_LANGUAGE_IDS);
 
 /** Schemes we are willing to synchronize to the server. */
-const ELIGIBLE_URI_SCHEMES: ReadonlySet<string> = new Set(['file', 'untitled']);
+const ELIGIBLE_URI_SCHEMES: ReadonlySet<string> = new Set(SUPPORTED_PERL_URI_SCHEMES);
 
 /**
  * Whether a document is a server-dependent surface.

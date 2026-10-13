@@ -1,7 +1,6 @@
 use super::{
     AstBreakpointValidator, BreakpointLocation, BreakpointLocationsArguments,
-    BreakpointLocationsResponseBody, BreakpointValidator, DapMessage, DebugAdapter, Ordering,
-    Value,
+    BreakpointLocationsResponseBody, BreakpointValidator, DapMessage, DebugAdapter, Value,
 };
 
 impl DebugAdapter {
@@ -73,11 +72,26 @@ impl DebugAdapter {
 
         let mut breakpoints = Vec::new();
         let end_line = args.end_line.unwrap_or(args.line);
-
+        let operation = match self.operation_broker.register_request(
+            request_seq,
+            super::super::operation_broker::OperationClass::Inspection,
+            std::time::Duration::from_secs(1),
+        ) {
+            Ok(operation) => operation,
+            Err(error) => {
+                return DapMessage::Response {
+                    seq,
+                    request_seq,
+                    success: false,
+                    command: "breakpointLocations".to_string(),
+                    body: None,
+                    message: Some(format!("Unable to register cancellation: {error:?}")),
+                };
+            }
+        };
         if let Ok(validator) = AstBreakpointValidator::new(&content) {
             for line in args.line..=end_line {
-                if self.cancel_requested.load(Ordering::Acquire) {
-                    self.cancel_requested.store(false, Ordering::Release);
+                if operation.token().is_some_and(|token| token.is_cancelled()) {
                     break;
                 }
                 if validator.is_executable_line(line) {
@@ -89,6 +103,26 @@ impl DebugAdapter {
                     });
                 }
             }
+        }
+
+        let terminal = if operation.token().is_some_and(|token| token.is_cancelled()) {
+            super::super::operation_broker::BrokerTerminal::Cancelled
+        } else {
+            super::super::operation_broker::BrokerTerminal::Completed(Vec::new())
+        };
+        let terminal = operation.settle(terminal);
+        if !matches!(terminal, super::super::operation_broker::BrokerTerminal::Completed(_)) {
+            return DapMessage::Response {
+                seq,
+                request_seq,
+                success: false,
+                command: "breakpointLocations".to_string(),
+                body: None,
+                message: Some(format!(
+                    "breakpointLocations did not complete: {}",
+                    terminal.as_str()
+                )),
+            };
         }
 
         let body = BreakpointLocationsResponseBody { breakpoints };

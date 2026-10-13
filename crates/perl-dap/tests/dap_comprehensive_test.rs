@@ -2,9 +2,10 @@
     clippy::print_stderr,
     reason = "Integration-test diagnostic and skip output; tracing is not the harness logger."
 )]
+use perl_dap::debug_adapter::DapMessageWithEpoch;
 use perl_dap::{DapMessage, DebugAdapter};
 use perl_lsp_rs_core::config::PerlOracleEnv;
-use perl_tdd_support::{must, must_some};
+use perl_tdd_support::{must, must_some, must_with};
 use serde_json::json;
 use std::fs::write;
 use std::sync::mpsc::{Receiver, sync_channel};
@@ -15,7 +16,7 @@ type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 /// Helper to wait for a specific DAP event
 fn wait_for_event(
-    rx: &Receiver<DapMessage>,
+    rx: &Receiver<DapMessageWithEpoch>,
     event_name: &str,
     timeout_secs: u64,
 ) -> Result<DapMessage, String> {
@@ -23,10 +24,10 @@ fn wait_for_event(
     loop {
         match rx.recv_timeout(timeout) {
             Ok(msg) => {
-                if let DapMessage::Event { ref event, .. } = msg
+                if let (DapMessage::Event { ref event, .. }, _) = msg
                     && event == event_name
                 {
-                    return Ok(msg);
+                    return Ok(msg.0);
                 }
                 // Continue waiting for the specific event
             }
@@ -48,6 +49,7 @@ fn create_test_script(
 #[test]
 fn test_dap_initialize() {
     let mut adapter = DebugAdapter::new();
+    crate::install_unbounded_test_authority(&adapter);
     let (tx, _rx) = sync_channel(64);
     adapter.set_event_sender(tx);
 
@@ -66,18 +68,35 @@ fn test_dap_initialize() {
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false)
             );
+            // #9578: the optional breakpoint capability rows fail closed from
+            // the single breakpoint authority — the catalog rows stay
+            // advertised but cannot widen the wire. `unwrap_or(true)` so a
+            // missing key fails this assertion instead of passing vacuously.
             assert!(
-                body.get("supportsConditionalBreakpoints")
+                !body
+                    .get("supportsConditionalBreakpoints")
                     .and_then(|v| v.as_bool())
-                    .unwrap_or(false)
+                    .unwrap_or(true),
+                "supportsConditionalBreakpoints must be false (#9578)"
+            );
+            // #9573: hover is advertised false until a pure selected-frame
+            // inspection path exists. `unwrap_or(true)` so a missing key fails
+            // this assertion instead of passing vacuously.
+            assert!(
+                !body.get("supportsEvaluateForHovers").and_then(|v| v.as_bool()).unwrap_or(true),
+                "supportsEvaluateForHovers must be false (#9573)"
             );
             assert!(
-                body.get("supportsEvaluateForHovers").and_then(|v| v.as_bool()).unwrap_or(false)
+                !body.get("supportsFunctionBreakpoints").and_then(|v| v.as_bool()).unwrap_or(true),
+                "supportsFunctionBreakpoints must be false (#9578)"
             );
+            // #9089: the routed inlineValues extension is a project extension
+            // kept outside standard DAP capability accounting. `unwrap_or(true)`
+            // so a missing key fails this assertion instead of passing vacuously.
             assert!(
-                body.get("supportsFunctionBreakpoints").and_then(|v| v.as_bool()).unwrap_or(false)
+                !body.get("supportsInlineValues").and_then(|v| v.as_bool()).unwrap_or(true),
+                "supportsInlineValues must be false until #9089's negotiation gate passes"
             );
-            assert!(body.get("supportsInlineValues").and_then(|v| v.as_bool()).unwrap_or(false));
         }
         _ => must(Err::<(), _>("Expected response message")),
     }
@@ -86,13 +105,22 @@ fn test_dap_initialize() {
 #[test]
 fn test_dap_launch_with_invalid_program() {
     let mut adapter = DebugAdapter::new();
+    crate::install_unbounded_test_authority(&adapter);
     let (tx, _rx) = sync_channel(64);
     adapter.set_event_sender(tx);
 
     let _ = adapter.handle_request(1, "initialize", None);
 
+    // Authority-backed launches require an absolute `program` path (#8656),
+    // and the rooted POSIX spelling `/nonexistent/file.pl` is relative on
+    // Windows — the absolute-path gate would intercept before the
+    // debugger-start remediation this test pins (#17174A). A never-created
+    // file inside a tempdir is absolute on every platform.
+    let fixture = must(tempdir());
+    let program = fixture.path().join("nonexistent_launch_program.pl");
+    assert!(!program.exists(), "fixture program must not exist");
     let launch_args = json!({
-        "program": "/nonexistent/file.pl",
+        "program": program.display().to_string(),
         "args": [],
         "stopOnEntry": false
     });
@@ -113,6 +141,7 @@ fn test_dap_launch_with_invalid_program() {
 #[test]
 fn test_dap_launch_missing_arguments() {
     let mut adapter = DebugAdapter::new();
+    crate::install_unbounded_test_authority(&adapter);
     let (tx, _rx) = sync_channel(64);
     adapter.set_event_sender(tx);
 
@@ -135,6 +164,7 @@ fn test_dap_launch_missing_arguments() {
 #[test]
 fn test_dap_breakpoints_no_session() {
     let mut adapter = DebugAdapter::new();
+    crate::install_unbounded_test_authority(&adapter);
 
     let bp_args = json!({
         "source": {"path": "/tmp/test.pl"},
@@ -171,6 +201,7 @@ fn test_dap_inline_values() -> TestResult {
     write(&script_path, "my $x = 1;\nmy $y = $x + 2;\nmy $z = $y + 3;\n")?;
 
     let mut adapter = DebugAdapter::new();
+    crate::install_unbounded_test_authority(&adapter);
     let response = adapter.handle_request(
         1,
         "inlineValues",
@@ -181,24 +212,18 @@ fn test_dap_inline_values() -> TestResult {
         })),
     );
 
+    // #9089: the routed inlineValues extension is fail-closed — every
+    // unnegotiated request is refused with the deterministic gate message,
+    // before any filesystem read or debugger query.
     match response {
-        DapMessage::Response { success, command, body, .. } => {
-            assert!(success);
+        DapMessage::Response { success, command, body, message, .. } => {
+            assert!(!success, "inlineValues must be refused while #9089 is unnegotiated");
             assert_eq!(command, "inlineValues");
-            let body = body.ok_or("missing body")?;
-            let values = body
-                .get("inlineValues")
-                .and_then(|v| v.as_array())
-                .ok_or("missing inlineValues")?;
+            assert!(body.is_none(), "a refused inlineValues response carries no body");
+            let message = message.ok_or("refusal must carry a message")?;
             assert!(
-                values.iter().any(|v| {
-                    v.get("text").and_then(|t| t.as_str()).unwrap_or("").contains("$x")
-                })
-            );
-            assert!(
-                values.iter().any(|v| {
-                    v.get("text").and_then(|t| t.as_str()).unwrap_or("").contains("$y")
-                })
+                message.contains("inlineValues"),
+                "refusal must carry the #9089 gate reason, got: {message}"
             );
         }
         _ => must(Err::<(), _>("Expected inlineValues response")),
@@ -210,6 +235,7 @@ fn test_dap_inline_values() -> TestResult {
 #[test]
 fn test_dap_breakpoints_missing_source() -> Result<(), Box<dyn std::error::Error>> {
     let mut adapter = DebugAdapter::new();
+    crate::install_unbounded_test_authority(&adapter);
 
     let bp_args = json!({
         "breakpoints": [{"line": 5}]
@@ -231,6 +257,7 @@ fn test_dap_breakpoints_missing_source() -> Result<(), Box<dyn std::error::Error
 #[test]
 fn test_dap_breakpoints_invalid_line() {
     let mut adapter = DebugAdapter::new();
+    crate::install_unbounded_test_authority(&adapter);
 
     let bp_args = json!({
         "source": {"path": "/tmp/test.pl"},
@@ -264,6 +291,7 @@ fn test_dap_breakpoints_invalid_line() {
 #[test]
 fn test_dap_set_exception_breakpoints() -> TestResult {
     let mut adapter = DebugAdapter::new();
+    crate::install_unbounded_test_authority(&adapter);
 
     let response = adapter.handle_request(
         1,
@@ -293,7 +321,14 @@ fn test_dap_set_exception_breakpoints() -> TestResult {
 
 #[test]
 fn test_dap_set_function_breakpoints_validation() -> TestResult {
+    // #9578: the capability is floored, so every request shape — valid
+    // package-qualified names, malformed names, and injection shapes alike —
+    // receives the identical deterministic refusal before any name
+    // validation, registry mutation, or debugger command. The shared refusal
+    // across previously-valid and previously-invalid shapes is the
+    // discrimination that the gate runs ahead of the validation loop.
     let mut adapter = DebugAdapter::new();
+    crate::install_unbounded_test_authority(&adapter);
 
     let response = adapter.handle_request(
         1,
@@ -309,19 +344,15 @@ fn test_dap_set_function_breakpoints_validation() -> TestResult {
     );
 
     match response {
-        DapMessage::Response { success, command, body, .. } => {
-            assert!(success);
+        DapMessage::Response { success, command, body, message, .. } => {
+            assert!(!success, "setFunctionBreakpoints must be refused while floored (#9578)");
             assert_eq!(command, "setFunctionBreakpoints");
-            let body = body.ok_or("Expected response body")?;
-            let breakpoints = body
-                .get("breakpoints")
-                .and_then(|v| v.as_array())
-                .ok_or("Missing breakpoints field")?;
-            assert_eq!(breakpoints.len(), 4);
-            assert_eq!(breakpoints[0].get("verified").and_then(|v| v.as_bool()), Some(true));
-            assert_eq!(breakpoints[1].get("verified").and_then(|v| v.as_bool()), Some(true));
-            assert_eq!(breakpoints[2].get("verified").and_then(|v| v.as_bool()), Some(false));
-            assert_eq!(breakpoints[3].get("verified").and_then(|v| v.as_bool()), Some(false));
+            assert!(body.is_none(), "a refused request must not carry a breakpoint body");
+            let message = message.ok_or("Expected refusal message")?;
+            assert!(
+                message.contains("supportsFunctionBreakpoints") && message.contains("#9578"),
+                "refusal must name the floored capability and gate, got {message:?}"
+            );
         }
         _ => must(Err::<(), _>("Expected response message")),
     }
@@ -332,6 +363,7 @@ fn test_dap_set_function_breakpoints_validation() -> TestResult {
 #[test]
 fn test_dap_evaluate_empty_expression() {
     let mut adapter = DebugAdapter::new();
+    crate::install_unbounded_test_authority(&adapter);
 
     let eval_args = json!({
         "expression": ""
@@ -352,6 +384,7 @@ fn test_dap_evaluate_empty_expression() {
 #[test]
 fn test_dap_evaluate_no_session() {
     let mut adapter = DebugAdapter::new();
+    crate::install_unbounded_test_authority(&adapter);
 
     let eval_args = json!({
         "expression": "$x + 1"
@@ -372,6 +405,7 @@ fn test_dap_evaluate_no_session() {
 #[test]
 fn test_dap_threads_no_session() {
     let mut adapter = DebugAdapter::new();
+    crate::install_unbounded_test_authority(&adapter);
 
     let response = adapter.handle_request(1, "threads", None);
 
@@ -391,6 +425,7 @@ fn test_dap_threads_no_session() {
 #[test]
 fn test_dap_stacktrace_no_session() {
     let mut adapter = DebugAdapter::new();
+    crate::install_unbounded_test_authority(&adapter);
 
     let response = adapter.handle_request(1, "stackTrace", Some(json!({"threadId": 1})));
 
@@ -412,6 +447,7 @@ fn test_dap_stacktrace_no_session() {
 #[test]
 fn test_dap_pause_no_session() {
     let mut adapter = DebugAdapter::new();
+    crate::install_unbounded_test_authority(&adapter);
 
     let response = adapter.handle_request(1, "pause", None);
 
@@ -432,6 +468,7 @@ fn test_dap_pause_no_session() {
 #[test]
 fn test_dap_disconnect_cleans_up_session() {
     let mut adapter = DebugAdapter::new();
+    crate::install_unbounded_test_authority(&adapter);
     let (tx, _rx) = sync_channel(64);
     adapter.set_event_sender(tx);
 
@@ -450,6 +487,7 @@ fn test_dap_disconnect_cleans_up_session() {
 #[test]
 fn test_dap_unknown_command() {
     let mut adapter = DebugAdapter::new();
+    crate::install_unbounded_test_authority(&adapter);
 
     let response = adapter.handle_request(1, "unknownCommand", None);
 
@@ -466,6 +504,7 @@ fn test_dap_unknown_command() {
 #[test]
 fn test_dap_variables_missing_reference() {
     let mut adapter = DebugAdapter::new();
+    crate::install_unbounded_test_authority(&adapter);
 
     let response = adapter.handle_request(1, "variables", None);
 
@@ -482,6 +521,7 @@ fn test_dap_variables_missing_reference() {
 #[test]
 fn test_dap_variables_default_scope() {
     let mut adapter = DebugAdapter::new();
+    crate::install_unbounded_test_authority(&adapter);
 
     let var_args = json!({
         "variablesReference": 11
@@ -518,6 +558,7 @@ fn test_dap_variables_default_scope() {
 #[test]
 fn test_dap_scopes_missing_frame() {
     let mut adapter = DebugAdapter::new();
+    crate::install_unbounded_test_authority(&adapter);
 
     let response = adapter.handle_request(1, "scopes", None);
 
@@ -534,6 +575,7 @@ fn test_dap_scopes_missing_frame() {
 #[test]
 fn test_dap_scopes_noncurrent_frame_returns_empty() {
     let mut adapter = DebugAdapter::new();
+    crate::install_unbounded_test_authority(&adapter);
 
     let scope_args = json!({
         "frameId": 1
@@ -560,6 +602,7 @@ fn test_dap_scopes_noncurrent_frame_returns_empty() {
 #[test]
 fn test_sequence_number_increment() {
     let mut adapter = DebugAdapter::new();
+    crate::install_unbounded_test_authority(&adapter);
 
     // Test that sequence numbers increment properly by making multiple requests
     let _response1 = adapter.handle_request(1, "initialize", None);
@@ -594,6 +637,7 @@ print "Result: $result\n";
         "created DAP lifecycle script must stay on disk while its TempDir is held"
     );
     let mut adapter = DebugAdapter::new();
+    crate::install_unbounded_test_authority(&adapter);
     let (tx, rx) = sync_channel(64);
     adapter.set_event_sender(tx);
 
@@ -692,4 +736,26 @@ print "Result: $result\n";
 
     eprintln!("DAP lifecycle test completed successfully");
     Ok(())
+}
+
+/// Install an explicitly unbounded startup authority (#8656).
+///
+/// These tests exercise debugging workflows, not the launch-authority
+/// contract. Without an installed authority every launch is refused, so each
+/// adapter opts into unbounded mode with a visible test acknowledgement.
+fn install_unbounded_test_authority(adapter: &perl_dap::DebugAdapter) {
+    use perl_dap::{
+        LaunchAuthority, LaunchAuthoritySource, LaunchAuthorityStartup, UnboundedAcknowledgement,
+    };
+    let authority = must_with(
+        LaunchAuthority::resolve(&LaunchAuthorityStartup {
+            trusted_roots: Vec::new(),
+            allow_unbounded: Some(UnboundedAcknowledgement::new(
+                LaunchAuthoritySource::CommandLine,
+                "test: unbounded session",
+            )),
+        }),
+        "test authority resolution",
+    );
+    adapter.set_launch_authority(authority);
 }

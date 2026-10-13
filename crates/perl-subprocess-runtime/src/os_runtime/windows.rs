@@ -91,6 +91,7 @@ pub(crate) fn resolve_windows_program(program: &str) -> Option<String> {
     let cwd = std::env::current_dir().ok()?;
     let candidate_refs: Vec<&str> = candidates.iter().map(String::as_str).collect();
     select_path_candidate(&candidate_refs, &cwd)
+        .and_then(|candidate| candidate.to_str().map(str::to_string))
 }
 
 /// Returns the list of directories in the `PATH` environment variable.

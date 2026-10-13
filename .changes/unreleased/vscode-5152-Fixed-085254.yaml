@@ -1,0 +1,9 @@
+project: vscode
+component: Performance and reliability
+kind: Fixed
+body: "The extension now runs a liveness watchdog that pings the language server every 30 seconds and automatically restarts it when a request goes unanswered for 10 seconds, so a hung server recovers on its own instead of staying unresponsive until a manual restart."
+time: 2026-07-28T08:52:54Z
+custom:
+  PR: "5152"
+  Slug: server-liveness-watchdog
+  Breaking: "no"

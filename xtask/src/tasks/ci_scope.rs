@@ -134,6 +134,10 @@ pub fn classify_diff(files: &[String]) -> String {
             has_prose = true;
         } else if is_ci_config_file(file) {
             has_ci_config = true;
+        } else if is_vscode_types_contract_input(file) {
+            // These JSON/YAML inputs carry an executable Rust policy guard;
+            // docs_as_code would skip RustScoped gates even with xtask selected.
+            has_code = true;
         } else if is_docs_as_code_file(file) {
             has_docs_as_code = true;
         } else {
@@ -180,21 +184,57 @@ fn is_ci_config_file(file: &str) -> bool {
 /// This is intentionally path-based. `ci-scope` must remain a cheap, stable
 /// planner and does not read arbitrary file contents while classifying a diff.
 /// The selected paths are the repository's known portability seams: shell
-/// hooks/scripts, URI and workspace-index code, and explicitly named Windows
-/// implementations.
+/// hooks/scripts, the `perl-ci-hygiene` process-helper seam, the
+/// `perl-dap` reload module (which owns the bounded debugger availability
+/// probe reported from Windows in #15099), URI and workspace-index code, and
+/// explicitly named Windows implementations. The Unix-only release-artifact
+/// integration target is one deliberate exception: it is included solely for
+/// Windows compile admission, while its Bash/chmod behavior remains
+/// Unix-owned and is not claimed as Windows runtime coverage.
 pub fn requires_windows_runner(files: &[String]) -> bool {
     files.iter().any(|file| {
         let normalized = file.replace('\\', "/").to_ascii_lowercase();
-        normalized == "hooks/pre-push"
+        is_powershell_completion_path(&normalized)
+            || normalized == "hooks/pre-push"
             || normalized.starts_with("hooks/")
             || (normalized.starts_with("scripts/") && normalized.ends_with(".sh"))
+            || normalized == "crates/perl-ci-hygiene/src/process.rs"
+            || normalized.starts_with("crates/perl-ci-hygiene/src/process/")
+            // The `perl-dap` reload module owns `probe_with_deadline`
+            // (`runtime.rs`) and the bounded probe decision
+            // (`Usable` / `Refused` / `TimedOut` / `InstrumentFailed`).
+            // It is the seam that was reported hanging on Windows in
+            // #15099 and was bounded on Linux only (#15529); promoting
+            // it here gives the Windows runner a path to actually
+            // exercise the bound and prove it terminates its probe child.
+            || normalized.starts_with("crates/perl-dap/src/reload/")
+            || normalized == "crates/perl-dap/src/reload.rs"
+            // Windows directory identity and its replacement witness live
+            // in this shared file; select the exact seam, not its module.
+            || normalized == "crates/perl-dap/src/security/launch_authority.rs"
             || normalized.starts_with("crates/perl-uri/")
             || normalized.contains("workspace-index")
             || normalized.contains("workspace_index")
             || normalized.contains("/windows/")
             || normalized.ends_with("_windows.rs")
             || normalized.ends_with("windows.rs")
+            // This integration target imports `std::os::unix` and drives a
+            // Bash/chmod smoke script. Its crate-root cfg keeps the target
+            // empty on Windows, but the target still needs Windows compile
+            // admission so the platform boundary cannot silently bit-rot.
+            || normalized == "xtask/tests/release_artifact_size_smoke_script.rs"
     })
+}
+
+fn is_powershell_completion_path(file: &str) -> bool {
+    let normalized = file.replace('\\', "/").to_ascii_lowercase();
+    matches!(
+        normalized.as_str(),
+        "crates/perllsp/src/main.rs"
+            | "crates/perl-lsp-rs/src/cli.rs"
+            | "crates/perllsp/tests/powershell_completion.rs"
+            | "crates/perllsp/tests/fixtures/powershell_completion_probe.ps1"
+    ) || normalized.starts_with("crates/perl-lsp-rs-core/src/runtime/launcher/")
 }
 
 fn is_docs_as_code_file(file: &str) -> bool {
@@ -446,6 +486,10 @@ fn has_features_toml_change(files: &[String]) -> bool {
     files.iter().any(|f| f == "features.toml")
 }
 
+fn is_vscode_types_contract_input(file: &str) -> bool {
+    matches!(file, "vscode-extension/package.json" | ".github/dependabot.yml")
+}
+
 /// Repository inputs that xtask's policy guards assert over, but which are not
 /// xtask source.
 ///
@@ -468,10 +512,43 @@ fn is_xtask_policy_guarded_input(file: &str) -> bool {
             | ".github/workflows/post-merge-status.yml"
             | ".github/workflows/badge-endpoints.yml"
             | ".github/workflows/ripr.yml"
+            // Four xtask integration suites (vim_host_runner_contract,
+            // vim_host_diagnostics_contract, vim_host_freshness_contract,
+            // vim_host_save_format_contract) read this workflow and assert its
+            // trigger surface and step contract. Without this route a PR
+            // editing only the lane skipped every guard written to catch it —
+            // observed on this branch: a trigger change silently broke
+            // `hermetic_host_ci_triggers_on_the_production_formatter_crate`
+            // and CI stayed green because xtask was never in scope.
+            | ".github/workflows/vim-hermetic-host.yml"
     )
+        // The gate policy is the gate owner's source: its declaration order is
+        // execution order (short-circuit focused gates, #13698/#14409), and the
+        // pinning proof `focused_control_plane_gates_precede_unit_routed_full_
+        // and_pin_the_backstop` lives in xtask's bin target. Without this
+        // routing, a gate-policy-only PR would skip both focused owner gates
+        // and the very proof that pins the policy's shape (#14409 review).
+        || file == ".ci/gate-policy.yaml"
+        // vscode_extension_types_fence reads both inputs (#13476). Route
+        // manifest-only and Dependabot-only edits to its owning test package.
+        || is_vscode_types_contract_input(file)
+        // The required-context ledger is asserted by
+        // `xtask/tests/required_context_binding_contract.rs` (#15348): a
+        // required row's producer binding (`ruleset_integration_id`,
+        // workflow + job identity) is only meaningful against the ledger
+        // file. Without this routing, a ledger-only PR would skip xtask's
+        // `tests/` suite under scope-aware `unit_routed_full` and a deleted
+        // binding would sail through every required check green (#15995
+        // review).
+        || file == ".ci/policies/required-checks.toml"
         // Publishable-crate manifests: binstall metadata, publish metadata, and
         // version-sync are all xtask-owned assertions over these files.
         || (file.starts_with("crates/") && file.ends_with("/Cargo.toml"))
+        // The lane-termination classifier is asserted by xtask's E1
+        // correctness harness and P3 scale bench (#17154): both execute the
+        // script and pin its counters. Without this routing, a script-only
+        // PR would skip the guards written to catch it (#17345 review).
+        || file == "scripts/ci/classify-ripr-lane-termination"
 }
 
 /// Extract unique crate names from cargo metadata JSON for crate dirs in the changed files.
@@ -760,7 +837,24 @@ pub fn classify_files(
     let windows_test_crates = if windows_runner {
         let mut crates: Vec<String> = direct_crates.iter().map(|c| c.name.clone()).collect();
         if crates.is_empty() {
-            crates.extend(["perl-uri".to_string(), "perl-workspace".to_string()]);
+            // #15405: add `perl-dap` to the default Windows smoke set so
+            // every Windows-bound PR surfaces the deterministic Windows-
+            // local failures (admitted_debugger_alias symlink privilege,
+            // live_perl_debuggee_reload perl5db stall — #15395 slices B1
+            // and B2 own the fixes) as visible check runs rather than
+            // letting them silently bit-rot on the floor. The set is
+            // advisory: promotion to required belongs to the owner once
+            // B1/B2 land.
+            crates.extend([
+                "perl-uri".to_string(),
+                "perl-workspace".to_string(),
+                "perl-dap".to_string(),
+            ]);
+        }
+        // The public-binary completion probe lives in perllsp even when
+        // only its shared CLI/template changes in a different crate.
+        if files.iter().any(|file| is_powershell_completion_path(file)) {
+            crates.push("perllsp".to_string());
         }
         crates.sort();
         crates.dedup();
@@ -1119,9 +1213,21 @@ mod tests {
         for file in [
             "hooks/pre-push",
             "scripts/check-shell.sh",
+            "crates/perl-ci-hygiene/src/process.rs",
+            "crates/perl-ci-hygiene/src/process/tests.rs",
+            "crates/perl-dap/src/reload/mod.rs",
+            "crates/perl-dap/src/reload/runtime.rs",
+            "crates/perl-dap/src/reload/measurement.rs",
+            "crates/perl-dap/src/security/launch_authority.rs",
             "crates/perl-uri/src/fs.rs",
             "crates/perl-workspace/src/workspace-index.rs",
             "crates/perl-workspace/src/platform/windows.rs",
+            "xtask/tests/release_artifact_size_smoke_script.rs",
+            "crates/perllsp/src/main.rs",
+            "crates/perl-lsp-rs/src/cli.rs",
+            "crates/perl-lsp-rs-core/src/runtime/launcher/mod.rs",
+            "crates/perllsp/tests/powershell_completion.rs",
+            "crates/perllsp/tests/fixtures/powershell_completion_probe.ps1",
         ] {
             assert!(
                 requires_windows_runner(&[file.to_string()]),
@@ -1136,6 +1242,11 @@ mod tests {
             "docs/windows.md".to_string(),
             "scripts/check-shell.py".to_string(),
             "crates/perl-parser/src/lib.rs".to_string(),
+            // Other perl-dap security siblings are outside the exact
+            // identity seam and should not select a Windows runner.
+            "crates/perl-dap/src/lib.rs".to_string(),
+            "crates/perl-dap/src/debug_adapter/protocol.rs".to_string(),
+            "crates/perl-dap/src/security/mod.rs".to_string(),
         ];
         assert!(!requires_windows_runner(&files));
     }
@@ -1231,6 +1342,55 @@ mod tests {
     // skips the guard that exists to catch it.
 
     #[test]
+    fn hermetic_vim_workflow_change_selects_xtask() -> Result<()> {
+        let files = vec![".github/workflows/vim-hermetic-host.yml".to_string()];
+        let metadata = fake_metadata(&[("xtask", "xtask")]);
+        let crates = crates_from_files(&files, &metadata, "/workspace")?;
+        assert!(
+            crates.contains("xtask"),
+            "changing the hermetic Vim lane must route to the contract tests that assert on it"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn vscode_types_contract_inputs_select_xtask() -> Result<()> {
+        let metadata = fake_metadata(&[("xtask", "xtask")]);
+        for file in ["vscode-extension/package.json", ".github/dependabot.yml"] {
+            let scope = classify_files(&[file.to_string()], &metadata, "/workspace")?;
+            assert_eq!(scope.diff_class, "code", "{file} must not skip Rust gates");
+            assert!(
+                scope.direct_crates.iter().any(|krate| krate.name == "xtask"),
+                "{file} must select its types fence"
+            );
+            assert!(!scope.lanes.parser_ratchet.selected, "{file} is not parser work");
+        }
+        let crates = crates_from_files(
+            &["vscode-extension/README.md".to_string()],
+            &metadata,
+            "/workspace",
+        )?;
+        assert!(!crates.contains("xtask"), "unrelated extension docs must not widen scope");
+        Ok(())
+    }
+
+    #[test]
+    fn required_checks_ledger_change_selects_xtask() -> Result<()> {
+        // #15348 / #15995 review: the required-context binding contract test
+        // reads `.ci/policies/required-checks.toml`. A ledger-only PR must
+        // route xtask into scope or a deleted producer binding sails through
+        // every required check green.
+        let files = vec![".ci/policies/required-checks.toml".to_string()];
+        let metadata = fake_metadata(&[("xtask", "xtask")]);
+        let crates = crates_from_files(&files, &metadata, "/workspace")?;
+        assert!(
+            crates.contains("xtask"),
+            "changing the required-checks ledger must route to the contract test that asserts on it"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn release_workflow_change_selects_xtask() -> Result<()> {
         let files = vec![".github/workflows/release.yml".to_string()];
         let metadata = fake_metadata(&[("xtask", "xtask")]);
@@ -1238,6 +1398,22 @@ mod tests {
         assert!(
             crates.contains("xtask"),
             "changing the packaging step must route to the guard that asserts on it"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn classifier_script_change_selects_xtask() -> Result<()> {
+        // #17345 review: E1's correctness harness and the P3 scale bench
+        // execute `scripts/ci/classify-ripr-lane-termination` and pin its
+        // counters. A script-only PR must route xtask into scope or a
+        // classifier regression sails through every required check green.
+        let files = vec!["scripts/ci/classify-ripr-lane-termination".to_string()];
+        let metadata = fake_metadata(&[("xtask", "xtask")]);
+        let crates = crates_from_files(&files, &metadata, "/workspace")?;
+        assert!(
+            crates.contains("xtask"),
+            "changing the classifier script must route to the E1/P3 guards that assert on it"
         );
         Ok(())
     }
@@ -1256,6 +1432,24 @@ mod tests {
                 "changing {workflow} must route to the xtask contract that reads it"
             );
         }
+        Ok(())
+    }
+
+    /// A gate-policy-only diff must select xtask (#14409 review of #13698):
+    /// the focused owner gates are `rust_package_scoped` on xtask, and the
+    /// pinning proof for the policy's declaration order/commands lives in the
+    /// xtask bin target. Without this routing, gate-policy drift would bypass
+    /// both on exactly the PRs that move the policy.
+    #[test]
+    fn gate_policy_change_selects_xtask() -> Result<()> {
+        let files = vec![".ci/gate-policy.yaml".to_string()];
+        let metadata = fake_metadata(&[("xtask", "xtask")]);
+        let crates = crates_from_files(&files, &metadata, "/workspace")?;
+        assert!(
+            crates.contains("xtask"),
+            "changing .ci/gate-policy.yaml must route to the gate owner whose \
+             pinning proof asserts on it"
+        );
         Ok(())
     }
 
@@ -1490,6 +1684,94 @@ mod tests {
         assert!(!output.platform_overrides.windows_runner);
         assert!(output.platform_overrides.windows_test_crates.is_empty());
         assert!(!output.explanations.contains_key("windows_runner"));
+        Ok(())
+    }
+
+    #[test]
+    fn classify_powershell_completion_paths_select_public_binary_on_windows() -> Result<()> {
+        let metadata = fake_metadata(&[
+            ("perllsp", "crates/perllsp"),
+            ("perl-lsp-rs", "crates/perl-lsp-rs"),
+            ("perl-lsp-rs-core", "crates/perl-lsp-rs-core"),
+        ]);
+        for (file, expected) in [
+            ("crates/perllsp/src/main.rs", vec!["perllsp"]),
+            ("crates/perl-lsp-rs/src/cli.rs", vec!["perl-lsp-rs", "perllsp"]),
+            (
+                "crates/perl-lsp-rs-core/src/runtime/launcher/mod.rs",
+                vec!["perl-lsp-rs-core", "perllsp"],
+            ),
+            ("crates/perllsp/tests/powershell_completion.rs", vec!["perllsp"]),
+            ("crates/perllsp/tests/fixtures/powershell_completion_probe.ps1", vec!["perllsp"]),
+        ] {
+            let output = classify_files(&[file.to_string()], &metadata, "/workspace")?;
+            assert!(output.platform_overrides.windows_runner, "{file} must execute on Windows");
+            assert_eq!(output.platform_overrides.windows_test_crates, expected, "{file}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn classify_process_helper_sources_select_ci_hygiene_for_windows_smoke() -> Result<()> {
+        let metadata = fake_metadata(&[("perl-ci-hygiene", "crates/perl-ci-hygiene")]);
+        let files = vec!["crates/perl-ci-hygiene/src/process/tests.rs".to_string()];
+        let output = classify_files(&files, &metadata, "/workspace")?;
+
+        assert!(output.platform_overrides.windows_runner);
+        assert_eq!(output.platform_overrides.windows_test_crates, vec!["perl-ci-hygiene"]);
+        assert_eq!(
+            output.direct_crates.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
+            ["perl-ci-hygiene"]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn classify_ci_hygiene_sibling_sources_do_not_widen_process_routing() -> Result<()> {
+        let metadata = fake_metadata(&[("perl-ci-hygiene", "crates/perl-ci-hygiene")]);
+        let files = vec!["crates/perl-ci-hygiene/src/main.rs".to_string()];
+        let output = classify_files(&files, &metadata, "/workspace")?;
+
+        assert!(!output.platform_overrides.windows_runner);
+        assert!(output.platform_overrides.windows_test_crates.is_empty());
+        Ok(())
+    }
+
+    /// #15405: when the Windows runner is triggered by a path outside any
+    /// crate (e.g. a shell hook change) the default fallback `windows_test_
+    /// crates` set must include `perl-dap` so the deterministic Windows-local
+    /// failures observed by #15395 (admitted_debugger_alias symlink privilege,
+    /// live_perl_debuggee_reload perl5db stall) reach the advisory Windows
+    /// smoke on every Windows-bound PR rather than only when the change
+    /// happens to touch `crates/perl-dap/**` directly. Slices B1 and B2 own
+    /// the fixes; this lane owns the observation. Promotion to required is
+    /// the owner's call once those slices land.
+    #[test]
+    fn classify_files_fallback_includes_perl_dap_when_windows_runner_triggers_without_direct_crates()
+    -> Result<()> {
+        // `hooks/pre-push` selects the Windows runner but is not under
+        // `crates/`, so `direct_crates` will be empty and the fallback list
+        // is what `windows_test_crates` reads from.
+        let metadata = fake_metadata(&[("perl-dap", "crates/perl-dap")]);
+        let files = vec!["hooks/pre-push".to_string()];
+        let output = classify_files(&files, &metadata, "/workspace")?;
+
+        assert!(
+            output.platform_overrides.windows_runner,
+            "hooks/pre-push should trigger the Windows runner"
+        );
+        assert!(
+            output.direct_crates.is_empty(),
+            "no crate is touched, so direct_crates must be empty for the fallback path"
+        );
+        let crates = &output.platform_overrides.windows_test_crates;
+        // Exact set (the fallback list is sorted and deduped at construction):
+        // perl-dap must be present, and nothing may silently join or leave.
+        assert_eq!(
+            crates,
+            &vec!["perl-dap".to_string(), "perl-uri".to_string(), "perl-workspace".to_string(),],
+            "fallback windows_test_crates drifted, got {crates:?}"
+        );
         Ok(())
     }
 

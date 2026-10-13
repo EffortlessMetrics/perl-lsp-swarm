@@ -271,6 +271,7 @@ fn named_parameter_node_is_not_emitted_as_ref() -> Result<()> {
     );
     let named_param = Node::new(
         NodeKind::NamedParameter {
+            default_operator_span: None,
             variable: Box::new(param_var),
             external_name: String::new(),
             default_operator: None,
@@ -590,30 +591,65 @@ fn token_under_cursor_cursor_past_end_snaps_back_to_last_char() {
     assert_eq!(result, Some("foo".to_string()), "past-end cursor must snap and extract token");
 }
 
-// ── token_under_cursor: cursor on non-modchar, adjacent modchar ──────────────
+// ── token_under_cursor: cursor on non-modchar punctuation after identifier ───
 //
-// Line 135: `else if anchor > 0 && is_modchar(bytes[anchor - 1])` — executed
-// 0 times in baseline. Triggered when `bytes[anchor]` is not a modchar or
-// sigil but `bytes[anchor - 1]` is.
+// Token-span snap-left is *whitespace-gated* (see `token_span` in
+// crates/perl-symbol/src/cursor/mod.rs); punctuation bytes that follow an
+// identifier (`(`, `[`, `{`, `;`, `,`, `.`) are explicit boundaries, not snap
+// targets. This matches the in-source contract asserted by
+// `whitespace_boundary_is_supported_but_punctuation_is_not`:
+//   get_symbol_range_at_position(3, "foo;")    -> None
+//   get_symbol_range_at_position(3, "foo.bar") -> None
+//
+// The earlier revision of this test expected `Some("abc")` for `"abc("` (a
+// non-whitespace snap branch that was removed in #2855). The test is
+// preserved here as a regression lock for the corrected boundary semantics
+// so a future re-broadening of `token_span` cannot reintroduce the old
+// behavior without an explicit, source-of-truth code change.
 
 #[test]
-fn token_under_cursor_cursor_on_delimiter_after_identifier() {
-    // "abc(" — cursor on '(' (col 3). '(' is neither modchar nor sigil;
-    // but 'c' at col 2 IS a modchar → snap to anchor-1.
+fn token_under_cursor_cursor_on_delimiter_after_identifier_returns_none() {
+    // "abc(" — cursor on '(' (col 3). '(' is neither modchar nor sigil and
+    // is *not* whitespace, so the snap-left branch does not fire and the
+    // final `else { return None }` branch is taken.
     let text = "abc(";
     let result = token_under_cursor(text, 0, 3);
-    assert_eq!(result, Some("abc".to_string()), "cursor after identifier must snap left");
+    assert_eq!(
+        result, None,
+        "punctuation after identifier is an explicit boundary, not a snap target"
+    );
+
+    // Lock the same boundary for every byte that the lexical layer treats as
+    // a delimiter. None of these may snap left into the preceding identifier.
+    for (label, delim_text, col) in [
+        ("call", "abc(", 3usize), // function-call paren
+        ("index", "abc[", 3),     // array/hash index bracket
+        ("hash", "abc{", 3),      // hash slice brace
+        ("semi", "abc;", 3),      // statement terminator
+        ("comma", "abc,", 3),     // list separator
+        ("dot", "abc.", 3),       // bareword-method notation
+    ] {
+        let r = token_under_cursor(delim_text, 0, col);
+        assert_eq!(
+            (label, r),
+            (label, None),
+            "{delim_text:?} cursor at col {col} must not snap into preceding identifier"
+        );
+    }
 }
 
-// ── token_under_cursor: cursor on space after identifier → None ──────────────
+// ── token_under_cursor: cursor on space at start of line → None ──────────────
 //
-// The `else { return None }` branch (line 138) fires when neither condition
-// in the if/else-if is satisfied.
+// The `else { return None }` branch fires when neither condition in the
+// if/else-if is satisfied. The trailing-whitespace snap path is exercised
+// elsewhere; this test pins the *non*-snap case for a leading-space line.
 
 #[test]
 fn token_under_cursor_cursor_on_space_not_adjacent_to_token_returns_none() {
-    // "  x" — cursor at col 0 (space), anchor > 0 is false, so the second
-    // condition `anchor > 0 && is_modchar(bytes[anchor - 1])` is also false → None.
+    // "  x" — cursor at col 0 (space), position > 0 is false, so the second
+    // condition `position > 0 && bytes[position].is_ascii_whitespace() &&
+    //  (is_name_byte(bytes[position - 1]) || is_sigil(bytes[position - 1]))`
+    // is also false → None.
     let text = "  x";
     let result = token_under_cursor(text, 0, 0);
     assert_eq!(result, None, "space at start of line must return None");

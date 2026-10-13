@@ -48,6 +48,10 @@ struct WorkspaceSymbolClass {
     requires_non_empty_query: bool,
     requires_ready_index: bool,
     requires_high_confidence: bool,
+    /// Machine-readable confidence bands admitted for live answers; an empty
+    /// declaration admits nothing live (receipts only).
+    #[serde(default)]
+    admits_confidence: Vec<String>,
     requires_source_anchor: bool,
     requires_generated_label: bool,
     #[serde(default)]
@@ -226,6 +230,9 @@ fn validate_source_backed_exact_class(
     if !class.live {
         violations.push(format!("{key} is ExplicitSource but live is false"));
     }
+    if !class.requires_high_confidence {
+        violations.push(format!("{key} is ExplicitSource but requires_high_confidence is false"));
+    }
     if class.requires_generated_label {
         violations.push(format!("{key} is ExplicitSource but requires_generated_label is true"));
     }
@@ -260,9 +267,21 @@ fn validate_source_backed_generated_class(
         violations
             .push(format!("{key} is SourceBackedGenerated but requires_ready_index is false"));
     }
-    if !class.requires_high_confidence {
-        violations
-            .push(format!("{key} is SourceBackedGenerated but requires_high_confidence is false"));
+    // The pilot admits bounded Medium confidence; the low_confidence blocker
+    // excludes Low-confidence and dynamic candidates. ExplicitSource keeps the
+    // High floor, so the generated pilot must not claim one. The admitted band
+    // is declared machine-readably, so a second generated producer cannot
+    // inherit Medium admission from this shared class without declaring it.
+    if class.requires_high_confidence {
+        violations.push(format!(
+            "{key} is the bounded Medium SourceBackedGenerated pilot but requires_high_confidence is true"
+        ));
+    }
+    let admitted = class.admits_confidence.iter().map(String::as_str).collect::<BTreeSet<_>>();
+    if admitted != BTreeSet::from(["Medium"]) {
+        violations.push(format!(
+            "{key} is the bounded Medium SourceBackedGenerated pilot but admits_confidence is {admitted:?}; expected exactly {{\"Medium\"}}"
+        ));
     }
     if !class.requires_source_anchor {
         violations
@@ -408,7 +427,8 @@ mod tests {
             live: true,
             requires_non_empty_query: true,
             requires_ready_index: true,
-            requires_high_confidence: true,
+            requires_high_confidence: false,
+            admits_confidence: vec!["Medium".to_string()],
             requires_source_anchor: true,
             requires_generated_label: true,
             label: Some(REQUIRED_GENERATED_LABEL.to_string()),
@@ -419,6 +439,54 @@ mod tests {
             claim_boundary: "Source-backed generated/framework members are labeled and anchored."
                 .to_string(),
         }
+    }
+
+    fn live_exact_class() -> WorkspaceSymbolClass {
+        WorkspaceSymbolClass {
+            name: "source_backed_exact_symbol".to_string(),
+            state: "partial_live".to_string(),
+            surface: REQUIRED_SURFACE.to_string(),
+            fact_provenance: "ExplicitSource".to_string(),
+            live: true,
+            requires_non_empty_query: true,
+            requires_ready_index: true,
+            requires_high_confidence: true,
+            admits_confidence: Vec::new(),
+            requires_source_anchor: true,
+            requires_generated_label: false,
+            label: None,
+            blocks: Vec::new(),
+            claim_boundary: "Exact source symbols remain high-confidence and anchored.".to_string(),
+        }
+    }
+
+    #[test]
+    fn rejects_exact_live_class_without_high_confidence_floor() -> TestResult {
+        let mut class = live_exact_class();
+        class.requires_high_confidence = false;
+        let mut violations = Vec::new();
+
+        validate_source_backed_exact_class(&class, "test", &mut violations);
+
+        assert!(
+            violations.iter().any(|violation| violation.contains("requires_high_confidence")),
+            "ExplicitSource class without the High confidence floor should be rejected: {violations:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn accepts_compliant_exact_live_class() -> TestResult {
+        let class = live_exact_class();
+        let mut violations = Vec::new();
+
+        validate_source_backed_exact_class(&class, "test", &mut violations);
+
+        assert!(
+            violations.is_empty(),
+            "compliant ExplicitSource class should pass: {violations:?}"
+        );
+        Ok(())
     }
 
     #[test]
@@ -459,6 +527,88 @@ mod tests {
     }
 
     #[test]
+    fn accepts_bounded_medium_generated_confidence_band() -> TestResult {
+        let policy = policy();
+        let class = live_generated_class();
+        let mut violations = Vec::new();
+
+        validate_source_backed_generated_class(&class, "test", &policy, &mut violations);
+
+        assert!(
+            violations.is_empty(),
+            "Medium generated pilot with low_confidence blocked should pass: {violations:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn generated_medium_band_still_requires_low_confidence_blocker() -> TestResult {
+        let policy = policy();
+        let mut class = live_generated_class();
+        class.blocks.retain(|blocker| blocker != "low_confidence");
+        let mut violations = Vec::new();
+
+        validate_source_backed_generated_class(&class, "test", &policy, &mut violations);
+
+        assert!(
+            violations.iter().any(|violation| violation.contains("low_confidence")),
+            "Medium admission without the low_confidence blocker must fail: {violations:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn generated_medium_band_rejects_high_confidence_claim() -> TestResult {
+        let policy = policy();
+        let mut class = live_generated_class();
+        class.requires_high_confidence = true;
+        let mut violations = Vec::new();
+
+        validate_source_backed_generated_class(&class, "test", &policy, &mut violations);
+
+        assert!(
+            violations.iter().any(|violation| violation.contains("requires_high_confidence")),
+            "bounded Medium pilot claiming High confidence must fail: {violations:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_generated_pilot_without_declared_confidence_band() -> TestResult {
+        let policy = policy();
+        let mut class = live_generated_class();
+        class.admits_confidence = Vec::new();
+        let mut violations = Vec::new();
+
+        validate_source_backed_generated_class(&class, "test", &policy, &mut violations);
+
+        assert!(
+            violations.iter().any(|violation| violation.contains("admits_confidence")),
+            "live generated pilot without a declared confidence band must fail: {violations:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_generated_pilot_admitting_low_confidence_band() -> TestResult {
+        let policy = policy();
+        let mut class = live_generated_class();
+        class.admits_confidence = vec!["Medium".to_string(), "Low".to_string()];
+        let mut violations = Vec::new();
+
+        validate_source_backed_generated_class(&class, "test", &policy, &mut violations);
+
+        assert!(
+            violations
+                .iter()
+                .any(|violation| violation.contains("admits_confidence")
+                    && violation.contains("Low")),
+            "live generated pilot admitting the Low band must fail: {violations:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn rejects_generated_no_source_live_class() -> TestResult {
         let class = WorkspaceSymbolClass {
             name: "generated_no_source_candidate".to_string(),
@@ -469,6 +619,7 @@ mod tests {
             requires_non_empty_query: false,
             requires_ready_index: false,
             requires_high_confidence: false,
+            admits_confidence: Vec::new(),
             requires_source_anchor: false,
             requires_generated_label: true,
             label: None,

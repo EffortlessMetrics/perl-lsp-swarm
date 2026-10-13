@@ -168,6 +168,20 @@ const MODULES: &[ModuleRow] = &[
         "#7390"
     ),
     module_row!(
+        "metadata_invalidation",
+        PerlApplication,
+        "perl-lsp-rs",
+        "retain metadata-change fact invalidation beside the workspace model it protects",
+        "#13640"
+    ),
+    module_row!(
+        "metadata_invalidation_tests",
+        PerlApplication,
+        "perl-lsp-rs",
+        "retain as cfg(test) falsifiers of metadata-change invalidation beside its subject",
+        "#13640"
+    ),
+    module_row!(
         "notebook",
         PerlApplication,
         "perl-lsp-rs DocumentStore",
@@ -229,6 +243,27 @@ const MODULES: &[ModuleRow] = &[
         "PerlLspAdapter",
         "provide explicit route descriptors to generic runtime",
         "#9503"
+    ),
+    module_row!(
+        "runtime_services",
+        PerlApplication,
+        "perl-lsp-rs RuntimeServices",
+        "retain as the application worker execution lifecycle/settlement owner",
+        "#10024"
+    ),
+    module_row!(
+        "runtime_services_tests",
+        PerlApplication,
+        "perl-lsp-rs",
+        "retain as cfg(test) falsifiers of application worker settlement beside its subject",
+        "#10024"
+    ),
+    module_row!(
+        "scan_gate_observation",
+        TemporaryCoupling,
+        "effortless-lsp testkit + product tests",
+        "split generic scan observation from Perl fixtures",
+        "#7394"
     ),
     module_row!(
         "scheduler",
@@ -306,6 +341,13 @@ const MODULES: &[ModuleRow] = &[
         "effortless-lsp",
         "extract generic protocol types; adapter keeps Perl policy",
         "#7386"
+    ),
+    module_row!(
+        "v0_18_text_sync_envelope",
+        PerlApplication,
+        "perl-lsp-rs DocumentStore + adapter",
+        "retain the selected v0.18 full-document UTF-16 envelope above runtime until the atomic-incremental cutover",
+        "#8129"
     ),
     module_row!(
         "window",
@@ -393,6 +435,9 @@ const DEPENDENCIES: &[DependencyRow] = &[
     dependency!("perl-pod", MoveToPerlAdapter, "#6957"),
     dependency!("perl-position-tracking", MoveToPerlAdapter, "#8617"),
     dependency!("perl-pragma", MoveToPerlAdapter, "#6957"),
+    // #14751: canonical regex diagnostics engine consumed by the core
+    // diagnostics provider; same adapter-bound analysis shape as perl-lexer.
+    dependency!("perl-regex", MoveToPerlAdapter, "#6957"),
     dependency!("perl-ripr-facts", MoveToPerlAdapter, "#6957"),
     dependency!("perl-semantic-analyzer", MoveToPerlAdapter, "#6957"),
     dependency!("perl-semantic-facts", MoveToPerlAdapter, "#6957"),
@@ -423,6 +468,7 @@ const DEPENDENCIES: &[DependencyRow] = &[
     dependency!("tracing", RetainGeneric, "#9291"),
     dependency!("tracing-appender", ProductOnly, "#9510"),
     dependency!("tracing-subscriber", ProductOnly, "#9510"),
+    dependency!("unicode-ident", PerlTestOnly, "#13159"),
     dependency!("ureq", ProductOnly, "#8400"),
     dependency!("url", MoveToPerlAdapter, "#8617"),
     dependency!("uuid", RetainGeneric, "#9291"),

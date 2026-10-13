@@ -145,8 +145,28 @@ submitted review body:
 Generate it only after the useful review record is complete:
 
 ```bash
-python3 scripts/ci/check-pr-semantic-review-currentness.py   <pr> <owner/repo> --emit-marker
+python3 scripts/ci/check-pr-semantic-review-currentness.py   <pr> <owner/repo> --emit-marker --result REVIEW_CURRENT
 ```
+
+`--fixture` and `SEMANTIC_REVIEW_TEST_FIXTURE` are evaluator test inputs. A valid
+fixture invocation exits 1 and reports top-level `NOT_PROVEN` with
+`acquisition_mode: fixture`; its semantic verdict remains in `evaluator_result`.
+Caller-supplied capture timestamps, pagination claims or provenance fields cannot
+promote that result. Marker emission refuses either fixture selector, including an
+empty environment value, before acquisition. The pre-merge guard also refuses that
+environment and requires the live checker envelope to match its repository, PR and
+observed head, passing that head through `--expected-head`.
+
+The supported live route still uses `gh` and its `--paginate --slurp` review
+acquisition. It rejects missing/malformed page envelopes and rows, and head/base
+movement during acquisition. `acquisition_mode: gh_live` identifies that code path;
+it is not signed provenance or authentication of an overridden executable or JSON.
+This source repair does not independently verify provider pagination completeness,
+make review/head observation atomic, qualify another provider transport, or replace
+the sanctioned thread collector and full live classic/ruleset policy union. Denied
+or unreadable acquisition remains `NOT_PROVEN`. Those capability and enforcement
+predicates remain under #17573/#17494; #17495, #15010, #15001 and #16958 retain their
+existing ownership.
 
 The digest covers `git diff --binary --full-index <merge-base> <reviewed-head>`. The
 marker is not a requirement to re-review merely because a SHA changed. It makes the
@@ -212,17 +232,29 @@ interaction, repair that interaction rather than predicting overlap in advance.
 ### Rebase as integration work
 
 Rebase is an ordinary integration tool, not a freshness ceremony. Its main accepted
-use is while resolving an actual merge conflict. The candidate lane rebases, resolves
+use is while resolving an actual merge conflict. One candidate writer rebases, resolves
 the conflict, and refreshes the proof and review subjects affected by the new combined
 tree and the resolution.
 
-The lane owner may also rebase when refreshing the base materially simplifies active
-work or reduces a concrete integration risk. It does not need to be the final action,
-and there is no mechanical one-rebase limit. Commit distance can inform that judgment,
-but it is not an acceptance condition.
+The accountable root may also direct a rebase when refreshing the base materially
+simplifies active work or reduces a concrete integration risk. The single-writer rule
+still binds: the root rebases only as the current candidate writer after explicit
+writer reassignment, or directs the active candidate writer to perform it — it does not
+mutate the candidate concurrently with a writer. A rebase does not need to be the final
+action, and there is no mechanical one-rebase limit. Commit distance can inform that
+judgment, but it is not an acceptance condition.
 
 Behind-only movement still requires no action. Do not rebase after every unrelated
 `main` commit, push empty commits, or keep a PR at exact head merely to retrigger CI.
+
+Before choosing rebase, merge, or a port, establish the branch's relation to current
+`main` from its merge base. The September 3, 2026 `main` history replacement left some
+branches without a merge base, but many older branches still share history; those are
+live candidates to compare at claim level, not orphan ports. Resolve generated-projection
+conflicts through the owning writer and publication policy, never by hand-merging.
+Feature branches do not regenerate or stage the default-branch publication
+`docs/policy/NON_RUST_INVENTORY.md`; follow [file policy](../FILE_POLICY.md) and
+[non-Rust policy](../policy/NON_RUST_POLICY.md) for its current-tree evidence path.
 Repeated rebases are churn when they have no conflict, interaction, or active-work
 reason; distinct integration work may justify more than one.
 

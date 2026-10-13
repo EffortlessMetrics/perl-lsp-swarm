@@ -764,6 +764,90 @@ fn explain_provider_decision(
     Ok(response)
 }
 
+#[test]
+fn latest_trace_selector_refuses_overwritten_request_and_preserves_id_types()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = create_server();
+    server.record_provider_decision_trace(
+        "references",
+        &json!({"provider": "references", "request_id": 41, "uri": "file:///a.pl"}),
+    );
+    server.record_provider_decision_trace(
+        "references",
+        &json!({"provider": "references", "request_id": "41", "uri": "file:///b.pl"}),
+    );
+
+    let explain = |selector: Option<Value>| -> Result<Value, Box<dyn std::error::Error>> {
+        let mut request = json!({"provider": "references"});
+        if let Some(selector) = selector {
+            request["request_id"] = selector;
+        }
+        server
+            .handle_execute_command(Some(json!({
+                "command": "perl.explainProviderDecision",
+                "arguments": [request]
+            })))?
+            .ok_or_else(|| "missing explain-provider-decision response".into())
+    };
+
+    let old_numeric = explain(Some(json!(41)))?;
+    if old_numeric.get("request_receipt").is_some()
+        || !old_numeric
+            .get("user_message")
+            .and_then(Value::as_str)
+            .is_some_and(|message| message.contains("No request evidence is attached"))
+    {
+        return Err(
+            format!("overwritten numeric request must refuse evidence: {old_numeric}").into()
+        );
+    }
+    let latest_string = explain(Some(json!("41")))?;
+    let latest_receipt = latest_string
+        .get("request_receipt")
+        .ok_or("latest string request should attach its receipt")?;
+    if latest_receipt.get("request_id") != Some(&json!("41"))
+        || latest_receipt.get("uri").and_then(Value::as_str) != Some("file:///b.pl")
+    {
+        return Err(format!("latest string request attached wrong receipt: {latest_string}").into());
+    }
+    let absent = explain(None)?;
+    if absent.get("request_receipt").and_then(|receipt| receipt.get("request_id"))
+        != Some(&json!("41"))
+    {
+        return Err(format!("absent selector must preserve latest behavior: {absent}").into());
+    }
+    let invalid_selector = server.handle_execute_command(Some(json!({
+        "command": "perl.explainProviderDecision",
+        "arguments": [{"provider": "references", "request_id": null}]
+    })));
+    let invalid_selector_error =
+        invalid_selector.err().ok_or("null request selector must return a JSON-RPC error")?;
+    if invalid_selector_error.code != -32602 {
+        return Err(format!(
+            "null request selector returned wrong error code: {invalid_selector_error:?}"
+        )
+        .into());
+    }
+    let conflicting_receipt = server.handle_execute_command(Some(json!({
+        "command": "perl.explainProviderDecision",
+        "arguments": [{
+            "provider": "references",
+            "request_id": 41,
+            "request_receipt": {"provider": "references"}
+        }]
+    })));
+    let conflicting_receipt_error = conflicting_receipt
+        .err()
+        .ok_or("request selector plus caller receipt must return a JSON-RPC error")?;
+    if conflicting_receipt_error.code != -32602 {
+        return Err(format!(
+            "selector plus caller receipt returned wrong error code: {conflicting_receipt_error:?}"
+        )
+        .into());
+    }
+    Ok(())
+}
+
 fn request_receipt<'a>(
     explanation: &'a Value,
     provider: &str,
@@ -872,7 +956,7 @@ fn assert_live_trace(receipt: &Value, provider: &str, action: &str) {
     assert_eq!(receipt.get("provider_action").and_then(Value::as_str), Some(action));
     assert_eq!(receipt.get("fact_source").and_then(Value::as_str), Some("provider_runtime"));
     assert_eq!(receipt.get("confidence").and_then(Value::as_str), Some("low"));
-    assert_eq!(receipt.get("freshness").and_then(Value::as_str), Some("fresh"));
+    assert_eq!(receipt.get("freshness").and_then(Value::as_str), Some("unknown"));
     assert!(receipt.get("fallback").and_then(Value::as_str).is_some());
     assert_eq!(receipt.get("source_backed").and_then(Value::as_bool), Some(false));
     assert_eq!(
@@ -1354,6 +1438,7 @@ fn live_type_definition_request_blocks_ambiguous_package_identity()
     assert_eq!(receipt.get("blocker").and_then(Value::as_str), Some("ambiguous_identity"));
     assert_eq!(receipt.get("fact_source").and_then(Value::as_str), Some("parser_syntax"));
     assert_eq!(receipt.get("confidence").and_then(Value::as_str), Some("low"));
+    assert_eq!(receipt.get("freshness").and_then(Value::as_str), Some("fresh"));
     assert_eq!(receipt.get("source_backed").and_then(Value::as_bool), Some(false));
     assert_eq!(
         receipt.get("source_backed_state").and_then(Value::as_str),

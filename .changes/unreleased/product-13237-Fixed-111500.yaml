@@ -1,0 +1,18 @@
+project: product
+component: Parser
+kind: Fixed
+body: >-
+  Retired the incremental parser's partial node-position index: construction no
+  longer clones every indexed subtree, and containment lookup now walks the
+  canonical child traversal, so `find_containing_node` reports the smallest
+  containing node under assignments, loops, method calls, and every other
+  structural family instead of an ancestor or nothing. Simple value edits inside
+  subroutine bodies, loop bodies, and method-call arguments are now admitted by
+  the incremental path and produce trees identical to a fresh parse; the
+  shifted-clone fallback shifts every canonical child slot, fixing stale
+  sibling positions after length-changing edits.
+time: 2026-08-29T00:00:00Z
+custom:
+  PR: "0000"
+  Slug: retire-incremental-node-position-index
+  Breaking: "no"

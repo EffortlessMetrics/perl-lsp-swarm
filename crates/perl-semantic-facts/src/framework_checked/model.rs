@@ -49,11 +49,20 @@ pub enum ModuleSelectorOutcome {
     /// Complete resolver evidence established absence.
     Absent,
     /// Resolver could not resolve the selector.
-    Unresolved { reason: String },
+    Unresolved {
+        /// Why the resolver could not resolve the selector.
+        reason: String,
+    },
     /// More than one candidate prevented a unique verdict.
-    Ambiguous { reason: String },
+    Ambiguous {
+        /// Why a unique verdict was impossible.
+        reason: String,
+    },
     /// Resolver or environment evidence was unavailable.
-    Unavailable { reason: String },
+    Unavailable {
+        /// Why the evidence was unavailable.
+        reason: String,
+    },
 }
 
 /// One exact selector and its observed terminal or incomplete outcome.
@@ -422,29 +431,53 @@ impl AdapterDetectionInput {
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DetectionAuthorityError {
+    /// Input or receipt schema version is unsupported.
     UnsupportedSchema,
+    /// Detection ran in a non-production build or profile.
     NonProduction,
+    /// Receipt descriptor does not match the input descriptor.
     DescriptorMismatch,
+    /// Result generation does not match the observed generation.
     GenerationMismatch,
+    /// The input carried an already-cancelled snapshot.
     CancelledInput,
+    /// The detector/registry/policy identity is missing.
     MissingPolicyIdentity,
+    /// The content digest is absent or malformed.
     InvalidContentDigest,
+    /// Selector evaluation evidence is malformed or incomplete.
     InvalidSelectorEvidence,
+    /// Module activation evidence is malformed.
     InvalidModuleEvidence,
+    /// Configuration exclusion evidence is malformed.
     InvalidConfigurationEvidence,
+    /// The result carries no input identity.
     MissingInputIdentity,
+    /// The result identity does not match the presented input.
     InputIdentityMismatch,
+    /// A detected outcome lacks contributing module evidence.
     MissingContributingEvidence,
+    /// Contributing evidence names modules outside the descriptor's selectors.
     UnrelatedContributingEvidence,
+    /// The evidence class cannot support the claimed confidence.
     InsufficientConfidence,
+    /// A selector was not exactly absent, so the absence claim is unproven.
     IncompleteModuleUniverse,
+    /// A required module selector matched while validating an absence claim.
     RequiredModulePresent,
+    /// Version evidence is missing or malformed.
     InvalidVersionEvidence,
+    /// The reviewed version constraint cannot be evaluated.
     UnsupportedVersionConstraint,
+    /// The observed version does not satisfy the reviewed constraint.
     VersionConstraintNotSatisfied,
+    /// The observed version satisfies a constraint that an absence claim requires to fail.
     VersionConstraintSatisfied,
+    /// Configuration exclusion evidence is absent where a rule requires it.
     MissingConfigurationEvidence,
+    /// The reviewed exclusion rule was not satisfied by the observations.
     ConfigurationRuleNotSatisfied,
+    /// The outcome was produced without authoritative validation.
     NonAuthoritativeOutcome,
 }
 
@@ -452,10 +485,15 @@ pub enum DetectionAuthorityError {
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DetectionAuthorityReceipt {
+    /// Deterministic identity of the compared input.
     pub input_identity: DetectionInputIdentity,
+    /// Adapter descriptor the receipt answers for.
     pub descriptor: AdapterDescriptor,
+    /// Outcome produced for that input.
     pub outcome: DetectionOutcome,
+    /// Whether validation admitted the outcome as authority.
     pub authoritative: bool,
+    /// First validation failure, when not authoritative.
     pub error: Option<DetectionAuthorityError>,
 }
 
@@ -464,15 +502,22 @@ pub struct DetectionAuthorityReceipt {
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AdapterDetectionResult {
+    /// Adapter this result belongs to.
     pub descriptor: AdapterDescriptor,
+    /// Source generation the detection observed.
     pub project_generation: SourceGeneration,
+    /// Terminal detection outcome.
     pub outcome: DetectionOutcome,
+    /// Observed module version evidence, when available.
     #[serde(default)]
     pub version_evidence: Option<ModuleVersionEvidence>,
+    /// Deterministic identity of the checked input, when bound.
     #[serde(default)]
     pub input_identity: Option<DetectionInputIdentity>,
+    /// Module activations that contributed to the outcome.
     #[serde(default)]
     pub contributing_modules: Vec<ModuleActivationIdentity>,
+    /// Configuration exclusion evidence, when present.
     #[serde(default)]
     pub configuration_evidence: Option<DetectionConfigurationEvidence>,
 }
@@ -511,6 +556,7 @@ impl AdapterDetectionResult {
         }
     }
 
+    /// Attach contributing module activations.
     #[must_use]
     pub fn with_contributing_modules(
         mut self,
@@ -520,18 +566,21 @@ impl AdapterDetectionResult {
         self
     }
 
+    /// Attach observed module version evidence.
     #[must_use]
     pub fn with_version_evidence(mut self, evidence: ModuleVersionEvidence) -> Self {
         self.version_evidence = Some(evidence);
         self
     }
 
+    /// Attach configuration exclusion evidence.
     #[must_use]
     pub fn with_configuration_evidence(mut self, evidence: DetectionConfigurationEvidence) -> Self {
         self.configuration_evidence = Some(evidence);
         self
     }
 
+    /// Whether the outcome reports the framework as detected.
     #[must_use]
     pub fn is_detected(&self) -> bool {
         matches!(self.outcome, DetectionOutcome::Detected { .. })

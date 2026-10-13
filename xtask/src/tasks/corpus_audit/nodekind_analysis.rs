@@ -192,6 +192,7 @@ fn recovery_kind_allowlist() -> HashMap<&'static str, &'static str> {
 ///   `actionable_never_seen` and `allowlisted_never_seen` names,
 /// - every omission name is a canonical `NodeKind` name from
 ///   `NodeKind::ALL_KIND_NAMES`, and
+/// - every allowlisted omission is a recovery kind, and
 /// - every allowlisted entry carries a non-empty rationale.
 ///
 /// Each violation yields one human-readable failure message; an empty result
@@ -201,6 +202,7 @@ pub fn omission_partition_failures(stats: &NodeKindStats) -> Vec<String> {
 
     let canonical: HashSet<&str> =
         perl_parser::ast::NodeKind::ALL_KIND_NAMES.iter().copied().collect();
+    let recovery_allowlist = recovery_kind_allowlist();
 
     // Classification bucket contents, with multiplicity for duplicate detection.
     let mut classified_counts: HashMap<&str, usize> = HashMap::new();
@@ -214,11 +216,20 @@ pub fn omission_partition_failures(stats: &NodeKindStats) -> Vec<String> {
                 entry.name
             ));
         }
+        if !recovery_allowlist.contains_key(entry.name.as_str()) {
+            failures.push(format!(
+                "Allowlisted never-seen NodeKind '{}' is not a recovery kind",
+                entry.name
+            ));
+        }
     }
     let mut actionable: HashSet<&str> = HashSet::new();
     for name in &stats.actionable_never_seen {
         *classified_counts.entry(name.as_str()).or_insert(0) += 1;
         actionable.insert(name.as_str());
+        if recovery_allowlist.contains_key(name.as_str()) {
+            failures.push(format!("Actionable never-seen NodeKind '{}' is a recovery kind", name));
+        }
     }
 
     // The two classification buckets must be disjoint.
@@ -414,6 +425,31 @@ mod tests {
         assert!(
             failures.iter().any(|s| s.contains("empty rationale")),
             "empty rationale must be rejected: {failures:?}"
+        );
+
+        // A canonical but non-recovery kind cannot be placed in the recovery-only
+        // bucket merely by supplying a rationale.
+        let non_recovery_allowlist = omission_fixture(&format!(
+            r#"{{ {base}, "never_seen": ["AmperCall"],
+                "allowlisted_never_seen": [{{"name": "AmperCall", "rationale": "incorrect recovery"}}],
+                "actionable_never_seen": [] }}"#
+        ));
+        let failures = omission_partition_failures(&non_recovery_allowlist);
+        assert!(
+            failures.iter().any(|s| s.contains("is not a recovery kind")),
+            "non-recovery allowlist entry must be rejected: {failures:?}"
+        );
+
+        // A recovery kind cannot be made actionable by moving it to the
+        // ordinary-omission bucket.
+        let actionable_recovery = omission_fixture(&format!(
+            r#"{{ {base}, "never_seen": ["Error"],
+                "allowlisted_never_seen": [], "actionable_never_seen": ["Error"] }}"#
+        ));
+        let failures = omission_partition_failures(&actionable_recovery);
+        assert!(
+            failures.iter().any(|s| s.contains("is a recovery kind")),
+            "actionable recovery entry must be rejected: {failures:?}"
         );
 
         // Valid recovery-only control: never_seen is exactly the allowlisted

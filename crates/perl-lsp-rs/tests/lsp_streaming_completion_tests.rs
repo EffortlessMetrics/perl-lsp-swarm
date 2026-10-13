@@ -9,13 +9,13 @@
 //!     -- streaming --test-threads=2
 //! ```
 
-// Tests are permitted to use `.expect()` on Result/Option per the repo's
-// coding standards (unlike production code, where it is banned).
+// This legacy integration module retains pre-existing panic-shaped test
+// helpers; the new saturation coverage below uses fallible checks.
 #![allow(clippy::expect_used)]
 
 mod support;
 
-use serde_json::json;
+use serde_json::{Value, json};
 use std::time::Duration;
 use support::lsp_harness::LspHarness;
 
@@ -28,57 +28,122 @@ fn init_harness() -> Result<LspHarness, String> {
     Ok(harness)
 }
 
+/// Await a cheap later request so a prior notification is known consumed.
+///
+/// Notifications (`workspace/didChangeConfiguration`, `textDocument/didClose`)
+/// have no response. The harness dispatches inbound messages in order, so any
+/// later JSON-RPC response proves the earlier handler returned.
+///
+/// This uses an unknown request rather than `workspace/symbol`: that handler
+/// WaitBriefly for index readiness (up to 2s), while this harness's adaptive
+/// request timeout is 600ms at `RUST_TEST_THREADS=2`. Index wait is a
+/// different wait than "notification consumed" and would time out without
+/// proving the claim. MethodNotFound (-32601) is still a dispatch-path
+/// response (see `punctuated_unknown_method_returns_32601_not_32600`).
+///
+/// Not a generation-bound configuration wait (#10840). Unlike
+/// `LspHarness::barrier`, a timeout is a test failure.
+fn await_prior_notification(harness: &mut LspHarness) -> Result<Value, Box<dyn std::error::Error>> {
+    match harness.request_with_timeout(
+        "perl-lsp/__testOrderBarrier",
+        json!({}),
+        Duration::from_secs(2),
+    ) {
+        Ok(result) => Ok(result),
+        Err(err) if request_failed_without_response(&err) => Err(err.into()),
+        Err(err) if err.contains("-32601") => Ok(json!({ "code": -32601 })),
+        Err(err) => Err(err.into()),
+    }
+}
+
+fn request_failed_without_response(err: &str) -> bool {
+    err.contains("timed out") || err.contains("No response") || err.contains("Server send error")
+}
+
+fn notify_and_await(
+    harness: &mut LspHarness,
+    method: &str,
+    params: Value,
+) -> Result<Value, Box<dyn std::error::Error>> {
+    harness.notify(method, params);
+    await_prior_notification(harness)
+}
+
+fn notify_generic_ai_config(
+    harness: &mut LspHarness,
+    ai_completion: Value,
+) -> Result<Value, Box<dyn std::error::Error>> {
+    notify_and_await(
+        harness,
+        "workspace/didChangeConfiguration",
+        json!({
+            "settings": {
+                "perl": {
+                    "aiCompletion": ai_completion
+                }
+            }
+        }),
+    )
+}
+
 /// Helper: send a generic-client AI enable attempt via didChangeConfiguration.
 ///
 /// Since #4997 no generic LSP settings channel can arm remote AI egress or
 /// toggle its streaming authorization: this payload is rejected by the
 /// server and previously accepted state is preserved. The helper remains so
 /// transport-level regressions prove that exact rejection end-to-end.
-fn enable_ai_streaming(harness: &mut LspHarness) {
-    harness.notify(
-        "workspace/didChangeConfiguration",
+fn enable_ai_streaming(harness: &mut LspHarness) -> TestResult {
+    notify_generic_ai_config(
+        harness,
         json!({
-            "settings": {
-                "perl": {
-                    "aiCompletion": {
-                        "enabled": true,
-                        "streaming": {
-                            "enabled": true
-                        }
-                    }
-                }
+            "enabled": true,
+            "streaming": {
+                "enabled": true
             }
         }),
-    );
-    // Give the server time to process the configuration change.
-    std::thread::sleep(Duration::from_millis(50));
+    )?;
+    Ok(())
 }
 
 /// Helper: generic enable attempt with fallback=false, the payload shape that
 /// used to select the no-backend progress contract before #4997.
-fn enable_ai_streaming_progress_contract(harness: &mut LspHarness) {
-    harness.notify(
-        "workspace/didChangeConfiguration",
+fn enable_ai_streaming_progress_contract(harness: &mut LspHarness) -> TestResult {
+    notify_generic_ai_config(
+        harness,
         json!({
-            "settings": {
-                "perl": {
-                    "aiCompletion": {
-                        "enabled": true,
-                        "fallback": false,
-                        "streaming": {
-                            "enabled": true
-                        }
-                    }
-                }
+            "enabled": true,
+            "fallback": false,
+            "streaming": {
+                "enabled": true
             }
         }),
-    );
-    std::thread::sleep(Duration::from_millis(50));
+    )?;
+    Ok(())
 }
 
 /// Helper: generic enable-plus-disable-streaming attempt. Both directions are
 /// unauthorized under #4997; neither may change AI state.
-fn enable_ai_disable_streaming(harness: &mut LspHarness) {
+fn enable_ai_disable_streaming(harness: &mut LspHarness) -> TestResult {
+    notify_generic_ai_config(
+        harness,
+        json!({
+            "enabled": true,
+            "streaming": {
+                "enabled": false
+            }
+        }),
+    )?;
+    Ok(())
+}
+
+// ==================== Order-preserving notification round-trip (#14865) ====================
+
+/// The round-trip helper must wait for a JSON-RPC response, not a wall-clock
+/// sleep. A sleep-only helper cannot produce MethodNotFound (-32601).
+#[test]
+fn await_prior_notification_after_did_change_configuration_returns_json_rpc_response() -> TestResult
+{
+    let mut harness = init_harness()?;
     harness.notify(
         "workspace/didChangeConfiguration",
         json!({
@@ -86,15 +151,89 @@ fn enable_ai_disable_streaming(harness: &mut LspHarness) {
                 "perl": {
                     "aiCompletion": {
                         "enabled": true,
-                        "streaming": {
-                            "enabled": false
-                        }
+                        "streaming": { "enabled": true }
                     }
                 }
             }
         }),
     );
-    std::thread::sleep(Duration::from_millis(50));
+    let response = await_prior_notification(&mut harness)?;
+    assert_eq!(
+        response.get("code").and_then(Value::as_i64),
+        Some(-32601),
+        "later in-order unknown request must be answered after didChangeConfiguration"
+    );
+    Ok(())
+}
+
+/// Opposite-direction control: the round-trip request itself is not a
+/// configuration notification. It must still be answered with no preceding
+/// `didChangeConfiguration`.
+#[test]
+fn await_prior_notification_without_preceding_notify_still_returns_json_rpc_response() -> TestResult
+{
+    let mut harness = init_harness()?;
+    let response = await_prior_notification(&mut harness)?;
+    assert_eq!(
+        response.get("code").and_then(Value::as_i64),
+        Some(-32601),
+        "order-preserving round-trip must succeed without a preceding configuration notify"
+    );
+    Ok(())
+}
+
+/// Two sequential configuration notifications each get their own round-trip.
+/// A helper that awaited only once would leave the second notification
+/// unacknowledged.
+#[test]
+fn sequential_did_change_configuration_notifications_each_await_a_response() -> TestResult {
+    let mut harness = init_harness()?;
+    let first = notify_generic_ai_config(
+        &mut harness,
+        json!({
+            "enabled": true,
+            "streaming": { "enabled": true }
+        }),
+    )?;
+    let second = notify_generic_ai_config(
+        &mut harness,
+        json!({
+            "enabled": true,
+            "streaming": { "enabled": false }
+        }),
+    )?;
+    assert_eq!(first.get("code").and_then(Value::as_i64), Some(-32601));
+    assert_eq!(second.get("code").and_then(Value::as_i64), Some(-32601));
+    Ok(())
+}
+
+/// didClose of an unknown URI must not break in-order dispatch: the later
+/// barrier request is still answered, and streaming is null.
+#[test]
+fn did_close_of_never_opened_uri_then_round_trip_streaming_is_null() -> TestResult {
+    let mut harness = init_harness()?;
+    let uri = "file:///never_opened.pl";
+    harness.close(uri)?;
+    let response = await_prior_notification(&mut harness)?;
+    assert_eq!(
+        response.get("code").and_then(Value::as_i64),
+        Some(-32601),
+        "didClose of an unknown URI must not prevent the order-preserving round-trip"
+    );
+
+    let result = harness.request(
+        "textDocument/perlInlineCompletionStream",
+        json!({
+            "textDocument": { "uri": uri, "version": 1 },
+            "position": { "line": 0, "character": 0 },
+            "partialResultToken": "never-opened-token"
+        }),
+    )?;
+    assert!(
+        result.is_null(),
+        "streaming on a never-opened URI after didClose round-trip should return null"
+    );
+    Ok(())
 }
 
 // ==================== Generic-channel rejection (#4997) ====================
@@ -108,7 +247,7 @@ fn enable_ai_disable_streaming(harness: &mut LspHarness) {
 #[test]
 fn hostile_generic_enable_cannot_enter_streaming_route() -> TestResult {
     let mut harness = init_harness()?;
-    enable_ai_streaming_progress_contract(&mut harness);
+    enable_ai_streaming_progress_contract(&mut harness)?;
 
     let uri = "file:///streaming_test.pl";
     harness.open(uri, "use strict;\nmy $obj = Package->")?;
@@ -159,7 +298,7 @@ fn hostile_generic_enable_cannot_enter_streaming_route() -> TestResult {
 #[test]
 fn hostile_generic_disable_streaming_is_equally_unauthorized() -> TestResult {
     let mut harness = init_harness()?;
-    enable_ai_disable_streaming(&mut harness);
+    enable_ai_disable_streaming(&mut harness)?;
 
     let uri = "file:///fallback_streaming_disabled.pl";
     harness.open(uri, "my $obj = Package->")?;
@@ -256,7 +395,7 @@ fn streaming_completion_without_ai_falls_back_to_one_shot() -> TestResult {
 #[test]
 fn streaming_completion_with_streaming_disabled_falls_back() -> TestResult {
     let mut harness = init_harness()?;
-    enable_ai_disable_streaming(&mut harness);
+    enable_ai_disable_streaming(&mut harness)?;
 
     let uri = "file:///fallback_streaming_disabled.pl";
     harness.open(uri, "my $obj = Package->")?;
@@ -290,7 +429,7 @@ fn streaming_completion_with_streaming_disabled_falls_back() -> TestResult {
 #[test]
 fn streaming_completion_without_partial_result_token_falls_back() -> TestResult {
     let mut harness = init_harness()?;
-    enable_ai_streaming(&mut harness);
+    enable_ai_streaming(&mut harness)?;
 
     let uri = "file:///no_token.pl";
     harness.open(uri, "my $obj = Package->")?;
@@ -328,21 +467,22 @@ fn streaming_completion_without_partial_result_token_falls_back() -> TestResult 
 
 /// After closing a document, subsequent streaming requests for that URI
 /// should return null without crashing.
+///
+/// Opposite control: open documents in this file's fallback tests return
+/// items, not null. This test only asserts the close path.
 #[test]
 fn streaming_completion_on_closed_doc_returns_null() -> TestResult {
     let mut harness = init_harness()?;
-    enable_ai_streaming(&mut harness);
+    enable_ai_streaming(&mut harness)?;
 
     let uri = "file:///closed_doc.pl";
     harness.open(uri, "use strict;\nmy $x = 1;\n")?;
     harness.wait_for_idle(Duration::from_millis(200));
     let _ = harness.drain_notifications(None, 100);
 
-    // Close the document
     harness.close(uri)?;
-    std::thread::sleep(Duration::from_millis(50));
+    await_prior_notification(&mut harness)?;
 
-    // Request streaming on the now-closed document.
     let result = harness.request(
         "textDocument/perlInlineCompletionStream",
         json!({
@@ -352,7 +492,6 @@ fn streaming_completion_on_closed_doc_returns_null() -> TestResult {
         }),
     )?;
 
-    // Should gracefully return null (document not found).
     assert!(result.is_null(), "streaming on closed doc should return null");
 
     Ok(())
@@ -414,6 +553,8 @@ fn streaming_completion_capability_advertised() -> TestResult {
 
 #[cfg(feature = "expose_lsp_test_api")]
 mod mock_streaming_completion_tests {
+    use super::TestResult;
+
     use parking_lot::Mutex;
     use perl_lsp::{JsonRpcRequest, LspServer};
     use perl_lsp_rs_core::transport::framing::ContentLengthFramer;
@@ -792,6 +933,133 @@ mod mock_streaming_completion_tests {
         }
     }
 
+    /// Backend that reports a saturated concurrency ceiling before emitting
+    /// anything (`#8300`).
+    struct MockSaturatedBackend;
+
+    impl perl_lsp_rs_core::providers::inline_completion::InlineCompletionBackend
+        for MockSaturatedBackend
+    {
+        fn stream(
+            &self,
+            _req: &perl_lsp_rs_core::providers::inline_completion::BackendRequest,
+            _sink: &mut dyn FnMut(
+                perl_lsp_rs_core::providers::inline_completion::StreamChunk,
+            )
+                -> perl_lsp_rs_core::providers::inline_completion::StreamControl,
+        ) -> Result<(), perl_lsp_rs_core::providers::inline_completion::BackendError> {
+            Err(perl_lsp_rs_core::providers::inline_completion::BackendError::Saturated)
+        }
+    }
+
+    /// Emits one accepted chunk, then refuses the response on a resource
+    /// budget — the shape of a real endpoint that streams a legal prefix and
+    /// then crosses a line, event, delta, or cumulative limit.
+    struct MockBudgetExceededChunkBackend;
+
+    impl perl_lsp_rs_core::providers::inline_completion::InlineCompletionBackend
+        for MockBudgetExceededChunkBackend
+    {
+        fn stream(
+            &self,
+            _req: &perl_lsp_rs_core::providers::inline_completion::BackendRequest,
+            sink: &mut dyn FnMut(
+                perl_lsp_rs_core::providers::inline_completion::StreamChunk,
+            )
+                -> perl_lsp_rs_core::providers::inline_completion::StreamControl,
+        ) -> Result<(), perl_lsp_rs_core::providers::inline_completion::BackendError> {
+            let _ = sink(perl_lsp_rs_core::providers::inline_completion::StreamChunk {
+                text: "1".to_string(),
+                is_final: false,
+            });
+            Err(perl_lsp_rs_core::providers::inline_completion::BackendError::BudgetExceeded(
+                perl_lsp_rs_core::providers::ai::budget::BudgetViolation {
+                    kind: perl_lsp_rs_core::providers::ai::budget::BudgetKind::CompletionBytes,
+                    limit: 1,
+                    observed_at_least: 2,
+                },
+            ))
+        }
+    }
+
+    /// A backend error that produced no text must still reach the deterministic
+    /// route on the streaming path, exactly as it does on the buffered one.
+    ///
+    /// Before this, only `BackendError::Provider` routed to fallback, so a
+    /// stream that terminated before emitting anything ended empty even with
+    /// fallback configured — the user got no suggestion at all.
+    #[test]
+    fn streaming_saturation_falls_back_to_deterministic_completions() -> TestResult {
+        let (server, capture) = create_server();
+        server.test_configure_ai_completion(true, true);
+        server.test_install_ai_backend(Some(Arc::new(MockSaturatedBackend)));
+
+        let uri = "file:///streaming-saturated-fallback.pl";
+        open_doc(&server, uri, "use ");
+        let result = request_streaming_completion(&server, uri, 4, "stream-saturated-fb");
+        if !result.is_null() {
+            return Err(
+                std::io::Error::other("streaming saturation must return a null response").into()
+            );
+        }
+
+        let progress =
+            wait_for_progress_messages(&capture, "stream-saturated-fb", Duration::from_millis(500));
+        let final_message =
+            progress.last().ok_or("the stream must always send a terminal isFinal notification")?;
+        if !final_message["params"]["value"]["isFinal"].as_bool().unwrap_or(false) {
+            return Err(std::io::Error::other(
+                "the stream must send a terminal isFinal notification",
+            )
+            .into());
+        }
+
+        let items =
+            final_message["params"]["value"]["items"].as_array().ok_or("items array")?.clone();
+        if items.is_empty() {
+            return Err(std::io::Error::other(format!(
+                "a saturated stream with fallback enabled must emit deterministic completions, got: {items:?}"
+            )).into());
+        }
+        Ok(())
+    }
+
+    /// With fallback disabled the same saturation ends the stream empty — a
+    /// typed final-empty decision, not a failure surfaced to the editor.
+    #[test]
+    fn streaming_saturation_without_fallback_ends_empty() -> TestResult {
+        let (server, capture) = create_server();
+        server.test_configure_ai_completion(true, false);
+        server.test_install_ai_backend(Some(Arc::new(MockSaturatedBackend)));
+
+        let uri = "file:///streaming-saturated-nofb.pl";
+        open_doc(&server, uri, "use ");
+        let result = request_streaming_completion(&server, uri, 4, "stream-saturated-nofb");
+        if !result.is_null() {
+            return Err(
+                std::io::Error::other("streaming saturation must return a null response").into()
+            );
+        }
+
+        let progress = wait_for_progress_messages(
+            &capture,
+            "stream-saturated-nofb",
+            Duration::from_millis(500),
+        );
+        let final_message =
+            progress.last().ok_or("the stream must always send a terminal isFinal notification")?;
+        if !final_message["params"]["value"]["isFinal"].as_bool().unwrap_or(false) {
+            return Err(std::io::Error::other(
+                "the stream must send a terminal isFinal notification",
+            )
+            .into());
+        }
+        if !final_message["params"]["value"]["items"].as_array().is_some_and(Vec::is_empty) {
+            return Err(std::io::Error::other("fallback disabled must end the stream empty").into());
+        }
+        Ok(())
+    }
+
     struct MockAuthBackend;
 
     impl perl_lsp_rs_core::providers::inline_completion::InlineCompletionBackend for MockAuthBackend {
@@ -1073,14 +1341,167 @@ mod mock_streaming_completion_tests {
                 .is_some_and(|is_final| is_final),
             "error path should emit a final progress frame"
         );
-        assert_eq!(
-            final_progress["params"]["value"]["items"][0]["insertText"], "1",
-            "error path should preserve final cumulative text"
+        // A typed provider failure means the failed provider text is never
+        // published as the final candidate: with fallback configured the
+        // deterministic route owns the final content, so the failed partial
+        // text ("1") must not survive into the final frame. The deterministic
+        // route legitimately yields an empty list for this prefix in the
+        // harness, so absence of "1" is the discriminating assertion here;
+        // the sibling no-fallback test pins the empty-final outcome
+        // positively.
+        let final_items = final_progress["params"]["value"]["items"]
+            .as_array()
+            .expect("final progress frame should carry items");
+        assert!(
+            final_items.iter().all(|item| item["insertText"] != "1"),
+            "failed provider text must not be finalized, got: {final_items:?}"
         );
         assert!(
             final_progress["params"]["value"]["sequence"].as_u64().is_some(),
             "final progress frame should carry sequence"
         );
+    }
+
+    #[test]
+    fn streaming_completion_provider_failure_without_fallback_ends_empty() {
+        // Without a configured fallback, a provider failure after partial
+        // text ends the stream with an empty final: the failed text is
+        // never published, but the terminal isFinal notification still
+        // reaches the client.
+        let (server, capture) = create_server();
+        server.test_configure_ai_completion(true, false);
+        server.test_install_ai_backend(Some(Arc::new(MockErrorChunkBackend)));
+
+        let uri = "file:///streaming-provider-failure-no-fallback.pl";
+        open_doc(&server, uri, "my $value = ");
+
+        let result = request_streaming_completion(&server, uri, 12, "stream-fail-no-fb");
+        assert!(result.is_null());
+
+        let deadline = Instant::now() + Duration::from_millis(500);
+        let progress = loop {
+            let progress = wait_for_progress_messages(
+                &capture,
+                "stream-fail-no-fb",
+                Duration::from_millis(50),
+            );
+            let has_final = progress.iter().any(|frame| {
+                frame
+                    .pointer("/params/value/isFinal")
+                    .and_then(Value::as_bool)
+                    .is_some_and(|is_final| is_final)
+            });
+            if has_final || Instant::now() >= deadline {
+                break progress;
+            }
+            thread::sleep(Duration::from_millis(10));
+        };
+        let final_progress =
+            progress.last().expect("error path should emit at least one progress frame");
+        assert!(
+            final_progress
+                .pointer("/params/value/isFinal")
+                .and_then(Value::as_bool)
+                .is_some_and(|is_final| is_final),
+            "provider failure must still emit a terminal isFinal frame"
+        );
+        let final_items = final_progress["params"]["value"]["items"]
+            .as_array()
+            .expect("final progress frame should carry items");
+        assert!(
+            final_items.is_empty(),
+            "failed provider text must not be finalized without fallback, got: {final_items:?}"
+        );
+    }
+
+    #[test]
+    fn streaming_budget_refusal_never_finalizes_the_accepted_prefix() {
+        // The whole point of the response budget is that a refused response
+        // yields no candidate. Bounding the sink is not enough: chunks already
+        // handed to the session are retained, so the terminal recovery has to
+        // repudiate them too. Before this was wired, the accepted "1" prefix
+        // was published as an accepted final completion — a deliberate
+        // refusal turned into a truncated suggestion.
+        let (server, capture) = create_server();
+        server.test_configure_ai_completion(true, false);
+        server.test_install_ai_backend(Some(Arc::new(MockBudgetExceededChunkBackend)));
+
+        let uri = "file:///streaming-budget-exceeded.pl";
+        open_doc(&server, uri, "my $value = ");
+
+        let result = request_streaming_completion(&server, uri, 12, "stream-budget-1");
+        assert!(result.is_null());
+
+        let deadline = Instant::now() + Duration::from_millis(500);
+        let progress = loop {
+            let progress =
+                wait_for_progress_messages(&capture, "stream-budget-1", Duration::from_millis(50));
+            let has_final = progress.iter().any(|frame| {
+                frame
+                    .pointer("/params/value/isFinal")
+                    .and_then(Value::as_bool)
+                    .is_some_and(|is_final| is_final)
+            });
+            if has_final || Instant::now() >= deadline {
+                break progress;
+            }
+            thread::sleep(Duration::from_millis(10));
+        };
+
+        let final_progress =
+            progress.last().expect("budget refusal should emit at least one progress frame");
+        assert!(
+            final_progress
+                .pointer("/params/value/isFinal")
+                .and_then(Value::as_bool)
+                .is_some_and(|is_final| is_final),
+            "budget refusal must still emit a terminal isFinal frame"
+        );
+        let final_items = final_progress["params"]["value"]["items"]
+            .as_array()
+            .expect("final progress frame should carry items");
+        assert!(
+            final_items.is_empty(),
+            "refused response text must not be finalized without fallback, got: {final_items:?}"
+        );
+
+        // Pin the boundary of the claim rather than leaving it to prose. A
+        // breach is only discoverable when the offending bytes arrive, so the
+        // prefix accepted before it legitimately reached the client as live,
+        // explicitly non-final progress; requiring otherwise would mean never
+        // streaming at all. What the budget guarantees is that every such
+        // frame was within budget when shown, and that none of them is
+        // promoted: the terminal frame is the only final one, and it is empty.
+        // Positive witness first: without it the two assertions below are
+        // vacuously true for a lone empty final frame, and would stop proving
+        // that an under-budget prefix legitimately reached the client at all.
+        assert!(
+            progress.len() >= 2,
+            "the accepted prefix must reach the client as live progress before the breach, \
+             got {} frame(s): {progress:?}",
+            progress.len()
+        );
+        assert_eq!(
+            progress[0]["params"]["value"]["items"][0]["insertText"], "1",
+            "the first frame must carry the under-budget prefix, got: {:?}",
+            progress[0]
+        );
+
+        for frame in progress.iter().take(progress.len().saturating_sub(1)) {
+            let is_final =
+                frame.pointer("/params/value/isFinal").and_then(Value::as_bool).unwrap_or(false);
+            assert!(!is_final, "only the terminal frame may be final: {frame:?}");
+        }
+        let finals = progress
+            .iter()
+            .filter(|frame| {
+                frame
+                    .pointer("/params/value/isFinal")
+                    .and_then(Value::as_bool)
+                    .is_some_and(|is_final| is_final)
+            })
+            .count();
+        assert_eq!(finals, 1, "a refused response must finalize exactly once");
     }
 
     #[test]

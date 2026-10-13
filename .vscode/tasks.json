@@ -7,6 +7,47 @@
       "script": "compile:test",
       "path": "${workspaceFolder}/vscode-extension",
       "problemMatcher": ["$tsc"]
+    },
+    {
+      "label": "perl-lsp: devex",
+      "type": "process",
+      "command": "just",
+      "args": ["devex"],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": [],
+      "detail": "Developer environment diagnostics (`just devex`)."
+    },
+    {
+      "label": "perl-lsp: agent-check",
+      "type": "process",
+      "command": "just",
+      "args": ["agent-check"],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": ["$rustc"],
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "detail": "Cargo-safe workspace compile check (`just agent-check`)."
+    },
+    {
+      "label": "perl-lsp: pr-fast",
+      "type": "process",
+      "command": "just",
+      "args": ["pr-fast"],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": [],
+      "group": {
+        "kind": "test",
+        "isDefault": true
+      },
+      "detail": "Fast local pull-request gate (`just pr-fast`)."
     }
   ]
 }

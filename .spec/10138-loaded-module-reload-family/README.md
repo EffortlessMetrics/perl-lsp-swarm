@@ -55,6 +55,13 @@ expect                 — exact expected projection: evaluation admitted or
                          fail-closed classification for unknown variants
 ```
 
+The reconciliation dispositions are the R03 (#10102) fill of the surface
+R01B registered: `not_applicable` on every surface for non-mutating
+outcomes, and `unavailable`/`invalidated`/`pending`
+(loaded_source_refresh/inspection_invalidation/breakpoint_reconciliation)
+for the two terminal mutation kinds — the wiring is fail-closed about what
+it cannot reacquire and never carries a `deferred` placeholder.
+
 ## Drift policy
 
 A hand-written TypeScript interface or Rust wire type that diverges from

@@ -1,0 +1,9 @@
+project: product
+component: Editor behavior
+kind: Fixed
+body: Reject stale inline runtime values after the debugger exits or its session changes.
+time: 2026-09-14T04:40:00Z
+custom:
+  PR: "14453"
+  Slug: inspection-session
+  Breaking: "no"

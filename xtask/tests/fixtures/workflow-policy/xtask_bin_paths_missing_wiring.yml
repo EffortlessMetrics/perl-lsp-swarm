@@ -1,0 +1,17 @@
+name: fixture-xtask-bin-paths-missing-wiring
+# Negative control. `--bin` selects a standalone target under `xtask/src/bin/`.
+# `mod tasks;` is declared in `xtask/src/main.rs`, so neither wiring file is
+# compiled into this binary and neither belongs in its paths filter.
+on:
+  pull_request:
+    paths:
+      - 'xtask/src/bin/example-standalone.rs'
+permissions:
+  contents: read
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - run: cargo run -p xtask --bin example-standalone --locked -- --check

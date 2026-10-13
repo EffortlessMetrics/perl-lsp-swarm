@@ -1,3 +1,4 @@
+#![expect(clippy::expect_used, reason = "bounded fixture assertion for #3021")]
 /// Deterministic fixtures for `ParseStopCause` — the typed terminal stop authority on
 /// [`ParseOutput`].
 ///
@@ -121,7 +122,7 @@ fn parse_stop_cause_debug_and_clone() {
         ParseStopCause::FutureTypedTerminal,
     ];
     for c in &causes {
-        let cloned = c.clone();
+        let cloned = *c;
         assert_eq!(c, &cloned);
         let _ = format!("{c:?}");
     }
@@ -175,8 +176,7 @@ fn finish_with_cancelled_cause_sets_terminated_early_true() {
 #[test]
 fn finish_with_nesting_cause_carries_limit_and_usage() {
     let cause = ParseStopCause::NestingOrDepthBudgetExhausted { limit: 128, usage: 129 };
-    let output =
-        ParseOutput::finish(empty_ast(), vec![], BudgetTracker::new(), Some(cause.clone()));
+    let output = ParseOutput::finish(empty_ast(), vec![], BudgetTracker::new(), Some(cause));
     assert_eq!(output.stop_cause(), Some(cause));
     assert!(output.terminated_early());
 }
@@ -239,8 +239,8 @@ fn diagnostic_order_change_does_not_affect_stop_cause() {
     ];
 
     let cause = Some(ParseStopCause::Cancelled);
-    let out_ab = ParseOutput::finish(empty_ast(), errors_ab, BudgetTracker::new(), cause.clone());
-    let out_ba = ParseOutput::finish(empty_ast(), errors_ba, BudgetTracker::new(), cause.clone());
+    let out_ab = ParseOutput::finish(empty_ast(), errors_ab, BudgetTracker::new(), cause);
+    let out_ba = ParseOutput::finish(empty_ast(), errors_ba, BudgetTracker::new(), cause);
 
     // Different diagnostic orders produce the same stop cause.
     assert_eq!(out_ab.stop_cause(), out_ba.stop_cause());

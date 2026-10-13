@@ -68,8 +68,24 @@ pub(crate) enum SessionWarningFamily {
     Critic,
     /// Invalid enum values from editor-provided settings.
     ClientSetting,
+    /// Rejected client `includePaths` entries (subject: the entry plus the
+    /// bounded reason kind, fingerprinted). The same rejected entry is
+    /// re-validated on several channels (`didChangeConfiguration`,
+    /// `initializationOptions` replay, folder effective-config rebuild), so
+    /// without a family the user would see one popup per channel per
+    /// notification (#17164).
+    ClientIncludePath,
     /// AI backend warnings (authentication failures).
     AiBackend,
+    /// A workspace `.perl-lsp.toml` could not be loaded or applied
+    /// (subject: the offending config path, fingerprinted).
+    ///
+    /// The remedy is "fix the file and reload the window", so a broken profile
+    /// is a persistent condition for the whole session: re-emitting the same
+    /// warning on every `didOpen` trains the user to dismiss the one message
+    /// that matters (#16548).
+    #[cfg(not(target_arch = "wasm32"))]
+    ProjectConfig,
 }
 
 /// Stable internal reason/category for a session warning.
@@ -78,22 +94,33 @@ pub(crate) enum SessionWarningFamily {
 /// warning wording and remediation stay owned by the domain call sites.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum SessionWarningCode {
-    /// `perlcritic` binary missing from PATH (no variable subject).
-    #[cfg(not(target_arch = "wasm32"))]
-    CriticMissingBinary,
-    /// Configured Perl::Critic profile path does not exist
-    /// (subject: configured profile string fingerprint).
-    #[cfg(not(target_arch = "wasm32"))]
-    CriticMissingProfile,
-    /// Perl::Critic execution failed (subject: error text fingerprint).
-    #[cfg(not(target_arch = "wasm32"))]
-    CriticExecutionFailed,
     /// Invalid enum value in an editor-provided setting
     /// (subject: setting tag + value type + normalized value fingerprint).
     ClientSettingInvalidValue,
+    /// A client-supplied `includePaths` entry was rejected
+    /// (subject: the entry plus the bounded reason kind, fingerprinted).
+    ClientIncludePathRejected,
     /// AI inline-completion backend authentication failed
     /// (no variable subject).
     AiBackendAuthFailure,
+    /// A workspace `.perl-lsp.toml` failed to load or apply
+    /// (subject: the offending config path fingerprint).
+    ///
+    /// The message body is deliberately **not** part of the identity: the
+    /// warning wording stays owned by the domain call site, and two different
+    /// parse errors in the same file are the same condition for suppression
+    /// purposes - the user fixes the file, not the sentence.
+    #[cfg(not(target_arch = "wasm32"))]
+    ProjectConfigInvalid,
+    /// A loaded `.perl-lsp.toml` carried an unusable `[perl].version`
+    /// (subject: the offending config path fingerprint).
+    ///
+    /// A separate kind from [`SessionWarningCode::ProjectConfigInvalid`] so a
+    /// load-failure warning and an invalid-version warning for the same file
+    /// remain distinct: the user can fix one and then trip the other, and
+    /// each names a different remedy (PR #16566 review).
+    #[cfg(not(target_arch = "wasm32"))]
+    ProjectConfigVersionInvalid,
 }
 
 /// Closed set of static dimensions that distinguish identities inside one
@@ -243,7 +270,7 @@ impl FamilyStore {
     }
 }
 
-/// Session-scoped warning-dedup store for the three governed families.
+/// Session-scoped warning-dedup store for the governed families.
 ///
 /// Presentation/operational state only (#9769): classification
 /// `provider_or_presentation`, semantic authority none, persistence never.
@@ -252,7 +279,10 @@ pub(crate) struct SessionWarningDedupStore {
     #[cfg(not(target_arch = "wasm32"))]
     critic: FamilyStore,
     client_setting: FamilyStore,
+    client_include_path: FamilyStore,
     ai_backend: FamilyStore,
+    #[cfg(not(target_arch = "wasm32"))]
+    project_config: FamilyStore,
 }
 
 impl SessionWarningDedupStore {
@@ -261,7 +291,10 @@ impl SessionWarningDedupStore {
             #[cfg(not(target_arch = "wasm32"))]
             SessionWarningFamily::Critic => &self.critic,
             SessionWarningFamily::ClientSetting => &self.client_setting,
+            SessionWarningFamily::ClientIncludePath => &self.client_include_path,
             SessionWarningFamily::AiBackend => &self.ai_backend,
+            #[cfg(not(target_arch = "wasm32"))]
+            SessionWarningFamily::ProjectConfig => &self.project_config,
         }
     }
 
@@ -342,6 +375,83 @@ impl SessionWarningDedupStore {
             ),
         )
     }
+
+    /// Decide, emit, and roll back on failed delivery for one rejected
+    /// client `includePaths` entry warning (#17164).
+    ///
+    /// The same rejected entry is re-validated on every channel that applies
+    /// client settings (`didChangeConfiguration`, `initializationOptions`
+    /// replay, folder effective-config rebuild), so suppression is keyed on
+    /// the **entry plus the bounded reason kind** (`reason_key`, from
+    /// [`perl_lsp_rs_core::config::RejectedClientIncludePathReason::dedup_key`]),
+    /// fingerprinted: one rejected entry warns once per session across all
+    /// channels, while a different entry — or the same entry rejected for a
+    /// different reason kind — still warns. Detail payloads (workspace-escape
+    /// details, unauthorized source labels) are excluded from the identity by
+    /// the caller's key, and only the deterministic fingerprint of the subject
+    /// is retained.
+    ///
+    /// Delivery failures roll the retention back via [`Self::emit_once_with`]:
+    /// a warning the client never received must be eligible to re-fire on the
+    /// next occurrence.
+    pub(crate) fn emit_client_include_path_warning(
+        &self,
+        entry: &str,
+        reason_key: &str,
+        emit: impl FnOnce() -> bool,
+    ) -> SessionWarningDecision {
+        let mut subject = String::with_capacity(entry.len() + reason_key.len() + 1);
+        subject.push_str(entry);
+        subject.push('\u{0}');
+        subject.push_str(reason_key);
+        self.emit_once_with(
+            SessionWarningFamily::ClientIncludePath,
+            SessionWarningIdentity::fingerprinted(
+                SessionWarningCode::ClientIncludePathRejected,
+                SessionWarningSubjectTag::None,
+                &subject,
+            ),
+            emit,
+        )
+    }
+
+    /// Decide, emit, and roll back on failed delivery for one
+    /// `.perl-lsp.toml` warning.
+    ///
+    /// Suppression is keyed on the **config path** alone, fingerprinted: the
+    /// same file warns once per session however many times it is re-read, and
+    /// a second broken file still warns because its path differs. The error
+    /// body is not part of the identity, so a user who fixes one error and
+    /// trips another in the same file is not spammed a second time — the
+    /// remedy (fix the file, reload the window) is identical either way.
+    ///
+    /// The caller supplies the warning kind (`ProjectConfigInvalid` for a
+    /// load/apply failure, `ProjectConfigVersionInvalid` for an unusable
+    /// `[perl].version`) and the **selected** config path the warning is
+    /// about — the file discovery actually chose, not the search root or a
+    /// display name, so two different files never collide into one identity
+    /// and one file never splits into two (PR #16566 review).
+    ///
+    /// Delivery failures roll the retention back via [`Self::emit_once_with`]:
+    /// a warning the client never received must be eligible to re-fire on the
+    /// next occurrence instead of being suppressed forever.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn emit_project_config_warning(
+        &self,
+        code: SessionWarningCode,
+        config_path: &str,
+        emit: impl FnOnce() -> bool,
+    ) -> SessionWarningDecision {
+        self.emit_once_with(
+            SessionWarningFamily::ProjectConfig,
+            SessionWarningIdentity::fingerprinted(
+                code,
+                SessionWarningSubjectTag::None,
+                config_path,
+            ),
+            emit,
+        )
+    }
 }
 
 /// Pressure/bound counters for one warning family (#9183 pressure row).
@@ -376,8 +486,14 @@ pub struct SessionWarningDedupSnapshot {
     pub critic: SessionWarningFamilyCounters,
     /// Client-setting family counters.
     pub client_setting: SessionWarningFamilyCounters,
+    /// Rejected client include-path entry family counters.
+    pub client_include_path: SessionWarningFamilyCounters,
     /// AI-backend family counters.
     pub ai_backend: SessionWarningFamilyCounters,
+    /// Project-config family counters (absent on WASM targets, where the
+    /// project-config loaders do not exist).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub project_config: SessionWarningFamilyCounters,
 }
 
 #[cfg(any(test, feature = "expose_lsp_test_api"))]
@@ -388,7 +504,10 @@ impl SessionWarningDedupStore {
             #[cfg(not(target_arch = "wasm32"))]
             critic: self.critic.counters(),
             client_setting: self.client_setting.counters(),
+            client_include_path: self.client_include_path.counters(),
             ai_backend: self.ai_backend.counters(),
+            #[cfg(not(target_arch = "wasm32"))]
+            project_config: self.project_config.counters(),
         }
     }
 }

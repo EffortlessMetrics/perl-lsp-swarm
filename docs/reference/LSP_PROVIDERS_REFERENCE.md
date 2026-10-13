@@ -1247,7 +1247,7 @@ let provider = ImplementationProvider::new(None);
 
 // With workspace indexing (cross-file inheritance)
 use std::sync::Arc;
-use perl_parser::workspace_index::WorkspaceIndex;
+use perl_workspace::workspace_index::WorkspaceIndex;
 let workspace_index = Arc::new(WorkspaceIndex::new());
 let provider = ImplementationProvider::new(Some(workspace_index));
 ```

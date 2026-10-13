@@ -15,8 +15,10 @@ A pure Rust Perl parser built on the [Pest](https://pest.rs/) PEG parser generat
 | `AstNode` | Typed AST covering declarations, control flow, expressions, literals, and modern Perl features |
 | `PrattParser` | Operator-precedence parser for Perl's expression grammar |
 | `SexpFormatter` | Configurable S-expression output (positions, compact mode) |
-| `ParseError` / `ParseResult` | Error types with position-aware diagnostics |
-| `ParseOutcome` / `ParseAttempt` / `SourceRange` | Typed completeness, diagnostic, rejection, and instrument-failure vocabulary. Not used by `parse()` yet |
+| `ParseError` | Canonical error union returned by every fallible API: `Rejected` (parser-domain rejection) or `Failed` (operational/instrument failure). The two are never interconvertible by type |
+| `StrictParseError` / `ParserFailure` / `SourceRange` | The rejection, instrument-failure, and range types carried by `ParseError`. A `Rejected` range is an offset into the source you passed to `parse()`, even though Pest parses a normalized rewrite of it |
+| `OutcomeError` | Reported by vocabulary constructors (`SourceRange`, `ParseOutcome`) for an invalid request to build a value. Not a parse result, and deliberately not folded into `ParseError` |
+| `ParseOutcome` / `ParseAttempt` / `ParseCompleteness` / `ParseDiagnostic` | Typed completeness and diagnostic vocabulary. Not used by `parse()`'s success side, which still returns a bare `AstNode` |
 
 ## Usage
 

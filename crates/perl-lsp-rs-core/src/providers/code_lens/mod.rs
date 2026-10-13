@@ -29,6 +29,8 @@ use perl_position_tracking::{WirePosition, WireRange};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+pub use crate::protocol::command::Command;
+
 /// LSP CodeLens
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -41,21 +43,6 @@ pub struct CodeLens {
     /// Data that will be passed to the CodeLensResolve request
     #[serde(skip_serializing_if = "Option::is_none")]
     pub data: Option<Value>,
-}
-
-/// LSP Command
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Command {
-    /// Title of the command (shown in UI)
-    pub title: String,
-    /// The identifier of the command to execute
-    pub command: String,
-    /// Plain text tooltip shown by clients that support LSP 3.18 command tooltips.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tooltip: Option<String>,
-    /// Arguments to the command
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub arguments: Option<Vec<Value>>,
 }
 
 /// Check if a file path refers to a Perl test file (`.t` extension)

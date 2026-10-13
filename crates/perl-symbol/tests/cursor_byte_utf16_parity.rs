@@ -52,7 +52,6 @@ fn byte_cursor_middle_of_bareword_extracts_complete_token_and_range_matches_it()
     let (name, kind) = must_some(extract_symbol_from_source(pos, source));
     let (start, end) = must_some(get_symbol_range_at_position(pos, source));
 
-    assert_eq!(name, "value");
     assert_eq!(kind, CursorSymbolKind::Subroutine);
     assert_eq!(name, "compute_value");
     // A middle-of-token cursor resolves the complete lexical token.

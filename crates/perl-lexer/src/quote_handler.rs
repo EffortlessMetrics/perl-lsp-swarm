@@ -132,7 +132,9 @@ pub fn is_quote_operator(word: &str) -> bool {
 pub fn get_quote_token_type(operator: &str) -> TokenType {
     match operator {
         "q" => TokenType::QuoteSingle,
-        "qq" => TokenType::QuoteDouble,
+        // #8779: the scanner supplies the real parts for a closed `qq` body;
+        // this mapping's empty-payload form is only a kind placeholder.
+        "qq" => TokenType::QuoteDouble(Vec::new()),
         "qw" => TokenType::QuoteWords,
         "qr" => TokenType::QuoteRegex,
         "qx" => TokenType::QuoteCommand,

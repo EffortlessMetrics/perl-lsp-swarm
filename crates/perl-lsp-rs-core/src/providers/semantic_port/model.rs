@@ -811,6 +811,8 @@ pub(crate) fn facts_are_related(left: &ProviderQueryFact, right: &ProviderQueryF
 
 #[cfg(test)]
 mod tests {
+    use perl_test_must::must_with;
+
     use super::*;
 
     fn exact_ready_request() -> ProviderQueryRequest {
@@ -936,10 +938,12 @@ mod tests {
         let request = exact_ready_request();
         let (producer, denom, snap, count, prov, conf, fresh) = valid_snapshot_args();
 
-        let grant = ProviderCompletenessGrant::issue_for_request(
-            &request, producer, denom, snap, count, prov, conf, fresh,
-        )
-        .expect("valid args must succeed");
+        let grant = must_with(
+            ProviderCompletenessGrant::issue_for_request(
+                &request, producer, denom, snap, count, prov, conf, fresh,
+            ),
+            "valid args must succeed",
+        );
 
         assert!(grant.matches(&request));
 

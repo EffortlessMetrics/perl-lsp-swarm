@@ -1,0 +1,17 @@
+project: product
+component: Parser and lexer
+kind: Fixed
+body: >-
+  Bound heredoc body collection with a deterministic source-byte budget instead
+  of a five-second wall clock. The old timer spanned the whole enclosing
+  statement, so a loaded host, tracing, or a debugger pause could drop heredoc
+  bodies from valid source and report the loss as a syntax error. Identical
+  source and parser configuration now produce identical diagnostics and AST on
+  every host, and exhausting the budget is reported as a typed resource limit
+  (`ParseStopCause::HeredocBudgetExhausted`) that leaves the affected heredoc
+  placeholders explicitly unresolved rather than silently empty.
+time: 2026-08-29T14:00:00Z
+custom:
+  PR: "13781"
+  Slug: deterministic-heredoc-collection-budget
+  Breaking: "no"

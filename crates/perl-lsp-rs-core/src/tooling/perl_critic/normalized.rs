@@ -223,6 +223,12 @@ pub struct CriticFindingContributor {
     explanation: Option<String>,
     remediation_suggestion: Option<String>,
     remediation_related_information: Vec<CriticRelatedInformation>,
+    /// Whether this producer advertised an automatic fix. Contributor-owned so
+    /// stripping the producer from a merged row also strips its fix
+    /// advertisement from the row-level view (#13798); skipped in the
+    /// serialized form, which keeps the published row contract unchanged.
+    #[serde(skip)]
+    fix_available: bool,
 }
 
 impl CriticFindingContributor {
@@ -234,6 +240,7 @@ impl CriticFindingContributor {
             explanation: candidate.explanation.clone(),
             remediation_suggestion: candidate.remediation_suggestion.clone(),
             remediation_related_information: candidate.remediation_related_information.clone(),
+            fix_available: candidate.fix_available,
         }
     }
 
@@ -272,6 +279,19 @@ impl CriticFindingContributor {
     pub fn remediation_related_information(&self) -> &[CriticRelatedInformation] {
         &self.remediation_related_information
     }
+}
+
+/// Outcome of evaluating critic-owned severity and include/exclude policy
+/// against one merged row (#13798).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CriticPolicyRetention {
+    /// The row is admitted; every contributor is retained.
+    Admitted,
+    /// The critic-side policy rejected the row: Critic contributors are
+    /// stripped and an independently owned built-in contributor survives with
+    /// its row-level view recomputed. A row without a built-in contributor is
+    /// removed entirely, so critic-owned rows remain fully removable.
+    StripCritic,
 }
 
 /// One normalized logical critic finding.
@@ -522,6 +542,104 @@ impl NormalizedCriticFinding {
     pub fn remediation_related_information(&self) -> &[CriticRelatedInformation] {
         &self.remediation_related_information
     }
+
+    /// The complete user-visible message for this logical row (#12004).
+    ///
+    /// [`Self::message`] is the normalized problem statement; a merged overlap
+    /// row can additionally carry the contributing ordinary producer's
+    /// remediation. Every surface that renders this finding to a user - the
+    /// published diagnostic and the code action that resolves it - must render
+    /// the same text, or a client cannot associate the fix with the problem it
+    /// resolves. Owning the composition here keeps the surfaces from drifting
+    /// (#13304).
+    #[must_use]
+    pub fn user_visible_message(&self) -> String {
+        match self.remediation_suggestion() {
+            Some(suggestion) => {
+                format!("{}\nSuggestion: {suggestion}", self.message())
+            }
+            None => self.message().to_string(),
+        }
+    }
+
+    /// Retain this row under critic-owned policy filtering (#13798).
+    ///
+    /// Critic severity thresholds and include/exclude filters own the Critic
+    /// producers' contributions only: they may remove those contributions from
+    /// a merged row, but they cannot revoke an independently emitted built-in
+    /// core proposition while that contributor remains present - not even an
+    /// exclude spelled with the built-in code itself, whose removal is a
+    /// built-in-policy decision, never a Critic-policy one. A
+    /// [`CriticPolicyRetention::Admitted`] row is returned unchanged; a
+    /// [`CriticPolicyRetention::StripCritic`] row survives with only its
+    /// built-in contributors - recomputing severity, severity conflict,
+    /// explanation, remediation, and fix availability from the retained
+    /// provenance so no stripped producer's advertisement survives - or
+    /// `None` when the row carried no built-in contributor, so critic-owned
+    /// rows remain fully removable. Presentation is unchanged because a
+    /// built-in contributor always owns the best presentation rank. Scoped
+    /// `## no critic` suppression deliberately keeps removing whole rows; the
+    /// source-directive ruling is deferred (#14021).
+    #[must_use]
+    pub fn retained_under_critic_policy(
+        mut self,
+        retention: CriticPolicyRetention,
+    ) -> Option<Self> {
+        match retention {
+            CriticPolicyRetention::Admitted => return Some(self),
+            CriticPolicyRetention::StripCritic => {}
+        }
+
+        let retains_core_authority = self.contributors.iter().any(|contributor| {
+            contributor.identity().origin() == CriticFindingOrigin::BuiltInDiagnostic
+        });
+        if !retains_core_authority {
+            return None;
+        }
+
+        self.contributors.retain(|contributor| {
+            contributor.identity().origin() == CriticFindingOrigin::BuiltInDiagnostic
+        });
+
+        let mut retained_severities =
+            self.contributors.iter().map(CriticFindingContributor::severity);
+        let strongest = retained_severities.next().unwrap_or(self.severity);
+        self.severity = retained_severities.fold(strongest, |best, severity| {
+            if severity_score(severity) > severity_score(best) { severity } else { best }
+        });
+        let distinct_retained = self
+            .contributors
+            .iter()
+            .map(|contributor| contributor.severity() as u8)
+            .collect::<std::collections::BTreeSet<u8>>();
+        self.severity_conflict = distinct_retained.len() > 1;
+        self.fix_available = self.contributors.iter().any(|contributor| contributor.fix_available);
+
+        let retained_explanation = self.contributors.iter().filter_map(|contributor| {
+            contributor.explanation().map(|text| {
+                (
+                    explanation_rank(contributor.identity().origin()),
+                    text.to_owned(),
+                    contributor.identity().code().to_owned(),
+                )
+            })
+        });
+        match retained_explanation.min() {
+            Some((rank, text, code)) => {
+                self.explanation = Some(text);
+                self.explanation_rank = rank;
+                self.explanation_code = Some(code);
+            }
+            None => {
+                self.explanation = None;
+                self.explanation_rank = u8::MAX;
+                self.explanation_code = None;
+            }
+        }
+
+        self.reconcile_remediation();
+        Some(self)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -613,7 +731,7 @@ fn explanation_rank(origin: CriticFindingOrigin) -> u8 {
     }
 }
 
-fn severity_score(severity: Severity) -> u8 {
+pub(super) fn severity_score(severity: Severity) -> u8 {
     severity as u8
 }
 
@@ -630,6 +748,7 @@ fn compare_contributors(
                 &right.remediation_related_information,
             )
         })
+        .then_with(|| left.fix_available.cmp(&right.fix_available))
 }
 
 /// Deterministic total order over one related-information entry: range
@@ -880,7 +999,7 @@ mod tests {
         let identity = CriticObservedIdentity::built_in_system_call();
         vec![
             CriticFindingCandidate::new(
-                identity.clone(),
+                identity,
                 source_identity,
                 Severity::Harsh,
                 range,
@@ -927,6 +1046,52 @@ mod tests {
         assert_eq!(related.len(), 2);
         assert_eq!(related[0].message, "alpha related");
         assert_eq!(related[1].message, "zulu related");
+    }
+
+    #[test]
+    fn contributors_differing_only_in_fix_availability_stay_ordered() -> Result<(), String> {
+        let range = range(10, 20);
+        let forward_candidates = vec![
+            CriticFindingCandidate::with_fix_availability(
+                CriticObservedIdentity::built_in_system_call(),
+                source(1, 7),
+                Severity::Harsh,
+                range,
+                "system() executes a shell command",
+                None,
+                false,
+            ),
+            CriticFindingCandidate::with_fix_availability(
+                CriticObservedIdentity::built_in_system_call(),
+                source(1, 7),
+                Severity::Harsh,
+                range,
+                "system() executes a shell command",
+                None,
+                true,
+            ),
+        ];
+        let forward = normalize_critic_findings(forward_candidates.clone());
+        let mut reversed = forward_candidates;
+        reversed.reverse();
+        let backward = normalize_critic_findings(reversed);
+
+        if forward != backward {
+            return Err("contributor bytes depend on arrival order".to_string());
+        }
+        let Some(row) = forward.first() else {
+            return Err("normalized contributor row is missing".to_string());
+        };
+        let Some(first) = row.contributors().first() else {
+            return Err("first contributor is missing".to_string());
+        };
+        let Some(second) = row.contributors().get(1) else {
+            return Err("second contributor is missing".to_string());
+        };
+        if first.fix_available || !second.fix_available {
+            return Err("fix availability did not determine final contributor order".to_string());
+        }
+        Ok(())
     }
 
     #[test]

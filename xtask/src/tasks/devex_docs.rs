@@ -129,20 +129,318 @@ fn xtask_subcommands() -> BTreeSet<String> {
 }
 
 fn inline_devex_commands(text: &str) -> Vec<String> {
+    let mut commands = backtick_devex_commands(text);
+    for command in line_devex_commands(text) {
+        push_unique_command(&mut commands, command);
+    }
+    commands
+}
+
+fn backtick_devex_commands(text: &str) -> Vec<String> {
     text.split('`')
         .enumerate()
         .filter_map(|(index, segment)| {
             if index % 2 == 0 {
                 return None;
             }
-            let command = segment.trim();
-            if command.starts_with("just ") || command.starts_with("cargo xtask ") {
-                Some(command.to_string())
-            } else {
-                None
-            }
+            normalize_extracted_command(segment)
         })
         .collect()
+}
+
+fn line_devex_commands(text: &str) -> Vec<String> {
+    let mut commands = Vec::new();
+    for (kind, body) in markdown_regions(text) {
+        let logical =
+            join_indented_flag_continuations(join_trailing_backslash_continuations(&body));
+        for line in logical {
+            if !admits_line_command(kind, &line) {
+                continue;
+            }
+            if let Some(command) = normalize_extracted_command(&line.text) {
+                push_unique_command(&mut commands, command);
+            }
+        }
+    }
+    commands
+}
+
+#[derive(Clone, Copy)]
+enum RegionKind {
+    Prose,
+    Fence,
+}
+
+fn admits_line_command(kind: RegionKind, line: &JoinedLine) -> bool {
+    match kind {
+        RegionKind::Fence => true,
+        RegionKind::Prose => {
+            line.continued
+                || looks_like_list_item(&line.text)
+                || is_env_prefixed_command_line(&line.text)
+        }
+    }
+}
+
+fn looks_like_list_item(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    strip_markdown_list_marker(trimmed) != trimmed
+}
+
+fn is_env_prefixed_command_line(line: &str) -> bool {
+    let without_list = strip_markdown_list_marker(line);
+    let without_env = strip_leading_env_assignments(without_list).trim();
+    without_env != without_list.trim() && is_governed_devex_command(without_env)
+}
+
+fn markdown_regions(text: &str) -> Vec<(RegionKind, String)> {
+    let mut regions = Vec::new();
+    let mut buf = String::new();
+    let mut open: Option<(char, usize)> = None;
+
+    for line in text.lines() {
+        if let Some((ch, len)) = open {
+            if is_closing_fence(line, ch, len) {
+                flush_region(&mut regions, RegionKind::Fence, &mut buf);
+                open = None;
+                continue;
+            }
+            push_region_line(&mut buf, line);
+            continue;
+        }
+        if let Some(mark) = opening_fence(line) {
+            flush_region(&mut regions, RegionKind::Prose, &mut buf);
+            open = Some(mark);
+            continue;
+        }
+        push_region_line(&mut buf, line);
+    }
+    let kind = if open.is_some() { RegionKind::Fence } else { RegionKind::Prose };
+    flush_region(&mut regions, kind, &mut buf);
+    regions
+}
+
+fn flush_region(regions: &mut Vec<(RegionKind, String)>, kind: RegionKind, buf: &mut String) {
+    if buf.is_empty() {
+        return;
+    }
+    regions.push((kind, std::mem::take(buf)));
+}
+
+fn push_region_line(buf: &mut String, line: &str) {
+    if !buf.is_empty() {
+        buf.push('\n');
+    }
+    buf.push_str(line);
+}
+
+fn opening_fence(line: &str) -> Option<(char, usize)> {
+    let (ch, len, _) = fence_prefix(line)?;
+    Some((ch, len))
+}
+
+fn is_closing_fence(line: &str, ch: char, len: usize) -> bool {
+    let Some((close_ch, close_len, rest)) = fence_prefix(line) else {
+        return false;
+    };
+    close_ch == ch && close_len >= len && rest.trim().is_empty()
+}
+
+fn fence_prefix(line: &str) -> Option<(char, usize, &str)> {
+    let trimmed_start = line.trim_start();
+    let indent = line.len().saturating_sub(trimmed_start.len());
+    if indent > 3 {
+        return None;
+    }
+    let ch = trimmed_start.chars().next()?;
+    if ch != '`' && ch != '~' {
+        return None;
+    }
+    let len = trimmed_start.chars().take_while(|candidate| *candidate == ch).count();
+    if len < 3 {
+        return None;
+    }
+    let rest = trimmed_start.get(len..)?;
+    Some((ch, len, rest))
+}
+
+/// Join physical lines that end with a shell line-continuation into one logical line.
+///
+/// A continuation is a POSIX backslash-newline escape: the final character of the
+/// physical line must be `\\` (immediately before the newline), and the trailing
+/// backslash run must have odd length so the last `\\` is not itself escaped.
+/// Trailing spaces after a backslash are not stripped for this test — they mean the
+/// newline is not escaped. Ordinary `trim_end` applies only when assembling the
+/// stored piece.
+fn join_trailing_backslash_continuations(text: &str) -> Vec<JoinedLine> {
+    let mut lines = Vec::new();
+    let mut buf: Option<String> = None;
+    for raw in text.lines() {
+        let (piece, continuation) = match shell_line_continuation(raw) {
+            Some(rest) => (rest.trim_end(), true),
+            None => (raw.trim_end(), false),
+        };
+        match buf.take() {
+            Some(mut existing) => {
+                existing.push(' ');
+                existing.push_str(piece.trim_start());
+                if continuation {
+                    buf = Some(existing);
+                } else {
+                    lines.push(JoinedLine { text: existing, continued: true });
+                }
+            }
+            None => {
+                if continuation {
+                    buf = Some(piece.to_string());
+                } else {
+                    lines.push(JoinedLine { text: piece.to_string(), continued: false });
+                }
+            }
+        }
+    }
+    if let Some(pending) = buf {
+        lines.push(JoinedLine { text: pending, continued: true });
+    }
+    lines
+}
+
+/// Returns the line without its escaping backslash when that backslash escapes the
+/// following newline. `None` means the physical line is complete.
+fn shell_line_continuation(line: &str) -> Option<&str> {
+    if !line.ends_with('\\') {
+        return None;
+    }
+    let trailing_backslashes = line.bytes().rev().take_while(|byte| *byte == b'\\').count();
+    if trailing_backslashes % 2 == 0 {
+        return None;
+    }
+    line.strip_suffix('\\')
+}
+
+#[derive(Debug)]
+struct JoinedLine {
+    text: String,
+    continued: bool,
+}
+
+fn join_indented_flag_continuations(lines: Vec<JoinedLine>) -> Vec<JoinedLine> {
+    let mut joined: Vec<JoinedLine> = Vec::new();
+    for line in lines {
+        if let Some(previous) = joined.last_mut()
+            && is_indented_flag_continuation(&line.text)
+            && normalize_extracted_command(&previous.text).is_some()
+        {
+            previous.text.push(' ');
+            previous.text.push_str(line.text.trim());
+            previous.continued = true;
+            continue;
+        }
+        joined.push(line);
+    }
+    joined
+}
+
+fn is_indented_flag_continuation(text: &str) -> bool {
+    let trimmed = text.trim_start();
+    if trimmed.len() == text.len() || trimmed.starts_with('#') {
+        return false;
+    }
+    if normalize_extracted_command(trimmed).is_some() {
+        return false;
+    }
+    is_shell_flag_token(trimmed)
+}
+
+fn is_shell_flag_token(trimmed: &str) -> bool {
+    if let Some(rest) = trimmed.strip_prefix("--") {
+        return !rest.is_empty() && !rest.starts_with(char::is_whitespace);
+    }
+    let mut chars = trimmed.chars();
+    if chars.next() != Some('-') {
+        return false;
+    }
+    matches!(chars.next(), Some(candidate) if candidate.is_ascii_alphanumeric())
+}
+
+fn normalize_extracted_command(raw: &str) -> Option<String> {
+    let line = raw.trim();
+    if line.is_empty() || line.starts_with('#') || line.contains('\n') {
+        return None;
+    }
+    let without_list = strip_markdown_list_marker(line);
+    let without_env = strip_leading_env_assignments(without_list).trim();
+    if without_env.is_empty() || without_env.starts_with('#') {
+        return None;
+    }
+    is_governed_devex_command(without_env).then(|| without_env.to_string())
+}
+
+fn strip_markdown_list_marker(line: &str) -> &str {
+    let line = line.trim_start();
+    for prefix in ["- ", "* ", "+ "] {
+        if let Some(rest) = line.strip_prefix(prefix) {
+            return rest;
+        }
+    }
+    let digits = line.bytes().take_while(u8::is_ascii_digit).count();
+    if digits == 0 {
+        return line;
+    }
+    match line.get(digits..) {
+        Some(rest) => rest.strip_prefix(". ").unwrap_or(line),
+        None => line,
+    }
+}
+
+fn strip_leading_env_assignments(command: &str) -> &str {
+    let mut rest = command.trim_start();
+    loop {
+        let Some((token, after)) = split_first_token(rest) else {
+            return rest;
+        };
+        if !is_env_assignment_token(token) {
+            return rest;
+        }
+        rest = after.trim_start();
+    }
+}
+
+fn split_first_token(text: &str) -> Option<(&str, &str)> {
+    if text.is_empty() {
+        return None;
+    }
+    match text.find(char::is_whitespace) {
+        Some(index) => text.get(..index).zip(text.get(index..)),
+        None => Some((text, "")),
+    }
+}
+
+fn is_env_assignment_token(token: &str) -> bool {
+    let Some((name, _)) = token.split_once('=') else {
+        return false;
+    };
+    is_posix_env_name(name)
+}
+
+fn is_posix_env_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    match chars.next() {
+        Some(candidate) if candidate.is_ascii_alphabetic() || candidate == '_' => {
+            chars.all(|candidate| candidate.is_ascii_alphanumeric() || candidate == '_')
+        }
+        _ => false,
+    }
+}
+
+fn is_governed_devex_command(command: &str) -> bool {
+    command.starts_with("just ") || command.starts_with("cargo xtask ")
+}
+
+fn push_unique_command(commands: &mut Vec<String>, command: String) {
+    if !commands.iter().any(|existing| existing == &command) {
+        commands.push(command);
+    }
 }
 
 fn command_exists(
@@ -178,6 +476,15 @@ fn normalize_doc_token(token: &str) -> String {
 mod tests {
     use super::*;
 
+    fn naive_line_devex_commands(text: &str) -> Vec<String> {
+        text.lines()
+            .filter_map(|line| {
+                let command = line.trim();
+                is_governed_devex_command(command).then_some(command.to_string())
+            })
+            .collect()
+    }
+
     #[test]
     fn major_minor_extracts_msrv_badge_version() {
         assert_eq!(major_minor("1.93.1"), "1.93");
@@ -190,6 +497,345 @@ mod tests {
             "| Need | Command |\n|---|---|\n| Fast | `just pr-fast` |\n| Fmt | `cargo xtask fmt` |\n| Rust | `cargo test -p xtask` |\n",
         );
         assert_eq!(commands, vec!["just pr-fast", "cargo xtask fmt"]);
+    }
+
+    #[test]
+    fn join_trailing_backslash_continuations_joins_command_and_args() {
+        let joined = join_trailing_backslash_continuations("just pr-fast \\\n    --locked\n");
+        assert_eq!(joined.len(), 1, "continued physical lines must become one logical line");
+        assert!(joined[0].continued, "a trailing-backslash join must be marked continued");
+        assert_eq!(joined[0].text, "just pr-fast --locked");
+    }
+
+    fn assert_independent_false_join_control(text: &str, first_stored: &str) {
+        let joined = join_trailing_backslash_continuations(text);
+        assert_eq!(joined.len(), 2, "independent physical lines must not merge: {joined:?}");
+        assert!(
+            joined.iter().all(|line| !line.continued),
+            "no real POSIX continuation: {joined:?}"
+        );
+        assert_eq!(joined[0].text, first_stored);
+        assert_eq!(joined[1].text, "just stale-recipe");
+
+        let commands = inline_devex_commands(text);
+        assert!(
+            !commands.iter().any(|command| command.contains("stale-recipe")),
+            "a false join must not smuggle the second recipe into one continued command, and uncontinued prose must not extract it: {commands:?}"
+        );
+
+        let just_recipes = BTreeSet::from(["pr-fast".to_string()]);
+        let xtask_subcommands = BTreeSet::new();
+        assert!(
+            command_exists(first_stored, &just_recipes, &xtask_subcommands).is_ok(),
+            "valid first recipe stays independently visible to command_exists"
+        );
+        assert!(
+            command_exists("just stale-recipe", &just_recipes, &xtask_subcommands).is_err(),
+            "stale second recipe must remain independently visible to command_exists"
+        );
+    }
+
+    #[test]
+    fn whitespace_after_backslash_does_not_join_two_commands() {
+        assert_independent_false_join_control(
+            "just pr-fast \\  \njust stale-recipe\n",
+            "just pr-fast \\",
+        );
+    }
+
+    #[test]
+    fn even_trailing_backslashes_do_not_continue() {
+        assert_independent_false_join_control(
+            "just pr-fast \\\\\njust stale-recipe\n",
+            "just pr-fast \\\\",
+        );
+    }
+
+    #[test]
+    fn join_trailing_backslash_continuations_joins_multiple_continuations() {
+        let joined = join_trailing_backslash_continuations(
+            "cargo xtask fmt \\\n    --check \\\n    --all\n",
+        );
+        assert_eq!(joined.len(), 1);
+        assert_eq!(joined[0].text, "cargo xtask fmt --check --all");
+        assert!(joined[0].continued);
+    }
+
+    #[test]
+    fn join_trailing_backslash_continuations_keeps_uncontinued_lines() {
+        let joined = join_trailing_backslash_continuations("just pr-fast\n    --locked\n");
+        assert_eq!(
+            joined.iter().map(|line| (line.text.as_str(), line.continued)).collect::<Vec<_>>(),
+            vec![("just pr-fast", false), ("    --locked", false)]
+        );
+    }
+
+    #[test]
+    fn continued_backslash_commands_enter_the_governed_denominator() {
+        let text = "```bash\njust pr-fast \\\n    --locked\ncargo xtask fmt \\\n    --check\n```\n";
+        let commands = inline_devex_commands(text);
+        assert!(
+            commands.iter().any(|command| command == "just pr-fast --locked"),
+            "joined just command must be extracted; got {commands:?}"
+        );
+        assert!(
+            commands.iter().any(|command| command == "cargo xtask fmt --check"),
+            "joined cargo xtask command must be extracted; got {commands:?}"
+        );
+
+        let just_recipes = BTreeSet::from(["pr-fast".to_string()]);
+        let xtask_subcommands = BTreeSet::from(["fmt".to_string()]);
+        assert!(
+            command_exists("just pr-fast --locked", &just_recipes, &xtask_subcommands).is_ok(),
+            "joined just command must tokenize through the documented-command checker"
+        );
+        assert!(
+            command_exists("cargo xtask fmt --check", &just_recipes, &xtask_subcommands).is_ok(),
+            "joined cargo xtask command must tokenize through the documented-command checker"
+        );
+    }
+
+    #[test]
+    fn naive_line_scan_misses_backslash_continuations() {
+        let text = "just pr-fast \\\n    --locked\n";
+        let naive = naive_line_devex_commands(text);
+        assert_eq!(
+            naive,
+            vec!["just pr-fast \\"],
+            "without a joiner the first physical line stays a backslash-suffixed command and continuation args are absent"
+        );
+        assert_eq!(inline_devex_commands(text), vec!["just pr-fast --locked"]);
+    }
+
+    #[test]
+    fn dangling_trailing_backslash_still_extracts_the_command_stem() {
+        let commands = inline_devex_commands("just pr-fast \\\n");
+        assert_eq!(
+            commands,
+            vec!["just pr-fast"],
+            "a continuation with no following line still yields the governed stem"
+        );
+    }
+
+    #[test]
+    fn env_prefixed_commands_enter_the_governed_denominator() {
+        let just_recipes = BTreeSet::from(["test".to_string(), "pr-fast".to_string()]);
+        let xtask_subcommands = BTreeSet::from(["fmt".to_string()]);
+
+        let env_prefixed = inline_devex_commands("FOO=1 just test\n");
+        assert_eq!(
+            env_prefixed,
+            vec!["just test"],
+            "leading env assignments must peel so the governed command is stored"
+        );
+        assert!(
+            command_exists(&env_prefixed[0], &just_recipes, &xtask_subcommands).is_ok(),
+            "stripped env-prefixed just must tokenize through command_exists"
+        );
+
+        let multiple = inline_devex_commands("FOO=1 BAR=2 cargo xtask fmt\n");
+        assert_eq!(multiple, vec!["cargo xtask fmt"]);
+        assert!(command_exists(&multiple[0], &just_recipes, &xtask_subcommands).is_ok());
+
+        let backticked = inline_devex_commands("run `FOO=1 just pr-fast` locally\n");
+        assert_eq!(backticked, vec!["just pr-fast"]);
+
+        let continued = inline_devex_commands("FOO=1 just pr-fast \\\n    --locked\n");
+        assert_eq!(continued, vec!["just pr-fast --locked"]);
+        assert!(command_exists(&continued[0], &just_recipes, &xtask_subcommands).is_ok());
+
+        assert_eq!(
+            inline_devex_commands("FOO= just test\n"),
+            vec!["just test"],
+            "an empty env value is still a leading assignment"
+        );
+    }
+
+    #[test]
+    fn naive_governed_prefix_scan_misses_env_assignments() {
+        let text = "FOO=1 just test\n";
+        let naive = naive_line_devex_commands(text);
+        assert!(
+            naive.is_empty(),
+            "without env peeling, a line that does not start with just / cargo xtask is missed; got {naive:?}"
+        );
+        assert_eq!(inline_devex_commands(text), vec!["just test"]);
+    }
+
+    #[test]
+    fn env_prefix_strip_does_not_eat_just_parameter_assignments() {
+        let commands = inline_devex_commands("`just FOO=1 pr-fast`\n");
+        assert_eq!(
+            commands,
+            vec!["just FOO=1 pr-fast"],
+            "assignments after just are recipe parameters, not shell env prefixes"
+        );
+        let just_recipes = BTreeSet::from(["pr-fast".to_string()]);
+        let xtask_subcommands = BTreeSet::new();
+        assert!(
+            command_exists("just FOO=1 pr-fast", &just_recipes, &xtask_subcommands).is_err(),
+            "command_exists must keep FOO=1 as the recipe token, not skip to pr-fast"
+        );
+    }
+
+    #[test]
+    fn unstripped_env_prefix_would_skip_command_exists_recipe_check() {
+        let just_recipes = BTreeSet::from(["pr-fast".to_string()]);
+        let xtask_subcommands = BTreeSet::new();
+        assert!(
+            command_exists("FOO=1 just stale-recipe", &just_recipes, &xtask_subcommands).is_ok(),
+            "control: storing the raw env-prefixed line would silently skip the recipe check"
+        );
+
+        let commands = inline_devex_commands("FOO=1 just stale-recipe\n");
+        assert_eq!(commands, vec!["just stale-recipe"]);
+        assert!(
+            command_exists(&commands[0], &just_recipes, &xtask_subcommands).is_err(),
+            "stripped stale recipe must remain visible to command_exists"
+        );
+    }
+
+    #[test]
+    fn markdown_split_indented_flags_join_without_backslash() {
+        let text = "just pr-fast\n    --locked\n";
+        let naive = naive_line_devex_commands(text);
+        assert_eq!(
+            naive,
+            vec!["just pr-fast"],
+            "without a Markdown-split joiner the flag line is not part of the command"
+        );
+        assert_eq!(inline_devex_commands(text), vec!["just pr-fast --locked"]);
+
+        let just_recipes = BTreeSet::from(["pr-fast".to_string()]);
+        let xtask_subcommands = BTreeSet::new();
+        assert!(command_exists("just pr-fast --locked", &just_recipes, &xtask_subcommands).is_ok());
+    }
+
+    #[test]
+    fn markdown_split_does_not_join_sibling_or_prose_lines() {
+        let sibling = inline_devex_commands("just pr-fast\njust stale-recipe\n");
+        assert!(
+            sibling.is_empty(),
+            "uncontinued unfenced sibling lines stay outside the line extractor: {sibling:?}"
+        );
+
+        let indented_command = inline_devex_commands("just pr-fast\n    just stale-recipe\n");
+        assert!(
+            indented_command.is_empty(),
+            "an indented new command is not a flag continuation: {indented_command:?}"
+        );
+
+        let prose = inline_devex_commands("just pr-fast\n    then commit the result\n");
+        assert!(
+            prose.is_empty(),
+            "indented prose that is not a flag must not join or extract an unfenced stem: {prose:?}"
+        );
+
+        let dashed_note = inline_devex_commands("just pr-fast\n    - then commit the result\n");
+        assert!(
+            dashed_note.is_empty(),
+            "an indented dashed note is not a shell flag: {dashed_note:?}"
+        );
+
+        assert_eq!(
+            inline_devex_commands("just pr-fast\n    -n\n"),
+            vec!["just pr-fast -n"],
+            "an indented short flag must still join"
+        );
+    }
+
+    #[test]
+    fn list_wrapped_commands_enter_the_denominator() {
+        assert_eq!(inline_devex_commands("- just pr-fast\n"), vec!["just pr-fast"]);
+        assert_eq!(inline_devex_commands("1. cargo xtask fmt\n"), vec!["cargo xtask fmt"]);
+        assert_eq!(
+            inline_devex_commands("- just pr-fast\n  --locked\n"),
+            vec!["just pr-fast --locked"]
+        );
+        assert_eq!(inline_devex_commands("- FOO=1 just test\n"), vec!["just test"]);
+    }
+
+    #[test]
+    fn uncontinued_fenced_commands_enter_the_denominator() {
+        let text = "```bash\njust pr-fast\ncargo xtask fmt\n```\n";
+        let commands = inline_devex_commands(text);
+        assert_eq!(commands, vec!["just pr-fast", "cargo xtask fmt"]);
+
+        let just_recipes = BTreeSet::from(["pr-fast".to_string()]);
+        let xtask_subcommands = BTreeSet::from(["fmt".to_string()]);
+        assert!(command_exists("just pr-fast", &just_recipes, &xtask_subcommands).is_ok());
+        assert!(command_exists("cargo xtask fmt", &just_recipes, &xtask_subcommands).is_ok());
+    }
+
+    #[test]
+    fn untagged_fence_does_not_store_a_multiline_command() {
+        let commands = inline_devex_commands("```\njust pr-fast\ncargo xtask fmt\n```\n");
+        assert_eq!(commands, vec!["just pr-fast", "cargo xtask fmt"]);
+        assert!(
+            commands.iter().all(|command| !command.contains('\n')),
+            "a fence-body backtick split must not store a newline-joined command: {commands:?}"
+        );
+    }
+
+    #[test]
+    fn fenced_comment_and_language_tag_are_not_extracted() {
+        let commented = inline_devex_commands(
+            "```bash\n# cargo xtask check --all\n# cargo xtask fmt\njust pr-fast\n```\n",
+        );
+        assert_eq!(
+            commented,
+            vec!["just pr-fast"],
+            "commented fence lines must not enter the denominator: {commented:?}"
+        );
+
+        let language_only = inline_devex_commands("```bash\necho hello\n```\n");
+        assert!(
+            language_only.is_empty(),
+            "fence language tags are not commands: {language_only:?}"
+        );
+    }
+
+    #[test]
+    fn fenced_env_prefix_and_markdown_split_compose() {
+        let text = "```bash\nFOO=1 just pr-fast\n    --locked\n```\n";
+        assert_eq!(inline_devex_commands(text), vec!["just pr-fast --locked"]);
+    }
+
+    #[test]
+    fn non_env_prefixes_stay_unextracted() {
+        let wrapped = inline_devex_commands("```bash\nnix develop -c just ci-gate\n```\n");
+        assert!(
+            wrapped.is_empty(),
+            "nix develop -c is not an env prefix and stays outside this claim; got {wrapped:?}"
+        );
+        let invalid = inline_devex_commands("=FOO just pr-fast\n");
+        assert!(invalid.is_empty(), "a leading '=' is not a POSIX env name: {invalid:?}");
+        let quoted_spaces = inline_devex_commands("FOO=\"1 2\" just test\n");
+        assert!(
+            quoted_spaces.is_empty(),
+            "quoted env values containing spaces stay outside this line-joiner; got {quoted_spaces:?}"
+        );
+    }
+
+    #[test]
+    fn tilde_fenced_commands_enter_the_denominator() {
+        assert_eq!(inline_devex_commands("~~~\njust pr-fast\n~~~\n"), vec!["just pr-fast"]);
+    }
+
+    #[test]
+    fn prose_and_html_comments_are_not_line_extracted() {
+        assert!(
+            inline_devex_commands("just kidding this is prose\n").is_empty(),
+            "ordinary prose beginning with just must not enter the denominator"
+        );
+        assert!(
+            inline_devex_commands("<!-- just stale-recipe -->\n").is_empty(),
+            "a single-line HTML comment must not enter the denominator"
+        );
+        assert!(
+            inline_devex_commands("<!--\njust stale-recipe\n-->\n").is_empty(),
+            "an HTML-comment body line must not enter the denominator"
+        );
     }
 
     #[test]

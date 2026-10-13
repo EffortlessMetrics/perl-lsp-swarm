@@ -1,0 +1,9 @@
+project: product
+component: Packaging and distribution
+kind: Fixed
+body: "Standalone POSIX and PowerShell installers promote a verified perllsp plus perl-dap product unit through an immutable candidate directory and an atomic current pointer. Interrupted or failed transitions leave the previous complete unit in place instead of a mixed pair. Migration impact: Windows installs now launch perllsp and perl-dap through PATH-visible .cmd shims and remove legacy install-directory .exe entry points, while POSIX publishes PATH names as links into .perl-lsp/current; consumers that invoke the installed executables by absolute path or copy installed files must move to the shim or link entry points."
+time: 2026-08-26T22:15:00Z
+custom:
+  PR: 12815
+  Slug: standalone-atomic-product-unit
+  Breaking: "yes"

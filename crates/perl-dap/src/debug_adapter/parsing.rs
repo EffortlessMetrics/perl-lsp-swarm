@@ -131,6 +131,54 @@ impl DebugAdapter {
             .collect()
     }
 
+    /// Capture the suspension-position authority from a framed `T` parse.
+    ///
+    /// perl5db's `T` report opens with the debugger's own `DB::DB` frame when
+    /// execution is suspended inside called code; that frame's position is
+    /// the line the debuggee will execute next. Every user frame in the same
+    /// report carries only its *caller's* position (`called from`), so
+    /// without this authority the topmost user frame would report the call
+    /// site instead of the suspension line (#17171). `None` when the report
+    /// does not open with the debugger frame (e.g. a top-level stop).
+    ///
+    /// The capture is deliberately narrower than
+    /// [`Self::filter_user_visible_frames`]'s internal predicate: it requires
+    /// the leading frame to be named exactly `DB::DB` **and** its `called
+    /// from` source to be non-debugger plumbing. A shim-internal leading
+    /// frame (`Devel::TSPerlDAP::…`, or a `DB::*` frame inside `perl5db.pl`)
+    /// carries shim positions, not the user's suspension line, and must
+    /// never be projected onto a user frame (CodeRabbit follow-up on
+    /// #17171).
+    pub(super) fn suspension_position_from_internal_frames(
+        frames: &[StackFrame],
+    ) -> Option<StackFrame> {
+        let first = frames.first()?;
+        if first.name != "DB::DB" {
+            return None;
+        }
+        let path = first.source.path.as_str();
+        if path.contains("perl5db.pl") || path.contains("Devel::TSPerlDAP") {
+            return None;
+        }
+        Some(first.clone())
+    }
+
+    /// Reattach the suspension position to the topmost user-visible frame.
+    ///
+    /// The T-derived frame keeps its identity, arguments, and caller chain;
+    /// only its current source position is reconciled to the position the
+    /// debugger's own frame reported for this suspension (#17171).
+    pub(super) fn reconcile_top_frame_with_suspension_position(
+        mut frames: Vec<StackFrame>,
+        suspension: Option<&StackFrame>,
+    ) -> Vec<StackFrame> {
+        if let (Some(suspended), Some(top)) = (suspension, frames.first_mut()) {
+            top.line = suspended.line;
+            top.source = suspended.source.clone();
+        }
+        frames
+    }
+
     /// Parse variables from debugger output lines using microcrate parser/renderer.
     ///
     /// Rows retain the typed value captured at parse time (see
@@ -171,24 +219,6 @@ impl DebugAdapter {
             }
         }
         (top_level, child_cache)
-    }
-
-    /// Parse variables from recent debugger output using microcrate parser/renderer.
-    pub(super) fn parse_scope_variables_from_output(
-        &self,
-        variables_ref: i32,
-        start: usize,
-        count: usize,
-    ) -> (Vec<CachedVariable>, HashMap<i32, Vec<CachedVariable>>) {
-        let lines = self.snapshot_recent_output_lines();
-        Self::parse_scope_variables_from_lines(
-            &lines,
-            variables_ref,
-            start,
-            count,
-            DebuggerOutputOrigin::BestEffortDebuggeeOutput,
-            ParseIdentity::new(),
-        )
     }
 
     /// Parse evaluate output from debugger lines into a DAP result payload.
@@ -350,6 +380,8 @@ impl DebugAdapter {
 
 #[cfg(test)]
 mod tests {
+    use super::super::operation_broker::OperationBroker;
+    use super::super::patterns::DEBUGGER_FRAME_POLL_MS;
     use super::super::*;
     use crate::parse_origin::{DebuggerOutputOrigin, OriginatedParseInput, ParseIdentity};
     use std::thread;
@@ -359,19 +391,29 @@ mod tests {
     const FIXTURE_IDENTITY: ParseIdentity = ParseIdentity::new();
 
     #[test]
-    pub(super) fn test_parse_scope_variables_from_recent_output()
+    pub(super) fn test_parse_scope_variables_from_best_effort_lines()
     -> Result<(), Box<dyn std::error::Error>> {
-        let adapter = DebugAdapter::new();
-        adapter.push_recent_output_line_for_test("$foo = 42");
-        adapter.push_recent_output_line_for_test("@arr = (1, 2, 3)");
-        adapter.push_recent_output_line_for_test("%hash = {a => 1}");
-
-        let (vars, child_cache) = adapter.parse_scope_variables_from_output(11, 0, 20);
+        let lines = vec![
+            "$foo = 42".to_string(),
+            "@arr = (1, 2, 3)".to_string(),
+            "%hash = {a => 1}".to_string(),
+        ];
+        let (vars, child_cache) = DebugAdapter::parse_scope_variables_from_lines(
+            &lines,
+            11,
+            0,
+            20,
+            DebuggerOutputOrigin::BestEffortDebuggeeOutput,
+            ParseIdentity::new(),
+        );
         let names: Vec<&str> = vars.iter().map(|v| v.row.name.as_str()).collect();
-        assert!(names.contains(&"$foo"));
-        assert!(names.contains(&"@arr"));
-        assert!(names.contains(&"%hash"));
-        assert!(!child_cache.is_empty(), "expected child cache entries for expandable values");
+        if !names.contains(&"$foo")
+            || !names.contains(&"@arr")
+            || !names.contains(&"%hash")
+            || child_cache.is_empty()
+        {
+            return Err("best-effort lines lost scalar or expandable variables".into());
+        }
         Ok(())
     }
 
@@ -476,16 +518,6 @@ mod tests {
     }
 
     #[test]
-    pub(super) fn test_capture_framed_debugger_output_respects_cancellation() {
-        let adapter = DebugAdapter::new();
-        adapter.cancel_requested.store(true, Ordering::Release);
-
-        let capture = adapter.capture_framed_debugger_output("DAP_BEGIN_400", "DAP_END_400", 200);
-        assert!(capture.is_none(), "capture should stop when request is cancelled");
-        assert!(!adapter.cancel_requested.load(Ordering::Acquire));
-    }
-
-    #[test]
     pub(super) fn test_capture_framed_debugger_output_timeout_without_end_marker() {
         let adapter = DebugAdapter::new();
         adapter.push_recent_output_line_for_test(r#""DAP_BEGIN_500""#);
@@ -500,42 +532,36 @@ mod tests {
     #[test]
     pub(super) fn test_framed_capture_marker_scan_microbenchmark() {
         let mut lines = Vec::with_capacity(RECENT_OUTPUT_MAX_LINES);
+        let mut raw_lines = Vec::with_capacity(RECENT_OUTPUT_MAX_LINES);
         for idx in 0..(RECENT_OUTPUT_MAX_LINES - 4) {
             let raw = format!("DB<1> noise line {idx}");
             lines.push(RecentOutputLine {
                 id: idx as u64 + 1,
                 normalized: DebugAdapter::normalize_debugger_output_line(&raw),
-                raw,
             });
+            raw_lines.push(raw);
         }
         let begin_id = RECENT_OUTPUT_MAX_LINES as u64 - 3;
-        lines.push(RecentOutputLine {
-            id: begin_id,
-            raw: r#""DAP_BEGIN_900""#.to_string(),
-            normalized: r#""DAP_BEGIN_900""#.to_string(),
-        });
-        lines.push(RecentOutputLine {
-            id: begin_id + 1,
-            raw: "$x = 1".to_string(),
-            normalized: "$x = 1".to_string(),
-        });
-        lines.push(RecentOutputLine {
-            id: begin_id + 2,
-            raw: "$y = 2".to_string(),
-            normalized: "$y = 2".to_string(),
-        });
+        lines.push(RecentOutputLine { id: begin_id, normalized: r#""DAP_BEGIN_900""#.to_string() });
+        lines.push(RecentOutputLine { id: begin_id + 1, normalized: "$x = 1".to_string() });
+        lines.push(RecentOutputLine { id: begin_id + 2, normalized: "$y = 2".to_string() });
         lines.push(RecentOutputLine {
             id: begin_id + 3,
-            raw: r#""DAP_END_900""#.to_string(),
             normalized: r#""DAP_END_900""#.to_string(),
         });
 
+        raw_lines.extend([
+            r#""DAP_BEGIN_900""#.to_string(),
+            "$x = 1".to_string(),
+            "$y = 2".to_string(),
+            r#""DAP_END_900""#.to_string(),
+        ]);
         let iterations = 300;
         let full_scan_start = Instant::now();
         for _ in 0..iterations {
-            let normalized = lines
+            let normalized = raw_lines
                 .iter()
-                .map(|line| DebugAdapter::normalize_debugger_output_line(&line.raw))
+                .map(|line| DebugAdapter::normalize_debugger_output_line(line))
                 .collect::<Vec<_>>();
             let _ = normalized.iter().rposition(|line| line.contains("DAP_BEGIN_900")).and_then(
                 |begin_idx| {
@@ -553,10 +579,14 @@ mod tests {
             let mut saw_begin = false;
             for line in &lines {
                 if !saw_begin {
-                    if DebugAdapter::line_contains_full_marker(&line.normalized, "DAP_BEGIN_900") {
+                    if OperationBroker::line_contains_full_marker(&line.normalized, "DAP_BEGIN_900")
+                    {
                         saw_begin = true;
                     }
-                } else if DebugAdapter::line_contains_full_marker(&line.normalized, "DAP_END_900") {
+                } else if OperationBroker::line_contains_full_marker(
+                    &line.normalized,
+                    "DAP_END_900",
+                ) {
                     break;
                 }
             }
@@ -887,6 +917,45 @@ mod tests {
         );
     }
 
+    /// Only a leading `DB::DB` frame pointing at non-debugger source carries
+    /// the suspension position. Shim-internal leading frames
+    /// (`Devel::TSPerlDAP::…`, or anything inside `perl5db.pl`) must not be
+    /// projected onto the user frame (CodeRabbit follow-up on #17171).
+    #[test]
+    pub(super) fn test_suspension_position_requires_leading_db_db_frame() {
+        fn frame(id: i32, name: &str, path: &str) -> StackFrame {
+            StackFrame {
+                id,
+                name: name.to_string(),
+                source: Source { name: None, path: path.to_string(), source_reference: None },
+                line: 9,
+                column: 1,
+                end_line: None,
+                end_column: None,
+            }
+        }
+        let db_frame = [frame(1, "DB::DB", "F:/dbg/hello.pl")];
+        assert!(
+            DebugAdapter::suspension_position_from_internal_frames(&db_frame).is_some(),
+            "the debugger's own frame over user code is the suspension authority"
+        );
+        let shim_frame = [frame(1, "Devel::TSPerlDAP::handle_break", "F:/dbg/hello.pl")];
+        assert!(
+            DebugAdapter::suspension_position_from_internal_frames(&shim_frame).is_none(),
+            "a shim frame must not become the suspension position"
+        );
+        let perl5db_frame = [frame(1, "DB::DB", "/usr/lib/perl5/perl5db.pl")];
+        assert!(
+            DebugAdapter::suspension_position_from_internal_frames(&perl5db_frame).is_none(),
+            "a DB::DB frame pointing inside perl5db.pl is shim plumbing, not user suspension"
+        );
+        let user_frame = [frame(1, "main::add", "F:/dbg/hello.pl")];
+        assert!(
+            DebugAdapter::suspension_position_from_internal_frames(&user_frame).is_none(),
+            "a report without a leading debugger frame carries no suspension authority"
+        );
+    }
+
     #[test]
     pub(super) fn test_parse_stack_trace_multi_file_packages() {
         let output = r#"# 0 Utils::Helper::validate at /app/lib/Utils/Helper.pm line 42
@@ -1044,7 +1113,7 @@ mod tests {
         adapter.push_recent_output_line_for_test("main::(/test/file1.pl:4):");
         adapter.push_recent_output_line_for_test("main::(/test/file2.pl:5):");
 
-        let response = adapter.handle_stack_trace(1, 1, None);
+        let response = adapter.handle_stack_trace(1, 1, Some(json!({"threadId": 1})));
         match response {
             DapMessage::Response { body: Some(body), .. } => {
                 if let Ok(trace_response) =

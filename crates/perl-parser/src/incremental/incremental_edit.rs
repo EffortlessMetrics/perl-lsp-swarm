@@ -1,7 +1,8 @@
-//! Enhanced edit structure for incremental parsing with text content
+//! Edit structure for experimental incremental document mutation.
 //!
 //! This module provides an extended Edit type that includes the new text
-//! being inserted, enabling efficient incremental parsing with subtree reuse.
+//! being inserted. `IncrementalDocument` applies these edits to source, then
+//! takes a full fresh parse; it does not patch leaves or shift cached subtrees.
 
 use perl_parser_core::position::Position;
 
@@ -186,9 +187,9 @@ impl IncrementalEditSet {
     /// Apply edits to a string using deterministic fallback semantics.
     ///
     /// This is intentionally more tolerant than [`Self::normalize_for_source`]:
-    /// the incremental fast path rejects overlapping or unmappable batches,
-    /// while this fallback applies every edit that still maps safely in reverse
-    /// byte order and skips edits that cannot be applied without panicking.
+    /// overlapping mappable batches skip the reverse-apply path, while this
+    /// fallback applies every edit that still maps safely in reverse byte
+    /// order and skips edits that cannot be applied without panicking.
     pub fn apply_to_string(&self, source: &str) -> String {
         if self.edits.is_empty() {
             return source.to_string();

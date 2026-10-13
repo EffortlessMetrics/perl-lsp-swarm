@@ -169,10 +169,21 @@ impl PerlToolchainProfile {
 
         let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         let oracle = super::PerlOracleEnv::for_version_probe(self.perl_binary.clone(), cwd);
+        // The probe child must not inherit the server's stdin (the LSP JSON-RPC
+        // transport): on Windows an inheriting console child blocks inside
+        // process initialization until killed, and an inheriting child would
+        // read protocol bytes (#17305).
         let detected_version =
-            oracle.into_command().arg("-e").arg("print $]").output().ok().and_then(|out| {
-                if out.status.success() { String::from_utf8(out.stdout).ok() } else { None }
-            });
+            oracle
+                .into_command()
+                .arg("-e")
+                .arg("print $]")
+                .stdin(std::process::Stdio::null())
+                .output()
+                .ok()
+                .and_then(|out| {
+                    if out.status.success() { String::from_utf8(out.stdout).ok() } else { None }
+                });
 
         if let Some(fingerprint) = fingerprint
             && let Ok(mut cache) = PERL_VERSION_CACHE.lock()
@@ -217,6 +228,7 @@ mod tests {
     /// An empty-string `perl_path` is treated as unset and falls through to the
     /// toolchain resolver (matching `.filter(|p| !p.is_empty())`).
     #[test]
+    #[serial_test::serial]
     fn resolve_treats_empty_perl_path_as_unset() -> TestResult {
         let config =
             WorkspaceConfig { perl_path: Some(String::new()), ..WorkspaceConfig::default() };
@@ -264,6 +276,7 @@ mod tests {
     /// and a second call returns the same value (served from cache). Skips when
     /// no Perl is available on the host.
     #[test]
+    #[serial_test::serial]
     fn version_probes_and_caches_real_interpreter() -> TestResult {
         let perl = match crate::platform::resolve_perl_path_with_toolchain().ok() {
             Some(p) => p,
@@ -288,6 +301,7 @@ mod tests {
     /// no fingerprint — `version` must still probe it via PATH (uncached) rather
     /// than short-circuiting to `None`. Regression guard for the #1978 review.
     #[test]
+    #[serial_test::serial]
     fn version_probes_bare_command_name_via_path() -> TestResult {
         // Deterministic precondition: only assert when a bare `perl` actually
         // runs from PATH (mirrors what `for_version_probe` will do).

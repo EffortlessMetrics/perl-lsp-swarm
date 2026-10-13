@@ -238,10 +238,16 @@ pub enum MojoBaseParentSelection {
     /// activate inheritance or `has`.
     StrictOnly,
     /// Computed parent expression — an explicit dynamic boundary.
-    Dynamic { reason: String },
+    Dynamic {
+        /// Why the parent expression is dynamic.
+        reason: String,
+    },
     /// Recovered or contradictory import spelling — the source could not be
     /// interpreted as one reviewed activation form.
-    Malformed { reason: String },
+    Malformed {
+        /// Why the import spelling could not be interpreted.
+        reason: String,
+    },
 }
 
 /// Import evidence extracted from the activating `use Mojo::Base ...;`
@@ -410,6 +416,7 @@ pub struct MojoBaseSiteAnchor {
     pub package: Option<String>,
     /// Import statement source interval, in bytes.
     pub span_start_byte: u32,
+    /// End of the import statement interval, in bytes.
     pub span_end_byte: u32,
     /// Literal parent spelling's source range (start, end in bytes), when the
     /// parent is a literal and the range was located in source.

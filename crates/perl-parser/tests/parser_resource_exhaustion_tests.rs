@@ -18,6 +18,14 @@ use std::time::{Duration, Instant};
 /// Maximum recursion depth before stack overflow
 const MAX_RECURSION_DEPTH: usize = 128;
 
+/// Watchdog for the heaviest memory-exhaustion scenario, not a benchmark
+/// (#15432): the largest generated input (10k variable declarations) parses in
+/// ~0.45 s natively on the reference Windows host, but coverage-instrumented
+/// runs (`cargo llvm-cov` in the workspace gate) and low-memory hosts run
+/// 10-50x slower. The budget only has to fail on hangs and pathological
+/// slowdowns.
+const MEMORY_EXHAUSTION_CASE_WATCHDOG: Duration = Duration::from_secs(60);
+
 /// Maximum heredoc depth before resource exhaustion
 const MAX_HEREDOC_DEPTH: usize = 100;
 
@@ -250,6 +258,16 @@ fn test_memory_exhaustion_scenarios() {
         ("Massive import statements", generate_massive_import_statements(1000)),
     ];
 
+    // Total wall-clock ceiling (#15432 review): five cases may each pass
+    // MEMORY_EXHAUSTION_CASE_WATCHDOG (60 s) individually while the loop's
+    // worst pass is 300 s — a fifth of the 1,500 s gate budget for this
+    // binary, spent opaquely. The documented 10-50x contended-host envelope
+    // (largest case ~0.45 s native) stays well inside this ceiling; a
+    // slower host fails here with a named assertion instead of starving
+    // the gate.
+    const MEMORY_EXHAUSTION_TOTAL_WATCHDOG: Duration = Duration::from_secs(180);
+    let suite_start = Instant::now();
+
     for (name, code) in memory_cases {
         println!("Testing: {}", name);
 
@@ -263,13 +281,23 @@ fn test_memory_exhaustion_scenarios() {
 
         // Should complete within reasonable time
         assert!(
-            parse_time < Duration::from_secs(10),
+            parse_time < MEMORY_EXHAUSTION_CASE_WATCHDOG,
             "Memory exhaustion test took too long: {:?}",
             parse_time
         );
 
         println!("  ✓ {} completed in {:?}", name, parse_time);
     }
+
+    let suite_elapsed = suite_start.elapsed();
+    assert!(
+        suite_elapsed < MEMORY_EXHAUSTION_TOTAL_WATCHDOG,
+        "Memory exhaustion scenarios took {:?} in total, exceeding the {:?} \
+         suite ceiling — individual cases passed their own watchdogs but the \
+         accumulated wall clock would starve the enclosing gate budget",
+        suite_elapsed,
+        MEMORY_EXHAUSTION_TOTAL_WATCHDOG
+    );
 }
 
 /// Test parser with concurrent resource exhaustion

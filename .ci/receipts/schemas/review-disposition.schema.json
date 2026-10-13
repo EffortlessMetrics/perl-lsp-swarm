@@ -1,24 +1,28 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Review Disposition Receipt (v1)",
-  "description": "THREAD-reply marker recording WHY a review thread was resolved. Embedded in a pull-request review-comment reply as `<!-- disposition:v1 {json} -->` and posted by scripts/reviews/disposition (the ONLY sanctioned resolve path — it posts this reply, then calls resolveReviewThread as an internal subprocess). The check-pr-review-convergence closeout reads these to compute dispositions_missing_marker, followups_without_issue, unreachable_fix_commits, and the writer set (#3693 R1). Class-specific evidence is required: fixed→commit, refuted→argument, superseded→superseded_by, follow-up→issue.",
+  "description": "THREAD-reply marker recording WHY a review thread was resolved or deliberately kept open. Embedded in a pull-request review-comment reply as `<!-- disposition:v1 {json} -->` and posted by scripts/reviews/disposition (the ONLY sanctioned thread-transition path — it posts this reply, then applies the marker's thread_transition). The check-pr-review-convergence closeout reads these to compute dispositions_missing_marker, followups_without_issue, unreachable_fix_commits, and the writer set (#3693 R1). Class-specific evidence is required: fixed→commit, refuted→argument, superseded→superseded_by, post-merge-follow-up→issue+argument, current-blocker→argument, blocked-by-prerequisite→issue+argument, not-proven→argument. The legacy class `follow-up` is retained in the enum only so historical markers remain valid; scripts/reviews/disposition rejects it for new dispositions because it does not say whether the current claim is satisfied or still blocked (#13342).",
   "type": "object",
   "required": ["v", "class", "thread_id", "by", "head", "evidence"],
   "additionalProperties": false,
   "properties": {
     "v": {"const": 1},
-    "class": {"enum": ["fixed", "refuted", "superseded", "follow-up"]},
-    "thread_id": {"type": "string", "description": "The review thread this disposition resolves."},
+    "class": {"enum": ["fixed", "refuted", "superseded", "post-merge-follow-up", "current-blocker", "blocked-by-prerequisite", "not-proven", "follow-up"]},
+    "thread_id": {"type": "string", "description": "The review thread this disposition resolves or keeps open."},
     "by": {"type": "string", "description": "Identity of the disposer (a member of the writer set)."},
     "head": {"type": "string", "description": "The PR headRefOid this disposition was posted at."},
+    "thread_transition": {
+      "enum": ["resolve", "keep_open"],
+      "description": "The transition scripts/reviews/disposition applies after posting: resolve for terminal classes, keep_open for live blockers and NOT_PROVEN. Optional only because historical v1 markers predate the field."
+    },
     "evidence": {
       "type": "object",
       "description": "Class-specific evidence. Exactly the field for the class is required.",
       "properties": {
         "commit": {"type": "string", "description": "fixed: the SHA that fixed it (must be reachable from head)."},
-        "argument": {"type": "string", "description": "refuted: why the finding does not hold."},
+        "argument": {"type": "string", "description": "refuted: why the finding does not hold; current-blocker/blocked-by-prerequisite: why the defect remains current; not-proven: the missing or contradictory evidence; post-merge-follow-up: why the current claim is already satisfied."},
         "superseded_by": {"type": "string", "description": "superseded: the PR/issue/commit that supersedes it."},
-        "issue": {"type": "integer", "minimum": 1, "description": "follow-up: the tracking issue number."}
+        "issue": {"type": "integer", "minimum": 1, "description": "post-merge-follow-up / blocked-by-prerequisite / legacy follow-up: the tracking issue number."}
       },
       "additionalProperties": true
     }

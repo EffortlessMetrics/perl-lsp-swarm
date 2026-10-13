@@ -151,7 +151,7 @@ Each surface maps to a specialist analyzer:
 | Governance | Policy Auditor | Schema alignment, anti-drift inventory |
 | Reproducibility | Docs Correctness Auditor | Gate clarity score, receipt inventory |
 
-See [`ANALYZER_FRAMEWORK.md`](ANALYZER_FRAMEWORK.md) for analyzer specifications.
+See [`ANALYZER_FRAMEWORK.md`](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/project/ANALYZER_FRAMEWORK.md) for analyzer specifications.
 
 ## Quality vs. Efficiency
 
@@ -166,6 +166,6 @@ A PR with excellent quality and high DevLT is preferable to a PR with poor quali
 
 ## See Also
 
-- [`METRICS_PROVENANCE.md`](METRICS_PROVENANCE.md) - Provenance schema
+- [`METRICS_PROVENANCE.md`](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/project/METRICS_PROVENANCE.md) - Provenance schema
 - [`FORENSICS_SCHEMA.md`](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/reference/FORENSICS_SCHEMA.md) - Full dossier template
-- [`ANALYZER_FRAMEWORK.md`](ANALYZER_FRAMEWORK.md) - Specialist analyzers
+- [`ANALYZER_FRAMEWORK.md`](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/project/ANALYZER_FRAMEWORK.md) - Specialist analyzers

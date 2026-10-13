@@ -10,7 +10,7 @@
     reason = "tracked conversion debt: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3021"
 )]
 
-use perl_parser::Parser;
+use perl_parser::{ErrorCategory, ErrorClass, ParseError, Parser};
 use std::time::{Duration, Instant};
 
 /// Maximum recursion depth from parser implementation
@@ -19,23 +19,37 @@ const MAX_RECURSION_DEPTH: usize = 128;
 /// Maximum heredoc depth from parser implementation
 const MAX_HEREDOC_DEPTH: usize = 100;
 
-/// Heredoc timeout from parser implementation
-const HEREDOC_TIMEOUT_MS: u64 = 5000;
+/// Test-owned wall-clock ceiling for these boundary fixtures.
+///
+/// This is deliberately **not** a mirror of a parser constant. The parser owns
+/// no wall-clock cutoff: heredoc collection is bounded by the deterministic
+/// `ParseBudget::max_heredoc_scan_bytes` charge (#7291), and recursion and
+/// nesting are bounded by their own deterministic limits. This value only
+/// asserts that the fixtures below stay fast enough to be a useful regression
+/// signal.
+const BOUNDARY_FIXTURE_CEILING_MS: u64 = 5000;
 
 /// Test parser at exact recursion depth boundary
 #[test]
 fn test_recursion_depth_boundary() {
     println!("Testing recursion depth boundary...");
 
-    // Test just below the limit
-    let below_limit_code = generate_nested_code(MAX_RECURSION_DEPTH - 5);
+    // Test just below the limit. Measured on this suite (#15432/#15647):
+    // the depth counter counts the ENTIRE enclosing construct chain, not
+    // just the generated parens: the `use` statements plus
+    // `my \$result = ...` (declaration -> assignment -> initializer) cost
+    // ~40 depth units before the first paren, and each paren costs 2 (the
+    // primary.rs double-guard). Effective paren budget is therefore ~44;
+    // 30 keeps a wide margin. Bisected: 40 parses, 45 fires.
+    let below_limit_depth = 30;
+    let below_limit_code = generate_nested_code(below_limit_depth);
     let start_time = Instant::now();
     let mut parser = Parser::new(&below_limit_code);
     let result = parser.parse();
     let parse_time = start_time.elapsed();
 
     assert!(result.is_ok(), "Should parse successfully below recursion limit");
-    println!("  ✓ Below limit ({}): parsed in {:?}", MAX_RECURSION_DEPTH - 5, parse_time);
+    println!("  ✓ Below limit ({}): parsed in {:?}", below_limit_depth, parse_time);
 
     // Test exactly at the limit
     let at_limit_code = generate_nested_code(MAX_RECURSION_DEPTH);
@@ -187,23 +201,15 @@ fn test_timeout_boundary() {
     let result = parser.parse();
     let parse_time = start_time.elapsed();
 
-    // Should either complete or timeout gracefully
-    match result {
-        Ok(_ast) => {
-            println!("  ✓ Slow code: completed in {:?}", parse_time);
-            assert!(
-                parse_time < Duration::from_millis(HEREDOC_TIMEOUT_MS),
-                "Should complete before heredoc timeout"
-            );
-        }
-        Err(e) => {
-            println!("  ✓ Slow code: timed out gracefully: {:?}", e);
-            assert!(
-                e.to_string().contains("timeout") || e.to_string().contains("time"),
-                "Should fail with timeout-related error"
-            );
-        }
-    }
+    // The parser has no wall-clock cutoff, and this fixture is ordinary valid
+    // Perl, so it must parse. Accepting any non-timeout error here would let a
+    // syntax regression pass unnoticed.
+    assert!(result.is_ok(), "Large but well-formed source must parse; got {:?}", result.err());
+    assert!(
+        parse_time < Duration::from_millis(BOUNDARY_FIXTURE_CEILING_MS),
+        "Should complete within the fixture ceiling"
+    );
+    println!("  ✓ Slow code: completed in {:?}", parse_time);
 
     // Test code that should definitely timeout
     let timeout_code = generate_timeout_code();
@@ -212,20 +218,21 @@ fn test_timeout_boundary() {
     let result = parser.parse();
     let parse_time = start_time.elapsed();
 
-    // Should timeout gracefully
+    // Deeply nested but well-formed source either parses or stops on one of the
+    // parser's own deterministic resource limits — never on elapsed time, and
+    // never on some unrelated syntax error.
     match result {
         Ok(_) => {
-            println!("  ⚠ Timeout code: unexpectedly succeeded in {:?}", parse_time);
+            println!("  ✓ Deeply nested code: completed in {:?}", parse_time);
         }
         Err(e) => {
-            println!("  ✓ Timeout code: timed out as expected in {:?}: {:?}", parse_time, e);
-            assert!(
-                e.to_string().contains("timeout") || e.to_string().contains("time"),
-                "Should fail with timeout-related error"
-            );
-            assert!(
-                parse_time >= Duration::from_millis(HEREDOC_TIMEOUT_MS),
-                "Should take at least the timeout duration"
+            let rendered = e.to_string();
+            println!("  ✓ Deeply nested code: bounded in {:?}: {rendered}", parse_time);
+            assert_eq!(
+                e.error_class(),
+                ErrorCategory::ResourceLimit,
+                "Deeply nested source may only stop on a deterministic resource \
+                 limit (#7291), not a timeout or a syntax error: {rendered}"
             );
         }
     }
@@ -271,13 +278,26 @@ fn test_file_size_boundaries() {
             }
         }
 
-        // Performance should scale reasonably
-        let time_per_kb = parse_time.as_millis() as f64 / (size as f64 / 1024.0);
+        // This is a boundary-validation suite, not a microbenchmark, and the
+        // parser owns no wall-clock cutoff (#7291): host speed is not a parser
+        // property. The former `10ms/KB` microbenchmark measured the test host
+        // — 5MB already costs ~2.2ms/KB in a plain debug build (#15432), so any
+        // ~4x slower or loaded host turned the assertion into a false red with
+        // no parser regression. Keep a coarse stall budget instead: a genuine
+        // pathological regression costs minutes-to-hours on these fixtures,
+        // not a slightly slower second.
+        let max_duration = match size {
+            0..=10_240 => Duration::from_secs(2),           // up to 10KB
+            10_241..=102_400 => Duration::from_secs(5),     // up to 100KB
+            102_401..=1_048_576 => Duration::from_secs(45), // up to 1MB
+            _ => Duration::from_secs(120),                  // 5MB fixture
+        };
         assert!(
-            time_per_kb < 10.0, // Less than 10ms per KB
-            "Performance degraded too much for {}: {:.2}ms/KB",
+            parse_time < max_duration,
+            "File size boundary parse for {} exceeded {:?}: {:?}",
             description,
-            time_per_kb
+            max_duration,
+            parse_time
         );
     }
 }
@@ -323,10 +343,15 @@ fn test_token_count_boundaries() {
 
         // This is a boundary-validation suite, not a microbenchmark. Keep a coarse
         // budget that still catches pathological stalls in CI and llvm-cov runs.
+        // The 1M-token tier builds ~4.7MB of source and its AST; it costs ~1.3s
+        // in a plain debug build here, but the memory-pressured, fully loaded
+        // host that produced the #15432 captures exceeded 45s on it with no
+        // parser regression. A real stall on this fixture is minutes-to-hours,
+        // so 120s stays a discriminating ceiling.
         let max_duration = match target_tokens {
             0..=10_000 => Duration::from_secs(2),
             10_001..=100_000 => Duration::from_secs(5),
-            _ => Duration::from_secs(45),
+            _ => Duration::from_secs(120),
         };
         assert!(
             parse_time < max_duration,
@@ -379,10 +404,14 @@ fn test_ast_node_boundaries() {
             }
         }
 
+        // Same rationale as the token tiers: the parser owns no wall-clock
+        // cutoff (#7291). The 100k-node fixture costs ~0.5s in a plain debug
+        // build, but a loaded host (the #15432 capture environment) can exceed
+        // 45s without any parser regression; a genuine stall is minutes away.
         let max_duration = match target_nodes {
             0..=1_000 => Duration::from_secs(2),
             1_001..=10_000 => Duration::from_secs(5),
-            _ => Duration::from_secs(45),
+            _ => Duration::from_secs(120),
         };
         assert!(
             parse_time < max_duration,
@@ -527,7 +556,7 @@ fn test_concurrent_boundary_conditions() {
                     let parse_time = start_time.elapsed();
                     let acceptable = match &result {
                         Ok(_) => true,
-                        Err(error) => is_expected_boundary_error(scenario_name, error),
+                        Err(error) => is_graceful_boundary_stop(scenario_name, error),
                     };
 
                     results_clone.lock().unwrap().push((
@@ -948,19 +977,27 @@ fn count_ast_nodes(ast: &perl_parser::ast::Node) -> usize {
     ast.count_nodes()
 }
 
-fn is_expected_boundary_error<E: ToString>(scenario_name: &str, error: &E) -> bool {
-    let message = error.to_string().to_ascii_lowercase();
-
+/// A boundary-straddling fixture is valid Perl, so the only acceptable
+/// failure in the recursion/heredoc scenarios is one of the parser's own
+/// deterministic resource-limit stops — `RecursionLimit`,
+/// `RecursionDepthExhausted`, `HeredocBudgetExhausted`, or `NestingTooDeep` —
+/// which is exactly the `ErrorCategory::ResourceLimit` class and the same
+/// contract `test_timeout_boundary` asserts. The former per-scenario string
+/// matching fell through to `false` for those scenarios, so on a host slow or
+/// loaded enough to trip a limit honestly (#15432) a graceful stop was scored
+/// unacceptable and failed the >70% acceptable-rate assertion.
+///
+/// The complexity/size fixtures stay strict (`false` for any error): they are
+/// flat — no heredocs, nesting depth ≤ 2, recursion-free — so none of the
+/// four `ResourceLimit` variants can fire on them honestly. A leaked
+/// recursion counter or a mis-charged heredoc scan would otherwise return
+/// `RecursionDepthExhausted` here and still satisfy the >70% assertion,
+/// masking exactly the regression class this suite exists to catch. Any
+/// `UserError` fails everywhere, so the discrimination is preserved.
+fn is_graceful_boundary_stop(scenario_name: &str, error: &ParseError) -> bool {
     match scenario_name {
-        "recursion" => {
-            message.contains("recursion")
-                || message.contains("depth")
-                || message.contains("nesting")
-        }
-        "heredoc" => {
-            message.contains("heredoc") || message.contains("depth") || message.contains("limit")
-        }
-        _ => false,
+        "complexity" | "size" => false,
+        _ => error.error_class() == ErrorCategory::ResourceLimit,
     }
 }
 

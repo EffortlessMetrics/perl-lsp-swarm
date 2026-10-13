@@ -1,0 +1,17 @@
+name: fixture-xtask-cli-paths-partial-wiring
+# Half a fix is still a gap: `main.rs` is listed but `tasks/mod.rs` is not, so a
+# module-registration change still skips this gate.
+on:
+  pull_request:
+    paths:
+      - 'xtask/src/tasks/example_contract.rs'
+      - 'xtask/src/main.rs'
+permissions:
+  contents: read
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - run: cargo xtask example-contract check

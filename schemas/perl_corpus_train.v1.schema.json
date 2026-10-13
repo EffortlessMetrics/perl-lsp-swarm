@@ -1,0 +1,350 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://effortlessmetrics.dev/perl-lsp/schemas/perl_corpus_train.v1.schema.json",
+  "title": "perl-corpus stable authority train manifest v1",
+  "description": "Stable, repository-owned semantic DAG for the complete perl-corpus authority, migration, proof, consumer, CI, package, and externalization programme (#10980 under #8826/#6696). The manifest owns what result each node establishes, which exact result depends on which, which semantic authority moves, which writers conflict or may proceed in parallel, which legacy path exits when, and which external action requires authorization. It never owns current main SHA or implementation state, issue labels or open/closed state, pull-request head/base/check/review state, the active writer, or what a coding agent may start today; those belong to #10992, #11001, and #11017. Typed relationship semantics bind to train_edge_contract.v1 (#10858) through declared adaptations only.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "schema_version",
+    "programme",
+    "stable_versus_mutable",
+    "role_vocabulary",
+    "dependency_classes",
+    "release_horizons",
+    "conflict_keys",
+    "external_authorities",
+    "candidate_lineages",
+    "nodes",
+    "limitations",
+    "revision_governance"
+  ],
+  "$defs": {
+    "node_id": {
+      "type": "string",
+      "pattern": "^pc_[a-z0-9_]+$",
+      "minLength": 4,
+      "maxLength": 80
+    },
+    "issue_ref": {
+      "type": "string",
+      "pattern": "^#[1-9][0-9]*$"
+    },
+    "authority_ref": {
+      "type": "string",
+      "pattern": "^#([1-9][0-9]*|[A-Z][A-Z0-9-]+)$",
+      "description": "An issue reference or a declared symbolic external authority such as #EXPLICIT-AUTHORIZATION."
+    },
+    "subject_ref": {
+      "type": "string",
+      "pattern": "^(#[1-9][0-9]*|PR #[1-9][0-9]*)$",
+      "description": "The durable GitHub subject a node stands for. Pull-request references are admitted only on historical candidate-lineage nodes; the checker rejects every other use."
+    },
+    "lineage_ref": {
+      "type": "string",
+      "pattern": "^PR #[1-9][0-9]*$"
+    },
+    "role": {
+      "enum": ["controller", "implementation", "proof", "cutover", "decision", "external_action", "historical"]
+    },
+    "dependency_class": {
+      "enum": ["hard", "evidence", "authorization"],
+      "description": "Closed local dependency classes bound to shared train_edge_contract.v1 kinds via .spec/10858-train-edge-contract/adaptations.json rows."
+    },
+    "release_horizon": {
+      "enum": [
+        "foundation_safety",
+        "topology_registration",
+        "expectation_gold_generator",
+        "workspace_command",
+        "audit_evidence",
+        "consumer_ci_closeout",
+        "package_externalization",
+        "publication_manual",
+        "optional_breadth"
+      ]
+    },
+    "conflict_key": {
+      "type": "string",
+      "pattern": "^perl_corpus\\.[a-z0-9_]+$"
+    },
+    "text": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1200
+    },
+    "text_list": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/text" }
+    },
+    "edge_target": {
+      "oneOf": [
+        { "$ref": "#/$defs/node_id" },
+        { "$ref": "#/$defs/authority_ref" }
+      ]
+    },
+    "dependency": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["target", "class", "provenance"],
+      "properties": {
+        "target": { "$ref": "#/$defs/edge_target" },
+        "class": { "$ref": "#/$defs/dependency_class" },
+        "provenance": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 200,
+          "description": "The statement this edge traces to: an issue-body header group, a controller graph section, or a controller comment."
+        }
+      }
+    },
+    "spec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["requirement", "owner"],
+      "properties": {
+        "requirement": { "enum": ["required", "optional", "not_applicable"] },
+        "owner": { "$ref": "#/$defs/issue_ref" }
+      }
+    },
+    "legacy_exit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["owner", "condition"],
+      "properties": {
+        "owner": { "type": ["string", "null"], "maxLength": 200 },
+        "condition": { "type": ["string", "null"], "maxLength": 600 }
+      }
+    },
+    "node": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "node_id",
+        "issue_ref",
+        "title",
+        "title_fingerprint",
+        "role",
+        "selectable",
+        "lane",
+        "phase",
+        "release_horizon",
+        "one_pr_proposition",
+        "semantic_authority_refs",
+        "dependencies",
+        "consumed_by",
+        "supersedes",
+        "superseded_by",
+        "duplicate_of",
+        "transferred_to",
+        "known_candidate_lineage_refs",
+        "candidate_reuse_policy",
+        "exclusive_conflict_keys",
+        "likely_owned_surfaces",
+        "forbidden_surfaces",
+        "positive_proof_obligations",
+        "first_falsifier",
+        "negative_controls",
+        "repository_verification",
+        "owned_generated_artifacts",
+        "spec",
+        "claim_ceiling",
+        "stop_conditions",
+        "authority_before",
+        "authority_after",
+        "legacy_exit"
+      ],
+      "properties": {
+        "node_id": { "$ref": "#/$defs/node_id" },
+        "issue_ref": { "$ref": "#/$defs/subject_ref" },
+        "title": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "title_fingerprint": { "type": "string", "pattern": "^[0-9A-F]{16}$" },
+        "role": { "$ref": "#/$defs/role" },
+        "selectable": {
+          "type": "boolean",
+          "description": "True only for implementation, proof, and cutover leaves that may become ordinary one-PR coding work. Controllers, decisions, external actions, and historical nodes are never selectable."
+        },
+        "lane": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "phase": { "type": "string", "pattern": "^(P|C0|A[0-6]|B[0-2]|H)$", "description": "Controller train slot: P programme root, C0 control plane, A0-A6 Train A, B0-B2 Train B, H historical/architecture input." },
+        "release_horizon": { "$ref": "#/$defs/release_horizon" },
+        "one_pr_proposition": { "$ref": "#/$defs/text" },
+        "semantic_authority_refs": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/authority_ref" }
+        },
+        "dependencies": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/dependency" }
+        },
+        "consumed_by": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/node_id" },
+          "description": "Exactly the derived reverse set of node-targeted dependency edges; the checker recomputes it."
+        },
+        "supersedes": { "type": "array", "items": { "$ref": "#/$defs/node_id" } },
+        "superseded_by": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/node_id" }] },
+        "duplicate_of": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/node_id" }] },
+        "transferred_to": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/node_id" }] },
+        "known_candidate_lineage_refs": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/lineage_ref" }
+        },
+        "candidate_reuse_policy": { "$ref": "#/$defs/text" },
+        "exclusive_conflict_keys": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/conflict_key" }
+        },
+        "likely_owned_surfaces": { "$ref": "#/$defs/text_list" },
+        "forbidden_surfaces": { "$ref": "#/$defs/text_list" },
+        "positive_proof_obligations": { "$ref": "#/$defs/text_list" },
+        "first_falsifier": { "type": "string", "maxLength": 600 },
+        "negative_controls": { "$ref": "#/$defs/text_list" },
+        "repository_verification": { "$ref": "#/$defs/text_list" },
+        "owned_generated_artifacts": { "$ref": "#/$defs/text_list" },
+        "spec": { "$ref": "#/$defs/spec" },
+        "claim_ceiling": { "$ref": "#/$defs/text" },
+        "stop_conditions": { "$ref": "#/$defs/text_list" },
+        "authority_before": { "$ref": "#/$defs/text" },
+        "authority_after": { "$ref": "#/$defs/text" },
+        "legacy_exit": { "$ref": "#/$defs/legacy_exit" }
+      }
+    }
+  },
+  "properties": {
+    "schema": { "const": "perl_corpus_train.v1" },
+    "schema_version": { "const": 1 },
+    "programme": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "architecture_epic_issue",
+        "execution_controller_issue",
+        "stable_dag_issue",
+        "home_programme",
+        "method_authority",
+        "planning_governance",
+        "shared_mechanics_gate"
+      ],
+      "properties": {
+        "architecture_epic_issue": { "type": "integer", "minimum": 1 },
+        "execution_controller_issue": { "type": "integer", "minimum": 1 },
+        "stable_dag_issue": { "type": "integer", "minimum": 1 },
+        "home_programme": { "const": "perl-corpus" },
+        "method_authority": { "$ref": "#/$defs/issue_ref" },
+        "planning_governance": { "$ref": "#/$defs/issue_ref" },
+        "shared_mechanics_gate": { "$ref": "#/$defs/issue_ref" }
+      }
+    },
+    "stable_versus_mutable": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["stable_owns", "never_owns", "mutable_owners"],
+      "properties": {
+        "stable_owns": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/text" } },
+        "never_owns": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/text" } },
+        "mutable_owners": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/issue_ref" } }
+      }
+    },
+    "role_vocabulary": {
+      "type": "array",
+      "minItems": 7,
+      "maxItems": 7,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["role", "selectable", "owns"],
+        "properties": {
+          "role": { "$ref": "#/$defs/role" },
+          "selectable": { "type": "boolean" },
+          "owns": { "$ref": "#/$defs/text" }
+        }
+      }
+    },
+    "dependency_classes": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["class", "meaning"],
+        "properties": {
+          "class": { "$ref": "#/$defs/dependency_class" },
+          "meaning": { "$ref": "#/$defs/text" }
+        }
+      }
+    },
+    "release_horizons": {
+      "type": "array",
+      "minItems": 9,
+      "maxItems": 9,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["horizon", "rank", "meaning"],
+        "properties": {
+          "horizon": { "$ref": "#/$defs/release_horizon" },
+          "rank": { "type": "integer", "minimum": 0, "maximum": 8 },
+          "meaning": { "$ref": "#/$defs/text" }
+        }
+      }
+    },
+    "conflict_keys": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["key", "authority"],
+        "properties": {
+          "key": { "$ref": "#/$defs/conflict_key" },
+          "authority": { "$ref": "#/$defs/text" }
+        }
+      }
+    },
+    "external_authorities": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "subject"],
+        "properties": {
+          "id": { "$ref": "#/$defs/authority_ref" },
+          "subject": { "$ref": "#/$defs/text" }
+        }
+      }
+    },
+    "candidate_lineages": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["ref", "subject", "reuse_policy"],
+        "properties": {
+          "ref": { "$ref": "#/$defs/lineage_ref" },
+          "subject": { "$ref": "#/$defs/text" },
+          "reuse_policy": { "$ref": "#/$defs/text" }
+        }
+      }
+    },
+    "nodes": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/node" }
+    },
+    "limitations": { "$ref": "#/$defs/text_list" },
+    "revision_governance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["owner_issue", "invalidates", "never", "metadata_only"],
+      "properties": {
+        "owner_issue": { "$ref": "#/$defs/issue_ref" },
+        "invalidates": { "$ref": "#/$defs/text" },
+        "never": { "$ref": "#/$defs/text" },
+        "metadata_only": { "$ref": "#/$defs/text" }
+      }
+    }
+  }
+}

@@ -8,6 +8,10 @@ cargo_safe := "./scripts/cargo-safe"
 default:
     @just --list
 
+# Optional explicit-date upstream cadence capture; no install or policy promotion (#15304).
+cargo-allow-cadence executable sha256 as_of root output_dir:
+    python3 scripts/cargo_allow_cadence.py --executable {{quote(executable)}} --expected-sha256 {{quote(sha256)}} --as-of {{quote(as_of)}} --root {{quote(root)}} --output-dir {{quote(output_dir)}}
+
 
 # Initialize bounded build/cache directories.
 devplane-init:
@@ -22,7 +26,8 @@ target-gc *args:
     ./scripts/target-gc.sh {{args}}
 
 agent-preflight: storage-doctor
-    @echo "agent preflight ok"
+    @echo "storage layout preflight ok; Cargo build capacity was not assessed"
+    @echo "For build admission: scripts/cargo-admitted --preflight <exact Cargo command>"
 
 # Agent-safe check: routed target/build dirs, incremental off, bounded sccache, build lock.
 agent-check:
@@ -34,8 +39,10 @@ agent-test:
 agent-clippy:
     {{cargo_safe}} clippy --workspace --all-targets --profile agent --locked -- -D warnings -A missing_docs
 
+# Nextest's runner profile and Cargo's build profile are separate selectors.
+# Match agent-test's build profile so switching runners reuses its test binaries.
 agent-nextest:
-    {{cargo_safe}} nextest run --workspace --profile agent
+    {{cargo_safe}} nextest run --workspace --profile agent --cargo-profile agent
 
 agent-pr-fast:
     {{cargo_safe}} xtask gates --tier pr-fast --receipt
@@ -50,6 +57,10 @@ cached *args:
 # (no Edit/Write/NotebookEdit/Agent in their tools: allowlist).
 check-agent-capabilities:
     {{cargo_safe}} xtask check-agent-capabilities
+
+# Docs gate (#17689): stale product names must not return to user docs.
+check-stale-doc-names:
+    bash scripts/check-stale-doc-names.sh
 
 # ============================================================================
 # Tiered CI Execution (works locally via Nix and in GitHub Actions)
@@ -92,7 +103,7 @@ pr-fast: _check-tools-basic
     if [ -n "${CI_SCOPE_BASE:-}" ]; then
         args+=(--base "$CI_SCOPE_BASE")
     fi
-    cargo xtask gates "${args[@]}"
+    {{cargo_safe}} xtask gates "${args[@]}"
 
 # Compile-only gate: catches integration-test/benchmark bit-rot and also
 # validates feature-gated code paths without incurring full test runtime.
@@ -105,6 +116,9 @@ check-all-targets:
     cargo check --workspace --all-targets --all-features --locked
     @echo "Compiling example test modules — cargo check --all-targets checks examples as non-test targets only, so their #[cfg(test)] code bit-rots unseen (#12650)..."
     cargo test --workspace --examples --locked --no-run
+    @echo "Compiling the wire-free perl-parser profiles — default and --all-features both enable lsp-compat, so a wire type reachable without it bit-rots unseen (#14975)..."
+    cargo check -p perl-parser --no-default-features --locked
+    cargo check -p perl-parser --no-default-features --features incremental --locked
     @echo "All targets compile clean."
 
 # Scan every tracked file for committed git conflict marker lines.
@@ -161,6 +175,8 @@ merge-gate: _check-tools-basic pr-fast
     just _timed "lsp-bdd" "just ci-lsp-bdd" && \
     just _timed "security-audit" "just security-audit" && \
     just _timed "ci-policy" "just ci-policy" && \
+    just _timed "ci-agent-ledgers-validate" "just ci-agent-ledgers-validate" && \
+    just _timed "ci-unsafe-prod" "just ci-unsafe-prod" && \
     just _timed "ci-v2-bundle-sync" "just ci-v2-bundle-sync" && \
     just _timed "ci-v2-parity" "just ci-v2-parity" && \
     just _timed "ci-lsp-def" "just ci-lsp-def" && \
@@ -414,7 +430,8 @@ quick-ref:
     @echo "  One-off lint check            just check                       ~30 sec"
     @echo "  Reformat all code             cargo xtask fmt                  ~20 sec"
     @echo "  Run tests only                cargo test --workspace --lib     ~1 min"
-    @echo "  Nightly / mutation / fuzz     just ci-full                     ~15-30 min"
+    @echo "  Nightly / mutation / fuzz     just nightly                     ~15-30 min"
+    @echo "  Mutation / fuzz subsets       just mutation-subset / just fuzz-bounded"
     @echo ""
     @echo "  TIP: install the pre-push hook so pr-fast runs automatically:"
     @echo "       bash scripts/install-githooks.sh"
@@ -422,11 +439,11 @@ quick-ref:
 
 # Lint all crates — treated as errors, same as CI (alias for cargo clippy)
 check:
-    cargo clippy --workspace -- -D warnings
+    {{cargo_safe}} clippy --workspace -- -D warnings
 
 # Auto-fix clippy warnings where possible
 fix:
-    cargo clippy --workspace --fix --allow-dirty
+    {{cargo_safe}} clippy --workspace --fix --allow-dirty
 
 # Canonical local merge gate via Nix (use before merge, not as the push hook)
 ci-local:
@@ -488,7 +505,7 @@ ready: doctor pr-fast
 # Run before any agent-spawning session. Safe to run repeatedly (idempotent).
 # Checks: core.bare corruption (#3205), stale branches, worktree leaks, orphaned
 # worktree dirs, pre-push hook, workspace cleanliness, master fast-forward state.
-# Workspace health check — auto-detects and auto-fixes recurring state corruption
+# Workspace health check — reports findings without repairing Git configuration
 doctor:
     #!/usr/bin/env bash
     set -uo pipefail
@@ -496,7 +513,6 @@ doctor:
     echo
 
     issues=0
-    fixed=0
 
     # ------------------------------------------------------------------
     # Locate main checkout. NOTE: on Git Bash for Windows, every external
@@ -533,18 +549,21 @@ doctor:
     # ------------------------------------------------------------------
     # Check 1: core.bare = true corruption (#3205)
     # ------------------------------------------------------------------
-    bare_value=$(git --git-dir="$main_git_dir" config --local --get core.bare 2>/dev/null || true)
+    bare_status=0
+    bare_value=$(git --git-dir="$main_git_dir" config --local --type=bool --get core.bare) || bare_status=$?
+    if [ "$bare_status" -ne 0 ] && [ "$bare_status" -ne 1 ]; then
+        echo "❌ could not inspect local core.bare (git config exited $bare_status)"
+        echo "   No repair performed; resolve the Git configuration error and rerun just doctor."
+        exit 1
+    fi
     if [ "$bare_value" = "true" ]; then
         echo "⚠️  git config core.bare = true detected in main checkout (#3205)"
-        if git --git-dir="$main_git_dir" config --local --unset core.bare 2>/dev/null; then
-            echo "   Auto-fixed: unset core.bare"
-            fixed=$((fixed + 1))
-        else
-            echo "   Fix: git --git-dir=\"$main_git_dir\" config --local --unset core.bare"
-            issues=$((issues + 1))
-        fi
+        echo "   No repair performed. Only if this is an ordinary checkout, run explicitly:"
+        printf '   Fix: git --git-dir=%q config --local --unset core.bare\n' "$main_git_dir"
+        echo "   Remaining checks not run: worktree observations require non-bare configuration."
+        exit 1
     else
-        echo "✅ git config core.bare unset (was OK)"
+        echo "✅ local core.bare is false or unset"
     fi
 
     # ------------------------------------------------------------------
@@ -777,10 +796,10 @@ doctor:
     fi
 
     echo
-    if [ "$issues" -eq 0 ] && [ "$fixed" -eq 0 ]; then
+    if [ "$issues" -eq 0 ]; then
         echo "✅ all checks passed"
     else
-        echo "$issues issues found, $fixed auto-fixed"
+        echo "$issues issues found; no repairs performed"
     fi
     exit 0
 
@@ -968,9 +987,11 @@ ci-gate:
     just status-check && \
     just ci-clippy-gate && \
     just ci-unwrap-panic-ratchet && \
+    just ci-serial-test-ratchet && \
     just ci-unsafe-ratchet && \
     just ci-print-in-lib-ratchet && \
     just ci-regex-static-ratchet && \
+    just ci-must-context && \
     just ci-forbid-fatal && \
     just ci-test-lib && \
     just check-all-targets && \
@@ -1005,10 +1026,15 @@ gates tier='merge-gate' *args='':
 # Validate release-history surfaces (tags ↔ ledger ↔ notes ↔ changelog).
 ci-release-history:
     bash scripts/check_release_history.sh
+    @python3 -m unittest scripts.tests.test_release_channel_actuals         scripts.test_release_build_identity         scripts.test_release_package_evidence         scripts.test_release_tag_authority         scripts.test_release_topology_json         scripts.tests.test_domain6_fragment -v
 
 # Validate installer Linux libc target selection without downloading artifacts.
 ci-install-target-selection:
     bash scripts/tests/test-install-target-selection.sh
+
+# Validate Termux detection, wrapper ownership, and source-mode selection.
+ci-install-termux-detection:
+    bash scripts/tests/test-installer-termux-detection.sh
 
 # Run gates with JSON output (for CI)
 gates-json tier='merge-gate':
@@ -1056,7 +1082,29 @@ ci-format:
     cargo xtask fmt --check
     @echo "✅ Format check passed"
 
-# Clippy lint (catches common issues, allow missing_docs during systematic resolution)
+# Agent-ledger contract validator (#15380) — exercises `cargo xtask agent ledgers validate`
+# against the committed docs/agents/ledgers/*.jsonl files. The validator exists and is unit-
+# tested (xtask/src/tasks/agent_ledgers.rs), but only the test module was wired into CI; the
+# CLI was never invoked against committed files. Adding the recipe + merge-gate call closes
+# the gap so a future ledger shape drift fails closed instead of being silently absorbed.
+ci-agent-ledgers-validate:
+    @echo "📒 Validating agent ledger contracts..."
+    cargo xtask agent ledgers validate --format json
+    @echo "✅ Agent ledger contracts valid"
+
+
+# Production-unsafe SAFETY ratchet (#16215) — runs `check-unsafe-prod`, which
+# fails when any production unsafe block lacks a preceding `// SAFETY:`
+# comment or the ci/unsafe_prod_baseline.txt count is exceeded. The checker
+# existed and was unit-tested, but nothing in CI invoked it, so drift was
+# silently absorbed; this recipe plus the merge-gate `_timed` call close that
+# gap, mirroring `ci-agent-ledgers-validate`.
+ci-unsafe-prod:
+    @echo "Checking production unsafe blocks carry SAFETY reasoning..."
+    bash ci/check_unsafe_prod.sh
+    @echo "Production unsafe SAFETY reasoning present"
+
+
 ci-clippy:
     @echo "🔍 Running clippy (all targets)..."
     cargo clippy --workspace --all-targets -- -D warnings -A missing_docs
@@ -1100,11 +1148,24 @@ ci-panic-test-ratchet:
     @cargo xtask ci-hygiene check-panic-test
     @echo "✅ Test-code panic! ratchet passed"
 
+# Parallel-unsafe test ratchet: test fns mutating process-global state must be
+# #[serial]-guarded or adjudicated in ci/serial_test_identities.json (#1269)
+ci-serial-test-ratchet:
+    @echo "🧩  Checking parallel-unsafe test serialization ratchet..."
+    @cargo xtask ci-hygiene check-serial-test
+    @echo "✅ Parallel-unsafe test ratchet passed"
+
 # Unsafe syntax ratchet (production source only)
 ci-unsafe-ratchet:
     @echo "🛡️  Checking unsafe syntax ratchet..."
     @cargo xtask ci-hygiene check-unsafe-prod
     @echo "✅ Unsafe syntax ratchet passed"
+
+# Assertion-context guard: a `.expect("…")` must not migrate to a bare must* helper
+ci-must-context:
+    @echo "🧾 Checking must* migrations preserve assertion context..."
+    @cargo xtask ci-hygiene check-must-context
+    @echo "✅ No assertion context dropped by a must* migration"
 
 # Print-macro ratchet: no raw println!/eprintln! in library source (use tracing)
 ci-print-in-lib-ratchet:
@@ -1250,6 +1311,21 @@ ux-tests-full:
         PERL_LSP_UX_REQUIRE_BINARY=1 \
         cargo test -p perl-lsp-ux-tests --features integration-test -- --test-threads=1
     @echo "UX tests (full) passed"
+
+# Memory ceiling + startup-to-ready bench receipts over the mojolicious
+# fixture (#17159 matrix rows 3-4: server_startup_to_ready + server_rss_memory;
+# memory lane also tracks #10015). Builds the release server, then runs the
+# single ignored receipt test, which writes .ci/metrics/lsp_memory_startup.json.
+# Nightly-scale (~2 min): 15 cold spawns plus a 600-message RSS soak.
+ux-bench-memory-startup:
+    @echo "Running memory + startup-to-ready bench receipts..."
+    @env -u RUSTC_WRAPPER CARGO_BUILD_JOBS=1 \
+        cargo build --release -p perllsp
+    @env -u RUSTC_WRAPPER RUST_TEST_THREADS=1 CARGO_BUILD_JOBS=1 \
+        PERL_LSP_BIN={{justfile_directory()}}/target/release/perllsp \
+        PERL_LSP_UX_REQUIRE_BINARY=1 \
+        cargo test -p perl-lsp-ux-tests --test lsp_memory_startup -- --test-threads=1 --ignored --nocapture
+    @echo "Memory + startup bench receipts written"
 
 # @INC consumer-consistency conformance harness.
 # Verifies that goto-definition, hover, and PL701 diagnostic agree on module resolution
@@ -1406,11 +1482,11 @@ ci-test-parser-dap-full:
 
 # Build all workspace crates
 build:
-    cargo build --workspace
+    {{cargo_safe}} build --workspace
 
 # Run all tests
 test:
-    cargo test --workspace
+    {{cargo_safe}} test --workspace
 
 # Format code
 fmt:
@@ -1432,7 +1508,11 @@ ci-policy:
     just ci-check-todos
     @python3 scripts/ci/test_validate_cargo_lock_conflict_policy.py
     @python3 scripts/ci/validate_cargo_lock_conflict_policy.py --repo-root .
+    @python3 scripts/ci/test_validate_cargo_feature_roles.py
+    @python3 scripts/ci/validate_cargo_feature_roles.py --repo-root .
+    @python3 scripts/ci/test_public_api_filter.py
     @cargo xtask check-from-raw
+    @cargo xtask check-tautology --check
     @cargo xtask check-memory-lifecycle-policy
     just version-check
     just ci-doc-claims
@@ -1842,6 +1922,23 @@ bench-index:
     @echo "📊 Running workspace index benchmarks..."
     @cargo xtask bench-run --category index --output benchmarks/results/latest.json
 
+# Run ripr-facts benchmarks only
+bench-ripr:
+    @echo "📊 Running ripr-facts benchmarks..."
+    @cargo xtask bench-run --category ripr --output benchmarks/results/latest.json
+
+# RIPR E-slate quality benches (#17154): boundary recall, limitation honesty,
+# fingerprint sensitivity, order invariance, guidance actionability.
+bench-ripr-quality:
+    @echo "📊 Running RIPR quality benches (E2/E3/D2/D3/A2)..."
+    ./scripts/cargo-admitted test -p perl-ripr-facts --test boundary_recall --test limitation_honesty --test fingerprint_sensitivity --test order_invariance --test guidance_actionability --locked
+
+# RIPR E1 gap precision/recall bench (#17154): new-gap gate FP/FN over the
+# fixtures/ripr-gate matrix plus lane-termination classifier mapping.
+bench-ripr-e1:
+    @echo "📊 Running RIPR E1 gap precision/recall bench..."
+    ./scripts/cargo-admitted test -p xtask --test ripr_e1_gap_precision_recall --locked
+
 # Format benchmark results as receipt
 bench-receipt:
     @echo "📋 Generating benchmark receipt..."
@@ -1877,6 +1974,13 @@ bench-alert-test:
     @echo "🧪 Running benchmark alert regression tests..."
     @cargo xtask bench-alert-test
 
+# Run benchmark runner harness tests (#17218 failure surfacing, #17219 parsing)
+bench-runner-test:
+    @echo "🧪 Running benchmark runner harness tests..."
+    @bash -n benchmarks/scripts/run-benchmarks.sh
+    bash benchmarks/scripts/test_run_benchmarks_parse.sh
+    bash benchmarks/scripts/test_run_benchmarks_failure.sh
+
 
 # Run all performance benchmarks and save baseline for 0.12.0
 perf-baseline:
@@ -1885,7 +1989,7 @@ perf-baseline:
     cargo bench -p perl-lexer --bench lexer_benchmarks --locked
     cargo bench -p perl-lsp-completion --bench completion_benchmark --locked
     cargo bench -p perl-lsp-navigation --bench navigation_benchmark --locked
-    cargo bench -p perl-workspace --bench workspace_index_benchmark --locked
+    cargo bench -p perl-workspace --features workspace --bench workspace_index_benchmark --locked
     cargo bench -p perl-lsp-rs --bench rope_performance_benchmark --locked
     cargo bench -p perl-lsp-tooling --bench cache_benchmark --locked
     @echo "Baseline complete. See docs/project/PERFORMANCE_BASELINES.md"
@@ -2030,26 +2134,26 @@ coverage-proof base='origin/main':
         --test ripr_new_gap_gate_workflow
     "$HOME/.cargo/bin/rustup" run nightly cargo llvm-cov report --lcov --output-path target/lcov.info \
         --ignore-filename-regex '(^|/)(archive|tests|benches|examples)(/|$)|(^|/)build\.rs$|(^|/)crates/tree-sitter-perl-c/|(^|/)crates/perl-dap/src/main\.rs$'
-    cargo xtask coverage-baseline \
+    "$HOME/.cargo/bin/rustup" run nightly cargo xtask coverage-baseline \
         --lcov target/lcov.info \
         --receipt target/receipts/quality/coverage-baseline.json \
         --codecov codecov.yml \
         --patch-base "{{base}}" \
         --scope workspace-lib-xtask-quality
-    cargo xtask coverage-baseline \
+    "$HOME/.cargo/bin/rustup" run nightly cargo xtask coverage-baseline \
         --lcov target/lcov.info \
         --receipt target/receipts/quality/coverage-baseline.json \
         --codecov codecov.yml \
         --patch-base "{{base}}" \
         --scope workspace-lib-xtask-quality \
         --check
-    cargo xtask quality-gate \
+    "$HOME/.cargo/bin/rustup" run nightly cargo xtask quality-gate \
         --mode enforce-patch-coverage \
         --coverage-receipt target/receipts/quality/coverage-baseline.json \
         --codecov codecov.yml \
         --receipt target/receipts/quality/quality-gate-coverage.json \
         --summary target/receipts/quality/quality-gate-coverage.md
-    cargo xtask quality-gate \
+    "$HOME/.cargo/bin/rustup" run nightly cargo xtask quality-gate \
         --mode enforce-patch-coverage \
         --coverage-receipt target/receipts/quality/coverage-baseline.json \
         --codecov codecov.yml \
@@ -2247,15 +2351,18 @@ semver-check-package package:
     BASELINE="$(git tag | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)"
     cargo semver-checks check-release -p {{package}} --baseline-rev "$BASELINE"
 
-# Check all published packages
+# Check every API-ratcheted crate (the list in
+# .ci/public-api-baselines/ratchet-crates.txt, not the whole publish
+# allowlist) for SemVer breaking changes.
 semver-check-all:
-    @echo "🔍 Checking all published packages for SemVer breaking changes..."
-    @just _semver-check-install
-    @just semver-check-package perl-parser
-    @just semver-check-package perl-lexer
-    @just semver-check-package perl-parser-core
-    @just semver-check-package perl-lsp-rs
-    @just semver-check-package perllsp
+    #!/usr/bin/env bash
+    set -euo pipefail
+    echo "🔍 Checking API-ratcheted crates for SemVer breaking changes..."
+    just _semver-check-install
+    crates="$(just _api-ratchet-crates)"
+    for crate in $crates; do
+        just semver-check-package "$crate"
+    done
 
 # Generate breaking changes report
 semver-report:
@@ -2299,17 +2406,97 @@ _public-api-install:
         ./scripts/cargo-safe install cargo-public-api --locked --version 0.50.1; \
     fi
 
-# Check public API surface of facade crates against committed baselines
+# Private helper: the crates both API ratchets guard. Single authority:
+# .ci/public-api-baselines/ratchet-crates.txt (#14607); admission is enforced
+# by `cargo xtask publish-manifest-check`.
+#
+# An empty list is an error, not "nothing to check": callers assign the output
+# (`crates="$(just _api-ratchet-crates)"`) so a failure here aborts them under
+# `set -e` instead of iterating zero times and reporting a vacuous pass. A
+# duplicate entry is an error too, so no caller checks a crate twice.
+[private]
+_api-ratchet-crates:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    list=".ci/public-api-baselines/ratchet-crates.txt"
+    crates="$(sed -e 's/#.*$//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' "$list" | grep -v '^$' || true)"
+    if [ -z "$crates" ]; then
+        echo "ERROR: $list lists no crates; both API ratchets would be vacuous" >&2
+        exit 1
+    fi
+    duplicates="$(printf '%s\n' "$crates" | sort | uniq -d)"
+    if [ -n "$duplicates" ]; then
+        echo "ERROR: $list lists a crate twice: $(printf '%s' "$duplicates" | tr '\n' ' ')" >&2
+        exit 1
+    fi
+    printf '%s\n' "$crates"
+
+# Private helper: the one surface filter shared by public-api-check and
+# public-api-update (#15634). cargo-public-api renders an item that carries an
+# attribute with that attribute in front of the visibility keyword
+# (`#[repr(u8)] pub enum ...`), so the old `^pub ` filter silently dropped
+# every attribute-bearing public item — from live diffs and from the
+# committed baselines alike. `#[repr]` and `#[non_exhaustive]` are part of
+# the public contract, so the guarded surface must record them: keep plain
+# `pub ` items plus items fronted by any run of bracketed attributes.
+# Non-item lines stay out.
+#
+# The final awk stage (scripts/ci/public_api_filter.awk, covered by
+# scripts/ci/test_public_api_filter.py) resolves method-signature `Self`
+# to the owning type path (`pub fn krate::Type::clone(&self) -> Self`
+# folds to `... -> krate::Type`). Nightly rustdoc-JSON started rendering
+# `Self` this way in September 2026 (1.100.0-nightly 2026-09-20; August
+# renderings spell the full path), which reddened every API-scope PR with
+# thousands of phantom lines (#16324, sequel to the io-path drift in
+# #16007). The owner path derives from the line itself, so a real rename
+# still diffs; a `Self`-looking substring inside a longer identifier (e.g.
+# `Selfish`) keeps its spelling via the boundary check.
+#
+# Fold the standard-library Arc re-export moved by nightly rustdoc (#17024).
+# Committed baselines keep alloc::sync::Arc; the canonical-form guard stays.
+# Exact type boundaries leave user-owned paths and different types visible.
+# Revisit the Arc rule because a matched delimiter may begin a nested Arc;
+# every replacement removes one relocated path, so the loop terminates.
+#
+# Usage: just _public-api-filter <raw-file> <filtered-file>
+[private]
+_public-api-filter raw out:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # grep exits 1 on no matches; an empty result is classified as
+    # INSTRUMENT-FAIL by the caller, so tolerate the exit code here.
+    # The leading context is a closed whitelist of ASCII delimiters, not an
+    # exclusion of identifier characters. `[^A-Za-z0-9_:]` looked equivalent
+    # and was not: a Rust identifier may contain any XID_Continue character,
+    # so `alloc` preceded by a Unicode letter presented that letter as a
+    # separator and the fold rewrote a user-owned path. Enumerating what may
+    # precede a path cannot acquire that hole as Unicode identifiers appear,
+    # and needs no locale to decide what an identifier character is. A
+    # delimiter missing from this set costs a visible phantom diff, never a
+    # silently hidden rename -- the failure direction a both-sides fold has
+    # to choose (#16119).
+    grep -E '^(pub |(#\[[^]]*\][[:space:]]*)+pub )' "{{raw}}" \
+        | sed -E \
+            -e 's#(^|[ <([&,=?])core::io::(write::|error::)?#\1std::io::#g' \
+            -e 's#(^|[ <([&,=?])alloc::io::(buf_read::|read::)?#\1std::io::#g' \
+            -e ':arc_alias' \
+            -e 's#(^|[ <([&,=?])alloc::rcs::arc::Arc(<|::|[][ >(),&;=?]|$)#\1alloc::sync::Arc\2#g' \
+            -e 't arc_alias' \
+        | awk -f scripts/ci/public_api_filter.awk \
+        > "{{out}}" || true
+
+# Check public API surface of the ratcheted crates against committed baselines
 public-api-check:
     #!/usr/bin/env bash
     set -euo pipefail
     just _public-api-install
-    echo "Checking public API surface for facade crates..."
+    echo "Checking public API surface for ratcheted crates..."
     # Evidence: record the rustdoc-JSON toolchain the comparison runs under
     # (CI pins this channel; see the workflow install steps).
     rustc +nightly --version || echo "WARN: no nightly toolchain visible to cargo-public-api"
     FAILED=0
-    for crate in perl-lsp-rs perl-parser perl-uri perl-dap perllsp; do
+    crates="$(just _api-ratchet-crates)"
+    for crate in $crates; do
         BASELINE=".ci/public-api-baselines/${crate}.txt"
         if [ ! -f "$BASELINE" ]; then
             echo "FAIL Missing baseline: $BASELINE (run: just public-api-update)"
@@ -2326,15 +2513,51 @@ public-api-check:
             FAILED=1
             continue
         fi
-        # grep exits 1 on no matches; under set -e that would abort before
-        # the named INSTRUMENT-FAIL classification below — tolerate it here.
-        grep "^pub " "/tmp/${crate}-raw.txt" > "/tmp/${crate}-current.txt" || true
+        # The shared filter owns which generated lines are guarded (#15634);
+        # an empty result is classified as INSTRUMENT-FAIL below.
+        just _public-api-filter "/tmp/${crate}-raw.txt" "/tmp/${crate}-current.txt"
         if [ ! -s "/tmp/${crate}-current.txt" ]; then
             echo "INSTRUMENT-FAIL ${crate}: generated API surface is empty (nightly toolchain missing?) — an empty surface is never a diff"
             FAILED=1
             continue
         fi
-        if ! diff -u "$BASELINE" "/tmp/${crate}-current.txt" > "/tmp/${crate}-diff.txt" 2>&1; then
+        # Both sides go through the identical transformation (#16117). The
+        # filter's io-path rewrite (#16043/#16058) previously ran on the
+        # generated surface only, so a baseline captured under a nightly that
+        # rendered `core::io::*`/`alloc::io::*` disagreed with every folded
+        # line -- 102 of them across three baselines -- on pull requests that
+        # changed no Rust at all. Normalizing the stored side too makes the
+        # comparison invariant to which toolchain captured it, which is the
+        # class #16043 set out to absorb. It is a no-op on a baseline already
+        # written by `public-api-update`, which shares this filter.
+        just _public-api-filter "$BASELINE" "/tmp/${crate}-baseline.txt"
+        if [ ! -s "/tmp/${crate}-baseline.txt" ]; then
+            echo "INSTRUMENT-FAIL ${crate}: committed baseline $BASELINE normalized to nothing -- a filter that empties a non-empty baseline is never a diff"
+            FAILED=1
+            continue
+        fi
+        # Emptiness is not the only way normalizing the stored side can cost
+        # detection. The filter's first stage is a `grep` for guarded public
+        # items, so any committed line that is not one -- a conflict marker a
+        # bad merge left behind, a stray comment, a body truncated by a full
+        # disk -- is now silently dropped from the comparison instead of
+        # showing up as a `-` in the diff. Before #16117 the baseline was
+        # compared raw and that corruption reddened the gate; routing it
+        # through the filter is what made it invisible, so this is the guard
+        # that keeps the change from being a weakening.
+        #
+        # The committed baselines are written by `public-api-update`, which
+        # shares this filter, so canonical form is already what is on disk:
+        # verified a no-op on all twelve, 0 differing lines. A baseline that
+        # fails this is corrupt or hand-edited, and either way the diff below
+        # would be answering the wrong question.
+        if ! cmp -s "$BASELINE" "/tmp/${crate}-baseline.txt"; then
+            echo "INSTRUMENT-FAIL ${crate}: committed baseline $BASELINE is not in canonical filtered form -- lines the filter drops would be invisible to this diff (run 'just public-api-update')"
+            diff -u "$BASELINE" "/tmp/${crate}-baseline.txt" | head -20 || true
+            FAILED=1
+            continue
+        fi
+        if ! diff -u "/tmp/${crate}-baseline.txt" "/tmp/${crate}-current.txt" > "/tmp/${crate}-diff.txt" 2>&1; then
             echo "FAIL Public API changed in ${crate}:"
             cat "/tmp/${crate}-diff.txt"
             FAILED=1
@@ -2351,7 +2574,8 @@ public-api-update:
     just _public-api-install
     echo "Regenerating public API baselines..."
     mkdir -p .ci/public-api-baselines
-    for crate in perl-lsp-rs perl-parser perl-uri perl-dap perllsp; do
+    crates="$(just _api-ratchet-crates)"
+    for crate in $crates; do
         # Fail closed: never overwrite a baseline with a failed or empty
         # generation — an empty baseline would make the ratchet vacuous
         # (#12861).
@@ -2360,9 +2584,9 @@ public-api-update:
             cat "/tmp/${crate}-err.txt" >&2
             exit 1
         fi
-        # grep exits 1 on no matches; under set -e that would abort before
-        # the named INSTRUMENT-FAIL classification below — tolerate it here.
-        grep "^pub " "/tmp/${crate}-raw.txt" > "/tmp/${crate}-new-baseline.txt" || true
+        # The shared filter owns which generated lines are guarded (#15634);
+        # an empty result is rejected by the INSTRUMENT-FAIL check below.
+        just _public-api-filter "/tmp/${crate}-raw.txt" "/tmp/${crate}-new-baseline.txt"
         if [ ! -s "/tmp/${crate}-new-baseline.txt" ]; then
             echo "INSTRUMENT-FAIL ${crate}: generated API surface is empty; refusing to overwrite the baseline" >&2
             exit 1
@@ -2372,7 +2596,7 @@ public-api-update:
     done
     echo "Commit .ci/public-api-baselines/ with your PR."
 
-# Private helper: run semver checks on core packages
+# Private helper: run semver checks on every API-ratcheted crate
 [private]
 _semver-check-run:
     #!/usr/bin/env bash
@@ -2380,15 +2604,12 @@ _semver-check-run:
     BASELINE="$(git tag | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)"
     EXIT_CODE=0
     echo "Using baseline: $BASELINE"
-    echo
-    echo "Checking perl-parser..."
-    cargo semver-checks check-release -p perl-parser --baseline-rev "$BASELINE" || EXIT_CODE=1
-    echo
-    echo "Checking perl-lexer..."
-    cargo semver-checks check-release -p perl-lexer --baseline-rev "$BASELINE" || EXIT_CODE=1
-    echo
-    echo "Checking perl-parser-core..."
-    cargo semver-checks check-release -p perl-parser-core --baseline-rev "$BASELINE" || EXIT_CODE=1
+    crates="$(just _api-ratchet-crates)"
+    for crate in $crates; do
+        echo
+        echo "Checking ${crate}..."
+        cargo semver-checks check-release -p "$crate" --baseline-rev "$BASELINE" || EXIT_CODE=1
+    done
     exit "$EXIT_CODE"
 
 # Private helper: get baseline tag for comparison
@@ -2965,31 +3186,27 @@ perl-core-prepare REF="b62845c7186b0b6a8e4e83419e6b5ef64ceef3ed":
           --ref {{REF}} \
           --output-dir target/perl-core/upstream/{{REF}}
 
-perl-core-discover-base PERL_TREE HOST_PERL="perl":
+perl-core-discover-base PERL_TREE:
     cargo run -p xtask -- perl-core-harness discover \
           --perl-tree {{PERL_TREE}} \
-          --host-perl {{HOST_PERL}} \
           --profile base
 
-perl-core-parse-base PERL_TREE HOST_PERL="perl":
+perl-core-parse-base PERL_TREE:
     cargo run -p xtask -- perl-core-harness run \
           --mode parse \
           --perl-tree {{PERL_TREE}} \
-          --host-perl {{HOST_PERL}} \
           --profile base
 
-perl-core-compile-base PERL_TREE HOST_PERL="perl":
+perl-core-compile-base PERL_TREE:
     cargo run -p xtask -- perl-core-harness run \
           --mode compile \
           --perl-tree {{PERL_TREE}} \
-          --host-perl {{HOST_PERL}} \
           --profile base
 
-perl-core-compile-base-ratchet PERL_TREE HOST_PERL="perl":
+perl-core-compile-base-ratchet PERL_TREE:
     cargo run -p xtask -- perl-core-harness run \
           --mode compile \
           --perl-tree {{PERL_TREE}} \
-          --host-perl {{HOST_PERL}} \
           --profile base
     cargo run -p xtask -- perl-core-harness baseline \
           --mode compile \
@@ -2998,24 +3215,21 @@ perl-core-compile-base-ratchet PERL_TREE HOST_PERL="perl":
           --baseline .ci/perl-core-harness/base-compile-baseline.json \
           --check
 
-perl-core-real-base-smoke PERL_TREE HOST_PERL="perl":
+perl-core-real-base-smoke PERL_TREE:
     cargo run -p xtask -- perl-core-harness smoke \
           --perl-tree {{PERL_TREE}} \
-          --host-perl {{HOST_PERL}} \
           --profile base \
           --modes parse,compile
 
-perl-core-real-comp-smoke PERL_TREE HOST_PERL="perl":
+perl-core-real-comp-smoke PERL_TREE:
     cargo run -p xtask -- perl-core-harness smoke \
           --perl-tree {{PERL_TREE}} \
-          --host-perl {{HOST_PERL}} \
           --profile comp \
           --modes parse,compile
 
-perl-core-real-run-smoke PERL_TREE HOST_PERL="perl":
+perl-core-real-run-smoke PERL_TREE:
     cargo run -p xtask -- perl-core-harness smoke \
           --perl-tree {{PERL_TREE}} \
-          --host-perl {{HOST_PERL}} \
           --profile run \
           --modes parse,compile
 
@@ -3025,7 +3239,6 @@ perl-core-integrated-base REF="b62845c7186b0b6a8e4e83419e6b5ef64ceef3ed":
           --output-dir target/perl-core/upstream/{{REF}}
     cargo run -p xtask -- perl-core-harness smoke \
           --perl-tree target/perl-core/upstream/{{REF}}/perl5 \
-          --host-perl perl \
           --profile base \
           --modes parse,compile \
           --perl-ref {{REF}} \
@@ -3037,7 +3250,6 @@ perl-core-integrated-comp REF="b62845c7186b0b6a8e4e83419e6b5ef64ceef3ed":
           --output-dir target/perl-core/upstream/{{REF}}
     cargo run -p xtask -- perl-core-harness smoke \
           --perl-tree target/perl-core/upstream/{{REF}}/perl5 \
-          --host-perl perl \
           --profile comp \
           --modes parse,compile \
           --perl-ref {{REF}} \
@@ -3049,7 +3261,6 @@ perl-core-integrated-run REF="b62845c7186b0b6a8e4e83419e6b5ef64ceef3ed":
           --output-dir target/perl-core/upstream/{{REF}}
     cargo run -p xtask -- perl-core-harness smoke \
           --perl-tree target/perl-core/upstream/{{REF}}/perl5 \
-          --host-perl perl \
           --profile run \
           --modes parse,compile \
           --perl-ref {{REF}} \

@@ -3,7 +3,11 @@
 //! These tests establish the source-backed linked-node patterns that already
 //! work before #13121 changes post-construction object-field assignment.
 
-use perl_semantic_analyzer::analysis::type_facts::{ShapeFact, TypeEvidence};
+use std::collections::BTreeMap;
+
+use perl_semantic_analyzer::analysis::type_facts::{
+    DynamicBoundary, ObjectShape, ShapeFact, TypeEvidence, TypeFact,
+};
 use perl_semantic_analyzer::analysis::type_inference::{PerlType, TypeInferenceEngine};
 use perl_semantic_analyzer::{Node, NodeKind, Parser};
 use perl_semantic_facts::Confidence;
@@ -135,6 +139,129 @@ fn blessed_recursive_link_initializer_keeps_node_receiver_fact() -> Result<(), S
             evidence,
             TypeEvidence::HashRefSlot { base, key }
                 if base == "$head" && key == "next"
+        )
+    }));
+    Ok(())
+}
+
+#[test]
+fn post_construction_link_assignment_preserves_blessed_container_shape() -> Result<(), String> {
+    let code = "my $head = bless { parent => LinkedList::Node->new }, 'LinkedList::Node'; my $tail = LinkedList::Node->new; $head->{child} = $tail; $head->{child}->value;";
+    let ast = parse_ast(code)?;
+    let mut engine = TypeInferenceEngine::new();
+
+    engine.infer(&ast).map_err(|err| format!("inference failed: {err:?}"))?;
+
+    let tail = engine.get_fact_at("tail").ok_or_else(|| "missing tail fact".to_string())?;
+    let head = engine.get_fact_at("head").ok_or_else(|| "missing head fact".to_string())?;
+    assert_eq!(head.ty, PerlType::Object("LinkedList::Node".to_string()));
+    assert_eq!(head.confidence, Confidence::Medium);
+    assert!(head.dynamic_boundary.is_none());
+    assert!(head.evidence.iter().any(|evidence| {
+        matches!(
+            evidence,
+            TypeEvidence::BlessLiteral { package } if package == "LinkedList::Node"
+        )
+    }));
+
+    let ShapeFact::Object(head_shape) =
+        head.shape.as_ref().ok_or_else(|| "missing head object shape".to_string())?
+    else {
+        return Err("head assignment replaced its object shape".to_string());
+    };
+    assert_eq!(head_shape.package, "LinkedList::Node");
+    assert!(head_shape.fields.contains_key("parent"));
+    let child =
+        head_shape.fields.get("child").ok_or_else(|| "missing assigned child field".to_string())?;
+    assert_eq!(child.ty, tail.ty);
+    assert_eq!(child.confidence, tail.confidence);
+    assert!(child.evidence.iter().any(|evidence| {
+        matches!(evidence, TypeEvidence::Assignment { name } if name == "head")
+    }));
+    assert!(child.evidence.iter().any(|evidence| {
+        matches!(
+            evidence,
+            TypeEvidence::HashRefSlot { base, key }
+                if base == "$head" && key == "child"
+        )
+    }));
+
+    let receiver = method_receiver(&ast, "value")?;
+    let receiver_fact = engine.infer_expr_fact(receiver);
+    assert_eq!(receiver_fact.ty, PerlType::Object("LinkedList::Node".to_string()));
+    assert_eq!(receiver_fact.confidence, tail.confidence);
+    Ok(())
+}
+
+#[test]
+fn post_construction_assignment_preserves_existing_dynamic_boundary() -> Result<(), String> {
+    let ast = parse_ast("$head->{child} = LinkedList::Node->new;")?;
+    let mut engine = TypeInferenceEngine::new();
+    let mut head_fact =
+        TypeFact::new(PerlType::Object("LinkedList::Node".to_string()), Confidence::Medium);
+    head_fact.evidence.push(TypeEvidence::BlessLiteral { package: "LinkedList::Node".to_string() });
+    head_fact.dynamic_boundary = Some(DynamicBoundary::UnknownReceiver);
+    head_fact.shape =
+        Some(ShapeFact::Object(ObjectShape::new("LinkedList::Node".to_string(), BTreeMap::new())));
+    engine.set_variable_fact("head".to_string(), head_fact);
+
+    engine.infer(&ast).map_err(|err| format!("inference failed: {err:?}"))?;
+
+    let head = engine.get_fact_at("head").ok_or_else(|| "missing head fact".to_string())?;
+    assert_eq!(head.dynamic_boundary, Some(DynamicBoundary::UnknownReceiver));
+    let ShapeFact::Object(head_shape) =
+        head.shape.as_ref().ok_or_else(|| "missing head object shape".to_string())?
+    else {
+        return Err("head assignment replaced its object shape".to_string());
+    };
+    assert!(head_shape.fields.contains_key("child"));
+    Ok(())
+}
+
+#[test]
+fn dynamic_field_assignment_does_not_manufacture_a_static_object_field() -> Result<(), String> {
+    let code = "my $field = 'child'; my $head = bless {}, 'LinkedList::Node'; my $tail = LinkedList::Node->new; $head->{$field} = $tail; $head->{child}->value;";
+    let ast = parse_ast(code)?;
+    let mut engine = TypeInferenceEngine::new();
+
+    engine.infer(&ast).map_err(|err| format!("inference failed: {err:?}"))?;
+
+    let head = engine.get_fact_at("head").ok_or_else(|| "missing head fact".to_string())?;
+    let ShapeFact::Object(head_shape) =
+        head.shape.as_ref().ok_or_else(|| "missing head object shape".to_string())?
+    else {
+        return Err("dynamic field assignment replaced the object shape".to_string());
+    };
+    assert!(!head_shape.fields.contains_key("child"));
+
+    let receiver = method_receiver(&ast, "value")?;
+    let receiver_fact = engine.infer_expr_fact(receiver);
+    assert_eq!(receiver_fact.ty, PerlType::Any);
+    Ok(())
+}
+
+#[test]
+fn ordinary_hash_slot_assignment_remains_a_hash_shape() -> Result<(), String> {
+    let code = "my %links; my $tail = LinkedList::Node->new; $links{child} = $tail;";
+    let ast = parse_ast(code)?;
+    let mut engine = TypeInferenceEngine::new();
+
+    engine.infer(&ast).map_err(|err| format!("inference failed: {err:?}"))?;
+
+    let links = engine.get_fact_at("links").ok_or_else(|| "missing links fact".to_string())?;
+    let ShapeFact::Hash(shape) =
+        links.shape.as_ref().ok_or_else(|| "missing links hash shape".to_string())?
+    else {
+        return Err("ordinary hash assignment stopped producing a hash shape".to_string());
+    };
+    let child =
+        shape.slots.get("child").ok_or_else(|| "missing assigned hash child slot".to_string())?;
+    assert_eq!(child.ty, PerlType::Object("LinkedList::Node".to_string()));
+    assert!(child.evidence.iter().any(|evidence| {
+        matches!(
+            evidence,
+            TypeEvidence::HashSlot { hash, key }
+                if hash == "$links" && key == "child"
         )
     }));
     Ok(())

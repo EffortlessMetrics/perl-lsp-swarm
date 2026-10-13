@@ -217,7 +217,6 @@ fn format_doc_indent_indents_parts_at_next_level() {
 fn formatter_mode_serde_roundtrip() -> Result<(), Box<dyn std::error::Error>> {
     for (mode, expected_json) in [
         (FormatterMode::Native, "\"native\""),
-        (FormatterMode::Compat, "\"compat\""),
         (FormatterMode::ExternalLegacy, "\"external-legacy\""),
         (FormatterMode::Off, "\"off\""),
     ] {

@@ -16,6 +16,9 @@
 
 use std::collections::BTreeMap;
 
+use perl_semantic_analyzer::analysis::receiver_facts::{
+    ARRAY_INDEX_RECEIVER_REASON, DYNAMIC_HASH_KEY_RECEIVER_REASON,
+};
 use perl_semantic_analyzer::analysis::type_facts::{
     ArrayShape, DynamicBoundary, HashShape, ObjectShape, ShapeFact, TypeEvidence, TypeFact,
 };
@@ -78,6 +81,25 @@ fn type_fact_any_low_confidence_accepts_owned_string() -> TestResult {
     let owned = String::from("dynamic dispatch boundary");
     let fact = TypeFact::any_low_confidence(owned);
     assert_eq!(heuristic_reason(&fact), Some("dynamic dispatch boundary"));
+    Ok(())
+}
+
+#[test]
+fn is_heuristic_reason_discriminates_kind_and_reason() -> TestResult {
+    let array_index = TypeEvidence::Heuristic { reason: ARRAY_INDEX_RECEIVER_REASON.to_string() };
+    let dynamic_key =
+        TypeEvidence::Heuristic { reason: DYNAMIC_HASH_KEY_RECEIVER_REASON.to_string() };
+
+    assert!(array_index.is_heuristic_reason(ARRAY_INDEX_RECEIVER_REASON));
+    assert!(dynamic_key.is_heuristic_reason(DYNAMIC_HASH_KEY_RECEIVER_REASON));
+    assert!(!array_index.is_heuristic_reason(DYNAMIC_HASH_KEY_RECEIVER_REASON));
+    assert!(!dynamic_key.is_heuristic_reason(ARRAY_INDEX_RECEIVER_REASON));
+    assert!(!array_index.is_heuristic_reason(&format!("{ARRAY_INDEX_RECEIVER_REASON} ")));
+    assert!(!TypeEvidence::Literal.is_heuristic_reason(ARRAY_INDEX_RECEIVER_REASON));
+    assert!(
+        !TypeEvidence::HashSlot { hash: "$groups".to_string(), key: "staff".to_string() }
+            .is_heuristic_reason(ARRAY_INDEX_RECEIVER_REASON)
+    );
     Ok(())
 }
 

@@ -65,7 +65,7 @@ Install and test the extension locally:
 
 ```bash
 # Install the VSIX file
-code --install-extension perl-lsp-rs-*.vsix
+code --install-extension perl-lsp-rs-<version>.vsix
 
 # Open test file
 code test/sample.pl
@@ -127,7 +127,7 @@ npm exec -- @vscode/vsce login <publisher-id>
 npm run publish -- --pat "$VSCE_PAT"
 
 # Publish the Open VSX-specific package
-npm run publish:openvsx -- perl-lsp-rs-*.vsix --pat "$OVSX_PAT"
+npm run publish:openvsx -- perl-lsp-rs-<version>.vsix --pat "$OVSX_PAT"
 
 # Or publish with version bump on Marketplace
 npm exec -- @vscode/vsce publish minor  # 0.5.0 -> 0.6.0

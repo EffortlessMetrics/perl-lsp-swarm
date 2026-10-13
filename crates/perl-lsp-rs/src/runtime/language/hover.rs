@@ -13,16 +13,52 @@ use crate::protocol::{req_position, req_uri};
 use crate::runtime::readiness::IndexReadinessPolicy;
 use crate::state::ParsedSnapshot;
 use crate::util::escape_markdown_text;
+use perl_parser_core::syntax::source_context::{
+    RangeClassification, SourceRegionIndex, SourceRegionKind,
+};
 use std::sync::Arc;
+mod closed_file_hover;
 mod hover_cards;
 mod hover_extracted;
 #[cfg(test)]
 mod hover_tests;
 mod live_compiler_hover;
+mod qualified_token;
 mod regex_hover;
 mod signature_help;
 
 use hover_extracted::HoverExtracted;
+#[cfg(feature = "workspace")]
+use qualified_token::indexed_member_matches_qualified_callable;
+use qualified_token::{QualifiedHoverKind, classify_qualified_hover_token};
+
+/// How a computed hover answer may be published.
+///
+/// The open-document publication gates on the captured document generation so
+/// a Full-sync invalidation that lands while the provider is off-lock cannot
+/// present superseded source as current. The disk-snapshot publication
+/// (#16647) has no open generation to gate on: the answer was computed from a
+/// file that was not open, and is published only if it is still not open — a
+/// `didOpen` racing the request supersedes disk text and fails closed to null.
+#[derive(Debug, Clone, Copy)]
+// The disk-snapshot arm only exists when the workspace index does; without the
+// workspace feature every hover still flows through the open-document arm.
+#[cfg_attr(not(feature = "workspace"), allow(dead_code))]
+enum HoverPublication {
+    /// Open document: publish only while this generation is still current.
+    OpenGeneration(u32),
+    /// Disk-index snapshot of a not-open workspace file (#16647).
+    DiskSnapshot { index_matches_disk: bool },
+}
+
+impl HoverPublication {
+    fn workspace_facts_are_current(self) -> bool {
+        match self {
+            Self::OpenGeneration(_) => true,
+            Self::DiskSnapshot { index_matches_disk } => index_matches_disk,
+        }
+    }
+}
 
 thread_local! {
     /// Trace-only source-region kind for the hover request running on *this*
@@ -196,7 +232,14 @@ impl LspServer {
                         None
                     };
 
-                    (offset, doc.current_parsed(), doc.text_arc.to_string(), hover_range)
+                    (
+                        offset,
+                        doc.current_parsed(),
+                        doc.text_arc.to_string(),
+                        hover_range,
+                        doc.full_sync_required(),
+                        doc.current_generation(),
+                    )
                 })
             };
             // documents guard dropped here
@@ -209,17 +252,64 @@ impl LspServer {
             }
 
             let t_analyze_start = std::time::Instant::now();
-            let (extracted, live_compiler_context, hover_range) = match locked {
-                Some((offset, parsed, text, range)) => {
-                    // Trace-only source-region classification (#5003). Recorded for the
-                    // dispatcher receipt in `runtime::language::misc`; it does not select
-                    // a hover branch and does not change the hover response payload.
-                    let source_region_kind = parsed.as_ref().map(|snapshot| {
-                        snapshot.source_region_index().kind_at_offset(offset).as_str().to_string()
-                    });
+            let (extracted, live_compiler_context, hover_range, publication) = match locked {
+                Some((_, _, _, _, true, _)) => {
+                    if timing_on {
+                        crate::runtime::timing::emit(crate::runtime::timing::TimingSpan::labeled(
+                            "provider.hover.analyze",
+                            crate::runtime::timing::elapsed_ms(t_analyze_start),
+                            crate::runtime::timing::uri_tail(uri),
+                        ));
+                    }
+                    // Full-sync-required: the predecessor text is evidence only
+                    // and must not answer the user.
+                    return Ok(Some(json!(null)));
+                }
+                // Not open (#16647): the open-documents gate was the only
+                // reason hover declined for a file the disk index already
+                // holds while references, definition, and workspace/symbol
+                // answered from it. Fall back to that indexed file; URIs the
+                // index does not hold still fail closed to null.
+                None => match self.closed_file_hover_parts(uri, line, character) {
+                    Some(parts) => (
+                        parts.extracted,
+                        parts.live_compiler_context,
+                        parts.hover_range,
+                        HoverPublication::DiskSnapshot {
+                            index_matches_disk: parts.index_matches_disk,
+                        },
+                    ),
+                    None => {
+                        if timing_on {
+                            crate::runtime::timing::emit(
+                                crate::runtime::timing::TimingSpan::labeled(
+                                    "provider.hover.analyze",
+                                    crate::runtime::timing::elapsed_ms(t_analyze_start),
+                                    crate::runtime::timing::uri_tail(uri),
+                                ),
+                            );
+                        }
+                        return Ok(Some(json!(null)));
+                    }
+                },
+                Some((offset, parsed, text, range, false, generation)) => {
+                    // Generation-bound source-region evidence (#5003). Beyond the
+                    // dispatcher trace, it now routes the generic fallback paths:
+                    // semantic/index lookups and the token/builtin fallback only
+                    // fire in proven code (#4967).
+                    let source_region =
+                        parsed.as_ref().map(|snapshot| snapshot.source_region_index());
+                    let source_region_kind = source_region
+                        .as_ref()
+                        .map(|index| index.kind_at_offset(offset).as_str().to_string());
                     set_hover_trace_source_region_kind(source_region_kind.clone());
-                    let live_compiler_context =
-                        Self::live_hover_compiler_context(uri, &text, offset, source_region_kind);
+                    let live_compiler_context = Self::live_hover_compiler_context(
+                        uri,
+                        &text,
+                        offset,
+                        source_region_kind,
+                        source_region.as_deref(),
+                    );
                     if let Some(ast) = parsed.as_ref().and_then(|p| p.ast()) {
                         // Canonical Dancer2 hover (#8928): one selected
                         // authority. Under exact activation the canonical
@@ -263,7 +353,12 @@ impl LspServer {
                                     "value": content,
                                 }
                             });
-                            return Ok(Self::inject_hover_range_opt(value, &range));
+                            return Ok(Some(self.publish_user_answer_value(
+                                uri,
+                                generation,
+                                Self::inject_hover_range_opt(value, &range).unwrap_or(json!(null)),
+                                json!(null),
+                            )));
                         }
                         // Check for `use Module` at this offset first
                         let extracted = if let Some(module_name) =
@@ -301,20 +396,22 @@ impl LspServer {
                                 offset,
                             )
                         } else {
-                            self.extract_symbol_hover(uri, ast, &text, offset, &parsed)
+                            self.extract_symbol_hover(uri, ast, &text, offset, &parsed, true)
                         };
-                        (extracted, live_compiler_context, range)
-                    } else {
                         (
-                            Self::extract_token_hover(uri, &text, offset),
+                            extracted,
                             live_compiler_context,
                             range,
+                            HoverPublication::OpenGeneration(generation),
+                        )
+                    } else {
+                        (
+                            Self::extract_token_hover(uri, &text, offset, source_region.as_deref()),
+                            live_compiler_context,
+                            range,
+                            HoverPublication::OpenGeneration(generation),
                         )
                     }
-                }
-                None => {
-                    set_hover_trace_source_region_kind(None);
-                    (HoverExtracted::None, None, None)
                 }
             };
             if timing_on {
@@ -331,9 +428,17 @@ impl LspServer {
                     if let Some(compiler_hover) =
                         self.try_live_compiler_hover(Some(&value), live_compiler_context.as_ref())
                     {
-                        return Self::inject_hover_range(compiler_hover, &hover_range);
+                        return self.publish_hover_answer(
+                            uri,
+                            publication,
+                            Self::inject_hover_range_opt(compiler_hover, &hover_range),
+                        );
                     }
-                    return Ok(Self::inject_hover_range_opt(value, &hover_range));
+                    return self.publish_hover_answer(
+                        uri,
+                        publication,
+                        Self::inject_hover_range_opt(value, &hover_range),
+                    );
                 }
                 HoverExtracted::UseModule(module_name, doc_text, doc_uri, doc_offset) => {
                     let hv = self.build_module_hover(
@@ -342,22 +447,121 @@ impl LspServer {
                         &doc_uri,
                         Some(doc_offset),
                     );
-                    return Ok(Self::inject_hover_range_opt(hv, &hover_range));
+                    return self.publish_hover_answer(
+                        uri,
+                        publication,
+                        Self::inject_hover_range_opt(hv, &hover_range),
+                    );
                 }
                 HoverExtracted::PossiblePackage(pkg_name, doc_text, doc_uri, doc_offset) => {
                     let hv =
                         self.build_module_hover(&pkg_name, &doc_text, &doc_uri, Some(doc_offset));
-                    return Ok(Self::inject_hover_range_opt(hv, &hover_range));
+                    return self.publish_hover_answer(
+                        uri,
+                        publication,
+                        Self::inject_hover_range_opt(hv, &hover_range),
+                    );
+                }
+                HoverExtracted::QualifiedCallable(package, name, qualified) => {
+                    #[cfg(feature = "workspace")]
+                    {
+                        // Cross-file callable lookup must fail closed when any
+                        // open document is newer than the index, matching
+                        // navigation. Caller-only freshness would present a
+                        // stale defining-file symbol as current.
+                        if publication.workspace_facts_are_current()
+                            && !self.workspace_index_stale_for_any_open_document()
+                        {
+                            let _ = self.check_index_readiness(IndexReadinessPolicy::WaitBriefly);
+                            if let Some(hover_value) =
+                                self.build_qualified_callable_hover(&package, &name)
+                            {
+                                if let Some(compiler_hover) = self.try_live_compiler_hover(
+                                    Some(&hover_value),
+                                    live_compiler_context.as_ref(),
+                                ) {
+                                    return self.publish_hover_answer(
+                                        uri,
+                                        publication,
+                                        Self::inject_hover_range_opt(compiler_hover, &hover_range),
+                                    );
+                                }
+                                return self.publish_hover_answer(
+                                    uri,
+                                    publication,
+                                    Self::inject_hover_range_opt(hover_value, &hover_range),
+                                );
+                            }
+                        }
+                    }
+                    #[cfg(not(feature = "workspace"))]
+                    {
+                        let _ = (&package, &name);
+                    }
+                    // Index miss, stale snapshot, or no workspace feature: do not
+                    // invent a proven sub and do not reuse the missing-module card.
+                    let generic = hover_cards::unresolved_qualified_token_hover(&qualified);
+                    if let Some(compiler_hover) =
+                        self.try_live_compiler_hover(Some(&generic), live_compiler_context.as_ref())
+                    {
+                        return self.publish_hover_answer(
+                            uri,
+                            publication,
+                            Self::inject_hover_range_opt(compiler_hover, &hover_range),
+                        );
+                    }
+                    return self.publish_hover_answer(
+                        uri,
+                        publication,
+                        Self::inject_hover_range_opt(generic, &hover_range),
+                    );
                 }
                 #[cfg(feature = "workspace")]
-                HoverExtracted::InheritedMethod(receiver_pkg, method_name, doc_uri) => {
-                    if !self.workspace_index_stale_for_document(&doc_uri) {
+                HoverExtracted::InheritedMethod(
+                    receiver_pkg,
+                    method_name,
+                    doc_uri,
+                    dynamic_fallback,
+                ) => {
+                    if publication.workspace_facts_are_current()
+                        && !self.workspace_index_stale_for_document(&doc_uri)
+                    {
                         let _ = self.check_index_readiness(IndexReadinessPolicy::WaitBriefly);
                         if let Some(hover_value) =
                             self.build_inherited_method_hover(&receiver_pkg, &method_name, &doc_uri)
                         {
-                            return Self::inject_hover_range(hover_value, &hover_range);
+                            return self.publish_hover_answer(
+                                uri,
+                                publication,
+                                Self::inject_hover_range_opt(hover_value, &hover_range),
+                            );
                         }
+                    }
+                    // The workspace lookup found nothing (or the index is stale).
+                    // Fall back to the same-file dynamic-boundary card rather than
+                    // dropping to generic token hover.
+                    //
+                    // This card reaches here from a path that previously returned
+                    // `Complete`, so it must still be offered to the live-compiler
+                    // cutover exactly as that arm does. Otherwise routing AUTOLOAD
+                    // through phase 2 would silently disable compiler-backed
+                    // provenance for the one case most likely to carry it.
+                    if let Some(hover_value) = dynamic_fallback {
+                        if let Some(compiler_hover) = self.try_live_compiler_hover(
+                            Some(&hover_value),
+                            live_compiler_context.as_ref(),
+                        ) {
+                            return self.publish_hover_answer(
+                                uri,
+                                publication,
+                                Self::inject_hover_range_opt(compiler_hover, &hover_range),
+                            );
+                        }
+                        return self.publish_hover_answer(
+                            uri,
+                            publication,
+                            Self::inject_hover_range_opt(hover_value, &hover_range),
+                        );
                     }
                 }
                 #[cfg(not(feature = "workspace"))]
@@ -366,21 +570,45 @@ impl LspServer {
                     if let Some(compiler_hover) =
                         self.try_live_compiler_hover(None, live_compiler_context.as_ref())
                     {
-                        return Self::inject_hover_range(compiler_hover, &hover_range);
+                        return self.publish_hover_answer(
+                            uri,
+                            publication,
+                            Self::inject_hover_range_opt(compiler_hover, &hover_range),
+                        );
                     }
                 }
             }
+            self.publish_hover_answer(uri, publication, Some(json!(null)))
+        } else {
+            Ok(Some(json!(null)))
         }
-
-        Ok(Some(json!(null)))
     }
 
-    /// Inject the `range` field into a hover response value. (#5085)
-    fn inject_hover_range(
-        value: Value,
-        range: &Option<Value>,
+    fn publish_hover_answer(
+        &self,
+        uri: &str,
+        publication: HoverPublication,
+        value: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
-        Ok(Self::inject_hover_range_opt(value, range))
+        let value = match publication {
+            HoverPublication::OpenGeneration(generation) => self.publish_user_answer_value(
+                uri,
+                generation,
+                value.unwrap_or(json!(null)),
+                json!(null),
+            ),
+            HoverPublication::DiskSnapshot { .. } => {
+                if self.document_generation(uri).is_some() {
+                    // The file was opened while the disk answer was being
+                    // computed; the open buffer supersedes disk text, so fail
+                    // closed instead of answering over a live document (#16647).
+                    json!(null)
+                } else {
+                    value.unwrap_or(json!(null))
+                }
+            }
+        };
+        Ok(Some(value))
     }
 
     fn inject_hover_range_opt(mut value: Value, range: &Option<Value>) -> Option<Value> {
@@ -412,8 +640,16 @@ impl LspServer {
         text: &str,
         offset: usize,
         parsed: &Option<Arc<ParsedSnapshot>>,
+        allow_workspace_facts: bool,
     ) -> HoverExtracted {
-        if let Some(xs_hover) = Self::extract_xs_api_hover(uri, text, offset) {
+        let source_region = parsed.as_ref().map(|snapshot| snapshot.source_region_index());
+        let source_region = source_region.as_deref();
+
+        // XS API names are claimed by raw token scan, so the claim is only
+        // allowed in proven code (#4967).
+        if Self::token_fallback_is_proven_code(source_region, text, offset)
+            && let Some(xs_hover) = Self::extract_xs_api_hover(uri, text, offset)
+        {
             return HoverExtracted::Complete(xs_hover);
         }
 
@@ -439,18 +675,59 @@ impl LspServer {
             return HoverExtracted::None;
         };
 
-        if let Some(symbol_info) =
-            analyzer.symbol_at(crate::SourceLocation { start: offset, end: offset })
+        // Analyzer claims are gated on proven code (#4967): `symbol_at` and
+        // `find_definition`'s `symbol_at` fallback return the smallest
+        // declaration *containing* the offset, so a `sub` symbol also contains
+        // the comments, strings, and heredocs inside its body. Answering from
+        // containment in non-code leaked the enclosing sub's generic card
+        // (review 5062479350). The inherited-method path below is text-scanned
+        // (`extract_arrow_receiver` has no region awareness), so it is gated on
+        // the same predicate. Span-exact islands above are reachable regardless.
+        let token_candidate_is_proven =
+            Self::token_fallback_is_proven_code(source_region, text, offset);
+
+        // Method-modifier target island (#15425). The synthetic modifier
+        // symbol spans the whole `before 'save' => sub { … };` statement, and
+        // its target name is a quoted string, so the proven-Code gate can
+        // never see a cursor on the target — the region index proves
+        // StringLiteral there (#4967). The declaration head is still precise
+        // evidence: allow the modifier card when the whole token range is
+        // proven StringLiteral and the hovered token text matches the
+        // symbol's target name (multi-target disambiguation). Body strings,
+        // comments, POD, and heredocs keep failing closed because their
+        // text won't match any modifier target name.
+        let modifier_target_island = !token_candidate_is_proven
+            && Self::token_range_is_proven_kind(
+                source_region,
+                text,
+                offset,
+                SourceRegionKind::StringLiteral,
+            );
+
+        if (token_candidate_is_proven || modifier_target_island)
+            && let Some(symbol_info) =
+                analyzer.symbol_at(crate::SourceLocation { start: offset, end: offset })
             && let Some(modifier_kind) =
                 symbol_info.attributes.iter().find_map(|a| a.strip_prefix("modifier="))
         {
-            let method_name = &symbol_info.name;
-            let doc = symbol_info.documentation.as_deref().unwrap_or("");
-            return HoverExtracted::Complete(hover_cards::method_modifier_hover(
-                modifier_kind,
-                method_name,
-                doc,
-            ));
+            // Multi-target disambiguation (#15425 review): when several
+            // modifier symbols share the same statement span, `symbol_at` may
+            // return any of them. Verify the hovered token text matches this
+            // symbol's name (the modifier target). Non-target tokens (body
+            // strings, comments) don't match any modifier name and fail
+            // closed naturally.
+            let token_text = Self::get_token_at_position_static(text, offset);
+            let target_matches = token_text == symbol_info.name;
+            let _ = modifier_target_island; // island gate already applied above
+            if target_matches || token_candidate_is_proven {
+                let method_name = &symbol_info.name;
+                let doc = symbol_info.documentation.as_deref().unwrap_or("");
+                return HoverExtracted::Complete(hover_cards::method_modifier_hover(
+                    modifier_kind,
+                    method_name,
+                    doc,
+                ));
+            }
         }
 
         // Detect early when the cursor is on a `->method` call: defer to the
@@ -458,46 +735,66 @@ impl LspServer {
         // is surfaced at call sites instead of the generic subroutine card.
         // Only discard when find_definition returned the enclosing sub (token
         // mismatch) or when the class model has modifier metadata for the callee.
-        let symbol_at_cursor = analyzer.find_definition(offset).filter(|sym| {
-            let token = Self::get_token_at_position_static(text, offset);
-            #[cfg(feature = "workspace")]
-            {
-                if matches!(
-                    sym.kind,
-                    crate::symbol::SymbolKind::Subroutine | crate::symbol::SymbolKind::Method
-                ) && Self::extract_arrow_receiver(text, offset).is_some()
-                    && sym.declaration.as_deref() != Some("has")
+        let symbol_at_cursor = if token_candidate_is_proven {
+            analyzer.find_definition(offset).filter(|sym| {
+                let token = Self::get_token_at_position_static(text, offset);
+                #[cfg(feature = "workspace")]
                 {
-                    if token != sym.name && !token.is_empty() {
-                        return false;
-                    }
-                    if token == sym.name
-                        && let Some(raw_receiver) = Self::extract_arrow_receiver(text, offset)
+                    if matches!(
+                        sym.kind,
+                        crate::symbol::SymbolKind::Subroutine | crate::symbol::SymbolKind::Method
+                    ) && Self::extract_arrow_receiver(text, offset).is_some()
+                        && sym.declaration.as_deref() != Some("has")
                     {
-                        let receiver_pkg =
-                            Self::resolve_receiver_package_name(ast, offset, &raw_receiver);
-                        if !receiver_pkg.is_empty()
-                            && analyzer
-                                .resolve_inherited_method_hover(&receiver_pkg, &sym.name)
-                                .is_some_and(|hover| {
-                                    hover
-                                        .details
-                                        .iter()
-                                        .any(|detail| detail.starts_with("Decorated with:"))
-                                })
-                        {
+                        if token != sym.name && !token.is_empty() {
                             return false;
+                        }
+                        if token == sym.name
+                            && let Some(raw_receiver) = Self::extract_arrow_receiver(text, offset)
+                        {
+                            let receiver_pkg =
+                                Self::resolve_receiver_package_name(ast, offset, &raw_receiver);
+                            if !receiver_pkg.is_empty()
+                                && analyzer
+                                    .resolve_inherited_method_hover(&receiver_pkg, &sym.name)
+                                    .is_some_and(|hover| {
+                                        hover
+                                            .details
+                                            .iter()
+                                            .any(|detail| detail.starts_with("Decorated with:"))
+                                    })
+                            {
+                                return false;
+                            }
                         }
                     }
                 }
-            }
-            // If the token matches the symbol name this IS a direct hover on that
-            // symbol (e.g. hovering on `sub run` where cursor is on `run`).
-            if token == sym.name || token.is_empty() {
-                return true; // keep — cursor is directly on the symbol
-            }
-            true
-        });
+                // The analyzer may return the containing sub when a special variable
+                // has no declaration. Let the existing special-variable card answer
+                // instead of presenting that unrelated sub as the hovered entity.
+                if matches!(
+                    sym.kind,
+                    crate::symbol::SymbolKind::Subroutine | crate::symbol::SymbolKind::Method
+                ) && token != sym.name
+                {
+                    let special = Self::extract_special_variable(text, offset)
+                        .unwrap_or_else(|| token.clone());
+                    if Self::get_special_variable_hover(&special).is_some() {
+                        return false;
+                    }
+                }
+                // If the token matches the symbol name this IS a direct hover on that
+                // symbol (e.g. hovering on `sub run` where cursor is on `run`).
+                if token == sym.name || token.is_empty() {
+                    return true; // keep — cursor is directly on the symbol
+                }
+                true
+            })
+        } else {
+            // Not proven code: the containment-based fallback fails closed
+            // (#4967); the generic token fallback below applies its own gate.
+            None
+        };
         if let Some(symbol_info) = symbol_at_cursor {
             // Detect Moo/Moose attribute accessors (declaration == "has") early and
             // render a dedicated card that shows the attribute metadata clearly,
@@ -676,10 +973,17 @@ impl LspServer {
         // Inherited method hover: cursor is on a `->method()` call but find_definition
         // found nothing in the current file.  Try the in-file class model first
         // (resolve_inherited_method_hover handles same-file parent/role chains), then
-        // emit InheritedMethod for Phase 2 (workspace index BFS).
+        // emit InheritedMethod for Phase 2 (workspace index BFS). This is an
+        // analyzer/index claim, so it runs only in proven code (#4967): the arrow
+        // receiver scan is text-based and would otherwise answer for `Pkg->method`
+        // text inside comments and strings.
         #[cfg(feature = "workspace")]
         {
-            if let Some(raw_receiver) = Self::extract_arrow_receiver(text, offset) {
+            use perl_semantic_facts::Provenance;
+
+            if token_candidate_is_proven
+                && let Some(raw_receiver) = Self::extract_arrow_receiver(text, offset)
+            {
                 // Extract the method name token at the cursor
                 let method_name = Self::get_token_at_position_static(text, offset);
                 if !method_name.is_empty() && !method_name.starts_with(['$', '@', '%']) {
@@ -695,37 +999,218 @@ impl LspServer {
                             analyzer.resolve_inherited_method_hover(&receiver_pkg, &method_name)
                         {
                             let details = hover_info.details.join("\n");
-                            return HoverExtracted::Complete(json!({
+                            // Branch on the typed provenance, not on `details`
+                            // prose and not on confidence. PLSP-SPEC-0002 lists
+                            // "Low confidence" and "Dynamic boundary" as separate
+                            // states: a future heuristic hover could be Low
+                            // without being a boundary, and keying the card off
+                            // Low would then mislabel it. Only DynamicBoundary
+                            // means the signature is a handler rather than an
+                            // exact definition of the requested method.
+                            let is_dynamic =
+                                matches!(hover_info.provenance, Some(Provenance::DynamicBoundary));
+                            let heading = if is_dynamic {
+                                "**Method (dynamic dispatch)**"
+                            } else {
+                                "**Method**"
+                            };
+                            let card = json!({
                                 "contents": {
                                     "kind": "markdown",
                                     "value": format!(
-                                        "**Method**\n\n`{}`\n\n{}",
+                                        "{}\n\n`{}`\n\n{}",
+                                        heading,
                                         hover_info.signature,
                                         details
                                     ),
                                 },
-                            }));
+                            });
+                            if is_dynamic {
+                                // The same-file model only sees same-file classes,
+                                // so its AUTOLOAD answer is not authoritative: an
+                                // ancestor in another file may define the method
+                                // exactly, and an exact method outranks AUTOLOAD.
+                                // Defer to the workspace pass, carrying this card
+                                // as the fallback if that finds nothing.
+                                return HoverExtracted::InheritedMethod(
+                                    receiver_pkg,
+                                    method_name,
+                                    uri.to_string(),
+                                    Some(card),
+                                );
+                            }
+                            return HoverExtracted::Complete(card);
                         }
 
+                        if !allow_workspace_facts {
+                            return HoverExtracted::None;
+                        }
                         // No in-file ancestor found — defer to Phase 2 workspace BFS
                         return HoverExtracted::InheritedMethod(
                             receiver_pkg,
                             method_name,
                             uri.to_string(),
+                            None,
                         );
                     }
                 }
             }
         }
 
-        Self::extract_token_hover(uri, text, offset)
+        Self::extract_token_hover(uri, text, offset, source_region)
+    }
+
+    /// Whether the whole token candidate range at `offset` is proven
+    /// executable code by the generation-bound source-region index
+    /// (#5003/#4967).
+    ///
+    /// The whole candidate range — not just the cursor byte — must be proven:
+    /// a broad enclosing literal is not permission for generic identifier
+    /// fallback anywhere inside it. Missing evidence fails closed.
+    fn token_fallback_is_proven_code(
+        region_index: Option<&SourceRegionIndex>,
+        text: &str,
+        offset: usize,
+    ) -> bool {
+        let Some(index) = region_index else {
+            return false;
+        };
+        let (start, end) = Self::token_byte_bounds_of(text, offset);
+        matches!(
+            index.classify_range(start, end),
+            RangeClassification::Proven { kind: SourceRegionKind::Code }
+        )
+    }
+
+    /// Whether the whole token range at `offset` is proven to be exactly
+    /// `kind` by the generation-bound source-region index (#5003/#4967).
+    ///
+    /// Empty token ranges (cursor on punctuation) never qualify: there is no
+    /// identifier evidence to prove. Missing evidence fails closed.
+    fn token_range_is_proven_kind(
+        region_index: Option<&SourceRegionIndex>,
+        text: &str,
+        offset: usize,
+        kind: SourceRegionKind,
+    ) -> bool {
+        let Some(index) = region_index else {
+            return false;
+        };
+        let (start, end) = Self::token_byte_bounds_of(text, offset);
+        if start >= end {
+            return false;
+        }
+        matches!(
+            index.classify_range(start, end),
+            RangeClassification::Proven { kind: proven } if proven == kind
+        )
+    }
+
+    /// Whether the token candidate at `offset` is an unescaped `$`/`@` variable
+    /// interpolated inside a double-quoted string literal (#14860).
+    ///
+    /// The region index records both `"…"` and `'…'` spans as
+    /// [`SourceRegionKind::StringLiteral`] without interpolation awareness, so
+    /// the opener byte decides: `'…'` never interpolates. Backticks and other
+    /// quote-likes are separate region kinds and stay outside this island. `%`
+    /// never interpolates, and an odd run of preceding backslashes escapes the
+    /// sigil. Missing evidence fails closed.
+    fn token_is_interpolated_string_variable(
+        region_index: Option<&SourceRegionIndex>,
+        text: &str,
+        offset: usize,
+    ) -> bool {
+        let Some(index) = region_index else {
+            return false;
+        };
+        // Punctuation variables (`$!`, `$^W`, `@+`) have no word-token bounds,
+        // so the candidate span comes from the same extractor that names them;
+        // sigiled identifiers fall back to word bounds.
+        let (start, end) = Self::special_variable_byte_bounds_of(text, offset)
+            .unwrap_or_else(|| Self::token_byte_bounds_of(text, offset));
+        if start >= end || !matches!(text.as_bytes().get(start), Some(b'$' | b'@')) {
+            return false;
+        }
+        let Some(region) = index.regions().iter().find(|region| {
+            region.kind == SourceRegionKind::StringLiteral && region.contains_range(start, end)
+        }) else {
+            return false;
+        };
+        let bytes = text.as_bytes();
+        let interpolating = matches!(bytes.get(region.start), Some(b'"'));
+        if !interpolating || start <= region.start {
+            return false;
+        }
+        let escaping_backslashes =
+            bytes[region.start..start].iter().rev().take_while(|b| **b == b'\\').count();
+        escaping_backslashes % 2 == 0
+    }
+
+    /// Byte span of the punctuation or caret special variable that
+    /// [`Self::extract_special_variable`] names at `offset`, anchored at the
+    /// sigil it found (cursor on the sigil or on the punctuation).
+    fn special_variable_byte_bounds_of(text: &str, offset: usize) -> Option<(usize, usize)> {
+        let name = Self::extract_special_variable(text, offset)?;
+        let start = [Some(offset), offset.checked_sub(1), offset.checked_sub(2)]
+            .into_iter()
+            .flatten()
+            .find(|pos| text.get(*pos..).is_some_and(|rest| rest.starts_with(name.as_str())))?;
+        let end = start + name.len();
+        // Preserve punctuation-boundary hover, but never claim identifier text
+        // immediately following a punctuation variable inside the string.
+        if offset >= end
+            && text
+                .get(offset..)
+                .and_then(|rest| rest.chars().next())
+                .is_some_and(|ch| ch.is_alphanumeric() || ch == '_')
+        {
+            return None;
+        }
+        Some((start, end))
     }
 
     /// Extract hover information from the token fallback path.
-    fn extract_token_hover(uri: &str, text: &str, offset: usize) -> HoverExtracted {
+    fn extract_token_hover(
+        uri: &str,
+        text: &str,
+        offset: usize,
+        region_index: Option<&SourceRegionIndex>,
+    ) -> HoverExtracted {
         // Check if the cursor is inside a regex literal and provide explanation.
-        if let Some(regex_hover) = Self::extract_regex_hover(text, offset) {
+        //
+        // Semantic island: regex construct documentation claims an exact
+        // operator/pattern span and stays possible inside genuine regex
+        // regions. The scan itself is a whole-line lexical heuristic, so the
+        // claimed span must carry generation-bound `RegexLike` evidence to
+        // answer; regex-shaped text in comments, strings, POD, heredocs, or
+        // recovery input fails closed (#4967).
+        if let Some(regex_hover) = Self::extract_regex_hover(text, offset, region_index) {
             return HoverExtracted::Complete(regex_hover);
+        }
+
+        // Generic symbol/token/builtin fallback: proven code only. Comments,
+        // POD, literals, quote-likes, regex bodies, heredocs, `__DATA__`, and
+        // recovery-ambiguous input fail closed to `None` (#4967).
+        //
+        // One island survives inside a string: an unescaped sigil variable in
+        // a double-quoted literal is a live variable reference, so its
+        // variable card stays answerable. Builtin, keyword,
+        // and bare-token cards remain suppressed there (#14860).
+        if !Self::token_fallback_is_proven_code(region_index, text, offset) {
+            if Self::token_is_interpolated_string_variable(region_index, text, offset) {
+                if let Some(special_var) = Self::extract_special_variable(text, offset)
+                    && let Some(hover) = Self::get_special_variable_hover(&special_var)
+                {
+                    return HoverExtracted::Complete(hover);
+                }
+                let token = Self::get_token_at_position_static(text, offset);
+                if token.starts_with(['$', '@'])
+                    && let Some(hover) = Self::get_special_variable_hover(&token)
+                {
+                    return HoverExtracted::Complete(hover);
+                }
+            }
+            return HoverExtracted::None;
         }
 
         // Check for special/punctuation variables (e.g. $!, $/, $$, $^W)
@@ -823,15 +1308,21 @@ impl LspServer {
                 }));
             }
 
-            // Before the bare-token fallback, check if the cursor is on a package name
-            // (an identifier that spans `::` separators, e.g. `File::Path`, `DBI`).
-            // Defer resolution to Phase 2 via `build_module_hover` so no workspace lock
-            // is held here.
-            if let Some(pkg_name) = Self::get_package_name_at_position(text, offset) {
+            // Before the bare-token fallback, classify a `::`-qualified token.
+            // Package/module references defer to `build_module_hover`. Qualified
+            // callables (`Pkg::sub`) must not take that path: a miss there is the
+            // missing-module `cpanm` card (#16646). Defer workspace lookup to
+            // Phase 2 so no workspace lock is held here.
+            if let Some(kind) = classify_qualified_hover_token(text, offset) {
+                let lookup_name = match &kind {
+                    QualifiedHoverKind::Package(pkg_name) => pkg_name.as_str(),
+                    QualifiedHoverKind::Callable { qualified, .. } => qualified.as_str(),
+                };
                 // Namespaced builtins (e.g. utf8::encode, utf8::decode) must take
-                // priority over module resolution: there is no utf8/encode.pm to
-                // find, and the correct response is the builtin hover card.
-                if let Some(builtin_doc) = crate::semantic::get_builtin_documentation(&pkg_name) {
+                // priority over module and callable resolution: there is no
+                // utf8/encode.pm to find, and the correct response is the builtin
+                // hover card.
+                if let Some(builtin_doc) = crate::semantic::get_builtin_documentation(lookup_name) {
                     return HoverExtracted::Complete(json!({
                         "contents": {
                             "kind": "markdown",
@@ -843,12 +1334,17 @@ impl LspServer {
                         },
                     }));
                 }
-                return HoverExtracted::PossiblePackage(
-                    pkg_name,
-                    text.to_string(),
-                    uri.to_string(),
-                    offset,
-                );
+                return match kind {
+                    QualifiedHoverKind::Package(pkg_name) => HoverExtracted::PossiblePackage(
+                        pkg_name,
+                        text.to_string(),
+                        uri.to_string(),
+                        offset,
+                    ),
+                    QualifiedHoverKind::Callable { package, name, qualified } => {
+                        HoverExtracted::QualifiedCallable(package, name, qualified)
+                    }
+                };
             }
 
             // Operator hover: show documentation for common Perl operators. (UX_GAP_06)
@@ -1146,47 +1642,38 @@ impl LspServer {
         content[start_byte..end_byte].to_string()
     }
 
-    /// Extract a package name at `offset`, spanning `::` separators.
+    /// Build hover for an indexed workspace-qualified callable (`Pkg::sub`).
     ///
-    /// Returns `Some(name)` only when the extracted token contains `::`,
-    /// indicating it is a qualified package name (e.g. `File::Path`, `Foo::Bar::Baz`).
-    /// Returns `None` for bare single-component identifiers to avoid misidentifying
-    /// function names or variables.
-    fn get_package_name_at_position(text: &str, offset: usize) -> Option<String> {
-        let bytes = text.as_bytes();
-        let len = bytes.len();
-        if offset >= len {
-            return None;
-        }
+    /// Returns `None` when the index has no matching subroutine, method, or
+    /// constant. Callers must not treat that miss as a missing CPAN module.
+    #[cfg(feature = "workspace")]
+    fn build_qualified_callable_hover(&self, package: &str, name: &str) -> Option<Value> {
+        use perl_symbol::SymbolKind;
 
-        // Scan left over alphanumeric, underscore, and `::` sequences.
-        let mut start = offset;
-        while start > 0 {
-            let prev = start - 1;
-            if bytes[prev].is_ascii_alphanumeric() || bytes[prev] == b'_' {
-                start -= 1;
-            } else if prev >= 1 && bytes[prev] == b':' && bytes[prev - 1] == b':' {
-                start -= 2;
-            } else {
-                break;
-            }
-        }
+        let coord = self.coordinator()?;
+        let workspace_index = coord.index();
+        let qualified = format!("{package}::{name}");
+        let symbol = workspace_index.get_package_members(package).into_iter().find(|symbol| {
+            indexed_member_matches_qualified_callable(
+                package,
+                name,
+                &symbol.name,
+                symbol.container_name.as_deref(),
+                symbol.qualified_name.as_deref(),
+            ) && (symbol.kind.is_callable() || matches!(symbol.kind, SymbolKind::Constant))
+        })?;
 
-        // Scan right over alphanumeric, underscore, and `::` sequences.
-        let mut end = offset;
-        while end < len {
-            if bytes[end].is_ascii_alphanumeric() || bytes[end] == b'_' {
-                end += 1;
-            } else if end + 1 < len && bytes[end] == b':' && bytes[end + 1] == b':' {
-                end += 2;
-            } else {
-                break;
-            }
-        }
-
-        // Trim any trailing `::` (e.g. cursor right after the separator).
-        let candidate = text[start..end].trim_end_matches(':');
-        if candidate.contains("::") { Some(candidate.to_string()) } else { None }
+        let (kind_str, signature) = match symbol.kind {
+            SymbolKind::Method => ("Method", format!("method {qualified}")),
+            SymbolKind::Constant => ("Constant", qualified.clone()),
+            _ => ("Subroutine", format!("sub {qualified}")),
+        };
+        Some(hover_cards::qualified_callable_hover(
+            kind_str,
+            &signature,
+            package,
+            symbol.documentation.as_deref(),
+        ))
     }
 
     fn extract_xs_api_hover(uri: &str, text: &str, offset: usize) -> Option<Value> {
@@ -1561,7 +2048,13 @@ impl LspServer {
         let mut queue = VecDeque::new();
         let mut related_package_cache: HashMap<String, Vec<String>> = HashMap::new();
 
-        let build_package_hover = |package_name: &str| -> Option<Value> {
+        // Perl searches the whole resolution order for an exact method before
+        // consulting AUTOLOAD. Resolving per-package — exact-then-AUTOLOAD for each
+        // package in turn — would let a subclass AUTOLOAD pre-empt an ancestor's
+        // real method and report an exact call as a dynamic boundary. So the
+        // traversal below collects the order first, then runs these two passes over
+        // it in sequence. Mirrors `resolve_inherited_method_hover_ordered`.
+        let build_exact_hover = |package_name: &str| -> Option<Value> {
             let members = workspace_index.get_package_members(package_name);
             if members.iter().any(|symbol| symbol.name == method_name) {
                 let detail = if package_name == receiver_pkg {
@@ -1579,19 +2072,31 @@ impl LspServer {
                     },
                 }));
             }
+            None
+        };
 
+        let build_autoload_hover = |package_name: &str| -> Option<Value> {
+            let members = workspace_index.get_package_members(package_name);
             if members.iter().any(|symbol| symbol.name == "AUTOLOAD") {
                 let detail = if package_name == receiver_pkg {
                     format!("Resolved via `AUTOLOAD` in `{package_name}`")
                 } else {
                     format!("Resolved via inherited `AUTOLOAD` in `{package_name}`")
                 };
+                // Same DynamicBoundary rule as the in-file path: this workspace
+                // hit is an AUTOLOAD handler, not an exact definition of
+                // `method_name`, so the card must not read as a plain method.
+                // The condition is the structural AUTOLOAD member match above,
+                // not a string match on rendered prose.
                 return Some(json!({
                     "contents": {
                         "kind": "markdown",
                         "value": format!(
-                            "**Method**\n\n`sub {}::AUTOLOAD`\n\n{}\n\nRequested method: `{}`",
-                            package_name, detail, method_name
+                            "**Method (dynamic dispatch)**\n\n`sub {}::AUTOLOAD`\n\n{}\n\nRequested method: `{}`\n\n{}",
+                            package_name,
+                            detail,
+                            method_name,
+                            crate::semantic::AUTOLOAD_DYNAMIC_DISPATCH_DETAIL
                         ),
                     },
                 }));
@@ -1599,10 +2104,6 @@ impl LspServer {
 
             None
         };
-
-        if let Some(hover) = build_package_hover(receiver_pkg) {
-            return Some(hover);
-        }
 
         // Inner closure: enqueue parent and role packages not yet visited.
         // Mirrors the logic in `inherited_method_definition_location` (navigation.rs)
@@ -1664,6 +2165,10 @@ impl LspServer {
             }
         };
 
+        // Collect the full resolution order first, receiver included, so the exact
+        // and AUTOLOAD passes below both see every package.
+        let universal_pkg = "UNIVERSAL".to_string();
+        let mut resolution_order = vec![receiver_pkg.to_string()];
         enqueue_related(receiver_pkg, &mut queue, &visited);
 
         while let Some(package_name) = queue.pop_front() {
@@ -1671,11 +2176,44 @@ impl LspServer {
                 continue;
             }
 
-            if let Some(hover) = build_package_hover(&package_name) {
+            enqueue_related(&package_name, &mut queue, &visited);
+            resolution_order.push(package_name);
+        }
+
+        // Phase 1 — exact method anywhere in the order, then `UNIVERSAL`.
+        //
+        // Perl permits user-defined `UNIVERSAL::` methods beyond the four builtins
+        // `is_universal_method` knows, and they outrank a class's AUTOLOAD. The
+        // workspace index is the only place such a definition can be seen, so
+        // `UNIVERSAL` is searched here — after the receiver's own ancestors, before
+        // any AUTOLOAD.
+        for package_name in resolution_order.iter().chain(std::iter::once(&universal_pkg)) {
+            if let Some(hover) = build_exact_hover(package_name) {
                 return Some(hover);
             }
+        }
 
-            enqueue_related(&package_name, &mut queue, &visited);
+        // Phase 2 — AUTOLOAD fallback, same order. `UNIVERSAL` is deliberately
+        // NOT included here, unlike the exact pass above.
+        //
+        // Perl does consult `UNIVERSAL::AUTOLOAD` last, so including it looks
+        // symmetric — but the two lookups are not comparable. The exact pass is
+        // name-matched: it fires only when someone defines `UNIVERSAL::<this exact
+        // method>`. An AUTOLOAD lookup is name-independent, so adding `UNIVERSAL`
+        // here would make *every* otherwise-unresolved method in any workspace that
+        // happens to index a `UNIVERSAL::AUTOLOAD` render as dynamic dispatch
+        // through it — including when that definition is never loaded, which Perl
+        // requires before the handler can run. That is a false dynamic claim on a
+        // huge population of calls, which is the over-claiming this whole seam
+        // exists to prevent.
+        //
+        // Correctly admitting it needs the caller's effective load context, which
+        // this resolver does not have. Left unhandled and recorded rather than
+        // approximated.
+        for package_name in &resolution_order {
+            if let Some(hover) = build_autoload_hover(package_name) {
+                return Some(hover);
+            }
         }
 
         None

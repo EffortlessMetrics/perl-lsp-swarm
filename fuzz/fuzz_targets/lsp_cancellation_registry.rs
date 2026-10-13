@@ -1,17 +1,17 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
+use perl_lsp_rs_core::protocol::JsonRpcId;
 use perl_lsp_rs_core::runtime::cancellation::{CancellationRegistry, PerlLspCancellationToken};
-use serde_json::Value;
 
-fn split_u64(data: &[u8], index: usize) -> Option<u64> {
+fn split_i64(data: &[u8], index: usize) -> Option<i64> {
     if data.len() < index + 8 {
         return None;
     }
 
     let mut bytes = [0u8; 8];
     bytes.copy_from_slice(&data[index..index + 8]);
-    Some(u64::from_le_bytes(bytes))
+    Some(i64::from_le_bytes(bytes))
 }
 
 fuzz_target!(|data: &[u8]| {
@@ -22,8 +22,8 @@ fuzz_target!(|data: &[u8]| {
     let registry = CancellationRegistry::new();
     let mut offset = 0usize;
 
-    while let Some(id) = split_u64(data, offset) {
-        let request_id = Value::from(id);
+    while let Some(id) = split_i64(data, offset) {
+        let request_id = JsonRpcId::Integer(id);
         let token = PerlLspCancellationToken::new(request_id.clone(), "fuzz-provider".to_string());
         let _ = registry.register_token(token);
 
@@ -47,7 +47,7 @@ fuzz_target!(|data: &[u8]| {
     }
 
     for metric_id in 0u8..4 {
-        let request_id = Value::from(u64::from(metric_id));
+        let request_id = JsonRpcId::Integer(i64::from(metric_id));
         let _ = registry.register_token(PerlLspCancellationToken::new(
             request_id.clone(),
             "metric-provider".to_string(),

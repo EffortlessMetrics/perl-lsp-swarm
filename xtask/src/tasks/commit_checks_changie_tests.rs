@@ -1,6 +1,6 @@
 use super::config::AQUA_CONFIG_PATH;
 use super::*;
-use color_eyre::eyre::{Context, Result, bail};
+use color_eyre::eyre::{Context, ContextCompat, Result, bail};
 use std::fs;
 use std::path::Path;
 use std::process::Command;
@@ -61,6 +61,47 @@ impl TempRepo {
         Ok(())
     }
 
+    /// Stage `content` as a blob at `path` with an explicit git `mode`
+    /// (e.g. `120000` symlink) via `hash-object -w` + `update-index
+    /// --cacheinfo` — a type-change recorded purely in the index, with no
+    /// working-tree symlink required.
+    fn stage_blob_at(&self, mode: &str, content: &str, path: &str) -> Result<()> {
+        use std::io::Write;
+        use std::process::Stdio;
+
+        let mut child = self
+            .git()
+            .args(["hash-object", "-w", "--stdin"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .context("failed to spawn `git hash-object -w --stdin`")?;
+        child
+            .stdin
+            .take()
+            .context("git hash-object stdin was not piped")?
+            .write_all(content.as_bytes())
+            .context("failed to write blob content to git hash-object")?;
+        let output = child.wait_with_output().context("failed to wait for git hash-object")?;
+        if !output.status.success() {
+            bail!("git hash-object failed: {}", String::from_utf8_lossy(&output.stderr));
+        }
+        let blob = String::from_utf8(output.stdout)
+            .context("git hash-object output was not UTF-8")?
+            .trim()
+            .to_string();
+        let spec = format!("{mode},{blob},{path}");
+        let status = self
+            .git()
+            .args(["update-index", "--add", "--cacheinfo", &spec])
+            .status()
+            .context("failed to run git update-index --cacheinfo")?;
+        if !status.success() {
+            bail!("git update-index --add --cacheinfo {spec} failed");
+        }
+        Ok(())
+    }
+
     fn commit(&self) -> Result<()> {
         let status = self
             .git()
@@ -69,6 +110,21 @@ impl TempRepo {
             .context("failed to commit fixture")?;
         if !status.success() {
             bail!("git commit failed");
+        }
+        Ok(())
+    }
+
+    /// Stage a deletion of an already-committed path (`git rm --cached`)
+    /// without touching the working tree — the exact shape of a deletion
+    /// entering the staged tree and its diff filter.
+    fn remove_cached(&self, path: &str) -> Result<()> {
+        let status = self
+            .git()
+            .args(["rm", "--cached", "--quiet", path])
+            .status()
+            .context("failed to unstage fixture path")?;
+        if !status.success() {
+            bail!("git rm --cached {path} failed");
         }
         Ok(())
     }
@@ -87,8 +143,55 @@ impl TempRepo {
 
 fn fragment(body: &str) -> String {
     format!(
-        "project: product\ncomponent: Developer experience\nkind: Fixed\nbody: \"{body}\"\ncustom:\n  PR: \"1\"\n  Breaking: \"no\"\n"
+        "project: product\ncomponent: Developer experience\nkind: Fixed\nbody: \"{body}\"\ntime: 2026-08-30T00:00:00Z\ncustom:\n  PR: \"1\"\n  Breaking: \"no\"\n"
     )
+}
+
+/// Issue #13484: a hand-authored fragment with an empty `time:` and the
+/// HH:MM:SS orphaned as bare YAML (the #12549/#12648 signature) must block the
+/// commit-tier gate with a finding naming the fragment and the defect — before
+/// it can land and crash `changie batch` repo-wide at render time.
+#[test]
+fn empty_or_orphaned_time_blocks_the_staged_gate() -> Result<()> {
+    for (label, fragment_text) in [
+        (
+            "empty time",
+            "project: product\ncomponent: Developer experience\nkind: Fixed\nbody: \"valid release note body\"\ntime:\ncustom:\n  PR: \"1\"\n  Breaking: \"no\"\n",
+        ),
+        (
+            "orphaned bare time",
+            "project: product\ncomponent: Developer experience\nkind: Fixed\nbody: \"valid release note body\"\ntime:\n  13:55:13\ncustom:\n  PR: \"1\"\n  Breaking: \"no\"\n",
+        ),
+    ] {
+        let repo = TempRepo::init()?;
+        repo.stage_baseline(CONFIG)?;
+        let fragment_path = ".changes/unreleased/product-1-Fixed-000000.yaml";
+        repo.write(fragment_path, fragment_text)?;
+        repo.add(fragment_path)?;
+
+        let outcome = run_with_renderer(repo.root(), None, |_workspace, _projects| {
+            bail!("renderer must not run while a malformed fragment is staged")
+        })?;
+        match outcome {
+            CommitCheckOutcome::Flagged(report) => {
+                assert_eq!(report.posture, Posture::Blocked, "{label}");
+                assert!(
+                    report.result.contains("`time:`"),
+                    "{label}: blocking report must name the time defect: {}",
+                    report.result
+                );
+                assert!(
+                    report.result.contains(fragment_path),
+                    "{label}: blocking report must name the fragment: {}",
+                    report.result
+                );
+            }
+            CommitCheckOutcome::Pass(summary) => {
+                bail!("expected an empty/orphaned `time:` fragment to block: {label}: {summary}");
+            }
+        }
+    }
+    Ok(())
 }
 
 #[test]
@@ -314,6 +417,207 @@ fn unsafe_config_paths_block_before_rendering() -> Result<()> {
         }
         CommitCheckOutcome::Pass(summary) => {
             bail!("expected unsafe Changie path to block: {summary}");
+        }
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------
+// Issue #4092 gap 1 proofs: config removal is an explicit policy
+// finding, never a clean pass and never an instrument failure, while
+// ordinary fragment deletion beside a valid config stays a pass.
+// ---------------------------------------------------------------------
+
+/// Required proof 1: a candidate tree that deliberately deletes
+/// `.changie.yaml` is a Changie policy finding (Blocked), and the check
+/// never reaches a pass or a renderer invocation.
+#[test]
+fn deleting_only_the_changie_config_is_a_policy_finding_not_a_pass() -> Result<()> {
+    let repo = TempRepo::init()?;
+    repo.stage_baseline(CONFIG)?;
+    repo.remove_cached(CONFIG_PATH)?;
+
+    let outcome = run_with_renderer(repo.root(), None, |_workspace, _projects| {
+        bail!("renderer must not run when the Changie config itself is absent")
+    })?;
+    match outcome {
+        CommitCheckOutcome::Flagged(report) => {
+            assert_eq!(
+                report.posture,
+                Posture::Blocked,
+                "config removal must be a policy BLOCK, not {:#?}",
+                report.posture
+            );
+            assert!(
+                report.result.contains(CONFIG_PATH),
+                "the policy finding must name the removed config: {}",
+                report.result
+            );
+        }
+        CommitCheckOutcome::Pass(summary) => {
+            bail!(
+                "deleting `.changie.yaml` must not silently pass while Changie is a mandatory \
+                 authority: {summary}"
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Required proof 2: deleting the config together with every unreleased
+/// fragment is still a policy finding — "all fragments were also deleted"
+/// is not authority to infer a decommissioning.
+#[test]
+fn deleting_config_and_all_fragments_still_blocks_instead_of_decommissioning() -> Result<()> {
+    let repo = TempRepo::init()?;
+    repo.stage_baseline(CONFIG)?;
+    let fragment_path = ".changes/unreleased/product-1-Fixed-000000.yaml";
+    repo.write(fragment_path, &fragment("committed fragment body"))?;
+    repo.add(fragment_path)?;
+    repo.commit()?;
+    repo.remove_cached(CONFIG_PATH)?;
+    repo.remove_cached(fragment_path)?;
+
+    let outcome = run_with_renderer(repo.root(), None, |_workspace, _projects| {
+        bail!("renderer must not run for a config-free candidate tree")
+    })?;
+    match outcome {
+        CommitCheckOutcome::Flagged(report) => {
+            assert_eq!(
+                report.posture,
+                Posture::Blocked,
+                "config+fragment deletion must stay a policy BLOCK, not {:#?}",
+                report.posture
+            );
+            assert!(
+                report.result.contains(CONFIG_PATH),
+                "the empty-ledger deletion must still be attributed to the missing config: {}",
+                report.result
+            );
+        }
+        CommitCheckOutcome::Pass(summary) => {
+            bail!(
+                "an all-deletions candidate must not be normalized into a clean decommission \
+                 pass: {summary}"
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Required proof 4: an ordinary fragment deletion while a valid config
+/// remains is handled as a no-op for the release-note ledger and passes.
+#[test]
+fn ordinary_fragment_deletion_with_valid_config_passes() -> Result<()> {
+    let repo = TempRepo::init()?;
+    repo.stage_baseline(CONFIG)?;
+    let fragment_path = ".changes/unreleased/product-1-Fixed-000000.yaml";
+    repo.write(fragment_path, &fragment("committed fragment body"))?;
+    repo.add(fragment_path)?;
+    repo.commit()?;
+
+    repo.remove_cached(fragment_path)?;
+
+    let outcome = run_with_renderer(repo.root(), None, |_workspace, projects| {
+        assert_eq!(
+            projects,
+            &["product".to_string()],
+            "a fragment deletion must still render every configured project"
+        );
+        Ok(RenderOutcome::Passed)
+    })?;
+    match outcome {
+        CommitCheckOutcome::Pass(summary) => assert!(
+            summary.contains("dry-render"),
+            "a fragment-only deletion must pass through the normal dry-render: {summary}"
+        ),
+        CommitCheckOutcome::Flagged(report) => {
+            bail!("an ordinary fragment deletion beside a valid config must pass: {report:?}");
+        }
+    }
+    Ok(())
+}
+
+/// Required proof 5 (gap 2, end-to-end): a regular-file -> symlink
+/// type-change on a Changie input is part of the staged set and is
+/// REJECTED by the owning check with its recorded `120000` mode — the
+/// symlink blob (a link target that could point anywhere) is never read as
+/// ordinary valid text and never materialized into the render sandbox.
+/// Uses `aqua.yaml` (a non-fragment Changie input) so the dispatch reaches
+/// the materialization loop's mode gate.
+#[test]
+fn type_changed_changie_input_blocks_before_materialization() -> Result<()> {
+    let repo = TempRepo::init()?;
+    repo.stage_baseline(CONFIG)?;
+
+    // Regular file -> symlink recorded purely in the index: the blob
+    // content is the link target, `../..`-relative to escape the repository
+    // if any consumer ever treated it as text.
+    repo.stage_blob_at("120000", "../../../outside/secrets", AQUA_CONFIG_PATH)?;
+
+    let outcome = run_with_renderer(repo.root(), None, |_workspace, _projects| {
+        bail!("renderer must not run for a type-changed Changie input")
+    })?;
+    match outcome {
+        CommitCheckOutcome::Flagged(report) => {
+            assert_eq!(
+                report.posture,
+                Posture::Blocked,
+                "a type-changed Changie input must block, not {:#?}",
+                report.posture
+            );
+            assert!(
+                report.result.contains("unsupported staged mode 120000"),
+                "the finding must name the recorded type-change mode: {}",
+                report.result
+            );
+            assert!(
+                report.affected.iter().any(|path| path == AQUA_CONFIG_PATH),
+                "the finding must point at the type-changed input: {:?}",
+                report.affected
+            );
+        }
+        CommitCheckOutcome::Pass(summary) => {
+            bail!("a symlinked Changie input must not be validated as text: {summary}");
+        }
+    }
+    Ok(())
+}
+
+/// The other half of required proof 5: a type-changed FRAGMENT cannot
+/// become clean either. Its symlink blob is link-target bytes, not
+/// fragment YAML, so it must surface as a blocking content finding — never
+/// silently skipped because the path "exists" in neither text shape.
+#[test]
+fn type_changed_fragment_cannot_become_clean() -> Result<()> {
+    let repo = TempRepo::init()?;
+    repo.stage_baseline(CONFIG)?;
+    let fragment_path = ".changes/unreleased/product-1-Fixed-000000.yaml";
+    repo.write(fragment_path, &fragment("soon type-changed body"))?;
+    repo.add(fragment_path)?;
+    repo.commit()?;
+
+    repo.stage_blob_at("120000", "../../../outside/secrets", fragment_path)?;
+
+    let outcome = run_with_renderer(repo.root(), None, |_workspace, _projects| {
+        bail!("renderer must not run for a type-changed fragment")
+    })?;
+    match outcome {
+        CommitCheckOutcome::Flagged(report) => {
+            assert_eq!(
+                report.posture,
+                Posture::Blocked,
+                "a type-changed fragment must block, not {:#?}",
+                report.posture
+            );
+            assert!(
+                report.result.contains(fragment_path),
+                "the blocking finding must name the type-changed fragment: {}",
+                report.result
+            );
+        }
+        CommitCheckOutcome::Pass(summary) => {
+            bail!("a type-changed fragment must not pass content validation: {summary}");
         }
     }
     Ok(())

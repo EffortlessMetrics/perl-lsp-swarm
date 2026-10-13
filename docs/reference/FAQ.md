@@ -64,7 +64,7 @@ Building from source (Rust 1.95+) works on any Rust-supported platform.
 
 ### Which Perl versions does perl-lsp support?
 
-The parser targets Perl 5.8 through 5.40. This includes:
+The parser targets Perl 5.8 through 5.42. This includes:
 
 - All core syntax from Perl 5.8+
 - Modern features: `say`, `given`/`when`, `state`, `fc`
@@ -72,7 +72,7 @@ The parser targets Perl 5.8 through 5.40. This includes:
 - `use v5.38; class ...` object syntax (partial support)
 - Moose, Moo, and common OO frameworks (detection-level support)
 
-This claim is backed by a visible CI workflow: [Perl Version Matrix](https://github.com/EffortlessMetrics/perl-lsp/actions/workflows/perl-version-matrix.yml). It runs version-gated Perl syntax probes on every Perl minor from 5.8 through 5.40, and also runs a Rust smoke test on both edge versions (5.8 and 5.40).
+This claim is backed by a visible CI workflow: [Perl Version Matrix](https://github.com/EffortlessMetrics/perl-lsp/actions/workflows/perl-version-matrix.yml). It runs version-gated Perl syntax probes on every Perl minor from 5.8 through 5.42, and also runs a Rust smoke test on 5.8 and 5.40.
 
 If you encounter a Perl construct that fails to parse, [report it](https://github.com/EffortlessMetrics/perl-lsp/issues) with a minimal example.
 
@@ -135,25 +135,11 @@ For performance tuning options (cache sizes, deadline budgets, file limits), see
 
 ### Are there workspace size limits?
 
-By default, perl-lsp indexes up to 10,000 files and 500,000 total symbols. For large monorepos, increase these via LSP settings:
-
-```json
-{
-  "perl": {
-    "limits": {
-      "maxIndexedFiles": 50000,
-      "maxTotalSymbols": 2000000,
-      "workspaceScanDeadlineMs": 120000
-    }
-  }
-}
-```
-
-See [CONFIG.md](CONFIG.md) for the full limits reference.
+The workspace index has internal limits of 10,000 files and 500,000 total symbols; LSP settings cannot raise these caps. If your workspace reaches a cap, open a narrower workspace folder containing the Perl source you need, then restart the server. [CONFIG.md](CONFIG.md) lists supported `perl.limits` settings. For degraded-index diagnosis, see the [large-workspace troubleshooting guide](../large-workspaces/TROUBLESHOOTING.md).
 
 ### What if the server is slow on startup?
 
-The initial workspace scan budget is 30 seconds by default. If your workspace has many files, increase `perl.limits.workspaceScanDeadlineMs`. You can also use `.perl-lspignore` to exclude directories that don't contain Perl source.
+The initial workspace scan is bounded by internal deadlines. If your workspace has many files, use `.perl-lspignore` to exclude directories that don't contain Perl source.
 
 ---
 

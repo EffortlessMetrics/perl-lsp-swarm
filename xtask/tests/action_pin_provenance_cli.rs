@@ -311,6 +311,41 @@ fn read_receipt(fixture: &Fixture) -> Result<Value> {
     serde_json::from_str(&text).context("parsing receipt JSON")
 }
 
+#[test]
+fn custom_ledger_contradiction_reports_selected_path_and_real_line() -> Result<()> {
+    let (fixture, _outer) = scenario(PinMovement::None)?;
+    let custom_ledger = fixture.root().join("custom/pins.toml");
+    std::fs::create_dir_all(custom_ledger.parent().context("custom ledger parent")?)?;
+    std::fs::write(
+        &custom_ledger,
+        format!(
+            "# custom ledger\n\n[[pin]]\naction = 'example/action'\nsha = '{CHECKOUT_SHA}'\nkind = 'release_tag'\nvalue = 'v1.0.0'\n\n[[pin]]\naction = 'example/action'\nsha = '{CHECKOUT_SHA}'\nkind = 'release_tag'\nvalue = 'v2.0.0'\n"
+        ),
+    )?;
+
+    let output = run_cli(
+        fixture.root(),
+        None,
+        None,
+        &["--ledger", "custom/pins.toml"],
+        fixture.receipt_path(),
+    )?;
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("CONTRADICTORY_LEDGER_MAPPING at custom/pins.toml:9"));
+    assert!(!stderr.contains(".ci/policies/action-pin-provenance.toml:1"));
+    let receipt = read_receipt(&fixture)?;
+    let issue = receipt["issues"]
+        .as_array()
+        .context("receipt issues array")?
+        .iter()
+        .find(|issue| issue["code"] == "CONTRADICTORY_LEDGER_MAPPING")
+        .context("contradictory ledger issue")?;
+    assert_eq!(issue["path"], "custom/pins.toml");
+    assert_eq!(issue["line"], 9);
+    Ok(())
+}
+
 fn run_cli(
     repository: &Path,
     merge_base: Option<&str>,

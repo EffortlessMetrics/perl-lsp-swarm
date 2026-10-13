@@ -52,6 +52,56 @@ mod tests {
         }
         false
     }
+
+    #[test]
+    fn unavailable_diagnostic_debouncer_falls_back_to_immediate_publish() {
+        let (server, buf) = make_server_with_capture();
+        let uri = "file:///diagnostic-debounce-fallback.pl";
+        // didOpen is the sanctioned setup here: it routes through
+        // `handle_did_open_with_cancellation`, which publishes a parsed
+        // snapshot before the document is visible, so `current_parsed()` is
+        // `Some` and the publish path below actually runs. A direct
+        // `DocumentState::from_parts` insert leaves `parsed: None`, and
+        // `publish_diagnostics` then silently withholds (#3396 PR4
+        // pending-parse guard) -- the fallback could never be exercised.
+        server
+            .test_handle_did_open(Some(json!({
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "perl",
+                    "version": 1,
+                    "text": "my $value = 1;\n"
+                }
+            })))
+            .expect("didOpen should succeed");
+        assert!(wait_for_frames(&buf, 1), "initial open should publish diagnostics");
+        buf.lock().clear();
+
+        server.install_diagnostic_debouncer(
+            super::super::diagnostic_debounce::DiagnosticDebouncer::unavailable_for_test(),
+        );
+        server.publish_diagnostics_debounced(uri);
+
+        assert!(
+            wait_for_frames(&buf, 1),
+            "an unavailable diagnostic debouncer must fall back to immediate publication"
+        );
+        let output = String::from_utf8_lossy(&buf.lock()).into_owned();
+        assert_eq!(
+            output.matches("\"method\":\"textDocument/publishDiagnostics\"").count(),
+            1,
+            "fallback must emit exactly one diagnostic notification: {output}"
+        );
+        assert!(
+            output.contains(uri),
+            "fallback must publish diagnostics for the requested document: {output}"
+        );
+        assert!(
+            !server.diagnostic_debouncer_is_installed(),
+            "the permanently unavailable worker must be evicted after its first rejected admission"
+        );
+    }
+
     /// didClose + didOpen of the SAME URI installs a brand-new document
     /// instance whose numeric generation can equal the removed one. Performed
     /// directly on the documents map so no handler reentrancy is needed.
@@ -143,6 +193,19 @@ mod tests {
             })))
             .expect("didOpen should succeed");
         assert!(wait_for_frames(&buf, 1), "initial open should publish before the falsifier runs");
+        // Settle the initial publish: fixtures that recover with diagnostics
+        // (e.g. same-line residue) are followed by a delayed semantic frame,
+        // so drain until no new frames arrive instead of assuming exactly one.
+        // The falsifier below (hook + fast publish + assert silence) is unchanged.
+        let settle_deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let before = String::from_utf8_lossy(&buf.lock()).matches("publishDiagnostics").count();
+            std::thread::sleep(Duration::from_millis(200));
+            let after = String::from_utf8_lossy(&buf.lock()).matches("publishDiagnostics").count();
+            if after == before || Instant::now() >= settle_deadline {
+                break;
+            }
+        }
         buf.lock().clear();
 
         // Between the fast path's snapshot and its enqueue, a newer accepted

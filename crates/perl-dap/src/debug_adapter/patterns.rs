@@ -11,6 +11,36 @@ pub(super) const DEBUG_SESSION_TERMINATE_WAIT_MS: u64 = 250;
 pub(super) const DEBUGGER_QUERY_WAIT_MS: u64 = 75;
 pub(super) const DEBUGGER_FRAME_POLL_MS: u64 = 10;
 
+/// Effective kill-confirmation budget for the terminate/cleanup paths.
+///
+/// Production keeps the tight [`DEBUG_SESSION_TERMINATE_WAIT_MS`] bounded
+/// reap: after `kill()` the exit confirmation only needs to absorb
+/// process-teardown latency, and a tight bound keeps a genuinely stuck
+/// cleanup verdict prompt.
+///
+/// #17173: under the parallel unit-test suite the reaping thread itself can
+/// be starved well past that budget (observed: 10 polls / 260ms for an
+/// already-terminated child), which fails tests that drive real children
+/// through `disconnect`/`terminate` and cleanup retries with a spurious
+/// "cleanup remains unconfirmed" verdict. Test builds resolve a larger
+/// budget so the assertion stays "the killed child was reaped", not "the
+/// reaper thread won a scheduling race". The value stays under the
+/// cleanup-driving tests' own 2s response deadlines so a slow confirm
+/// surfaces as a pass, not as a different timeout, and the production
+/// default is unchanged.
+pub(super) fn debug_session_terminate_wait_ms() -> u64 {
+    if cfg!(test) {
+        // Test-build budget (#17173): ~5x the observed worst starvation
+        // (260ms) while remaining under the 2s response deadlines of the
+        // disconnect/terminate tests. TerminateProcess/`kill()` completes
+        // in milliseconds; the window only absorbs observer scheduling
+        // latency under load and returns as soon as the exit is observed.
+        1_500
+    } else {
+        DEBUG_SESSION_TERMINATE_WAIT_MS
+    }
+}
+
 pub(super) const RECENT_OUTPUT_MAX_LINES: usize = 2048;
 
 /// Capacity of the outbound DAP event queue.
@@ -25,7 +55,6 @@ const MAX_DEBUGGER_IDENTIFIER_LEN: usize = 512;
 #[derive(Debug, Clone)]
 pub(super) struct RecentOutputLine {
     pub(super) id: u64,
-    pub(super) raw: String,
     pub(super) normalized: String,
 }
 
@@ -49,11 +78,12 @@ pub(super) fn context_re() -> Option<&'static Regex> {
             //   main::(/path/to/file.pl:42):
             //   main::(C:\Windows\path\file.pl:42):
             //
-            // File paths may contain `:` on Windows (drive letter prefix such as `C:\`).
-            // The path-capturing groups allow a `:` only when it is immediately followed
-            // by a non-digit, non-space character — matching `C:\path` but not the `:42`
-            // line-number separator.
-            Regex::new(r"^(?:(?P<func>[A-Za-z_][\w:]*?)(?:::)?(?:\((?P<file>[^:)\s]+(?::[^:)\d\s][^:)\s]*)*):(?P<line>\d+)\):?|__ANON__)|main::(?:\()?(?P<file2>[^:)\s]+(?::[^:)\d\s][^:)\s]*)*)(?:\))?:(?P<line2>\d+):?)")
+            // File paths may contain spaces, parentheses, and `:` (including a
+            // Windows drive prefix). A lazy capture expands to the final
+            // `:<line>` delimiter required by the end anchor, preserving those
+            // characters even when a filename contains an earlier `:digits)`
+            // sequence and retaining the legacy optional `)` fallback.
+            Regex::new(r"^(?:(?P<func>[A-Za-z_][\w:]*?)(?:::)?(?:\((?P<file>.+?):(?P<line>\d+)\):?|__ANON__)|main::(?:\()?(?P<file2>.+?)(?:\))?:(?P<line2>\d+):?)(?:\t.*)?$")
         })
         .as_ref()
         .ok()

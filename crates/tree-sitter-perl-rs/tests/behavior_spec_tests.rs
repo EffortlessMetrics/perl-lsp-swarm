@@ -243,6 +243,7 @@ fn when_requesting_grammar_kind_of_variable_with_attributes_then_snake_case_fall
     }
 }
 
+#[cfg(feature = "semantic-overlay")]
 #[test]
 fn when_querying_definition_overlay_at_offset_then_definition_is_returned() {
     let source = "my $value = 1;\n$value + 2;\n";
@@ -256,6 +257,7 @@ fn when_querying_definition_overlay_at_offset_then_definition_is_returned() {
     assert_eq!(definition.start_byte, 3);
 }
 
+#[cfg(feature = "semantic-overlay")]
 #[test]
 fn when_querying_visible_imports_overlay_then_prior_use_statements_are_reported() {
     let source = "use strict;\nuse warnings;\nmy $x = 1;\n";
@@ -269,6 +271,7 @@ fn when_querying_visible_imports_overlay_then_prior_use_statements_are_reported(
     assert_eq!(import_modules, vec!["strict", "warnings"]);
 }
 
+#[cfg(feature = "semantic-overlay")]
 #[test]
 fn when_querying_pragma_state_overlay_then_effective_state_matches_offset() {
     let source = "no strict;\nuse warnings;\nmy $x = 1;\n";
@@ -282,6 +285,7 @@ fn when_querying_pragma_state_overlay_then_effective_state_matches_offset() {
     assert!(state.warnings);
 }
 
+#[cfg(feature = "semantic-overlay")]
 #[test]
 fn when_source_starts_with_use_then_visible_imports_byte_range_is_exact_statement_span() {
     // Regression: a source that starts with `use` caused the Program root node's text
@@ -309,6 +313,7 @@ fn when_source_starts_with_use_then_visible_imports_byte_range_is_exact_statemen
     assert_eq!(strict_import.statement_start_byte, 0);
 }
 
+#[cfg(feature = "semantic-overlay")]
 #[test]
 fn when_querying_visible_imports_then_no_module_is_excluded() {
     // `no` statements are NOT module imports — they disable pragmas.

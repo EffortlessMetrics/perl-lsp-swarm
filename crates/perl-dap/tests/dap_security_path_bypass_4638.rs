@@ -67,9 +67,16 @@ fn test_parent_traversal_rejected_without_workspace_goto_targets() -> TestResult
 #[test]
 fn test_parent_traversal_rejected_without_workspace_breakpoint_locations() -> TestResult {
     let mut adapter = DebugAdapter::new();
-    let (success, _msg) =
+    // #9581: breakpointLocations is floored, so this traversal input is rejected
+    // by the capability floor before path validation or any source read — the
+    // #4638 security property (no filesystem reach) holds a fortiori.
+    let (success, msg) =
         breakpoint_locations_path_result(&mut adapter, "../../../../../../tmp/sensitive")?;
     assert!(!success, "parent-directory traversal must be rejected without workspace root");
+    assert!(
+        msg.as_deref().is_some_and(|m| m.contains("unsupported")),
+        "the floored rejection must be the explicit unsupported disposition, got: {msg:?}"
+    );
     Ok(())
 }
 

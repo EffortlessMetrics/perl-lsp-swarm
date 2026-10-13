@@ -1,6 +1,7 @@
 # File-Policy Rollout Burndown (non-rust)
 
-> **Substrate (already built)**: `cargo xtask non-rust inventory` landed in #8512, with `policy/non-rust-allowlist.toml` as the authoritative ledger and generated `docs/policy/NON_RUST_INVENTORY.md` as the user-readable summary. Umbrella #8174 tracks the broader PR 3–11 ladder.
+> **Substrate (already built)**: `cargo xtask non-rust inventory` landed in #8512, with `policy/non-rust-allowlist.toml` as the authoritative ledger, ignored Markdown/JSON as per-run evidence (uploaded as the `non-rust-inventory-<sha>` CI artifact), and `docs/policy/NON_RUST_INVENTORY.md` as a frozen pointer that is never generated. Umbrella #8174 tracks the broader PR 3–11 ladder.
+> **Authority boundary (#14688)**: feature branches are judged from the allowlist plus their current tracked tree. Nothing regenerates the tracked Markdown, and `main` never changes it; `inventory --check` emits evidence, requires the frozen pointer, then rejects any newly added unclassified path.
 > **Connector gap**: `cargo xtask check-file-policy --mode advisory` (read-only CI surface that prints policy deltas without failing) plus `cargo xtask non-rust propose` (emits a draft TOML diff a reviewer can apply) — together they make the inventory user-trustworthy without forcing every contributor onto an all-or-nothing strict mode.
 > **0.14.0 upside**: contributors can add or move non-rust files (workflows, policy docs, scripts, manifests) and immediately see what they tripped, with a precise proposal for how to register it. No more silent allowlist drift; no more "what is this file even for" review threads.
 
@@ -34,7 +35,9 @@ cargo xtask check-file-policy --mode advisory
 # Phase 2 receipt: propose generates a TOML diff a reviewer can apply.
 cargo xtask non-rust propose
 
-# Phase 3 receipt (post-promotion): strict mode fails on undeclared non-rust files.
+# Phase 3 receipts: current-tree inventory rejects newly introduced debt;
+# strict mode applies the broader file-policy contract.
+cargo xtask non-rust inventory --check
 cargo xtask check-file-policy --mode strict
 
 # Per-phase issue status.

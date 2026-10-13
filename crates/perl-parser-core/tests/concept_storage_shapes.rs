@@ -259,7 +259,7 @@ fn typeglob_alias_keeps_both_operands_attached_to_one_assignment() -> Result<(),
                 source_text(source, rhs),
                 subtree_contains(
                     lhs,
-                    &|kind| matches!(kind, NodeKind::Typeglob { name } if name == "alias"),
+                    &|kind| matches!(kind, NodeKind::Typeglob { name, .. } if name == "alias"),
                 ),
                 subtree_contains(
                     rhs,

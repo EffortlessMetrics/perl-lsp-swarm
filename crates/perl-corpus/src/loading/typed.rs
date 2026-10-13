@@ -452,7 +452,7 @@ where
         valid_up_to: error.utf8_error().valid_up_to(),
     })?;
     let utf8_bom = source.starts_with('\u{feff}');
-    let newline_style = detect_newline_style(&source);
+    let newline_style = detect_newline_style(source.as_bytes());
 
     Ok(LoadedUtf8 { source, utf8_bom, newline_style })
 }
@@ -592,8 +592,12 @@ fn metadata_is_link_like(metadata: &fs::Metadata) -> bool {
     metadata.file_type().is_symlink()
 }
 
-fn detect_newline_style(source: &str) -> NewlineStyle {
-    let bytes = source.as_bytes();
+/// Classify the newline representation of raw bytes.
+///
+/// Deliberately byte-based: the classification is valid before any UTF-8
+/// decode, because `\r` and `\n` can never occur inside a multi-byte UTF-8
+/// sequence. `byte_fidelity` relies on that to classify undecodable members.
+pub(crate) fn detect_newline_style(bytes: &[u8]) -> NewlineStyle {
     let mut lf = 0usize;
     let mut crlf = 0usize;
     let mut cr = 0usize;

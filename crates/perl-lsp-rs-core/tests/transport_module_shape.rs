@@ -12,6 +12,16 @@ fn transport_module_exposes_read_message() {
 }
 
 #[test]
+fn transport_module_exposes_read_message_outcome() {
+    let _: fn(
+        &mut dyn std::io::BufRead,
+    ) -> Result<
+        Option<Result<perl_lsp_rs_core::protocol::JsonRpcRequest, IncomingMessageError>>,
+        _,
+    > = read_message_outcome;
+}
+
+#[test]
 fn transport_module_exposes_write_message() {
     // Verify that write_message is accessible post-absorption
     let _: fn(

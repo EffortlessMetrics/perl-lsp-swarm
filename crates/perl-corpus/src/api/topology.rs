@@ -8,7 +8,6 @@
 use super::asset_path::{CorpusAssetPath, CorpusAssetPathError};
 use crate::files::{CorpusLayer, CorpusPaths};
 use serde::{Deserialize, Serialize};
-use std::ffi::OsStr;
 use std::fmt;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
@@ -58,6 +57,70 @@ pub enum AssetRequirement {
     Required,
     /// The asset may be absent without invalidating the topology.
     Optional,
+}
+
+/// Stable, machine-readable reason a layer classifier rejected a path.
+///
+/// `CorpusTopologyError::UnclassifiedAssetPath` carries one of these so callers and
+/// maintainers can tell which rule rejected the asset without re-deriving the private
+/// selector. The variants are additive and `#[non_exhaustive]`: callers must match by
+/// wildcard when constructing fallback diagnostics.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UnclassifiedReason {
+    /// A path component begins with `.` or `_`, which discovery skips before descent.
+    IgnoredPathComponent {
+        /// The first ignored component discovered, in forward order.
+        component: String,
+    },
+    /// The leaf extension is not in the layer's allow list.
+    UnsupportedExtension {
+        /// Lower-cased extension found on the leaf, or `None` for an extensionless name.
+        extension: Option<String>,
+    },
+    /// The extensionless leaf name does not match the layer's required shape.
+    ///
+    /// `expected` is a short, stable token describing the required shape (for example,
+    /// `"crash-*"` for the fuzz extensionless prefix).
+    UnsupportedShape {
+        /// Stable machine-readable expected-shape token.
+        expected: &'static str,
+    },
+    /// An intermediate path component already classifies as an asset, blocking descent.
+    ClassifyingAncestor {
+        /// The classifying ancestor component, in forward order.
+        ancestor: String,
+        /// The kind that ancestor classifies as under the owning layer.
+        classified_as: CorpusAssetKind,
+    },
+}
+
+impl fmt::Display for UnclassifiedReason {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::IgnoredPathComponent { component } => {
+                write!(
+                    formatter,
+                    "path component {component:?} begins with '.' or '_' and is skipped by discovery"
+                )
+            }
+            Self::UnsupportedExtension { extension: Some(extension) } => {
+                write!(formatter, "extension {extension:?} is not in the layer's allow list")
+            }
+            Self::UnsupportedExtension { extension: None } => {
+                write!(formatter, "extensionless path is not in the layer's allow list")
+            }
+            Self::UnsupportedShape { expected } => {
+                write!(formatter, "extensionless name does not match required shape {expected:?}")
+            }
+            Self::ClassifyingAncestor { ancestor, classified_as } => {
+                write!(
+                    formatter,
+                    "ancestor {ancestor:?} already classifies as {classified_as:?} and blocks descent"
+                )
+            }
+        }
+    }
 }
 
 /// One corpus asset with a stable identity independent of absolute checkout paths.
@@ -126,6 +189,24 @@ pub enum CorpusTopologyError {
         layer: CorpusAssetLayer,
         /// Required root-relative prefix for the declared layer.
         required_prefix: &'static str,
+    },
+    /// A deserialized asset path is not selected by its owning layer classifier.
+    UnclassifiedAssetPath {
+        /// Asset ID.
+        id: String,
+        /// Declared layer whose classifier rejected the path.
+        layer: CorpusAssetLayer,
+        /// Stable machine-readable reason the layer classifier rejected the path.
+        reason: UnclassifiedReason,
+    },
+    /// A deserialized asset kind disagrees with its owning layer classifier.
+    AssetKindMismatch {
+        /// Asset ID.
+        id: String,
+        /// Kind declared by the serialized asset.
+        declared: CorpusAssetKind,
+        /// Kind selected by the owning layer classifier.
+        classified: CorpusAssetKind,
     },
     /// The serialized topology schema is not supported by this implementation.
     UnsupportedSchemaVersion {
@@ -222,6 +303,18 @@ impl fmt::Display for CorpusTopologyError {
                     "corpus asset {id:?} is outside declared {layer:?} layer prefix {required_prefix:?}"
                 )
             }
+            Self::UnclassifiedAssetPath { id, layer, reason } => {
+                write!(
+                    formatter,
+                    "corpus asset {id:?} is not classified by its {layer:?} layer: {reason}"
+                )
+            }
+            Self::AssetKindMismatch { id, declared, classified } => {
+                write!(
+                    formatter,
+                    "corpus asset {id:?} declares kind {declared:?}, but its layer classifies it as {classified:?}"
+                )
+            }
             Self::UnsupportedSchemaVersion { found, supported } => {
                 write!(
                     formatter,
@@ -293,18 +386,9 @@ impl CorpusTopology {
     pub fn from_paths(paths: &CorpusPaths) -> Result<Self, CorpusTopologyError> {
         let canonical_root = canonical_runtime_root(&paths.root)?;
         let paths = CorpusPaths::from_root(canonical_root.clone());
-        let mut assets = collect_layer_assets(
-            &paths,
-            &paths.test_corpus,
-            CorpusAssetLayer::TestCorpus,
-            classify_test_asset,
-        )?;
-        assets.extend(collect_layer_assets(
-            &paths,
-            &paths.fuzz,
-            CorpusAssetLayer::Fuzz,
-            classify_fuzz_asset,
-        )?);
+        let mut assets =
+            collect_layer_assets(&paths, &paths.test_corpus, CorpusAssetLayer::TestCorpus)?;
+        assets.extend(collect_layer_assets(&paths, &paths.fuzz, CorpusAssetLayer::Fuzz)?);
         assets.sort_by(|left, right| left.id.cmp(&right.id));
 
         let topology = Self { schema_version: CORPUS_TOPOLOGY_SCHEMA_VERSION, assets, root: None };
@@ -409,27 +493,38 @@ fn asset_from_path(
     })
 }
 
+/// Validate syntax, v1 identity equality, layer selection, and declared kind.
 fn validate_asset_identity(asset: &CorpusAsset) -> Result<CorpusAssetPath, CorpusTopologyError> {
-    let id =
-        CorpusAssetPath::parse(&asset.id).map_err(|error| invalid_asset_path(&asset.id, error))?;
+    let id = CorpusAssetPath::parse(&asset.id)
+        .map_err(|error| invalid_asset_path(&asset.id, error))?;
     let relative_path = CorpusAssetPath::parse(&asset.relative_path)
         .map_err(|error| invalid_asset_path(&asset.relative_path, error))?;
     if id != relative_path {
         return Err(CorpusTopologyError::AssetIdentityMismatch {
-            id: asset.id.clone(),
-            relative_path: asset.relative_path.clone(),
+            id: asset.id.clone(), relative_path: asset.relative_path.clone(),
         });
     }
-
     let required_prefix = layer_prefix(asset.layer);
-    if !relative_path.starts_with_components(layer_prefix_components(asset.layer)) {
+    let prefix = layer_prefix_components(asset.layer);
+    if !relative_path.starts_with_components(prefix) {
         return Err(CorpusTopologyError::LayerPathMismatch {
-            id: asset.id.clone(),
-            layer: asset.layer,
-            required_prefix,
+            id: asset.id.clone(), layer: asset.layer, required_prefix,
         });
     }
-
+    // Interpret durable components directly, even when they cannot be materialized
+    // on this host. Host support is checked only by asset_path after membership.
+    let components = relative_path.components().skip(prefix.len()).map(std::ffi::OsStr::new)
+        .collect::<Vec<_>>();
+    let classified = classify_selected_components(asset.layer, &components).ok_or_else(||
+        CorpusTopologyError::UnclassifiedAssetPath {
+            id: asset.id.clone(), layer: asset.layer,
+            reason: unclassified_components_reason(asset.layer, &components),
+        })?;
+    if classified != asset.kind {
+        return Err(CorpusTopologyError::AssetKindMismatch {
+            id: asset.id.clone(), declared: asset.kind, classified,
+        });
+    }
     Ok(relative_path)
 }
 
@@ -599,11 +694,11 @@ fn validate_resolved_asset(
     })
 }
 
+/// Discover selected members without descending ignored or classifying ancestors.
 fn collect_layer_assets(
     paths: &CorpusPaths,
     root: &Path,
     layer: CorpusAssetLayer,
-    classify: fn(&Path) -> Option<CorpusAssetKind>,
 ) -> Result<Vec<CorpusAsset>, CorpusTopologyError> {
     match fs::symlink_metadata(root) {
         Ok(metadata) if metadata.file_type().is_symlink() => {
@@ -643,7 +738,7 @@ fn collect_layer_assets(
             })?;
             let path = entry.path();
             let file_name = entry.file_name();
-            if is_ignored_name(&file_name) {
+            if is_ignored_path(Path::new(&file_name)) {
                 continue;
             }
 
@@ -651,7 +746,12 @@ fn collect_layer_assets(
                 path: path.clone(),
                 message: error.to_string(),
             })?;
-            let kind = classify(&path);
+            let layer_relative =
+                path.strip_prefix(root).map_err(|_| CorpusTopologyError::PathOutsideRoot {
+                    path: path.clone(),
+                    root: root.to_path_buf(),
+                })?;
+            let kind = classify_selected_asset(layer, layer_relative);
 
             if file_type.is_symlink() {
                 // Selected assets must fail closed as SymlinkUnsupported before any
@@ -697,30 +797,116 @@ fn collect_layer_assets(
     Ok(assets)
 }
 
-fn is_ignored_name(name: &OsStr) -> bool {
-    name.as_encoded_bytes().first().is_some_and(|byte| *byte == b'.' || *byte == b'_')
+/// Reports whether any component of a layer-relative path is an ignored name.
+///
+/// Discovery skips a `.`- or `_`-prefixed entry and never descends into it, so every
+/// component constrains selection, not just the leaf.
+fn is_ignored_path(path: &Path) -> bool {
+    path.components().any(|component| {
+        let Component::Normal(name) = component else {
+            return false;
+        };
+        name.as_encoded_bytes().first().is_some_and(|byte| *byte == b'.' || *byte == b'_')
+    })
+}
+
+/// Selects a layer-relative path exactly as discovery does.
+///
+/// Discovery walks entry by entry and refuses a directory whose own name classifies
+/// as an asset (`UnsupportedFileType`), so it never descends into one; it likewise
+/// skips ignored names before descending. Both rules therefore constrain every
+/// intermediate component, not only the leaf. Validation reaches a serialized leaf
+/// directly, so it must apply the same component rules to agree with discovery about
+/// which paths are selectable.
+///
+/// The ancestor rule cannot change discovery's own behavior: discovery only descends
+/// through directories that classify as `None`, so no entry it reaches can have a
+/// classifying ancestor.
+fn selected_components(path: &Path) -> Vec<&std::ffi::OsStr> {
+    path.components().filter_map(|component| match component {
+        Component::Normal(name) => Some(name),
+        _ => None,
+    }).collect()
+}
+
+fn classify_selected_asset(layer: CorpusAssetLayer, path: &Path) -> Option<CorpusAssetKind> {
+    classify_selected_components(layer, &selected_components(path))
+}
+
+fn classify_selected_components(layer: CorpusAssetLayer, components: &[&std::ffi::OsStr])
+    -> Option<CorpusAssetKind> {
+    if components.iter().any(|name| name.as_encoded_bytes().first()
+        .is_some_and(|byte| *byte == b'.' || *byte == b'_')) {
+        return None;
+    }
+    let (leaf, ancestors) = components.split_last()?;
+    if ancestors.iter().any(|name| classify_layer_component(layer, name).is_some()) {
+        return None;
+    }
+    classify_layer_component(layer, leaf)
+}
+
+fn unclassified_reason_for(layer: CorpusAssetLayer, path: &Path) -> UnclassifiedReason {
+    unclassified_components_reason(layer, &selected_components(path))
+}
+
+fn unclassified_components_reason(layer: CorpusAssetLayer, components: &[&std::ffi::OsStr])
+    -> UnclassifiedReason {
+    for name in components {
+        if name.as_encoded_bytes().first().is_some_and(|byte| *byte == b'.' || *byte == b'_') {
+            return UnclassifiedReason::IgnoredPathComponent {
+                component: name.to_string_lossy().into_owned(),
+            };
+        }
+    }
+    if let Some((_, ancestors)) = components.split_last() {
+        for name in ancestors {
+            if let Some(kind) = classify_layer_component(layer, name) {
+                return UnclassifiedReason::ClassifyingAncestor {
+                    ancestor: name.to_string_lossy().into_owned(), classified_as: kind,
+                };
+            }
+        }
+    }
+    let extension = components.last().and_then(|name| component_extension(name))
+        .and_then(|extension| std::str::from_utf8(extension).ok())
+        .map(str::to_ascii_lowercase);
+    match (layer, extension) {
+        (CorpusAssetLayer::Fuzz, None) => UnclassifiedReason::UnsupportedShape { expected: "crash-*" },
+        (_, extension) => UnclassifiedReason::UnsupportedExtension { extension },
+    }
+}
+
+// Components are already separated by their owning path model. Inspect only the
+// leaf bytes here; a portable literal backslash must never become a separator.
+fn component_extension(name: &std::ffi::OsStr) -> Option<&[u8]> {
+    let bytes = name.as_encoded_bytes();
+    let index = bytes.iter().rposition(|byte| *byte == b'.')?;
+    (index > 0).then_some(&bytes[index + 1..])
+}
+
+fn classify_layer_component(layer: CorpusAssetLayer, name: &std::ffi::OsStr)
+    -> Option<CorpusAssetKind> {
+    match (layer, component_extension(name)) {
+        (CorpusAssetLayer::TestCorpus, Some(extension)) if TEST_EXTENSIONS.iter()
+            .any(|allowed| extension.eq_ignore_ascii_case(allowed.as_bytes())) => Some(CorpusAssetKind::PerlSource),
+        (CorpusAssetLayer::Fuzz, Some(extension)) if extension.eq_ignore_ascii_case(b"pl") => Some(CorpusAssetKind::PerlSource),
+        (CorpusAssetLayer::Fuzz, Some(extension)) if extension.eq_ignore_ascii_case(b"txt") => Some(CorpusAssetKind::TextFixture),
+        (CorpusAssetLayer::Fuzz, None) if name.as_encoded_bytes().starts_with(b"crash-") => Some(CorpusAssetKind::PerlSource),
+        _ => None,
+    }
+}
+
+fn classify_layer_asset(layer: CorpusAssetLayer, path: &Path) -> Option<CorpusAssetKind> {
+    path.file_name().and_then(|name| classify_layer_component(layer, name))
 }
 
 fn classify_test_asset(path: &Path) -> Option<CorpusAssetKind> {
-    has_allowed_extension(path, TEST_EXTENSIONS).then_some(CorpusAssetKind::PerlSource)
+    classify_layer_asset(CorpusAssetLayer::TestCorpus, path)
 }
 
 fn classify_fuzz_asset(path: &Path) -> Option<CorpusAssetKind> {
-    match path.extension().and_then(|extension| extension.to_str()) {
-        Some(extension) if extension.eq_ignore_ascii_case("pl") => {
-            Some(CorpusAssetKind::PerlSource)
-        }
-        Some(extension) if extension.eq_ignore_ascii_case("txt") => {
-            Some(CorpusAssetKind::TextFixture)
-        }
-        None if path
-            .file_name()
-            .is_some_and(|name| name.as_encoded_bytes().starts_with(b"crash-")) =>
-        {
-            Some(CorpusAssetKind::PerlSource)
-        }
-        _ => None,
-    }
+    classify_layer_asset(CorpusAssetLayer::Fuzz, path)
 }
 
 fn has_allowed_extension(path: &Path, extensions: &[&str]) -> bool {
@@ -1061,6 +1247,610 @@ mod tests {
                 required_prefix: "crates/perl-corpus/fuzz",
             })
         );
+    }
+
+    #[test]
+    fn validation_rejects_unclassified_fuzz_readme() -> Result<(), Box<dyn std::error::Error>> {
+        let relative_path = "crates/perl-corpus/fuzz/README.md";
+        let asset = CorpusAsset {
+            id: relative_path.to_string(),
+            layer: CorpusAssetLayer::Fuzz,
+            kind: CorpusAssetKind::PerlSource,
+            relative_path: relative_path.to_string(),
+            requirement: AssetRequirement::Required,
+        };
+
+        match topology_with(vec![asset]).validate() {
+            Err(CorpusTopologyError::UnclassifiedAssetPath { id, layer, reason })
+                if id == relative_path
+                    && layer == CorpusAssetLayer::Fuzz
+                    && matches!(
+                        reason,
+                        UnclassifiedReason::UnsupportedExtension {
+                            extension: Some(ref ext),
+                        } if ext == "md"
+                    ) =>
+            {
+                Ok(())
+            }
+            result => {
+                Err(format!("unexpected validation result for fuzz README: {result:?}").into())
+            }
+        }
+    }
+
+    #[test]
+    fn unclassified_reasons_distinguish_all_four_selector_rules()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Four shapes that the layer classifier can reject, paired with the typed
+        // reason that must surface. Covers both layers and at least one nested ignored
+        // component per the issue's acceptance criteria.
+        let cases: [(CorpusAsset, UnclassifiedReason); 7] = [
+            (
+                CorpusAsset {
+                    id: "test_corpus/.hidden.pl".to_string(),
+                    layer: CorpusAssetLayer::TestCorpus,
+                    kind: CorpusAssetKind::PerlSource,
+                    relative_path: "test_corpus/.hidden.pl".to_string(),
+                    requirement: AssetRequirement::Required,
+                },
+                UnclassifiedReason::IgnoredPathComponent { component: ".hidden.pl".to_string() },
+            ),
+            (
+                CorpusAsset {
+                    id: "crates/perl-corpus/fuzz/_ignored.txt".to_string(),
+                    layer: CorpusAssetLayer::Fuzz,
+                    kind: CorpusAssetKind::TextFixture,
+                    relative_path: "crates/perl-corpus/fuzz/_ignored.txt".to_string(),
+                    requirement: AssetRequirement::Required,
+                },
+                UnclassifiedReason::IgnoredPathComponent { component: "_ignored.txt".to_string() },
+            ),
+            (
+                CorpusAsset {
+                    id: "test_corpus/_ignored/case.pl".to_string(),
+                    layer: CorpusAssetLayer::TestCorpus,
+                    kind: CorpusAssetKind::PerlSource,
+                    relative_path: "test_corpus/_ignored/case.pl".to_string(),
+                    requirement: AssetRequirement::Required,
+                },
+                UnclassifiedReason::IgnoredPathComponent { component: "_ignored".to_string() },
+            ),
+            (
+                CorpusAsset {
+                    id: "test_corpus/notes.md".to_string(),
+                    layer: CorpusAssetLayer::TestCorpus,
+                    kind: CorpusAssetKind::PerlSource,
+                    relative_path: "test_corpus/notes.md".to_string(),
+                    requirement: AssetRequirement::Required,
+                },
+                UnclassifiedReason::UnsupportedExtension { extension: Some("md".to_string()) },
+            ),
+            (
+                CorpusAsset {
+                    id: "test_corpus/notes.MD".to_string(),
+                    layer: CorpusAssetLayer::TestCorpus,
+                    kind: CorpusAssetKind::PerlSource,
+                    relative_path: "test_corpus/notes.MD".to_string(),
+                    requirement: AssetRequirement::Required,
+                },
+                UnclassifiedReason::UnsupportedExtension { extension: Some("md".to_string()) },
+            ),
+            (
+                CorpusAsset {
+                    id: "test_corpus/no_extension".to_string(),
+                    layer: CorpusAssetLayer::TestCorpus,
+                    kind: CorpusAssetKind::PerlSource,
+                    relative_path: "test_corpus/no_extension".to_string(),
+                    requirement: AssetRequirement::Required,
+                },
+                UnclassifiedReason::UnsupportedExtension { extension: None },
+            ),
+            (
+                CorpusAsset {
+                    id: "crates/perl-corpus/fuzz/metadata".to_string(),
+                    layer: CorpusAssetLayer::Fuzz,
+                    kind: CorpusAssetKind::PerlSource,
+                    relative_path: "crates/perl-corpus/fuzz/metadata".to_string(),
+                    requirement: AssetRequirement::Required,
+                },
+                UnclassifiedReason::UnsupportedShape { expected: "crash-*" },
+            ),
+        ];
+
+        for (asset, expected_reason) in cases {
+            let result = topology_with(vec![asset.clone()]).validate();
+            match result {
+                Err(CorpusTopologyError::UnclassifiedAssetPath { id, layer, reason })
+                    if id == asset.id && layer == asset.layer && reason == expected_reason => {}
+                other => {
+                    return Err(format!(
+                        "{} must fail validation as {expected_reason:?}, got {other:?}",
+                        asset.id
+                    )
+                    .into());
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn unclassified_reason_for_classifying_ancestor_is_stable()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Validation matches discovery when an intermediate directory's name classifies
+        // as an asset: the leaf itself is fine, but descent is blocked by the
+        // classifying ancestor. The reason must surface the ancestor and the kind it
+        // classifies as, so callers can pinpoint the offending component.
+        let cases = [
+            (
+                CorpusAssetLayer::TestCorpus,
+                "test_corpus/container.pl/case.pm",
+                CorpusAssetKind::PerlSource,
+                "container.pl",
+                CorpusAssetKind::PerlSource,
+            ),
+            (
+                CorpusAssetLayer::Fuzz,
+                "crates/perl-corpus/fuzz/cases.txt/case.pl",
+                CorpusAssetKind::PerlSource,
+                "cases.txt",
+                CorpusAssetKind::TextFixture,
+            ),
+            (
+                // Two classifying ancestors: discovery refuses at the shallowest
+                // one it reaches first (`outer.pl`), not the deeper `inner.txt`
+                // row the leaf-first ancestor walk would name.
+                CorpusAssetLayer::Fuzz,
+                "crates/perl-corpus/fuzz/outer.pl/inner.txt/case.pl",
+                CorpusAssetKind::PerlSource,
+                "outer.pl",
+                CorpusAssetKind::PerlSource,
+            ),
+        ];
+
+        for (layer, relative_path, declared_kind, expected_ancestor, expected_kind) in cases {
+            let asset = CorpusAsset {
+                id: relative_path.to_string(),
+                layer,
+                kind: declared_kind,
+                relative_path: relative_path.to_string(),
+                requirement: AssetRequirement::Required,
+            };
+            let result = topology_with(vec![asset]).validate();
+            match result {
+                Err(CorpusTopologyError::UnclassifiedAssetPath {
+                    id,
+                    layer: rejected_layer,
+                    reason: UnclassifiedReason::ClassifyingAncestor { ancestor, classified_as },
+                }) if id == relative_path
+                    && rejected_layer == layer
+                    && ancestor == expected_ancestor
+                    && classified_as == expected_kind => {}
+                other => {
+                    return Err(format!(
+                        "{relative_path:?} must fail validation as ClassifyingAncestor({expected_ancestor:?}, {expected_kind:?}), got {other:?}"
+                    )
+                    .into());
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn unclassified_reason_display_is_actionable_without_parsing() {
+        // Each reason must render in prose that distinguishes ignored components from
+        // unsupported layer-specific shape, without requiring callers to parse the
+        // variant name. The exact wording can evolve; the discriminating content must
+        // remain.
+        let ignored = UnclassifiedReason::IgnoredPathComponent { component: ".hidden".to_string() };
+        assert!(ignored.to_string().contains(".hidden"));
+
+        let ext_some =
+            UnclassifiedReason::UnsupportedExtension { extension: Some("md".to_string()) };
+        assert!(ext_some.to_string().contains("md"));
+
+        let ext_none = UnclassifiedReason::UnsupportedExtension { extension: None };
+        assert!(ext_none.to_string().contains("extensionless"));
+
+        let shape = UnclassifiedReason::UnsupportedShape { expected: "crash-*" };
+        assert!(shape.to_string().contains("crash-*"));
+
+        let ancestor = UnclassifiedReason::ClassifyingAncestor {
+            ancestor: "container.pl".to_string(),
+            classified_as: CorpusAssetKind::PerlSource,
+        };
+        assert!(ancestor.to_string().contains("container.pl"));
+    }
+
+    #[test]
+    fn valid_assets_keep_their_current_classification_under_enriched_reason() {
+        // Adding the typed reason must not change the accept path for either layer.
+        // This is the regression guard against a first-binding-wins mutant that would
+        // misclassify a valid asset as unclassified just to surface a richer reason.
+        let valid_assets = [
+            CorpusAsset {
+                id: "test_corpus/case.pl".to_string(),
+                layer: CorpusAssetLayer::TestCorpus,
+                kind: CorpusAssetKind::PerlSource,
+                relative_path: "test_corpus/case.pl".to_string(),
+                requirement: AssetRequirement::Required,
+            },
+            CorpusAsset {
+                id: "test_corpus/nested/deeper/case.pm".to_string(),
+                layer: CorpusAssetLayer::TestCorpus,
+                kind: CorpusAssetKind::PerlSource,
+                relative_path: "test_corpus/nested/deeper/case.pm".to_string(),
+                requirement: AssetRequirement::Required,
+            },
+            CorpusAsset {
+                id: "crates/perl-corpus/fuzz/case.txt".to_string(),
+                layer: CorpusAssetLayer::Fuzz,
+                kind: CorpusAssetKind::TextFixture,
+                relative_path: "crates/perl-corpus/fuzz/case.txt".to_string(),
+                requirement: AssetRequirement::Required,
+            },
+            CorpusAsset {
+                id: "crates/perl-corpus/fuzz/crash-001".to_string(),
+                layer: CorpusAssetLayer::Fuzz,
+                kind: CorpusAssetKind::PerlSource,
+                relative_path: "crates/perl-corpus/fuzz/crash-001".to_string(),
+                requirement: AssetRequirement::Required,
+            },
+        ];
+        for asset in &valid_assets {
+            assert!(
+                topology_with(vec![asset.clone()]).validate().is_ok(),
+                "valid asset {} must still validate",
+                asset.id
+            );
+        }
+    }
+
+    #[test]
+    fn validation_rejects_fuzz_text_kind_mismatch() -> Result<(), Box<dyn std::error::Error>> {
+        let relative_path = "crates/perl-corpus/fuzz/case.txt";
+        let asset = CorpusAsset {
+            id: relative_path.to_string(),
+            layer: CorpusAssetLayer::Fuzz,
+            kind: CorpusAssetKind::PerlSource,
+            relative_path: relative_path.to_string(),
+            requirement: AssetRequirement::Required,
+        };
+
+        match topology_with(vec![asset]).validate() {
+            Err(CorpusTopologyError::AssetKindMismatch {
+                id,
+                declared: CorpusAssetKind::PerlSource,
+                classified: CorpusAssetKind::TextFixture,
+            }) if id == relative_path => Ok(()),
+            result => {
+                Err(format!("unexpected validation result for fuzz kind mismatch: {result:?}")
+                    .into())
+            }
+        }
+    }
+
+    #[test]
+    fn validation_rejects_test_corpus_kind_mismatch() -> Result<(), Box<dyn std::error::Error>> {
+        let relative_path = "test_corpus/case.pl";
+        let asset = CorpusAsset {
+            id: relative_path.to_string(),
+            layer: CorpusAssetLayer::TestCorpus,
+            kind: CorpusAssetKind::TextFixture,
+            relative_path: relative_path.to_string(),
+            requirement: AssetRequirement::Required,
+        };
+
+        match topology_with(vec![asset]).validate() {
+            Err(CorpusTopologyError::AssetKindMismatch {
+                id,
+                declared: CorpusAssetKind::TextFixture,
+                classified: CorpusAssetKind::PerlSource,
+            }) if id == relative_path => Ok(()),
+            result => Err(format!(
+                "unexpected validation result for test-corpus kind mismatch: {result:?}"
+            )
+            .into()),
+        }
+    }
+
+    #[test]
+    fn discovery_and_validation_reject_same_ignored_paths() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let cases = [
+            (CorpusAssetLayer::TestCorpus, "test_corpus/.hidden.pl", CorpusAssetKind::PerlSource),
+            (
+                CorpusAssetLayer::Fuzz,
+                "crates/perl-corpus/fuzz/_ignored.txt",
+                CorpusAssetKind::TextFixture,
+            ),
+            (
+                CorpusAssetLayer::TestCorpus,
+                "test_corpus/_ignored/case.pl",
+                CorpusAssetKind::PerlSource,
+            ),
+            (
+                CorpusAssetLayer::Fuzz,
+                "crates/perl-corpus/fuzz/.ignored/case.pl",
+                CorpusAssetKind::PerlSource,
+            ),
+        ];
+        let valid_paths = ["crates/perl-corpus/fuzz/case.txt", "test_corpus/case.pl"];
+        let root = tempfile::tempdir()?;
+        for relative_path in valid_paths
+            .iter()
+            .copied()
+            .chain(cases.iter().map(|(_, relative_path, _)| *relative_path))
+        {
+            let fixture_path = root.path().join(relative_path);
+            let parent = fixture_path
+                .parent()
+                .ok_or_else(|| format!("fixture {relative_path:?} has no parent"))?;
+            fs::create_dir_all(parent)?;
+            fs::write(fixture_path, "my $value = 1;")?;
+        }
+
+        let discovered = topology_from_root(root.path())?;
+        let discovered_ids =
+            discovered.assets.iter().map(|asset| asset.id.as_str()).collect::<Vec<_>>();
+        if discovered_ids != valid_paths {
+            return Err(format!(
+                "discovery must retain only the valid two-layer controls, got {discovered_ids:?}"
+            )
+            .into());
+        }
+
+        for (layer, relative_path, kind) in cases {
+            let asset = CorpusAsset {
+                id: relative_path.to_string(),
+                layer,
+                kind,
+                relative_path: relative_path.to_string(),
+                requirement: AssetRequirement::Required,
+            };
+            match topology_with(vec![asset]).validate() {
+                Err(CorpusTopologyError::UnclassifiedAssetPath {
+                    id,
+                    layer: rejected_layer,
+                    reason: UnclassifiedReason::IgnoredPathComponent { .. },
+                }) if id == relative_path && rejected_layer == layer => {}
+                result => {
+                    return Err(format!(
+                        "discovery-excluded path {relative_path:?} must fail validation as IgnoredPathComponent, got {result:?}"
+                    )
+                    .into());
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn discovery_and_validation_reject_assets_under_classifying_directories()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Discovery refuses a directory whose own name classifies as an asset, so it
+        // never descends into one. A serialized leaf beneath such a directory names a
+        // record discovery can never produce and must fail validation for the same
+        // reason, not merely resolve on disk.
+        let cases = [
+            (
+                CorpusAssetLayer::TestCorpus,
+                "test_corpus/container.pl/case.pm",
+                "test_corpus/container.pl",
+            ),
+            (
+                CorpusAssetLayer::Fuzz,
+                "crates/perl-corpus/fuzz/cases.txt/case.pl",
+                "crates/perl-corpus/fuzz/cases.txt",
+            ),
+            (
+                CorpusAssetLayer::Fuzz,
+                "crates/perl-corpus/fuzz/crash-nested/case.pl",
+                "crates/perl-corpus/fuzz/crash-nested",
+            ),
+            // Classifying grandparent under an ordinary immediate parent. Without
+            // this, checking only `path.parent()` satisfies every other case here
+            // while reintroducing the divergence one level further down.
+            (
+                CorpusAssetLayer::TestCorpus,
+                "test_corpus/container.pl/subdir/case.pm",
+                "test_corpus/container.pl",
+            ),
+        ];
+
+        for (layer, relative_path, classifying_directory) in cases {
+            let root = tempfile::tempdir()?;
+            let fixture_path = root.path().join(relative_path);
+            let parent = fixture_path
+                .parent()
+                .ok_or_else(|| format!("fixture {relative_path:?} has no parent"))?;
+            fs::create_dir_all(parent)?;
+            fs::write(fixture_path, "my $value = 1;")?;
+
+            // Discovery half: the classifying directory is a hard refusal, anchored at
+            // the directory itself rather than at the leaf.
+            match topology_from_root(root.path()) {
+                Err(CorpusTopologyError::UnsupportedFileType { path })
+                    if path == root.path().join(classifying_directory) => {}
+                result => {
+                    return Err(format!(
+                        "discovery must refuse classifying directory {classifying_directory:?}, got {result:?}"
+                    )
+                    .into());
+                }
+            }
+
+            // Validation half: the declared kind matches the leaf classifier, so only
+            // the intermediate-component rule can reject this record.
+            let asset = CorpusAsset {
+                id: relative_path.to_string(),
+                layer,
+                kind: CorpusAssetKind::PerlSource,
+                relative_path: relative_path.to_string(),
+                requirement: AssetRequirement::Required,
+            };
+            match topology_with(vec![asset]).validate() {
+                Err(CorpusTopologyError::UnclassifiedAssetPath {
+                    id,
+                    layer: rejected_layer,
+                    reason: UnclassifiedReason::ClassifyingAncestor { .. },
+                }) if id == relative_path && rejected_layer == layer => {}
+                result => {
+                    return Err(format!(
+                        "undiscoverable nested path {relative_path:?} must fail validation as ClassifyingAncestor, got {result:?}"
+                    )
+                    .into());
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn discovery_and_validation_accept_assets_under_ordinary_directories()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Opposite-direction control: nesting is not itself disqualifying. Without
+        // this, rejecting every nested path would satisfy the test above.
+        let valid_paths =
+            ["crates/perl-corpus/fuzz/nested/case.txt", "test_corpus/nested/deeper/case.pl"];
+        let root = tempfile::tempdir()?;
+        for relative_path in valid_paths {
+            let fixture_path = root.path().join(relative_path);
+            let parent = fixture_path
+                .parent()
+                .ok_or_else(|| format!("fixture {relative_path:?} has no parent"))?;
+            fs::create_dir_all(parent)?;
+            fs::write(fixture_path, "my $value = 1;")?;
+        }
+
+        let discovered = topology_from_root(root.path())?;
+        let discovered_ids =
+            discovered.assets.iter().map(|asset| asset.id.as_str()).collect::<Vec<_>>();
+        if discovered_ids != valid_paths {
+            return Err(format!(
+                "discovery must retain both ordinary nested assets, got {discovered_ids:?}"
+            )
+            .into());
+        }
+        discovered.validate()?;
+        Ok(())
+    }
+
+    #[test]
+    fn validation_preserves_valid_round_trip_identity_for_both_layers()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let topology = topology_with(vec![
+            CorpusAsset {
+                id: "crates/perl-corpus/fuzz/case.txt".to_string(),
+                layer: CorpusAssetLayer::Fuzz,
+                kind: CorpusAssetKind::TextFixture,
+                relative_path: "crates/perl-corpus/fuzz/case.txt".to_string(),
+                requirement: AssetRequirement::Required,
+            },
+            CorpusAsset {
+                id: "test_corpus/case.pl".to_string(),
+                layer: CorpusAssetLayer::TestCorpus,
+                kind: CorpusAssetKind::PerlSource,
+                relative_path: "test_corpus/case.pl".to_string(),
+                requirement: AssetRequirement::Required,
+            },
+        ]);
+
+        let payload = serde_json::to_string(&topology)?;
+        let loaded = serde_json::from_str::<CorpusTopology>(&payload)?;
+        loaded.validate()?;
+        if loaded == topology {
+            Ok(())
+        } else {
+            Err("valid topology identity changed across serialization".into())
+        }
+    }
+
+    #[test]
+    fn deserialization_rejects_invalid_asset_kind_fields() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let cases = [
+            (
+                "missing kind",
+                r#"{"schema_version":1,"assets":[{"id":"crates/perl-corpus/fuzz/case.txt","layer":"fuzz","relative_path":"crates/perl-corpus/fuzz/case.txt","requirement":"required"}]}"#,
+            ),
+            (
+                "extra kind field",
+                r#"{"schema_version":1,"assets":[{"id":"crates/perl-corpus/fuzz/case.txt","layer":"fuzz","kind":"text_fixture","asset_kind":"text_fixture","relative_path":"crates/perl-corpus/fuzz/case.txt","requirement":"required"}]}"#,
+            ),
+            (
+                "malformed kind",
+                r#"{"schema_version":1,"assets":[{"id":"crates/perl-corpus/fuzz/case.txt","layer":"fuzz","kind":42,"relative_path":"crates/perl-corpus/fuzz/case.txt","requirement":"required"}]}"#,
+            ),
+            (
+                "unsupported kind",
+                r#"{"schema_version":1,"assets":[{"id":"crates/perl-corpus/fuzz/case.txt","layer":"fuzz","kind":"binary","relative_path":"crates/perl-corpus/fuzz/case.txt","requirement":"required"}]}"#,
+            ),
+        ];
+
+        for (label, payload) in cases {
+            if serde_json::from_str::<CorpusTopology>(payload).is_ok() {
+                return Err(
+                    format!("forged {label} asset kind must fail at deserialization").into()
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn deserialized_forged_asset_kinds_are_revalidated() -> Result<(), Box<dyn std::error::Error>> {
+        let cases = [
+            (
+                "unclassified fuzz README",
+                r#"{"schema_version":1,"assets":[{"id":"crates/perl-corpus/fuzz/README.md","layer":"fuzz","kind":"perl_source","relative_path":"crates/perl-corpus/fuzz/README.md","requirement":"required"},{"id":"crates/perl-corpus/fuzz/case.pl","layer":"fuzz","kind":"perl_source","relative_path":"crates/perl-corpus/fuzz/case.pl","requirement":"required"}]}"#,
+                CorpusTopologyError::UnclassifiedAssetPath {
+                    id: "crates/perl-corpus/fuzz/README.md".to_string(),
+                    layer: CorpusAssetLayer::Fuzz,
+                    reason: UnclassifiedReason::UnsupportedExtension {
+                        extension: Some("md".to_string()),
+                    },
+                },
+            ),
+            (
+                "fuzz text kind mismatch",
+                r#"{"schema_version":1,"assets":[{"id":"crates/perl-corpus/fuzz/case.pl","layer":"fuzz","kind":"perl_source","relative_path":"crates/perl-corpus/fuzz/case.pl","requirement":"required"},{"id":"crates/perl-corpus/fuzz/case.txt","layer":"fuzz","kind":"perl_source","relative_path":"crates/perl-corpus/fuzz/case.txt","requirement":"required"}]}"#,
+                CorpusTopologyError::AssetKindMismatch {
+                    id: "crates/perl-corpus/fuzz/case.txt".to_string(),
+                    declared: CorpusAssetKind::PerlSource,
+                    classified: CorpusAssetKind::TextFixture,
+                },
+            ),
+        ];
+
+        for (label, payload, expected) in cases {
+            let topology = serde_json::from_str::<CorpusTopology>(payload)?;
+            let asset = topology
+                .assets
+                .iter()
+                .find(|asset| asset.relative_path.ends_with("case.pl"))
+                .cloned()
+                .ok_or_else(|| format!("forged {label} topology has no valid requested asset"))?;
+
+            for (entry_point, result) in [
+                ("validate", topology.validate().map(|_| ())),
+                ("with_root", topology.clone().with_root(".").map(|_| ())),
+                ("asset_path", topology.asset_path(&asset).map(|_| ())),
+            ] {
+                match result {
+                    Err(error) if error == expected => {}
+                    result => {
+                        return Err(format!(
+                            "forged {label} must fail through {entry_point} with {expected:?}, got {result:?}"
+                        )
+                        .into());
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 
     #[test]

@@ -1,0 +1,11 @@
+{
+  "schema_version": "standalone_source_build.vector.v1",
+  "base": "01_exact_plan.json",
+  "mutation": {
+    "pointer": "/plan/receipt_path",
+    "value": "private/credentials.json"
+  },
+  "expectation": {
+    "result": "schema_rejected"
+  }
+}

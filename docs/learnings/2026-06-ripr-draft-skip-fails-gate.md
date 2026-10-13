@@ -9,6 +9,13 @@ search_terms: [ripr gate, draft PR, skip, route_result, ROUTE_RESULT, skipped, N
 
 # ripr+ New Gap Gate fails on draft PRs when router skips them
 
+> **Current status:** The neutral/pass recommendation below is superseded by
+> [#9603](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/9603) and
+> [#15253](https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/15253).
+> Skipped draft routes now fail with explicit `draft-no-proof` / `NOT_PROVEN`:
+> this reports missing analysis evidence, not a source defect. The original
+> incident and recommendation are preserved below as historical context.
+
 **Date**: 2026-06
 **Hazard class**: ci / gate-logic
 **Portable lesson**: [docs/concepts/gate-names-must-match-failure-classes.md](../concepts/gate-names-must-match-failure-classes.md)

@@ -1,0 +1,71 @@
+{
+  "schema_version": "compiler_performance_receipt.v1",
+  "receipt_id": "fixture-compiler-performance-uninstrumented-001",
+  "subject": {
+    "repository": "EffortlessMetrics/perl-lsp-swarm",
+    "candidate": "a05f4820ab9385b261a2993ea9687cf9d7beedfc",
+    "tree": "f530d2f1221c516484a3654f01a3ad694ab56969",
+    "dirty_tree": true,
+    "toolchain": "1.95.0-x86_64-unknown-linux-gnu",
+    "runner": "linux-x86_64",
+    "identities": {
+      "source": {"schema": "source.v1", "profile": "default"},
+      "parser": {"schema": "parser.v1", "profile": "default"},
+      "hir": {"schema": "hir.v1", "profile": "default"},
+      "pir": {"schema": "pir.v1", "profile": "default"},
+      "effects": {"schema": "effects.v1", "profile": "default"},
+      "world": {"schema": "world.v1", "profile": "default"},
+      "interfaces": {"schema": "interfaces.v1", "profile": "default"}
+    }
+  },
+  "workload": {
+    "id": "fixture-focused-uninstrumented",
+    "class": "focused_fixture",
+    "profile": "default",
+    "fixture": "compiler-performance",
+    "series": "fixture-series",
+    "cache_mode": "warm",
+    "required_stages": ["lex_parse", "hir", "module_graph"]
+  },
+  "cache": {
+    "status": "not_proven",
+    "outcome": "not_proven"
+  },
+  "stages": [
+    {
+      "name": "lex_parse",
+      "applicability": "applicable",
+      "result": "not_proven",
+      "work": {"status": "not_proven"},
+      "timing": {"status": "not_proven"},
+      "instrumentation": "missing"
+    },
+    {
+      "name": "hir",
+      "applicability": "applicable",
+      "result": "not_proven",
+      "work": {"status": "not_proven"},
+      "timing": {"status": "measured", "wall_ns": 512000},
+      "instrumentation": "partial"
+    },
+    {
+      "name": "module_graph",
+      "applicability": "required_missing",
+      "result": "not_proven",
+      "work": {"status": "not_proven"},
+      "timing": {"status": "not_proven"},
+      "instrumentation": "missing"
+    }
+  ],
+  "provider": {
+    "status": "not_proven",
+    "correctness": {"status": "not_proven"},
+    "timing": {"status": "not_proven"}
+  },
+  "limitations": [
+    "Stage instrumentation is absent on this runner: lex_parse and hir report no work counters at all rather than zero counters.",
+    "module_graph is in the declared required-stage denominator but was never observed, so it is carried as an explicit required_missing row.",
+    "The warm cache_mode is a setup label only; no cache key or currentness was validated, so the cache outcome stays not_proven.",
+    "Provider utility and correctness were not instrumented, so no request, exact, fallback, refusal, or zero-budget counters are published."
+  ]
+}

@@ -1,0 +1,12 @@
+project: product
+component: Parser and lexer
+kind: Fixed
+body: >-
+  Route parenthesized `substr`, `vec`, and `pos` lvalue assignments through the
+  contextual assignment parser so contiguous Perl `x=` is recognized without
+  changing ordinary binary `x` or trivia-separated `x =` forms.
+time: 2026-08-29T04:24:42Z
+custom:
+  PR: "13496"
+  Slug: lvalue-repetition-assignment
+  Breaking: "no"

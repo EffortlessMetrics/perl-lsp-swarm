@@ -140,14 +140,41 @@ impl StrictParseError {
     ///
     /// Pest line/column display is preserved only as `pest_context`. The range is
     /// Pest's byte location checked against `original_source`.
+    ///
+    /// Use this only when Pest parsed `original_source` verbatim. When the caller
+    /// rewrote the text first, Pest's offsets index the rewritten buffer and must
+    /// be translated with [`Self::from_pest_mapped`], or the resulting range would
+    /// contradict this type's caller-source contract.
     pub fn from_pest<R: RuleType>(
         error: &PestError<R>,
         original_source: &str,
     ) -> Result<Self, OutcomeError> {
+        Self::from_pest_mapped(error, original_source, |offset| offset)
+    }
+
+    /// Map a Pest error onto the caller-supplied original source when Pest parsed
+    /// a rewritten copy of it.
+    ///
+    /// `map_offset` translates a byte offset in the buffer Pest actually parsed
+    /// into the equivalent byte offset in `original_source`. The translated range
+    /// is then validated against `original_source` exactly as [`Self::from_pest`]
+    /// validates an untranslated one, so a caller cannot smuggle a foreign-buffer
+    /// offset in through this constructor.
+    pub fn from_pest_mapped<R: RuleType>(
+        error: &PestError<R>,
+        original_source: &str,
+        map_offset: impl Fn(usize) -> usize,
+    ) -> Result<Self, OutcomeError> {
         let range = match error.location {
-            InputLocation::Pos(pos) => SourceRange::try_over_source(pos, pos, original_source)?,
+            InputLocation::Pos(pos) => {
+                let mapped = map_offset(pos);
+                SourceRange::try_over_source(mapped, mapped, original_source)?
+            }
             InputLocation::Span((start, end)) => {
-                SourceRange::try_over_source(start, end, original_source)?
+                let mapped_start = map_offset(start);
+                // A rewrite can collapse a span; keep the range non-inverted.
+                let mapped_end = map_offset(end).max(mapped_start);
+                SourceRange::try_over_source(mapped_start, mapped_end, original_source)?
             }
         };
         let message = match &error.variant {

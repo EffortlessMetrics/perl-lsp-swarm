@@ -1,5 +1,5 @@
 #![deny(clippy::map_err_ignore)] // Cohort C1 activation (#12598): all production rows exact-excepted; new findings move the crate back to non-C1.
-use perl_position_tracking::LineStartsCache;
+use perl_position_tracking::{LineIndex, LineStartsCache};
 use proptest::prelude::*;
 use ropey::Rope;
 
@@ -37,18 +37,31 @@ fn char_boundary_offsets(content: &str) -> Vec<usize> {
     offsets
 }
 
+fn expected_roundtrip_offset(content: &str, offset: usize) -> usize {
+    let offset = offset.min(content.len());
+    for (cr_index, separator) in content.as_bytes().windows(2).enumerate() {
+        if separator == b"\r\n" && offset == cr_index + 1 {
+            return cr_index;
+        }
+    }
+    offset
+}
+
 proptest! {
     #[test]
     fn prop_text_and_rope_offsets_agree(content in mixed_content_strategy(), offset in 0usize..512usize) {
         let rope = Rope::from_str(&content);
         let cache_text = LineStartsCache::new(&content);
         let cache_rope = LineStartsCache::new_rope(&rope);
+        let owning_index = LineIndex::new(content.clone());
 
         let bounded = offset.min(content.len());
         let text_pos = cache_text.offset_to_position(&content, bounded);
         let rope_pos = cache_rope.offset_to_position_rope(&rope, bounded);
+        let owning_pos = owning_index.offset_to_position(bounded);
 
         prop_assert_eq!(text_pos, rope_pos, "offset-to-position mismatch at {}", bounded);
+        prop_assert_eq!(text_pos, owning_pos, "owning-index mismatch at {}", bounded);
     }
 
     #[test]
@@ -69,7 +82,14 @@ proptest! {
         for offset in char_boundary_offsets(&content) {
             let (line, col) = cache.offset_to_position_rope(&rope, offset);
             let roundtrip_offset = cache.position_to_offset_rope(&rope, line, col);
-            prop_assert_eq!(roundtrip_offset, offset, "roundtrip mismatch at offset {}", offset);
+            let expected = expected_roundtrip_offset(&content, offset);
+            prop_assert_eq!(
+                roundtrip_offset,
+                expected,
+                "roundtrip mismatch at offset {} (expected normalized offset {})",
+                offset,
+                expected,
+            );
         }
     }
 }

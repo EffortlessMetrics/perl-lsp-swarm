@@ -20,6 +20,10 @@ use std::time::{Duration, Instant};
 use support::bdd_diagnostics::{BddScenario, DocumentDiagnosticFlow};
 use support::lsp_harness::{LspHarness, TempWorkspace};
 
+fn is_retryable_readiness_error(error: &str) -> bool {
+    error.starts_with("Request timed out after ") || error == "No response received"
+}
+
 fn find_position(text: &str, needle: &str) -> (u32, u32) {
     perl_tdd_support::must_some(
         text.split('\n').enumerate().find_map(|(line_idx, line)| {
@@ -891,7 +895,7 @@ sub transform {
     let module_uri = workspace.uri("lib/Toolkit.pm");
     harness.open(&module_uri, module)?;
 
-    harness.wait_for_symbol("transform", Some(&module_uri), Duration::from_secs(2)).ok();
+    harness.wait_for_symbol("transform", Some(&module_uri), Duration::from_secs(5))?;
 
     scenario.when("searching workspace symbols for the function name");
     let result = harness.request(
@@ -942,7 +946,7 @@ is(calculate_total(1, 2), 3, 'adds values');
     let uri = workspace.uri("t/calculator.t");
     harness.open(&uri, test_file)?;
 
-    harness.wait_for_symbol("calculate_total", Some(&uri), Duration::from_secs(2)).ok();
+    harness.wait_for_symbol("calculate_total", Some(&uri), Duration::from_secs(5))?;
 
     scenario.when("requesting completion at a partially typed function name");
     let (completion_line, completion_col) = find_position(test_file, "my $value = calc");
@@ -1566,8 +1570,10 @@ sub score {
 
 #[test]
 #[serial]
-fn bdd_pull_diagnostics_tracks_result_ids_per_document() -> Result<(), Box<dyn std::error::Error>> {
-    let scenario = BddScenario::new("Pull diagnostics keep per-document resultId caches isolated");
+fn bdd_pull_diagnostics_workspace_fact_movement_retires_cached_ids()
+-> Result<(), Box<dyn std::error::Error>> {
+    let scenario =
+        BddScenario::new("Workspace fact movement retires cached pull-diagnostics result IDs");
 
     let healthy = r#"use strict;
 use warnings;
@@ -1619,27 +1625,74 @@ sub boom {
     scenario.then("both documents return unchanged reports");
     assert_eq!(DocumentDiagnosticFlow::kind(&stable_unchanged), Some("unchanged"));
     assert_eq!(DocumentDiagnosticFlow::kind(&changing_unchanged), Some("unchanged"));
+    assert_ne!(stable_id, changing_id, "different documents must receive distinct result IDs");
+    assert_eq!(stable_unchanged.get("resultId").and_then(Value::as_str), Some(stable_id.as_str()));
+    assert_eq!(
+        changing_unchanged.get("resultId").and_then(Value::as_str),
+        Some(changing_id.as_str())
+    );
+
+    // A prior result ID is bound to the complete report subject. Swapping IDs
+    // between documents must therefore produce full reports for both requests,
+    // even though neither document changed.
+    let stable_with_changing_id = DocumentDiagnosticFlow::new(&mut harness, stable_uri.clone())
+        .request(Some(changing_id.as_str()))?;
+    let changing_with_stable_id = DocumentDiagnosticFlow::new(&mut harness, changing_uri.clone())
+        .request(Some(stable_id.as_str()))?;
+    assert_eq!(DocumentDiagnosticFlow::kind(&stable_with_changing_id), Some("full"));
+    assert_eq!(DocumentDiagnosticFlow::kind(&changing_with_stable_id), Some("full"));
+    assert_eq!(
+        stable_with_changing_id.get("resultId").and_then(Value::as_str),
+        Some(stable_id.as_str())
+    );
+    assert_eq!(
+        changing_with_stable_id.get("resultId").and_then(Value::as_str),
+        Some(changing_id.as_str())
+    );
 
     scenario.when("introducing a syntax regression in only one document");
     harness.change_full(&changing_uri, 2, broken)?;
     harness.barrier();
 
-    let (stable_after_edit, changing_after_edit) = {
+    // The workspace fact tier is part of every report subject (#7480,
+    // 470277161c): re-indexing `changing.pl` moves the workspace fact
+    // generation, so the untouched document's identity moves with it and the
+    // next pull for `stable.pl` must degrade honestly to `full` with a fresh
+    // ID. The index consumes the edit on a background worker, so wait for the
+    // fact-tier movement explicitly instead of racing it: poll until the
+    // stable document's previously cached result ID stops matching. If the
+    // tier never moves the deadline expires and the full-report assertion
+    // below fails loudly, so this wait cannot mask a real regression.
+    let movement_deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let stable_after_edit = loop {
         let mut stable_diag = DocumentDiagnosticFlow::new(&mut harness, stable_uri.clone());
-        let stable_after_edit = stable_diag.request(Some(stable_id.as_str()))?;
-
-        let mut changing_diag = DocumentDiagnosticFlow::new(&mut harness, changing_uri.clone());
-        let changing_after_edit = changing_diag.request(Some(changing_id.as_str()))?;
-        (stable_after_edit, changing_after_edit)
+        let report = stable_diag.request(Some(stable_id.as_str()))?;
+        let moved = DocumentDiagnosticFlow::kind(&report) != Some("unchanged");
+        if !moved && std::time::Instant::now() < movement_deadline {
+            std::thread::sleep(std::time::Duration::from_millis(25));
+            continue;
+        }
+        break report;
     };
 
-    scenario
-        .then("the unchanged file stays unchanged while the edited file gets a new full report");
-    assert_eq!(DocumentDiagnosticFlow::kind(&stable_after_edit), Some("unchanged"));
+    let mut changing_diag = DocumentDiagnosticFlow::new(&mut harness, changing_uri.clone());
+    let changing_after_edit = changing_diag.request(Some(changing_id.as_str()))?;
+
+    scenario.then("the fact-tier movement surfaces as fresh full reports on both documents");
     assert_eq!(
-        stable_after_edit.get("resultId").and_then(Value::as_str),
-        Some(stable_id.as_str()),
-        "stable file should keep the same resultId"
+        DocumentDiagnosticFlow::kind(&stable_after_edit),
+        Some("full"),
+        "workspace fact movement (#7480) must retire the stable document's cached result ID"
+    );
+    let stable_fresh_id = DocumentDiagnosticFlow::result_id(&stable_after_edit)?;
+    assert_ne!(
+        stable_fresh_id, stable_id,
+        "stable file must receive a fresh resultId after the fact tier moved"
+    );
+    assert_eq!(
+        diagnostic_error_count(&stable_after_edit),
+        0,
+        "stable file's fresh full report must stay error-free"
     );
 
     assert_eq!(DocumentDiagnosticFlow::kind(&changing_after_edit), Some("full"));
@@ -1841,7 +1894,7 @@ print $value;
     let (mut harness, workspace) = setup_workspace(&[("navigation.pl", code)])?;
     let uri = workspace.uri("navigation.pl");
     harness.open(&uri, code)?;
-    harness.wait_for_symbol("calculate_total", Some(&uri), Duration::from_secs(2)).ok();
+    harness.wait_for_symbol("calculate_total", Some(&uri), Duration::from_secs(5))?;
 
     scenario.when("requesting document highlights on the local variable inside the subroutine");
     let (highlight_line, highlight_col) = find_position(code, "$total =");
@@ -1903,7 +1956,7 @@ print $x;
     let (mut harness, workspace) = setup_workspace(&[("script.pl", script)])?;
     let uri = workspace.uri("script.pl");
     harness.open(&uri, script)?;
-    harness.wait_for_symbol("x", Some(&uri), std::time::Duration::from_secs(5)).ok();
+    harness.wait_for_symbol("x", Some(&uri), std::time::Duration::from_secs(5))?;
     harness.barrier();
 
     scenario.when("requesting definition on the inner variable usage");
@@ -1988,22 +2041,34 @@ Foo::do_foo();
 
     harness.open(&module_uri, module)?;
     harness.open(&main_uri, main)?;
-    harness.wait_for_symbol("do_foo", Some(&module_uri), std::time::Duration::from_secs(5)).ok();
+    harness.wait_for_symbol("do_foo", Some(&module_uri), std::time::Duration::from_secs(5))?;
     harness.barrier();
 
     scenario.when("requesting hover on the module name");
     let (line, col) = find_position(main, "use Foo;");
 
-    let response = harness
-        .request_with_timeout(
+    // A single request with a fixed 1s timeout raced hover readiness under
+    // parallel test load (#13492). Poll within a bounded deadline until a
+    // hover payload arrives; the content assertions below still discriminate.
+    let hover_deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let response = loop {
+        let reply = match harness.request_with_timeout(
             "textDocument/hover",
             json!({
                 "textDocument": { "uri": main_uri },
                 "position": { "line": line, "character": col + 4 } // offset for "use "
             }),
-            std::time::Duration::from_secs(1),
-        )
-        .unwrap_or(serde_json::Value::Null);
+            std::time::Duration::from_secs(2),
+        ) {
+            Ok(reply) => reply,
+            Err(error) if is_retryable_readiness_error(&error) => serde_json::Value::Null,
+            Err(error) => return Err(error.into()),
+        };
+        if reply.get("contents").is_some() || std::time::Instant::now() >= hover_deadline {
+            break reply;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    };
 
     scenario.then("the hover response should contain the module links and MetaCPAN reference");
     assert!(!response.is_null(), "Hover response should not be null");
@@ -2047,15 +2112,33 @@ sub main_func {}
     harness.barrier();
 
     scenario.when("requesting document symbols");
-    let response = harness
-        .request_with_timeout(
+    // A single request with a fixed 1s timeout raced the server's parse
+    // publication pipeline under parallel test load (#13492): the reply could
+    // land after the deadline or list symbols before the first full
+    // publication. Poll within a bounded deadline until the package becomes
+    // visible (the same deterministic-wait pattern as `wait_for_symbol`);
+    // the full symbol assertions below still discriminate the content.
+    let symbols_deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let response = loop {
+        let reply = match harness.request_with_timeout(
             "textDocument/documentSymbol",
             json!({
                 "textDocument": { "uri": uri }
             }),
-            std::time::Duration::from_secs(1),
-        )
-        .unwrap_or(serde_json::Value::Null);
+            std::time::Duration::from_secs(2),
+        ) {
+            Ok(reply) => reply,
+            Err(error) if is_retryable_readiness_error(&error) => serde_json::Value::Null,
+            Err(error) => return Err(error.into()),
+        };
+        let published = reply.as_array().is_some_and(|symbols| {
+            symbols.iter().any(|node| node["name"].as_str() == Some("Outer"))
+        });
+        if published || std::time::Instant::now() >= symbols_deadline {
+            break reply;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    };
 
     scenario.then("the document symbols should include all packages and their subroutines");
     let empty_vec = vec![];
@@ -2636,7 +2719,7 @@ sub collect_metrics {
     let (mut harness, workspace) = setup_workspace(&[("lib/SymbolHub.pm", module)])?;
     let module_uri = workspace.uri("lib/SymbolHub.pm");
     harness.open(&module_uri, module)?;
-    harness.wait_for_symbol("collect_metrics", Some(&module_uri), Duration::from_secs(10)).ok();
+    harness.wait_for_symbol("collect_metrics", Some(&module_uri), Duration::from_secs(10))?;
     harness.barrier();
 
     scenario.when("searching workspace symbols using a package-oriented query");
@@ -2691,7 +2774,7 @@ sub collect_metrics {
     let (mut harness, workspace) = setup_workspace(&[("lib/SymbolHub.pm", before)])?;
     let module_uri = workspace.uri("lib/SymbolHub.pm");
     harness.open(&module_uri, before)?;
-    harness.wait_for_symbol("SymbolHub", Some(&module_uri), Duration::from_secs(10)).ok();
+    harness.wait_for_symbol("SymbolHub", Some(&module_uri), Duration::from_secs(10))?;
     harness.barrier();
 
     scenario.when("querying workspace symbols before and after a didChange rename");
@@ -2703,7 +2786,7 @@ sub collect_metrics {
     )?;
 
     harness.change_full(&module_uri, 2, &after)?;
-    harness.wait_for_symbol("MetricsHub", Some(&module_uri), Duration::from_secs(10)).ok();
+    harness.wait_for_symbol("MetricsHub", Some(&module_uri), Duration::from_secs(10))?;
     harness.barrier();
 
     let after_result = harness.request(
@@ -2926,7 +3009,7 @@ my $y = helper();
     let (mut harness, workspace) = setup_workspace(&[("refs.pl", script)])?;
     let uri = workspace.uri("refs.pl");
     harness.open(&uri, script)?;
-    harness.wait_for_symbol("helper", Some(&uri), Duration::from_secs(5)).ok();
+    harness.wait_for_symbol("helper", Some(&uri), Duration::from_secs(5))?;
 
     let (line, character) = find_position(script, "helper()");
 
@@ -3194,7 +3277,7 @@ sub list {
 
     harness.open(&controller_uri, controller)?;
     harness.open(&app_uri, app)?;
-    harness.wait_for_symbol("list", Some(&controller_uri), Duration::from_secs(10)).ok();
+    harness.wait_for_symbol("list", Some(&controller_uri), Duration::from_secs(10))?;
 
     let (line, character) = find_position(app, "admin-user#list");
 
@@ -3296,7 +3379,7 @@ $dog->
 
     harness.open(&module_uri, dog_module)?;
     harness.open(&main_uri, main_script)?;
-    harness.wait_for_symbol("bark", Some(&module_uri), Duration::from_secs(10)).ok();
+    harness.wait_for_symbol("bark", Some(&module_uri), Duration::from_secs(10))?;
     harness.barrier();
 
     scenario.when("requesting completion at the position after the arrow operator");
@@ -3495,7 +3578,7 @@ sub helper { 1 }
     let (mut harness, workspace) = setup_workspace(&[("lib/Utils.pm", module)])?;
     let module_uri = workspace.uri("lib/Utils.pm");
     harness.open(&module_uri, module)?;
-    harness.wait_for_symbol("helper", Some(&module_uri), Duration::from_secs(10)).ok();
+    harness.wait_for_symbol("helper", Some(&module_uri), Duration::from_secs(10))?;
     harness.barrier();
 
     scenario.when("searching workspace symbols for 'helper'");
@@ -3531,7 +3614,7 @@ my $r = greet();
     let (mut harness, workspace) = setup_workspace(&[("main.pl", code)])?;
     let uri = workspace.uri("main.pl");
     harness.open(&uri, code)?;
-    harness.wait_for_symbol("greet", Some(&uri), Duration::from_secs(10)).ok();
+    harness.wait_for_symbol("greet", Some(&uri), Duration::from_secs(10))?;
     harness.barrier();
 
     scenario.when("requesting goto-definition at the greet() call site");

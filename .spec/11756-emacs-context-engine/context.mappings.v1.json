@@ -357,11 +357,11 @@
           "component_id": "emacs.runner_core.rust",
           "role": "production",
           "kind": "rust_source",
-          "path": "xtask/tests/support/emacs_host_runner.rs",
+          "path": "xtask/tests/support/emacs_host_process.rs",
           "symbol": "run_owned_process",
           "symbol_kind": "rust_item",
           "client_family": null,
-          "notes": "landed hermetic runner core: run plans, owned processes, receipts"
+          "notes": "landed hermetic runner core: run plans, owned processes, receipts (defined in emacs_host_process.rs; emacs_host_runner.rs re-exports it)"
         },
         {
           "component_id": "emacs.runner_core.elisp_driver",

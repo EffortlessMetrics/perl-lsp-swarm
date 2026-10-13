@@ -128,6 +128,7 @@ fn spawn_fake_peer(addr: std::net::SocketAddr, token: Option<String>) -> JoinHan
                                 success: true,
                                 command: req.command.clone(),
                                 message: None,
+                                cause: None,
                                 body,
                             }),
                         );

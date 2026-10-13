@@ -1014,7 +1014,7 @@ mod tests {
             assert!(source.contains(line.as_str()), "following line must come from the source");
         }
         // Truncation metadata stores counts and reasons only.
-        let truncation = must_with(serde_json::to_value(&prepared.truncation), "serialize");
+        let truncation = must_with(serde_json::to_value(prepared.truncation), "serialize");
         let text_like = ["originalText", "includedText", "omitted", "content"];
         for key in text_like {
             assert!(

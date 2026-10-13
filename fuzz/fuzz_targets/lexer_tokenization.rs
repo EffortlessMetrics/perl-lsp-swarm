@@ -24,6 +24,7 @@ fuzz_target!(|data: &[u8]| {
         parse_interpolation: true,
         track_positions: false,
         max_lookahead: 256,
+        symbol_table: None,
     };
     let mut lexer2 = PerlLexer::with_config(&input, config_interp);
     let _ = lexer2.collect_tokens();
@@ -33,6 +34,7 @@ fuzz_target!(|data: &[u8]| {
         parse_interpolation: false,
         track_positions: true,
         max_lookahead: 256,
+        symbol_table: None,
     };
     let mut lexer3 = PerlLexer::with_config(&input, config_pos);
     let _ = lexer3.collect_tokens();

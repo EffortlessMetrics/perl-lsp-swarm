@@ -39,6 +39,7 @@ Current generated and human-owned status sources include:
 | [PLSP-ADR-0005](PLSP-ADR-0005-hir-body-pir-eir-boundaries.md) | Accepted | 2026-06-21 | HIR-body / PIR-A / EIR Boundaries | Canonical terminology: HIR body items are L0, PIR-A evolves the existing tooling PIR, EIR branches off PIR-A under a separate ADR |
 | [PLSP-ADR-0006](PLSP-ADR-0006-perl-workspace-core-facts-substrate.md) | Accepted | 2026-07-03 | perl-workspace-core Facts Substrate | LSP-free project-facts substrate that every product surface consumes, replacing per-product re-extraction |
 | [PLSP-ADR-0007](PLSP-ADR-0007-tap-facts-seam.md) | Accepted | 2026-07-15 | TAP Result Facts Seam | Pure result-time TAP facts are separate from workspace source-time test facts and runner execution |
+| [PLSP-ADR-0008](PLSP-ADR-0008-dedicated-eir-execution-model.md) | Proposed | 2026-10-12 | Dedicated EIR Execution Model | EIR crate/model/dependency/limit record with offline-lane amendment and staged entry; acceptance is maintainer merge |
 
 ### Legacy Series (0001–0002)
 
@@ -98,6 +99,7 @@ Current generated and human-owned status sources include:
 | [ADR-0045](0045-noncurrent-frame-mutation-disposition.md) | Accepted | 2026-08-24 | Non-Current-Frame Mutation Disposition | #11324 ruling: not_proven with named missing evidence; #11325 stays non-selectable; frame-blind setVariable refusal path recorded |
 | [ADR-0046](0046-loaded-module-reload-semantics.md) | Accepted | 2026-08-24 | Loaded-Module Reload Semantics (R01 Contract) | #10097 contract: exact subject identity, closed 13-class eligibility, possibly-applied boundary, per-process RuntimeModuleGeneration, per-object-kind invalidation composed with stopped_generation; wire stays with #10138 |
 | [ADR-0047](0047-dap-stdio-only-editor-transport.md) | Accepted | 2026-08-25 | Stdio-Only Editor Transport for perl-dap | #10564 ruling: stdio is the sole product editor transport; native and external-peer editor sockets are retire; debugger-peer TCP stays authenticated and separate; no runtime removal in the inventory PR |
+| [ADR-0048](0048-source-line-contract.md) | Accepted | 2026-08-29 | LF-Delimited Source-Line Contract | #4973 ruling: LF is the only source-row terminator, CRLF is one separator, bare CR and VT/FF/NEL/LS/PS are content; rows carry start/content_end/separator_end; BOM is a source-subject decision (#8707); Ropey line APIs are not row authority |
 | [ADR-0041](0041-microcrate-collapse.md) | Accepted | 2026-04-14 | Microcrate Collapse | Collapse from 132 published crates to ~30; ~100 internal microcrates become subfolder modules |
 
 ## About ADRs

@@ -38,8 +38,101 @@ pub mod queries;
 /// Literal-eval sub extractor for dynamic boundary evidence.
 pub mod eval_sub_extractor;
 
-/// Production framework generated-member extraction.
-pub mod generated_member_extractor;
+#[path = "generated_member_extractor.rs"]
+mod generated_member_extractor_core;
+
+#[allow(unreachable_pub)]
+#[path = "workspace_import_extractor.rs"]
+mod workspace_import_extractor_core;
+
+mod quickorm;
+
+/// Framework-generated member extraction for package-level declarations.
+pub mod generated_member_extractor {
+    use crate::Node;
+    use perl_semantic_facts::FileId;
+
+    pub(crate) use super::generated_member_extractor_core::GeneratedMemberFact;
+
+    /// Extract generated-member facts from the canonical framework producers.
+    ///
+    /// QuickORM table members are separator-sensitive: a source-free walk can
+    /// never establish their import authority, so they are extracted only by
+    /// [`extract_generated_member_facts_with_source`].
+    pub(crate) fn extract_generated_member_facts(
+        ast: &Node,
+        file_id: FileId,
+    ) -> Vec<GeneratedMemberFact> {
+        super::generated_member_extractor_core::extract_generated_member_facts(ast, file_id)
+    }
+
+    /// Extract generated members with the source text available to adapters
+    /// whose parser representation intentionally omits separators.
+    pub(crate) fn extract_generated_member_facts_with_source(
+        ast: &Node,
+        file_id: FileId,
+        source: &str,
+    ) -> Vec<GeneratedMemberFact> {
+        let mut facts = extract_generated_member_facts(ast, file_id);
+        facts.extend(super::quickorm::extract_generated_member_facts_with_source(
+            ast, file_id, source,
+        ));
+        facts
+    }
+}
+
+/// Import-spec extraction for `ImportExportIndex` population during `index_file`.
+pub mod workspace_import_extractor {
+    use crate::Node;
+    use perl_parser_core::hir::HirFile;
+    use perl_semantic_facts::{FileId, ImportSpec};
+
+    pub use super::workspace_import_extractor_core::extract_use_lib_facts;
+
+    /// Extract import facts from canonical HIR projection and apply bounded
+    /// framework-specific import semantics.
+    pub fn extract_import_specs(ast: &Node, file_id: FileId) -> Vec<ImportSpec> {
+        let mut specs = super::workspace_import_extractor_core::extract_import_specs(ast, file_id);
+        super::quickorm::normalize_import_specs(ast, &mut specs);
+        specs
+    }
+
+    /// Extract import facts from an already-lowered HIR file.
+    ///
+    /// Production indexing already lowers HIR for package/export facts; reuse
+    /// that projection instead of classifying flattened `Use.args`.
+    pub fn extract_import_specs_from_hir(
+        hir: &HirFile,
+        ast: &Node,
+        file_id: FileId,
+        source: Option<&str>,
+    ) -> Vec<ImportSpec> {
+        let mut specs = super::workspace_import_extractor_core::extract_import_specs_from_hir(
+            hir, ast, file_id,
+        );
+        if let Some(source) = source {
+            super::quickorm::normalize_import_specs_with_source(ast, &mut specs, source);
+        } else {
+            super::quickorm::normalize_import_specs(ast, &mut specs);
+        }
+        specs
+    }
+
+    /// Extract import facts with source text available for exact framework
+    /// syntax checks that the normalized AST cannot express.
+    pub fn extract_import_specs_with_source(
+        ast: &Node,
+        file_id: FileId,
+        source: &str,
+    ) -> Vec<ImportSpec> {
+        extract_import_specs_from_hir(
+            &perl_parser_core::hir::lower_ast(ast),
+            ast,
+            file_id,
+            Some(source),
+        )
+    }
+}
 
 /// Non-published DBIx::QuickORM table-column field candidates.
 ///
@@ -48,9 +141,6 @@ pub mod generated_member_extractor;
 /// methods.
 #[path = "generated_member_extractor_quickorm.rs"]
 pub(crate) mod dbix_quickorm_candidate;
-
-/// Import-spec extractor for `ImportExportIndex` population during `index_file`.
-pub mod workspace_import_extractor;
 
 /// Per-provider scorecard gate fixture suites (test-only).
 #[cfg(test)]

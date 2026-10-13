@@ -262,14 +262,33 @@ gh workflow run release-orchestration.yml \
 | `publish-crates.yml` | Orchestration dispatch | ~60–90 min | Publishes all crates to crates.io in topological dependency order with 3-attempt retry and index wait per crate |
 | `publish-extension.yml` | Orchestration dispatch | ~10–30 min | Builds VSIX, publishes to VS Code Marketplace and Open VSX Registry, then runs published-package smokes |
 | `docker-publish.yml` | Orchestration dispatch | ~20–30 min | Builds multi-arch images (amd64, arm64) for GHCR and Docker Hub |
-| `brew-bump.yml` | GitHub release published event | ~5–10 min | Updates `EffortlessMetrics/homebrew-tap` formula with new version and checksums |
-| `scoop-bump.yml` | GitHub release published event | ~3–5 min | Updates Scoop manifest |
-| `chocolatey-bump.yml` | GitHub release published event | ~3–5 min | Updates Chocolatey package |
-| `winget-bump.yml` | GitHub release published event | ~3–5 min | Refreshes the repo-local winget manifest |
+| `brew-bump.yml` | `release.yml` package refresh dispatch | ~5–10 min | Updates `EffortlessMetrics/homebrew-tap` formula with new version and checksums |
+| `scoop-bump.yml` | `release.yml` package refresh dispatch | ~3–5 min | Updates Scoop manifest |
+| `chocolatey-bump.yml` | `release.yml` package refresh dispatch | ~3–5 min | Updates Chocolatey package |
+| `winget-bump.yml` | `release.yml` package refresh dispatch | ~3–5 min | Refreshes the repo-local winget manifest |
 
 **Total expected wall time for a full release: ~50–90 minutes.**
 
 The build, crates, extension, and Docker workflows run in parallel after the tag is created.
+
+On an orchestrated cut the four package-channel refreshes are started by
+`release.yml`'s `Dispatch downstream package refresh workflows` step, which runs
+after the GitHub Release is published and is skipped for prereleases — **not** by
+their `release: published` trigger (#15454).
+
+That trigger is still declared on all four workflows, but it cannot fire for an
+orchestrated release. `release.yml` creates the Release with
+`softprops/action-gh-release` authenticated by `secrets.GITHUB_TOKEN`, and
+[GitHub does not create workflow runs from events triggered by that
+token](https://docs.github.com/en/actions/security-for-github-actions/security-guides/automatic-token-authentication#using-the-github_token-in-a-workflow)
+(only `workflow_dispatch` and `repository_dispatch` are exempt). So each channel
+runs exactly once per cut, via the dispatch.
+
+The `release: published` trigger therefore covers only the out-of-band case: a
+Release published by a person, a PAT, or a GitHub App — including
+`gh release edit vX.Y.Z --draft=false`. On that path the four workflows start
+themselves from the tag, with no orchestration inputs. Both paths are live and
+neither duplicates the other.
 
 ---
 
@@ -336,19 +355,23 @@ gh workflow run vscode-published-extension-smoke.yml \
 
 ### 5. Docker images
 
+The runtime image carries the `-perl` suffix. The unsuffixed tags used to
+publish the Rust build toolchain, which ships no `perllsp`; that image is
+retired from product publication (#8980), so verify the runtime tag only.
+
 ```bash
-docker pull "effortlessmetrics/perl-lsp:${VERSION}"
-docker run --rm "effortlessmetrics/perl-lsp:${VERSION}" perllsp --version
+docker pull "effortlessmetrics/perl-lsp:${VERSION}-perl"
+docker run --rm "effortlessmetrics/perl-lsp:${VERSION}-perl" --version
 # Expected: perllsp X.Y.Z
 ```
 
 ```bash
-docker pull "ghcr.io/effortlessmetrics/perl-lsp:${VERSION}"
+docker pull "ghcr.io/effortlessmetrics/perl-lsp-perl:${VERSION}"
 ```
 
 ### 6. Homebrew auto-bump
 
-The `brew-bump.yml` workflow triggers automatically on `release.published`. It downloads all four Homebrew platform archives (`perllsp-${VERSION}-{x86_64,aarch64}-{apple-darwin,unknown-linux-gnu}.tar.gz`), validates them against `SHA256SUMS`, generates `Formula/perllsp.rb` through `cargo xtask update-homebrew`, and creates a bump PR in `EffortlessMetrics/homebrew-tap`.
+On an orchestrated cut the `brew-bump.yml` workflow is started by `release.yml`'s package refresh dispatch, not by `release.published` — see [Expected Workflow Runtimes](#expected-workflow-runtimes) for why that event cannot fire for a `GITHUB_TOKEN`-published Release. It downloads all four Homebrew platform archives (`perllsp-${VERSION}-{x86_64,aarch64}-{apple-darwin,unknown-linux-gnu}.tar.gz`), validates them against `SHA256SUMS`, generates `Formula/perllsp.rb` through `cargo xtask update-homebrew`, and creates a bump PR in `EffortlessMetrics/homebrew-tap`.
 
 To verify the workflow ran:
 

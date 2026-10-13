@@ -110,6 +110,8 @@ if (-not $InstallerSucceeded) {
 '@ | Set-Content -LiteralPath $Harness -Encoding utf8
 
 $Payload = Join-Path $TempRoot "archive.zip"
+$ServerFixture = Join-Path $TempRoot "perllsp.exe"
+& (Join-Path $PSScriptRoot 'new-install-ps1-native-fixture.ps1') -Path $ServerFixture
 Add-Type -AssemblyName System.IO.Compression
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 if (Test-Path -LiteralPath $Payload) {
@@ -118,7 +120,7 @@ if (Test-Path -LiteralPath $Payload) {
 $Zip = [System.IO.Compression.ZipFile]::Open($Payload, [System.IO.Compression.ZipArchiveMode]::Create)
 try {
     $Files = @{
-        "perllsp.exe" = [Text.Encoding]::ASCII.GetBytes("test server")
+        "perllsp.exe" = [IO.File]::ReadAllBytes($ServerFixture)
         "perl-dap.exe" = [Text.Encoding]::ASCII.GetBytes("test dap")
         "README.md" = [Text.Encoding]::ASCII.GetBytes("readme`n")
         "LICENSE-APACHE" = [Text.Encoding]::ASCII.GetBytes("apache`n")
@@ -172,8 +174,11 @@ try {
             }
         )
         $AssetRequest = @($Requests | Where-Object { $_ -like "*.zip" }).Count -eq 1
-        $ServerInstalled = Test-Path -LiteralPath (Join-Path $CaseRoot "install/perllsp.exe")
-        $DapInstalled = Test-Path -LiteralPath (Join-Path $CaseRoot "install/perl-dap.exe")
+        $installDir = Join-Path $CaseRoot "install"
+        $ServerCmd = Test-Path -LiteralPath (Join-Path $installDir "perllsp.cmd")
+        $DapCmd = Test-Path -LiteralPath (Join-Path $installDir "perl-dap.cmd")
+        $ServerExe = Test-Path -LiteralPath (Join-Path $installDir "perllsp.exe")
+        $DapExe = Test-Path -LiteralPath (Join-Path $installDir "perl-dap.exe")
 
         $Problems = [System.Collections.Generic.List[string]]::new()
         if ($Status -ne $Case.Expected) {
@@ -186,10 +191,13 @@ try {
             $Problems.Add("asset request expected=$($Case.AssetRequested) actual=$AssetRequest")
         }
         if ($Case.Expected -eq 0) {
-            if (-not ($ServerInstalled -and $DapInstalled)) {
-                $Problems.Add("successful case did not install both binaries")
+            if (-not ($ServerCmd -and $DapCmd)) {
+                $Problems.Add("successful case did not install both PATH selectors")
             }
-        } elseif ($ServerInstalled -or $DapInstalled) {
+            if ($ServerExe -or $DapExe) {
+                $Problems.Add("successful case published independent PATH copies")
+            }
+        } elseif ($ServerCmd -or $DapCmd -or $ServerExe -or $DapExe) {
             $Problems.Add("failed case changed the install destination")
         }
 

@@ -85,6 +85,54 @@ stable.
 
 ## Output
 
+### Selected subject and unavailable inputs
+
+Use `cargo xtask workflow-policy-lint --root <checkout>` when invoking a cached
+or relocated binary against a particular checkout. Without `--root`, the command
+retains its compile-time project root; it does not silently substitute the current
+working directory. Repository mode requires a usable root and a readable inventory
+containing at least one `.yml` or `.yaml` file. Selected files must be readable and
+parseable by the existing linter. This does not add workflow-schema validation:
+blank or nonmapping YAML retains the existing rule coverage.
+
+`--check-lane-whitelist` requires its policy file to exist, read, and parse; actual
+lane findings remain advisory. The isolation registry remains optional: absence
+does not clear self-hosted PR jobs, which still require declared profiles.
+`--fixture` evaluates only that file without consulting a repository root, and
+conflicts with both `--root` and `--check-lane-whitelist`.
+
+Receipt version `1.0.0` and existing fields are retained. Additive `subject`
+metadata records `mode`, `selection`, `path_identity_sha256`,
+`workflow_file_count`, `scan_completed`, and which repository checks were requested.
+The receipt schema accepts legacy receipts without `subject`; when present, its
+fields are required and strictly typed, and unknown fields remain rejected.
+The count is evaluated files, not validated workflow contracts. The identity hashes
+the canonical selected path's OS-native bytes, not file contents or a source commit;
+it avoids recording an absolute private path and is not a portable artifact digest.
+Fixture receipts do not establish repository-wide coverage. `scan_completed` means
+the selected checks finished, even when they found policy errors.
+
+Input failures return nonzero and replace an explicitly requested receipt with
+`passed: false`, incomplete scan metadata, and `WORKFLOW_POLICY_INPUT_UNAVAILABLE`.
+If the filesystem refuses receipt replacement, the command returns nonzero but
+cannot guarantee that an old file was removed. CLI argument errors occur before
+scanning and likewise do not replace an existing receipt. Never accept a preexisting
+receipt as a successful current invocation when its process failed; failed receipts
+can still document policy or instrument errors. Receipt and fixture paths retain
+their existing current-working-directory interpretation.
+
+Focused proof:
+
+```bash
+cargo test -p xtask --bin xtask --locked workflow_policy_lint
+cargo test -p xtask --test workflow_policy_root_cli --locked
+```
+
+The CLI regression copies the just-built binary and invokes it from an unrelated
+directory against an explicit temporary root. A resolver-level control covers an
+unavailable compile-time default. Neither test removes a live checkout or claims
+execution of a binary whose actual build checkout was deleted.
+
 Warnings appear as `::warning::` annotations in the GitHub workflow log.
 The receipt JSON includes them in `issues[]` with `level: "warning"`,
 `code: "LANE_WHITELIST_MISSING"`. The `passed` field of the receipt is

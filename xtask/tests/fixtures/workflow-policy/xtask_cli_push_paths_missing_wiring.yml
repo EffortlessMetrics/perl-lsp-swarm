@@ -1,0 +1,23 @@
+name: fixture-xtask-cli-push-paths-missing-wiring
+# Each paths-filtered trigger selects runs independently, so the obligation is
+# per-trigger: `pull_request` is complete here, `push` is not, and only `push`
+# may be reported.
+on:
+  pull_request:
+    paths:
+      - 'xtask/src/tasks/example_contract.rs'
+      - 'xtask/src/main.rs'
+      - 'xtask/src/tasks/mod.rs'
+  push:
+    branches: [main]
+    paths:
+      - 'xtask/src/tasks/example_contract.rs'
+permissions:
+  contents: read
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - run: cargo xtask example-contract check

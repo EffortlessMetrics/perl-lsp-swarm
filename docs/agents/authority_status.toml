@@ -54,6 +54,12 @@ successor = ""
 notes = "Durable GitHub surface and label-authority boundary."
 
 [[documents]]
+path = "docs/agents/CARGO_STORAGE.md"
+status = "current"
+successor = ""
+notes = "Cargo storage admission, capacity policy, and worktree-private build-state contract."
+
+[[documents]]
 path = "docs/agents/SKILL_CONTRACT.md"
 status = "current"
 successor = ""
@@ -118,7 +124,7 @@ path = "scripts/ci/check-pr-review-convergence-core"
 status = "transitional"
 successor = "scripts/ci/check-pr-review-convergence"
 stale_marker = "CANONICAL review-convergence authority"
-notes = "Compatibility collector that still calls itself the canonical authority and still carries exact-head receipt terminology; consume only through the public semantic wrapper. Containment is not finished: scripts/pre-merge-check.sh still invokes the core directly, bypassing the wrapper. Issue #5778 closed as completed on 2026-08-14 without landing that containment, so this row names the wrapper rather than a closed issue, and the remaining work is residual #4555 work."
+notes = "Compatibility collector that still calls itself the canonical authority in its line-2 header; consume only through the public semantic wrapper. Containment is complete: scripts/pre-merge-check.sh sets NATIVE_CONVERGENCE to the wrapper (landed in 883bf27a21, 2026-08-16, after issue #5778 closed on 2026-08-14). Stale authority text remains beyond that header marker: the opening comments direct every consumer to call the core directly (MUST call this script, lines 5-7) and declare it the ONE authority, everything else points at it (lines 34-37). Rewrite those comments together with the header marker before marking code repair complete on this row."
 
 [[documents]]
 path = "docs/reference/ORCHESTRATION_DOCTRINE.md"
@@ -213,3 +219,9 @@ successor = "docs/agents/DEVELOPMENT_METHOD.md"
 historical_source_commit = "4dc745fd3513d1a345cd1d6258bb96a13e284ae2"
 historical_source_blob_sha1 = "5d27670786f80b7274e7e1d9ff357d7ee65bfb3b"
 notes = "Superseded active-rails selector. Current work selection follows provider-native method plus the issue-owned graph; #3949 owns durable change-graph placement."
+
+[[documents]]
+path = "docs/specs/PLSP-SPEC-0037-reload-lifecycle-v1.md"
+status = "current"
+successor = ""
+notes = "Current reload-lifecycle architecture authority (#10874). Registered here so an agent resolving \"which document is current\" finds it centrally; the in-document RELOAD-LIFECYCLE-AUTHORITY marker and tests/test_reload_lifecycle_authority.py remain the mechanical single-authority check, since this registry classifies paths someone added while the marker scan reads every markdown file under docs/."

@@ -17,8 +17,9 @@ product surface already consumes it.
 
 | Surface | Current implementation | Canonical owner and target |
 | --- | --- | --- |
-| Test2 imports and pragma effects | `perl-lsp-rs-core::providers::testing::test2` reads Test2 source and supplies the current critic integration. | #4907 with #6946 and #6948: registered FrameworkAdapters emit versioned source facts once. |
-| Completion and hover | Generic test completion/hover still routes Test2 contexts through Test::More presentation data. Test2 exclusions, aliases, V1 defaults, and standalone tool defaults are not yet authoritative on these surfaces. | #6951 / #2384: complete and document only local names authorized by canonical import facts. |
+| Test2 imports and pragma effects | `perl-lsp-rs-core::providers::testing::test2` reads Test2 source and feeds the current native critic and completion bridge. It models V0/V1 import and pragma behavior plus a bounded set of tools and generated target helpers; the exact first-party inventory, versions, and admission boundary are being reconciled under #13527 and #13347. | #4907 with #6946 and #6948: registered FrameworkAdapters emit versioned source facts once. |
+| Completion | `providers::completion::completion::request::test_frameworks` walks parser-backed `use` statements in the active package and reconciles current `Test2Facts`. Covered forms include V0 exclusions, aliases, and tags; V1 `T2` and `-import`; currently modeled standalone-tool defaults; and statically proved V0/V1 `-target` helpers. Generic `.t` files no longer receive the entire Test::More table. This is live transitional behavior, not canonical fact authority. | #7661 and #7666, with conformance checklist #2384: complete only local names authorized by current canonical import facts and preserve framework, version, provenance, and limitations. |
+| Hover and signature help | These surfaces do not yet consume the same canonical local-import identity as completion. Test2-only documentation and signatures, aliases and original names, V1 handle methods, version/provenance, and mixed-framework collisions remain incomplete or can still route through Test::More presentation data. | #7661 and #7666, with #6951 and #2384: resolve completion, hover, and signature help from the same canonical imported-symbol row. |
 | Subtest discovery | The Rust parser-backed walker supplies document symbols and Run Subtest lenses. Other Rust and VS Code discovery paths still exist. | #4774 / #6953: one generation-aware, nested `TestItem` tree with stable typed identity. |
 | TAP result facts | The execute-command path currently uses a provider-local Rust TAP reader. `perl-test-facts` is the accepted pure result-facts authority, but consumer migration is not complete. | #6943 / #4776: `perl-test-facts` becomes the only server-side TAP parser; #4778 removes the TypeScript parser. |
 | Test execution | The execute-command provider can run `yath`, `prove`, or `perl`; a separate legacy server path and a direct VS Code `prove` path also remain. | #4776 / #4898 / #4972: one runner plan, one supervised process path, and one typed result contract. |
@@ -39,6 +40,7 @@ use Test2::V0 ok => {-as => 'my_ok'};
 use Test2::V0 ok => {-prefix => 't2_'};
 use Test2::V0 -no_strict;
 use Test2::V0 -no_warnings;
+use Test2::V0 -target => 'Some::Package';
 use Test2::V1;
 use Test2::V1 -import;
 ```
@@ -46,17 +48,36 @@ use Test2::V1 -import;
 It also preserves the important V0/V1 distinction: plain `Test2::V1` exposes
 the `T2()` handle rather than the V0 bare-function set.
 
-Today these facts are used most directly by native critic behavior. For a
-supported normal `use Test2::V0;` import, the critic can treat the bundle as
-providing `strict` and `warnings`; the documented opt-outs remain significant.
+These facts currently feed native critic behavior and live completion
+reconciliation. The completion path walks parser-backed `use` statements,
+scopes them to the active package, and then projects local names from
+`Test2Facts`. For the covered slice, it honors exclusions, aliases, tags, V1
+`T2`/`-import`, currently modeled standalone tools, and statically proved
+V0/V1 `-target` helpers. A generic `.t` file no longer silently receives the
+whole Test::More callable table.
 
-These facts do **not yet** make completion and hover fully import-accurate.
-Until #6951 lands, statements such as `!ok`, `-as`, V1-only `T2`, and standalone
-`Test2::Tools::*` defaults can still diverge from what those editor surfaces
-show.
+This remains a provider-local migration path. It is not yet a version-aware
+first-party fact authority. Explicit-name admission remains fail-open for every
+recognized Test2 module, so a misspelled or unknown requested export can still
+be projected as a completion fact. The `Test2::Tools::*`, `Test2::Plugin::*`,
+and `Test2::Bundle::*` prefixes additionally recognize unknown module names,
+widening that limitation beyond inventoried modules. #13347 owns fail-closed
+admission. #13527 owns the exact pinned first-party module/import/generated-helper
+contract; its
+[pinned-source receipt PR #13534](https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/13534)
+is source-review input, not canonical authority. #13225 and #13226 own the
+independent runtime oracle and durable falsification corpus; and #13544 owns
+the separate direct `Test2::Tools::Target` compatibility leaf.
 
-Current migration oracle:
-[`providers::testing::test2`](../../crates/perl-lsp-rs-core/src/providers/testing/test2.rs).
+Hover and signature help remain separate. They do not yet resolve through the
+same canonical local-import row, so Test2-specific documentation, signatures,
+V1 handle methods, aliases, provenance, and mixed-framework collisions remain
+under #7661 and #7666.
+
+Current migration paths:
+[`providers::testing::test2`](../../crates/perl-lsp-rs-core/src/providers/testing/test2.rs)
+and
+[`providers::completion::completion::request::test_frameworks`](../../crates/perl-lsp-rs-core/src/providers/completion/completion/request/test_frameworks.rs).
 Canonical source-fact program: #4907, #6946, and #6948.
 
 ### Test structure
@@ -173,7 +194,7 @@ Responsibility map:
 | Concern | Canonical issue |
 | --- | --- |
 | Test::More/Test2 source semantics | #4907, #6944, #6946, #6948 |
-| Completion and hover presentation | #6951 and conformance checklist #2384 |
+| Completion, hover, and signature presentation | #6951, #7661, #7666, and conformance checklist #2384 |
 | Stable test/subtest identity and discovery | #4774 and #6953 |
 | TAP authority and server migration | #6943 and #4776 |
 | Runner-plan and result service | #4776 |

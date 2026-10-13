@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::SCHEMA_VERSION;
 use crate::boundary::DynamicBoundary;
 use crate::dist::DistMetadataFacts;
+use crate::dist_authoring::DistAuthoringFacts;
 use crate::effects::CompileEffectFacts;
 use crate::error::ModelLimitation;
 use crate::export::ExportFact;
@@ -32,6 +33,17 @@ pub struct ProjectShardState {
     /// Limitation ids owned by the shard and removed with it.
     #[serde(default)]
     pub limitation_ids: Vec<String>,
+    /// Fact classes the adopted shard actually populated. `None` means the
+    /// snapshot predates population evidence, so the pre-evidence behavior is
+    /// retained; `Some` records the producer's population evidence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub populated: Option<FactClasses>,
+    /// Structural limitation-to-path association retained from the adopted
+    /// shard (limitation id -> relative paths it bounds). Limitations that
+    /// declare no paths are associated with the shard's own file, so path
+    /// scoping never has to be reconstructed from id text.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub limitation_paths: std::collections::BTreeMap<String, Vec<String>>,
 }
 
 /// All facts owned by one file at one producer generation.
@@ -63,6 +75,9 @@ pub struct ProjectFactShard {
     pub compile_effects: Vec<CompileEffectFacts>,
     /// Distribution metadata owned by the file.
     pub dist_metadata: Vec<DistMetadataFacts>,
+    /// Authoring-file facts owned by the file.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dist_authoring: Vec<DistAuthoringFacts>,
     /// Test facts owned by the file.
     pub tests: Vec<TestFact>,
     /// POD facts owned by the file.
@@ -105,6 +120,7 @@ impl ProjectFactShard {
             exports: Vec::new(),
             compile_effects: Vec::new(),
             dist_metadata: Vec::new(),
+            dist_authoring: Vec::new(),
             tests: Vec::new(),
             pod: Vec::new(),
             relations: Vec::new(),
@@ -146,6 +162,7 @@ impl ProjectFactShard {
         require_owner!(self.exports, "export");
         require_owner!(self.compile_effects, "compile_effect");
         require_owner!(self.dist_metadata, "dist_metadata");
+        require_owner!(self.dist_authoring, "dist_authoring");
         require_owner!(self.tests, "test");
         require_owner!(self.pod, "pod");
         require_owner!(self.relations, "relation");
@@ -166,7 +183,11 @@ impl ProjectFactShard {
             (!self.imports.is_empty(), FactClasses::IMPORTS, "imports"),
             (!self.exports.is_empty(), FactClasses::EXPORTS, "exports"),
             (!self.compile_effects.is_empty(), FactClasses::COMPILE_EFFECTS, "compile_effects"),
-            (!self.dist_metadata.is_empty(), FactClasses::DIST, "dist"),
+            (
+                !self.dist_metadata.is_empty() || !self.dist_authoring.is_empty(),
+                FactClasses::DIST,
+                "dist",
+            ),
             (!self.tests.is_empty(), FactClasses::TESTS, "tests"),
             (!self.pod.is_empty(), FactClasses::POD, "pod"),
             (!self.relations.is_empty(), FactClasses::RELATIONS, "relations"),
@@ -238,6 +259,24 @@ impl ProjectFactShard {
         }) {
             return Err(ShardError::RangeOutsideSource { fact_kind: "pod" });
         }
+        let authoring_range_bad = self.dist_authoring.iter().any(|facts| {
+            facts.declarations.iter().any(|item| {
+                item.range.start_byte > item.range.end_byte
+                    || item.range.end_byte > self.source_len_bytes
+            }) || facts.prereqs.iter().any(|item| {
+                item.range.start_byte > item.range.end_byte
+                    || item.range.end_byte > self.source_len_bytes
+            }) || facts.resources.iter().any(|item| {
+                item.range.start_byte > item.range.end_byte
+                    || item.range.end_byte > self.source_len_bytes
+            }) || facts.provides.iter().any(|item| {
+                item.range.start_byte > item.range.end_byte
+                    || item.range.end_byte > self.source_len_bytes
+            })
+        });
+        if authoring_range_bad {
+            return Err(ShardError::RangeOutsideSource { fact_kind: "dist_authoring" });
+        }
         Ok(())
     }
 
@@ -257,6 +296,7 @@ impl ProjectFactShard {
         shard.exports.sort_by_key(|fact| fact.range.start_byte);
         shard.compile_effects.sort_by(|a, b| a.file_id.cmp(&b.file_id));
         shard.dist_metadata.sort_by(|a, b| a.file_id.cmp(&b.file_id));
+        shard.dist_authoring.sort_by(|a, b| a.file_id.cmp(&b.file_id));
         shard.tests.sort_by(|a, b| a.file_id.cmp(&b.file_id));
         shard.pod.sort_by(|a, b| a.file_id.cmp(&b.file_id));
         shard.relations.sort_by(|a, b| {

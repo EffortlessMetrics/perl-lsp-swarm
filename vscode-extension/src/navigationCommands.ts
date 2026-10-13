@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { PRODUCT_NAME, sanitizeDiagnosticField } from './supportCommands';
+import { isPerlLanguageId } from './languageIdentity';
 
 type NavigationOutputChannel = Pick<vscode.OutputChannel, 'show'>;
 
@@ -148,7 +149,7 @@ export async function showWorkspaceStatusCommand(dependencies: {
 /** Show the status-bar action menu for the current editor context. */
 export async function showStatusMenuCommand(): Promise<void> {
   const editor = vscode.window.activeTextEditor;
-  const isPerl = editor?.document.languageId === 'perl';
+  const isPerl = isPerlLanguageId(editor?.document.languageId);
   const filePath = editor?.document.uri.fsPath ?? '';
   const isTestFile = isPerl && (filePath.endsWith('.t') || filePath.endsWith('.pl'));
 
