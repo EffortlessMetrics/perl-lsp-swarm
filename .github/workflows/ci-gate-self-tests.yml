@@ -100,6 +100,8 @@ on:
       - 'scripts/ci/test_evaluate_ci_gate.py'
       - 'scripts/ci/pr_smoke_disk_guard.py'
       - 'scripts/ci/test_pr_smoke_disk_guard.py'
+      - 'scripts/ci/test_pr_smoke_workflow_guard.py'
+      - '.github/workflows/ci.yml'
       - 'scripts/ci/verify_gate_receipt_freshness.py'
       - 'scripts/ci/test_verify_gate_receipt_freshness.py'
       # PR-fast failing-gate reporter (#15492): it decides which gates reach the
@@ -432,6 +434,9 @@ jobs:
 
       - name: Run PR smoke disk-guard oracle tests (#15400/A2)
         run: python3 -m unittest scripts.ci.test_pr_smoke_disk_guard
+
+      - name: Run PR Smoke workflow/helper compatibility controls (#17835)
+        run: python3 -m unittest scripts.ci.test_pr_smoke_workflow_guard
 
       - name: Run gate receipt freshness oracle tests (#15400/A2)
         run: python3 -m unittest scripts.ci.test_verify_gate_receipt_freshness

@@ -5,7 +5,8 @@ use super::implementation::{
     BracePlacement, ElsePlacement, FinalNewline, FormatConfig, FormatDiagnosticSeverity,
     FormatResult, FormatterMode, KeywordSpacing, NativeFormatter, PerlFormatter, TextEdit,
     TextRange, TrailingComma, format_simple_line, indent_unit, is_rendered_block_boundary_line,
-    multiline_literal_lines, range_includes_line, rendered_boundary_role, split_trailing_comment,
+    literal_preserve_region, preserve_region_lines, range_includes_line, rendered_boundary_role,
+    split_trailing_comment,
 };
 use serde::{Deserialize, Serialize};
 
@@ -37,8 +38,14 @@ pub enum FormatDisposition {
 pub enum FormatReasonCode {
     /// Formatting produced safe changes.
     Applied,
+    /// Formatting produced safe changes while literal-preserve regions were
+    /// emitted byte-exact instead of refusing the document (#17708).
+    AppliedPreservingLiterals,
     /// The eligible source was already formatted.
     AlreadyFormatted,
+    /// The eligible source was already formatted and contains
+    /// literal-preserve regions that were emitted byte-exact (#17708).
+    AlreadyFormattedPreservingLiterals,
     /// Formatting is disabled by the effective configuration.
     FormatterDisabled,
     /// The current native formatter does not support the admitted syntax safely.
@@ -79,6 +86,10 @@ pub enum FormatEngine {
 pub enum FormatEvidenceState {
     /// The check completed and established the required property.
     Proven,
+    /// Literal regions were preserved byte-exact while the rest of the
+    /// document was formatted normally (#17708). Distinct from `Proven`,
+    /// which describes a document with no preserve regions in play.
+    PreservedPartially,
     /// The check was not required for this computation.
     NotApplicable,
     /// The check did not run.
@@ -390,10 +401,20 @@ fn classify(
         };
     }
 
+    // Document targets with preserve regions report the preserving reason
+    // codes so callers can distinguish partial preservation from a plain
+    // full-document format (#17708). Range targets keep the scoped refusal.
+    let preserving = matches!(target, FormatRequestTarget::Document)
+        && literal_preserve_region(source).is_some();
+
     if result.changed {
         return Classification {
             disposition: FormatDisposition::Applied,
-            reason: FormatReasonCode::Applied,
+            reason: if preserving {
+                FormatReasonCode::AppliedPreservingLiterals
+            } else {
+                FormatReasonCode::Applied
+            },
         };
     }
 
@@ -401,7 +422,11 @@ fn classify(
         return if target_has_only_supported_lines(source, config, target) {
             Classification {
                 disposition: FormatDisposition::NoChange,
-                reason: FormatReasonCode::AlreadyFormatted,
+                reason: if preserving {
+                    FormatReasonCode::AlreadyFormattedPreservingLiterals
+                } else {
+                    FormatReasonCode::AlreadyFormatted
+                },
             }
         } else {
             Classification {
@@ -573,7 +598,7 @@ fn target_has_only_supported_lines(
     // code: exactly as in `format_safe_subset`, they never move the block
     // stack and are never adjudicated, so string content shaped like a
     // block header cannot invent an opener for a later range.
-    let literal_lines = multiline_literal_lines(source);
+    let literal_lines = preserve_region_lines(source);
     for (line, text) in split_lines_for_range_validation(source).into_iter().enumerate() {
         if literal_lines.contains(&line) {
             continue;
@@ -655,6 +680,12 @@ fn safety_evidence(
         FormatReasonCode::Applied | FormatReasonCode::AlreadyFormatted => {
             (FormatEvidenceState::Proven, FormatEvidenceState::Proven, FormatEvidenceState::Proven)
         }
+        FormatReasonCode::AppliedPreservingLiterals
+        | FormatReasonCode::AlreadyFormattedPreservingLiterals => (
+            FormatEvidenceState::Proven,
+            FormatEvidenceState::Proven,
+            FormatEvidenceState::PreservedPartially,
+        ),
         FormatReasonCode::FormatterDisabled => {
             (FormatEvidenceState::NotRun, FormatEvidenceState::NotRun, FormatEvidenceState::NotRun)
         }
@@ -709,6 +740,8 @@ fn next_action(reason: FormatReasonCode) -> Option<&'static str> {
         }
         FormatReasonCode::Applied
         | FormatReasonCode::AlreadyFormatted
+        | FormatReasonCode::AppliedPreservingLiterals
+        | FormatReasonCode::AlreadyFormattedPreservingLiterals
         | FormatReasonCode::UnsupportedSyntax => None,
     }
 }

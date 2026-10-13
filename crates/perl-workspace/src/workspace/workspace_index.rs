@@ -6282,14 +6282,17 @@ impl IndexVisitor {
     ) {
         match &node.kind {
             NodeKind::Package { name, block, .. } => {
-                self.current_package = Some(name.clone());
                 // NEW COVERAGE: `IndexVisitor::visit_node` never recurses
                 // into `block` for references today (only
                 // `project_symbol_declarations`/`extract_symbol_decls` sees
                 // it, for declarations). Recursing here closes that gap --
                 // see `docs/reference/1711-B-coverage-delta.md` case 1.
                 if let Some(b) = block {
+                    let saved_package = self.current_package.replace(name.clone());
                     self.walk_unified(b, file_index, symbol_refs);
+                    self.current_package = saved_package;
+                } else {
+                    self.current_package = Some(name.clone());
                 }
             }
 
@@ -6558,9 +6561,13 @@ impl IndexVisitor {
             }
 
             NodeKind::Block { statements } => {
+                // A statement-form package declaration lasts only through
+                // this lexical block, just as in extract_symbol_decls.
+                let saved_package = self.current_package.clone();
                 for stmt in statements {
                     self.walk_unified(stmt, file_index, symbol_refs);
                 }
+                self.current_package = saved_package;
             }
 
             NodeKind::If { condition, then_branch, elsif_branches, else_branch, .. } => {

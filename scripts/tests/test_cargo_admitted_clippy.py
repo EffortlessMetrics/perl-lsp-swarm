@@ -1,5 +1,7 @@
 """Finite staged Clippy admission; fixture capacity is not host admission."""
 import contextlib
+import ast
+import hashlib
 import importlib.util
 import io
 import json
@@ -17,6 +19,48 @@ spec = importlib.util.spec_from_file_location("cargo_admitted", ROOT / "scripts/
 safe = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(safe)
 REQUEST = ["clippy", "-p", "consumer", "--all-targets", "--profile", "agent", "--locked", "--", "-D", "warnings"]
+NAMED_REQUEST = ["clippy", "-p", "consumer", "--test", "named-proof", "--profile", "agent", "--locked", "--", "-D", "warnings"]
+
+
+class QualificationBindingTests(unittest.TestCase):
+    def test_named_variant_binding_rejects_wrong_missing_or_overwritten_inputs(self):
+        # Load only the pure binding functions: importing the executable qualifier
+        # would parse CLI arguments and launch Cargo.
+        source = ROOT / 'scripts/tests/qualify_admitted_clippy.py'
+        module = ast.parse(source.read_text())
+        functions = [node for node in module.body if isinstance(node, ast.FunctionDef)
+                     and node.name in {'fixture_inputs', 'bind_inputs', 'verify_inputs'}]
+        namespace = {'hashlib': hashlib}
+        exec(compile(ast.Module(body=functions, type_ignores=[]), str(source), 'exec'), namespace)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / 'fixture'
+            retained = Path(temporary) / 'retained'
+            paths = namespace['fixture_inputs'](NAMED_REQUEST)
+            self.assertIn('Cargo.toml', paths)
+            self.assertIn('tests/other.rs', paths)
+            self.assertIn('tests/named-proof.rs', paths)
+            for relative in paths:
+                path = root / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(relative.encode())
+            binding = namespace['bind_inputs'](root, retained, NAMED_REQUEST)
+            verify = lambda rows: namespace['verify_inputs'](root, retained, NAMED_REQUEST, rows)
+            verify(binding)
+            wrong = {key: dict(value) for key, value in binding.items()}
+            wrong['tests/named-proof.rs']['sha256'] = '0' * 64
+            with self.assertRaisesRegex(RuntimeError, 'binding mismatch'):
+                verify(wrong)
+            missing = dict(binding)
+            del missing['tests/named-proof.rs']
+            with self.assertRaisesRegex(RuntimeError, 'missing'):
+                verify(missing)
+            (root / 'tests/named-proof.rs').write_bytes(b'clean replacement')
+            with self.assertRaisesRegex(RuntimeError, 'binding mismatch'):
+                verify(binding)
+            (root / 'tests/named-proof.rs').write_bytes((retained / 'tests/named-proof.rs').read_bytes())
+            (retained / 'tests/named-proof.rs').unlink()
+            with self.assertRaises(FileNotFoundError):
+                verify(binding)
 
 
 @unittest.skipUnless(sys.platform == "linux" and sys.version_info >= (3, 11), "staged Linux Clippy only")
@@ -186,6 +230,64 @@ class ClippyAdmissionTests(unittest.TestCase):
             result, _ = self.invoke()
         self.assertEqual(result, 75)
         self.assertFalse(self.slot.exists())
+
+    def test_named_test_dispatch_preserves_driver_profile_resources_and_settlement(self):
+        for settled in (False, True):
+            with self.subTest(settled=settled):
+                self.slot = self.root / ("named-" + str(settled))
+                observed = []
+                result, output = self.invoke(NAMED_REQUEST, status=101, settled=settled,
+                                             call=lambda command, env, lock: observed.append((command, env)) or 101)
+                self.assertEqual(len(observed), 1, output)
+                command, env = observed[0]
+                self.assertEqual(command[:2], [self.plan["subjects"]["cargo-clippy"]["path"], "clippy"])
+                self.assertEqual(command[-len(NAMED_REQUEST[1:]):], NAMED_REQUEST[1:])
+                self.assertNotIn("--all-targets", command)
+                self.assertEqual(command[command.index("--target-dir") + 1], str(self.paths["target"]))
+                self.assertIn("build.build-dir=" + json.dumps(str(self.paths["build"])), command)
+                self.assertEqual(command[command.index("--target") + 1], self.plan["host"])
+                self.assertEqual(env["RUSTC"], self.plan["subjects"]["rustc"]["path"])
+                self.assertEqual(env["RUSTC_WORKSPACE_WRAPPER"], self.plan["subjects"]["clippy-driver"]["path"])
+                self.assertEqual(env["CLIPPY_ARGS"], safe.CLIPPY_LINT_ARGS)
+                self.assertEqual(result, 101 if settled else 75)
+                self.assertEqual((self.slot / "cargo-active").exists(), not settled)
+                self.assertIn('"lease_released": ' + str(settled).lower(), output)
+
+    def test_named_selector_rejects_malformed_conflicting_and_unsupported_requests(self):
+        for selection in (["--test"], ["--test", ""], ["--test", "*"], ["--test", "a?"],
+                          ["--test", "../a"], ["--test", "a/b"], ["--test", "a\\b"],
+                          ["--test", "a b"], ["--test", "a\n"], ["--test", "é"],
+                          ["--test", "--all-targets"], ["--test=named-proof"], ["--tests"],
+                          ["--test", "a", "--test", "b"], ["--all-targets", "--test", "a"],
+                          ["--test", "a", "--all-targets"], ["--test", "a", "--lib"],
+                          ["--test", "a", "--bin", "consumer"], ["--test", "a", "--features", "x"],
+                          ["--test", "a", "--no-default-features"], ["--test", "a", "--keep-going"], []):
+            with self.subTest(selection=selection):
+                args = REQUEST[:3] + selection + REQUEST[4:]
+                result, _ = self.invoke(args)
+                self.assertEqual(result, 75)
+                self.assertFalse(self.slot.exists(), "refuse before allocation")
+
+    def test_named_test_preflight_and_budget_bind_exact_selector(self):
+        scopes = []
+        for args in (REQUEST, NAMED_REQUEST, NAMED_REQUEST[:4] + ["another_test"] + NAMED_REQUEST[5:]):
+            result, output = self.invoke(["--preflight", *args], env=dict(self.env, FIXTURE="yes"))
+            self.assertEqual(result, 0, output)
+            scopes.append(json.loads(output.split("cargo-admitted preflight: ")[1])["scope"])
+            self.assertFalse(self.slot.exists())
+        self.assertEqual(len({scope["cargo_argv_sha256"] for scope in scopes}), 3)
+        for scope in scopes:
+            self.assertEqual(scope["clippy_setup"]["toolchain"], self.plan)
+            self.assertEqual(scope["resources"], {key: str(value) for key, value in self.paths.items()})
+        budget = self.root / "named-budget.json"
+        budget.write_text(json.dumps({"schema_version": 1, "scope": scopes[1], "reserve_bytes": 1024,
+                                     "expected_growth_bytes": 1024, "basis": "fixture only"}))
+        for args in (REQUEST, NAMED_REQUEST[:4] + ["another_test"] + NAMED_REQUEST[5:]):
+            with self.subTest(args=args):
+                result, output = self.invoke(["--budget-file", str(budget), *args], env={"FIXTURE": "yes"})
+                self.assertEqual(result, 75)
+                self.assertIn("scope", output)
+                self.assertFalse(self.slot.exists())
 
     def test_compiler_and_loader_injection_refuse_before_allocation(self):
         for name in ("CARGO", "RUSTC", "RUSTDOC", "CLIPPY_ARGS", "CLIPPY_CONF_DIR", "CLIPPY_DRIVER_PATH",

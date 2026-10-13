@@ -80,7 +80,7 @@ def validate_clippy(args):
     if os.name != "posix" or sys.platform != "linux":
         raise Denied("staged Clippy currently admits Linux only; other native hosts require qualification")
     if len(args) < 10 or args[-3:] != ["--", "-D", "warnings"]:
-        raise Denied("Clippy requires -p PACKAGE --all-targets --profile agent --locked -- -D warnings")
+        raise Denied("Clippy requires -p PACKAGE (--all-targets | --test NAME) --profile agent --locked -- -D warnings")
     fields = args[1:-3]
     seen = set()
     while fields:
@@ -88,7 +88,7 @@ def validate_clippy(args):
         if flag in seen:
             raise Denied("duplicate Clippy field: " + flag)
         seen.add(flag)
-        if flag in ("-p", "--profile"):
+        if flag in ("-p", "--profile", "--test"):
             if not fields:
                 raise Denied("missing Clippy field value: " + flag)
             value = fields.pop(0)
@@ -96,10 +96,14 @@ def validate_clippy(args):
                 raise Denied("Clippy requires one explicit package name, not a pattern/path/spec")
             if flag == "--profile" and value != "agent":
                 raise Denied("staged Clippy requires profile agent")
+            if flag == "--test" and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", value):
+                raise Denied("Clippy requires one literal test target name, not a pattern/path/option")
         elif flag not in ("--all-targets", "--locked", "--offline"):
             raise Denied("unsupported staged Clippy field: " + flag)
-    if not {"-p", "--profile", "--all-targets", "--locked"} <= seen:
-        raise Denied("Clippy requires explicit package/all-targets/agent/locked fields")
+    if not {"-p", "--profile", "--locked"} <= seen:
+        raise Denied("Clippy requires explicit package/agent/locked fields")
+    if len(seen & {"--all-targets", "--test"}) != 1:
+        raise Denied("Clippy requires exactly one of --all-targets or --test NAME")
 
 
 CLIPPY_LINT_ARGS = "-D__CLIPPY_HACKERY__warnings__CLIPPY_HACKERY__"

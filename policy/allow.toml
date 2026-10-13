@@ -4409,7 +4409,7 @@ path = "crates/perl-lsp-rs-core/src/providers/ai/inflight.rs"
 owner = "core/maintainers"
 classification = "reviewed_exception"
 reason = "The deliberate unwind witness proves RAII permit release so a panicking holder cannot strand the maxInflight slot; retained only for policy:allow-14622-inflight-unwind (#8300 containment proof)."
-evidence = ["issue:8300", "test:perl-lsp-rs-core/src/providers/ai/inflight.rs::permit_is_released_when_the_holder_panics"]
+evidence = ["issue:8300", "test:crates/perl-lsp-rs-core/src/providers/ai/inflight.rs::permit_is_released_when_the_holder_panics"]
 created = "2026-09-08"
 review_after = "2026-12-01"
 
