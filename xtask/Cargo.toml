@@ -52,7 +52,8 @@ tree-sitter-perl-rs = { workspace = true }
 regex.workspace = true
 serde_yaml_ng = "0.10.0"
 toml = "1.1.2"
-bindgen = "0.72.1"
+# Only the parser-tasks-gated bindings command uses libclang/bindgen.
+bindgen = { version = "0.72.1", optional = true }
 notify = "8.2.0"
 flate2 = "1.1.5"
 tar = "0.4.46"
@@ -96,9 +97,9 @@ strum = { workspace = true }
 legacy = ["perl-parser-pest"]
 # Parser-related tasks that additionally require the C tree-sitter parser
 # (bindings generation, highlight tests, three-way parser comparison).
-# Building this feature requires a C toolchain and libclang to compile
-# `tree-sitter-perl-c`.
-parser-tasks = ["legacy", "tree-sitter-perl-c"]
+# Building this feature requires a C toolchain for `tree-sitter-perl-c`;
+# running bindings generation additionally requires libclang.
+parser-tasks = ["legacy", "tree-sitter-perl-c", "dep:bindgen"]
 
 [lints]
 workspace = true

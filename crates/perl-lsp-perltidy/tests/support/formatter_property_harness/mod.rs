@@ -731,15 +731,18 @@ pub fn generate_invalidation_case(seed: u64, index: usize) -> GeneratedCase {
             "mutator.invalidation.empty_statement",
             true,
         ),
+        // #17708: regex and __END__ subjects are no longer refusals (the
+        // formatter preserves those regions and formats around them), so
+        // the invalidation controls use parse-invalid subjects instead.
         2 => (
-            format!("{base}\nmy$re=qr{{x}};\n"),
+            format!("{base}\nmy $s = \"unterminated;\n"),
             Family::PlainAssignment,
             TargetRequest::Document,
-            "mutator.invalidation.regex_injection",
+            "mutator.invalidation.unterminated_string",
             false,
         ),
         3 => (
-            format!("{base}\n__END__\n"),
+            format!("{base}\nmy $x = ;\n__END__\n"),
             Family::ModuleSurface,
             TargetRequest::Document,
             "mutator.invalidation.data_marker",
@@ -1008,7 +1011,11 @@ fn disposition_name(disposition: FormatDisposition) -> &'static str {
 fn reason_name(reason: FormatReasonCode) -> &'static str {
     match reason {
         FormatReasonCode::Applied => "applied",
+        FormatReasonCode::AppliedPreservingLiterals => "applied_preserving_literals",
         FormatReasonCode::AlreadyFormatted => "already_formatted",
+        FormatReasonCode::AlreadyFormattedPreservingLiterals => {
+            "already_formatted_preserving_literals"
+        }
         FormatReasonCode::FormatterDisabled => "formatter_disabled",
         FormatReasonCode::UnsupportedSyntax => "unsupported_syntax",
         FormatReasonCode::LiteralPreservationUnsupported => "literal_preservation_unsupported",

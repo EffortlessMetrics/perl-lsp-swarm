@@ -2523,6 +2523,13 @@ enum Commands {
         command: CompilerProfileCommand,
     },
 
+    /// Validate and report versioned executable-profile manifests (#4773).
+    #[command(name = "executable-profile")]
+    ExecutableProfile {
+        #[command(subcommand)]
+        command: ExecutableProfileCommand,
+    },
+
     /// Upstream-derived semantic conformance surfaces (#12532).
     #[command(name = "compiler")]
     Compiler {
@@ -4528,6 +4535,14 @@ enum CompilerProfileCommand {
     List,
     /// Validate one profile document and print its stable identity.
     Check { path: PathBuf },
+}
+
+#[derive(Subcommand)]
+enum ExecutableProfileCommand {
+    /// Validate one manifest document and print its stable identity.
+    Check { path: PathBuf },
+    /// Validate one manifest document and print its deterministic subset summary.
+    Report { path: PathBuf },
 }
 
 #[derive(Subcommand)]
@@ -7276,6 +7291,14 @@ fn run_cli(cli: Cli) -> Result<()> {
                 }
             }
         }
+        Commands::ExecutableProfile { command } => match command {
+            ExecutableProfileCommand::Check { path } => {
+                tasks::executable_profile::check(&path).map_err(|error| eyre!("{error:#}"))
+            }
+            ExecutableProfileCommand::Report { path } => {
+                tasks::executable_profile::report(&path).map_err(|error| eyre!("{error:#}"))
+            }
+        },
         Commands::Compiler { command } => match command {
             CompilerUpstreamCommand::Upstream { command } => match command {
                 CompilerUpstreamStatusGroup::Status { command } => {
