@@ -306,12 +306,24 @@ fn walk(node: &Node, ctx: &mut WalkCtx, out: &mut Vec<SymbolDecl>) {
         NodeKind::FunctionCall { name, args } if ctx.const_fast_enabled && name == "const" => {
             for arg in args {
                 push_const_fast_decl(arg, node, ctx, out);
+                if !matches!(
+                    arg.kind,
+                    NodeKind::VariableDeclaration { .. } | NodeKind::VariableListDeclaration { .. }
+                ) {
+                    walk(arg, ctx, out);
+                }
             }
         }
 
         NodeKind::FunctionCall { name, args } if ctx.readonly_enabled && name == "Readonly" => {
             for arg in args {
                 push_readonly_decl(arg, node, ctx, out);
+                if !matches!(
+                    arg.kind,
+                    NodeKind::VariableDeclaration { .. } | NodeKind::VariableListDeclaration { .. }
+                ) {
+                    walk(arg, ctx, out);
+                }
             }
         }
 
@@ -335,8 +347,10 @@ fn walk(node: &Node, ctx: &mut WalkCtx, out: &mut Vec<SymbolDecl>) {
             walk(expression, ctx, out);
         }
 
-        // All other nodes: no declaration to project.
-        _ => {}
+        // Non-declaration wrappers still contain declarations: control-flow
+        // bodies, call arguments and assigned closures must not swallow them.
+        // Explicit package/block handlers above retain lexical context rules.
+        _ => node.for_each_child(|child| walk(child, ctx, out)),
     }
 }
 
