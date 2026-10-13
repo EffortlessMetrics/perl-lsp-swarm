@@ -225,3 +225,57 @@ path = "docs/specs/PLSP-SPEC-0037-reload-lifecycle-v1.md"
 status = "current"
 successor = ""
 notes = "Current reload-lifecycle architecture authority (#10874). Registered here so an agent resolving \"which document is current\" finds it centrally; the in-document RELOAD-LIFECYCLE-AUTHORITY marker and tests/test_reload_lifecycle_authority.py remain the mechanical single-authority check, since this registry classifies paths someone added while the marker scan reads every markdown file under docs/."
+
+[[documents]]
+path = "TECHNICAL_VISION.md"
+status = "historical"
+successor = "docs/project/CURRENT_STATUS.md"
+notes = "Aspirational strategic north-star document (v0.12.0, last updated 2026-03-28) presenting definitive-platform and general-availability claims. Shipped reality is the v0.17.0 public beta recorded in docs/project/status/release.md, so these claims are not acceptance predicates. The registry schema has no aspirational status, so this aspirational record is classified historical; current product status lives in the successor."
+
+[[documents]]
+path = "docs/project/PERL_LSP_VISION.md"
+status = "historical"
+successor = "docs/project/CURRENT_STATUS.md"
+notes = "Aspirational research vision document (research completed 2026-03-19, scope v0.12.0 to v1.0.0) claiming 100 percent LSP feature coverage as GA. That contradicts the shipped v0.17.0 public-beta reality, so it is not an acceptance predicate. The registry schema has no aspirational status, so this aspirational record is classified historical; current product status lives in the successor."
+
+[[documents]]
+path = "docs/articles/research/MAINTAINER_VISION_ARCHAEOLOGY.md"
+status = "historical"
+successor = "docs/agents/AUTHORITY_STATUS.md"
+notes = "Research article recounting how maintainer vision was recast across historical waves. It records vision history; it is not itself a vision or north-star authority."
+
+[[documents]]
+path = "docs/agents/lenses/vision-alignment.md"
+status = "current"
+successor = ""
+notes = "Current review lens only: it checks whether issues, plans, and candidates still serve the product direction. It is not a product vision or north-star document and sets no acceptance predicates of its own."
+
+[[documents]]
+path = ".hermes/conveyor/work-9ac57b3a/findings/maintainer-vision-agent-findings.md"
+status = "historical"
+successor = "docs/agents/AUTHORITY_STATUS.md"
+notes = "Historical conveyor work-item findings. Vision in the filename names the maintainer-vision reviewer role, not a vision document; retained as work evidence only."
+
+[[documents]]
+path = ".hermes/conveyor/work-e551d1f1/findings/maintainer-vision-agent-findings.md"
+status = "historical"
+successor = "docs/agents/AUTHORITY_STATUS.md"
+notes = "Historical conveyor work-item findings. Vision in the filename names the maintainer-vision reviewer role, not a vision document; retained as work evidence only."
+
+[[documents]]
+path = "docs/project/EDITOR_TRUST_WAVE.md"
+status = "historical"
+successor = "docs/project/CURRENT_STATUS.md"
+notes = "Dated editor-trust wave plan (last updated 2026-05-05) with a North star section. Its principles survive only where current status or roadmap documents restate them; the wave plan itself is not current acceptance authority."
+
+[[documents]]
+path = "docs/project/plans/2026-06-convergence-to-release.md"
+status = "historical"
+successor = "docs/project/CURRENT_STATUS.md"
+notes = "Human-owned 2026-06 convergence-to-release narrative plan with a North Star section. Its umbrella issue #1209 is closed and the plan itself directs readers to live status documents, so its north-star wording is aspirational history, not an acceptance predicate."
+
+[[documents]]
+path = ".kiro/specs/ux-readiness-system/requirements.md"
+status = "historical"
+successor = "docs/project/CURRENT_STATUS.md"
+notes = "Kiro-era UX-readiness requirements specification. Its north-star sentence defines that historical system's purpose; it is not current product vision authority. Current status is reached through the successor landing page."
