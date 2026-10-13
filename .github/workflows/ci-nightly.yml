@@ -1199,7 +1199,10 @@ jobs:
   fuzz:
     name: Fuzz Target (${{ matrix.target }})
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    # 600s fuzz budget plus cold toolchain/cargo-fuzz build headroom, so the
+    # job deadline cannot land inside the fuzz run and eat the crash-artifact
+    # upload window (#17028).
+    timeout-minutes: 30
     if: |
       (github.event_name == 'workflow_dispatch' && inputs.run_fuzz) ||
       github.event_name == 'schedule'
