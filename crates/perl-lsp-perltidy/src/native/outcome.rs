@@ -540,10 +540,19 @@ fn utf16_len(source: &str) -> u32 {
 ///   [`indent_unit`] past that block's indent — a body at or above its
 ///   header's indent (`sub f {` / `return 1;` / `}`) is hand-written, not
 ///   rendered;
-/// - the included lines end with every opened block closed. Document targets
-///   always balance (this walk runs only after a clean parse); a range that
-///   stops inside a block has no closing evidence in scope and stays refused,
-///   exactly as before boundary admission existed.
+/// - the walked lines end with every opened block closed. Document targets
+///   always balance (this walk runs only after a clean parse).
+///
+/// A range target is judged with its enclosing block context (#17713): the
+/// walk covers the whole document — the same way the range formatter's
+/// reindent walk tracks its opener stack over the whole document — so blocks
+/// opened before the range seed the stack and blocks closed after it balance
+/// it. Only lines inside the range are adjudicated: an out-of-range line can
+/// neither refuse the range nor be excused by it, it only moves the stack.
+/// Before this, a range was judged on its selected lines alone, so a
+/// no-change range inside an already-formatted block (a body plus its tail,
+/// a header plus its body, a lone tail) still reported `UnsupportedSyntax`
+/// on the second pass.
 ///
 /// Blank and comment lines impose no indent constraint: they pass the
 /// formatter through unchanged wherever they appear.
@@ -559,9 +568,6 @@ fn target_has_only_supported_lines(
             FormatRequestTarget::Document => true,
             FormatRequestTarget::Range { range } => range_includes_line(range, line as u32),
         };
-        if !included {
-            continue;
-        }
         let trimmed = text.trim();
         if trimmed.is_empty() || trimmed.starts_with('#') {
             continue;
@@ -573,6 +579,17 @@ fn target_has_only_supported_lines(
         // header or tail line is a `format_simple_line` candidate.
         if is_rendered_block_boundary_line(text, config) {
             let role = rendered_boundary_role(text);
+            if !included {
+                // Context only: track the enclosing stack without judging
+                // lines the caller did not ask about.
+                if role.closes_block {
+                    open_blocks.pop();
+                }
+                if role.opens_block {
+                    open_blocks.push(indent);
+                }
+                continue;
+            }
             if role.closes_block {
                 let closes_matched_block = open_blocks.last().is_some_and(|open| *open == indent);
                 if !closes_matched_block {
@@ -589,10 +606,11 @@ fn target_has_only_supported_lines(
             if role.opens_block {
                 open_blocks.push(indent);
             }
-        } else if format_simple_line(text, config).is_none()
-            || open_blocks
-                .last()
-                .is_some_and(|open| !indent.starts_with(&format!("{open}{body_indent}")))
+        } else if included
+            && (format_simple_line(text, config).is_none()
+                || open_blocks
+                    .last()
+                    .is_some_and(|open| !indent.starts_with(&format!("{open}{body_indent}"))))
         {
             return false;
         }

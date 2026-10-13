@@ -571,6 +571,163 @@ fn reindent_survives_unsupported_inline_else_tail() {
     assert!(result.formatted.contains("\n    return 3;\n"), "got: {:?}", result.formatted);
 }
 #[test]
+fn typed_range_result_admits_rendered_block_interior_on_a_second_pass() {
+    // #17713: range admission used to judge only the selected lines, so a
+    // no-change range inside an already-formatted block still reported
+    // UnsupportedSyntax whenever the selection cut a block boundary (body
+    // plus tail, header plus body, a lone tail). The classification walk now
+    // accounts for the enclosing block context, so every interior selection
+    // of rendered bytes is NoChange — twice in a row.
+    let formatter = NativeFormatter::new();
+    let config = FormatConfig::default();
+    let rendered = formatter.format_document("sub f{my$x=1;my$y=2;}\n", &config);
+    assert_eq!(rendered.formatted, "sub f {\n    my $x = 1;\n    my $y = 2;\n}\n");
+
+    let selections = [
+        // body only
+        TextRange::new(TextPosition::new(1, 0), TextPosition::new(3, 0)),
+        // body plus closing tail (opener outside the range)
+        TextRange::new(TextPosition::new(1, 0), TextPosition::new(4, 0)),
+        // header plus body (tail outside the range)
+        TextRange::new(TextPosition::new(0, 0), TextPosition::new(3, 0)),
+        // lone closing tail
+        TextRange::new(TextPosition::new(3, 0), TextPosition::new(4, 0)),
+        // whole block
+        TextRange::new(TextPosition::new(0, 0), TextPosition::new(4, 0)),
+    ];
+    for range in selections {
+        for _ in 0..2 {
+            let typed = formatter.format_range_typed(
+                &rendered.formatted,
+                range,
+                &config,
+                &FormatContext::default(),
+            );
+            assert_eq!(
+                typed.outcome.disposition,
+                FormatDisposition::NoChange,
+                "range {range:?} over rendered block must be NoChange, not {:?}/{:?}",
+                typed.outcome.disposition,
+                typed.outcome.reason
+            );
+            assert_eq!(typed.outcome.reason, FormatReasonCode::AlreadyFormatted);
+            assert!(!typed.result.changed);
+            assert!(typed.result.edits.is_empty());
+            assert_eq!(typed.result.formatted, rendered.formatted);
+        }
+    }
+}
+
+#[test]
+fn typed_range_result_refuses_unsupported_body_with_same_reason_as_document() {
+    // A range over a construct the document path refuses must refuse with
+    // the same typed reason — no silent divergence between targets.
+    let formatter = NativeFormatter::new();
+    let source = "sub f {\n    my %h = (a => 1, b => 2);\n}\n";
+
+    let document = formatter.format_document_typed(
+        source,
+        &FormatConfig::default(),
+        &FormatContext::default(),
+    );
+    assert_eq!(document.outcome.disposition, FormatDisposition::Refused);
+    assert_eq!(document.outcome.reason, FormatReasonCode::UnsupportedSyntax);
+
+    for range in [
+        TextRange::new(TextPosition::new(1, 0), TextPosition::new(2, 0)),
+        TextRange::new(TextPosition::new(0, 0), TextPosition::new(3, 0)),
+    ] {
+        let typed = formatter.format_range_typed(
+            source,
+            range,
+            &FormatConfig::default(),
+            &FormatContext::default(),
+        );
+        assert_eq!(typed.outcome.disposition, FormatDisposition::Refused);
+        assert_eq!(typed.outcome.reason, document.outcome.reason);
+        assert!(!typed.result.changed);
+        assert!(typed.result.edits.is_empty());
+    }
+}
+
+#[test]
+fn typed_range_result_refuses_misindented_body_inside_block() {
+    // Enclosing context cuts both ways: a body line at the wrong depth is
+    // not already formatted just because the line alone is supported.
+    let formatter = NativeFormatter::new();
+    let source = "sub f {\nmy $x = 1;\n}\n";
+    let range = TextRange::new(TextPosition::new(1, 0), TextPosition::new(2, 0));
+
+    let typed = formatter.format_range_typed(
+        source,
+        range,
+        &FormatConfig::default(),
+        &FormatContext::default(),
+    );
+
+    assert_eq!(typed.outcome.disposition, FormatDisposition::Refused);
+    assert_eq!(typed.outcome.reason, FormatReasonCode::UnsupportedSyntax);
+    assert!(!typed.result.changed);
+}
+
+#[test]
+fn typed_range_result_formats_admitted_range_inside_block() {
+    let formatter = NativeFormatter::new();
+    let source = "sub f {\n    my$x=1;\n    my $y = 2;\n}\n";
+    let range = TextRange::new(TextPosition::new(1, 0), TextPosition::new(2, 0));
+
+    let typed = formatter.format_range_typed(
+        source,
+        range,
+        &FormatConfig::default(),
+        &FormatContext::default(),
+    );
+
+    assert_eq!(typed.outcome.disposition, FormatDisposition::Applied);
+    assert_eq!(typed.outcome.reason, FormatReasonCode::Applied);
+    assert_eq!(typed.result.formatted, "sub f {\n    my $x = 1;\n    my $y = 2;\n}\n");
+    assert!(typed.result.edits.iter().all(|edit| edit.range.start.line == 1));
+}
+
+#[test]
+fn typed_range_result_partial_preserve_overlap_refuses_like_document_gate() {
+    // A range that overlaps a preserve region refuses with the typed
+    // literal-preservation reason; a range that excludes it is admitted.
+    let formatter = NativeFormatter::new();
+    let source = "my $x = 1;\nmy $matched = $text =~ /needle/i;\nmy $y = 2;\n";
+
+    for range in [
+        TextRange::new(TextPosition::new(1, 0), TextPosition::new(2, 0)),
+        TextRange::new(TextPosition::new(0, 0), TextPosition::new(3, 0)),
+    ] {
+        let typed = formatter.format_range_typed(
+            source,
+            range,
+            &FormatConfig::default(),
+            &FormatContext::default(),
+        );
+        assert_eq!(typed.outcome.disposition, FormatDisposition::Refused);
+        assert_eq!(typed.outcome.reason, FormatReasonCode::LiteralPreservationUnsupported);
+        assert_eq!(typed.result.formatted, source);
+        assert!(!typed.result.changed);
+    }
+
+    for range in [
+        TextRange::new(TextPosition::new(0, 0), TextPosition::new(1, 0)),
+        TextRange::new(TextPosition::new(2, 0), TextPosition::new(3, 0)),
+    ] {
+        let typed = formatter.format_range_typed(
+            source,
+            range,
+            &FormatConfig::default(),
+            &FormatContext::default(),
+        );
+        assert_eq!(typed.outcome.disposition, FormatDisposition::NoChange);
+        assert_eq!(typed.outcome.reason, FormatReasonCode::AlreadyFormatted);
+    }
+}
+
+#[test]
 fn formats_list_operator_statements_inside_blocks() {
     let formatter = NativeFormatter::new();
     let source = "sub f {\nprint$x;\nprintf \"%d\",  42;\nsay $x, $y;\n}\n";
