@@ -48,7 +48,7 @@ fn indexed_fixture(caller: &str) -> Result<WorkspaceIndex, Box<dyn std::error::E
             "fixture parser errors in {uri}: {:?}",
             parser.errors()
         );
-        index.index_file(Url::parse(uri)?, source.to_owned())?;
+        index.index_initial_file(Url::parse(uri)?, source.to_owned())?;
     }
     assert_eq!(index.file_count(), 4, "all fixture files must be indexed");
     assert_eq!(index.stale_file_count(), 0, "the fixture index must be current");
