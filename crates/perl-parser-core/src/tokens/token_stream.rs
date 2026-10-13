@@ -49,6 +49,10 @@ use perl_token::TokenSpanError;
 pub use perl_token::{Token, TokenKind};
 use std::collections::VecDeque;
 
+#[cfg(test)]
+#[path = "../../tests/unit/token_stream_checkpoint_contract.rs"]
+mod checkpoint_contract;
+
 /// A parser-directed contextual token operation (issue #8128).
 ///
 /// Contextual operations can change how not-yet-produced tokens are classified
