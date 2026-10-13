@@ -418,7 +418,7 @@ fn test_signature_help_unknown_call_returns_null() -> TestResult {
                 "position": {"line": 1, "character": 31}
             }),
         )
-        .unwrap_or(json!(null));
+        .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
     assert!(unknown.is_null(), "unknown call must return null, got: {unknown:?}");
 
     let known = harness
@@ -429,7 +429,7 @@ fn test_signature_help_unknown_call_returns_null() -> TestResult {
                 "position": {"line": 2, "character": 20}
             }),
         )
-        .unwrap_or(json!(null));
+        .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
     assert!(!known.is_null(), "known sub must return a signature, got null");
     let label = known
         .get("signatures")
@@ -448,7 +448,7 @@ fn test_signature_help_unknown_call_returns_null() -> TestResult {
                 "position": {"line": 3, "character": 22}
             }),
         )
-        .unwrap_or(json!(null));
+        .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
     assert!(!builtin.is_null(), "builtin must return a signature, got null");
 
     harness.shutdown_gracefully();

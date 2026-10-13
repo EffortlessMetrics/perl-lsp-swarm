@@ -366,8 +366,8 @@ fn scenario_22_signature_help_imported_fn_no_settle_delay_hard_assert() -> anyho
     let first_label =
         sigs.first().and_then(|s| s.get("label")).and_then(|l| l.as_str()).unwrap_or("");
     assert!(
-        first_label.contains("helper"),
-        "signatureHelp first signature label must name `helper`. \
+        first_label.starts_with("sub helper"),
+        "signatureHelp first signature label must be the real Util.pm signature. \
          Got label: {first_label:?}"
     );
 
