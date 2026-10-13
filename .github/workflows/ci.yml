@@ -914,10 +914,22 @@ jobs:
       - name: Pre-flight disk budget guard
         shell: bash
         run: |
-          python3 scripts/ci/pr_smoke_disk_guard.py preflight \
-            --workspace-path . \
-            --target-dir "${CARGO_TARGET_DIR:-target}" \
-            --footprint-bytes "${PR_SMOKE_FOOTPRINT_GIB}GiB"
+          # The guard script is checked out at the PR head while this
+          # workflow comes from the base branch: heads predating #17231
+          # have a guard without --footprint-bytes. Probe for the flag
+          # and fall back to the old built-in floor on those heads
+          # (with a visible warning) instead of dying in argparse.
+          if python3 scripts/ci/pr_smoke_disk_guard.py preflight --help 2>&1 | grep -q -- "--footprint-bytes"; then
+            python3 scripts/ci/pr_smoke_disk_guard.py preflight \
+              --workspace-path . \
+              --target-dir "${CARGO_TARGET_DIR:-target}" \
+              --footprint-bytes "${PR_SMOKE_FOOTPRINT_GIB}GiB"
+          else
+            echo "::warning::checked-out disk guard predates --footprint-bytes (#17231); using its built-in floor until this head is refreshed"
+            python3 scripts/ci/pr_smoke_disk_guard.py preflight \
+              --workspace-path . \
+              --target-dir "${CARGO_TARGET_DIR:-target}"
+          fi
 
       - name: Warm xtask
         run: cargo build -p xtask --locked
