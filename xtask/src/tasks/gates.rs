@@ -4959,6 +4959,52 @@ gates:
     }
 
     #[test]
+    fn pr_fast_owned_non_rust_bin_only_input_uses_target_metadata() -> color_eyre::eyre::Result<()>
+    {
+        let root = crate::utils::project_root()?;
+        let policy = load_policy_for_inspection(&root.join(".ci/gate-policy.yaml"))?;
+        let gates: Vec<_> = policy
+            .gates
+            .into_iter()
+            .filter(|gate| matches!(gate.name.as_str(), "unit_scoped" | "unit_routed_full"))
+            .collect();
+        assert_eq!(gates.len(), 2, "both library and integration selectors must be present");
+        let metadata = serde_json::json!({
+            "packages": [{"name": "perllsp", "id": "perllsp 0.1.0",
+                "manifest_path": "/workspace/crates/perllsp/Cargo.toml"}],
+            "resolve": {"nodes": [{"id": "perllsp 0.1.0", "deps": []}]}
+        });
+        let scope = crate::tasks::ci_scope::classify_files(
+            &["crates/perllsp/tests/fixtures/selector_input.json".to_string()],
+            &metadata,
+            "/workspace",
+        )?;
+        assert_eq!(scope.diff_class, "docs_as_code");
+        assert_eq!(super::selected_package_names(&scope), vec!["perllsp"]);
+
+        // A partial repair that honors ownership but omits target indexing
+        // wrongly selects --lib for this package, which has only bin targets.
+        let without_metadata = build_pr_fast_plan_from_scope(
+            GateTier::PrFast,
+            "origin/main".to_string(),
+            gates.clone(),
+            Some(scope.clone()),
+            true,
+            false,
+            None,
+        )?;
+        assert!(selected_gate_names(&without_metadata).contains(&"unit_scoped".to_string()));
+
+        let plan = super::plan_pr_fast_gates(&root, gates, "origin/main".to_string(), Some(scope))?;
+        assert_eq!(selected_gate_names(&plan), vec!["unit_routed_full"]);
+        assert!(plan.selected[0].gate.command.contains("--tests -p perllsp"));
+        assert_eq!(skipped_gate_names(&plan), vec!["unit_scoped"]);
+        assert!(plan.skipped[0].reason.contains("no ci-scope selected packages have a lib target"));
+        assert!(!plan.fallback_used);
+        Ok(())
+    }
+
+    #[test]
     fn pr_fast_docs_as_code_keeps_always_on_and_skips_rust_lanes() -> color_eyre::eyre::Result<()> {
         let gates = vec![
             pr_gate("fmt", GatePlanningRole::AlwaysOn, "cargo xtask fmt --check"),
