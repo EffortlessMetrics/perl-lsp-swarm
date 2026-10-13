@@ -138,22 +138,9 @@ pub struct CloseProofOutput {
 /// `std::process::exit(2)` when `Ok(false)` is returned, keeping the
 /// exit-code contract (0/1/2) intact.
 pub fn run(config: CloseProofConfig) -> Result<bool> {
-    let reachable = check_ancestry(&config.commit, &config.canonical_main)?;
-
-    let content_survives = if let Some(ref grep_str) = config.substance_grep {
-        Some(check_substance(grep_str, &config.canonical_main)?)
-    } else {
-        None
-    };
-
-    let output = CloseProofOutput {
-        schema_version: LANDING_PROOF_SCHEMA_V1.to_string(),
-        commit_reachable: reachable,
-        commit: config.commit.clone(),
-        canonical_main: config.canonical_main.clone(),
-        content_survives,
-        semantic_completion: SEMANTIC_COMPLETION_NOT_EVALUATED.to_string(),
-    };
+    validate_sha_format(&config.commit)?;
+    let ancestry = is_ancestor(Path::new("."), &config.commit, &config.canonical_main);
+    let output = output_from_ancestry(Path::new("."), &config, &ancestry)?;
 
     match config.format {
         CloseProofFormat::Json => {
@@ -165,7 +152,28 @@ pub fn run(config: CloseProofConfig) -> Result<bool> {
         }
     }
 
-    Ok(reachable)
+    Ok(output.commit_reachable)
+}
+
+fn output_from_ancestry(
+    repository: &Path,
+    config: &CloseProofConfig,
+    ancestry: &AncestryReceipt,
+) -> Result<CloseProofOutput> {
+    let reachable = interpret_ancestry(ancestry, &config.commit, &config.canonical_main)?;
+    let content_survives = config
+        .substance_grep
+        .as_deref()
+        .map(|needle| check_substance_in(repository, needle, &config.canonical_main))
+        .transpose()?;
+    Ok(CloseProofOutput {
+        schema_version: LANDING_PROOF_SCHEMA_V1.to_string(),
+        commit_reachable: reachable,
+        commit: config.commit.clone(),
+        canonical_main: config.canonical_main.clone(),
+        content_survives,
+        semantic_completion: SEMANTIC_COMPLETION_NOT_EVALUATED.to_string(),
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -225,7 +233,12 @@ fn interpret_ancestry(
 /// `git grep` silently limits the search to the caller's current directory,
 /// which would make `content_survives` depend on where the command was run.
 fn check_substance(grep_str: &str, canonical_main: &str) -> Result<bool> {
+    check_substance_in(Path::new("."), grep_str, canonical_main)
+}
+
+fn check_substance_in(repository: &Path, grep_str: &str, canonical_main: &str) -> Result<bool> {
     let output = Command::new("git")
+        .current_dir(repository)
         .args(["grep", "-F", grep_str, canonical_main, "--", ":/"])
         .output()
         .with_context(|| format!("running `git grep -F {grep_str:?} {canonical_main}`"))?;
@@ -300,6 +313,88 @@ fn print_human(output: &CloseProofOutput) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn fixture_git(repository: &Path, args: &[&str]) -> Result<String> {
+        let output = Command::new("git").current_dir(repository).args(args).output()?;
+        color_eyre::eyre::ensure!(output.status.success(), "git {args:?}: {:?}", output);
+        Ok(String::from_utf8(output.stdout)?.trim().to_string())
+    }
+
+    fn landing_subject_fixture() -> Result<(tempfile::TempDir, String, String)> {
+        let dir = tempfile::tempdir()?;
+        let repo = dir.path();
+        fixture_git(repo, &["init", "--quiet"])?;
+        fixture_git(repo, &["config", "user.name", "Landing fixture"])?;
+        fixture_git(repo, &["config", "user.email", "fixture@example.invalid"])?;
+        std::fs::write(repo.join("subject.txt"), "landing-subject-witness\n")?;
+        fixture_git(repo, &["add", "subject.txt"])?;
+        fixture_git(repo, &["commit", "--quiet", "-m", "witness present"])?;
+        let before = fixture_git(repo, &["rev-parse", "HEAD"])?;
+        std::fs::write(repo.join("subject.txt"), "replacement\n")?;
+        fixture_git(repo, &["commit", "--quiet", "-am", "witness removed"])?;
+        let after = fixture_git(repo, &["rev-parse", "HEAD"])?;
+        fixture_git(repo, &["update-ref", "refs/heads/observed-main", &before])?;
+        Ok((dir, before, after))
+    }
+
+    #[test]
+    fn landing_subject_pins_short_commit_and_mutable_main() -> Result<()> {
+        let (dir, before, _) = landing_subject_fixture()?;
+        let config = CloseProofConfig {
+            commit: before[..12].to_string(),
+            canonical_main: "refs/heads/observed-main".to_string(),
+            substance_grep: Some("landing-subject-witness".to_string()),
+            format: CloseProofFormat::Json,
+        };
+        let ancestry = is_ancestor(dir.path(), &config.commit, &config.canonical_main);
+        let output = output_from_ancestry(dir.path(), &config, &ancestry)?;
+        assert!(output.commit_reachable);
+        assert_eq!(output.content_survives, Some(true));
+        assert_eq!(output.semantic_completion, SEMANTIC_COMPLETION_NOT_EVALUATED);
+        assert_eq!(output.commit, before);
+        assert_eq!(output.canonical_main, before);
+        Ok(())
+    }
+
+    #[test]
+    fn landing_subject_ref_movement_cannot_join_different_content() -> Result<()> {
+        let (dir, before, after) = landing_subject_fixture()?;
+        for (observed, moved, expected) in [(&before, &after, true), (&after, &before, false)] {
+            fixture_git(dir.path(), &["update-ref", "refs/heads/observed-main", observed])?;
+            let config = CloseProofConfig {
+                commit: before.clone(),
+                canonical_main: "refs/heads/observed-main".to_string(),
+                substance_grep: Some("landing-subject-witness".to_string()),
+                format: CloseProofFormat::Json,
+            };
+            let ancestry = is_ancestor(dir.path(), &config.commit, &config.canonical_main);
+            fixture_git(dir.path(), &["update-ref", "refs/heads/observed-main", moved])?;
+            assert_eq!(
+                check_substance_in(dir.path(), "landing-subject-witness", moved)?,
+                !expected
+            );
+            let output = output_from_ancestry(dir.path(), &config, &ancestry)?;
+            assert!(output.commit_reachable);
+            assert_eq!(output.semantic_completion, SEMANTIC_COMPLETION_NOT_EVALUATED);
+            assert_eq!(output.content_survives, Some(expected));
+            assert_eq!(output.canonical_main, *observed);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn landing_subject_missing_ref_produces_no_receipt() -> Result<()> {
+        let (dir, before, _) = landing_subject_fixture()?;
+        let config = CloseProofConfig {
+            commit: before,
+            canonical_main: "refs/heads/missing".to_string(),
+            substance_grep: None,
+            format: CloseProofFormat::Json,
+        };
+        let ancestry = is_ancestor(dir.path(), &config.commit, &config.canonical_main);
+        assert!(output_from_ancestry(dir.path(), &config, &ancestry).is_err());
+        Ok(())
+    }
 
     // ----- Receipt vocabulary ratchet ---------------------------------------
 
