@@ -2647,7 +2647,8 @@ mod tests {
                 let uri = "file:///workspace/fallback_prefix.pl";
                 let source = format!("{before}{prefix}{after}");
                 let doc = crate::state::DocumentState::new(&source, 1);
-                assert!(doc.parsed_for_user_answers().is_none(), "must exercise no-AST fallback");
+                assert!(doc.current_parsed().is_none(), "must exercise no-AST fallback");
+                assert!(doc.latest_parsed().is_none(), "fixture must have no predecessor AST");
                 server.documents_guard().insert(uri.to_string(), doc);
                 let line = before.bytes().filter(|&b| b == b'\n').count() as u32;
                 let start = before
@@ -2763,7 +2764,8 @@ mod tests {
                 };
                 let source = format!("{before}{prefix}{suffix}{after}");
                 let doc = crate::state::DocumentState::new(&source, 1);
-                assert!(doc.parsed_for_user_answers().is_none(), "must exercise no-AST fallback");
+                assert!(doc.current_parsed().is_none(), "must exercise no-AST fallback");
+                assert!(doc.latest_parsed().is_none(), "fixture must have no predecessor AST");
                 server.documents_guard().insert(uri.to_string(), doc);
                 let line = before.bytes().filter(|&b| b == b'\n').count() as u32;
                 let start = before
