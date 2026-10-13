@@ -646,12 +646,6 @@ fn is_perl5lib_source(source: &str) -> bool {
 
 fn path_status(workspace: &Path, raw: &str, path: &Path, source: &str) -> &'static str {
     let raw_path = Path::new(raw);
-    // The LSP resolver drops absolute roots outside the workspace, so an
-    // external PERL5LIB root does not participate even when it exists
-    // (#17362). Say so instead of implying it is searched.
-    if is_perl5lib_source(source) && raw_path.is_absolute() && !path.starts_with(workspace) {
-        return "outside workspace: not searched";
-    }
     if !is_perl5lib_source(source)
         && !raw_path.is_absolute()
         && let Err(error) = validate_workspace_path(raw_path, workspace)
@@ -2982,29 +2976,6 @@ mod tests {
         assert_eq!(second.source, ".perl-lsp.toml include_paths");
         assert_eq!(second.raw, "lib");
         assert!(second.resolved.ends_with("lib"));
-        Ok(())
-    }
-
-    #[test]
-    fn effective_root_reports_mark_external_perl5lib_as_not_searched() -> TestResult {
-        let temp = tempfile::tempdir()?;
-        let workspace = temp.path().join("ws");
-        let outside = temp.path().join("poslib");
-        std::fs::create_dir_all(&workspace)?;
-        std::fs::create_dir_all(&outside)?;
-        let mut config = WorkspaceConfig::default();
-        config.use_perl5lib = true;
-
-        let reports = effective_root_reports(
-            &workspace,
-            &config,
-            &[outside.display().to_string()],
-            ".perl-lsp.toml include_paths",
-        );
-
-        let first = reports.first().ok_or("missing PERL5LIB report")?;
-        assert_eq!(first.source, "PERL5LIB");
-        assert_eq!(first.status, "outside workspace: not searched");
         Ok(())
     }
 

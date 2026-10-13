@@ -9,15 +9,31 @@ pub(super) fn search_display_paths(
         .iter()
         .map(|root| {
             let label = root_source_label(&root.source).to_string();
-            // The resolver deliberately drops absolute roots outside the
-            // workspace, and a missing directory cannot be searched. Label
-            // both honestly instead of claiming they were searched (#17362).
+            // Label roots the resolver cannot search (#17362). The URI
+            // resolver probes external kinds (PERL5LIB, interpreter startup,
+            // absolute) directly wherever they live; workspace kinds are
+            // boundary-validated and dropped outside the workspace. Relative
+            // PERL5LIB roots resolve against the process directory, matching
+            // the resolver; other relative roots resolve against the
+            // workspace. A missing directory cannot be searched either way.
+            use perl_module::IncRootKind;
+            let external = matches!(
+                root.kind,
+                IncRootKind::ExternalAbsolute
+                    | IncRootKind::Perl5LibEnv
+                    | IncRootKind::InterpreterStartup
+                    | IncRootKind::RuntimeDerived
+            );
             let absolute = if root.path.is_absolute() {
                 root.path.clone()
+            } else if matches!(root.kind, IncRootKind::Perl5LibEnv) {
+                std::env::current_dir()
+                    .map(|cwd| cwd.join(&root.path))
+                    .unwrap_or_else(|_| root.path.clone())
             } else {
                 workspace_root.join(&root.path)
             };
-            let label = if !absolute.starts_with(workspace_root) {
+            let label = if !external && !absolute.starts_with(workspace_root) {
                 format!("{label}, outside workspace: not searched")
             } else if !absolute.exists() {
                 format!("{label}, does not exist: not searched")
@@ -64,18 +80,31 @@ mod tests {
             &workspace,
         );
 
-        assert_eq!(displays[0].source, "PERL5LIB", "searched root keeps plain label");
-        assert!(
-            displays[1].source.contains("outside workspace")
-                && displays[1].source.contains("not searched"),
-            "outside root must be labeled not searched, got: {}",
-            displays[1].source
-        );
+        // External PERL5LIB roots are probed directly by the URI resolver,
+        // wherever they live: both keep the plain searched label.
+        assert_eq!(displays[0].source, "PERL5LIB", "inside root keeps plain label");
+        assert_eq!(displays[1].source, "PERL5LIB", "external root is searched directly");
         assert!(
             displays[2].source.contains("does not exist")
                 && displays[2].source.contains("not searched"),
             "missing root must be labeled not searched, got: {}",
             displays[2].source
+        );
+
+        // A workspace-relative root outside the workspace is dropped by
+        // boundary validation and must be labeled not searched.
+        let workspace_kind = IncRoot {
+            path: outside.clone(),
+            source: "workspace-include-paths".to_string(),
+            kind: perl_module::IncRootKind::WorkspaceRelative,
+            precedence: 0,
+        };
+        let displays = search_display_paths(&[workspace_kind], &workspace);
+        assert!(
+            displays[0].source.contains("outside workspace")
+                && displays[0].source.contains("not searched"),
+            "outside workspace root must be labeled not searched, got: {}",
+            displays[0].source
         );
         Ok(())
     }
