@@ -2520,6 +2520,31 @@ fn usize_to_u32(value: usize) -> u32 {
     value.min(u32::MAX as usize) as u32
 }
 
+/// Physical lines spanned by `source[start..end]`, counting LF, CRLF, and
+/// CR-only line breaks (the shared byte-offset position conversion is
+/// LF-based, which would collapse CR-only sources to one line).
+fn physical_line_count(source: &str, start: usize, end: usize) -> usize {
+    let start = start.min(source.len());
+    let end = end.min(source.len()).max(start);
+    let bytes = source[start..end].as_bytes();
+    let mut breaks = 0usize;
+    let mut idx = 0usize;
+    while idx < bytes.len() {
+        match bytes[idx] {
+            b'\n' => {
+                breaks += 1;
+                idx += 1;
+            }
+            b'\r' => {
+                breaks += 1;
+                idx += if bytes.get(idx + 1) == Some(&b'\n') { 2 } else { 1 };
+            }
+            _ => idx += 1,
+        }
+    }
+    breaks + 1
+}
+
 fn collect_sub_too_long_findings(
     rule: &SubTooLongRule,
     source: &str,
@@ -2527,8 +2552,7 @@ fn collect_sub_too_long_findings(
     out: &mut Vec<CriticFinding>,
 ) {
     if let NodeKind::Subroutine { name: Some(name), name_span, body, .. } = &node.kind {
-        let body_range = range_for_byte_span(source, body.location.start, body.location.end);
-        let line_count = (body_range.end.line.saturating_sub(body_range.start.line) + 1) as usize;
+        let line_count = physical_line_count(source, body.location.start, body.location.end);
         if line_count > DEFAULT_MAX_SUB_LINES {
             let header_end = name_span.map_or(body.location.start, |span| span.end);
             let range = range_for_byte_span(source, node.location.start, header_end);
@@ -5878,6 +5902,19 @@ if ($x = 1) { print $x; }
             "message should name the sub and its line count: {}",
             finding.message
         );
+    }
+
+    #[test]
+    fn native_sub_too_long_rule_reports_cr_only_sub_over_the_limit() {
+        let source = long_sub_source("too_long", DEFAULT_MAX_SUB_LINES - 1).replace('\n', "\r");
+        let ast = parse_source(&source);
+        let config = CriticConfig::default();
+        let ctx = CriticContext::new(&source, &ast, &config);
+        let registry = NativeCriticRegistry::with_rules(vec![Box::new(SubTooLongRule)]);
+
+        let findings = registry.check(&ctx);
+        assert_eq!(findings.len(), 1, "CR-only line breaks must count as physical lines");
+        assert!(findings[0].message.contains("51"), "got: {}", findings[0].message);
     }
 
     #[test]
