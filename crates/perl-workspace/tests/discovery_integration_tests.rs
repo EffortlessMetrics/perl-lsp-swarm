@@ -13,6 +13,26 @@ use tempfile::TempDir;
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 #[test]
+fn fallback_discovery_preserves_source_files_named_like_skipped_directories() -> TestResult {
+    let tmp = TempDir::new()?;
+    let root = tmp.path();
+    for path in
+        ["bin/target", "bin/vendor", "bin/generated", "vendor/perl5/target", "vendor/target"]
+    {
+        create_file_with_content(root, path, "#!/usr/bin/perl\nprint 1;\n")?;
+    }
+    let config = DiscoveryConfig::new(Vec::new(), vec!["generated".into()]);
+    let result = discover_perl_files_with_config(root, &["vendor/perl5"], &config);
+    assert_eq!(result.method, DiscoveryMethod::Walk);
+    let expected: Vec<_> = ["bin/generated", "bin/target", "bin/vendor", "vendor/perl5/target"]
+        .into_iter()
+        .map(|path| root.join(path))
+        .collect();
+    assert_eq!(result.files, expected, "skip directory policy must not exclude source filenames");
+    Ok(())
+}
+
+#[test]
 fn explicit_include_roots_do_not_admit_skipped_ancestor_siblings() -> TestResult {
     for use_git in [true, false] {
         if use_git && !git_available() {

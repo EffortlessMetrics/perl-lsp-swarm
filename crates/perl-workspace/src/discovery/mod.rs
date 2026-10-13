@@ -624,11 +624,9 @@ fn walk_discovery_with_allowlist(
             continue;
         }
 
-        if entry
-            .path()
-            .strip_prefix(root)
-            .is_ok_and(|relative_path| !allowlist.has_unallowed_skipped_component(relative_path))
-            && config.is_discovery_path(entry.path())
+        if entry.path().parent().and_then(|parent| parent.strip_prefix(root).ok()).is_some_and(
+            |relative_parent| !allowlist.has_unallowed_skipped_component(relative_parent),
+        ) && config.is_discovery_path(entry.path())
         {
             files.push(entry.path().to_path_buf());
         } else {
