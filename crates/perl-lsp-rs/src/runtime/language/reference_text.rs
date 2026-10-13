@@ -31,6 +31,31 @@ pub(super) struct TextReferenceQuery<'a> {
     pub needle: &'a str,
     pub sigil: Option<char>,
     pub include_declaration: bool,
+    pub package: Option<&'a str>,
+}
+
+/// A precise name anchor projected from the current, source-matching AST.
+#[derive(Debug, Clone)]
+pub(super) struct CallableDeclaration {
+    pub start: usize,
+    pub end: usize,
+    pub qualified_name: String,
+}
+
+pub(super) fn callable_declarations(ast: &perl_parser::ast::Node) -> Vec<CallableDeclaration> {
+    let mut declarations: Vec<_> = perl_symbol::surface::extract_symbol_decls(ast, Some("main"))
+        .into_iter()
+        .filter(|decl| decl.kind == perl_symbol::types::SymbolKind::Subroutine)
+        .filter_map(|decl| {
+            let (start, end) = decl.anchor_span?;
+            // The projector prefixes its package even for explicitly qualified names.
+            let qualified_name =
+                if decl.name.contains("::") { decl.name } else { decl.qualified_name };
+            Some(CallableDeclaration { start, end, qualified_name })
+        })
+        .collect();
+    declarations.sort_by_key(|decl| decl.start);
+    declarations
 }
 
 /// Kind of a word occurrence in a single source line.
@@ -186,6 +211,7 @@ pub(super) fn should_skip_text_reference_match(
 }
 
 /// Scan documents for word-boundary occurrences of the query, filtered by kind.
+#[cfg(test)]
 pub(super) fn search_document_texts_for_references<'a, I>(
     documents: I,
     query: TextReferenceQuery<'_>,
@@ -193,6 +219,21 @@ pub(super) fn search_document_texts_for_references<'a, I>(
 ) -> Vec<Value>
 where
     I: IntoIterator<Item = (&'a str, &'a str)>,
+{
+    search_document_texts_with_declarations(
+        documents.into_iter().map(|(uri, text)| (uri, text, &[][..])),
+        query,
+        cap,
+    )
+}
+
+pub(super) fn search_document_texts_with_declarations<'a, I>(
+    documents: I,
+    query: TextReferenceQuery<'_>,
+    cap: usize,
+) -> Vec<Value>
+where
+    I: IntoIterator<Item = (&'a str, &'a str, &'a [CallableDeclaration])>,
 {
     let (needle, sigil) = normalized_text_query(query.needle, query.sigil);
     if needle.is_empty() || cap == 0 {
@@ -202,14 +243,23 @@ where
     let needle_bytes = needle.as_bytes();
     let mut out = Vec::new();
 
-    'docs: for (doc_uri, doc_text) in documents {
-        for (line_num, line) in doc_text.lines().enumerate() {
+    'docs: for (doc_uri, doc_text, declarations) in documents {
+        let mut line_offset = 0;
+        for (line_num, raw_line) in doc_text.split_inclusive('\n').enumerate() {
+            let line = raw_line.strip_suffix('\n').unwrap_or(raw_line);
+            let line = line.strip_suffix('\r').unwrap_or(line);
             let line_bytes = line.as_bytes();
             let mut start = 0usize;
             while let Some(idx) = line.get(start..).and_then(|tail| tail.find(needle)) {
                 let byte_pos = start + idx;
                 let match_end = byte_pos + needle_bytes.len();
                 if is_reference_ident_boundary(line_bytes, byte_pos, needle_bytes.len())
+                    && keep_callable_declaration(
+                        declarations,
+                        line_offset + byte_pos,
+                        line_offset + match_end,
+                        query,
+                    )
                     && keep_text_reference_match(
                         line,
                         byte_pos,
@@ -229,10 +279,42 @@ where
                 }
                 start = match_end;
             }
+            line_offset += raw_line.len();
         }
     }
 
     finalize_reference_locations(out, cap)
+}
+
+// Only proven declaration anchors participate. Unknown/parser-error regions keep
+// the existing fallback behavior; index readiness is not parser evidence.
+fn keep_callable_declaration(
+    declarations: &[CallableDeclaration],
+    start: usize,
+    end: usize,
+    query: TextReferenceQuery<'_>,
+) -> bool {
+    let (_, sigil) = normalized_text_query(query.needle, query.sigil);
+    if matches!(sigil, Some('$' | '@' | '%')) {
+        return true;
+    }
+    let i = declarations.partition_point(|decl| decl.start <= start);
+    let Some(decl) = i.checked_sub(1).and_then(|i| declarations.get(i)) else {
+        return true;
+    };
+    if end > decl.end {
+        return true;
+    }
+    if !query.include_declaration {
+        return false;
+    }
+    let Some(package) = query.package else {
+        return true;
+    };
+    let (name, _) = normalized_text_query(query.needle, query.sigil);
+    let qualified =
+        if name.contains("::") { name.to_owned() } else { format!("{package}::{name}") };
+    decl.qualified_name == qualified
 }
 
 /// Collapse occurrence-identity duplicates, then identical ranges, on one
@@ -604,9 +686,75 @@ mod tests {
     fn scan(docs: &[(&str, &str)], needle: &str, sigil: Option<char>, cap: usize) -> Vec<Value> {
         search_document_texts_for_references(
             docs.iter().copied(),
-            TextReferenceQuery { needle, sigil, include_declaration: true },
+            TextReferenceQuery { needle, sigil, include_declaration: true, package: None },
             cap,
         )
+    }
+
+    #[test]
+    fn anchored_declarations_filter_before_cap_without_dropping_body_calls()
+    -> Result<(), Box<dyn Error>> {
+        let source = "package Other;\r\nsub mark { mark(); }\r\npackage Wanted;\r\nsub mark {}\r\n";
+        let mut parser = perl_parser::Parser::new(source);
+        let ast = parser.parse()?;
+        assert!(parser.errors().is_empty());
+        let declarations = callable_declarations(&ast);
+        assert_eq!(declarations.len(), 2);
+        let query = TextReferenceQuery {
+            needle: "mark",
+            sigil: None,
+            package: Some("Wanted"),
+            include_declaration: false,
+        };
+        let out = search_document_texts_with_declarations(
+            [("file:///test.pl", source, declarations.as_slice())],
+            query,
+            1,
+        );
+        assert_eq!(out, vec![location_value("file:///test.pl", 1, 11, 15)]);
+        let out = search_document_texts_with_declarations(
+            [("file:///test.pl", source, declarations.as_slice())],
+            TextReferenceQuery { include_declaration: true, ..query },
+            10,
+        );
+        assert_eq!(
+            out,
+            vec![
+                location_value("file:///test.pl", 1, 11, 15),
+                location_value("file:///test.pl", 3, 4, 8)
+            ]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn explicitly_qualified_declaration_uses_its_own_package() -> Result<(), Box<dyn Error>> {
+        let source = "package Other;\nsub Wanted::mark {}\n";
+        let mut parser = perl_parser::Parser::new(source);
+        let ast = parser.parse()?;
+        assert!(parser.errors().is_empty());
+        let declarations = callable_declarations(&ast);
+        for (package, include_declaration, count) in
+            [("Other", true, 0), ("Wanted", true, 1), ("Wanted", false, 0)]
+        {
+            let out = search_document_texts_with_declarations(
+                [("file:///test.pl", source, declarations.as_slice())],
+                TextReferenceQuery {
+                    needle: "mark",
+                    sigil: None,
+                    package: Some(package),
+                    include_declaration,
+                },
+                10,
+            );
+            let expected = if count == 1 {
+                vec![location_value("file:///test.pl", 1, 12, 16)]
+            } else {
+                Vec::new()
+            };
+            assert_eq!(out, expected);
+        }
+        Ok(())
     }
 
     #[test]
