@@ -2293,6 +2293,8 @@ mod executable_busy_retry_tests {
         let release = std::thread::spawn(move || {
             let signaled = receive.recv_timeout(Duration::from_secs(2)).is_ok();
             if signaled {
+                // ux-timing: deliberate-stimulus — hold the writer after the first
+                // actual busy refusal so recovery requires a subsequent retry.
                 std::thread::sleep(Duration::from_millis(40));
             }
             drop(writer);
