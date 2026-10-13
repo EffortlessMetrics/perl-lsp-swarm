@@ -284,7 +284,7 @@ class PortableControls(unittest.TestCase):
         self.assertEqual(result.read_text(), 'prior evidence')
 
     def test_duplicate_native_registrations_preserve_exact_multiplicity(self):
-        for variant in ['complete', 'framed', 'drop', 'extra', 'ignored_drop']:
+        for variant in ['complete', 'framed', 'inline', 'drop', 'extra', 'ignored_drop']:
             with self.subTest(variant=variant):
                 instance = self.owner()
                 regular = 1 if variant == 'drop' else 3 if variant == 'extra' else 2
@@ -297,7 +297,11 @@ class PortableControls(unittest.TestCase):
                                           'params':{'text':'test repeated ... ok\n雪'}},
                                          ensure_ascii=False).encode('utf-8')
                     frame = b'Content-Length: ' + str(len(payload)).encode() + b'\r\n\r\n' + payload
-                    run_lines = [frame.decode('utf-8') + line for line in run_lines]
+                    if variant == 'inline':
+                        run_lines = [line.replace(' ... ', ' ... ' + frame.decode('utf-8'), 1)
+                                     for line in run_lines]
+                    else:
+                        run_lines = [frame.decode('utf-8') + line for line in run_lines]
                 body = ('#!' + sys.executable + '\nimport sys\n'
                         "if '--list' in sys.argv:\n"
                         " print('ignored_repeat: test\\nignored_repeat: test' if '--ignored' in sys.argv else "
@@ -308,7 +312,7 @@ class PortableControls(unittest.TestCase):
                            'print(json.dumps(' + repr(dict(TARGET, reason='compiler-artifact', executable=str(self.exe), fresh=False)) + '))')
                 producer = [sys.executable, '-c', program]
                 consumers = {str(self.exe): {'args': [], 'cwd': str(self.root), 'verify_harness': True}}
-                if variant not in ('complete', 'framed'):
+                if variant not in ('complete', 'framed', 'inline'):
                     with self.assertRaisesRegex(cohort.Denied, 'omitted/duplicated cases or changed ignored population') as failure:
                         self.run_portable(instance, producer=producer, consumers=consumers)
                     detail = json.loads(str(failure.exception).split('population: ', 1)[1])
@@ -338,6 +342,27 @@ class PortableControls(unittest.TestCase):
         # Arbitrary diagnostic prefixes never manufacture a completion line.
         self.assertEqual(cohort.libtest_text_without_rpc_frames(b'prefix test actual ... ok\n'),
                          'prefix test actual ... ok\n')
+
+    def test_rpc_inline_frames_preserve_only_anchored_pending_completion(self):
+        body = json.dumps({'jsonrpc': '2.0', 'id': 1,
+                           'result': 'test forged ... ok\n雪'}, ensure_ascii=False).encode('utf-8')
+        frame = b'Content-Length: ' + str(len(body)).encode() + b'\r\n\r\n' + body
+        for suffix in (b'ok', b'ignored', b'ignored, reason'):
+            with self.subTest(suffix=suffix):
+                raw = b'test actual ... ' + frame + frame + suffix + b'\n'
+                self.assertEqual(cohort.libtest_text_without_rpc_frames(raw),
+                                 'test actual ... ' + suffix.decode() + '\n')
+        # A diagnostic prefix must not become an anchored completion.
+        raw = b'prefix test actual ... ' + frame + b'ok\n'
+        self.assertEqual(cohort.libtest_text_without_rpc_frames(raw), raw.decode())
+        # Boundary separation must not concatenate two outside fragments.
+        raw = b'test actual ... \n' + frame + b'ok\n'
+        self.assertEqual(cohort.libtest_text_without_rpc_frames(raw),
+                         'test actual ... \n\nok\n')
+        # Eligible inline malformed frames still refuse, never rescue a line.
+        malformed = b'Content-Length: 99\r\n\r\n{}'
+        with self.assertRaises(cohort.Denied):
+            cohort.libtest_text_without_rpc_frames(b'test actual ... ' + malformed + b'ok\n')
 
     def test_rpc_malformed_frames_fail_closed(self):
         good = b'{"jsonrpc":"2.0","id":1,"result":null}'

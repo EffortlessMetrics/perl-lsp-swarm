@@ -67,12 +67,19 @@ def libtest_text_without_rpc_frames(raw):
 
     Keep the original log separately. Never count completion-shaped strings in
     JSON bodies, or recover from a malformed frame by skipping arbitrary text.
+    Only an anchored unfinished libtest prefix permits an inline frame; keep
+    boundary separation elsewhere so removal cannot manufacture a new line.
     """
     output = bytearray()
     cursor = 0
     boundary = True
+    line_start = 0
     while cursor < len(raw):
-        if boundary and raw.startswith(b'Content-Length:', cursor):
+        pending = False
+        if raw.startswith(b'Content-Length:', cursor):
+            pending = (not boundary and re.fullmatch(
+                rb'test [^\r\n]+ \.\.\. ', output[line_start:]) is not None)
+        if (boundary or pending) and raw.startswith(b'Content-Length:', cursor):
             end = raw.find(b'\r\n\r\n', cursor)
             if end < 0:
                 raise Denied('malformed native JSON-RPC frame header')
@@ -113,13 +120,17 @@ def libtest_text_without_rpc_frames(raw):
                         or not isinstance(error.get('code'), int) or not isinstance(error.get('message'), str)):
                     raise Denied('unsupported native JSON-RPC frame error')
             cursor = start + size
-            output.extend(b'\n')
-            boundary = True
+            if not pending:
+                output.extend(b'\n')
+                line_start = len(output)
+            boundary = not pending
         else:
             byte = raw[cursor]
             output.append(byte)
             cursor += 1
             boundary = byte == 10
+            if boundary:
+                line_start = len(output)
     return output.decode('utf-8')
 
 
