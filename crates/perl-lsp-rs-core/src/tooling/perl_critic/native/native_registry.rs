@@ -18,7 +18,7 @@ use super::{
     DuplicateParameterRule, ParameterShadowsGlobalRule, PipeOpenRule, PrintfFormatArityRule,
     ProhibitLeadingZerosRule, QxReadpipeRule, RequirePodSectionsRule, RequireUseStrictRule,
     RequireUseWarningsRule, ShadowedLexicalVariableRule, StaleDollarAtRule, StringEvalRule,
-    SystemExecRule, TwoArgOpenRule, UncheckedOpenCloseRule, UndeclaredVariableRule,
+    SubTooLongRule, SystemExecRule, TwoArgOpenRule, UncheckedOpenCloseRule, UndeclaredVariableRule,
     UndefComparisonRule, UninitializedVariableRule, UnquotedBarewordRule, UnreachableCodeRule,
     UnusedLexicalVariableRule, UnusedParameterRule,
 };
@@ -174,6 +174,7 @@ static NATIVE_IDENTITY_DISPOSITIONS: &[NativeCriticIdentityDisposition] = &[
     NativeCriticIdentityDisposition::new("native.syntax.unquoted_bareword", GENERAL),
     NativeCriticIdentityDisposition::new("native.documentation.require_pod_sections", GENERAL),
     NativeCriticIdentityDisposition::new("native.syntax.prohibit_leading_zeros", GENERAL),
+    NativeCriticIdentityDisposition::new("native.maintainability.sub_too_long", GENERAL),
 ];
 
 const MAX_REJECTED_PROFILE_CHARS: usize = 80;
@@ -445,6 +446,7 @@ impl NativeCriticRegistry {
             Box::new(UnquotedBarewordRule),
             Box::new(RequirePodSectionsRule),
             Box::new(ProhibitLeadingZerosRule),
+            Box::new(SubTooLongRule),
         ])
     }
 
