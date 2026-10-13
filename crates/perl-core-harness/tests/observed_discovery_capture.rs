@@ -591,8 +591,23 @@ fn core_selector_observation_uses_switches_only_argv() -> Result<()> {
     // selection. The route must send switches only (never the 13 roots,
     // never locally expanded members) and the stand-in expands its own
     // population, yielding complete observed membership.
-    let observation = observe_with_mode("selector_test_core", "select")?;
-    let receipt = &observation.receipt;
+    // The stand-in tree also carries roots upstream suppresses under
+    // --core (porting, lib): they must not leak into core membership.
+    let temp = tempfile::tempdir()?;
+    let tree = fixture_tree(temp.path(), "select")?;
+    let t_dir = tree.join("t");
+    fs::create_dir_all(t_dir.join("porting"))?;
+    fs::write(t_dir.join("porting").join("maintainers.t"), "1;\n")?;
+    fs::create_dir_all(t_dir.join("lib"))?;
+    fs::write(t_dir.join("lib").join("sample.t"), "1;\n")?;
+    let config = config_for(
+        &tree,
+        temp.path().join("core-receipt.json"),
+        "selector_test_core",
+        default_limits(),
+    );
+    let receipt = observe_discovery(&config)?;
+    let receipt = &receipt;
     assert_eq!(receipt.payload.state, DiscoveryObservationState::ObservedComplete);
     assert_eq!(
         receipt.payload.invocation.argv,

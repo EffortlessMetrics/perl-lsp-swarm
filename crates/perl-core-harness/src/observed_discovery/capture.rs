@@ -121,10 +121,20 @@ pub(crate) fn selector_arguments(
         ));
     }
     let (selectors, _script_forms) = effective_selection(matrix, entry)?;
-    let upstream_internal = !entry.contract.runner_switches.is_empty()
-        && selectors
-            .iter()
-            .any(|selector| matches!(selector, TargetSelector::ManifestPopulation { .. }))
+    // Admission is pinned to the exact upstream `--core` shape, not to any
+    // switches-plus-manifest combination: environment variants of the full
+    // target inherit a manifest population with their own switches
+    // (`--utf8`, `--deparse`, ...) and must keep refusing, because their
+    // zero-argument population is platform- and build-dependent.
+    let upstream_internal = entry.contract.runner_switches.as_slice() == ["--core"]
+        && selectors.iter().any(|selector| {
+            matches!(
+                selector,
+                TargetSelector::ManifestPopulation {
+                    component: crate::model::ManifestPopulation::CoreRootLib
+                }
+            )
+        })
         && selectors
             .iter()
             .any(|selector| matches!(selector, TargetSelector::RecursiveRoot { .. }))
@@ -551,7 +561,22 @@ mod contract_tests {
     #[test]
     fn non_test_authorities_and_foreign_selectors_refuse_the_route() -> Result<()> {
         let matrix = matrix()?;
-        for target_id in ["component_op", "manifest_root_lib", "make_test_reonly", "prep_test"] {
+        for target_id in [
+            "component_op",
+            "manifest_root_lib",
+            "make_test_reonly",
+            "prep_test",
+            // Environment variants inherit the full target's manifest
+            // population with non-core switches: only the exact `--core`
+            // shape is admitted switches-only, so every variant refuses.
+            "variant_deparse",
+            "variant_taintwarn",
+            "variant_utf8",
+            "variant_utf16_be_bom",
+            "variant_utf16_be_no_bom",
+            "variant_utf16_le_bom",
+            "variant_utf16_le_no_bom",
+        ] {
             let found = entry(&matrix, target_id)?;
             let Err(error) = selector_arguments(&matrix, found) else {
                 bail!("{target_id} must refuse the exact t/TEST observation route");
