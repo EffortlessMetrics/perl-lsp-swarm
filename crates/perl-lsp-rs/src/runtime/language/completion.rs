@@ -2226,7 +2226,8 @@ impl LspServer {
         let mut completions = Vec::new();
 
         // Get the prefix we're completing
-        let text_before = &content[..offset.min(content.len())];
+        let offset = offset.min(content.len());
+        let text_before = &content[..offset];
         let prefix = text_before
             .chars()
             .rev()
@@ -2235,9 +2236,15 @@ impl LspServer {
             .chars()
             .rev()
             .collect::<String>();
-        // Replace only the name prefix; keep a preceding sigil or receiver intact.
-        // The shared serializer projects these current-source byte offsets.
+        // Filter using the prefix, but replace the entire contiguous name token.
+        // Keep sigils, receivers, punctuation and line endings outside the edit.
         let prefix_start = offset.saturating_sub(prefix.len());
+        let suffix_len: usize = content[offset..]
+            .chars()
+            .take_while(|&c| c.is_alphanumeric() || c == '_')
+            .map(char::len_utf8)
+            .sum();
+        let prefix_end = offset + suffix_len;
 
         // Check if we're in a method call context (after ->)
         let is_method_call = text_before.ends_with("->")
@@ -2283,7 +2290,7 @@ impl LspServer {
                         additional_edits: vec![],
                         sort_text: None,
                         filter_text: None,
-                        text_edit_range: Some((prefix_start, offset)),
+                        text_edit_range: Some((prefix_start, prefix_end)),
                         commit_characters: None,
                         insert_text_format: InsertTextFormat::PlainText,
                         label_details: None,
@@ -2306,7 +2313,7 @@ impl LspServer {
                         additional_edits: vec![],
                         sort_text: None,
                         filter_text: None,
-                        text_edit_range: Some((prefix_start, offset)),
+                        text_edit_range: Some((prefix_start, prefix_end)),
                         commit_characters: None,
                         insert_text_format: InsertTextFormat::PlainText,
                         label_details: None,
@@ -2325,7 +2332,7 @@ impl LspServer {
                         additional_edits: vec![],
                         sort_text: None,
                         filter_text: None,
-                        text_edit_range: Some((prefix_start, offset)),
+                        text_edit_range: Some((prefix_start, prefix_end)),
                         commit_characters: None,
                         insert_text_format: InsertTextFormat::PlainText,
                         label_details: None,
@@ -2341,7 +2348,7 @@ impl LspServer {
                         additional_edits: vec![],
                         sort_text: None,
                         filter_text: None,
-                        text_edit_range: Some((prefix_start, offset)),
+                        text_edit_range: Some((prefix_start, prefix_end)),
                         commit_characters: None,
                         insert_text_format: InsertTextFormat::PlainText,
                         label_details: None,
@@ -2360,7 +2367,7 @@ impl LspServer {
                         additional_edits: vec![],
                         sort_text: None,
                         filter_text: None,
-                        text_edit_range: Some((prefix_start, offset)),
+                        text_edit_range: Some((prefix_start, prefix_end)),
                         commit_characters: None,
                         insert_text_format: InsertTextFormat::PlainText,
                         label_details: None,
@@ -2372,7 +2379,7 @@ impl LspServer {
                     &mut completions,
                     &prefix,
                     prefix_start,
-                    offset,
+                    prefix_end,
                     content,
                     filepath,
                 );
@@ -2389,7 +2396,7 @@ impl LspServer {
                             additional_edits: vec![],
                             sort_text: None,
                             filter_text: None,
-                            text_edit_range: Some((prefix_start, offset)),
+                            text_edit_range: Some((prefix_start, prefix_end)),
                             commit_characters: None,
                             insert_text_format: InsertTextFormat::PlainText,
                             label_details: None,
@@ -2661,6 +2668,116 @@ mod tests {
                 assert_eq!(applied, format!("{before}{new_text}{after}"));
             }
         }
+        Ok(())
+    }
+
+    /// Apply the serialized edit as a client would, independently of server position helpers.
+    fn apply_fallback_client_edit(
+        source: &str,
+        value: &Value,
+    ) -> Result<String, Box<dyn std::error::Error>> {
+        let edit: lsp_types::TextEdit = serde_json::from_value(value.clone())?;
+        let offset = |position: lsp_types::Position| -> Result<usize, &'static str> {
+            let line_start: usize =
+                source.split_inclusive('\n').take(position.line as usize).map(str::len).sum();
+            let line = source
+                .split_inclusive('\n')
+                .nth(position.line as usize)
+                .ok_or("client edit line outside document")?;
+            let mut character = 0;
+            for (byte, ch) in line.char_indices() {
+                if character == position.character {
+                    return Ok(line_start + byte);
+                }
+                character += ch.len_utf16() as u32;
+            }
+            if character == position.character {
+                Ok(line_start + line.len())
+            } else {
+                Err("client edit column outside UTF-16 boundary")
+            }
+        };
+        let start = offset(edit.range.start)?;
+        let end = offset(edit.range.end)?;
+        let mut applied = source.to_string();
+        applied.replace_range(start..end, &edit.new_text);
+        Ok(applied)
+    }
+
+    #[test]
+    fn fallback_mid_token_edits_apply_without_suffix_duplication()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut failures = Vec::new();
+        for (before, prefix, suffix, label, after) in [
+            ("sub example { ", "wh", "ile", "while", ";"),
+            ("sub example { @", "AR", "GV", "ARGV", ";"),
+            ("sub example { %", "EN", "V", "ENV", ";"),
+            ("sub example { $", "", "_", "_", ";"),
+            ("sub example { ", "dXS", "ARGS", "dXSARGS", ";"),
+            ("sub example { $unknown->", "ge", "t", "get", "();"),
+            ("sub example { ", "wh", "atever_123", "while", "; next_token"),
+            ("sub example { @", "", "ARGV", "ARGV", ";"),
+            ("sub example { $unknown->", "", "get", "get", "();"),
+            ("my $emoji = \"🦀\"; ", "wh", "ile", "while", ";"),
+            ("my $emoji = \"🦀\"; @", "AR", "GV", "ARGV", ";"),
+            ("my $emoji = \"🦀\"; $unknown->", "ge", "t", "get", "();"),
+            ("sub example { ", "wh", "é_123", "while", ";"),
+            ("sub example { ", "wh", "𐐀_123", "while", ";"),
+            ("# 🦀\r\nsub example {\r\n    @", "AR", "GV", "ARGV", ";\r\nnext_token"),
+            ("sub example { ", "wh", "", "while", "\r\nnext_token"),
+        ] {
+            for cancellable in [false, true] {
+                let server = LspServer::default();
+                let uri = if label == "dXSARGS" {
+                    "file:///workspace/fallback_mid_token.xs"
+                } else {
+                    "file:///workspace/fallback_mid_token.pl"
+                };
+                let source = format!("{before}{prefix}{suffix}{after}");
+                let doc = crate::state::DocumentState::new(&source, 1);
+                assert!(doc.parsed_for_user_answers().is_none(), "must exercise no-AST fallback");
+                server.documents_guard().insert(uri.to_string(), doc);
+                let line = before.bytes().filter(|&b| b == b'\n').count() as u32;
+                let start = before
+                    .rsplit('\n')
+                    .next()
+                    .ok_or("missing current line")?
+                    .encode_utf16()
+                    .count() as u32;
+                let cursor = start + prefix.encode_utf16().count() as u32;
+                let end = cursor + suffix.encode_utf16().count() as u32;
+                let params = Some(json!({
+                    "textDocument": { "uri": uri },
+                    "position": { "line": line, "character": cursor }
+                }));
+                let response = if cancellable {
+                    server.handle_completion_cancellable(params, None)?
+                } else {
+                    server.handle_completion(params)?
+                }
+                .ok_or("completion returned no response")?;
+                let item = response["items"]
+                    .as_array()
+                    .ok_or("missing items")?
+                    .iter()
+                    .find(|item| item["label"] == label)
+                    .ok_or_else(|| format!("missing {label} in {response}"))?;
+                let applied = apply_fallback_client_edit(&source, &item["textEdit"])?;
+                let expected = format!("{before}{label}{after}");
+                let expected_range = json!({
+                    "start": { "line": line, "character": start },
+                    "end": { "line": line, "character": end }
+                });
+                if applied != expected || item["textEdit"]["range"] != expected_range {
+                    failures.push(format!(
+                        "source={source:?}, cancellable={cancellable}: \
+                        applied={applied:?}, expected={expected:?}, edit={}",
+                        item["textEdit"]
+                    ));
+                }
+            }
+        }
+        assert!(failures.is_empty(), "incorrect client applications:\n{}", failures.join("\n"));
         Ok(())
     }
 
