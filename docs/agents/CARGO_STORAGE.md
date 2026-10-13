@@ -281,11 +281,21 @@ product failures even when the cohort subsequently settles successfully.
 
 ### Staged native Clippy
 
-The existing owner admits only this finite Linux request (optional `--offline`):
+The existing owner admits these finite Linux requests (optional `--offline`):
 
 ```text
 python3 scripts/cargo_admitted.py clippy -p PACKAGE --all-targets --profile agent --locked -- -D warnings
+python3 scripts/cargo_admitted.py clippy -p PACKAGE --test NAME --profile agent --locked -- -D warnings
 ```
+
+Select exactly one of `--all-targets` or `--test NAME`. A named test uses one literal
+ASCII name beginning with a letter or digit and containing only letters, digits,
+underscores or hyphens; patterns, paths, joined forms, multiple selectors and other
+target/feature selectors refuse before allocation. Cargo still checks prerequisites
+of that target and reports a missing target as a product failure. The selected name
+remains in the request digest, so its budget cannot transfer to another target or
+all-targets work. A focused result covers only the selected compilation graph; it
+does not replace a required all-targets gate or qualify an unvisited target.
 
 Python 3.11+ and the already-installed repository pin 1.95.0 are required. No
 installation occurs. The route fingerprints direct Cargo/rustc/rustdoc,
