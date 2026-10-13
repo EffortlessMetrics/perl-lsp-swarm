@@ -113,6 +113,22 @@ fn executable_profile_check_rejects_premature_boundary_wiring() -> Result<()> {
 }
 
 #[test]
+fn executable_profile_check_rejects_whitespace_identity() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let spaced =
+        VALID_MANIFEST.replace("profile_id: narrow_eval_v1", "profile_id: 'narrow eval_v1'");
+    let manifest = write_fixture(&dir, "spaced.yaml", &spaced)?;
+
+    let output =
+        cargo_bin_cmd!("xtask").arg("executable-profile").arg("check").arg(&manifest).output()?;
+    assert!(
+        !output.status.success(),
+        "check must reject a whitespace profile id that would break its three-field output"
+    );
+    Ok(())
+}
+
+#[test]
 fn executable_profile_is_registered_in_list_commands() -> Result<()> {
     let output = cargo_bin_cmd!("xtask").arg("list-commands").output()?;
     assert!(output.status.success());

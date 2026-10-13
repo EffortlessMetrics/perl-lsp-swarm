@@ -120,11 +120,11 @@ impl ExecutableProfile {
         if self.predecessor_profile.as_deref().is_some_and(|value| value.trim().is_empty()) {
             bail!("executable profile field predecessor_profile must not be empty when present");
         }
-        if !self.profile_id.ends_with("_v1") {
-            bail!("profile_id must be versioned with the _v1 suffix");
+        if !is_snake_case_id(&self.profile_id) || !self.profile_id.ends_with("_v1") {
+            bail!("profile_id must be lowercase snake_case ASCII with the _v1 suffix");
         }
-        if !self.profile_version.starts_with('v') {
-            bail!("profile_version must start with 'v'");
+        if !is_profile_version(&self.profile_version) {
+            bail!("profile_version must be 'v' followed by version characters (no whitespace)");
         }
         validate_required_strings("supported_perl_versions", &self.supported_perl_versions)?;
         validate_required_strings("supported_constructs", &self.supported_constructs)?;
@@ -203,13 +203,24 @@ impl BuiltinEntry {
 /// S2 boundary rule: IDs keep the SPEC-0038 shape and uniqueness contract so
 /// S4 inherits the mechanism, but the list itself stays empty until the #4770
 /// catalog loader lands. Any entry fails closed.
+fn is_snake_case_id(value: &str) -> bool {
+    !value.is_empty()
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
+}
+
+fn is_profile_version(value: &str) -> bool {
+    value.len() > 1
+        && value.starts_with('v')
+        && value.bytes().skip(1).all(|byte| {
+            byte.is_ascii_alphanumeric() || byte == b'.' || byte == b'_' || byte == b'-'
+        })
+}
+
 fn validate_boundary_ids(ids: &[String]) -> Result<()> {
     for id in ids {
-        let shape_ok = !id.is_empty()
-            && id
-                .bytes()
-                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_');
-        if !shape_ok {
+        if !is_snake_case_id(id) {
             bail!("unsupported boundary id {id:?} must be lowercase snake_case ASCII");
         }
     }
@@ -409,6 +420,28 @@ claim_boundary: Fixture only; admits no evaluation and claims no EIR conformance
             "a manifest with an unversioned profile version must fail closed"
         );
 
+        let spaced_id =
+            VALID_MINIMAL.replace("profile_id: narrow_eval_v1", "profile_id: 'narrow eval_v1'");
+        let error = ExecutableProfile::from_str(&spaced_id)
+            .expect_err("a profile id with whitespace must fail closed")
+            .to_string();
+        assert!(
+            error.contains("profile_id") && error.contains("snake_case"),
+            "whitespace identity error should name the shape rule: {error}"
+        );
+
+        let spaced_version = VALID_MINIMAL.replace("profile_version: v1", "profile_version: 'v 1'");
+        assert!(
+            ExecutableProfile::from_str(&spaced_version).is_err(),
+            "a profile version with whitespace must fail closed"
+        );
+
+        let bare_version = VALID_MINIMAL.replace("profile_version: v1", "profile_version: v");
+        assert!(
+            ExecutableProfile::from_str(&bare_version).is_err(),
+            "a bare 'v' profile version must fail closed"
+        );
+
         let empty_policy = VALID_MINIMAL.replace(
             "environment_policy: No environment reads during evaluation.",
             "environment_policy: \"\"",
@@ -462,6 +495,41 @@ claim_boundary: Fixture only; admits no evaluation and claims no EIR conformance
         ] {
             assert!(required.contains(&field), "schema must require {field}");
         }
+        let pattern = |name: &str| {
+            schema
+                .get("properties")
+                .and_then(|properties| properties.get(name))
+                .and_then(|property| property.get("pattern"))
+                .and_then(serde_json::Value::as_str)
+        };
+        assert_eq!(
+            pattern("profile_id"),
+            Some("^[a-z0-9_]+_v1$"),
+            "schema must pin the whitespace-free profile_id shape"
+        );
+        assert_eq!(
+            pattern("profile_version"),
+            Some("^v[0-9A-Za-z._-]+$"),
+            "schema must pin the whitespace-free profile_version shape"
+        );
+        assert_eq!(
+            schema
+                .get("properties")
+                .and_then(|properties| properties.get("unsupported_boundary_ids"))
+                .and_then(|property| property.get("maxItems"))
+                .and_then(serde_json::Value::as_u64),
+            Some(0),
+            "schema must keep the S2 boundary list empty until S4"
+        );
+        assert!(
+            schema
+                .get("properties")
+                .and_then(|properties| properties.get("supported_builtins"))
+                .and_then(|property| property.get("description"))
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|text| text.contains("unique")),
+            "schema must document the builtin name-uniqueness custom rule"
+        );
         Ok(())
     }
 

@@ -40,12 +40,12 @@
     "profile_id": {
       "type": "string",
       "minLength": 1,
-      "pattern": "_v1$"
+      "pattern": "^[a-z0-9_]+_v1$"
     },
     "profile_version": {
       "type": "string",
       "minLength": 1,
-      "pattern": "^v"
+      "pattern": "^v[0-9A-Za-z._-]+$"
     },
     "purpose": {
       "type": "string",
@@ -72,6 +72,7 @@
     "supported_builtins": {
       "type": "array",
       "uniqueItems": true,
+      "description": "Builtin names must be unique across entries; JSON Schema uniqueItems cannot express name-projection uniqueness, so the executable-profile validator enforces it as a custom rule and rejects same-name entries with conflicting behaviors.",
       "items": {
         "type": "object",
         "additionalProperties": false,
@@ -179,7 +180,9 @@
     },
     "unsupported_boundary_ids": {
       "type": "array",
+      "maxItems": 0,
       "uniqueItems": true,
+      "description": "S2 manifests carry an empty boundary list; the S4 slice relaxes maxItems when the #4770 catalog loader lands.",
       "items": {
         "type": "string",
         "pattern": "^[a-z0-9_]+$"
