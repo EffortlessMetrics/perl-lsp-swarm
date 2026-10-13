@@ -149,6 +149,7 @@ fn pr_fast_non_rust_composition_retains_registered_rust_consumers() -> Result<()
 #[test]
 fn pr_fast_non_rust_composition_rejects_incomplete_package_metadata() -> Result<()> {
     let files = vec!["README.md".to_string(), "scripts/agent-preflight.sh".to_string()];
+    let valid_package = metadata()["packages"][0].clone();
     for invalid in [
         serde_json::json!(null),
         serde_json::json!({}),
@@ -157,6 +158,8 @@ fn pr_fast_non_rust_composition_rejects_incomplete_package_metadata() -> Result<
         serde_json::json!({"packages": []}),
         serde_json::json!({"packages": [null]}),
         serde_json::json!({"packages": [{}]}),
+        serde_json::json!({"packages": [valid_package.clone(), {}]}),
+        serde_json::json!({"packages": [{}, valid_package]}),
     ] {
         assert!(
             ci_scope::classify_files(&files, &invalid, "/workspace").is_err(),
