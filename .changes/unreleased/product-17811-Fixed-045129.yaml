@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: "Show declared native method parameters, including defaults and slurpy parameters, in signature help with method declaration labels."
+time: 2026-10-13T04:51:29Z
+custom:
+  PR: "17811"
+  Slug: native-method-signature-projection
+  Breaking: "no"
