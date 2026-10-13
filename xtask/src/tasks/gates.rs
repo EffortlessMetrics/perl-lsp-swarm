@@ -4911,6 +4911,51 @@ gates:
     }
 
     #[test]
+    fn pr_fast_non_rust_owned_inputs_reach_routed_integration_tests() -> color_eyre::eyre::Result<()>
+    {
+        let root = crate::utils::project_root()?;
+        let policy = load_policy_for_inspection(&root.join(".ci/gate-policy.yaml"))?;
+        let gate = policy
+            .gates
+            .iter()
+            .find(|gate| gate.name == "unit_routed_full")
+            .cloned()
+            .ok_or_else(|| color_eyre::eyre::eyre!("missing routed test gate"))?;
+        assert!(gate.required, "the routed integration cohort must remain required in its tier");
+        let metadata = serde_json::json!({
+            "packages": [{"name": "xtask", "id": "xtask 0.1.0",
+                "manifest_path": "/workspace/xtask/Cargo.toml"}],
+            "resolve": {"nodes": [{"id": "xtask 0.1.0", "deps": []}]}
+        });
+        for file in [".ci/gate-policy.yaml", ".ci/policies/required-checks.toml"] {
+            let scope = crate::tasks::ci_scope::classify_files(
+                &[file.to_string()],
+                &metadata,
+                "/workspace",
+            )?;
+            assert_eq!(scope.diff_class, "ci_config", "the input remains non-Rust: {file}");
+            assert_eq!(
+                super::selected_package_names(&scope),
+                vec!["xtask"],
+                "owner missing: {file}"
+            );
+            let plan = super::plan_pr_fast_gates(
+                &root,
+                vec![gate.clone()],
+                "origin/main".to_string(),
+                Some(scope),
+            )?;
+            assert_eq!(selected_gate_names(&plan), vec!["unit_routed_full"], "lost proof: {file}");
+            assert!(
+                plan.selected[0].gate.command.contains("--tests -p xtask"),
+                "{file} must execute its owner's integration contracts"
+            );
+            assert!(!plan.fallback_used, "explicit owner must not select broad fallback: {file}");
+        }
+        Ok(())
+    }
+
+    #[test]
     fn pr_fast_docs_as_code_keeps_always_on_and_skips_rust_lanes() -> color_eyre::eyre::Result<()> {
         let gates = vec![
             pr_gate("fmt", GatePlanningRole::AlwaysOn, "cargo xtask fmt --check"),
