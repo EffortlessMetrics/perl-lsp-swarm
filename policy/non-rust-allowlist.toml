@@ -26,6 +26,19 @@ broad_globs_require_reason = true
 coverage_required_for_production_surfaces = true
 
 [[allow]]
+id = "non-rust-xtask-ai-dependency-proof"
+path = "scripts/tests/test_xtask_ai_dependencies.py"
+kind = "ci_tooling"
+language = "python"
+surface = "tooling"
+classification = "test"
+owner = "tooling/agents"
+reason = "Real locked Cargo graph controls inspect optional tooling and retained product AI features without first compiling xtask or requiring network provider access."
+covered_by = ["python3 scripts/tests/test_xtask_ai_dependencies.py"]
+created = "2026-10-13"
+review_after = "2027-01-13"
+
+[[allow]]
 id = "non-rust-xtask-parser-dependency-proof"
 path = "scripts/tests/test_xtask_parser_dependencies.py"
 kind = "ci_tooling"
