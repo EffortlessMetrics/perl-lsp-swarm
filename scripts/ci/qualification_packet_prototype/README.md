@@ -34,6 +34,8 @@ and savings retain separate verdicts. Missing evidence is NOT_PROVEN, invalid
 evidence is REFUSED, and observed nonzero product status is FAILED; admission
 status 75 is REFUSED. A partial ordinary reference cannot become a savings
 denominator, while the candidate's independent observations remain inspectable.
+A negative `sampled_peak_fraction` is a valid comparative observation: synthetic
+completeness validates the requested evidence and does not promise improvement.
 
 ## Pinned producer contract
 
@@ -74,11 +76,15 @@ python3 -B scripts/ci/qualification_packet_prototype/fixtures.py > /tmp/qualific
 python3 -B scripts/ci/qualification_packet_prototype/evaluator.py /tmp/qualification-synthetic.json --check
 ```
 
-The suite has 28 test groups. The original 26 and two new execution-plane
-groups pass. The new groups observed nine assertion failures, zero errors, on the
-previous revision: both routes now require a present, nonempty dictionary of
-case outcomes before execution can pass, while independent storage remains
-inspectable. Five new groups produced 30 assertion failures, zero instrument errors,
+The suite has 32 test groups. All pass, including both-route cross-plane
+matrices, a legitimate zero-case harness and signed negative savings. Execution
+requires object rows with typed case/ignored lists; empty lists are permitted.
+An execution failure downgrades only equivalence PASS and preserves established
+REFUSED or NOT_PROVEN evidence. The four new groups produced 17 assertion
+failures and zero errors on the previous revision. The earlier empty-map
+regression groups remain covered, including missing maps on both routes and
+inspectable independent storage. Five earlier groups produced 30 assertion
+failures, zero instrument errors,
 against the earlier prototype. The public `prove_discrimination.py` command
 executes a controlled always-pass consumer that ignores its input against the same oracle;
 it returns success only when the positive fixture passes and the mutant produces

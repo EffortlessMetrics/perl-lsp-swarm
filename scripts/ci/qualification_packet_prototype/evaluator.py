@@ -177,8 +177,11 @@ def evaluate(document):
                     require(r['receipt_errors'] == [], 'receipt errors')
                     outcomes = r['case_outcomes']
                     require(isinstance(outcomes, dict) and bool(outcomes), 'nonempty case outcomes map')
-                    if route == 'ordinary':
-                        for row in outcomes.values():
+                    for row in outcomes.values():
+                        require(isinstance(row, dict), 'case outcome row object')
+                        require(isinstance(row['cases'], list) and isinstance(row['ignored'], list), 'case outcome row lists')
+                        require(all(isinstance(name, str) for name in row['cases'] + row['ignored']), 'case outcome row identities')
+                        if route == 'ordinary':
                             ordinary_outcome_consistent(row)
                 plane('execution', execution)
                 status = r.get('storage', {}).get('command_status')
@@ -270,7 +273,9 @@ def evaluate(document):
             if cell_id not in result['savings']:
                 result['reasons'].append(f'{cell_id}/savings: complete equivalent measured reference, positive denominator and matching basis required')
             if not all(v['execution'] == 'PASS' for v in (ordinary, cohort)):
-                ordinary['equivalence'] = cohort['equivalence'] = 'NOT_PROVEN'
+                for v in (ordinary, cohort):
+                    if v['equivalence'] == 'PASS':
+                        v['equivalence'] = 'NOT_PROVEN'
         if all(v[plane] == 'PASS' for cell in result['cells'].values() for v in cell.values() for plane in PLANES):
             result['status'] = 'SYNTHETIC_PASS'
     except (EvidenceError, KeyError, TypeError, ValueError, AttributeError, OverflowError) as error:

@@ -355,6 +355,68 @@ class Controls(unittest.TestCase):
                 self.assertEqual(result['cells']['cold'][route]['execution'], 'NOT_PROVEN')
                 self.assertNotIn('cold', result['savings'])
 
+    def test_cross_plane_case_row_negative_matrix(self):
+        rows = ((None, 'REFUSED'), ({}, 'NOT_PROVEN'),
+                ({'cases': None, 'ignored': []}, 'REFUSED'),
+                ({'cases': [], 'ignored': None}, 'REFUSED'),
+                ({'cases': [False], 'ignored': []}, 'REFUSED'),
+                ({'cases': [], 'ignored': [0]}, 'REFUSED'))
+        for route, index in (('ordinary', 0), ('cohort', 1)):
+            for row, verdict in rows:
+                with self.subTest(route=route, row=row):
+                    d = fixture(); p = d['packets'][index]
+                    key = next(iter(p['report']['case_outcomes']))
+                    p['report']['case_outcomes'][key] = row
+                    result = self.reject(d); v = result['cells']['cold'][route]
+                    self.assertEqual(v['execution'], verdict)
+                    self.assertEqual(v['equivalence'], verdict)
+                    self.assertEqual(v['storage'], 'PASS')
+                    self.assertNotIn('cold', result['savings'])
+
+    def test_cross_plane_execution_failure_preserves_inventory_verdict(self):
+        for route, index in (('ordinary', 0), ('cohort', 1)):
+            for failure, execution in (('inner-receipt', 'REFUSED'), ('unsettled', 'REFUSED'), ('product', 'FAILED')):
+                for inventory, equivalence in (('valid', 'NOT_PROVEN'), ('missing', 'NOT_PROVEN'), ('contradictory', 'REFUSED')):
+                    with self.subTest(route=route, failure=failure, inventory=inventory):
+                        d = fixture(); p = d['packets'][index]; r = p['report']
+                        if failure == 'inner-receipt': p['inner_receipts_complete'] = False
+                        if failure == 'unsettled': r['terminal_owner_binding']['settlement']['tree_settled'] = False
+                        if failure == 'product':
+                            r['storage']['command_status'] = 101
+                            r['terminal_owner_binding']['product']['exit_code'] = 101
+                        if inventory == 'missing': del r['units_sha256']
+                        if inventory == 'contradictory':
+                            next(iter(r['case_outcomes'].values()))['ignored'] = ['foreign']
+                        result = self.reject(d); v = result['cells']['cold'][route]
+                        self.assertEqual(v['execution'], execution)
+                        self.assertEqual(v['equivalence'], equivalence)
+                        self.assertEqual(v['storage'], 'PASS')
+                        self.assertEqual(result['cells']['cold']['cohort' if route == 'ordinary' else 'ordinary']['equivalence'], 'NOT_PROVEN')
+                        self.assertNotIn('cold', result['savings'])
+
+    def test_legitimate_empty_harness_case_lists(self):
+        d = fixture()
+        for p in d['packets'][:2]:
+            r = p['report']; row = next(iter(r['case_outcomes'].values()))
+            row.update(cases=[], ignored=[])
+            if p['route'] == 'ordinary':
+                row.update(outcomes=[], failed=[], footer_counts={'passed': 0, 'failed': 0, 'ignored': 0})
+            r.update(case_count=15, ignored_count=5)
+            r['cases_sha256'] = digest({k: {f: v[f] for f in ('cases', 'ignored')} for k, v in r['case_outcomes'].items()})
+            p['bindings']['inventory']['cases_sha256'] = r['cases_sha256']
+            d['manifest']['cells'][0]['routes'][p['route']]['inventory']['cases_sha256'] = r['cases_sha256']
+        result = evaluate(d)
+        self.assertEqual(result['status'], 'SYNTHETIC_PASS', result)
+        for v in result['cells']['cold'].values(): self.assertEqual(v['execution'], 'PASS')
+
+    def test_negative_savings_is_valid_comparative_observation(self):
+        d = fixture(); d['packets'][1]['report']['storage']['sampled_peak_allocated_bytes'] = 12000
+        result = evaluate(d)
+        self.assertEqual(result['status'], 'SYNTHETIC_PASS', result)
+        self.assertAlmostEqual(result['savings']['cold']['sampled_peak_fraction'], -0.2)
+        self.assertFalse(result['savings']['cold']['continuous_bound'])
+        self.assertEqual(result['production_qualification'], 'NOT_PROVEN')
+
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)
