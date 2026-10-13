@@ -249,9 +249,107 @@ impl LspServer {
 mod tests {
     use super::LspServer;
     use crate::protocol::{JsonRpcId, JsonRpcRequest};
+    use crate::transport::{FramingError, IncomingMessageError};
     use parking_lot::Mutex;
+    use serde_json::json;
     use std::io::{self, Write};
     use std::sync::Arc;
+
+    struct CapturedOutput(Arc<Mutex<Vec<u8>>>);
+
+    impl Write for CapturedOutput {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.0.lock().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn malformed_json() -> IncomingMessageError {
+        IncomingMessageError::MalformedJson { payload_bytes: 1, line: 1, column: 1 }
+    }
+
+    #[test]
+    fn reject_incoming_message_reports_exact_parse_error_and_success()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let bytes = Arc::new(Mutex::new(Vec::new()));
+        let server = LspServer::with_io(
+            Box::new(io::Cursor::new(Vec::<u8>::new())),
+            Box::new(CapturedOutput(Arc::clone(&bytes))),
+        );
+
+        let result = server.reject_incoming_message(&malformed_json());
+        assert!(result.is_ok(), "successful response admission must return Ok: {result:?}");
+        drop(server); // Drain the real outbound writer before inspecting its one frame.
+
+        let output = String::from_utf8(bytes.lock().clone())?;
+        let (header, body) = output.split_once("\r\n\r\n").ok_or("missing response frame")?;
+        assert_eq!(header, format!("Content-Length: {}", body.len()));
+        let response: serde_json::Value = serde_json::from_str(body)?;
+        assert_eq!(
+            response,
+            json!({
+                "jsonrpc": "2.0", "id": null,
+                "error": {"code": -32700, "message": "Parse error", "data": null}
+            }),
+            "invalid JSON must produce exactly one ParseError with an explicit null ID"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn reject_incoming_message_propagates_closed_response_admission()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let bytes = Arc::new(Mutex::new(Vec::new()));
+        let server = LspServer::with_io(
+            Box::new(io::Cursor::new(Vec::<u8>::new())),
+            Box::new(CapturedOutput(Arc::clone(&bytes))),
+        );
+        server.outbound.close_admission();
+
+        let result = server.reject_incoming_message(&malformed_json());
+        let error = result.err().ok_or("closed response admission incorrectly returned success")?;
+        assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);
+        assert_eq!(error.to_string(), "outbound channel closed");
+        assert!(server.response_delivery_failed(), "failed admission must notify serving");
+        drop(server);
+        assert!(bytes.lock().is_empty(), "closed admission must not write a response");
+        Ok(())
+    }
+
+    #[test]
+    fn reject_incoming_message_keeps_other_decode_failures_silent_and_successful() {
+        let errors = [
+            IncomingMessageError::Framing(FramingError::InvalidContentLength),
+            IncomingMessageError::InvalidUtf8 { payload_bytes: 1, valid_up_to: 0 },
+            IncomingMessageError::InvalidMessageShape {
+                payload_bytes: 1,
+                recoverable_id: Some(JsonRpcId::Integer(71)),
+            },
+            IncomingMessageError::UnsupportedBatch { payload_bytes: 2 },
+            IncomingMessageError::InvalidJsonRpc {
+                payload_bytes: 1,
+                recoverable_id: Some(JsonRpcId::String("client-id".to_string())),
+            },
+        ];
+        for error in errors {
+            let bytes = Arc::new(Mutex::new(Vec::new()));
+            let server = LspServer::with_io(
+                Box::new(io::Cursor::new(Vec::<u8>::new())),
+                Box::new(CapturedOutput(Arc::clone(&bytes))),
+            );
+            // A closed sink makes even an attempted response visible as Err.
+            server.outbound.close_admission();
+            let result = server.reject_incoming_message(&error);
+            assert!(result.is_ok(), "other decode failures retain successful return: {result:?}");
+            assert!(!server.response_delivery_failed(), "must not attempt response admission");
+            drop(server);
+            assert!(bytes.lock().is_empty(), "other decode failures must remain silent");
+        }
+    }
 
     fn request(id: i64, method: &str) -> JsonRpcRequest {
         JsonRpcRequest {
