@@ -173,7 +173,11 @@ impl Project {
     }
 
     fn close(&self, client: &mut RealProcessClient) -> Result<()> {
-        client.notify("textDocument/didClose", json!({"textDocument": {"uri": self.uri}}))?;
+        self.close_as(client, &self.uri)
+    }
+
+    fn close_as(&self, client: &mut RealProcessClient, close_uri: &str) -> Result<()> {
+        client.notify("textDocument/didClose", json!({"textDocument": {"uri": close_uri}}))?;
         let deadline = Instant::now() + timeout();
         loop {
             let notification = client.receive_server_notification(
@@ -181,7 +185,7 @@ impl Project {
                 deadline.saturating_duration_since(Instant::now()),
             )?;
             ensure!(
-                notification.pointer("/params/uri") == Some(&json!(self.uri)),
+                notification.pointer("/params/uri") == Some(&json!(close_uri)),
                 "{notification}"
             );
             // A save can publish versioned diagnostics immediately before close.
@@ -189,7 +193,7 @@ impl Project {
             if notification.pointer("/params/version").is_none() {
                 ensure!(
                     notification.get("params")
-                        == Some(&json!({"uri": self.uri, "diagnostics": []})),
+                        == Some(&json!({"uri": close_uri, "diagnostics": []})),
                     "close must clear diagnostics after the handoff: {notification}"
                 );
                 break;
@@ -404,4 +408,35 @@ fn close_decodes_utf16_disk_and_preserves_binary_data_sections() -> Result<()> {
         shutdown(client)?;
     }
     Ok(())
+}
+
+/// Compatibility close spelling: didOpen/edit use proper file URIs. Raw-path
+/// didOpen is rejected; the existing close eviction accepts equivalent paths.
+#[test]
+fn absolute_path_close_alias_restores_canonical_disk_symbols() -> Result<()> {
+    let project = Project::new("Journey.pm", Some(DISK))?;
+    let mut client = project.start()?;
+    let caller_uri = project.open_caller(&mut client)?;
+    project.assert_symbol(&mut client, "disk_only", Some((3, 0, 19)))?;
+    project.open(&mut client, DISK)?;
+    project.edit(&mut client)?;
+    let close_uri = project.path.to_str().context("fixture path must be UTF-8")?;
+    project.close_as(&mut client, close_uri)?;
+    project.assert_symbol(&mut client, "disk_only", Some((3, 0, 19)))?;
+    project.assert_symbol(&mut client, "buffer_only", None)?;
+    project.assert_disk_definition(&mut client, &caller_uri)?;
+    shutdown(client)
+}
+
+#[test]
+fn encoded_file_uri_close_alias_restores_canonical_disk_symbols() -> Result<()> {
+    let project = Project::new("Journey.pm", Some(DISK))?;
+    let mut client = project.start()?;
+    project.open(&mut client, DISK)?;
+    project.edit(&mut client)?;
+    let close_uri = project.uri.replace("/Journey.pm", "/%4Aourney.pm");
+    project.close_as(&mut client, &close_uri)?;
+    project.assert_symbol(&mut client, "disk_only", Some((3, 0, 19)))?;
+    project.assert_symbol(&mut client, "buffer_only", None)?;
+    shutdown(client)
 }

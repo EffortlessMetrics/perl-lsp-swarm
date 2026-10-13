@@ -31,6 +31,8 @@ impl LspServer {
             // the editor discards an ordinary unsaved edit without a watcher
             // event. Retire its indexed buffer facts with the session so failed
             // disk reads cannot leave discarded source searchable.
+            #[cfg(feature = "workspace")]
+            let mut retired_index_version = 0;
             let _closed_open_session = {
                 #[cfg(feature = "workspace")]
                 let _transition = self.indexing_transition_lock.lock();
@@ -45,6 +47,7 @@ impl LspServer {
                     for key in Self::uri_key_variants(uri) {
                         coordinator.index().remove_file(&key);
                     }
+                    retired_index_version = coordinator.index().write_version();
                 }
                 was_open
             };
@@ -56,42 +59,73 @@ impl LspServer {
                 // watchers: a directory/FIFO or declassified script is not
                 // current Perl source. Repeated close of an unopened URI does
                 // not create a new filesystem read surface.
-                let content = source_path_from_uri(uri).and_then(|path| {
-                    let admission = self.discovery_admission_config(&path);
-                    let byte_limit = crate::state::max_file_size_bytes();
-                    match read_perl_source_file_with_byte_limit(&path, &admission, Some(byte_limit))
+                // The index revision is global: an unrelated write also
+                // invalidates a read. One fresh retry preserves availability
+                // without letting sustained mutation make close unbounded.
+                for _ in 0..2 {
+                    let content = source_path_from_uri(uri).and_then(|path| {
+                        let url = url::Url::from_file_path(&path).ok()?;
+                        let admission = self.discovery_admission_config(&path);
+                        let byte_limit = crate::state::max_file_size_bytes();
+                        match read_perl_source_file_with_byte_limit(
+                            &path,
+                            &admission,
+                            Some(byte_limit),
+                        ) {
+                            // Decode before canonical binary classification: valid
+                            // UTF-16 bytes contain NULs, and __DATA__ may be binary.
+                            // Decoding can expand bytes beyond the ingress ceiling.
+                            Ok(content) => content
+                                .filter(|text| {
+                                    text.len() <= byte_limit
+                                        && !perl_parser_core::source_file::is_binary_content(text)
+                                })
+                                .map(|content| (url, content)),
+                            Err(error) => {
+                                tracing::debug!(
+                                    "Failed to reload closed-file source {}: {}",
+                                    path.display(),
+                                    error
+                                );
+                                None
+                            }
+                        }
+                    });
+                    #[cfg(test)]
                     {
-                        // Decode before canonical binary classification: valid
-                        // UTF-16 bytes contain NULs, and __DATA__ may be binary.
-                        // Decoding can expand bytes beyond the ingress ceiling.
-                        Ok(content) => content.filter(|text| {
-                            text.len() <= byte_limit
-                                && !perl_parser_core::source_file::is_binary_content(text)
-                        }),
-                        Err(error) => {
-                            tracing::debug!(
-                                "Failed to reload closed-file source {}: {}",
-                                path.display(),
-                                error
-                            );
-                            None
+                        let hook = self.close_disk_loaded_hook.lock().take();
+                        if let Some(hook) = hook {
+                            hook();
                         }
                     }
-                });
-                let _transition = self.indexing_transition_lock.lock();
-                // didOpen can race the off-lock read. Its new buffer remains
-                // authoritative; neither disk publication nor a counter reset
-                // may mutate that successor session.
-                if !self.document_is_open(uri)
-                    && let Some(content) = content
-                    && let Ok(url) = url::Url::parse(uri)
-                {
-                    // The retired entry has no live document generation. This
-                    // is a closed-source initial import; remove_file already
-                    // reset the prior session's generation high-water mark.
-                    if let Err(error) = coordinator.index().index_initial_file(url, content) {
-                        tracing::warn!("Failed to re-index {} on close: {}", uri, error);
+                    let _transition = self.indexing_transition_lock.lock();
+                    // A successor buffer remains authoritative. A watcher or
+                    // scan sharing this transition lock can also publish newer
+                    // closed-source facts while our disk read is off-lock.
+                    if self.document_is_open(uri) {
+                        break;
                     }
+                    let current_revision = coordinator.index().write_version();
+                    if current_revision != retired_index_version {
+                        retired_index_version = current_revision;
+                        continue;
+                    }
+                    if let Some((url, content)) = content {
+                        // Closed-source initial import has no live generation.
+                        // Use the resolved file identity, including equivalent
+                        // URI spellings accepted by the close eviction surface.
+                        if let Err(error) = coordinator.index().index_initial_file(url, content) {
+                            tracing::warn!("Failed to re-index {} on close: {}", uri, error);
+                        }
+                    } else {
+                        // A fresh retry may reject backing after a watcher
+                        // published intervening facts. Its unchanged revision
+                        // lets this observed rejection retire those facts too.
+                        for key in Self::uri_key_variants(uri) {
+                            coordinator.index().remove_file(&key);
+                        }
+                    }
+                    break;
                 }
             }
 
