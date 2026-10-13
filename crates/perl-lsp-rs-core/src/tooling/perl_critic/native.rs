@@ -924,11 +924,14 @@ pub const DEFAULT_MAX_NESTED_BLOCKS: usize = 4;
 
 /// Native rule that reports named subroutines whose blocks nest too deep.
 ///
-/// Depth counts [`NodeKind::Block`] nesting inside the subroutine body;
-/// the subroutine's own body block is the baseline and is not counted, so
-/// a flat subroutine has depth 0 and each nested block (an `if`/`while`/
-/// `for` body, a bare block, a `do`/`eval` block, and so on) adds one.
-/// Hash and array literals are not blocks and never add depth. A nested
+/// Depth counts control-structure nesting inside the subroutine body:
+/// each `if`/`unless`, `while`/`until`, `for`/`foreach`, `try`, `eval`,
+/// or `given`/`when` level adds one, so a flat subroutine has depth 0.
+/// Bare blocks add nothing: the parser represents a single-expression
+/// hash constructor such as `{{1}}` as a `Block` node, so raw block
+/// counting cannot distinguish a hash reference from an executable
+/// block and would report nested hash references as deep nesting.
+/// For the same reason hash and array literals never add depth. A nested
 /// subroutine or method starts a fresh measurement: its blocks do not
 /// inflate the enclosing subroutine, and a named nested subroutine is
 /// measured on its own. A subroutine whose depth is exactly
@@ -2657,13 +2660,22 @@ fn collect_too_many_nested_blocks_findings(
     }
 }
 
-/// Deepest [`NodeKind::Block`] nesting at or below `node`, where entering
-/// a block adds one level to `depth`. A nested subroutine or method is a
-/// separate measurement and is never descended into.
+/// Deepest control-structure nesting at or below `node`, where entering
+/// an `if`, loop, `try`, `eval`, or `given`/`when` adds one level to
+/// `depth`. Bare `Block` nodes add nothing (see [`TooManyNestedBlocksRule`]
+/// for why), and a nested subroutine or method is a separate measurement
+/// that is never descended into.
 fn max_block_depth(node: &Node, depth: usize) -> usize {
     match &node.kind {
         NodeKind::Subroutine { .. } | NodeKind::Method { .. } => depth,
-        NodeKind::Block { .. } => node
+        NodeKind::If { .. }
+        | NodeKind::While { .. }
+        | NodeKind::For { .. }
+        | NodeKind::Foreach { .. }
+        | NodeKind::Try { .. }
+        | NodeKind::Eval { .. }
+        | NodeKind::Given { .. }
+        | NodeKind::When { .. } => node
             .children()
             .iter()
             .map(|child| max_block_depth(child, depth + 1))
@@ -6147,6 +6159,19 @@ if ($x = 1) { print $x; }
         let registry = NativeCriticRegistry::with_rules(vec![Box::new(TooManyNestedBlocksRule)]);
 
         assert!(registry.check(&ctx).is_empty(), "hash/array literals are not blocks");
+    }
+
+    #[test]
+    fn native_too_many_nested_blocks_rule_ignores_nested_hash_references() {
+        // The parser represents a single-expression brace constructor as a
+        // Block node, so nested hash references must not count as nesting.
+        let source = "use strict;\nuse warnings;\nsub build { my $x = {{{{{1}}}}}; return $x; }\n";
+        let ast = parse_source(source);
+        let config = CriticConfig::default();
+        let ctx = CriticContext::new(source, &ast, &config);
+        let registry = NativeCriticRegistry::with_rules(vec![Box::new(TooManyNestedBlocksRule)]);
+
+        assert!(registry.check(&ctx).is_empty(), "hash references are not nested blocks");
     }
 
     #[test]
