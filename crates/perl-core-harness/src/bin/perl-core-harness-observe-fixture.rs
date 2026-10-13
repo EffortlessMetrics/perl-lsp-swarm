@@ -151,6 +151,25 @@ fn write_rows(rows: &[String]) -> io::Result<()> {
 /// sorted, mirroring `_find_tests` plus `dump_tests` at the pinned ref.
 fn selected_rows(selectors: &[String]) -> io::Result<Vec<String>> {
     let mut rows = Vec::new();
+    if selectors.is_empty() {
+        // Upstream zero-file-argument form (for example `TEST --core
+        // --dumptests`): the runner expands its own roots internally. The
+        // stand-in walks every root directory present in its tree.
+        let mut roots = Vec::new();
+        for entry in fs::read_dir(".")? {
+            let entry = entry?;
+            if entry.file_type()?.is_dir() {
+                roots.push(entry.file_name().to_string_lossy().into_owned());
+            }
+        }
+        roots.sort();
+        for root in &roots {
+            collect_dot_t(Path::new(root), root, &mut rows)?;
+        }
+        rows.sort();
+        rows.dedup();
+        return Ok(rows);
+    }
     for selector in selectors {
         collect_dot_t(Path::new(selector), selector, &mut rows)?;
     }

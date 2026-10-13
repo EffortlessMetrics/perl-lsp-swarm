@@ -100,6 +100,14 @@ pub(crate) struct ObservationProcessPlan {
 /// exact files, glob patterns) plus the contract's runner switches; it never
 /// expands the target into explicit `.t` members, so the upstream runner
 /// itself performs the selection.
+///
+/// One switches-only form is admitted: when a target's selectors contain a
+/// manifest population and every other selector is a recursive root, the
+/// target names an upstream-internal selection (for example `t/TEST --core`,
+/// whose pinned source expands its core roots and core MANIFEST subset only
+/// on the zero-file-argument path). Passing the roots verbatim would echo
+/// directory names instead of members, so the argv is the contract's runner
+/// switches alone and upstream still performs every part of the selection.
 pub(crate) fn selector_arguments(
     matrix: &UpstreamTargetMatrix,
     entry: &TargetMatrixEntry,
@@ -113,6 +121,22 @@ pub(crate) fn selector_arguments(
         ));
     }
     let (selectors, _script_forms) = effective_selection(matrix, entry)?;
+    let upstream_internal = !entry.contract.runner_switches.is_empty()
+        && selectors
+            .iter()
+            .any(|selector| matches!(selector, TargetSelector::ManifestPopulation { .. }))
+        && selectors
+            .iter()
+            .any(|selector| matches!(selector, TargetSelector::RecursiveRoot { .. }))
+        && selectors.iter().all(|selector| {
+            matches!(
+                selector,
+                TargetSelector::RecursiveRoot { .. } | TargetSelector::ManifestPopulation { .. }
+            )
+        });
+    if upstream_internal {
+        return Ok(entry.contract.runner_switches.clone());
+    }
     let mut arguments = Vec::new();
     for switch in &entry.contract.runner_switches {
         arguments.push(switch.clone());
@@ -527,15 +551,7 @@ mod contract_tests {
     #[test]
     fn non_test_authorities_and_foreign_selectors_refuse_the_route() -> Result<()> {
         let matrix = matrix()?;
-        for target_id in [
-            "component_op",
-            "manifest_root_lib",
-            "make_test_reonly",
-            "prep_test",
-            // Carries a manifest-population selector even though its authority
-            // is t/TEST: `--core` populations stay outside this route.
-            "selector_test_core",
-        ] {
+        for target_id in ["component_op", "manifest_root_lib", "make_test_reonly", "prep_test"] {
             let found = entry(&matrix, target_id)?;
             let Err(error) = selector_arguments(&matrix, found) else {
                 bail!("{target_id} must refuse the exact t/TEST observation route");

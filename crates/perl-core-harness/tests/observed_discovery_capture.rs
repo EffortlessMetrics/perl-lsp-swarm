@@ -584,3 +584,25 @@ fn command_writes_a_reconstructing_receipt_for_a_clean_observation() -> Result<(
     ensure_reconstructs("clean-command", &receipt)?;
     Ok(())
 }
+
+#[test]
+fn core_selector_observation_uses_switches_only_argv() -> Result<()> {
+    // #6665: the actual upstream --core denominator is upstream-internal
+    // selection. The route must send switches only (never the 13 roots,
+    // never locally expanded members) and the stand-in expands its own
+    // population, yielding complete observed membership.
+    let observation = observe_with_mode("selector_test_core", "select")?;
+    let receipt = &observation.receipt;
+    assert_eq!(receipt.payload.state, DiscoveryObservationState::ObservedComplete);
+    assert_eq!(
+        receipt.payload.invocation.argv,
+        vec!["TEST".to_string(), "--dumptests".to_string(), "--core".to_string()],
+        "core argv must be switches only"
+    );
+    assert_eq!(
+        accepted_paths(receipt),
+        vec!["t/base/cond.t", "t/base/if.t", "t/comp/require.t", "t/run/exit.t"]
+    );
+    ensure_reconstructs("selector_test_core", receipt)?;
+    Ok(())
+}
