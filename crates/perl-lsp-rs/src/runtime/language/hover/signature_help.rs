@@ -161,9 +161,7 @@ impl LspServer {
                     #[cfg(feature = "workspace")]
                     let _ = self.check_index_readiness(IndexReadinessPolicy::WaitBriefly);
                     #[cfg(feature = "workspace")]
-                    if Self::is_method_call_context(&doc.text, offset)
-                        && let Some(signature) = self.resolve_method_in_workspace(&function_name)
-                    {
+                    if let Some(signature) = self.resolve_method_in_workspace(&function_name) {
                         return Ok(Some(json!({
                             "signatures": [signature],
                             "activeSignature": active_signature,
@@ -226,16 +224,10 @@ impl LspServer {
                         }
                     }
 
-                    // If no signature found, return a generic one
-                    return Ok(Some(json!({
-                        "signatures": [json!({
-                            "label": format!("{}(...)", function_name),
-                            "documentation": null,
-                            "parameters": []
-                        })],
-                        "activeSignature": active_signature,
-                        "activeParameter": active_param
-                    })));
+                    // No static callable fact: LSP 3.17 defines a null
+                    // result when no signatures are available (#17582).
+                    // Never fabricate a `name(...)` signature.
+                    return Ok(Some(Value::Null));
                 }
             }
         } else {
