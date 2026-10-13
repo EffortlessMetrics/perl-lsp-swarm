@@ -5,6 +5,7 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -27,7 +28,7 @@ class RpmDebugContract(unittest.TestCase):
         subprocess.run(["strip", "--strip-debug", str(self.stripped)], check=True)
         output = self.work / "rendered"
         subprocess.run([
-            "python3", str(ROOT / "scripts/render-linux-packages.py"),
+            sys.executable, str(ROOT / "scripts/render-linux-packages.py"),
             "--version", "0.17.0", "--download-base", "https://example.invalid/release",
             "--download-sha256", "0" * 64, "--arch", "x86_64",
             "--output-dir", str(output),
