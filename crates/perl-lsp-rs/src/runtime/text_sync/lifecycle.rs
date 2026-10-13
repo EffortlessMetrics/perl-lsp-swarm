@@ -110,17 +110,25 @@ impl LspServer {
                         retired_index_version = current_revision;
                         continue;
                     }
-                    if let Some((url, content)) = content {
+                    let restored = if let Some((url, content)) = content {
                         // Closed-source initial import has no live generation.
                         // Use the resolved file identity, including equivalent
                         // URI spellings accepted by the close eviction surface.
-                        if let Err(error) = coordinator.index().index_initial_file(url, content) {
-                            tracing::warn!("Failed to re-index {} on close: {}", uri, error);
+                        match coordinator.index().index_initial_file(url, content) {
+                            Ok(()) => true,
+                            Err(error) => {
+                                tracing::warn!("Failed to re-index {} on close: {}", uri, error);
+                                false
+                            }
                         }
                     } else {
-                        // A fresh retry may reject backing after a watcher
-                        // published intervening facts. Its unchanged revision
-                        // lets this observed rejection retire those facts too.
+                        false
+                    };
+                    if !restored {
+                        // A fresh retry may reject backing or fail to import
+                        // after a watcher published intervening facts. Its
+                        // unchanged revision lets this failed handoff retire
+                        // those obsolete facts too.
                         for key in Self::uri_key_variants(uri) {
                             coordinator.index().remove_file(&key);
                         }

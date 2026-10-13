@@ -3672,6 +3672,13 @@ fn test_did_close_retry_rejection_retires_intervening_watcher_source()
 }
 
 #[cfg(feature = "workspace")]
+#[test]
+fn test_did_close_retry_parse_failure_retires_intervening_watcher_source()
+-> Result<(), Box<dyn std::error::Error>> {
+    close_watcher_interposition("retry_parse_failure")
+}
+
+#[cfg(feature = "workspace")]
 fn close_watcher_interposition(event: &'static str) -> Result<(), Box<dyn std::error::Error>> {
     let dir = tempfile::tempdir()?;
     let path = dir.path().join("Journey.pm");
@@ -3697,7 +3704,12 @@ fn close_watcher_interposition(event: &'static str) -> Result<(), Box<dyn std::e
         hook_reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let server = weak.upgrade().expect("live close server");
         match event {
-            "changed" | "exhausted" | "retry_missing" | "retry_directory" | "retry_binary" => {
+            "changed"
+            | "exhausted"
+            | "retry_missing"
+            | "retry_directory"
+            | "retry_binary"
+            | "retry_parse_failure" => {
                 std::fs::write(&hook_path, newer).expect("write newer disk");
                 server.handle_watched_file_batch(vec![hook_uri.clone()]);
                 assert!(
@@ -3720,6 +3732,26 @@ fn close_watcher_interposition(event: &'static str) -> Result<(), Box<dyn std::e
                     }
                     "retry_binary" => std::fs::write(&hook_path, "\0invalid binary\n")
                         .expect("binary retry source"),
+                    "retry_parse_failure" => {
+                        // Existing WorkspaceIndex regression's deterministic
+                        // NestingTooDeep failure, without changing the parser.
+                        let too_deep = format!(
+                            "package Journey;\n{}1;{}\n",
+                            "if ($a) { ".repeat(200),
+                            "}".repeat(200)
+                        );
+                        let control = perl_workspace::workspace_index::WorkspaceIndex::new();
+                        assert!(
+                            control
+                                .index_initial_file(
+                                    url::Url::from_file_path(&hook_path).unwrap(),
+                                    too_deep.clone()
+                                )
+                                .is_err(),
+                            "fixture must exercise import Err, not ordinary diagnostics"
+                        );
+                        std::fs::write(&hook_path, too_deep).expect("unindexable retry source");
+                    }
                     _ => {}
                 }
                 if event == "exhausted" {
@@ -3805,7 +3837,11 @@ fn close_watcher_interposition(event: &'static str) -> Result<(), Box<dyn std::e
                 (3, 0, 3, 20)
             );
         }
-        "deleted" | "retry_missing" | "retry_directory" | "retry_binary" => {
+        "deleted"
+        | "retry_missing"
+        | "retry_directory"
+        | "retry_binary"
+        | "retry_parse_failure" => {
             assert!(
                 symbols.is_empty(),
                 "close must not retain rejected or deleted disk source: {event}"

@@ -21,7 +21,7 @@ Close and delete are different lifecycle events.
 
 | Lifecycle | Required behavior |
 |-----------|-------------------|
-| Close-only: `didOpen -> didClose` | Evict editor/session state and retire indexed buffer facts. Restore closed-source workspace facts only from a successful, admitted, size-bounded and non-binary disk read; missing, unreadable or guarded backing leaves them absent. Reopened buffers and newer watcher publications keep authority. |
+| Close-only: `didOpen -> didClose` | Evict editor/session state and retire indexed buffer facts. Restore closed-source workspace facts only after a successful import of admitted, size-bounded and non-binary disk source; missing, unreadable, guarded or unindexable backing leaves them absent. Reopened buffers and newer watcher publications keep authority. |
 | Close and delete: `didOpen -> didClose -> watched-file DELETED` | Evict editor/session state and remove workspace-index state for that file. No index structure should retain the deleted URI after pending work drains. |
 | Workspace-folder removal | Evict open documents and workspace-index state under the removed roots only. Unrelated roots must remain intact. |
 
