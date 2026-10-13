@@ -1722,12 +1722,21 @@ impl<'a> PerlLexer<'a> {
                 // 42, while bare `$'` after a match stays postmatch).
                 else if let Some(ch) = self.current_char() {
                     if ch == '\''
-                        && matches!(sigil, '$' | '@' | '%' | '*' | '&')
+                        && matches!(sigil, '$' | '@' | '%' | '*')
                         && self.apostrophe_starts_legacy_package_segment(self.position)
                     {
                         self.advance(); // consume '
                         while let Some(ch) = self.current_char() {
-                            if is_perl_identifier_continue(ch) {
+                            if ch == '\'' {
+                                // A further separator is consumed only
+                                // when another segment follows it; otherwise
+                                // the apostrophe opens a string in Perl.
+                                if self.apostrophe_starts_legacy_package_segment(self.position) {
+                                    self.advance();
+                                } else {
+                                    break;
+                                }
+                            } else if is_perl_identifier_continue(ch) {
                                 self.advance();
                             } else {
                                 break;

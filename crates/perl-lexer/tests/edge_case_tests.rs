@@ -93,6 +93,29 @@ fn leading_apostrophe_variable_is_one_identifier() -> R {
 }
 
 #[test]
+fn second_apostrophe_without_segment_opens_string() -> R {
+    // `$'b'c` continues the qualified name (another separator segment),
+    // but `$'b';` must not absorb the trailing apostrophe into the token:
+    // in Perl it opens a string there.
+    let chained = significant("$'b'c;");
+    assert!(
+        chained.iter().any(|token| token.text.as_ref() == "$'b'c"),
+        "chained separator segments should stay one token: {chained:?}"
+    );
+    let terminated = significant("$'b';");
+    assert!(
+        terminated.iter().any(|token| token.text.as_ref() == "$'b"),
+        "qualified name should end before the string apostrophe: {terminated:?}"
+    );
+    assert!(
+        !terminated.iter().any(|token| token.text.as_ref() == "$'b'"),
+        "trailing apostrophe must not join the variable token: {terminated:?}"
+    );
+
+    Ok(())
+}
+
+#[test]
 fn bare_postmatch_apostrophe_stays_special_variable() -> R {
     // Bare `$'` with no identifier start after it remains the postmatch
     // special variable.
