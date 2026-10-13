@@ -16,6 +16,8 @@ const TIMEOUT: Duration = Duration::from_secs(10);
 const CLEAN: &str = "# fixture\npackage age {\n    sub { 0 };\n    sub ub { 'ub age' }\n}\n";
 const BROKEN: &str = "# fixture\npackage age {\n    sub { 0 };\n    sub ub { 'ub age' + }\n}\n";
 const RENAMED: &str = "# fixture\npackage ack {\n    sub { 0 };\n    sub b { 'b ack' }\n}\n";
+const CONDITIONAL: &str =
+    "# fixture\npackage age {\n    if (1) {\n        sub ub { 'ub age' }\n    }\n}\n";
 
 fn range(line: u32, start: u32, end_line: u32, end: u32) -> Value {
     json!({"start": {"line": line, "character": start},
@@ -129,6 +131,27 @@ fn nested_sub_name_does_not_select_the_sub_keyword() -> Result<()> {
         actual[0]["children"][0]["selectionRange"],
         gold[0]["children"][0]["selectionRange"]
     );
+    finish(&mut client)
+}
+
+/// The canonical declaration walker must reach declarations below control-flow
+/// containers too. Looking up only the existing flat records and falling back
+/// to substring inference on a missing record would leave this case wrong.
+#[test]
+fn package_scoped_sub_inside_condition_has_an_exact_name_span() -> Result<()> {
+    let mut client = start(CONDITIONAL)?;
+    let gold = json!([{
+        "name": "age", "kind": 2, "detail": "",
+        "range": range(1, 0, 5, 1),
+        "selectionRange": range(1, 8, 1, 11),
+        "children": [{
+            "name": "ub", "kind": 12, "detail": "",
+            "range": range(3, 8, 3, 27),
+            "selectionRange": range(3, 12, 3, 14),
+            "children": []
+        }]
+    }]);
+    assert_eq!(current_outline(&mut client, &gold)?, gold);
     finish(&mut client)
 }
 
