@@ -172,6 +172,53 @@ fn clean_pair_grants_bounded_transfer() -> Result<()> {
 }
 
 #[test]
+fn cli_rejects_nonlexical_output_alias_without_touching_inputs() -> Result<()> {
+    // Negative security case: `--output <dir>/./ordinary.json` spells the
+    // ordinary receipt non-lexically. The CLI must refuse before reading or
+    // deleting anything, so the input receipt survives byte-for-byte.
+    let ordinary_temp = tempfile::tempdir()?;
+    let instrumented_temp = tempfile::tempdir()?;
+    let ordinary_value = ordinary_side(ordinary_temp.path(), "select")?;
+    let instrumented = instrumented_side(instrumented_temp.path(), "clean")?;
+    let ordinary_receipt = ordinary_temp.path().join("ordinary-receipt.json");
+    fs::write(&ordinary_receipt, serde_json::to_vec(&ordinary_value)?)?;
+    fs::write(
+        instrumented_temp.path().join("parent-receipt.json"),
+        serde_json::to_vec(&instrumented.parent)?,
+    )?;
+    fs::write(
+        instrumented_temp.path().join("trace-receipt.json"),
+        serde_json::to_vec(&instrumented.trace)?,
+    )?;
+    fs::write(
+        instrumented_temp.path().join("work-receipt.json"),
+        serde_json::to_vec(&instrumented.work)?,
+    )?;
+    let before = fs::read(&ordinary_receipt)?;
+    let alias = format!("{}/./ordinary-receipt.json", ordinary_temp.path().display());
+    let status = std::process::Command::new(env!("CARGO_BIN_EXE_perl-core-harness-artifacts"))
+        .args([
+            "compare-equivalence",
+            "--matrix",
+            &matrix_path().to_string_lossy(),
+            "--ordinary",
+            &ordinary_receipt.to_string_lossy(),
+            "--instrumented-parent",
+            &instrumented_temp.path().join("parent-receipt.json").to_string_lossy(),
+            "--trace",
+            &instrumented_temp.path().join("trace-receipt.json").to_string_lossy(),
+            "--work",
+            &instrumented_temp.path().join("work-receipt.json").to_string_lossy(),
+            "--output",
+            &alias,
+        ])
+        .status()?;
+    assert!(!status.success(), "aliased output must be refused");
+    assert_eq!(fs::read(&ordinary_receipt)?, before, "input receipt must survive");
+    Ok(())
+}
+
+#[test]
 fn stderr_bearing_ordinary_run_is_measured_difference() -> Result<()> {
     // Falsifier 5: instrumentation must not change ordinary stdout/stderr
     // beyond the isolated trace channel; stderr drift is measured, not hidden.
