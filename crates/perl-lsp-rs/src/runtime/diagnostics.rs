@@ -1493,6 +1493,13 @@ impl LspServer {
         };
 
         if let Some((doc, generation, gen_at_snapshot, workspace_gen_at_snapshot)) = doc_snapshot {
+            // A rejected change leaves last-good text for recovery, not current
+            // editor-buffer truth. Do not let the provider's reparse fallback
+            // resurrect its diagnostics or mint a reusable result ID (#17752).
+            if doc.full_sync_required() {
+                return Ok(Some(Self::empty_full_diagnostic_report()));
+            }
+
             // Coarse workDoneProgress for the full pull-diagnostics path, which
             // may analyze many native rules over large trees. Initialized
             // here (after the document-existence check) so that immediately-
