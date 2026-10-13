@@ -644,6 +644,32 @@ mod tests {
     }
 
     #[test]
+    fn formatting_indent_columns_admitted_from_client_settings() -> TestResult {
+        // Admission layer: the JSON a client actually sends through
+        // didChangeConfiguration must land in ServerConfig and then in
+        // formatting output, not just direct config mutation.
+        let (server, _output) = server_with_output();
+        let uri = "file:///indent-columns-admission.pl";
+        server.test_apply_did_open(uri, "sub f {\nmy $x = 1;\n}\n", 1)?;
+        server.test_handle_did_change_configuration(Some(json!({
+            "settings": { "perl": { "formatting": { "indentColumns": 2 } } }
+        })));
+
+        let response =
+            server.handle_formatting_policy(Some(document_formatting_params(uri, 1)), None)?;
+
+        verify(
+            server.config.lock().perltidy_indent_columns == Some(2),
+            "client indentColumns did not enter ServerConfig",
+        )?;
+        verify(
+            first_new_text(&response).contains("\n  my $x = 1;"),
+            format!("admitted indentColumns=2 did not change output: {response:?}"),
+        )?;
+        Ok(())
+    }
+
+    #[test]
     fn formatting_tabs_setting_changes_output() -> TestResult {
         let (server, _output) = server_with_output();
         let uri = "file:///tabs-channel.pl";
