@@ -3321,6 +3321,24 @@ sub real_method { 1 }
         assert!(!names.contains(&"state_helper"), "state sub must not be a method, got {names:?}");
     }
 
+    #[test]
+    fn current_source_lexical_subs_do_not_surface_as_methods() {
+        let source = r#"package User;
+use Moo;
+my sub lexical_helper { 1 }
+state sub state_helper { 1 }
+sub real_method { 1 }
+1;
+"#;
+        let index = Arc::new(WorkspaceIndex::new());
+        let members =
+            collect_all_package_members_with_source(index.as_ref(), "User", source, "");
+        let names: Vec<_> = members.iter().map(|member| member.name.as_str()).collect();
+        assert!(names.contains(&"real_method"), "package sub must be offered, got {names:?}");
+        assert!(!names.contains(&"lexical_helper"), "my sub must not be a method, got {names:?}");
+        assert!(!names.contains(&"state_helper"), "state sub must not be a method, got {names:?}");
+    }
+
     /// G1 regression (#17084): the index holds generation 1 of the edited
     /// document. The open buffer is generation 2 and renames `old_name` to
     /// `new_name`; the stale same-document explicit member must not resurrect,
