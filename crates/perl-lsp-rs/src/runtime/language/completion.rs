@@ -1521,7 +1521,11 @@ impl LspServer {
         match doc.latest_parsed() {
             Some(latest) if latest.source() == doc.text => (Some(latest), false),
             Some(_) => (None, true),
-            None => (None, false),
+            // No snapshot has ever published for this text (a document the
+            // async worker has not caught up with, e.g. created by a
+            // full-buffer didChange): the fallback is bounded, so the list
+            // is incomplete until the first parse lands.
+            None => (None, true),
         }
     }
 
