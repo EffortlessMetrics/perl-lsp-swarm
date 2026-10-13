@@ -16,7 +16,7 @@ class RpmDebugContract(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.work = Path(self.temp.name)
-        for tool in ("cc", "readelf", "strip", "objcopy"):
+        for tool in ("cc", "readelf", "strip", "objcopy", "objdump"):
             self.assertIsNotNone(shutil.which(tool), f"required fixture tool: {tool}")
         source = self.work / "main.c"
         source.write_text("int main(void) { return 0; }\n")
@@ -46,6 +46,9 @@ class RpmDebugContract(unittest.TestCase):
                               text=True, capture_output=True)
 
     def test_stripped_pair_passes_without_changing_input(self):
+        sections = subprocess.check_output(["readelf", "-SW", str(self.stripped)], text=True)
+        self.assertIn(".symtab", sections, "no-DWARF static symbols are valid inputs")
+        self.assertIn(".dynsym", sections, "runtime dynamic symbols are valid inputs")
         before = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in self.payload.iterdir()}
         result = self.run_guard()
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -63,7 +66,7 @@ class RpmDebugContract(unittest.TestCase):
                 shutil.copy2(self.stripped, self.payload / name)
 
     def test_additional_debug_section_markers_are_refused(self):
-        for section in (".zdebug_info", ".gnu_debugdata", ".gnu_debuglink", ".gnu_debugaltlink"):
+        for section in (".zdebug_info", ".gnu_debugdata", ".gnu_debuglink", ".gnu_debugaltlink", ".gdb_index"):
             with self.subTest(section=section):
                 destination = self.payload / "perl-dap"
                 shutil.copy2(self.stripped, destination)
@@ -80,6 +83,23 @@ class RpmDebugContract(unittest.TestCase):
         subprocess.run(["objcopy", "--compress-debug-sections=zlib-gnu", str(destination)], check=True)
         sections = subprocess.check_output(["readelf", "-SW", str(destination)], text=True)
         self.assertIn(".zdebug_info", sections, "fixture must contain compressed DWARF")
+        before = destination.read_bytes()
+        result = self.run_guard()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("debug information", result.stderr)
+        self.assertEqual(before, destination.read_bytes())
+
+    def test_real_stabs_debug_is_refused_before_mutation(self):
+        source = self.work / "stabs.c"
+        source.write_text(r'''asm(".stabs \"fixture.c\",100,0,0,0\n"
+    ".stabs \"main:F(0,1)\",36,0,0,main\n");
+int main(void) { return 0; }
+''')
+        destination = self.payload / "perl-dap"
+        subprocess.run(["cc", str(source), "-o", str(destination)], check=True)
+        records = subprocess.check_output(["objdump", "--stabs", str(destination)], text=True)
+        self.assertIn("fixture.c", records, "fixture must contain source records")
+        self.assertIn("main:F(0,1)", records, "fixture must contain function records")
         before = destination.read_bytes()
         result = self.run_guard()
         self.assertNotEqual(result.returncode, 0)

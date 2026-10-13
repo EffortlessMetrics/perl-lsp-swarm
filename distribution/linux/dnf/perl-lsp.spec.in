@@ -31,7 +31,7 @@ for binary in perllsp perl-dap; do
         exit 1
     fi
     sections=$(LC_ALL=C readelf -SW "$binary") || exit 1
-    if echo "$sections" | grep -Eq '[[:space:]](\.debug_|\.zdebug_|\.gnu_debug(data|link|altlink))'; then
+    if echo "$sections" | grep -Eq '[[:space:]](\.debug_|\.zdebug_|\.gnu_debug(data|link|altlink)|\.stab(str)?([[:space:]]|\.)|\.gdb_index[[:space:]])'; then
         echo "Release binary $binary contains debug information; use debug-preserving packaging" >&2
         exit 1
     fi
