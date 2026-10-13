@@ -261,6 +261,45 @@ fn cli_without_ordinary_emits_not_proven_receipt() -> Result<()> {
 }
 
 #[test]
+fn cli_accepts_bare_relative_output_name() -> Result<()> {
+    // Regression: `--output equivalence.json` (no directory component)
+    // must not abort in the alias check; the empty parent is the cwd.
+    let instrumented_temp = tempfile::tempdir()?;
+    let instrumented = instrumented_side(instrumented_temp.path(), "clean")?;
+    fs::write(
+        instrumented_temp.path().join("parent-receipt.json"),
+        serde_json::to_vec(&instrumented.parent)?,
+    )?;
+    fs::write(
+        instrumented_temp.path().join("trace-receipt.json"),
+        serde_json::to_vec(&instrumented.trace)?,
+    )?;
+    fs::write(
+        instrumented_temp.path().join("work-receipt.json"),
+        serde_json::to_vec(&instrumented.work)?,
+    )?;
+    let status = std::process::Command::new(env!("CARGO_BIN_EXE_perl-core-harness-artifacts"))
+        .current_dir(instrumented_temp.path())
+        .args([
+            "compare-equivalence",
+            "--matrix",
+            &matrix_path().to_string_lossy(),
+            "--instrumented-parent",
+            &instrumented_temp.path().join("parent-receipt.json").to_string_lossy(),
+            "--trace",
+            &instrumented_temp.path().join("trace-receipt.json").to_string_lossy(),
+            "--work",
+            &instrumented_temp.path().join("work-receipt.json").to_string_lossy(),
+            "--output",
+            "equivalence.json",
+        ])
+        .status()?;
+    assert!(status.success(), "bare relative output name must be accepted");
+    assert!(instrumented_temp.path().join("equivalence.json").is_file());
+    Ok(())
+}
+
+#[test]
 fn stderr_bearing_ordinary_run_is_measured_difference() -> Result<()> {
     // Falsifier 5: instrumentation must not change ordinary stdout/stderr
     // beyond the isolated trace channel; stderr drift is measured, not hidden.

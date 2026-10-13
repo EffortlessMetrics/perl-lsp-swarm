@@ -515,7 +515,13 @@ pub(crate) fn compare_equivalence_from_options(
     let canonical = |path: &PathBuf| -> color_eyre::eyre::Result<PathBuf> {
         if path.exists() {
             Ok(path.canonicalize()?)
-        } else if let (Some(parent), Some(name)) = (path.parent(), path.file_name()) {
+        } else if let Some(name) = path.file_name() {
+            // A bare relative name has an empty parent: that is the
+            // current directory, not an error.
+            let parent = match path.parent() {
+                Some(parent) if !parent.as_os_str().is_empty() => parent.to_path_buf(),
+                _ => PathBuf::from("."),
+            };
             Ok(parent.canonicalize()?.join(name))
         } else {
             Ok(path.clone())
