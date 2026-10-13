@@ -67,7 +67,10 @@ fn typed_document_result_does_not_flatten_disabled_mode_to_no_change() {
 }
 
 #[test]
-fn typed_document_result_does_not_flatten_literal_refusal_to_no_change() {
+fn typed_document_preserves_literal_only_document_without_refusing() {
+    // #17708: a document whose only construct is a preserved literal is no
+    // longer refused wholesale. The literal line stays byte-exact and the
+    // outcome reports partial preservation instead of a refusal.
     let formatter = NativeFormatter::new();
     let source = "my $matched = $text =~ /needle/i;\n";
 
@@ -77,12 +80,48 @@ fn typed_document_result_does_not_flatten_literal_refusal_to_no_change() {
         &FormatContext::default(),
     );
 
-    assert_eq!(typed.outcome.disposition, FormatDisposition::Refused);
-    assert_eq!(typed.outcome.reason, FormatReasonCode::LiteralPreservationUnsupported,);
-    assert_eq!(typed.outcome.safety.literal_preservation, FormatEvidenceState::Refused,);
+    assert_eq!(typed.outcome.disposition, FormatDisposition::NoChange);
+    assert_eq!(typed.outcome.reason, FormatReasonCode::AlreadyFormattedPreservingLiterals);
+    assert_eq!(typed.outcome.safety.literal_preservation, FormatEvidenceState::PreservedPartially);
     assert_eq!(typed.result.formatted, source);
     assert!(typed.result.edits.is_empty());
-    assert_eq!(typed.result.diagnostics[0].code, "native.format.literal_preserve_region");
+    assert!(typed.result.diagnostics.is_empty());
+}
+
+#[test]
+fn typed_document_formats_around_preserved_heredoc_and_pod() {
+    let formatter = NativeFormatter::new();
+    let source =
+        "my$x=1;\nmy $text = <<'EOF';\n  keep   me\nEOF\n=head1 NAME\n\nDemo\n=cut\nmy$y=2;\n";
+
+    let typed = formatter.format_document_typed(
+        source,
+        &FormatConfig::default(),
+        &FormatContext::default(),
+    );
+
+    assert_eq!(typed.outcome.disposition, FormatDisposition::Applied);
+    assert_eq!(typed.outcome.reason, FormatReasonCode::AppliedPreservingLiterals);
+    assert_eq!(typed.outcome.safety.literal_preservation, FormatEvidenceState::PreservedPartially);
+    assert!(typed.result.formatted.contains("my $x = 1;"), "got: {}", typed.result.formatted);
+    assert!(typed.result.formatted.contains("my $y = 2;"), "got: {}", typed.result.formatted);
+    assert!(
+        typed.result.formatted.contains("  keep   me\n"),
+        "heredoc body must stay byte-exact, got: {}",
+        typed.result.formatted
+    );
+    assert!(
+        typed.result.formatted.contains("=head1 NAME\n\nDemo\n=cut\n"),
+        "POD must stay byte-exact, got: {}",
+        typed.result.formatted
+    );
+    // Formatting the formatted output is a no-op (idempotent).
+    let again = formatter.format_document_typed(
+        &typed.result.formatted,
+        &FormatConfig::default(),
+        &FormatContext::default(),
+    );
+    assert_eq!(again.result.formatted, typed.result.formatted);
 }
 
 #[test]
@@ -520,15 +559,20 @@ fn reindents_misindented_sub_and_conditional_blocks() {
 }
 
 #[test]
-fn reindent_leaves_literal_preserve_documents_unchanged() {
-    // The document-level literal-preserve gate still refuses documents
-    // containing heredocs wholesale; relaxing it is a separate claim.
+fn reindent_formats_around_literal_preserve_regions() {
+    // #17708: documents containing heredocs are formatted around the
+    // preserved body instead of being refused wholesale. The heredoc body
+    // stays byte-exact; the surrounding code reindents normally.
     let formatter = NativeFormatter::new();
     let source = "sub foo {\nmy $x = <<'EOF';\n  keep   me\nEOF\nmy $y = 1;\n}\n";
-    let expected = source;
+    let expected = "sub foo {\n    my $x = <<'EOF';\n  keep   me\nEOF\n    my $y = 1;\n}\n";
 
     let result = formatter.format_document(source, &FormatConfig::default());
     assert_eq!(result.formatted, expected);
+
+    let second = formatter.format_document(&result.formatted, &FormatConfig::default());
+    assert_eq!(second.formatted, expected, "preserve formatting must be idempotent");
+    assert!(!second.changed);
 }
 
 #[test]
