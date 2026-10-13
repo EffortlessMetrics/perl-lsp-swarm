@@ -969,8 +969,10 @@ pub const DEFAULT_MAX_PARAMS: usize = 5;
 /// Native rule that reports named subroutines with too many parameters.
 ///
 /// Only subroutines with an explicit signature (`sub name ($a, $b) { }`)
-/// are measured: every declared parameter counts once, whether mandatory,
-/// optional, named, or slurpy. Subroutines that read `@_` directly declare
+/// are measured: every classified parameter counts once, whether
+/// mandatory, optional, named, or slurpy. Malformed signature items,
+/// which the parser retains as error nodes rather than classifying,
+/// never count. Subroutines that read `@_` directly declare
 /// no parameter list, so their arity is not statically known and they are
 /// never reported. A subroutine with exactly [`DEFAULT_MAX_PARAMS`]
 /// parameters passes; only a count above it fires, once, at the sub
@@ -2713,7 +2715,18 @@ fn collect_too_many_params_findings(
     } = &node.kind
         && let NodeKind::Signature { parameters } = &signature.kind
     {
-        let param_count = parameters.len();
+        let param_count = parameters
+            .iter()
+            .filter(|parameter| {
+                matches!(
+                    parameter.kind,
+                    NodeKind::MandatoryParameter { .. }
+                        | NodeKind::OptionalParameter { .. }
+                        | NodeKind::NamedParameter { .. }
+                        | NodeKind::SlurpyParameter { .. }
+                )
+            })
+            .count();
         if param_count > DEFAULT_MAX_PARAMS {
             let header_end = name_span.map_or(body.location.start, |span| span.end);
             let range = range_for_byte_span(source, node.location.start, header_end);
@@ -6370,6 +6383,23 @@ if ($x = 1) { print $x; }
 
         assert_eq!(findings.len(), 1, "six declared parameters must fire");
         assert!(findings[0].message.contains("6"), "got: {}", findings[0].message);
+    }
+
+    #[test]
+    fn native_too_many_params_rule_ignores_malformed_parameters() {
+        // The parser retains a malformed signature item as an error node;
+        // it is not a declared binding and must not count toward the width.
+        let source =
+            "use strict;\nuse warnings;\nsub wide($a, $b, $c, $d, $e, $f = ) { return $a; }\n";
+        let ast = parse_source(source);
+        let config = CriticConfig::default();
+        let ctx = CriticContext::new(source, &ast, &config);
+        let registry = NativeCriticRegistry::with_rules(vec![Box::new(TooManyParamsRule)]);
+
+        assert!(
+            registry.check(&ctx).is_empty(),
+            "a malformed parameter is not a declared parameter"
+        );
     }
 
     #[test]
