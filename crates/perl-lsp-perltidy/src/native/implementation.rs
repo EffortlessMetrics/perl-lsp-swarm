@@ -296,7 +296,7 @@ impl NativeFormatter {
 /// Line indices (0-based) covered by a multiline literal token, excluding
 /// the line the token starts on. Those lines are literal bytes: the block
 /// stack must ignore them and formatting must preserve them exactly.
-fn multiline_literal_lines(source: &str) -> std::collections::HashSet<usize> {
+pub(super) fn multiline_literal_lines(source: &str) -> std::collections::HashSet<usize> {
     let mut lines = std::collections::HashSet::new();
     let line_starts: Vec<usize> =
         std::iter::once(0).chain(source.match_indices('\n').map(|(index, _)| index + 1)).collect();
@@ -842,7 +842,7 @@ fn format_simple_statement_line(line: &str, config: &FormatConfig) -> Option<Str
     Some(format!("{indent}{}", append_trailing_comment(formatted, trailing_comment)))
 }
 
-fn split_trailing_comment(body: &str) -> (&str, Option<&str>) {
+pub(super) fn split_trailing_comment(body: &str) -> (&str, Option<&str>) {
     let mut in_single = false;
     let mut in_double = false;
     let mut in_backtick = false;

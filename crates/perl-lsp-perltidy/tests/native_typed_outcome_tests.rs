@@ -728,6 +728,80 @@ fn typed_range_result_partial_preserve_overlap_refuses_like_document_gate() {
 }
 
 #[test]
+fn typed_range_result_ignores_inline_clause_tail_before_the_range() {
+    // Review PRRT_kwDOSid81M6rq9dA: an unselected inline `} else { ... }`
+    // tail is not a rendered boundary, but it still closes the `if` block.
+    // The admission walk must pop that block for context lines, or a later
+    // correctly indented selection is compared against the stale opener and
+    // refused as UnsupportedSyntax.
+    let formatter = NativeFormatter::new();
+    let source =
+        "sub f {\n    if ($x) {\n        print 2;\n    } else { print 3; }\n    my $y = 2;\n}\n";
+    // Select only `my $y = 2;` (line 4).
+    let range = TextRange::new(TextPosition::new(4, 0), TextPosition::new(5, 0));
+
+    let typed = formatter.format_range_typed(
+        source,
+        range,
+        &FormatConfig::default(),
+        &FormatContext::default(),
+    );
+
+    assert_eq!(typed.outcome.disposition, FormatDisposition::NoChange);
+    assert_eq!(typed.outcome.reason, FormatReasonCode::AlreadyFormatted);
+    assert!(!typed.result.changed);
+    assert!(typed.result.edits.is_empty());
+    assert!(typed.result.diagnostics.is_empty());
+    assert_eq!(typed.result.formatted, source);
+}
+
+#[test]
+fn typed_range_result_still_refuses_misindented_line_after_inline_clause_tail() {
+    // Negative control for the context-pop fix above: honouring the inline
+    // tail's close must not admit a selection outside the enclosing layout.
+    let formatter = NativeFormatter::new();
+    let source =
+        "sub f {\n    if ($x) {\n        print 2;\n    } else { print 3; }\nmy $y = 2;\n}\n";
+    let range = TextRange::new(TextPosition::new(4, 0), TextPosition::new(5, 0));
+
+    let typed = formatter.format_range_typed(
+        source,
+        range,
+        &FormatConfig::default(),
+        &FormatContext::default(),
+    );
+
+    assert_eq!(typed.outcome.disposition, FormatDisposition::Refused);
+    assert_eq!(typed.outcome.reason, FormatReasonCode::UnsupportedSyntax);
+    assert!(!typed.result.changed);
+}
+
+#[test]
+fn typed_range_result_ignores_multiline_string_content_before_the_range() {
+    // Review PRRT_kwDOSid81M6rq9dr: physical lines inside a multiline
+    // string are literal bytes, not code. A string-content line shaped like
+    // a block header must not be pushed as an opener for a later range.
+    let formatter = NativeFormatter::new();
+    let source = "sub f {\n    my $s = \"hello\n    if ($x) {\nworld\";\n    my $y = 2;\n}\n";
+    // Select only `my $y = 2;` (line 4).
+    let range = TextRange::new(TextPosition::new(4, 0), TextPosition::new(5, 0));
+
+    let typed = formatter.format_range_typed(
+        source,
+        range,
+        &FormatConfig::default(),
+        &FormatContext::default(),
+    );
+
+    assert_eq!(typed.outcome.disposition, FormatDisposition::NoChange);
+    assert_eq!(typed.outcome.reason, FormatReasonCode::AlreadyFormatted);
+    assert!(!typed.result.changed);
+    assert!(typed.result.edits.is_empty());
+    assert!(typed.result.diagnostics.is_empty());
+    assert_eq!(typed.result.formatted, source);
+}
+
+#[test]
 fn formats_list_operator_statements_inside_blocks() {
     let formatter = NativeFormatter::new();
     let source = "sub f {\nprint$x;\nprintf \"%d\",  42;\nsay $x, $y;\n}\n";
