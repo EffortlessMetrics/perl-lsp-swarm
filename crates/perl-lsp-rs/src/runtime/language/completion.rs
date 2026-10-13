@@ -1499,6 +1499,32 @@ impl LspServer {
         json!({"isIncomplete": false, "items": []})
     }
 
+    /// Snapshot completion may answer from, plus whether the current
+    /// generation's parse is still pending (#17775).
+    ///
+    /// The generation-current snapshot is always usable. A stale snapshot
+    /// is usable only when the text it was parsed from still equals the
+    /// current text (a generation bump without a text change); pairing a
+    /// stale AST with newer text made instance methods intermittently
+    /// disappear behind a confident generic-only list. While the parse is
+    /// pending, callers must use the bounded current-text fallback and mark
+    /// the list incomplete instead.
+    fn completion_parsed_snapshot(
+        doc: &DocumentState,
+    ) -> (Option<Arc<crate::state::ParsedSnapshot>>, bool) {
+        if let Some(current) = doc.current_parsed() {
+            return (Some(current), false);
+        }
+        if doc.full_sync_required() {
+            return (None, false);
+        }
+        match doc.latest_parsed() {
+            Some(latest) if latest.source() == doc.text => (Some(latest), false),
+            Some(_) => (None, true),
+            None => (None, false),
+        }
+    }
+
     fn publish_completion_answer(&self, uri: &str, generation: Option<u32>, value: Value) -> Value {
         match generation {
             Some(generation) => self.publish_user_answer_value(
@@ -1595,15 +1621,15 @@ impl LspServer {
                     break 'completion_response None;
                 }
 
-                // Prefer the generation-current snapshot; fall back to the latest
-                // published one when the current generation has no snapshot yet
-                // (e.g. the workspace indexer bumped the generation before the
-                // completion request arrived, leaving `current_parsed()` empty).
-                // For completions, a slightly-stale AST is always more useful than
-                // the symbol-table-free `lexical_complete` fallback (#11858).
-                // Full-sync desynchronization is not pending parse: predecessor
-                // AST must not answer the user (#8129).
-                let parsed = doc.parsed_for_user_answers();
+                // Use the generation-current snapshot, or a stale one whose
+                // parsed source still equals the current text. While the
+                // current generation's parse is pending, never pair the stale
+                // AST with the new text (#17775); the bounded fallback below
+                // answers instead and the list is marked incomplete. The
+                // indexer-bump case behind #11858 is the same-text stale
+                // snapshot, which stays usable. Full-sync desynchronization
+                // is not pending parse (#8129).
+                let (parsed, pending_parse_gap) = Self::completion_parsed_snapshot(doc);
                 let ast_available = parsed.as_ref().is_some_and(|p| p.ast().is_some());
 
                 // One `@INC` context per request, shared by the module roots
@@ -1722,6 +1748,7 @@ impl LspServer {
                 }
 
                 let (completions, is_incomplete) = sort_and_cap_completions(completions, cap);
+                let is_incomplete = is_incomplete || pending_parse_gap;
                 let (workspace_index_state, workspace_index_reason) =
                     Self::completion_workspace_index_state(&workspace_mode);
                 let completion_decision_context = CompletionDecisionContext {
@@ -1984,15 +2011,11 @@ impl LspServer {
                     break 'completion_response None;
                 }
 
-                // Prefer the generation-current snapshot; fall back to the latest
-                // published one when the current generation has no snapshot yet
-                // (e.g. the workspace indexer bumped the generation before the
-                // completion request arrived, leaving `current_parsed()` empty).
-                // For completions, a slightly-stale AST is always more useful than
-                // the symbol-table-free `lexical_complete` fallback (#11858).
-                // Full-sync desynchronization is not pending parse: predecessor
-                // AST must not answer the user (#8129).
-                let parsed = doc.parsed_for_user_answers();
+                // Same freshness contract as `handle_completion`: never pair
+                // a stale AST with newer text while the parse is pending
+                // (#17775); same-text stale snapshots stay usable (#11858),
+                // and full-sync desynchronization is not pending parse (#8129).
+                let (parsed, pending_parse_gap) = Self::completion_parsed_snapshot(doc);
                 let ast_available = parsed.as_ref().is_some_and(|p| p.ast().is_some());
 
                 // Create optimized cancellation callback with reduced frequency
@@ -2113,6 +2136,7 @@ impl LspServer {
 
                 let (completions, is_incomplete) =
                     sort_and_cap_completions(completions, completion_cap());
+                let is_incomplete = is_incomplete || pending_parse_gap;
 
                 if token.is_cancelled_relaxed() {
                     return Err(JsonRpcError {
