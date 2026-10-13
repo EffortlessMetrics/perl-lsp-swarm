@@ -13,6 +13,19 @@ Builtin routes require Python 3.10+ and Cargo 1.95+; staged Clippy requires Pyth
 profiles unchanged. Default jobs remain two (accepted range one to four), with
 incremental compilation disabled. This is a capacity policy, not a speed claim.
 
+Host profiles for the jobs knob (#17673): the default of two protects
+constrained and shared hosts. On a dedicated host with at least eight logical
+cores and memory headroom for parallel rustc processes, setting
+`CARGO_BUILD_JOBS=4` in the shell environment (never in tracked config,
+#5204) is the supported faster profile. Measured on an 8-core/16-thread,
+80 GiB host (fresh target, shared cargo-home, `check -p perl-parser`,
+one run per setting): cold 80.2s at jobs=2 versus 31.9s at jobs=4; warm and
+single-crate edited checks are under two seconds at either setting, so the
+win is concentrated in cold and multi-crate work. Peak memory at jobs=4
+was not captured, so treat the profile as unqualified on memory-tight
+hosts and on hosted CI runners, which have different core/memory envelopes
+and should keep the default.
+
 One admission/lease slot is keyed by canonical Git common directory, hostname and
 OS, under `DEVPLANE` (default `~/.cache/devplane`). Sibling worktrees share this
 exclusion domain; independent clones and Windows/WSL do not. Within that slot,
