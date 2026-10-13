@@ -162,6 +162,10 @@ pub struct Parser<'a> {
     class_grammar: ClassGrammarContext,
     /// Statement boundary tracking for indirect object syntax detection
     at_stmt_start: bool,
+    /// While parsing a `sort` comparator slot, a bareword must not be
+    /// promoted to a call by `looks_like_bare_call`: `sort mycmp LIST`
+    /// names its comparator, it does not call it with the list as args.
+    in_sort_comparator: bool,
     /// FIFO queue of pending heredoc declarations awaiting content collection
     pending_heredocs: VecDeque<PendingHeredoc>,
     /// Custom attributes registered by Attribute::Handlers declarations in this file.
@@ -257,6 +261,7 @@ impl<'a> Parser<'a> {
             do_while_paren_depth: 0,
             class_grammar: ClassGrammarContext::default(),
             at_stmt_start: true,
+            in_sort_comparator: false,
             pending_heredocs: VecDeque::new(),
             custom_attribute_handlers: HashSet::new(),
             attribute_handlers_enabled: false,

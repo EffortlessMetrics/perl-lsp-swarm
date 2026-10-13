@@ -1727,6 +1727,14 @@ impl<'a> Parser<'a> {
                                     self.parse_args()?
                                 };
                                 args.extend(paren_args);
+                            } else if func_name.as_ref() == "sort" {
+                                // `sort mycmp LIST`: the first slot names the
+                                // comparator sub, so bare-call promotion is
+                                // suppressed while it is parsed.
+                                self.in_sort_comparator = true;
+                                let first = self.parse_assignment_or_declaration();
+                                self.in_sort_comparator = false;
+                                args.push(first?);
                             } else {
                                 // For builtins, use parse_assignment_or_declaration to handle
                                 // my/our/local/state declarations inside argument lists
