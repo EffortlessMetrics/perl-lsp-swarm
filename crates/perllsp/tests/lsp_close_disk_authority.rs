@@ -342,3 +342,21 @@ fn close_reclassifies_extensionless_disk_and_removes_virtual_symbols() -> Result
     }
     Ok(())
 }
+
+#[cfg(unix)]
+#[test]
+fn close_with_writerless_fifo_does_not_block_or_retain_buffer() -> Result<()> {
+    let project = Project::new("Journey.pm", Some(DISK))?;
+    let mut client = project.start()?;
+    project.open(&mut client, DISK)?;
+    project.edit(&mut client)?;
+    std::fs::remove_file(&project.path)?;
+    // Same real native fixture utility used by the workspace scan FIFO tests.
+    // No writer ever opens the pipe: an unchecked disk read would hang here.
+    let status = std::process::Command::new("mkfifo").arg(&project.path).status()?;
+    ensure!(status.success(), "mkfifo could not create the close fixture");
+    project.close(&mut client)?;
+    project.assert_symbol(&mut client, "buffer_only", None)?;
+    project.assert_symbol(&mut client, "disk_only", None)?;
+    shutdown(client)
+}
