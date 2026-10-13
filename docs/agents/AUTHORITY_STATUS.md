@@ -164,8 +164,8 @@ that say they are aspirational; no vision claim is an acceptance predicate.
 | `docs/project/PERL_LSP_VISION.md` | `historical` — aspirational research vision (2026-03-19) claiming 100 percent LSP coverage as GA | `docs/project/CURRENT_STATUS.md` |
 | `docs/articles/research/MAINTAINER_VISION_ARCHAEOLOGY.md` | `historical` — research article recording vision history, not itself a vision authority | this index |
 | `docs/agents/lenses/vision-alignment.md` | `current` — current review lens only; it is not a product vision document and sets no acceptance predicates | itself, for review-lens scope only |
-| `.hermes/conveyor/work-9ac57b3a/findings/maintainer-vision-agent-findings.md` | `historical` — conveyor findings; “vision” names a reviewer role | this index |
-| `.hermes/conveyor/work-e551d1f1/findings/maintainer-vision-agent-findings.md` | `historical` — conveyor findings; “vision” names a reviewer role | this index |
+| `.hermes/conveyor/work-9ac57b3a/findings/maintainer-vision-agent-findings.md` | `historical` — conveyor findings; "vision" names a reviewer role | this index |
+| `.hermes/conveyor/work-e551d1f1/findings/maintainer-vision-agent-findings.md` | `historical` — conveyor findings; "vision" names a reviewer role | this index |
 | `docs/project/EDITOR_TRUST_WAVE.md` | `historical` — dated wave plan with a North star section; principles survive only where current documents restate them | `docs/project/CURRENT_STATUS.md` |
 | `docs/project/plans/2026-06-convergence-to-release.md` | `historical` — dated narrative plan (umbrella #1209 closed) that itself points readers to live status | `docs/project/CURRENT_STATUS.md` |
 | `.kiro/specs/ux-readiness-system/requirements.md` | `historical` — Kiro-era requirements spec whose north-star sentence defines that system's purpose | `docs/project/CURRENT_STATUS.md` |
