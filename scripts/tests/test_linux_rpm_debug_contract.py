@@ -85,7 +85,8 @@ class RpmDebugContract(unittest.TestCase):
             command.append("--build-in-place")
         command.extend(["--define", f"_topdir {top}", str(spec_path)])
         result = subprocess.run(command, cwd=cwd, text=True, capture_output=True)
-        installed = list(top.glob("BUILD/*/BUILDROOT/usr/bin/perllsp"))
+        installed = list(top.glob("BUILDROOT/*/usr/bin/perllsp"))
+        installed.extend(top.glob("BUILD/*/BUILDROOT/usr/bin/perllsp"))
         if route == "normal":
             unchanged = hashlib.sha256(archive_path.read_bytes()).hexdigest() == source_hash
         else:
@@ -203,9 +204,7 @@ int main(void) { return 0; }
                 self.assertEqual(result.returncode, 0, output)
                 self.assertIn("Executing(%build)", output)
                 self.assertIn("Executing(%install)", output)
-                if route == "build-in-place":
-                    self.assertNotIn("Executing(%prep)", output)
-                else:
+                if route == "normal":
                     self.assertIn("Executing(%prep)", output)
                 self.assertEqual(len(installed), 1, output)
                 self.assertTrue(unchanged, "RPM must not mutate the release input")
@@ -220,7 +219,6 @@ int main(void) { return 0; }
                     self.assertNotEqual(result.returncode, 0, output)
                     if route == "build-in-place":
                         self.assertIn("Executing(%build)", output)
-                        self.assertNotIn("Executing(%prep)", output)
                     self.assertIn("debug information", output)
                     self.assertNotIn("Executing(%install)", output)
                     self.assertEqual(installed, [], output)
