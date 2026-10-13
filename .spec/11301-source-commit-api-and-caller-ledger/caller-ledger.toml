@@ -239,6 +239,7 @@ caller_paths = [
   "crates/perl-workspace/tests/legacy_public_api_regression_tests.rs",
   "crates/perl-workspace/tests/memory_leak_regression.rs",
   "crates/perl-workspace/tests/memory_profiling_test.rs",
+  "crates/perl-workspace/tests/package_scope_references.rs",
   "crates/perl-workspace/tests/quickorm_generated_member.rs",
   "crates/perl-workspace/tests/quickorm_workspace_receipt.rs",
   "crates/perl-workspace/tests/semantic_real_workspace_baseline.rs",

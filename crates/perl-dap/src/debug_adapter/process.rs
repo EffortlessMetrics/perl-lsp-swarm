@@ -558,6 +558,24 @@ impl DebugAdapter {
         }
 
         if let Some(args) = arguments {
+            // Reject malformed argv before retaining configuration or touching
+            // interpreter, authority, or process state (#17733). Every accepted
+            // string remains one argument; silently dropping entries changes
+            // the program the client asked us to debug.
+            let perl_args = match Self::parse_launch_script_args(&args) {
+                Ok(args) => args,
+                Err(message) => {
+                    return DapMessage::Response {
+                        seq,
+                        request_seq,
+                        success: false,
+                        command: "launch".to_string(),
+                        body: None,
+                        message: Some(message),
+                    };
+                }
+            };
+
             // Store launch arguments for restart support
             *lock_or_recover(&self.last_launch_args, "debug_adapter.last_launch_args") =
                 Some(args.clone());
@@ -709,14 +727,6 @@ impl DebugAdapter {
                 *lock_or_recover(&self.workspace_root, "debug_adapter.workspace_root") = Some(root);
             }
 
-            let perl_args = args
-                .get("args")
-                .and_then(|a| a.as_array())
-                .map(|arr| {
-                    arr.iter().filter_map(|v| v.as_str()).map(|s| s.to_string()).collect::<Vec<_>>()
-                })
-                .unwrap_or_default();
-
             let stop_on_entry = args.get("stopOnEntry").and_then(|s| s.as_bool()).unwrap_or(false);
 
             // Wall-clock timeout for the perl -d debuggee process (#4640).
@@ -812,6 +822,25 @@ impl DebugAdapter {
                 ),
             }
         }
+    }
+
+    /// Admit the optional script argv without coercion or payload-bearing errors.
+    fn parse_launch_script_args(args: &Value) -> Result<Vec<String>, String> {
+        let values = match args.get("args") {
+            None | Some(Value::Null) => return Ok(Vec::new()),
+            Some(Value::Array(values)) => values,
+            Some(_) => return Err("Invalid launch args: expected an array of strings".to_string()),
+        };
+        values
+            .iter()
+            .enumerate()
+            .map(|(index, value)| {
+                value
+                    .as_str()
+                    .map(str::to_owned)
+                    .ok_or_else(|| format!("Invalid launch args[{index}]: expected a string"))
+            })
+            .collect()
     }
 
     /// Resolve the Perl interpreter for a debug launch from its `launch.json`
@@ -3872,6 +3901,57 @@ mod tests {
             super::DapMessage::Response { success, message, .. } if !success => message,
             _ => None,
         }
+    }
+
+    #[test]
+    fn malformed_launch_args_preserve_configuration_and_authority() -> Result<(), String> {
+        let root = tempfile::tempdir().map_err(|error| error.to_string())?;
+        let mut adapter = DebugAdapter::new();
+        adapter.set_launch_authority(workspace_bound_authority(root.path()));
+        let _ = adapter.handle_initialize(1, 1, None);
+        let accepted = json!({"program": "retained.pl", "args": ["retained"]});
+        *lock_or_recover(&adapter.last_launch_args, "test.last_launch_args") =
+            Some(accepted.clone());
+        *lock_or_recover(&adapter.workspace_root, "test.workspace_root") =
+            Some(root.path().to_path_buf());
+        let (_, receipt) = adapter.begin_authority_session().ok_or("authority session")?;
+
+        for (invalid, field) in [
+            (json!("private-payload"), "args"),
+            (json!(["valid", 17]), "args[1]"),
+            (json!([null, "valid"]), "args[0]"),
+        ] {
+            let response = adapter.handle_launch(
+                2,
+                9,
+                Some(json!({
+                    "program": root.path().join("missing.pl"),
+                    "perlPath": root.path().join("missing").join("perl"),
+                    "workspaceRoot": root.path().join("missing-root"),
+                    "args": invalid
+                })),
+            );
+            let message = launch_failure_message(response).ok_or("malformed argv was accepted")?;
+            assert!(message.contains(field), "early field-specific refusal: {message}");
+            assert!(!message.contains("private-payload"), "payload leaked: {message}");
+            assert_eq!(
+                *lock_or_recover(&adapter.last_launch_args, "test.last_launch_args"),
+                Some(accepted.clone()),
+                "rejected argv must not replace retained configuration"
+            );
+            assert_eq!(
+                *lock_or_recover(&adapter.workspace_root, "test.workspace_root"),
+                Some(root.path().to_path_buf()),
+                "rejected argv must not mutate workspace state"
+            );
+            assert_eq!(
+                adapter.last_authority_receipt().map(|current| current.session_generation),
+                Some(receipt.session_generation),
+                "rejected argv must not consume a session generation"
+            );
+            assert!(lock_or_recover(&adapter.session, "test.session").is_none());
+        }
+        Ok(())
     }
 
     #[test]

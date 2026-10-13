@@ -2389,9 +2389,10 @@ impl<'a> PerlLexer<'a> {
                     // Switch back to normal mode
                     self.mode = LexerMode::ExpectTerm;
 
+                    let body: Arc<str> = Arc::from(body);
                     return Some(Token {
-                        token_type: TokenType::FormatBody(Arc::from(body.clone())),
-                        text: Arc::from(body),
+                        token_type: TokenType::FormatBody(Arc::clone(&body)),
+                        text: body,
                         start,
                         end: self.position,
                     });

@@ -160,8 +160,13 @@ impl LspServer {
                     // Mirrors the pattern used by completion (#3069) and workspace/symbol (#1514).
                     #[cfg(feature = "workspace")]
                     let _ = self.check_index_readiness(IndexReadinessPolicy::WaitBriefly);
+                    // Bare calls resolve through the workspace only with
+                    // import evidence in the calling document; an unimported
+                    // bare name must not borrow an unrelated package's
+                    // same-named callable (#17582).
                     #[cfg(feature = "workspace")]
-                    if Self::is_method_call_context(&doc.text, offset)
+                    if (Self::is_method_call_context(&doc.text, offset)
+                        || document_imports_name(&doc.text, &function_name))
                         && let Some(signature) = self.resolve_method_in_workspace(&function_name)
                     {
                         return Ok(Some(json!({
@@ -178,33 +183,25 @@ impl LspServer {
                     let is_dbi_source =
                         doc.text.contains("use DBI") || doc.text.contains("use DBIx");
                     if is_dbi_source {
-                        let paren_offset = {
-                            let chars: Vec<char> = doc.text.chars().collect();
+                        let paren_offset = doc.text.get(..offset).and_then(|prefix| {
                             let mut depth = 0usize;
-                            let mut found = None;
-                            let mut k = if offset > 0 { offset - 1 } else { 0 };
-                            loop {
-                                match chars.get(k) {
-                                    Some(')') | Some(']') | Some('}') => depth += 1,
-                                    Some('(') => {
+                            // Receiver extraction consumes byte offsets, so retain
+                            // char_indices coordinates while walking backward.
+                            for (byte_offset, ch) in prefix.char_indices().rev() {
+                                match ch {
+                                    ')' | ']' | '}' => depth += 1,
+                                    '(' => {
                                         if depth == 0 {
-                                            found = Some(k);
-                                            break;
+                                            return Some(byte_offset);
                                         }
                                         depth = depth.saturating_sub(1);
                                     }
-                                    Some('[') | Some('{') => {
-                                        depth = depth.saturating_sub(1);
-                                    }
+                                    '[' | '{' => depth = depth.saturating_sub(1),
                                     _ => {}
                                 }
-                                if k == 0 {
-                                    break;
-                                }
-                                k -= 1;
                             }
-                            found
-                        };
+                            None
+                        });
                         if let Some(paren_pos) = paren_offset
                             && let Some(receiver) =
                                 Self::extract_arrow_receiver(&doc.text, paren_pos)
@@ -226,16 +223,10 @@ impl LspServer {
                         }
                     }
 
-                    // If no signature found, return a generic one
-                    return Ok(Some(json!({
-                        "signatures": [json!({
-                            "label": format!("{}(...)", function_name),
-                            "documentation": null,
-                            "parameters": []
-                        })],
-                        "activeSignature": active_signature,
-                        "activeParameter": active_param
-                    })));
+                    // No static callable fact: LSP 3.17 defines a null
+                    // result when no signatures are available (#17582).
+                    // Never fabricate a `name(...)` signature.
+                    return Ok(Some(Value::Null));
                 }
             }
         } else {
@@ -266,10 +257,10 @@ impl LspServer {
         content: &str,
         offset: usize,
     ) -> Option<(String, usize)> {
-        let chars: Vec<char> = content.chars().collect();
-        if offset > chars.len() {
-            return None;
-        }
+        // The position converter supplies bytes. Scan only the valid prefix
+        // before that boundary so scalar indexing cannot pass the cursor.
+        let chars: Vec<char> = content.get(..offset)?.chars().collect();
+        let offset = chars.len();
 
         // Find the opening parenthesis, tracking all bracket types
         let mut paren_pos = None;
@@ -921,16 +912,19 @@ impl LspServer {
     /// This is a pure-text heuristic with no AST dependency, making it safe to call
     /// inside the document-lock section without re-parsing.
     pub(crate) fn is_method_call_context(text: &str, offset: usize) -> bool {
-        let chars: Vec<char> = text.chars().collect();
+        let Some(prefix) = text.get(..offset) else {
+            return false;
+        };
+        let chars: Vec<char> = prefix.chars().collect();
         let len = chars.len();
-        if len == 0 || offset == 0 {
+        if len == 0 {
             return false;
         }
 
         // Scan backward to find the opening `(`
         let mut depth = 0usize;
         let mut paren_pos = None;
-        let mut i = offset.saturating_sub(1).min(len - 1);
+        let mut i = len - 1;
         loop {
             match chars[i] {
                 ')' | ']' | '}' => depth += 1,
@@ -1039,6 +1033,34 @@ impl LspServer {
     }
 }
 
+/// True when `text` imports `name` through a `use Module qw(...)` list or a
+/// parenthesized quoted import list. This is import evidence only; it does
+/// not prove the imported symbol resolves, so callers still need a real
+/// workspace definition before showing a signature (#17582).
+fn document_imports_name(text: &str, name: &str) -> bool {
+    if name.is_empty() {
+        return false;
+    }
+    for line in text.lines() {
+        let line = line.trim_start();
+        if !line.starts_with("use ") {
+            continue;
+        }
+        if let Some(start) = line.find("qw(").or_else(|| line.find("qw[")) {
+            let close = if line[start + 2..].starts_with('(') { ')' } else { ']' };
+            if let Some(end) = line[start..].find(close)
+                && line[start + 3..start + end].split_whitespace().any(|word| word == name)
+            {
+                return true;
+            }
+        }
+        if line.contains(&format!("'{name}'")) || line.contains(&format!("\"{name}\"")) {
+            return true;
+        }
+    }
+    false
+}
+
 fn active_signature_from_context(params: &Value) -> u64 {
     let Some(context) = params.get("context") else {
         return 0;
@@ -1054,6 +1076,92 @@ fn active_signature_from_context(params: &Value) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unicode_byte_cursor_finds_incomplete_signature_context() {
+        let server = LspServer::new();
+        for prefix in ["", "# café\n", "# 😀\r\n", "# e\u{301}\n"] {
+            for (call, expected) in
+                [("push(", 0), ("push(@items, ", 1), ("push([1, 2], ", 1), ("push([1, 2]", 0)]
+            {
+                let source = format!("{prefix}{call}");
+                assert_eq!(
+                    server.find_function_context(&source, source.len()),
+                    Some(("push".to_owned(), expected)),
+                    "{source:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn unicode_byte_cursor_does_not_scan_after_cursor() {
+        let server = LspServer::new();
+        for prefix in ["", "# café\n", "# 😀\n", "# e\u{301}\n"] {
+            let before = format!("{prefix}push(@items, ");
+            let source = format!("{before}2, 3);          ");
+            assert_eq!(
+                server.find_function_context(&source, before.len()),
+                Some(("push".to_owned(), 1)),
+                "{source:?}"
+            );
+            assert_eq!(server.find_function_context(&source, source.len()), None);
+            let before = format!("{prefix}$obj->run(");
+            let source = format!("{before});          ");
+            assert!(LspServer::is_method_call_context(&source, before.len()), "{source:?}");
+            assert!(!LspServer::is_method_call_context(&source, source.len()));
+        }
+    }
+
+    #[test]
+    fn signature_context_refuses_invalid_byte_boundaries() {
+        let server = LspServer::new();
+        let source = "push(é";
+        for offset in [source.len() - 1, source.len() + 1] {
+            assert_eq!(server.find_function_context(source, offset), None);
+            assert!(!LspServer::is_method_call_context(source, offset));
+        }
+    }
+
+    #[test]
+    fn unicode_byte_cursor_signature_handler_preserves_known_content()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for prefix in
+            ["", "my $label = 'café'; ", "my $label = '😀😀😀😀'; ", "my $label = 'e\u{301}'; "]
+        {
+            for (call, expected, active) in [
+                ("push(@items, ", "push ARRAY, LIST", 1),
+                ("$dbh->prepare(", "prepare($statement, \\@attr?)", 0),
+            ] {
+                let server =
+                    LspServer::with_io(Box::new(std::io::empty()), Box::new(Vec::<u8>::new()));
+                server.handle_initialize(Some(json!({"capabilities": {}})))?;
+                let line = format!("{prefix}{call}");
+                let source = format!("use DBI;\n{line}");
+                let uri = "file:///signature-unicode-17770.pl";
+                server.handle_did_open(Some(json!({"textDocument": {
+                    "uri": uri, "languageId": "perl", "version": 1, "text": source
+                }})))?;
+                let result = server
+                    .handle_signature_help(Some(json!({
+                        "textDocument": {"uri": uri},
+                        "position": {"line": 1, "character": line.encode_utf16().count()}
+                    })))?
+                    .ok_or("missing terminal signature response")?;
+                assert_eq!(
+                    result.pointer("/signatures/0/label").and_then(Value::as_str),
+                    Some(expected),
+                    "prefix {prefix:?}, call {call:?}: {result}"
+                );
+                assert_eq!(
+                    result.get("activeParameter").and_then(Value::as_u64),
+                    Some(active),
+                    "{result}"
+                );
+            }
+        }
+        Ok(())
+    }
 
     #[test]
     fn positional_default_labels_preserve_operator_8915() -> Result<(), Box<dyn std::error::Error>>

@@ -408,8 +408,54 @@ fn utf16_offset(source: &str, line: u32, character: u32) -> usize {
     offset
 }
 
+fn apply_wire_edits(
+    source: &str,
+    edits: &[perl_lsp::features::formatting::FormatTextEdit],
+) -> String {
+    let mut spans: Vec<(usize, usize, &str)> = edits
+        .iter()
+        .map(|edit| {
+            let start = wire_offset(source, edit.range.start.clone());
+            let end = wire_offset(source, edit.range.end.clone());
+            (start, end, edit.new_text.as_str())
+        })
+        .collect();
+    spans.sort_by_key(|span| span.0);
+    let mut out = String::new();
+    let mut cursor = 0;
+    for (start, end, text) in spans {
+        out.push_str(&source[cursor..start]);
+        out.push_str(text);
+        cursor = end;
+    }
+    out.push_str(&source[cursor..]);
+    out
+}
+
+fn wire_offset(source: &str, position: perl_lsp::features::formatting::FormatPosition) -> usize {
+    let mut offset = 0;
+    for (line, text) in source.split_inclusive('\n').enumerate() {
+        if line == position.line as usize {
+            let body = text.strip_suffix('\n').unwrap_or(text);
+            let body = body.strip_suffix('\r').unwrap_or(body);
+            let mut units = 0;
+            for (byte, ch) in body.char_indices() {
+                if units >= position.character as usize {
+                    return offset + byte;
+                }
+                units += ch.len_utf16();
+            }
+            return offset + body.len();
+        }
+        offset += text.len();
+    }
+    source.len()
+}
+
 #[test]
-fn test_formatting_returns_no_edits_for_literal_preserve_regions() {
+fn test_formatting_preserves_literal_regions_byte_exact() {
+    // #17708: formatting no longer refuses documents with literal-preserve
+    // regions. Preserved bytes survive exactly; ordinary code still formats.
     let formatter = CodeFormatter::new();
     let options = FormattingOptions {
         tab_size: 4,
@@ -419,19 +465,23 @@ fn test_formatting_returns_no_edits_for_literal_preserve_regions() {
         trim_final_newlines: None,
     };
 
-    for code in [
-        "my $matched = $text =~ /needle/i;   \n",
-        "$text =~ s/foo/bar/g;   \n",
-        "$text =~ tr/a-z/A-Z/;   \n",
-        "my @words = qw(alpha beta gamma);   \n",
-        "print <<'EOF';   \nraw { text }\nEOF\n",
-        "my $x = 1;   \n__DATA__\nraw fixture bytes\n",
-        "my $x = 1;   \n__END__\nraw fixture bytes\n",
-        "format STDOUT =\n@<<<<\n$name\n.\nwrite;   \n",
-        "=pod\n\n=head1 NAME   \n\n=cut\n\nmy $x = 1;   \n",
+    for (code, preserved) in [
+        ("my $matched = $text =~ /needle/i;   \n", "my $matched = $text =~ /needle/i;"),
+        ("$text =~ s/foo/bar/g;   \n", "$text =~ s/foo/bar/g;"),
+        ("$text =~ tr/a-z/A-Z/;   \n", "$text =~ tr/a-z/A-Z/;"),
+        ("my @words = qw(alpha beta gamma);   \n", "my @words = qw(alpha beta gamma);"),
+        ("print <<'EOF';   \nraw { text }\nEOF\n", "raw { text }\nEOF\n"),
+        ("my $x = 1;   \n__DATA__\nraw fixture bytes\n", "__DATA__\nraw fixture bytes\n"),
+        ("my $x = 1;   \n__END__\nraw fixture bytes\n", "__END__\nraw fixture bytes\n"),
+        ("format STDOUT =\n@<<<<\n$name\n.\nwrite;   \n", "format STDOUT =\n@<<<<\n$name\n.\n"),
+        ("=pod\n\n=head1 NAME   \n\n=cut\n\nmy $x = 1;   \n", "=head1 NAME\n"),
     ] {
         let edits = must(formatter.format_document(code, &options));
-        assert!(edits.is_empty(), "literal-preserve source should not produce edits: {code:?}");
+        let formatted = apply_wire_edits(code, &edits);
+        assert!(
+            formatted.contains(preserved),
+            "preserved region must stay byte-exact: {preserved:?} in {formatted:?} (source {code:?})"
+        );
     }
 }
 
