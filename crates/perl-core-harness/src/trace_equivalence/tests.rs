@@ -16,6 +16,7 @@ use crate::observed_discovery::model::{
 use crate::runner_model::RunnerKind;
 use color_eyre::eyre::Result;
 use std::collections::BTreeMap;
+use std::path::Path;
 
 const MEMBERS: [&str; 2] = ["t/base/cond.t", "t/base/if.t"];
 const STDOUT: &str = "t/base/cond.t\nt/base/if.t\n";
@@ -322,6 +323,48 @@ fn forged_receipt_fails_provenance_check() -> Result<()> {
     let honest = build_trace_equivalence(&input).map_err(|error| color_eyre::eyre::eyre!(error))?;
     super::compare::check_trace_equivalence(&input, &honest)
         .map_err(|error| color_eyre::eyre::eyre!(error))?;
+    Ok(())
+}
+
+#[test]
+fn cli_route_without_ordinary_emits_not_proven() -> Result<()> {
+    // Direct static call of the CLI route (the subprocess form in the
+    // integration suite creates no call edge): the `None` arm for a
+    // missing --ordinary must emit the typed not_proven receipt.
+    let input = pair(STDOUT, &MEMBERS)?;
+    let temp = tempfile::tempdir()?;
+    fn write<T: serde::Serialize>(dir: &Path, name: &str, value: &T) -> Result<std::path::PathBuf> {
+        let path = dir.join(name);
+        std::fs::write(&path, serde_json::to_vec(value)?)?;
+        Ok(path)
+    }
+    let dir = temp.path();
+    let parent = write(dir, "parent.json", &input.instrumented_parent)?;
+    let trace = write(dir, "trace.json", &input.trace)?;
+    let work = write(dir, "work.json", &input.work)?;
+    let output = temp.path().join("equivalence.json");
+    let matrix = crate::invocation_trace::test_support::repo_file(
+        ".ci/perl-core-harness/upstream-targets-5.42.2.v1",
+    );
+    let options = crate::artifacts::Options::parse(
+        [
+            "--matrix".to_string(),
+            matrix.to_string_lossy().into_owned(),
+            "--instrumented-parent".to_string(),
+            parent.to_string_lossy().into_owned(),
+            "--trace".to_string(),
+            trace.to_string_lossy().into_owned(),
+            "--work".to_string(),
+            work.to_string_lossy().into_owned(),
+            "--output".to_string(),
+            output.to_string_lossy().into_owned(),
+        ]
+        .into_iter(),
+    )?;
+    super::compare::compare_equivalence_from_options(options)?;
+    let receipt: super::model::UpstreamTraceEquivalenceV1 =
+        serde_json::from_slice(&std::fs::read(&output)?)?;
+    assert_eq!(receipt.payload.verdict, EquivalenceVerdict::NotProven);
     Ok(())
 }
 
