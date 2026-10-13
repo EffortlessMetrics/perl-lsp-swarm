@@ -294,10 +294,14 @@ def phase_diagnostics(request_path, outer_descriptor=None):
         if not split or len(split) > 65536:
             raise ValueError('phase journal empty or record bound exceeded')
         rows = [json.loads(line) for line in split]
+        if any(not isinstance(row, dict) for row in rows):
+            raise ValueError('phase journal records must be objects')
         header = rows[0]
         if header.get('event') != 'header' or header.get('advisory_only') is not True:
             raise ValueError('phase header missing')
         binding = header['binding']
+        if not isinstance(binding, dict):
+            raise ValueError('phase journal binding must be an object')
         if (binding['request_sha256'] != hashlib.sha256(request_bytes).hexdigest()
                 or binding['evidence_path'] != request['evidence_path']
                 or any(binding[key] != request[key] for key in ('source_digest','profile_digest','expected_targets'))):

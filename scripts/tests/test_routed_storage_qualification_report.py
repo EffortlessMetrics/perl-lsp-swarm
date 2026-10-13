@@ -63,6 +63,24 @@ class QualificationInventory(unittest.TestCase):
             request.write_bytes(request.read_bytes()+b' ')
             self.assertFalse(subject.phase_diagnostics(request,owner)['available'])
 
+    def test_phase_journal_nonobject_records_and_binding_refuse(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); request, journal, owner = self.journal_fixture(root)
+            with journal.phase('producer'): pass
+            rows = [json.loads(line) for line in journal.path.read_text().splitlines()]
+            self.assertTrue(subject.phase_diagnostics(request, owner)['available'])
+            for value in (None, [], True, 1, 'not an object'):
+                for location in ('header', 'later_record', 'binding'):
+                    with self.subTest(value=value, location=location):
+                        malformed = copy.deepcopy(rows)
+                        if location == 'header': malformed[0] = value
+                        elif location == 'later_record': malformed[-1] = value
+                        else: malformed[0]['binding'] = value
+                        journal.path.write_text(''.join(json.dumps(row)+'\n' for row in malformed))
+                        diagnostic = subject.phase_diagnostics(request, owner)
+                        self.assertFalse(diagnostic['available'])
+                        self.assertIn('error', diagnostic)
+
     def test_phase_journal_truncated_tail_retains_only_complete_observations(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory);request,journal,owner = self.journal_fixture(root)
