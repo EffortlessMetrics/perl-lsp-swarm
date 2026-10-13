@@ -93,18 +93,19 @@ fn qualify_fqn_reference_cursor(
     character: u32,
     first_start: u32,
     first_end: u32,
+    definitions: &[(&str, &str)],
 ) -> TestResult {
     let binary = std::env::var("PERL_LSP_BIN")?;
     assert!(Path::new(&binary).is_absolute() && Path::new(&binary).is_file());
     let timeout = Duration::from_secs(20);
-    let declaration = "package Outer;\nsub mark {}\n";
-    let harness = UxHarness::new(
-        ScenarioConfig { timeout, ..ScenarioConfig::default() }
-            .with_file("Outer.pm", declaration)
-            .with_file("caller.pl", caller),
-    )?;
+    let mut config =
+        ScenarioConfig { timeout, ..ScenarioConfig::default() }.with_file("caller.pl", caller);
+    for &(filename, text) in definitions {
+        config = config.with_file(filename, text);
+    }
+    let harness = UxHarness::new(config)?;
     harness.wait_for_index_ready(timeout).map_err(|e| format!("index readiness: {e:?}"))?;
-    for (filename, text) in [("Outer.pm", declaration), ("caller.pl", caller)] {
+    for &(filename, text) in definitions.iter().chain(std::iter::once(&("caller.pl", caller))) {
         harness.open_file(filename, text)?;
         harness
             .wait_for_active_document_ready(&harness.workspace.uri(filename), timeout)
@@ -142,13 +143,15 @@ fn qualify_fqn_reference_cursor(
         // Exclusion must return no Outer.pm location; inclusion adds exactly
         // the name anchor, never the compatibility query's full declaration.
         if include_declaration {
-            expected.push(
-                json!({"uri": harness.workspace.uri("Outer.pm"), "range": {
-                    "start": {"line": 1, "character": 4},
-                    "end": {"line": 1, "character": 8}
-                }})
-                .to_string(),
-            );
+            for &(filename, _) in definitions {
+                expected.push(
+                    json!({"uri": harness.workspace.uri(filename), "range": {
+                        "start": {"line": 1, "character": 4},
+                        "end": {"line": 1, "character": 8}
+                    }})
+                    .to_string(),
+                );
+            }
         }
         let mut actual: Vec<_> = locations.iter().map(Value::to_string).collect();
         actual.sort();
@@ -170,10 +173,106 @@ fn qualify_fqn_reference_cursor(
 
 #[test]
 fn qualified_ampersand_call_cursor_respects_declaration_inclusion() -> TestResult {
-    qualify_fqn_reference_cursor("&Outer::mark();\nOuter::mark();\n", 10, 0, 14)
+    qualify_fqn_reference_cursor(
+        "&Outer::mark();\nOuter::mark();\n",
+        10,
+        0,
+        14,
+        &[("Outer.pm", "package Outer;\nsub mark {}\n")],
+    )
 }
 
 #[test]
 fn qualified_code_reference_cursor_respects_declaration_inclusion() -> TestResult {
-    qualify_fqn_reference_cursor("\\&Outer::mark;\nOuter::mark();\n", 11, 1, 13)
+    qualify_fqn_reference_cursor(
+        "\\&Outer::mark;\nOuter::mark();\n",
+        11,
+        1,
+        13,
+        &[("Outer.pm", "package Outer;\nsub mark {}\n")],
+    )
+}
+
+#[test]
+fn qualified_ampersand_cursor_includes_all_definition_sites() -> TestResult {
+    qualify_fqn_reference_cursor(
+        "&Outer::mark();\nOuter::mark();\n",
+        10,
+        0,
+        14,
+        &[
+            ("Outer.pm", "package Outer;\nsub mark {}\n"),
+            ("Second.pm", "package Outer;\nsub mark {}\n"),
+        ],
+    )
+}
+
+#[test]
+fn qualified_code_reference_cursor_includes_all_definition_sites() -> TestResult {
+    qualify_fqn_reference_cursor(
+        "\\&Outer::mark;\nOuter::mark();\n",
+        11,
+        1,
+        13,
+        &[
+            ("Outer.pm", "package Outer;\nsub mark {}\n"),
+            ("Second.pm", "package Outer;\nsub mark {}\n"),
+        ],
+    )
+}
+
+#[test]
+fn explicitly_qualified_declaration_obeys_inclusion() -> TestResult {
+    let binary = std::env::var("PERL_LSP_BIN")?;
+    assert!(Path::new(&binary).is_absolute() && Path::new(&binary).is_file());
+    let timeout = Duration::from_secs(20);
+    let declarations = "sub Wanted::mark {}\n";
+    let caller = "# Wanted::mark\n";
+    let harness = UxHarness::new(
+        ScenarioConfig { timeout, ..ScenarioConfig::default() }
+            .with_file("Wanted.pm", declarations)
+            .with_file("caller.pl", caller),
+    )?;
+    harness.wait_for_index_ready(timeout).map_err(|e| format!("index readiness: {e:?}"))?;
+    for (filename, text) in [("Wanted.pm", declarations), ("caller.pl", caller)] {
+        harness.open_file(filename, text)?;
+        harness
+            .wait_for_active_document_ready(&harness.workspace.uri(filename), timeout)
+            .map_err(|e| format!("document readiness for {filename}: {e:?}"))?;
+    }
+    let mut mismatches = Vec::new();
+    for include_declaration in [false, true] {
+        let response = harness.client.request(
+            "textDocument/references",
+            json!({
+                "textDocument": {"uri": harness.workspace.uri("caller.pl")},
+                "position": {"line": 0, "character": 11},
+                "context": {"includeDeclaration": include_declaration}
+            }),
+            timeout,
+        )?;
+        assert!(response.get("error").is_none(), "RPC error: {response}");
+        let locations = response
+            .get("result")
+            .and_then(Value::as_array)
+            .ok_or_else(|| format!("missing/malformed references array: {response}"))?;
+        let expected = if include_declaration {
+            vec![json!({"uri": harness.workspace.uri("Wanted.pm"), "range": {
+                "start": {"line": 0, "character": 12},
+                "end": {"line": 0, "character": 16}
+            }})]
+        } else {
+            Vec::new()
+        };
+        if locations != &expected {
+            mismatches.push(format!("includeDeclaration={include_declaration}: expected {expected:?}, actual {locations:?}"));
+        }
+    }
+    harness.client.shutdown_and_exit(timeout)?;
+    assert!(
+        mismatches.is_empty(),
+        "qualified declaration reference mismatches:\n{}",
+        mismatches.join("\n")
+    );
+    Ok(())
 }

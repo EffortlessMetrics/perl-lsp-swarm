@@ -1361,30 +1361,29 @@ impl LspServer {
 
                                                 // The compatibility query includes definitions.
                                                 // Exclude them from the union before adding the
-                                                // single name anchor under includeDeclaration.
+                                                // name anchors under includeDeclaration.
                                                 let declarations = index.find_defs(&key);
                                                 all_refs.retain(|location| {
                                                     !declarations.contains(location)
                                                 });
 
-                                                // Add definition if includeDeclaration is true,
-                                                // narrowed to the declaration's name token so it
-                                                // shares occurrence identity with the text tier
+                                                // Add definitions if includeDeclaration is true,
+                                                // narrowed to each declaration's name token so they
+                                                // share occurrence identity with the text tier
                                                 // (#17242).
-                                                if include_declaration
-                                                    && let Some(mut def) =
-                                                        declarations.into_iter().next()
-                                                {
+                                                if include_declaration {
                                                     let doc_refs: Vec<(&str, &str)> = docs_snapshot
                                                         .iter()
                                                         .map(|(doc_uri, doc_text)| {
                                                             (doc_uri.as_str(), doc_text.as_str())
                                                         })
                                                         .collect();
-                                                    shrink_declaration_span_to_name_span(
-                                                        &mut def, &doc_refs, &name, None,
-                                                    );
-                                                    all_refs.push(def);
+                                                    for mut def in declarations {
+                                                        shrink_declaration_span_to_name_span(
+                                                            &mut def, &doc_refs, &name, None,
+                                                        );
+                                                        all_refs.push(def);
+                                                    }
                                                 }
 
                                                 if !all_refs.is_empty() {

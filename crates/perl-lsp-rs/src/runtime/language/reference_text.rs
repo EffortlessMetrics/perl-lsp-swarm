@@ -758,6 +758,43 @@ mod tests {
     }
 
     #[test]
+    fn qualified_text_declarations_obey_inclusion_before_cap() -> Result<(), Box<dyn Error>> {
+        let source = "sub Wanted::mark {}\r\nsub Other::Wanted::mark {}\r\nWanted::mark();\r\n";
+        let mut parser = perl_parser::Parser::new(source);
+        let ast = parser.parse()?;
+        assert!(parser.errors().is_empty());
+        let declarations = callable_declarations(&ast);
+        // The parser/projector retain the entire explicit name, not only mark.
+        assert_eq!(declarations.len(), 2);
+        assert_eq!((declarations[0].start, declarations[0].end), (4, 16));
+        assert_eq!(declarations[0].qualified_name, "Wanted::mark");
+        assert_eq!(declarations[1].qualified_name, "Other::Wanted::mark");
+        for include_declaration in [false, true] {
+            for cap in [1, 10] {
+                let out = search_document_texts_with_declarations(
+                    [("file:///test.pl", source, declarations.as_slice())],
+                    TextReferenceQuery {
+                        needle: "Wanted::mark",
+                        sigil: None,
+                        package: Some("Wanted"),
+                        include_declaration,
+                    },
+                    cap,
+                );
+                let mut expected = if include_declaration {
+                    vec![location_value("file:///test.pl", 0, 4, 16)]
+                } else {
+                    Vec::new()
+                };
+                expected.push(location_value("file:///test.pl", 2, 0, 12));
+                expected.truncate(cap);
+                assert_eq!(out, expected, "includeDeclaration={include_declaration}, cap={cap}");
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
     fn hash_key_fat_comma_is_not_a_subroutine_reference() -> Result<(), Box<dyn Error>> {
         let line = "my $self = { name => $args{name} // 'anon' };";
         let fat = line.find("name").ok_or("missing fat-comma key")?;
