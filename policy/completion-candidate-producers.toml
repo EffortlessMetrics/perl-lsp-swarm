@@ -153,7 +153,13 @@ outcome_owner = "#10230"
 # channels, entry routes, delegations or finalizer seam. Runtime and XS row notes
 # now describe caller-specific ranges; identity, insertion compatibility,
 # evidence, rank, completeness and migration owners retain their prior ceilings.
-source_digest = "sha256:e643ed3a7a897ae56b54f16845483ec112a87b979da4f83ccbf05b54c106b8f9"
+# Re-audit 2026-10-13 (#17840): the landed #17834 snapshot selector admits
+# current or same-text predecessor ASTs and reports a pending parse gap through
+# the response flag; it adds no candidate channel or post-finalizer append.
+# The fallback fixtures now require both current and latest snapshots absent.
+# All 42 scan files, 59 producers, routes, finalizer seams, classifications and
+# migration owners retain their prior ceilings.
+source_digest = "sha256:755c7a10d51070ff5257b7a7dcff8a16ddb329a158cebfff64d39901d810966e"
 
 [[delegations]]
 module = "dancer2"
