@@ -17,9 +17,14 @@
 //!    positions on the entry file (member after `$self->`, package member
 //!    after `Mojolicious::`, lexical after `$`), each probe-validated then
 //!    sampled at a higher request count than the generic lanes (#17159).
+//!    The probe-selected coordinates (fallback included) are resolved once
+//!    and shared by the receipt pass and the criterion groups, so a lane
+//!    name times one subject in both passes (#17731).
 //! 5. `diagnostics_after_edit` — `textDocument/didChange` on a dedicated
 //!    generated document, waiting for the version-matched
-//!    `textDocument/publishDiagnostics` for that exact edit.
+//!    `textDocument/publishDiagnostics` for that exact edit. Duplicate
+//!    publications are swept once at the end of the lane so a duplicate for
+//!    an earlier version arriving late is still attributed (#17732).
 //!
 //! Each lane reports p50/p95/p99 over raw wallclock samples and writes a
 //! receipt to `.ci/metrics/lsp_roundtrip.json` (created relative to the
@@ -69,9 +74,10 @@
 use anyhow::{Context, Result, anyhow, bail};
 use criterion::Criterion;
 use perl_lsp_ux_tests::{
-    LspEvent, REQUIRE_BINARY_ENV, ScenarioConfig, UxClient, UxHarness,
+    CompletionProbeOutcome, DiagnosticsTracker, LspEvent, REQUIRE_BINARY_ENV, ScenarioConfig,
+    UxClient, UxHarness, classify_completion_probe,
     project_fixture::{fixture_content, fixture_scenario_config, load_mojolicious_fixture_files},
-    resolve_binary,
+    resolve_binary, validate_completion_response,
 };
 use serde_json::{Value, json};
 use std::cell::Cell;
@@ -111,6 +117,13 @@ const COMPLETION_SUBLANE_WARMUP: usize = 10;
 /// `didChange → version-matched publishDiagnostics` samples, one edit per
 /// sample on the dedicated generated document.
 const DIDCHANGE_EDIT_SAMPLES: usize = 50;
+
+/// Settling window between the last sampled edit's arrival and the
+/// end-of-lane duplicate sweep. The arrival wait observes only the first
+/// push per version; the window lets a duplicate for the final version (and
+/// any in-flight straggler) land inside the sweep's horizon. It bounds the
+/// attribution window; it cannot extend it indefinitely (#17732).
+const DUPLICATE_SWEEP_SETTLE: Duration = Duration::from_millis(500);
 
 /// Bound for one warm request round trip. Arrival is the assertion; this
 /// bound only fails fast on a wedged binary (see the module timing policy).
@@ -158,6 +171,12 @@ const WORKSPACE_SYMBOL_QUERY: &str = "new";
 // of `$self->` on file line 19
 // `    return $self->app->routes->continue($self);` (`has app` is declared in
 // the same package at file line 11).
+//
+// Probe guard order is load-bearing (#17731): a JSON-RPC error is a failed
+// probe and surfaces as an error before any emptiness check, so the fallback
+// only ever follows a genuinely zero-item answer — never a failed request.
+// Whichever coordinate the probe selects, the criterion group for the lane
+// times the exact same request params (#17731).
 const COMPLETION_METHOD_LINE: u32 = 34;
 const COMPLETION_METHOD_COL: u32 = 11;
 const COMPLETION_PACKAGE_LINE: u32 = 13;
@@ -314,6 +333,28 @@ struct CompletionSublane {
     trigger: &'static str,
 }
 
+/// The three sub-lane descriptors, shared by the probe resolution, the
+/// receipt pass, and the criterion groups so every pass names and times the
+/// same lane subject (#17731).
+const COMPLETION_METHOD_SUBLANE: CompletionSublane = CompletionSublane {
+    lane: "completion_method_position",
+    line: COMPLETION_METHOD_LINE,
+    character: COMPLETION_METHOD_COL,
+    trigger: ">",
+};
+const COMPLETION_PACKAGE_SUBLANE: CompletionSublane = CompletionSublane {
+    lane: "completion_package_prefix",
+    line: COMPLETION_PACKAGE_LINE,
+    character: COMPLETION_PACKAGE_COL,
+    trigger: ":",
+};
+const COMPLETION_LEXICAL_SUBLANE: CompletionSublane = CompletionSublane {
+    lane: "completion_lexical",
+    line: COMPLETION_LEXICAL_LINE,
+    character: COMPLETION_LEXICAL_COL,
+    trigger: "$",
+};
+
 /// The `textDocument/completion` request shape shared by the sub-lanes (the
 /// generic `completion` lane keeps its own inline copy untouched).
 fn completion_request_params(uri: &str, line: u32, character: u32, trigger: &str) -> Value {
@@ -324,41 +365,42 @@ fn completion_request_params(uri: &str, line: u32, character: u32, trigger: &str
     })
 }
 
-/// Map a completion response to an error when the server answered with a
-/// JSON-RPC error — the guard copied from the generic completion lane:
-/// `client.request` only fails on transport errors, so an `error` field must
-/// be rejected explicitly or it would silently flatter the numbers.
-fn completion_error_guard(response: &Value) -> Result<()> {
-    if response.get("error").is_some() {
-        bail!("completion returned a JSON-RPC error: {response}");
-    }
-    Ok(())
-}
-
-/// Extract the completion item list with `completion_with_timeout` parse
-/// semantics (`result.items` array, bare `result` array, else empty).
-fn completion_items(response: &Value) -> Vec<Value> {
-    response["result"]["items"]
-        .as_array()
-        .or_else(|| response["result"].as_array())
-        .cloned()
-        .unwrap_or_default()
-}
-
-/// Run one completion sub-lane: a probe-validated warmup burst, then
-/// `COMPLETION_SUBLANE_SAMPLES` timed round trips.
+/// Probe-resolved request params for the three completion sub-lanes.
 ///
-/// The first warmup response must parse to a non-empty item list: an empty
-/// list means the coordinate is wrong, so the lane falls back to the proven
-/// method position on `lib/Mojolicious/Controller.pm` instead of recording
-/// meaningless samples, and fails outright if the fallback is empty too
-/// (fix the coordinate, never drop the probe).
-fn measure_completion_sublane(
+/// The probe selection runs once, before the mode split, and the resolved
+/// params are shared by the receipt pass and the criterion groups so a lane
+/// name times one subject in both passes (#17731). In bench mode a failed
+/// probe fails the receipt lane at its measurement point; in test mode the
+/// matching criterion group is skipped and counted as a round-trip failure.
+struct CompletionSublaneResolutions {
+    method_position: Result<Value>,
+    package_prefix: Result<Value>,
+    lexical: Result<Value>,
+}
+
+/// Borrow one probe resolution for sampling; a failed probe fails the
+/// receipt lane at its measurement point (bench mode; test mode skips the
+/// group instead).
+fn resolution_params(resolution: &Result<Value>) -> Result<&Value> {
+    resolution.as_ref().map_err(|error| anyhow!("{error:#}"))
+}
+
+/// Resolve the request params for one completion sub-lane by probing the
+/// primary coordinate.
+///
+/// Guard order is load-bearing (#17731): the probe response is error-guarded
+/// first, so a JSON-RPC error surfaces as a lane failure instead of parsing
+/// as an empty list and silently switching the lane's subject; only a
+/// genuinely zero-item answer falls back to the proven method position on
+/// `lib/Mojolicious/Controller.pm`, which must itself answer with a
+/// non-empty list. The resolved params are returned so the criterion group
+/// for the lane times the exact subject the receipt pass samples.
+fn resolve_completion_sublane_params(
     session: &RoundTripSession,
     sublane: &CompletionSublane,
-) -> Result<Vec<u64>> {
+) -> Result<Value> {
     let entry_uri = session.harness.workspace.uri(ENTRY_FILE);
-    let mut params =
+    let params =
         completion_request_params(&entry_uri, sublane.line, sublane.character, sublane.trigger);
 
     let probe = session
@@ -366,48 +408,72 @@ fn measure_completion_sublane(
         .client
         .request("textDocument/completion", params.clone(), REQUEST_TIMEOUT)
         .with_context(|| format!("{} lane: probe request failed", sublane.lane))?;
-    if completion_items(&probe).is_empty() {
-        eprintln!(
-            "WARNING: {} lane probe at (line {}, char {}) returned zero items; \
-             falling back to the {COMPLETION_FALLBACK_FILE} method position",
-            sublane.lane, sublane.line, sublane.character,
-        );
-        session
-            .harness
-            .open_fixture(COMPLETION_FALLBACK_FILE)
-            .with_context(|| format!("{} lane: failed to open the fallback file", sublane.lane))?;
-        let fallback_uri = session.harness.workspace.uri(COMPLETION_FALLBACK_FILE);
-        params = completion_request_params(
-            &fallback_uri,
-            COMPLETION_FALLBACK_LINE,
-            COMPLETION_FALLBACK_COL,
-            ">",
-        );
-        let fallback_probe = session
-            .harness
-            .client
-            .request("textDocument/completion", params.clone(), REQUEST_TIMEOUT)
-            .with_context(|| format!("{} lane: fallback probe request failed", sublane.lane))?;
-        let items = completion_items(&fallback_probe);
-        anyhow::ensure!(
-            !items.is_empty(),
-            "{} lane: probe at (line {}, char {}) and fallback probe at \
-             (line {COMPLETION_FALLBACK_LINE}, char {COMPLETION_FALLBACK_COL}) both returned \
-             zero completion items — the coordinates are wrong; \
-             fix the coordinate, never drop the probe",
-            sublane.lane,
-            sublane.line,
-            sublane.character,
-        );
+    if matches!(
+        classify_completion_probe(&probe)
+            .with_context(|| format!("{} lane: probe", sublane.lane))?,
+        CompletionProbeOutcome::Verified
+    ) {
+        return Ok(params);
     }
 
+    eprintln!(
+        "WARNING: {} lane probe at (line {}, char {}) returned zero items; \
+         falling back to the {COMPLETION_FALLBACK_FILE} method position",
+        sublane.lane, sublane.line, sublane.character,
+    );
+    session
+        .harness
+        .open_fixture(COMPLETION_FALLBACK_FILE)
+        .with_context(|| format!("{} lane: failed to open the fallback file", sublane.lane))?;
+    let fallback_uri = session.harness.workspace.uri(COMPLETION_FALLBACK_FILE);
+    let fallback_params = completion_request_params(
+        &fallback_uri,
+        COMPLETION_FALLBACK_LINE,
+        COMPLETION_FALLBACK_COL,
+        ">",
+    );
+    let fallback_probe = session
+        .harness
+        .client
+        .request("textDocument/completion", fallback_params.clone(), REQUEST_TIMEOUT)
+        .with_context(|| format!("{} lane: fallback probe request failed", sublane.lane))?;
+    anyhow::ensure!(
+        matches!(
+            classify_completion_probe(&fallback_probe)
+                .with_context(|| format!("{} lane: fallback probe", sublane.lane))?,
+            CompletionProbeOutcome::Verified
+        ),
+        "{} lane: probe at (line {}, char {}) and fallback probe at \
+         (line {COMPLETION_FALLBACK_LINE}, char {COMPLETION_FALLBACK_COL}) both returned \
+         zero completion items — the coordinates are wrong; \
+         fix the coordinate, never drop the probe",
+        sublane.lane,
+        sublane.line,
+        sublane.character,
+    );
+    Ok(fallback_params)
+}
+
+/// Sample one completion sub-lane on already-resolved request params: a
+/// warmup burst, then `COMPLETION_SUBLANE_SAMPLES` timed round trips.
+///
+/// `params` comes from `resolve_completion_sublane_params`, whose probe
+/// already verified the coordinate, so every sampled response must pass the
+/// same combined guard as the criterion groups — a JSON-RPC error or a
+/// zero-item list is refused, never recorded as a successful receipt sample
+/// (#17731).
+fn measure_completion_sublane(
+    session: &RoundTripSession,
+    sublane: &CompletionSublane,
+    params: &Value,
+) -> Result<Vec<u64>> {
     for _ in 1..COMPLETION_SUBLANE_WARMUP {
         let response = session
             .harness
             .client
             .request("textDocument/completion", params.clone(), REQUEST_TIMEOUT)
             .with_context(|| format!("{} lane: warmup request failed", sublane.lane))?;
-        completion_error_guard(&response)
+        validate_completion_response(&response, sublane.lane)
             .with_context(|| format!("{} lane: warmup request", sublane.lane))?;
     }
 
@@ -419,7 +485,7 @@ fn measure_completion_sublane(
             .client
             .request("textDocument/completion", params.clone(), REQUEST_TIMEOUT)
             .with_context(|| format!("{} lane: sampled request failed", sublane.lane))?;
-        completion_error_guard(&response)
+        validate_completion_response(&response, sublane.lane)
             .with_context(|| format!("{} lane: sampled request", sublane.lane))?;
         samples.push(millis_since(start));
     }
@@ -500,8 +566,12 @@ fn ensure_didchange_target_open(
 /// `textDocument/didChange` is written until the `publishDiagnostics` for
 /// that exact document version arrives. A late publication for a previous
 /// version does not satisfy the wait, and a timeout is a lane failure, never
-/// a sample. Also reports the duplicate-push count: publications observed
-/// beyond the first for an already-published version.
+/// a sample. Also reports the duplicate-push count, swept once at the end of
+/// the lane over the whole retained event buffer: every publication beyond
+/// the first for a sampled version counts, including a duplicate for an
+/// earlier version that arrived while later edits were being awaited
+/// (#17732 — a per-version scan taken once at each arrival undercounted
+/// those late arrivals).
 fn measure_didchange_to_diagnostics(
     session: &RoundTripSession,
     editor: &DiagTargetEditor,
@@ -509,7 +579,7 @@ fn measure_didchange_to_diagnostics(
     ensure_didchange_target_open(session, editor)?;
     let uri = session.harness.workspace.uri(DIDCHANGE_TARGET_PATH);
     let mut samples = Vec::with_capacity(DIDCHANGE_EDIT_SAMPLES);
-    let mut duplicate_pushes = 0usize;
+    let mut sampled_versions = Vec::with_capacity(DIDCHANGE_EDIT_SAMPLES);
     for _ in 0..DIDCHANGE_EDIT_SAMPLES {
         let (version, source) = editor.next_edit();
 
@@ -531,35 +601,30 @@ fn measure_didchange_to_diagnostics(
                 })
             });
         match arrival {
-            Ok(()) => samples.push(millis_since(start)),
+            Ok(()) => {
+                samples.push(millis_since(start));
+                sampled_versions.push(i64::from(version));
+            }
             Err(end) => bail!(
                 "didChange lane: no version-{version} publishDiagnostics arrived for \
                  {DIDCHANGE_TARGET_PATH}: {}",
                 end.describe()
             ),
         }
-        duplicate_pushes += duplicate_pushes_for_version(&session.harness.client, &uri, version);
     }
-    Ok((samples, duplicate_pushes))
-}
 
-/// Count buffered publications for `uri` beyond the first one carrying
-/// `version` — each extra push for an already-published version is a
-/// duplicate push. Events are never consumed by a wait, so the whole buffer
-/// is observable here.
-fn duplicate_pushes_for_version(client: &UxClient, uri: &str, version: i32) -> usize {
-    let pushes = client
-        .peek_events()
-        .iter()
-        .filter(|event| {
-            matches!(
-                event,
-                LspEvent::Diagnostics { uri: published, version: Some(published_version), .. }
-                    if published == uri && *published_version == i64::from(version)
-            )
-        })
-        .count();
-    pushes.saturating_sub(1)
+    // Duplicate attribution at the publisher boundary (#17732): one sweep
+    // over the retained buffer after the last arrival wait counts every push
+    // for every sampled version, so a duplicate for version N that lands
+    // after N's own arrival wait is still counted and the receipt cannot
+    // report `duplicate_pushes: 0` despite observed duplicates.
+    std::thread::sleep(DUPLICATE_SWEEP_SETTLE);
+    let duplicate_pushes = DiagnosticsTracker::duplicate_pushes_for_versions(
+        &session.harness.client.peek_events(),
+        &uri,
+        &sampled_versions,
+    );
+    Ok((samples, duplicate_pushes))
 }
 
 // ---- Receipt ---------------------------------------------------------------------
@@ -757,7 +822,11 @@ fn print_lane_summary(lane: &'static str, summary: Value) {
 
 // ---- Criterion regression groups ---------------------------------------------------
 
-fn run_criterion_pass(session: &RoundTripSession, editor: &DiagTargetEditor) {
+fn run_criterion_pass(
+    session: &RoundTripSession,
+    editor: &DiagTargetEditor,
+    completion_resolutions: &CompletionSublaneResolutions,
+) {
     let mut criterion = Criterion::default().configure_from_args();
     let mut group = criterion.benchmark_group("lsp_stdio_roundtrip");
     group.measurement_time(Duration::from_secs(10));
@@ -827,39 +896,30 @@ fn run_criterion_pass(session: &RoundTripSession, editor: &DiagTargetEditor) {
     });
 
     // Completion sub-lanes: same triggerKind-2 request shape as the generic
-    // `completion` group above, at the coordinated positions from the
-    // receipt pass. The guard additionally rejects zero-item responses: a
-    // wrong coordinate would otherwise record fast empty round trips and
-    // flatter the numbers.
-    let method_params = completion_request_params(
-        &session.harness.workspace.uri(ENTRY_FILE),
-        COMPLETION_METHOD_LINE,
-        COMPLETION_METHOD_COL,
-        ">",
-    );
-    group.bench_function("completion_method_position", |b| {
-        b.iter(criterion_completion_body(session, &method_params, "completion_method_position"))
-    });
-
-    let package_params = completion_request_params(
-        &session.harness.workspace.uri(ENTRY_FILE),
-        COMPLETION_PACKAGE_LINE,
-        COMPLETION_PACKAGE_COL,
-        ":",
-    );
-    group.bench_function("completion_package_prefix", |b| {
-        b.iter(criterion_completion_body(session, &package_params, "completion_package_prefix"))
-    });
-
-    let lexical_params = completion_request_params(
-        &session.harness.workspace.uri(ENTRY_FILE),
-        COMPLETION_LEXICAL_LINE,
-        COMPLETION_LEXICAL_COL,
-        "$",
-    );
-    group.bench_function("completion_lexical", |b| {
-        b.iter(criterion_completion_body(session, &lexical_params, "completion_lexical"))
-    });
+    // `completion` group above, at the exact request params the receipt pass
+    // probe-resolved for each lane (fallback included), so a lane name times
+    // one subject across both passes (#17731). The shared guard rejects
+    // JSON-RPC errors and zero-item responses alike: a wrong coordinate or a
+    // failed request would otherwise record fast empty round trips and
+    // flatter the numbers. In test mode a failed probe skips the group;
+    // bench mode fails the receipt lane instead.
+    for (resolution, lane) in [
+        (&completion_resolutions.method_position, COMPLETION_METHOD_SUBLANE.lane),
+        (&completion_resolutions.package_prefix, COMPLETION_PACKAGE_SUBLANE.lane),
+        (&completion_resolutions.lexical, COMPLETION_LEXICAL_SUBLANE.lane),
+    ] {
+        match resolution {
+            Ok(params) => {
+                group.bench_function(lane, |b| {
+                    b.iter(criterion_completion_body(session, params, lane))
+                });
+            }
+            Err(error) => {
+                eprintln!("SKIP {lane} criterion group: {error:#}");
+                CRITERION_ROUND_TRIP_FAILURES.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    }
 
     // The receipt pass opens the didChange target untimed before its own
     // lane; criterion test mode (no receipt pass) opens it here so the
@@ -932,9 +992,10 @@ fn record_criterion_outcome<T>(lane: &'static str, outcome: &Result<T>) {
 }
 
 /// The per-iteration body shared by the criterion completion sub-lanes:
-/// raw request timed from write to decoded response, then the JSON-RPC-error
-/// guard plus the zero-items guard (both counted as round-trip failures
-/// rather than silently flattering the numbers).
+/// raw request timed from write to decoded response, then the combined
+/// response guard shared with the receipt pass — a JSON-RPC error or a
+/// zero-item list counts as a round-trip failure rather than silently
+/// flattering the numbers (#17731).
 fn criterion_completion_body<'a>(
     session: &'a RoundTripSession,
     params: &'a Value,
@@ -946,14 +1007,7 @@ fn criterion_completion_body<'a>(
             .harness
             .client
             .request("textDocument/completion", params.clone(), REQUEST_TIMEOUT)
-            .and_then(|response| {
-                completion_error_guard(&response)?;
-                anyhow::ensure!(
-                    !completion_items(&response).is_empty(),
-                    "{lane} returned zero completion items"
-                );
-                Ok(())
-            });
+            .and_then(|response| validate_completion_response(&response, lane));
         let elapsed = millis_since(start);
         record_criterion_outcome(lane, &outcome);
         black_box(elapsed);
@@ -1008,12 +1062,22 @@ fn run() -> Result<()> {
     // document versioning.
     let editor = DiagTargetEditor::new();
 
+    // Probe-resolve each completion sub-lane's request subject once, before
+    // the mode split: the receipt pass and the criterion groups must time the
+    // same coordinates (fallback included), so one resolution is shared by
+    // both passes instead of each pass rebuilding entry-file params (#17731).
+    let completion_resolutions = CompletionSublaneResolutions {
+        method_position: resolve_completion_sublane_params(&session, &COMPLETION_METHOD_SUBLANE),
+        package_prefix: resolve_completion_sublane_params(&session, &COMPLETION_PACKAGE_SUBLANE),
+        lexical: resolve_completion_sublane_params(&session, &COMPLETION_LEXICAL_SUBLANE),
+    };
+
     if !bench_mode {
         eprintln!(
             "SKIP receipt pass lsp_stdio_roundtrip_benchmark: no --bench (test mode); \
              criterion groups still run once in test mode"
         );
-        run_criterion_pass(&session, &editor);
+        run_criterion_pass(&session, &editor, &completion_resolutions);
         return Ok(());
     }
 
@@ -1077,35 +1141,25 @@ fn run() -> Result<()> {
     });
 
     // Completion sub-lanes: higher sample counts at coordinated positions
-    // (see the coordinate provenance block at the top of this file). The
+    // (see the coordinate provenance block at the top of this file). Each
+    // lane samples the exact params its probe resolved above, and the
+    // criterion group for the same lane name reuses them (#17731). The
     // generic `completion` lane above stays untouched for comparability with
     // the committed receipt.
     let method_position = measure_completion_sublane(
         &session,
-        &CompletionSublane {
-            lane: "completion_method_position",
-            line: COMPLETION_METHOD_LINE,
-            character: COMPLETION_METHOD_COL,
-            trigger: ">",
-        },
+        &COMPLETION_METHOD_SUBLANE,
+        resolution_params(&completion_resolutions.method_position)?,
     );
     let package_prefix = measure_completion_sublane(
         &session,
-        &CompletionSublane {
-            lane: "completion_package_prefix",
-            line: COMPLETION_PACKAGE_LINE,
-            character: COMPLETION_PACKAGE_COL,
-            trigger: ":",
-        },
+        &COMPLETION_PACKAGE_SUBLANE,
+        resolution_params(&completion_resolutions.package_prefix)?,
     );
     let lexical = measure_completion_sublane(
         &session,
-        &CompletionSublane {
-            lane: "completion_lexical",
-            line: COMPLETION_LEXICAL_LINE,
-            character: COMPLETION_LEXICAL_COL,
-            trigger: "$",
-        },
+        &COMPLETION_LEXICAL_SUBLANE,
+        resolution_params(&completion_resolutions.lexical)?,
     );
 
     // The didChange editor cursor (created above, before the mode split) is
@@ -1148,7 +1202,7 @@ fn run() -> Result<()> {
     let receipt_path = write_receipt(&session, &lanes)?;
     eprintln!("receipt written to {}", receipt_path.display());
 
-    run_criterion_pass(&session, &editor);
+    run_criterion_pass(&session, &editor, &completion_resolutions);
     Ok(())
 }
 
