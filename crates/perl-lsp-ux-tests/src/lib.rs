@@ -1451,8 +1451,10 @@ pub fn verify_binary_source(binary: &str) -> Result<()> {
         .parent()
         .and_then(std::path::Path::parent)
         .ok_or_else(|| anyhow!("UX workspace root unavailable"))?;
-    let (revision, digest) = build_source_identity::source_identity(root)
-        .map_err(|error| anyhow!("cannot establish UX source identity: {error}"))?;
+    let (revision, digest) = build_source_identity::complete_source_identity(None, None, || {
+        build_source_identity::source_identity(root)
+    })
+    .map_err(|error| anyhow!("cannot establish UX source identity: {error}"))?;
     let stdout = tempfile::NamedTempFile::new()?;
     let stderr = tempfile::NamedTempFile::new()?;
     let child = std::process::Command::new(binary)

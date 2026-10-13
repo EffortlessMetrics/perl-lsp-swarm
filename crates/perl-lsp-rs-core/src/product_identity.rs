@@ -258,7 +258,9 @@ impl BinaryIdentityPacketV1 {
 
     /// Bind binary-owned source evidence while preserving other embedded build facts.
     ///
-    /// A missing local field falls back to an explicitly supplied release field.
+    /// Without facade source fields, retain the embedded release facts. If the
+    /// facade supplies either field, replace the pair together so a missing
+    /// counterpart cannot be filled from a different embedded source identity.
     #[must_use]
     pub fn embedded_server_with_source(
         version: impl Into<String>,
@@ -266,11 +268,9 @@ impl BinaryIdentityPacketV1 {
         source_tree_digest: Option<&str>,
     ) -> Self {
         let mut input = embedded_build_input();
-        if let Some(revision) = source_revision {
-            input.source_revision = Some(revision.to_owned());
-        }
-        if let Some(digest) = source_tree_digest {
-            input.source_tree_digest = Some(digest.to_owned());
+        if source_revision.is_some() || source_tree_digest.is_some() {
+            input.source_revision = source_revision.map(str::to_owned);
+            input.source_tree_digest = source_tree_digest.map(str::to_owned);
         }
         Self::server(version, input)
     }

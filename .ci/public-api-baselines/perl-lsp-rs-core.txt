@@ -1528,6 +1528,7 @@ pub perl_lsp_rs_core::product_identity::BinaryIdentityPacketV1::schema_version: 
 pub fn perl_lsp_rs_core::product_identity::BinaryIdentityPacketV1::dap(version: impl core::convert::Into<alloc::string::String>, input: perl_lsp_rs_core::product_identity::BinaryIdentityInput) -> perl_lsp_rs_core::product_identity::BinaryIdentityPacketV1
 pub fn perl_lsp_rs_core::product_identity::BinaryIdentityPacketV1::embedded_dap(version: impl core::convert::Into<alloc::string::String>) -> perl_lsp_rs_core::product_identity::BinaryIdentityPacketV1
 pub fn perl_lsp_rs_core::product_identity::BinaryIdentityPacketV1::embedded_server(version: impl core::convert::Into<alloc::string::String>) -> perl_lsp_rs_core::product_identity::BinaryIdentityPacketV1
+pub fn perl_lsp_rs_core::product_identity::BinaryIdentityPacketV1::embedded_server_with_source(version: impl core::convert::Into<alloc::string::String>, source_revision: core::option::Option<&str>, source_tree_digest: core::option::Option<&str>) -> perl_lsp_rs_core::product_identity::BinaryIdentityPacketV1
 pub fn perl_lsp_rs_core::product_identity::BinaryIdentityPacketV1::server(version: impl core::convert::Into<alloc::string::String>, input: perl_lsp_rs_core::product_identity::BinaryIdentityInput) -> perl_lsp_rs_core::product_identity::BinaryIdentityPacketV1
 pub fn perl_lsp_rs_core::product_identity::BinaryIdentityPacketV1::to_human(&self) -> alloc::string::String
 pub fn perl_lsp_rs_core::product_identity::BinaryIdentityPacketV1::to_json(&self) -> serde_json::error::Result<alloc::string::String>

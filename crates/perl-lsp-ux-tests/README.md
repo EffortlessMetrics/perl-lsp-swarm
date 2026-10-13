@@ -119,10 +119,14 @@ Keep scenarios focused on user workflows and regression intent.
 Binary selection verifies the existing `product_identity` packet's server role,
 package, schema, `source_revision`, and `source_tree_digest` against the current
 checkout. Ordinary `perllsp` executable builds embed that source inventory automatically;
-release builds retain their explicitly supplied identity. The inventory uses the
+release builds retain their complete explicitly supplied identity pair;
+a lone supplied field is completed only when it agrees
+with the current checkout. A mismatched partial override remains partial and
+cannot count as exact UX evidence. The inventory uses the
 release protocol's Git tree format with raw local file bytes, including tracked
 edits, deletions, and non-ignored additions. Ignored Rust/config inputs under
-`crates` or `.cargo`, external symlinks, submodules, and newline or leading-quote source paths
+`crates` or `.cargo` (including extensionless `.cargo/config`), external symlinks,
+submodules, and newline or leading-quote source paths
 refuse exact local UX evidence. Ordinary product compilation continues with a warning
 and without an automatic stamp when that evidence is unavailable. This is source binding, not authentication of an
 arbitrary executable or an attestation of the compiler/environment.

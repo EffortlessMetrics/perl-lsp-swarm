@@ -11,17 +11,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let manifest = env::var("CARGO_MANIFEST_DIR")?;
     let root = Path::new(&manifest).parent().and_then(Path::parent);
     if let Some(root) = root.filter(|root| root.join(".git").exists()) {
-        let observed =
-            match (env::var("PERL_LSP_BUILD_REVISION"), env::var("PERL_LSP_SOURCE_TREE_DIGEST")) {
-                (Ok(revision), Ok(digest)) => Some((revision, digest)),
-                _ => match build_source_identity::source_identity(root) {
-                    Ok(identity) => Some(identity),
-                    Err(error) => {
-                        println!("cargo:warning=local source identity not proven: {error}");
-                        None
-                    }
-                },
-            };
+        let observed = match build_source_identity::complete_source_identity(
+            env::var("PERL_LSP_BUILD_REVISION").ok(),
+            env::var("PERL_LSP_SOURCE_TREE_DIGEST").ok(),
+            || build_source_identity::source_identity(root),
+        ) {
+            Ok(identity) => Some(identity),
+            Err(error) => {
+                println!("cargo:warning=local source identity not proven: {error}");
+                None
+            }
+        };
         for (key, automatic) in [
             ("PERL_LSP_BUILD_REVISION", observed.as_ref().map(|value| &value.0)),
             ("PERL_LSP_SOURCE_TREE_DIGEST", observed.as_ref().map(|value| &value.1)),

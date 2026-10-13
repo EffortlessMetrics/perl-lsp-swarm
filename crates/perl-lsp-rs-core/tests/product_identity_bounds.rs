@@ -149,3 +149,25 @@ fn executable_owned_source_uses_existing_packet_normalization() {
     assert_eq!(invalid.build.source_revision, None);
     assert_eq!(invalid.build.source_tree_digest, None);
 }
+
+#[test]
+fn facade_revision_does_not_retain_embedded_digest() {
+    let revision_only =
+        BinaryIdentityPacketV1::embedded_server_with_source("1.2.3", Some(&revision('c')), None);
+    assert_eq!(revision_only.build.source_revision, Some(revision('c')));
+    assert_eq!(
+        revision_only.build.source_tree_digest, None,
+        "must not retain another source's digest"
+    );
+}
+
+#[test]
+fn facade_digest_does_not_retain_embedded_revision() {
+    let digest_only =
+        BinaryIdentityPacketV1::embedded_server_with_source("1.2.3", None, Some(&digest('d')));
+    assert_eq!(
+        digest_only.build.source_revision, None,
+        "must not retain another source's revision"
+    );
+    assert_eq!(digest_only.build.source_tree_digest, Some(digest('d')));
+}

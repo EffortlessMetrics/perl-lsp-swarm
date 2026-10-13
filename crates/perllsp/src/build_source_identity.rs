@@ -6,6 +6,33 @@ use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
+pub fn complete_source_identity(
+    revision: Option<String>,
+    digest: Option<String>,
+    automatic: impl FnOnce() -> Result<(String, String), Box<dyn std::error::Error>>,
+) -> Result<(String, String), Box<dyn std::error::Error>> {
+    if let (Some(revision), Some(digest)) = (&revision, &digest) {
+        return Ok((revision.clone(), digest.clone()));
+    }
+    let observed = automatic()?;
+    if revision.as_ref().is_some_and(|revision| revision.trim() != observed.0)
+        || digest.as_ref().is_some_and(|digest| {
+            let digest = digest.trim();
+            !digest.strip_prefix("sha256:").unwrap_or(digest).eq_ignore_ascii_case(&observed.1)
+        })
+    {
+        return Err("incomplete source override disagrees with current source identity".into());
+    }
+    Ok(observed)
+}
+
+fn potential_source_input(path: &str) -> bool {
+    path.ends_with(".rs")
+        || path.ends_with(".toml")
+        || path == ".cargo/config"
+        || path.ends_with("/.cargo/config")
+}
+
 pub fn source_identity(root: &Path) -> Result<(String, String), Box<dyn std::error::Error>> {
     for selector in [
         "GIT_DIR",
@@ -26,6 +53,7 @@ pub fn source_identity(root: &Path) -> Result<(String, String), Box<dyn std::err
         let output = Command::new("git")
             .current_dir(root)
             .env("GIT_INDEX_FILE", &index)
+            .arg("--literal-pathspecs")
             .args(args)
             .output()?;
         if !output.status.success() {
@@ -55,9 +83,7 @@ pub fn source_identity(root: &Path) -> Result<(String, String), Box<dyn std::err
     ])?;
     for path in ignored.split(|byte| *byte == 0).filter(|path| !path.is_empty()) {
         let path = std::str::from_utf8(path)?;
-        if !path.split('/').any(|part| part == "target")
-            && (path.ends_with(".rs") || path.ends_with(".toml"))
-        {
+        if !path.split('/').any(|part| part == "target") && potential_source_input(path) {
             return Err(
                 format!("ignored source/build configuration is not provable: {path}").into()
             );
@@ -104,7 +130,7 @@ pub fn source_identity(root: &Path) -> Result<(String, String), Box<dyn std::err
             ])?;
             for target_path in ignored.split(|byte| *byte == 0).filter(|path| !path.is_empty()) {
                 let target_path = std::str::from_utf8(target_path)?;
-                if target_path.ends_with(".rs") || target_path.ends_with(".toml") {
+                if potential_source_input(target_path) {
                     return Err(
                         format!("ignored symlink source is not provable: {target_path}").into()
                     );
@@ -123,6 +149,7 @@ pub fn source_identity(root: &Path) -> Result<(String, String), Box<dyn std::err
         let output = Command::new("git")
             .current_dir(root)
             .env("GIT_INDEX_FILE", &index)
+            .arg("--literal-pathspecs")
             .args(args)
             .stdin(Stdio::from(input_file))
             .output()?;
