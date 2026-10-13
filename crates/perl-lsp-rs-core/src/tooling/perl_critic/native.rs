@@ -2526,7 +2526,7 @@ fn usize_to_u32(value: usize) -> u32 {
 fn physical_line_count(source: &str, start: usize, end: usize) -> usize {
     let start = start.min(source.len());
     let end = end.min(source.len()).max(start);
-    let bytes = source[start..end].as_bytes();
+    let bytes = &source.as_bytes()[start..end];
     let mut breaks = 0usize;
     let mut idx = 0usize;
     while idx < bytes.len() {
