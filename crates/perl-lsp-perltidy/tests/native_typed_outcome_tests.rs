@@ -125,6 +125,46 @@ fn typed_document_formats_around_preserved_heredoc_and_pod() {
 }
 
 #[test]
+fn typed_document_preserves_queued_heredoc_bodies() {
+    let formatter = NativeFormatter::new();
+    let source = "my ($a, $b) = (<<'A', <<'B');\nfirst  body\nA\nsecond   body\nB\nmy$x=1;\n";
+    let typed = formatter.format_document_typed(
+        source,
+        &FormatConfig::default(),
+        &FormatContext::default(),
+    );
+    assert!(typed.result.formatted.contains("first  body\n"), "got: {}", typed.result.formatted);
+    assert!(typed.result.formatted.contains("second   body\n"), "got: {}", typed.result.formatted);
+    assert!(typed.result.formatted.contains("my $x = 1;"), "got: {}", typed.result.formatted);
+}
+
+#[test]
+fn typed_document_preserves_heredoc_body_after_padded_terminator_line() {
+    // A padded delimiter is body text for an ordinary heredoc, not a close.
+    let formatter = NativeFormatter::new();
+    let source = "my $s = <<'EOF';\n EOF\nmy$x=1;\nEOF\nmy$y=2;\n";
+    let typed = formatter.format_document_typed(
+        source,
+        &FormatConfig::default(),
+        &FormatContext::default(),
+    );
+    assert!(typed.result.formatted.contains(" EOF\nmy$x=1;\n"), "got: {}", typed.result.formatted);
+    assert!(typed.result.formatted.contains("my $y = 2;"), "got: {}", typed.result.formatted);
+}
+
+#[test]
+fn typed_document_comment_heredoc_marker_does_not_suppress_formatting() {
+    let formatter = NativeFormatter::new();
+    let source = "# example: <<'EOF'\nmy$x=1;\n";
+    let typed = formatter.format_document_typed(
+        source,
+        &FormatConfig::default(),
+        &FormatContext::default(),
+    );
+    assert!(typed.result.formatted.contains("my $x = 1;"), "got: {}", typed.result.formatted);
+}
+
+#[test]
 fn typed_document_result_does_not_flatten_parse_refusal_to_no_change() {
     let formatter = NativeFormatter::new();
     let source = "my $x = ;\n";

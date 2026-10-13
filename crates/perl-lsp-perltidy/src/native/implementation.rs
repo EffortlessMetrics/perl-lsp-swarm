@@ -386,6 +386,7 @@ pub(super) fn preserve_region_lines(source: &str) -> std::collections::HashSet<u
                         | TokenKind::QuoteWords
                         | TokenKind::QuoteCommand
                         | TokenKind::FormatBody
+                        | TokenKind::HeredocBody
                 ) {
                     let end = token.end().saturating_sub(1).max(token.start());
                     for line in line_of(token.start())..=line_of(end) {
@@ -398,10 +399,14 @@ pub(super) fn preserve_region_lines(source: &str) -> std::collections::HashSet<u
     }
 
     // Line-tracked regions: POD, DATA/END, format bodies, heredoc bodies.
+    // Heredoc bodies queue in opener order; an ordinary heredoc closes only
+    // when the delimiter occupies the whole line, an indented (`<<~`)
+    // heredoc allows leading whitespace on its terminator.
     let mut in_pod = false;
     let mut in_data = false;
     let mut in_format = false;
-    let mut heredoc_terminator: Option<String> = None;
+    let mut heredoc_queue: std::collections::VecDeque<(String, bool)> =
+        std::collections::VecDeque::new();
     for (index, raw_line) in source.split_inclusive('\n').enumerate() {
         let (body, _) = split_line_ending(raw_line);
         let trimmed = body.trim_start();
@@ -409,10 +414,15 @@ pub(super) fn preserve_region_lines(source: &str) -> std::collections::HashSet<u
             lines.insert(index);
             continue;
         }
-        if let Some(terminator) = &heredoc_terminator {
+        if let Some((terminator, indented)) = heredoc_queue.front().cloned() {
             lines.insert(index);
-            if body.trim_start().trim_end() == terminator.as_str() {
-                heredoc_terminator = None;
+            let closes = if indented {
+                body.trim_start().trim_end() == terminator.as_str()
+            } else {
+                !body.starts_with(char::is_whitespace) && body.trim_end() == terminator.as_str()
+            };
+            if closes {
+                heredoc_queue.pop_front();
             }
             continue;
         }
@@ -445,22 +455,36 @@ pub(super) fn preserve_region_lines(source: &str) -> std::collections::HashSet<u
             in_format = true;
             continue;
         }
-        if contains_likely_heredoc_start(body) {
-            heredoc_terminator = heredoc_terminator_name(body);
+        // Full-line comments cannot open a heredoc; markers inside them
+        // must not suppress formatting of later code. Real heredoc bodies
+        // are also covered by HeredocBody tokens above.
+        if !trimmed.starts_with('#') && contains_likely_heredoc_start(body) {
+            heredoc_queue.extend(heredoc_openers(body));
         }
     }
     lines
 }
 
-/// Extract the terminator word from a line containing a heredoc opener.
-fn heredoc_terminator_name(line: &str) -> Option<String> {
-    let (_, after_marker) = line.split_once("<<")?;
-    let after_indent = after_marker.trim_start();
-    let marker = after_indent.strip_prefix('~').unwrap_or(after_indent).trim_start();
-    let marker = marker.strip_prefix(['\'', '"', '`']).unwrap_or(marker);
-    let name: String =
-        marker.chars().take_while(|ch| *ch == '_' || ch.is_ascii_alphanumeric()).collect();
-    if name.is_empty() { None } else { Some(name) }
+/// Every heredoc opener queued on one code line, in order, as
+/// `(terminator, indented)` pairs.
+fn heredoc_openers(line: &str) -> Vec<(String, bool)> {
+    let mut openers = Vec::new();
+    let mut rest = line;
+    while let Some((_, after_marker)) = rest.split_once("<<") {
+        let after_space = after_marker.trim_start();
+        let (indented, marker) = match after_space.strip_prefix('~') {
+            Some(stripped) => (true, stripped.trim_start()),
+            None => (false, after_space),
+        };
+        let marker = marker.strip_prefix(['\'', '"', '`']).unwrap_or(marker);
+        let name: String =
+            marker.chars().take_while(|ch| *ch == '_' || ch.is_ascii_alphanumeric()).collect();
+        if !name.is_empty() {
+            openers.push((name, indented));
+        }
+        rest = after_marker;
+    }
+    openers
 }
 
 /// Line indices (0-based) covered by a multiline literal token, excluding
