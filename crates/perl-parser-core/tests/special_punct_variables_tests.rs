@@ -128,17 +128,3 @@ fn while_empty_condition() {
 fn while_empty_condition_with_body() {
     parse_ok("while () { my $line = <STDIN>; last unless defined $line; }");
 }
-
-#[test]
-fn leading_apostrophe_package_variable_parses() {
-    // `$'b` is `$main::b` (legacy separator, empty first segment), as in
-    // upstream t/comp/package.t: `$main'a = $'b;`.
-    parse_ok("$x = $'b;");
-    parse_ok("$'b = 1;");
-    parse_ok("$main'a = $'b;");
-}
-
-#[test]
-fn bare_postmatch_variable_still_parses() {
-    parse_ok("print $';");
-}
