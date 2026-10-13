@@ -928,10 +928,14 @@ fn classify_layer_component(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use perl_test_must::{must_some_with, must_with};
 
     fn write_fixture(path: &Path, source: &str) {
-        fs::create_dir_all(path.parent().expect("fixture parent")).expect("create fixture parent");
-        fs::write(path, source).expect("write fixture");
+        must_with(
+            fs::create_dir_all(must_some_with(path.parent(), "fixture parent")),
+            "create fixture parent",
+        );
+        must_with(fs::write(path, source), "write fixture");
     }
 
     fn asset(relative_path: &str) -> CorpusAsset {
@@ -949,8 +953,11 @@ mod tests {
     }
 
     fn topology_from_root(root: &Path) -> Result<CorpusTopology, CorpusTopologyError> {
-        fs::create_dir_all(root.join("test_corpus")).expect("create test corpus layer");
-        fs::create_dir_all(root.join("crates/perl-corpus/fuzz")).expect("create fuzz corpus layer");
+        must_with(fs::create_dir_all(root.join("test_corpus")), "create test corpus layer");
+        must_with(
+            fs::create_dir_all(root.join("crates/perl-corpus/fuzz")),
+            "create fuzz corpus layer",
+        );
         CorpusTopology::from_paths(&CorpusPaths::from_root(root.to_path_buf()))
     }
 
@@ -1031,12 +1038,13 @@ mod tests {
         // whole window -- read it, create below it, resolve against it -- must
         // exclude any concurrent test that moves the process current directory.
         let _lock = crate::api::CWD_TEST_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
-        let current = std::env::current_dir().expect("current directory");
-        let root = tempfile::tempdir_in(&current).expect("relative-root temporary directory");
-        let relative = root.path().strip_prefix(&current).expect("root below current directory");
+        let current = must_with(std::env::current_dir(), "current directory");
+        let root = must_with(tempfile::tempdir_in(&current), "relative-root temporary directory");
+        let relative =
+            must_with(root.path().strip_prefix(&current), "root below current directory");
         let topology =
-            topology_with(Vec::new()).with_root(relative).expect("bind relative runtime root");
-        let expected = canonical_runtime_root(root.path()).expect("canonical runtime root");
+            must_with(topology_with(Vec::new()).with_root(relative), "bind relative runtime root");
+        let expected = must_with(canonical_runtime_root(root.path()), "canonical runtime root");
 
         assert_eq!(topology.root(), Some(expected.as_path()));
     }
@@ -1045,11 +1053,11 @@ mod tests {
     #[test]
     fn binding_rejects_intermediate_runtime_root_symlink() -> Result<(), Box<dyn std::error::Error>>
     {
-        let parent = tempfile::tempdir().expect("temporary directory");
+        let parent = must_with(tempfile::tempdir(), "temporary directory");
         let real_parent = parent.path().join("real");
         let real_root = real_parent.join("repo");
         let linked_parent = parent.path().join("linked");
-        fs::create_dir_all(&real_root).expect("create real runtime root");
+        must_with(fs::create_dir_all(&real_root), "create real runtime root");
         if !create_directory_symlink_for_test(&real_parent, &linked_parent)? {
             return Ok(());
         }
@@ -1065,7 +1073,7 @@ mod tests {
     #[test]
     fn discovery_requires_each_governed_layer_directory() -> Result<(), Box<dyn std::error::Error>>
     {
-        let both_missing = tempfile::tempdir().expect("both-missing temporary directory");
+        let both_missing = must_with(tempfile::tempdir(), "both-missing temporary directory");
         let both_paths = CorpusPaths::from_root(both_missing.path().to_path_buf());
         assert_eq!(
             CorpusTopology::from_paths(&both_paths),
@@ -1078,9 +1086,11 @@ mod tests {
             })
         );
 
-        let only_fuzz = tempfile::tempdir().expect("fuzz-only temporary directory");
-        fs::create_dir_all(only_fuzz.path().join("crates/perl-corpus/fuzz"))
-            .expect("create fuzz-only layer");
+        let only_fuzz = must_with(tempfile::tempdir(), "fuzz-only temporary directory");
+        must_with(
+            fs::create_dir_all(only_fuzz.path().join("crates/perl-corpus/fuzz")),
+            "create fuzz-only layer",
+        );
         let fuzz_paths = CorpusPaths::from_root(only_fuzz.path().to_path_buf());
         assert_eq!(
             CorpusTopology::from_paths(&fuzz_paths),
@@ -1093,8 +1103,11 @@ mod tests {
             })
         );
 
-        let only_test = tempfile::tempdir().expect("test-only temporary directory");
-        fs::create_dir_all(only_test.path().join("test_corpus")).expect("create test-only layer");
+        let only_test = must_with(tempfile::tempdir(), "test-only temporary directory");
+        must_with(
+            fs::create_dir_all(only_test.path().join("test_corpus")),
+            "create test-only layer",
+        );
         let test_paths = CorpusPaths::from_root(only_test.path().to_path_buf());
         assert_eq!(
             CorpusTopology::from_paths(&test_paths),
@@ -1111,7 +1124,7 @@ mod tests {
 
     #[test]
     fn topology_includes_supported_test_and_fuzz_assets() {
-        let root = tempfile::tempdir().expect("temporary directory");
+        let root = must_with(tempfile::tempdir(), "temporary directory");
         let test_file = root.path().join("test_corpus/nested/case.pl");
         let test_module = root.path().join("test_corpus/nested/Case.pm");
         let fuzz_perl = root.path().join("crates/perl-corpus/fuzz/seed.pl");
@@ -1128,7 +1141,7 @@ mod tests {
         write_fixture(&fuzz_unclassified, "metadata without a declared kind");
         write_fixture(&fuzz_readme, "metadata only");
 
-        let topology = topology_from_root(root.path()).expect("build topology");
+        let topology = must_with(topology_from_root(root.path()), "build topology");
         let ids = topology.assets.iter().map(|asset| asset.id.as_str()).collect::<Vec<_>>();
 
         assert_eq!(
@@ -1144,37 +1157,35 @@ mod tests {
         assert!(!ids.iter().any(|id| id.ends_with("README.md")));
         assert!(!ids.iter().any(|id| id.ends_with("/notes")));
 
-        let text = topology
-            .assets
-            .iter()
-            .find(|asset| asset.id.ends_with("heredoc_validation.txt"))
-            .expect("text fixture");
+        let text = must_some_with(
+            topology.assets.iter().find(|asset| asset.id.ends_with("heredoc_validation.txt")),
+            "text fixture",
+        );
         assert_eq!(text.kind, CorpusAssetKind::TextFixture);
         assert_eq!(text.layer, CorpusAssetLayer::Fuzz);
 
-        let crash = topology
-            .assets
-            .iter()
-            .find(|asset| asset.id.ends_with("crash-deadbeef"))
-            .expect("extensionless crash fixture");
+        let crash = must_some_with(
+            topology.assets.iter().find(|asset| asset.id.ends_with("crash-deadbeef")),
+            "extensionless crash fixture",
+        );
         assert_eq!(crash.kind, CorpusAssetKind::PerlSource);
-        assert!(topology.asset_path(crash).expect("resolve crash fixture").is_file());
+        assert!(must_with(topology.asset_path(crash), "resolve crash fixture").is_file());
     }
 
     #[test]
     fn topology_serialization_is_checkout_independent_and_deterministic() {
-        let first_root = tempfile::tempdir().expect("first temporary directory");
-        let second_root = tempfile::tempdir().expect("second temporary directory");
+        let first_root = must_with(tempfile::tempdir(), "first temporary directory");
+        let second_root = must_with(tempfile::tempdir(), "second temporary directory");
 
         write_fixture(&first_root.path().join("test_corpus/z.pl"), "1;");
         write_fixture(&first_root.path().join("test_corpus/a.pl"), "2;");
         write_fixture(&second_root.path().join("test_corpus/a.pl"), "2;");
         write_fixture(&second_root.path().join("test_corpus/z.pl"), "1;");
 
-        let first = topology_from_root(first_root.path()).expect("build first topology");
-        let second = topology_from_root(second_root.path()).expect("build second topology");
-        let first_json = serde_json::to_string(&first).expect("serialize first topology");
-        let second_json = serde_json::to_string(&second).expect("serialize second topology");
+        let first = must_with(topology_from_root(first_root.path()), "build first topology");
+        let second = must_with(topology_from_root(second_root.path()), "build second topology");
+        let first_json = must_with(serde_json::to_string(&first), "serialize first topology");
+        let second_json = must_with(serde_json::to_string(&second), "serialize second topology");
 
         assert_ne!(first.root(), second.root());
         assert_eq!(first_json, second_json);
@@ -1184,11 +1195,11 @@ mod tests {
             vec!["test_corpus/a.pl", "test_corpus/z.pl"]
         );
 
-        let loaded: CorpusTopology = serde_json::from_str(&first_json).expect("load topology");
-        let asset = loaded.assets.first().expect("loaded asset");
+        let loaded: CorpusTopology = must_with(serde_json::from_str(&first_json), "load topology");
+        let asset = must_some_with(loaded.assets.first(), "loaded asset");
         assert_eq!(loaded.asset_path(asset), Err(CorpusTopologyError::RootNotBound));
 
-        let rebound = loaded.with_root(first_root.path()).expect("bind topology root");
+        let rebound = must_with(loaded.with_root(first_root.path()), "bind topology root");
         assert!(
             rebound
                 .assets
@@ -1199,7 +1210,7 @@ mod tests {
 
     #[test]
     fn loaded_asset_paths_fail_closed() {
-        let root = tempfile::tempdir().expect("temporary directory");
+        let root = must_with(tempfile::tempdir(), "temporary directory");
 
         for relative_path in ["../outside.pl", "/tmp/outside.pl", "test_corpus/./case.pl"] {
             let rejected = asset(relative_path);
@@ -1897,11 +1908,11 @@ mod tests {
 
     #[test]
     fn resolution_requires_exact_topology_membership() {
-        let root = tempfile::tempdir().expect("temporary directory");
+        let root = must_with(tempfile::tempdir(), "temporary directory");
         let included = asset("test_corpus/included.pl");
         write_fixture(&root.path().join(&included.relative_path), "1;");
         let topology =
-            topology_with(vec![included]).with_root(root.path()).expect("bind topology root");
+            must_with(topology_with(vec![included]).with_root(root.path()), "bind topology root");
         let outsider = asset("test_corpus/outsider.pl");
 
         assert_eq!(
@@ -1912,16 +1923,17 @@ mod tests {
 
     #[test]
     fn required_assets_must_exist_after_rebinding() -> Result<(), Box<dyn std::error::Error>> {
-        let source_root = tempfile::tempdir().expect("source temporary directory");
-        let empty_root = tempfile::tempdir().expect("empty temporary directory");
+        let source_root = must_with(tempfile::tempdir(), "source temporary directory");
+        let empty_root = must_with(tempfile::tempdir(), "empty temporary directory");
         write_fixture(&source_root.path().join("test_corpus/case.pl"), "1;");
-        let discovered = topology_from_root(source_root.path()).expect("discover topology");
-        let payload = serde_json::to_string(&discovered).expect("serialize topology");
-        let rebound = serde_json::from_str::<CorpusTopology>(&payload)
-            .expect("deserialize topology")
-            .with_root(empty_root.path())
-            .expect("bind topology root");
-        let required = rebound.assets.first().expect("required asset");
+        let discovered = must_with(topology_from_root(source_root.path()), "discover topology");
+        let payload = must_with(serde_json::to_string(&discovered), "serialize topology");
+        let rebound = must_with(
+            must_with(serde_json::from_str::<CorpusTopology>(&payload), "deserialize topology")
+                .with_root(empty_root.path()),
+            "bind topology root",
+        );
+        let required = must_some_with(rebound.assets.first(), "required asset");
         let expected_path = canonical_expected_path(
             empty_root.path(),
             &empty_root.path().join(&required.relative_path),
@@ -1939,12 +1951,13 @@ mod tests {
 
     #[test]
     fn optional_assets_may_be_absent_after_rebinding() -> Result<(), Box<dyn std::error::Error>> {
-        let root = tempfile::tempdir().expect("temporary directory");
+        let root = must_with(tempfile::tempdir(), "temporary directory");
         let mut optional = asset("test_corpus/optional.pl");
         optional.requirement = AssetRequirement::Optional;
-        let topology = topology_with(vec![optional.clone()])
-            .with_root(root.path())
-            .expect("bind topology root");
+        let topology = must_with(
+            topology_with(vec![optional.clone()]).with_root(root.path()),
+            "bind topology root",
+        );
 
         assert_eq!(
             topology.asset_path(&optional),
@@ -1958,10 +1971,14 @@ mod tests {
     #[test]
     fn discover_pins_the_real_corpus_population() {
         let raw_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        let repo_root =
-            strip_verbatim_prefix(fs::canonicalize(&raw_root).expect("canonical repository root"));
-        let topology = CorpusTopology::from_paths(&CorpusPaths::from_root(repo_root))
-            .expect("discover real corpus");
+        let repo_root = strip_verbatim_prefix(must_with(
+            fs::canonicalize(&raw_root),
+            "canonical repository root",
+        ));
+        let topology = must_with(
+            CorpusTopology::from_paths(&CorpusPaths::from_root(repo_root)),
+            "discover real corpus",
+        );
 
         let test_assets = topology
             .assets
@@ -1997,10 +2014,15 @@ mod tests {
 
     #[test]
     fn discovery_rejects_directories_named_like_assets() -> Result<(), Box<dyn std::error::Error>> {
-        let root = tempfile::tempdir().expect("temporary directory");
-        fs::create_dir_all(root.path().join("test_corpus/sneaky.pl"))
-            .expect("create directory named like a test asset");
-        fs::create_dir_all(root.path().join("crates/perl-corpus/fuzz")).expect("create fuzz layer");
+        let root = must_with(tempfile::tempdir(), "temporary directory");
+        must_with(
+            fs::create_dir_all(root.path().join("test_corpus/sneaky.pl")),
+            "create directory named like a test asset",
+        );
+        must_with(
+            fs::create_dir_all(root.path().join("crates/perl-corpus/fuzz")),
+            "create fuzz layer",
+        );
 
         assert_eq!(
             CorpusTopology::from_paths(&CorpusPaths::from_root(root.path().to_path_buf())),
@@ -2017,27 +2039,25 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn literal_backslash_and_separator_paths_have_distinct_ids() {
-        let root = tempfile::tempdir().expect("temporary directory");
+        let root = must_with(tempfile::tempdir(), "temporary directory");
         let literal = root.path().join("test_corpus/a\\b.pl");
         let nested = root.path().join("test_corpus/a/b.pl");
         write_fixture(&literal, "1;");
         write_fixture(&nested, "2;");
 
-        let topology = topology_from_root(root.path()).expect("build topology");
-        let literal_asset = topology
-            .assets
-            .iter()
-            .find(|asset| asset.id == "test_corpus/a\\b.pl")
-            .expect("literal-backslash asset");
-        let nested_asset = topology
-            .assets
-            .iter()
-            .find(|asset| asset.id == "test_corpus/a/b.pl")
-            .expect("nested asset");
+        let topology = must_with(topology_from_root(root.path()), "build topology");
+        let literal_asset = must_some_with(
+            topology.assets.iter().find(|asset| asset.id == "test_corpus/a\\b.pl"),
+            "literal-backslash asset",
+        );
+        let nested_asset = must_some_with(
+            topology.assets.iter().find(|asset| asset.id == "test_corpus/a/b.pl"),
+            "nested asset",
+        );
 
         assert_ne!(literal_asset.id, nested_asset.id);
-        assert_eq!(topology.asset_path(literal_asset).expect("resolve literal asset"), literal);
-        assert_eq!(topology.asset_path(nested_asset).expect("resolve nested asset"), nested);
+        assert_eq!(must_with(topology.asset_path(literal_asset), "resolve literal asset"), literal);
+        assert_eq!(must_with(topology.asset_path(nested_asset), "resolve nested asset"), nested);
     }
 
     #[cfg(unix)]
@@ -2046,11 +2066,11 @@ mod tests {
         use std::ffi::OsString;
         use std::os::unix::ffi::OsStringExt;
 
-        let root = tempfile::tempdir().expect("temporary directory");
+        let root = must_with(tempfile::tempdir(), "temporary directory");
         let mut path = root.path().join("test_corpus");
-        fs::create_dir_all(&path).expect("create corpus directory");
+        must_with(fs::create_dir_all(&path), "create corpus directory");
         path.push(OsString::from_vec(vec![b'b', 0xff, b'.', b'p', b'l']));
-        fs::write(&path, "1;").expect("write non-UTF-8 fixture");
+        must_with(fs::write(&path, "1;"), "write non-UTF-8 fixture");
 
         assert!(matches!(
             topology_from_root(root.path()),
@@ -2064,13 +2084,13 @@ mod tests {
         use std::ffi::OsString;
         use std::os::unix::ffi::OsStringExt;
 
-        let root = tempfile::tempdir().expect("temporary directory");
+        let root = must_with(tempfile::tempdir(), "temporary directory");
         let mut path = root.path().join("crates/perl-corpus/fuzz");
-        fs::create_dir_all(&path).expect("create fuzz directory");
+        must_with(fs::create_dir_all(&path), "create fuzz directory");
         path.push(OsString::from_vec(vec![b'n', 0xff, b'.', b'm', b'd']));
-        fs::write(&path, "metadata").expect("write non-UTF-8 metadata");
+        must_with(fs::write(&path, "metadata"), "write non-UTF-8 metadata");
 
-        let topology = topology_from_root(root.path()).expect("ignore non-asset metadata");
+        let topology = must_with(topology_from_root(root.path()), "ignore non-asset metadata");
         assert!(topology.assets.is_empty());
     }
 
@@ -2078,16 +2098,20 @@ mod tests {
     #[test]
     fn excluded_metadata_symlink_does_not_block_discovery() -> Result<(), Box<dyn std::error::Error>>
     {
-        let root = tempfile::tempdir().expect("temporary directory");
+        let root = must_with(tempfile::tempdir(), "temporary directory");
         let target = root.path().join("README-target.md");
         let link = root.path().join("crates/perl-corpus/fuzz/README.md");
         write_fixture(&target, "metadata");
-        fs::create_dir_all(link.parent().expect("link parent")).expect("create link parent");
+        must_with(
+            fs::create_dir_all(must_some_with(link.parent(), "link parent")),
+            "create link parent",
+        );
         if !create_file_symlink_for_test(&target, &link)? {
             return Ok(());
         }
 
-        let topology = topology_from_root(root.path()).expect("ignore excluded metadata symlink");
+        let topology =
+            must_with(topology_from_root(root.path()), "ignore excluded metadata symlink");
         assert!(topology.assets.is_empty());
         Ok(())
     }
@@ -2096,15 +2120,18 @@ mod tests {
     #[test]
     fn dangling_excluded_metadata_symlink_does_not_block_discovery()
     -> Result<(), Box<dyn std::error::Error>> {
-        let root = tempfile::tempdir().expect("temporary directory");
+        let root = must_with(tempfile::tempdir(), "temporary directory");
         let link = root.path().join("crates/perl-corpus/fuzz/README.md");
-        fs::create_dir_all(link.parent().expect("link parent")).expect("create link parent");
+        must_with(
+            fs::create_dir_all(must_some_with(link.parent(), "link parent")),
+            "create link parent",
+        );
         if !create_file_symlink_for_test(&root.path().join("missing-readme-target.md"), &link)? {
             return Ok(());
         }
 
         let topology =
-            topology_from_root(root.path()).expect("ignore dangling excluded metadata symlink");
+            must_with(topology_from_root(root.path()), "ignore dangling excluded metadata symlink");
         assert!(topology.assets.is_empty());
         Ok(())
     }
@@ -2112,11 +2139,14 @@ mod tests {
     #[cfg(any(unix, windows))]
     #[test]
     fn symlinked_entries_fail_closed() -> Result<(), Box<dyn std::error::Error>> {
-        let root = tempfile::tempdir().expect("temporary directory");
+        let root = must_with(tempfile::tempdir(), "temporary directory");
         let target = root.path().join("target.pl");
         let link = root.path().join("test_corpus/linked.pl");
         write_fixture(&target, "1;");
-        fs::create_dir_all(link.parent().expect("link parent")).expect("create link parent");
+        must_with(
+            fs::create_dir_all(must_some_with(link.parent(), "link parent")),
+            "create link parent",
+        );
         if !create_file_symlink_for_test(&target, &link)? {
             return Ok(());
         }
@@ -2134,9 +2164,12 @@ mod tests {
     #[test]
     fn dangling_selected_symlink_fails_as_symlink_unsupported()
     -> Result<(), Box<dyn std::error::Error>> {
-        let root = tempfile::tempdir().expect("temporary directory");
+        let root = must_with(tempfile::tempdir(), "temporary directory");
         let link = root.path().join("test_corpus/dangling.pl");
-        fs::create_dir_all(link.parent().expect("link parent")).expect("create link parent");
+        must_with(
+            fs::create_dir_all(must_some_with(link.parent(), "link parent")),
+            "create link parent",
+        );
         if !create_file_symlink_for_test(&root.path().join("missing-target.pl"), &link)? {
             return Ok(());
         }
@@ -2154,13 +2187,16 @@ mod tests {
     #[test]
     fn symlinked_test_directory_cannot_hide_selected_descendants()
     -> Result<(), Box<dyn std::error::Error>> {
-        let root = tempfile::tempdir().expect("temporary directory");
+        let root = must_with(tempfile::tempdir(), "temporary directory");
         let target = root.path().join("outside-test-tree");
         write_fixture(&target.join("case.pl"), "1;");
         write_fixture(&target.join("Case.pm"), "package Case; 1;");
         write_fixture(&target.join("case.t"), "ok 1;");
         let link = root.path().join("test_corpus/linked");
-        fs::create_dir_all(link.parent().expect("link parent")).expect("create link parent");
+        must_with(
+            fs::create_dir_all(must_some_with(link.parent(), "link parent")),
+            "create link parent",
+        );
         if !create_directory_symlink_for_test(&target, &link)? {
             return Ok(());
         }
@@ -2178,13 +2214,16 @@ mod tests {
     #[test]
     fn symlinked_fuzz_directory_cannot_hide_selected_descendants()
     -> Result<(), Box<dyn std::error::Error>> {
-        let root = tempfile::tempdir().expect("temporary directory");
+        let root = must_with(tempfile::tempdir(), "temporary directory");
         let target = root.path().join("outside-fuzz-tree");
         write_fixture(&target.join("crash-deadbeef"), "xqN<<\"");
         write_fixture(&target.join("validation.txt"), "xqN<<\"");
         write_fixture(&target.join("seed.pl"), "1;");
         let link = root.path().join("crates/perl-corpus/fuzz/linked");
-        fs::create_dir_all(link.parent().expect("link parent")).expect("create link parent");
+        must_with(
+            fs::create_dir_all(must_some_with(link.parent(), "link parent")),
+            "create link parent",
+        );
         if !create_directory_symlink_for_test(&target, &link)? {
             return Ok(());
         }
@@ -2202,7 +2241,7 @@ mod tests {
     #[test]
     fn symlinked_directory_target_inside_root_still_fails_closed()
     -> Result<(), Box<dyn std::error::Error>> {
-        let root = tempfile::tempdir().expect("temporary directory");
+        let root = must_with(tempfile::tempdir(), "temporary directory");
         let target = root.path().join("test_corpus/real");
         write_fixture(&target.join("case.pl"), "1;");
         let link = root.path().join("test_corpus/linked");
@@ -2223,11 +2262,14 @@ mod tests {
     #[test]
     fn symlinked_directory_target_outside_root_fails_closed()
     -> Result<(), Box<dyn std::error::Error>> {
-        let root = tempfile::tempdir().expect("temporary directory");
-        let outside = tempfile::tempdir().expect("outside temporary directory");
+        let root = must_with(tempfile::tempdir(), "temporary directory");
+        let outside = must_with(tempfile::tempdir(), "outside temporary directory");
         write_fixture(&outside.path().join("case.pl"), "1;");
         let link = root.path().join("test_corpus/linked");
-        fs::create_dir_all(link.parent().expect("link parent")).expect("create link parent");
+        must_with(
+            fs::create_dir_all(must_some_with(link.parent(), "link parent")),
+            "create link parent",
+        );
         if !create_directory_symlink_for_test(outside.path(), &link)? {
             return Ok(());
         }
@@ -2245,11 +2287,14 @@ mod tests {
     #[test]
     fn nested_intermediate_directory_symlink_fails_closed() -> Result<(), Box<dyn std::error::Error>>
     {
-        let root = tempfile::tempdir().expect("temporary directory");
+        let root = must_with(tempfile::tempdir(), "temporary directory");
         let target = root.path().join("outside-nested-tree");
         write_fixture(&target.join("case.pl"), "1;");
         let link = root.path().join("test_corpus/outer/linked");
-        fs::create_dir_all(link.parent().expect("link parent")).expect("create link parent");
+        must_with(
+            fs::create_dir_all(must_some_with(link.parent(), "link parent")),
+            "create link parent",
+        );
         if !create_directory_symlink_for_test(&target, &link)? {
             return Ok(());
         }
@@ -2268,10 +2313,13 @@ mod tests {
     fn selected_non_regular_entries_fail_closed() {
         use std::os::unix::net::UnixListener;
 
-        let root = tempfile::tempdir().expect("temporary directory");
+        let root = must_with(tempfile::tempdir(), "temporary directory");
         let socket = root.path().join("test_corpus/socket.pl");
-        fs::create_dir_all(socket.parent().expect("socket parent")).expect("create socket parent");
-        let _listener = UnixListener::bind(&socket).expect("bind Unix socket");
+        must_with(
+            fs::create_dir_all(must_some_with(socket.parent(), "socket parent")),
+            "create socket parent",
+        );
+        let _listener = must_with(UnixListener::bind(&socket), "bind Unix socket");
 
         assert_eq!(
             topology_from_root(root.path()),
@@ -2283,7 +2331,7 @@ mod tests {
     fn component_ids_use_forward_slashes() {
         let path = Path::new("test_corpus").join("nested").join("case.pl");
         assert_eq!(
-            CorpusAssetPath::from_host_path(&path).expect("canonical relative path").as_str(),
+            must_with(CorpusAssetPath::from_host_path(&path), "canonical relative path").as_str(),
             "test_corpus/nested/case.pl"
         );
     }
