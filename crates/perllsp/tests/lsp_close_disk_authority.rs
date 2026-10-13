@@ -360,3 +360,48 @@ fn close_with_writerless_fifo_does_not_block_or_retain_buffer() -> Result<()> {
     project.assert_symbol(&mut client, "disk_only", None)?;
     shutdown(client)
 }
+
+#[test]
+fn close_refuses_oversized_and_binary_disk_replacements() -> Result<()> {
+    // The normal public default is 1 MiB. Use short comment lines so the
+    // oversized case exercises total size rather than a per-line bound.
+    let oversized = format!("sub guarded_disk {{ 1 }}\n{}", "# padding\n".repeat(110_000));
+    let binary = format!("sub guarded_disk {{ 1 }}\n{}", "\0".repeat(500));
+    for text in [oversized, binary] {
+        let project = Project::new("Journey.pm", Some(DISK))?;
+        let mut client = project.start()?;
+        project.open(&mut client, DISK)?;
+        project.edit(&mut client)?;
+        std::fs::write(&project.path, text)?;
+        project.close(&mut client)?;
+        project.assert_symbol(&mut client, "guarded_disk", None)?;
+        project.assert_symbol(&mut client, "buffer_only", None)?;
+        project.assert_symbol(&mut client, "disk_only", None)?;
+        shutdown(client)?;
+    }
+    Ok(())
+}
+
+#[test]
+fn close_decodes_utf16_disk_and_preserves_binary_data_sections() -> Result<()> {
+    for utf16 in [false, true] {
+        let project = Project::new("Journey.pm", Some(DISK))?;
+        let mut client = project.start()?;
+        project.open(&mut client, DISK)?;
+        project.edit(&mut client)?;
+        if utf16 {
+            let mut bytes = vec![0xff, 0xfe];
+            bytes.extend(CURRENT_DISK.encode_utf16().flat_map(u16::to_le_bytes));
+            std::fs::write(&project.path, bytes)?;
+        } else {
+            let text = format!("{CURRENT_DISK}__DATA__\n{}", "\0".repeat(500));
+            std::fs::write(&project.path, text)?;
+        }
+        project.close(&mut client)?;
+        project.assert_symbol(&mut client, "current_disk", Some((4, 0, 22)))?;
+        project.assert_symbol(&mut client, "buffer_only", None)?;
+        project.assert_symbol(&mut client, "disk_only", None)?;
+        shutdown(client)?;
+    }
+    Ok(())
+}

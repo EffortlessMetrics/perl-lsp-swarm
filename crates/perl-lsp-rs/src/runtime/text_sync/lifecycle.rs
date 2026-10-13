@@ -3,7 +3,7 @@ use super::{
     source_path_from_uri,
 };
 #[cfg(feature = "workspace")]
-use crate::runtime::workspace::read_perl_source_file;
+use crate::runtime::workspace::read_perl_source_file_with_byte_limit;
 #[cfg(feature = "workspace")]
 use perl_workspace::workspace_index::{SourceCommit, SourceCommitOutcome};
 
@@ -58,8 +58,16 @@ impl LspServer {
                 // not create a new filesystem read surface.
                 let content = source_path_from_uri(uri).and_then(|path| {
                     let admission = self.discovery_admission_config(&path);
-                    match read_perl_source_file(&path, &admission) {
-                        Ok(content) => content,
+                    let byte_limit = crate::state::max_file_size_bytes();
+                    match read_perl_source_file_with_byte_limit(&path, &admission, Some(byte_limit))
+                    {
+                        // Decode before canonical binary classification: valid
+                        // UTF-16 bytes contain NULs, and __DATA__ may be binary.
+                        // Decoding can expand bytes beyond the ingress ceiling.
+                        Ok(content) => content.filter(|text| {
+                            text.len() <= byte_limit
+                                && !perl_parser_core::source_file::is_binary_content(text)
+                        }),
                         Err(error) => {
                             tracing::debug!(
                                 "Failed to reload closed-file source {}: {}",
