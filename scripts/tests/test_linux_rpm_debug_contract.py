@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Exercise the rendered RPM prep guard with real stripped and debug ELF inputs."""
+"""Exercise the rendered RPM input guard with real ELF and native build routes."""
 import hashlib
 from pathlib import Path
 import re
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 import unittest
 
@@ -17,7 +18,7 @@ class RpmDebugContract(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.work = Path(self.temp.name)
-        for tool in ("cc", "readelf", "strip", "objcopy", "objdump"):
+        for tool in ("cc", "readelf", "strip", "objcopy", "objdump", "rpmbuild"):
             self.assertIsNotNone(shutil.which(tool), f"required fixture tool: {tool}")
         source = self.work / "main.c"
         source.write_text("int main(void) { return 0; }\n")
@@ -34,9 +35,8 @@ class RpmDebugContract(unittest.TestCase):
             "--output-dir", str(output),
         ], check=True, capture_output=True)
         self.spec = (output / "dnf/perl-lsp.spec").read_text()
-        prep = self.spec.split("%prep\n", 1)[1].split("%build\n", 1)[0]
-        # Native autosetup is covered by the package build; here supply its unpacked cwd.
-        self.guard = "\n".join(line for line in prep.splitlines() if not line.startswith("%autosetup"))
+        build = self.spec.split("%build\n", 1)[1].split("%install\n", 1)[0]
+        self.guard = build
         self.payload = self.work / "payload"
         self.payload.mkdir()
         for name in ("perllsp", "perl-dap"):
@@ -45,6 +45,55 @@ class RpmDebugContract(unittest.TestCase):
     def run_guard(self):
         return subprocess.run(["bash", "-eu", "-c", self.guard], cwd=self.payload,
                               text=True, capture_output=True)
+
+    def run_native_build(self, route, debug_binary=None):
+        case = self.work / f"native-{route}-{debug_binary or 'stripped'}"
+        top = case / "top"
+        source_dir = self.spec.split("%autosetup -n ", 1)[1].splitlines()[0]
+        asset = Path(re.search(r"(?m)^Source0:\s+(\S+)", self.spec).group(1)).name
+        payload = case / "payload"
+        payload.mkdir(parents=True)
+        for name in ("perllsp", "perl-dap"):
+            shutil.copy2(self.debug if name == debug_binary else self.stripped, payload / name)
+        (payload / "LICENSE-MIT").write_text("MIT test fixture\n")
+        (payload / "LICENSE-APACHE").write_text("Apache test fixture\n")
+        (payload / "README.md").write_text("RPM test fixture\n")
+
+        for directory in ("BUILD", "RPMS", "SOURCES", "SPECS", "SRPMS"):
+            (top / directory).mkdir(parents=True, exist_ok=True)
+        spec = re.sub(r"(?m)^\* Thu Jan 01 1970 ", "* Wed Jan 01 2025 ", self.spec)
+        spec_path = top / "SPECS/perl-lsp.spec"
+        spec_path.write_text(spec)
+        archive_path = top / "SOURCES" / asset
+        if route == "normal":
+            with tarfile.open(archive_path, "w:gz") as archive:
+                for path in payload.iterdir():
+                    archive.add(path, arcname=f"{source_dir}/{path.name}", recursive=False)
+            cwd = case
+            source_hash = hashlib.sha256(archive_path.read_bytes()).hexdigest()
+        else:
+            cwd = payload
+            source_hash = {
+                path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+                for path in payload.iterdir()
+            }
+
+        # rpm is apt-installed in this Linux CI job, so RPM's database does
+        # not know about the separately provisioned fixture tools.
+        command = ["rpmbuild", "-bi", "--nodeps"]
+        if route == "build-in-place":
+            command.append("--build-in-place")
+        command.extend(["--define", f"_topdir {top}", str(spec_path)])
+        result = subprocess.run(command, cwd=cwd, text=True, capture_output=True)
+        installed = list(top.glob("BUILD/*/BUILDROOT/usr/bin/perllsp"))
+        if route == "normal":
+            unchanged = hashlib.sha256(archive_path.read_bytes()).hexdigest() == source_hash
+        else:
+            unchanged = source_hash == {
+                path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+                for path in payload.iterdir()
+            }
+        return result, installed, unchanged
 
     def test_stripped_pair_passes_without_changing_input(self):
         sections = subprocess.check_output(["readelf", "-SW", str(self.stripped)], text=True)
@@ -145,6 +194,37 @@ int main(void) { return 0; }
         deleted = re.sub(r"^%global debug_package .*\n", "", self.spec, flags=re.MULTILINE)
         self.assertNotEqual(deleted, self.spec, "macro deletion control must change the spec")
         self.assertIn("perl-lsp-debuginfo", packages(deleted))
+
+    def test_native_build_in_place_and_normal_routes_guard_before_install(self):
+        for route in ("build-in-place", "normal"):
+            with self.subTest(route=route, case="stripped"):
+                result, installed, unchanged = self.run_native_build(route)
+                output = result.stdout + result.stderr
+                self.assertEqual(result.returncode, 0, output)
+                self.assertIn("Executing(%build)", output)
+                self.assertIn("Executing(%install)", output)
+                if route == "build-in-place":
+                    self.assertNotIn("Executing(%prep)", output)
+                else:
+                    self.assertIn("Executing(%prep)", output)
+                self.assertEqual(len(installed), 1, output)
+                self.assertTrue(unchanged, "RPM must not mutate the release input")
+                self.assertNotIn(".debug_info", subprocess.check_output(
+                    ["readelf", "-SW", str(installed[0])], text=True
+                ))
+
+            for name in ("perllsp", "perl-dap"):
+                with self.subTest(route=route, case="debug", binary=name):
+                    result, installed, unchanged = self.run_native_build(route, name)
+                    output = result.stdout + result.stderr
+                    self.assertNotEqual(result.returncode, 0, output)
+                    if route == "build-in-place":
+                        self.assertIn("Executing(%build)", output)
+                        self.assertNotIn("Executing(%prep)", output)
+                    self.assertIn("debug information", output)
+                    self.assertNotIn("Executing(%install)", output)
+                    self.assertEqual(installed, [], output)
+                    self.assertTrue(unchanged, "refusal must preserve the source input")
 
 
 if __name__ == "__main__":

@@ -1,5 +1,5 @@
 # This scaffold repackages release binaries built with strip = "debuginfo".
-# There is no DWARF to split; the prep guard refuses unexpected debug inputs
+# There is no DWARF to split; the pre-install guard refuses unexpected debug inputs
 # before the standard RPM strip/policy scripts can discard their information.
 %global debug_package %{nil}
 
@@ -20,6 +20,7 @@ This package installs the perllsp and perl-dap executables from the public-beta 
 %prep
 %autosetup -n __SOURCE_DIR__
 
+%build
 for binary in perllsp perl-dap; do
     header=$(LC_ALL=C readelf -h "$binary") || {
         echo "Release binary $binary is not a readable ELF executable" >&2
@@ -36,9 +37,6 @@ for binary in perllsp perl-dap; do
         exit 1
     fi
 done
-
-%build
-true
 
 %install
 rm -rf %{buildroot}
