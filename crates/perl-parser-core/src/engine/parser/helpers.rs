@@ -1450,6 +1450,10 @@ impl<'a> Parser<'a> {
     /// reading is the sole valid Perl parse, #16373) and must NOT be a string
     /// comparison operator (`eq`, `ne`, `lt`, `gt`, etc.) or a keyword token.
     fn looks_like_bare_call(&mut self, name: &str) -> bool {
+        // A sort comparator names a sub; it is never a call site.
+        if self.in_sort_comparator {
+            return false;
+        }
         if self.peek_kind().is_some_and(|kind| {
             matches!(kind, TokenKind::My | TokenKind::Our | TokenKind::Local | TokenKind::State)
         }) {
@@ -1593,24 +1597,8 @@ impl<'a> Parser<'a> {
                     // t/comp/parser.t has `is CORE::print::foo, 43, ...`,
                     // where the qualified bareword is the first list item.
                     if let Ok(third) = self.tokens.peek_second() {
-                        if third.kind() == TokenKind::Comma {
-                            // `sort mycmp Foo::Bar, Baz::Qux` is a comparator
-                            // plus a qualified-bareword list, not a call:
-                            // a qualified name followed by another qualified
-                            // name keeps the conservative reading. A qualified
-                            // name followed by a plain list item (`is
-                            // CORE::print::foo, 43`) is a call argument.
-                            let after_comma_is_qualified = self
-                                .tokens
-                                .peek_third()
-                                .ok()
-                                .is_some_and(|fourth| {
-                                    fourth.kind() == TokenKind::Identifier
-                                        && fourth.text.contains("::")
-                                });
-                            return !after_comma_is_qualified;
-                        }
                         return third.kind() == TokenKind::Arrow
+                            || third.kind() == TokenKind::Comma
                             || third.kind() == TokenKind::LeftParen
                             || third.kind() == TokenKind::FatArrow
                             || third.kind() == TokenKind::RightParen

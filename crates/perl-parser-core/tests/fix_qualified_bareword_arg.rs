@@ -40,8 +40,27 @@ fn qualified_bareword_as_bare_call_argument_parses() {
 #[test]
 fn qualified_bareword_paren_and_fat_arrow_arms_parse() {
     // RightParen arm: `(foo Foo::Bar)` failed on the parent commit.
-    assert_clean_parse("my $x = (foo Foo::Bar);");
+    assert_call_arg_count("my $x = (foo Foo::Bar);", "foo", 1);
     assert_clean_parse("foo Foo::Bar => 1;");
+}
+
+#[test]
+fn qualified_call_with_qualified_second_item_parses() {
+    assert_call_arg_count("is Foo::Bar, Baz::Qux;", "is", 2);
+}
+
+#[test]
+fn sort_comparator_with_plain_list_is_not_a_nested_call() {
+    let source = "sort mycmp Foo::Bar, 1;";
+    let mut parser = Parser::new(source);
+    let ast = must_with(parser.parse(), format!("parse failed for {source:?}"));
+    assert_eq!(
+        find_function_call(&ast, "mycmp"),
+        None,
+        "comparator must not become a call:\n{}",
+        ast.to_sexp()
+    );
+    assert_clean_parse(source);
 }
 
 #[test]
