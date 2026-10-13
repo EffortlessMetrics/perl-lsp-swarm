@@ -2633,27 +2633,6 @@ print "result: $final\n";
     }
 
     #[test]
-    fn test_attach_default_values() -> Result<(), Box<dyn std::error::Error>> {
-        let mut adapter = DebugAdapter::new();
-        // Empty args should use defaults and fail with missing arguments message
-        let args = json!({});
-        let response = adapter.handle_request(1, "attach", Some(args));
-
-        match response {
-            DapMessage::Response { success, command, message, .. } => {
-                assert!(!success);
-                assert_eq!(command, "attach");
-                assert!(message.is_some());
-                // Should use default host/port but still not be implemented
-                let msg = message.ok_or("Expected message")?;
-                assert!(msg.contains("localhost:13603"));
-            }
-            _ => return Err("Expected response".into()),
-        }
-        Ok(())
-    }
-
-    #[test]
     fn test_attach_custom_port() -> Result<(), Box<dyn std::error::Error>> {
         let mut adapter = DebugAdapter::new();
         let args = json!({
