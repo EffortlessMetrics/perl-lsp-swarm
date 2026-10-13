@@ -511,10 +511,28 @@ pub(crate) fn compare_equivalence_from_options(
     options.finish()?;
     // The output is evidence, never an input: aliasing would destroy a
     // paired receipt, and a failed rerun must not leave stale proof behind.
-    for input_path in [&matrix_path, &instrumented_path, &trace_path, &work_path] {
-        if output == *input_path || ordinary_path.as_ref() == Some(&output) {
-            return Err(color_eyre::eyre::eyre!("--output must not alias an input receipt"));
+    // Canonical forms, not lexical spellings, decide aliasing.
+    let canonical = |path: &PathBuf| -> color_eyre::eyre::Result<PathBuf> {
+        if path.exists() {
+            Ok(path.canonicalize()?)
+        } else if let (Some(parent), Some(name)) = (path.parent(), path.file_name()) {
+            Ok(parent.canonicalize()?.join(name))
+        } else {
+            Ok(path.clone())
         }
+    };
+    let canonical_output = canonical(&output)?;
+    let mut canonical_inputs = vec![
+        canonical(&matrix_path)?,
+        canonical(&instrumented_path)?,
+        canonical(&trace_path)?,
+        canonical(&work_path)?,
+    ];
+    if let Some(path) = &ordinary_path {
+        canonical_inputs.push(canonical(path)?);
+    }
+    if canonical_inputs.contains(&canonical_output) {
+        return Err(color_eyre::eyre::eyre!("--output must not alias an input receipt"));
     }
     if output.exists() {
         std::fs::remove_file(&output)?;
