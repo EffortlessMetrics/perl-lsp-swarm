@@ -114,20 +114,9 @@ fn is_permission_denied_error(e: &std::io::Error) -> bool {
 }
 
 #[cfg(feature = "workspace")]
-use crate::util::{decode_text_bytes, read_text_file_with_encoding};
+use crate::util::decode_text_bytes;
 #[cfg(feature = "workspace")]
 use perl_workspace::monitoring::{IndexingPhase, WorkspaceIndexingReceipt};
-
-#[cfg(feature = "workspace")]
-pub(crate) fn read_watched_file_content(uri: &str, purpose: &str) -> Option<String> {
-    uri_to_fs_path(uri).and_then(|path| match read_text_file_with_encoding(&path) {
-        Ok(content) => Some(content),
-        Err(e) => {
-            tracing::debug!("Failed to read file for {} ({}): {}", purpose, path.display(), e);
-            None
-        }
-    })
-}
 
 /// Read a discovered object's raw bytes for indexing without blocking on
 /// non-regular objects (#14074 review).

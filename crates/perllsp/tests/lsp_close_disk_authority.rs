@@ -85,7 +85,7 @@ impl Project {
                 "uri": self.uri, "languageId": "perl", "version": 1, "text": text
             }}),
         )?;
-        self.ready(client, 1)
+        self.ready_for(client, &self.uri, 1)
     }
 
     fn edit(&self, client: &mut RealProcessClient) -> Result<()> {
@@ -94,7 +94,7 @@ impl Project {
             json!({"textDocument": {"uri": self.uri, "version": 2},
                 "contentChanges": [{"text": BUFFER}]}),
         )?;
-        self.ready(client, 2)?;
+        self.ready_for(client, &self.uri, 2)?;
         // Readiness covers parser effects, so prove the actual indexed buffer
         // result too. Literal UTF-16 range: emoji is two units; sub starts at 18.
         self.assert_symbol(client, "buffer_only", Some((3, 18, 39)))?;
@@ -102,14 +102,19 @@ impl Project {
         Ok(())
     }
 
-    fn ready(&self, client: &mut RealProcessClient, generation: u64) -> Result<()> {
+    fn ready_for(
+        &self,
+        client: &mut RealProcessClient,
+        document_uri: &str,
+        generation: u64,
+    ) -> Result<()> {
         let deadline = Instant::now() + timeout();
         loop {
             let notification = client.receive_server_notification(
                 "perl-lsp/active-document-ready",
                 deadline.saturating_duration_since(Instant::now()),
             )?;
-            if notification.pointer("/params/uri") == Some(&json!(self.uri))
+            if notification.pointer("/params/uri") == Some(&json!(document_uri))
                 && notification.pointer("/params/generation") == Some(&json!(generation))
             {
                 break;
@@ -119,10 +124,50 @@ impl Project {
         // the next diagnostic clear an acknowledgement of the close handoff.
         let diagnostic =
             client.receive_server_notification("textDocument/publishDiagnostics", timeout())?;
-        ensure!(diagnostic.pointer("/params/uri") == Some(&json!(self.uri)), "{diagnostic}");
+        ensure!(diagnostic.pointer("/params/uri") == Some(&json!(document_uri)), "{diagnostic}");
         ensure!(
             diagnostic.pointer("/params/version") == Some(&json!(generation)),
             "fixture version and accepted generation must match: {diagnostic}"
+        );
+        Ok(())
+    }
+
+    fn open_caller(&self, client: &mut RealProcessClient) -> Result<String> {
+        let caller = self.root.path().join("caller.pl");
+        let text = "use Journey;\nJourney::disk_only();\n";
+        std::fs::write(&caller, text)?;
+        let caller_uri = uri(&caller)?;
+        client.notify(
+            "textDocument/didOpen",
+            json!({"textDocument": {
+                "uri": caller_uri, "languageId": "perl", "version": 1, "text": text
+            }}),
+        )?;
+        self.ready_for(client, &caller_uri, 1)?;
+        Ok(caller_uri)
+    }
+
+    fn assert_disk_definition(
+        &self,
+        client: &mut RealProcessClient,
+        caller_uri: &str,
+    ) -> Result<()> {
+        let response = client.request(
+            json!("disk-definition"),
+            "textDocument/definition",
+            json!({"textDocument": {"uri": caller_uri},
+                "position": {"line": 1, "character": 12}}),
+            timeout(),
+        )?;
+        ensure!(
+            response.get("result")
+                == Some(&json!([{
+                    "uri": self.uri, "range": {
+                        "start": {"line": 3, "character": 0},
+                        "end": {"line": 3, "character": 19}
+                    }
+                }])),
+            "cross-file definition must return the independent disk declaration: {response}"
         );
         Ok(())
     }
@@ -201,22 +246,28 @@ fn shutdown(mut client: RealProcessClient) -> Result<()> {
 fn discard_close_restores_disk_and_matches_restart() -> Result<()> {
     let project = Project::new("Journey.pm", Some(DISK))?;
     let mut client = project.start()?;
+    let caller_uri = project.open_caller(&mut client)?;
     project.assert_symbol(&mut client, "disk_only", Some((3, 0, 19)))?;
+    project.assert_disk_definition(&mut client, &caller_uri)?;
     project.open(&mut client, DISK)?;
     project.edit(&mut client)?;
     project.close(&mut client)?;
     let closed = project.assert_symbol(&mut client, "disk_only", Some((3, 0, 19)))?;
     project.assert_symbol(&mut client, "buffer_only", None)?;
+    project.assert_disk_definition(&mut client, &caller_uri)?;
     // A successor version-1 session must acquire fresh buffer authority.
     project.open(&mut client, BUFFER)?;
     project.assert_symbol(&mut client, "buffer_only", Some((3, 18, 39)))?;
     project.close(&mut client)?;
     project.assert_symbol(&mut client, "disk_only", Some((3, 0, 19)))?;
+    project.assert_disk_definition(&mut client, &caller_uri)?;
     shutdown(client)?;
     let mut restarted = project.start()?;
+    let caller_uri = project.open_caller(&mut restarted)?;
     let after_restart = project.assert_symbol(&mut restarted, "disk_only", Some((3, 0, 19)))?;
     ensure!(closed == after_restart, "close and restart must agree on disk authority");
     project.assert_symbol(&mut restarted, "buffer_only", None)?;
+    project.assert_disk_definition(&mut restarted, &caller_uri)?;
     shutdown(restarted)
 }
 
