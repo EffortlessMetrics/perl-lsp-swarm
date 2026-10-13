@@ -568,6 +568,12 @@ static IDENTITIES: &[CriticIdentityEntry] = &[
         "no built-in diagnostic has the same block-nesting policy",
         &[CriticAlias::new(NATIVE, "native.maintainability.too_many_nested_blocks", GENERAL)],
     ),
+    CriticIdentityEntry::distinct(
+        "critic.maintainability.too_many_params",
+        CriticIdentityCategory::Maintainability,
+        "no built-in diagnostic has the same parameter-count policy",
+        &[CriticAlias::new(NATIVE, "native.maintainability.too_many_params", GENERAL)],
+    ),
     CriticIdentityEntry::equivalent(
         "critic.regex.capture_without_match",
         CriticIdentityCategory::Semantic,

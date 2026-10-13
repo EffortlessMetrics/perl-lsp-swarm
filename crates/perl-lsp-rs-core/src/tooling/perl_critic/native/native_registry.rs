@@ -18,7 +18,7 @@ use super::{
     DuplicateParameterRule, ParameterShadowsGlobalRule, PipeOpenRule, PrintfFormatArityRule,
     ProhibitLeadingZerosRule, QxReadpipeRule, RequirePodSectionsRule, RequireUseStrictRule,
     RequireUseWarningsRule, ShadowedLexicalVariableRule, StaleDollarAtRule, StringEvalRule,
-    SubTooLongRule, SystemExecRule, TooManyNestedBlocksRule, TwoArgOpenRule,
+    SubTooLongRule, SystemExecRule, TooManyNestedBlocksRule, TooManyParamsRule, TwoArgOpenRule,
     UncheckedOpenCloseRule, UndeclaredVariableRule, UndefComparisonRule, UninitializedVariableRule,
     UnquotedBarewordRule, UnreachableCodeRule, UnusedLexicalVariableRule, UnusedParameterRule,
 };
@@ -176,6 +176,7 @@ static NATIVE_IDENTITY_DISPOSITIONS: &[NativeCriticIdentityDisposition] = &[
     NativeCriticIdentityDisposition::new("native.syntax.prohibit_leading_zeros", GENERAL),
     NativeCriticIdentityDisposition::new("native.maintainability.sub_too_long", GENERAL),
     NativeCriticIdentityDisposition::new("native.maintainability.too_many_nested_blocks", GENERAL),
+    NativeCriticIdentityDisposition::new("native.maintainability.too_many_params", GENERAL),
 ];
 
 const MAX_REJECTED_PROFILE_CHARS: usize = 80;
@@ -449,6 +450,7 @@ impl NativeCriticRegistry {
             Box::new(ProhibitLeadingZerosRule),
             Box::new(SubTooLongRule),
             Box::new(TooManyNestedBlocksRule),
+            Box::new(TooManyParamsRule),
         ])
     }
 
