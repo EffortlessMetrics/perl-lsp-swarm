@@ -1,6 +1,24 @@
-//! Proof of the shared error contract when xtask declines the network backend.
+//! AI dependency and error contracts selected by the existing routed xtask tests.
 
-fn main() {}
+use std::{path::Path, process::Command};
+
+#[test]
+fn tooling_and_product_ai_features_are_resolved_by_cargo() -> Result<(), Box<dyn std::error::Error>>
+{
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let python = if cfg!(windows) { "python" } else { "python3" };
+    let output = Command::new(python)
+        .arg(root.join("scripts/tests/test_xtask_ai_dependencies.py"))
+        .current_dir(&root)
+        .output()?;
+    assert!(
+        output.status.success(),
+        "Cargo graph proof failed:\n{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    Ok(())
+}
 
 #[cfg(test)]
 mod tests {
