@@ -2235,6 +2235,8 @@ impl LspServer {
             .chars()
             .rev()
             .collect::<String>();
+        // Replace only the name prefix; keep a preceding sigil or receiver intact.
+        // The shared serializer projects these current-source byte offsets.
         let prefix_start = offset.saturating_sub(prefix.len());
 
         // Check if we're in a method call context (after ->)
@@ -2281,7 +2283,7 @@ impl LspServer {
                         additional_edits: vec![],
                         sort_text: None,
                         filter_text: None,
-                        text_edit_range: None,
+                        text_edit_range: Some((prefix_start, offset)),
                         commit_characters: None,
                         insert_text_format: InsertTextFormat::PlainText,
                         label_details: None,
@@ -2304,7 +2306,7 @@ impl LspServer {
                         additional_edits: vec![],
                         sort_text: None,
                         filter_text: None,
-                        text_edit_range: None,
+                        text_edit_range: Some((prefix_start, offset)),
                         commit_characters: None,
                         insert_text_format: InsertTextFormat::PlainText,
                         label_details: None,
@@ -2323,7 +2325,7 @@ impl LspServer {
                         additional_edits: vec![],
                         sort_text: None,
                         filter_text: None,
-                        text_edit_range: None,
+                        text_edit_range: Some((prefix_start, offset)),
                         commit_characters: None,
                         insert_text_format: InsertTextFormat::PlainText,
                         label_details: None,
@@ -2339,7 +2341,7 @@ impl LspServer {
                         additional_edits: vec![],
                         sort_text: None,
                         filter_text: None,
-                        text_edit_range: None,
+                        text_edit_range: Some((prefix_start, offset)),
                         commit_characters: None,
                         insert_text_format: InsertTextFormat::PlainText,
                         label_details: None,
@@ -2358,7 +2360,7 @@ impl LspServer {
                         additional_edits: vec![],
                         sort_text: None,
                         filter_text: None,
-                        text_edit_range: None,
+                        text_edit_range: Some((prefix_start, offset)),
                         commit_characters: None,
                         insert_text_format: InsertTextFormat::PlainText,
                         label_details: None,
@@ -2387,7 +2389,7 @@ impl LspServer {
                             additional_edits: vec![],
                             sort_text: None,
                             filter_text: None,
-                            text_edit_range: None,
+                            text_edit_range: Some((prefix_start, offset)),
                             commit_characters: None,
                             insert_text_format: InsertTextFormat::PlainText,
                             label_details: None,
@@ -2570,6 +2572,97 @@ mod tests {
     )]
 
     use super::*;
+
+    #[test]
+    fn fallback_prefix_edits_cover_every_existing_candidate() {
+        let server = LspServer::default();
+        for (source, start, end) in [
+            ("sub example { wh", 14, 16),
+            ("sub example { $_", 15, 16),
+            ("sub example { @AR", 15, 17),
+            ("sub example { @_", 15, 16),
+            ("sub example { %EN", 15, 17),
+            ("sub example { $unknown->ge", 24, 26),
+            ("sub example { @", 15, 15),
+            ("sub example { $unknown->", 24, 24),
+        ] {
+            let items = server.lexical_complete(source, source.len(), None);
+            assert!(!items.is_empty(), "fallback fixture must emit candidates: {source}");
+            for item in items {
+                assert_eq!(item.text_edit_range, Some((start, end)), "{source}: {}", item.label);
+            }
+        }
+    }
+
+    #[test]
+    fn fallback_prefix_edits_reach_both_runtime_request_routes()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for (before, prefix, label, new_text, after) in [
+            ("sub example { ", "wh", "while", "while", ";"),
+            ("sub example { @", "AR", "ARGV", "ARGV", ";"),
+            ("sub example { %", "EN", "ENV", "ENV", ";"),
+            ("sub example { $", "_", "_", "_", ";"),
+            ("sub example { $unknown->", "ge", "get", "get", "();"),
+            ("sub example { @", "", "ARGV", "ARGV", ";"),
+            ("my $emoji = \"🦀\"; @", "AR", "ARGV", "ARGV", ";"),
+            ("# 🦀\r\nsub example {\r\n    @", "AR", "ARGV", "ARGV", ";"),
+        ] {
+            for cancellable in [false, true] {
+                let server = LspServer::default();
+                let uri = "file:///workspace/fallback_prefix.pl";
+                let source = format!("{before}{prefix}{after}");
+                let doc = crate::state::DocumentState::new(&source, 1);
+                assert!(doc.parsed_for_user_answers().is_none(), "must exercise no-AST fallback");
+                server.documents_guard().insert(uri.to_string(), doc);
+                let line = before.bytes().filter(|&b| b == b'\n').count() as u32;
+                let start = before
+                    .rsplit('\n')
+                    .next()
+                    .ok_or("missing current line")?
+                    .encode_utf16()
+                    .count() as u32;
+                let end = start + prefix.encode_utf16().count() as u32;
+                let params = Some(json!({
+                    "textDocument": { "uri": uri },
+                    "position": { "line": line, "character": end }
+                }));
+                let response = if cancellable {
+                    server.handle_completion_cancellable(params, None)?
+                } else {
+                    server.handle_completion(params)?
+                }
+                .ok_or("completion returned no response")?;
+                let items = response["items"].as_array().ok_or("missing items")?;
+                let item = items
+                    .iter()
+                    .find(|item| item["label"] == label)
+                    .ok_or_else(|| format!("missing {label} in {response}"))?;
+                assert_eq!(
+                    item["textEdit"],
+                    json!({
+                        "range": {
+                            "start": { "line": line, "character": start },
+                            "end": { "line": line, "character": end }
+                        },
+                        "newText": new_text
+                    }),
+                    "source={source:?}, cancellable={cancellable}"
+                );
+                let edit = &item["textEdit"];
+                let docs = server.documents_guard();
+                let doc = server.get_document(&docs, uri).ok_or("missing document")?;
+                let start_byte = server.pos16_to_offset(doc, line, start);
+                let end_byte = server.pos16_to_offset(doc, line, end);
+                let mut applied = source.clone();
+                applied.replace_range(
+                    start_byte..end_byte,
+                    edit["newText"].as_str().ok_or("missing replacement")?,
+                );
+                assert_eq!(applied, format!("{before}{new_text}{after}"));
+            }
+        }
+        Ok(())
+    }
 
     /// Render the documentation the runtime would show for `keyword` at the
     /// byte offset of `needle`, using a candidate the *provider* actually
