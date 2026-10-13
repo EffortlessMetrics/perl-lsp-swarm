@@ -1359,12 +1359,21 @@ impl LspServer {
                                                 let alt_refs = index.find_references(&symbol_name);
                                                 all_refs.extend(alt_refs);
 
+                                                // The compatibility query includes definitions.
+                                                // Exclude them from the union before adding the
+                                                // single name anchor under includeDeclaration.
+                                                let declarations = index.find_defs(&key);
+                                                all_refs.retain(|location| {
+                                                    !declarations.contains(location)
+                                                });
+
                                                 // Add definition if includeDeclaration is true,
                                                 // narrowed to the declaration's name token so it
                                                 // shares occurrence identity with the text tier
                                                 // (#17242).
                                                 if include_declaration
-                                                    && let Some(mut def) = index.find_def(&key)
+                                                    && let Some(mut def) =
+                                                        declarations.into_iter().next()
                                                 {
                                                     let doc_refs: Vec<(&str, &str)> = docs_snapshot
                                                         .iter()

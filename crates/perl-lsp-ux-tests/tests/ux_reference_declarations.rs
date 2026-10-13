@@ -85,3 +85,95 @@ fn references_respect_declaration_role_and_package_identity() -> TestResult {
     assert!(mismatches.is_empty(), "complete reference set mismatches:\n{}", mismatches.join("\n"));
     Ok(())
 }
+
+// AmperCall does not supply the cursor resolver's symbol key, so these
+// reference cursors exercise the qualified-name index fallback directly.
+fn qualify_fqn_reference_cursor(
+    caller: &str,
+    character: u32,
+    first_start: u32,
+    first_end: u32,
+) -> TestResult {
+    let binary = std::env::var("PERL_LSP_BIN")?;
+    assert!(Path::new(&binary).is_absolute() && Path::new(&binary).is_file());
+    let timeout = Duration::from_secs(20);
+    let declaration = "package Outer;\nsub mark {}\n";
+    let harness = UxHarness::new(
+        ScenarioConfig { timeout, ..ScenarioConfig::default() }
+            .with_file("Outer.pm", declaration)
+            .with_file("caller.pl", caller),
+    )?;
+    harness.wait_for_index_ready(timeout).map_err(|e| format!("index readiness: {e:?}"))?;
+    for (filename, text) in [("Outer.pm", declaration), ("caller.pl", caller)] {
+        harness.open_file(filename, text)?;
+        harness
+            .wait_for_active_document_ready(&harness.workspace.uri(filename), timeout)
+            .map_err(|e| format!("document readiness for {filename}: {e:?}"))?;
+    }
+    let caller_uri = harness.workspace.uri("caller.pl");
+    let mut mismatches = Vec::new();
+    for include_declaration in [false, true] {
+        let response = harness.client.request(
+            "textDocument/references",
+            json!({
+                "textDocument": {"uri": caller_uri},
+                "position": {"line": 0, "character": character},
+                "context": {"includeDeclaration": include_declaration}
+            }),
+            timeout,
+        )?;
+        assert!(response.get("error").is_none(), "RPC error: {response}");
+        let locations = response
+            .get("result")
+            .and_then(Value::as_array)
+            .ok_or_else(|| format!("missing/malformed references array: {response}"))?;
+        let mut expected = vec![
+            json!({"uri": caller_uri, "range": {
+                "start": {"line": 0, "character": first_start},
+                "end": {"line": 0, "character": first_end}
+            }})
+            .to_string(),
+            json!({"uri": caller_uri, "range": {
+                "start": {"line": 1, "character": 0},
+                "end": {"line": 1, "character": 13}
+            }})
+            .to_string(),
+        ];
+        // Exclusion must return no Outer.pm location; inclusion adds exactly
+        // the name anchor, never the compatibility query's full declaration.
+        if include_declaration {
+            expected.push(
+                json!({"uri": harness.workspace.uri("Outer.pm"), "range": {
+                    "start": {"line": 1, "character": 4},
+                    "end": {"line": 1, "character": 8}
+                }})
+                .to_string(),
+            );
+        }
+        let mut actual: Vec<_> = locations.iter().map(Value::to_string).collect();
+        actual.sort();
+        expected.sort();
+        if actual != expected {
+            mismatches.push(format!(
+                "includeDeclaration={include_declaration}: expected {expected:?}, actual {actual:?}"
+            ));
+        }
+    }
+    harness.client.shutdown_and_exit(timeout)?;
+    assert!(
+        mismatches.is_empty(),
+        "complete FQN reference set mismatches:\n{}",
+        mismatches.join("\n")
+    );
+    Ok(())
+}
+
+#[test]
+fn qualified_ampersand_call_cursor_respects_declaration_inclusion() -> TestResult {
+    qualify_fqn_reference_cursor("&Outer::mark();\nOuter::mark();\n", 10, 0, 14)
+}
+
+#[test]
+fn qualified_code_reference_cursor_respects_declaration_inclusion() -> TestResult {
+    qualify_fqn_reference_cursor("\\&Outer::mark;\nOuter::mark();\n", 11, 1, 13)
+}
