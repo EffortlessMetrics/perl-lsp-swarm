@@ -160,8 +160,13 @@ impl LspServer {
                     // Mirrors the pattern used by completion (#3069) and workspace/symbol (#1514).
                     #[cfg(feature = "workspace")]
                     let _ = self.check_index_readiness(IndexReadinessPolicy::WaitBriefly);
+                    // Bare calls resolve through the workspace only with
+                    // import evidence in the calling document; an unimported
+                    // bare name must not borrow an unrelated package's
+                    // same-named callable (#17582).
                     #[cfg(feature = "workspace")]
-                    if Self::is_method_call_context(&doc.text, offset)
+                    if (Self::is_method_call_context(&doc.text, offset)
+                        || document_imports_name(&doc.text, &function_name))
                         && let Some(signature) = self.resolve_method_in_workspace(&function_name)
                     {
                         return Ok(Some(json!({
@@ -226,16 +231,10 @@ impl LspServer {
                         }
                     }
 
-                    // If no signature found, return a generic one
-                    return Ok(Some(json!({
-                        "signatures": [json!({
-                            "label": format!("{}(...)", function_name),
-                            "documentation": null,
-                            "parameters": []
-                        })],
-                        "activeSignature": active_signature,
-                        "activeParameter": active_param
-                    })));
+                    // No static callable fact: LSP 3.17 defines a null
+                    // result when no signatures are available (#17582).
+                    // Never fabricate a `name(...)` signature.
+                    return Ok(Some(Value::Null));
                 }
             }
         } else {
@@ -1037,6 +1036,34 @@ impl LspServer {
 
         self.get_user_function_signature(&ast, method_name)
     }
+}
+
+/// True when `text` imports `name` through a `use Module qw(...)` list or a
+/// parenthesized quoted import list. This is import evidence only; it does
+/// not prove the imported symbol resolves, so callers still need a real
+/// workspace definition before showing a signature (#17582).
+fn document_imports_name(text: &str, name: &str) -> bool {
+    if name.is_empty() {
+        return false;
+    }
+    for line in text.lines() {
+        let line = line.trim_start();
+        if !line.starts_with("use ") {
+            continue;
+        }
+        if let Some(start) = line.find("qw(").or_else(|| line.find("qw[")) {
+            let close = if line[start + 2..].starts_with('(') { ')' } else { ']' };
+            if let Some(end) = line[start..].find(close)
+                && line[start + 3..start + end].split_whitespace().any(|word| word == name)
+            {
+                return true;
+            }
+        }
+        if line.contains(&format!("'{name}'")) || line.contains(&format!("\"{name}\"")) {
+            return true;
+        }
+    }
+    false
 }
 
 fn active_signature_from_context(params: &Value) -> u64 {
