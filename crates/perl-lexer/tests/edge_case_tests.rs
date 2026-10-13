@@ -128,6 +128,12 @@ fn colon_tail_apostrophe_without_segment_opens_string() -> R {
         !sig.iter().any(|token| token.text.as_ref() == "$'b::c'"),
         "trailing apostrophe must not join the variable token: {sig:?}"
     );
+    // The trailing input is not dropped: it lexes as its own (here
+    // unterminated) string token after the variable.
+    assert!(
+        sig.iter().any(|token| token.text.as_ref() == "';"),
+        "trailing apostrophe input should remain a separate token: {sig:?}"
+    );
 
     Ok(())
 }
