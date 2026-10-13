@@ -194,11 +194,11 @@ struct StructuredCloseProof {
 
 /// The `landing_proof.v1` receipt carried inside a structured close proof.
 ///
-/// `content_survives` is optional in the schema and carries no rule of its own;
-/// declaring it is what makes it *accepted* under `deny_unknown_fields`.
+/// `content_survives` is optional when the producer did not inspect content.
+/// Explicit false contradicts content-survival proof and must be refused;
+/// omission does not establish survival or semantic completion.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-#[allow(dead_code)]
 struct LandingProofReceipt {
     schema_version: String,
     commit_reachable: bool,
@@ -761,6 +761,13 @@ fn check_structured_close_proof(proof: &StructuredCloseProof) -> Vec<String> {
     if !proof.receipt.commit_reachable {
         errors.push(
             "field `close_proof.receipt.commit_reachable` must be true; an unreachable commit is not landing proof"
+                .to_string(),
+        );
+    }
+
+    if proof.receipt.content_survives == Some(false) {
+        errors.push(
+            "field `close_proof.receipt.content_survives` must not be false; overwritten content cannot support close proof (CLOSE_PROOF_POLICY.md Rule 3)"
                 .to_string(),
         );
     }
