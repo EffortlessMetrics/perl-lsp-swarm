@@ -156,7 +156,7 @@ impl NativeProductReadiness {
         let ordered: Vec<NativeProductRow> = NATIVE_PRODUCT_ROWS
             .iter()
             .map(|id| {
-                rows.iter().find(|row| row.id == *id).cloned().unwrap_or_else(|| NativeProductRow {
+                merge_duplicates(&rows, id).unwrap_or_else(|| NativeProductRow {
                     id: (*id).to_string(),
                     status: NativeProductRowStatus::Unverified,
                     evidence: Vec::new(),
@@ -179,6 +179,40 @@ impl NativeProductReadiness {
     /// Serialize deterministically (struct field order, catalog row order).
     pub fn to_json(&self) -> Result<String, serde_json::Error> {
         serde_json::to_string_pretty(self)
+    }
+}
+
+/// Merge every input row for one catalog id into a single row.
+///
+/// Duplicate ids cannot hide a worse outcome: the merged status is the
+/// most severe supplied (fail, then unverified, then warn, then pass),
+/// evidence is concatenated in input order, and the first non-empty
+/// remediation wins. Unknown ids are ignored by the catalog assembly.
+fn merge_duplicates(rows: &[NativeProductRow], id: &str) -> Option<NativeProductRow> {
+    let mut merged: Option<NativeProductRow> = None;
+    for candidate in rows.iter().filter(|row| row.id == id) {
+        match &mut merged {
+            None => merged = Some(candidate.clone()),
+            Some(existing) => {
+                if severity(candidate.status) > severity(existing.status) {
+                    existing.status = candidate.status;
+                }
+                existing.evidence.extend(candidate.evidence.iter().cloned());
+                if existing.remediation.is_none() {
+                    existing.remediation.clone_from(&candidate.remediation);
+                }
+            }
+        }
+    }
+    merged
+}
+
+fn severity(status: NativeProductRowStatus) -> u8 {
+    match status {
+        NativeProductRowStatus::Pass => 0,
+        NativeProductRowStatus::Warn => 1,
+        NativeProductRowStatus::Unverified => 2,
+        NativeProductRowStatus::Fail => 3,
     }
 }
 
@@ -223,21 +257,21 @@ fn row_from_outcome(id: &str, outcome: Outcome) -> NativeProductRow {
 
 /// Evaluate the canonical payload from repository evidence.
 ///
-/// `repo_root` supplies the first-mile and DAP surfaces; the formatter and
-/// critic default rows consume the native-tooling readiness receipt at
+/// `repo_root` supplies the first-mile and DAP surfaces under `profile`
+/// (release candidates must pass [`KwaliteeProfile::Release`] so the
+/// release-strict surface rules apply); the formatter and critic default
+/// rows consume the native-tooling readiness receipt at
 /// `readiness_receipt` (see `cargo xtask native-tooling readiness`), whose
 /// freshness is judged against `expected_commit`. No installed artifact is
 /// executed and no process is spawned.
 pub fn evaluate_native_product(
     repo_root: &Path,
+    profile: KwaliteeProfile,
     readiness_receipt: Option<&Path>,
     expected_commit: &str,
 ) -> NativeProductReadiness {
     let rows = vec![
-        row_from_outcome(
-            ROW_NATIVE_ONLY,
-            product_surface::native_only(repo_root, KwaliteeProfile::Pr),
-        ),
+        row_from_outcome(ROW_NATIVE_ONLY, product_surface::native_only(repo_root, profile)),
         row_from_outcome(ROW_DAP_CLI_NATIVE_ONLY, dap::cli_native_only(repo_root)),
         row_from_outcome(
             ROW_FORMATTER_NATIVE_DEFAULT,
@@ -327,6 +361,17 @@ mod tests {
     }
 
     #[test]
+    fn duplicate_rows_cannot_hide_a_failure() {
+        let mut rows = all_rows(NativeProductRowStatus::Pass);
+        rows.push(row(ROW_NATIVE_ONLY, NativeProductRowStatus::Fail));
+        let payload = NativeProductReadiness::from_rows(rows);
+        assert_eq!(payload.verdict, NativeProductVerdict::Blocked);
+        let native_only =
+            payload.rows.iter().find(|row| row.id == ROW_NATIVE_ONLY).expect("row present");
+        assert_eq!(native_only.status, NativeProductRowStatus::Fail);
+    }
+
+    #[test]
     fn payload_json_round_trips_and_rejects_unknown_fields() {
         let payload = NativeProductReadiness::from_rows(all_rows(NativeProductRowStatus::Pass));
         let json = payload.to_json().expect("payload serializes");
@@ -348,7 +393,7 @@ mod tests {
         // An empty directory has no first-mile surfaces and no readiness
         // receipt: posture cannot be decided, so nothing may read ready.
         let dir = tempfile::tempdir().expect("tempdir");
-        let payload = evaluate_native_product(dir.path(), None, "unknown");
+        let payload = evaluate_native_product(dir.path(), KwaliteeProfile::Pr, None, "unknown");
         assert_eq!(payload.verdict, NativeProductVerdict::NotProven);
         assert!(payload.rows.iter().any(|row| row.id == ROW_FORMATTER_NATIVE_DEFAULT
             && row.status == NativeProductRowStatus::Unverified));
