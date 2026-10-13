@@ -103,7 +103,7 @@ fn run_mode(mode: &str, selectors: &[String], core: bool) -> io::Result<i32> {
         "select_stderr" => {
             // Same selection on stdout, plus ordinary stderr output: paired
             // equivalence must type this as a measured difference (#12286).
-            let rows = selected_rows(selectors)?;
+            let rows = selected_rows(selectors, core)?;
             write_rows(&rows)?;
             eprintln!("fixture warning on ordinary stderr");
             Ok(0)
