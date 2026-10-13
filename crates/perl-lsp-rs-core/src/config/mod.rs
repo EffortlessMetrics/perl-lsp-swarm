@@ -2656,18 +2656,16 @@ pub fn load_project_config(
     // UTF-8 BOM, which causes toml::from_str to report a syntax error at byte 0.
     let content = content.strip_prefix('\u{FEFF}').unwrap_or(&content);
 
-    toml::from_str::<ProjectConfig>(content)
-        .map(Some)
-        .map_err(|e| {
-            // Typed deserialization can reject syntactically valid TOML. Check
-            // syntax only on failure, retaining the original span/type detail.
-            let kind = if toml::de::Deserializer::parse(content).is_ok() {
-                "an invalid value"
-            } else {
-                "a syntax error"
-            };
-            format!(".perl-lsp.toml has {kind}: {e}")
-        })
+    toml::from_str::<ProjectConfig>(content).map(Some).map_err(|e| {
+        // Typed deserialization can reject syntactically valid TOML. Check
+        // syntax only on failure, retaining the original span/type detail.
+        let kind = if toml::de::Deserializer::parse(content).is_ok() {
+            "an invalid value"
+        } else {
+            "a syntax error"
+        };
+        format!(".perl-lsp.toml has {kind}: {e}")
+    })
 }
 
 /// Discover a `.perltidyrc` profile for a workspace following perltidy's
