@@ -159,7 +159,10 @@ pub(crate) fn selector_arguments(
         && selectors.iter().all(|selector| {
             matches!(
                 selector,
-                TargetSelector::RecursiveRoot { .. } | TargetSelector::ManifestPopulation { .. }
+                TargetSelector::RecursiveRoot { .. }
+                    | TargetSelector::ManifestPopulation {
+                        component: crate::model::ManifestPopulation::CoreRootLib
+                    }
             )
         });
     if upstream_internal {
