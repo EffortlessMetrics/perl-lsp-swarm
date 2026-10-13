@@ -11,9 +11,11 @@ use std::time::{Duration, Instant};
 
 const URI: &str = "file:///document-symbol-name-spans.pm";
 const TIMEOUT: Duration = Duration::from_secs(10);
-const CLEAN: &str = "# fixture\npackage age {\n    sub { 0 };\n    sub ub { 1 }\n}\n";
-const BROKEN: &str = "# fixture\npackage age {\n    sub { 0 };\n    sub ub { 1 + }\n}\n";
-const RENAMED: &str = "# fixture\npackage ack {\n    sub { 0 };\n    sub b { 1 }\n}\n";
+// Earlier keyword substrings and later body repetitions discriminate both
+// first-match and last-match source-search approximations.
+const CLEAN: &str = "# fixture\npackage age {\n    sub { 0 };\n    sub ub { 'ub age' }\n}\n";
+const BROKEN: &str = "# fixture\npackage age {\n    sub { 0 };\n    sub ub { 'ub age' + }\n}\n";
+const RENAMED: &str = "# fixture\npackage ack {\n    sub { 0 };\n    sub b { 'b ack' }\n}\n";
 
 fn range(line: u32, start: u32, end_line: u32, end: u32) -> Value {
     json!({"start": {"line": line, "character": start},
@@ -112,7 +114,7 @@ fn finish(client: &mut RealProcessClient) -> Result<()> {
 #[test]
 fn package_name_does_not_select_the_package_keyword() -> Result<()> {
     let mut client = start(CLEAN)?;
-    let gold = expected("age", "ub", 16, 10);
+    let gold = expected("age", "ub", 23, 10);
     let actual = current_outline(&mut client, &gold)?;
     assert_eq!(actual[0]["selectionRange"], gold[0]["selectionRange"]);
     finish(&mut client)
@@ -121,7 +123,7 @@ fn package_name_does_not_select_the_package_keyword() -> Result<()> {
 #[test]
 fn nested_sub_name_does_not_select_the_sub_keyword() -> Result<()> {
     let mut client = start(CLEAN)?;
-    let gold = expected("age", "ub", 16, 10);
+    let gold = expected("age", "ub", 23, 10);
     let actual = current_outline(&mut client, &gold)?;
     assert_eq!(
         actual[0]["children"][0]["selectionRange"],
@@ -134,10 +136,10 @@ fn nested_sub_name_does_not_select_the_sub_keyword() -> Result<()> {
 fn exact_name_spans_survive_repeated_queries_and_edit_recovery() -> Result<()> {
     let mut client = start(CLEAN)?;
     for (version, source, gold) in [
-        (1, CLEAN, expected("age", "ub", 16, 10)),
-        (2, BROKEN, expected("age", "ub", 18, 10)),
-        (3, RENAMED, expected("ack", "b", 15, 9)),
-        (4, CLEAN, expected("age", "ub", 16, 10)),
+        (1, CLEAN, expected("age", "ub", 23, 10)),
+        (2, BROKEN, expected("age", "ub", 25, 10)),
+        (3, RENAMED, expected("ack", "b", 21, 9)),
+        (4, CLEAN, expected("age", "ub", 23, 10)),
     ] {
         if version > 1 {
             client.notify(
