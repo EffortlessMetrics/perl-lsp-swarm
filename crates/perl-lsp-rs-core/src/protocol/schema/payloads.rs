@@ -358,3 +358,7 @@ pub(super) fn document_highlight_result(method: &str, value: &Value) -> Result<(
     }
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "../../../tests/support/protocol_schema_document_highlight.rs"]
+mod document_highlight_seam_proofs;
