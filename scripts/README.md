@@ -17,6 +17,12 @@ Run these locally during normal contribution work.
 | `forbid-fatal-constructs.sh` | Grep for banned patterns (`unwrap`, `panic!`, etc.) |
 | `dead-code-check.sh` | Report dead code across the workspace |
 
+`bash scripts/check-rust-toolchain.sh [check|doctor]` accepts at most one
+mode argument and defaults to `check`. Unknown modes and extra arguments print
+usage to stderr and exit 2 before any Rust toolchain probe or delegation. For valid
+commands, the rustup-less Cargo guard retains exit 78 for a missing or unsupported
+Cargo; delegated rustup/Cargo commands retain their original exit status.
+
 ## Worktree & Workspace Management
 
 | Script | Purpose |
