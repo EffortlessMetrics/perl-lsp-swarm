@@ -29,4 +29,4 @@ This pilot owns the versioned rule-proof schema, typed model, generator/checker,
 
 ## Catalog remainder
 
-12 catalog native rules are outside this closed PILOT_RULES cohort. Their evidence classes remain MISSING; they do not inherit proof from transport coverage, false-positive corpus counts, or recommended/strict rule-count totals. Extra catalog rows are rejected so missing classes stay missing on purpose.
+14 catalog native rules are outside this closed PILOT_RULES cohort. Their evidence classes remain MISSING; they do not inherit proof from transport coverage, false-positive corpus counts, or recommended/strict rule-count totals. Extra catalog rows are rejected so missing classes stay missing on purpose.

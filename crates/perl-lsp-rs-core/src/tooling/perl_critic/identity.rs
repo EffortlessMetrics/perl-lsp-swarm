@@ -562,6 +562,12 @@ static IDENTITIES: &[CriticIdentityEntry] = &[
         "no built-in diagnostic has the same subroutine-length policy",
         &[CriticAlias::new(NATIVE, "native.maintainability.sub_too_long", GENERAL)],
     ),
+    CriticIdentityEntry::distinct(
+        "critic.maintainability.too_many_nested_blocks",
+        CriticIdentityCategory::Maintainability,
+        "no built-in diagnostic has the same block-nesting policy",
+        &[CriticAlias::new(NATIVE, "native.maintainability.too_many_nested_blocks", GENERAL)],
+    ),
     CriticIdentityEntry::equivalent(
         "critic.regex.capture_without_match",
         CriticIdentityCategory::Semantic,
