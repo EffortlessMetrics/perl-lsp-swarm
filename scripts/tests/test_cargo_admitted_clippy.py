@@ -1,5 +1,7 @@
 """Finite staged Clippy admission; fixture capacity is not host admission."""
 import contextlib
+import ast
+import hashlib
 import importlib.util
 import io
 import json
@@ -18,6 +20,47 @@ safe = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(safe)
 REQUEST = ["clippy", "-p", "consumer", "--all-targets", "--profile", "agent", "--locked", "--", "-D", "warnings"]
 NAMED_REQUEST = ["clippy", "-p", "consumer", "--test", "named-proof", "--profile", "agent", "--locked", "--", "-D", "warnings"]
+
+
+class QualificationBindingTests(unittest.TestCase):
+    def test_named_variant_binding_rejects_wrong_missing_or_overwritten_inputs(self):
+        # Load only the pure binding functions: importing the executable qualifier
+        # would parse CLI arguments and launch Cargo.
+        source = ROOT / 'scripts/tests/qualify_admitted_clippy.py'
+        module = ast.parse(source.read_text())
+        functions = [node for node in module.body if isinstance(node, ast.FunctionDef)
+                     and node.name in {'fixture_inputs', 'bind_inputs', 'verify_inputs'}]
+        namespace = {'hashlib': hashlib}
+        exec(compile(ast.Module(body=functions, type_ignores=[]), str(source), 'exec'), namespace)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / 'fixture'
+            retained = Path(temporary) / 'retained'
+            paths = namespace['fixture_inputs'](NAMED_REQUEST)
+            self.assertIn('Cargo.toml', paths)
+            self.assertIn('tests/other.rs', paths)
+            self.assertIn('tests/named-proof.rs', paths)
+            for relative in paths:
+                path = root / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(relative.encode())
+            binding = namespace['bind_inputs'](root, retained, NAMED_REQUEST)
+            verify = lambda rows: namespace['verify_inputs'](root, retained, NAMED_REQUEST, rows)
+            verify(binding)
+            wrong = {key: dict(value) for key, value in binding.items()}
+            wrong['tests/named-proof.rs']['sha256'] = '0' * 64
+            with self.assertRaisesRegex(RuntimeError, 'binding mismatch'):
+                verify(wrong)
+            missing = dict(binding)
+            del missing['tests/named-proof.rs']
+            with self.assertRaisesRegex(RuntimeError, 'missing'):
+                verify(missing)
+            (root / 'tests/named-proof.rs').write_bytes(b'clean replacement')
+            with self.assertRaisesRegex(RuntimeError, 'binding mismatch'):
+                verify(binding)
+            (root / 'tests/named-proof.rs').write_bytes((retained / 'tests/named-proof.rs').read_bytes())
+            (retained / 'tests/named-proof.rs').unlink()
+            with self.assertRaises(FileNotFoundError):
+                verify(binding)
 
 
 @unittest.skipUnless(sys.platform == "linux" and sys.version_info >= (3, 11), "staged Linux Clippy only")
