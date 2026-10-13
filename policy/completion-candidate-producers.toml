@@ -147,7 +147,7 @@ outcome_owner = "#10230"
 # add/remove/re-channel, no entry/finalizer change. The methods row's
 # limitations text documents the combined predicate and the
 # receiver_packages=None fallback. Digest-only projection diff.
-source_digest = "sha256:0f65f540ded8386d00b6237c0c938db9ad99ca719e6bd0ccf6a66004d6d0c71d"
+source_digest = "sha256:b3c0756614e251f295787d4a89b83a132ffe6ba523f4017098944d280905bc58"
 
 [[delegations]]
 module = "dancer2"
