@@ -22,6 +22,24 @@ fn parse(src: &str) -> Result<perl_parser_core::Node> {
 
 fn assert_parsed_wrapper_initializer(source: &str) -> Result<()> {
     let ast = parse(source)?;
+    fn has_wrapper_initializer(node: &perl_parser_core::Node) -> bool {
+        if let perl_ast::NodeKind::FunctionCall { name, args } = &node.kind
+            && matches!(name.as_str(), "const" | "Readonly")
+            && args.iter().any(|arg| {
+                matches!(
+                    &arg.kind,
+                    perl_ast::NodeKind::VariableDeclaration { initializer: Some(_), .. }
+                        | perl_ast::NodeKind::VariableListDeclaration { initializer: Some(_), .. }
+                )
+            })
+        {
+            return true;
+        }
+        let mut found = false;
+        node.for_each_child(|child| found |= has_wrapper_initializer(child));
+        found
+    }
+    assert!(has_wrapper_initializer(&ast), "fixture must exercise a wrapper initializer");
     let declarations = extract_symbol_decls(&ast, Some("main"));
     assert_eq!(declarations.len(), 2, "one constant and one nested named sub");
     assert_eq!(declarations[0].kind, SymbolKind::Constant);
