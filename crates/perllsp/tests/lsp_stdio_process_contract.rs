@@ -747,7 +747,7 @@ fn synchronous_serving_reports_malformed_json_and_continues() -> Result<()> {
         fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
             self.0
                 .lock()
-                .map_err(|_| std::io::Error::other("capture lock poisoned"))?
+                .map_err(|error| std::io::Error::other(format!("capture lock poisoned: {error}")))?
                 .extend_from_slice(bytes);
             Ok(bytes.len())
         }
@@ -767,7 +767,8 @@ fn synchronous_serving_reports_malformed_json_and_continues() -> Result<()> {
     })));
     server.serve(&mut Cursor::new(input))?;
     drop(server); // Close and drain the existing outbound writer before inspection.
-    let bytes = output.lock().map_err(|_| anyhow::anyhow!("capture lock poisoned"))?.clone();
+    let bytes =
+        output.lock().map_err(|error| anyhow::anyhow!("capture lock poisoned: {error}"))?.clone();
     let mut reader = Cursor::new(bytes);
     let mut codec = perllsp::transport::ContentLengthMessageReader::new();
     let first = codec
