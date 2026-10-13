@@ -128,6 +128,7 @@ fn pr_fast_non_rust_composition_retains_registered_rust_consumers() -> Result<()
         vec!["scripts/ci/classify-ripr-lane-termination"],
         vec!["scripts/ci/classify-ripr-lane-termination", "README.md"],
         vec!["xtask/src/main.rs", "README.md", "scripts/agent-preflight.sh"],
+        vec!["xtask/README.md", "scripts/agent-preflight.sh"],
     ] {
         let plan = classify_and_plan(&files)?;
         assert!(!plan.fallback_used, "registered owner should use scoped proof: {files:?}");
@@ -142,6 +143,49 @@ fn pr_fast_non_rust_composition_retains_registered_rust_consumers() -> Result<()
         assert!(plan.selected.iter().any(|gate| gate.gate.name == "unit_control_plane_bins"));
         assert!(!plan.selected.iter().any(|gate| gate.gate.name == "clippy_core"));
     }
+    Ok(())
+}
+
+#[test]
+fn pr_fast_non_rust_composition_rejects_incomplete_package_metadata() -> Result<()> {
+    let files = vec!["README.md".to_string(), "scripts/agent-preflight.sh".to_string()];
+    for invalid in [
+        serde_json::json!(null),
+        serde_json::json!({}),
+        serde_json::json!({"packages": null}),
+        serde_json::json!({"packages": "unknown"}),
+        serde_json::json!({"packages": []}),
+        serde_json::json!({"packages": [null]}),
+        serde_json::json!({"packages": [{}]}),
+    ] {
+        assert!(
+            ci_scope::classify_files(&files, &invalid, "/workspace").is_err(),
+            "missing metadata must not prove unowned composition: {invalid}"
+        );
+    }
+    for field in ["name", "id", "manifest_path"] {
+        for value in [serde_json::json!(null), serde_json::json!(42), serde_json::json!(" ")] {
+            let mut invalid = metadata();
+            invalid["packages"][0][field] = value;
+            assert!(
+                ci_scope::classify_files(&files, &invalid, "/workspace").is_err(),
+                "incomplete {field} must not prove unowned composition: {invalid}"
+            );
+        }
+        let mut invalid = metadata();
+        invalid["packages"][0]
+            .as_object_mut()
+            .ok_or_else(|| eyre!("fixture package must be an object"))?
+            .remove(field);
+        assert!(ci_scope::classify_files(&files, &invalid, "/workspace").is_err());
+    }
+    let mut valid = metadata();
+    valid["resolve"] = serde_json::Value::Null;
+    let scope = ci_scope::classify_files(&files, &valid, "/workspace")?;
+    let (root, gates) = policy()?;
+    let plan = plan_pr_fast_gates(&root, gates, "HEAD".to_string(), Some(scope))?;
+    assert_portfolio(&plan, UNOWNED_PORTFOLIO);
+    assert!(!plan.fallback_used, "valid --no-deps metadata must remain admissible");
     Ok(())
 }
 

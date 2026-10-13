@@ -726,6 +726,29 @@ pub fn classify_files(
 ) -> Result<ScopeOutput> {
     let diff_class = classify_diff(files);
 
+    // The new mixed optimization needs positive ownership evidence. Missing
+    // package identity must reach the planner's acquisition fallback rather
+    // than masquerade as an empty, proven-unowned package set. `--no-deps`
+    // metadata legitimately has resolve=null; only package identity is needed.
+    if diff_class == "mixed" && is_known_non_rust_composition(files) {
+        let packages = metadata
+            .get("packages")
+            .and_then(|value| value.as_array())
+            .ok_or_else(|| eyre!("non-Rust composition requires cargo package metadata"))?;
+        if packages.is_empty()
+            || packages.iter().any(|package| {
+                ["name", "id", "manifest_path"].iter().any(|field| {
+                    package
+                        .get(*field)
+                        .and_then(|value| value.as_str())
+                        .is_none_or(|value| value.trim().is_empty())
+                })
+            })
+        {
+            return Err(eyre!("non-Rust composition requires complete cargo package identities"));
+        }
+    }
+
     // Empty diff or prose-only → empty output (no lanes)
     if files.is_empty() || diff_class == "prose_only" {
         let parser_ratchet = parser_ratchet_decision(files, &[]);
