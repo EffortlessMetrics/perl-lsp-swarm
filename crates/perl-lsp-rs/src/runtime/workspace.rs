@@ -1868,6 +1868,12 @@ impl LspServer {
                 // Critic/AI push still triggers a scoped pull below, but must leave the
                 // current folder include paths intact until its response arrives.
                 if perl.get("workspace").is_some() {
+                    // Notifications are patches. Rebuild with the accumulated
+                    // client layer so omitted fields keep earlier client values,
+                    // just as the global config's in-place update does. Clone
+                    // before taking folder locks; the replay cache is already
+                    // advanced above.
+                    let client_settings = self.last_client_settings.lock().clone();
                     // Apply global client settings to each folder's effective config immediately.
                     // The async workspace/configuration pull that follows will refine per-folder
                     // settings once the client responds, but we update now so the window between
@@ -1920,7 +1926,7 @@ impl LspServer {
                                 }
                             }
                             let rejected = effective_config.update_from_value_with_context(
-                                perl,
+                                client_settings.as_ref().unwrap_or(perl),
                                 WorkspaceConfigUpdateContext {
                                     workspace_root: folder.path.as_deref(),
                                     external_include_paths: ExternalIncludePathAuthority::Untrusted(
