@@ -10113,8 +10113,26 @@ fn package_qualified_completion_offers_members_nested_packages_and_no_lexicals()
     let code = "use strict; use warnings;\nuse Animal;\nmy $pkg = Animal::";
     let mut parser = Parser::new(code);
     let ast = must(parser.parse());
-    let provider = CompletionProvider::new_with_index(&ast, Some(index));
+    let provider = CompletionProvider::new_with_index(&ast, Some(index.clone()));
     let completions = provider.get_completions(code, code.len());
+
+    // A sigil-qualified request asks for a package variable: a package name
+    // must never answer it, even though the direct-member query carries the
+    // nested `Package` declarations.
+    let sigiled_code = "use strict; use warnings;\nuse Animal;\nmy $member = $Animal::";
+    let mut sigiled_parser = Parser::new(sigiled_code);
+    let sigiled_ast = must(sigiled_parser.parse());
+    let sigiled_provider = CompletionProvider::new_with_index(&sigiled_ast, Some(index.clone()));
+    let sigiled = sigiled_provider.get_completions(sigiled_code, sigiled_code.len());
+    let package_leak: Vec<_> = sigiled
+        .iter()
+        .filter(|item| item.kind == CompletionItemKind::Module)
+        .map(|item| item.label.to_string())
+        .collect();
+    assert!(
+        package_leak.is_empty(),
+        "sigiled request must not receive package-name candidates: {package_leak:?}"
+    );
 
     let lexicals: Vec<_> = completions
         .iter()

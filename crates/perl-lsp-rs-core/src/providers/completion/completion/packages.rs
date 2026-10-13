@@ -388,10 +388,14 @@ pub fn add_package_completions(
                 // of relying on the name-only runtime fallback tier (#17162).
                 // Label, filter text, and insertion carry the full nested
                 // name so the completed text stays valid regardless of how
-                // the client applies the prefix edit range.
+                // the client applies the prefix edit range. Sigil-qualified
+                // requests (`$Animal::`) ask for a package variable, so a
+                // package name must never answer them: skip before the
+                // push rather than relying on the sigil guard below.
                 WsSymbolKind::Package => {
                     let nested_prefix = format!("{package_name}::");
-                    if let Some(bare_name) = symbol.name.strip_prefix(&nested_prefix)
+                    if requested_sigil.is_none()
+                        && let Some(bare_name) = symbol.name.strip_prefix(&nested_prefix)
                         && !bare_name.is_empty()
                         && bare_name.starts_with(member_prefix)
                         && seen_labels.insert(symbol.name.clone())
