@@ -325,3 +325,7 @@ pub(super) fn did_save_params(method: &str, value: &Value) -> Result<(), SchemaE
     }
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "../../../tests/support/protocol_schema_did_save.rs"]
+mod did_save_seam_proofs;
