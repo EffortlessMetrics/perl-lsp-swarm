@@ -8,7 +8,7 @@ mod cpan_test_helpers;
 
 use cpan_test_helpers::{assert_clean_parse, assert_no_blocking_diagnostics};
 use perl_parser_core::{Node, NodeKind, Parser};
-use perl_tdd_support::must_with;
+use perl_tdd_support::{must_some_with, must_with};
 
 fn find_function_call<'a>(node: &'a Node, name: &str) -> Option<(&'a str, Vec<String>)> {
     match &node.kind {
@@ -24,12 +24,10 @@ fn assert_parses_as_call(source: &str, name: &str, expected_args: usize) -> Vec<
     let mut parser = Parser::new(source);
     let ast = must_with(parser.parse(), format!("parse failed for {source:?}"));
     let found = find_function_call(&ast, name);
-    let (found_name, arg_kinds) = match found {
-        Some(pair) => pair,
-        None => {
-            panic!("expected FunctionCall {name} for source:\n{source}\n\nsexp:\n{}", ast.to_sexp())
-        }
-    };
+    let (found_name, arg_kinds) = must_some_with(
+        found,
+        format!("expected FunctionCall {name} for source:\n{source}\n\nsexp:\n{}", ast.to_sexp()),
+    );
     assert_eq!(found_name, name);
     assert_eq!(
         arg_kinds.len(),
