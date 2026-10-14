@@ -167,19 +167,15 @@ const CMD_UNRESOLVED_COMMAND_STATUS: i32 = 9009;
 /// `run_command` reports process-start failures as errors, but on Windows a
 /// `.bat`/`.cmd` program runs through `cmd.exe /C`, so an unresolvable or
 /// unstartable target still yields a *completed* cmd.exe process: a non-zero
-/// status plus the OS-level complaint on stderr. Those texts are launch
-/// failures; perltidy's own failure output is about the Perl source and never
-/// contains them.
+/// status plus a complaint on stderr. Retain the observed unrecognized-command
+/// diagnostic as a compatibility heuristic, not proof of launch provenance.
+/// Generic OS error text can also come from a running perltidy's file operations
+/// or echoed paths and must remain a tool error (#17892).
 fn command_launch_failed(status_code: i32, stderr: &str) -> bool {
     if status_code == CMD_UNRESOLVED_COMMAND_STATUS {
         return true;
     }
-    const LAUNCH_FAILURE_TEXTS: [&str; 3] = [
-        "is not recognized as an internal or external command",
-        "The filename, directory name, or volume label syntax is incorrect",
-        "Access is denied",
-    ];
-    LAUNCH_FAILURE_TEXTS.iter().any(|text| stderr.contains(text))
+    stderr.contains("is not recognized as an internal or external command")
 }
 
 #[cfg(test)]
@@ -292,8 +288,7 @@ mod tests {
                 1,
             ),
             ("'perltidy' is not recognized as an internal or external command.\r\n", 9009),
-            ("The filename, directory name, or volume label syntax is incorrect.\r\n", 1),
-            ("Access is denied.\r\n", 1),
+            ("", 9009),
         ] {
             let provider = FormattingProvider::new(FailingRuntime { stderr, status_code });
             let error = provider
@@ -310,6 +305,89 @@ mod tests {
                 perl_parser_core::ErrorCategory::Infra
             );
         }
+        Ok(())
+    }
+
+    /// A child that demonstrably executed can emit OS errors while reading its
+    /// profile. Preserve its stderr and typed tool error instead of install advice.
+    #[cfg(unix)]
+    #[test]
+    fn executed_perltidy_os_errors_remain_tool_errors() -> Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+
+        for stderr in [
+            "Access is denied.",
+            "perltidy: cannot read profile /tmp/Access is denied.rc: Access is denied",
+            "The filename, directory name, or volume label syntax is incorrect.",
+        ] {
+            let directory = tempfile::tempdir()?;
+            let program = directory.path().join("fake-perltidy");
+            std::fs::write(
+                &program,
+                format!(
+                    "#!/bin/sh\nprintf ran > \"$0.ran\"\ncat >/dev/null\nprintf 'untrusted output'\nprintf '%s\\n' '{stderr}' >&2\nexit 1\n"
+                ),
+            )?;
+            std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700))?;
+            let provider = FormattingProvider::new(
+                perl_subprocess_runtime::OsSubprocessRuntime::with_timeout(5),
+            )
+            .with_perltidy_path(
+                program
+                    .to_str()
+                    .ok_or_else(|| anyhow::anyhow!("fixture path must be UTF-8"))?
+                    .to_owned(),
+            );
+            let error =
+                provider.format_document("my $x = 1;\n", &options()).err().ok_or_else(|| {
+                    anyhow::anyhow!("non-success child must withhold formatted output")
+                })?;
+
+            assert_eq!(std::fs::read(program.with_extension("ran"))?, b"ran");
+            assert!(
+                matches!(&error, FormattingError::PerltidyError(message) if message == &format!("{stderr}\n"))
+            );
+            assert_eq!(error.error_kind(), "perltidy_error");
+            assert_eq!(
+                perl_parser_core::ErrorClass::error_class(&error),
+                perl_parser_core::ErrorCategory::UserError
+            );
+            assert_eq!(
+                error.to_string(),
+                format!("perltidy error (check Perl syntax): {stderr}\n")
+            );
+            assert!(!error.to_string().contains("To install perltidy:"));
+        }
+        Ok(())
+    }
+
+    /// Actual spawn failure keeps the actionable missing-tool error independently
+    /// of stderr heuristics for a completed wrapper process.
+    #[test]
+    fn missing_perltidy_executable_keeps_install_guidance() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let program = directory.path().join("missing-perltidy.exe");
+        let provider =
+            FormattingProvider::new(perl_subprocess_runtime::OsSubprocessRuntime::with_timeout(5))
+                .with_perltidy_path(
+                    program
+                        .to_str()
+                        .ok_or_else(|| anyhow::anyhow!("fixture path must be UTF-8"))?
+                        .to_owned(),
+                );
+        let error = provider
+            .format_document("my $x = 1;\n", &options())
+            .err()
+            .ok_or_else(|| anyhow::anyhow!("missing executable must fail closed"))?;
+        assert!(
+            matches!(&error, FormattingError::PerltidyNotFound(message) if !message.is_empty())
+        );
+        assert_eq!(error.error_kind(), "perltidy_not_found");
+        assert_eq!(
+            perl_parser_core::ErrorClass::error_class(&error),
+            perl_parser_core::ErrorCategory::Infra
+        );
+        assert!(error.to_string().contains("To install perltidy:"));
         Ok(())
     }
 
