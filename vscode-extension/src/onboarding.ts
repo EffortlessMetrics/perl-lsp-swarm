@@ -8,8 +8,6 @@
  */
 
 import * as fs from 'fs';
-import * as os from 'os';
-import * as path from 'path';
 import { execFile } from 'child_process';
 import * as vscode from 'vscode';
 
@@ -109,19 +107,6 @@ type ExecCheckFn = (cmd: string, args: string[]) => Promise<{ stdout: string; st
 interface ExecInvocation {
   command: string;
   args: string[];
-}
-
-function resolveUserPath(rawPath: string): string {
-  const trimmedPath = rawPath.trim();
-  if (trimmedPath === '~') {
-    return os.homedir();
-  }
-
-  if (trimmedPath.startsWith('~/') || trimmedPath.startsWith('~\\')) {
-    return path.join(os.homedir(), trimmedPath.slice(2));
-  }
-
-  return trimmedPath;
 }
 
 // ---------------------------------------------------------------------------
@@ -226,73 +211,42 @@ export class OnboardingManager {
     }
   }
 
-  /** Check perlcritic availability/profile when perl-lsp.perlcritic.enabled is true. */
+  /** Observe historical Critic settings without executing a compatibility tool. */
   async checkPerlcriticSetup(): Promise<HealthCheckResult> {
-    const label = 'perlcritic';
-    const perlcriticConfig = vscode.workspace
-      .getConfiguration('perl-lsp')
-      .get<{ enabled?: unknown; profile?: unknown }>('perlcritic', {});
-    const enabled = Boolean(perlcriticConfig?.enabled);
-    const profile =
-      typeof perlcriticConfig?.profile === 'string'
-        ? resolveUserPath(perlcriticConfig.profile)
-        : '';
-
-    if (!enabled) {
-      return {
-        label,
-        ok: true,
-        status: HealthCheckStatus.Ok,
-        detail: 'Perl::Critic is disabled',
-      };
+    const observations: string[] = [];
+    const scopes: { label: string; uri?: vscode.Uri }[] = [
+      { label: 'workspace/default settings' },
+      ...(vscode.workspace.workspaceFolders ?? []).map((folder) => ({
+        label: `folder ${folder.name}`,
+        uri: folder.uri,
+      })),
+    ];
+    for (const scope of scopes) {
+      const config = vscode.workspace.getConfiguration('perl-lsp', scope.uri);
+      const old = config.get<{ enabled?: unknown; profile?: unknown }>('perlcritic', {});
+      const engine = config.get<unknown>('critic.engine');
+      const externalEngine =
+        typeof engine === 'string' &&
+        ['legacy', 'external', 'perlcritic'].includes(engine.trim().toLowerCase());
+      const oldProfile = typeof old?.profile === 'string' && old.profile.trim().length > 0;
+      if (old?.enabled === true || oldProfile || externalEngine) {
+        observations.push(scope.label);
+      }
     }
 
-    const resolvedProfile = this.resolvePerlcriticProfilePath(profile);
-    if (resolvedProfile && !fs.existsSync(resolvedProfile)) {
-      return {
-        label,
-        ok: false,
-        status: HealthCheckStatus.Warning,
-        detail: `Configured perlcritic profile was not found: ${resolvedProfile}`,
-      };
-    }
-
-    try {
-      await this._execCheck('perlcritic', ['--version']);
-      return {
-        label,
-        ok: true,
-        status: HealthCheckStatus.Ok,
-        detail: 'perlcritic found',
-      };
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      return {
-        label,
-        ok: false,
-        status: HealthCheckStatus.Warning,
-        detail:
-          `Perl::Critic is enabled but perlcritic was not found on PATH. (${msg}) ` +
-          'Install via: cpanm Perl::Critic',
-      };
-    }
-  }
-
-  private resolvePerlcriticProfilePath(profile: string): string | undefined {
-    if (!profile) {
-      return undefined;
-    }
-
-    if (path.isAbsolute(profile)) {
-      return profile;
-    }
-
-    const primaryWorkspace = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-    // When no workspace folder is open we cannot resolve a relative path to a
-    // meaningful absolute location (CWD of the extension host is not the user's
-    // project directory).  Return `undefined` so the caller skips the existence
-    // check rather than silently probing the wrong location.
-    return primaryWorkspace ? path.resolve(primaryWorkspace, profile) : undefined;
+    const needsReview = observations.length > 0;
+    return {
+      label: 'perlcritic',
+      ok: !needsReview,
+      status: needsReview ? HealthCheckStatus.Warning : HealthCheckStatus.Ok,
+      detail:
+        'Native Critic does not require an external binary. ' +
+        (needsReview
+          ? `Historical external Critic settings need review/migration (${observations.join('; ')}). ` +
+            'This health check does not execute Perl::Critic or validate external profiles; ' +
+            'it does not change settings or command behavior.'
+          : 'No external Critic setup is needed for native analysis.'),
+    };
   }
 
   /**

@@ -83,6 +83,10 @@ impl<'a> Parser<'a> {
             self.reclassify_head_as_term()?;
         }
 
+        if let Some(identifier) = self.consume_autoquoted_word_operator_identifier()? {
+            return Ok(identifier);
+        }
+
         if self.is_contextual_await_start() {
             let op_token = self.advance_token()?;
             let start = op_token.start();
@@ -645,15 +649,9 @@ impl<'a> Parser<'a> {
 
     /// Returns `true` for word-operator token kinds that cannot be parsed as
     /// primary expressions but are valid as negative bareword hash keys when
-    /// immediately followed by `=>`: `-or => 1`, `-and => 2`, `-xor => 3`.
+    /// immediately followed by `=>`: `-or => 1`, `-and => 2`, `-xor => 3`,
+    /// `-cmp => 1`.
     fn is_word_op_keyword(kind: TokenKind) -> bool {
-        matches!(
-            kind,
-            TokenKind::WordOr
-                | TokenKind::WordAnd
-                | TokenKind::WordXor
-                | TokenKind::WordNot
-                | TokenKind::StringCompare // cmp
-        )
+        kind.is_word_operator()
     }
 }

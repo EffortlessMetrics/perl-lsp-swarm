@@ -17,7 +17,7 @@ import type {
 } from 'vscode-languageclient/node';
 import { PerlTestAdapter } from './testAdapter';
 import { activateDebugger, rewriteTestLensCommand } from './debugAdapter';
-import { BinaryDownloader, parseLocalVersion } from './downloader';
+import { BinaryDownloader, isDownloadCancellationMessage, parseLocalVersion } from './downloader';
 import {
   isPerlLanguageId,
   isSupportedPerlUriScheme,
@@ -28,6 +28,7 @@ import {
 import {
   acquireLaunchManagedCandidateReference,
   mayReleaseManagedCandidateReferences,
+  readInstalledManagedCandidateManifest,
   releaseManagedCandidateSessionReferences,
 } from './managedCandidateRuntime';
 import { runLanguageServerHealthCheck } from './languageServerHealth';
@@ -55,7 +56,8 @@ import {
 } from './coexistenceAdvisory';
 import { registerCoexistenceCommandGroup } from './coexistenceCommandGroup';
 import { WhatsNewManager } from './whatsNew';
-import { generateBoilerplate } from './fileCreation';
+import { FileKind } from './fileCreation';
+import { createPerlScaffold } from './scaffoldCommands';
 import { handleFormattingError } from './formattingErrors';
 import { HealthWidget, ClientState } from './healthWidget';
 import { HealthWidgetDataSource } from './healthWidgetDataSource';
@@ -81,11 +83,13 @@ import { registerMcpSupport } from './mcpSupport';
 import { registerServerCommandGroup } from './serverCommandGroup';
 import { languageServerRuntimeHealth } from './languageServerRuntimeHealth';
 import {
+  SHOW_BINARY_IDENTITY_COMMAND,
   showBinaryIdentityStatus,
   type BinaryIdentityCommandHost,
+  type BinaryIdentityCommandInput,
   type BinaryIdentityRequestClient,
 } from './binaryIdentityCommand';
-import type { SelectedBinaryRole } from './binaryIdentityStatus';
+import type { BinaryIdentityAction } from './binaryIdentityStatus';
 import { registerCriticCommandGroup } from './criticCommandGroup';
 import { registerTestCommandGroup } from './testCommandGroup';
 import { registerOnboardingCommandGroup } from './onboardingCommandGroup';
@@ -159,9 +163,9 @@ export { workspaceTrustClientRuntimeState } from './workspaceTrustRuntimeState';
 import {
   buildDisabledFeaturesFromConfig,
   buildPerlCriticConfiguration as buildPerlCriticConfigurationPayload,
-  CRITIC_SETTINGS,
   hasExplicitPerlCriticOverrides,
   syncLanguageClientConfiguration,
+  syncLiveLanguageClientConfiguration,
   syncUserAiCompletionConfiguration,
   syncPerlCriticConfiguration as syncPerlCriticConfigurationFromConfig,
 } from './languageClientConfiguration';
@@ -249,10 +253,15 @@ let serverDemand: ServerDemandCoordinator | undefined;
  */
 let extensionActivation: ExtensionActivationOwner | null = null;
 
+/**
+ * Builds the registered binary-identity command. The input is resolved per
+ * invocation, not once at activation: a reinstall between commands binds a
+ * different managed candidate, so the installed candidate and target must be
+ * re-read when the user asks for identity status.
+ */
 export function createBinaryIdentityCommand(
   getClient: () => BinaryIdentityRequestClient | undefined,
-  extensionVersion: string,
-  selectedRole: SelectedBinaryRole,
+  resolveInput: () => BinaryIdentityCommandInput,
   host: BinaryIdentityCommandHost,
   reportError: (message: string) => void = () => undefined,
 ): () => Promise<unknown> {
@@ -263,15 +272,111 @@ export function createBinaryIdentityCommand(
     }
 
     try {
-      return await showBinaryIdentityStatus(activeClient, host, {
-        extensionVersion,
-        selectedRole,
-      });
+      return await showBinaryIdentityStatus(activeClient, host, resolveInput());
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
       reportError(message);
       return { status: 'error' as const, message };
     }
+  };
+}
+
+/**
+ * Maps an installed managed candidate manifest to the identity expectations
+ * the server can actually compare. The server's embedded `candidate_identity`
+ * is the release-tag token its release build embedded (`release.yml`
+ * `CANDIDATE_ID: ${{ needs.release-metadata.outputs.tag }}` →
+ * `scripts/release_build_identity.py` `PERL_LSP_CANDIDATE_ID` →
+ * `product_identity.rs:441`), and the manifest's `subject.release` records
+ * that same tag for the archive this binary came from. The manifest's
+ * hash-derived `candidate_id` is a local managed-cache key in a different
+ * identity vocabulary; sending it would compare a `candidate-<sha256>` token
+ * against a release tag and report `candidate_mismatch` on every valid
+ * managed install. `undefined` when the manifest is absent or its subject
+ * fields are not strings, so the identity request omits the expectations
+ * instead of fabricating or mistyping them.
+ */
+export function installedIdentityFromManifest(
+  manifest: unknown,
+): { candidate: string; target: string } | undefined {
+  // The shared reader validates the manifest envelope (schema_version,
+  // candidate_id) but not `subject`, so the identity fields are read through
+  // the same defensive shape the reader itself casts to; a tampered manifest
+  // missing its subject omits the expectations instead of throwing in the
+  // builder.
+  const subject = (manifest as { subject?: { release?: unknown; target?: unknown } } | null)
+    ?.subject;
+  if (
+    subject === undefined ||
+    typeof subject.release !== 'string' ||
+    typeof subject.target !== 'string'
+  ) {
+    return undefined;
+  }
+  return { candidate: subject.release, target: subject.target };
+}
+
+/**
+ * The installed managed candidate's recorded identity, read from the resolved
+ * install dir's `candidate.json` manifest (#10083). This is the release tag
+ * and target that actually run, not the host-preferred one, so a fallback
+ * install (e.g. Windows ARM64 emulation) is compared against what was really
+ * installed. `undefined` for a user-supplied or pre-policy install, which
+ * carries no manifest; the identity request then omits the candidate and
+ * target expectations instead of fabricating them.
+ */
+function installedManagedIdentity(): { candidate: string; target: string } | undefined {
+  const serverPath = currentServerPath;
+  if (serverPath === null) {
+    return undefined;
+  }
+  return installedIdentityFromManifest(
+    readInstalledManagedCandidateManifest(path.dirname(serverPath)),
+  );
+}
+
+/**
+ * Button labels for the identity presentation's executable remediation
+ * actions (#10307). The presentation's own action is offered first; the
+ * support-packet copy stays available alongside every actionable state.
+ */
+const BINARY_IDENTITY_ACTION_LABELS: Record<Exclude<BinaryIdentityAction, 'none'>, string> = {
+  refresh_identity: 'Refresh identity',
+  repair_managed_pair: 'Repair managed binary',
+  inspect_configured_binary: 'Inspect configured binary',
+  copy_support_packet: 'Copy support packet',
+};
+
+/**
+ * Production dialog for the binary-identity presentation: the presentation's
+ * recommended action and the support-packet copy are offered as buttons and
+ * the selection maps back to the dispatched action. A quiet state and a
+ * dismissed dialog dispatch nothing.
+ */
+export function createBinaryIdentityDialogShow(
+  showMessage: (message: string, ...items: string[]) => Thenable<string | undefined>,
+): BinaryIdentityCommandHost['show'] {
+  return async (presentation) => {
+    const message = `${presentation.label}\n${presentation.detail}`;
+    const choices: { action: BinaryIdentityAction; label: string }[] = [];
+    if (presentation.action !== 'none') {
+      choices.push({
+        action: presentation.action,
+        label: BINARY_IDENTITY_ACTION_LABELS[presentation.action],
+      });
+      if (presentation.action !== 'copy_support_packet') {
+        choices.push({
+          action: 'copy_support_packet',
+          label: BINARY_IDENTITY_ACTION_LABELS.copy_support_packet,
+        });
+      }
+    }
+    if (choices.length === 0) {
+      await showMessage(message);
+      return undefined;
+    }
+    const selection = await showMessage(message, ...choices.map((choice) => choice.label));
+    return choices.find((choice) => choice.label === selection)?.action;
   };
 }
 
@@ -983,6 +1088,33 @@ async function runExtensionActivation(
     },
   });
 
+  // The refresh action re-invokes the registered identity command. Re-entry
+  // stays bounded by the user: every re-invocation presents its own dialog,
+  // so a further refresh is a fresh user click, never an automatic loop.
+  const refreshBinaryIdentity = async (): Promise<void> => {
+    await vscode.commands.executeCommand(SHOW_BINARY_IDENTITY_COMMAND);
+  };
+
+  // The inspect action surfaces the resolved server path read-only. It never
+  // replaces a configured user-supplied binary.
+  const showConfiguredServerBinary = async (): Promise<void> => {
+    const configuredPath = currentServerPath;
+    if (configuredPath === null) {
+      await vscode.window.showInformationMessage(
+        'No Perl LSP server binary is resolved yet. Start the server or run the health check first.',
+      );
+      return;
+    }
+    outputChannel.info(`[binary-identity] configured server binary: ${configuredPath}`);
+    const selection = await vscode.window.showInformationMessage(
+      `Configured Perl LSP server binary:\n${configuredPath}`,
+      'Show Output',
+    );
+    if (selection === 'Show Output') {
+      outputChannel.show();
+    }
+  };
+
   // Register server-facing commands through an explicit dependency context.
   // Lifecycle transitions remain owned by the authoritative composition.
   const serverCommandDisposables = registerServerCommandGroup({
@@ -1018,18 +1150,32 @@ async function runExtensionActivation(
     restartServer: () => restartServerFromExplicitRecovery(context),
     showBinaryIdentity: createBinaryIdentityCommand(
       () => client ?? languageClientLifecycle?.client,
-      (context.extension.packageJSON.version as string) ?? 'unknown',
-      'managed',
+      () => {
+        const installed = installedManagedIdentity();
+        return {
+          extensionVersion: (context.extension.packageJSON.version as string) ?? 'unknown',
+          // #9096 owns persistent selected-source truth; until it lands this
+          // host can only speak for the managed role it resolves by default.
+          selectedRole: 'managed',
+          // Absent properties stay absent: the request builder distinguishes
+          // an unset expectation from an empty one.
+          ...(installed === undefined
+            ? {}
+            : { extensionCandidate: installed.candidate, expectedTarget: installed.target }),
+        };
+      },
       {
-        show: async (presentation) => {
-          await vscode.window.showInformationMessage(
-            `${presentation.label}\n${presentation.detail}`,
-          );
-          return undefined;
+        show: createBinaryIdentityDialogShow((message, ...items) =>
+          vscode.window.showInformationMessage(message, ...items),
+        ),
+        refreshIdentity: refreshBinaryIdentity,
+        // Adapts the governed replacement authority: the same fail-closed
+        // installer and restore-previous-binary path the `perl-lsp.reinstall`
+        // command runs. No new install mechanism is introduced here.
+        repairManagedPair: async () => {
+          await reinstallServerBinary(context);
         },
-        refreshIdentity: async () => undefined,
-        repairManagedPair: async () => undefined,
-        inspectConfiguredBinary: async () => undefined,
+        inspectConfiguredBinary: showConfiguredServerBinary,
         copySupportPacket: async (packet) => {
           await vscode.env.clipboard.writeText(packet);
         },
@@ -1171,6 +1317,8 @@ async function runExtensionActivation(
     formatDocument: formatDocumentCommand,
     showIncPaths: showIncPathsCommand,
     openModule: openPerlModuleCommand,
+    createModule: () => createPerlScaffold(FileKind.Module).then(() => undefined),
+    createTest: () => createPerlScaffold(FileKind.Test).then(() => undefined),
     showParserAst: () =>
       showParserAstCommand({
         activeClient: client,
@@ -1225,8 +1373,12 @@ async function runExtensionActivation(
         return;
       }
       const downloader = new BinaryDownloader(context, outputChannel);
-      await context.globalState.update('perl-lsp.lastUpdateCheck', 0);
-      await downloader.checkForUpdateSilent();
+      // Force a real check (#16530): the former global-state reset only
+      // cleared the legacy `perl-lsp.lastUpdateCheck` key, while the interval
+      // guard reads the compatibility-scoped key, so a recent background
+      // check silently no-op'd this command for up to a day. `force` bypasses
+      // the interval guards and reports the outcome to the user.
+      await downloader.checkForUpdateSilent(true);
     },
   });
   // Onboarding/What's New and support surfaces are intentionally usable after
@@ -1317,12 +1469,7 @@ async function runExtensionActivation(
           await rerunIncludePathGuidance(context);
         }
 
-        const criticChanged = CRITIC_SETTINGS.some((setting) =>
-          event.affectsConfiguration(setting),
-        );
-        if (event.affectsConfiguration('perl-lsp.includePaths') || criticChanged) {
-          await syncLanguageClientConfiguration(client);
-        }
+        await syncLiveLanguageClientConfiguration(client, event);
 
         // Advisory coexistence findings re-evaluate when an owned input
         // changes; every collected input is classified live, so this block is
@@ -1368,15 +1515,6 @@ async function runExtensionActivation(
 
   const includePathGuidanceFolderWatcher = registerIncludePathGuidanceWorkspaceListener(context);
   activation.own('workspace_listeners', 'optional_degradable', includePathGuidanceFolderWatcher);
-
-  const fileCreationWatcher = vscode.workspace.onDidCreateFiles(async (event) => {
-    try {
-      await populateCreatedFiles(event);
-    } catch (e) {
-      outputChannel.error('File creation handler error', e);
-    }
-  });
-  activation.own('workspace_listeners', 'mandatory_for_activation', fileCreationWatcher);
 
   const arrowCompletionWatcher = vscode.workspace.onDidChangeTextDocument((event) => {
     maybeNudgeArrowCompletion(event);
@@ -2921,47 +3059,6 @@ export function maybeNudgeArrowCompletion(event: vscode.TextDocumentChangeEvent)
 }
 
 /**
- * Insert boilerplate into newly created Perl files that are still empty.
- *
- * `perl-lsp.autoPopulateNewFiles` is contributed `scope: "resource"`, so the
- * gate is resolved against each created URI rather than once for the whole
- * event (#14547). An unscoped `getConfiguration('perl-lsp')` cannot observe a
- * `workspaceFolderValue` at all, so a multi-root workspace where one folder
- * turns population off previously took the global value for every folder. The
- * read must stay inside the loop for the declared scope to mean anything.
- *
- * A URI outside every workspace folder resolves to the global/workspace value,
- * which is the same answer the hoisted read gave, as does an unset value. A
- * workspace opened as a single folder has no workspace-folder layer to select,
- * so it is unaffected too — but note that a `.code-workspace` listing exactly
- * one folder is mechanically multi-root and does have that layer, so a value
- * set on that folder now wins where it previously could not be seen.
- */
-export async function populateCreatedFiles(event: vscode.FileCreateEvent): Promise<void> {
-  for (const uri of event.files) {
-    const scoped = vscode.workspace.getConfiguration('perl-lsp', uri);
-    if (!scoped.get<boolean>('autoPopulateNewFiles', true)) {
-      continue;
-    }
-
-    const boilerplate = generateBoilerplate(uri.fsPath);
-    if (!boilerplate) {
-      continue;
-    }
-
-    const doc = await vscode.workspace.openTextDocument(uri);
-    if (doc.getText().length > 0) {
-      // File already has content — don't overwrite
-      continue;
-    }
-
-    const edit = new vscode.WorkspaceEdit();
-    edit.insert(uri, new vscode.Position(0, 0), boilerplate.content);
-    await vscode.workspace.applyEdit(edit);
-  }
-}
-
-/**
  * Probe the LSP binary directly and return diagnostic information.
  *
  * Runs the binary with `--version` (fast probe, 3s timeout). On failure,
@@ -3343,22 +3440,25 @@ async function reinstallServerBinary(
   const downloadedPath = await downloader.ensureBinary(true);
 
   if (!downloadedPath) {
-    vscode.window
-      .showErrorMessage(
-        'Could not reinstall perl-lsp. Check your internet connection and proxy settings, then try again.',
-        'Show Output',
-        'Open Settings',
-      )
-      .then((selection) => {
-        if (selection === 'Show Output') {
-          outputChannel.show();
-        }
-        if (selection === 'Open Settings') {
-          void vscode.commands.executeCommand('workbench.action.openSettings', 'http.proxy');
-        }
-      });
+    const cancelled = isDownloadCancellationMessage(downloader.getLastErrorMessage() ?? '');
+    if (!cancelled) {
+      vscode.window
+        .showErrorMessage(
+          'Could not reinstall perl-lsp. Check your internet connection and proxy settings, then try again.',
+          'Show Output',
+          'Open Settings',
+        )
+        .then((selection) => {
+          if (selection === 'Show Output') {
+            outputChannel.show();
+          }
+          if (selection === 'Open Settings') {
+            void vscode.commands.executeCommand('workbench.action.openSettings', 'http.proxy');
+          }
+        });
+    }
     if (wasRunning && previousServerPath) {
-      outputChannel.error('[reinstall] restoring previous binary after failed download');
+      outputChannel.info('[reinstall] restoring previous binary after incomplete download');
       languageClientLifecycle?.setServerPathOverride(previousServerPath);
       try {
         await restartServer(context);
@@ -3424,7 +3524,20 @@ async function reinstallServerBinary(
       // restartServer surfaces its own dialog/log.
     }
   } else {
-    vscode.window.showInformationMessage('perl-lsp was reinstalled successfully.', 'OK');
+    // A retry after first-install failure has no running client to restart,
+    // but still must resume the dormant lifecycle after health verification.
+    await restartServer(context);
+    if (languageClientLifecycle?.snapshot.state !== 'running') {
+      return {
+        ok: false,
+        serverPath: downloadedPath,
+        target,
+        source,
+        version,
+        checksumVerified: true,
+        error: 'server did not start after reinstall',
+      };
+    }
   }
 
   return {

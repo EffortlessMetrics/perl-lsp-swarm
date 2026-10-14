@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://effortlessmetrics.dev/schemas/perl_core_harness_upstream_trace_equivalence.v1.schema.json",
+  "title": "Perl core harness upstream trace equivalence receipt v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "payload_digest", "payload"],
+  "properties": {
+    "schema_version": {"const": "perl_core_harness.upstream_trace_equivalence.v1"},
+    "payload_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "payload": {"$ref": "#/$defs/payload"}
+  },
+  "$defs": {
+    "payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["subjects", "target_id", "perl_ref", "repository_commit", "verdict", "planes", "differences", "transferable", "non_transferable", "limitations", "claim_boundary"],
+      "properties": {
+        "subjects": {"$ref": "#/$defs/subjects"},
+        "target_id": {"type": "string", "minLength": 1},
+        "perl_ref": {"type": "string", "minLength": 1},
+        "repository_commit": {"type": "string", "minLength": 1},
+        "verdict": {"enum": ["equivalent_for_declared_planes", "measured_difference", "not_comparable", "stale", "not_proven", "instrument_failure"]},
+        "planes": {"type": "array", "items": {"$ref": "#/$defs/plane_comparison"}},
+        "differences": {"type": "array", "items": {"type": "string", "minLength": 1}},
+        "transferable": {"type": "array", "items": {"enum": ["instrumented invocation observation is non-perturbing evidence for ordinary t/TEST for the exact bound subjects and declared planes"]}},
+        "non_transferable": {"type": "array", "items": {"enum": ["another Perl revision", "another target or variant", "another trace patch, capture point, or schema", "another runner (including t/harness)", "compiler semantic or runtime equivalence", "future runner drift without rerun"]}},
+        "limitations": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
+        "claim_boundary": {"const": "instrumented invocation observation is non-perturbing evidence for ordinary t/TEST only for the exact bound target/Perl/runner/patch/schema subjects and only for the named comparison planes; compiler semantic, TAP, and runtime equivalence remain unproven"}
+      }
+    },
+    "subjects": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ordinary_receipt_digest", "instrumented_parent_receipt_digest", "trace_receipt_digest", "work_receipt_digest", "equivalence_identity"],
+      "properties": {
+        "ordinary_receipt_digest": {"type": "string"},
+        "instrumented_parent_receipt_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "trace_receipt_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "work_receipt_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "equivalence_identity": {"$ref": "#/$defs/equivalence_identity"}
+      }
+    },
+    "equivalence_identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["instrumentation_id", "ordinary_runner_artifact_sha256", "instrumented_runner_artifact_sha256", "patch_subject_digest"],
+      "properties": {
+        "instrumentation_id": {"type": "string", "minLength": 1},
+        "ordinary_runner_artifact_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "instrumented_runner_artifact_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "patch_subject_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "plane_comparison": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["plane", "ordinary_digest", "instrumented_digest", "matched", "differences"],
+      "properties": {
+        "plane": {"enum": ["discovery_bytes", "membership_order", "terminal_process", "cleanup", "invocation_rows"]},
+        "ordinary_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "instrumented_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "matched": {"type": "boolean"},
+        "differences": {"type": "array", "items": {"type": "string", "minLength": 1}}
+      }
+    }
+  }
+}

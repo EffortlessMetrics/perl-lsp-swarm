@@ -245,19 +245,8 @@ impl<'a> Parser<'a> {
         // Word `not` enters through parse_unary so the levels above
         // still run after `parse_word_not_expr` returns. The
         // `parse_unary` WordNot arm remains the single entry point.
-        if let Some(kind) = self.peek_kind()
-            && matches!(
-                kind,
-                TokenKind::WordNot | TokenKind::WordAnd | TokenKind::WordOr | TokenKind::WordXor
-            )
-            && self.is_keyword_before_fat_arrow()
-        {
-            let token = self.advance_token()?;
-            return self.charge_node(
-                NodeKind::Identifier { name: token.text.to_string() },
-                SourceLocation { start: token.start(), end: token.end() },
-            );
-        }
+        // Word-operator fat-arrow autoquote (`cmp =>`, `or =>`) also enters
+        // through parse_unary so `parse_shift` named-unary arguments see it.
 
         // Handle 'return' as an expression in expression context
         // This allows patterns like: open $fh, $file or return;
@@ -513,7 +502,7 @@ impl<'a> Parser<'a> {
     ///   `(our $AUTOLOAD =~ /pattern/)` — `=~` after the declaration
     ///   `(my $x || "default")`        — `||` after the declaration
     ///
-    /// The chain applies operators from highest to lowest precedence (multiplicative →
+    /// The chain applies operators from highest to lowest precedence (power → multiplicative →
     /// additive → shift → relational → equality → bitwise-and → bitwise-xor →
     /// bitwise-or → logical-and → logical-or → range → ternary) so that the declaration
     /// node is correctly used as the leftmost operand of whatever operator follows.
@@ -521,6 +510,7 @@ impl<'a> Parser<'a> {
     /// Assignment operators (`=`, `+=`, …) are NOT applied here — they are handled
     /// by `parse_declaration_arg` itself (via the `Some(TokenKind::Assign)` branch).
     fn parse_below_assignment_with(&mut self, expr: Node) -> ParseResult<Node> {
+        let expr = self.parse_power_with(expr)?;
         let expr = self.parse_multiplicative_with(expr)?;
         let expr = self.parse_additive_with(expr)?;
         let expr = self.parse_shift_with(expr)?;

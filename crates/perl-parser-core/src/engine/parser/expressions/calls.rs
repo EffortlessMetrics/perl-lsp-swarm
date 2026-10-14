@@ -83,6 +83,7 @@ impl<'a> Parser<'a> {
             };
             let next_kind = next_token.kind();
             let next_text = next_token.text.to_string();
+            let next_end = next_token.end();
 
             // These tokens *cannot* start an indirect object
             match next_kind {
@@ -165,7 +166,15 @@ impl<'a> Parser<'a> {
                 }
 
                 if next_text.chars().next().is_some_and(|c| c.is_uppercase()) {
-                    return true;
+                    // An adjacent `(` makes this a subroutine argument, even
+                    // for uppercase or qualified names: print Foo::bar(1).
+                    // A separated `(` can still start an explicit handle's
+                    // output list: print STDOUT (1, 2). Scalar and braced
+                    // handles, and other indirect-builtin families, retain
+                    // their existing admission rules (#17078).
+                    return !(matches!(name, "print" | "printf" | "say")
+                        && third.kind() == TokenKind::LeftParen
+                        && next_end == third.start());
                 }
 
                 let third_text = &third.text;
@@ -740,7 +749,7 @@ impl<'a> Parser<'a> {
             while self.peek_kind() != Some(TokenKind::RightParen) && !self.tokens.is_eof() {
                 // Declaration-as-argument list forms share per-item attribute
                 // attachment with statement-form `my ($x :shared, $y)`.
-                let var = self.parse_variable_list_item()?;
+                let var = self.parse_variable_list_item(&declarator)?;
                 variables.push(self.with_optional_list_item_attributes(var)?);
 
                 if self.peek_kind() == Some(TokenKind::Comma) {

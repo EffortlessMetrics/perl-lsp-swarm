@@ -146,9 +146,12 @@ and the rewrite transforms alike. The subroutine duplicate was missing from an
 earlier draft of this ledger; review caught it, and omitting it would have let
 #9189 treat an active nested publisher as nonexistent.
 
-The literal extract arms that do live in `refactors.rs` are guarded by
-`actions.is_empty()`, so they only run when the nested enhanced call returned
-nothing. That is `shadow_only_candidate`, not a second authority.
+The remaining literal `Extract to variable` arm in `refactors.rs` is guarded by
+`actions.is_empty()`, so it can run only when the nested enhanced call returned
+nothing. That is `shadow_only_candidate`, not a second authority. #16779 removed
+the basic Block `Extract to function` arm after a real code-action response and
+applied-edit Perl check proved its unsafe fallback path. The enhanced subroutine
+extractor remains available for its admitted shapes.
 
 ### Within the diagnostic-routed family, only V2 associates a fix with its diagnostic
 
@@ -287,7 +290,7 @@ The corpus covers the outcome classes #9188 requires:
 | malformed | `cac-parity-parse-error-recovery-keeps-ast-path` |
 | legitimate empty | `cac-parity-legitimate-empty-out-of-range-source-action`, `cac-parity-kind-filter-excludes-other-families`, `cac-parity-unknown-document-is-empty-not-error` |
 | identity without edit | `cac-parity-explain-diagnostic-command-only`, `cac-parity-test-generation-command-only`, `cac-parity-v2-attaches-originating-diagnostic` |
-| recorded gap (`NOT_PROVEN`) | `text_fallback` (both rows), `refactor.extract:subroutine` on both the enhanced and the original generation, and `refactor.extract:basic_fallback` carry a `proof_gap` instead of a fixture — five rows |
+| recorded gap (`NOT_PROVEN`) | `text_fallback` (both rows), `refactor.extract:subroutine` on both the enhanced and the original generation, and the remaining variable arm in `refactor.extract:basic_fallback` carry a `proof_gap` instead of a parity fixture — five rows |
 
 Every `cac-parity-*` id named anywhere on this page is checked against the
 ledger's routes. This table previously named a fixture that had been renamed,

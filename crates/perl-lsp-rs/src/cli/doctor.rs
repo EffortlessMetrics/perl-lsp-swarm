@@ -29,8 +29,9 @@ const DOCTOR_TOOL_TIMEOUT_SECS: u64 = 5;
 /// `perllsp --doctor --external-tools`: registry-driven, native-first
 /// external-tooling report (#7212). Source-only projection of the canonical
 /// registry (#7209): no probe, install, selection, or execution occurs, and
-/// every verdict comes from the registry rows.
-pub(super) fn run_doctor_external_tools(json: bool) -> i32 {
+/// every verdict comes from the registry rows. `command_name` is the name the
+/// binary was invoked under and flows into the report header (#17163).
+pub(super) fn run_doctor_external_tools(json: bool, command_name: &str) -> i32 {
     let entries = external_tool_doctor_entries(EXTERNAL_TOOL_REGISTRY);
     if json {
         match serde_json::to_string_pretty(&entries) {
@@ -44,7 +45,7 @@ pub(super) fn run_doctor_external_tools(json: bool) -> i32 {
             }
         }
     } else {
-        print!("{}", render_external_tool_doctor_text(&entries));
+        print!("{}", render_external_tool_doctor_text(&entries, command_name));
         0
     }
 }
@@ -52,7 +53,7 @@ pub(super) fn run_doctor_external_tools(json: bool) -> i32 {
 /// `perllsp --doctor --critic-compatibility`: registry-driven Perl::Critic
 /// configuration compatibility (#7212). Explains `.perlcriticrc` mapping
 /// process-free; never offers a runtime engine switch.
-pub(super) fn run_doctor_critic_compatibility(json: bool) -> i32 {
+pub(super) fn run_doctor_critic_compatibility(json: bool, command_name: &str) -> i32 {
     let Some(entry) = critic_compatibility_entry(EXTERNAL_TOOL_REGISTRY) else {
         eprintln!("registry does not own a .perlcriticrc compatibility row");
         return 1;
@@ -69,7 +70,7 @@ pub(super) fn run_doctor_critic_compatibility(json: bool) -> i32 {
             }
         }
     } else {
-        print!("{}", render_critic_compatibility_text(&entry));
+        print!("{}", render_critic_compatibility_text(&entry, command_name));
         0
     }
 }
@@ -82,7 +83,9 @@ pub(super) fn run_doctor_critic_compatibility(json: bool) -> i32 {
 /// identity divergence for DAP E2E / prove consumers. Typed statuses and
 /// copyable fix lines follow the #7212 posture; the symlink probe uses temporary
 /// files with best-effort cleanup and never installs or configures anything.
-pub(super) fn run_doctor_dev_environment(json: bool) -> i32 {
+/// `command_name` is the name the binary was invoked under and flows into the
+/// report header (#17163).
+pub(super) fn run_doctor_dev_environment(json: bool, command_name: &str) -> i32 {
     let report = build_dev_environment_report();
     if json {
         match serde_json::to_string_pretty(&report) {
@@ -96,12 +99,12 @@ pub(super) fn run_doctor_dev_environment(json: bool) -> i32 {
             }
         }
     } else {
-        print!("{}", render_dev_environment_report(&report));
+        print!("{}", render_dev_environment_report(&report, command_name));
         0
     }
 }
 
-pub(super) fn run_doctor(dir: &str, json: bool) -> i32 {
+pub(super) fn run_doctor(dir: &str, json: bool, command_name: &str) -> i32 {
     match build_doctor_report_struct(dir) {
         Ok(report) => {
             if json {
@@ -116,7 +119,7 @@ pub(super) fn run_doctor(dir: &str, json: bool) -> i32 {
                     }
                 }
             } else {
-                print!("{}", render_report(report));
+                print!("{}", render_report(report, command_name));
                 0
             }
         }
@@ -215,7 +218,7 @@ struct PerlReport {
     binary: Option<PathBuf>,
     source: &'static str,
     version: Option<String>,
-    error: Option<String>,
+    error: Option<ReportFailure>,
 }
 
 /// Report for an external tool (`perltidy`/`perlcritic`) that perl-lsp may
@@ -227,7 +230,105 @@ struct ToolReport {
     binary: Option<PathBuf>,
     source: &'static str,
     version: Option<String>,
-    error: Option<String>,
+    error: Option<ReportFailure>,
+}
+
+/// Why reporting on a discovered Perl or external tool failed.
+///
+/// One fact, two audiences (#16525). The human summary needs a concise
+/// verdict that states which step failed; the JSON surface keeps the raw
+/// child output for diagnosis. Both render from this type, so no renderer
+/// re-parses a composed error string to work out what happened.
+#[derive(Debug, Clone)]
+enum ReportFailure {
+    /// The binary was located and executed, but the version probe failed.
+    ///
+    /// `status` is already normalized by the constructor, so a summary never
+    /// composes two status phrasings. `stderr` is the raw child stream: it
+    /// belongs in `--json`, never in a one-line summary, where a child that
+    /// denies its own discovery ("Can't find X on PATH") reads as a
+    /// contradiction of the discovery this same line already reported.
+    VersionProbe { label: String, status: String, stderr: String },
+    /// Discovery or spawn itself failed. The message is already a
+    /// user-facing one-line diagnosis with no hidden child output.
+    Message(String),
+}
+
+impl ReportFailure {
+    /// A version probe that ran and failed. `label` names the tool in the
+    /// machine detail; the Perl line is already labelled by its own row.
+    fn version_probe(label: &str, status: &std::process::ExitStatus, stderr: &[u8]) -> Self {
+        Self::VersionProbe {
+            label: label.to_string(),
+            status: probe_status_clause(status),
+            stderr: String::from_utf8_lossy(stderr).trim().to_string(),
+        }
+    }
+
+    /// The one-line human verdict, pointing at `--doctor --json` only when
+    /// this failure actually hides child output. The pointer says to add
+    /// `--json` to the same invocation because repeating `--doctor` alone
+    /// would drop an explicit workspace argument and probe a different
+    /// Perl (#16525).
+    fn summary(&self) -> String {
+        match self {
+            Self::VersionProbe { status, stderr, .. } => {
+                let verdict = format!("version probe failed ({status})");
+                if stderr.is_empty() {
+                    verdict
+                } else {
+                    format!("{verdict}; re-run with --json added for probe detail")
+                }
+            }
+            Self::Message(message) => message.clone(),
+        }
+    }
+
+    /// The full machine-readable detail `--json` preserves.
+    fn detail(&self) -> String {
+        match self {
+            Self::VersionProbe { label, status, stderr } => {
+                let prefix = if label.is_empty() { String::new() } else { format!("{label} ") };
+                let mut detail = format!("{prefix}version probe exited with {status}");
+                if !stderr.is_empty() {
+                    detail.push_str("; stderr: ");
+                    detail.push_str(stderr);
+                }
+                detail
+            }
+            Self::Message(message) => message.clone(),
+        }
+    }
+}
+
+/// The `error` field keeps its JSON string shape and still carries the full
+/// stderr, but the status wording inside it is normalized exactly like the
+/// human line (#16525): consumers comparing the old doubled phrasing
+/// (`exited with status exit code: N`) see the new single clause.
+impl Serialize for ReportFailure {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.detail())
+    }
+}
+
+/// Render a process exit status as a single clause.
+///
+/// `ExitStatus`'s own `Display` is already a status phrase ("exit code: 29",
+/// "exit status: 2"), so wrapping it in another template produced
+/// "exited with status exit code: 29" (#16525). The caller owns the wording
+/// and receives the bare fact instead.
+fn probe_status_clause(status: &std::process::ExitStatus) -> String {
+    // On Windows a child that dies hard reports an NTSTATUS in the high bit
+    // (0xC0000142 and friends), which `code()` hands back as a negative
+    // `i32`. Keep std's own hexadecimal rendering for those so the crash
+    // stays recognizable instead of becoming a negative decimal. Everywhere
+    // else a `Some` code is the honest fact, and `Display` is the fallback
+    // when the child was signalled rather than exited.
+    let code = status.code().filter(|code| !cfg!(windows) || *code >= 0);
+    match code {
+        Some(code) => format!("exit code {code}"),
+        None => format!("{status}"),
+    }
 }
 
 #[derive(Serialize)]
@@ -316,7 +417,7 @@ fn probe_perl_with_resolver(
                     binary: None,
                     source: "PATH",
                     version: None,
-                    error: Some(format!("{error}")),
+                    error: Some(ReportFailure::Message(format!("{error}"))),
                 };
             }
         },
@@ -337,16 +438,15 @@ fn probe_perl_with_resolver(
             binary: Some(binary),
             source,
             version: None,
-            error: Some(version_probe_error(&output)),
+            error: Some(ReportFailure::version_probe("", &output.status, &output.stderr)),
         },
-        Err(error) => {
-            PerlReport { binary: Some(binary), source, version: None, error: Some(error) }
-        }
+        Err(error) => PerlReport {
+            binary: Some(binary),
+            source,
+            version: None,
+            error: Some(ReportFailure::Message(error)),
+        },
     }
-}
-
-fn version_probe_error(output: &std::process::Output) -> String {
-    version_probe_error_from_parts(&output.status.to_string(), &output.stderr)
 }
 
 /// Locate an external tool on `PATH`, using the hardened resolver on Windows
@@ -387,7 +487,7 @@ fn probe_tool_with_resolver(
                 binary: None,
                 source: "PATH",
                 version: None,
-                error: Some(format!("{name} not found on PATH")),
+                error: Some(ReportFailure::Message(format!("{name} not found on PATH"))),
             };
         }
     };
@@ -408,27 +508,15 @@ fn probe_tool_with_resolver(
             binary: Some(binary),
             source: "PATH",
             version: None,
-            error: Some(tool_version_probe_error(name, &output)),
+            error: Some(ReportFailure::version_probe(name, &output.status, &output.stderr)),
         },
-        Err(error) => {
-            ToolReport { binary: Some(binary), source: "PATH", version: None, error: Some(error) }
-        }
+        Err(error) => ToolReport {
+            binary: Some(binary),
+            source: "PATH",
+            version: None,
+            error: Some(ReportFailure::Message(error)),
+        },
     }
-}
-
-fn tool_version_probe_error(name: &str, output: &std::process::Output) -> String {
-    format!("{name} {}", version_probe_error(output))
-}
-
-fn version_probe_error_from_parts(status: &str, stderr: &[u8]) -> String {
-    let mut error = format!("version probe exited with status {status}");
-    let stderr = String::from_utf8_lossy(stderr);
-    let stderr = stderr.trim();
-    if !stderr.is_empty() {
-        error.push_str("; stderr: ");
-        error.push_str(stderr);
-    }
-    error
 }
 
 fn resolve_perl_path_for_doctor() -> anyhow::Result<(PathBuf, &'static str)> {
@@ -2243,10 +2331,15 @@ fn wsl_bash_flavor_report_from_status(status: Result<(), String>) -> BashFlavorR
 
 // ── Rendering ───────────────────────────────────────────────────────────────
 
-fn render_dev_environment_report(report: &DevEnvironmentReport) -> String {
+fn render_dev_environment_report(report: &DevEnvironmentReport, command_name: &str) -> String {
     let mut out = String::new();
-    out.push_str("perl-lsp doctor - development environment\n");
-    out.push_str("=========================================\n\n");
+    // The header names the binary as it was invoked (#17163); the underline
+    // width must keep matching the header so the format stays stable.
+    let header = format!("{command_name} doctor - development environment");
+    out.push_str(&header);
+    out.push('\n');
+    out.push_str(&"=".repeat(header.chars().count()));
+    out.push_str("\n\n");
     out.push_str(&format!(
         "Pins: workspace rust-version {}, rust-toolchain.toml channel {}\n",
         report.workspace_rust_version, report.toolchain_channel_pin
@@ -2370,10 +2463,15 @@ fn truncate_for_detail(text: &str, max_chars: usize) -> String {
     }
 }
 
-fn render_report(report: DoctorReport) -> String {
+fn render_report(report: DoctorReport, command_name: &str) -> String {
     let mut out = String::new();
-    out.push_str("perl-lsp doctor\n");
-    out.push_str("===============\n\n");
+    // The header names the binary as it was invoked (#17163); the underline
+    // width must keep matching the header so the format stays stable.
+    let header = format!("{command_name} doctor");
+    out.push_str(&header);
+    out.push('\n');
+    out.push_str(&"=".repeat(header.chars().count()));
+    out.push_str("\n\n");
     out.push_str(&format!("Workspace: {}\n", report.workspace.display()));
     out.push_str(&format!("Project config: {}\n", render_project_config_status(&report.config)));
     if !report.config.rejected_include_paths.is_empty() {
@@ -2472,7 +2570,7 @@ fn render_perl_version(report: &PerlReport) -> String {
     if let Some(version) = report.version.as_deref().filter(|version| !version.is_empty()) {
         version.to_string()
     } else if let Some(error) = &report.error {
-        format!("not available: {error}")
+        format!("not available: {}", error.summary())
     } else {
         "not available".to_string()
     }
@@ -2480,24 +2578,27 @@ fn render_perl_version(report: &PerlReport) -> String {
 
 fn render_tool_report(report: &ToolReport) -> String {
     match &report.binary {
+        // The binary was located, so this line already asserts discovery.
+        // A failure rendered here is the *probe*, not discovery: naming it
+        // that way is what keeps a child that denies its own path from
+        // contradicting the path this line just reported (#16525).
         Some(path) => {
-            let version = report
+            let status = report
                 .version
                 .as_deref()
                 .filter(|version| !version.is_empty())
                 .map(|version| version.to_string())
-                .or_else(|| {
-                    report.error.as_deref().map(|error| format!("version unavailable: {error}"))
-                })
+                .or_else(|| report.error.as_ref().map(|error| error.summary()))
                 .unwrap_or_else(|| "version unavailable".to_string());
-            format!("{} ({}); {}", path.display(), report.source, version)
+            format!("{} ({}); {}", path.display(), report.source, status)
         }
         None => {
             let error = report
                 .error
-                .as_deref()
+                .as_ref()
+                .map(|error| error.summary())
                 .filter(|error| !error.is_empty())
-                .unwrap_or("not found on PATH");
+                .unwrap_or_else(|| "not found on PATH".to_string());
             format!("not found ({}); {error}", report.source)
         }
     }
@@ -2837,7 +2938,7 @@ mod tests {
         let temp = tempfile::tempdir()?;
         let dir = temp.path().to_str().ok_or("non-UTF-8 temp path")?;
 
-        assert_eq!(run_doctor(dir, false), 0);
+        assert_eq!(run_doctor(dir, false, "perl-lsp"), 0);
         Ok(())
     }
 
@@ -2845,11 +2946,11 @@ mod tests {
     fn run_doctor_match_arm_discriminator() -> TestResult {
         let temp = tempfile::tempdir()?;
         let dir = temp.path().to_str().ok_or("non-UTF-8 temp path")?;
-        assert_eq!(run_doctor(dir, false), 0);
+        assert_eq!(run_doctor(dir, false, "perl-lsp"), 0);
 
         let missing = temp.path().join("missing-workspace");
         let missing_dir = missing.to_str().ok_or("non-UTF-8 temp path")?;
-        assert_eq!(run_doctor(missing_dir, false), 1);
+        assert_eq!(run_doctor(missing_dir, false, "perl-lsp"), 1);
         Ok(())
     }
 
@@ -3077,7 +3178,7 @@ mod tests {
         )?;
         let dir = temp.path().to_str().ok_or("non-UTF-8 temp path")?;
 
-        let report = render_report(build_doctor_report_struct(dir)?);
+        let report = render_report(build_doctor_report_struct(dir)?, "perl-lsp");
 
         assert!(report.contains("Project config: loaded .perl-lsp.toml"));
         assert!(report.contains("custom/lib"));
@@ -3134,7 +3235,7 @@ mod tests {
         )?;
         let dir = temp.path().to_str().ok_or("non-UTF-8 temp path")?;
 
-        let rendered = render_report(build_doctor_report_struct(dir)?);
+        let rendered = render_report(build_doctor_report_struct(dir)?, "perl-lsp");
 
         assert!(rendered.contains("Rejected .perl-lsp.toml include_paths entries:"));
         assert!(rendered.contains(absolute));
@@ -3217,18 +3318,81 @@ mod tests {
         assert_eq!(report.binary.as_deref(), Some(current_exe.as_path()));
         assert!(report.version.is_none());
         let error = report.error.ok_or("non-Perl executable should fail version probe")?;
-        assert!(error.contains("version probe exited with status"));
+        assert!(error.detail().contains("version probe exited with exit code "));
         Ok(())
     }
 
+    /// A synthetic non-zero exit status that decodes to exit code 1 on both
+    /// platforms, so the status wording these tests assert is the wording
+    /// production renders, on every CI runner.
+    ///
+    /// This deliberately does not reuse `synthetic_process_output`: its
+    /// failure case is a raw *wait status*, so on unix `from_raw(1)` is
+    /// read as signal 1 (SIGHUP) and `ExitStatus::code()` is `None`. These
+    /// tests need a child that exited with a code, not one that was
+    /// signalled, because `code()` is what `probe_status_clause` reports.
+    fn synthetic_failure_status() -> std::process::ExitStatus {
+        #[cfg(unix)]
+        use std::os::unix::process::ExitStatusExt as _;
+        #[cfg(windows)]
+        use std::os::windows::process::ExitStatusExt as _;
+
+        // A unix wait status carries the exit code in the high byte.
+        #[cfg(unix)]
+        let raw = 1 << 8;
+        #[cfg(windows)]
+        let raw = 1;
+
+        std::process::ExitStatus::from_raw(raw)
+    }
+
     #[test]
-    fn version_probe_error_preserves_stderr_guidance() {
-        let error = version_probe_error_from_parts("exit status: 2", b"Can't locate App.pm\n");
+    fn version_probe_detail_names_the_status_once_and_keeps_child_stderr() {
+        let failure = ReportFailure::version_probe(
+            "perltidy",
+            &synthetic_failure_status(),
+            b"Can't locate App.pm\n",
+        );
 
         assert_eq!(
-            error,
-            "version probe exited with status exit status: 2; stderr: Can't locate App.pm"
+            failure.detail(),
+            "perltidy version probe exited with exit code 1; stderr: Can't locate App.pm"
         );
+    }
+
+    #[test]
+    fn version_probe_summary_names_the_failed_step_and_withholds_child_stderr() {
+        let failure = ReportFailure::version_probe(
+            "perltidy",
+            &synthetic_failure_status(),
+            b"Can't find C:\\Strawberry\\perl\\bin\\perltidy.BAT on PATH, '.' not in PATH.",
+        );
+
+        let summary = failure.summary();
+        assert_eq!(
+            summary,
+            "version probe failed (exit code 1); re-run with --json added for probe detail"
+        );
+        assert!(
+            !summary.contains("Strawberry"),
+            "the summary must not restate the child's own discovery claim: {summary}"
+        );
+        assert!(!summary.contains("stderr"), "raw child stderr must not leak: {summary}");
+    }
+
+    #[test]
+    fn version_probe_summary_omits_the_detail_pointer_when_the_child_was_silent() {
+        let failure =
+            ReportFailure::version_probe("perlcritic", &synthetic_failure_status(), b"  \n");
+
+        assert_eq!(failure.summary(), "version probe failed (exit code 1)");
+    }
+
+    #[test]
+    fn version_probe_without_a_tool_label_omits_the_prefix() {
+        let failure = ReportFailure::version_probe("", &synthetic_failure_status(), b"");
+
+        assert_eq!(failure.detail(), "version probe exited with exit code 1");
     }
 
     #[test]
@@ -3244,7 +3408,7 @@ mod tests {
         assert!(report.binary.is_none());
         assert!(report.version.is_none());
         let error = report.error.ok_or("missing Perl should report path resolution guidance")?;
-        assert!(error.contains("perl binary not found on PATH"));
+        assert!(error.summary().contains("perl binary not found on PATH"));
         Ok(())
     }
 
@@ -3261,7 +3425,7 @@ mod tests {
         assert_eq!(report.binary.as_deref(), Some(current_exe.as_path()));
         assert!(report.version.is_none());
         let error = report.error.ok_or("non-Perl executable should fail version probe")?;
-        assert!(error.contains("version probe exited with status"));
+        assert!(error.detail().contains("version probe exited with exit code "));
         Ok(())
     }
 
@@ -3278,7 +3442,7 @@ mod tests {
         assert_eq!(report.binary.as_deref(), Some(missing.as_path()));
         assert!(report.version.is_none());
         let error = report.error.ok_or("missing configured Perl should fail to spawn")?;
-        assert!(error.contains("command failed to start"));
+        assert!(error.summary().contains("command failed to start"));
         Ok(())
     }
 
@@ -3290,7 +3454,7 @@ mod tests {
         assert!(report.binary.is_none());
         assert!(report.version.is_none());
         let error = report.error.ok_or("missing tool should report an error")?;
-        assert!(error.contains("perltidy not found on PATH"));
+        assert!(error.summary().contains("perltidy not found on PATH"));
         Ok(())
     }
 
@@ -3303,7 +3467,7 @@ mod tests {
         assert!(report.binary.is_some());
         assert!(report.version.is_none());
         let error = report.error.ok_or("non-perltidy binary should fail version probe")?;
-        assert!(error.contains("perltidy version probe exited with status"));
+        assert!(error.detail().contains("perltidy version probe exited with exit code "));
         Ok(())
     }
 
@@ -3324,11 +3488,15 @@ mod tests {
             binary: Some(PathBuf::from("/usr/bin/perlcritic")),
             source: "PATH",
             version: None,
-            error: Some("perlcritic version probe exited with status 2".to_string()),
+            error: Some(ReportFailure::version_probe(
+                "perlcritic",
+                &synthetic_failure_status(),
+                b"",
+            )),
         };
         assert_eq!(
             render_tool_report(&version_unavailable),
-            "/usr/bin/perlcritic (PATH); version unavailable: perlcritic version probe exited with status 2"
+            "/usr/bin/perlcritic (PATH); version probe failed (exit code 1)"
         );
 
         let no_error = ToolReport {
@@ -3343,13 +3511,40 @@ mod tests {
         );
     }
 
+    /// The whole line from the #16525 live reproduction. Discovery reports
+    /// the binary as found; a Windows `.BAT` probe then fails while the child
+    /// denies the very path this line already reported. The rendered line
+    /// must reconcile that into one honest fact.
+    #[test]
+    fn render_tool_report_does_not_echo_a_child_that_denies_its_own_discovery() {
+        let report = ToolReport {
+            binary: Some(PathBuf::from(r"C:\Strawberry\perl\bin\perltidy.BAT")),
+            source: "PATH",
+            version: None,
+            error: Some(ReportFailure::version_probe(
+                "perltidy",
+                &synthetic_failure_status(),
+                br#"Can't find C:\Strawberry\perl\bin\perltidy.BAT on PATH, '.' not in PATH."#,
+            )),
+        };
+
+        let line = render_tool_report(&report);
+        assert!(
+            line.starts_with(r"C:\Strawberry\perl\bin\perltidy.BAT (PATH); version probe failed ("),
+            "discovery and the failed step must both be stated, without contradiction: {line}"
+        );
+        assert!(!line.contains("Can't find"), "the child's denial must not be echoed: {line}");
+        assert!(!line.contains("stderr"), "raw child stderr must not reach the summary: {line}");
+        assert!(line.ends_with("re-run with --json added for probe detail"), "{line}");
+    }
+
     #[test]
     fn render_tool_report_missing() {
         let report = ToolReport {
             binary: None,
             source: "PATH",
             version: None,
-            error: Some("perltidy not found on PATH".to_string()),
+            error: Some(ReportFailure::Message("perltidy not found on PATH".to_string())),
         };
         assert_eq!(render_tool_report(&report), "not found (PATH); perltidy not found on PATH");
     }
@@ -3359,7 +3554,7 @@ mod tests {
         let temp = tempfile::tempdir()?;
         let dir = temp.path().to_str().ok_or("non-UTF-8 temp path")?;
 
-        let report = render_report(build_doctor_report_struct(dir)?);
+        let report = render_report(build_doctor_report_struct(dir)?, "perl-lsp");
 
         assert!(report.contains("perltidy:"));
         assert!(report.contains("perlcritic:"));
@@ -3382,33 +3577,38 @@ mod tests {
         let perltidy = probe_tool_with_resolver("perltidy", "--version", |_| None);
         let perlcritic = probe_tool_with_resolver("perlcritic", "--version", |_| None);
 
-        let rendered = render_report(DoctorReport {
-            workspace,
-            config: ProjectConfigReport {
-                status: ProjectConfigStatus::Missing,
-                include_source: "default includePaths",
-                rejected_include_paths: Vec::new(),
+        let rendered = render_report(
+            DoctorReport {
+                workspace,
+                config: ProjectConfigReport {
+                    status: ProjectConfigStatus::Missing,
+                    include_source: "default includePaths",
+                    rejected_include_paths: Vec::new(),
+                },
+                perl: PerlReport {
+                    binary: None,
+                    source: "PATH",
+                    version: None,
+                    error: Some(ReportFailure::Message(
+                        "perl binary not found on PATH".to_string(),
+                    )),
+                },
+                perltidy,
+                perlcritic,
+                perl5lib_paths: Vec::new(),
+                perl5lib_enabled: false,
+                perl5lib_precedence: Perl5LibPrecedence::Prepend,
+                configured_paths: Vec::new(),
+                effective_paths: Vec::new(),
+                system_inc: SystemIncReport { status: "disabled", paths: Vec::new() },
+                text_sync_envelope: TextSyncEnvelopeReport {
+                    decision: crate::runtime::v0_18_text_sync_envelope::DECISION,
+                    text_sync_kind: crate::runtime::v0_18_text_sync_envelope::TEXT_SYNC_KIND_NAME,
+                    position_encoding: crate::runtime::v0_18_text_sync_envelope::WIRE_ENCODING,
+                },
             },
-            perl: PerlReport {
-                binary: None,
-                source: "PATH",
-                version: None,
-                error: Some("perl binary not found on PATH".to_string()),
-            },
-            perltidy,
-            perlcritic,
-            perl5lib_paths: Vec::new(),
-            perl5lib_enabled: false,
-            perl5lib_precedence: Perl5LibPrecedence::Prepend,
-            configured_paths: Vec::new(),
-            effective_paths: Vec::new(),
-            system_inc: SystemIncReport { status: "disabled", paths: Vec::new() },
-            text_sync_envelope: TextSyncEnvelopeReport {
-                decision: crate::runtime::v0_18_text_sync_envelope::DECISION,
-                text_sync_kind: crate::runtime::v0_18_text_sync_envelope::TEXT_SYNC_KIND_NAME,
-                position_encoding: crate::runtime::v0_18_text_sync_envelope::WIRE_ENCODING,
-            },
-        });
+            "perl-lsp",
+        );
 
         assert!(rendered.contains("Install perltidy (cpanm Perl::Tidy)"));
         assert!(rendered.contains("Install perlcritic (cpanm Perl::Critic)"));
@@ -3493,7 +3693,7 @@ mod tests {
             binary: None,
             source: "PATH",
             version: None,
-            error: Some("probe failed".to_string()),
+            error: Some(ReportFailure::Message("probe failed".to_string())),
         };
         assert_eq!(render_perl_binary(&error_report), "not found (PATH)");
         assert_eq!(render_perl_version(&error_report), "not available: probe failed");
@@ -3505,18 +3705,18 @@ mod tests {
 
     #[test]
     fn run_doctor_external_tools_text_exit_zero() {
-        assert_eq!(run_doctor_external_tools(false), 0);
+        assert_eq!(run_doctor_external_tools(false, "perl-lsp"), 0);
     }
 
     #[test]
     fn run_doctor_external_tools_json_exit_zero() {
-        assert_eq!(run_doctor_external_tools(true), 0);
+        assert_eq!(run_doctor_external_tools(true, "perl-lsp"), 0);
     }
 
     #[test]
     fn run_doctor_critic_compatibility_exit_zero() {
-        assert_eq!(run_doctor_critic_compatibility(false), 0);
-        assert_eq!(run_doctor_critic_compatibility(true), 0);
+        assert_eq!(run_doctor_critic_compatibility(false, "perl-lsp"), 0);
+        assert_eq!(run_doctor_critic_compatibility(true, "perl-lsp"), 0);
     }
 
     #[test]
@@ -4759,7 +4959,8 @@ mod tests {
 
     #[test]
     fn render_dev_environment_report_surfaces_findings_and_prescribed_fixes() {
-        let rendered = render_dev_environment_report(&synthetic_dev_environment_report());
+        let rendered =
+            render_dev_environment_report(&synthetic_dev_environment_report(), "perl-lsp");
 
         assert!(rendered.contains("perl-lsp doctor - development environment"));
         assert!(rendered.contains("Symlink privilege: missing"));
@@ -4786,8 +4987,32 @@ mod tests {
             fix: None,
         }];
 
-        let rendered = render_dev_environment_report(&report);
+        let rendered = render_dev_environment_report(&report, "perl-lsp");
         assert!(rendered.contains("runs repo entrypoints: not_proven"));
+    }
+
+    #[test]
+    fn doctor_headers_follow_the_supplied_command_name() -> TestResult {
+        // #17163: the doctor headers used to hard-code the crate name while
+        // `--version` and `--help` followed the invocation name. The header
+        // must carry the name the binary was invoked under, and the `=`
+        // underline must still match the header width so line-oriented
+        // parsers see only the identity token move.
+        let rendered =
+            render_dev_environment_report(&synthetic_dev_environment_report(), "perllsp");
+        let header = rendered.lines().next().ok_or("dev-environment report is empty")?;
+        assert_eq!(header, "perllsp doctor - development environment");
+        let underline = rendered.lines().nth(1).ok_or("dev-environment report has no underline")?;
+        assert_eq!(underline.chars().count(), header.chars().count());
+
+        let temp = tempfile::tempdir()?;
+        let dir = temp.path().to_str().ok_or("non-UTF-8 temp path")?;
+        let rendered = render_report(build_doctor_report_struct(dir)?, "perllsp");
+        let header = rendered.lines().next().ok_or("doctor report is empty")?;
+        assert_eq!(header, "perllsp doctor");
+        let underline = rendered.lines().nth(1).ok_or("doctor report has no underline")?;
+        assert_eq!(underline.chars().count(), header.chars().count());
+        Ok(())
     }
 
     #[test]

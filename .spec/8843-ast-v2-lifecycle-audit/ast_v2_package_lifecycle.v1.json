@@ -1089,15 +1089,6 @@
       "proposition": "Real dependency backing the production implementation uses and the engine re-export."
     },
     {
-      "consumer_id": "c:lexer-manifest",
-      "file": "crates/perl-lexer/Cargo.toml",
-      "role": "package_dependency",
-      "symbols": [
-        "dev-dependencies.perl-ast-v2"
-      ],
-      "proposition": "Declared dev-dependency with no matching use: no perl_ast_v2 or perl_ast::v2 reference exists anywhere in crates/perl-lexer/src or crates/perl-lexer/tests. The tokenizer module doc at crates/perl-lexer/src/tokenizer/mod.rs:3-5 states the opposite of the manifest, describing this module as the slice with no perl-ast-v2 dependency. Recorded as an unused declared dependency; removing it is outside #8843's claim ceiling."
-    },
-    {
       "consumer_id": "c:v2-tests-node-kinds",
       "file": "crates/perl-ast-v2/tests/node_kinds.rs",
       "role": "test_fixture",
@@ -1242,7 +1233,7 @@
       "file": "crates/perl-lexer/src/tokenizer/mod.rs",
       "role": "docs_reference",
       "symbols": [],
-      "proposition": "Module doc naming perl-ast-v2 to explain what this module does NOT depend on. Consumes nothing, and contradicts crates/perl-lexer/Cargo.toml:35."
+      "proposition": "Module doc naming perl-ast-v2 to explain what this module does not depend on. Consumes nothing."
     },
     {
       "consumer_id": "c:lexer-wave-c-comment",

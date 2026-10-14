@@ -82,6 +82,72 @@ fn qw_scanner_uses_recovery_only_when_the_closer_is_missing() -> TestResult {
 }
 
 #[test]
+fn quote_operator_word_opens_m_only_with_a_real_delimiter() -> TestResult {
+    // Call-observation for `quote_operator_word_opens_here` / `op == "m"`:
+    // depth 0 always opens; inside a subscript `m` opens only for a delimiter
+    // (`$h->{scalar m/foo/}`), not for a bare-key terminator (`$h{m}`, `$h{m;}`).
+    let depth_zero = PerlLexer::new("m/foo/");
+    if !depth_zero.quote_operator_word_opens_here("m") {
+        return Err("statement-level m// must still open at hash_brace_depth 0".into());
+    }
+
+    let mut bare_key = PerlLexer::new("}");
+    bare_key.hash_brace_depth = 1;
+    if bare_key.quote_operator_word_opens_here("m") {
+        return Err("`$h{{m}}` key boundary must not open m//".into());
+    }
+    if !bare_key.hash_subscript_bare_key_boundary('}') {
+        return Err("`}}` must be a hash-subscript bare-key boundary".into());
+    }
+    if bare_key.hash_subscript_allows_match_operator() {
+        return Err("key-boundary `}}` must not allow a subscript match operator".into());
+    }
+
+    let mut missing_closer = PerlLexer::new(";");
+    missing_closer.hash_brace_depth = 1;
+    if missing_closer.quote_operator_word_opens_here("m") {
+        return Err("`$h->{{a}}{{m;` must keep `m` as a key so recovery can insert `}}`".into());
+    }
+
+    let mut computed = PerlLexer::new("/foo/");
+    computed.hash_brace_depth = 1;
+    if !computed.quote_operator_word_opens_here("m") {
+        return Err("computed-key `m/foo/` inside a subscript must open as a match".into());
+    }
+    if !computed.hash_subscript_allows_match_operator() {
+        return Err("`/` is not a bare-key boundary; match must be allowed".into());
+    }
+    if computed.quote_operator_word_opens_here("s") {
+        return Err("s/// stays on the dedicated identifier path, not this m-arm".into());
+    }
+
+    let mut q_family = PerlLexer::new("}");
+    q_family.hash_brace_depth = 1;
+    if !q_family.quote_operator_word_opens_here("qw") {
+        return Err("q-family operators still open inside subscripts (`@h{{qw/a b/}}`)".into());
+    }
+    Ok(())
+}
+
+#[test]
+fn left_brace_opens_hash_subscript_requires_var_or_arrow() -> TestResult {
+    let mut lexer = PerlLexer::new("{");
+    if lexer.left_brace_opens_hash_subscript() {
+        return Err("bare `{{` is a block opener, not a hash subscript".into());
+    }
+    lexer.after_var_subscript = true;
+    if !lexer.left_brace_opens_hash_subscript() {
+        return Err("`$h{{` must open a hash subscript".into());
+    }
+    lexer.after_var_subscript = false;
+    lexer.after_arrow = true;
+    if !lexer.left_brace_opens_hash_subscript() {
+        return Err("`->{{` must open a hash subscript".into());
+    }
+    Ok(())
+}
+
+#[test]
 fn qw_parser_tokenizes_closed_pair_with_escaped_delimiter() -> TestResult {
     let input = r"my @words = qw(foo\) bar);";
     let mut lexer = PerlLexer::new(input);

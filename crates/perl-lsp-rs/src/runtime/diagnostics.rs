@@ -928,7 +928,8 @@ impl LspServer {
                 gen_at_snapshot,
                 "Skipping diagnostic publish (document instance replaced before sink boundary)"
             ),
-            PushDiagnosticsCommitOutcome::RejectedSupersededGeneration => tracing::debug!(
+            PushDiagnosticsCommitOutcome::RejectedSupersededGeneration
+            | PushDiagnosticsCommitOutcome::RejectedSupersededPhase => tracing::debug!(
                 uri = %normalized_uri,
                 gen_at_snapshot,
                 current_gen = generation.load(Ordering::SeqCst),
@@ -1174,7 +1175,8 @@ impl LspServer {
                 gen_at_snapshot,
                 "Skipping syntax-only diagnostic publish (document gone or replaced)"
             ),
-            PushDiagnosticsCommitOutcome::RejectedSupersededGeneration => tracing::debug!(
+            PushDiagnosticsCommitOutcome::RejectedSupersededGeneration
+            | PushDiagnosticsCommitOutcome::RejectedSupersededPhase => tracing::debug!(
                 uri = %normalized_uri,
                 gen_at_snapshot,
                 current_gen = generation.load(Ordering::SeqCst),
@@ -1319,13 +1321,14 @@ impl LspServer {
         // between the snapshot above and this send could publish stale-N
         // errors after N+1 acceptance, or onto a reopened instance of the
         // same URI.
-        let identity = PushDiagnosticIdentity::for_document(
+        let mut identity = PushDiagnosticIdentity::for_document(
             &normalized_uri,
             &generation,
             gen_at_snapshot,
             self.workspace_identity_generation.load(Ordering::SeqCst),
         )
         .with_folder_config_generation(config_generation_at_snapshot);
+        identity.parse_errors_only = true;
         let payload = json!({
             "uri": uri,
             "version": version,
@@ -1349,7 +1352,8 @@ impl LspServer {
                 "Skipping fast parse-error publish (document instance replaced before \
                  sink boundary)"
             ),
-            PushDiagnosticsCommitOutcome::RejectedSupersededGeneration => tracing::debug!(
+            PushDiagnosticsCommitOutcome::RejectedSupersededGeneration
+            | PushDiagnosticsCommitOutcome::RejectedSupersededPhase => tracing::debug!(
                 uri = %normalized_uri,
                 gen_at_snapshot,
                 current_gen = generation.load(Ordering::SeqCst),
@@ -1493,6 +1497,13 @@ impl LspServer {
         };
 
         if let Some((doc, generation, gen_at_snapshot, workspace_gen_at_snapshot)) = doc_snapshot {
+            // A rejected change leaves last-good text for recovery, not current
+            // editor-buffer truth. Do not let the provider's reparse fallback
+            // resurrect its diagnostics or mint a reusable result ID (#17752).
+            if doc.full_sync_required() {
+                return Ok(Some(Self::empty_full_diagnostic_report()));
+            }
+
             // Coarse workDoneProgress for the full pull-diagnostics path, which
             // may analyze many native rules over large trees. Initialized
             // here (after the document-existence check) so that immediately-

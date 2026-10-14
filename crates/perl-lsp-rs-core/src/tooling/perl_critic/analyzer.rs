@@ -124,7 +124,31 @@ impl CriticAnalyzer {
         let args_refs: Vec<&str> = args.iter().map(String::as_str).collect();
         let output =
             self.runtime.run_command("perlcritic", &args_refs, stdin).map_err(|e| e.message)?;
-        self.parse_output(&output.stdout, path_str)
+        let violations = self.parse_output(&output.stdout, path_str)?;
+        // `perlcritic` reserves exit status 2 for "policy violations found"
+        // and status 1 for its own failures (a `.perlcriticrc` that does not
+        // compile, internal errors), exiting 0 only on a clean run (Perl-
+        // Critic EXIT STATUS, metacpan). Only status 2 may carry an
+        // actionable violation list: accepting parsed stdout alongside any
+        // other non-zero status would let a perlcritic that died halfway
+        // through supply a partial violation set that the caller then caches
+        // as complete, and status 1 with empty stdout would report the file
+        // as clean - a false all-clear, strictly worse than no message
+        // (#16550).
+        if !output.success() && output.status_code != 2 {
+            let detail = output
+                .stderr_lossy()
+                .lines()
+                .map(str::trim)
+                .find(|line| !line.is_empty())
+                .unwrap_or("no diagnostic on stderr")
+                .to_string();
+            return Err(format!(
+                "perlcritic failed (exit {}); check .perlcriticrc: {detail}",
+                output.status_code
+            ));
+        }
+        Ok(violations)
     }
 
     /// Insert a new entry, evicting the LRU entry when the cache is full.
@@ -320,7 +344,7 @@ fn windows_1252_codepoint(byte: u8) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use perl_subprocess_runtime::mock::MockSubprocessRuntime;
+    use perl_subprocess_runtime::mock::{MockResponse, MockSubprocessRuntime};
 
     fn make_analyzer(max_cache_entries: usize) -> CriticAnalyzer {
         let config = CriticConfig { max_cache_entries, ..Default::default() };
@@ -334,6 +358,94 @@ mod tests {
         // which parses as zero violations — sufficient for cache behaviour tests.
         let runtime = Arc::new(MockSubprocessRuntime::new());
         CriticAnalyzer::new(config, runtime)
+    }
+
+    // ── perlcritic exit statuses: 0 clean, 2 violations, 1 tool failure (#16550) ──
+
+    /// An analyzer whose every `perlcritic` call returns `response`.
+    fn analyzer_returning(response: MockResponse) -> CriticAnalyzer {
+        let mut runtime = MockSubprocessRuntime::new();
+        runtime.set_default_response(response);
+        CriticAnalyzer::new(CriticConfig::default(), Arc::new(runtime))
+    }
+
+    /// Run the analyzer over a one-line buffer at a path that need not exist:
+    /// `doc_text` is piped to perlcritic via stdin, so no file is read.
+    fn analyze_with(
+        analyzer: &mut CriticAnalyzer,
+        path: &str,
+        text: &str,
+    ) -> Result<Vec<Violation>, String> {
+        analyzer.analyze_file_with_hash(Path::new(path), super::hash_content(text), Some(text))
+    }
+
+    #[test]
+    fn a_broken_profile_is_an_error_not_a_clean_report() {
+        // `.perlcriticrc` that does not compile: perlcritic's own error, so
+        // exit status 1 with empty stdout and the diagnosis on stderr. Before
+        // the fix this surfaced as `status: success, violationCount: 0` -
+        // telling the user their file is clean because the tool never ran.
+        let mut analyzer = analyzer_returning(MockResponse::failure(
+            b"Cannot load perlcritic config from .perlcriticrc at line 3\n".to_vec(),
+            1,
+        ));
+        let error = analyze_with(&mut analyzer, "t.pl", "1;\n")
+            .expect_err("a perlcritic that failed must not report a clean file");
+        assert!(
+            error.contains("perlcritic failed (exit 1)"),
+            "the message must carry the exit status, got: {error}"
+        );
+        assert!(
+            error.contains(".perlcriticrc"),
+            "the message must name the likely cause, got: {error}"
+        );
+        assert!(
+            error.contains("line 3"),
+            "the message must surface the tool's own diagnostic, got: {error}"
+        );
+    }
+
+    #[test]
+    fn violations_with_exit_status_2_are_still_violations() {
+        // The control that keeps the guard from over-firing: `perlcritic`
+        // reserves exit status 2 for "policy violations found". Treating that
+        // status as failure would convert every finding into an error.
+        let mut analyzer = analyzer_returning(MockResponse {
+            // `path:line:col:severity:policy:message` - the three consecutive
+            // numerics are what `parse_perlcritic_line` looks for.
+            stdout: b"t.pl:1:1:3:Subroutines::ReopenPackage:msg\n".to_vec(),
+            stderr: Vec::new(),
+            status_code: 2,
+        });
+        let violations = analyze_with(&mut analyzer, "t.pl", "1;\n")
+            .expect("violations reported with exit status 2 are not a tool failure");
+        assert_eq!(violations.len(), 1, "the violation must survive the guard");
+    }
+
+    #[test]
+    fn exit_status_1_is_a_tool_failure_even_when_stdout_parses() {
+        // `perlcritic` uses status 1 for its own errors. A run that died
+        // halfway can still leave parseable lines on stdout; accepting them
+        // would cache a partial violation set as complete.
+        let mut analyzer = analyzer_returning(MockResponse {
+            stdout: b"t.pl:1:1:3:Subroutines::ReopenPackage:msg\n".to_vec(),
+            stderr: b"Perltidy state file error\n".to_vec(),
+            status_code: 1,
+        });
+        let error = analyze_with(&mut analyzer, "t.pl", "1;\n")
+            .expect_err("exit status 1 must be reported as a tool failure");
+        assert!(
+            error.contains("perlcritic failed"),
+            "the error must identify the tool failure, got: {error}"
+        );
+    }
+
+    #[test]
+    fn a_clean_success_is_unaffected() {
+        let mut analyzer = analyzer_returning(MockResponse::success(b"t.pl: 1: ok\n".to_vec()));
+        let violations = analyze_with(&mut analyzer, "t.pl", "1;\n")
+            .expect("a successful run must not become an error");
+        assert!(violations.is_empty(), "expected no violations, got {violations:?}");
     }
 
     #[test]

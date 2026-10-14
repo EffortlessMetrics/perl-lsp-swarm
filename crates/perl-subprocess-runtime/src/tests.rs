@@ -564,7 +564,11 @@ fn test_run_command_does_not_execute_planted_cwd_binary() {
         let runtime = OsSubprocessRuntime::new();
         let result = runtime.run_command("pwned.bat", &[], None);
         assert!(result.is_err(), "child must fail closed: {result:?}");
-        println!("PERL_SUBPROCESS_CWD_RCE_CHILD_RAN");
+        // `writeln!` rather than `println!`: the marker must stay on stdout
+        // (the parent asserts the captured child stdout contains it), and the
+        // workspace clippy gate denies `clippy::print_stdout`.
+        use std::io::Write as _;
+        let _ = writeln!(std::io::stdout(), "PERL_SUBPROCESS_CWD_RCE_CHILD_RAN");
         return;
     }
 

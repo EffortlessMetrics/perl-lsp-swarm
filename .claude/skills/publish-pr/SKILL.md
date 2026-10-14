@@ -18,14 +18,25 @@ For an existing draft, inspect the named condition. Once complete, recheck the e
 
 Proportionality mirrors `review-pr`'s carve-out: a mechanical candidate — generated
 regeneration, lint-site collapse, allowlist row removal, or comment-only edits — may
-publish a reduced index of **Claim**, **Proof**, and **Non-goals**. The full index
+publish a reduced index of **Claim**, **Proof**, and **Non-goals**. Include **Hosted
+proof** in that reduced index when local toolchain proof was not run. The full index
 remains the default for anything crossing a production seam.
 
 The order is load-bearing: establish claim and authority before proof; trace the changed
 production path; record focused and affected proof with `pass` / `fail` / `not-run` /
-`NOT_PROVEN`; challenge a realistic wrong implementation with negative, stale,
-failure, recovery, or opposite-direction controls; simplify before publication; bound
-the claim and non-goals; then name risk, rollback, and review locations.
+`NOT_PROVEN`; fill **Hosted proof** with named hosted checks and the commit they
+actually evaluated whenever local toolchain proof was not run; challenge a realistic
+wrong implementation with negative, stale, failure, recovery, or opposite-direction
+controls; simplify before publication; bound the claim and non-goals; then name risk,
+rollback, and review locations.
+
+When this lane has no local Rust toolchain, check **Hosted-only** in **Hosted proof**
+and name the hosted checks that replace `cargo fmt` / Clippy / tests. Do not claim
+those hosted checks passed until current GitHub evidence exists. "Local Rust proof
+NOT RUN" is the hosted-only mark, not a substitute for naming the checks. Hosted-only
+is a PR-body and reviewer classification; it does not rewrite the ready-publication
+threshold above. Authors without a toolchain still use the named draft exception for
+remote-only proof until hosted evidence exists.
 
 ```markdown
 ## Claim
@@ -33,6 +44,7 @@ the claim and non-goals; then name risk, rollback, and review locations.
 ## Governing contract
 ## Changed production path
 ## Proof
+## Hosted proof
 ## Test hardening
 ## Simplification
 ## Deviations

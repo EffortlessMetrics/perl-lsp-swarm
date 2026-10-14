@@ -454,6 +454,33 @@ development_repository = "EffortlessMetrics/perl-lsp-swarm"
             ):
                 subject.validate_cross_config(path, CROSS_TARGET)
 
+    def test_cross_config_rejects_extra_and_reordered_passthrough(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / subject.CROSS_CONFIG_RELATIVE
+            path.parent.mkdir(parents=True)
+            cases = (
+                (
+                    list(subject.IDENTITY_ENV_KEYS) + ["CARGO_TERM_COLOR"],
+                    "extra=",
+                ),
+                (list(reversed(subject.IDENTITY_ENV_KEYS)), "order differs"),
+            )
+            for keys, pattern in cases:
+                with self.subTest(pattern=pattern):
+                    rendered = "\n".join(f'  "{key}",' for key in keys)
+                    path.write_text(
+                        f"[build.env]\npassthrough = [\n{rendered}\n]\n"
+                        f"[target.{CROSS_TARGET}]\n"
+                        f'image = "{subject.CROSS_IMAGE_REGISTRY}/'
+                        f'{CROSS_TARGET}@sha256:{"a" * 64}"\n',
+                        encoding="utf-8",
+                    )
+                    with self.assertRaisesRegex(
+                        subject.BuildIdentityError, pattern
+                    ):
+                        subject.validate_cross_config(path, CROSS_TARGET)
+
     def test_cross_runner_exports_cross_config_for_build_and_verify(
         self,
     ) -> None:
@@ -527,6 +554,56 @@ development_repository = "EffortlessMetrics/perl-lsp-swarm"
                 second = subject.toolchain_digest(root, "cross", CROSS_TARGET)
             self.assertNotEqual(first, second)
 
+    def test_cross_toolchain_digest_binds_image_when_config_bytes_are_unchanged(
+        self,
+    ) -> None:
+        """The pin must be hashed structurally, not only via Cross.toml bytes.
+
+        `test_cross_toolchain_digest_moves_with_pinned_image_digest` cannot
+        catch a missing `\\0cross_image\\0` append: the pin lives in the file,
+        so config bytes already move. This keeps those bytes identical.
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            write_cross_config(root)
+            first_image = (
+                f"{subject.CROSS_IMAGE_REGISTRY}/{CROSS_TARGET}"
+                f"@sha256:{'a' * 64}"
+            )
+            second_image = (
+                f"{subject.CROSS_IMAGE_REGISTRY}/{CROSS_TARGET}"
+                f"@sha256:{'b' * 64}"
+            )
+            with mock.patch.object(
+                subject, "run", side_effect=cross_runner_outputs(2)
+            ):
+                with mock.patch.object(
+                    subject,
+                    "validate_cross_config",
+                    side_effect=[first_image, second_image],
+                ):
+                    first = subject.toolchain_digest(
+                        root, "cross", CROSS_TARGET
+                    )
+                    second = subject.toolchain_digest(
+                        root, "cross", CROSS_TARGET
+                    )
+            self.assertNotEqual(first, second)
+
+    def test_cross_toolchain_digest_is_stable_for_unchanged_pin_and_config(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            write_cross_config(root)
+            with mock.patch.object(
+                subject, "run", side_effect=cross_runner_outputs(2)
+            ):
+                first = subject.toolchain_digest(root, "cross", CROSS_TARGET)
+                second = subject.toolchain_digest(root, "cross", CROSS_TARGET)
+            self.assertEqual(first, second)
+            self.assertTrue(subject.HEX64.fullmatch(first))
+
     def test_cross_toolchain_digest_separates_targets_sharing_one_config(
         self,
     ) -> None:
@@ -591,6 +668,23 @@ development_repository = "EffortlessMetrics/perl-lsp-swarm"
             ),
             [],
         )
+
+    def test_cross_config_allowance_is_exact_not_a_prefix(self) -> None:
+        """CROSS_CONFIG is the one allowed name; lookalikes must still fail."""
+        self.assertEqual(
+            subject.cross_ambient_overrides(
+                CROSS_TARGET, {"CROSS_CONFIG": "/x/Cross.toml"}
+            ),
+            [],
+        )
+        for name in ("CROSS_CONFIGURATION", "CROSS_CONFIG_EXTRA"):
+            with self.subTest(variable=name):
+                self.assertEqual(
+                    subject.cross_ambient_overrides(
+                        CROSS_TARGET, {name: "x"}
+                    ),
+                    [name],
+                )
 
     def test_every_cross_env_read_is_covered(self) -> None:
         """Derived from cross 0.2.5's complete `env::var` surface.
@@ -773,6 +867,73 @@ development_repository = "EffortlessMetrics/perl-lsp-swarm"
                 f"ghcr.io/cross-rs/{OTHER_CROSS_TARGET}@sha256:{'a' * 64}",
                 CROSS_TARGET,
             )
+
+    def test_cross_config_rejects_pin_format_edge_cases(self) -> None:
+        """Canonical immutable pin only: lowercase digest, no tag, exact repo."""
+        digest = "a" * 64
+        pinned = (
+            f"{subject.CROSS_IMAGE_REGISTRY}/{CROSS_TARGET}@sha256:{digest}"
+        )
+        self.assertEqual(
+            subject.validate_cross_image(pinned, CROSS_TARGET), pinned
+        )
+        cases = (
+            f"{subject.CROSS_IMAGE_REGISTRY}/{CROSS_TARGET}@sha256:{'A' * 64}",
+            f"{subject.CROSS_IMAGE_REGISTRY}/{CROSS_TARGET}@SHA256:{digest}",
+            f"{subject.CROSS_IMAGE_REGISTRY}/{CROSS_TARGET}@sha256:{'a' * 63}",
+            f"{subject.CROSS_IMAGE_REGISTRY}/{CROSS_TARGET}@sha256:{'a' * 65}",
+            f"{subject.CROSS_IMAGE_REGISTRY}/{CROSS_TARGET}:main",
+            (
+                f"{subject.CROSS_IMAGE_REGISTRY}/{CROSS_TARGET}"
+                f":main@sha256:{digest}"
+            ),
+            f" {pinned}",
+            f"{pinned} ",
+            "",
+            f"sha256:{digest}",
+        )
+        for image in cases:
+            with self.subTest(image=image):
+                with self.assertRaisesRegex(
+                    subject.BuildIdentityError, "immutable"
+                ):
+                    subject.validate_cross_image(image, CROSS_TARGET)
+        with self.assertRaisesRegex(
+            subject.BuildIdentityError, "another target's image repository"
+        ):
+            subject.validate_cross_image(
+                f"docker.io/cross-rs/{CROSS_TARGET}@sha256:{digest}",
+                CROSS_TARGET,
+            )
+
+    def test_cross_config_rejects_non_string_image(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / subject.CROSS_CONFIG_RELATIVE
+            path.parent.mkdir(parents=True)
+            rendered = "".join(
+                f'  "{key}",\n' for key in subject.IDENTITY_ENV_KEYS
+            )
+            path.write_text(
+                f"[build.env]\npassthrough = [\n{rendered}]\n"
+                f"[target.{CROSS_TARGET}]\nimage = 1\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                subject.BuildIdentityError, "must be a string"
+            ):
+                subject.validate_cross_config(path, CROSS_TARGET)
+
+    def test_cross_config_rejects_invalid_toml(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / subject.CROSS_CONFIG_RELATIVE
+            path.parent.mkdir(parents=True)
+            path.write_text("[build\n", encoding="utf-8")
+            with self.assertRaisesRegex(
+                subject.BuildIdentityError, "is invalid"
+            ):
+                subject.validate_cross_config(path, CROSS_TARGET)
 
     def test_reviewed_cross_config_pins_every_release_cross_target(
         self,
