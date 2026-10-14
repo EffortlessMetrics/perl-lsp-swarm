@@ -2,12 +2,12 @@
     "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
     "name": "Perl",
     "scopeName": "source.perl",
-        "patterns": [
-            {
-                "include": "#comments"
-            },
-            {
-                "include": "#pod"
+    "patterns": [
+        {
+            "include": "#comments"
+        },
+        {
+            "include": "#pod"
         },
         {
             "include": "#strings"
@@ -30,14 +30,14 @@
         {
             "include": "#operators"
         },
-            {
-                "include": "#functions"
-            },
-            {
-                "include": "#swig"
-            }
-        ],
-        "repository": {
+        {
+            "include": "#functions"
+        },
+        {
+            "include": "#swig"
+        }
+    ],
+    "repository": {
         "comments": {
             "patterns": [
                 {
@@ -322,19 +322,91 @@
                 },
                 {
                     "name": "string.regexp.replace.perl",
-                    "begin": "\\b(s|tr|y)\\s*([^\\s\\w])",
-                    "end": "\\2[cgimosxpodualner]*",
-                    "captures": {
+                    "begin": "\\b(s|tr|y)(?=\\s*[\\[{(<])",
+                    "end": "(?=\\S)",
+                    "applyEndPatternLast": true,
+                    "beginCaptures": {
                         "1": {
                             "name": "keyword.other.perl"
                         }
                     },
                     "patterns": [
                         {
+                            "begin": "\\G\\s*\\{",
+                            "end": "(?=\\})",
+                            "patterns": [
+                                {
+                                    "include": "#replacement-braces"
+                                }
+                            ]
+                        },
+                        {
+                            "begin": "\\G\\s*\\[",
+                            "end": "(?=\\])",
+                            "patterns": [
+                                {
+                                    "include": "#replacement-brackets"
+                                }
+                            ]
+                        },
+                        {
+                            "begin": "\\G\\s*\\(",
+                            "end": "(?=\\))",
+                            "patterns": [
+                                {
+                                    "include": "#replacement-parens"
+                                }
+                            ]
+                        },
+                        {
+                            "begin": "\\G\\s*<",
+                            "end": "(?=>)",
+                            "patterns": [
+                                {
+                                    "include": "#replacement-angles"
+                                }
+                            ]
+                        },
+                        {
+                            "begin": "[}\\])>]\\s*",
+                            "end": "(?=\\S)",
+                            "applyEndPatternLast": true,
+                            "patterns": [
+                                {
+                                    "include": "#replacement-half"
+                                }
+                            ]
+                        }
+                    ],
+                    "comment": "Paired pattern closes enter an anchored replacement half. Containers pop at the next non-space only after their child finishes; this permits whitespace/newlines and different replacement delimiters without swallowing following code."
+                },
+                {
+                    "name": "string.regexp.replace.perl",
+                    "begin": "\\b(s|tr|y)(?=\\s*([^\\s\\w\\[\\]{}()<>]))",
+                    "end": "\\2[cgimosxpodualner]*",
+                    "applyEndPatternLast": true,
+                    "beginCaptures": {
+                        "1": {
+                            "name": "keyword.other.perl"
+                        }
+                    },
+                    "patterns": [
+                        {
+                            "begin": "\\G\\s*([^\\s\\w])",
+                            "end": "\\1",
+                            "patterns": [
+                                {
+                                    "name": "constant.character.escape.perl",
+                                    "match": "\\\\."
+                                }
+                            ]
+                        },
+                        {
                             "name": "constant.character.escape.perl",
                             "match": "\\\\."
                         }
-                    ]
+                    ],
+                    "comment": "The anchored child consumes the pattern delimiter pair; the outer end then consumes the replacement delimiter and flags. End patterns run last so empty halves and escaped delimiters stay inside the literal."
                 }
             ]
         },
@@ -363,6 +435,124 @@
                     "begin": "^\\s*%(?:perlcode|perl5)\\b\\s*%\\{\\s*$",
                     "end": "^\\s*%\\}\\s*$",
                     "contentName": "source.perl"
+                }
+            ]
+        },
+        "replacement-braces": {
+            "patterns": [
+                {
+                    "name": "constant.character.escape.perl",
+                    "match": "\\\\."
+                },
+                {
+                    "begin": "\\{",
+                    "end": "\\}",
+                    "patterns": [
+                        {
+                            "include": "#replacement-braces"
+                        }
+                    ]
+                }
+            ]
+        },
+        "replacement-brackets": {
+            "patterns": [
+                {
+                    "name": "constant.character.escape.perl",
+                    "match": "\\\\."
+                },
+                {
+                    "begin": "\\[",
+                    "end": "\\]",
+                    "patterns": [
+                        {
+                            "include": "#replacement-brackets"
+                        }
+                    ]
+                }
+            ]
+        },
+        "replacement-parens": {
+            "patterns": [
+                {
+                    "name": "constant.character.escape.perl",
+                    "match": "\\\\."
+                },
+                {
+                    "begin": "\\(",
+                    "end": "\\)",
+                    "patterns": [
+                        {
+                            "include": "#replacement-parens"
+                        }
+                    ]
+                }
+            ]
+        },
+        "replacement-angles": {
+            "patterns": [
+                {
+                    "name": "constant.character.escape.perl",
+                    "match": "\\\\."
+                },
+                {
+                    "begin": "<",
+                    "end": ">",
+                    "patterns": [
+                        {
+                            "include": "#replacement-angles"
+                        }
+                    ]
+                }
+            ]
+        },
+        "replacement-half": {
+            "patterns": [
+                {
+                    "begin": "\\G\\s*\\{",
+                    "end": "\\}[cgimosxpodualner]*",
+                    "patterns": [
+                        {
+                            "include": "#replacement-braces"
+                        }
+                    ]
+                },
+                {
+                    "begin": "\\G\\s*\\[",
+                    "end": "\\][cgimosxpodualner]*",
+                    "patterns": [
+                        {
+                            "include": "#replacement-brackets"
+                        }
+                    ]
+                },
+                {
+                    "begin": "\\G\\s*\\(",
+                    "end": "\\)[cgimosxpodualner]*",
+                    "patterns": [
+                        {
+                            "include": "#replacement-parens"
+                        }
+                    ]
+                },
+                {
+                    "begin": "\\G\\s*<",
+                    "end": ">[cgimosxpodualner]*",
+                    "patterns": [
+                        {
+                            "include": "#replacement-angles"
+                        }
+                    ]
+                },
+                {
+                    "begin": "\\G\\s*([^\\s\\w\\[\\]{}()<>])",
+                    "end": "\\1[cgimosxpodualner]*",
+                    "patterns": [
+                        {
+                            "name": "constant.character.escape.perl",
+                            "match": "\\\\."
+                        }
+                    ]
                 }
             ]
         }
