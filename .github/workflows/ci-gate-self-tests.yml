@@ -20,6 +20,7 @@ on:
       - 'scripts/cargo_cohort.py'
       - 'scripts/tests/test_cargo_cohort.py'
       - 'scripts/tests/test_cargo_cohort_source_plan.py'
+      - 'scripts/tests/test_storage_self_test_workflow.py'
       - 'scripts/tests/test_routed_test_cohorts.py'
       - 'scripts/tests/fixtures/routed-resolver-2/**'
       - 'xtask/src/bin/routed-test-cohorts.rs'
@@ -647,26 +648,41 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Checkout
+        id: storage_checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      # Independent portable controls must not wait for a Rust install or
+      # disappear after another suite fails. Cancellation still stops work.
+      - name: Check storage self-test ordering and failure propagation
+        if: ${{ !cancelled() && steps.storage_checkout.outcome == 'success' }}
+        run: python3 -m unittest discover -s scripts/tests -p 'test_storage_self_test_workflow.py' -v
+      - name: Run both admitted storage suites without Rust builds
+        if: ${{ !cancelled() && steps.storage_checkout.outcome == 'success' }}
+        run: python3 -m unittest discover -s scripts/tests -p 'test_cargo_admitted*.py' -v
+      - name: Check fresh source traversal plans
+        if: ${{ !cancelled() && steps.storage_checkout.outcome == 'success' }}
+        run: python3 -m unittest discover -s scripts/tests -p 'test_cargo_cohort_source_plan.py' -v
+      - name: Check cohort ownership and exact reclamation controls
+        if: ${{ !cancelled() && steps.storage_checkout.outcome == 'success' }}
+        run: python3 -m unittest discover -s scripts/tests -p 'test_cargo_cohort.py' -v
+      - name: Check staged routed producer source and runtime controls
+        if: ${{ !cancelled() && steps.storage_checkout.outcome == 'success' }}
+        run: python3 -m unittest discover -s scripts/tests -p 'test_routed_test_cohorts.py' -v
+      - name: Check retained target measurement failure and threshold controls
+        if: ${{ !cancelled() && steps.storage_checkout.outcome == 'success' }}
+        run: python3 -m unittest discover -s scripts/tests -p 'test_storage_doctor.py' -v
+      - name: Check sampled allocation, hardlinks and interrupted measurement
+        if: ${{ !cancelled() && steps.storage_checkout.outcome == 'success' }}
+        run: python3 -m unittest discover -s scripts/tests -p 'test_measure_cargo_storage.py' -v
+      - name: Check ordinary and cohort inventory report discriminators
+        if: ${{ !cancelled() && steps.storage_checkout.outcome == 'success' }}
+        run: python3 -m unittest discover -s scripts/tests -p 'test_routed_storage_qualification_report.py' -v
+      # Rust work retains the default success() prerequisite. Any failed
+      # portable control keeps the job red and avoids unnecessary builds.
       - name: Install pinned Rust toolchain for Cargo runtime fixture
         uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # stable (master)
         with:
           toolchain: 1.95.0
           components: clippy
-      - name: Run both admitted storage suites without Rust builds
-        run: python3 -m unittest discover -s scripts/tests -p 'test_cargo_admitted*.py' -v
-      - name: Check fresh source traversal plans
-        run: python3 -m unittest discover -s scripts/tests -p 'test_cargo_cohort_source_plan.py' -v
-      - name: Check cohort ownership and exact reclamation controls
-        run: python3 -m unittest discover -s scripts/tests -p 'test_cargo_cohort.py' -v
-      - name: Check staged routed producer source and runtime controls
-        run: python3 -m unittest discover -s scripts/tests -p 'test_routed_test_cohorts.py' -v
-      - name: Check retained target measurement failure and threshold controls
-        run: python3 -m unittest discover -s scripts/tests -p 'test_storage_doctor.py' -v
-      - name: Check sampled allocation, hardlinks and interrupted measurement
-        run: python3 -m unittest discover -s scripts/tests -p 'test_measure_cargo_storage.py' -v
-      - name: Check ordinary and cohort inventory report discriminators
-        run: python3 -m unittest discover -s scripts/tests -p 'test_routed_storage_qualification_report.py' -v
       - name: Exercise Cargo binary runtime environments through admitted owner
         shell: bash
         run: |
