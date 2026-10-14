@@ -1,0 +1,168 @@
+{
+  "schema_version": "rust_small_proof.v1",
+  "subject": {
+    "git_sha": "c626bb1e5f0000000000000000000000000000ab",
+    "worktree_dirty": false,
+    "rustc_version": "rustc 1.90.0 (deadbeef 2026-01-01)",
+    "cargo_version": "cargo 1.90.0 (deadbeef 2026-01-01)",
+    "scorecard_profile": "agent",
+    "scorecard_features": "workspace",
+    "locked": true
+  },
+  "steps": [
+    {
+      "name": "fetch locked inputs",
+      "argv": [
+        "cargo",
+        "fetch",
+        "--locked"
+      ],
+      "outcome": "ok",
+      "exit_code": 0
+    },
+    {
+      "name": "workspace compile check",
+      "argv": [
+        "cargo",
+        "check",
+        "--workspace",
+        "--locked"
+      ],
+      "outcome": "ok",
+      "exit_code": 0
+    },
+    {
+      "name": "parser semantic smoke",
+      "argv": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "perl-parser",
+        "--test",
+        "semantic_smoke_tests",
+        "--",
+        "--nocapture"
+      ],
+      "outcome": "ok",
+      "exit_code": 0
+    },
+    {
+      "name": "parser accuracy e2e",
+      "argv": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "perl-parser",
+        "--test",
+        "parser_accuracy_e2e",
+        "--",
+        "--nocapture"
+      ],
+      "outcome": "ok",
+      "exit_code": 0
+    },
+    {
+      "name": "parser accuracy NodeKind vocabulary",
+      "argv": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "perl-parser",
+        "--test",
+        "parser_accuracy_nodekind_vocabulary",
+        "--",
+        "--nocapture"
+      ],
+      "outcome": "ok",
+      "exit_code": 0
+    },
+    {
+      "name": "lsp smoke",
+      "argv": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "perl-lsp-rs",
+        "--test",
+        "lsp_smoke",
+        "--",
+        "--test-threads=1",
+        "--nocapture"
+      ],
+      "outcome": "ok",
+      "exit_code": 0
+    },
+    {
+      "name": "postfix hash-slice recovery",
+      "argv": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "perl-parser-core",
+        "--test",
+        "postfix_hash_slice_tests",
+        "--",
+        "--nocapture"
+      ],
+      "outcome": "ok",
+      "exit_code": 0
+    },
+    {
+      "name": "references scorecard census",
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "perl-lsp-rs",
+        "--lib",
+        "--features",
+        "workspace",
+        "--profile",
+        "agent",
+        "--locked",
+        "references_tier_scorecard_tests",
+        "--",
+        "--list"
+      ],
+      "outcome": "ok",
+      "exit_code": 0
+    },
+    {
+      "name": "references scorecard replay",
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "perl-lsp-rs",
+        "--lib",
+        "--features",
+        "workspace",
+        "--profile",
+        "agent",
+        "--locked",
+        "references_tier_scorecard_tests",
+        "--",
+        "--test-threads=1"
+      ],
+      "outcome": "ok",
+      "exit_code": 0
+    },
+    {
+      "name": "diff hygiene",
+      "argv": [
+        "git",
+        "diff",
+        "--check"
+      ],
+      "outcome": "ok",
+      "exit_code": 0
+    }
+  ],
+  "scorecard_census": 42,
+  "result": "success"
+}
