@@ -1004,6 +1004,39 @@ mod tests {
         assert!(typed.outcome.change.rendered_bytes_changed > 0);
     }
 
+    /// Regression control for #17300: an admitted bare-print document needs
+    /// no edits or unsupported-syntax warning. Unsupported layouts retain
+    /// their separate refusal boundary.
+    #[test]
+    fn parse_clean_unchanged_source_is_already_formatted() {
+        let source = "print $x + $y;\n";
+        let result = NativeFormatter::new().format_document_typed(
+            source,
+            &FormatConfig::default(),
+            &FormatContext::default(),
+        );
+        assert_eq!(result.outcome.disposition, FormatDisposition::NoChange);
+        assert_eq!(result.outcome.reason, FormatReasonCode::AlreadyFormatted);
+        assert!(result.result.edits.is_empty());
+        assert!(!result.result.changed);
+    }
+
+    /// An admitted bare-print range that needs no edits is a successful no-op.
+    #[test]
+    fn parse_clean_unchanged_range_is_already_formatted() {
+        let source = "my $value = 1;\nprint $x + $y;\n";
+        let range = TextRange::new(TextPosition::new(1, 0), TextPosition::new(2, 0));
+        let result = NativeFormatter::new().format_range_typed(
+            source,
+            range,
+            &FormatConfig::default(),
+            &FormatContext::default(),
+        );
+        assert_eq!(result.outcome.disposition, FormatDisposition::NoChange);
+        assert_eq!(result.outcome.reason, FormatReasonCode::AlreadyFormatted);
+        assert!(result.result.edits.is_empty());
+    }
+
     #[test]
     fn unsupported_unchanged_source_is_refused() {
         let result = NativeFormatter::new().format_document_typed(
