@@ -89,7 +89,14 @@ fn uppercase_declared_call_with_reference_arg_parses() {
 #[test]
 fn operandless_backslash_is_not_a_call_argument() {
     // Perl rejects each sibling: nesting references does not supply an operand.
-    for source in [r"sub foo { } foo \;", r"sub foo { } foo \\;", r"sub foo { } foo \\\;"] {
+    for source in [
+        r"sub foo { } foo \;",
+        r"sub foo { } foo \\;",
+        r"sub foo { } foo \\\;",
+        r"sub foo { } foo \\",
+        r"sub foo { } foo(\\);",
+        r"my $ref = \;",
+    ] {
         let mut parser = Parser::new(source);
         let ast = must_with(parser.parse(), format!("parse failed for {source:?}"));
         assert!(
