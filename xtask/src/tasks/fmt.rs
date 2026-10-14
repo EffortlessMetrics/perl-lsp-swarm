@@ -53,17 +53,29 @@ pub(crate) struct WorkspacePackage {
     pub(crate) edition: String,
 }
 
+/// First line of every drift report [`format_failure_report`] builds in
+/// `--check` mode. Shared with `ci_doctor` so the doctor can classify a
+/// captured `fmt --check` error as real drift versus an instrument failure
+/// without re-parsing English prose.
+pub(crate) const CHECK_DRIFT_REPORT_PREFIX: &str = "cargo fmt --check found unformatted files in";
+
 /// One crate's failure record collected during the per-crate iteration.
 ///
 /// `unformatted_files` is populated in `--check` mode by parsing rustfmt's
 /// `Diff in <path>` lines from stdout; in apply mode it stays empty (cargo
 /// fmt without `--check` is expected to mutate files and exit zero unless
 /// rustfmt itself errored, which we still report as a per-crate failure).
+///
+/// `rustfmt_error` records a check-mode batch that exited non-zero *without*
+/// naming a single file: rustfmt itself failed (parse error, unreadable
+/// config), which is an instrument failure and must never be reported as
+/// formatting drift — see [`format_failure_report`].
 #[derive(Debug)]
 struct CrateFailure {
     manifest_path: String,
     unformatted_files: Vec<String>,
     spawn_error: Option<String>,
+    rustfmt_error: bool,
 }
 
 /// Classification of one staged Rust file for `--staged` formatting.
@@ -479,10 +491,25 @@ fn extract_diff_path(rest: &str) -> &str {
 /// In `--check` mode the report names each unformatted file under the crate
 /// that owns it, replacing the historical generic "Failed to format
 /// Cargo.toml" message that masked per-PR drift as a master cascade.
+///
+/// The header only claims "unformatted files" when at least one file is
+/// actually named. A crate whose batches all exited non-zero without diff
+/// output is a rustfmt instrument failure (parse error, unreadable config);
+/// labelling it drift — the historical behavior — sent operators to
+/// `cargo xtask fmt`, which fails identically (#17166).
 fn format_failure_report(check: bool, failures: &[CrateFailure]) -> String {
+    let named_files: usize = failures.iter().map(|failure| failure.unformatted_files.len()).sum();
     let mut report = String::new();
     let header = if check {
-        format!("cargo fmt --check found unformatted files in {} crate(s):", failures.len())
+        if named_files > 0 {
+            format!("{CHECK_DRIFT_REPORT_PREFIX} {} crate(s):", failures.len())
+        } else {
+            format!(
+                "cargo fmt --check failed without naming unformatted files in {} crate(s) — \
+                 this is a formatter failure, not formatting drift:",
+                failures.len()
+            )
+        }
     } else {
         format!("cargo fmt failed in {} crate(s):", failures.len())
     };
@@ -494,6 +521,12 @@ fn format_failure_report(check: bool, failures: &[CrateFailure]) -> String {
             report.push_str(" (spawn failed: ");
             report.push_str(spawn_error);
             report.push(')');
+        }
+        if failure.rustfmt_error {
+            report.push_str(
+                "\n      (rustfmt exited non-zero without naming files — see its stderr \
+                 above; this is a formatter failure, not formatting drift)",
+            );
         }
         for file in &failure.unformatted_files {
             report.push_str("\n      ");
@@ -608,6 +641,7 @@ fn execute_package_plan_with(
     let mut spawn_errors: Vec<String> = Vec::new();
     let mut apply_failed = false;
     let mut check_failed = false;
+    let mut rustfmt_error = false;
 
     for batch in &plan.batches {
         let outcome = run_batch(batch);
@@ -622,7 +656,15 @@ fn execute_package_plan_with(
             if !outcome.stdout.is_empty() {
                 print!("{}", String::from_utf8_lossy(&outcome.stdout));
             }
-            for file in parse_unformatted_files(&outcome.stdout) {
+            let named: Vec<String> = parse_unformatted_files(&outcome.stdout);
+            if named.is_empty() {
+                // Non-zero exit without a single `Diff in` line: rustfmt
+                // itself failed (parse error, bad config). Its stderr was
+                // inherited above; recording it here keeps the aggregate
+                // report from labelling the crate as unformatted drift.
+                rustfmt_error = true;
+            }
+            for file in named {
                 if !unformatted_files.iter().any(|seen| seen == &file) {
                     unformatted_files.push(file);
                 }
@@ -641,6 +683,7 @@ fn execute_package_plan_with(
         manifest_path: plan.manifest_path.clone(),
         unformatted_files,
         spawn_error: if spawn_errors.is_empty() { None } else { Some(spawn_errors.join("; ")) },
+        rustfmt_error,
     })
 }
 
@@ -1078,13 +1121,14 @@ fn dedup_preserve_order(paths: Vec<String>) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        BatchRunResult, CargoMetadata, CargoPackage, CargoTarget, CrateFailure,
-        FORMATTER_SPAWN_BUDGET, PackageFormatterPlan, StagedFormatAction, WorkspacePackage,
-        classify_staged_paths, collect_package_format_roots, collect_workspace_manifest_paths,
-        execute_package_plan_with, format_failure_report, is_rewritable_staged_file,
-        parse_unformatted_files, plan_workspace_format,
+        BatchRunResult, CHECK_DRIFT_REPORT_PREFIX, CargoMetadata, CargoPackage, CargoTarget,
+        CrateFailure, FORMATTER_SPAWN_BUDGET, PackageFormatterPlan, StagedFormatAction,
+        WorkspacePackage, classify_staged_paths, collect_package_format_roots,
+        collect_workspace_manifest_paths, execute_package_plan_with, format_failure_report,
+        is_rewritable_staged_file, parse_unformatted_files, plan_workspace_format,
     };
     use color_eyre::eyre::Result;
+    use perl_tdd_support::{must_err_with, must_some_with, must_with};
     use std::collections::HashSet;
     use std::fs;
     use std::process::{Command, Stdio};
@@ -1261,7 +1305,7 @@ mod tests {
     fn well_formed_index_records_parse_to_their_modes() {
         let mut input = record("100644 abc123 0", "src/lib.rs");
         input.extend(record("120000 def456 0", "src/link.rs"));
-        let modes = super::parse_staged_index_modes(&input).expect("well-formed input parses");
+        let modes = must_with(super::parse_staged_index_modes(&input), "well-formed input parses");
         assert_eq!(modes.get(Path::new("src/lib.rs")).map(String::as_str), Some("100644"));
         assert_eq!(modes.get(Path::new("src/link.rs")).map(String::as_str), Some("120000"));
     }
@@ -1271,14 +1315,14 @@ mod tests {
         // Dropping it would leave the path with no mode, which the predicate
         // reads as permission — the exact bypass this refusal closes.
         let input = b"100644 abc123 0 src/lib.rs\0".to_vec();
-        let error = super::parse_staged_index_modes(&input).expect_err("must refuse");
+        let error = must_err_with(super::parse_staged_index_modes(&input), "must refuse");
         assert!(format!("{error}").contains("no tab separator"), "unexpected: {error}");
     }
 
     #[test]
     fn a_record_with_no_mode_field_refuses_rather_than_dropping_the_path() {
         let input = record("", "src/lib.rs");
-        let error = super::parse_staged_index_modes(&input).expect_err("must refuse");
+        let error = must_err_with(super::parse_staged_index_modes(&input), "must refuse");
         assert!(format!("{error}").contains("no mode field"), "unexpected: {error}");
     }
 
@@ -1294,7 +1338,8 @@ mod tests {
 
     #[test]
     fn empty_index_output_is_an_empty_map_not_an_error() {
-        let modes = super::parse_staged_index_modes(b"").expect("empty input is not an anomaly");
+        let modes =
+            must_with(super::parse_staged_index_modes(b""), "empty input is not an anomaly");
         assert!(modes.is_empty());
     }
 
@@ -1312,8 +1357,10 @@ mod tests {
         // gate-clean files: `rustfmt --check` rewrote 29, `rustfmt --edition
         // 2024 --check` rewrote 0.
         let packages = vec![package("legacy-crate", "crates/legacy", "2021")];
-        let owner = super::owning_package(Path::new("crates/legacy/src/lib.rs"), &packages)
-            .expect("legacy path must resolve to its package");
+        let owner = must_some_with(
+            super::owning_package(Path::new("crates/legacy/src/lib.rs"), &packages),
+            "legacy path must resolve to its package",
+        );
         assert_eq!(owner.edition, "2021", "each file must be formatted at its own package edition");
     }
 
@@ -1438,8 +1485,8 @@ mod tests {
             Err(err) => format!("{err}"),
         };
         // The available list must be sorted — both packages appear in alphabetical order.
-        let perl_pos = message.find("perl-parser").expect("perl-parser in error");
-        let xtask_pos = message.find("xtask").expect("xtask in error");
+        let perl_pos = must_some_with(message.find("perl-parser"), "perl-parser in error");
+        let xtask_pos = must_some_with(message.find("xtask"), "xtask in error");
         assert!(perl_pos < xtask_pos, "available packages must be listed in sorted order");
         Ok(())
     }
@@ -1503,6 +1550,7 @@ mod tests {
                 manifest_path: "crates/foo/Cargo.toml".to_string(),
                 unformatted_files: vec!["crates/foo/src/lib.rs".to_string()],
                 spawn_error: None,
+                rustfmt_error: false,
             },
             CrateFailure {
                 manifest_path: "crates/bar/Cargo.toml".to_string(),
@@ -1511,6 +1559,7 @@ mod tests {
                     "crates/bar/src/util.rs".to_string(),
                 ],
                 spawn_error: None,
+                rustfmt_error: false,
             },
         ];
         let report = format_failure_report(true, &failures);
@@ -1532,11 +1581,47 @@ mod tests {
             manifest_path: "crates/foo/Cargo.toml".to_string(),
             unformatted_files: Vec::new(),
             spawn_error: Some("rustfmt not found".to_string()),
+            rustfmt_error: false,
         }];
         let report = format_failure_report(false, &failures);
         assert!(report.contains("cargo fmt failed"));
         assert!(report.contains("crates/foo/Cargo.toml"));
         assert!(report.contains("rustfmt not found"));
+    }
+
+    #[test]
+    fn format_failure_report_does_not_claim_unformatted_files_when_none_are_named() {
+        // A rustfmt instrument failure (non-zero exit, no `Diff in` output)
+        // must not be rendered as drift — the historical header asserted
+        // "found unformatted files" while naming zero files (#17166).
+        let failures = vec![CrateFailure {
+            manifest_path: "crates/foo/Cargo.toml".to_string(),
+            unformatted_files: Vec::new(),
+            spawn_error: None,
+            rustfmt_error: true,
+        }];
+        let report = format_failure_report(true, &failures);
+        assert!(
+            !report.contains(CHECK_DRIFT_REPORT_PREFIX),
+            "must not claim unformatted files: {report}"
+        );
+        assert!(report.contains("failed without naming unformatted files"), "{report}");
+        assert!(report.contains("not formatting drift"), "{report}");
+        assert!(report.contains("crates/foo/Cargo.toml"), "{report}");
+    }
+
+    #[test]
+    fn check_drift_report_prefix_matches_the_drift_header() {
+        // ci_doctor classifies a captured fmt error by this prefix; the two
+        // must not drift apart silently.
+        let failures = vec![CrateFailure {
+            manifest_path: "crates/foo/Cargo.toml".to_string(),
+            unformatted_files: vec!["crates/foo/src/lib.rs".to_string()],
+            spawn_error: None,
+            rustfmt_error: false,
+        }];
+        let report = format_failure_report(true, &failures);
+        assert!(report.starts_with(CHECK_DRIFT_REPORT_PREFIX), "{report}");
     }
 
     fn rust_target(src_path: &str, edition: &str) -> CargoTarget {
@@ -1614,9 +1699,10 @@ mod tests {
         let huge = format!("{}.rs", "x".repeat(FORMATTER_SPAWN_BUDGET));
         let mut metadata = sample_metadata();
         metadata.packages[0].targets = vec![rust_target(&huge, "2024")];
-        let error =
-            plan_workspace_format(&metadata, None, &plan_args(true, FORMATTER_SPAWN_BUDGET))
-                .expect_err("command-size uncertainty must not be a successful plan");
+        let error = must_err_with(
+            plan_workspace_format(&metadata, None, &plan_args(true, FORMATTER_SPAWN_BUDGET)),
+            "command-size uncertainty must not be a successful plan",
+        );
         let rendered = format!("{error}");
         assert!(rendered.contains("process-spawn limit"), "{rendered}");
         assert!(rendered.contains("not formatting drift"), "{rendered}");
@@ -1652,11 +1738,13 @@ mod tests {
                 batch("2024", &["last.rs"]),
             ],
         };
-        let failure = execute_package_plan_with(&plan, true, |current| {
-            let name = current.files[0].display().to_string();
-            if name == "first.rs" { clean() } else { drift(&name) }
-        })
-        .expect("aggregate must fail");
+        let failure = must_some_with(
+            execute_package_plan_with(&plan, true, |current| {
+                let name = current.files[0].display().to_string();
+                if name == "first.rs" { clean() } else { drift(&name) }
+            }),
+            "aggregate must fail",
+        );
         assert!(failure.spawn_error.is_none());
         assert_eq!(failure.unformatted_files, vec!["middle.rs".to_string(), "last.rs".to_string()]);
     }
@@ -1667,16 +1755,63 @@ mod tests {
             manifest_path: "crates/pkg/Cargo.toml".to_string(),
             batches: vec![batch("2024", &["first.rs"]), batch("2024", &["last.rs"])],
         };
-        let failure = execute_package_plan_with(&plan, true, |current| {
-            if current.files[0].display().to_string() == "last.rs" {
-                BatchRunResult { success: false, stdout: Vec::new(), spawn_error: None }
-            } else {
-                clean()
-            }
-        })
-        .expect("a child non-zero without Diff lines must still fail the crate");
+        let failure = must_some_with(
+            execute_package_plan_with(&plan, true, |current| {
+                if current.files[0].display().to_string() == "last.rs" {
+                    BatchRunResult { success: false, stdout: Vec::new(), spawn_error: None }
+                } else {
+                    clean()
+                }
+            }),
+            "a child non-zero without Diff lines must still fail the crate",
+        );
         assert!(failure.unformatted_files.is_empty());
         assert!(failure.spawn_error.is_none());
+        // The crate still fails, but as a formatter instrument failure — the
+        // report must not call it unformatted drift (#17166).
+        assert!(failure.rustfmt_error, "no-diff child failure must be recorded as rustfmt_error");
+    }
+
+    #[test]
+    fn drift_and_rustfmt_error_in_one_crate_both_surface() {
+        let plan = PackageFormatterPlan {
+            manifest_path: "crates/pkg/Cargo.toml".to_string(),
+            batches: vec![batch("2024", &["drift.rs"]), batch("2024", &["broken.rs"])],
+        };
+        let failure = must_some_with(
+            execute_package_plan_with(&plan, true, |current| {
+                if current.files[0].display().to_string() == "drift.rs" {
+                    drift("drift.rs")
+                } else {
+                    BatchRunResult { success: false, stdout: Vec::new(), spawn_error: None }
+                }
+            }),
+            "both drift and instrument failure must fail the crate",
+        );
+        assert_eq!(failure.unformatted_files, vec!["drift.rs".to_string()]);
+        assert!(failure.rustfmt_error);
+        let report = format_failure_report(true, std::slice::from_ref(&failure));
+        assert!(report.starts_with(CHECK_DRIFT_REPORT_PREFIX), "{report}");
+        assert!(report.contains("without naming files"), "{report}");
+        assert!(report.contains("drift.rs"), "{report}");
+    }
+
+    #[test]
+    fn apply_mode_failure_is_not_recorded_as_a_rustfmt_check_error() {
+        let plan = PackageFormatterPlan {
+            manifest_path: "crates/pkg/Cargo.toml".to_string(),
+            batches: vec![batch("2024", &["a.rs"])],
+        };
+        let failure = must_some_with(
+            execute_package_plan_with(&plan, false, |_| BatchRunResult {
+                success: false,
+                stdout: Vec::new(),
+                spawn_error: None,
+            }),
+            "apply-mode batch failure must fail the crate",
+        );
+        assert!(!failure.rustfmt_error, "apply mode captures no diff output to classify");
+        assert!(failure.unformatted_files.is_empty());
     }
 
     #[test]
@@ -1685,21 +1820,23 @@ mod tests {
             manifest_path: "crates/pkg/Cargo.toml".to_string(),
             batches: vec![batch("2024", &["clean.rs"]), batch("2024", &["drift.rs"])],
         };
-        let failure = execute_package_plan_with(&plan, true, |current| {
-            if current.files[0].display().to_string() == "clean.rs" {
-                BatchRunResult {
-                    success: false,
-                    stdout: Vec::new(),
-                    spawn_error: Some(
-                        "The filename or extension is too long. (os error 206)".into(),
-                    ),
+        let failure = must_some_with(
+            execute_package_plan_with(&plan, true, |current| {
+                if current.files[0].display().to_string() == "clean.rs" {
+                    BatchRunResult {
+                        success: false,
+                        stdout: Vec::new(),
+                        spawn_error: Some(
+                            "The filename or extension is too long. (os error 206)".into(),
+                        ),
+                    }
+                } else {
+                    drift("drift.rs")
                 }
-            } else {
-                drift("drift.rs")
-            }
-        })
-        .expect("both spawn and drift must surface");
-        let spawn = failure.spawn_error.expect("spawn error must be retained");
+            }),
+            "both spawn and drift must surface",
+        );
+        let spawn = must_some_with(failure.spawn_error, "spawn error must be retained");
         assert!(spawn.contains("os error 206"), "{spawn}");
         assert_eq!(failure.unformatted_files, vec!["drift.rs".to_string()]);
     }
@@ -1741,8 +1878,7 @@ mod tests {
             fs::write(&path, "fn probe(){ let x=1; }\n")?;
             files.push(path);
         }
-        let original: Vec<Vec<u8>> =
-            files.iter().map(|path| fs::read(path)).collect::<std::io::Result<_>>()?;
+        let original: Vec<Vec<u8>> = files.iter().map(fs::read).collect::<std::io::Result<_>>()?;
 
         let plan = PackageFormatterPlan {
             manifest_path: "Cargo.toml".to_string(),
@@ -1755,8 +1891,10 @@ mod tests {
                 })
                 .collect(),
         };
-        let failure = super::execute_package_plan(&plan, true, Path::new("rustfmt"), None)
-            .expect("unformatted first/middle/last batches must fail check");
+        let failure = must_some_with(
+            super::execute_package_plan(&plan, true, Path::new("rustfmt"), None),
+            "unformatted first/middle/last batches must fail check",
+        );
         assert_eq!(failure.unformatted_files.len(), 3, "{:?}", failure.unformatted_files);
         for (path, bytes) in files.iter().zip(&original) {
             assert_eq!(&fs::read(path)?, bytes, "check mode must not mutate {}", path.display());
@@ -1931,21 +2069,23 @@ mod tests {
         let mut fs = FakeFs::default();
         let mut stage_called = false;
 
-        let error = super::commit_formatted(
-            &files,
-            &mut |path, text| {
-                if path.display().to_string() == "b.rs" && text.starts_with("formatted") {
-                    return Err(color_eyre::eyre::eyre!("disk full"));
-                }
-                fs.writes.push((path.display().to_string(), text.to_string()));
-                Ok(())
-            },
-            &mut |_| {
-                stage_called = true;
-                Ok(())
-            },
-        )
-        .expect_err("a failed write must not report success");
+        let error = must_err_with(
+            super::commit_formatted(
+                &files,
+                &mut |path, text| {
+                    if path.display().to_string() == "b.rs" && text.starts_with("formatted") {
+                        return Err(color_eyre::eyre::eyre!("disk full"));
+                    }
+                    fs.writes.push((path.display().to_string(), text.to_string()));
+                    Ok(())
+                },
+                &mut |_| {
+                    stage_called = true;
+                    Ok(())
+                },
+            ),
+            "a failed write must not report success",
+        );
 
         assert!(!stage_called, "nothing may be staged when a write failed");
         assert_eq!(
@@ -1965,15 +2105,17 @@ mod tests {
         let files = vec![formatted("a.rs"), formatted("b.rs")];
         let mut fs = FakeFs::default();
 
-        let error = super::commit_formatted(
-            &files,
-            &mut |path, text| {
-                fs.writes.push((path.display().to_string(), text.to_string()));
-                Ok(())
-            },
-            &mut |_| Err(color_eyre::eyre::eyre!("index.lock exists")),
-        )
-        .expect_err("a failed stage must not report success");
+        let error = must_err_with(
+            super::commit_formatted(
+                &files,
+                &mut |path, text| {
+                    fs.writes.push((path.display().to_string(), text.to_string()));
+                    Ok(())
+                },
+                &mut |_| Err(color_eyre::eyre::eyre!("index.lock exists")),
+            ),
+            "a failed stage must not report success",
+        );
 
         let state = fs.state();
         assert_eq!(state.get("a.rs").map(String::as_str), Some("original a.rs"));
@@ -1990,18 +2132,20 @@ mod tests {
         // author needs to know exactly what to `git checkout --`.
         let files = vec![formatted("a.rs")];
 
-        let error = super::commit_formatted(
-            &files,
-            &mut |_, text| {
-                // The formatted write succeeds; the restore write fails.
-                if text.starts_with("original") {
-                    return Err(color_eyre::eyre::eyre!("read-only filesystem"));
-                }
-                Ok(())
-            },
-            &mut |_| Err(color_eyre::eyre::eyre!("index.lock exists")),
-        )
-        .expect_err("a failed stage must not report success");
+        let error = must_err_with(
+            super::commit_formatted(
+                &files,
+                &mut |_, text| {
+                    // The formatted write succeeds; the restore write fails.
+                    if text.starts_with("original") {
+                        return Err(color_eyre::eyre::eyre!("read-only filesystem"));
+                    }
+                    Ok(())
+                },
+                &mut |_| Err(color_eyre::eyre::eyre!("index.lock exists")),
+            ),
+            "a failed stage must not report success",
+        );
 
         let rendered = format!("{error:?}");
         assert!(rendered.contains("rollback also failed"), "{rendered}");
@@ -2215,7 +2359,7 @@ mod tests {
                         j += 1;
                     }
                     if closed {
-                        if quote + 1 <= j {
+                        if quote < j {
                             literals.push(SourceString {
                                 text: source[quote + 1..j].to_string(),
                                 start: i,

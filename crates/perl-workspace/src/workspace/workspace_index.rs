@@ -4979,6 +4979,41 @@ impl WorkspaceIndex {
         members
     }
 
+    /// Get symbols whose membership is anchored to exactly `package_name`.
+    ///
+    /// Unlike [`Self::get_package_members`], which also returns nested-namespace
+    /// descendants (`Animal::Dog::*` and `Animal::Kennel::*` when queried with
+    /// `Animal`), this query returns only direct members: symbols whose
+    /// container is `package_name`, or whose qualified name denotes a bare
+    /// member `package_name::<name>` with no deeper `::`. Callers walking a
+    /// real inheritance chain (`@ISA`/parent/role) must use this query so a
+    /// shared namespace root cannot dress same-root sibling packages up as
+    /// inherited members (#17160).
+    pub fn get_direct_package_members(&self, package_name: &str) -> Vec<WorkspaceSymbol> {
+        self.get_package_members(package_name)
+            .into_iter()
+            .filter(|symbol| Self::is_direct_package_member(symbol, package_name))
+            .collect()
+    }
+
+    /// Whether `symbol` is a direct member of exactly `package_name`.
+    ///
+    /// A symbol anchored to a deeper nested namespace (`Animal::Dog::speak`
+    /// against `Animal`) is a descendant-namespace member, not a member of the
+    /// queried package.
+    fn is_direct_package_member(symbol: &WorkspaceSymbol, package_name: &str) -> bool {
+        if symbol.container_name.as_deref() == Some(package_name) {
+            return true;
+        }
+        symbol
+            .qualified_name
+            .as_deref()
+            .and_then(|qualified| {
+                qualified.strip_prefix(package_name).and_then(|rest| rest.strip_prefix("::"))
+            })
+            .is_some_and(|bare| !bare.contains("::"))
+    }
+
     /// Return framework-generated members for one package from semantic fact shards.
     ///
     /// Legacy package members remain available through get_package_members.
@@ -5268,6 +5303,38 @@ impl WorkspaceIndex {
                 reference.kind == ReferenceKind::Usage
                     && reference.package.as_deref() != Some(key.pkg.as_ref())
             })
+            .map(|reference| Location { uri: reference.uri.clone(), range: reference.range })
+            .collect::<Vec<_>>();
+        drop(global_refs);
+
+        Self::sort_locations_deterministically(&mut locations);
+        locations.dedup_by(|left, right| left.uri == right.uri && left.range == right.range);
+        locations
+    }
+
+    /// Find every arrow method-call site recorded under the bare method name of
+    /// a symbol key, regardless of receiver attribution (#9814).
+    ///
+    /// Arrow dispatch is indexed under the bare method name with no package
+    /// attribution, and [`Self::find_refs`] retains only the conventional
+    /// `$self`/`$this` receivers (see `bare_reference_matches_package`) — every
+    /// other receiver (`$obj->method`) is invisible to it. Consumers that
+    /// attribute receivers themselves (the rename layer resolves constructor-
+    /// typed receivers from the call-site AST) need the unfiltered arrow-site
+    /// denominator so a resolvable call site is never silently omitted from a
+    /// rename edit set. Each span covers the full method-call expression
+    /// (`$obj->greet`), mirroring the bare-name index entries.
+    pub fn find_method_call_refs(&self, key: &SymbolKey) -> Vec<Location> {
+        if key.sigil.is_some() {
+            return Vec::new();
+        }
+
+        let global_refs = self.global_references.read();
+        let mut locations = global_refs
+            .get(key.name.as_ref())
+            .into_iter()
+            .flat_map(|refs| refs.iter())
+            .filter(|reference| reference.kind == ReferenceKind::MethodCall)
             .map(|reference| Location { uri: reference.uri.clone(), range: reference.range })
             .collect::<Vec<_>>();
         drop(global_refs);
@@ -6250,14 +6317,17 @@ impl IndexVisitor {
     ) {
         match &node.kind {
             NodeKind::Package { name, block, .. } => {
-                self.current_package = Some(name.clone());
                 // NEW COVERAGE: `IndexVisitor::visit_node` never recurses
                 // into `block` for references today (only
                 // `project_symbol_declarations`/`extract_symbol_decls` sees
                 // it, for declarations). Recursing here closes that gap --
                 // see `docs/reference/1711-B-coverage-delta.md` case 1.
                 if let Some(b) = block {
+                    let saved_package = self.current_package.replace(name.clone());
                     self.walk_unified(b, file_index, symbol_refs);
+                    self.current_package = saved_package;
+                } else {
+                    self.current_package = Some(name.clone());
                 }
             }
 
@@ -6526,9 +6596,13 @@ impl IndexVisitor {
             }
 
             NodeKind::Block { statements } => {
+                // A statement-form package declaration lasts only through
+                // this lexical block, just as in extract_symbol_decls.
+                let saved_package = self.current_package.clone();
                 for stmt in statements {
                     self.walk_unified(stmt, file_index, symbol_refs);
                 }
+                self.current_package = saved_package;
             }
 
             NodeKind::If { condition, then_branch, elsif_branches, else_branch, .. } => {
@@ -7641,6 +7715,62 @@ pub(crate) mod reindex_metrics {
 mod tests {
     use super::*;
     use perl_tdd_support::{must, must_some};
+
+    #[test]
+    fn direct_package_members_exclude_nested_namespace_descendants() -> anyhow::Result<()> {
+        // #17160: a shared namespace root is not an inheritance edge. `Animal`
+        // must return only members anchored to `Animal` itself (plus the nested
+        // package declarations), never `Animal::Dog::*` or `Animal::Kennel::*`
+        // members from same-root sibling/descendant namespaces.
+        let index = WorkspaceIndex::new();
+        index
+            .index_initial_file(
+                Url::parse("file:///lib/Animal.pm")?,
+                "package Animal;\nsub new { 1 }\nsub speak { 1 }\n1;".to_string(),
+            )
+            .map_err(anyhow::Error::msg)?;
+        index
+            .index_initial_file(
+                Url::parse("file:///lib/Animal/Dog.pm")?,
+                "package Animal::Dog;\nuse parent -norequire, 'Animal';\nsub speak { 1 }\nsub fetch { 1 }\n1;"
+                    .to_string(),
+            )
+            .map_err(anyhow::Error::msg)?;
+        index
+            .index_initial_file(
+                Url::parse("file:///lib/Animal/Kennel.pm")?,
+                "package Animal::Kennel;\nsub admit { 1 }\nsub capacity { 1 }\n1;".to_string(),
+            )
+            .map_err(anyhow::Error::msg)?;
+
+        let direct = index.get_direct_package_members("Animal");
+        let direct_names: Vec<_> = direct.iter().map(|symbol| symbol.name.as_str()).collect();
+        anyhow::ensure!(
+            direct_names.contains(&"new") && direct_names.contains(&"speak"),
+            "Animal's own members must stay direct members: {direct_names:?}"
+        );
+        anyhow::ensure!(
+            direct.iter().all(|symbol| {
+                symbol.container_name.as_deref() != Some("Animal::Dog")
+                    && symbol.container_name.as_deref() != Some("Animal::Kennel")
+            }),
+            "descendant-namespace members must not pass as direct members of Animal: {direct_names:?}"
+        );
+        anyhow::ensure!(
+            direct_names.contains(&"Animal::Dog") && direct_names.contains(&"Animal::Kennel"),
+            "nested package declarations stay discoverable for namespace completion: {direct_names:?}"
+        );
+
+        // The loose query keeps its nested-namespace behavior for its existing
+        // callers (hover); the distinction between the two queries is the point.
+        let loose = index.get_package_members("Animal");
+        anyhow::ensure!(
+            loose.iter().any(|symbol| symbol.name == "fetch"
+                && symbol.container_name.as_deref() == Some("Animal::Dog")),
+            "get_package_members must keep returning nested descendants: {loose:?}"
+        );
+        Ok(())
+    }
 
     #[test]
     fn package_less_extensionless_scripts_keep_main_namespace() -> anyhow::Result<()> {
@@ -12802,7 +12932,10 @@ mod semantic_query_callback_tests {
             ),
         ];
         for (uri, code) in sources {
-            must(index.index_file(must(url::Url::parse(uri)), code.to_string()));
+            // The ungenerationed `index_file` surface is a compatibility API
+            // with a caller-count ledger (#11301); tests index through the
+            // typed initial-generation form.
+            must(index.index_initial_file(must(url::Url::parse(uri)), code.to_string()));
         }
 
         let mut all_anchor_ids: Vec<AnchorId> = Vec::new();

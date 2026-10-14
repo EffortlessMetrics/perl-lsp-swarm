@@ -693,3 +693,130 @@ fn two_selected_config_paths_never_cross_suppress_through_the_emit_path() {
     let snapshot = server.session_warning_dedup_snapshot();
     assert_eq!(snapshot.project_config.entries, 2);
 }
+
+// -------------------------------------------------------------------------
+// Client include-path family (#17164)
+//
+// One rejected `includePaths` entry is re-validated on every channel that
+// applies client settings (`didChangeConfiguration`, `initializationOptions`
+// replay, folder effective-config rebuild). The property under test is the
+// module's standing contract - "repeated subjects warn once, genuinely
+// different subjects still warn" - applied per entry plus bounded reason
+// kind, so the editor user sees one popup per distinct rejection, not one
+// per channel.
+// -------------------------------------------------------------------------
+
+use perl_lsp_rs_core::config::{RejectedClientIncludePath, RejectedClientIncludePathReason};
+
+fn rejected_entry(
+    entry: &str,
+    reason: RejectedClientIncludePathReason,
+) -> RejectedClientIncludePath {
+    RejectedClientIncludePath { entry: entry.to_string(), reason }
+}
+
+fn warn_rejected(server: &LspServer, rejected: &[RejectedClientIncludePath]) {
+    server.warn_rejected_client_include_paths(rejected);
+}
+
+#[test]
+fn repeated_rejected_include_path_warns_once_across_channels()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (server, output) = server_with_output_capture();
+    let absolute = if cfg!(windows) { "C:\\Windows" } else { "/etc" };
+
+    // The same entry/reason pair as it would arrive through several
+    // validation channels in one session.
+    warn_rejected(&server, &[rejected_entry(absolute, RejectedClientIncludePathReason::Absolute)]);
+    warn_rejected(&server, &[rejected_entry(absolute, RejectedClientIncludePathReason::Absolute)]);
+    warn_rejected(&server, &[rejected_entry(absolute, RejectedClientIncludePathReason::Absolute)]);
+
+    drop(server);
+    let texts = warning_texts(&output.messages()?);
+    assert_eq!(
+        texts.len(),
+        1,
+        "one rejected entry must surface once per session across channels: {texts:?}"
+    );
+    assert!(texts[0].contains(absolute), "the warning must name the rejected entry: {texts:?}");
+    assert!(
+        texts[0].contains("workspace-relative"),
+        "the warning must name the supported form: {texts:?}"
+    );
+    assert!(
+        !texts[0].contains("externalIncludePaths"),
+        "the warning must not advise the inert `externalIncludePaths` setting: {texts:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn distinct_rejected_include_path_entries_and_reasons_still_warn()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (server, output) = server_with_output_capture();
+    let absolute = if cfg!(windows) { "C:\\Windows" } else { "/etc" };
+
+    warn_rejected(&server, &[rejected_entry(absolute, RejectedClientIncludePathReason::Absolute)]);
+    // Same entry, different reason kind: the remedy differs, so it must warn.
+    warn_rejected(
+        &server,
+        &[rejected_entry(
+            absolute,
+            RejectedClientIncludePathReason::ExternalUnauthorized(
+                perl_lsp_rs_core::config::UnauthorizedExternalIncludePathSource::Unknown,
+            ),
+        )],
+    );
+    // Different entry, same reason kind: a second dropped root is a second
+    // actionable fact.
+    warn_rejected(
+        &server,
+        &[rejected_entry(
+            "no-such-lib",
+            RejectedClientIncludePathReason::EscapesWorkspace("parent does not exist".to_string()),
+        )],
+    );
+    // The first pair, repeated: still suppressed.
+    warn_rejected(&server, &[rejected_entry(absolute, RejectedClientIncludePathReason::Absolute)]);
+
+    let snapshot = server.session_warning_dedup_snapshot();
+    drop(server);
+    assert_eq!(
+        snapshot.client_include_path.entries, 3,
+        "one retained identity per entry/reason pair"
+    );
+    let texts = warning_texts(&output.messages()?);
+    assert_eq!(texts.len(), 3, "each distinct rejection must warn exactly once: {texts:?}");
+    Ok(())
+}
+
+#[test]
+fn failed_include_path_warning_delivery_rolls_back_for_retry() {
+    // A server whose output transport fails simulates a client that never
+    // received the notification: the identity must not stay retained, so a
+    // later occurrence can still warn (mirrors the project-config contract).
+    let server = LspServer::new();
+    let absolute = if cfg!(windows) { "C:\\Windows" } else { "/etc" };
+
+    server.session_warning_dedup.emit_client_include_path_warning(
+        absolute,
+        RejectedClientIncludePathReason::Absolute.dedup_key(),
+        || false,
+    );
+    assert_eq!(
+        server.session_warning_dedup_snapshot().client_include_path.entries,
+        0,
+        "an undelivered warning must not stay retained"
+    );
+
+    server.session_warning_dedup.emit_client_include_path_warning(
+        absolute,
+        RejectedClientIncludePathReason::Absolute.dedup_key(),
+        || true,
+    );
+    assert_eq!(
+        server.session_warning_dedup_snapshot().client_include_path.entries,
+        1,
+        "a delivered warning is retained"
+    );
+}

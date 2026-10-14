@@ -647,11 +647,11 @@ describe('package.json contributes', () => {
       expect(setting.default).toBe(true);
     });
 
-    test('defines critic.engine as a native/legacy picker defaulting to native', () => {
+    test('defines critic.engine as a native-only picker defaulting to native', () => {
       const setting = getSetting(properties, 'perl-lsp.critic.engine');
       expect(setting).toBeDefined();
       expect(setting.type).toBe('string');
-      expect(setting.enum).toEqual(['native', 'legacy']);
+      expect(setting.enum).toEqual(['native']);
       expect(setting.default).toBe('native');
     });
 

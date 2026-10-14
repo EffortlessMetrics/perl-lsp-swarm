@@ -318,6 +318,7 @@ impl LspServer {
                 let mut effective_config = WorkspaceConfig::default();
                 if let Some(init_opts) = self.initialization_options_perl_settings.lock().as_ref() {
                     let rejected = effective_config.update_from_value(init_opts);
+                    self.warn_rejected_client_include_paths(&rejected);
                     for entry in rejected {
                         tracing::warn!(
                             target: "perl_lsp::config",
@@ -2536,10 +2537,9 @@ perlcritic_severity = 2
     fn malformed_batch_folder_generation_falls_back_to_lower_layers_not_previous_client_values()
     -> anyhow::Result<()> {
         // Folder effective configs are reassembled per generation
-        // (defaults < initializationOptions < project < current payload), so a
-        // wrong-typed or absent client field falls back to its LOWER LAYER value,
-        // never to the previous generation's accepted client value and never to a
-        // partial mix of the two consumer classes.
+        // (defaults < initializationOptions < project < accumulated client
+        // patches). An explicitly wrong-typed field falls back to its lower
+        // layer; an omitted field retains its earlier client patch (#17753).
         let server = LspServer::new();
         let temp = tempfile::tempdir()?;
         let uri = push_folder_with_project_config(&server, &temp, "zeta")?;
@@ -2576,9 +2576,8 @@ perlcritic_severity = 2
              not to the previous batch's good_lib"
         );
         assert!(
-            !state.effective_workspace_config.use_system_inc,
-            "absent-from-batch useSystemInc falls back to the default, \
-             not to the previous batch's true"
+            state.effective_workspace_config.use_system_inc,
+            "absent-from-batch useSystemInc retains the earlier client patch"
         );
         assert_eq!(
             state.effective_workspace_config.discovery_extra_extensions,

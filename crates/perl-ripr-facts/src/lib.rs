@@ -20,13 +20,16 @@
 //!   and returns the assembled `ripr-perl-facts-v1` packet as a
 //!   [`serde_json::Value`]. It reads workspace files but performs no output
 //!   writes, spawns no processes, and writes nothing to stderr.
-//! - [`run_ripr_facts`] is the thin CLI wrapper the `perl-lsp` / `perllsp`
-//!   `--ripr-facts` flag calls: it forwards CLI-shaped args to the batch
-//!   API, then validates the output path, writes the packet to disk, and maps
-//!   the outcome to a process exit code. The write **replaces** the
-//!   destination through a staged sibling and a rename, so a failed generation
-//!   preserves the previous valid packet and no consumer ever reads a
-//!   truncated one (#16022; see `README.md` "Output safety").
+//! - [`run_ripr_facts_with_diff_path`] is the thin CLI wrapper the
+//!   `perl-lsp` / `perllsp` `--ripr-facts` flag calls: it reads `--ripr-diff`
+//!   text from a file (`None` = no-diff packet), forwards CLI-shaped args to
+//!   the batch API, then validates the output path, writes the packet to
+//!   disk, and maps the outcome to a process exit code. [`run_ripr_facts`]
+//!   is the retained no-diff wrapper (same shape minus the diff read). The
+//!   write **replaces** the destination through a staged sibling and a
+//!   rename, so a failed generation preserves the previous valid packet and
+//!   no consumer ever reads a truncated one (#16022; see `README.md`
+//!   "Output safety").
 //! - [`run_cli`] is the standalone `perl-ripr-facts` binary entry point. It
 //!   accepts RIPR's managed-producer command shape, including `--diff`.
 //!
@@ -46,8 +49,9 @@
 //! - [`packet`] (private) — [`build_ripr_facts_packet`] itself: runs the
 //!   emitters, binds relations to changes, computes `packet_fingerprint`.
 //! - [`cli`] (private) — [`run_cli`], [`run_ripr_facts`],
-//!   [`run_ripr_facts_with_diff`]: argv parsing, output-path validation, and
-//!   the process-exit-code mapping around [`build_ripr_facts_packet`].
+//!   [`run_ripr_facts_with_diff`], [`run_ripr_facts_with_diff_path`]: argv
+//!   parsing, output-path validation, and the process-exit-code mapping
+//!   around [`build_ripr_facts_packet`].
 //! - [`emitter`] (private) — the fact emitters themselves, one submodule per
 //!   packet fact family; see its module docs for the full breakdown.
 #![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
@@ -57,6 +61,6 @@ mod emitter;
 mod packet;
 mod request;
 
-pub use cli::{run_cli, run_ripr_facts, run_ripr_facts_with_diff};
+pub use cli::{run_cli, run_ripr_facts, run_ripr_facts_with_diff, run_ripr_facts_with_diff_path};
 pub use packet::build_ripr_facts_packet;
 pub use request::{RiprFactsError, RiprFactsRequest};

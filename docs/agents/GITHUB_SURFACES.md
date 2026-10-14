@@ -158,17 +158,17 @@ If no such fact exists, let the other lane focus on its work.
 
 ## Label policy
 
-Use labels for stable classification and requested attention:
+Use labels for stable classification and requested attention. The live label list
+(`gh label list`) is the standing vocabulary; create a label before referencing it.
+Families that currently exist:
 
 ```text
-area/*
+area/* (plus legacy `area:*` colon forms)
 kind/*
-risk/*
 size/*
-release/*
-blocked
-needs-human-decision
-needs-reproduction
+status:* (for example `status:blocked`)
+type:*
+P0-critical … P3-low
 ```
 
 Do not use labels as proof of build, review, CI, response, route, or merge completion.

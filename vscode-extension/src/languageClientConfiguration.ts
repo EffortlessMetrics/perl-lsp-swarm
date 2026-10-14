@@ -196,6 +196,36 @@ function readIncludePaths(config: ConfigurationReader): string[] {
   return configured.filter((value): value is string => typeof value === 'string');
 }
 
+/**
+ * Include paths explicitly set at user/global scope only.
+ *
+ * `inspect()` reports every scope regardless of the resource a configuration
+ * was opened with, so this reads `globalValue` directly — the same
+ * machine-scoped discipline `readExternalIncludePaths` applies. Workspace and
+ * folder values are deliberately invisible here: the unscoped
+ * `workspace/configuration` item feeds the server's session-global layer, so a
+ * folder-scoped value that leaked into it would re-create the "folder A's
+ * settings answer folder B / become session-global" shape #14447 removed
+ * (#17334).
+ */
+function readGlobalIncludePaths(config: ConfigurationReader): string[] | undefined {
+  const inspected = config.inspect?.('includePaths') as
+    | {
+        globalValue?: unknown;
+      }
+    | undefined;
+
+  if (!inspected || inspected.globalValue === undefined) {
+    return undefined;
+  }
+
+  if (!Array.isArray(inspected.globalValue)) {
+    return [...DEFAULT_INCLUDE_PATHS];
+  }
+
+  return inspected.globalValue.filter((value): value is string => typeof value === 'string');
+}
+
 function readExternalIncludePaths(config: ConfigurationReader): string[] | undefined {
   const inspected = config.inspect?.('externalIncludePaths') as
     | {
@@ -234,6 +264,38 @@ export function buildWorkspaceConfigurationPayload(
   const workspace: Record<string, unknown> = {};
   if (includePathsExplicit) {
     workspace.includePaths = readIncludePaths(config);
+  }
+  if (externalIncludePaths !== undefined) {
+    workspace.externalIncludePaths = externalIncludePaths;
+  }
+
+  return { workspace };
+}
+
+/**
+ * The unscoped `workspace/configuration` answer: user-scoped state only.
+ *
+ * The server's configuration pull asks for one resource-less `perl` item plus
+ * one item per workspace folder. The unscoped item is applied by the server as
+ * a session-global base layer under every folder (see `configurationPull.ts`),
+ * so it must never carry workspace/folder-scoped values — in a single-root
+ * workspace a resource-less `get()` would otherwise resolve the
+ * workspace==folder value and leak it into every session (#17334). Folder
+ * values travel exclusively through the folder-scoped items.
+ */
+export function buildGlobalWorkspaceConfigurationPayload(
+  config: ConfigurationReader = vscode.workspace.getConfiguration('perl-lsp'),
+): Record<string, unknown> | undefined {
+  const globalIncludePaths = readGlobalIncludePaths(config);
+  const externalIncludePaths = readExternalIncludePaths(config);
+
+  if (globalIncludePaths === undefined && externalIncludePaths === undefined) {
+    return undefined;
+  }
+
+  const workspace: Record<string, unknown> = {};
+  if (globalIncludePaths !== undefined) {
+    workspace.includePaths = globalIncludePaths;
   }
   if (externalIncludePaths !== undefined) {
     workspace.externalIncludePaths = externalIncludePaths;

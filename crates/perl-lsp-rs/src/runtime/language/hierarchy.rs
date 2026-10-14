@@ -697,7 +697,15 @@ impl LspServer {
                                     from_range,
                                 )
                             });
-                        let key = (from.name.clone(), from.uri.clone());
+                        // Dedup across tiers on one canonical URI identity
+                        // (#17368): the index tier spells URIs via
+                        // `fs_path_to_uri` (on-disk drive case) while the
+                        // open-document tier spells them with the documents-map
+                        // key (`perl_uri::uri_key`, Windows drive letter
+                        // lowercased). Comparing raw strings split the same
+                        // caller into two entries, so key both tiers the way
+                        // `LspServer::normalize_uri_key` keys its documents.
+                        let key = (from.name.clone(), self.normalize_uri_key(&from.uri));
                         if let Some(&idx) = seen.get(&key) {
                             all_calls[idx].from_ranges.push(from_range);
                         } else {
@@ -731,9 +739,17 @@ impl LspServer {
                 let provider = CallHierarchyProvider::new(doc_text, doc_uri.clone());
                 let calls = provider.incoming_calls(&ast, &ch_item);
                 for call in calls {
-                    let key = (call.from.name.clone(), call.from.uri.clone());
+                    // Same canonical identity as the index tier above (#17368).
+                    let key = (call.from.name.clone(), self.normalize_uri_key(&call.from.uri));
                     if let Some(&idx) = seen.get(&key) {
-                        all_calls[idx].from_ranges.extend(call.from_ranges);
+                        // The same call site discovered by both tiers is one call
+                        // site: merge ranges without repeating an identical range
+                        // the earlier tier already reported.
+                        for range in call.from_ranges {
+                            if !all_calls[idx].from_ranges.contains(&range) {
+                                all_calls[idx].from_ranges.push(range);
+                            }
+                        }
                     } else {
                         seen.insert(key, all_calls.len());
                         all_calls.push(call);

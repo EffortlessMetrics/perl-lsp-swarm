@@ -2791,7 +2791,11 @@ fn collect_all_package_members_with_source(
         // authoritative facts for this package, persisted explicit members
         // anchored to the edited document itself are an older generation and
         // must not resurrect deleted or renamed bindings (#17084).
-        let mut persisted_members = index.get_package_members(pkg);
+        // Direct members only: the MRO walk reaches ancestors via explicit
+        // `@ISA`/parent/role edges, so a nested-namespace descendant must not
+        // ride along as an own-package member — a shared namespace root is not
+        // an inheritance edge (#17160).
+        let mut persisted_members = index.get_direct_package_members(pkg);
         if facts.from_current_document && !current_document_uri.is_empty() {
             persisted_members.retain(|symbol| symbol.uri != current_document_uri);
         }
@@ -2875,6 +2879,9 @@ fn push_index_method_symbols(
         match symbol.kind {
             WsSymbolKind::Subroutine | WsSymbolKind::Method => {}
             _ => continue,
+        }
+        if symbol.is_lexical {
+            continue;
         }
         if seen_names.insert(symbol.name.clone()) {
             result.push(symbol);
@@ -3291,6 +3298,48 @@ sub own_method { 1 }
             names.contains(&"name"),
             "indexed generated reader must remain after current-document composition, got {names:?}"
         );
+    }
+
+    /// Regression (#17636): lexical `my`/`state` subs indexed from a file
+    /// must not surface as `$obj->` methods; only package subs may.
+    #[test]
+    fn indexed_lexical_subs_do_not_surface_as_methods() {
+        let source = r#"package User;
+use Moo;
+my sub lexical_helper { 1 }
+state sub state_helper { 1 }
+sub real_method { 1 }
+1;
+"#;
+        let index = Arc::new(WorkspaceIndex::new());
+        must(
+            index.index_initial_file(
+                must(Url::parse("file:///workspace/User.pm")),
+                source.to_string(),
+            ),
+        );
+        let members = collect_all_package_members(index.as_ref(), "User");
+        let names: Vec<_> = members.iter().map(|member| member.name.as_str()).collect();
+        assert!(names.contains(&"real_method"), "package sub must be offered, got {names:?}");
+        assert!(!names.contains(&"lexical_helper"), "my sub must not be a method, got {names:?}");
+        assert!(!names.contains(&"state_helper"), "state sub must not be a method, got {names:?}");
+    }
+
+    #[test]
+    fn current_source_lexical_subs_do_not_surface_as_methods() {
+        let source = r#"package User;
+use Moo;
+my sub lexical_helper { 1 }
+state sub state_helper { 1 }
+sub real_method { 1 }
+1;
+"#;
+        let index = Arc::new(WorkspaceIndex::new());
+        let members = collect_all_package_members_with_source(index.as_ref(), "User", source, "");
+        let names: Vec<_> = members.iter().map(|member| member.name.as_str()).collect();
+        assert!(names.contains(&"real_method"), "package sub must be offered, got {names:?}");
+        assert!(!names.contains(&"lexical_helper"), "my sub must not be a method, got {names:?}");
+        assert!(!names.contains(&"state_helper"), "state sub must not be a method, got {names:?}");
     }
 
     /// G1 regression (#17084): the index holds generation 1 of the edited

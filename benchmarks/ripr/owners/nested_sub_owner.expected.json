@@ -1,0 +1,4 @@
+{
+  "staged_path": "lib/Nest.pm",
+  "expected_owner": {"kind": "sub", "qualified_name": "Outer::inner"}
+}

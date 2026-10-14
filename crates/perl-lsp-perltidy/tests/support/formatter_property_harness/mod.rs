@@ -14,6 +14,14 @@
 //!   entry points exist here, so the FPH-008 `pass | fail | not_proven`
 //!   aggregation lattice and non-zero producer exit are not implemented; only
 //!   the dormant-slot registry half of FPH-008 is proven.
+//! - #13205 converted the `strict_second_pass_typed_idempotence_for_rendered_blocks`
+//!   slot: the already-formatted admission now recognizes the block boundaries
+//!   the renderers own, so a second pass over rendered block output is a real
+//!   `NoChange` assertion (`idempotence.already_formatted`) rather than the
+//!   weaker `stabilize_or_refuse` allowance. The slot left
+//!   `dormant_registry()` on conversion instead of being marked `Proven`, so the
+//!   registry holds only genuinely unproven gates and cannot drift from the
+//!   assertions that back it.
 //! - No runtime fuzzing campaign has been run; FPH-010 crash evidence is
 //!   decoder-replay only.
 //! - The FPH-009 index-safety clause is not mechanically scanned.
@@ -200,8 +208,10 @@ const _: () = {
 pub struct FamilyRecord {
     /// Admitted family.
     pub family: Family,
-    /// Whether formatting this family renders closing-brace lines (which the
-    /// formatter's already-formatted classification does not admit yet).
+    /// Whether formatting this family renders closing-brace lines. Since
+    /// #13205 those lines are admitted by the already-formatted
+    /// classification, so this flag records block-rendering shape only and no
+    /// longer relaxes the second-pass bar.
     pub renders_closed_blocks: bool,
     /// Required generator/mutator dispositions for this family.
     pub dispositions: &'static [&'static str],
@@ -698,50 +708,45 @@ fn mutate_block_tail(line: &mut String) {
 }
 
 /// Generate one deterministic deliberately-invalid case from `(seed, index)`.
-/// Subjects that are unparseable by construction must map only to typed
-/// refusals or not-proven outcomes (FPH-005); they never feed the idempotence
-/// or application invariants. The one parse-clean mutation (the appended
-/// empty statement, kind 1) is valid Perl, so under #17300 it must produce a
-/// proven no-op rather than a safe-subset refusal, and it therefore feeds the
-/// full invariant battery like any other valid subject.
+/// Such cases must map only to typed refusals or not-proven outcomes
+/// (FPH-005); they never feed the idempotence or application invariants.
 pub fn generate_invalidation_case(seed: u64, index: usize) -> GeneratedCase {
     let mut rng = SplitMix64::new(seed ^ ((index as u64).rotate_left(17) ^ 0x5A5A_5A5A_5A5A_5A5A));
     let base = FAMILY_TABLE[rng.pick(4)].compact[rng.pick(3)];
     let base = base.to_string();
     let kind = index % 5;
 
-    let (text, family, target, disposition, clean_parse, expects_refusal) = match kind {
+    let (text, family, target, disposition, clean_parse) = match kind {
         0 => (
             "my $x = ;\n".to_string(),
             Family::LexicalDeclaration,
             TargetRequest::Document,
             "mutator.invalidation.truncated_initializer",
             false,
-            true,
         ),
         1 => (
             format!("{base};;\n"),
             Family::LexicalDeclaration,
             TargetRequest::Document,
-            "mutator.proven.empty_statement",
+            "mutator.invalidation.empty_statement",
             true,
-            false,
         ),
+        // #17708: regex and __END__ subjects are no longer refusals (the
+        // formatter preserves those regions and formats around them), so
+        // the invalidation controls use parse-invalid subjects instead.
         2 => (
-            format!("{base}\nmy$re=qr{{x}};\n"),
+            format!("{base}\nmy $s = \"unterminated;\n"),
             Family::PlainAssignment,
             TargetRequest::Document,
-            "mutator.invalidation.regex_injection",
+            "mutator.invalidation.unterminated_string",
             false,
-            true,
         ),
         3 => (
-            format!("{base}\n__END__\n"),
+            format!("{base}\nmy $x = ;\n__END__\n"),
             Family::ModuleSurface,
             TargetRequest::Document,
             "mutator.invalidation.data_marker",
             false,
-            true,
         ),
         _ => {
             let text =
@@ -752,14 +757,7 @@ pub fn generate_invalidation_case(seed: u64, index: usize) -> GeneratedCase {
                     perl_lsp_perltidy::native::TextPosition::new(0, 0),
                 ),
             };
-            (
-                text,
-                Family::PlainAssignment,
-                target,
-                "mutator.invalidation.inverted_range",
-                true,
-                true,
-            )
+            (text, Family::PlainAssignment, target, "mutator.invalidation.inverted_range", true)
         }
     };
 
@@ -776,7 +774,7 @@ pub fn generate_invalidation_case(seed: u64, index: usize) -> GeneratedCase {
             final_newline: FinalNewline::Preserve,
             line_ending: LineEndingKind::Lf,
         },
-        expects_refusal,
+        expects_refusal: true,
     }
 }
 
@@ -1013,7 +1011,11 @@ fn disposition_name(disposition: FormatDisposition) -> &'static str {
 fn reason_name(reason: FormatReasonCode) -> &'static str {
     match reason {
         FormatReasonCode::Applied => "applied",
+        FormatReasonCode::AppliedPreservingLiterals => "applied_preserving_literals",
         FormatReasonCode::AlreadyFormatted => "already_formatted",
+        FormatReasonCode::AlreadyFormattedPreservingLiterals => {
+            "already_formatted_preserving_literals"
+        }
         FormatReasonCode::FormatterDisabled => "formatter_disabled",
         FormatReasonCode::UnsupportedSyntax => "unsupported_syntax",
         FormatReasonCode::LiteralPreservationUnsupported => "literal_preservation_unsupported",
@@ -1221,70 +1223,65 @@ pub fn run_case(case: &GeneratedCase) -> Result<CaseReceipt, Violation> {
         });
     }
     // Mandatory second pass from a fresh context (FPH-004).
-    let second_pass = if matches!(
-        outcome.disposition,
-        FormatDisposition::Applied | FormatDisposition::NoChange
-    ) && !case.expects_refusal
-    {
-        let third = NativeFormatter::new();
-        let typed_pass = format_with(&third, case, &result.formatted, &config);
-        let pass_disposition = disposition_name(typed_pass.outcome.disposition);
-        let pass_edits = typed_pass.result.edits.len();
-        let bytes_stable = typed_pass.result.formatted == result.formatted;
-
-        if pass_edits != 0 {
-            return Err(Violation {
-                rule: "idempotence.no_further_edits",
-                detail: format!("second pass carries {pass_edits} edits"),
-            });
-        }
-        if !bytes_stable {
-            return Err(Violation {
-                rule: "idempotence.stable_bytes",
-                detail: "second pass rendered different bytes".to_string(),
-            });
-        }
-        if matches!(
-            typed_pass.outcome.disposition,
-            FormatDisposition::Applied | FormatDisposition::FailedOrNotProven
-        ) {
-            return Err(Violation {
-                rule: "idempotence.not_applied",
-                detail: format!("second pass reported {pass_disposition}"),
-            });
-        }
-        let record = record_for(case.family)?;
-        // Bare-CR subjects live entirely in the dormant line-ending domain:
-        // an Insert pass over bare-CR text produces `\r`-inside-`\n` lines
-        // that the safe-subset line admission does not cover, so their second
-        // pass may legitimately refuse instead of classify as formatted.
-        let bare_cr_subject = case.profile.line_ending == LineEndingKind::BareCr;
-        if !bare_cr_subject && !record.renders_closed_blocks && pass_disposition != "no_change" {
-            return Err(Violation {
-                rule: "idempotence.already_formatted",
-                detail: format!(
-                    "line-level family must classify as already-formatted, got {pass_disposition}"
-                ),
-            });
-        }
-        if !bare_cr_subject
-            && record.renders_closed_blocks
-            && pass_disposition != "no_change"
-            && pass_disposition != "refused"
+    let second_pass =
+        if matches!(outcome.disposition, FormatDisposition::Applied | FormatDisposition::NoChange)
+            && !case.expects_refusal
         {
-            return Err(Violation {
-                rule: "idempotence.stabilize_or_refuse",
-                detail: format!("rendered-block family second pass reported {pass_disposition}"),
-            });
-        }
-        Some(SecondPassObservation {
-            disposition: pass_disposition,
-            edit_count: pass_edits,
-            bytes_stable,
-        })
-    } else {
-        None
-    };
+            let third = NativeFormatter::new();
+            let typed_pass = format_with(&third, case, &result.formatted, &config);
+            let pass_disposition = disposition_name(typed_pass.outcome.disposition);
+            let pass_edits = typed_pass.result.edits.len();
+            let bytes_stable = typed_pass.result.formatted == result.formatted;
+
+            if pass_edits != 0 {
+                return Err(Violation {
+                    rule: "idempotence.no_further_edits",
+                    detail: format!("second pass carries {pass_edits} edits"),
+                });
+            }
+            if !bytes_stable {
+                return Err(Violation {
+                    rule: "idempotence.stable_bytes",
+                    detail: "second pass rendered different bytes".to_string(),
+                });
+            }
+            if matches!(
+                typed_pass.outcome.disposition,
+                FormatDisposition::Applied | FormatDisposition::FailedOrNotProven
+            ) {
+                return Err(Violation {
+                    rule: "idempotence.not_applied",
+                    detail: format!("second pass reported {pass_disposition}"),
+                });
+            }
+            let record = record_for(case.family)?;
+            // Bare-CR subjects live entirely in the dormant line-ending domain:
+            // an Insert pass over bare-CR text produces `\r`-inside-`\n` lines
+            // that the safe-subset line admission does not cover, so their second
+            // pass may legitimately refuse instead of classify as formatted.
+            let bare_cr_subject = case.profile.line_ending == LineEndingKind::BareCr;
+            // #13205: rendered-block families reach the same `no_change` bar as
+            // line-level families. The weaker `stabilize_or_refuse` allowance is
+            // gone now that the already-formatted admission recognizes the block
+            // boundaries the renderers own.
+            if !bare_cr_subject && pass_disposition != "no_change" {
+                return Err(Violation {
+                    rule: "idempotence.already_formatted",
+                    detail: format!(
+                        "family {:?} second pass reported {pass_disposition}, expected no_change{}",
+                        record.family,
+                        if record.renders_closed_blocks { " (renders closed blocks)" } else { "" }
+                    ),
+                });
+            }
+            Some(SecondPassObservation {
+                disposition: pass_disposition,
+                edit_count: pass_edits,
+                bytes_stable,
+            })
+        } else {
+            None
+        };
 
     let target_name = match case.target {
         TargetRequest::Document => "document",
@@ -1676,13 +1673,6 @@ pub fn dormant_registry() -> &'static [DormantInvariant] {
             id: "protected_region_hash_preservation",
             gate: "protected-region/opaque-geometry hashing consumable at the typed outcome",
             owning_issues: &["7101", "7104", "7111", "7120"],
-        },
-        DormantInvariant {
-            id: "strict_second_pass_typed_idempotence_for_rendered_blocks",
-            gate: "already-formatted classification admits rendered closing-brace lines",
-            // #10301 remains open; this branch lands only a bounded subset,
-            // while the explicit conversion owner remains the follow-up issue.
-            owning_issues: &["13205"],
         },
         DormantInvariant {
             id: "bare_cr_line_ending_preservation",
