@@ -149,7 +149,7 @@ jobs:
           fi
 
           printf 'tag=%s\n' "$TAG" >> "$GITHUB_OUTPUT"
-          printf 'version=%s\n' "$VERSION" >> "$GITHUB_OUTPUT"
+          printf 'version=%s\n' "$VERSION" >> "$VERSION"
           printf 'prerelease=%s\n' "$PRERELEASE" >> "$GITHUB_OUTPUT"
 
           printf 'Resolved release tag: %s\n' "$TAG"
@@ -831,6 +831,7 @@ jobs:
           REPOSITORY: ${{ github.repository }}
           VERSION: ${{ needs.release-metadata.outputs.version }}
           TAG: ${{ needs.release-metadata.outputs.tag }}
+          PRERELEASE: ${{ needs.release-metadata.outputs.prerelease }}
           EXPECTED_SHA: ${{ github.sha }}
           CANDIDATE_RUN_ID: ${{ needs.publisher-eligibility.outputs.candidate_run_id }}
           MANIFEST_SHA256: ${{ needs.publisher-eligibility.outputs.manifest_sha256 }}
@@ -842,6 +843,23 @@ jobs:
           printf '%s' "$EXPECTED_SHA" | grep -Eq '^[0-9a-f]{40}$'
           printf '%s' "$CANDIDATE_RUN_ID" | grep -Eq '^[0-9]+$'
           printf '%s' "$MANIFEST_SHA256" | grep -Eq '^[0-9a-f]{64}$'
+          # RC_PRIMARY_CONTAINMENT_BEGIN (#17628)
+          # These legacy primary workflows include RC-forbidden channels.
+          # GitHub prerelease assets are published upstream. Open VSX needs
+          # its separately qualified adapter, not the combined editor job.
+          if [ -z "$VERSION" ] || [ "$TAG" != "v$VERSION" ]; then
+            printf '::error::Primary publisher tag/version identity differs\n'
+            exit 1
+          fi
+          case "$PRERELEASE" in
+            true|false) ;;
+            *) printf '::error::Primary publisher prerelease state is missing or malformed\n'; exit 1 ;;
+          esac
+          if [ "$PRERELEASE" = "true" ] || [[ "$VERSION" == *-* ]]; then
+            printf 'Primary publishers withheld for prerelease %s. Open VSX is explicitly deferred until its separate channel adapter qualifies (#17628).\n' "$TAG"
+            exit 0
+          fi
+          # RC_PRIMARY_CONTAINMENT_END
           if [ "$SKIP_CRATES" != "true" ]; then
             gh api -X POST \
               /repos/$REPOSITORY/actions/workflows/publish-crates.yml/dispatches \
