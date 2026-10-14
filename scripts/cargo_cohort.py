@@ -182,7 +182,7 @@ def _source_verify_directory_names(bindings):
 
 
 def _prepare_source_declaration(worktree, entries):
-    """Retain only lexical manifest declarations, never observed filesystem facts."""
+    """Plan lexical traversal once; never retain observed filesystem facts."""
     worktree = Path(worktree)
     root_text = str(worktree)
     if (not worktree.is_absolute() or root_text.startswith(('//', '/mnt/'))
@@ -199,12 +199,21 @@ def _prepare_source_declaration(worktree, entries):
             raise Denied('foreign or noncanonical source/profile path')
         subjects.append((subject, entry['sha256']))
         deepest = max(deepest, len(subject.parent.parts))
+    root_paths = tuple(reversed(worktree.parents)) + (worktree,)
+    steps = []
+    previous = ()
     root_prefix = root_text.rstrip('/') + '/'
-    ordered = tuple((subject, expected_hash,
-                     tuple(part for part in str(subject)[len(root_prefix):].split('/')
-                           if part not in ('', '.'))[:-1])
-                    for subject, expected_hash in sorted(subjects, key=lambda row: str(row[0])))
-    return (root_text, tuple(subjects), deepest, ordered)
+    for subject, expected_hash in sorted(subjects, key=lambda row: str(row[0])):
+        parents = tuple(part for part in str(subject)[len(root_prefix):].split('/')
+                        if part not in ('', '.'))[:-1]
+        common = 0
+        while common < min(len(previous), len(parents)) and previous[common] == parents[common]:
+            common += 1
+        descend = tuple((parents[index], worktree.joinpath(*parents[:index + 1]))
+                        for index in range(common, len(parents)))
+        steps.append((subject, expected_hash, len(previous) - common, descend))
+        previous = parents
+    return root_text, tuple(subjects), deepest, root_paths, tuple(steps)
 
 
 def validate_source_entries(worktree, entries):
@@ -213,15 +222,13 @@ def validate_source_entries(worktree, entries):
 
 
 def _validate_source_declaration(worktree, entries):
-    """Validate every entry afresh; state and descriptors exist only for this call.
+    """Replay lexical traversal, opening and checking every subject afresh.
 
-    A sorted traversal reuses anchored parent descriptors within this validation
-    epoch. Every source is freshly opened and hashed; every visited ancestor is
-    checked again by its current pathname after the last source. Deeper paths
-    use the existing per-file validator for the entire call, before opening any
-    descriptor, preserving their eligibility without changing descriptor limits.
+    The plan retains names and traversal steps only. File/directory descriptors,
+    observed identities/hashes and ancestor bindings belong to this invocation. Deep
+    paths retain the existing per-file validation before opening a stack.
     """
-    root_text, subjects, deepest, ordered = entries
+    root_text, subjects, deepest, root_paths, steps = entries
     worktree = Path(worktree)
     if root_text != str(worktree):
         raise Denied('prepared declaration worktree changed')
@@ -236,15 +243,14 @@ def _validate_source_declaration(worktree, entries):
     bindings = {}
     directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
     try:
-        current = Path('/')
+        current = root_paths[0]
         descriptor = os.open('/', directory_flags)
         stack.append((current, descriptor))  # register before even fstat can fail
         bindings[current] = _source_directory_key(os.fstat(descriptor))
-        for name in worktree.parts[1:]:
-            descriptor = os.open(name, directory_flags, dir_fd=stack[-1][1])
+        for current in root_paths[1:]:
+            descriptor = os.open(current.name, directory_flags, dir_fd=stack[-1][1])
             try:
                 observed = _source_directory_key(os.fstat(descriptor))
-                current = current / name
                 if _source_directory_key(current.lstat()) != observed:
                     raise Denied('source root component replaced')
             except BaseException:
@@ -252,17 +258,10 @@ def _validate_source_declaration(worktree, entries):
                 raise
             stack.append((current, descriptor))
             bindings[current] = observed
-        root_depth = len(stack)
-        previous_directories = ()
-        for subject, expected_hash, parent_parts in ordered:
-            common = 0
-            while (common < min(len(previous_directories), len(parent_parts))
-                   and previous_directories[common] == parent_parts[common]):
-                common += 1
-            while len(stack) > root_depth + common:
+        for subject, expected_hash, ascend, descend in steps:
+            for _ in range(ascend):
                 os.close(stack.pop()[1])
-            for name in parent_parts[common:]:
-                current = stack[-1][0] / name
+            for name, current in descend:
                 descriptor = os.open(name, directory_flags, dir_fd=stack[-1][1])
                 try:
                     observed = _source_directory_key(os.fstat(descriptor))
@@ -275,7 +274,6 @@ def _validate_source_declaration(worktree, entries):
                     raise
                 stack.append((current, descriptor))
                 bindings[current] = observed
-            previous_directories = parent_parts
             _source_read_and_check(subject, expected_hash, stack[-1][1])
         _source_verify_directory_names(bindings)
     finally:
