@@ -1151,7 +1151,10 @@ mod tests {
             required: true,
         };
         assert_eq!(declared.producer_class(), ProducerClass::RepositoryJob);
-        let unknown = InventoryCheck { producer: Some("invented".into()), ..declared };
+        let unknown = InventoryCheck {
+            producer: Some("invented".into()),
+            ..declared
+        };
         assert_eq!(unknown.producer_class(), ProducerClass::Unstated);
     }
 }

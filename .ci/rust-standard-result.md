@@ -13,8 +13,9 @@ The policy validates central v1 proof evidence against the native repository,
 GITHUB_SHA, run ID, attempt and standard profile. For pull_request, GITHUB_SHA is
 the tested merge commit; the main-red probe separately queries checks on the
 webhook PR head. For merge_group, both probe subject and effective workflow tree
-are its head SHA. Push/manual retain the prior non-applicable candidate-vs-main
-refusal behavior. An absent, failed, cancelled, stale or ambiguous proof cannot
+are its head SHA. Push retains the prior non-applicable candidate-vs-main
+refusal behavior. Admitted manual dispatch binds both probe subject and workflow
+tree to reviewed_sha, equal to GITHUB_SHA, and runs refusal for that source. An absent, failed, cancelled, stale or ambiguous proof cannot
 enter the policy. A draft skips the entire reusable call before allocation;
 there is no old draft-result job left to mirror an unrelated run's success.
 
