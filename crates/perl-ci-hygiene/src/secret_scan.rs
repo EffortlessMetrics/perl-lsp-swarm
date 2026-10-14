@@ -610,6 +610,28 @@ mod tests {
     }
 
     #[test]
+    fn nul_separated_near_miss_is_clean_but_a_genuine_token_reports() -> Result<()> {
+        // #17906 forced binary patches open, so the scanner now sees the raw
+        // bytes of NUL-carrying files. A NUL between the prefix and the value
+        // run must keep the shape from assembling (the gate reads the diff
+        // into a String that retains NULs, and the NUL matches no value
+        // class) — its genuine sibling still reports.
+        let near_miss = format!("+token = \"ghp_\0{}\"", "A".repeat(36));
+        assert_eq!(
+            matched_rules("leak.bin", &[&near_miss])?,
+            Vec::<&str>::new(),
+            "a NUL-separated shape must not read as a token"
+        );
+        let genuine = format!("+token = \"{}\"", fake_github_token("ghp_"));
+        assert_eq!(
+            matched_rules("leak.bin", &[&genuine])?,
+            vec!["github-token"],
+            "the same shape without the NUL must still report"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn call_shaped_values_are_not_credentials() -> Result<()> {
         // The value run must end at end-of-line or a non-value, non-paren
         // character; a `(` immediately after the run reads as a call.
