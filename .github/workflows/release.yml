@@ -149,7 +149,7 @@ jobs:
           fi
 
           printf 'tag=%s\n' "$TAG" >> "$GITHUB_OUTPUT"
-          printf 'version=%s\n' "$VERSION" >> "$VERSION"
+          printf 'version=%s\n' "$VERSION" >> "$GITHUB_OUTPUT"
           printf 'prerelease=%s\n' "$PRERELEASE" >> "$GITHUB_OUTPUT"
 
           printf 'Resolved release tag: %s\n' "$TAG"
