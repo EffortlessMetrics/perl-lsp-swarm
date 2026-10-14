@@ -388,10 +388,18 @@ describe('OnboardingManager.checkBinaryDownloaded', () => {
 
   test('rejects other nonfile filesystem entries', () => {
     const mgr = new OnboardingManager(makeContext(), makeOutputChannel());
+    const nonfileStats = fs.statSync(tmpDir);
+    nonfileStats.isFile = () => false;
+    nonfileStats.isDirectory = () => false;
     const stat = jest.spyOn(jest.requireActual<typeof fs>('fs'), 'statSync');
-    stat.mockReturnValueOnce({ isFile: () => false } as fs.Stats);
+    stat.mockReturnValueOnce(nonfileStats);
     try {
-      expect(mgr.checkBinaryDownloaded(tmpDir).status).toBe(HealthCheckStatus.Error);
+      expect(mgr.checkBinaryDownloaded(tmpDir)).toEqual({
+        label: 'LSP binary',
+        ok: false,
+        status: HealthCheckStatus.Error,
+        detail: `perl-lsp binary path is not a regular file: ${tmpDir}`,
+      });
     } finally {
       stat.mockRestore();
     }
