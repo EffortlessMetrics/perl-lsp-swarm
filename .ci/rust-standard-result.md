@@ -144,7 +144,47 @@ remains NOT_PROVEN where organization variables/package reads are unavailable.
 No access, credentials, protections, required checks or release settings change
 in this continuation. Rollback still requires matched producer and protection.
 
-## Authenticated native admission prerequisite — 2026-10-14
+## Native-review-v1 preparation — 2026-10-14
+
+Central [em-ci #230](https://github.com/EffortlessMetrics/em-ci/pull/230)
+merged as `541e72034a3b5963bb1fb6a80787120bc223d5e4`. Its
+[closed native contract](https://github.com/EffortlessMetrics/em-ci/blob/541e72034a3b5963bb1fb6a80787120bc223d5e4/docs/rust-native-proof-admission.md)
+now supplies the previously missing authenticated recheck immediately before
+each proof entry, including eligible recovery. It extracts and verifies the
+three existing semantic-currentness/convergence tools from protected main,
+binds actor/request/run/attempt/head/base/integration identities, repeats native
+reads after review, and isolates the metadata credential from product proof.
+Perl main `4cc7960e61b685ce3b7e4cb9fe43b929bf900972` contains all three owners.
+This supersedes the missing-central-source prerequisite below, but does not
+establish public distribution, runtime qualification or native execution.
+
+The actual consumer now requests `fetch_depth: 0`, required by that contract,
+and includes `pull_request: auto_merge_enabled` alongside existing discovery
+events. Its native job branch has a literal `false` gate: publication of this
+preparation cannot enter costly proof on an auto-merge request. The active
+`a3125de` pin remains unchanged and `proof_admission` stays unselected because
+that public callee does not implement the new input. Existing dispatch/queue
+entries, real canonical product proof, exact result policy and read scopes are
+preserved. Routine Draft/Ready/opened/synchronize/push still allocate no proof.
+Tests reject removal of the dormant gate, loss of the request trigger,
+shallow history and premature selection of the unsupported input.
+
+Activation requires a separately established reviewed public immutable pin for
+the merged isolated contract, verified runner tools including `gh`, and
+coordinated consumption of `proof_admission: native-review-v1`. Only that
+transaction may remove the literal `false` from the native request branch;
+the central owner must then enforce current non-draft same-repository human
+request, admin coordinator, fresh review and exact integration binding before
+Cargo. Consumer lifecycle cancellation and final-currentness obligations remain
+to be reconciled before activation; the current synchronize cancellation alone
+does not cover request withdrawal or later review changes. No cancellation
+write scope, caller credential, host configuration or new authority is added
+by this source preparation. Qualification must cover exact-source native
+positive/refusal/recovery, real product/result/cleanup and the separate Perl
+ten-file packet custody. The diagnostic publisher is insufficient for that
+packet. No dispatch or pin activation is performed here.
+
+## Earlier authenticated native admission finding — superseded in part
 
 The manual-only PR path in this source is a material integration defect, not
 completed source review. GitHub documents that workflow_dispatch job checks do

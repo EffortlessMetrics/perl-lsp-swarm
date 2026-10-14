@@ -383,7 +383,7 @@ fn ci_workflows_keep_issue_4657_hardening() -> Result<(), Box<dyn std::error::Er
     );
     assert!(
         routed_rust.contains(
-            "if: github.event_name == 'merge_group' || (github.event_name == 'workflow_dispatch' && inputs.pre_merge_admission && inputs.reviewed_sha == github.sha)"
+            "if: github.event_name == 'merge_group' || (github.event_name == 'workflow_dispatch' && inputs.pre_merge_admission && inputs.reviewed_sha == github.sha) || (false && github.event_name == 'pull_request' && github.event.action == 'auto_merge_enabled')"
         ),
         "Rust Small routing must skip draft pull requests and Ready/synchronize, admitting only reviewed pre-merge work"
     );

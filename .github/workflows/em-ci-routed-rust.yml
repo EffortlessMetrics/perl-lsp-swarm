@@ -25,7 +25,7 @@ on:
           - github
   pull_request:
     branches: [main]
-    types: [opened, synchronize, reopened, ready_for_review]
+    types: [opened, synchronize, reopened, ready_for_review, auto_merge_enabled]
   merge_group:
   # Keep the protected-branch event surface for discovery. Costly proof now
   # requires explicit pre-merge admission; a push skip is not baseline proof.
@@ -55,8 +55,11 @@ jobs:
   rust-small-proof:
     name: Perl LSP Rust Small governed proof
     # Routine PR and landed-push events retain discovery without allocating proof.
-    # Admission is an explicit reviewed dispatch or the native pre-merge queue.
-    if: github.event_name == 'merge_group' || (github.event_name == 'workflow_dispatch' && inputs.pre_merge_admission && inputs.reviewed_sha == github.sha)
+    # Existing admission stays dispatch/queue. The native request branch is dormant
+    # until reviewed public native-review-v1 publication and runtime qualification.
+    # Remove its literal false only with the matching pin + proof_admission contract;
+    # the immutable central owner must recheck authority after allocation, before Cargo.
+    if: github.event_name == 'merge_group' || (github.event_name == 'workflow_dispatch' && inputs.pre_merge_admission && inputs.reviewed_sha == github.sha) || (false && github.event_name == 'pull_request' && github.event.action == 'auto_merge_enabled')
     # The fixed standard capability pool is owned by EM CI. GitHub selects a
     # qualified runner; this consumer has no inventory token or host policy.
     # Upstream PR #17 published this isolated owned policy/aggregate to main.
@@ -65,7 +68,7 @@ jobs:
       profile: standard
       script: .ci/rust-standard-proof.sh
       result_script: .ci/rust-standard-result.sh
-      fetch_depth: 1
+      fetch_depth: 0
       # Keep forced-hosted and the pre-existing fork/bot isolation. Legacy
       # cx53/cx43 dispatch values now select the same governed standard pool.
       force_hosted: ${{ (github.event_name == 'workflow_dispatch' && inputs.force_target == 'github') || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || github.event.pull_request.user.type == 'Bot' || startsWith(github.event.pull_request.user.login, 'dependabot') || startsWith(github.event.pull_request.user.login, 'app/') || endsWith(github.event.pull_request.user.login, '[bot]'))) }}

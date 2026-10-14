@@ -15,7 +15,7 @@ pub fn validate(text: &str) -> TestResult<()> {
     }
     let guard = call.get("if").and_then(Value::as_str).ok_or("draft admission missing")?;
     if guard
-        != "github.event_name == 'merge_group' || (github.event_name == 'workflow_dispatch' && inputs.pre_merge_admission && inputs.reviewed_sha == github.sha)"
+        != "github.event_name == 'merge_group' || (github.event_name == 'workflow_dispatch' && inputs.pre_merge_admission && inputs.reviewed_sha == github.sha) || (false && github.event_name == 'pull_request' && github.event.action == 'auto_merge_enabled')"
     {
         return Err("drafts must skip the complete governed call".into());
     }
@@ -27,6 +27,24 @@ pub fn validate(text: &str) -> TestResult<()> {
         return Err("isolated owned policy revision drifted".into());
     }
     let inputs = call.get("with").ok_or("proof inputs missing")?;
+    if inputs.get("fetch_depth").and_then(Value::as_u64) != Some(0) {
+        return Err("native protected-base owners require full Git history".into());
+    }
+    if inputs.get("proof_admission").is_some() {
+        return Err("native mode must stay unselected until public/runtime qualification".into());
+    }
+    let events = yaml
+        .get("on")
+        .and_then(|on| on.get("pull_request"))
+        .and_then(|pr| pr.get("types"))
+        .and_then(Value::as_sequence)
+        .ok_or("native request events missing")?;
+    let expected = ["opened", "synchronize", "reopened", "ready_for_review", "auto_merge_enabled"];
+    if events.len() != expected.len()
+        || !events.iter().zip(expected).all(|(event, name)| event.as_str() == Some(name))
+    {
+        return Err("native explicit request/discovery event set drifted".into());
+    }
     for (key, expected) in [
         ("profile", "standard"),
         ("script", ".ci/rust-standard-proof.sh"),
@@ -61,6 +79,10 @@ pub fn check_contract(path: &Path) -> TestResult<()> {
         ("name: Perl LSP Rust Small governed proof", "name: Unbound proof"),
         ("inputs.pre_merge_admission && ", ""),
         ("inputs.reviewed_sha == github.sha", "true"),
+        ("false && github.event_name", "github.event_name"),
+        ("ready_for_review, auto_merge_enabled", "ready_for_review"),
+        ("fetch_depth: 0", "fetch_depth: 1"),
+        ("      fetch_depth: 0", "      proof_admission: native-review-v1\n      fetch_depth: 0"),
         ("result_script: .ci/rust-standard-result.sh", "result_script: .ci/noop.sh"),
         ("  checks: read", "  checks: write"),
     ] {
