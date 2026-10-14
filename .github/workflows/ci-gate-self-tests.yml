@@ -19,6 +19,7 @@ on:
       - 'scripts/cargo_admitted.py'
       - 'scripts/cargo_cohort.py'
       - 'scripts/tests/test_cargo_cohort.py'
+      - 'scripts/tests/test_cargo_cohort_source_plan.py'
       - 'scripts/tests/test_routed_test_cohorts.py'
       - 'scripts/tests/fixtures/routed-resolver-2/**'
       - 'xtask/src/bin/routed-test-cohorts.rs'
@@ -654,6 +655,8 @@ jobs:
           components: clippy
       - name: Run both admitted storage suites without Rust builds
         run: python3 -m unittest discover -s scripts/tests -p 'test_cargo_admitted*.py' -v
+      - name: Check fresh source traversal plans
+        run: python3 -m unittest discover -s scripts/tests -p 'test_cargo_cohort_source_plan.py' -v
       - name: Check cohort ownership and exact reclamation controls
         run: python3 -m unittest discover -s scripts/tests -p 'test_cargo_cohort.py' -v
       - name: Check staged routed producer source and runtime controls
@@ -710,7 +713,7 @@ jobs:
           else
             echo "## Cargo toolchain guard self-test FAILED" >> "$GITHUB_STEP_SUMMARY"
             echo "" >> "$GITHUB_STEP_SUMMARY"
-            echo "The guard contract regressed — a bash entrypoint could again hand builds to a cargo older than the workspace rust-version and surface it as a manifest parse error. Check the step output above." >> "$GITHUB_STEP_SUMMARY"
+            echo "The guard contract regressed — a bash entrypoint could again hand builds to a cargo older than the workspace rust-version and surface it as a manifest parse error. Check the step output above for the failed case." >> "$GITHUB_STEP_SUMMARY"
           fi
 
   release-turnkey-handoff-self-test:
