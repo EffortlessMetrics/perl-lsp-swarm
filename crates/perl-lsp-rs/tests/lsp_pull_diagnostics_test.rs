@@ -400,12 +400,20 @@ fn test_pull_diagnostics_suppressed_until_full_resync() -> Result<(), Box<dyn st
     let uri = url::Url::from_file_path(root.path().join("desync.pl")).map_err(|_| "file URI")?;
     let uri = uri.as_str();
     let server = LspServer::new();
-    let _ = server.handle_request(JsonRpcRequest {
-        _jsonrpc: "2.0".into(),
-        id: Some(perl_lsp::protocol::JsonRpcId::Integer(1_i64)),
-        method: "initialize".into(),
-        params: Some(json!({"processId": 1, "rootUri": root_uri.as_str(), "capabilities": {}})),
-    });
+    let initialized = server
+        .handle_request(JsonRpcRequest {
+            _jsonrpc: "2.0".into(),
+            id: Some(perl_lsp::protocol::JsonRpcId::Integer(1_i64)),
+            method: "initialize".into(),
+            params: Some(json!({"processId": 1, "rootUri": root_uri.as_str(), "capabilities": {}})),
+        })
+        .ok_or("initialize response")?;
+    assert!(initialized.error.is_none(), "initialize must succeed");
+    let capabilities = initialized.result.ok_or("initialize result")?;
+    assert_eq!(
+        capabilities["capabilities"]["textDocumentSync"]["change"], 1,
+        "the ranged-change refusal must exercise the advertised Full envelope"
+    );
     let _ = server.handle_request(JsonRpcRequest {
         _jsonrpc: "2.0".into(),
         id: None,
@@ -543,7 +551,8 @@ fn test_pull_diagnostics_suppressed_until_full_resync() -> Result<(), Box<dyn st
     });
     assert_eq!(pull(8, Some(recovered_id))?, json!({"kind": "full", "items": []}));
 
-    // Reopen at the same numeric version: document-instance identity must change.
+    // Reopen at the same numeric version, replacing this predecessor generation.
+    // This does not prove identity invalidation for equal-generation reopen cases.
     let _ = server.handle_request(JsonRpcRequest {
         _jsonrpc: "2.0".into(),
         id: None,
@@ -554,7 +563,7 @@ fn test_pull_diagnostics_suppressed_until_full_resync() -> Result<(), Box<dyn st
     let reopened = pull(9, Some(recovered_id))?;
     assert_eq!(reopened["kind"], "full");
     assert_eq!(reopened["items"], recovered["items"], "reopen must restore current findings");
-    assert_ne!(reopened["resultId"], recovered_id, "new instance must invalidate old ID");
+    assert_ne!(reopened["resultId"], recovered_id, "reopen must invalidate this predecessor ID");
     assert!(reopened["resultId"].is_string());
     Ok(())
 }
