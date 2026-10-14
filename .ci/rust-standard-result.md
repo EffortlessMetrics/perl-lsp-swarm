@@ -143,3 +143,52 @@ are admission evidence, not consumer qualification. Full canonical configuration
 remains NOT_PROVEN where organization variables/package reads are unavailable.
 No access, credentials, protections, required checks or release settings change
 in this continuation. Rollback still requires matched producer and protection.
+
+## Authenticated native admission prerequisite — 2026-10-14
+
+The manual-only PR path in this source is a material integration defect, not
+completed source review. GitHub documents that workflow_dispatch job checks do
+not satisfy PR branch-ruleset required checks even on the exact head:
+https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/troubleshooting-required-status-checks#checks-from-some-workflow-jobs-are-not-evaluated
+The observed merge queue is disabled. Qualification is blocked until an eligible
+native pull_request path with the accepted reviewed admission contract is complete.
+
+The existing native auto_merge_enabled request is a source design candidate,
+covered by #17068 comment 5947931025 and the current merge-reconcile procedure.
+It can exclude routine Draft/Ready/synchronize/opened/push qualification without
+creating labels, a competing approval authority or another migration. No such
+request has been issued for this work, and that source repair is not yet active.
+
+Independent challenge of a local prototype exposed a queue-time gap: a new
+ordinary CHANGES_REQUESTED after metadata admission was accepted by the semantic
+review owner. That owner deliberately delegates native requests/threads/change
+requests to the separate convergence owner. A complete admission must refresh
+both existing owners, writer permissions and native request state immediately
+before Cargo against the current reviewed PR head, base and GITHUB_SHA merge
+subject. It must reject missing, stale, draft, foreign, bot and unauthorized input.
+A metadata snapshot followed by a queued runner is insufficient for that claim.
+
+The retained a3125de central contract has no authenticated pre-Cargo owner hook.
+Its proof step exports only EM_CI_PROOF_SCRIPT; GH_TOKEN is supplied only to the
+repository result policy after proof. The native convergence owner requires
+authenticated gh/GraphQL, and public review reads cannot establish current
+unresolved threads, requested reviewers or actor permissions. Do not substitute
+another oracle or credential route. The central source owner must provide a
+reviewed, qualified pre-proof read contract (using existing read authority) or a
+verified equivalent, then coordinate its approved pin/contract consumption here.
+No central source, grant, credential, permission or protection was changed here.
+
+A rejected admission must not skip the required emitter into success. Executed
+negative controls showed the existing immutable classifier can reject an invalid
+profile before checkout/Cargo while the same aggregate fails; this is a useful
+existing seam for the eventual native path, not current consumer qualification.
+The sole published candidate remains draft and source review remains
+CHANGES_REQUIRED/BLOCKED_BY_PREREQUISITE for native admission.
+
+The separate formatter defect from native run 38531785866/job 115745128511 on
+3a81ee91/tree 87c8bbe2 was reproduced and repaired with installed Rust 1.95.0,
+rustfmt 1.9.0. Workspace cargo fmt --all -- --check passes after that repair.
+Focused native owning tests passed 33/33 under cargo-admitted; the owned process
+settled with kernel ECHILD proof and released its lease. These are genuine local
+Cargo tests and remain distinct from the 259 Python source tests, native product
+qualification, draft-no-proof RIPR 38531786079 and skipped caller 38531786447.
