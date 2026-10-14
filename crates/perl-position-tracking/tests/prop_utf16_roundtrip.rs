@@ -187,9 +187,9 @@ fn literal_cr_rows_preserve_content_and_normalize_only_separators() {
                 normalized_boundary(text, offset)
             );
         }
-        let &(start, end, _) = expected_rows.last().unwrap();
-        let eof =
-            ((expected_rows.len() - 1) as u32, text[start..end].encode_utf16().count() as u32);
+        let last_line = expected_rows.len() - 1;
+        let (start, end, _) = expected_rows[last_line];
+        let eof = (last_line as u32, text[start..end].encode_utf16().count() as u32);
         assert_eq!(offset_to_utf16_line_col(text, text.len() + 20), eof);
         assert_eq!(utf16_line_col_to_offset(text, eof.0 + 20, 20), text.len());
     }
