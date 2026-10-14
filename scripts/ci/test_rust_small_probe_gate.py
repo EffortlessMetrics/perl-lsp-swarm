@@ -21,7 +21,8 @@ class RustSmallProbeGateTests(unittest.TestCase):
                     ('valid', 'missing', 'stale', 'failed')):
                 with self.subTest(event=event, draft=draft, result=result, evidence=evidence_mode):
                     event_file.write_text(json.dumps({'pull_request': {'draft': draft, 'head': {'sha': 'b'*40}},
-                                                     'merge_group': {'head_sha': 'a'*40}}))
+                                                     'merge_group': {'head_sha': 'a'*40},
+                                                     'inputs': {'pre_merge_admission':'true','reviewed_sha':'a'*40}}))
                     evidence = {'schema':'em-ci-rust-result.v1','repository':'owner/repo','sha':'a'*40,
                                 'run_id':'123','run_attempt':'2','profile':'standard','result':'success',
                                 'proof_outcome':'success','route':'self_hosted','infrastructure_failure':'',

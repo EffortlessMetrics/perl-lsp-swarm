@@ -289,6 +289,13 @@ Otherwise detect, explain, repair, and continue.
   remote head and use a non-rewriting integration or stop;
 - stage intended paths explicitly;
 - use one worktree per genuine concurrent write claim, not per lifecycle pass;
+- keep both Cargo target and intermediate build paths private to the canonical
+  worktree; a shared lock or Git version stamp does not prevent stale sibling
+  libraries (#11650). Use the host-admitted `scripts/cargo-admitted` route or an
+  explicitly admitted equivalent; legacy `cargo-safe` does not establish isolation.
+  See [Cargo storage admission](docs/agents/CARGO_STORAGE.md). Preserve old resources;
+- bind behavioral proof to an immutable executable copied before releasing its
+  build ownership, and verify actual behavior after candidate changes;
 - run focused proof, then affected package proof, then broader proof only when risk or
   the merge gate selects it;
 - do not run repository-wide Clippy or tests after every edit.

@@ -307,6 +307,14 @@ impl ClassModel {
         !matches!(self.framework, Framework::None)
     }
 
+    /// Returns true when this package segment explicitly declared ancestry,
+    /// including an explicit empty reset (`our @ISA = ();`). Callers composing
+    /// persisted inheritance facts must treat an explicitly empty parent list
+    /// as authoritative, not as "unspecified" (#17084).
+    pub fn parents_explicit(&self) -> bool {
+        self.parents_explicit
+    }
+
     /// Return the names of Object::Pad fields that participate in constructor parameters.
     ///
     /// These are the *field* names. Callers building `Class->new(...)` keys

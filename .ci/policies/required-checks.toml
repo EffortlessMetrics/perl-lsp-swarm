@@ -3,7 +3,7 @@ source = "github-enforcement-union"
 
 # Candidate contract: the owned Rust aggregate replaces the old Rust Small
 # context only after native qualification and explicit settings approval.
-# As assembled2026-10-02, live ruleset16664791 still requires the old context.
+# As assembled 2026-10-02, live ruleset 16664791 still requires the old context.
 # The static receipt never proves live enforcement; verify the protected union.
 
 # `[[check]]` is workflow-trigger-lint input. Its `required` bit means the

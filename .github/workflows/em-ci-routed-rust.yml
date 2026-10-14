@@ -3,6 +3,16 @@ name: EM CI Routed Rust
 on:
   workflow_dispatch:
     inputs:
+      pre_merge_admission:
+        description: Execute only after coordinated review of this exact integration source.
+        required: false
+        default: false
+        type: boolean
+      reviewed_sha:
+        description: Full reviewed integration SHA; must equal the dispatched ref SHA.
+        required: false
+        default: ""
+        type: string
       force_target:
         description: Select the governed pool or force GitHub-hosted proof; cx53/cx43 are legacy pool aliases.
         required: false
@@ -17,9 +27,8 @@ on:
     branches: [main]
     types: [opened, synchronize, reopened, ready_for_review]
   merge_group:
-  # #16168: the required `Perl LSP Rust Small Result` context previously reported only
-  # on PR and merge-queue heads and never on a landed commit, so no run ever verified
-  # what actually sits on main. Landed main commits now carry their own baseline run.
+  # Keep the protected-branch event surface for discovery. Costly proof now
+  # requires explicit pre-merge admission; a push skip is not baseline proof.
   push:
     branches: [main, master]
 
@@ -45,7 +54,9 @@ env:
 jobs:
   rust-small-proof:
     name: Perl LSP Rust Small governed proof
-    if: github.event.pull_request.draft != true || github.event_name != 'pull_request'
+    # Routine PR and landed-push events retain discovery without allocating proof.
+    # Admission is an explicit reviewed dispatch or the native pre-merge queue.
+    if: github.event_name == 'merge_group' || (github.event_name == 'workflow_dispatch' && inputs.pre_merge_admission && inputs.reviewed_sha == github.sha)
     # The fixed standard capability pool is owned by EM CI. GitHub selects a
     # qualified runner; this consumer has no inventory token or host policy.
     uses: EffortlessMetrics/em-ci-workflows/.github/workflows/rust.yml@a3125de962a74e7ec2e127d41d7532f66c69334d  # isolated owned policy and aggregate

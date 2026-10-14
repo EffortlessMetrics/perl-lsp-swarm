@@ -1,7 +1,7 @@
 # Merge-ready receipt protocol
 
 Candidate migration note (2026-10-02): the owned Rust context below is proposed
-by this source candidate. Live ruleset16664791 still requires `Perl LSP Rust Small Result`
+by this source candidate. Live ruleset 16664791 still requires `Perl LSP Rust Small Result`
 until exact native qualification and an explicitly approved settings transaction.
 The other four protected identities are unchanged; this document is not live
 settings evidence. See [the migration plan](../../.ci/rust-standard-result.md).
@@ -36,14 +36,14 @@ current proof-floor contexts, by source mechanism, are:
 
 Ruleset `main` (id `16664791`, `GET /repos/{owner}/{repo}/rules/branches/main`):
 
-- `Perl LSP Rust Small governed proof / Rust CI / Required`
+- `Perl LSP Rust Small Result`
 - `ripr+ New Gap Gate`
 - `Compile All Targets (bit-rot guard)`
 - `Conflict marker check`
 - `validate-title`
 
 Classic branch protection (`GET /repos/{owner}/{repo}/branches/main/protection`)
-no longer requires any status context. Rulesets bind administrators, so none of
+is unreadable through the connector; its complete current union is NOT_PROVEN. Rulesets bind administrators, so none of
 these contexts can be bypassed by a manual admin probe while pending.
 
 This list must match the live branch protection and ruleset state exactly. It
@@ -64,8 +64,8 @@ merge-queue flow.
 ### The main-red refusal makes advisory gate shards de-facto required (#16196)
 
 `Perl LSP Rust Small governed proof / Rust CI / Required` does more than report a candidate's own
-aggregate. The `Probe main-red refusal` step of
-`.github/workflows/em-ci-routed-rust.yml` classifies exact-SHA check runs for
+aggregate. The repository result-policy entry point
+`.ci/rust-standard-result.sh` → `.ci/rust-main-red-probe.sh` classifies exact-SHA check runs for
 the eight `CI Gate shard (...)` contexts — `meta`, `foundation`,
 `parser_stack`, `analysis`, `lsp`, `support`, `corpus`, `policy` — on both
 `main` and the PR/merge-group subject, using

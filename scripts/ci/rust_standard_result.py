@@ -30,9 +30,14 @@ def policy_environment(environment):
         if pr.get('draft') is not False:
             raise ValueError('draft or ambiguous PR cannot execute result policy')
         candidate, tree = pr['head']['sha'], environment['GITHUB_SHA']
+    elif event_name == 'workflow_dispatch':
+        inputs = event.get('inputs', {})
+        if inputs.get('pre_merge_admission') != 'true' or inputs.get('reviewed_sha') != environment['GITHUB_SHA']:
+            raise ValueError('dispatch lacks exact reviewed integration admission')
+        candidate = tree = inputs['reviewed_sha']
     elif event_name == 'merge_group':
         candidate = tree = event['merge_group']['head_sha']
-    if event_name in ('pull_request', 'merge_group') and any(not re.fullmatch('[0-9a-f]{40}', value) for value in (candidate, tree)):
+    if event_name in ('pull_request', 'merge_group', 'workflow_dispatch') and any(not re.fullmatch('[0-9a-f]{40}', value) for value in (candidate, tree)):
         raise ValueError('event subject is absent')
     return dict(mapped, REPOSITORY=environment['GITHUB_REPOSITORY'], EVENT_NAME=event_name,
                 CANDIDATE_SHA=candidate, EFFECTIVE_WORKFLOW_TREE=tree)

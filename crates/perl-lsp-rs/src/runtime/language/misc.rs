@@ -2037,6 +2037,303 @@ impl LspServer {
         Ok(Some(json!([])))
     }
 
+    /// Run `perl.runCritic` for an open document through
+    /// [`NativeCriticService::analyze`] (#6969).
+    ///
+    /// Returns `None` when the target is not an open document, so the caller
+    /// keeps the existing provider (disk) path for unopened files. For an
+    /// open document the analyzed subject is the in-memory text and its
+    /// current-generation parse snapshot, bound to the accepted critic
+    /// snapshot captured for that document — the same subject composition
+    /// pull diagnostics use. A run that is not publishable, or whose subject
+    /// moved while rules evaluated, yields an explicit non-success `status`
+    /// with no violations rather than stale findings.
+    fn run_critic_for_open_document(
+        &self,
+        arguments: &[Value],
+    ) -> Option<Result<Option<Value>, JsonRpcError>> {
+        use perl_lsp_rs_core::tooling::perl_critic::{
+            NativeCriticRunCompleteness, NativeCriticService, NativeCriticSubject, RunGate,
+            critic_source_identity_for_uri,
+        };
+
+        let raw_target = arguments.first()?.as_str()?;
+        // Same argument-length rejection as the provider disk path
+        // (`resolve_path_from_args`), applied before any open-document match.
+        const MAX_ARG_LENGTH: usize = 4096;
+        if raw_target.len() > MAX_ARG_LENGTH {
+            let original = format!(
+                "Path resolution failed: Argument too long ({} bytes, max {})",
+                raw_target.len(),
+                MAX_ARG_LENGTH
+            );
+            return Some(Err(JsonRpcError {
+                code: -32603,
+                message: format!("Execute command failed: {original}"),
+                data: Some(json!({
+                    "command": "perl.runCritic",
+                    "errorType": "executeCommand",
+                    "originalError": original
+                })),
+            }));
+        }
+
+        // Workspace roots, collected the same way `handle_execute_command`
+        // collects them for the provider.
+        let mut workspace_roots: Vec<PathBuf> = Vec::new();
+        if let Some(root_path) = self.root_path.lock().clone() {
+            workspace_roots.push(root_path);
+        }
+        {
+            let folders = self.workspace_folders.lock();
+            for folder in folders.iter() {
+                if let Ok(parsed) = url::Url::parse(&folder.uri)
+                    && let Ok(path) = parsed.to_file_path()
+                    && !workspace_roots.contains(&path)
+                {
+                    workspace_roots.push(path);
+                }
+            }
+        }
+
+        // Candidate URIs for open-document matching. Relative targets are
+        // normalized against the current directory and each workspace root
+        // (the provider canonicalizes relative paths), so dirty buffers
+        // addressed by a relative path are found instead of falling through
+        // to disk.
+        let candidate_uris: Vec<String> = if raw_target.starts_with("file://") {
+            vec![raw_target.to_string()]
+        } else {
+            let raw_path = PathBuf::from(raw_target);
+            let bases: Vec<PathBuf> = if raw_path.is_absolute() {
+                vec![raw_path]
+            } else {
+                let mut bases = Vec::new();
+                if let Ok(cwd) = std::env::current_dir() {
+                    bases.push(cwd.join(&raw_path));
+                }
+                for root in &workspace_roots {
+                    bases.push(root.join(&raw_path));
+                }
+                bases.push(raw_path);
+                bases
+            };
+            let mut uris = Vec::new();
+            for base in bases {
+                let resolved = base.canonicalize().unwrap_or(base);
+                if let Ok(url) = url::Url::from_file_path(&resolved)
+                    && !uris.contains(&url.to_string())
+                {
+                    uris.push(url.to_string());
+                }
+            }
+            uris
+        };
+        if candidate_uris.is_empty() {
+            return None;
+        }
+
+        // Clone the document snapshot under a brief lock; rule evaluation
+        // below runs with no document lock held (#9062).
+        let (doc_uri, doc) = {
+            let documents = self.documents.lock();
+            let mut found = None;
+            'outer: for candidate_uri in &candidate_uris {
+                for key in Self::uri_key_variants(candidate_uri) {
+                    if let Some(doc) = documents.get(&key) {
+                        found = Some((key, doc.clone()));
+                        break 'outer;
+                    }
+                }
+            }
+            found?
+        };
+
+        // Filesystem-path form for this document, matching the provider disk
+        // path's `file` field (canonical path, not a URI), plus the workspace
+        // containment check the provider enforces.
+        let doc_fs_path: PathBuf = url::Url::parse(&doc_uri)
+            .ok()
+            .and_then(|url| url.to_file_path().ok())
+            .or_else(|| crate::workspace_index::uri_to_fs_path(&doc_uri))?;
+        let canonical_doc_path = doc_fs_path.canonicalize().unwrap_or_else(|_| doc_fs_path.clone());
+        let display_file = canonical_doc_path.to_string_lossy().into_owned();
+        let effective_roots: Vec<PathBuf> = if workspace_roots.is_empty() {
+            match std::env::current_dir() {
+                Ok(cwd) => vec![cwd],
+                Err(_) => Vec::new(),
+            }
+        } else {
+            workspace_roots.clone()
+        };
+        // Compare with extended-length (`\\?\`) prefixes stripped so an
+        // unsaved dirty buffer (whose path cannot canonicalize) inside a
+        // workspace root is not spuriously rejected.
+        let strip_extended = |path: &Path| -> PathBuf {
+            let text = path.to_string_lossy();
+            let stripped = text
+                .strip_prefix(r"\\?\UNC\")
+                .map(|rest| format!(r"\\{rest}"))
+                .or_else(|| text.strip_prefix(r"\\?\").map(ToOwned::to_owned));
+            stripped.map(PathBuf::from).unwrap_or_else(|| path.to_path_buf())
+        };
+        let comparable_doc = strip_extended(&canonical_doc_path);
+        let inside_workspace = effective_roots.iter().any(|root| {
+            let canonical_root = root.canonicalize().unwrap_or_else(|_| root.clone());
+            comparable_doc.starts_with(strip_extended(&canonical_root))
+                || doc_fs_path.starts_with(root)
+        });
+        if !inside_workspace {
+            let original = format!(
+                "Path resolution failed: Path traversal detected: {display_file} is outside workspace boundaries"
+            );
+            return Some(Err(JsonRpcError {
+                code: -32603,
+                message: format!("Execute command failed: {original}"),
+                data: Some(json!({
+                    "command": "perl.runCritic",
+                    "errorType": "executeCommand",
+                    "originalError": original
+                })),
+            }));
+        }
+
+        let stale_result = |status: &str, reason: &str| {
+            Some(Ok(Some(json!({
+                "status": status,
+                "error": reason,
+                "violations": [],
+                "violationCount": 0,
+                "analyzerUsed": "native"
+            }))))
+        };
+
+        let Some(parsed) = doc.current_parsed() else {
+            return stale_result("stale", "open document has no current-generation parse snapshot");
+        };
+        let Some(ast) = parsed.ast().cloned() else {
+            // No AST: the disk provider path reports a Syntax::ParseError
+            // violation for this case; emit the equivalent here.
+            if parsed.parse_errors().is_empty() {
+                return stale_result("stale", "open document parse produced no AST");
+            }
+            let violations: Vec<Value> = parsed
+                .parse_errors()
+                .iter()
+                .map(|error| {
+                    json!({
+                        "policy": "Syntax::ParseError",
+                        "description": format!("Syntax error: {error}"),
+                        "explanation": "This code contains a syntax error that prevents parsing. Fix the syntax error before running additional checks.",
+                        "severity": 1,
+                        "line": 1,
+                        "column": 1,
+                        "file": display_file
+                    })
+                })
+                .collect();
+            let violation_count = violations.len();
+            return Some(Ok(Some(json!({
+                "status": "success",
+                "violations": violations,
+                "violationCount": violation_count,
+                "analyzerUsed": "native"
+            }))));
+        };
+        let source_text: std::sync::Arc<str> = std::sync::Arc::from(parsed.source());
+        let generation = doc.current_generation();
+        let document_instance = std::sync::Arc::clone(&doc.generation);
+        let diagnostic_analysis = parsed.diagnostic_analysis();
+
+        let snapshot = self.capture_accepted_critic(&doc_uri);
+        let documents_handle = std::sync::Arc::clone(&self.documents);
+        let gate_uri = doc_uri.clone();
+        let gate_snapshot = snapshot.clone();
+        let is_current = || {
+            let doc_still_current = {
+                let documents = documents_handle.lock();
+                documents.get(&gate_uri).is_some_and(|live| {
+                    std::sync::Arc::ptr_eq(&live.generation, &document_instance)
+                        && live.current_generation() == generation
+                })
+            };
+            doc_still_current && self.capture_accepted_critic(&gate_uri) == gate_snapshot
+        };
+
+        // Merged lint contributors (#11918): pull diagnostics feed the
+        // service the core diagnostics' critic-overlap observations, so a
+        // built-in finding (e.g. PL603 for `system($cmd)`) merges with its
+        // native alias into one logical row. Compute the same core set for
+        // this document and offer its observations, for pull parity.
+        let overlap_observations = {
+            use perl_lsp_rs_core::providers::diagnostics::{
+                DiagnosticsProvider, critic_overlap_observations,
+            };
+            let provider = match parsed.regex_analysis().cloned() {
+                Some(table) => DiagnosticsProvider::new().with_regex_analysis(table),
+                None => DiagnosticsProvider::new(),
+            };
+            let core_diagnostics = provider.get_diagnostics_with_path_with_analysis(
+                &ast,
+                parsed.parse_errors(),
+                &source_text,
+                None,
+                &[],
+                Some(&canonical_doc_path),
+                None,
+                diagnostic_analysis.as_deref(),
+            );
+            critic_overlap_observations(&core_diagnostics)
+        };
+
+        let subject = NativeCriticSubject::accepted(
+            &doc_uri,
+            critic_source_identity_for_uri(&doc_uri, generation),
+            &ast,
+            &source_text,
+            snapshot.state().clone(),
+            overlap_observations,
+            RunGate::open(),
+            RunGate::new(&is_current),
+        );
+        let run = NativeCriticService::analyze(match diagnostic_analysis.as_deref() {
+            Some(analysis) => subject.with_analysis(analysis),
+            None => subject,
+        });
+
+        if !run.is_publishable() || !is_current() {
+            let status = match run.completeness() {
+                NativeCriticRunCompleteness::Cancelled => "cancelled",
+                _ => "stale",
+            };
+            return stale_result(status, "native critic run is not publishable for current text");
+        }
+
+        let violations: Vec<Value> = run
+            .findings()
+            .iter()
+            .map(|finding| {
+                json!({
+                    "policy": finding.public_code(),
+                    "description": finding.user_visible_message(),
+                    "explanation": finding.explanation().unwrap_or_default(),
+                    "severity": finding.severity() as u8,
+                    "line": (finding.range().start.line + 1) as usize,
+                    "column": (finding.range().start.column + 1) as usize,
+                    "file": display_file
+                })
+            })
+            .collect();
+
+        let violation_count = violations.len();
+        Some(Ok(Some(json!({
+            "status": "success",
+            "violations": violations,
+            "violationCount": violation_count,
+            "analyzerUsed": "native"
+        }))))
+    }
+
     /// Handle execute command request
     pub(crate) fn handle_execute_command(
         &self,
@@ -2065,6 +2362,16 @@ impl LspServer {
             }
 
             tracing::debug!(command, "Executing command");
+
+            // #6969: an open document is analyzed from its in-memory text
+            // through the native critic service (the pull-diagnostics
+            // entrypoint), never from disk. Unopened targets fall through to
+            // the provider path unchanged.
+            if command == "perl.runCritic"
+                && let Some(result) = self.run_critic_for_open_document(&arguments)
+            {
+                return result;
+            }
 
             // Use the new execute command provider for new commands
             // Collect workspace roots, deduplicating to avoid redundant security checks

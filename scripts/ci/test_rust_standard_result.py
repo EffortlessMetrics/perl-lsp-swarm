@@ -50,6 +50,17 @@ class PolicyTests(unittest.TestCase):
         self.assertEqual(result['CANDIDATE_SHA'],'b'*40)
         self.assertEqual(result['EFFECTIVE_WORKFLOW_TREE'],'a'*40)
         self.assertNotIn('EM_CI_CALL_RESULT',result)
+    def test_dispatch_binds_reviewed_integration_to_refusal(self):
+        self.event.write_text(json.dumps({'inputs': {'pre_merge_admission':'true', 'reviewed_sha':'a'*40}}))
+        result=policy_environment(dict(self.env,GITHUB_EVENT_NAME='workflow_dispatch'))
+        self.assertEqual(result['CANDIDATE_SHA'],'a'*40)
+        self.assertEqual(result['EFFECTIVE_WORKFLOW_TREE'],'a'*40)
+        for admission, sha in [('false','a'*40), ('true','b'*40), ('true',''), ('','a'*40)]:
+            with self.subTest(admission=admission,sha=sha):
+                self.event.write_text(json.dumps({'inputs':{'pre_merge_admission':admission,'reviewed_sha':sha}}))
+                with self.assertRaises(ValueError):
+                    policy_environment(dict(self.env,GITHUB_EVENT_NAME='workflow_dispatch'))
+
     def test_missing_failed_and_stale_proof_rejected(self):
         for changes in ({'EM_CI_SELECTED_PROOF_RESULT':'failure'},{'EM_CI_SELECTED_PROOF_RESULT':''},{'GITHUB_RUN_ATTEMPT':'3'},{'GITHUB_SHA':'c'*40},{'GITHUB_EVENT_NAME':'workflow_run'}):
             with self.assertRaises(ValueError):policy_environment(dict(self.env,**changes))

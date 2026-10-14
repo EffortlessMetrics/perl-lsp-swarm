@@ -11,9 +11,12 @@ paths, ownership, acceptance criteria, and proof commands against the code and
 current GitHub state. Historical comments and labels are useful receipts, but
 they do not override current source or live checks.
 
-The root [AGENTS.md](../../AGENTS.md) is the stable role router. The detailed
-method and recovery rules are in [CLAUDE.md](../../CLAUDE.md) and the
-[development method](../agents/DEVELOPMENT_METHOD.md).
+Use the route map for your provider: [AGENTS.md](../../AGENTS.md) and
+`.agents/skills/` for Codex, or [CLAUDE.md](../../CLAUDE.md) and
+`.claude/skills/` for Claude Code. The shared method and recovery rules are in
+the [development method](../agents/DEVELOPMENT_METHOD.md). Check the
+[authority status](../agents/AUTHORITY_STATUS.md) before relying on older agent
+or orchestration documents.
 
 ## Shape one bounded claim
 

@@ -100,8 +100,8 @@ def validate_rust_small_route_contract(workflow_text: str, proof_text: str | Non
     expected_force = "${{ (github.event_name == 'workflow_dispatch' && inputs.force_target == 'github') || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || github.event.pull_request.user.type == 'Bot' || startsWith(github.event.pull_request.user.login, 'dependabot') || startsWith(github.event.pull_request.user.login, 'app/') || endsWith(github.event.pull_request.user.login, '[bot]'))) }}"
     if inputs.get("force_hosted") != expected_force:
         raise AssertionError("forced hosted/fork/bot isolation drifted")
-    if call.get("if") != "github.event.pull_request.draft != true || github.event_name != 'pull_request'":
-        raise AssertionError("draft proof admission drifted")
+    if call.get("if") != "github.event_name == 'merge_group' || (github.event_name == 'workflow_dispatch' && inputs.pre_merge_admission && inputs.reviewed_sha == github.sha)":
+        raise AssertionError("explicit pre-merge proof admission drifted")
     active_lines = active_code_lines(proof_text)
     active = "\n".join(active_lines)
     if "set -euo pipefail" not in active_lines:
@@ -293,7 +293,7 @@ class RustSmallRouteContractTests(unittest.TestCase):
             validate_rust_small_route_contract(self.workflow_text, self.proof_text.replace("set -euo pipefail", "set +e"))
 
     def test_caller_mutations_fail_closed(self) -> None:
-        for old, new in (("name: Perl LSP Rust Small governed proof", "name: Unbound proof"), ("profile: standard", "profile: heavy"), ("script: .ci/rust-standard-proof.sh", "script: .ci/other.sh"), ("fetch_depth: 1", "fetch_depth: 0"), (".github/workflows/rust.yml@a3125de962a74e7ec2e127d41d7532f66c69334d", ".github/workflows/rust.yml@main"), ("inputs.force_target == 'github'", "inputs.force_target == 'auto'"), (" || endsWith(github.event.pull_request.user.login, '[bot]')", ""), ("    with:\n", "    secrets: inherit\n    with:\n"), ("    if: github.event.pull_request.draft != true", "    if: github.event.pull_request.draft == true"), ("  rust-small-proof:\n", "  removed:\n")):
+        for old, new in (("name: Perl LSP Rust Small governed proof", "name: Unbound proof"), ("profile: standard", "profile: heavy"), ("script: .ci/rust-standard-proof.sh", "script: .ci/other.sh"), ("fetch_depth: 1", "fetch_depth: 0"), (".github/workflows/rust.yml@a3125de962a74e7ec2e127d41d7532f66c69334d", ".github/workflows/rust.yml@main"), ("inputs.force_target == 'github'", "inputs.force_target == 'auto'"), (" || endsWith(github.event.pull_request.user.login, '[bot]')", ""), ("    with:\n", "    secrets: inherit\n    with:\n"), ("inputs.pre_merge_admission && ", ""), ("inputs.reviewed_sha == github.sha", "true"), ("github.event_name == 'merge_group'", "github.event_name == 'pull_request'"), ("  rust-small-proof:\n", "  removed:\n")):
             with self.subTest(old=old):
                 broken = self.workflow_text.replace(old, new, 1)
                 self.assertNotEqual(broken, self.workflow_text)

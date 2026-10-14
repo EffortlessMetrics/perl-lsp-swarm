@@ -66,6 +66,10 @@ if [[ "${1:-}" == "--no-optional-locks" ]]; then
   shift
 fi
 
+if [[ "${1:-}" == "-c" && "${2:-}" == "maintenance.auto=false" ]]; then
+  shift 2
+fi
+
 handle_rev_parse() {
   if [[ "$*" == *"--path-format=absolute --git-common-dir"* ]]; then
     printf '%s/.git\n' "${MOCK_REPO_ROOT}"
@@ -533,13 +537,126 @@ test_squash_merged_branch_without_remote_is_removed() {
   local case_dir output
   case_dir="$(new_case squash-merged)"
   write_worktree_list "$case_dir" "feature/squash-merged"
-  printf '[{"number":99}]\n' > "${case_dir}/merged-pr"
+  printf '[{"number":99,"headRefOid":"abc123"}]\n' > "${case_dir}/merged-pr"
 
   output="$(run_cleanup_dry_run "$case_dir")"
 
   assert_contains "squash-merged branch is marked landed" "$output" "landed"
   assert_contains "squash-merged branch action is REMOVE" "$output" "REMOVE"
   assert_no_destructive_commands "dry-run does not remove squash-merged worktrees" "$case_dir"
+}
+
+# Regression test for #17404: `landed` matches by branch NAME, so a reused or
+# locally-advanced branch can match a stale merged PR while HEAD still carries
+# commits that exist nowhere else. Unpushed commits must veto removal before
+# the landed verdict is acted on.
+test_reused_branch_name_with_unpushed_commits_keeps_tree() {
+  local case_dir output worktree_path
+  case_dir="$(new_case reused-unpushed)"
+  write_worktree_list "$case_dir" "fix/reused"
+  worktree_path="${case_dir}/repo/.claude/worktrees/fix-reused"
+  printf '1\n' > "${case_dir}/remote-branch"
+  printf '2\n' > "${case_dir}/ahead-count"
+  printf '[{"number":42,"headRefOid":"stale-tip-not-abc123"}]\n' > "${case_dir}/merged-pr"
+
+  output="$(run_cleanup_dry_run "$case_dir")"
+
+  assert_contains "reused branch name with unpushed commits reports unpushed count" "$output" "unpushed:2"
+  assert_contains "reused branch name with unpushed commits is kept" "$output" "KEEP"
+  assert_not_contains "reused branch name with unpushed commits is not judged landed" "$output" "landed"
+  assert_no_destructive_commands "reused branch dry-run removes nothing" "$case_dir"
+  if [[ -d "$worktree_path" ]]; then
+    pass "reused branch worktree directory still exists"
+  else
+    fail "reused branch worktree directory still exists"
+  fi
+
+  # The mutating sweep must veto removal the same way: no worktree remove and
+  # no branch deletion may even be attempted.
+  case_dir="$(new_case reused-unpushed-real)"
+  write_worktree_list "$case_dir" "fix/reused"
+  printf '1\n' > "${case_dir}/remote-branch"
+  printf '2\n' > "${case_dir}/ahead-count"
+  printf '[{"number":42,"headRefOid":"stale-tip-not-abc123"}]\n' > "${case_dir}/merged-pr"
+
+  output="$(run_cleanup_real "$case_dir")"
+
+  assert_contains "mutating sweep keeps the reused branch with unpushed commits" "$output" "unpushed:2"
+  assert_contains "mutating sweep keeps the reused branch action KEEP" "$output" "KEEP"
+  assert_no_destructive_commands "mutating sweep attempts no removal for unpushed commits" "$case_dir"
+  assert_not_contains "mutating sweep issues no worktree remove" \
+    "$(cat "${case_dir}/git.log")" "worktree remove"
+}
+
+# A merged-PR name match without a tip match proves nothing: the branch name
+# may be reused while HEAD carries new commits, and with no remote-tracking
+# ref there is no ahead count to veto with. The verdict must be KEEP, never
+# landed REMOVE.
+test_stale_pr_name_without_tip_match_keeps_tree() {
+  local case_dir output worktree_path
+  case_dir="$(new_case stale-tip-no-remote)"
+  write_worktree_list "$case_dir" "fix/reused"
+  worktree_path="${case_dir}/repo/.claude/worktrees/fix-reused"
+  printf '[{"number":42,"headRefOid":"stale-tip-not-abc123"}]\n' > "${case_dir}/merged-pr"
+
+  output="$(run_cleanup_dry_run "$case_dir")"
+
+  assert_not_contains "stale tip without remote is not judged landed" "$output" "landed"
+  assert_contains "stale tip without remote is kept" "$output" "KEEP"
+  assert_no_destructive_commands "stale-tip dry-run removes nothing" "$case_dir"
+  if [[ -d "$worktree_path" ]]; then
+    pass "stale-tip worktree directory still exists"
+  else
+    fail "stale-tip worktree directory still exists"
+  fi
+
+  case_dir="$(new_case stale-tip-no-remote-real)"
+  write_worktree_list "$case_dir" "fix/reused"
+  printf '[{"number":42,"headRefOid":"stale-tip-not-abc123"}]\n' > "${case_dir}/merged-pr"
+
+  output="$(run_cleanup_real "$case_dir")"
+
+  assert_not_contains "mutating sweep does not judge a stale tip landed" "$output" "landed"
+  assert_contains "mutating sweep keeps the stale-tip branch" "$output" "KEEP"
+  assert_no_destructive_commands "mutating sweep attempts no removal for a stale tip" "$case_dir"
+  assert_not_contains "mutating sweep issues no worktree remove for a stale tip" \
+    "$(cat "${case_dir}/git.log")" "worktree remove"
+}
+
+# Proven ancestry in the base settles the worktree even when the feature ref
+# is stale: the ahead count must not veto proof that HEAD is already in the
+# base.
+test_ancestry_with_stale_feature_ref_still_removes() {
+  local case_dir output
+  case_dir="$(new_case ancestry-stale-ref)"
+  write_worktree_list "$case_dir" "feature/stale-ref"
+  printf 'abc123\n' > "${case_dir}/merged-heads"
+  printf '1\n' > "${case_dir}/remote-branch"
+  printf '2\n' > "${case_dir}/ahead-count"
+
+  output="$(run_cleanup_dry_run "$case_dir")"
+
+  assert_contains "ancestry-proven branch is marked landed despite stale ref" "$output" "landed"
+  assert_contains "ancestry-proven branch action is REMOVE" "$output" "REMOVE"
+  assert_not_contains "stale ref does not misreport unpushed" "$output" "unpushed"
+  assert_no_destructive_commands "dry-run does not remove ancestry-proven worktrees" "$case_dir"
+}
+
+# rev-list is purely local, so a failed fetch must not zero the ahead count:
+# last-known unpushed commits still veto removal.
+test_fetch_failure_with_ahead_count_keeps_tree() {
+  local case_dir output
+  case_dir="$(new_case fetch-fail-ahead)"
+  write_worktree_list "$case_dir" "feature/fetch-fail-ahead"
+  printf '1\n' > "${case_dir}/remote-branch"
+  printf 'fetch-fail\n' > "${case_dir}/fetch-fail"
+  printf '3\n' > "${case_dir}/ahead-count"
+
+  output="$(run_cleanup_real "$case_dir")"
+
+  assert_contains "fetch failure with ahead count reports unpushed" "$output" "unpushed:3"
+  assert_contains "fetch failure with ahead count action is KEEP" "$output" "KEEP"
+  assert_no_destructive_commands "fetch failure with ahead count removes nothing" "$case_dir"
 }
 
 # The NOT_PROVEN downgrade guards a fetch that was attempted and failed, leaving
@@ -591,6 +708,7 @@ test_real_run_fetches_without_global_prune() {
   output="$(run_cleanup_real "$case_dir")"
 
   assert_git_log_contains "real run refreshes remote refs" "$case_dir" "fetch"
+  assert_git_log_contains "real run fetch maintenance guard" "$case_dir" "maintenance.auto=false"
   assert_not_contains "real run preserves unrelated administrative metadata" \
     "$(cat "${case_dir}/git.log")" "worktree prune"
   assert_contains "real run reports fresh remote refs" "$output" "Remote refs: fresh"
@@ -816,6 +934,10 @@ test_branch_without_remote_is_kept
 test_managed_owner_keeps_pushed_worktree
 test_json_escapes_special_characters
 test_squash_merged_branch_without_remote_is_removed
+test_reused_branch_name_with_unpushed_commits_keeps_tree
+test_stale_pr_name_without_tip_match_keeps_tree
+test_ancestry_with_stale_feature_ref_still_removes
+test_fetch_failure_with_ahead_count_keeps_tree
 test_fetch_failure_keeps_ambiguous_remote_branch
 test_dry_run_performs_no_mutating_git_commands
 test_real_run_fetches_without_global_prune
