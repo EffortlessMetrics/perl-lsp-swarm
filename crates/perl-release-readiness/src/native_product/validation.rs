@@ -3,8 +3,8 @@
 use serde::Deserialize;
 
 use super::{
-    NATIVE_PRODUCT_KIND, NATIVE_PRODUCT_ROWS, NATIVE_PRODUCT_SCHEMA_VERSION, NativeProductReadiness,
-    NativeProductRow, NativeProductVerdict, verdict_for,
+    NATIVE_PRODUCT_KIND, NATIVE_PRODUCT_ROWS, NATIVE_PRODUCT_SCHEMA_VERSION,
+    NativeProductReadiness, NativeProductRow, NativeProductVerdict, verdict_for,
 };
 
 /// Untrusted wire shape. Only the checked conversion constructs a parsed payload.
@@ -82,7 +82,8 @@ mod tests {
     }
 
     #[test]
-    fn valid_packet_preserves_rows_evidence_and_serialized_bytes() -> Result<(), serde_json::Error> {
+    fn valid_packet_preserves_rows_evidence_and_serialized_bytes() -> Result<(), serde_json::Error>
+    {
         let value = packet();
         let parsed: NativeProductReadiness = serde_json::from_value(value.clone())?;
         assert_eq!(serde_json::to_value(&parsed)?, value);
