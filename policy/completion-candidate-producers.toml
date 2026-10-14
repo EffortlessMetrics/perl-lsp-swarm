@@ -213,7 +213,14 @@ outcome_owner = "#10230"
 # what the existing workspace method row can restore for an explicitly reset
 # reopened package — a source re-audit, not a claim that completion behavior is
 # unchanged. Digest recomputed over the edited sources.
-source_digest = "sha256:e76cbcaf7fdb76f24aded7fb9c9037dc0f2c532d8dfd6d55f2de2ad394f7338a"
+# Re-anchor 2026-10-14 (merge of origin/main into #16984): main moved scanned
+# completion source lexical_context.rs with a test-only edit (must-context
+# migration inside `#[cfg(test)] mod tests`); no producer behavior change, no
+# producer add/remove/re-channel and no entry/finalizer change. All other
+# merged files (perltidy outcome/checked, formatting legacy, diagnostics
+# internal_types, perl_critic analyzer/service, hover) are outside the 42 scan
+# roots. Digest recomputed over the merged tree.
+source_digest = "sha256:e61f76dcbb280b69fdf5aa31aa462c106219122c60f1f5153bda2e1b49f52a91"
 
 [[delegations]]
 module = "dancer2"
