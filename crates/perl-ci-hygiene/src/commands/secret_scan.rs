@@ -171,10 +171,25 @@ fn scan_pr_body_into(findings: &mut Vec<secret_scan::SecretFinding>) -> Result<S
 /// boundaries by the ` b/` separator, so an ambient `diff.noprefix=true`
 /// would emit boundaries it cannot attribute and silently report every file
 /// as clean — a false green driven by config the guard does not own.
+///
+/// `--text` forces the patch open: git's binary detection (a PR-head
+/// `-diff` attribute in `.gitattributes`, or a NUL byte in the content)
+/// would otherwise collapse the file to `Binary files differ` with no hunks
+/// and hide every token-shaped added line (#17906). Both triggers sit on the
+/// hostile side of the trust boundary, so the read — not the repo's
+/// attributes — decides what the scanner sees.
 fn read_diff(repo_root: &Path, base: &str) -> Result<String> {
     let output = Command::new("git")
         .current_dir(repo_root)
-        .args(["diff", "--unified=0", "--no-color", "--src-prefix=a/", "--dst-prefix=b/", base])
+        .args([
+            "diff",
+            "--text",
+            "--unified=0",
+            "--no-color",
+            "--src-prefix=a/",
+            "--dst-prefix=b/",
+            base,
+        ])
         .output()
         .map_err(|error| eyre!("failed to run `git diff` against '{base}': {error}"))?;
 
@@ -197,6 +212,10 @@ fn read_diff(repo_root: &Path, base: &str) -> Result<String> {
 /// `HEAD` there are no commits at all, so a failed `git log` degrades to an
 /// empty history rather than erroring a subject that cannot exist. Any other
 /// failure fails the gate closed.
+///
+/// `--text` forces the patch open for the same reason [`read_diff`] does: a
+/// `-diff` attribute or a NUL byte must not mute the history leg (#17906) —
+/// it is exactly where a secret added and removed inside the range lives.
 fn read_history_diff(repo_root: &Path, base: &str) -> Result<String> {
     let range = if base == EMPTY_TREE_SHA { "HEAD".to_owned() } else { format!("{base}..HEAD") };
     let output = Command::new("git")
@@ -205,6 +224,7 @@ fn read_history_diff(repo_root: &Path, base: &str) -> Result<String> {
             "log",
             "-p",
             "-m",
+            "--text",
             "--format=commit %H",
             "--no-color",
             "--unified=0",
@@ -258,6 +278,47 @@ mod tests {
         let code = check(&repo, Some(&base))?;
 
         assert_eq!(code, 1, "a secret removed inside the range must still be reported");
+        std::fs::remove_dir_all(repo)?;
+        Ok(())
+    }
+
+    /// Reports a secret hidden behind a PR-head `-diff` attribute: git's
+    /// binary detection collapses the file to `Binary files differ` with no
+    /// hunks, so only a text-forced diff read can put the token line in front
+    /// of the scanner (#17906). The attribute is attacker-controlled — it
+    /// rides in the same PR head the gate is judging.
+    #[test]
+    fn check_reports_a_secret_behind_a_minus_diff_attribute() -> Result<()> {
+        let repo = fixture_repo()?;
+        let token = format!("ghp_{}", "A".repeat(36));
+        commit_file(&repo, "ok.rs", "benign content\n", "benign base")?;
+        let base = rev_parse(&repo, "HEAD")?;
+        commit_file(&repo, ".gitattributes", "leak.txt -diff\n", "hide the leak from diff")?;
+        commit_file(&repo, "leak.txt", &format!("token = \"{token}\"\n"), "add token")?;
+
+        let code = check(&repo, Some(&base))?;
+
+        assert_eq!(code, 1, "a -diff attribute must not hide a token from the gate");
+        std::fs::remove_dir_all(repo)?;
+        Ok(())
+    }
+
+    /// Reports a secret in a NUL-carrying file: a NUL byte alone flips git's
+    /// binary detection and drops the patch text, so an unforced read would
+    /// scan nothing and report green (#17906).
+    #[test]
+    fn check_reports_a_secret_in_a_nul_carrying_file() -> Result<()> {
+        let repo = fixture_repo()?;
+        let token = format!("ghp_{}", "C".repeat(36));
+        commit_file(&repo, "ok.rs", "benign content\n", "benign base")?;
+        let base = rev_parse(&repo, "HEAD")?;
+        let mut content = format!("token = \"{token}\"\n").into_bytes();
+        content.push(0);
+        commit_bytes(&repo, "leak.bin", &content, "add token behind a NUL byte")?;
+
+        let code = check(&repo, Some(&base))?;
+
+        assert_eq!(code, 1, "a NUL byte must not hide a token from the gate");
         std::fs::remove_dir_all(repo)?;
         Ok(())
     }
@@ -442,6 +503,14 @@ mod tests {
     }
 
     fn commit_file(repo: &Path, name: &str, content: &str, message: &str) -> Result<()> {
+        std::fs::write(repo.join(name), content)?;
+        git(repo, &["add", name])?;
+        git(repo, &["commit", "--quiet", "-m", message])?;
+        Ok(())
+    }
+
+    /// Commits raw bytes: the NUL-carrying shape no `&str` helper can express.
+    fn commit_bytes(repo: &Path, name: &str, content: &[u8], message: &str) -> Result<()> {
         std::fs::write(repo.join(name), content)?;
         git(repo, &["add", name])?;
         git(repo, &["commit", "--quiet", "-m", message])?;

@@ -40,6 +40,11 @@ mod install {
 # crates/perl-ci-hygiene/src/secret_scan.rs; the required secret_scan gate
 # re-scans the same shapes over the PR diff + body, so --no-verify bypasses
 # the hook but not the gate.
+#
+# Every patch-producing git read below forces text mode (#17906): binary
+# detection (a -diff attribute in .gitattributes, or a NUL byte in the
+# content) would otherwise collapse the file to "Binary files differ" with
+# no hunks and hide its added lines from the scan.
 SECRET_SCAN_RULE_GITHUB='gh[pousr]_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{22}_[A-Za-z0-9]{59}'
 SECRET_SCAN_RULE_AWS='AKIA[0-9A-Z]{16}'
 SECRET_SCAN_RULE_SLACK='xox[baprs]-[A-Za-z0-9-]{10,48}'
@@ -130,7 +135,7 @@ secret_scan_staged() {
     while IFS= read -r -d '' file; do
         [ -z "$file" ] && continue
         secret_scan_allowed "$file" && continue
-        if ! diff="$(git --literal-pathspecs -c core.quotePath=false diff --cached --unified=0 --no-color --src-prefix=a/ --dst-prefix=b/ -- "$file" 2>/dev/null)"; then
+        if ! diff="$(git --literal-pathspecs -c core.quotePath=false diff --cached --text --unified=0 --no-color --src-prefix=a/ --dst-prefix=b/ -- "$file" 2>/dev/null)"; then
             rm -f "$list_tmp"
             secret_scan_cannot_evaluate commit "git diff --cached for $file failed"
             return 1
@@ -198,13 +203,13 @@ secret_scan_range() {
     while IFS= read -r -d '' file; do
         [ -z "$file" ] && continue
         secret_scan_allowed "$file" && continue
-        if ! diff="$(git --literal-pathspecs -c core.quotePath=false diff --unified=0 --no-color --src-prefix=a/ --dst-prefix=b/ "$base" "$1" -- "$file" 2>/dev/null)"; then
+        if ! diff="$(git --literal-pathspecs -c core.quotePath=false diff --text --unified=0 --no-color --src-prefix=a/ --dst-prefix=b/ "$base" "$1" -- "$file" 2>/dev/null)"; then
             rm -f "$list_tmp"
             secret_scan_cannot_evaluate push "git diff $base $1 for $file failed"
             return 1
         fi
         [ -n "$diff" ] && secret_scan_stream "$file" <<< "$diff"
-        if ! hist_diff="$(git --literal-pathspecs -c core.quotePath=false log -p -m --format=commit\ %H --no-color --unified=0 --src-prefix=a/ --dst-prefix=b/ "$range" -- "$file" 2>/dev/null)"; then
+        if ! hist_diff="$(git --literal-pathspecs -c core.quotePath=false log -p -m --text --format=commit\ %H --no-color --unified=0 --src-prefix=a/ --dst-prefix=b/ "$range" -- "$file" 2>/dev/null)"; then
             rm -f "$list_tmp"
             secret_scan_cannot_evaluate push "git log $range for $file failed"
             return 1
@@ -1334,8 +1339,33 @@ mod tests {
         // A secret added and removed inside the pushed range never appears in
         // the endpoint diff; every commit's tree delta is scanned too.
         assert!(
-            install::SECRET_SCAN_SH.contains("log -p -m --format=commit\\ %H"),
+            install::SECRET_SCAN_SH.contains("log -p -m --text --format=commit\\ %H"),
             "pushed-range scan must cover per-commit history, not only the endpoint diff"
+        );
+    }
+
+    #[test]
+    fn secret_scan_patch_reads_force_text_mode() {
+        // #17906: git's binary detection — a PR-head `-diff` attribute in
+        // .gitattributes, or a NUL byte in the content — collapses a file to
+        // `Binary files differ` with no hunks, so token-shaped added lines
+        // never reach the scan and the hook reports green on a secret. Every
+        // patch-producing git read in the shared snippet must force text
+        // mode; the `--name-only` listings produce no patch and need no flag.
+        for pin in [
+            "diff --cached --text --unified=0",
+            "diff --text --unified=0",
+            "log -p -m --text --format=commit\\ %H",
+        ] {
+            assert!(
+                install::SECRET_SCAN_SH.contains(pin),
+                "hook scan patch read must force text mode ({pin})"
+            );
+        }
+        assert_eq!(
+            install::SECRET_SCAN_SH.matches("--text").count(),
+            3,
+            "exactly the three patch-producing reads may carry --text"
         );
     }
 
