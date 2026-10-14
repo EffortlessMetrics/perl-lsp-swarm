@@ -173,7 +173,14 @@ fi
 wait "$reader"; reader_status=$?
 [[ -s "$prefix.stderr.json" ]] || printf '{"instrument_error":"stderr capture incomplete"}\n' > "$prefix.stderr.json"
 snapshot > "$prefix.after.json" || printf '{"instrument_error":"after snapshot failed"}\n' > "$prefix.after.json"
-command_json=$(printf '%s\0' "$@" | jq -Rs 'split("\u0000")[:-1]')
+# Keep a non-NUL sentinel after the last argument delimiter. jq 1.6 omits the
+# trailing empty field from split(), while newer jq versions retain it; relying
+# on that field and slicing it away drops a real final argument on jq 1.6.
+# The sentinel makes the split's final field unambiguously nonempty on both.
+command_json=$(
+    { printf '%s\0' "$@"; printf x; } |
+        jq -Rs 'split("\u0000")[:-1]'
+)
 jq -n --arg schema_version xtask_build_observation.v1 --arg phase "$phase" \
     --arg run_id "${GITHUB_RUN_ID:-local}" --arg run_attempt "${GITHUB_RUN_ATTEMPT:-local}" \
     --arg image_id "${MEASUREMENT_IMAGE_ID:-host}" --arg image_digest "${MEASUREMENT_IMAGE_DIGEST:-host}" \
