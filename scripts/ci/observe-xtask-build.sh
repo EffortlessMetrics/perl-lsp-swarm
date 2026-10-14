@@ -76,7 +76,16 @@ snapshot > "$prefix.before.json" || printf '{"instrument_error":"before snapshot
 # Fingerprint output is diagnostic only. Bound retained data and suppress those
 # verbose trace lines from the job console; preserve all ordinary Cargo stderr.
 collect_stderr() {
-LC_ALL=C exec awk -v trace="$prefix.trace.log" -v reasons="$prefix.dirty.log" -v finished="$prefix.finished.log" -v summary="$prefix.stderr.json" '
+    # mawk otherwise buffers sparse pipe input until EOF or a full buffer;
+    # fflush below only flushes records already read. Its interactive mode
+    # line-buffers stdin so diagnostics survive the bounded drain cutoff.
+    # Probe without consuming the command stream; other awks keep their flags.
+    local implementation
+    local -a input_options=()
+    if implementation=$(LC_ALL=C awk -W version </dev/null 2>&1) && [[ "$implementation" == "mawk "* ]]; then
+        input_options=(-W interactive)
+    fi
+LC_ALL=C exec awk "${input_options[@]}" -v trace="$prefix.trace.log" -v reasons="$prefix.dirty.log" -v finished="$prefix.finished.log" -v summary="$prefix.stderr.json" '
     BEGIN {
         # Cargo 0.96.0 DirtyReason variants (the pinned 1.95 toolchain).
         # No arbitrary token, package SourceId, path, flag or log prefix survives.
