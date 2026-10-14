@@ -75,6 +75,21 @@ fn repeated_backslashes_with_operands_are_call_arguments() {
 }
 
 #[test]
+fn explicit_reference_operands_remain_clean() {
+    // Real Perl accepts these operands, including empty parenthesized lists.
+    for source in [
+        r"my $ref = \undef;",
+        r"my $ref = \();",
+        r"my $ref = \{};",
+        r"my $ref = \[];",
+        r"my $ref = \\();",
+    ] {
+        assert_clean_parse(source);
+        assert_no_blocking_diagnostics(source);
+    }
+}
+
+#[test]
 fn bareword_call_other_args_still_parse() {
     assert_clean_parse("sub foo { } foo $x, undef;");
     assert_clean_parse("sub foo { } foo &x;");
