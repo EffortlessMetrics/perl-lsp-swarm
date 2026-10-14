@@ -92,7 +92,7 @@ exit "${FAKE_EXIT:-0}"
         )
         records = list((self.work / "out").glob("*.observation.json"))
         self.assertEqual(len(records), 1, result.stderr[-2500:])
-        observation = json.loads(records[0].read_text())
+        observation = json.loads(records[0].read_text(encoding="utf-8"))
         actual_args = (self.state / "args").read_bytes().decode().split("\0")[:-1]
         self.assertEqual(actual_args, command[1:])
         self.assertEqual(observation["command"], command)
@@ -115,6 +115,11 @@ exit "${FAKE_EXIT:-0}"
         actual_args = (self.state / "args").read_bytes().decode().split("\0")[:-1]
         self.assertEqual(actual_args, command[1:])
         self.assertEqual(record["command"], command)
+        receipt = next((self.work / "out").glob("*.observation.json"))
+        # Windows' default cp1252 codec cannot decode this UTF-8 receipt;
+        # this negative control guards against reintroducing locale decoding.
+        with self.assertRaises(UnicodeDecodeError):
+            receipt.read_text(encoding="cp1252")
 
     def test_command_receipt_preserves_empty_final_argument(self):
         command = ["cargo", "empty-final", ""]
