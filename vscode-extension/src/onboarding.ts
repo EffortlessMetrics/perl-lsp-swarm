@@ -70,7 +70,7 @@ export function classifyStartupFailure(results: HealthCheckResult[]): string {
     return PERL_MISSING_MESSAGE;
   }
 
-  // LSP binary not found — use the explicit binary result rather than inference.
+  // Use the explicit binary error for missing, nonfile, and inspection failures.
   if (
     binaryResult &&
     binaryResult.ok === false &&
@@ -79,7 +79,7 @@ export function classifyStartupFailure(results: HealthCheckResult[]): string {
     const detail = binaryResult.detail.trimEnd();
     const detailWithPeriod = detail.endsWith('.') ? detail : `${detail}.`;
     return (
-      'Perl Language Server binary (perllsp) not found. ' +
+      'Perl Language Server binary (perllsp) is unavailable. ' +
       detailWithPeriod +
       ' Check the Output panel for download details or reinstall the extension.'
     );

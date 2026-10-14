@@ -386,6 +386,15 @@ describe('OnboardingManager.checkBinaryDownloaded', () => {
     });
   });
 
+  test('startup diagnostics describe an existing directory accurately', async () => {
+    const mgr = new OnboardingManager(makeContext(), makeOutputChannel());
+    mockExecCheck(mgr, () => Promise.resolve({ stdout: '5.036000', stderr: '' }));
+    const message = await mgr.runStartupDiagnostics(tmpDir);
+    expect(message).toContain('binary (perllsp) is unavailable.');
+    expect(message).toContain(`path is not a regular file: ${tmpDir}`);
+    expect(message).not.toContain('not found');
+  });
+
   test('rejects other nonfile filesystem entries', () => {
     const mgr = new OnboardingManager(makeContext(), makeOutputChannel());
     const nonfileStats = fs.statSync(tmpDir);
@@ -503,6 +512,10 @@ describe('OnboardingManager.runSetupHealthCheck', () => {
       });
       expect(output.appendLine).toHaveBeenCalledWith(
         `[onboarding] [ERROR] LSP binary: perl-lsp binary path is not a regular file: ${tmpDir}`,
+      );
+      expect(output.appendLine).toHaveBeenCalledWith('[health-check] Results:');
+      expect(output.appendLine).toHaveBeenCalledWith(
+        `   LSP binary: perl-lsp binary path is not a regular file: ${tmpDir}`,
       );
       expect(showError).toHaveBeenCalledWith('Health check failed: LSP binary', 'Show Output');
     } finally {
