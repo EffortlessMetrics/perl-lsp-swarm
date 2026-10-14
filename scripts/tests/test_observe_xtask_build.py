@@ -79,12 +79,12 @@ exit "${FAKE_EXIT:-0}"
         path.write_text("#!/usr/bin/env bash\n" + body, encoding="utf-8", newline="\n")
         path.chmod(0o755)
 
-    def observe(self, **extra):
+    def observe(self, command=None, **extra):
         env = dict(os.environ, FAKE_STATE=posix(self.state), HOME=posix(self.work),
                    CARGO_HOME=posix(self.work / "cargo-home"), CARGO_TARGET_DIR="target",
                    GITHUB_RUN_ID="123", GITHUB_RUN_ATTEMPT="2")
         env.update(extra)
-        command = ["cargo", "xtask", "ripr-plus", "--receipt", "target/path with space.json"]
+        command = command or ["cargo", "xtask", "ripr-plus", "--receipt", "target/path with space.json"]
         result = subprocess.run(
             [BASH, "--noprofile", "--norc", "-c", 'export PATH="$1:$PATH"; shift; exec bash "$@"',
              "observation-control", posix(self.bin), posix(OBSERVER), "host-test", "out", "--", *command],
@@ -108,6 +108,20 @@ exit "${FAKE_EXIT:-0}"
         self.assertEqual(record["stderr"]["compiling_messages"], 1)
         self.assertEqual(record["stderr"]["dirty_lines"], 2)
         self.assertEqual((record["run_id"], record["run_attempt"]), ("123", "2"))
+
+    def test_command_receipt_preserves_empty_whitespace_unicode_and_newline_arguments(self):
+        command = ["cargo", "xtask", "", "receipt path with spaces.json", "雪だるま ☃", "line one\nline two"]
+        _, record = self.observe(command=command)
+        actual_args = (self.state / "args").read_bytes().decode().split("\0")[:-1]
+        self.assertEqual(actual_args, command[1:])
+        self.assertEqual(record["command"], command)
+
+    def test_command_receipt_preserves_empty_final_argument(self):
+        command = ["cargo", "empty-final", ""]
+        _, record = self.observe(command=command)
+        actual_args = (self.state / "args").read_bytes().decode().split("\0")[:-1]
+        self.assertEqual(actual_args, command[1:])
+        self.assertEqual(record["command"], command)
 
     def test_failed_cargo_is_not_rescued(self):
         result, record = self.observe(FAKE_EXIT="37")
