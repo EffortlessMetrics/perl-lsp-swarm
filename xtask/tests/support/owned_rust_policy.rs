@@ -1,4 +1,4 @@
-//! Rust Small has no local result/mirror job: admission owns draft suppression.
+//! Rust Small has no local result/mirror job: admission suppresses all routine PR events.
 use serde_yaml_ng::Value;
 use std::{fs, path::Path};
 type TestResult<T> = Result<T, Box<dyn std::error::Error>>;
@@ -14,7 +14,7 @@ pub fn validate(text: &str) -> TestResult<()> {
         return Err("native result context prefix drifted".into());
     }
     let guard = call.get("if").and_then(Value::as_str).ok_or("draft admission missing")?;
-    if guard != "github.event.pull_request.draft != true || github.event_name != 'pull_request'" {
+    if guard != "github.event_name == 'merge_group' || (github.event_name == 'workflow_dispatch' && inputs.pre_merge_admission && inputs.reviewed_sha == github.sha)" {
         return Err("drafts must skip the complete governed call".into());
     }
     if call.get("uses").and_then(Value::as_str)
@@ -57,7 +57,8 @@ pub fn check_contract(path: &Path) -> TestResult<()> {
     validate(&text)?;
     for (before, after) in [
         ("name: Perl LSP Rust Small governed proof", "name: Unbound proof"),
-        ("draft != true", "draft == true"),
+        ("inputs.pre_merge_admission && ", ""),
+        ("inputs.reviewed_sha == github.sha", "true"),
         ("result_script: .ci/rust-standard-result.sh", "result_script: .ci/noop.sh"),
         ("  checks: read", "  checks: write"),
     ] {

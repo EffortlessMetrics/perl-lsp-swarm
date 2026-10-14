@@ -383,9 +383,9 @@ fn ci_workflows_keep_issue_4657_hardening() -> Result<(), Box<dyn std::error::Er
     );
     assert!(
         routed_rust.contains(
-            "if: github.event.pull_request.draft != true || github.event_name != 'pull_request'"
+            "if: github.event_name == 'merge_group' || (github.event_name == 'workflow_dispatch' && inputs.pre_merge_admission && inputs.reviewed_sha == github.sha)"
         ),
-        "Rust Small routing must skip draft pull requests while allowing ready_for_review"
+        "Rust Small routing must skip draft pull requests and Ready/synchronize, admitting only reviewed pre-merge work"
     );
     owned_rust_policy::check_contract(&root.join(".github/workflows/em-ci-routed-rust.yml"))?;
     assert!(

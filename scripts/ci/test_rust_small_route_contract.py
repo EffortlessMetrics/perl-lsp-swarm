@@ -292,6 +292,26 @@ class RustSmallRouteContractTests(unittest.TestCase):
         with self.assertRaisesRegex(AssertionError, "propagate failures"):
             validate_rust_small_route_contract(self.workflow_text, self.proof_text.replace("set -euo pipefail", "set +e"))
 
+    def test_actual_admission_expression_rejects_routine_events_and_unreviewed_dispatch(self) -> None:
+        workflow = yaml.safe_load(self.workflow_text)
+        inputs = workflow[True]['workflow_dispatch']['inputs']
+        self.assertIs(inputs['pre_merge_admission']['default'], False)
+        self.assertEqual(inputs['pre_merge_admission']['type'], 'boolean')
+        self.assertEqual(inputs['reviewed_sha']['default'], '')
+        expression = workflow['jobs']['rust-small-proof']['if']
+        # Execute the actual bounded expression after substituting only its
+        # known GitHub data operands, rather than a separate admission oracle.
+        for event in ('pull_request', 'push', 'merge_group', 'workflow_dispatch'):
+            for admitted in (False, True):
+                for reviewed in ('', 'a'*40, 'b'*40):
+                    with self.subTest(event=event,admitted=admitted,reviewed=reviewed):
+                        rendered = expression.replace('github.event_name', repr(event))
+                        rendered = rendered.replace('inputs.pre_merge_admission', repr(admitted))
+                        rendered = rendered.replace('inputs.reviewed_sha', repr(reviewed))
+                        rendered = rendered.replace('github.sha', repr('a'*40)).replace('||','or').replace('&&','and')
+                        self.assertEqual(eval(rendered, {'__builtins__':{}}, {}),
+                            event == 'merge_group' or (event == 'workflow_dispatch' and admitted and reviewed == 'a'*40))
+
     def test_caller_mutations_fail_closed(self) -> None:
         for old, new in (("name: Perl LSP Rust Small governed proof", "name: Unbound proof"), ("profile: standard", "profile: heavy"), ("script: .ci/rust-standard-proof.sh", "script: .ci/other.sh"), ("fetch_depth: 1", "fetch_depth: 0"), (".github/workflows/rust.yml@a3125de962a74e7ec2e127d41d7532f66c69334d", ".github/workflows/rust.yml@main"), ("inputs.force_target == 'github'", "inputs.force_target == 'auto'"), (" || endsWith(github.event.pull_request.user.login, '[bot]')", ""), ("    with:\n", "    secrets: inherit\n    with:\n"), ("inputs.pre_merge_admission && ", ""), ("inputs.reviewed_sha == github.sha", "true"), ("github.event_name == 'merge_group'", "github.event_name == 'pull_request'"), ("  rust-small-proof:\n", "  removed:\n")):
             with self.subTest(old=old):
