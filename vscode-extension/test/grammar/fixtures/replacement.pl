@@ -24,3 +24,7 @@ $str =~ s{foo}
 {bar}r; my $between_halves = 1;
 $str =~ tr[a-z]
 [A-Z]r; my $between_translation_halves = 1;
+$str =~ s{foo}
+ # comment!
+ {bar}r; my $after_comment = 1;
+$str =~ s{foo}#bar#r; my $hash_delimiter = 1;

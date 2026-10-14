@@ -56,6 +56,7 @@ const expressions = [
     String.raw`tr[a\]b][c\]d]r`,
     's!foo!bar!r',
     's#foo#bar#ee',
+    's{foo}#bar#r',
     's{foo} {bar}r',
     's{foo}/bar/r',
     's{foo}[bar]r',
@@ -163,5 +164,37 @@ for (const [firstLine, secondLine] of [
         assert.ok(
             scopesAt(second.tokens, line.indexOf('$after')).includes('variable.other.scalar.perl'),
         );
+    });
+}
+
+test('comments between paired halves preserve replacement and following code', () => {
+    let stack;
+    for (const line of [
+        's{foo}',
+        ' # comment!',
+        '',
+        ' # second comment.',
+        ' {bar}r; my $after = 1;',
+    ]) {
+        const result = grammar.tokenizeLine(line, stack);
+        stack = result.ruleStack;
+        if (line.includes('bar')) {
+            assert.ok(scopesAt(result.tokens, line.indexOf('bar')).includes(scope));
+            assert.ok(scopesAt(result.tokens, line.indexOf('r;')).includes(scope));
+            assert.ok(
+                scopesAt(result.tokens, line.indexOf('$after')).includes(
+                    'variable.other.scalar.perl',
+                ),
+            );
+        }
+    }
+});
+for (const expression of ['s{foo}{bar}r', 's{foo}/bar/ee']) {
+    test(`a completed paired replacement does not capture next-line delimiters: ${expression}`, () => {
+        const first = grammar.tokenizeLine(expression);
+        for (const line of [' / 2;', ' } my $after = 1;']) {
+            const next = grammar.tokenizeLine(line, first.ruleStack);
+            assert.ok(!scopesAt(next.tokens, 1).includes(scope));
+        }
     });
 }

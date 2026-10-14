@@ -323,7 +323,7 @@
                 {
                     "name": "string.regexp.replace.perl",
                     "begin": "\\b(s|tr|y)(?=\\s*[\\[{(<])",
-                    "end": "(?=\\S)",
+                    "end": "(?<=[^\\w\\s])[cgimosxpodualner]*|(?=\\S)",
                     "applyEndPatternLast": true,
                     "beginCaptures": {
                         "1": {
@@ -369,7 +369,7 @@
                         },
                         {
                             "begin": "[}\\])>]\\s*",
-                            "end": "(?=\\S)",
+                            "end": "(?<=[^\\w\\s])|(?=\\S)",
                             "applyEndPatternLast": true,
                             "patterns": [
                                 {
@@ -509,8 +509,8 @@
         "replacement-half": {
             "patterns": [
                 {
-                    "begin": "\\G\\s*\\{",
-                    "end": "\\}[cgimosxpodualner]*",
+                    "begin": "(?:\\G|^)\\s*\\{",
+                    "end": "\\}",
                     "patterns": [
                         {
                             "include": "#replacement-braces"
@@ -518,8 +518,8 @@
                     ]
                 },
                 {
-                    "begin": "\\G\\s*\\[",
-                    "end": "\\][cgimosxpodualner]*",
+                    "begin": "(?:\\G|^)\\s*\\[",
+                    "end": "\\]",
                     "patterns": [
                         {
                             "include": "#replacement-brackets"
@@ -527,8 +527,8 @@
                     ]
                 },
                 {
-                    "begin": "\\G\\s*\\(",
-                    "end": "\\)[cgimosxpodualner]*",
+                    "begin": "(?:\\G|^)\\s*\\(",
+                    "end": "\\)",
                     "patterns": [
                         {
                             "include": "#replacement-parens"
@@ -536,8 +536,8 @@
                     ]
                 },
                 {
-                    "begin": "\\G\\s*<",
-                    "end": ">[cgimosxpodualner]*",
+                    "begin": "(?:\\G|^)\\s*<",
+                    "end": ">",
                     "patterns": [
                         {
                             "include": "#replacement-angles"
@@ -545,14 +545,28 @@
                     ]
                 },
                 {
-                    "begin": "\\G\\s*([^\\s\\w\\[\\]{}()<>])",
-                    "end": "\\1[cgimosxpodualner]*",
+                    "begin": "(?:\\G|^)\\s*([^\\s\\w\\[\\]{}()<>#])",
+                    "end": "\\1",
                     "patterns": [
                         {
                             "name": "constant.character.escape.perl",
                             "match": "\\\\."
                         }
                     ]
+                },
+                {
+                    "begin": "\\G(?<=[}\\])>])(#)",
+                    "end": "\\1",
+                    "patterns": [
+                        {
+                            "name": "constant.character.escape.perl",
+                            "match": "\\\\."
+                        }
+                    ]
+                },
+                {
+                    "name": "comment.line.number-sign.perl",
+                    "match": "(?:\\G|^)\\s*#.*(?:\\n|$)"
                 }
             ]
         }

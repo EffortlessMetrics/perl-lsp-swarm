@@ -70,7 +70,8 @@
 #                 ^ source.perl string.regexp.replace.perl
 #                  ^ source.perl string.regexp.replace.perl
 #                   ^^^^^^^^^^^ source.perl string.regexp.replace.perl
-#                              ^^^^ source.perl string.regexp.replace.perl
+#                              ^ source.perl string.regexp.replace.perl
+#                               ^^^ source.perl string.regexp.replace.perl
 #                                  ^^ source.perl
 #                                    ^^ source.perl keyword.other.perl
 #                                      ^ source.perl
@@ -98,7 +99,8 @@
 #                 ^ source.perl string.regexp.replace.perl
 #                  ^ source.perl string.regexp.replace.perl
 #                   ^ source.perl string.regexp.replace.perl
-#                    ^^ source.perl string.regexp.replace.perl
+#                    ^ source.perl string.regexp.replace.perl
+#                     ^ source.perl string.regexp.replace.perl
 #                      ^^ source.perl
 #                        ^^ source.perl keyword.other.perl
 #                          ^ source.perl
@@ -120,7 +122,8 @@
 #              ^ source.perl string.regexp.replace.perl
 #               ^ source.perl string.regexp.replace.perl
 #                ^^^ source.perl string.regexp.replace.perl
-#                   ^^^^ source.perl string.regexp.replace.perl
+#                   ^ source.perl string.regexp.replace.perl
+#                    ^^^ source.perl string.regexp.replace.perl
 #                       ^^ source.perl
 #                         ^^ source.perl keyword.other.perl
 #                           ^ source.perl
@@ -192,7 +195,8 @@
 #                ^ source.perl string.regexp.replace.perl
 #                 ^^ source.perl string.regexp.replace.perl constant.character.escape.perl
 #                   ^ source.perl string.regexp.replace.perl
-#                    ^^ source.perl string.regexp.replace.perl
+#                    ^ source.perl string.regexp.replace.perl
+#                     ^ source.perl string.regexp.replace.perl
 #                      ^^ source.perl
 #                        ^^ source.perl keyword.other.perl
 #                          ^ source.perl
@@ -218,7 +222,8 @@
 #                 ^ source.perl string.regexp.replace.perl
 #                  ^^ source.perl string.regexp.replace.perl constant.character.escape.perl
 #                    ^ source.perl string.regexp.replace.perl
-#                     ^^ source.perl string.regexp.replace.perl
+#                     ^ source.perl string.regexp.replace.perl
+#                      ^ source.perl string.regexp.replace.perl
 #                       ^^ source.perl
 #                         ^^ source.perl keyword.other.perl
 #                           ^ source.perl
@@ -282,7 +287,8 @@
 #             ^ source.perl string.regexp.replace.perl
 #              ^ source.perl string.regexp.replace.perl
 #               ^^^ source.perl string.regexp.replace.perl
-#                  ^^ source.perl string.regexp.replace.perl
+#                  ^ source.perl string.regexp.replace.perl
+#                   ^ source.perl string.regexp.replace.perl
 #                    ^^ source.perl
 #                      ^^ source.perl keyword.other.perl
 #                        ^ source.perl
@@ -304,7 +310,8 @@
 #             ^ source.perl string.regexp.replace.perl
 #              ^ source.perl string.regexp.replace.perl
 #               ^^^ source.perl string.regexp.replace.perl
-#                  ^^ source.perl string.regexp.replace.perl
+#                  ^ source.perl string.regexp.replace.perl
+#                   ^ source.perl string.regexp.replace.perl
 #                    ^^ source.perl
 #                      ^^ source.perl keyword.other.perl
 #                        ^ source.perl
@@ -367,7 +374,8 @@
 #               ^ source.perl string.regexp.replace.perl
 #                ^^^^ source.perl string.regexp.replace.perl
 >]r; my $paired_recovered = 1;
-#^^ source.perl string.regexp.replace.perl
+#^ source.perl string.regexp.replace.perl
+# ^ source.perl string.regexp.replace.perl
 #  ^^ source.perl
 #    ^^ source.perl keyword.other.perl
 #      ^ source.perl
@@ -419,7 +427,8 @@
 #             ^ source.perl string.regexp.replace.perl
 #              ^ source.perl string.regexp.replace.perl
 #               ^^^ source.perl string.regexp.replace.perl
-#                  ^^ source.perl string.regexp.replace.perl
+#                  ^ source.perl string.regexp.replace.perl
+#                   ^ source.perl string.regexp.replace.perl
 #                    ^^ source.perl
 #                      ^^ source.perl keyword.other.perl
 #                        ^ source.perl
@@ -441,7 +450,8 @@
 #             ^ source.perl string.regexp.replace.perl
 #              ^ source.perl string.regexp.replace.perl
 #               ^^^ source.perl string.regexp.replace.perl
-#                  ^^ source.perl string.regexp.replace.perl
+#                  ^ source.perl string.regexp.replace.perl
+#                   ^ source.perl string.regexp.replace.perl
 #                    ^^ source.perl
 #                      ^^ source.perl keyword.other.perl
 #                        ^ source.perl
@@ -464,7 +474,8 @@
 >{bar}r; my $between_halves = 1;
 #^ source.perl string.regexp.replace.perl
 # ^^^ source.perl string.regexp.replace.perl
-#    ^^ source.perl string.regexp.replace.perl
+#    ^ source.perl string.regexp.replace.perl
+#     ^ source.perl string.regexp.replace.perl
 #      ^^ source.perl
 #        ^^ source.perl keyword.other.perl
 #          ^ source.perl
@@ -487,7 +498,8 @@
 >[A-Z]r; my $between_translation_halves = 1;
 #^ source.perl string.regexp.replace.perl
 # ^^^ source.perl string.regexp.replace.perl
-#    ^^ source.perl string.regexp.replace.perl
+#    ^ source.perl string.regexp.replace.perl
+#     ^ source.perl string.regexp.replace.perl
 #      ^^ source.perl
 #        ^^ source.perl keyword.other.perl
 #          ^ source.perl
@@ -497,4 +509,53 @@
 #                                        ^ source.perl
 #                                         ^ source.perl constant.numeric.integer.perl
 #                                          ^^ source.perl
+>$str =~ s{foo}
+#^^^^ source.perl variable.other.scalar.perl
+#    ^ source.perl
+#     ^ source.perl keyword.operator.assignment.perl
+#      ^ source.perl keyword.operator.bitwise.perl
+#       ^ source.perl
+#        ^ source.perl string.regexp.replace.perl keyword.other.perl
+#         ^ source.perl string.regexp.replace.perl
+#          ^^^ source.perl string.regexp.replace.perl
+#             ^^ source.perl string.regexp.replace.perl
+> # comment!
+#^^^^^^^^^^^^ source.perl string.regexp.replace.perl comment.line.number-sign.perl
+> {bar}r; my $after_comment = 1;
+#^^ source.perl string.regexp.replace.perl
+#  ^^^ source.perl string.regexp.replace.perl
+#     ^ source.perl string.regexp.replace.perl
+#      ^ source.perl string.regexp.replace.perl
+#       ^^ source.perl
+#         ^^ source.perl keyword.other.perl
+#           ^ source.perl
+#            ^^^^^^^^^^^^^^ source.perl variable.other.scalar.perl
+#                          ^ source.perl
+#                           ^ source.perl keyword.operator.assignment.perl
+#                            ^ source.perl
+#                             ^ source.perl constant.numeric.integer.perl
+#                              ^^ source.perl
+>$str =~ s{foo}#bar#r; my $hash_delimiter = 1;
+#^^^^ source.perl variable.other.scalar.perl
+#    ^ source.perl
+#     ^ source.perl keyword.operator.assignment.perl
+#      ^ source.perl keyword.operator.bitwise.perl
+#       ^ source.perl
+#        ^ source.perl string.regexp.replace.perl keyword.other.perl
+#         ^ source.perl string.regexp.replace.perl
+#          ^^^ source.perl string.regexp.replace.perl
+#             ^ source.perl string.regexp.replace.perl
+#              ^ source.perl string.regexp.replace.perl
+#               ^^^ source.perl string.regexp.replace.perl
+#                  ^ source.perl string.regexp.replace.perl
+#                   ^ source.perl string.regexp.replace.perl
+#                    ^^ source.perl
+#                      ^^ source.perl keyword.other.perl
+#                        ^ source.perl
+#                         ^^^^^^^^^^^^^^^ source.perl variable.other.scalar.perl
+#                                        ^ source.perl
+#                                         ^ source.perl keyword.operator.assignment.perl
+#                                          ^ source.perl
+#                                           ^ source.perl constant.numeric.integer.perl
+#                                            ^^ source.perl
 >
