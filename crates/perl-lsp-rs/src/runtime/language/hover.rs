@@ -1252,8 +1252,8 @@ impl LspServer {
                 return HoverExtracted::Complete(hover);
             }
 
-            let bare = hover_text.trim_start_matches(['$', '@', '%']);
-            if let Some(builtin_doc) = crate::semantic::get_builtin_documentation(bare) {
+            // Preserve variable sigils: `$length` is not the `length` builtin.
+            if let Some(builtin_doc) = crate::semantic::get_builtin_documentation(&hover_text) {
                 return HoverExtracted::Complete(json!({
                     "contents": {
                         "kind": "markdown",
@@ -1271,6 +1271,7 @@ impl LspServer {
             }
 
             // Check Test::More/Test2 function hover when source imports a test framework
+            let bare = hover_text.trim_start_matches(['$', '@', '%']);
             let is_test_source = text.contains("use Test::More") || text.contains("use Test2");
             if is_test_source
                 && let Some((sig, desc)) = crate::completion::get_test_more_documentation(bare)
