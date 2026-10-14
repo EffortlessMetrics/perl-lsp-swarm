@@ -61,10 +61,7 @@ pub fn check_contract(path: &Path) -> TestResult<()> {
         ("name: Perl LSP Rust Small governed proof", "name: Unbound proof"),
         ("inputs.pre_merge_admission && ", ""),
         ("inputs.reviewed_sha == github.sha", "true"),
-        (
-            "result_script: .ci/rust-standard-result.sh",
-            "result_script: .ci/noop.sh",
-        ),
+        ("result_script: .ci/rust-standard-result.sh", "result_script: .ci/noop.sh"),
         ("  checks: read", "  checks: write"),
     ] {
         let mutant = text.replacen(before, after, 1);
