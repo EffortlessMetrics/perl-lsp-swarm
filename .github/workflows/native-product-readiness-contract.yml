@@ -31,7 +31,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: native-product-readiness-${{ github.event.pull_request.number || github.ref }}
+  group: native-product-readiness-${{ github.event.pull_request.number || github.event_name == 'push' && github.sha || github.ref }}
   cancel-in-progress: ${{ github.event.action == 'synchronize' }}
 
 jobs:
