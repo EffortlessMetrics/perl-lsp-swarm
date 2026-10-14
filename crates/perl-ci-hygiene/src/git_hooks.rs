@@ -40,6 +40,14 @@ mod install {
 # crates/perl-ci-hygiene/src/secret_scan.rs; the required secret_scan gate
 # re-scans the same shapes over the PR diff + body, so --no-verify bypasses
 # the hook but not the gate.
+#
+# Every patch-producing git read below forces text mode (#17906): binary
+# detection (a -diff attribute in .gitattributes, or a NUL byte in the
+# content) would otherwise collapse the file to "Binary files differ" with
+# no hunks and hide its added lines from the scan. The forced-open patch
+# bytes travel file-to-file — never through a Bash variable, whose command
+# substitution strips NULs and would splice a NUL-separated near-miss into
+# a token that was never in the file (#17910 review).
 SECRET_SCAN_RULE_GITHUB='gh[pousr]_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{22}_[A-Za-z0-9]{59}'
 SECRET_SCAN_RULE_AWS='AKIA[0-9A-Z]{16}'
 SECRET_SCAN_RULE_SLACK='xox[baprs]-[A-Za-z0-9-]{10,48}'
@@ -61,13 +69,30 @@ secret_scan_allowed() {
     grep -F -x -q -- "$1" <(sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e '/^#/d' -e '/^$/d' "$SECRET_SCAN_ALLOWLIST") 2>/dev/null
 }
 secret_scan_stream() {
-    local file="$1" added name pattern hits
+    local file="$1" patch="$2" subject="$3" name pattern hits added_tmp
+    added_tmp="$(mktemp 2>/dev/null)" || {
+        secret_scan_cannot_evaluate "$subject" "cannot allocate a temp file for the added lines"
+        return 1
+    }
     # Hunk-aware added-line filter: diff and file headers print before the
     # first @@, so only + lines inside a hunk are scanned. A content line that
     # itself starts with + (++token = …) is kept — the old ^\+[^+] grep
     # dropped it, hiding tokens in such lines from the hooks.
-    added="$(awk '/^diff --git / { in_hunk = 0 } /^@@/ { in_hunk = 1; next } in_hunk && /^\+/ { print }' || true)"
-    [ -z "$added" ] && return 0
+    #
+    # Byte-preserving: the patch is read from a file and the added lines land
+    # in one — no Bash variable ever holds patch bytes. Command substitution
+    # strips NULs, so a forced-open binary patch could lose the very byte
+    # separating `ghp_` from 36 letters and report a token that was never in
+    # the file (#17910 review).
+    if ! awk '/^diff --git / { in_hunk = 0 } /^@@/ { in_hunk = 1; next } in_hunk && /^\+/ { print }' "$patch" >"$added_tmp"; then
+        rm -f "$added_tmp"
+        secret_scan_cannot_evaluate "$subject" "the added-line filter failed for $file"
+        return 1
+    fi
+    if [ ! -s "$added_tmp" ]; then
+        rm -f "$added_tmp"
+        return 0
+    fi
     for name in github-token aws-access-key slack-token private-key generic-assignment; do
         case "$name" in
             github-token) pattern="$SECRET_SCAN_RULE_GITHUB" ;;
@@ -76,20 +101,25 @@ secret_scan_stream() {
             private-key) pattern="$SECRET_SCAN_RULE_PRIVKEY" ;;
             generic-assignment) pattern="$SECRET_SCAN_RULE_GENERIC" ;;
         esac
+        # -a keeps the greps in text mode: a NUL byte must not flip grep into
+        # binary mode, where it reports nothing at all and a real token on a
+        # NUL-carrying line would be silently missed. The NUL itself matches
+        # no value class, so a `ghp_` + NUL + 36 letters near-miss stays clean.
         # The -- matters: the private-key shape starts with dashes and would
         # otherwise parse as grep options, failing that rule open.
         if [ "$name" = "generic-assignment" ]; then
             # Bare-identifier references match the generic shape but name
             # computed values; filter them exactly like the gate does.
-            hits="$(printf '%s\n' "$added" | grep -E -- "$pattern" | grep -E -v -- "$SECRET_SCAN_EXCLUDE_GENERIC" | grep -c . || true)"
+            hits="$(grep -a -E -- "$pattern" "$added_tmp" | grep -a -E -v -- "$SECRET_SCAN_EXCLUDE_GENERIC" | grep -a -c . || true)"
         else
-            hits="$(printf '%s\n' "$added" | grep -E -c -- "$pattern" || true)"
+            hits="$(grep -a -E -c -- "$pattern" "$added_tmp" || true)"
         fi
         if [ -n "$hits" ] && [ "$hits" != "0" ]; then
             SECRET_SCAN_HITS="${SECRET_SCAN_HITS}  $file: rule $name matched $hits added line(s)
 "
         fi
     done
+    rm -f "$added_tmp"
 }
 secret_scan_refuse_if_hits() {
     [ -z "$SECRET_SCAN_HITS" ] && return 0
@@ -114,36 +144,45 @@ secret_scan_cannot_evaluate() {
 secret_scan_staged() {
     SECRET_SCAN_ALLOWLIST="$(git rev-parse --show-toplevel 2>/dev/null)/.ci/secret-scan-allowlist.txt"
     SECRET_SCAN_HITS=""
-    local file diff list_tmp
+    local file diff_tmp list_tmp
     list_tmp="$(mktemp 2>/dev/null)" || {
         secret_scan_cannot_evaluate commit "cannot allocate a temp file for the staged list"
+        return 1
+    }
+    diff_tmp="$(mktemp 2>/dev/null)" || {
+        rm -f "$list_tmp"
+        secret_scan_cannot_evaluate commit "cannot allocate a temp file for the staged patch"
         return 1
     }
     # -z (NUL-delimited) plus quotePath=false: a quoted name ("caf\303\251")
     # would otherwise reach the per-file diff as a literal pathspec matching
     # nothing, silently skipping the file.
     if ! git -c core.quotePath=false diff --cached --name-only -z >"$list_tmp" 2>/dev/null; then
-        rm -f "$list_tmp"
+        rm -f "$diff_tmp" "$list_tmp"
         secret_scan_cannot_evaluate commit "git diff --cached --name-only failed"
         return 1
     fi
     while IFS= read -r -d '' file; do
         [ -z "$file" ] && continue
         secret_scan_allowed "$file" && continue
-        if ! diff="$(git --literal-pathspecs -c core.quotePath=false diff --cached --unified=0 --no-color --src-prefix=a/ --dst-prefix=b/ -- "$file" 2>/dev/null)"; then
-            rm -f "$list_tmp"
+        # The patch is written straight to a temp file, never captured into a
+        # Bash variable: command substitution strips NULs (#17910 review), and
+        # a forced-open binary patch would lose the byte that keeps a near-miss
+        # from reading as a token.
+        if ! git --literal-pathspecs -c core.quotePath=false diff --cached --text --unified=0 --no-color --src-prefix=a/ --dst-prefix=b/ -- "$file" >"$diff_tmp" 2>/dev/null; then
+            rm -f "$diff_tmp" "$list_tmp"
             secret_scan_cannot_evaluate commit "git diff --cached for $file failed"
             return 1
         fi
-        [ -n "$diff" ] && secret_scan_stream "$file" <<< "$diff"
+        [ -s "$diff_tmp" ] && secret_scan_stream "$file" "$diff_tmp" commit
     done <"$list_tmp"
-    rm -f "$list_tmp"
+    rm -f "$diff_tmp" "$list_tmp"
     secret_scan_refuse_if_hits commit
 }
 secret_scan_range() {
     SECRET_SCAN_ALLOWLIST="$(git rev-parse --show-toplevel 2>/dev/null)/.ci/secret-scan-allowlist.txt"
     SECRET_SCAN_HITS=""
-    local base file diff hist_diff list_tmp range
+    local base file patch_tmp list_tmp range
     git cat-file -e "$1" 2>/dev/null || {
         secret_scan_cannot_evaluate push "local sha $1 does not resolve"
         return 1
@@ -161,8 +200,13 @@ secret_scan_range() {
         secret_scan_cannot_evaluate push "cannot allocate a temp file for the file list"
         return 1
     }
-    if ! git -c core.quotePath=false diff --name-only -z "$base" "$1" >"$list_tmp" 2>/dev/null; then
+    patch_tmp="$(mktemp 2>/dev/null)" || {
         rm -f "$list_tmp"
+        secret_scan_cannot_evaluate push "cannot allocate a temp file for the pushed patches"
+        return 1
+    }
+    if ! git -c core.quotePath=false diff --name-only -z "$base" "$1" >"$list_tmp" 2>/dev/null; then
+        rm -f "$patch_tmp" "$list_tmp"
         secret_scan_cannot_evaluate push "git diff --name-only $base $1 failed"
         return 1
     fi
@@ -182,7 +226,7 @@ secret_scan_range() {
     # review wave 5). -m splits merges per parent; --no-renames lists both
     # sides of a rename.
     if ! git -c core.quotePath=false log -m --no-renames --name-only -z --format= "$range" >>"$list_tmp" 2>/dev/null; then
-        rm -f "$list_tmp"
+        rm -f "$patch_tmp" "$list_tmp"
         secret_scan_cannot_evaluate push "git log --name-only $range failed"
         return 1
     fi
@@ -190,7 +234,7 @@ secret_scan_range() {
     # list keeps duplicates, which only re-scan (findings are idempotent).
     if printf '' | sort -z -u >/dev/null 2>&1; then
         if ! sort -z -u "$list_tmp" -o "$list_tmp" 2>/dev/null; then
-            rm -f "$list_tmp"
+            rm -f "$patch_tmp" "$list_tmp"
             secret_scan_cannot_evaluate push "de-duplicating the file list for $range failed"
             return 1
         fi
@@ -198,20 +242,24 @@ secret_scan_range() {
     while IFS= read -r -d '' file; do
         [ -z "$file" ] && continue
         secret_scan_allowed "$file" && continue
-        if ! diff="$(git --literal-pathspecs -c core.quotePath=false diff --unified=0 --no-color --src-prefix=a/ --dst-prefix=b/ "$base" "$1" -- "$file" 2>/dev/null)"; then
-            rm -f "$list_tmp"
+        # Both patch-producing reads write straight to a temp file, never into
+        # a Bash variable: command substitution strips NULs (#17910 review),
+        # and a forced-open binary patch would lose the byte that keeps a
+        # near-miss from reading as a token.
+        if ! git --literal-pathspecs -c core.quotePath=false diff --text --unified=0 --no-color --src-prefix=a/ --dst-prefix=b/ "$base" "$1" -- "$file" >"$patch_tmp" 2>/dev/null; then
+            rm -f "$patch_tmp" "$list_tmp"
             secret_scan_cannot_evaluate push "git diff $base $1 for $file failed"
             return 1
         fi
-        [ -n "$diff" ] && secret_scan_stream "$file" <<< "$diff"
-        if ! hist_diff="$(git --literal-pathspecs -c core.quotePath=false log -p -m --format=commit\ %H --no-color --unified=0 --src-prefix=a/ --dst-prefix=b/ "$range" -- "$file" 2>/dev/null)"; then
-            rm -f "$list_tmp"
+        [ -s "$patch_tmp" ] && secret_scan_stream "$file" "$patch_tmp" push
+        if ! git --literal-pathspecs -c core.quotePath=false log -p -m --text --format=commit\ %H --no-color --unified=0 --src-prefix=a/ --dst-prefix=b/ "$range" -- "$file" >"$patch_tmp" 2>/dev/null; then
+            rm -f "$patch_tmp" "$list_tmp"
             secret_scan_cannot_evaluate push "git log $range for $file failed"
             return 1
         fi
-        [ -n "$hist_diff" ] && secret_scan_stream "$file" <<< "$hist_diff"
+        [ -s "$patch_tmp" ] && secret_scan_stream "$file" "$patch_tmp" push
     done <"$list_tmp"
-    rm -f "$list_tmp"
+    rm -f "$patch_tmp" "$list_tmp"
     secret_scan_refuse_if_hits push
 }
 # SECRET_SCAN_SH_END
@@ -1287,15 +1335,59 @@ mod tests {
     fn secret_scan_grep_invocations_are_option_terminated() {
         // The private-key shape starts with dashes; without `--` grep parses
         // it as options and that rule fails open (found by dogfooding the
-        // generated hook over this worktree's own staged tree).
-        assert!(
-            install::SECRET_SCAN_SH.contains("grep -E -c -- "),
-            "rule greps must terminate options before the pattern"
-        );
-        assert!(
-            install::SECRET_SCAN_SH.contains("grep -F -x -q -- "),
-            "allowlist greps must terminate options before the path"
-        );
+        // generated hook over this worktree's own staged tree). The content
+        // greps also carry -a so a NUL byte cannot flip grep into binary
+        // mode, where it reports nothing at all and a real token on a
+        // NUL-carrying line would be silently missed (#17910 review).
+        for pin in [
+            "grep -a -E -c -- ",
+            "grep -a -E -- ",
+            "grep -a -E -v -- ",
+            "grep -a -c .",
+            "grep -F -x -q -- ",
+        ] {
+            assert!(
+                install::SECRET_SCAN_SH.contains(pin),
+                "content greps must terminate options and stay text-mode ({pin})"
+            );
+        }
+    }
+
+    #[test]
+    fn secret_scan_patch_bytes_never_enter_a_bash_variable() {
+        // #17910 review: Bash command substitution strips NUL bytes, so a
+        // forced-open binary patch captured into a variable splices a
+        // `ghp_` + NUL + 36 letters near-miss into a token that was never in
+        // the file (the staged read and both pushed-range reads used this
+        // shape). Every patch-producing read must land its bytes in a temp
+        // file and hand the stream the file path — no here-string, no
+        // re-emission of captured bytes.
+        let snippet = install::SECRET_SCAN_SH;
+        for banned in [
+            "diff=\"$(",
+            "hist_diff=\"$(",
+            "added=\"$(",
+            "printf '%s\\n' \"$added\"",
+            "<<< \"$diff\"",
+            "<<< \"$hist_diff\"",
+        ] {
+            assert!(
+                !snippet.contains(banned),
+                "patch bytes must not pass through a Bash variable ({banned})"
+            );
+        }
+        for required in [
+            "--dst-prefix=b/ -- \"$file\" >\"$diff_tmp\"",
+            "--dst-prefix=b/ \"$base\" \"$1\" -- \"$file\" >\"$patch_tmp\"",
+            "--dst-prefix=b/ \"$range\" -- \"$file\" >\"$patch_tmp\"",
+            "secret_scan_stream \"$file\" \"$diff_tmp\" commit",
+            "secret_scan_stream \"$file\" \"$patch_tmp\" push",
+        ] {
+            assert!(
+                snippet.contains(required),
+                "patch reads must be byte-preserving file routes ({required})"
+            );
+        }
     }
 
     #[test]
@@ -1334,8 +1426,33 @@ mod tests {
         // A secret added and removed inside the pushed range never appears in
         // the endpoint diff; every commit's tree delta is scanned too.
         assert!(
-            install::SECRET_SCAN_SH.contains("log -p -m --format=commit\\ %H"),
+            install::SECRET_SCAN_SH.contains("log -p -m --text --format=commit\\ %H"),
             "pushed-range scan must cover per-commit history, not only the endpoint diff"
+        );
+    }
+
+    #[test]
+    fn secret_scan_patch_reads_force_text_mode() {
+        // #17906: git's binary detection — a PR-head `-diff` attribute in
+        // .gitattributes, or a NUL byte in the content — collapses a file to
+        // `Binary files differ` with no hunks, so token-shaped added lines
+        // never reach the scan and the hook reports green on a secret. Every
+        // patch-producing git read in the shared snippet must force text
+        // mode; the `--name-only` listings produce no patch and need no flag.
+        for pin in [
+            "diff --cached --text --unified=0",
+            "diff --text --unified=0",
+            "log -p -m --text --format=commit\\ %H",
+        ] {
+            assert!(
+                install::SECRET_SCAN_SH.contains(pin),
+                "hook scan patch read must force text mode ({pin})"
+            );
+        }
+        assert_eq!(
+            install::SECRET_SCAN_SH.matches("--text").count(),
+            3,
+            "exactly the three patch-producing reads may carry --text"
         );
     }
 
@@ -1546,6 +1663,200 @@ mod tests {
         fs::set_permissions(hooks_dir.join("pre-commit"), fs::Permissions::from_mode(0o644))?;
         assert_eq!(check_githooks(&repo)?, 1);
         fs::remove_dir_all(repo)?;
+        Ok(())
+    }
+
+    // --- Live near-miss controls (#17910 review) -----------------------------
+    //
+    // The staged and pushed scans are driven through real git and the real
+    // generated snippet (the same extraction the T3 trap performs), so the
+    // byte-preservation contract is exercised wherever this crate's tests
+    // run, not only in the trap lane: a `ghp_` + NUL + 36 letters file must
+    // commit and push cleanly — no token was ever in it — while the same
+    // bytes without the NUL are refused on both paths.
+
+    /// Shebang + strict-mode prologue shared by the fixture hooks.
+    const LIVE_HOOK_HEAD: &str = "#!/usr/bin/env bash\nset -euo pipefail\n";
+
+    /// The pushed-ref loop the generated pre-push uses for the scan call,
+    /// reduced to the hook-under-test (no gates after it).
+    const LIVE_PUSH_HARNESS: &str = r#"
+PUSH_REFS=()
+while IFS= read -r line; do PUSH_REFS+=("$line"); done
+for line in "${PUSH_REFS[@]+"${PUSH_REFS[@]}"}"; do
+    read -r _push_ref push_local _remote_ref push_remote <<< "$line"
+    if [ "$push_local" != "0000000000000000000000000000000000000000" ]; then
+        secret_scan_range "$push_local" "$push_remote" || exit 1
+    fi
+done
+exit 0
+"#;
+
+    /// The `ghp_` + NUL + 36 letters near-miss: shape-shaped only after a
+    /// Bash variable strips the NUL.
+    fn nul_near_miss_bytes() -> Vec<u8> {
+        let mut bytes = b"ghp_".to_vec();
+        bytes.push(0);
+        bytes.extend_from_slice(&[b'A'; 36]);
+        bytes
+    }
+
+    /// Runs `git` in `repo`, returning (exit code, stdout + stderr).
+    fn git_capture(repo: &Path, args: &[&str]) -> Result<(i32, String)> {
+        let output = git_command().args(args).current_dir(repo).output()?;
+        let mut report = String::from_utf8_lossy(&output.stdout).into_owned();
+        report.push_str(&String::from_utf8_lossy(&output.stderr));
+        Ok((output.status.code().unwrap_or(-1), report))
+    }
+
+    /// A scratch repo with a neutral identity (the generated pre-commit
+    /// refuses its placeholder identities, so the fixture must avoid them).
+    fn scan_live_repo(tag: &str) -> Result<PathBuf> {
+        let path = std::env::temp_dir().join(format!(
+            "perl-ci-hygiene-hook-scan-{tag}-{}-{}",
+            std::process::id(),
+            SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()
+        ));
+        fs::create_dir_all(&path)?;
+        let init = git_capture(&path, &["init", "--quiet", "-b", "main"])?;
+        assert_eq!(init.0, 0, "git init failed: {}", init.1);
+        for config in
+            [("user.email", "hook-scan-live@example.invalid"), ("user.name", "hook-scan-live")]
+        {
+            let set = git_capture(&path, &["config", config.0, config.1])?;
+            assert_eq!(set.0, 0, "git config {} failed: {}", config.0, set.1);
+        }
+        Ok(path)
+    }
+
+    /// Stages and commits everything currently in the worktree.
+    fn commit_all(repo: &Path, message: &str) -> Result<()> {
+        let add = git_capture(repo, &["add", "-A"])?;
+        assert_eq!(add.0, 0, "git add failed: {}", add.1);
+        let commit = git_capture(repo, &["commit", "--quiet", "-m", message])?;
+        assert_eq!(commit.0, 0, "git commit failed: {}", commit.1);
+        Ok(())
+    }
+
+    /// Installs a fixture hook made of `body` around the shared snippet.
+    fn write_live_hook(repo: &Path, name: &str, body: &str) -> Result<()> {
+        let hook_path = repo.join(".git").join("hooks").join(name);
+        fs::create_dir_all(
+            hook_path.parent().ok_or_else(|| {
+                color_eyre::eyre::eyre!("hook path {:?} has no parent", hook_path)
+            })?,
+        )?;
+        fs::write(&hook_path, body)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&hook_path, fs::Permissions::from_mode(0o755))?;
+        }
+        Ok(())
+    }
+
+    fn rev_list_count(repo: &Path) -> Result<usize> {
+        let (code, report) = git_capture(repo, &["rev-list", "--all", "--count"])?;
+        assert_eq!(code, 0, "git rev-list failed: {report}");
+        let trimmed = report.trim();
+        trimmed.parse::<usize>().map_err(|error| {
+            color_eyre::eyre::eyre!("rev-list printed {trimmed:?}, not a count: {error}")
+        })
+    }
+
+    /// The NUL near-miss must commit through the live staged scan, and the
+    /// same shape without the NUL must be refused (#17910 review: the staged
+    /// patch read keeps NULs, so the shape never assembles).
+    #[test]
+    fn staged_scan_commits_a_nul_near_miss_and_refuses_a_genuine_token() -> Result<()> {
+        let repo = scan_live_repo("staged")?;
+        fs::write(repo.join("ok.txt"), "benign base\n")?;
+        commit_all(&repo, "base")?;
+        fs::write(repo.join(".gitattributes"), "nearmiss.bin -diff\n")?;
+        commit_all(&repo, "mask the fixture file from diff")?;
+        write_live_hook(
+            &repo,
+            "pre-commit",
+            &format!("{LIVE_HOOK_HEAD}{}\nsecret_scan_staged || exit 1\n", install::SECRET_SCAN_SH),
+        )?;
+
+        let before = rev_list_count(&repo)?;
+        fs::write(repo.join("nearmiss.bin"), nul_near_miss_bytes())?;
+        let add = git_capture(&repo, &["add", "nearmiss.bin"])?;
+        assert_eq!(add.0, 0, "git add failed: {}", add.1);
+        let (code, report) = git_capture(&repo, &["commit", "-m", "add the NUL near-miss"])?;
+        assert_eq!(code, 0, "a NUL-separated near-miss must commit cleanly: {report}");
+        assert!(
+            !report.contains("Secret scan refused"),
+            "the near-miss must not read as a token: {report}"
+        );
+        assert_eq!(rev_list_count(&repo)?, before + 1, "the near-miss commit must land");
+
+        fs::write(repo.join("genuine.txt"), format!("token = \"ghp_{}\"\n", "F".repeat(36)))?;
+        let add = git_capture(&repo, &["add", "genuine.txt"])?;
+        assert_eq!(add.0, 0, "git add failed: {}", add.1);
+        let (code, report) = git_capture(&repo, &["commit", "-m", "add a genuine token"])?;
+        assert_ne!(code, 0, "a genuine token must be refused: {report}");
+        assert!(report.contains("Secret scan refused"), "refusal missing: {report}");
+        assert!(report.contains("rule github-token"), "rule name missing: {report}");
+        assert_eq!(rev_list_count(&repo)?, before + 1, "the refused commit must not land");
+        fs::remove_dir_all(repo)?;
+        Ok(())
+    }
+
+    /// The NUL near-miss must push through the live pushed-range scan (both
+    /// legs: endpoint diff and per-commit history), and the same shape
+    /// without the NUL must refuse the push (#17910 review).
+    #[test]
+    fn pushed_scan_accepts_a_nul_near_miss_and_refuses_a_genuine_token() -> Result<()> {
+        let root = scan_live_repo("pushed")?;
+        let bare = root.join("origin.git");
+        let work = root.join("work");
+        let bare_str = bare
+            .to_str()
+            .ok_or_else(|| color_eyre::eyre::eyre!("bare path is not valid unicode"))?;
+        let work_str = work
+            .to_str()
+            .ok_or_else(|| color_eyre::eyre::eyre!("work path is not valid unicode"))?;
+        let init = git_capture(&root, &["init", "--quiet", "--bare", bare_str])?;
+        assert_eq!(init.0, 0, "git init --bare failed: {}", init.1);
+        let clone = git_capture(&root, &["clone", "--quiet", bare_str, work_str])?;
+        assert_eq!(clone.0, 0, "git clone failed: {}", clone.1);
+        for config in
+            [("user.email", "hook-scan-live@example.invalid"), ("user.name", "hook-scan-live")]
+        {
+            let set = git_capture(&work, &["config", config.0, config.1])?;
+            assert_eq!(set.0, 0, "git config {} failed: {}", config.0, set.1);
+        }
+        let branch = git_capture(&work, &["checkout", "-q", "-b", "trap/nul-push"])?;
+        assert_eq!(branch.0, 0, "git checkout failed: {}", branch.1);
+        write_live_hook(
+            &work,
+            "pre-push",
+            &format!("{LIVE_HOOK_HEAD}{}{LIVE_PUSH_HARNESS}", install::SECRET_SCAN_SH),
+        )?;
+
+        fs::write(work.join("readme.txt"), "near-miss fixture\n")?;
+        fs::write(work.join("nearmiss.bin"), nul_near_miss_bytes())?;
+        fs::write(work.join(".gitattributes"), "nearmiss.bin -diff\n")?;
+        commit_all(&work, "add the NUL near-miss")?;
+
+        let (code, report) = git_capture(&work, &["push", "origin", "trap/nul-push"])?;
+        assert_eq!(code, 0, "a NUL-separated near-miss must push cleanly: {report}");
+        assert!(
+            !report.contains("Secret scan refused"),
+            "the near-miss must not read as a token: {report}"
+        );
+        assert_eq!(rev_list_count(&bare)?, 1, "the near-miss push must land on the remote");
+
+        fs::write(work.join("leak.rs"), format!("token = \"ghp_{}\"\n", "C".repeat(36)))?;
+        commit_all(&work, "add a genuine token")?;
+        let (code, report) = git_capture(&work, &["push", "origin", "trap/nul-push"])?;
+        assert_ne!(code, 0, "a genuine token must refuse the push: {report}");
+        assert!(report.contains("Secret scan refused this push"), "push refusal missing: {report}");
+        assert!(report.contains("rule github-token"), "rule name missing: {report}");
+        assert_eq!(rev_list_count(&bare)?, 1, "the refused push must not reach the remote");
+        fs::remove_dir_all(root)?;
         Ok(())
     }
 }
