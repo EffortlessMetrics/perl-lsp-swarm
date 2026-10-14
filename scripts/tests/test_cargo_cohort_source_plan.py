@@ -175,7 +175,6 @@ class SourceTraversalPlan(unittest.TestCase):
 
     def test_deep_path_fallback_stays_fresh_without_directory_stack(self):
         path = self.file('a/b/c/source.rs', b'abcd')
-        plan = self.prepare()
         original_open = os.open
         directory_opens = []
         def open_file(path, flags, *args, **kwargs):
@@ -184,6 +183,8 @@ class SourceTraversalPlan(unittest.TestCase):
             return original_open(path, flags, *args, **kwargs)
         with patch.object(subject, '_SOURCE_DIRECTORY_STACK_LIMIT', 1), \
              patch.object(os, 'open', side_effect=open_file):
+            with patch.object(Path, 'joinpath', side_effect=AssertionError('planned unused deep traversal')):
+                plan = self.prepare()
             self.run_plan(plan)
             path.write_bytes(b'wxyz')
             with self.assertRaises(subject.Denied):

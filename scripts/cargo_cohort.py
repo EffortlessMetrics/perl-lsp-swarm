@@ -199,6 +199,10 @@ def _prepare_source_declaration(worktree, entries):
             raise Denied('foreign or noncanonical source/profile path')
         subjects.append((subject, entry['sha256']))
         deepest = max(deepest, len(subject.parent.parts))
+    # The deep-path fallback never replays a directory stack. Avoid building
+    # unused ancestor paths or transitions for that subject.
+    if deepest >= _SOURCE_DIRECTORY_STACK_LIMIT:
+        return root_text, tuple(subjects), deepest, (), ()
     root_paths = tuple(reversed(worktree.parents)) + (worktree,)
     steps = []
     previous = ()
