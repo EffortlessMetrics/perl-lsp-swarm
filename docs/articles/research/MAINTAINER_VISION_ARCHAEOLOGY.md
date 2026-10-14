@@ -1,4 +1,9 @@
 # Maintainer Vision Archaeology
+
+<!-- authority-status:v1 -->
+> **Status: historical.** Current authority: [Agent and maintainer authority status](../../agents/AUTHORITY_STATUS.md).
+> Retained as historical or aspirational evidence. Internal wording below that calls this document current, definitive, a north star, or an acceptance authority is historical and must not route current work. See [Agent and maintainer authority status](../../agents/AUTHORITY_STATUS.md).
+
 ## How Maintainer Intent Kept Getting Recast Into Better Agent Surfaces
 
 One of the most distinctive patterns in this repository is that maintainer

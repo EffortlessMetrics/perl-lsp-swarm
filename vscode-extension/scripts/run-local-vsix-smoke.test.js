@@ -1333,6 +1333,77 @@ void test('a child receipt bound to this run admits behavioral proof', () => {
   assert.equal(result.ok, true);
 });
 
+const snapshotVsixFile = path.join(identityFixtureRoot, 'snapshot', 'candidate.vsix');
+fs.mkdirSync(path.dirname(snapshotVsixFile));
+fs.copyFileSync(inputVsixFile, snapshotVsixFile);
+const observedSnapshotVsix = observeSmokeArtifact(snapshotVsixFile);
+// The published runner removes its owned snapshot before the parent reads the receipt.
+fs.rmSync(snapshotVsixFile);
+function snapshotChildReceipt() {
+  const receipt = childReceipt();
+  receipt.installed_byte_identity.vsix_before = observedSnapshotVsix;
+  receipt.installed_byte_identity.vsix_after = observedSnapshotVsix;
+  return receipt;
+}
+
+void test('a cleaned-up private VSIX snapshot binds the parent-owned package bytes', () => {
+  assert.notEqual(observedSnapshotVsix.path, observedInputVsix.path);
+  assert.equal(fs.existsSync(snapshotVsixFile), false);
+  const result = validateChild(snapshotChildReceipt());
+  assert.equal(result.ok, true, result.ok ? '' : result.violations.join('; '));
+});
+
+for (const name of ['different digest', 'different size', 'relative path', 'missing path']) {
+  void test(`a private VSIX snapshot receipt rejects ${name}`, () => {
+    const receipt = snapshotChildReceipt();
+    const observation = { ...observedSnapshotVsix };
+    if (name === 'different digest') observation.sha256 = 'd'.repeat(64);
+    else if (name === 'different size') observation.size += 1;
+    else if (name === 'relative path') observation.path = 'candidate.vsix';
+    else Reflect.deleteProperty(observation, 'path');
+    receipt.installed_byte_identity.vsix_before = observation;
+    receipt.installed_byte_identity.vsix_after = observation;
+    const result = validateChild(receipt);
+    assert.equal(result.ok, false);
+    assert.match(result.violations.join('; '), /installed byte identity/);
+  });
+}
+
+void test('a private VSIX snapshot cannot change paths between receipt phases', () => {
+  const receipt = snapshotChildReceipt();
+  receipt.installed_byte_identity.vsix_after = observedInputVsix;
+  const result = validateChild(receipt);
+  assert.equal(result.ok, false);
+  assert.match(result.violations.join('; '), /installed byte identity/);
+});
+
+for (const field of ['sha256', 'size']) {
+  void test(`a private VSIX snapshot cannot change ${field} after the initial observation`, () => {
+    const receipt = snapshotChildReceipt();
+    receipt.installed_byte_identity.vsix_after =
+      field === 'sha256'
+        ? { ...observedSnapshotVsix, sha256: 'd'.repeat(64) }
+        : { ...observedSnapshotVsix, size: observedSnapshotVsix.size + 1 };
+    const result = validateChild(receipt);
+    assert.equal(result.ok, false);
+    assert.match(result.violations.join('; '), /installed byte identity/);
+  });
+}
+
+for (const mutation of ['replacement', 'deletion']) {
+  void test(`a private VSIX snapshot cannot hide parent package ${mutation}`, () => {
+    try {
+      if (mutation === 'replacement') fs.writeFileSync(inputVsixFile, 'different-vsix');
+      else fs.rmSync(inputVsixFile);
+      const result = validateChild(snapshotChildReceipt());
+      assert.equal(result.ok, false);
+      assert.match(result.violations.join('; '), /installed byte identity/);
+    } finally {
+      fs.writeFileSync(inputVsixFile, 'known-vsix');
+    }
+  });
+}
+
 void test('a missing child receipt is never behavioral proof', () => {
   const result = validateChild(childReceipt(), { present: false });
   assert.equal(result.ok, false);

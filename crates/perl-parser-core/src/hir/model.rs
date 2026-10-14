@@ -113,10 +113,14 @@ pub enum RecoveryConfidence {
 /// previous `Call { args: [Opaque{Block}, …] }` fallback for
 /// `try`/`catch`/`finally` and, unlike that fallback, retain the statements
 /// inside each region.
+/// v7 adds the [`HirExpr::Literal`] first-cohort scalar leaf (#17538), which
+/// replaces the previous `Opaque` fallback for plain decimal numbers,
+/// noninterpolating strings, and `undef`, and retains the exact payload.
 ///
 /// [`HirExpr::Try`]: super::body::HirExpr::Try
 /// [`HirCatchHandler`]: super::body::HirCatchHandler
-pub const HIR_BODY_MODEL_VERSION: u32 = 6;
+/// [`HirExpr::Literal`]: super::body::HirExpr::Literal
+pub const HIR_BODY_MODEL_VERSION: u32 = 7;
 
 /// HIR for one parsed file.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]

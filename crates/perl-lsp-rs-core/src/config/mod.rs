@@ -293,12 +293,14 @@ pub struct AiCompletionConfig {
 pub(crate) const DEFAULT_AI_API_KEY_HEADER: &str = "Authorization";
 pub(crate) const DEFAULT_AI_API_KEY_PREFIX: &str = "Bearer";
 
+#[cfg(feature = "ai-provider")]
 pub(crate) fn normalize_ai_api_key_header(value: &str) -> Option<String> {
     let trimmed = value.trim();
     (!trimmed.is_empty() && trimmed.bytes().all(is_http_header_name_byte))
         .then(|| trimmed.to_string())
 }
 
+#[cfg(feature = "ai-provider")]
 pub(crate) fn normalize_ai_api_key_prefix(value: &str) -> Option<Option<String>> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
@@ -308,10 +310,12 @@ pub(crate) fn normalize_ai_api_key_prefix(value: &str) -> Option<Option<String>>
     is_safe_http_header_value_part(trimmed).then(|| Some(trimmed.to_string()))
 }
 
+#[cfg(feature = "ai-provider")]
 pub(crate) fn is_safe_http_header_value_part(value: &str) -> bool {
     !value.bytes().any(|byte| byte < 0x20 || byte == 0x7f)
 }
 
+#[cfg(feature = "ai-provider")]
 fn is_http_header_name_byte(byte: u8) -> bool {
     byte.is_ascii_alphanumeric()
         || matches!(
@@ -2656,9 +2660,16 @@ pub fn load_project_config(
     // UTF-8 BOM, which causes toml::from_str to report a syntax error at byte 0.
     let content = content.strip_prefix('\u{FEFF}').unwrap_or(&content);
 
-    toml::from_str::<ProjectConfig>(content)
-        .map(Some)
-        .map_err(|e| format!(".perl-lsp.toml has a syntax error: {}", e))
+    toml::from_str::<ProjectConfig>(content).map(Some).map_err(|e| {
+        // Typed deserialization can reject syntactically valid TOML. Check
+        // syntax only on failure, retaining the original span/type detail.
+        let kind = if toml::de::Deserializer::parse(content).is_ok() {
+            "an invalid value"
+        } else {
+            "a syntax error"
+        };
+        format!(".perl-lsp.toml has {kind}: {e}")
+    })
 }
 
 /// Discover a `.perltidyrc` profile for a workspace following perltidy's
@@ -3866,6 +3877,29 @@ perlcritic_severity = 2
             .err()
             .ok_or("expected invalid TOML to return an error")?;
         assert!(err.contains("syntax error"));
+        assert!(err.contains("line 1, column"), "syntax location must survive: {err}");
+        assert!(!err.contains("invalid value"), "syntax must not be mislabeled: {err}");
+        Ok(())
+    }
+
+    #[test]
+    fn load_project_config_distinguishes_invalid_values_from_syntax() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        for (content, expected, line) in [
+            ("[perl]\ninclude_paths = \"lib\"\n", "expected a sequence", 2),
+            ("[features]\ninlay_hints = \"yes\"\n", "expected a boolean", 2),
+            ("[perl]\nversion = 5.38\n", "expected a string", 2),
+        ] {
+            std::fs::write(temp.path().join(".perl-lsp.toml"), content)?;
+            let err = load_project_config(temp.path())
+                .err()
+                .ok_or("invalid values must fail rather than fall back to defaults")?;
+            assert!(err.contains("invalid value"), "wrong classification: {err}");
+            assert!(!err.contains("has a syntax error"), "valid TOML syntax: {err}");
+            assert!(err.contains(expected), "expected-type guidance must survive: {err}");
+            assert!(err.contains(&format!("line {line}, column")), "span must survive: {err}");
+            assert!(err.contains(".perl-lsp.toml"), "name the file to fix: {err}");
+        }
         Ok(())
     }
 

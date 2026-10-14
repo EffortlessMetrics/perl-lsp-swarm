@@ -173,7 +173,37 @@ outcome_owner = "#10230"
 # class-model merge in workspace.rs; the two compose on different seams of the
 # same workspace-methods pipeline. No producer add/remove/re-channel and no
 # entry/finalizer change. Digest recomputed over the merged tree.
-source_digest = "sha256:71f9e000c5903629d41b076d701178c26b48c27376a82fac8e2e1cf8d4a74918"
+# Re-audit 2026-10-13 (#17779): joined the landed #17736 indexed lexical-sub
+# suppression with the runtime fallback name-token edits and application tests.
+# The same 42 scan files and 59 producer rows remain: no added/removed candidate
+# channels, entry routes, delegations or finalizer seam. Runtime and XS row notes
+# now describe caller-specific ranges; identity, insertion compatibility,
+# evidence, rank, completeness and migration owners retain their prior ceilings.
+# Re-anchor 2026-10-13 (#17160/#17161/#17162 repair): member-collection and
+# catalog filtering changed inside existing producers (direct-membership query
+# in the workspace MRO walk, lexical and nested-package handling in
+# add_package_completions, prefix filtering in the generic/DBI method catalogs).
+# No producer add/remove/re-channel and no entry/finalizer change. Also absorbs
+# the un-anchored surface movement #17834 left in
+# perl-lsp-rs/src/runtime/language/completion.rs (its state/document.rs edit is
+# outside the scan roots; its completion.rs test-body edits are scanned).
+# Re-audit 2026-10-13 (#17840, merged as #17841 between this branch's base and
+# its merge): the landed #17834 snapshot selector admits current or same-text
+# predecessor ASTs and reports a pending parse gap through the response flag;
+# it adds no candidate channel or post-finalizer append. The fallback fixtures
+# now require both current and latest snapshots absent. All 42 scan files,
+# 59 producers, routes, finalizer seams, classifications and migration owners
+# retain their prior ceilings. Digest recomputed over the merged tree.
+# Re-anchor 2026-10-13 (merge of origin/main into #16853): main's #17844
+# completion-semantics repair (#17160/#17161/#17162) changed member collection
+# and catalog filtering inside existing producers (direct-membership query in
+# the workspace MRO walk, lexical-sub filtering in the indexed method push)
+# beside this branch's per-segment reopened class-model merge in
+# current_document_package_facts; the two compose on different seams of the same
+# workspace pipeline and neither reverts the other. No producer
+# add/remove/re-channel and no entry/finalizer change. Digest recomputed over
+# the merged tree.
+source_digest = "sha256:b96a5caa74b99b484cd4764328d98e0bf4d6d51e307f919d401f5a3b7ba4fc88"
 
 [[delegations]]
 module = "dancer2"
@@ -252,7 +282,7 @@ reach_evidence = "direct_call"
 reached_by = ["handle_completion", "handle_completion_cancellable"]
 migration_owner = "#15014"
 limitations = "The degraded route taken when no AST is available. Its candidates are lexical guesses: they carry no scope, no visibility, and no semantic entity, and must not be read as evidence that a symbol exists."
-note = "Fallback producer used when the document has no usable parse."
+note = "Fallback producer used when the document has no usable parse. Filtering uses the cursor prefix; existing compatibility items replace the whole contiguous alphanumeric/underscore name token around the cursor, preserving sigils, receivers, punctuation and line boundaries."
 
 [[producers]]
 id = "perl_lsp_rs::runtime::language::completion::sort_and_cap_completions"
@@ -991,7 +1021,7 @@ reach_evidence = "provider_seam"
 reached_by = ["handle_completion", "handle_completion_cancellable"]
 migration_owner = "#8958"
 limitations = "Current-document class and method facts are read from the request source, but indexed methods and generated members can still contribute without freshness bound to this document generation. A candidate from that persisted branch can describe source the user has changed."
-note = "Method candidates from current-document class facts and workspace index members; exact source facts can run with an empty index, while unknown-receiver fallback remains index-gated."
+note = "Method candidates from current-document class facts and workspace index members; exact source facts can run with an empty index, while unknown-receiver fallback remains index-gated. Indexed lexical my/state subs are excluded from method candidates (#17636)."
 
 [[producers]]
 id = "perl_lsp_rs_core::providers::completion::completion::workspace::drop_generic_local_methods_rebound_from_composition"
@@ -1059,7 +1089,7 @@ reach_evidence = "provider_seam"
 reached_by = ["handle_completion", "handle_completion_cancellable"]
 migration_owner = "#15014"
 limitations = "Server-authored catalogue with no semantic entity behind it. Identity is the label today, so two catalogue entries sharing a label are indistinguishable at merge."
-note = "XS API catalogue filtered by a typed prefix."
+note = "XS API catalogue filtered by a typed prefix. The no-AST runtime caller supplies the whole contiguous name-token end; core-provider callers retain their existing range plan. Candidate identity and insertion remain compatibility projections."
 
 [[producers]]
 id = "perl_lsp_rs_core::providers::completion_item::candidate::merge_completion_candidates"

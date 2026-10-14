@@ -14,6 +14,16 @@ on:
   pull_request:
     branches: [main, master]
     paths:
+      # Scoped pre-build storage admission; Python fixtures compile no Rust.
+      - 'scripts/cargo-admitted'
+      - 'scripts/cargo_admitted.py'
+      - 'scripts/cargo_cohort.py'
+      - 'scripts/tests/test_cargo_cohort.py'
+      - 'scripts/tests/test_cargo_admitted_storage.py'
+      - 'scripts/tests/test_cargo_admitted_budget.py'
+      - 'scripts/storage-doctor'
+      - 'scripts/tests/test_storage_doctor.py'
+      - 'justfile'
       - 'scripts/cargo_allow_cadence.py'
       - 'scripts/tests/test_cargo_allow_cadence.py'
       - 'scripts/cargo-package-workspace-dry-run.sh'
@@ -33,6 +43,8 @@ on:
       - 'scripts/windows_fresh_path_oracle.py'
       - 'scripts/tests/test-windows-fresh-path-oracle.sh'
       - 'scripts/tests/test-distribution-manifest-consistency.sh'
+      - 'scripts/tests/test_linux_rpm_debug_contract.py'
+      - 'scripts/tests/test_linux_package_sources.py'
       - 'scripts/maintenance/verify_11983_reject_identities.py'
       - 'scripts/tests/test-rebuild-11983-reject-identities.py'
       - 'scripts/maintenance/rebuild_11983_current_main.sh'
@@ -88,6 +100,8 @@ on:
       - 'scripts/ci/test_evaluate_ci_gate.py'
       - 'scripts/ci/pr_smoke_disk_guard.py'
       - 'scripts/ci/test_pr_smoke_disk_guard.py'
+      - 'scripts/ci/test_pr_smoke_workflow_guard.py'
+      - '.github/workflows/ci.yml'
       - 'scripts/ci/verify_gate_receipt_freshness.py'
       - 'scripts/ci/test_verify_gate_receipt_freshness.py'
       # PR-fast failing-gate reporter (#15492): it decides which gates reach the
@@ -339,6 +353,17 @@ jobs:
       - name: Run distribution manifest consistency self-test
         run: bash scripts/tests/test-distribution-manifest-consistency.sh
 
+      - name: Test rendered Linux package sources and archive staging
+        run: python3 -B scripts/tests/test_linux_package_sources.py -v
+
+      - name: Install RPM input-contract test tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends rpm binutils gcc
+
+      - name: Verify RPM stripped release input contract
+        run: python3 -B scripts/tests/test_linux_rpm_debug_contract.py -v
+
       - name: Summary
         if: always()
         run: |
@@ -409,6 +434,9 @@ jobs:
 
       - name: Run PR smoke disk-guard oracle tests (#15400/A2)
         run: python3 -m unittest scripts.ci.test_pr_smoke_disk_guard
+
+      - name: Run PR Smoke workflow/helper compatibility controls (#17835)
+        run: python3 -m unittest scripts.ci.test_pr_smoke_workflow_guard
 
       - name: Run gate receipt freshness oracle tests (#15400/A2)
         run: python3 -m unittest scripts.ci.test_verify_gate_receipt_freshness
@@ -622,6 +650,20 @@ jobs:
             echo "" >> "$GITHUB_STEP_SUMMARY"
             echo "The per-worktree target-dir isolation contract regressed. Check the step output above for the failed case." >> "$GITHUB_STEP_SUMMARY"
           fi
+
+  cargo-admitted-storage-self-test:
+    name: Cargo admitted storage self-test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - name: Run both admitted storage suites without Rust builds
+        run: python3 -m unittest discover -s scripts/tests -p 'test_cargo_admitted*.py' -v
+      - name: Check cohort ownership and exact reclamation controls
+        run: python3 -m unittest discover -s scripts/tests -p 'test_cargo_cohort.py' -v
+      - name: Check retained target measurement failure and threshold controls
+        run: python3 -m unittest discover -s scripts/tests -p 'test_storage_doctor.py' -v
 
   cargo-toolchain-guard-self-test:
     name: Entrypoint cargo toolchain guard self-test
