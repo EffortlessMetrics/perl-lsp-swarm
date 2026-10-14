@@ -384,19 +384,16 @@ impl ExecuteCommandProvider {
         }
 
         let mut explanation = default_provider_decision_explanation(request.provider);
-        // Capture only the defaults. Caller context and request details belong
-        // outside the policy heading, even though the shared formatter supports both.
+        // Capture only the defaults. Request evidence stays outside the policy
+        // heading; receipt and scenario identity stay in the structured response.
         let policy_summary = format_provider_decision_explanation(&explanation);
-        let mut request_context = String::new();
 
         if let Some(receipt_id) = request.receipt_id {
             validate_explanation_echo(&receipt_id, "receipt_id")?;
-            request_context.push_str(&format!("\nReceipt: {receipt_id}."));
             explanation = explanation.with_receipt_id(receipt_id);
         }
         if let Some(scenario) = request.scenario {
             validate_explanation_echo(&scenario, "scenario")?;
-            request_context.push_str(&format!("\nScenario: {scenario}."));
             explanation = explanation.with_scenario(scenario);
         }
         if let Some(request_receipt) = request.request_receipt {
@@ -430,9 +427,8 @@ impl ExecuteCommandProvider {
         } else {
             "No request evidence is attached.".to_string()
         };
-        let user_message = format!(
-            "{request_evidence}{request_context}\nProvider policy summary:\n{policy_summary}"
-        );
+        let user_message =
+            format!("{request_evidence}\nProvider policy summary:\n{policy_summary}");
         explanation = explanation.with_user_message(user_message);
         let copyable_payload = ProviderDecisionCopyablePayload::from_explanation(
             &explanation,
