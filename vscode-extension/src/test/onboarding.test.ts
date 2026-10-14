@@ -25,6 +25,7 @@ import {
   STARTUP_DIAGNOSTICS_UNAVAILABLE_MESSAGE,
 } from '../onboarding';
 import type { HealthCheckResult } from '../onboarding';
+import { registerServerCommandGroup } from '../serverCommandGroup';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -364,12 +365,54 @@ describe('OnboardingManager.checkBinaryDownloaded', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  test('returns ok when server path exists', () => {
+  test('returns ok for a regular file without requiring executable permissions', () => {
     const binPath = path.join(tmpDir, 'perl-lsp');
-    fs.writeFileSync(binPath, '#!/bin/sh\necho ok');
+    fs.writeFileSync(binPath, '#!/bin/sh\necho ok', { mode: 0o600 });
     const mgr = new OnboardingManager(makeContext(), makeOutputChannel());
     const result = mgr.checkBinaryDownloaded(binPath);
     expect(result.ok).toBe(true);
+    expect(result.status).toBe(HealthCheckStatus.Ok);
+    expect(result.detail).toContain(binPath);
+  });
+
+  test('returns error for an existing directory', () => {
+    const mgr = new OnboardingManager(makeContext(), makeOutputChannel());
+    const result = mgr.checkBinaryDownloaded(tmpDir);
+    expect(result).toEqual({
+      label: 'LSP binary',
+      ok: false,
+      status: HealthCheckStatus.Error,
+      detail: `perl-lsp binary path is not a regular file: ${tmpDir}`,
+    });
+  });
+
+  test('rejects other nonfile filesystem entries', () => {
+    const mgr = new OnboardingManager(makeContext(), makeOutputChannel());
+    const stat = jest.spyOn(jest.requireActual<typeof fs>('fs'), 'statSync');
+    stat.mockReturnValueOnce({ isFile: () => false } as fs.Stats);
+    try {
+      expect(mgr.checkBinaryDownloaded(tmpDir).status).toBe(HealthCheckStatus.Error);
+    } finally {
+      stat.mockRestore();
+    }
+  });
+
+  test('reports inspection errors without throwing or accepting the path', () => {
+    const mgr = new OnboardingManager(makeContext(), makeOutputChannel());
+    const stat = jest.spyOn(jest.requireActual<typeof fs>('fs'), 'statSync');
+    stat.mockImplementationOnce(() => {
+      throw new Error('metadata unavailable');
+    });
+    try {
+      expect(mgr.checkBinaryDownloaded(tmpDir)).toEqual({
+        label: 'LSP binary',
+        ok: false,
+        status: HealthCheckStatus.Error,
+        detail: `Unable to inspect perl-lsp binary path: ${tmpDir}`,
+      });
+    } finally {
+      stat.mockRestore();
+    }
   });
 
   test('returns error when server path is null', () => {
@@ -413,6 +456,51 @@ describe('OnboardingManager.runSetupHealthCheck', () => {
     const results: HealthCheckResult[] = await mgr.runSetupHealthCheck(binPath);
     expect(Array.isArray(results)).toBe(true);
     expect(results.length).toBeGreaterThanOrEqual(3);
+  });
+
+  test('directory rejection reaches the registered health command summary', async () => {
+    const output = makeOutputChannel() as vscode.LogOutputChannel;
+    const mgr = new OnboardingManager(makeContext(), output);
+    mockExecCheck(mgr, () => Promise.resolve({ stdout: '5.036000', stderr: '' }));
+    const disposables = registerServerCommandGroup({
+      outputChannel: output,
+      currentServerPath: () => tmpDir,
+      resolveServerPath: async () => tmpDir,
+      reinstallServerBinary: async () => {
+        throw new Error('unexpected reinstall');
+      },
+      restartServer: async () => {
+        throw new Error('unexpected restart');
+      },
+      runHealthCheck: (serverPath) => mgr.runSetupHealthCheck(serverPath),
+      runtimeHealthCheck: () => {
+        throw new Error('unexpected runtime probe');
+      },
+      currentRuntimeSnapshot: () => {
+        throw new Error('unexpected lifecycle probe');
+      },
+    });
+    const showError = jest.spyOn(vscode.window, 'showErrorMessage');
+    try {
+      const result = await vscode.commands.executeCommand('perl-lsp.runHealthCheck', tmpDir);
+      expect(result).toEqual({
+        ok: false,
+        checks: expect.arrayContaining([
+          {
+            label: 'LSP binary',
+            status: 'error',
+            detail: `perl-lsp binary path is not a regular file: ${tmpDir}`,
+          },
+        ]),
+      });
+      expect(output.appendLine).toHaveBeenCalledWith(
+        `[onboarding] [ERROR] LSP binary: perl-lsp binary path is not a regular file: ${tmpDir}`,
+      );
+      expect(showError).toHaveBeenCalledWith('Health check failed: LSP binary', 'Show Output');
+    } finally {
+      showError.mockRestore();
+      disposables.forEach((disposable) => disposable.dispose());
+    }
   });
 
   test('each result has label, ok, status, and detail properties', async () => {

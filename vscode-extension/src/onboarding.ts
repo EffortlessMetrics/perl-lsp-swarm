@@ -264,12 +264,30 @@ export class OnboardingManager {
         detail: 'perl-lsp binary not found. Check Output for download details.',
       };
     }
-    if (!fs.existsSync(serverPath)) {
+    try {
+      const stat = fs.statSync(serverPath, { throwIfNoEntry: false });
+      if (!stat) {
+        return {
+          label,
+          ok: false,
+          status: HealthCheckStatus.Error,
+          detail: `perl-lsp binary path does not exist on disk: ${serverPath}`,
+        };
+      }
+      if (!stat.isFile()) {
+        return {
+          label,
+          ok: false,
+          status: HealthCheckStatus.Error,
+          detail: `perl-lsp binary path is not a regular file: ${serverPath}`,
+        };
+      }
+    } catch {
       return {
         label,
         ok: false,
         status: HealthCheckStatus.Error,
-        detail: `perl-lsp binary path does not exist on disk: ${serverPath}`,
+        detail: `Unable to inspect perl-lsp binary path: ${serverPath}`,
       };
     }
     return {
