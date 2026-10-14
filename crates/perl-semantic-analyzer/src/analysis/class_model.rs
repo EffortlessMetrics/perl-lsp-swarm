@@ -328,6 +328,13 @@ pub fn merge_reopened_class_models(models: &[ClassModel]) -> Vec<ClassModel> {
             } else {
                 existing.parents = model.parents.clone();
             }
+            // The merged package state now carries an explicit ancestry
+            // decision (including an explicit empty `@ISA = ()` reset), so the
+            // persisted-facts composition gate must observe it even when the
+            // first segment was silent (#17084). `parents_additive` and
+            // `parents_replaces_prior` stay per-segment: their only reader is
+            // this merge, which consumes per-segment builder output.
+            existing.parents_explicit = true;
         }
         if !model.roles.is_empty() {
             existing.roles = model.roles.clone();
@@ -2311,6 +2318,29 @@ mod tests {
             user.roles,
             vec!["Other".to_string()],
             "a later explicit `with` must supersede the earlier role, not union with it"
+        );
+    }
+
+    #[test]
+    fn merge_reopened_class_models_explicit_empty_isa_reopen_stays_explicit() {
+        // A silent segment followed by an explicit `our @ISA = ();` reset: the
+        // merged model must carry the explicit-ancestry marker even though the
+        // first segment was silent, so persisted-facts composition does not
+        // refill the emptied parent list from the index (#17084).
+        let source = "package Child;\nuse Moo;\nsub buffered_method { 1 }\n\
+                     \npackage Child;\nour @ISA = ();\nsub reset_method { 2 }\n";
+        let ast = must(Parser::new(source).parse());
+        let models = ClassModelBuilder::new().build(&ast);
+
+        let child = merged_model(&models, "Child");
+        assert!(
+            child.parents.is_empty(),
+            "the explicit empty reset must leave no parents; got {:?}",
+            child.parents
+        );
+        assert!(
+            child.parents_explicit,
+            "the merged model must keep the explicit-ancestry marker across the silent first segment"
         );
     }
 

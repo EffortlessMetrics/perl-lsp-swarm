@@ -3539,6 +3539,29 @@ mod reopened_consumer_source_facts_tests {
             .collect()
     }
 
+    /// Index where cross-file `Child` inherits `Base`, plus `Base` itself.
+    fn child_with_base_index() -> WorkspaceIndex {
+        use perl_tdd_support::must;
+
+        let index = WorkspaceIndex::new();
+
+        let base_uri = must(url::Url::parse("file:///workspace/Base.pm"));
+        must(
+            index.index_initial_file(
+                base_uri,
+                "package Base;\nsub base_method { }\n1;\n".to_string(),
+            ),
+        );
+
+        let child_uri = must(url::Url::parse("file:///workspace/Child.pm"));
+        must(index.index_initial_file(
+            child_uri,
+            "package Child;\nuse parent 'Base';\nsub indexed_child_method { }\n1;\n".to_string(),
+        ));
+
+        index
+    }
+
     #[test]
     fn silent_reopen_keeps_role_and_both_segments_methods() {
         let names = collected(SILENT_REOPEN, "User");
@@ -3581,6 +3604,37 @@ mod reopened_consumer_source_facts_tests {
         assert!(
             names.contains(&"sibling_method".to_string()),
             "the sibling's own method must still be offered; got {names:?}"
+        );
+    }
+
+    /// A silent segment followed by an explicit `our @ISA = ();` reopen must
+    /// keep the merged model's explicit-ancestry marker, so the cross-file
+    /// indexed parent is not restored over the explicit empty reset (#17084).
+    /// Discriminating: with a dropped marker propagation the restore gate sees
+    /// `parents_stated == false` and resurfaces `base_method`.
+    #[test]
+    fn explicit_empty_isa_reopen_keeps_indexed_parent_suppressed() {
+        let index = child_with_base_index();
+        let source = "package Child;\nuse Moo;\nsub buffered_method { 1 }\n\
+             \npackage Child;\nour @ISA = ();\nsub reset_method { 2 }\n";
+        let names = collect_all_package_members_with_source(
+            &index,
+            "Child",
+            source,
+            "file:///workspace/script.pl",
+        )
+        .into_iter()
+        .map(|symbol| symbol.name)
+        .collect::<Vec<_>>();
+        assert!(
+            !names.contains(&"base_method".to_string()),
+            "an explicit empty @ISA reset must not be refilled from the cross-file indexed \
+             parent; got {names:?}"
+        );
+        assert!(
+            names.contains(&"buffered_method".to_string())
+                && names.contains(&"reset_method".to_string()),
+            "both reopened segments' own methods must still be offered; got {names:?}"
         );
     }
 }

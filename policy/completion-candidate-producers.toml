@@ -203,7 +203,17 @@ outcome_owner = "#10230"
 # workspace pipeline and neither reverts the other. No producer
 # add/remove/re-channel and no entry/finalizer change. Digest recomputed over
 # the merged tree.
-source_digest = "sha256:b96a5caa74b99b484cd4764328d98e0bf4d6d51e307f919d401f5a3b7ba4fc88"
+# Re-anchor 2026-10-12 (#16984 review): merge_reopened_class_models now
+# propagates `parents_explicit` onto the merged model when a reopened segment
+# explicitly declares ancestry, so an explicitly emptied `@ISA = ()` reset after
+# a silent segment is no longer refilled from the persisted index by the
+# workspace facts composition gate. The analyzer is not a scan root; the only
+# scan-root change is test-only in completion/completion/workspace.rs. No
+# producer add/remove/re-channel and no entry/finalizer change. This narrows
+# what the existing workspace method row can restore for an explicitly reset
+# reopened package — a source re-audit, not a claim that completion behavior is
+# unchanged. Digest recomputed over the edited sources.
+source_digest = "sha256:e76cbcaf7fdb76f24aded7fb9c9037dc0f2c532d8dfd6d55f2de2ad394f7338a"
 
 [[delegations]]
 module = "dancer2"
