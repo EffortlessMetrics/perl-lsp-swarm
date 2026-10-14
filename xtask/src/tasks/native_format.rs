@@ -96,6 +96,10 @@ struct NativeFormatCorpusReceipt {
     formatted_parse_clean_count: usize,
     idempotence_passed_count: usize,
     parse_preserved_count: usize,
+    /// Schema-v1 field name kept. Counts literal-preservation events, not only
+    /// refusals: since #17907 a corpus file qualifies when the formatter
+    /// refused on unchanged output OR when a changed format preserved the
+    /// literal sections byte-exact.
     literal_bailout_count: usize,
     unsupported_patterns_count: usize,
     unsupported_parse_clean_count: usize,
@@ -115,6 +119,9 @@ struct NativeFormatCorpusFileResult {
     source_parse_clean: bool,
     formatted_parse_clean: bool,
     parse_preserved: bool,
+    /// Schema-v1 field name kept; see [`NativeFormatCorpusReceipt::
+    /// literal_bailout_count`]. True for any literal-preservation event:
+    /// a refusal on unchanged output or a changed-preserving format.
     literal_bailout: bool,
     unsupported_pattern: bool,
     unsupported_parse_clean: bool,
@@ -188,6 +195,10 @@ struct NativeFormatFixtureResult {
     source_parse_clean: bool,
     formatted_parse_clean: bool,
     parse_preserved: bool,
+    /// Schema-v1 field name kept. Formatter-refusal shape only: the source was
+    /// left byte-exact while the literal-preservation signal fired.
+    /// Changed-preserving passes (#17917) are accepted separately and are not
+    /// counted here.
     bailout: bool,
     passed: bool,
 }
@@ -636,6 +647,8 @@ fn check_fixture(
     );
     let expected_matched =
         expected.as_ref().is_none_or(|expected| expected == &result.result.formatted);
+    let actual_diagnostic_codes: Vec<String> =
+        result.result.diagnostics.iter().map(|diagnostic| diagnostic.code.clone()).collect();
     let diagnostic_codes = receipt_diagnostic_codes(&result);
     let second_diagnostic_codes = receipt_diagnostic_codes(&second);
     let expected_diagnostics_matched = diagnostic_codes == expected_diagnostic_codes;
@@ -654,7 +667,16 @@ fn check_fixture(
         && !result.result.changed
         && result.result.edits.is_empty()
         && result.result.formatted == source;
-    let parse_preserved = if expects_diagnostics {
+    // The receipt-derived `literal_preserve_region` code is outcome
+    // bookkeeping (#17907), not a formatter refusal: when the only signal is
+    // the typed outcome's preservation reason, a fixture whose formatting
+    // changed the output while its literal sections stayed byte-exact is a
+    // valid changed-preserving pass, not a bailout (#17917).
+    let changed_preserving = expects_diagnostics
+        && actual_diagnostic_codes.is_empty()
+        && preserves_literals(&result)
+        && result.result.changed;
+    let parse_preserved = if expects_diagnostics && !changed_preserving {
         result.result.formatted == source && !has_parse_preservation_diagnostic(&result.result)
     } else {
         source_parse_clean
@@ -666,9 +688,9 @@ fn check_fixture(
         && parse_preserved
         && expected_diagnostics_matched
         && if expects_diagnostics {
-            bailout
+            bailout || changed_preserving
         } else {
-            source_parse_clean && formatted_parse_clean && diagnostic_codes.is_empty()
+            source_parse_clean && formatted_parse_clean && actual_diagnostic_codes.is_empty()
         };
 
     Ok(NativeFormatFixtureResult {
@@ -812,7 +834,12 @@ fn write_corpus_summary(path: &Path, receipt: &NativeFormatCorpusReceipt) -> Res
         "- Parse preservation: {}/{}\n",
         receipt.parse_preserved_count, receipt.files_checked
     ));
-    markdown.push_str(&format!("- Literal bailouts: {}\n", receipt.literal_bailout_count));
+    markdown
+        .push_str(&format!("- Literal-preservation events: {}\n", receipt.literal_bailout_count));
+    markdown.push_str(
+        "  - Formatter refusals on unchanged output plus changed formats that preserved \
+         literal sections byte-exact (schema-v1 receipt field `literal_bailout_count`).\n",
+    );
     markdown
         .push_str(&format!("- Unsupported diagnostics: {}\n", receipt.unsupported_patterns_count));
     markdown.push_str(&format!(
@@ -976,6 +1003,88 @@ mod tests {
     }
 
     #[test]
+    fn native_format_check_accepts_changed_preserving_expected_diagnostics() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let fixtures = temp.path().join("fixtures");
+        let receipts = temp.path().join("receipts");
+        fs::create_dir_all(&fixtures)?;
+        // Regression for #17917: formatting CHANGES the output (`my$x=1;` ->
+        // `my $x = 1;`) while the `__DATA__` section stays byte-exact, so the
+        // only receipt code is the outcome-derived
+        // `native.format.literal_preserve_region` compatibility code. That is
+        // receipt-level bookkeeping, not a formatter refusal, so this fixture
+        // form must pass; before the fix it failed both with and without a
+        // sidecar.
+        let source = "my$x=1;\n__DATA__\nraw\n";
+        fs::write(fixtures.join("data.pl"), source)?;
+        fs::write(fixtures.join("data.expected.pl"), "my $x = 1;\n__DATA__\nraw\n")?;
+        fs::write(
+            fixtures.join("data.expected-diagnostics.txt"),
+            "native.format.literal_preserve_region\n",
+        )?;
+
+        check(NativeFormatCheckConfig { fixtures, receipt_dir: receipts.clone() })?;
+
+        let fixture_receipt: Value = serde_json::from_str(&fs::read_to_string(
+            receipts.join("native-format-fixtures.json"),
+        )?)?;
+        assert_eq!(fixture_receipt["fixture_count"], 1);
+        assert_eq!(fixture_receipt["passed"], true);
+        assert_eq!(fixture_receipt["changed_count"], 1);
+        assert_eq!(fixture_receipt["expected_diagnostics_match_count"], 1);
+        // The refusal ratchet is intact: a changed-preserving pass is not
+        // counted as a bailout refusal.
+        assert_eq!(fixture_receipt["bailout_count"], 0);
+        let data = &fixture_receipt["fixtures"][0];
+        assert_eq!(data["changed"], true);
+        assert_eq!(data["bailout"], false);
+        assert_eq!(data["expected_matched"], true);
+        assert_eq!(data["expected_diagnostics_matched"], true);
+        assert_eq!(data["idempotent"], true);
+        assert_eq!(data["parse_preserved"], true);
+        assert_eq!(data["diagnostic_codes"][0], "native.format.literal_preserve_region");
+
+        Ok(())
+    }
+
+    #[test]
+    fn native_format_check_still_rejects_genuine_formatter_refusals() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let fixtures = temp.path().join("fixtures");
+        let receipts = temp.path().join("receipts");
+        fs::create_dir_all(&fixtures)?;
+        // A genuine formatter refusal (`native.format.parse_error`, source
+        // left byte-exact) keeps failing even though the preservation signal
+        // classification exists; a sidecar cannot launder a refusal into a
+        // changed-preserving pass (#17917).
+        let source = "my $x = ;\n";
+        fs::write(fixtures.join("broken.pl"), source)?;
+        fs::write(fixtures.join("broken.expected.pl"), source)?;
+        fs::write(
+            fixtures.join("broken.expected-diagnostics.txt"),
+            "native.format.literal_preserve_region\n",
+        )?;
+
+        let check_result =
+            check(NativeFormatCheckConfig { fixtures, receipt_dir: receipts.clone() });
+        assert!(check_result.is_err(), "genuine formatter refusal must keep failing");
+
+        let fixture_receipt: Value = serde_json::from_str(&fs::read_to_string(
+            receipts.join("native-format-fixtures.json"),
+        )?)?;
+        assert_eq!(fixture_receipt["passed"], false);
+        assert_eq!(fixture_receipt["failed_count"], 1);
+        let broken = &fixture_receipt["fixtures"][0];
+        assert_eq!(broken["passed"], false);
+        assert_eq!(broken["changed"], false);
+        assert_eq!(broken["bailout"], false);
+        assert_eq!(broken["expected_diagnostics_matched"], false);
+        assert_eq!(broken["diagnostic_codes"][0], "native.format.parse_error");
+
+        Ok(())
+    }
+
+    #[test]
     fn native_format_corpus_writes_receipt_and_summary() -> Result<()> {
         let temp = tempfile::tempdir()?;
         let corpus_root = temp.path().join("corpus");
@@ -1025,7 +1134,10 @@ mod tests {
         let summary = fs::read_to_string(receipts.join("native-format-corpus-summary.md"))?;
         assert!(summary.contains("# Native Format Corpus"));
         assert!(summary.contains("Files checked: 3"));
-        assert!(summary.contains("Literal bailouts: 2"));
+        assert!(summary.contains("Literal-preservation events: 2"));
+        assert!(summary.contains(
+            "refusals on unchanged output plus changed formats that preserved literal sections"
+        ));
         assert!(summary.contains("Unsupported diagnostics on parse-clean files: 0"));
         assert!(summary.contains("Parse-error diagnostics: 0"));
 
