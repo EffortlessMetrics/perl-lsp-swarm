@@ -10,10 +10,11 @@ use crate::syntax::regex_analysis::RegexAnalysisFamily;
 use super::body::{
     AccessMode, Arena, AssignMode, BinaryOp, BodyOwner, BodyOwnerKind, BodySourceMap,
     DeclStorageClass, HirBlock, HirBlockId, HirBody, HirBodyId, HirCatchHandler, HirExpr,
-    HirExprId, HirLoopLabel, HirLoopRegionId, HirRegex, HirRegexMatch, HirRegexTarget, HirStmt,
-    HirStmtId, HirSubscript, HirSubstitution, HirTransliteration, HirVariable,
-    LoopControlResolution, RegexAnalysisAnchor, ReplacementEvaluation, Sigil, SubscriptKind,
-    UnaryMode, VariableKind, diamond_expr, glob_expr, heredoc_expr, readline_expr,
+    HirExprId, HirLiteral, HirLiteralKind, HirLoopLabel, HirLoopRegionId, HirRegex, HirRegexMatch,
+    HirRegexTarget, HirStmt, HirStmtId, HirSubscript, HirSubstitution, HirTransliteration,
+    HirVariable, LoopControlResolution, RegexAnalysisAnchor, ReplacementEvaluation, Sigil,
+    SubscriptKind, UnaryMode, VariableKind, diamond_expr, glob_expr, heredoc_expr, readline_expr,
+    strip_string_quotes,
 };
 use super::model::{
     AstAnchor, BarewordExpr, BarewordFact, BarewordRole, BarewordTable, Binding, BindingReference,
@@ -1228,7 +1229,23 @@ impl Lowerer {
                     self.package_context.clone(),
                     Some(self.current_scope()),
                 );
-                self.visit_children(node, confidence);
+                // The orphaned-`else` recovery shell fabricates its "true"
+                // condition to keep the stranded block visible (#15032). That
+                // fabrication must not inherit the enclosing `Parsed`
+                // confidence, or a consumer reading condition truth or branch
+                // reachability would treat an invented operand as source-backed.
+                // Only the condition changes: the block's real contents are
+                // genuinely in the file and keep their own confidence.
+                if is_synthesized_true_condition(condition) {
+                    self.visit_children_distinguishing(
+                        node,
+                        confidence,
+                        condition,
+                        RecoveryConfidence::Recovered,
+                    );
+                } else {
+                    self.visit_children(node, confidence);
+                }
             }
             NodeKind::Ternary { condition, .. } => {
                 self.push_item(
@@ -1463,6 +1480,33 @@ impl Lowerer {
 
     fn visit_children(&mut self, node: &Node, confidence: RecoveryConfidence) {
         node.for_each_child(|child| self.visit(child, confidence));
+    }
+
+    /// Visit a node's children in order, lowering the child identical to
+    /// `distinguished` with `distinguished_confidence` and every other child
+    /// with `confidence`.
+    ///
+    /// Child identity is compared by address so the shared `for_each_child` walk
+    /// stays the single source of child order and shape; this only changes the
+    /// confidence one already-known child is lowered with. That keeps a
+    /// fabricated child from inheriting its parent's provenance without
+    /// re-deriving the AST child walk (which would risk a silent reorder or a
+    /// dropped branch).
+    fn visit_children_distinguishing(
+        &mut self,
+        node: &Node,
+        confidence: RecoveryConfidence,
+        distinguished: &Node,
+        distinguished_confidence: RecoveryConfidence,
+    ) {
+        node.for_each_child(|child| {
+            let child_confidence = if std::ptr::eq(child, distinguished) {
+                distinguished_confidence
+            } else {
+                confidence
+            };
+            self.visit(child, child_confidence);
+        });
     }
 
     fn current_scope(&self) -> HirScopeId {
@@ -3523,6 +3567,49 @@ fn is_synthesized_default_topic(expr: &Node) -> bool {
         && expr.location.start == expr.location.end
 }
 
+/// Whether a branch condition is the parser-fabricated "true" operand of an
+/// orphaned-`else` recovery shell.
+///
+/// `parse_orphaned_else` wraps a stranded `else` block in an `If` whose
+/// condition is a fabricated zero-width `Number("1")`, so the block stays visible
+/// to the LSP. Both conditions here are load-bearing: a written `1` in an `if`
+/// always spans at least one source character, so a zero-width `Number` reached
+/// through a branch arm can only be the fabrication.
+///
+/// The predicate is deliberately scoped to branch conditions. `while () { }`
+/// fabricates the same shape for the empty-condition infinite-loop idiom, but
+/// that is a `While` node and never reaches the `If` arm, so this cannot silently
+/// claim a sibling arm it has not been proven against. Broadening that is a
+/// separate change under #6666's honesty sweep, not a widening of this one.
+fn is_synthesized_true_condition(condition: &Node) -> bool {
+    matches!(&condition.kind, NodeKind::Number { value } if value == "1")
+        && condition.location.start == condition.location.end
+}
+
+/// Whether a numeric token is a plain decimal literal admitted to the first
+/// scalar cohort (#17538). The lexeme must be one or more ASCII digits with no
+/// base prefix, fraction, exponent, or separator, and no leading zero: Perl
+/// reads multi-digit leading-zero forms as octal (`010` is 8, `09` is a
+/// syntax error), so only the lone `0` is plain decimal. Anything else keeps
+/// falling through to `Opaque` so no normalization or coercion is implied.
+fn is_plain_decimal(value: &str) -> bool {
+    !value.is_empty()
+        && value.bytes().all(|byte| byte.is_ascii_digit())
+        && (value == "0" || !value.starts_with('0'))
+}
+
+/// Whether a scalar leaf node is absent from the source text (#17538).
+///
+/// Covers parser recovery fabrication (orphaned-`else` shells, missing
+/// operands such as `!;`) and valid-idiom desugaring (`while ()` empty
+/// condition): all share the zero-width point location, and a written token
+/// always spans at least one character, so the marker is truthful for every
+/// scalar arm. Call only with scalar nodes; broader fabrication coverage
+/// belongs to #6666's honesty sweep, not to this leaf.
+fn is_fabricated_scalar(node: &Node) -> bool {
+    node.location.start == node.location.end
+}
+
 fn variable_binding(node: &Node) -> Option<VariableBinding> {
     match &node.kind {
         NodeKind::Variable { sigil, name } => {
@@ -3592,21 +3679,24 @@ fn lower_bodies_into_file(ast: &Node, file: &mut HirFile) {
         file.bodies.push(root_body);
     }
 
-    // Sub/method bodies: walk the top-level AST for Subroutine and Method nodes.
-    collect_sub_bodies(ast, file, &mut 0u32, &mut 0u32);
+    // Sub/method/class bodies: walk the top-level AST for Subroutine, Method,
+    // and Class nodes.
+    collect_sub_bodies(ast, file, &mut 0u32, &mut 0u32, &mut 0u32);
 }
 
-/// Walk `node` looking for `Subroutine` and `Method` AST nodes and lower their bodies.
+/// Walk `node` looking for `Subroutine`, `Method`, and `Class` AST nodes and
+/// lower their bodies.
 fn collect_sub_bodies(
     node: &Node,
     file: &mut HirFile,
     sub_ordinal: &mut u32,
     method_ordinal: &mut u32,
+    class_ordinal: &mut u32,
 ) {
     match &node.kind {
         NodeKind::Program { statements } => {
             for stmt in statements {
-                collect_sub_bodies(stmt, file, sub_ordinal, method_ordinal);
+                collect_sub_bodies(stmt, file, sub_ordinal, method_ordinal, class_ordinal);
             }
         }
         NodeKind::Subroutine { name, body, .. } => {
@@ -3622,7 +3712,7 @@ fn collect_sub_bodies(
             file.body_owners.insert(BodyOwner::new(owner_kind, ordinal), body_id);
             file.bodies.push(hir_body);
             // Recurse into the body for nested subs/methods
-            collect_sub_bodies(body, file, sub_ordinal, method_ordinal);
+            collect_sub_bodies(body, file, sub_ordinal, method_ordinal, class_ordinal);
         }
         NodeKind::Method { name, body, .. } => {
             let owner_kind = BodyOwnerKind::Method { name: name.clone() };
@@ -3634,22 +3724,39 @@ fn collect_sub_bodies(
             let body_id = HirBodyId(file.bodies.len() as u32);
             file.body_owners.insert(BodyOwner::new(owner_kind, ordinal), body_id);
             file.bodies.push(hir_body);
-            collect_sub_bodies(body, file, sub_ordinal, method_ordinal);
+            collect_sub_bodies(body, file, sub_ordinal, method_ordinal, class_ordinal);
+        }
+        NodeKind::Class { name, body, .. } => {
+            // A class body is its own body owner (#13844): its direct
+            // statements (`field`, `my`) lower into this arena so the body
+            // graph agrees with the scope graph. The class body block keeps
+            // its `ScopeKind::Class` frame as the lowering start scope, and
+            // nested subs/methods/classes are collected by recursing below.
+            let owner_kind = BodyOwnerKind::Class { name: name.clone() };
+            let ordinal = *class_ordinal;
+            *class_ordinal += 1;
+            let body_scope = find_body_scope(&file.scope_graph, body.location);
+            let hir_body =
+                lower_body_from_ast(body, owner_kind.clone(), body_scope, &file.scope_graph);
+            let body_id = HirBodyId(file.bodies.len() as u32);
+            file.body_owners.insert(BodyOwner::new(owner_kind, ordinal), body_id);
+            file.bodies.push(hir_body);
+            collect_sub_bodies(body, file, sub_ordinal, method_ordinal, class_ordinal);
         }
         NodeKind::Block { statements } => {
             for stmt in statements {
-                collect_sub_bodies(stmt, file, sub_ordinal, method_ordinal);
+                collect_sub_bodies(stmt, file, sub_ordinal, method_ordinal, class_ordinal);
             }
         }
         NodeKind::Package { block, .. } => {
             if let Some(block) = block {
-                collect_sub_bodies(block, file, sub_ordinal, method_ordinal);
+                collect_sub_bodies(block, file, sub_ordinal, method_ordinal, class_ordinal);
             }
         }
         _ => {
             // Recurse into children via the AST's child-iteration.
             node.for_each_child(|child: &Node| {
-                collect_sub_bodies(child, file, sub_ordinal, method_ordinal);
+                collect_sub_bodies(child, file, sub_ordinal, method_ordinal, class_ordinal);
             });
         }
     }
@@ -3928,6 +4035,36 @@ impl<'a> BodyBuilder2<'a> {
             .map(|binding| binding.id)
     }
 
+    /// Whether a declared binding is a class-field declaration — a `field`
+    /// that is a direct statement of a `class` body (#13817).
+    fn is_class_field_binding(&self, id: HirBindingId) -> bool {
+        self.scope_graph
+            .bindings
+            .iter()
+            .any(|recorded| recorded.id == id && recorded.storage == StorageClass::ClassField)
+    }
+
+    /// Storage class for a declaration lowered into a body arena.
+    ///
+    /// A `field` that the first pass recorded as a class-field binding lowers
+    /// with `DeclStorageClass::Field`. The scope graph is the shared
+    /// authority, so the arena agrees with it by construction. Any other
+    /// `field`-shaped node is a legacy call and keeps
+    /// `DeclStorageClass::Unknown`.
+    fn body_storage_for_decl(
+        &self,
+        declarator: &str,
+        binding: Option<HirBindingId>,
+    ) -> DeclStorageClass {
+        if declarator == "field" {
+            if binding.is_some_and(|id| self.is_class_field_binding(id)) {
+                return DeclStorageClass::Field;
+            }
+            return DeclStorageClass::Unknown;
+        }
+        storage_class_for_decl(declarator)
+    }
+
     /// Coarse lexical/package classification for an occurrence.
     ///
     /// A qualified name (`Foo::x`) is always `Package`, checked before storage
@@ -4145,11 +4282,12 @@ impl<'a> BodyBuilder2<'a> {
                     &named.var_name,
                     named.binding_node.location,
                 );
+                let storage = self.body_storage_for_decl(declarator, binding);
                 self.alloc_stmt(
                     HirStmt::Let {
                         name: named.var_name,
                         sigil: sigil_from_str(named.sigil_str),
-                        storage: storage_class_for_decl(declarator),
+                        storage,
                         init,
                         binding_range: named.binding_node.location,
                         binding,
@@ -4175,15 +4313,16 @@ impl<'a> BodyBuilder2<'a> {
         range: crate::SourceLocation,
     ) -> HirStmtId {
         let sigil = sigil_from_str(sigil_str);
-        let storage = storage_class_for_decl(declarator);
-        // Unknown storage represents a legacy call. Its argument uses the
-        // visible binding rather than creating a new declaration.
-        let is_legacy_call = storage == DeclStorageClass::Unknown;
         // Canonical identity for the binding this declaration introduces
         // (#14166). Matched on the declaration token's own span, so a nested
         // redeclaration — and a second same-scope declaration of the same
-        // spelling — each name their own binding.
+        // spelling — each name their own binding. Resolved before storage so
+        // a class-body `field` can consult the scope graph's verdict (#13844).
         let binding = self.binding_declared_at(sigil_str, &var_name, binding_node.location);
+        let storage = self.body_storage_for_decl(declarator, binding);
+        // Unknown storage represents a legacy call. Its argument uses the
+        // visible binding rather than creating a new declaration.
+        let is_legacy_call = storage == DeclStorageClass::Unknown;
 
         let init_expr_id = match (initializer, &variable.kind) {
             // An embedded assignment owns its declaration place and RHS. The
@@ -4210,6 +4349,12 @@ impl<'a> BodyBuilder2<'a> {
                 // their argument through the existing scope authority.
                 let place_kind = match declarator {
                     "our" => VariableKind::Package,
+                    // A real field declaration owns a per-object place even
+                    // though the field is not yet visible to ordinary
+                    // resolution at its own initializer (#13844).
+                    "field" if binding.is_some_and(|id| self.is_class_field_binding(id)) => {
+                        VariableKind::Field
+                    }
                     "field" => Self::kind_for(
                         &var_name,
                         self.resolve_visible_binding(sigil_str, &var_name, variable.location.start),
@@ -5086,6 +5231,45 @@ impl<'a> BodyBuilder2<'a> {
                     range,
                 )
             }
+
+            // First-cohort scalar literals (#17538): typed leaves with exact
+            // source-derived payloads. Anything outside the admitted families
+            // (bases, floats, exponents, interpolated strings, version strings)
+            // keeps falling through to Opaque below.
+            NodeKind::Number { value } if is_plain_decimal(value) => self.alloc_expr(
+                HirExpr::Literal(HirLiteral {
+                    kind: HirLiteralKind::Number,
+                    payload: value.clone(),
+                    synthesized: is_fabricated_scalar(node),
+                }),
+                range,
+            ),
+            NodeKind::String { value, interpolated: false } => {
+                match strip_string_quotes(value) {
+                    Some((content, quote)) => self.alloc_expr(
+                        HirExpr::Literal(HirLiteral {
+                            kind: HirLiteralKind::String(quote),
+                            payload: content.to_string(),
+                            synthesized: is_fabricated_scalar(node),
+                        }),
+                        range,
+                    ),
+                    // Unquoted, mismatched, or quote-like spellings stay
+                    // Opaque: same fallback as the catch-all below.
+                    None => self.alloc_expr(
+                        HirExpr::Opaque { ast_kind: node.kind.kind_name().to_string() },
+                        range,
+                    ),
+                }
+            }
+            NodeKind::Undef => self.alloc_expr(
+                HirExpr::Literal(HirLiteral {
+                    kind: HirLiteralKind::Undef,
+                    payload: String::new(),
+                    synthesized: is_fabricated_scalar(node),
+                }),
+                range,
+            ),
 
             _ => {
                 // Everything else: emit Opaque. This is the "fail closed" path.

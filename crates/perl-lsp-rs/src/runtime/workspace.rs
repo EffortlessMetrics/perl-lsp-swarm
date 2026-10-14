@@ -1502,76 +1502,97 @@ impl LspServer {
                 let extractor = crate::symbol::SymbolExtractor::new_with_source(&doc.text);
                 let symbol_table = extractor.extract(ast);
 
-                // Find matching symbol
+                // Find matching symbol. Prefer the declaration whose start
+                // matches the requested location, so duplicate names in one
+                // file resolve to the declaration the client asked about.
+                let requested_start = symbol
+                    .get("location")
+                    .and_then(|location| location.get("range"))
+                    .and_then(|range| range.get("start"))
+                    .and_then(|start| {
+                        Some((start.get("line")?.as_u64()?, start.get("character")?.as_u64()?))
+                    });
+                let mut first_match = None;
+                let mut chosen = None;
                 for symbols in symbol_table.symbols.values() {
                     for sym in symbols {
                         if sym.name == name {
-                            // Return enhanced symbol with detail and accurate range
-                            let start_pos =
-                                doc.line_starts.offset_to_position(&doc.text, sym.location.start);
-                            let end_pos =
-                                doc.line_starts.offset_to_position(&doc.text, sym.location.end);
-
-                            // Start with the provided symbol JSON so we can add
-                            // additional details without panicking if fields are missing
-                            let mut resolved = json!(symbol);
-
-                            use crate::symbol::VarKind;
-                            // Add detail based on symbol kind
-                            let detail = match sym.kind {
-                                crate::symbol::SymbolKind::Subroutine => {
-                                    format!("sub {}", name)
-                                }
-                                crate::symbol::SymbolKind::Method => {
-                                    format!("method {}", name)
-                                }
-                                crate::symbol::SymbolKind::Variable(VarKind::Scalar) => {
-                                    format!("${}", name)
-                                }
-                                crate::symbol::SymbolKind::Variable(VarKind::Array) => {
-                                    format!("@{}", name)
-                                }
-                                crate::symbol::SymbolKind::Variable(VarKind::Hash) => {
-                                    format!("%{}", name)
-                                }
-                                crate::symbol::SymbolKind::Package => {
-                                    format!("package {}", name)
-                                }
-                                crate::symbol::SymbolKind::Constant => {
-                                    format!("constant {}", name)
-                                }
-                                _ => name.to_string(),
-                            };
-                            resolved["detail"] = json!(detail);
-                            if let Some(doc) = &sym.documentation {
-                                resolved["documentation"] = json!(doc);
+                            if first_match.is_none() {
+                                first_match = Some(sym);
                             }
-
-                            // Update location with accurate range
-                            resolved["location"]["range"] = json!({
-                                "start": {
-                                    "line": start_pos.0,
-                                    "character": start_pos.1,
-                                },
-                                "end": {
-                                    "line": end_pos.0,
-                                    "character": end_pos.1,
+                            if let Some(want) = requested_start {
+                                let pos = doc
+                                    .line_starts
+                                    .offset_to_position(&doc.text, sym.location.start);
+                                if (u64::from(pos.0), u64::from(pos.1)) == want {
+                                    chosen = Some(sym);
                                 }
-                            });
-
-                            // Add container name derived from qualified symbol name
-                            if let Some(container) =
-                                perl_parser_core::qualified_name::container_name(
-                                    &sym.qualified_name,
-                                )
-                            {
-                                resolved["containerName"] =
-                                    json!(perl_module::normalize_package_separator(container));
                             }
-
-                            return Ok(Some(json!(resolved)));
                         }
                     }
+                }
+                if let Some(sym) = chosen.or(first_match) {
+                    // Return enhanced symbol with detail and accurate range
+                    let start_pos =
+                        doc.line_starts.offset_to_position(&doc.text, sym.location.start);
+                    let end_pos = doc.line_starts.offset_to_position(&doc.text, sym.location.end);
+
+                    // Start with the provided symbol JSON so we can add
+                    // additional details without panicking if fields are missing
+                    let mut resolved = json!(symbol);
+
+                    use crate::symbol::VarKind;
+                    // Add detail based on symbol kind
+                    let detail = match sym.kind {
+                        crate::symbol::SymbolKind::Subroutine => {
+                            format!("sub {}", name)
+                        }
+                        crate::symbol::SymbolKind::Method => {
+                            format!("method {}", name)
+                        }
+                        crate::symbol::SymbolKind::Variable(VarKind::Scalar) => {
+                            format!("${}", name)
+                        }
+                        crate::symbol::SymbolKind::Variable(VarKind::Array) => {
+                            format!("@{}", name)
+                        }
+                        crate::symbol::SymbolKind::Variable(VarKind::Hash) => {
+                            format!("%{}", name)
+                        }
+                        crate::symbol::SymbolKind::Package => {
+                            format!("package {}", name)
+                        }
+                        crate::symbol::SymbolKind::Constant => {
+                            format!("constant {}", name)
+                        }
+                        _ => name.to_string(),
+                    };
+                    resolved["detail"] = json!(detail);
+                    if let Some(doc) = &sym.documentation {
+                        resolved["documentation"] = json!(doc);
+                    }
+
+                    // Update location with accurate range
+                    resolved["location"]["range"] = json!({
+                        "start": {
+                            "line": start_pos.0,
+                            "character": start_pos.1,
+                        },
+                        "end": {
+                            "line": end_pos.0,
+                            "character": end_pos.1,
+                        }
+                    });
+
+                    // Add container name derived from qualified symbol name
+                    if let Some(container) =
+                        perl_parser_core::qualified_name::container_name(&sym.qualified_name)
+                    {
+                        resolved["containerName"] =
+                            json!(perl_module::normalize_package_separator(container));
+                    }
+
+                    return Ok(Some(json!(resolved)));
                 }
             }
         }
@@ -1847,6 +1868,12 @@ impl LspServer {
                 // Critic/AI push still triggers a scoped pull below, but must leave the
                 // current folder include paths intact until its response arrives.
                 if perl.get("workspace").is_some() {
+                    // Notifications are patches. Rebuild with the accumulated
+                    // client layer so omitted fields keep earlier client values,
+                    // just as the global config's in-place update does. Clone
+                    // before taking folder locks; the replay cache is already
+                    // advanced above.
+                    let client_settings = self.last_client_settings.lock().clone();
                     // Apply global client settings to each folder's effective config immediately.
                     // The async workspace/configuration pull that follows will refine per-folder
                     // settings once the client responds, but we update now so the window between
@@ -1899,7 +1926,7 @@ impl LspServer {
                                 }
                             }
                             let rejected = effective_config.update_from_value_with_context(
-                                perl,
+                                client_settings.as_ref().unwrap_or(perl),
                                 WorkspaceConfigUpdateContext {
                                     workspace_root: folder.path.as_deref(),
                                     external_include_paths: ExternalIncludePathAuthority::Untrusted(

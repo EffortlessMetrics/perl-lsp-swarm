@@ -529,8 +529,17 @@ function validateInstalledByteIdentity(
       throw new Error('installed server differs from observed input bytes');
     requireSmokeObservation(identity.before_provider, observed);
   }
-  requireSmokeObservation(identity.vsix_before, expectedVsix);
-  requireSmokeObservation(identity.vsix_after, expectedVsix);
+  // The child observes its invocation-owned snapshot, which is removed before
+  // this parent reads the receipt. Bind its stable path and bytes across phases,
+  // then compare bytes to the independently re-observed parent-owned package.
+  requireSmokeObservation(identity.vsix_before, identity.vsix_after);
+  if (
+    typeof identity.vsix_before.path !== 'string' ||
+    !path.isAbsolute(identity.vsix_before.path) ||
+    identity.vsix_before.sha256 !== expectedVsix.sha256 ||
+    identity.vsix_before.size !== expectedVsix.size
+  )
+    throw new Error('VSIX snapshot observation differs from parent-owned package bytes');
 }
 
 function safeFilePart(value) {

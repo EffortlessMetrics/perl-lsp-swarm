@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "owner_issue": 7807,
-  "reason": "Compose issue 7807 POD preview webview accessibility (+780 bundled entrypoint bytes, out/extension.js 1737414 to 1738194, re-measured from a rolldown build of the merged sources) with main's remover-owned filesystem request join ratchet (#17472) after merging origin/main at 78cc84178bd3",
+  "owner_issue": 17689,
+  "reason": "Accept the reviewed #17690 native-only critic.engine enum and descriptions from the exact produced VSIX; no version, default or scope change.",
   "base_baseline_file_sha256": "833b67c30dfaaf09e39eb9759bbb6ff0c4545ab13ec593156457c89400af94e0",
-  "candidate_baseline_file_sha256": "acf7c726026749903ce9913f6e882fcc1128cbf78c03d9855fdd7940828e213e",
+  "candidate_baseline_file_sha256": "382c054e80e80e8162de3373399f4401d1f9e4c79342d4447188a386a5eb8cf0",
   "base_inventory_sha256": "a7ab35ff5bbc699e1b7c1dbdfe0784b1183c844a71db5c5463696adaddcb1573",
-  "candidate_inventory_sha256": "a3b6f28fdfd7205697175e633e9c1dd0dfd0881df61a1d6b7e1955093e7d6d5b"
+  "candidate_inventory_sha256": "00acc7c6104d69f3a9bb51ef6454b1a251133e7873d24dd7cc0cc1ca6c95d369"
 }
