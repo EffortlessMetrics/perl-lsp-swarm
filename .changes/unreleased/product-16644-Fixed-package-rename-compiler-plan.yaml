@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: "Package rename preview now reaches its compiler plan on the canonical two-file scenario (package defined in one open file, used in another): qualified names like `Foo::Bar` survive symbol extraction, so the preview reports the plannable definition edit instead of a `compiler_missing` fallback with zero edits, and syntactically invalid target names are refused with `invalid_new_name` instead of a missing-compiler message."
+time: 2026-09-29T00:00:00Z
+custom:
+  PR: "16644"
+  Slug: package-rename-compiler-plan
+  Breaking: "no"

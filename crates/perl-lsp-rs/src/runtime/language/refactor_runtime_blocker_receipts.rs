@@ -317,13 +317,10 @@ impl LspServer {
         let planned_live_provider_edit_count =
             lsp_workspace_edit_count(Some(&planned_workspace_edit));
         let returned_workspace_edit_count = 0;
-        let rollback_receipt = package_rename_rollback_receipt_json(
-            planned_live_provider_edit_count,
-            returned_workspace_edit_count,
-            receipt.get("fallback_noise"),
-        );
-        let user_message = package_rename_preview_message(&receipt);
 
+        // Classify the preview decision first so the rollback receipt and user
+        // message reflect the enriched decision (including an invalid requested
+        // name) rather than the raw compiler fallback state (#16644).
         if let Some(object) = receipt.as_object_mut() {
             object.insert("provider_action".to_string(), json!("perl.previewPackageRename"));
             object.insert("ux_surface".to_string(), json!("scoped_package_rename_preview"));
@@ -337,15 +334,25 @@ impl LspServer {
                 "returned_workspace_edit_count".to_string(),
                 json!(returned_workspace_edit_count),
             );
-            object.insert("rollback_receipt".to_string(), rollback_receipt);
             object.insert("planned_workspace_edit".to_string(), planned_workspace_edit);
             object.insert("workspace_edit".to_string(), json!({"changes": {}}));
-            object.insert("user_message".to_string(), json!(user_message));
             object.insert(
                 "claim_boundary".to_string(),
                 json!("scoped package rename preview only; no package rename edits are applied"),
             );
             enrich_package_rename_preview_decision_trace(object);
+        }
+
+        let rollback_receipt = package_rename_rollback_receipt_json(
+            planned_live_provider_edit_count,
+            returned_workspace_edit_count,
+            receipt.get("fallback_noise"),
+        );
+        let user_message = package_rename_preview_message(&receipt);
+
+        if let Some(object) = receipt.as_object_mut() {
+            object.insert("rollback_receipt".to_string(), rollback_receipt);
+            object.insert("user_message".to_string(), json!(user_message));
         }
 
         let receipt = normalize_provider_decision_receipt(receipt);
@@ -1039,7 +1046,12 @@ impl LspServer {
         let documents = self.documents_guard();
         let doc = self.get_document(&documents, uri)?;
         let offset = self.pos16_to_offset(doc, line, character);
-        let symbol = self.get_token_at_position(&doc.text, offset);
+        // Qualified names must survive extraction: `Foo::Bar` truncated to
+        // `Foo` resolves no semantic entity, so every refactor receipt on a
+        // package or qualified symbol fell back to `compiler_missing` even
+        // with both files open and indexed (#16644).
+        let (start, end) = Self::qualified_symbol_span_at(&doc.text, offset)?;
+        let symbol = doc.text.get(start..end)?.to_string();
         if symbol.is_empty() {
             return None;
         }
@@ -1779,6 +1791,29 @@ fn rename_live_provider_state(
     }
 }
 
+/// Whether `name` is a syntactically valid Perl package name.
+///
+/// A package name is one or more `::`-separated identifier segments, each
+/// starting with a letter or underscore. A leading `::` (`::Foo`) is accepted,
+/// matching Perl's own grammar. Legacy `'` separators are deliberately not
+/// accepted so exotic names fail closed instead of being planned.
+fn is_valid_package_name(name: &str) -> bool {
+    let is_ident_start = |ch: char| ch.is_alphabetic() || ch == '_';
+    let is_ident_continue = |ch: char| ch.is_alphanumeric() || ch == '_';
+
+    let body = name.strip_prefix("::").unwrap_or(name);
+    if body.is_empty() {
+        return false;
+    }
+    body.split("::").all(|segment| {
+        let mut chars = segment.chars();
+        match chars.next() {
+            Some(first) if is_ident_start(first) => chars.all(is_ident_continue),
+            _ => false,
+        }
+    })
+}
+
 fn enrich_package_rename_preview_decision_trace(object: &mut serde_json::Map<String, Value>) {
     let package_pilot = object.get("package_pilot").and_then(Value::as_object);
     let fallback_noise = object.get("fallback_noise").and_then(Value::as_object);
@@ -1800,65 +1835,91 @@ fn enrich_package_rename_preview_decision_trace(object: &mut serde_json::Map<Str
         .unwrap_or("compiler_missing");
 
     let first_blocker = blocker_reasons.iter().filter_map(Value::as_str).next().unwrap_or_default();
+    let new_name = object.get("new_name").and_then(Value::as_str).unwrap_or_default();
     let (decision, reason, fact_source, confidence, freshness, fallback_state) =
-        match (eligible, pilot_reason, blocker_count, first_blocker, fallback_state) {
-            (Some(true), _, _, _, _) => {
-                ("allowed", "compiler_preview_allowed", "compiler_fact", "high", "fresh", "none")
+        if !is_valid_package_name(new_name) {
+            // The requested name is not a package name the compiler could ever
+            // plan, so refuse it before any pilot classification can present it
+            // as plannable. Input validation is runtime-owned and
+            // freshness-independent (#16644).
+            ("blocked", "invalid_new_name", "provider_runtime", "high", "not_applicable", "no_edit")
+        } else {
+            match (eligible, pilot_reason, blocker_count, first_blocker, fallback_state) {
+                (Some(true), _, _, _, _) => (
+                    "allowed",
+                    "compiler_preview_allowed",
+                    "compiler_fact",
+                    "high",
+                    "fresh",
+                    "none",
+                ),
+                (_, _, count, "DynamicBoundary", _) if count > 0 => {
+                    ("blocked", "dynamic_boundary", "dynamic_boundary", "high", "fresh", "no_edit")
+                }
+                (_, _, count, "GeneratedMember", _) if count > 0 => (
+                    "blocked",
+                    "generated_no_source",
+                    "framework_adapter",
+                    "high",
+                    "fresh",
+                    "no_edit",
+                ),
+                (_, _, count, "StaleFact", _) if count > 0 => (
+                    "blocked",
+                    "stale_fact",
+                    "compiler_fact",
+                    "low",
+                    "stale",
+                    "refresh_workspace_facts",
+                ),
+                (_, _, count, "AmbiguousReference", _) if count > 0 => (
+                    "blocked",
+                    "ambiguous_low_confidence_candidates",
+                    "semantic_fact",
+                    "low",
+                    "fresh",
+                    "require_confirmation",
+                ),
+                (_, _, count, "CrossModuleExport" | "ImportedSymbol" | "ExportedSymbol", _)
+                    if count > 0 =>
+                {
+                    (
+                        "blocked",
+                        "import_export_visibility",
+                        "compiler_fact",
+                        "high",
+                        "fresh",
+                        "no_edit",
+                    )
+                }
+                (_, _, count, _, _) if count > 0 => {
+                    ("blocked", "compiler_blocked", "compiler_fact", "low", "fresh", "no_edit")
+                }
+                (_, Some("empty_plan"), _, _, _) => (
+                    "fallback",
+                    "empty_compiler_plan",
+                    "fallback",
+                    "low",
+                    "not_applicable",
+                    "compiler_empty",
+                ),
+                (_, _, _, _, "compiler_missing") => (
+                    "fallback",
+                    "compiler_missing",
+                    "provider_runtime",
+                    "low",
+                    "unknown",
+                    "compiler_missing",
+                ),
+                _ => (
+                    "fallback",
+                    "preview_not_authorized",
+                    "provider_runtime",
+                    "low",
+                    "unknown",
+                    "no_result",
+                ),
             }
-            (_, _, count, "DynamicBoundary", _) if count > 0 => {
-                ("blocked", "dynamic_boundary", "dynamic_boundary", "high", "fresh", "no_edit")
-            }
-            (_, _, count, "GeneratedMember", _) if count > 0 => {
-                ("blocked", "generated_no_source", "framework_adapter", "high", "fresh", "no_edit")
-            }
-            (_, _, count, "StaleFact", _) if count > 0 => (
-                "blocked",
-                "stale_fact",
-                "compiler_fact",
-                "low",
-                "stale",
-                "refresh_workspace_facts",
-            ),
-            (_, _, count, "AmbiguousReference", _) if count > 0 => (
-                "blocked",
-                "ambiguous_low_confidence_candidates",
-                "semantic_fact",
-                "low",
-                "fresh",
-                "require_confirmation",
-            ),
-            (_, _, count, "CrossModuleExport" | "ImportedSymbol" | "ExportedSymbol", _)
-                if count > 0 =>
-            {
-                ("blocked", "import_export_visibility", "compiler_fact", "high", "fresh", "no_edit")
-            }
-            (_, _, count, _, _) if count > 0 => {
-                ("blocked", "compiler_blocked", "compiler_fact", "low", "fresh", "no_edit")
-            }
-            (_, Some("empty_plan"), _, _, _) => (
-                "fallback",
-                "empty_compiler_plan",
-                "fallback",
-                "low",
-                "not_applicable",
-                "compiler_empty",
-            ),
-            (_, _, _, _, "compiler_missing") => (
-                "fallback",
-                "compiler_missing",
-                "provider_runtime",
-                "low",
-                "unknown",
-                "compiler_missing",
-            ),
-            _ => (
-                "fallback",
-                "preview_not_authorized",
-                "provider_runtime",
-                "low",
-                "unknown",
-                "no_result",
-            ),
         };
 
     object.insert("decision".to_string(), json!(decision));
@@ -1882,6 +1943,17 @@ fn package_rename_preview_message(receipt: &Value) -> String {
     let symbol = receipt.get("symbol").and_then(Value::as_str).unwrap_or("symbol");
     let new_name = receipt.get("new_name").and_then(Value::as_str).unwrap_or("new name");
     let package_pilot = receipt.get("package_pilot");
+
+    // An input-validation refusal is decided before the pilot classification,
+    // so it must not be phrased as a compiler or availability outcome (#16644).
+    if receipt.get("decision").and_then(Value::as_str) == Some("blocked")
+        && receipt.get("reason").and_then(Value::as_str) == Some("invalid_new_name")
+    {
+        return format!(
+            "Package rename preview refused for `{symbol}` -> `{new_name}`: \
+             `{new_name}` is not a valid Perl package name. No edits were applied."
+        );
+    }
 
     match package_pilot.and_then(|pilot| pilot.get("eligible")).and_then(Value::as_bool) {
         Some(true) => format!(
@@ -2323,4 +2395,34 @@ fn runtime_blocker_descriptions(blockers: &[PlanBlocker]) -> String {
         return "none".to_string();
     }
     blockers.iter().map(|blocker| blocker.description.as_str()).collect::<Vec<_>>().join(" | ")
+}
+
+#[cfg(test)]
+mod package_name_validation_tests {
+    #![allow(clippy::expect_used)]
+
+    use super::is_valid_package_name;
+
+    #[test]
+    fn accepts_bare_and_qualified_package_names() {
+        assert!(is_valid_package_name("Foo"));
+        assert!(is_valid_package_name("Foo::Bar"));
+        assert!(is_valid_package_name("Foo::Bar::Baz"));
+        assert!(is_valid_package_name("::Foo"));
+        assert!(is_valid_package_name("_Private::Class"));
+    }
+
+    #[test]
+    fn rejects_non_package_names() {
+        assert!(!is_valid_package_name(""));
+        // Issue #16644 invalid-name control.
+        assert!(!is_valid_package_name("Foo::Bar-Baz!!"));
+        assert!(!is_valid_package_name("Foo::"));
+        assert!(!is_valid_package_name("Foo:::Bar"));
+        assert!(!is_valid_package_name("1Foo"));
+        assert!(!is_valid_package_name("Foo::1Bar"));
+        assert!(!is_valid_package_name("::"));
+        // Legacy `'` separators fail closed.
+        assert!(!is_valid_package_name("Foo'Bar"));
+    }
 }

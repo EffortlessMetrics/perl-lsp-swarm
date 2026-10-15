@@ -3721,7 +3721,10 @@ fn refactor_runtime_blocker_ux_safe_delete_live_pilot_blocks_non_subroutine_and_
             }]
         })))?
         .ok_or("missing package-wide safe-delete blocker result")?;
-    assert_safe_delete_live_source_guard_blocked(&package_result, "Boundary")?;
+    // The cursor sits inside `package SafeDelete::Boundary;`, so the runtime
+    // symbol extraction reports the full qualified package name rather than
+    // the trailing segment alone (#16644).
+    assert_safe_delete_live_source_guard_blocked(&package_result, "SafeDelete::Boundary")?;
 
     let explanation = explain_provider_decision(&server, "safe_delete")?;
     let request_receipt = request_receipt(&explanation)?;
@@ -3729,7 +3732,7 @@ fn refactor_runtime_blocker_ux_safe_delete_live_pilot_blocks_non_subroutine_and_
         request_receipt.get("provider_action").and_then(Value::as_str),
         Some("perl.safeDeleteSymbol")
     );
-    assert_eq!(request_receipt.get("symbol").and_then(Value::as_str), Some("Boundary"));
+    assert_eq!(request_receipt.get("symbol").and_then(Value::as_str), Some("SafeDelete::Boundary"));
     assert_eq!(
         request_receipt.get("reason").and_then(Value::as_str),
         Some("not_source_backed_exact_subroutine_definition")
@@ -4405,6 +4408,225 @@ fn safe_delete_source_guard_skips_stale_request_document_semantic_tier()
         result.get("freshness").and_then(Value::as_str),
         Some("stale"),
         "stale request document must record stale freshness: {result}"
+    );
+
+    Ok(())
+}
+
+// ── #16644: previewPackageRename must reach its compiler plan on the
+// canonical two-file scenario (package defined in one open file, used in
+// another). The runtime symbol extraction used to truncate `Foo::Bar` to
+// `Foo`, so the semantic entity lookup resolved nothing and every preview
+// fell back to `compiler_missing` with zero planned edits.
+
+const TWO_FILE_PACKAGE_DEF_URI: &str = "file:///workspace/pr_a.pl";
+const TWO_FILE_PACKAGE_USE_URI: &str = "file:///workspace/pr_b.pl";
+
+const TWO_FILE_PACKAGE_DEF_SOURCE: &str = r#"use strict;
+use warnings;
+package Foo::Bar;
+sub new { return bless {}, shift }
+sub greet { return 'hello' }
+1;
+"#;
+
+const TWO_FILE_PACKAGE_USE_SOURCE: &str = "use strict;
+use warnings;
+my $obj = Foo::Bar->new();
+print $obj->greet(), \"\\n\";
+";
+
+#[cfg(feature = "workspace")]
+fn open_two_file_package_workspace(server: &LspServer) -> Result<(), Box<dyn std::error::Error>> {
+    open_document(server, TWO_FILE_PACKAGE_DEF_URI, TWO_FILE_PACKAGE_DEF_SOURCE)?;
+    open_document(server, TWO_FILE_PACKAGE_USE_URI, TWO_FILE_PACKAGE_USE_SOURCE)?;
+    Ok(())
+}
+
+#[cfg(feature = "workspace")]
+fn two_file_package_rename_preview(
+    server: &LspServer,
+    uri: &str,
+    source: &str,
+    needle: &str,
+    new_name: &str,
+) -> Result<Value, Box<dyn std::error::Error>> {
+    let (target_line, target_character) = position_of(source, needle)?;
+    server
+        .handle_execute_command(Some(json!({
+            "command": "perl.previewPackageRename",
+            "arguments": [{
+                "textDocument": {"uri": uri},
+                "position": {"line": target_line, "character": target_character},
+                "newName": new_name
+            }]
+        })))?
+        .ok_or("missing two-file package rename preview result")
+        .map_err(Box::<dyn std::error::Error>::from)
+}
+
+#[cfg(feature = "workspace")]
+#[test]
+fn package_rename_preview_reaches_compiler_plan_from_definition_site_16644()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = create_server();
+    open_two_file_package_workspace(&server)?;
+
+    let preview_result = two_file_package_rename_preview(
+        &server,
+        TWO_FILE_PACKAGE_DEF_URI,
+        TWO_FILE_PACKAGE_DEF_SOURCE,
+        "Foo::Bar;",
+        "Foo::Baz",
+    )?;
+
+    assert_eq!(
+        preview_result.get("symbol").and_then(Value::as_str),
+        Some("Foo::Bar"),
+        "qualified package symbol must survive extraction: {preview_result}"
+    );
+    assert_eq!(
+        preview_result.get("decision").and_then(Value::as_str),
+        Some("allowed"),
+        "canonical two-file scenario must reach the compiler plan, not compiler_missing: \
+         {preview_result}"
+    );
+    assert_eq!(
+        preview_result.get("reason").and_then(Value::as_str),
+        Some("compiler_preview_allowed")
+    );
+    assert_eq!(preview_result.get("fact_source").and_then(Value::as_str), Some("compiler_fact"));
+    assert_eq!(preview_result.get("confidence").and_then(Value::as_str), Some("high"));
+    assert_eq!(preview_result.get("freshness").and_then(Value::as_str), Some("fresh"));
+
+    let package_pilot = preview_result.get("package_pilot").ok_or("missing package_pilot")?;
+    assert_eq!(package_pilot.get("eligible").and_then(Value::as_bool), Some(true));
+    assert!(
+        package_pilot.get("edit_count").and_then(Value::as_u64).is_some_and(|count| count >= 1),
+        "compiler plan must cover at least the package definition edit: {package_pilot}"
+    );
+    assert_json_array_contains(package_pilot, "edit_categories", "Definition")?;
+
+    let fallback_noise = preview_result.get("fallback_noise").ok_or("missing fallback_noise")?;
+    assert_eq!(
+        fallback_noise.get("fallback_state").and_then(Value::as_str),
+        Some("compiler_allowed")
+    );
+    assert!(
+        fallback_noise
+            .get("compiler_plan_edit_count")
+            .and_then(Value::as_u64)
+            .is_some_and(|count| count >= 1),
+        "fallback noise must preserve the planned compiler edit count: {fallback_noise}"
+    );
+
+    assert_eq!(preview_result.get("edits_applied").and_then(Value::as_bool), Some(false));
+    assert_eq!(
+        preview_result
+            .pointer("/workspace_edit/changes")
+            .and_then(Value::as_object)
+            .map(serde_json::Map::len),
+        Some(0),
+        "preview must not return live edits: {preview_result}"
+    );
+    assert_eq!(
+        preview_result.get("returned_workspace_edit_count").and_then(Value::as_u64),
+        Some(0)
+    );
+
+    let user_message = preview_result
+        .get("user_message")
+        .and_then(Value::as_str)
+        .ok_or("missing preview user_message")?;
+    assert!(
+        user_message.contains("Foo::Bar")
+            && user_message.contains("Foo::Baz")
+            && user_message.contains("can be planned")
+            && user_message.contains("no package rename edits were applied"),
+        "allowed preview message should explain the no-edit plan: {user_message}"
+    );
+
+    Ok(())
+}
+
+#[cfg(feature = "workspace")]
+#[test]
+fn package_rename_preview_reaches_compiler_plan_from_use_site_16644()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = create_server();
+    open_two_file_package_workspace(&server)?;
+
+    let preview_result = two_file_package_rename_preview(
+        &server,
+        TWO_FILE_PACKAGE_USE_URI,
+        TWO_FILE_PACKAGE_USE_SOURCE,
+        "Foo::Bar->new",
+        "Foo::Baz",
+    )?;
+
+    assert_eq!(
+        preview_result.get("symbol").and_then(Value::as_str),
+        Some("Foo::Bar"),
+        "class-name use token must extract the full qualified name: {preview_result}"
+    );
+    assert_eq!(
+        preview_result.get("decision").and_then(Value::as_str),
+        Some("allowed"),
+        "use-site preview must reach the cross-file compiler plan: {preview_result}"
+    );
+    assert_eq!(
+        preview_result.get("reason").and_then(Value::as_str),
+        Some("compiler_preview_allowed")
+    );
+    let package_pilot = preview_result.get("package_pilot").ok_or("missing package_pilot")?;
+    assert_eq!(package_pilot.get("eligible").and_then(Value::as_bool), Some(true));
+    assert_eq!(preview_result.get("edits_applied").and_then(Value::as_bool), Some(false));
+
+    Ok(())
+}
+
+#[cfg(feature = "workspace")]
+#[test]
+fn package_rename_preview_refuses_invalid_new_name_with_honest_reason_16644()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = create_server();
+    open_two_file_package_workspace(&server)?;
+
+    let preview_result = two_file_package_rename_preview(
+        &server,
+        TWO_FILE_PACKAGE_DEF_URI,
+        TWO_FILE_PACKAGE_DEF_SOURCE,
+        "Foo::Bar;",
+        "Foo::Bar-Baz!!",
+    )?;
+
+    assert_ne!(
+        preview_result.get("reason").and_then(Value::as_str),
+        Some("compiler_missing"),
+        "invalid-name control must be refused for the name, not for a missing compiler: \
+         {preview_result}"
+    );
+    assert_eq!(preview_result.get("decision").and_then(Value::as_str), Some("blocked"));
+    assert_eq!(preview_result.get("reason").and_then(Value::as_str), Some("invalid_new_name"));
+    assert_eq!(preview_result.get("fallback_state").and_then(Value::as_str), Some("no_edit"));
+    assert_eq!(preview_result.get("edits_applied").and_then(Value::as_bool), Some(false));
+    assert_eq!(
+        preview_result
+            .pointer("/workspace_edit/changes")
+            .and_then(Value::as_object)
+            .map(serde_json::Map::len),
+        Some(0),
+        "invalid-name refusal must not return edits: {preview_result}"
+    );
+
+    let user_message = preview_result
+        .get("user_message")
+        .and_then(Value::as_str)
+        .ok_or("missing invalid-name preview user_message")?;
+    assert!(
+        user_message.contains("Foo::Bar-Baz!!")
+            && user_message.contains("not a valid Perl package name"),
+        "refusal message should explain the invalid name: {user_message}"
     );
 
     Ok(())
