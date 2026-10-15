@@ -739,6 +739,9 @@ class Domain6GitQueryTest(unittest.TestCase):
             self.generator.tree_blobs(head, ["plain"])
 
     def test_tree_reads_bound_native_many_and_long_path_arguments(self) -> None:
+        import os
+        from unittest.mock import patch
+
         self.write("present", "content")
         head = self.commit("argument transport")
         oid = self.query("rev-parse", "HEAD:present").strip()
@@ -747,7 +750,8 @@ class Domain6GitQueryTest(unittest.TestCase):
 
         def counted(*args):
             calls.append(args)
-            return original(*args, cwd=self.root)
+            with patch.dict(os.environ, self.env, clear=True):
+                return original(*args, cwd=self.root)
 
         self.generator.git = counted
         populations = [
@@ -772,6 +776,21 @@ class Domain6GitQueryTest(unittest.TestCase):
         calls.clear()
         self.assertEqual(self.generator.tree_blobs(head, [exact]), {exact: None})
         self.assertEqual(len(calls), 1)
+
+        # Hooks select their repository through the environment even with cwd
+        # set. The native route must use the same isolated env as fixture setup.
+        caller_env = dict(os.environ)
+        poison = {"GIT_DIR": str(self.root / "absent.git"),
+                  "GIT_WORK_TREE": str(self.root / "absent-worktree"),
+                  "GIT_INDEX_FILE": str(self.root / "absent-index")}
+        with patch.dict(os.environ, poison):
+            with self.assertRaises(self.generator.FragmentError):
+                original("ls-tree", head, "--", "present", cwd=self.root)
+            paths = ["present", *populations[0]]
+            self.assertEqual(self.generator.tree_blobs(head, paths),
+                             {**dict.fromkeys(populations[0]), "present": oid})
+            self.assertTrue(all(os.environ[key] == value for key, value in poison.items()))
+        self.assertEqual(dict(os.environ), caller_env)
 
     def test_tree_read_batches_count_quoted_utf16_and_exact_limit(self) -> None:
         head = "a" * 40
