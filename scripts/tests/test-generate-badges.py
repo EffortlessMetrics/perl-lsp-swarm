@@ -952,6 +952,7 @@ class WindowsJobSettlementTests(unittest.TestCase):
     def job(self, counts):
         job = generator.WindowsJob.__new__(generator.WindowsJob)
         job._handle = 42
+        job.process_handles = mock.Mock(return_value=[])
         job._kernel32 = mock.Mock()
         job._kernel32.TerminateJobObject.return_value = True
         job._kernel32.CloseHandle.return_value = True
@@ -995,6 +996,83 @@ class WindowsJobSettlementTests(unittest.TestCase):
             failures = job.terminate()
         self.assertTrue(any("query refused" in failure for failure in failures), failures)
         job._kernel32.CloseHandle.assert_called_once_with(42)
+
+    def test_zero_accounting_still_waits_for_bound_member_exit(self):
+        job = self.job(iter([0]))
+        job.process_handles.return_value = [123]
+        job._kernel32.WaitForSingleObject.return_value = 0
+        self.assertEqual(job.terminate(), [])
+        job._kernel32.WaitForSingleObject.assert_called_once()
+        self.assertEqual(job._kernel32.WaitForSingleObject.call_args.args[0], 123)
+        self.assertEqual(job._kernel32.CloseHandle.call_args_list, [mock.call(123), mock.call(42)])
+
+    def test_zero_accounting_cannot_mask_unsignaled_member(self):
+        job = self.job(iter([0]))
+        job.process_handles.return_value = [123]
+        job._kernel32.WaitForSingleObject.return_value = 258
+        failures = job.terminate()
+        self.assertTrue(any("member exit unconfirmed" in failure for failure in failures), failures)
+        self.assertEqual(job._kernel32.CloseHandle.call_args_list, [mock.call(123), mock.call(42)])
+
+    def test_process_handle_snapshot_retries_a_growing_job_list(self):
+        for partial_success in (False, True):
+            with self.subTest(partial_success=partial_success):
+                job = self.job(iter([]))
+                del job.process_handles
+                attempts = []
+                def query(handle, kind, pointer, size, returned):
+                    self.assertEqual(kind, 3)
+                    attempts.append(len(pointer._obj.ProcessIdList))
+                    if len(attempts) == 1:
+                        pointer._obj.NumberOfAssignedProcesses = 17
+                        return partial_success
+                    pointer._obj.NumberOfAssignedProcesses = 1
+                    pointer._obj.NumberOfProcessIdsInList = 1
+                    pointer._obj.ProcessIdList[0] = 111
+                    return True
+                def membership(handle, owner, pointer):
+                    pointer._obj.value = True
+                    return True
+                job._kernel32.QueryInformationJobObject.side_effect = query
+                job._kernel32.OpenProcess.return_value = 101
+                job._kernel32.IsProcessInJob.side_effect = membership
+                with mock.patch.object(generator.ctypes, "get_last_error", return_value=234, create=True):
+                    self.assertEqual(job.process_handles(), [101])
+                self.assertEqual(attempts, [16, 32])
+
+    def test_process_handle_binding_checks_membership_and_closes_partial_bindings(self):
+        job = self.job(iter([]))
+        del job.process_handles
+        def query(handle, kind, pointer, size, returned):
+            self.assertEqual(kind, 3)
+            pointer._obj.NumberOfProcessIdsInList = 2
+            pointer._obj.ProcessIdList[0] = 111
+            pointer._obj.ProcessIdList[1] = 222
+            return True
+        job._kernel32.QueryInformationJobObject.side_effect = query
+        job._kernel32.OpenProcess.side_effect = [101, 102]
+        def membership(handle, owner, pointer):
+            self.assertEqual(owner, 42)
+            pointer._obj.value = handle == 101
+            return True
+        job._kernel32.IsProcessInJob.side_effect = membership
+        with self.assertRaisesRegex(OSError, "no longer belongs"):
+            job.process_handles()
+        self.assertEqual(job._kernel32.CloseHandle.call_args_list, [mock.call(101), mock.call(102)])
+
+    def test_interrupted_termination_closes_bound_handles_and_job(self):
+        job = self.job(iter([]))
+        job.process_handles.return_value = [123]
+        job._kernel32.TerminateJobObject.side_effect = KeyboardInterrupt
+        with self.assertRaises(KeyboardInterrupt):
+            job.terminate()
+        self.assertEqual(job._kernel32.CloseHandle.call_args_list, [mock.call(123), mock.call(42)])
+
+    def test_member_binding_failure_is_not_settlement(self):
+        job = self.job(iter([0]))
+        job.process_handles.side_effect = OSError("binding refused")
+        failures = job.terminate()
+        self.assertTrue(any("binding refused" in failure for failure in failures), failures)
 
     def test_closed_handle_does_not_prove_settlement(self):
         job = self.job(iter([]))

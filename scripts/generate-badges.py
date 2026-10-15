@@ -125,6 +125,14 @@ class WindowsJob:
             wintypes.DWORD, ctypes.c_void_p,
         ]
         kernel32.QueryInformationJobObject.restype = wintypes.BOOL
+        kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.IsProcessInJob.argtypes = [
+            wintypes.HANDLE, wintypes.HANDLE, ctypes.POINTER(wintypes.BOOL),
+        ]
+        kernel32.IsProcessInJob.restype = wintypes.BOOL
+        kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        kernel32.WaitForSingleObject.restype = wintypes.DWORD
         kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
         kernel32.CloseHandle.restype = wintypes.BOOL
 
@@ -184,25 +192,89 @@ class WindowsJob:
             self._raise_last_error("QueryInformationJobObject")
         return accounting.ActiveProcesses
 
+    def process_handles(self) -> list[int]:
+        """Bind only processes enumerated from this job, before termination.
+
+        Accounting can reach zero before a process handle becomes signaled.
+        Keep those identities to observe exit rather than trusting the count.
+        A descendant born after this snapshot is outside the handle-exit proof.
+        """
+        from ctypes import wintypes
+
+        if self._handle is None:
+            raise OSError("Windows job handle is closed; settlement unconfirmed")
+        capacity = 16
+        while capacity <= 65_536:
+            class ProcessIdList(ctypes.Structure):
+                _fields_ = [
+                    ("NumberOfAssignedProcesses", ctypes.c_uint32),
+                    ("NumberOfProcessIdsInList", ctypes.c_uint32),
+                    ("ProcessIdList", ctypes.c_size_t * capacity),
+                ]
+
+            members = ProcessIdList()
+            complete = self._kernel32.QueryInformationJobObject(
+                self._handle, 3, ctypes.byref(members), ctypes.sizeof(members), None
+            )
+            if complete and members.NumberOfProcessIdsInList >= members.NumberOfAssignedProcesses:
+                break
+            if not complete and ctypes.get_last_error() != 234:  # ERROR_MORE_DATA
+                self._raise_last_error("QueryInformationJobObject(process IDs)")
+            capacity = max(capacity * 2, members.NumberOfAssignedProcesses)
+        else:
+            raise OSError("Windows job process list exceeded its bounded capacity")
+
+        handles: list[int] = []
+        try:
+            for pid in members.ProcessIdList[:members.NumberOfProcessIdsInList]:
+                handle = self._kernel32.OpenProcess(0x00100000 | 0x1000, False, pid)
+                if not handle:
+                    self._raise_last_error("OpenProcess(job member)")
+                handles.append(handle)
+                member = wintypes.BOOL()
+                if not self._kernel32.IsProcessInJob(handle, self._handle, ctypes.byref(member)):
+                    self._raise_last_error("IsProcessInJob")
+                if not member.value:
+                    raise OSError("enumerated process no longer belongs to the Windows job")
+            return handles
+        except BaseException:
+            for handle in handles:
+                self._kernel32.CloseHandle(handle)
+            raise
+
     def terminate(self) -> list[str]:
         failures: list[str] = []
         if self._handle is None:
             return ["Windows job handle is closed; settlement unconfirmed"]
-        if not self._kernel32.TerminateJobObject(self._handle, 1):
-            error = ctypes.get_last_error()
-            failures.append(f"TerminateJobObject failed: {ctypes.FormatError(error)}")
-        # A successful termination request or leader wait does not prove that
-        # descendants have released their files. Retain the job for observation.
-        deadline = time.monotonic() + TERMINATION_GRACE_SECONDS
+        handles: list[int] = []
         try:
-            while self.active_processes():
-                if time.monotonic() >= deadline:
-                    failures.append("Windows job settlement timed out; descendants may remain")
-                    break
-                time.sleep(0.01)
-        except OSError as error:
-            failures.append(f"Windows job settlement unconfirmed: {error}")
+            try:
+                handles = self.process_handles()
+            except OSError as error:
+                failures.append(f"Windows job identity binding incomplete: {error}")
+            if not self._kernel32.TerminateJobObject(self._handle, 1):
+                error = ctypes.get_last_error()
+                failures.append(f"TerminateJobObject failed: {ctypes.FormatError(error)}")
+            # Zero accounting can precede actual exit/file release. Observe both
+            # the job count and the verified members bound before termination.
+            deadline = time.monotonic() + TERMINATION_GRACE_SECONDS
+            try:
+                while self.active_processes():
+                    if time.monotonic() >= deadline:
+                        failures.append("Windows job settlement timed out; descendants may remain")
+                        break
+                    time.sleep(0.01)
+                for handle in handles:
+                    remaining_ms = max(0, int((deadline - time.monotonic()) * 1000))
+                    result = self._kernel32.WaitForSingleObject(handle, remaining_ms)
+                    if result != 0:  # WAIT_OBJECT_0 is the only exit proof.
+                        failures.append(f"Windows job member exit unconfirmed: wait result {result}")
+            except OSError as error:
+                failures.append(f"Windows job settlement unconfirmed: {error}")
         finally:
+            for handle in handles:
+                if not self._kernel32.CloseHandle(handle):
+                    failures.append("CloseHandle(job member) failed")
             failures.extend(self.close())
         return failures
 
