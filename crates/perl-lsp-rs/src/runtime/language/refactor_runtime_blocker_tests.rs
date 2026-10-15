@@ -4752,8 +4752,8 @@ fn refactor_runtime_blocker_receipt_keeps_matching_sigil_variable_target_16644()
     let live_edit =
         receipt.get("live_provider_result").ok_or("missing matching-sigil live edit")?;
     assert_eq!(
-        workspace_edit_texts_for_uri(live_edit, SAFE_DELETE_BOUNDARY_URI),
-        Some(vec!["$RENAMED_CONFIG"])
+        workspace_edit_texts_for_uri(live_edit, SAFE_DELETE_BOUNDARY_URI)?,
+        vec!["$RENAMED_CONFIG"]
     );
     Ok(())
 }
