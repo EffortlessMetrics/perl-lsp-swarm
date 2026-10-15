@@ -95,7 +95,7 @@ def validate_rust_small_route_contract(workflow_text: str, proof_text: str | Non
     if set(call) != {"name", "if", "uses", "with"}:
         raise AssertionError("thin caller must not own runners, permissions, secrets or implementation")
     inputs = call.get("with", {})
-    if set(inputs) != {"profile", "script", "result_script", "fetch_depth", "force_hosted"} or inputs.get("profile") != "standard" or inputs.get("script") != ".ci/rust-standard-proof.sh" or inputs.get("fetch_depth") != 0 or inputs.get("result_script") != ".ci/rust-standard-result.sh":
+    if set(inputs) != {"profile", "script", "result_script", "fetch_depth", "force_hosted", "artifact_lane", "upload_artifacts"} or inputs.get("profile") != "standard" or inputs.get("script") != ".ci/rust-standard-proof.sh" or inputs.get("fetch_depth") != 0 or inputs.get("result_script") != ".ci/rust-standard-result.sh" or inputs.get("artifact_lane") != "perl-rust-small" or inputs.get("upload_artifacts") is not True:
         raise AssertionError("canonical script/profile/depth inputs drifted")
     expected_force = "${{ (github.event_name == 'workflow_dispatch' && inputs.force_target == 'github') || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || github.event.pull_request.user.type == 'Bot' || startsWith(github.event.pull_request.user.login, 'dependabot') || startsWith(github.event.pull_request.user.login, 'app/') || endsWith(github.event.pull_request.user.login, '[bot]'))) }}"
     if inputs.get("force_hosted") != expected_force:
@@ -151,6 +151,9 @@ class RustStandardProofScriptTests(unittest.TestCase):
             "GITHUB_WORKSPACE": str(self.directory / "workspace with spaces"),
             "PROOF_TEST_LOG": str(self.log),
         }
+        # Unit product mocks are outside the enclosing native packet producer.
+        self.environment.pop('EM_CI_LANE', None)
+        self.environment.pop('EM_CI_ARTIFACT_DIR', None)
         for variable in subprocess.check_output(
             ["git", "rev-parse", "--local-env-vars"], text=True
         ).splitlines():
@@ -321,13 +324,15 @@ class RustSmallRouteContractTests(unittest.TestCase):
         for old, new in (
             ("false && github.event_name", "github.event_name"),
             ("ready_for_review, auto_merge_enabled", "ready_for_review"),
+            ("artifact_lane: perl-rust-small", "artifact_lane: ripr"),
+            ("upload_artifacts: true", "upload_artifacts: false"),
             ("fetch_depth: 0", "proof_admission: native-review-v1\n      fetch_depth: 0"),
         ):
             broken = self.workflow_text.replace(old, new, 1)
             self.assertNotEqual(broken, self.workflow_text)
             with self.subTest(old=old), self.assertRaises(AssertionError):
                 validate_rust_small_route_contract(broken, self.proof_text)
-        for old, new in (("name: Perl LSP Rust Small governed proof", "name: Unbound proof"), ("profile: standard", "profile: heavy"), ("script: .ci/rust-standard-proof.sh", "script: .ci/other.sh"), ("fetch_depth: 0", "fetch_depth: 1"), (".github/workflows/rust.yml@a3125de962a74e7ec2e127d41d7532f66c69334d", ".github/workflows/rust.yml@main"), ("inputs.force_target == 'github'", "inputs.force_target == 'auto'"), (" || endsWith(github.event.pull_request.user.login, '[bot]')", ""), ("    with:\n", "    secrets: inherit\n    with:\n"), ("inputs.pre_merge_admission && ", ""), ("inputs.reviewed_sha == github.sha", "true"), ("github.event_name == 'merge_group'", "github.event_name == 'pull_request'"), ("  rust-small-proof:\n", "  removed:\n")):
+        for old, new in (("name: Perl LSP Rust Small governed proof", "name: Unbound proof"), ("profile: standard", "profile: heavy"), ("script: .ci/rust-standard-proof.sh", "script: .ci/other.sh"), ("fetch_depth: 0", "fetch_depth: 1"), (".github/workflows/rust.yml@752fad709cf3da63a69d004af2867b0e77ad0af2", ".github/workflows/rust.yml@main"), ("inputs.force_target == 'github'", "inputs.force_target == 'auto'"), (" || endsWith(github.event.pull_request.user.login, '[bot]')", ""), ("    with:\n", "    secrets: inherit\n    with:\n"), ("inputs.pre_merge_admission && ", ""), ("inputs.reviewed_sha == github.sha", "true"), ("github.event_name == 'merge_group'", "github.event_name == 'pull_request'"), ("  rust-small-proof:\n", "  removed:\n")):
             with self.subTest(old=old):
                 broken = self.workflow_text.replace(old, new, 1)
                 self.assertNotEqual(broken, self.workflow_text)

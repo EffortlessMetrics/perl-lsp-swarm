@@ -1,8 +1,13 @@
 # Proposed canonical Perl Rust Small transport
 
-Status: consumer preparation only. No callable central lane, public pin,
-allowlist application, workflow dispatch or protection transition is established
-by this document. The active caller is unchanged and native admission is dormant.
+Status: consumer source wiring, awaiting live allowance and qualification approval.
+The matching central lane is published at public PR #22 merge
+`752fad709cf3da63a69d004af2867b0e77ad0af2`, exact Rust blob
+`a01c520d215445bcf293beb18a4ee4ca98df6409`. The candidate caller and product
+export are wired to that source; native admission remains dormant. No dispatch
+or protection transition is established by this document. Earlier source
+inventory/proposal below is retained as design history, superseded by this
+published implementation where specified.
 
 ## Existing owners and non-duplication
 
@@ -101,8 +106,10 @@ outputs. The aggregate remains immutable and runs no caller code/archive import.
 
 The policy receives only a central-verified private imported directory. It checks
 transport envelope/native proof success and exporter digest against authenticated
-bytes, then invokes `scripts/ci/verify_rust_small_import.sh` before the existing
-main-red refusal. This runs the actual canonical Rust `--verify-receipt` owner
+bytes. Published central source now invokes the actual canonical Rust
+`--verify-receipt` owner before permitting the existing main-red policy, so
+`scripts/ci/verify_rust_small_import.sh` remains an unused reference rather
+than starting a duplicate cold build. The central step runs that owner
 against the clean checkout and observed exact 1.95.0 toolchain, then requires
 receipt result success. A coherent diagnostic failure can pass shape verification
 but must never make policy green. Full native producer authentication is still
@@ -173,7 +180,7 @@ receipt, symlink/hardlink/linked ancestor, existing staging and out-of-temp refu
 It also rejects unrelated producer/workflow/event/ref context and nonprivate
 destination mode. These checks bind to the current process environment; native
 API producer authentication remains central's responsibility.
-This helper is not wired into the active proof and its fixtures are not product proof.
+The exporter is now wired into the candidate proof; its fixtures are not product proof.
 The owner-provided synthetic fixture is
 `scripts/ci/fixtures/rust-small-proof-success.v1.json`, derived from Rust's
 `success_receipt()` and canonical argv constants. Its sample subject/tool versions

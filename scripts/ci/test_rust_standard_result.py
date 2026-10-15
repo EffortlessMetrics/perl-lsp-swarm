@@ -45,11 +45,29 @@ class PolicyTests(unittest.TestCase):
         self.event.write_text(json.dumps({'pull_request':{'draft':False,'head':{'sha':'b'*40}}}))
         evidence={'schema':'em-ci-rust-result.v1','repository':'owner/repo','sha':'a'*40,'run_id':'123','run_attempt':'2','profile':'standard','result':'success','proof_outcome':'success','route':'self_hosted','infrastructure_failure':'','proof_entered_at':'2026-10-02T00:00:00Z'}
         self.env={'EM_CI_SELECTED_PROOF_RESULT':'success','EM_CI_EVIDENCE':json.dumps(evidence),'GITHUB_REPOSITORY':'owner/repo','GITHUB_SHA':'a'*40,'GITHUB_RUN_ID':'123','GITHUB_RUN_ATTEMPT':'2','GITHUB_EVENT_NAME':'pull_request','GITHUB_EVENT_PATH':str(self.event)}
+        self.packet=Path(self.temp.name)/'packet';self.packet.mkdir()
+        self.receipt=self.packet/'rust-small-proof.json'
+        self.receipt.write_text(json.dumps({'schema_version':'rust_small_proof.v1','result':'success','subject':{'git_sha':'a'*40,'worktree_dirty':False}}))
+        self.env.update(EM_CI_LANE='perl-rust-small',EM_CI_ARTIFACT_DIR=str(self.packet))
     def test_distinct_tested_merge_and_check_subject(self):
         result=policy_environment(self.env)
         self.assertEqual(result['CANDIDATE_SHA'],'b'*40)
         self.assertEqual(result['EFFECTIVE_WORKFLOW_TREE'],'a'*40)
         self.assertNotIn('EM_CI_CALL_RESULT',result)
+    def test_outer_success_without_canonical_import_cannot_pass_policy(self):
+        for changes in ({'EM_CI_LANE':''}, {'EM_CI_LANE':'ripr'}, {'EM_CI_ARTIFACT_DIR':''}):
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                policy_environment(dict(self.env,**changes))
+        self.receipt.unlink()
+        with self.assertRaises(OSError):policy_environment(self.env)
+    def test_wrong_source_diagnostic_and_dirty_import_cannot_pass_policy(self):
+        for receipt in (
+            {'schema_version':'rust_small_proof.v1','result':'product_failure','subject':{'git_sha':'a'*40,'worktree_dirty':False}},
+            {'schema_version':'rust_small_proof.v1','result':'success','subject':{'git_sha':'b'*40,'worktree_dirty':False}},
+            {'schema_version':'rust_small_proof.v1','result':'success','subject':{'git_sha':'a'*40,'worktree_dirty':True}},
+        ):
+            with self.subTest(receipt=receipt), self.assertRaises(ValueError):
+                self.receipt.write_text(json.dumps(receipt));policy_environment(self.env)
     def test_dispatch_binds_reviewed_integration_to_refusal(self):
         self.event.write_text(json.dumps({'inputs': {'pre_merge_admission':'true', 'reviewed_sha':'a'*40}}))
         result=policy_environment(dict(self.env,GITHUB_EVENT_NAME='workflow_dispatch'))

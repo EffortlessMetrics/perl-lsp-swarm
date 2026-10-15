@@ -1,5 +1,17 @@
 # Immutable workflow source evidence
 
+Current consumer source candidate selects public PR #22 merge
+`752fad709cf3da63a69d004af2867b0e77ad0af2`, independently fetched from
+EffortlessMetrics/em-ci-workflows at the immutable reference. The exact
+`rust.yml` blob is `a01c520d215445bcf293beb18a4ee4ca98df6409`, retained
+verbatim in `em-ci-rust-752fad70.yml`; SHA256 is
+`192a7202bfc2caee4a6ee66f57a352f85a1b8197106c538b8fb354525ea3cac0`.
+Independent PR #22 readback confirms base main, exact merged commit and
+merged_at `2026-10-15T00:45:40Z`, supporting projection `main (2026-10-15)`.
+The parent still owns live allowance/qualification approval; source wiring
+is not a dispatch or a protection transition. The older source below remains
+recovery evidence, not the selected candidate callee.
+
 em-ci-rust-a3125de9.yml was independently fetched from
 https://github.com/EffortlessMetrics/em-ci-workflows/blob/a3125de962a74e7ec2e127d41d7532f66c69334d/.github/workflows/rust.yml
 on 2026-10-02 using the connected GitHub file reader and independently

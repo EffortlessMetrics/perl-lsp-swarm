@@ -2,10 +2,46 @@
 
 This candidate continues PR16134 at ac2cddf1ab10c58edd38dbcce14dccf271a0503e.
 It invokes the canonical Rust Small proof once through public Rust workflow
-`a3125de962a74e7ec2e127d41d7532f66c69334d`, with the repository policy in a
+`752fad709cf3da63a69d004af2867b0e77ad0af2`, with the repository policy in a
 separate disposable owned job and the final aggregate in a fresh immutable job.
 There is no consumer-hosted result wrapper. This candidate is not activated:
 the old required context remains enforced until the settings transaction below.
+
+## Current bounded manual source wiring
+
+Central em-ci #234 merged `229180a8f206f5f5ea4023ef523ea449d29d373f`;
+public PR #22 published `752fad709cf3da63a69d004af2867b0e77ad0af2`.
+Independent immutable retrieval verifies Rust blob
+`a01c520d215445bcf293beb18a4ee4ca98df6409` and retained exact source hash.
+The caller selects standard, full history, `artifact_lane: perl-rust-small`,
+uploads enabled and the existing canonical proof/result scripts. The native
+auto-merge branch retains literal false; proof_admission remains unselected.
+Only the existing explicit reviewed-SHA manual or queue guard can enter proof.
+
+The product wrapper runs formatter and canonical Rust Small once, exports the
+actual receipt through the reviewed helper and preserves product failure when
+diagnostic export fails. A successful product with failed export is blocking.
+The central source independently validates raw source, runs the actual Rust
+owner on the producer's receipt, packages exactly the canonical receipt/export
+manifest/central context, authenticates and imports the native artifact, then
+runs the Rust owner again before allowing repository policy. No outer envelope
+or synthesized step records replace the canonical receipt. Failure receipts
+remain diagnostic; successful policy requires the actual imported clean source
+and product result. Existing main-red refusal and immutable aggregate remain.
+
+Post-import owner validation already belongs to the immutable central workflow;
+the earlier consumer verifier adapter is retained as an unused reference and is
+not invoked again by policy. Its cold verifier build and native toolchain
+provisioning must fit the 35-minute policy envelope on the actual allocation.
+Source tests do not prove resource fit, native tool availability or cleanup.
+
+Parent confirmation of the exact live allowance and qualification approval is
+still pending. Do not dispatch or infer permission from public publication or
+the earlier allowance for a different pin. Revision-9 image/resource identity,
+full retained receipt, real product/policy/aggregate outcomes, resource limits,
+cleanup and native check identity remain unproved until that authorized run.
+Manual evidence still cannot substitute for native PR branch protection; no
+protection, access, image or native admission change is made here.
 
 ## Exact policy and evidence
 

@@ -15,6 +15,11 @@ class RustSmallProbeGateTests(unittest.TestCase):
     def test_actual_gate_rejects_draft_absent_failed_and_stale_proof(self):
         with tempfile.TemporaryDirectory() as directory:
             event_file = Path(directory) / 'event.json'
+            packet = Path(directory) / 'packet'
+            packet.mkdir()
+            (packet / 'rust-small-proof.json').write_text(json.dumps({
+                'schema_version':'rust_small_proof.v1','result':'success',
+                'subject':{'git_sha':'a'*40,'worktree_dirty':False}}))
             for event, draft, result, evidence_mode in itertools.product(
                     ('pull_request', 'merge_group', 'workflow_dispatch', 'push'),
                     (False, True), ('success', 'failure', 'cancelled', 'skipped', ''),
@@ -30,6 +35,7 @@ class RustSmallProbeGateTests(unittest.TestCase):
                     if evidence_mode == 'stale': evidence['run_attempt'] = '1'
                     if evidence_mode == 'failed': evidence['proof_outcome'] = 'failure'
                     env = {'EM_CI_SELECTED_PROOF_RESULT':result,
+                           'EM_CI_LANE':'perl-rust-small','EM_CI_ARTIFACT_DIR':str(packet),
                            'EM_CI_EVIDENCE':json.dumps(evidence) if evidence_mode != 'missing' else '',
                            'GITHUB_REPOSITORY':'owner/repo','GITHUB_SHA':'a'*40,
                            'GITHUB_RUN_ID':'123','GITHUB_RUN_ATTEMPT':'2','GITHUB_EVENT_NAME':event,

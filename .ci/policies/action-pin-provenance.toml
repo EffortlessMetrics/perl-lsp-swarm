@@ -500,3 +500,15 @@ action = 'EffortlessMetrics/em-ci-workflows/.github/workflows/rust.yml'
 sha = 'a3125de962a74e7ec2e127d41d7532f66c69334d'
 kind = 'branch_commit'
 value = 'main (2026-10-02)'
+
+# Independently read immutable public PR #22 merge and exact workflow bytes.
+# https://github.com/EffortlessMetrics/em-ci-workflows/pull/22
+# merged_at 2026-10-15T00:45:40Z, base main, exact merge SHA below.
+# Rust blob a01c520d215445bcf293beb18a4ee4ca98df6409; SHA256 and
+# verbatim source are recorded in .ci/workflow-sources/README.md.
+# Source selection does not claim the parent's pending live workflow allowance.
+[[pin]]
+action = 'EffortlessMetrics/em-ci-workflows/.github/workflows/rust.yml'
+sha = '752fad709cf3da63a69d004af2867b0e77ad0af2'
+kind = 'branch_commit'
+value = 'main (2026-10-15)'

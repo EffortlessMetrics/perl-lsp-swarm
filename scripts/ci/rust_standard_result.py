@@ -7,9 +7,31 @@ import re
 import subprocess
 import sys
 if __package__:
-    from .rust_small_evidence import validate_proof_evidence
+    from .rust_small_evidence import validate_proof_evidence, unique_object
+    from .export_rust_small_receipt import regular_bytes, MAX_RECEIPT_BYTES
 else:
-    from rust_small_evidence import validate_proof_evidence
+    from rust_small_evidence import validate_proof_evidence, unique_object
+    from export_rust_small_receipt import regular_bytes, MAX_RECEIPT_BYTES
+
+
+def imported_receipt(environment):
+    """Require actual imported product bytes after immutable central validation.
+
+    Central owns native authentication/import and Rust semantic verification;
+    these policy checks bind its imported product result to this policy subject.
+    """
+    if environment.get('EM_CI_LANE') != 'perl-rust-small':
+        raise ValueError('canonical Perl import missing')
+    root = Path(environment.get('EM_CI_ARTIFACT_DIR', ''))
+    if not root.is_absolute():
+        raise ValueError('canonical imported directory missing')
+    raw, _ = regular_bytes(root / 'rust-small-proof.json', MAX_RECEIPT_BYTES)
+    receipt = json.loads(raw, object_pairs_hook=unique_object)
+    if receipt.get('schema_version') != 'rust_small_proof.v1' or receipt.get('result') != 'success':
+        raise ValueError('canonical product receipt did not succeed')
+    subject = receipt.get('subject', {})
+    if subject.get('git_sha') != environment['GITHUB_SHA'] or subject.get('worktree_dirty') is not False:
+        raise ValueError('canonical imported source mismatch')
 
 
 def policy_environment(environment):
@@ -20,6 +42,7 @@ def policy_environment(environment):
                            ('EXPECTED_RUN_ID', 'GITHUB_RUN_ID'), ('EXPECTED_RUN_ATTEMPT', 'GITHUB_RUN_ATTEMPT')]:
         mapped[target] = environment.get(source, '')
     validate_proof_evidence(mapped)
+    imported_receipt(environment)
     event_name = environment.get('GITHUB_EVENT_NAME')
     if event_name not in ('pull_request', 'merge_group', 'workflow_dispatch', 'push'):
         raise ValueError('unsupported event')

@@ -21,7 +21,7 @@ pub fn validate(text: &str) -> TestResult<()> {
     }
     if call.get("uses").and_then(Value::as_str)
         != Some(
-            "EffortlessMetrics/em-ci-workflows/.github/workflows/rust.yml@a3125de962a74e7ec2e127d41d7532f66c69334d",
+            "EffortlessMetrics/em-ci-workflows/.github/workflows/rust.yml@752fad709cf3da63a69d004af2867b0e77ad0af2",
         )
     {
         return Err("isolated owned policy revision drifted".into());
@@ -49,10 +49,14 @@ pub fn validate(text: &str) -> TestResult<()> {
         ("profile", "standard"),
         ("script", ".ci/rust-standard-proof.sh"),
         ("result_script", ".ci/rust-standard-result.sh"),
+        ("artifact_lane", "perl-rust-small"),
     ] {
         if inputs.get(key).and_then(Value::as_str) != Some(expected) {
             return Err(format!("governed {key} drifted").into());
         }
+    }
+    if inputs.get("upload_artifacts").and_then(Value::as_bool) != Some(true) {
+        return Err("canonical Perl artifact upload must be enabled".into());
     }
     for forbidden in ["steps", "runs-on", "secrets", "continue-on-error", "permissions"] {
         if call.get(forbidden).is_some() {
@@ -82,6 +86,8 @@ pub fn check_contract(path: &Path) -> TestResult<()> {
         ("false && github.event_name", "github.event_name"),
         ("ready_for_review, auto_merge_enabled", "ready_for_review"),
         ("fetch_depth: 0", "fetch_depth: 1"),
+        ("artifact_lane: perl-rust-small", "artifact_lane: ripr"),
+        ("upload_artifacts: true", "upload_artifacts: false"),
         ("      fetch_depth: 0", "      proof_admission: native-review-v1\n      fetch_depth: 0"),
         ("result_script: .ci/rust-standard-result.sh", "result_script: .ci/noop.sh"),
         ("  checks: read", "  checks: write"),

@@ -358,8 +358,8 @@ fn governed_rust_caller_requires_exact_reviewed_historical_projection() -> Resul
         .context("governed Rust caller")?
         .trim();
     let ledger = std::fs::read_to_string(source.join(".ci/policies/action-pin-provenance.toml"))?;
-    let sha = "a3125de962a74e7ec2e127d41d7532f66c69334d";
-    let projection = "main (2026-10-02)";
+    let sha = "752fad709cf3da63a69d004af2867b0e77ad0af2";
+    let projection = "main (2026-10-15)";
     assert!(uses.contains(sha) && uses.ends_with(projection));
     assert!(ledger.contains(&format!("value = '{projection}'")));
 
