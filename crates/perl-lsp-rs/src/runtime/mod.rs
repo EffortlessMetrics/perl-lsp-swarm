@@ -77,6 +77,8 @@ mod open_buffer_authority_tests;
 mod runtime_services_tests;
 #[cfg(test)]
 mod session_warning_dedup_tests;
+#[cfg(test)]
+mod watched_delete_republish_tests;
 
 // Test/pressure observation of the bounded session-warning dedup store (#9769).
 #[cfg(any(test, feature = "expose_lsp_test_api"))]
@@ -489,6 +491,15 @@ pub struct LspServer {
     /// process-level `Once`) so that each `LspServer` instance tracks its own
     /// session independently.
     pub(crate) root_undetected_shown: Arc<AtomicBool>,
+    /// Whether the "this is a Perl core module, use hover instead" goto-definition
+    /// notice has already been written to the output channel this session.
+    ///
+    /// Same shape and same reason as `root_undetected_shown`: goto-definition is a
+    /// per-request action, so an unguarded notice repeats on every F12 over
+    /// `use strict` and trains the user to ignore the channel. Instance-level
+    /// rather than a process-level `Once`, so each `LspServer` session is its own
+    /// window (#16551).
+    pub(crate) core_module_notice_shown: Arc<AtomicBool>,
     /// Test-only subprocess runtime override for formatter construction.
     #[cfg(any(test, feature = "expose_lsp_test_api"))]
     pub(crate) formatter_runtime_override:
@@ -1622,6 +1633,31 @@ impl LspServer {
         }
         if !self.runtime_services.schedule_diagnostic_debounce(uri) {
             self.publish_diagnostics(uri);
+        }
+    }
+
+    /// Republish diagnostics for every open document.
+    ///
+    /// External-mutation seams — workspace-folder identity changes, watched
+    /// `didChangeWatchedFiles` DELETED events, client `workspace/didDeleteFiles`
+    /// events (#17332) — invalidate facts an open buffer's diagnostics were
+    /// computed from (for example a dependency module the index can no longer
+    /// resolve). The buffer text itself did not change, so no `didChange`
+    /// publish will repair the client's stale display; the seam must push fresh
+    /// publications itself.
+    ///
+    /// The open set is snapshotted under the lock and republished after it is
+    /// released: `publish_diagnostics` re-acquires `documents.lock()`, and
+    /// `parking_lot::Mutex` is not reentrant. Publications go through
+    /// [`Self::publish_diagnostics_debounced`], so a burst of delete events
+    /// coalesces per URI.
+    pub(crate) fn republish_open_document_diagnostics(&self) {
+        let open_uris: Vec<String> = {
+            let documents = self.documents.lock();
+            documents.keys().cloned().collect()
+        };
+        for open_uri in open_uris {
+            self.publish_diagnostics_debounced(&open_uri);
         }
     }
 

@@ -124,6 +124,7 @@ const SCAN_ROOTS: &[&str] = &[
 const TEST_SURFACE_FILES: &[&str] = &[
     "crates/perl-lsp-rs-core/src/providers/completion/completion/tests.rs",
     "crates/perl-lsp-rs-core/src/providers/completion/completion/keyword_role_tests.rs",
+    "crates/perl-lsp-rs-core/src/providers/completion/completion/same_file_role_completion_tests.rs",
 ];
 
 /// The runtime file holding the LSP entry points. Reachability is reconciled
@@ -494,7 +495,26 @@ impl RankDisposition {
 /// #10230 may not report `Complete` while any reached row is
 /// `legacy_unreported`, which is precisely why the state is named rather than
 /// folded into `complete_or_empty`.
+///
+/// # Why there is no `Forbidden*` variant
+///
+/// Unlike the sibling enums (`IdentityDisposition`, `InsertionDisposition`,
+/// `EvidenceDisposition`, `RankDisposition`, `FinalizerRoute`) each of which
+/// carries a `Forbidden*` variant that `validate_dispositions` refuses, every
+/// variant here is a legitimate producer state — including `legacy_unreported`,
+/// which is the documented default for unmigrated rows. Inventing a `Forbidden*`
+/// variant to mirror the sibling shape would either forbid a state the ledger
+/// currently uses as its honest default or rename a real disposition, neither
+/// of which is the change `#16085` asked for. `#10230` owns the planned
+/// consumer-side gate, but source-completeness data does not reach request
+/// outcomes yet. Until propagation changes, no request can earn `Complete`.
+///
+/// This decision is pinned by `deliberately_accepts_every_completeness_variant`.
+/// The test derives its inventory from the enum itself, so adding a variant
+/// automatically adds it to the acceptance walk instead of relying on a second
+/// hand-maintained list.
 #[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[cfg_attr(test, derive(strum::EnumIter))]
 #[serde(rename_all = "snake_case")]
 pub enum CompletenessDisposition {
     /// Reports an exact complete result, empty included.
@@ -3358,6 +3378,56 @@ mod tests {
         }
     }
 
+    /// An external `#[cfg(test)] mod` is parsed as a separate file by the
+    /// source scan, which cannot see the gating attribute on its parent. Keep
+    /// those proof-only files out of the production producer denominator.
+    #[test]
+    fn completion_test_modules_are_excluded_from_product_scan() -> Result<()> {
+        let root = project_root()?;
+        let parent = "crates/perl-lsp-rs-core/src/providers/completion/completion.rs";
+        let source =
+            fs::read_to_string(root.join(parent)).context("read completion module source")?;
+        let parsed = syn::parse_file(&source).context("parse completion module source")?;
+        let tracked = tracked_files(&root).context("list tracked source files")?;
+        let scanned = scanned_files(&root).context("discover completion product source")?;
+        color_eyre::eyre::ensure!(
+            scanned.iter().any(|path| path == parent),
+            "product completion module `{parent}` must stay scanned"
+        );
+        let mut gated_modules = BTreeSet::new();
+
+        for item in parsed.items {
+            let syn::Item::Mod(module) = item else { continue };
+            if !has_cfg_test(&module.attrs) || module.content.is_some() {
+                continue;
+            }
+            let file = format!(
+                "crates/perl-lsp-rs-core/src/providers/completion/completion/{}.rs",
+                module.ident
+            );
+            gated_modules.insert(file.clone());
+            color_eyre::eyre::ensure!(
+                tracked.contains(&file),
+                "test module `{file}` must be tracked"
+            );
+            color_eyre::eyre::ensure!(
+                TEST_SURFACE_FILES.contains(&file.as_str()),
+                "test module `{file}` would be counted as product source"
+            );
+            color_eyre::eyre::ensure!(
+                !scanned.contains(&file),
+                "test module `{file}` entered the product source digest"
+            );
+        }
+        let excluded: BTreeSet<String> =
+            TEST_SURFACE_FILES.iter().map(|path| (*path).to_string()).collect();
+        color_eyre::eyre::ensure!(
+            excluded == gated_modules,
+            "every excluded source file must still be an external #[cfg(test)] completion module; excluded: {excluded:?}; gated: {gated_modules:?}"
+        );
+        Ok(())
+    }
+
     /// Discovery is not vacuous. A denominator that quietly became empty would
     /// make every other assertion here pass while proving nothing.
     #[test]
@@ -3491,6 +3561,36 @@ mod tests {
         let (mut ledger, discovered) = fixture();
         ledger.producers[0].rank = RankDisposition::UnclassifiedForbidden;
         refuses(&ledger, &discovered, "rank behavior must be classified");
+    }
+
+    /// `CompletenessDisposition` deliberately has no `Forbidden*` variant and no
+    /// `forbidden()` gate in `validate_dispositions` (see the enum's doc comment
+    /// and `#16085`). Every declared variant is a legitimate producer state,
+    /// including `LegacyUnreported`, which is the documented default for every
+    /// unmigrated row. `EnumIter` makes the walk derive from the enum itself, so
+    /// adding a variant automatically extends this acceptance control.
+    #[test]
+    fn deliberately_accepts_every_completeness_variant() -> Result<()> {
+        use strum::IntoEnumIterator;
+
+        for variant in CompletenessDisposition::iter() {
+            let (mut ledger, discovered) = fixture();
+            let row = row_mut(&mut ledger, |row| {
+                // Reach a row the validator exercises end-to-end. The router and
+                // finalizer rows are accepted by every other axis; any producer
+                // row whose other dispositions are valid will do.
+                !matches!(row.candidate_class, CandidateClass::Router | CandidateClass::Finalizer)
+            });
+            row.source_completeness = variant;
+            validate(&ledger, &discovered).with_context(|| {
+                format!(
+                    "validator refused `CompletenessDisposition::{}` even though #16085 records \
+                     the absence of a forbidden() gate as a deliberate decision",
+                    variant.as_str()
+                )
+            })?;
+        }
+        Ok(())
     }
 
     /// A workspace or method candidate has a real entity behind it, so calling

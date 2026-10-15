@@ -947,7 +947,9 @@ impl LspServer {
             && is_perl_sigil(previous)
         {
             start = start.saturating_sub(previous.len_utf8());
-            new_text = normalized_name.to_string();
+            // An aggregate's scalar element accesses retain their own `$`
+            // sigil; using the declaration's `@` or `%` would create a slice.
+            new_text = format!("{previous}{}", strip_perl_sigil(normalized_name));
         }
 
         let (start_line, start_char) = self.offset_to_pos16(doc, start);

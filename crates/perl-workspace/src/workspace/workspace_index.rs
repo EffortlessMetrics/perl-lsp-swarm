@@ -2361,11 +2361,9 @@ impl WorkspaceIndex {
         // canonical `Vec<SymbolRef>` projection, replacing the two
         // independent full-AST reference walks (`IndexVisitor::visit` +
         // `extract_symbol_refs`) this path ran before. Declaration
-        // extraction, eval-sub boundary facts, generated-member facts, and
-        // import/use-lib extraction are UNCHANGED by this cutover -- only
-        // the reference walk is unified (declarations are a separable
-        // follow-up; see `FileExtractionBundle::build_unified`'s doc
-        // comment).
+        // extraction, eval-sub boundary facts, and generated-member facts
+        // remain separate walks. Import rows are projected from the HIR
+        // compile environment already lowered above (#16823).
         let file_hir = perl_parser_core::hir::lower_ast(&ast);
         let package_edges = package_edges_from_stash_graph(&file_hir.stash_graph);
         let inherited_method_aliases = self.inherited_method_aliases(&package_edges);
@@ -2376,6 +2374,7 @@ impl WorkspaceIndex {
             &mut candidate_document,
             folder_uri,
             &inherited_method_aliases,
+            &file_hir,
         );
         // `build_unified` builds its own `FileIndex` (it has no notion of
         // this call's `generation` parameter) -- restore it here, exactly
@@ -2396,10 +2395,9 @@ impl WorkspaceIndex {
 
         // Update the import/export index with the import specs and use-lib
         // facts the unified extraction bundle above already produced
-        // (`extract_import_specs`/`extract_use_lib_facts`, unchanged by
-        // this cutover) -- populates ImportExportIndex so that
-        // `Foo->import(@names)` dynamic-import suppression is live in
-        // production.
+        // (`CompileEnvironment::import_specs` plus use-lib extraction) --
+        // populates ImportExportIndex so that `Foo->import(@names)`
+        // dynamic-import suppression is live in production.
         //
         // Lock ordering note: `semantic_import_export_index` is acquired write
         // separately from (and after) `files`/`symbols`/`global_references` to
@@ -3936,6 +3934,62 @@ impl WorkspaceIndex {
         location
     }
 
+    /// Resolve many anchors to source-backed LSP-wire locations in one pass
+    /// over the shards, in the same order as `anchor_ids`.
+    ///
+    /// Each entry answers exactly what [`Self::semantic_anchor_wire_location`]
+    /// answers for the same id: `None` for missing anchors, zero-width
+    /// fallback anchors, unavailable source text, or an `anchor_id` claimed by
+    /// more than one shard or more than once per shard. Duplicates fail closed
+    /// instead of choosing an arbitrary hash-map iteration result, matching
+    /// the single-anchor form.
+    ///
+    /// This is the find-references hot path: one location is wired per
+    /// occurrence, so the per-anchor scan is quadratic in the workspace
+    /// (#17247). Callers resolving every occurrence of a request should use
+    /// this batch once instead of the single-anchor form per occurrence. An
+    /// empty request returns an empty map without taking the shard lock, so a
+    /// no-result find-references request pays no anchor scan.
+    pub fn semantic_anchor_wire_locations(
+        &self,
+        anchor_ids: &[AnchorId],
+    ) -> std::collections::HashMap<AnchorId, Option<WireLocation>> {
+        if anchor_ids.is_empty() {
+            return std::collections::HashMap::new();
+        }
+        let shards = self.fact_shards.read();
+        let requested: std::collections::HashSet<AnchorId> = anchor_ids.iter().copied().collect();
+        let mut resolved: std::collections::HashMap<AnchorId, Option<WireLocation>> =
+            anchor_ids.iter().map(|id| (*id, None)).collect();
+        let mut claimed: std::collections::HashMap<AnchorId, usize> = HashMap::new();
+
+        for shard in shards.values() {
+            for anchor in shard.anchors.iter().filter(|a| requested.contains(&a.id)) {
+                let claimed = claimed.entry(anchor.id).or_default();
+                *claimed += 1;
+                if *claimed > 1 {
+                    resolved.insert(anchor.id, None);
+                    continue;
+                }
+                if anchor.span_end_byte <= anchor.span_start_byte {
+                    resolved.insert(anchor.id, None);
+                    continue;
+                }
+                let next_location = self.document_store.get(&shard.source_uri).and_then(|doc| {
+                    let start = usize::try_from(anchor.span_start_byte).ok()?;
+                    let end = usize::try_from(anchor.span_end_byte).ok()?;
+                    Some(WireLocation::new(
+                        shard.source_uri.clone(),
+                        WireRange::from_byte_offsets(doc.text(), start, end),
+                    ))
+                });
+                resolved.insert(anchor.id, next_location);
+            }
+        }
+
+        resolved
+    }
+
     /// Resolve a semantic anchor to a source-backed LSP-wire location in a
     /// specific indexed file.
     ///
@@ -4925,6 +4979,41 @@ impl WorkspaceIndex {
         members
     }
 
+    /// Get symbols whose membership is anchored to exactly `package_name`.
+    ///
+    /// Unlike [`Self::get_package_members`], which also returns nested-namespace
+    /// descendants (`Animal::Dog::*` and `Animal::Kennel::*` when queried with
+    /// `Animal`), this query returns only direct members: symbols whose
+    /// container is `package_name`, or whose qualified name denotes a bare
+    /// member `package_name::<name>` with no deeper `::`. Callers walking a
+    /// real inheritance chain (`@ISA`/parent/role) must use this query so a
+    /// shared namespace root cannot dress same-root sibling packages up as
+    /// inherited members (#17160).
+    pub fn get_direct_package_members(&self, package_name: &str) -> Vec<WorkspaceSymbol> {
+        self.get_package_members(package_name)
+            .into_iter()
+            .filter(|symbol| Self::is_direct_package_member(symbol, package_name))
+            .collect()
+    }
+
+    /// Whether `symbol` is a direct member of exactly `package_name`.
+    ///
+    /// A symbol anchored to a deeper nested namespace (`Animal::Dog::speak`
+    /// against `Animal`) is a descendant-namespace member, not a member of the
+    /// queried package.
+    fn is_direct_package_member(symbol: &WorkspaceSymbol, package_name: &str) -> bool {
+        if symbol.container_name.as_deref() == Some(package_name) {
+            return true;
+        }
+        symbol
+            .qualified_name
+            .as_deref()
+            .and_then(|qualified| {
+                qualified.strip_prefix(package_name).and_then(|rest| rest.strip_prefix("::"))
+            })
+            .is_some_and(|bare| !bare.contains("::"))
+    }
+
     /// Return framework-generated members for one package from semantic fact shards.
     ///
     /// Legacy package members remain available through get_package_members.
@@ -5222,6 +5311,38 @@ impl WorkspaceIndex {
         locations.dedup_by(|left, right| left.uri == right.uri && left.range == right.range);
         locations
     }
+
+    /// Find every arrow method-call site recorded under the bare method name of
+    /// a symbol key, regardless of receiver attribution (#9814).
+    ///
+    /// Arrow dispatch is indexed under the bare method name with no package
+    /// attribution, and [`Self::find_refs`] retains only the conventional
+    /// `$self`/`$this` receivers (see `bare_reference_matches_package`) — every
+    /// other receiver (`$obj->method`) is invisible to it. Consumers that
+    /// attribute receivers themselves (the rename layer resolves constructor-
+    /// typed receivers from the call-site AST) need the unfiltered arrow-site
+    /// denominator so a resolvable call site is never silently omitted from a
+    /// rename edit set. Each span covers the full method-call expression
+    /// (`$obj->greet`), mirroring the bare-name index entries.
+    pub fn find_method_call_refs(&self, key: &SymbolKey) -> Vec<Location> {
+        if key.sigil.is_some() {
+            return Vec::new();
+        }
+
+        let global_refs = self.global_references.read();
+        let mut locations = global_refs
+            .get(key.name.as_ref())
+            .into_iter()
+            .flat_map(|refs| refs.iter())
+            .filter(|reference| reference.kind == ReferenceKind::MethodCall)
+            .map(|reference| Location { uri: reference.uri.clone(), range: reference.range })
+            .collect::<Vec<_>>();
+        drop(global_refs);
+
+        Self::sort_locations_deterministically(&mut locations);
+        locations.dedup_by(|left, right| left.uri == right.uri && left.range == right.range);
+        locations
+    }
 }
 
 /// **`build_unified` is the production extraction path (perl-lsp-swarm#1711-B
@@ -5259,8 +5380,8 @@ pub(crate) struct FileExtractionBundle {
     /// The canonical fact shard, produced by one
     /// `build_canonical_fact_shard_for_ast` call.
     pub(crate) canonical_shard: FileFactShard,
-    /// Import specifications from one `extract_import_specs` call. Not part
-    /// of `canonical_shard` (see the parity contract table above).
+    /// Import specifications from HIR `CompileEnvironment::import_specs`. Not
+    /// part of `canonical_shard` (see the parity contract table above).
     pub(crate) import_specs: Vec<perl_semantic_facts::ImportSpec>,
     /// `use lib`/`no lib` facts from one `extract_use_lib_facts` call. Not
     /// part of `canonical_shard` (see the parity contract table above).
@@ -5329,7 +5450,8 @@ impl FileExtractionBundle {
     /// called twice (once per projection, with the existing
     /// `Some("main")`/`None` package-context seeds) -- unifying declarations
     /// is a separable follow-up (see the #1711 feasibility comment, item 3).
-    /// Import/use-lib extraction is also unchanged.
+    /// Import/use-lib extraction projects HIR compile-environment facts
+    /// (`#16823`) rather than classifying flattened `Use.args`.
     ///
     /// Uses [`Node::for_each_child`] as the unified walk's recursion
     /// fallback (see `IndexVisitor::walk_unified`'s doc comment), which
@@ -5350,6 +5472,7 @@ impl FileExtractionBundle {
         doc: &mut Document,
         folder_uri: Option<String>,
         inherited_method_aliases: &std::collections::BTreeMap<String, EntityId>,
+        hir: &perl_parser_core::hir::HirFile,
     ) -> Self {
         let mut file_index = FileIndex {
             source_uri: uri_str.to_string(),
@@ -5378,10 +5501,11 @@ impl FileExtractionBundle {
         #[cfg(test)]
         let import_start = Instant::now();
         let import_specs =
-            crate::semantic::workspace_import_extractor::extract_import_specs_with_source(
+            crate::semantic::workspace_import_extractor::extract_import_specs_from_hir(
+                hir,
                 ast,
                 file_id,
-                doc.text(),
+                Some(doc.text()),
             );
         #[cfg(test)]
         reindex_metrics::record_import_extract(import_start.elapsed());
@@ -6193,14 +6317,17 @@ impl IndexVisitor {
     ) {
         match &node.kind {
             NodeKind::Package { name, block, .. } => {
-                self.current_package = Some(name.clone());
                 // NEW COVERAGE: `IndexVisitor::visit_node` never recurses
                 // into `block` for references today (only
                 // `project_symbol_declarations`/`extract_symbol_decls` sees
                 // it, for declarations). Recursing here closes that gap --
                 // see `docs/reference/1711-B-coverage-delta.md` case 1.
                 if let Some(b) = block {
+                    let saved_package = self.current_package.replace(name.clone());
                     self.walk_unified(b, file_index, symbol_refs);
+                    self.current_package = saved_package;
+                } else {
+                    self.current_package = Some(name.clone());
                 }
             }
 
@@ -6469,9 +6596,13 @@ impl IndexVisitor {
             }
 
             NodeKind::Block { statements } => {
+                // A statement-form package declaration lasts only through
+                // this lexical block, just as in extract_symbol_decls.
+                let saved_package = self.current_package.clone();
                 for stmt in statements {
                     self.walk_unified(stmt, file_index, symbol_refs);
                 }
+                self.current_package = saved_package;
             }
 
             NodeKind::If { condition, then_branch, elsif_branches, else_branch, .. } => {
@@ -7584,6 +7715,62 @@ pub(crate) mod reindex_metrics {
 mod tests {
     use super::*;
     use perl_tdd_support::{must, must_some};
+
+    #[test]
+    fn direct_package_members_exclude_nested_namespace_descendants() -> anyhow::Result<()> {
+        // #17160: a shared namespace root is not an inheritance edge. `Animal`
+        // must return only members anchored to `Animal` itself (plus the nested
+        // package declarations), never `Animal::Dog::*` or `Animal::Kennel::*`
+        // members from same-root sibling/descendant namespaces.
+        let index = WorkspaceIndex::new();
+        index
+            .index_initial_file(
+                Url::parse("file:///lib/Animal.pm")?,
+                "package Animal;\nsub new { 1 }\nsub speak { 1 }\n1;".to_string(),
+            )
+            .map_err(anyhow::Error::msg)?;
+        index
+            .index_initial_file(
+                Url::parse("file:///lib/Animal/Dog.pm")?,
+                "package Animal::Dog;\nuse parent -norequire, 'Animal';\nsub speak { 1 }\nsub fetch { 1 }\n1;"
+                    .to_string(),
+            )
+            .map_err(anyhow::Error::msg)?;
+        index
+            .index_initial_file(
+                Url::parse("file:///lib/Animal/Kennel.pm")?,
+                "package Animal::Kennel;\nsub admit { 1 }\nsub capacity { 1 }\n1;".to_string(),
+            )
+            .map_err(anyhow::Error::msg)?;
+
+        let direct = index.get_direct_package_members("Animal");
+        let direct_names: Vec<_> = direct.iter().map(|symbol| symbol.name.as_str()).collect();
+        anyhow::ensure!(
+            direct_names.contains(&"new") && direct_names.contains(&"speak"),
+            "Animal's own members must stay direct members: {direct_names:?}"
+        );
+        anyhow::ensure!(
+            direct.iter().all(|symbol| {
+                symbol.container_name.as_deref() != Some("Animal::Dog")
+                    && symbol.container_name.as_deref() != Some("Animal::Kennel")
+            }),
+            "descendant-namespace members must not pass as direct members of Animal: {direct_names:?}"
+        );
+        anyhow::ensure!(
+            direct_names.contains(&"Animal::Dog") && direct_names.contains(&"Animal::Kennel"),
+            "nested package declarations stay discoverable for namespace completion: {direct_names:?}"
+        );
+
+        // The loose query keeps its nested-namespace behavior for its existing
+        // callers (hover); the distinction between the two queries is the point.
+        let loose = index.get_package_members("Animal");
+        anyhow::ensure!(
+            loose.iter().any(|symbol| symbol.name == "fetch"
+                && symbol.container_name.as_deref() == Some("Animal::Dog")),
+            "get_package_members must keep returning nested descendants: {loose:?}"
+        );
+        Ok(())
+    }
 
     #[test]
     fn package_less_extensionless_scripts_keep_main_namespace() -> anyhow::Result<()> {
@@ -12723,6 +12910,62 @@ mod semantic_query_callback_tests {
         Ok(())
     }
 
+    /// #17247: the batched anchor resolution must answer exactly what the
+    /// single-anchor form answers for every anchor in a multi-file index.
+    /// The fixture spans several files whose import placeholder anchors are
+    /// intentionally degenerate and claim the same synthetic id across files,
+    /// so the equivalence also pins the duplicate/degenerate fail-closed
+    /// behavior the find-references batch relies on.
+    #[test]
+    fn semantic_anchor_wire_locations_matches_single_anchor_resolution()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let index = WorkspaceIndex::new();
+        let sources = [
+            (
+                "file:///lib/BatchA.pm",
+                "package BatchA;\nuse strict;\nuse warnings;\nsub alpha { 1 }\nsub beta { alpha() }\n1;\n",
+            ),
+            ("file:///lib/BatchB.pm", "package BatchB;\nuse POSIX;\nsub gamma { 2 }\n1;\n"),
+            (
+                "file:///lib/BatchC.pm",
+                "package BatchC;\nuse strict;\nsub delta { 3 }\nBatchB::gamma();\n1;\n",
+            ),
+        ];
+        for (uri, code) in sources {
+            // The ungenerationed `index_file` surface is a compatibility API
+            // with a caller-count ledger (#11301); tests index through the
+            // typed initial-generation form.
+            must(index.index_initial_file(must(url::Url::parse(uri)), code.to_string()));
+        }
+
+        let mut all_anchor_ids: Vec<AnchorId> = Vec::new();
+        let mut shards_with_anchors = 0;
+        for (uri, _) in sources {
+            if let Some(shard) = index.file_fact_shard(uri) {
+                if !shard.anchors.is_empty() {
+                    shards_with_anchors += 1;
+                }
+                all_anchor_ids.extend(shard.anchors.iter().map(|anchor| anchor.id));
+            }
+        }
+        assert!(
+            shards_with_anchors >= 3 && all_anchor_ids.len() >= 6,
+            "fixture must produce anchors in every file, got {shards_with_anchors} files / \
+             {} ids",
+            all_anchor_ids.len()
+        );
+
+        let batched = index.semantic_anchor_wire_locations(&all_anchor_ids);
+        for anchor_id in &all_anchor_ids {
+            assert_eq!(
+                batched.get(anchor_id).cloned().flatten(),
+                index.semantic_anchor_wire_location(*anchor_id),
+                "batch and single anchor resolution must agree for {anchor_id:?}"
+            );
+        }
+        Ok(())
+    }
+
     // Covers lines 4140-4144: NodeKind::NestedVariableList arm in visit_node.
     // Indexing a file that produces a NestedVariableList in the AST ensures the
     // workspace indexer recurses into it to discover nested-declared variables.
@@ -14572,6 +14815,7 @@ mod extraction_bundle_shadow_compare {
     fn build_bundle_unified(uri: &str, text: &str, ast: &Node) -> FileExtractionBundle {
         let content_hash = content_hash_of(text);
         let mut doc = Document::new(uri.to_string(), 1, text.to_string());
+        let hir = perl_parser_core::hir::lower_ast(ast);
         FileExtractionBundle::build_unified(
             ast,
             uri,
@@ -14579,6 +14823,7 @@ mod extraction_bundle_shadow_compare {
             &mut doc,
             None,
             &std::collections::BTreeMap::new(),
+            &hir,
         )
     }
 

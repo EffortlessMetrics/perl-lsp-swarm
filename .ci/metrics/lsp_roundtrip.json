@@ -1,0 +1,63 @@
+{
+  "commit": "23ba886442",
+  "corpus": {
+    "entry_file": "lib/Mojolicious.pm",
+    "file_count": 13,
+    "fixture": "mojolicious_skeleton",
+    "source_line_count": 791
+  },
+  "kind": "lsp_stdio_roundtrip",
+  "lanes": {
+    "completion": {
+      "p50_ms": 1,
+      "p95_ms": 1,
+      "p99_ms": 1,
+      "samples": 50
+    },
+    "definition": {
+      "p50_ms": 0,
+      "p95_ms": 0,
+      "p99_ms": 0,
+      "samples": 50
+    },
+    "did_open_to_diagnostics": {
+      "p50_ms": 264,
+      "p95_ms": 266,
+      "p99_ms": 266,
+      "samples": 12
+    },
+    "hover": {
+      "p50_ms": 0,
+      "p95_ms": 0,
+      "p99_ms": 0,
+      "samples": 50
+    },
+    "initialize": {
+      "p50_ms": 96,
+      "p95_ms": 123,
+      "p99_ms": 123,
+      "samples": 10
+    },
+    "workspace_symbol": {
+      "p50_ms": 0,
+      "p95_ms": 0,
+      "p99_ms": 1,
+      "samples": 50
+    }
+  },
+  "measured_at": "2026-10-04T04:37:50Z",
+  "runtime": {
+    "binary": "F:\\code\\Rust2\\plrs-bench-matrix\\target\\release\\perllsp.exe",
+    "binary_profile": "release",
+    "index_ready": true,
+    "workspace_env": "PERL_LSP_WORKSPACE=1 (fixture_scenario_config)"
+  },
+  "sampling": {
+    "did_open_samples": 12,
+    "initialize_samples": 10,
+    "request_samples_per_lane": 50,
+    "request_warmup_per_lane": 5
+  },
+  "schema_version": 1,
+  "timing_policy": "client-side wallclock send→response over stdio on a warm session; advisory baseline only — no wallclock assertion runs in cargo test (ux_latency_raw_rpc.rs timing policy, #17159)"
+}
