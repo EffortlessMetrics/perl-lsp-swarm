@@ -112,3 +112,69 @@ Its kernel entry awaits PID 1 reaping. No live fixture process remained at that
 inspection. The isolated source worktree and local negative-control/log
 evidence are retained for handoff. Existing shared caches and owner resources
 remain retained and untouched.
+
+## Independent challenge and scoped hardening, 2026-10-15
+
+Review subject: `c297b09e608dac8f95115ab1b6d6ab669453c0a9`, based on
+`c8b1705a938fd1ff2e28645fded3b9439dc99818`. Refreshed `origin/main` resolves to
+`4cc7960e61b685ce3b7e4cb9fe43b929bf900972`. Git advertises the original owner
+branch `test/linux-admission-adversary-20261015` at the exact review subject.
+The independent review and test hardening use a separate review branch; neither
+that owner branch nor production source is modified.
+
+The exact original suite was replayed on Linux 6.18.44, CPython 3.12.14 with the
+already installed 1.95.0 toolchain using the command above: **4 passed, 1 skipped,
+6.047 seconds**. The default opt-out replay had **3 passed, 2 skipped**. These are
+fresh execution observations on the original candidate, separate from the earlier
+runs above. Default-profile cancellation remains explicitly skipped for the same
+missing proc child table; no fallback was added.
+
+A separate read-only proof review and executable counterexamples found narrow
+oracle gaps rather than a demonstrated production defect:
+
+- A forwarding fake Cargo passed the original opt-in “real Cargo” test without
+  compiling Rust. The strengthened fixture requires the Rust program to write
+  its `current_exe()` witness, matching the expected target executable with an
+  ELF header. That same fake now fails for the missing Rust witness. This binds
+  the observation to execution of the fixture binary; it is not toolchain
+  provenance attestation.
+- The linked sibling case now asserts different build paths as well as targets,
+  and no refused build-directory allocation. A disposable common-build-path
+  mutant fails the new comparison. Existing storage tests already cover this
+  path partition and alternating real-worktree builds; contention alone still
+  does not establish divergent-source compiler freshness.
+- A new alternate-profile case cancels after the leader's product receipt while
+  the detached helper holds the owner. It then requires a fresh helper launch,
+  one new payload execution, renewed contender refusal, and natural settlement
+  with lease presence observed by that helper. A disposable mutant that poisons
+  the target on cancellation passes initial settlement but fails fresh reuse.
+- Cancellation now binds pidfds to the live payload leader and helper before
+  interruption, requires exit readiness for both afterward, and preserves the
+  unrelated-child survival control. These independent observations supplement
+  owner-reported ECHILD; they do not independently enumerate every Cargo/Rust
+  intermediary or prove absence of all possible descendants.
+
+The hardened suite on unchanged production source, with the same opt-in command,
+produced **5 passed, 1 skipped, 8.193 seconds**. Real cancellation took 2.109 s;
+retained and sampled allocated-file maxima were 9,437,184 bytes (logical
+9,315,399). The original 9,408,512-byte observation is **9.408512 decimal MB**,
+not an exact peak. Sampling excludes unsampled transients and filesystem
+metadata; neither value proves an upper bound on total storage or portable
+workload sizing. The declared aggregate budgets and reserve remain fixture-only.
+
+Live owner/review/hold refresh remains **NOT_PROVEN**: `gh api
+repos/EffortlessMetrics/perl-lsp-swarm/commits/c297b09e608dac8f95115ab1b6d6ab669453c0a9/pulls`
+returned `Get "https://api.github.com/repos/EffortlessMetrics/perl-lsp-swarm/commits/c297b09e608dac8f95115ab1b6d6ab669453c0a9/pulls": Forbidden`.
+No alternate API was used. Git source/branch observations do not establish live
+PR ownership, review disposition, protections, or user holds. The default-retirement
+hold and every existing qualification limit above remain in force. No broad CI,
+workflow dispatch, integration, release, deployment, or protection change was made.
+
+Final independent read-only diff review found no blocking oracle issue after the
+repairs; it reviewed the execution and negative-control results without repeating
+the real build. Affected policy/path controls also ran with
+`python scripts/tests/test_cargo_admitted_storage.py`: **26 passed, 1 skipped**
+(27 tests, 0.304 seconds). Its optional alternating real-worktree build was not
+repeated. No production repair was warranted. Fixture processes and private
+build/home/temp resources were released by test cleanup; the isolated source
+worktree is retained for the review handoff, with shared caches untouched.

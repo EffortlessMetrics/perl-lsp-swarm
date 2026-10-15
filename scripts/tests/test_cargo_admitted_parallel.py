@@ -8,6 +8,7 @@ import ctypes
 import json
 import os
 from pathlib import Path
+import select
 import signal
 import subprocess
 import sys
@@ -152,6 +153,7 @@ class ParallelAdmissionTests(unittest.TestCase):
         self.assertIsNotNone(scope, preflight.stderr)
         target = Path(scope['resources']['target'])
         self.target = target
+        self.build = Path(scope['resources']['build'])
         self.lease = target.parents[2] / 'cargo-active'
         self.env['FIXTURE_LEASE'] = str(self.lease)
         self.budget = self.root / 'budget.json'
@@ -217,7 +219,7 @@ class ParallelAdmissionTests(unittest.TestCase):
 
     def test_linked_worktree_contender_shares_lease_but_has_private_outputs(self):
         self.prepare()
-        original_target, original_lease = self.target, self.lease
+        original_target, original_build, original_lease = self.target, self.build, self.lease
         owner = self.start()
         self.wait_for(lambda: (self.root / 'helper').exists())
         subprocess.run(['git', '-C', str(self.repo), '-c', 'user.name=Fixture',
@@ -229,15 +231,17 @@ class ParallelAdmissionTests(unittest.TestCase):
         self.prepare(repo=sibling)
         self.assertEqual(self.lease, original_lease)
         self.assertNotEqual(self.target, original_target)
+        self.assertNotEqual(self.build, original_build)
         contender = self.start()
         self.assertEqual(contender.wait(timeout=5), 75, contender.fixture_log.read_text())
         self.assertIn('slot is active', contender.fixture_log.read_text())
         self.assertFalse(self.target.exists(), 'refused sibling must not allocate outputs')
+        self.assertFalse(self.build.exists(), 'refused sibling must not allocate intermediates')
         (self.root / 'leader-exit').touch()
         (self.root / 'helper-exit').touch()
         self.assert_settled(owner, 0)
 
-    def cancellation(self, discovery='proc-children', real=False):
+    def cancellation(self, discovery='proc-children', real=False, after_product=False):
         self.prepare(discovery, real=real)
         sentinel = subprocess.Popen([sys.executable, '-c', 'import time;time.sleep(20)'])
         self.processes.append(sentinel)
@@ -246,6 +250,24 @@ class ParallelAdmissionTests(unittest.TestCase):
         retry = self.start()
         self.assertEqual(retry.wait(timeout=5), 75, retry.fixture_log.read_text())
         self.assertIn('slot is active', retry.fixture_log.read_text())
+        if real:
+            witness = Path((self.root / 'rust-executable').read_text())
+            self.assertEqual(witness, self.target / 'debug' / 'small-admission')
+            self.assertTrue(witness.is_file())
+            self.assertEqual(witness.read_bytes()[:4], b'\x7fELF')
+        # Bind the known payload identities before cancellation; descriptor
+        # readiness observes exit independently of the owner's settlement log.
+        observed = [int((self.root / name).read_text()) for name in ('launches', 'helper')]
+        handles = []
+        for pid in observed:
+            fd = os.pidfd_open(pid)
+            handles.append(fd)
+            self.addCleanup(os.close, fd)
+            self.assertEqual(select.select([fd], [], [], 0)[0], [])
+        if after_product:
+            (self.root / 'leader-exit').touch()
+            self.wait_for(lambda: bool(self.rows(owner, 'product')))
+            self.assertIsNone(owner.poll(), 'detached helper must still hold the owner')
         start = time.monotonic()
         owner.send_signal(signal.SIGINT)
         time.sleep(.1)
@@ -254,6 +276,8 @@ class ParallelAdmissionTests(unittest.TestCase):
         final = self.assert_settled(owner, 130)
         self.assertTrue(final['cancelled'])
         self.assertTrue(final['termination_requested'])
+        self.assertEqual(set(select.select(handles, [], [], 0)[0]), set(handles),
+                         'both bound payload processes must have exited')
         self.assertIsNone(sentinel.poll(), 'unrelated caller child must survive')
         logical, allocated = self.sample_storage()
         measurement = {'discovery': discovery, 'real_cargo': real,
@@ -272,6 +296,23 @@ class ParallelAdmissionTests(unittest.TestCase):
     def test_alternate_discovery_cancellation_preserves_unrelated_child(self):
         self.cancellation('proc-parent-pidfd')
 
+    def test_cancellation_after_leader_exit_allows_fresh_reuse(self):
+        self.cancellation('proc-parent-pidfd', after_product=True)
+        old_helper = (self.root / 'helper').read_text()
+        for name in ('helper', 'leader-exit', 'helper-exit', 'helper-lease'):
+            (self.root / name).unlink(missing_ok=True)
+        owner = self.start()
+        self.wait_for(lambda: (self.root / 'helper').exists())
+        self.assertNotEqual((self.root / 'helper').read_text(), old_helper)
+        self.assertEqual(len((self.root / 'launches').read_text().splitlines()), 2)
+        retry = self.start()
+        self.assertEqual(retry.wait(timeout=5), 75, retry.fixture_log.read_text())
+        self.assertIn('slot is active', retry.fixture_log.read_text())
+        (self.root / 'leader-exit').touch()
+        (self.root / 'helper-exit').touch()
+        self.assert_settled(owner, 0)
+        self.assertEqual((self.root / 'helper-lease').read_text(), 'True')
+
     @unittest.skipUnless(os.environ.get('CARGO_ADMITTED_SMALL_REAL_TOOLCHAIN'),
                          'opt-in installed toolchain for dependency-free offline build')
     def test_real_cargo_small_parallel_refusal_and_cancel(self):
@@ -283,7 +324,7 @@ class ParallelAdmissionTests(unittest.TestCase):
         payload.write_text(PAYLOAD)
         self.env['FIXTURE_PAYLOAD'] = str(payload)
         (self.repo / 'Cargo.toml').write_text('[package]\nname="small-admission"\nversion="0.0.0"\nedition="2021"\n[[bin]]\nname="small-admission"\npath="main.rs"\n')
-        (self.repo / 'main.rs').write_text('fn main() { let status = std::process::Command::new(std::env::var("FIXTURE_PYTHON").unwrap()).arg(std::env::var("FIXTURE_PAYLOAD").unwrap()).status().unwrap(); std::process::exit(status.code().unwrap_or(1)); }\n')
+        (self.repo / 'main.rs').write_text('fn main() { std::fs::write(std::path::Path::new(&std::env::var("FIXTURE_ROOT").unwrap()).join("rust-executable"), std::env::current_exe().unwrap().to_str().unwrap()).unwrap(); let status = std::process::Command::new(std::env::var("FIXTURE_PYTHON").unwrap()).arg(std::env::var("FIXTURE_PAYLOAD").unwrap()).status().unwrap(); std::process::exit(status.code().unwrap_or(1)); }\n')
         self.cancellation('proc-parent-pidfd', real=True)
 
 
