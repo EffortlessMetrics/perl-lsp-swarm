@@ -41,7 +41,7 @@ The initial proposal incorrectly treated dynamic result names as compatible with
 current canonical enforcement. Parent live review identified the same rejected
 approach in [#9603 comment 5964825594](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/9603#issuecomment-5964825594).
 Source confirms the blocker in scripts/ci/validate_gate_enforcement_contract.py:
-_read_job discards dynamic name text; _producer_index indexes only static names;
+_read_job discards dynamic name text; build_producer_index indexes only static names;
 entry validation emits **job_name_not_static**, **mapped_producer_not_indexed** and
 **duplicate_emitted_context**. This is not a routine trigger-lint exemption.
 
@@ -178,6 +178,8 @@ Post "https://api.github.com/graphql": Forbidden
 Get "https://api.github.com/repos/EffortlessMetrics/perl-lsp-swarm/issues/9603": Forbidden
 Get "https://api.github.com/repos/EffortlessMetrics/perl-lsp-swarm/issues/comments/5964825594": Forbidden
 Get "https://api.github.com/repos/EffortlessMetrics/perl-lsp-swarm/issues/17940": Forbidden
+Get "https://api.github.com/repos/EffortlessMetrics/perl-lsp-swarm/issues/10058": Forbidden
+Get "https://api.github.com/repos/EffortlessMetrics/perl-lsp-swarm/pulls/16134": Forbidden
 Get "https://api.github.com/repos/EffortlessMetrics/perl-lsp-swarm/issues?state=open&per_page=100": Forbidden
 ```
 
