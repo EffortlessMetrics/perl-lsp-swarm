@@ -26,6 +26,15 @@ devplane ready:
 
 Recommended:
 
+First qualify an operator-owned budget for the exact focused command below using
+docs/how-to/CONSTRAINED_CARGO_BUILDS.md. Directory setup alone does not admit a
+build. This example requires an already installed toolchain and dependencies.
+
   export DEVPLANE="$devplane"
-  ./scripts/cargo-safe check --workspace --all-targets --profile agent --locked
+  ./scripts/cargo-admitted --preflight --budget-file "\$HOME/.config/perl-lsp/cargo-budget.json" check -p perl-test-must --lib --locked --offline
+  ./scripts/cargo-admitted --budget-file "\$HOME/.config/perl-lsp/cargo-budget.json" check -p perl-test-must --lib --locked --offline
+
+Changed packages, targets, flags or storage settings require a matching qualified
+budget. Without --budget-file, even small checks retain the default 40 GiB reserve.
+Legacy cargo-safe recipes remain compatibility routes; setup does not migrate them.
 EOM

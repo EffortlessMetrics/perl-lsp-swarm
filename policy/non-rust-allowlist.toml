@@ -5922,3 +5922,16 @@ reason = "Disposable real Git negative-control fixture proves fetch maintenance 
 covered_by = ["python scripts/tests/test_cleanup_fetch_maintenance.py"]
 created = "2026-10-01"
 review_after = "2027-01-01"
+
+[[allow]]
+id = "non-rust-devplane-admitted-guidance-proof"
+path = "scripts/tests/test_cargo_admitted_devplane_guidance.py"
+kind = "ci_tooling"
+language = "python"
+surface = "tooling"
+classification = "test"
+owner = "tooling/agents"
+reason = "Run setup's printed shell recommendations with a stub admission boundary to guard exact scoped-budget forwarding without compiling Rust."
+covered_by = ["python3 -m unittest discover -s scripts/tests -p 'test_cargo_admitted*.py'"]
+created = "2026-10-15"
+review_after = "2027-01-15"
