@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -507,6 +508,73 @@ class ConstrainedAdmissionTests(unittest.TestCase):
             link.symlink_to(self.budget)
             self.assertEqual(self.invoke(["--budget-file", str(link), *self.args])[0], 75)
         self.assert_unallocated()
+
+
+    def test_numeric_tokens_refuse_before_observation_allocation_or_launch(self):
+        # Use raw JSON: Python values would erase integer-looking float syntax,
+        # signed zero, exponent overflow/underflow, and malformed number tokens.
+        tokens = ("1.0", "1e0", "0.5", "-1.5", "-1", "-0", "0", "1e400",
+                  "1e-400", "9223372036854775808", "9" * 5000,
+                  "true", "null", '"1"', "NaN", "Infinity", "01", "+1", "1/2")
+        for field in ("reserve_bytes", "expected_growth_bytes"):
+            document = dict(self.document, **{field: "TOKEN"})
+            for token in tokens:
+                self.budget.write_text(json.dumps(document).replace('"TOKEN"', token), encoding="utf-8")
+                for prefix in ([], ["--preflight"]):
+                    with self.subTest(field=field, token=token[:30], preflight=bool(prefix)), \
+                         patch.object(safe.shutil, "disk_usage") as observe:
+                        result, output, cargo = self.invoke([*prefix, "--budget-file", str(self.budget), *self.args], disk=observe)
+                        self.assertEqual(result, 75, output)
+                        self.assertIn("cargo-admitted: DENY:", output)
+                        observe.assert_not_called()
+                        cargo.assert_not_called()
+                        self.assert_unallocated()
+
+    def test_signed_64_bit_sum_boundary_is_inclusive_without_float_rounding(self):
+        maximum = 2**63 - 1
+        for reserve, growth in ((1, 1), (1, maximum - 1), (maximum - 1, 1)):
+            required = reserve + growth
+            self.document.update(reserve_bytes=reserve, expected_growth_bytes=growth)
+            self.budget.write_text(json.dumps(self.document), encoding="utf-8")
+            for free, expected in ((required, 0), (required - 1, 75)):
+                with self.subTest(reserve=reserve, growth=growth, free=free):
+                    usage = self.Usage(maximum, maximum - free, free)
+                    result, output, cargo = self.invoke(["--preflight", "--budget-file", str(self.budget), *self.args],
+                                                        disk=lambda path: usage)
+                    self.assertEqual(result, expected, output)
+                    cargo.assert_not_called()
+                    self.assert_unallocated()
+                    if expected == 0:
+                        report = json.loads(output.split("cargo-admitted preflight: ", 1)[1])
+                        self.assertEqual(report["admission"]["required_free_bytes"], required)
+                        self.assertTrue(all(row["headroom_bytes"] == 0 for row in report["admission"]["destinations"]))
+            # Individually valid operands must still reject an overflowing sum.
+            self.document["expected_growth_bytes"] = maximum - reserve + 1
+            self.budget.write_text(json.dumps(self.document), encoding="utf-8")
+            result, output, cargo = self.invoke(["--budget-file", str(self.budget), *self.args])
+            self.assertEqual(result, 75, output)
+            self.assertIn("reserve plus expected growth exceeds", output)
+            cargo.assert_not_called()
+            self.assert_unallocated()
+
+    def test_conflicting_policies_refuse_before_observation_in_both_modes(self):
+        # Values can be empty or individually valid: presence alone conflicts.
+        settings = {"CARGO_STORAGE_POLICY": "percent", "MIN_FREE_GB": "40",
+                    "MAX_USED_PCT": "85", "CARGO_EXPECTED_GROWTH_GB": "1",
+                    "CARGO_STORAGE_BUDGET_EVIDENCE": "fixture:bounded"}
+        environments = [{key: value} for key, valid in settings.items() for value in ("", valid)]
+        environments.append(settings)
+        for environment in environments:
+            self.env = environment
+            for prefix in ([], ["--preflight"]):
+                with self.subTest(environment=environment, preflight=bool(prefix)), \
+                     patch.object(safe.shutil, "disk_usage") as observe:
+                    result, output, cargo = self.invoke([*prefix, "--budget-file", str(self.budget), *self.args], disk=observe)
+                    self.assertEqual(result, 75, output)
+                    self.assertIn("conflicts with capacity environment settings", output)
+                    observe.assert_not_called()
+                    cargo.assert_not_called()
+                    self.assert_unallocated()
 
 
 class AdmissionProcessTests(unittest.TestCase):
