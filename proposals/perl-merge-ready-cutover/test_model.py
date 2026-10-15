@@ -5,7 +5,8 @@ from pathlib import Path
 import subprocess
 import unittest
 
-from model import Event, Subject, accepts, admit, group, material, result_name
+from model import (Event, Subject, accepts, admit, group, material, result_name,
+                   readiness, budget, remaining_budget)
 
 
 class CutoverFixtures(unittest.TestCase):
@@ -17,11 +18,10 @@ class CutoverFixtures(unittest.TestCase):
         self.args = dict(e=self.event, expected=self.subject, receipt=self.subject,
                          results={"compile": "success", "ripr": "success"},
                          required_workers=["compile", "ripr"],
-                         live_head=self.subject.head, live_base=self.subject.base,
-                         live_label=True,
                          merge_parents=(self.subject.base, self.subject.head),
-                         checkout=(self.subject.merge, self.subject.tree),
-                         elapsed_seconds=1199)
+                         checkout=(self.subject.merge, self.subject.tree))
+        self.live = dict(live_head=self.subject.head, live_base=self.subject.base,
+                         live_label=True)
 
     def test_control_qualifies(self):
         self.assertTrue(accepts(**self.args))
@@ -64,19 +64,37 @@ class CutoverFixtures(unittest.TestCase):
             with self.subTest(axis=field.name):
                 self.assertFalse(accepts(**(self.args | {"receipt": receipt})))
 
-    def test_stale_source_label_and_instrument_fail_closed(self):
-        mutations = [dict(live_head="new"), dict(live_base="new"),
-                     dict(live_label=False), dict(merge_parents=()),
+    def test_source_and_instrument_fail_closed(self):
+        mutations = [dict(merge_parents=()),
                      dict(checkout=(self.subject.head, self.subject.tree)),
                      dict(checkout=(self.subject.merge, "wrong")),
-                     dict(elapsed_seconds=1201), dict(elapsed_seconds=-1),
                      dict(run_cancelled=True)]
         for mutation in mutations:
             with self.subTest(mutation=mutation):
                 self.assertFalse(accepts(**(self.args | mutation)))
 
-    def test_twenty_minute_boundary(self):
-        self.assertTrue(accepts(**(self.args | {"elapsed_seconds": 1200})))
+    def test_final_live_state_even_when_head_base_label_unchanged(self):
+        for mutation in (dict(live_draft=True), dict(live_state="closed"),
+                         dict(live_base_ref="owner-branch"), dict(live_label=False)):
+            self.assertEqual(readiness(True, self.subject, **(self.live | mutation)),
+                             "NOT_READY")
+            self.assertTrue(accepts(**self.args))
+
+    def test_base_advance_preserves_completed_evidence_for_affected_reassessment(self):
+        self.assertTrue(accepts(**self.args))
+        self.assertEqual(readiness(True, self.subject,
+                                  **(self.live | dict(live_base="new"))),
+                         "BASE_ADVANCED_REASSESS")
+        self.assertEqual(readiness(True, self.subject, **self.live),
+                         "READY_FOR_REMAINING_LIVE_GATES")
+
+    def test_budget_failure_is_not_false_proof_or_automatic_repeat(self):
+        for elapsed, verdict in ((1200, "WITHIN_BUDGET"), (1201, "BUDGET_EXCEEDED"),
+                                 (-1, "NOT_MEASURED")):
+            self.assertEqual(budget(elapsed), verdict)
+            self.assertTrue(accepts(**self.args))
+        self.assertEqual(remaining_budget(1201), 0)
+        self.assertEqual(remaining_budget(1190), 10)
 
     def test_event_cannot_borrow_another_run_or_pr(self):
         for field in ("pr", "run", "attempt"):

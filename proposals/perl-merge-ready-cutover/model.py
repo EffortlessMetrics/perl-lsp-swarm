@@ -22,6 +22,7 @@ class Event:
     pr: int = 1
     run: int = 1
     attempt: int = 1
+    state: str = "open"
 
 
 def material(e):
@@ -35,7 +36,7 @@ def admit(e):
     # Membership in the PR label set is deliberately insufficient.
     return (material(e) and e.action == "labeled" and e.label == LABEL
             and not e.draft and e.base_ref in {"main", "master"}
-            and e.attempt == 1)
+            and e.attempt == 1 and e.state == "open")
 
 
 def result_name(e, protected_name):
@@ -61,9 +62,8 @@ class Subject:
 
 
 def accepts(e, expected, receipt, results, required_workers, *,
-            live_head, live_base, live_label, merge_parents, checkout,
-            elapsed_seconds, run_cancelled=False):
-    """All values originate in one run; never borrow same-named green checks."""
+            merge_parents, checkout, run_cancelled=False):
+    """Immutable proof validity, independently of budget or current PR state."""
     if not admit(e) or receipt != expected or run_cancelled:
         return False
     if (e.pr, e.run, e.attempt) != (expected.pr, expected.run, expected.attempt):
@@ -71,13 +71,35 @@ def accepts(e, expected, receipt, results, required_workers, *,
     if not all(re.fullmatch(r"[0-9a-f]{40}", value) for value in (
             expected.head, expected.base, expected.merge, expected.tree, expected.workflow)):
         return False
-    if (live_head, live_base) != (expected.head, expected.base) or not live_label:
-        return False
     if merge_parents != (expected.base, expected.head):
         return False
     if checkout != (expected.merge, expected.tree):
         return False
-    if not 0 <= elapsed_seconds <= 1200:
-        return False
     return bool(required_workers) and all(
         results.get(worker) == "success" for worker in required_workers)
+
+
+def readiness(proof_valid, expected, *, live_head, live_base, live_label,
+              live_draft=False, live_state="open", live_base_ref="main"):
+    """Current integration assessment; never erases completed subject evidence."""
+    if not proof_valid:
+        return "NOT_PROVEN"
+    if (live_state != "open" or live_draft or not live_label
+            or live_base_ref not in {"main", "master"}):
+        return "NOT_READY"
+    if live_head != expected.head:
+        return "HEAD_CHANGED_REASSESS"
+    if live_base != expected.base:
+        return "BASE_ADVANCED_REASSESS"
+    return "READY_FOR_REMAINING_LIVE_GATES"
+
+
+def budget(elapsed_seconds):
+    if elapsed_seconds < 0:
+        return "NOT_MEASURED"
+    return "WITHIN_BUDGET" if elapsed_seconds <= 1200 else "BUDGET_EXCEEDED"
+
+
+def remaining_budget(elapsed_seconds):
+    """Execution receives remaining deadline, never another automatic attempt."""
+    return max(0, 1200 - elapsed_seconds)
