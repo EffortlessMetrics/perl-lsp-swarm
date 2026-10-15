@@ -216,8 +216,12 @@ class RevisionBuildTests(unittest.TestCase):
         self.assertFalse((common / "refs/tags/detached-packed-tag").exists())
         self.build(root, "common-tag-packed", False, "tag detached-packed-tag")
         self.build(root, "common-packed-repeat", True, "tag detached-packed-tag")
-        # With no loose tag changed, only common packed-refs can expose deletion.
+        # Git's transient loose-ref lock also touches the empty tags directory.
+        # Preserve its timestamp so only packed-refs can expose this deletion.
+        tags = common / "refs/tags"
+        tags_stat = tags.stat()
         self.git(original, "tag", "-d", "detached-packed-tag")
+        os.utime(tags, ns=(tags_stat.st_atime_ns, tags_stat.st_mtime_ns))
         self.build(root, "common-packed-tag-deleted", False, self.revision(root))
         self.build(root, "common-delete-repeat", True, self.revision(root))
         self.assertIn(private / "HEAD", watched)
