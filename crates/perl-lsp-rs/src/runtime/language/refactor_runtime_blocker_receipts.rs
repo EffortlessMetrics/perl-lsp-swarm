@@ -49,6 +49,7 @@ impl LspServer {
     /// compiler-fact rename plan from the same runtime workspace index. This is
     /// receipt-only and preserves fallback/noise evidence even when newer live
     /// guardrails block the edit-producing path.
+    #[cfg(any(test, feature = "expose_lsp_test_api"))]
     pub(crate) fn rename_runtime_blocker_ux_receipt(
         &self,
         params: Option<Value>,
