@@ -57,10 +57,31 @@ CHECK_ENTRY_FIELDS = REUSABLE_FIELDS | frozenset(
         "classic_app_id",
         "ruleset_integration_id",
         "reason",
+        "name_contract",
     }
 )
 EVENT_NAME = re.compile(r"^[A-Za-z0-9_.-]+$")
 JOB_HEADER = re.compile(r"^  ([A-Za-z0-9_.-]+):\s*(?:#.*)?$")
+
+# An explicit versioned opt-in, not a general Actions expression evaluator.
+# No checked-in workflow or policy row opts in merely by landing this support.
+RIPR_NAME_CONTRACT = "pr-material-required-name-v1"
+RIPR_REQUIRED_NAME = "ripr+ New Gap Gate"
+RIPR_IGNORED_NAME = "Ignored metadata / " + RIPR_REQUIRED_NAME
+RIPR_MATERIAL = (
+    "github.event_name == 'pull_request' && ("
+    "contains(fromJSON('[\"opened\",\"synchronize\",\"reopened\",\"ready_for_review\",\"converted_to_draft\"]'), github.event.action) || "
+    "(contains(fromJSON('[\"labeled\",\"unlabeled\"]'), github.event.action) && github.event.label.name == 'merge-ready') || "
+    "(github.event.action == 'edited' && github.event.changes.base != null))"
+)
+RIPR_NAME_EXPRESSION = "${{ (" + RIPR_MATERIAL + ") && '" + RIPR_REQUIRED_NAME + "' || '" + RIPR_IGNORED_NAME + "' }}"
+RIPR_RESULT_CONDITION = "${{ always() && (" + RIPR_MATERIAL + ") }}"
+RIPR_CONCURRENCY_GROUP = (
+    "${{ github.workflow }}-${{ (" + RIPR_MATERIAL + ") && "
+    "format('pr-{0}', github.event.pull_request.number) || format('ignored-{0}', github.run_id) }}"
+)
+RIPR_PR_TYPES = frozenset({"opened", "synchronize", "reopened", "ready_for_review",
+                           "converted_to_draft", "labeled", "unlabeled", "edited"})
 
 
 class Finding(NamedTuple):
@@ -79,6 +100,8 @@ class Job(NamedTuple):
     condition_class: str
     uses: str | None = None
     strategy: bool = False
+    raw_name: str | None = None
+    own_concurrency: bool = False
 
 
 class Workflow(NamedTuple):
@@ -87,6 +110,9 @@ class Workflow(NamedTuple):
     events: frozenset[str]
     path_filtered_events: frozenset[str]
     jobs: dict[str, Job]
+    pr_types: str | None = None
+    concurrency_group: str | None = None
+    cancel_in_progress: str | None = None
 
 
 def _indent(line: str) -> int:
@@ -295,6 +321,8 @@ def _read_job(lines: list[str], start: int, end: int, job_id: str) -> Job:
     condition: str | None = None
     uses: str | None = None
     strategy = False
+    raw_name: str | None = None
+    own_concurrency = False
 
     index = start + 1
     while index < end:
@@ -306,12 +334,15 @@ def _read_job(lines: list[str], start: int, end: int, job_id: str) -> Job:
         key = _unquote(stripped.split(":", 1)[0].strip()) if ":" in stripped else ""
         if key == "strategy":
             strategy = True
+        if key == "concurrency":
+            own_concurrency = True
         if key == "uses":
             raw, index = _collect_block_value(lines, index, end, 4)
             uses = _unquote(raw)
             continue
         if key == "name":
             raw, index = _collect_block_value(lines, index, end, 4)
+            raw_name = _unquote(raw)
             name_static = bool(raw) and "${{" not in raw
             name = _unquote(raw) if name_static else None
             continue
@@ -342,6 +373,8 @@ def _read_job(lines: list[str], start: int, end: int, job_id: str) -> Job:
         condition_class=_condition_class(condition),
         uses=uses,
         strategy=strategy,
+        raw_name=raw_name,
+        own_concurrency=own_concurrency,
     )
 
 
@@ -400,6 +433,33 @@ def _parse_events(lines: list[str]) -> tuple[frozenset[str], frozenset[str]]:
     return frozenset(events), frozenset(filtered)
 
 
+def _direct_field(lines: list[str], path: tuple[str, ...]) -> str | None:
+    """Read a unique direct field through this parser's bounded block syntax.
+
+    Inline maps/aliases and duplicate keys are deliberately not inferred for the
+    optional finite contract. Ordinary static-name behavior is unchanged.
+    """
+    start, end = 0, len(lines)
+    for depth, key in enumerate(path):
+        matches = [i for i in range(start, end)
+                   if lines[i].strip() and not lines[i].lstrip().startswith("#")
+                   and _indent(lines[i]) == 2 * depth
+                   and _unquote(lines[i].strip().split(":", 1)[0]) == key]
+        if len(matches) != 1:
+            return None
+        index = matches[0]
+        raw, _ = _collect_block_value(lines, index, end, 2 * depth)
+        if depth == len(path) - 1:
+            return _unquote(raw)
+        if raw:
+            return None
+        start = index + 1
+        end = next((i for i in range(start, end)
+                    if lines[i].strip() and not lines[i].lstrip().startswith("#")
+                    and _indent(lines[i]) <= 2 * depth), end)
+    return None
+
+
 def read_workflow(root: Path, raw_path: str) -> Workflow:
     path, relative = _safe_repo_path(root, raw_path, subject="workflow")
     lines = path.read_text(encoding="utf-8").splitlines()
@@ -430,6 +490,9 @@ def read_workflow(root: Path, raw_path: str) -> Workflow:
         events=events,
         path_filtered_events=path_filtered_events,
         jobs=jobs,
+        pr_types=_direct_field(lines, ("on", "pull_request", "types")),
+        concurrency_group=_direct_field(lines, ("concurrency", "group")),
+        cancel_in_progress=_direct_field(lines, ("concurrency", "cancel-in-progress")),
     )
 
 
@@ -450,8 +513,11 @@ def build_producer_index(workflows: dict[str, Workflow]) -> dict[str, list[tuple
     index: dict[str, list[tuple[str, str]]] = {}
     for workflow in workflows.values():
         for job in workflow.jobs.values():
-            if job.name_static and job.name:
-                index.setdefault(job.name, []).append((workflow.path, job.job_id))
+            emitted = (job.name,) if job.name_static and job.name else (
+                (RIPR_REQUIRED_NAME, RIPR_IGNORED_NAME)
+                if job.raw_name == RIPR_NAME_EXPRESSION else ())
+            for name in emitted:
+                index.setdefault(name, []).append((workflow.path, job.job_id))
     for producers in index.values():
         producers.sort()
     return index
@@ -568,6 +634,47 @@ def _binding_findings(
     return []
 
 
+def _ripr_name_contract_findings(entry: dict[str, Any], workflow: Workflow, job: Job) -> list[Finding]:
+    """Prove the one allowed conditional emission domain before indexing it.
+
+    Material events emit the required identity and always execute its result.
+    Unrelated metadata/non-PR events can skip only the unprotected alternative.
+    This proves emission shape, not result-step proof or trusted admission.
+    """
+    expected = {
+        "name_contract": RIPR_NAME_CONTRACT,
+        "name": RIPR_REQUIRED_NAME,
+        "producer": "repository-job",
+        "workflow": ".github/workflows/ripr.yml",
+        "job": "ripr",
+        "required": True,
+        "policy_role": "required",
+        "workflow_result": "propagate",
+        "applicability": "conditional",
+        "events": ["pull_request"],
+    }
+    failures = [field for field, value in expected.items()
+                if entry.get(field) != value or (field == "required" and entry.get(field) is not True)]
+    if job.raw_name != RIPR_NAME_EXPRESSION:
+        failures.append("exact name expression")
+    if job.condition != RIPR_RESULT_CONDITION:
+        failures.append("always/material result condition")
+    if job.uses is not None or job.strategy or job.own_concurrency:
+        failures.append("direct non-matrix result without a concurrency override")
+    raw_types = workflow.pr_types or ""
+    types = [part.strip().strip("'\"") for part in raw_types[1:-1].split(",")]
+    if (not raw_types.startswith("[") or not raw_types.endswith("]")
+            or len(types) != len(RIPR_PR_TYPES) or set(types) != RIPR_PR_TYPES):
+        failures.append("complete explicit PR activity types")
+    if (workflow.concurrency_group != RIPR_CONCURRENCY_GROUP
+            or workflow.cancel_in_progress != "true"):
+        failures.append("isolated material/ignored concurrency groups")
+    if failures:
+        return [Finding("invalid_name_contract", str(entry.get("name", "<unnamed>")),
+                        "finite RIPR contract mismatch: " + ", ".join(failures))]
+    return []
+
+
 def validate_context(
     entry: dict[str, Any],
     workflows: dict[str, Workflow],
@@ -624,6 +731,8 @@ def validate_context(
     workflow = entry.get("workflow")
     job_id = entry.get("job")
     workflow_result = entry.get("workflow_result")
+    if "name_contract" in entry and producer != "repository-job":
+        findings.append(Finding("invalid_name_contract", name, "name contracts apply only to the direct RIPR producer"))
 
     if producer == "external":
         if isinstance(workflow, str) and workflow.startswith(".github/workflows/"):
@@ -672,9 +781,15 @@ def validate_context(
         findings.append(Finding("workflow_job_missing", name, f"{workflow}:{job_id}"))
         return findings, True
 
-    if not job.name_static or job.name is None:
+    finite_name = False
+    if "name_contract" in entry:
+        contract_findings = _ripr_name_contract_findings(entry, workflow_data, job)
+        findings.extend(contract_findings)
+        finite_name = not contract_findings
+
+    if not finite_name and (not job.name_static or job.name is None):
         findings.append(Finding("job_name_not_static", name, f"{workflow}:{job_id} must emit a static direct name"))
-    elif job.name != name:
+    elif not finite_name and job.name != name:
         findings.append(Finding("context_name_mismatch", name, f"workflow emits {job.name!r}"))
 
     actual_producers = producers.get(name, [])
@@ -690,6 +805,17 @@ def validate_context(
                 + (", ".join(f"{path}:{job}" for path, job in actual_producers) or "none"),
             )
         )
+
+    if finite_name:
+        if producers.get(RIPR_IGNORED_NAME) != [expected_producer]:
+            findings.append(Finding("ignored_name_collision", name, "ignored identity has another producer"))
+        for source in workflows.values():
+            for other in source.jobs.values():
+                if (not other.name_static and other.raw_name
+                        and other.raw_name != RIPR_NAME_EXPRESSION
+                        and RIPR_REQUIRED_NAME in other.raw_name):
+                    findings.append(Finding("ambiguous_name_contract_producer", name,
+                                            f"{source.path}:{other.job_id} has an opaque expression mentioning the protected identity"))
 
     if not job.continue_static:
         findings.append(Finding("job_continue_on_error_not_static", name, f"{workflow}:{job_id} has absent, commented, or dynamic direct continue-on-error"))
@@ -728,6 +854,7 @@ def _canonical_context(entry: dict[str, Any]) -> dict[str, Any]:
         "ruleset_integration_id",
         "events",
         "callee_workflow", "callee_source", "callee_sha256", "callee_job",
+        "name_contract",
     )
     return {field: entry[field] for field in fields if field in entry}
 
@@ -768,6 +895,12 @@ def validate(root: Path, policy_path: Path) -> dict[str, Any]:
         entry_findings, is_mapped = validate_context(entry, workflows, producer_index)
         findings.extend(entry_findings)
         mapped += int(is_mapped)
+
+    if any(isinstance(entry, dict) and "name_contract" in entry for entry in contexts):
+        for entry in contexts:
+            if isinstance(entry, dict) and entry.get("name") == RIPR_IGNORED_NAME:
+                findings.append(Finding("ignored_name_collision", RIPR_IGNORED_NAME,
+                                        "ignored conditional identity must not be registered as a policy context"))
 
     workflow_subjects = [
         {"path": workflow.path, "sha256": workflow.sha256}

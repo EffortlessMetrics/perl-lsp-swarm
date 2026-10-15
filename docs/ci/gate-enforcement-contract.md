@@ -65,7 +65,7 @@ This is separate from policy role. An advisory context may propagate failure and
 - a required row naming no protected enforcement;
 - unsafe, untracked, symlinked, missing, or repository-escaping workflow paths;
 - a repository-owned context without an emitting-job mapping;
-- a missing or dynamically named mapped job;
+- a missing mapped job or a dynamic name outside the explicit finite contract below;
 - absent, commented, or dynamic `continue-on-error` where the policy claims `continue`;
 - disagreement between `workflow_result` and direct job posture;
 - a mapped context name that differs from the emitted job name;
@@ -76,6 +76,52 @@ This is separate from policy role. An advisory context may propagate failure and
 - duplicate policy identities.
 
 The parser is deliberately bounded. It reads the direct workflow fields needed for this contract rather than pretending to evaluate arbitrary GitHub Actions expressions. A condition that cannot be established at the claimed strength blocks the static contract instead of being guessed.
+
+### Optional finite RIPR emission contract
+
+Static names remain the default. A future direct `.github/workflows/ripr.yml: ripr`
+row may explicitly declare `name_contract = "pr-material-required-name-v1"` with
+`name = "ripr+ New Gap Gate"`, `applicability = "conditional"`,
+`events = ["pull_request"]`, required policy role and propagating failure. No active
+row or workflow opts in as part of the validator-support change. This versioned
+optional field retains policy version 2: old validators reject the unknown field,
+and its value is included in the canonical context/subject digest.
+
+The only supported name expression is `RIPR_NAME_EXPRESSION` in the canonical
+validator. It emits the protected name on opened, synchronize, reopened, Ready,
+draft conversion, the exact merge-ready labeled/unlabeled edge, and a base edit.
+Other metadata and non-PR events emit `Ignored metadata / ripr+ New Gap Gate`.
+That ignored name must not be registered as a policy context. This is an explicit
+emission domain, not an always-or-scoped-noop claim about the entire job.
+
+Acceptance also requires the exact `RIPR_RESULT_CONDITION`: `always()` and the same
+material-event predicate. A material event cannot skip the job with its protected
+name. A non-material event may skip only the ignored identity. The explicit PR
+activity list must be complete, without duplicates or required-event path filters.
+The exact `RIPR_CONCURRENCY_GROUP` isolates ignored events by run ID and material
+events by workflow/PR; literal cancellation is enabled. A job-level concurrency
+override, reusable call, matrix, arbitrary/inverted expression, missing opt-in,
+unknown contract or failure suppression is refused.
+
+The producer index includes both finite alternatives even for unlisted emitters,
+so a second static or finite protected producer cannot hide behind the opt-in.
+Opaque dynamic expressions mentioning the protected identity are refused when
+this contract is selected. This bounded parser does not prove that arbitrary
+unlisted expressions cannot synthesize a collision indirectly; candidate workflow
+trust and hosted check-name/source association remain separate qualification work.
+
+This contract establishes source emission/skip/concurrency consistency only. It
+does not validate result-step proof, trusted admission, current PR readiness, actual
+runtime cancellation, protection settings, or a 20-minute execution budget. Native
+canaries and separately authorized cutover remain necessary. Reusable-producer
+projection and its existing callee-source binding are unaffected; a reusable row
+cannot borrow this direct-job contract.
+
+The bounded support delta is composed on PR #16134 owner head
+`f5e0f96537e8d71f6b592e6e798d073f6ead0e3e` without changing that branch or active
+workflows. Coordination is recorded in [the companion comment](https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/16134#issuecomment-6182682200).
+Migration ownership remains #10058/#17900/#17903. This support is not a claim that
+the label cutover is active or that the broader trusted-admission work is complete.
 
 ## Subject binding
 

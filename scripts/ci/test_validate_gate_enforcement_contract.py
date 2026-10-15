@@ -1005,5 +1005,143 @@ class ReusableProducerTests(unittest.TestCase):
             self.assertEqual(row[key], OWNED_RUST_DRAFT_ROW[key])
 
 
+# Literal source fixtures are independent of the implementation's template constants.
+FINITE_MATERIAL = (
+    "github.event_name == 'pull_request' && ("
+    "contains(fromJSON('[\"opened\",\"synchronize\",\"reopened\",\"ready_for_review\",\"converted_to_draft\"]'), github.event.action) || "
+    "(contains(fromJSON('[\"labeled\",\"unlabeled\"]'), github.event.action) && github.event.label.name == 'merge-ready') || "
+    "(github.event.action == 'edited' && github.event.changes.base != null))"
+)
+FINITE_NAME = "${{ (" + FINITE_MATERIAL + ") && 'ripr+ New Gap Gate' || 'Ignored metadata / ripr+ New Gap Gate' }}"
+FINITE_IF = "${{ always() && (" + FINITE_MATERIAL + ") }}"
+FINITE_GROUP = ("${{ github.workflow }}-${{ (" + FINITE_MATERIAL + ") && "
+                "format('pr-{0}', github.event.pull_request.number) || format('ignored-{0}', github.run_id) }}")
+FINITE_POLICY = '''
+[[checks]]
+name = "ripr+ New Gap Gate"
+name_contract = "pr-material-required-name-v1"
+producer = "repository-job"
+workflow = ".github/workflows/ripr.yml"
+job = "ripr"
+workflow_result = "propagate"
+events = ["pull_request"]
+required = true
+policy_role = "required"
+applicability = "conditional"
+enforcement = "github-ruleset"
+ruleset_integration_id = 15368
+'''
+FINITE_WORKFLOW = (
+    "name: ripr\non:\n  pull_request:\n"
+    "    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft, labeled, unlabeled, edited]\n"
+    "concurrency:\n  group: " + FINITE_GROUP + "\n  cancel-in-progress: true\n"
+    "jobs:\n  ripr:\n    name: " + FINITE_NAME + "\n    if: " + FINITE_IF + "\n"
+    "    runs-on: ubuntu-latest\n    steps: []\n"
+)
+
+
+class FiniteRequiredNameTests(unittest.TestCase):
+    def validate(self, workflow=FINITE_WORKFLOW, policy=FINITE_POLICY, other=None):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = root / ".ci/policies/required-checks.toml"
+            path.parent.mkdir(parents=True)
+            path.write_text(policy_text(policy), encoding="utf-8")
+            workflow_path = root / ".github/workflows/ripr.yml"
+            workflow_path.parent.mkdir(parents=True)
+            workflow_path.write_text(workflow, encoding="utf-8")
+            if other is not None:
+                (workflow_path.parent / "other.yml").write_text(other, encoding="utf-8")
+            commit_all(root)
+            return contract.validate(root, path)
+
+    def codes(self, **kwargs):
+        return {item["code"] for item in self.validate(**kwargs)["findings"]}
+
+    def test_explicit_finite_direct_ripr_contract_passes(self):
+        result = self.validate()
+        self.assertEqual(result["status"], "SUCCESS")
+        self.assertEqual(result["mapped_jobs"], 1)
+        self.assertEqual(result["live_enforcement_status"], "NOT_PROVEN")
+        row = result["semantic_subject"]["contexts"][0]
+        self.assertEqual(row["name_contract"], "pr-material-required-name-v1")
+
+    def test_dynamic_names_still_require_explicit_known_contract(self):
+        for policy in (FINITE_POLICY.replace('name_contract = "pr-material-required-name-v1"\n', ""),
+                       FINITE_POLICY.replace('pr-material-required-name-v1', 'anything-v1')):
+            with self.subTest(policy=policy):
+                self.assertIn("job_name_not_static", self.codes(policy=policy))
+
+    def test_contract_cannot_be_borrowed_by_another_context_or_mapping(self):
+        for old, new in (('job = "ripr"', 'job = "absent"'),
+                         ('name = "ripr+ New Gap Gate"', 'name = "Other"'),
+                         ('policy_role = "required"', 'policy_role = "advisory"'),
+                         ('required = true', 'required = false'),
+                         ('applicability = "conditional"', 'applicability = "always-or-scoped-noop"'),
+                         ('events = ["pull_request"]', 'events = ["pull_request", "push"]')):
+            with self.subTest(field=old):
+                self.assertNotEqual(self.validate(policy=FINITE_POLICY.replace(old, new))["status"], "SUCCESS")
+
+    def test_arbitrary_inverted_sticky_and_constant_names_refuse(self):
+        for name in ("${{ github.event.label.name }}",
+                     FINITE_NAME.replace("&&", "||", 1),
+                     FINITE_NAME.replace("github.event.label.name", "github.event.pull_request.labels"),
+                     "ripr+ New Gap Gate"):
+            with self.subTest(name=name):
+                self.assertIn("invalid_name_contract", self.codes(workflow=FINITE_WORKFLOW.replace(FINITE_NAME, name)))
+
+    def test_skipped_required_false_green_shapes_refuse(self):
+        for condition in ("false", "${{ success() }}", "${{ always() }}",
+                          FINITE_IF.replace("always() &&", "success() &&"),
+                          FINITE_IF.replace("&&", "||", 1)):
+            with self.subTest(condition=condition):
+                self.assertIn("invalid_name_contract", self.codes(workflow=FINITE_WORKFLOW.replace(FINITE_IF, condition)))
+
+    def test_unrelated_event_concurrency_must_be_isolated(self):
+        for workflow in (FINITE_WORKFLOW.replace(FINITE_GROUP, "${{ github.workflow }}-${{ github.event.pull_request.number }}"),
+                         FINITE_WORKFLOW.replace("cancel-in-progress: true", "cancel-in-progress: false"),
+                         FINITE_WORKFLOW.replace("    runs-on:", "    concurrency: another-group\n    runs-on:")):
+            with self.subTest(workflow=workflow):
+                self.assertIn("invalid_name_contract", self.codes(workflow=workflow))
+
+    def test_missing_extra_duplicate_or_filtered_activity_domains_refuse(self):
+        for workflow in (FINITE_WORKFLOW.replace(", unlabeled", ""),
+                         FINITE_WORKFLOW.replace("labeled, unlabeled", "labeled, labeled"),
+                         FINITE_WORKFLOW.replace("unlabeled, edited]", "unlabeled, edited, closed]"),
+                         FINITE_WORKFLOW.replace("  pull_request:\n", "  pull_request:\n    paths: ['src/**']\n"),
+                         FINITE_WORKFLOW.replace("    types:", "    types: [opened]\n    types:")):
+            with self.subTest(workflow=workflow):
+                self.assertNotEqual(self.validate(workflow=workflow)["status"], "SUCCESS")
+
+    def test_job_matrix_reusable_and_failure_suppression_refuse(self):
+        for field in ("    strategy: {}\n", "    uses: other/repo/.github/workflows/x.yml@main\n",
+                      "    continue-on-error: true\n", "    continue-on-error: ${{ true }}\n"):
+            self.assertNotEqual(self.validate(workflow=FINITE_WORKFLOW.replace(
+                "    runs-on:", field + "    runs-on:"))["status"], "SUCCESS")
+
+    def test_duplicate_protected_emitters_are_not_hidden_by_opt_in(self):
+        for name in ("ripr+ New Gap Gate", FINITE_NAME):
+            other = "name: Other\non: [pull_request]\njobs:\n  duplicate:\n    name: " + name + "\n    steps: []\n"
+            with self.subTest(name=name):
+                self.assertIn("duplicate_emitted_context", self.codes(other=other))
+
+    def test_opaque_unlisted_identity_and_ignored_name_collisions_refuse(self):
+        other = "name: Other\non: [pull_request]\njobs:\n  duplicate:\n    name: %s\n    steps: []\n"
+        self.assertIn("ambiguous_name_contract_producer", self.codes(
+            other=other % "${{ true && 'ripr+ New Gap Gate' }}"))
+        self.assertIn("ignored_name_collision", self.codes(
+            other=other % "Ignored metadata / ripr+ New Gap Gate"))
+        ignored_row = FINITE_POLICY.replace("ripr+ New Gap Gate", "Ignored metadata / ripr+ New Gap Gate")
+        self.assertIn("ignored_name_collision", self.codes(policy=FINITE_POLICY + ignored_row))
+
+    def test_reusable_producer_cannot_borrow_direct_name_contract(self):
+        row = dict(OWNED_RUST_DRAFT_ROW, name_contract="pr-material-required-name-v1")
+        workflows, _, findings = contract.project_reusable_workflows(
+            ROOT, contract.read_workflow_catalog(ROOT), [row])
+        self.assertEqual(findings, [])
+        findings, _ = contract.validate_context(row, workflows, contract.build_producer_index(workflows))
+        self.assertIn("invalid_name_contract", [item.code for item in findings])
+
+
 if __name__ == "__main__":
     unittest.main()
