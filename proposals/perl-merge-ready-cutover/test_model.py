@@ -75,7 +75,8 @@ class CutoverFixtures(unittest.TestCase):
 
     def test_final_live_state_even_when_head_base_label_unchanged(self):
         for mutation in (dict(live_draft=True), dict(live_state="closed"),
-                         dict(live_base_ref="owner-branch"), dict(live_label=False)):
+                         dict(live_base_ref="owner-branch"), dict(live_label=False),
+                         dict(live_base_ref="master")):
             self.assertEqual(readiness(True, self.subject, **(self.live | mutation)),
                              "NOT_READY")
             self.assertTrue(accepts(**self.args))
@@ -99,6 +100,9 @@ class CutoverFixtures(unittest.TestCase):
     def test_event_cannot_borrow_another_run_or_pr(self):
         for field in ("pr", "run", "attempt"):
             event = dataclasses.replace(self.event, **{field: 2})
+            self.assertFalse(accepts(**(self.args | {"e": event})))
+        for field, value in (("repository", "other/repo"), ("base_ref", "master")):
+            event = dataclasses.replace(self.event, **{field: value})
             self.assertFalse(accepts(**(self.args | {"e": event})))
 
     def test_malformed_expected_source_is_not_exact_identity(self):

@@ -120,7 +120,9 @@ is subsequent owner work; a RIPR-only stage does not claim the whole goal comple
 - Before publishing readiness and immediately before integration, read live PR
   **open state, draft state, base ref, head/base SHA and label**, current enforcement,
   reviews/findings and mergeability. A closed, draft or unsupported-target PR is not
-  ready even with unchanged H/B/label. API failures preserve exact errors and yield
+  ready even with unchanged H/B/label. The final base ref must equal the captured
+  base ref: even main-to-master with identical SHAs needs reassessment. Bind event
+  repository/base ref to the captured subject as well. API failures preserve exact errors and yield
   no readiness assertion. Expected-head merge is still needed; reads plus merge are
   not atomic. Candidate-controlled workflow trust is not repaired by this proposal.
 

@@ -23,6 +23,7 @@ class Event:
     run: int = 1
     attempt: int = 1
     state: str = "open"
+    repository: str = "EffortlessMetrics/perl-lsp-swarm"
 
 
 def material(e):
@@ -59,6 +60,7 @@ class Subject:
     workflow: str
     run: int
     attempt: int
+    base_ref: str = "main"
 
 
 def accepts(e, expected, receipt, results, required_workers, *,
@@ -67,6 +69,8 @@ def accepts(e, expected, receipt, results, required_workers, *,
     if not admit(e) or receipt != expected or run_cancelled:
         return False
     if (e.pr, e.run, e.attempt) != (expected.pr, expected.run, expected.attempt):
+        return False
+    if (e.repository, e.base_ref) != (expected.repository, expected.base_ref):
         return False
     if not all(re.fullmatch(r"[0-9a-f]{40}", value) for value in (
             expected.head, expected.base, expected.merge, expected.tree, expected.workflow)):
@@ -85,7 +89,8 @@ def readiness(proof_valid, expected, *, live_head, live_base, live_label,
     if not proof_valid:
         return "NOT_PROVEN"
     if (live_state != "open" or live_draft or not live_label
-            or live_base_ref not in {"main", "master"}):
+            or live_base_ref not in {"main", "master"}
+            or live_base_ref != expected.base_ref):
         return "NOT_READY"
     if live_head != expected.head:
         return "HEAD_CHANGED_REASSESS"
