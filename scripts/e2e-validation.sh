@@ -353,7 +353,7 @@ echo "------------------------"
 print_status "INFO" "Validating performance benchmarks..."
 
 # Check if benchmarks can run
-if cargo bench --no-run 2>/dev/null; then
+if cargo bench --features perl-lsp-rs/benchmarks --no-run 2>/dev/null; then
     print_status "OK" "Benchmarks can be compiled"
     
     # Run a quick benchmark
