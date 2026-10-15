@@ -75,9 +75,14 @@ visible on GitHub, but it is not a review-validity token.
 Do not require:
 
 - a review submitted on the latest commit solely because the SHA changed;
-- a material-claim digest;
+- a separate material-claim receipt or digest from the retired review protocol;
 - `review-start` / `review-done` receipt comments;
 - a full deep review after every repair push.
+
+The `semantic-review:v1` marker below is still required for machine qualification.
+Its digest identifies the original reviewed diff; it is not a claim digest or a
+requirement that the reviewed head equal every later PR head. Preserve that original
+identity when carrying a review forward.
 
 The durable review record is the useful GitHub review itself:
 
@@ -142,6 +147,30 @@ submitted review body:
 <!-- semantic-review:v1 {"head":"<reviewed-head>","merge_base":"<merge-base>","pr":<number>,"result":"REVIEW_CURRENT","subject_sha256":"<cumulative-diff-digest>"} -->
 ```
 
+Use the provider's `review-pr` record template. The checker requires these literal
+level-two headings outside code fences: `## Review scope`, `## Evidence and falsifiers`,
+`## What this establishes`, `## Residual risk / not proved`, and
+`## Substantive review result`, plus an outcome heading (`## Findings` or
+`## No material findings`; the template requires choosing one). The single result
+section must declare exactly one result in a bullet, such as `- REVIEW_CURRENT`.
+Synonymous headings, a quoted template, or a marker alone do not qualify a review.
+
+The identities checked by the v1 reader are:
+
+| Field | Required relationship |
+| --- | --- |
+| `pr` | matches the PR being evaluated |
+| `head` | matches the commit attached to the submitted GitHub review |
+| `merge_base` | identifies the recorded diff base, which must be an ancestor of the reviewed head |
+| `subject_sha256` | matches the SHA-256 of the binary full-index diff from that recorded base to that reviewed head |
+| `result` | is `REVIEW_CURRENT`, agreeing with the review body's single declared result |
+
+The emitter obtains the merge base from the live PR base and head. The reader verifies
+the recorded subject; it does not replace its base with today's `main`. A later
+adverse or ambiguous cumulative human review prevents reuse of an earlier clean
+marker, including at an unchanged head. Native findings and change requests remain
+separate blockers.
+
 Generate it only after the useful review record is complete:
 
 ```bash
@@ -168,7 +197,7 @@ or unreadable acquisition remains `NOT_PROVEN`. Those capability and enforcement
 predicates remain under #17573/#17494; #17495, #15010, #15001 and #16958 retain their
 existing ownership.
 
-The digest covers `git diff --binary --full-index <merge-base> <reviewed-head>`. The
+The digest covers `git diff --binary --full-index --no-ext-diff <merge-base> <reviewed-head> --`. The
 marker is not a requirement to re-review merely because a SHA changed. It makes the
 reviewed subject falsifiable and lets the pre-merge guard distinguish a real cumulative
 judgment from an empty comment.
@@ -183,6 +212,17 @@ content is compared byte-for-byte and any change inside a fence yields `NOT_PROV
 Any other later change yields `NOT_PROVEN` until focused review publishes a new
 marker. Human review can determine that a broader
 change preserves the conclusion; the mechanical checker does not invent that judgment.
+
+`NOT_PROVEN` here requests the missing focused judgment; it does not order a full test
+replay. For example, a source-equivalent code edit is outside the automatic neutral
+class and needs focused review before a new marker can qualify it, while unaffected
+test evidence can still carry forward. Record each carried test's original run URL or
+local command/result, candidate commit/tree, tested subject, and relevant runtime or
+configuration, with the reason the later change cannot affect it. Keep the original
+review and marker intact. A new cumulative review can cite that evidence and record
+the changed-seam judgment; it must not relabel an old run as a current-head execution.
+Required GitHub status contexts still have to report on their required integration
+subject as described above.
 
 ## GitHub-native merge blockers
 

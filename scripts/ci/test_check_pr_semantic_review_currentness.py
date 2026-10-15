@@ -605,6 +605,38 @@ class SemanticReviewCurrentnessTests(unittest.TestCase):
         )
         self.assertEqual("REVIEW_CURRENT", result["classification"])
         self.assertTrue(result["carried_forward"])
+        self.assertEqual(current, result["current_head"])
+        self.assertEqual(reviewed, result["reviewed_head"])
+        self.assertEqual(base, result["merge_base"])
+        self.assertEqual(
+            module.subject_digest(root, base, reviewed), result["subject_sha256"]
+        )
+        self.assertNotEqual(
+            module.subject_digest(root, base, current), result["subject_sha256"]
+        )
+
+    def test_same_tree_new_head_preserves_original_review_identity(self) -> None:
+        tmp, root, base, reviewed = setup_repo()
+        self.addCleanup(tmp.cleanup)
+        original_review = review(42, root, base, reviewed)
+        git(root, "commit", "--allow-empty", "-q", "-m", "same tree new commit")
+        current = git(root, "rev-parse", "HEAD")
+        self.assertNotEqual(reviewed, current)
+        self.assertEqual(
+            git(root, "rev-parse", f"{reviewed}^{{tree}}"),
+            git(root, "rev-parse", f"{current}^{{tree}}"),
+        )
+        result = module.evaluate(
+            root, pr=42, current_head=current, reviews=[original_review]
+        )
+        self.assertEqual("REVIEW_CURRENT", result["classification"])
+        self.assertTrue(result["carried_forward"])
+        self.assertEqual(current, result["current_head"])
+        self.assertEqual(reviewed, result["reviewed_head"])
+        self.assertEqual(base, result["merge_base"])
+        self.assertEqual(
+            module.subject_digest(root, base, reviewed), result["subject_sha256"]
+        )
 
     def test_material_route_change_requires_focused_review(self) -> None:
         tmp, root, base, reviewed = setup_repo()
@@ -622,6 +654,25 @@ class SemanticReviewCurrentnessTests(unittest.TestCase):
         )
         self.assertEqual("NOT_PROVEN", result["classification"])
         self.assertEqual("material_content_change_after_review", result["reason"])
+
+    def test_source_equivalent_code_comment_still_needs_focused_review(self) -> None:
+        tmp, root, base, _reviewed = setup_repo()
+        self.addCleanup(tmp.cleanup)
+        source = root / "logic.py"
+        source.write_text("value = 1\n# original explanation\n", encoding="utf-8")
+        reviewed = commit(root, "add code")
+        original_review = review(42, root, base, reviewed)
+        source.write_text("value = 1\n# clearer explanation\n", encoding="utf-8")
+        current = commit(root, "clarify code comment")
+        result = module.evaluate(
+            root, pr=42, current_head=current, reviews=[original_review]
+        )
+        self.assertEqual("NOT_PROVEN", result["classification"])
+        self.assertEqual(
+            "post-review_change_is_not_in_a_whitespace-insensitive_prose_file",
+            result["reason"],
+        )
+        self.assertFalse(result["carried_forward"])
 
     def test_added_path_is_not_neutral(self) -> None:
         tmp, root, base, reviewed = setup_repo()
