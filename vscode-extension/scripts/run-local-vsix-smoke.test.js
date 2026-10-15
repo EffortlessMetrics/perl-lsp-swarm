@@ -340,12 +340,12 @@ void test('verified packaged child receipt hashes and parses one source snapshot
   fs.writeFileSync(sourceReceiptFile, Buffer.concat([healthyBytes, Buffer.from('\n')]));
   const mismatched = validate();
   assert.equal(mismatched.ok, false);
-  assert.match(mismatched.violations.join(' '), /digest does not match/);
+  assert.match(mismatched.violations?.join(' ') ?? '', /digest does not match/);
 
   bindSource(failedBytes);
   const failed = validate();
   assert.equal(failed.ok, false);
-  assert.match(failed.violations.join(' '), /does not prove the bounded/);
+  assert.match(failed.violations?.join(' ') ?? '', /does not prove the bounded/);
 
   const readFile = fs.readFileSync;
   let sourceReads = 0;
@@ -361,7 +361,7 @@ void test('verified packaged child receipt hashes and parses one source snapshot
   t.mock.restoreAll();
   assert.ok(sourceReads > 0, 'the source rewrite control must execute');
   assert.equal(rewritten.ok, false, 'behavior from replacement bytes must not be accepted');
-  assert.match(rewritten.violations.join(' '), /does not prove the bounded/);
+  assert.match(rewritten.violations?.join(' ') ?? '', /does not prove the bounded/);
   assert.equal(sourceReads, 1, 'hashing and parsing must share a single source read');
 });
 
