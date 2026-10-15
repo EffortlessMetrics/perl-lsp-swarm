@@ -519,7 +519,7 @@ class ConstrainedAdmissionTests(unittest.TestCase):
         for field in ("reserve_bytes", "expected_growth_bytes"):
             document = dict(self.document, **{field: "TOKEN"})
             for token in tokens:
-                self.budget.write_text(json.dumps(document).replace('"TOKEN"', token), encoding="utf-8")
+                self.budget.write_text(json.dumps(document).replace(f'"{field}": "TOKEN"', f'"{field}": {token}', 1), encoding="utf-8")
                 for prefix in ([], ["--preflight"]):
                     with self.subTest(field=field, token=token[:30], preflight=bool(prefix)), \
                          patch.object(safe.shutil, "disk_usage") as observe:
