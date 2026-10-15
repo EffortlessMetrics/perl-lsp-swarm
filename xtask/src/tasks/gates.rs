@@ -42,6 +42,8 @@ mod first_failure;
 mod planning_types;
 pub mod route_profile;
 mod routed_result_adapter;
+#[cfg(test)]
+mod installer_selection_contract;
 
 pub use first_failure::{is_cargo_test_command, parse_first_failure};
 
