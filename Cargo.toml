@@ -398,6 +398,12 @@ opt-level = 1
 # dev target/ size under parallel multi-worktree dev (#12791).
 debug = "line-tables-only"
 
+# xtask's test profile also builds its library and the helper binaries prepared
+# for integration tests. Avoid optimizing these proof tools (#3230), retaining
+# dependency optimization and the dev/agent/release profiles.
+[profile.test.package.xtask]
+opt-level = 0
+
 # Profile for agent builds - optimized for lower artifact footprint
 [profile.agent]
 inherits = "dev"
