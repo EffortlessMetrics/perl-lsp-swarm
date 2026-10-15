@@ -61,6 +61,9 @@ impl LspServer {
         params: Option<Value>,
         package_preview: bool,
     ) -> Result<Option<Value>, JsonRpcError> {
+        #[cfg(not(all(feature = "workspace", not(target_arch = "wasm32"))))]
+        let _ = package_preview;
+
         // Wait for any in-flight didOpen index tasks to complete before sampling
         // live provider state.  When tokio-backed async indexing runs on didOpen
         // (any test that happens to have a tokio runtime), build_rename_edit may

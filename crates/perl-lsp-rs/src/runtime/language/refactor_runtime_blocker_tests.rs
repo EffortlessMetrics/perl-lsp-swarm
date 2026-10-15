@@ -4742,16 +4742,18 @@ fn refactor_runtime_blocker_receipt_keeps_matching_sigil_variable_target_16644()
         })))?
         .ok_or("missing matching-sigil variable receipt")?;
     assert_eq!(receipt.get("new_name").and_then(Value::as_str), Some("$RENAMED_CONFIG"));
+    // This package-variable fixture has no compiler receipt. The retention
+    // oracle is the real matching-sigil live admission and resulting edit.
     assert!(
-        receipt.get("compiler_receipt").is_some_and(Value::is_object),
-        "generic rename must preserve matching-sigil target admission: {receipt}"
+        receipt.get("live_provider_error").is_none_or(Value::is_null),
+        "generic matching-sigil target must not be rejected: {receipt}"
     );
-    assert!(
-        receipt
-            .pointer("/fallback_noise/compiler_plan_edit_count")
-            .and_then(Value::as_u64)
-            .is_some_and(|count| count > 0),
-        "matching-sigil target must retain its compiler plan: {receipt}"
+    assert_eq!(receipt.get("live_provider_edit_count").and_then(Value::as_u64), Some(1));
+    let live_edit =
+        receipt.get("live_provider_result").ok_or("missing matching-sigil live edit")?;
+    assert_eq!(
+        workspace_edit_texts_for_uri(live_edit, SAFE_DELETE_BOUNDARY_URI),
+        Some(vec!["$RENAMED_CONFIG"])
     );
     Ok(())
 }
