@@ -120,7 +120,7 @@ def _indent(line: str) -> int:
     return len(line) - len(line.lstrip(" "))
 
 
-def _strip_inline_comment(value: str) -> str:
+def _strip_inline_comment(value: str, *, whitespace: str | None = None) -> str:
     quote: Optional[str] = None
     escaped = False
     for index, character in enumerate(value):
@@ -137,13 +137,14 @@ def _strip_inline_comment(value: str) -> str:
         if character in {'"', "'"}:
             quote = character
             continue
-        if character == "#" and (index == 0 or value[index - 1].isspace()):
-            return value[:index].rstrip()
-    return value.rstrip()
+        if character == "#" and (index == 0 or (value[index - 1].isspace()
+                                              if whitespace is None else value[index - 1] in whitespace)):
+            return value[:index].rstrip(whitespace)
+    return value.rstrip(whitespace)
 
 
-def _unquote(value: str) -> str:
-    value = _strip_inline_comment(value).strip()
+def _unquote(value: str, *, whitespace: str | None = None) -> str:
+    value = _strip_inline_comment(value, whitespace=whitespace).strip(whitespace)
     if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
         return value[1:-1]
     return value
@@ -443,20 +444,20 @@ def _direct_field(lines: list[str], path: tuple[str, ...]) -> str | None:
     start, end = 0, len(lines)
     for depth, key in enumerate(path):
         matches = [i for i in range(start, end)
-                   if lines[i].strip() and not lines[i].lstrip().startswith("#")
+                   if lines[i].strip(" \t") and not lines[i].lstrip(" \t").startswith("#")
                    and ":" in lines[i]
                    and _indent(lines[i]) == 2 * depth
-                   and _unquote(lines[i].strip().split(":", 1)[0]) == key]
+                   and _unquote(lines[i].strip(" \t").split(":", 1)[0], whitespace=" \t") == key]
         if len(matches) != 1:
             return None
         index = matches[0]
-        raw = _strip_inline_comment(lines[index].split(":", 1)[1]).strip()
+        raw = _strip_inline_comment(lines[index].split(":", 1)[1], whitespace=" \t").strip(" \t")
         if depth == len(path) - 1:
             # The opt-in proves exact source bytes, not an approximation of YAML
             # scalar semantics. Literal blocks retain newlines; quoted scalars
             # and continuations can also change the value we would otherwise see.
             following = next((line for line in lines[index + 1:end]
-                              if line.strip() and not line.lstrip().startswith("#")), None)
+                              if line.strip(" \t") and not line.lstrip(" \t").startswith("#")), None)
             if (not raw or raw[0] in "'\"|>"
                     or (following is not None and _indent(following) > 2 * depth)):
                 return None
@@ -465,14 +466,18 @@ def _direct_field(lines: list[str], path: tuple[str, ...]) -> str | None:
             return None
         start = index + 1
         end = next((i for i in range(start, end)
-                    if lines[i].strip() and not lines[i].lstrip().startswith("#")
+                    if lines[i].strip(" \t") and not lines[i].lstrip(" \t").startswith("#")
                     and _indent(lines[i]) <= 2 * depth), end)
     return None
 
 
 def read_workflow(root: Path, raw_path: str) -> Workflow:
     path, relative = _safe_repo_path(root, raw_path, subject="workflow")
-    lines = path.read_text(encoding="utf-8").splitlines()
+    source = path.read_text(encoding="utf-8")
+    lines = source.splitlines()
+    # YAML 1.2 line breaks are CR/LF (read_text already normalizes them).
+    # Preserve Unicode separators as scalar data for the finite source proof.
+    finite_lines = source.split("\n")
     events, path_filtered_events = _parse_events(lines)
     jobs_index = next(
         (
@@ -499,10 +504,10 @@ def read_workflow(root: Path, raw_path: str) -> Workflow:
                     and not line.lstrip().startswith("#")]
             jobs[job_id] = job._replace(finite_source_valid=(
                 len(keys) == len(set(keys))
-                and _direct_field(lines, ("jobs", job_id, "name")) == RIPR_NAME_EXPRESSION
-                and _direct_field(lines, ("jobs", job_id, "if")) == RIPR_RESULT_CONDITION
+                and _direct_field(finite_lines, ("jobs", job_id, "name")) == RIPR_NAME_EXPRESSION
+                and _direct_field(finite_lines, ("jobs", job_id, "if")) == RIPR_RESULT_CONDITION
                 and ("continue-on-error" not in keys
-                     or _direct_field(lines, ("jobs", job_id, "continue-on-error")) == "false")
+                     or _direct_field(finite_lines, ("jobs", job_id, "continue-on-error")) == "false")
             ))
     return Workflow(
         path=relative,
@@ -510,9 +515,9 @@ def read_workflow(root: Path, raw_path: str) -> Workflow:
         events=events,
         path_filtered_events=path_filtered_events,
         jobs=jobs,
-        pr_types=_direct_field(lines, ("on", "pull_request", "types")),
-        concurrency_group=_direct_field(lines, ("concurrency", "group")),
-        cancel_in_progress=_direct_field(lines, ("concurrency", "cancel-in-progress")),
+        pr_types=_direct_field(finite_lines, ("on", "pull_request", "types")),
+        concurrency_group=_direct_field(finite_lines, ("concurrency", "group")),
+        cancel_in_progress=_direct_field(finite_lines, ("concurrency", "cancel-in-progress")),
     )
 
 
@@ -684,8 +689,8 @@ def _ripr_name_contract_findings(entry: dict[str, Any], workflow: Workflow, job:
     if job.uses is not None or job.strategy or job.own_concurrency:
         failures.append("direct non-matrix result without a concurrency override")
     raw_types = workflow.pr_types or ""
-    tokens = [part.strip() for part in raw_types[1:-1].split(",")]
-    types = [_unquote(part) for part in tokens]
+    tokens = [part.strip(" \t") for part in raw_types[1:-1].split(",")]
+    types = [_unquote(part, whitespace=" \t") for part in tokens]
     if (not raw_types.startswith("[") or not raw_types.endswith("]")
             or any(not re.fullmatch(r"[a-z_]+|'[a-z_]+'|\"[a-z_]+\"", part) for part in tokens)
             or len(types) != len(RIPR_PR_TYPES) or set(types) != RIPR_PR_TYPES):

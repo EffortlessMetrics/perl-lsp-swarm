@@ -112,6 +112,16 @@ newlines into a different protected identity; it is not a general YAML validator
 These restrictions apply to the finite opt-in only, preserving existing static-name
 and reusable-producer parsing.
 
+Finite source comparisons ignore only YAML's ASCII space/tab separation and split
+lines only at normalized CR/LF boundaries. Unicode whitespace and line separators
+remain scalar data, including before a `#` that has no ASCII separator. This avoids
+accepting an expression with extra name bytes or altered activity/cancellation data.
+Ordinary Unicode text after an ASCII-separated comment remains permitted. See
+[YAML 1.2.2 whitespace](https://yaml.org/spec/1.2.2/#55-white-space-characters)
+and [line breaks](https://yaml.org/spec/1.2.2/#54-line-break-characters).
+The legacy static/job projection parser retains its prior behavior; this finite
+proof does not establish full YAML validity or decode escaped mapping keys.
+
 Adversarial controls extend the original companion `37dae252c3436a91ae22034fdca0835e05b9cc1f`:
 that source flattened literal `ripr+\nNew Gap Gate` into the protected name and
 accepted a quoted sequence-shaped scalar or mismatched activity-item quotes.

@@ -1001,6 +1001,32 @@ class ReusableProducerTests(unittest.TestCase):
                 findings = self.findings(OWNED_RUST_DRAFT_ROW, workflows)[0]
                 self.assertIn("ambiguous_reusable_emitter", [item.code for item in findings])
 
+    def test_actual_source_finite_expressions_refuse_reusable_projection(self):
+        reference = "example/review/.github/workflows/child.yml@" + "a" * 40
+        for position in ("caller", "callee"):
+            for style in ("plain", "literal", "quoted"):
+                expression = FINITE_NAME if style == "plain" else (
+                    "|-\n      " + FINITE_NAME if style == "literal" else '"' + FINITE_NAME + '"')
+                with self.subTest(position=position, style=style), tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    caller = root / ".github/workflows/caller.yml"
+                    caller.parent.mkdir(parents=True)
+                    callee = root / ".ci/child.yml"
+                    callee.parent.mkdir()
+                    caller.write_text("on: [pull_request]\njobs:\n  call:\n    name: "
+                                      + (expression if position == "caller" else "Prefix")
+                                      + "\n    uses: " + reference + "\n")
+                    callee.write_text("on: [workflow_call]\njobs:\n  result:\n    name: "
+                                      + (expression if position == "callee" else "Result")
+                                      + "\n    runs-on: ubuntu-latest\n    steps: []\n")
+                    commit_all(root)
+                    row = dict(OWNED_RUST_DRAFT_ROW, workflow=".github/workflows/caller.yml",
+                               job="call", callee_job="result", callee_workflow=reference,
+                               callee_source=".ci/child.yml", callee_sha256=hashlib.sha256(callee.read_bytes()).hexdigest())
+                    _, _, findings = contract.project_reusable_workflows(
+                        root, contract.read_workflow_catalog(root), [row])
+                    self.assertIn("ambiguous_reusable_emitter", [item.code for item in findings])
+
     def test_source_and_ref_are_in_canonical_identity(self):
         row = contract._canonical_context(OWNED_RUST_DRAFT_ROW)
         for key in contract.REUSABLE_FIELDS:
@@ -1130,6 +1156,30 @@ class FiniteRequiredNameTests(unittest.TestCase):
             with self.subTest(old=old, new=new):
                 self.assertIn("invalid_name_contract", self.codes(
                     workflow=FINITE_WORKFLOW.replace(old, new)))
+
+    def test_unicode_scalar_data_is_not_normalized_into_finite_contract(self):
+        # YAML separation is ASCII space/tab; these characters remain scalar data.
+        fields = (("name", FINITE_NAME), ("if", FINITE_IF), ("group", FINITE_GROUP),
+                  ("cancel-in-progress", "true"))
+        for character in ("\u00a0", "\u2003", "\u202f", "\u2028", "\u2029"):
+            for field, value in fields:
+                for suffix in (character, character + "# scalar data"):
+                    with self.subTest(character=repr(character), field=field, suffix=suffix):
+                        workflow = FINITE_WORKFLOW.replace(
+                            field + ": " + value + "\n", field + ": " + value + suffix + "\n")
+                        self.assertIn("invalid_name_contract", self.codes(workflow=workflow))
+
+    def test_unicode_activity_token_data_is_not_stripped(self):
+        for character in ("\u00a0", "\u2003", "\u202f"):
+            with self.subTest(character=repr(character)):
+                workflow = FINITE_WORKFLOW.replace("[opened,", "[opened" + character + ",")
+                self.assertIn("invalid_name_contract", self.codes(workflow=workflow))
+
+    def test_ascii_separation_and_unicode_comments_preserve_finite_contract(self):
+        for suffix in (" ", "\t", " # comment \u00a0\u2003", "\t# comment \u2028"):
+            with self.subTest(suffix=suffix):
+                workflow = FINITE_WORKFLOW.replace(FINITE_NAME + "\n", FINITE_NAME + suffix + "\n")
+                self.assertEqual("SUCCESS", self.validate(workflow=workflow)["status"])
 
     def test_contract_cannot_be_borrowed_by_another_context_or_mapping(self):
         for old, new in (('job = "ripr"', 'job = "absent"'),
