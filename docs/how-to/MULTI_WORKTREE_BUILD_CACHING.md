@@ -42,13 +42,26 @@ Cargo build outputs transferable between worktrees.
 
 ## Recommended route for agent work
 
-After the root admits host capacity and existing consumers, use the existing
-strict route:
+Select the smallest package/target that can falsify the focused task, then admit
+host capacity and existing consumers through the existing strict route. On a
+constrained cloud host, prepare an operator-owned budget for that exact command
+using the [constrained-host procedure](CONSTRAINED_CARGO_BUILDS.md#supply-an-explicit-host-budget-when-the-default-does-not-apply).
+For example, with a budget already qualified for this package-scoped check:
 
 ```bash
-scripts/cargo-admitted check --workspace --all-targets --locked
-scripts/cargo-admitted test -p perl-lsp-rs --locked
+scripts/cargo-admitted --preflight \
+  --budget-file "$HOME/.config/perl-lsp/cargo-budget.json" \
+  check -p perl-parser --lib --locked
+scripts/cargo-admitted \
+  --budget-file "$HOME/.config/perl-lsp/cargo-budget.json" \
+  check -p perl-parser --lib --locked
 ```
+
+Without `--budget-file`, even a focused command uses the default 40 GiB reserve.
+For a test, different package, or other changed arguments, obtain its exact
+preflight scope and requalify the budget before running it; this example's file
+does not admit those requests. Workspace-wide proof needs its own sizing basis
+and should be selected only when the task requires it.
 
 The [Cargo storage admission contract](../agents/CARGO_STORAGE.md) governs this
 route. It retains one common-repository/host lease and independently reusable
