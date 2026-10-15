@@ -399,10 +399,10 @@ opt-level = 1
 debug = "line-tables-only"
 
 # xtask's test profile also builds its library and the helper binaries prepared
-# for integration tests. Avoid optimizing these proof tools (#3230), retaining
-# dependency optimization and the dev/agent/release profiles.
+# for integration tests. Optimize these proof tools for smaller artifacts (#3230),
+# retaining dependency optimization and the dev/agent/release profiles.
 [profile.test.package.xtask]
-opt-level = 0
+opt-level = "z"
 
 # Profile for agent builds - optimized for lower artifact footprint
 [profile.agent]
