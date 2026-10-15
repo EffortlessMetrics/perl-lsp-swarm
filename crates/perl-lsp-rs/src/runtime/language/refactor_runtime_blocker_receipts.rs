@@ -1995,7 +1995,7 @@ fn package_rename_preview_message(receipt: &Value) -> String {
 
     if receipt.get("reason").and_then(Value::as_str) == Some("stale_fact") {
         return format!(
-            "Package rename preview unavailable for `{symbol}` -> `{new_name}`: \
+            "Package rename preview refused for `{symbol}` -> `{new_name}`: \
              workspace facts are stale. Refresh workspace facts before retrying. No edits were applied."
         );
     }
