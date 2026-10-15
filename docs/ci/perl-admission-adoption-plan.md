@@ -11,15 +11,26 @@ workflow registry. Re-read their live state before implementation or activation.
 
 The [inactive proposal at c2cff4eacb934da8a14ac8b41618bd2263cf5efa](https://github.com/EffortlessMetrics/perl-lsp-swarm/tree/c2cff4eacb934da8a14ac8b41618bd2263cf5efa/proposals/perl-merge-ready-cutover)
 contains useful finite-name, identity, cancellation, result, budget and inventory
-controls. Its own tests demonstrate those modeled properties, not trusted native
-admission. Its explicit label-edge admission, remove/reapply retry and assertion
-that no native queue is needed conflict with the refreshed
+controls. Its own tests demonstrate modeled properties, not native qualification.
+Steven's current requested design, clarified after this plan's first publication,
+is a **fresh `merge-ready` labeled edge on an open, non-draft current candidate**.
+Ready alone is not admission. A retained label after synchronize, a delayed/stale
+event, unrelated label, closed/draft PR or mismatched head/base cannot admit proof.
+The edge requests qualification; it does not waive required checks, substantive
+review, mergeability, exact-subject checks or other existing protections.
+
+**Correction to the first published plan:** commit `83c2728d6d8a64a4388ed3101d54f2a5b94a7141`
+incorrectly said “Do not deploy those parts” about fresh label-edge admission and
+substituted trusted-command/compulsory-queue deployment. That was a policy choice,
+not just rejection of sticky labels. It followed the October 13
 [#10058 ruling](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/10058)
-and [#17900 transport contract](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/17900).
-Do not deploy those parts or describe a `merge-ready` label as authority.
-Ready remains review availability. A label may be request data only if the trusted
-owner validates an actual authorized request; neither its presence nor its edge
-establishes that transaction. This plan does not endorse a new label transport.
+and [#17900 transport contract](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/17900),
+which prescribe a separate trusted command and H/custody/G route. Those issue
+bodies remain unchanged on refresh. The latest assignment clarification controls
+this scoped recommendation; their competing design is recorded for owner
+reconciliation, not silently imposed as a new prerequisite. No live issue or
+protection has been rewritten. Native queue activation and a new privileged
+controller are not prerequisites for the requested label-trigger slice.
 
 The [validator companion at 37dae252c3436a91ae22034fdca0835e05b9cc1f](https://github.com/EffortlessMetrics/perl-lsp-swarm/commit/37dae252c3436a91ae22034fdca0835e05b9cc1f)
 implements the previously missing finite opt-in in the canonical validator, its
@@ -28,14 +39,16 @@ existing tests and guide. It is based on PR #16134 head
 Adopt only its reviewed three-file delta through the current owner, resolving
 actual interactions rather than merging its entire ancestry as a shortcut.
 No checked-in workflow or policy row opts in merely by landing that support.
-The grammar still includes old lifecycle/material-label events: validating its
-emission shape does not make those events a permitted admission mechanism.
+The grammar includes lifecycle invalidations and exact material-label edges.
+Emission-shape validation alone does not establish native admission or check
+association; that is the remaining qualification boundary.
 
-The correction is therefore to separate safe inactive source support from the
-trusted request, producer and protected activation transaction. A RIPR-only active
-label cutover is not the first deployment recommendation.
+The smallest source-first order is inactive validator support, then a reviewed
+RIPR-only label-edge candidate retaining its proof population, then separately
+authorized native qualification and controlled activation. The broader three-root
+and nested-dispatch migration follows through existing owners.
 
-## Refreshed ownership and holds
+## Refreshed ownership and holds (issue designs remain distinct)
 
 GitHub connector issue bodies/comments and both PR objects were read before this
 documentation edit. CLI GraphQL and ruleset reads returned `Forbidden`; these are
@@ -43,8 +56,8 @@ access limits, not failing tests or successful protection observations.
 
 | Live authority | Observed responsibility and adoption boundary |
 | --- | --- |
-| [#10058](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/10058) | Explicit exact-head request after useful proof/review/repair; current target is admitted H, protected custody, exact G qualification, then protected integration. Preserve the max-1 target; no queue/settings activation here. The October 13 ruling supersedes older Ready-custody comments. |
-| [#17900](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/17900) | One thin command and trusted default-branch dispatch transport, H publication and custody read-back. Final command spelling belongs to #8606/#17073. No implemented command is asserted by this plan. |
+| [#10058](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/10058) | Explicit exact-head request after useful proof/review/repair; current target is admitted H, protected custody, exact G qualification, then protected integration. That is the issue's design, not a new queue prerequisite for this clarified label slice; no queue/settings activation here. The October 13 ruling supersedes older Ready-custody comments. |
+| [#17900](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/17900) | Issue owns a thin command and trusted default-branch transport, H publication and custody read-back. This differs from the clarified fresh-label route; reconcile with its owner before dependent shared-source changes. No new command is asserted or made a prerequisite here. |
 | [#17903](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/17903) | Existing parser/catalog owns full lifecycle and nested-dispatch perimeter plus matched trigger diff; #9151 retains the wider gate/obligation audit. Guard fixtures can precede activation; final trigger removal cannot strand required producers. |
 | [PR #16134](https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/16134) | Open Draft, head `f5e0f96537e8d71f6b592e6e798d073f6ead0e3e`, branch `feat/contabo-rust-standard`. Canonical Rust consumer writer; validator companion is offered in [comment 6182682200](https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/16134#issuecomment-6182682200). Exact public pin allowance/approval, native admission/producer/custody, full policy budget and protection transition remain pending. No dispatch follows from this plan. |
 | [PR #17624](https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/17624) | Open Ready, head `2c559069f4df9949321d464d1dfe1e93d186d14e`, branch `perf/windows-ci-selection-17485`. Existing classifier/bootstrap/workflow writer retains its scope. Later comments report a Cargo-cwd fixture failure and an isolated #17639 correction; do not infer it is repaired on this head or overwrite its workflow changes. |
@@ -87,58 +100,63 @@ mapping; this document authorizes none.
    projection on the actual composition. This is independently useful source
    support and requires no native queue, fleet migration or main-health redesign.
    Revert those three files together if the unused support is rejected.
-2. **Stage the actual request and producer interfaces without protected effects.**
-   #10057 supplies eligibility; #17900 supplies trusted transport in non-required,
-   no-general-custody rehearsal; #17073 adopts its implemented command in both
-   provider routes. Keep control revision S, candidate H and integration G distinct.
-   The final `scripts/pre-merge-check.sh` already requires green checks and is not
-   an entry evaluator. Prove stale/unauthorized requests refuse, dry-run writes
-   nothing, repeated requests converge, H publication binds the approved source,
-   and successful dispatch without read-back never reports custody.
-3. **Stage compatible producer/perimeter source and the exact activation diff.**
-   #17903 extends the existing parser/catalog and event fixtures across CI, RIPR,
-   routed Rust, auxiliary and reusable/indirect roots. #10063/#17080 map all five
-   obligations to honest H-entry and actual G-integration profiles, with selected
-   work complete and fail-closed. Neither profile satisfies the other. #10064 and
-   the relevant runner owners qualify a reachable selected execution route; an
-   unrelated future fleet rollout is not a universal prerequisite. Coordinate
-   #16134 and #17624 before shared-file composition. Keep current protected
-   producers active; hold incompatible final trigger removal in the cutover
-   candidate. No candidate-controlled activation switch or extra required context.
-4. **Qualify and activate only through #10065's separately authorized transaction.**
-   Revalidate exact predecessor sources, app/context mapping, full protection union,
-   native request/check/custody behavior and rollback packet. Hold admissions while
-   switching the compatible source/settings generation: writes are not atomic.
-   Prove every H-entry obligation is reachable and H-green cannot direct-merge
-   around compulsory G proof before releasing admissions. Keep the initial target
-   maximum group size one. Native canaries must exercise actual names, app,
-   H/S/G/run/attempt association, queue read-back, stale H2/adverse review revocation,
-   cancellation, ignored-event isolation and missing/failed selected results.
-   Removing old automatic triggers and enabling their admitted replacement belong
-   to this same guarded cutover; neither premature removal nor indefinite duplicate
-   execution is acceptable. Restore the compatible source/routing/settings
-   generation and reconstruct custody from GitHub on rollback, not source alone.
-5. **Prove the deployed boundary and adopt it.** #11132 consumes the actual live
-   max-1 generation for wait/wake and merge-barrier proof. #17073 documents the
-   actual command, explain mode, blocker and repair/re-request path; H2 needs fresh
-   affected proof/review and a new explicit request. Observe zero product dispatch
-   for open/Ready/reopen/synchronize and docs inapplicability before allocation.
-   Product jobs allocated only to print a no-op do not qualify. Missing read-back
-   stays NOT_PROVEN/MERGE_BLOCKED. #17075 can consider max-2 only after the live
-   max-1 proof, through a new reviewed settings generation.
+2. **Prepare the RIPR-only label-edge candidate through its existing writer.**
+   Keep the existing command population and five required checks. Admit broad work
+   only on the exact fresh `labeled` / `event.label.name == 'merge-ready'` edge,
+   first attempt, supported base, open/non-draft PR, with captured repository,
+   PR/head/base/ref/label matching live state. Ready/open/reopen/synchronize only
+   invalidate or publish cheap honest results; sticky membership does not rerun
+   proof. Removal revokes readiness; deliberate removal/reapply requests a new
+   attempt. Do not auto-retry stale work or introduce a new command/controller.
+   The final `scripts/pre-merge-check.sh` remains the final green-check guard,
+   not a prerequisite demanding green CI before starting qualification.
+3. **Review emission, concurrency and proof before native activation.** Pair the
+   finite name with exact `always() && material` result execution and isolated
+   ignored-event concurrency. Missing/skipped/failed/cancelled/timed-out workers or
+   instrument failure cannot pass the protected name. Bind event/run/attempt,
+   repository/PR, H/base/ref, actual evaluated merge SHA/tree and workflow revision;
+   re-read open/draft/label/subject before publication and integration. Candidate
+   workflow trust remains an explicit unresolved boundary; neither fixtures nor
+   applying a label establishes it. Retain old protected producers until the compatible new
+   route is satisfiable. Coordinate #10058/#17900/#17903 and current #16134/#17624
+   writers; do not absorb their active workflow work or promote a proposed Rust
+   identity. A RIPR-only slice makes no claim that other roots are already gated.
+4. **Run separately authorized native canaries, then the controlled RIPR cutover.**
+   Preserve the current five names/app bindings and all protections. Obtain the
+   complete effective union before activation; unknown policy remains NOT_PROVEN.
+   Native canaries must demonstrate fresh-edge admission and refusal of Ready,
+   sticky labels, delayed stale events, reruns, wrong subject, draft/closed/retargeted
+   PRs and missing/failed workers. Exercise ignored-label pending isolation,
+   remove/reapply races, cancellation, actual check name/SHA/app/run/attempt and the
+   shared <=20-minute deadline, including publication reserve and termination.
+   This plan performs none of those canaries. Existing protection owners retain
+   any separately necessary settings transaction; enabling native queue or changing
+   protected identities is not authorized or required by this label slice. Hold
+   admission during incompatible source transition; rollback restores compatible
+   source/result/concurrency semantics and retains existing protection settings.
+5. **Adopt the observed slice, then migrate remaining producers with their owners.**
+   Publish the actual fresh-edge procedure and limitations only after native proof.
+   H changes revoke readiness and need affected proof/review plus a new explicit
+   label edge; no automatic broad rerun from membership. Preserve completed valid
+   evidence for its exact subject when only base or budget changes, while assessing
+   remaining live gates. #17903 owns the remaining CI/routed-Rust/auxiliary/nested
+   perimeter using the existing parser/catalog, including generated-status dispatch
+   below. Retain unique release/cache/platform obligations. Reconcile the differing
+   #17900 command/queue programme through its owner rather than silently switching
+   this deployment to it or declaring the broader migration complete.
 
-Steps 1–3 are source preparation. Steps 4–5 require native qualification and
-separate activation authority and are **not performed by this assignment**.
-Finite-name support alone cannot shorten this sequence into active label admission.
+Steps 1–3 are source preparation. Step 4 requires separate native qualification
+and activation authority; no release/deployment is performed by this assignment.
+The first active scope remains RIPR only, preserving all five required checks.
 
 ## Main-health and remaining post-merge dispatch
 
 **Main-health is a distinct evidence consumer.** Preserve current refusal semantics
 and provenance, including `scripts/ci/main_red_refusal.py` and the routed Rust
 probe. Do not make a main-health redesign a prerequisite for inactive validator
-support or request rehearsal. Before removing its producer, identify the genuinely
+support or the label-edge candidate. Before removing its producer, identify the genuinely
 landed-M obligation and arrange an owner-qualified replacement/cadence through the
-existing programme. G evidence is not exact landed squash-M evidence; missing main
+existing programme. An evaluated PR merge tree is not exact landed squash-M evidence; missing main
 observations retain the current explicit limitation and cannot be relabeled green.
 Do not silently delete unique main/deep/release/platform/cache work as duplicate CI.
 
@@ -150,9 +168,11 @@ This is qualification of a newly generated PR, not evidence for the landed M tha
 triggered generation. Deleting main-push triggers alone leaves it reachable.
 #17903 must include it in the existing reachability denominator and coordinate
 the existing generated-status owner. Keep publication/freshness/title metadata;
-replace its product dispatch with the implemented trusted exact-H request only
-after proof/review and explicit intent, rather than treating bot publication as
-admission. Preserve current required producers until that replacement is reachable.
+retire or gate its product dispatch through the owner-agreed explicit admission
+route after proof/review. For this clarified slice, publication must not synthesize
+a `merge-ready` edge or treat sticky membership as a request. The actual generated
+PR needs its own fresh subject-bound admission. Preserve current required producers
+until that replacement is reachable; this document does not implement the edge.
 The broad zero-dispatch claim remains incomplete until this edge is dispositioned.
 
 ## Evidence and remaining limits
@@ -166,7 +186,7 @@ input (Python bytecode output is untracked/ignored):
 | `37dae252c3436a91ae22034fdca0835e05b9cc1f` | `python3 -m unittest discover -s scripts/ci -p 'test_*enforcement*.py' -v`: 199 passed, 7.409 s, including acquisition, reconciliation, app binding and finite-name refusal controls. |
 
 These passes support source consistency and the modeled controls only; they do
-not reconcile the proposal's obsolete label policy or qualify GitHub expression
+not qualify the fresh-label route on GitHub or establish expression
 evaluation, check association, product execution, runner trust or custody. The
 validator's bounded parser cannot prove absence of indirectly synthesized names
 in arbitrary unlisted expressions. Retain that limit at adoption.
