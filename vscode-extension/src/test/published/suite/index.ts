@@ -2,6 +2,16 @@ import * as path from 'path';
 import Mocha from 'mocha';
 
 export function assertSmokeSelector(environment: NodeJS.ProcessEnv = process.env): void {
+  if (environment.PERL_LSP_HEALTH_CHECK_DIRECTORY_SMOKE === '1') {
+    if (environment.PERL_LSP_HEALTH_CHECK_FAILURE_SMOKE !== '1') {
+      throw new Error(
+        'PERL_LSP_HEALTH_CHECK_DIRECTORY_SMOKE requires PERL_LSP_HEALTH_CHECK_FAILURE_SMOKE=1',
+      );
+    }
+    if (environment.PERL_LSP_HEALTH_CHECK_RECOVERY_SMOKE === '1') {
+      throw new Error('Health Check directory and recovery legs require separate hosts.');
+    }
+  }
   if (
     environment.PERL_LSP_HEALTH_CHECK_RECOVERY_SMOKE === '1' &&
     environment.PERL_LSP_HEALTH_CHECK_FAILURE_SMOKE !== '1'

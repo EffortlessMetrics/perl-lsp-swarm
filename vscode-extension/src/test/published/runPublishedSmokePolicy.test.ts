@@ -481,6 +481,49 @@ void test('current-source installed smoke selects the staged bundled server', ()
   }
 });
 
+void test('published smoke admits the isolated directory leg', () => {
+  assert.doesNotThrow(() =>
+    assertSmokeSelector({
+      PERL_LSP_HEALTH_CHECK_FAILURE_SMOKE: '1',
+      PERL_LSP_HEALTH_CHECK_DIRECTORY_SMOKE: '1',
+    }),
+  );
+});
+
+void test('published directory leg rejects invalid selectors before loading a suite', async () => {
+  const keys = [
+    'PERL_LSP_HEALTH_CHECK_FAILURE_SMOKE',
+    'PERL_LSP_HEALTH_CHECK_DIRECTORY_SMOKE',
+    'PERL_LSP_HEALTH_CHECK_RECOVERY_SMOKE',
+  ] as const;
+  const previous = keys.map((key) => process.env[key]);
+  const originalAddFile = Mocha.prototype.addFile;
+  let suiteLoadCalls = 0;
+  Mocha.prototype.addFile = function () {
+    suiteLoadCalls += 1;
+    return this;
+  };
+  try {
+    process.env.PERL_LSP_HEALTH_CHECK_DIRECTORY_SMOKE = '1';
+    delete process.env.PERL_LSP_HEALTH_CHECK_FAILURE_SMOKE;
+    delete process.env.PERL_LSP_HEALTH_CHECK_RECOVERY_SMOKE;
+    await assert.rejects(
+      runPublishedSuite(),
+      /PERL_LSP_HEALTH_CHECK_DIRECTORY_SMOKE requires PERL_LSP_HEALTH_CHECK_FAILURE_SMOKE=1/,
+    );
+    process.env.PERL_LSP_HEALTH_CHECK_FAILURE_SMOKE = '1';
+    process.env.PERL_LSP_HEALTH_CHECK_RECOVERY_SMOKE = '1';
+    await assert.rejects(runPublishedSuite(), /directory and recovery legs require separate hosts/);
+    assert.equal(suiteLoadCalls, 0);
+  } finally {
+    Mocha.prototype.addFile = originalAddFile;
+    keys.forEach((key, index) => {
+      if (previous[index] === undefined) delete process.env[key];
+      else process.env[key] = previous[index];
+    });
+  }
+});
+
 void test('published smoke rejects a recovery leg without its failure selector', () => {
   assert.throws(
     () =>

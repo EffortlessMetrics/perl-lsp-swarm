@@ -345,6 +345,7 @@ void test('builds an exclusive candidate-bound Test Explorer child environment',
       PERL_LSP_FIRST_HOUR_SERVER_PATH: 'old-server',
       PERL_LSP_PACKAGED_BUNDLE_SMOKE: '1',
       PERL_LSP_HEALTH_CHECK_FAILURE_SMOKE: '1',
+      PERL_LSP_HEALTH_CHECK_DIRECTORY_SMOKE: '1',
       PERL_LSP_ACTIVATION_FAILURE_SMOKE: '1',
       PERL_LSP_CRASH_RECOVERY_SMOKE: '1',
       PERL_LSP_TEST_EXPLORER_JOURNEY: '1',
@@ -367,6 +368,7 @@ void test('builds an exclusive candidate-bound Test Explorer child environment',
   assert.equal(environment.PERL_LSP_ACTIVATION_FAILURE_SMOKE, undefined);
   assert.equal(environment.PERL_LSP_CRASH_RECOVERY_SMOKE, undefined);
   assert.equal(environment.PERL_LSP_HEALTH_CHECK_RECOVERY_SMOKE, undefined);
+  assert.equal(environment.PERL_LSP_HEALTH_CHECK_DIRECTORY_SMOKE, undefined);
   assert.equal(environment.PERL_LSP_ACTIVATION_FAILURE_LEG, undefined);
   assert.equal(environment.PERL_LSP_CRASH_RECOVERY_LEG, undefined);
   assert.equal(environment.PERL_LSP_TEST_EXPLORER_JOURNEY, undefined);

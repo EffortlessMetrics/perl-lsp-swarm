@@ -1,9 +1,16 @@
 import * as assert from 'assert';
 import { spawnSync } from 'child_process';
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { bundledBinaryPath, scanProcessesUnderDirectory, withTimeout } from './journeySupport';
+import {
+  bundledBinaryPath,
+  receiptsDir,
+  scanProcessesUnderDirectory,
+  sha256,
+  withTimeout,
+} from './journeySupport';
 
 interface HealthCheckResult {
   ok: boolean;
@@ -65,8 +72,117 @@ async function waitForFailedHealth(): Promise<HealthCheckResult> {
 suite('Installed Health Check failure and recovery', function () {
   this.timeout(240_000);
 
+  test('rejects a configured directory in the installed health command', async function () {
+    if (process.env.PERL_LSP_HEALTH_CHECK_DIRECTORY_SMOKE !== '1') {
+      this.skip();
+    }
+    const extension = vscode.extensions.getExtension('EffortlessMetrics.perl-lsp-rs');
+    assert.ok(extension, 'installed extension must be available');
+    assert.equal(extension.isActive, false, 'directory leg requires a fresh extension host');
+    const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-directory-health-'));
+    const directory = path.join(fixture, 'not-a-binary');
+    const regularFile = path.join(fixture, 'regular-file');
+    fs.mkdirSync(directory);
+    fs.writeFileSync(regularFile, 'regular file control\n', { mode: 0o600 });
+    const receipt: Record<string, unknown> = {
+      schema_version: 1,
+      journey: 'directory-health',
+      outcome: 'failed',
+      platform: process.platform,
+      arch: process.arch,
+      vscode_version: vscode.version,
+      extension_path: extension.extensionPath,
+      extension_version: extension.packageJSON.version,
+      declared_source_sha: process.env.PERL_LSP_CURRENT_SOURCE_SHA ?? null,
+      declared_source_tree: process.env.PERL_LSP_CURRENT_SOURCE_TREE ?? null,
+      vsix: null,
+      fixture: { directory, regular_file: regularFile },
+      // The startup OS probe can take priority over onboarding diagnostics.
+      // This journey observes the registered command, not the startup dialog.
+      startup_diagnosis: 'not exposed by the activation API',
+    };
+    try {
+      receipt.installed_bundle_sha256 = sha256(
+        path.join(extension.extensionPath, 'out/extension.js'),
+      );
+      const vsixPath = process.env.PERL_LSP_PUBLISHED_VSIX_PATH;
+      if (vsixPath) {
+        const digest = sha256(vsixPath);
+        receipt.vsix = { path: vsixPath, sha256: digest };
+        assert.equal(
+          digest,
+          process.env.PERL_LSP_VSIX_SHA256,
+          'installed archive identity changed',
+        );
+      }
+      assert.ok(fs.statSync(directory).isDirectory());
+      assert.ok(fs.statSync(regularFile).isFile());
+      const config = vscode.workspace.getConfiguration('perl-lsp');
+      await config.update('autoDownload', false, vscode.ConfigurationTarget.Global);
+      await config.update('serverPath', directory, vscode.ConfigurationTarget.Global);
+      const activation = (await withTimeout(
+        'extension activation',
+        extension.activate(),
+        90_000,
+      )) as { getLanguageClientStartupMetrics?: () => Record<string, unknown> } | undefined;
+      await waitForCommand('perl-lsp.runHealthCheck');
+
+      // Run the opposite-direction control first, so an exists-only mutant
+      // cannot fail before demonstrating that a regular file remains eligible.
+      const control = (await withTimeout(
+        'regular-file setup control',
+        vscode.commands.executeCommand('perl-lsp.runHealthCheck', regularFile),
+        90_000,
+      )) as HealthCheckResult;
+      receipt.regular_file = control;
+      assert.equal(check(control, 'LSP binary').status, 'ok', JSON.stringify(control));
+      assert.ok(check(control, 'LSP binary').detail.includes(regularFile));
+
+      // No argument: exercise the installed configured/lifecycle projection.
+      const implicit = await waitForFailedHealth();
+      receipt.implicit = implicit;
+      const explicit = (await withTimeout(
+        'explicit directory setup check',
+        vscode.commands.executeCommand('perl-lsp.runHealthCheck', directory),
+        90_000,
+      )) as HealthCheckResult;
+      receipt.explicit = explicit;
+      receipt.startup_metrics = activation?.getLanguageClientStartupMetrics?.() ?? null;
+      for (const [subject, result] of [
+        ['implicit', implicit],
+        ['explicit', explicit],
+      ] as const) {
+        assert.equal(result.ok, false, `${subject}: ${JSON.stringify(result)}`);
+        const binary = check(result, 'LSP binary');
+        assert.equal(
+          binary.status,
+          'error',
+          `${subject} directory binary row: ${JSON.stringify(result)}`,
+        );
+        assert.equal(binary.detail, `perl-lsp binary path is not a regular file: ${directory}`);
+        assert.doesNotMatch(binary.detail, /not found/i);
+      }
+      receipt.outcome = 'passed';
+    } catch (error: unknown) {
+      receipt.error = error instanceof Error ? error.message : String(error);
+      throw error;
+    } finally {
+      try {
+        fs.writeFileSync(
+          path.join(receiptsDir(), 'directory_health_receipt.json'),
+          `${JSON.stringify(receipt, null, 2)}\n`,
+        );
+      } finally {
+        fs.rmSync(fixture, { recursive: true, force: true });
+      }
+    }
+  });
+
   test('reports blocked replacement after a failed startup and preserves the failure', async function () {
-    if (process.env.PERL_LSP_HEALTH_CHECK_RECOVERY_SMOKE === '1') {
+    if (
+      process.env.PERL_LSP_HEALTH_CHECK_RECOVERY_SMOKE === '1' ||
+      process.env.PERL_LSP_HEALTH_CHECK_DIRECTORY_SMOKE === '1'
+    ) {
       this.skip();
     }
     const extension = vscode.extensions.getExtension('EffortlessMetrics.perl-lsp-rs');
@@ -150,7 +266,10 @@ suite('Installed Health Check failure and recovery', function () {
   });
 
   test('starts the bundled server in a fresh host and reports healthy runtime', async function () {
-    if (process.env.PERL_LSP_HEALTH_CHECK_RECOVERY_SMOKE !== '1') {
+    if (
+      process.env.PERL_LSP_HEALTH_CHECK_RECOVERY_SMOKE !== '1' ||
+      process.env.PERL_LSP_HEALTH_CHECK_DIRECTORY_SMOKE === '1'
+    ) {
       this.skip();
     }
 

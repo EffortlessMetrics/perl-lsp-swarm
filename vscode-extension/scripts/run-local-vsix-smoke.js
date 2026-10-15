@@ -82,6 +82,7 @@ function testExplorerSmokeEnv(baseEnv, revision, vsixPath, vsixSha256) {
   delete env.PERL_LSP_PACKAGED_BUNDLE_SMOKE;
   delete env.PERL_LSP_HEALTH_CHECK_FAILURE_SMOKE;
   delete env.PERL_LSP_HEALTH_CHECK_RECOVERY_SMOKE;
+  delete env.PERL_LSP_HEALTH_CHECK_DIRECTORY_SMOKE;
   delete env.PERL_LSP_ACTIVATION_FAILURE_SMOKE;
   delete env.PERL_LSP_ACTIVATION_FAILURE_LEG;
   delete env.PERL_LSP_CRASH_RECOVERY_SMOKE;
