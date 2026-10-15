@@ -1,0 +1,18 @@
+[package]
+name = "perl-rust-small-verifier"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+description = "Lightweight entrypoint for canonical Rust Small receipt verification"
+
+[dependencies]
+color-eyre = "0.6.5"
+serde.workspace = true
+serde_json = { workspace = true, features = ["raw_value"] }
+
+[lints]
+workspace = true
