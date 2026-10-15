@@ -1,4 +1,7 @@
-"""Qualify complete generated dispatch with disposable native Git pushes.
+"""Qualify complete generated dispatch with retained native Git push evidence.
+
+The caller chooses --evidence and owns retention of every unique run directory,
+including successful mutation controls. This helper does not delete evidence.
 
 Cargo/just recorders represent expensive gate commands only inside these fixtures.
 Optional retained test instrumentation exercises unchanged repository tests too.
@@ -69,7 +72,7 @@ assert not selectors,'validation inherited outer Git selectors'
         return {str(p): (hashlib.sha256(p.read_bytes()).hexdigest(), p.stat().st_dev, p.stat().st_ino, p.stat().st_mtime_ns) for p in files}
     report = {'hook_sha256': hashlib.sha256(args.hook.read_bytes()).hexdigest(), 'preserved_binary_sha256': binary_sha,
               'preserved_test_count': len(names), 'preserved_bin_count': 3 if bin_instrument else 0, 'qualification': 'complete generated shell dispatch with fixture gate recorders; no workspace portfolio', 'cases': []}
-    modes = ['full', 'single', 'status', 'full-removal', 'single-removal', 'status-removal', 'binding-refusal', 'gate-failure', 'docs']
+    modes = ['full', 'single', 'status', 'full-removal', 'single-removal', 'status-removal', 'binding-refusal', 'gate-failure', 'docs', 'legacy-common-api']
     for number, mode in enumerate(modes):
         case = run / mode; case.mkdir(); outer = case / 'outer'; outer.mkdir(); writer = case / 'writer'; remote = case / 'remote.git'
         command(outer, 'init', '--initial-branch=main')
@@ -91,7 +94,15 @@ assert not selectors,'validation inherited outer Git selectors'
         for label in ['cargo', 'just']:
             file = tools / label
             file.write_text('#!/usr/bin/env bash\nexec ' + ' '.join(shlex.quote(str(v).replace('\\', '/')) for v in [sys.executable, recorder, label]) + ' "$@"\n', newline='\n'); file.chmod(0o755)
+        if mode == 'legacy-common-api':
+            shim = tools / 'git'
+            shim.write_text('#!/usr/bin/env bash\nfor arg in "$@"; do\n case "$arg" in --path-format*) exit 97;; esac\ndone\nif [ "$1" = rev-parse ] && [ "$2" = --git-common-dir ]; then\n printf "common-dir\\n" >> ' + shlex.quote(str(case / 'common-lookups').replace('\\', '/')) + '\nfi\nexec ' + shlex.quote(str(git).replace('\\', '/')) + ' "$@"\n', newline='\n')
+            shim.chmod(0o755)
         selected = source
+        if mode == 'legacy-common-api':
+            shell_tools = tools.as_posix()
+            if os.name == 'nt': shell_tools = '/' + shell_tools[0].lower() + shell_tools[2:]
+            selected = selected.replace('set -euo pipefail', 'set -euo pipefail\nPATH=' + shlex.quote(shell_tools) + ':"$PATH"\nexport PATH', 1)
         if mode == 'full-removal': selected = selected.replace('run_validation_child run_gate 2>&1', 'run_gate 2>&1')
         if mode == 'single-removal': selected = selected.replace('run_validation_child run_single_crate_gate 2>&1', 'run_single_crate_gate 2>&1')
         if mode == 'status-removal': selected = selected.replace('run_validation_child python3 "$REPO_ROOT/scripts/update-current-status.py"', 'python3 "$REPO_ROOT/scripts/update-current-status.py"')
@@ -103,6 +114,8 @@ assert not selectors,'validation inherited outer Git selectors'
         local = dict(env, PATH=str(tools) + os.pathsep + env.get('PATH', ''), HOOK_PROOF_CASE=str(case), HOOK_PROOF_MODE=mode,
                      GIT_DIR=gitdir.as_posix(), GIT_COMMON_DIR=common.as_posix(), GIT_WORK_TREE=writer.as_posix(),
                      GIT_INDEX_FILE=(gitdir / 'index').as_posix(), GIT_OBJECT_DIRECTORY=(common / 'objects').as_posix())
+        if mode == 'legacy-common-api':
+            for key in ['PERL_LSP_HOOK_LIBRARY_TEST_EXE', 'PERL_LSP_HOOK_LIBRARY_TEST_NAMES', 'PERL_LSP_HOOK_BIN_TEST_EXE']: local.pop(key, None)
         if mode == 'gate-failure': local['HOOK_PROOF_EXIT'] = '23'
         r = subprocess.run([git, '-C', str(writer), 'push', str(remote), 'HEAD:refs/heads/proof'], env=local, capture_output=True)
         (case / 'push.stdout').write_bytes(r.stdout); (case / 'push.stderr').write_bytes(r.stderr)
@@ -127,6 +140,8 @@ assert not selectors,'validation inherited outer Git selectors'
                 assert '--all-targets' in validation[1]['argv']
             elif mode == 'status': assert [x['label'] for x in validation] == ['status', 'just']
             else: assert [x['label'] for x in validation] == ['just']
+        if mode == 'legacy-common-api':
+            assert len((case / 'common-lookups').read_text().splitlines()) >= 2, 'capture and recheck must use portable common-dir API'
         report['cases'].append({'mode': mode, 'push_exit': r.returncode, 'outer_preserved': preserved, 'calls': calls, 'control_detected': True})
         (run / 'report.json').write_text(json.dumps(report, indent=2) + '\n')
     if instrument: assert hashlib.sha256(Path(instrument).read_bytes()).hexdigest() == binary_sha

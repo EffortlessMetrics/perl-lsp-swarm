@@ -124,7 +124,7 @@ pub(crate) fn pre_push_hook_script() -> &'static str {
 # Hook logic version (#17431 review wave 3): bump the integer below on EVERY
 # guard-logic change. Self-heal only upgrades (checkout > installed) and
 # never downgrades; unmarked legacy hooks count as version 0.
-# pre-push-hook-version: 2
+# pre-push-hook-version: 3
 
 set -euo pipefail
 
@@ -293,7 +293,9 @@ REPO_ROOT="$(git rev-parse --show-toplevel)"
 # Bind gate children to this worktree before clearing Git's hook-local selectors.
 # Fixture Git commands must discover their own repositories from their cwd.
 VALIDATION_GIT_DIR="$(git rev-parse --absolute-git-dir)" || exit 1
-VALIDATION_COMMON_DIR="$(git rev-parse --path-format=absolute --git-common-dir)" || exit 1
+VALIDATION_COMMON_DIR="$(git rev-parse --git-common-dir)" || exit 1
+[ -n "$VALIDATION_COMMON_DIR" ] || exit 1
+VALIDATION_COMMON_DIR="$(cd -- "$VALIDATION_COMMON_DIR" && pwd -P)" || exit 1
 VALIDATION_LOCAL_ENV="$(git rev-parse --local-env-vars)" || exit 1
 if [ -z "$REPO_ROOT" ] || [ -z "$VALIDATION_GIT_DIR" ] || [ -z "$VALIDATION_COMMON_DIR" ] || [ -z "$VALIDATION_LOCAL_ENV" ]; then
     echo "pre-push validation worktree binding is incomplete; refusing gates" >&2
@@ -307,7 +309,9 @@ run_validation_child() (
     cd -- "$REPO_ROOT" || return
     actual_root="$(git rev-parse --show-toplevel)" || return
     actual_git_dir="$(git rev-parse --absolute-git-dir)" || return
-    actual_common_dir="$(git rev-parse --path-format=absolute --git-common-dir)" || return
+    actual_common_dir="$(git rev-parse --git-common-dir)" || return
+    [ -n "$actual_common_dir" ] || return 1
+    actual_common_dir="$(cd -- "$actual_common_dir" && pwd -P)" || return
     if [ "$actual_root" != "$REPO_ROOT" ] || [ "$actual_git_dir" != "$VALIDATION_GIT_DIR" ] || [ "$actual_common_dir" != "$VALIDATION_COMMON_DIR" ]; then
         echo "pre-push validation worktree binding changed; refusing gates" >&2
         return 1
@@ -917,7 +921,7 @@ mod tests {
         // upgrades (and refuses that one push).
         let hook = pre_push_hook_script();
         for marker in [
-            "# pre-push-hook-version: 2",
+            "# pre-push-hook-version: 3",
             "hook_version()",
             "\"$checkout_version\" -gt \"$installed_version\"",
             "keeping the installed hook. Update this branch/worktree",
@@ -967,6 +971,12 @@ mod tests {
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );
+        // This run is deliberately retained under the caller's task TEMP.
+        // Print the success path too so its owner can manage evidence retention.
+        std::io::Write::write_all(
+            &mut std::io::stderr(),
+            format!("retained generated hook evidence: {}\n", area.display()).as_bytes(),
+        )?;
         Ok(())
     }
 
