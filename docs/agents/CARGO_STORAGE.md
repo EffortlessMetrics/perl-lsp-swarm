@@ -96,12 +96,14 @@ cache volumes need a separately admitted route. Unsupported commands must be
 explicitly admitted by the root, not silently retried as raw Cargo.
 
 Before allocating any directory, admission checks the nearest existing ancestor
-of the slot, both target/build resources, Cargo home and temporary storage. The
-default `CARGO_STORAGE_POLICY=percent` preserves 40 GiB minimum free AND less
-than 85% used. The 85% figure is an inherited legacy heuristic, not a measured
-requirement for this workload. The 40 GiB reserve is a preserved safety floor,
-not a proven universal reserve. `MIN_FREE_GB`/`MAX_USED_PCT` remain explicit host
-policy in the unchanged percentage mode; do not tune them simply to pass a build.
+of the slot, both target/build resources, Cargo home and temporary storage. There
+is no implicit reserve. Without a scope-bound `--budget-file`,
+compatibility host policies require an explicit positive finite `MIN_FREE_GB`.
+The default compatibility policy remains `percent`, with an inherited 85% used
+ceiling unless `MAX_USED_PCT` is explicit. That heuristic is not a measured
+workload requirement. Do not tune host settings simply to pass a build.
+See [guard retirement and adoption](../how-to/CARGO_CAPACITY_ADOPTION.md) before
+activating this change on an existing host.
 
 For constrained hosts, the existing route also accepts an exact-command
 `--preflight` and an explicit scope-bound `--budget-file`. See
@@ -117,10 +119,11 @@ small-cloud profile is supplied. Execution checks reserve plus total additional
 peak growth on every destination again inside the lease. This does not reserve
 bytes, enforce runtime quotas, attest all source/config/cache state, apportion
 separate volumes, admit compiler caches or account for cross-repository consumers.
-Without this option, the policies below retain their existing thresholds.
+Without this option, the policies below require an explicit host reserve.
 
 For a host with an evidenced byte budget, the root may explicitly select
-`CARGO_STORAGE_POLICY=byte-budget`. This requires both:
+`CARGO_STORAGE_POLICY=byte-budget`. This requires an explicit positive finite
+`MIN_FREE_GB` reserve and both:
 
 - `CARGO_EXPECTED_GROWTH_GB`: a finite positive conservative upper bound on the
   **total additional storage** across target, build, dependency downloads and
@@ -130,8 +133,8 @@ For a host with an evidenced byte budget, the root may explicitly select
   reference but does not read it or independently validate the estimate.
 
 This mode checks `free >= reserve + total expected growth` at every effective
-destination's nearest existing ancestor. Reserve defaults to 40 GiB and cannot
-be lowered below 40 GiB in this mode. A shared volume can be checked repeatedly,
+destination's nearest existing ancestor. Reserve is the explicitly declared
+`MIN_FREE_GB`, with no universal minimum. A shared volume can be checked repeatedly,
 but the growth bound is never added once per output path. The entire total bound
 is conservatively required on each distinct destination volume. Valid explicit
 byte-budget mode replaces the percentage check; it does not modify `cargo-safe`,
@@ -358,8 +361,7 @@ owner death and incomplete cancellation never become release authority.
 
 The opt-in `scripts/tests/qualify_admitted_clippy.py --proof-root ABSOLUTE_DIR`
 creates a dependency-free offline fail/clean fixture. Its scoped reserve 4 GiB and
-growth 2 GiB apply only to that fixture, with every destination checked. The
-default 40 GiB reserve remains unchanged. It preserves logs, source hashes,
+growth 2 GiB apply only to that fixture, with every destination checked. This fixture declaration is not a general host budget. It preserves logs, source hashes,
 budget/volume observations and original-owner kernel settlement/release receipts.
 It independently records exact-group absence; that additional observation does
 not authorize arbitrary workload cleanup or cover independent consumers.

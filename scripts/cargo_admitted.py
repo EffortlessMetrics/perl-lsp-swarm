@@ -742,8 +742,10 @@ def check_capacity(paths, env, budget=None):
         policy = env.get("CARGO_STORAGE_POLICY", "percent")
         if policy not in ("percent", "byte-budget"):
             raise Denied("unknown CARGO_STORAGE_POLICY")
+        if "MIN_FREE_GB" not in env:
+            raise Denied("capacity requires an explicit reserve: use --preflight to capture scope, then --budget-file with a qualified reserve and total additional growth; compatibility host policies require MIN_FREE_GB")
         try:
-            reserve_gib = float(env.get("MIN_FREE_GB", "40"))
+            reserve_gib = float(env["MIN_FREE_GB"])
             floor = reserve_gib * 1024 ** 3
             if not math.isfinite(floor) or floor <= 0:
                 raise ValueError()
@@ -751,7 +753,7 @@ def check_capacity(paths, env, budget=None):
             if policy == "byte-budget":
                 growth = float(env.get("CARGO_EXPECTED_GROWTH_GB", "")) * 1024 ** 3
                 evidence = env.get("CARGO_STORAGE_BUDGET_EVIDENCE", "").strip()
-                if reserve_gib < 40 or not math.isfinite(growth) or growth <= 0 or not evidence:
+                if not math.isfinite(growth) or growth <= 0 or not evidence:
                     raise ValueError()
                 required = floor + growth
                 if not math.isfinite(required):
@@ -764,7 +766,7 @@ def check_capacity(paths, env, budget=None):
                 required = floor
                 report["max_used_pct"] = ceiling
         except ValueError:
-            raise Denied("invalid capacity policy inputs; byte-budget requires reserve >=40 GiB, positive finite total growth and an evidence reference")
+            raise Denied("invalid capacity policy inputs; reserve must be positive and finite; byte-budget also requires positive finite total growth and an evidence reference")
 
     report["required_free_bytes"] = required
     observations = []

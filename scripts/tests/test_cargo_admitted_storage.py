@@ -111,7 +111,7 @@ class AdmissionTests(unittest.TestCase):
         from collections import namedtuple
         Usage = namedtuple("Usage", "total used free")
         gib = 1024 ** 3
-        env = {"CARGO_STORAGE_POLICY": "byte-budget", "CARGO_EXPECTED_GROWTH_GB": "20",
+        env = {"CARGO_STORAGE_POLICY": "byte-budget", "MIN_FREE_GB": "40", "CARGO_EXPECTED_GROWTH_GB": "20",
                "CARGO_STORAGE_BUDGET_EVIDENCE": "fixture:aggregate-upper-bound"}
         # Five destinations on one 4-TiB volume, 80 GiB free (~98% used).
         with patch.object(safe.shutil, "disk_usage", return_value=Usage(4096*gib, 4016*gib, 80*gib)):
@@ -131,7 +131,7 @@ class AdmissionTests(unittest.TestCase):
         from collections import namedtuple
         Usage = namedtuple("Usage", "total used free")
         gib = 1024 ** 3
-        env = {"CARGO_STORAGE_POLICY": "byte-budget", "CARGO_EXPECTED_GROWTH_GB": "20",
+        env = {"CARGO_STORAGE_POLICY": "byte-budget", "MIN_FREE_GB": "40", "CARGO_EXPECTED_GROWTH_GB": "20",
                "CARGO_STORAGE_BUDGET_EVIDENCE": "fixture:boundary"}
         with patch.object(safe.shutil, "disk_usage", return_value=Usage(4096*gib, 4036*gib, 60*gib)):
             report = safe.check_capacity([self.slot], env)
@@ -151,7 +151,7 @@ class AdmissionTests(unittest.TestCase):
         from collections import namedtuple
         Usage = namedtuple("Usage", "total used free")
         gib = 1024 ** 3
-        self.env = {"CARGO_STORAGE_POLICY": "byte-budget", "CARGO_EXPECTED_GROWTH_GB": "20",
+        self.env = {"CARGO_STORAGE_POLICY": "byte-budget", "MIN_FREE_GB": "40", "CARGO_EXPECTED_GROWTH_GB": "20",
                     "CARGO_STORAGE_BUDGET_EVIDENCE": "fixture:evidence-reference-only"}
         output = io.StringIO()
         with patch.object(safe.shutil, "disk_usage", return_value=Usage(4096*gib, 4016*gib, 80*gib)), contextlib.redirect_stderr(output):
@@ -165,7 +165,7 @@ class AdmissionTests(unittest.TestCase):
         from collections import namedtuple
         Usage = namedtuple("Usage", "total used free")
         gib = 1024 ** 3
-        self.env = {"CARGO_STORAGE_POLICY": "byte-budget", "CARGO_EXPECTED_GROWTH_GB": "20",
+        self.env = {"CARGO_STORAGE_POLICY": "byte-budget", "MIN_FREE_GB": "40", "CARGO_EXPECTED_GROWTH_GB": "20",
                     "CARGO_STORAGE_BUDGET_EVIDENCE": "fixture:all-destination-upper-bound"}
         volumes = [self.root / str(i) for i in range(5)]
         for path in volumes:
@@ -185,17 +185,17 @@ class AdmissionTests(unittest.TestCase):
             self.assertFalse(any(path.exists() for path in self.paths.values()))
 
     def test_byte_budget_invalid_or_missing_inputs_refuse_before_allocation(self):
-        valid = {"CARGO_STORAGE_POLICY": "byte-budget", "CARGO_EXPECTED_GROWTH_GB": "20",
+        valid = {"CARGO_STORAGE_POLICY": "byte-budget", "MIN_FREE_GB": "40", "CARGO_EXPECTED_GROWTH_GB": "20",
                  "CARGO_STORAGE_BUDGET_EVIDENCE": "fixture:bounded-growth"}
         cases = [{"CARGO_EXPECTED_GROWTH_GB": value} for value in ("", "NaN", "inf", "-inf", "0", "-1", "no")]
         cases += [{"CARGO_STORAGE_BUDGET_EVIDENCE": value} for value in ("", "  ")]
-        cases += [{"MIN_FREE_GB": value} for value in ("39.99", "NaN", "inf", "0")]
+        cases += [{"MIN_FREE_GB": value} for value in ("-1", "NaN", "inf", "0")]
         cases += [{"CARGO_STORAGE_POLICY": "unknown"}]
         for change in cases:
             self.env = dict(valid, **change)
             self.assertEqual(self.run_safe(["build"]), 75, change)
             self.assertFalse(self.slot.exists())
-        for missing in ("CARGO_EXPECTED_GROWTH_GB", "CARGO_STORAGE_BUDGET_EVIDENCE"):
+        for missing in ("MIN_FREE_GB", "CARGO_EXPECTED_GROWTH_GB", "CARGO_STORAGE_BUDGET_EVIDENCE"):
             self.env = dict(valid)
             del self.env[missing]
             self.assertEqual(self.run_safe(["build"]), 75)
@@ -531,7 +531,7 @@ class AdmissionTests(unittest.TestCase):
         for key in ("MIN_FREE_GB", "MAX_USED_PCT"):
             for value in ("NaN", "inf", "-inf", "0", "-1"):
                 with self.assertRaises(safe.Denied):
-                    safe.check_capacity([self.root], {key: value})
+                    safe.check_capacity([self.root], {"MIN_FREE_GB": "1", key: value})
 
     def test_native_and_foreign_paths(self):
         self.assertEqual(safe.native_path(str(self.root)), self.root.resolve())

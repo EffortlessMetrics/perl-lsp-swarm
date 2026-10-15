@@ -74,6 +74,65 @@ class ConstrainedAdmissionTests(unittest.TestCase):
         self.assertFalse(self.slot.exists())
         self.assertFalse(any(path.exists() for path in self.paths.values()))
 
+    def test_missing_budget_refuses_even_with_abundant_capacity(self):
+        for env in ({}, {"MAX_USED_PCT": "100"},
+                    {"CARGO_STORAGE_POLICY": "byte-budget",
+                     "CARGO_EXPECTED_GROWTH_GB": "1",
+                     "CARGO_STORAGE_BUDGET_EVIDENCE": "fixture:missing-reserve"}):
+            with self.subTest(env=env):
+                self.env = env
+                result, output, cargo = self.invoke(self.args, disk=lambda path:
+                    self.Usage(2000*self.gib, 1000*self.gib, 1000*self.gib))
+                self.assertEqual(result, 75, output)
+                self.assertIn("explicit reserve", output)
+                cargo.assert_not_called()
+                self.assert_unallocated()
+
+    def test_missing_budget_preflight_still_returns_scope_for_sizing(self):
+        import json
+        result, output, cargo = self.invoke(["--preflight", *self.args], disk=lambda path:
+            self.Usage(2000*self.gib, 1000*self.gib, 1000*self.gib))
+        self.assertEqual(result, 75, output)
+        report = json.loads(output.split("cargo-admitted preflight: ", 1)[1])
+        self.assertEqual(report["scope"], self.document["scope"])
+        self.assertFalse(report["lease_acquired"])
+        cargo.assert_not_called()
+        self.assert_unallocated()
+
+    def test_explicit_legacy_byte_budget_uses_declared_reserve_and_growth(self):
+        self.env = {"CARGO_STORAGE_POLICY": "byte-budget", "MIN_FREE_GB": "8",
+                    "CARGO_EXPECTED_GROWTH_GB": "12",
+                    "CARGO_STORAGE_BUDGET_EVIDENCE": "fixture:arithmetic-only"}
+        for free, expected in ((20*self.gib-1, 75), (20*self.gib, 0)):
+            with self.subTest(free=free):
+                result, output, cargo = self.invoke(["--preflight", *self.args], free=free)
+                self.assertEqual(result, expected, output)
+                cargo.assert_not_called()
+                self.assert_unallocated()
+
+    def test_scoped_budget_cannot_bypass_active_request_and_reuses_after_release(self):
+        nested = []
+        def product(command, env):
+            lock = self.slot / "cargo-active"
+            self.assertTrue(lock.is_dir())
+            result, output, cargo = self.invoke(
+                ["--budget-file", str(self.budget), *self.args])
+            nested.append(result)
+            self.assertEqual(result, 75, output)
+            self.assertIn("slot is active", output)
+            cargo.assert_not_called()
+            self.assertTrue(lock.is_dir())
+            return 0
+        options = ["--budget-file", str(self.budget), *self.args]
+        result, output, _ = self.invoke(options, call=product)
+        self.assertEqual(result, 0, output)
+        self.assertEqual(nested, [75])
+        self.assertFalse((self.slot / "cargo-active").exists())
+        result, output, cargo = self.invoke(options)
+        self.assertEqual(result, 0, output)
+        cargo.assert_called_once()
+        self.assertFalse((self.slot / "cargo-active").exists())
+
     @unittest.skipIf(os.name == "nt", "POSIX open-directory/fdopen failure fixture")
     def test_directory_budget_failure_closes_opened_descriptor(self):
         directory = self.root / "directory-budget"
