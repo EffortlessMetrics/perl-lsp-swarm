@@ -4619,15 +4619,139 @@ fn package_rename_preview_refuses_invalid_new_name_with_honest_reason_16644()
         "invalid-name refusal must not return edits: {preview_result}"
     );
 
+    assert_ne!(
+        preview_result.pointer("/package_pilot/eligible").and_then(Value::as_bool),
+        Some(true),
+        "invalid target must not leave an eligible compiler pilot: {preview_result}"
+    );
+    assert_eq!(
+        preview_result
+            .pointer("/fallback_noise/compiler_plan_edit_count")
+            .and_then(Value::as_u64)
+            .unwrap_or(0),
+        0,
+        "invalid target must not construct compiler edits: {preview_result}"
+    );
+    assert_eq!(workspace_edit_change_count(&preview_result["planned_workspace_edit"])?, 0);
+
     let user_message = preview_result
         .get("user_message")
         .and_then(Value::as_str)
         .ok_or("missing invalid-name preview user_message")?;
     assert!(
         user_message.contains("Foo::Bar-Baz!!")
-            && user_message.contains("not a valid Perl package name"),
+            && user_message.contains("not a supported package rename target"),
         "refusal message should explain the invalid name: {user_message}"
     );
 
+    Ok(())
+}
+
+#[cfg(feature = "workspace")]
+#[test]
+fn package_rename_preview_does_not_plan_against_stale_document_16644()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = create_server();
+    open_two_file_package_workspace(&server)?;
+    server
+        .test_index_file_in_building_state(TWO_FILE_PACKAGE_DEF_URI, TWO_FILE_PACKAGE_DEF_SOURCE)
+        .map_err(|e| e.to_string())?;
+    server
+        .test_index_file_in_building_state(TWO_FILE_PACKAGE_USE_URI, TWO_FILE_PACKAGE_USE_SOURCE)
+        .map_err(|e| e.to_string())?;
+    server.test_simulate_indexing_complete();
+    let fresh_source = format!("{TWO_FILE_PACKAGE_DEF_SOURCE}\n# newer open document\n");
+    server
+        .test_replace_document_without_index(TWO_FILE_PACKAGE_DEF_URI, &fresh_source, 2)
+        .map_err(|e| e.to_string())?;
+    assert!(server.workspace_index_stale_for_document(TWO_FILE_PACKAGE_DEF_URI));
+
+    let result = two_file_package_rename_preview(
+        &server,
+        TWO_FILE_PACKAGE_DEF_URI,
+        &fresh_source,
+        "Foo::Bar;",
+        "Foo::Baz",
+    )?;
+    assert!(
+        result.get("compiler_receipt").is_none_or(Value::is_null),
+        "stale document must not supply a compiler plan: {result}"
+    );
+    assert_ne!(result.get("decision").and_then(Value::as_str), Some("allowed"));
+    assert_eq!(result.get("edits_applied").and_then(Value::as_bool), Some(false));
+    assert_eq!(result.get("returned_workspace_edit_count").and_then(Value::as_u64), Some(0));
+    assert_eq!(workspace_edit_change_count(&result["workspace_edit"])?, 0);
+    Ok(())
+}
+
+#[cfg(feature = "workspace")]
+#[test]
+fn package_rename_preview_does_not_plan_stale_definition_from_fresh_use_site_16644()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = create_server();
+    open_two_file_package_workspace(&server)?;
+    server
+        .test_index_file_in_building_state(TWO_FILE_PACKAGE_DEF_URI, TWO_FILE_PACKAGE_DEF_SOURCE)
+        .map_err(|e| e.to_string())?;
+    server
+        .test_index_file_in_building_state(TWO_FILE_PACKAGE_USE_URI, TWO_FILE_PACKAGE_USE_SOURCE)
+        .map_err(|e| e.to_string())?;
+    server.test_simulate_indexing_complete();
+    let changed_definition =
+        TWO_FILE_PACKAGE_DEF_SOURCE.replace("package Foo::Bar;", "package Renamed::Package;");
+    server
+        .test_replace_document_without_index(TWO_FILE_PACKAGE_DEF_URI, &changed_definition, 2)
+        .map_err(|e| e.to_string())?;
+    assert!(server.workspace_index_stale_for_any_open_document());
+    assert!(!server.workspace_index_stale_for_document(TWO_FILE_PACKAGE_USE_URI));
+
+    let result = two_file_package_rename_preview(
+        &server,
+        TWO_FILE_PACKAGE_USE_URI,
+        TWO_FILE_PACKAGE_USE_SOURCE,
+        "Foo::Bar->new",
+        "Foo::Baz",
+    )?;
+    assert!(
+        result.get("compiler_receipt").is_none_or(Value::is_null),
+        "fresh caller must not consume a stale definition's compiler plan: {result}"
+    );
+    assert_ne!(result.get("decision").and_then(Value::as_str), Some("allowed"));
+    assert_eq!(result.get("edits_applied").and_then(Value::as_bool), Some(false));
+    assert_eq!(result.get("returned_workspace_edit_count").and_then(Value::as_u64), Some(0));
+    assert_eq!(workspace_edit_change_count(&result["workspace_edit"])?, 0);
+    Ok(())
+}
+
+#[cfg(feature = "workspace")]
+#[test]
+fn refactor_runtime_blocker_receipt_keeps_matching_sigil_variable_target_16644()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = create_server();
+    open_document(&server, SAFE_DELETE_BOUNDARY_URI, SAFE_DELETE_BOUNDARY_MODULE)?;
+    server
+        .test_index_file_in_building_state(SAFE_DELETE_BOUNDARY_URI, SAFE_DELETE_BOUNDARY_MODULE)
+        .map_err(|e| e.to_string())?;
+    server.test_simulate_indexing_complete();
+    let (line, character) = position_of(SAFE_DELETE_BOUNDARY_MODULE, "$CONFIG")?;
+    let receipt = server
+        .test_rename_runtime_blocker_ux_receipt(Some(json!({
+            "textDocument": {"uri": SAFE_DELETE_BOUNDARY_URI},
+            "position": {"line": line, "character": character},
+            "newName": "$RENAMED_CONFIG",
+        })))?
+        .ok_or("missing matching-sigil variable receipt")?;
+    assert_eq!(receipt.get("new_name").and_then(Value::as_str), Some("$RENAMED_CONFIG"));
+    assert!(
+        receipt.get("compiler_receipt").is_some_and(Value::is_object),
+        "generic rename must preserve matching-sigil target admission: {receipt}"
+    );
+    assert!(
+        receipt
+            .pointer("/fallback_noise/compiler_plan_edit_count")
+            .and_then(Value::as_u64)
+            .is_some_and(|count| count > 0),
+        "matching-sigil target must retain its compiler plan: {receipt}"
+    );
     Ok(())
 }

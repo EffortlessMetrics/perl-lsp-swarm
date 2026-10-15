@@ -53,6 +53,14 @@ impl LspServer {
         &self,
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
+        self.rename_runtime_receipt(params, false)
+    }
+
+    fn rename_runtime_receipt(
+        &self,
+        params: Option<Value>,
+        package_preview: bool,
+    ) -> Result<Option<Value>, JsonRpcError> {
         // Wait for any in-flight didOpen index tasks to complete before sampling
         // live provider state.  When tokio-backed async indexing runs on didOpen
         // (any test that happens to have a tokio runtime), build_rename_edit may
@@ -221,7 +229,13 @@ impl LspServer {
             }
 
             let _ = self.check_index_readiness(IndexReadinessPolicy::WaitBriefly);
-            let compiler_receipt_parts = if self.workspace_index_stale_for_document(uri) {
+            let facts_unavailable = if package_preview {
+                !self.package_rename_target_is_supported(new_name)
+                    || self.workspace_index_stale_for_any_open_document()
+            } else {
+                self.workspace_index_stale_for_document(uri)
+            };
+            let compiler_receipt_parts = if facts_unavailable {
                 None
             } else {
                 match route_index_access(self.coordinator()) {
@@ -300,6 +314,16 @@ impl LspServer {
         }
     }
 
+    /// Supported modern package-target subset for no-edit previews.
+    ///
+    /// Each segment uses the existing rename identifier owner. Legacy apostrophe
+    /// separators and unsupported forms are refused rather than claiming the full
+    /// Perl package grammar is supported here.
+    fn package_rename_target_is_supported(&self, name: &str) -> bool {
+        let body = name.strip_prefix("::").unwrap_or(name);
+        !body.is_empty() && body.split("::").all(|segment| self.is_valid_identifier(segment))
+    }
+
     /// Live package-rename UX preview for editor commands.
     ///
     /// This exposes the package/compiler-backed rename pilot classification and
@@ -309,11 +333,18 @@ impl LspServer {
         &self,
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
-        let Some(mut receipt) = self.rename_runtime_blocker_ux_receipt(params)? else {
+        let Some(mut receipt) = self.rename_runtime_receipt(params, true)? else {
             return Ok(None);
         };
-        let planned_workspace_edit =
-            receipt.get("live_provider_result").cloned().unwrap_or_else(|| json!({"changes": {}}));
+        let supported_new_name = receipt
+            .get("new_name")
+            .and_then(Value::as_str)
+            .is_some_and(|name| self.package_rename_target_is_supported(name));
+        let planned_workspace_edit = if supported_new_name {
+            receipt.get("live_provider_result").cloned().unwrap_or_else(|| json!({"changes": {}}))
+        } else {
+            json!({"changes": {}})
+        };
         let planned_live_provider_edit_count =
             lsp_workspace_edit_count(Some(&planned_workspace_edit));
         let returned_workspace_edit_count = 0;
@@ -340,7 +371,7 @@ impl LspServer {
                 "claim_boundary".to_string(),
                 json!("scoped package rename preview only; no package rename edits are applied"),
             );
-            enrich_package_rename_preview_decision_trace(object);
+            enrich_package_rename_preview_decision_trace(object, supported_new_name);
         }
 
         let rollback_receipt = package_rename_rollback_receipt_json(
@@ -1791,30 +1822,10 @@ fn rename_live_provider_state(
     }
 }
 
-/// Whether `name` is a syntactically valid Perl package name.
-///
-/// A package name is one or more `::`-separated identifier segments, each
-/// starting with a letter or underscore. A leading `::` (`::Foo`) is accepted,
-/// matching Perl's own grammar. Legacy `'` separators are deliberately not
-/// accepted so exotic names fail closed instead of being planned.
-fn is_valid_package_name(name: &str) -> bool {
-    let is_ident_start = |ch: char| ch.is_alphabetic() || ch == '_';
-    let is_ident_continue = |ch: char| ch.is_alphanumeric() || ch == '_';
-
-    let body = name.strip_prefix("::").unwrap_or(name);
-    if body.is_empty() {
-        return false;
-    }
-    body.split("::").all(|segment| {
-        let mut chars = segment.chars();
-        match chars.next() {
-            Some(first) if is_ident_start(first) => chars.all(is_ident_continue),
-            _ => false,
-        }
-    })
-}
-
-fn enrich_package_rename_preview_decision_trace(object: &mut serde_json::Map<String, Value>) {
+fn enrich_package_rename_preview_decision_trace(
+    object: &mut serde_json::Map<String, Value>,
+    supported_new_name: bool,
+) {
     let package_pilot = object.get("package_pilot").and_then(Value::as_object);
     let fallback_noise = object.get("fallback_noise").and_then(Value::as_object);
 
@@ -1835,13 +1846,11 @@ fn enrich_package_rename_preview_decision_trace(object: &mut serde_json::Map<Str
         .unwrap_or("compiler_missing");
 
     let first_blocker = blocker_reasons.iter().filter_map(Value::as_str).next().unwrap_or_default();
-    let new_name = object.get("new_name").and_then(Value::as_str).unwrap_or_default();
     let (decision, reason, fact_source, confidence, freshness, fallback_state) =
-        if !is_valid_package_name(new_name) {
-            // The requested name is not a package name the compiler could ever
-            // plan, so refuse it before any pilot classification can present it
-            // as plannable. Input validation is runtime-owned and
-            // freshness-independent (#16644).
+        if !supported_new_name {
+            // This target is outside the preview's supported identifier subset.
+            // Refusal is runtime-owned and independent of index freshness; the
+            // planning path applies the same predicate before querying facts.
             ("blocked", "invalid_new_name", "provider_runtime", "high", "not_applicable", "no_edit")
         } else {
             match (eligible, pilot_reason, blocker_count, first_blocker, fallback_state) {
@@ -1951,7 +1960,7 @@ fn package_rename_preview_message(receipt: &Value) -> String {
     {
         return format!(
             "Package rename preview refused for `{symbol}` -> `{new_name}`: \
-             `{new_name}` is not a valid Perl package name. No edits were applied."
+             `{new_name}` is not a supported package rename target. No edits were applied."
         );
     }
 
@@ -2401,28 +2410,30 @@ fn runtime_blocker_descriptions(blockers: &[PlanBlocker]) -> String {
 mod package_name_validation_tests {
     #![allow(clippy::expect_used)]
 
-    use super::is_valid_package_name;
+    use super::LspServer;
 
     #[test]
-    fn accepts_bare_and_qualified_package_names() {
-        assert!(is_valid_package_name("Foo"));
-        assert!(is_valid_package_name("Foo::Bar"));
-        assert!(is_valid_package_name("Foo::Bar::Baz"));
-        assert!(is_valid_package_name("::Foo"));
-        assert!(is_valid_package_name("_Private::Class"));
+    fn accepts_supported_bare_and_qualified_package_targets() {
+        let server = LspServer::new();
+        assert!(server.package_rename_target_is_supported("Foo"));
+        assert!(server.package_rename_target_is_supported("Foo::Bar"));
+        assert!(server.package_rename_target_is_supported("Foo::Bar::Baz"));
+        assert!(server.package_rename_target_is_supported("::Foo"));
+        assert!(server.package_rename_target_is_supported("_Private::Class"));
     }
 
     #[test]
-    fn rejects_non_package_names() {
-        assert!(!is_valid_package_name(""));
+    fn rejects_unsupported_package_targets() {
+        let server = LspServer::new();
+        assert!(!server.package_rename_target_is_supported(""));
         // Issue #16644 invalid-name control.
-        assert!(!is_valid_package_name("Foo::Bar-Baz!!"));
-        assert!(!is_valid_package_name("Foo::"));
-        assert!(!is_valid_package_name("Foo:::Bar"));
-        assert!(!is_valid_package_name("1Foo"));
-        assert!(!is_valid_package_name("Foo::1Bar"));
-        assert!(!is_valid_package_name("::"));
+        assert!(!server.package_rename_target_is_supported("Foo::Bar-Baz!!"));
+        assert!(!server.package_rename_target_is_supported("Foo::"));
+        assert!(!server.package_rename_target_is_supported("Foo:::Bar"));
+        assert!(!server.package_rename_target_is_supported("1Foo"));
+        assert!(!server.package_rename_target_is_supported("Foo::1Bar"));
+        assert!(!server.package_rename_target_is_supported("::"));
         // Legacy `'` separators fail closed.
-        assert!(!is_valid_package_name("Foo'Bar"));
+        assert!(!server.package_rename_target_is_supported("Foo'Bar"));
     }
 }

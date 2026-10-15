@@ -964,7 +964,7 @@ impl LspServer {
         })
     }
 
-    pub(crate) fn token_span_at(content: &str, offset: usize) -> Option<(usize, usize)> {
+    fn token_span_at(content: &str, offset: usize) -> Option<(usize, usize)> {
         // Build (byte_offset, char) pairs so all index arithmetic stays in byte space.
         // Callers receive a byte offset from pos16_to_offset and the returned
         // (start, end) are passed to offset_to_pos16, which also expects byte offsets.
@@ -1038,7 +1038,7 @@ impl LspServer {
     /// Extend a bare token span across `::` package separators.
     ///
     /// [`Self::token_span_at`] stops at the first non-identifier character, so a
-    /// cursor anywhere on `Foo::Bar` yields only the segment under the cursor
+    /// cursor on an identifier segment of `Foo::Bar` yields only that segment
     /// (`Foo` or `Bar`). The semantic definition lookup resolves full canonical
     /// package names by `ExactQualified` rank, so the refactor receipts must
     /// hand it the whole qualified span; a truncated segment resolves no entity
@@ -1046,8 +1046,7 @@ impl LspServer {
     /// compiler facts are present (#16644).
     ///
     /// A leading sigil stays part of the span (token behavior), and legacy
-    /// `'` package separators are deliberately not followed so exotic names
-    /// fail closed rather than half-resolving.
+    /// `'` package separators are deliberately not followed by this helper.
     pub(crate) fn qualified_symbol_span_at(content: &str, offset: usize) -> Option<(usize, usize)> {
         let (mut start, mut end) = Self::token_span_at(content, offset)?;
         let is_ident_char = |ch: char| ch.is_alphanumeric() || ch == '_';
@@ -2324,10 +2323,10 @@ mod tests {
     }
 
     #[test]
-    fn qualified_symbol_span_fails_closed_on_trailing_separator_and_legacy_quote() {
+    fn qualified_symbol_span_stops_before_incomplete_or_legacy_separator() {
         // Trailing `::` has no following segment; do not swallow it.
         assert_eq!(qualified_span_at("Foo::;", "Foo::;"), "Foo");
-        // Legacy `'` package separators are not followed (fail closed).
+        // Legacy `'` package separators are not followed by this helper.
         assert_eq!(qualified_span_at("Foo'Bar;", "Foo'"), "Foo");
     }
 
