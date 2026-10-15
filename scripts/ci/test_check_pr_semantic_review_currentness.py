@@ -213,8 +213,13 @@ class HostLocaleDecodingTests(unittest.TestCase):
         (bin_dir / "reviews.json").write_bytes(payload.encode("utf-8"))
         shim = bin_dir / "gh"
         shim.write_text(
-            '#!/bin/sh\nif [ "$1" = pr ]; then cat "$(dirname "$0")/meta.json"\n'
-            'else cat "$(dirname "$0")/reviews.json"\nfi\n',
+            '#!/bin/sh\ncase "$*" in\n'
+            '"--version") printf "gh version 2.63.0 (2024-12-18)\\n" ;;\n'
+            '"pr view 7 --repo o/r --json headRefOid,baseRefOid") '
+            'cat "$(dirname "$0")/meta.json" ;;\n'
+            '"api --paginate --slurp repos/o/r/pulls/7/reviews?per_page=100") '
+            'cat "$(dirname "$0")/reviews.json" ;;\n'
+            '*) exit 91 ;;\nesac\n',
             encoding="utf-8",
         )
         shim.chmod(shim.stat().st_mode | stat.S_IEXEC)
@@ -404,6 +409,159 @@ class AcquisitionBoundaryTests(unittest.TestCase):
             code = module.main(["42", "o/r", "--root", str(self.root), *options])
         return code, stdout.getvalue()
 
+    def exact_cli(self, steps, *options, mutate_argv=None):
+        """Match ordered argv; only named local Git reads can leave the double."""
+        actual_run = module._run
+        remaining = list(steps)
+        calls = []
+        local_git = [
+            ["git", "cat-file", "-e", f"{oid}^{{commit}}"]
+            for oid in (self.base, self.head)
+        ] + [
+            ["git", "merge-base", "--is-ancestor", self.base, self.head],
+            ["git", "merge-base", self.base, self.head],
+            ["git", "diff", "--binary", "--full-index", "--no-ext-diff",
+             self.base, self.head, "--"],
+        ]
+
+        def provider(args, **kwargs):
+            self.assertEqual(self.root, kwargs["cwd"])
+            if args in local_git:
+                return actual_run(args, **kwargs)
+            if mutate_argv is not None:
+                args = mutate_argv(len(calls), args.copy())
+            calls.append(args)
+            self.assertTrue(remaining, f"unexpected command: {args!r}")
+            expected, response = remaining.pop(0)
+            self.assertEqual(expected, args, "exact ordered command contract")
+            if isinstance(response, Exception):
+                raise response
+            if isinstance(response, subprocess.CompletedProcess):
+                self.assertEqual(args, response.args)
+                return response
+            return subprocess.CompletedProcess(args, 0, response, "")
+
+        with patch.object(module, "_run", side_effect=provider), \
+                patch.dict(os.environ, {}, clear=True):
+            code, raw = self.cli(*options)
+        self.assertEqual([], remaining, "required commands were skipped")
+        return code, raw, calls
+
+    def live_steps(self, pages, *, metadata=None, version=None, reread=True):
+        if pages == "valid":
+            pages = [[{
+                "user": {"login": "reviewer", "type": "User"}, "state": "COMMENTED",
+                "body": self.row["body"], "commit_id": self.head,
+                "submitted_at": self.row["submitted_at"],
+            }]]
+        metas = metadata if metadata is not None else [
+            {"headRefOid": self.head, "baseRefOid": self.base}
+        ] * 2
+        identity = ["gh", "pr", "view", "42", "--repo", "o/r", "--json", "headRefOid,baseRefOid"]
+        steps = [
+            (["gh", "--version"], version or "gh version 2.63.0 (2024-12-18)\n"),
+            (identity, json.dumps(metas[0])),
+        ]
+        if len(metas) > 1:
+            steps.append((["gh", "api", "--paginate", "--slurp",
+                           "repos/o/r/pulls/42/reviews?per_page=100"], json.dumps(pages)))
+            if reread:
+                steps.append((identity, json.dumps(metas[1])))
+        return steps
+
+    def test_unsupported_gh_refuses_before_live_acquisition(self):
+        for options in ((), ("--emit-marker", "--result", "REVIEW_CURRENT")):
+            with self.subTest(options=options):
+                code, raw, calls = self.exact_cli(
+                    [(["gh", "--version"], "gh version 2.46.0 (2024-03-20)\n")],
+                    *options,
+                )
+                result = json.loads(raw)
+                self.assertEqual(2, code)
+                self.assertEqual("NOT_PROVEN", result["classification"])
+                self.assertEqual("instrument_failure", result["reason"])
+                self.assertEqual(module.SCHEMA_VERSION, result["schema_version"])
+                for fact in ("2.46.0", "2.63.0", "baseRefOid", "--slurp", "https://cli.github.com/"):
+                    self.assertIn(fact, result["detail"])
+                self.assertNotIn("semantic-review:v1", raw)
+                self.assertEqual([["gh", "--version"]], calls)
+
+    def test_intermediate_gh_versions_still_refuse_before_acquisition(self):
+        for version in ("2.47.0", "2.48.0", "2.62.9"):
+            with self.subTest(version=version):
+                code, raw, calls = self.exact_cli(
+                    [(["gh", "--version"], f"gh version {version}\n")]
+                )
+                self.assertEqual(2, code)
+                self.assertIn(version, json.loads(raw)["detail"])
+                self.assertIn("baseRefOid", json.loads(raw)["detail"])
+                self.assertEqual([["gh", "--version"]], calls)
+
+    def test_unprovable_version_probes_refuse_without_echoing_output(self):
+        secret = "ghp_DO_NOT_PUBLISH Authorization: Bearer PRIVATE"
+        probes = [
+            "", None, "unknown", "gh version 2.63", "gh version 2.63.0-rc1",
+            f"gh version unknown https://user:PASSWORD@host/ {secret}" + "x" * 10000,
+            FileNotFoundError(2, secret, "gh"),
+            OSError(secret),
+            UnicodeDecodeError("utf-8", b"\xff", 0, 1, secret),
+            subprocess.TimeoutExpired(["gh", "--version"], 5, output=secret),
+            subprocess.CalledProcessError(1, ["gh", secret], output=secret, stderr=secret),
+        ]
+        for probe in probes:
+            with self.subTest(probe_type=type(probe).__name__):
+                code, raw, calls = self.exact_cli([(["gh", "--version"], probe)])
+                result = json.loads(raw)
+                self.assertEqual(2, code)
+                self.assertEqual("NOT_PROVEN", result["classification"])
+                self.assertEqual("instrument_failure", result["reason"])
+                self.assertEqual(module.SCHEMA_VERSION, result["schema_version"])
+                self.assertIn("https://cli.github.com/", result["detail"])
+                self.assertIn("2.63.0", result["detail"])
+                self.assertLessEqual(len(result["detail"]), 512)
+                for denied in ("ghp_DO_NOT_PUBLISH", "PRIVATE", "PASSWORD", "Authorization"):
+                    self.assertNotIn(denied, raw)
+                self.assertEqual([["gh", "--version"]], calls)
+
+    def test_wrapped_instrument_diagnostics_are_not_public_output(self):
+        secret = "Authorization: Bearer ghp_PRIVATE\nTOKEN=ENV_SECRET\n" + "x" * 10000
+        missing = "d" * 40
+        metadata = {"headRefOid": missing, "baseRefOid": self.base}
+        steps = self.live_steps([[]], metadata=[metadata, metadata])
+        cat = ["git", "cat-file", "-e", f"{missing}^{{commit}}"]
+        fetch = ["git", "fetch", "--no-tags", "origin", missing]
+        steps += [
+            (cat, subprocess.CompletedProcess(cat, 128, "", "not found")),
+            (fetch, subprocess.CompletedProcess(fetch, 128, "", secret)),
+        ]
+        code, raw, calls = self.exact_cli(steps, "--emit-marker", "--result", "REVIEW_CURRENT")
+        result = json.loads(raw)
+        self.assertEqual(2, code)
+        self.assertEqual("NOT_PROVEN", result["classification"])
+        self.assertIn("inspect local", result["detail"])
+        self.assertLessEqual(len(result["detail"]), 512)
+        for denied in ("Authorization", "ghp_PRIVATE", "ENV_SECRET", "semantic-review:v1"):
+            self.assertNotIn(denied, raw)
+        self.assertEqual(6, len(calls))
+
+    def test_exact_command_double_rejects_changed_contract(self):
+        mutations = [
+            (1, ["gh", "pr", "view", "42", "--repo", "o/r", "--json", "headRefOid"]),
+            (1, ["gh", "pr", "view", "43", "--repo", "o/r", "--json", "headRefOid,baseRefOid"]),
+            (1, ["gh", "pr", "view", "42", "--repo", "other/repo", "--json", "headRefOid,baseRefOid"]),
+            (2, ["gh", "api", "--paginate", "repos/o/r/pulls/42/reviews?per_page=100"]),
+            (2, ["gh", "api", "--slurp", "repos/o/r/pulls/42/reviews?per_page=100"]),
+            (1, ["gh", "api", "--paginate", "--slurp", "repos/o/r/pulls/42/reviews?per_page=100"]),
+            (2, ["gh", "pr", "view", "42", "--repo", "o/r", "--json", "headRefOid,baseRefOid"]),
+            (1, ["curl", "https://api.github.com/"]),
+        ]
+        for index, changed in mutations:
+            with self.subTest(changed=changed):
+                with self.assertRaisesRegex(AssertionError, "exact ordered command contract"):
+                    self.exact_cli(self.live_steps("valid"), mutate_argv=(
+                        lambda call, args: changed if call == index else args
+                    ))
+
     def test_fixture_verdict_cannot_qualify_production(self):
         for via_env in (False, True):
             with self.subTest(via_env=via_env), patch.dict(os.environ, {}, clear=True):
@@ -437,11 +595,13 @@ class AcquisitionBoundaryTests(unittest.TestCase):
                 else:
                     os.environ["SEMANTIC_REVIEW_TEST_FIXTURE"] = (
                         "" if selection == "empty_env" else str(self.fixture))
-                with patch.object(module, "fetch_pr", return_value=(self.head, self.base, [])) as fetch:
+                with patch.object(module, "fetch_pr", return_value=(self.head, self.base, [])) as fetch, \
+                        patch.object(module, "_run", side_effect=AssertionError("probe or live call")) as run:
                     code, raw = self.cli(*options)
                 self.assertEqual(2, code)
                 self.assertNotIn("semantic-review:v1", raw)
                 fetch.assert_not_called()
+                run.assert_not_called()
 
     def test_empty_fixture_environment_cannot_fall_back_to_live(self):
         with patch.dict(os.environ, {"SEMANTIC_REVIEW_TEST_FIXTURE": ""}), \
@@ -451,28 +611,11 @@ class AcquisitionBoundaryTests(unittest.TestCase):
         self.assertEqual("NOT_PROVEN", json.loads(raw)["classification"])
         fetch.assert_not_called()
 
-    def live_cli(self, pages, *, metadata=None, expected_head=None):
-        provider_row = {
-            "user": {"login": "reviewer", "type": "User"}, "state": "COMMENTED",
-            "body": self.row["body"], "commit_id": self.head,
-            "submitted_at": self.row["submitted_at"],
-        }
-        if pages == "valid":
-            pages = [[provider_row]]
-        actual_run = module._run
-        calls = []
-        metas = iter(metadata or [{"headRefOid": self.head, "baseRefOid": self.base}] * 2)
-
-        def provider(args, **kwargs):
-            if args[0] != "gh":
-                return actual_run(args, **kwargs)
-            calls.append(args)
-            payload = next(metas) if args[1] == "pr" else pages
-            return subprocess.CompletedProcess(args, 0, json.dumps(payload), "")
-
+    def live_cli(self, pages, *, metadata=None, expected_head=None, version=None, reread=True):
         options = [] if expected_head is None else ["--expected-head", expected_head]
-        with patch.object(module, "_run", side_effect=provider):
-            code, raw = self.cli(*options)
+        code, raw, calls = self.exact_cli(
+            self.live_steps(pages, metadata=metadata, version=version, reread=reread), *options
+        )
         return code, json.loads(raw), calls
 
     def test_live_subject_positive_control(self):
@@ -482,8 +625,23 @@ class AcquisitionBoundaryTests(unittest.TestCase):
         self.assertEqual("gh_live", result["acquisition_mode"])
         self.assertEqual("o/r", result["repo"])
         self.assertEqual(self.head, result["current_head"])
-        self.assertIn("--paginate", calls[1])
-        self.assertIn("--slurp", calls[1])
+        self.assertEqual(4, len(calls))
+        self.assertEqual(["gh", "--version"], calls[0])
+
+    def test_current_gh_format_and_marker_positive_controls(self):
+        for version in ("gh version 2.63.0\n", "gh version 2.83.2 (2026-10-01)\nhttps://github.com/cli/cli/releases/tag/v2.83.2\n"):
+            with self.subTest(version=version):
+                code, result, _ = self.live_cli("valid", version=version)
+                self.assertEqual(0, code)
+                self.assertEqual("REVIEW_CURRENT", result["classification"])
+                code, raw, calls = self.exact_cli(
+                    self.live_steps("valid", version=version),
+                    "--emit-marker", "--result", "REVIEW_CURRENT", "--expected-head", self.head,
+                )
+                self.assertEqual(0, code)
+                marker = module.parse_marker(REVIEW_SECTIONS + raw, 42, self.head)
+                self.assertEqual(self.head, marker.head)
+                self.assertEqual(4, len(calls))
 
     def test_expected_head_drift_is_refused(self):
         code, result, _ = self.live_cli("valid", expected_head=self.base)
@@ -506,11 +664,23 @@ class AcquisitionBoundaryTests(unittest.TestCase):
         self.assertEqual("NOT_PROVEN", result["classification"])
 
     def test_transport_denial_never_becomes_a_verdict(self):
-        with patch.object(module, "_run", side_effect=subprocess.CalledProcessError(
-                1, ["gh", "pr", "view"], stderr="Forbidden")):
-            code, raw = self.cli()
-        self.assertEqual(2, code)
-        self.assertEqual("NOT_PROVEN", json.loads(raw)["classification"])
+        for options in ((), ("--emit-marker", "--result", "REVIEW_CURRENT")):
+            with self.subTest(options=options):
+                steps = self.live_steps("valid")[:2]
+                argv = steps[1][0]
+                steps[1] = (argv, subprocess.CalledProcessError(
+                    1, argv, stderr="Post https://user:PASSWORD@api.github.com/graphql: Forbidden\n"
+                    "Authorization: Bearer ghp_PRIVATE\nTOKEN=ENV_SECRET" + "x" * 10000,
+                ))
+                code, raw, calls = self.exact_cli(steps, *options)
+                result = json.loads(raw)
+                self.assertEqual(2, code)
+                self.assertEqual("NOT_PROVEN", result["classification"])
+                self.assertIn("Forbidden", result["detail"])
+                self.assertLessEqual(len(result["detail"]), 512)
+                for denied in ("PASSWORD", "ghp_PRIVATE", "ENV_SECRET", "Authorization", "semantic-review:v1"):
+                    self.assertNotIn(denied, raw)
+                self.assertEqual(2, len(calls))
 
     def test_malformed_metadata_is_an_instrument_failure(self):
         for metadata in ([], {}, {"headRefOid": 1, "baseRefOid": self.base},
@@ -537,7 +707,7 @@ class AcquisitionBoundaryTests(unittest.TestCase):
                       [[valid, {**valid, "submitted_at": ""}]], [[valid, {**valid, "state": ""}]],
                       {"errors": ["Forbidden"]}):
             with self.subTest(pages=pages):
-                code, result, _ = self.live_cli(pages)
+                code, result, _ = self.live_cli(pages, reread=False)
                 self.assertEqual(2, code)
                 self.assertEqual("NOT_PROVEN", result["classification"])
 
