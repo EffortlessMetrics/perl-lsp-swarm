@@ -956,3 +956,255 @@ fn stdio_transport_stops_when_client_closes_stdout_while_stdin_remains_open() ->
     child.wait()?;
     result
 }
+
+// #17951: exercise untyped attach arguments through the exact public binary.
+mod attach_option_validation {
+    use super::*;
+    use std::net::{TcpListener, TcpStream};
+
+    fn next(dap: &DapProcess) -> Result<DapMessage> {
+        dap.rx
+            .recv_timeout(Duration::from_secs(5))
+            .context("missing next DAP frame")?
+            .map_err(|error| anyhow!("DAP frame reader failed: {error}"))
+    }
+
+    fn response(dap: &DapProcess, seq: i64, command: &str, error: Option<&str>) -> Result<()> {
+        match next(dap)? {
+            DapMessage::Response {
+                request_seq, command: actual, success, body, message, ..
+            } if request_seq == seq && actual == command => {
+                assert_eq!(success, error.is_none(), "{command}: {message:?}");
+                assert!(body.is_none(), "unexpected response body: {body:?}");
+                assert_eq!(message.as_deref(), error);
+                Ok(())
+            }
+            other => Err(anyhow!("unexpected next frame for {command}/{seq}: {other:?}")),
+        }
+    }
+
+    fn start() -> Result<DapProcess> {
+        let mut dap = DapProcess::spawn_binary(&OsString::from(env!("CARGO_BIN_EXE_perl-dap")))?;
+        dap.send_request(1, "initialize", Some(json!({"adapterID":"perl-dap"})))?;
+        match next(&dap)? {
+            DapMessage::Response { request_seq: 1, command, success: true, .. }
+                if command == "initialize" => {}
+            other => return Err(anyhow!("unexpected initialize response: {other:?}")),
+        }
+        match next(&dap)? {
+            DapMessage::Event { event, .. } if event == "initialized" => {}
+            other => return Err(anyhow!("unexpected initialize event: {other:?}")),
+        }
+        Ok(dap)
+    }
+
+    fn listener() -> Result<TcpListener> {
+        // Bind failure is instrument failure, never a successful no-contact assertion.
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        listener.set_nonblocking(true)?;
+        Ok(listener)
+    }
+
+    fn no_contact(listener: &TcpListener) -> Result<()> {
+        match listener.accept() {
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => Ok(()),
+            Err(error) => Err(error.into()),
+            Ok(_) => Err(anyhow!("refused attach contacted the owned listener")),
+        }
+    }
+
+    fn arguments(listener: &TcpListener, mut options: Value) -> Result<Value> {
+        options["host"] = json!("127.0.0.1");
+        options["port"] = json!(listener.local_addr()?.port());
+        Ok(options)
+    }
+
+    fn attach(dap: &mut DapProcess, seq: i64, options: Value) -> Result<TcpStream> {
+        let listener = listener()?;
+        dap.send_request(seq, "attach", Some(arguments(&listener, options)?))?;
+        response(dap, seq, "attach", None)?;
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            match listener.accept() {
+                Ok((peer, _)) => return Ok(peer),
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    if Instant::now() >= deadline {
+                        return Err(anyhow!("successful attach did not contact owned listener"));
+                    }
+                    thread::sleep(Duration::from_millis(5));
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
+    }
+
+    fn finish(dap: &mut DapProcess, seq: i64) -> Result<()> {
+        dap.send_request(seq, "disconnect", Some(json!({})))?;
+        let mut responded = false;
+        let mut terminated = false;
+        loop {
+            match dap.rx.recv_timeout(Duration::from_secs(5)) {
+                Ok(Ok(DapMessage::Response { request_seq, command, success: true, .. }))
+                    if request_seq == seq && command == "disconnect" && !responded =>
+                {
+                    responded = true;
+                }
+                Ok(Ok(DapMessage::Event { event, .. })) if event == "terminated" && !terminated => {
+                    terminated = true
+                }
+                Err(RecvTimeoutError::Disconnected) if responded => break,
+                other => return Err(anyhow!("unexpected disconnect frame: {other:?}")),
+            }
+        }
+        dap.finish_cleanly()
+    }
+
+    fn refused_cases() -> Vec<(Value, String)> {
+        let mut cases = Vec::new();
+        for (value, kind) in [
+            (json!("true"), "string"),
+            (json!("false"), "string"),
+            (json!(""), "string"),
+            (json!(0), "number"),
+            (json!(1), "number"),
+            (json!([]), "array"),
+            (json!({}), "object"),
+        ] {
+            cases.push((
+                json!({"stopOnEntry": value}),
+                format!("Invalid stopOnEntry: expected a boolean, got JSON {kind}"),
+            ));
+        }
+        for field in ["timeout", "timeoutMs"] {
+            for (value, kind) in [
+                (json!("5000"), "string"),
+                (json!(true), "boolean"),
+                (json!(false), "boolean"),
+                (json!(-1), "number"),
+                (json!(0.5), "number"),
+                (json!(5000.0), "number"),
+                (json!([]), "array"),
+                (json!({}), "object"),
+            ] {
+                let mut options = json!({});
+                options[field] = value;
+                cases.push((options, format!(
+                    "Invalid {field}: expected a non-negative integer in milliseconds, got JSON {kind}"
+                )));
+            }
+            for value in [0_u64, 300_001, 4_294_972_296, u64::MAX] {
+                let mut options = json!({});
+                options[field] = json!(value);
+                cases.push((
+                    options,
+                    if value == 0 {
+                        "Timeout must be greater than 0 milliseconds"
+                    } else {
+                        "Timeout cannot exceed 300000 milliseconds (5 minutes)"
+                    }
+                    .to_string(),
+                ));
+            }
+        }
+        cases.extend([
+            (json!({"timeout":5000,"timeoutMs":"bad"}),
+                "Invalid timeoutMs: expected a non-negative integer in milliseconds, got JSON string".into()),
+            (json!({"timeout":null,"timeoutMs":[]}),
+                "Invalid timeoutMs: expected a non-negative integer in milliseconds, got JSON array".into()),
+            (json!({"timeout":"bad","timeoutMs":5000}),
+                "Invalid timeout: expected a non-negative integer in milliseconds, got JSON string".into()),
+            (json!({"timeout":0,"timeoutMs":5000}),
+                "Timeout must be greater than 0 milliseconds".into()),
+            (json!({"stopOnEntry":true}),
+                "TCP attach does not support stopOnEntry=true. Set stopOnEntry=false and configure the debugger peer to pause if needed".into()),
+        ]);
+        cases
+    }
+
+    #[test]
+    fn stdio_transport_attach_options_refuse_before_contact_and_recover() -> Result<()> {
+        let mut dap = start()?;
+        let rejected = listener()?;
+        let mut seq = 2;
+        for (options, error) in refused_cases() {
+            dap.send_request(seq, "attach", Some(arguments(&rejected, options)?))?;
+            response(&dap, seq, "attach", Some(&error))?;
+            no_contact(&rejected)?;
+            seq += 1;
+            dap.send_request(seq, "threads", None)?;
+            match next(&dap)? {
+                DapMessage::Response {
+                    request_seq,
+                    command,
+                    success: true,
+                    body: Some(body),
+                    ..
+                } if request_seq == seq && command == "threads" => {
+                    assert_eq!(body["threads"], json!([]), "refusal fabricated a session");
+                }
+                other => return Err(anyhow!("unexpected post-refusal frame: {other:?}")),
+            }
+            seq += 1;
+        }
+        let _peer = attach(&mut dap, seq, json!({"stopOnEntry":false,"timeout":5000}))?;
+        finish(&mut dap, seq + 1)?;
+        no_contact(&rejected)
+    }
+
+    #[test]
+    fn stdio_transport_attach_options_preserve_defaults_and_alias_precedence() -> Result<()> {
+        // Socket acceptance proves admission, not the configured duration. Existing
+        // TcpAttachConfig tests own exact default/duration and 1..=300000 bounds.
+        for options in [
+            json!({}),
+            json!({"stopOnEntry":null}),
+            json!({"stopOnEntry":false}),
+            json!({"timeout":null}),
+            json!({"timeoutMs":null}),
+            json!({"timeout":5000}),
+            json!({"timeoutMs":5000}),
+            json!({"timeout":300000}),
+            json!({"timeoutMs":300000}),
+            json!({"timeout":null,"timeoutMs":0}),
+            json!({"timeout":5000,"timeoutMs":0}),
+            json!({"timeout":5000,"timeoutMs":18446744073709551615_u64}),
+        ] {
+            let mut dap = start()?;
+            let _peer = attach(&mut dap, 2, options.clone())
+                .with_context(|| format!("valid options refused: {options}"))?;
+            finish(&mut dap, 3)?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn stdio_transport_attach_options_preserve_active_session_after_refusal() -> Result<()> {
+        let mut dap = start()?;
+        let mut peer = attach(&mut dap, 2, json!({"timeout":5000}))?;
+        peer.set_write_timeout(Some(Duration::from_secs(2)))?;
+        let rejected = listener()?;
+        let mut seq = 3;
+        for (options, error) in refused_cases() {
+            dap.send_request(seq, "attach", Some(arguments(&rejected, options)?))?;
+            response(&dap, seq, "attach", Some(&error))?;
+            no_contact(&rejected)?;
+            let marker = format!("surviving-session-{seq}\n");
+            let payload = serde_json::to_vec(&json!({
+                "seq":seq,"type":"event","event":"output",
+                "body":{"category":"console","output":marker}
+            }))?;
+            write!(peer, "Content-Length: {}\r\n\r\n", payload.len())?;
+            peer.write_all(&payload)?;
+            peer.flush()?;
+            match next(&dap)? {
+                DapMessage::Event { event, body: Some(body), .. } if event == "output" => {
+                    assert_eq!(body["output"], marker, "old session did not retain peer identity");
+                }
+                other => return Err(anyhow!("unexpected surviving-session frame: {other:?}")),
+            }
+            seq += 1;
+        }
+        finish(&mut dap, seq)?;
+        no_contact(&rejected)
+    }
+}
