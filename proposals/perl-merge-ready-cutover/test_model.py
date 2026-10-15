@@ -1,6 +1,8 @@
 import dataclasses
 import json
+import hashlib
 from pathlib import Path
+import subprocess
 import unittest
 
 from model import Event, Subject, accepts, admit, group, material, result_name
@@ -67,7 +69,8 @@ class CutoverFixtures(unittest.TestCase):
                      dict(live_label=False), dict(merge_parents=()),
                      dict(checkout=(self.subject.head, self.subject.tree)),
                      dict(checkout=(self.subject.merge, "wrong")),
-                     dict(elapsed_seconds=1201), dict(elapsed_seconds=-1)]
+                     dict(elapsed_seconds=1201), dict(elapsed_seconds=-1),
+                     dict(run_cancelled=True)]
         for mutation in mutations:
             with self.subTest(mutation=mutation):
                 self.assertFalse(accepts(**(self.args | mutation)))
@@ -75,12 +78,30 @@ class CutoverFixtures(unittest.TestCase):
     def test_twenty_minute_boundary(self):
         self.assertTrue(accepts(**(self.args | {"elapsed_seconds": 1200})))
 
+    def test_event_cannot_borrow_another_run_or_pr(self):
+        for field in ("pr", "run", "attempt"):
+            event = dataclasses.replace(self.event, **{field: 2})
+            self.assertFalse(accepts(**(self.args | {"e": event})))
+
+    def test_malformed_expected_source_is_not_exact_identity(self):
+        for field in ("head", "base", "merge", "tree", "workflow"):
+            subject = dataclasses.replace(self.subject, **{field: "main"})
+            self.assertFalse(accepts(**(self.args | {"expected": subject,
+                                                       "receipt": subject})))
+
     def test_inventory_pins_all_five_result_owners(self):
         inventory = json.loads(Path(__file__).with_name("inventory.json").read_text())
         self.assertEqual(len(inventory["workflows"]), 103)
         self.assertEqual({r["name"] for r in inventory["required_results"]}, {
             "Perl LSP Rust Small Result", "ripr+ New Gap Gate",
             "Compile All Targets (bit-rot guard)", "Conflict marker check", "validate-title"})
+
+    def test_inventory_matches_pinned_source_bytes(self):
+        inventory = json.loads(Path(__file__).with_name("inventory.json").read_text())
+        for workflow in inventory["workflows"]:
+            source = subprocess.check_output(
+                ["git", "show", inventory["source_commit"] + ":" + workflow["path"]])
+            self.assertEqual(hashlib.sha256(source).hexdigest(), workflow["sha256"])
 
 
 if __name__ == "__main__":

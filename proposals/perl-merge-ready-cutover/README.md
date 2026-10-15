@@ -76,6 +76,9 @@ Use read-only `pull_request`, never execute candidate contents under a privilege
    missing receipt or instrument failure returns failure. Require actual `success`
    from the complete selected worker set; no `skipped`, `neutral`, empty output,
    cancellation, timeout or `continue-on-error` can become qualification proof.
+   An `always()` verdict step must explicitly reject `cancelled()` for its own run,
+   even if the label was removed and reapplied before its final live read. Bind the
+   event PR/run/attempt to the expected tuple as well as comparing receipt fields.
    Scoped no-ops need a successful explicit scope evaluator and recorded reason;
    never infer an exemption from absence. Preserve the five result names/app IDs;
    this design does not require changing the known required contexts.
@@ -177,7 +180,24 @@ The existing work checkout and all owner branches are unchanged. This does not c
 a successful canonical writer-admission run. Hook configuration was inspected:
 no core.hooksPath override, only sample hooks installed in the original common dir;
 tracked hooks/pre-push normally selects the fast gate. No hooks were changed,
-installed or bypassed, and no push or PR was made.
+installed or bypassed. Source trigger inspection found no push workflow selecting
+the proposal branch; publication is limited to that branch, with no PR or label
+event. This does not establish behavior of undisclosed external integrations.
+
+Local proof command:
+
+```
+python3 -m unittest discover -s proposals/perl-merge-ready-cutover -p 'test_*.py' -v
+git diff --check
+```
+
+Twelve tests pass, including 17 event fixtures and byte verification against the
+103 pinned workflow Git objects. Independent source review confirmed the complete
+inventory, required-result ownership and proposed native semantics. Review found
+the model did not initially bind its event PR/run to its expected subject; that gap
+is repaired with negative fixtures. Explicit own-run cancellation rejection and
+malformed exact-SHA rejection were added during challenge. These are model/design
+findings and repairs, not claims about activated workflow behavior.
 
 ## Alternatives and integration requirements
 

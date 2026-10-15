@@ -3,6 +3,7 @@
 Models proposed event admission and evidence acceptance; does not emulate Actions.
 """
 from dataclasses import dataclass
+import re
 
 
 LABEL = "merge-ready"
@@ -61,9 +62,14 @@ class Subject:
 
 def accepts(e, expected, receipt, results, required_workers, *,
             live_head, live_base, live_label, merge_parents, checkout,
-            elapsed_seconds):
+            elapsed_seconds, run_cancelled=False):
     """All values originate in one run; never borrow same-named green checks."""
-    if not admit(e) or receipt != expected:
+    if not admit(e) or receipt != expected or run_cancelled:
+        return False
+    if (e.pr, e.run, e.attempt) != (expected.pr, expected.run, expected.attempt):
+        return False
+    if not all(re.fullmatch(r"[0-9a-f]{40}", value) for value in (
+            expected.head, expected.base, expected.merge, expected.tree, expected.workflow)):
         return False
     if (live_head, live_base) != (expected.head, expected.base) or not live_label:
         return False
