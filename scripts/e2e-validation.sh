@@ -358,7 +358,7 @@ if cargo bench --no-run 2>/dev/null; then
     
     # Run a quick benchmark
     print_status "INFO" "Running quick performance validation..."
-    if timeout 120 cargo bench --bench rope_performance_benchmark --no-run 2>/dev/null; then
+    if timeout 120 cargo bench -p perl-lsp-rs --features benchmarks --bench rope_performance_benchmark --no-run 2>/dev/null; then
         print_status "OK" "Performance benchmarks compiled successfully"
     else
         print_status "WARN" "Performance benchmarks failed to compile"
