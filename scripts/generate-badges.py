@@ -169,8 +169,8 @@ class WindowsJob:
         ):
             self._raise_last_error("AssignProcessToJobObject")
 
-    def active_processes(self) -> int:
-        """Observe associated processes, including descendants after leader exit."""
+    def process_accounting(self) -> tuple[int, int]:
+        """Return active and lifetime process counts from this exact job."""
         class BasicAccountingInformation(ctypes.Structure):
             _fields_ = [
                 ("TotalUserTime", ctypes.c_longlong),
@@ -190,14 +190,21 @@ class WindowsJob:
             self._handle, 1, ctypes.byref(accounting), ctypes.sizeof(accounting), None
         ):
             self._raise_last_error("QueryInformationJobObject")
-        return accounting.ActiveProcesses
+        return accounting.ActiveProcesses, accounting.TotalProcesses
+
+    def active_processes(self) -> int:
+        return self.process_accounting()[0]
+
+    def total_processes(self) -> int:
+        return self.process_accounting()[1]
 
     def process_handles(self) -> list[int]:
         """Bind only processes enumerated from this job, before termination.
 
         Accounting can reach zero before a process handle becomes signaled.
         Keep those identities to observe exit rather than trusting the count.
-        A descendant born after this snapshot is outside the handle-exit proof.
+        Lifetime accounting around the snapshot detects new members; a changed
+        count must reject success rather than imply those members were waited.
         """
         from ctypes import wintypes
 
@@ -247,7 +254,14 @@ class WindowsJob:
         if self._handle is None:
             return ["Windows job handle is closed; settlement unconfirmed"]
         handles: list[int] = []
+        initial_total: int | None = None
         try:
+            try:
+                # Sample before enumeration: a later birth must not disappear
+                # from the proof merely because active accounting reaches zero.
+                initial_total = self.total_processes()
+            except OSError as error:
+                failures.append(f"Windows job initial accounting unavailable: {error}")
             try:
                 handles = self.process_handles()
             except OSError as error:
@@ -269,6 +283,12 @@ class WindowsJob:
                     result = self._kernel32.WaitForSingleObject(handle, remaining_ms)
                     if result != 0:  # WAIT_OBJECT_0 is the only exit proof.
                         failures.append(f"Windows job member exit unconfirmed: wait result {result}")
+                final_total = self.total_processes()
+                if initial_total is not None and final_total != initial_total:
+                    failures.append(
+                        "Windows job membership changed during settlement; "
+                        "post-snapshot member exit unconfirmed"
+                    )
             except OSError as error:
                 failures.append(f"Windows job settlement unconfirmed: {error}")
         finally:

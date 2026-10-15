@@ -953,6 +953,7 @@ class WindowsJobSettlementTests(unittest.TestCase):
         job = generator.WindowsJob.__new__(generator.WindowsJob)
         job._handle = 42
         job.process_handles = mock.Mock(return_value=[])
+        job.total_processes = mock.Mock(return_value=7)
         job._kernel32 = mock.Mock()
         job._kernel32.TerminateJobObject.return_value = True
         job._kernel32.CloseHandle.return_value = True
@@ -996,6 +997,31 @@ class WindowsJobSettlementTests(unittest.TestCase):
             failures = job.terminate()
         self.assertTrue(any("query refused" in failure for failure in failures), failures)
         job._kernel32.CloseHandle.assert_called_once_with(42)
+
+    def test_post_snapshot_birth_rejects_success_even_after_zero_and_wait(self):
+        job = self.job(iter([0]))
+        job.total_processes.side_effect = [7, 8]
+        job.process_handles.return_value = [123]
+        job._kernel32.WaitForSingleObject.return_value = 0
+        failures = job.terminate()
+        self.assertTrue(any("membership changed" in failure for failure in failures), failures)
+        job._kernel32.WaitForSingleObject.assert_called_once()
+
+    def test_lifetime_baseline_precedes_member_snapshot(self):
+        job = self.job(iter([0]))
+        events = []
+        job.total_processes.side_effect = lambda: events.append("total") or 7
+        job.process_handles.side_effect = lambda: events.append("snapshot") or []
+        self.assertEqual(job.terminate(), [])
+        self.assertEqual(events, ["total", "snapshot", "total"])
+
+    def test_missing_initial_or_terminal_accounting_is_not_success(self):
+        for sequence in ([OSError("initial query refused"), 7], [7, OSError("terminal query refused")]):
+            with self.subTest(sequence=sequence):
+                job = self.job(iter([0]))
+                job.total_processes.side_effect = sequence
+                self.assertTrue(job.terminate())
+                job._kernel32.CloseHandle.assert_called_once_with(42)
 
     def test_zero_accounting_still_waits_for_bound_member_exit(self):
         job = self.job(iter([0]))

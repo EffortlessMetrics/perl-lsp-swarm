@@ -54,6 +54,18 @@ if sys.argv[1] == "child":
         time.sleep(30)
     finally:
         kernel.CloseHandle(handle)
+elif sys.argv[1] == "spawner":
+    expires = time.monotonic() + 30
+    (root / "spawner.json").write_text(json.dumps({"pid": os.getpid()}), encoding="utf-8")
+    deadline = time.monotonic() + 10
+    while not (root / "spawn-late").exists():
+        if time.monotonic() >= deadline:
+            raise RuntimeError("late-birth release timed out")
+        time.sleep(0.01)
+    child = subprocess.Popen([sys.executable, __file__, "child", str(root)],
+                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL, close_fds=True)
+    time.sleep(max(0, expires - time.monotonic()))
 else:
     child = subprocess.Popen([sys.executable, __file__, "child", str(root)],
                              stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
@@ -189,6 +201,73 @@ class NativeWindowsBadgeJobProof(unittest.TestCase):
         self.assertEqual(self.job.active_processes(), 1)
         self.assertEqual(self.job.terminate(), [])
         self.assert_settled_and_release_target()
+
+    def test_descendant_born_after_snapshot_cannot_authorize_success(self):
+        owner = self
+        totals = []
+        class LateBirthJob(BASE_WINDOWS_JOB):
+            triggered = False
+
+            def total_processes(self):
+                total = super().total_processes()
+                totals.append(total)
+                return total
+
+            def process_handles(self):
+                handles = super().process_handles()
+                if self.triggered:
+                    return handles
+                self.triggered = True
+                try:
+                    (owner.root / "spawn-late").touch()
+                    deadline = time.monotonic() + 10
+                    while not (owner.root / "ready.json").exists():
+                        if time.monotonic() >= deadline:
+                            raise AssertionError("late child did not publish its lock receipt")
+                        time.sleep(0.01)
+                    receipt = json.loads((owner.root / "ready.json").read_text(encoding="utf-8"))
+                    owner.child_handle = owner.kernel.OpenProcess(0x00100000 | 0x1000, False, receipt["pid"])
+                    owner.assertTrue(owner.child_handle)
+                    member = wintypes.BOOL()
+                    owner.assertTrue(owner.kernel.IsProcessInJob(owner.child_handle, self._handle, ctypes.byref(member)))
+                    owner.assertTrue(member.value)
+                    owner.assertEqual(owner.kernel.WaitForSingleObject(owner.child_handle, 0), 258)
+                    with owner.assertRaises(PermissionError) as blocked:
+                        owner.remove_private_target()
+                    owner.assertEqual(blocked.exception.winerror, 32)
+                    print(f"NATIVE_LATE_PRE: bound_handles={len(handles)} late_child_live=true target_release=sharing_violation_32", flush=True)
+                    return handles
+                except BaseException:
+                    for handle in handles:
+                        self._kernel32.CloseHandle(handle)
+                    raise
+
+        self.job = LateBirthJob()
+        self.leader = subprocess.Popen(
+            [sys.executable, str(SCRIPT.resolve()), generator.WINDOWS_JOB_LAUNCHER_FLAG,
+             sys.executable, str(self.fixture), "spawner", str(self.root)],
+            cwd=self.root, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
+        )
+        self.job.assign(self.leader)
+        self.leader.stdin.write(b"\0")
+        self.leader.stdin.close()
+        deadline = time.monotonic() + 10
+        while not (self.root / "spawner.json").exists():
+            if time.monotonic() >= deadline:
+                self.fail("owned spawner did not start")
+            time.sleep(0.01)
+        failures = self.job.terminate()
+        try:
+            self.assertTrue(any("membership changed" in failure for failure in failures), failures)
+            self.assertEqual(len(totals), 2)
+            self.assertGreater(totals[1], totals[0])
+            print(f"NATIVE_LATE_RESULT: lifetime_counts={totals} post_snapshot_birth=refused_success", flush=True)
+        finally:
+            self.assertEqual(self.kernel.WaitForSingleObject(self.child_handle, 5000), 0)
+            self.remove_private_target()
+            self.assertFalse(self.target.exists())
+            print("NATIVE_LATE_POST: owned_child_exited=true private_target_removed=true", flush=True)
 
     def test_real_run_ripr_settles_after_successful_leader_and_pipe_eof(self):
         owner = self

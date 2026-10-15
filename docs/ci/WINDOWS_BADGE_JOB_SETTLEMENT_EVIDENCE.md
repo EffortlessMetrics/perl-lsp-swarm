@@ -13,7 +13,7 @@ after assignment to a private non-breakaway Job Object. Cleanup uses that job
 and the test's exact Popen handle; it never signals a PID from a host scan.
 
 Original candidate: `265a97e9a5f9f9af8e0e390c0a20f4106a83a81f`.
-Final source blobs qualified by the focused final runs:
+Handle-wait revision source blobs qualified by the first focused runs (candidate `ee62a4bef55fec4fd50b5078b3a9bd6794593b9b`):
 
 - `scripts/generate-badges.py`: `c0a9a573e2a6fe4fdceac1a0157854f1b334e77b`
 - `scripts/tests/test-generate-badges.py`: `f4d9e697b3fcb24217c3ce110fcef66e9d84c2c9`
@@ -91,20 +91,63 @@ and leader-only negative controls are failed/synthetic contract results, not
 provisioning failures. Earlier hosted `draft-no-proof` checks skipped analysis;
 they are neither product failures nor passing qualification.
 
+## Late-birth review repair
+
+The post-snapshot limitation was challenged before integration. A task-owned
+spawner creates a child only after the real native `process_handles()` snapshot
+returns. The late child joins the same Job Object, opens the private file without
+delete sharing, and publishes readiness. The fixture verifies the child's exact
+handle/membership and the sharing violation before requesting termination.
+
+Against `ee62a4bef55fec4fd50b5078b3a9bd6794593b9b`, the added native test failed
+because the owner returned an empty failure list despite missing the late child's
+handle. Final cleanup still waited for that exact owned child and removed only
+the private target. This identifies an unproved late-member exit; the red test
+does not claim every scheduling interleaving retains the lock after return.
+
+The repair samples lifetime `TotalProcesses` before member capture and after
+termination, zero accounting and captured-handle waits. A changed lifetime total
+or either unavailable sample rejects success. The lifetime total includes exited
+members, so a late child cannot evade the detector by leaving active accounting.
+Conservative refusal is intentional even if the new member was itself captured
+and exited. This is a refusal check, not an atomic creation barrier.
+
+New focused execution: portable 16 passed; native 4 passed (8.296s), including the
+late-born-member refusal and the existing native success/negative/real-caller
+controls. The native fixture additionally records both real lifetime totals and
+retains its 30-second process lifetime cap. Independent execution on the final
+source/fixture passed native 4 (6.806s) and portable 16 (0.182s), recording real
+lifetime counts `[2, 3]` and refusing success. Removing the final count comparison
+in memory produced one intended portable failure and no instrument errors.
+The independent final review found no blocker within this refusal/captured-member
+claim and confirmed alignment with honest resource ownership; it did not certify
+shared-target deletion safety.
+
+Source blobs for the review repair:
+
+- `scripts/generate-badges.py`: `68f740adb0aec896530f5dcb76e7f5a6eb960a25`
+- `scripts/tests/test-generate-badges.py`: `6d64320fa2f2b3108ebf503afa816f27550acfa6`
+- `scripts/tests/test_windows_badge_job_native.py`: `f398b9478afc7df4c71badabb157f48ff1f559f0`
+
 ## Limits
 
-This proves the bounded fixture and captured-member exit guarantee. A descendant
-born after the pretermination snapshot remains outside the handle-exit proof.
-The snapshot and termination request are not an atomic barrier. General safe
-cleanup of shared targets, arbitrary descendant creation patterns, externally
-held handles, a canonical Cargo supervisor, and other repository process owners
-remain unqualified. No shared target deletion is authorized by these results.
+This proves the bounded fixtures, captured-member exit waits and refusal when
+lifetime membership changes across capture/settlement. It does not prove general
+safe target deletion. An already-counted process could disappear from enumeration
+before capture while completing exit; unchanged totals do not prove historical
+members' resources released. Enumeration and termination are not atomic.
+The counter is a DWORD; theoretical full-width rollover is not qualified.
+Shared targets, external handles, arbitrary descendant-creation patterns,
+canonical Cargo supervision, and other process owners remain unqualified.
+No shared target deletion is authorized by these results.
 
 Microsoft's [TerminateProcess contract](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-terminateprocess)
 prescribes a process-handle wait for asynchronous termination. The
 [process-ID list contract](https://learn.microsoft.com/en-us/windows/win32/api/winnt/ns-winnt-jobobject_basic_process_id_list)
-defines the variable-length list and incomplete-count condition. These support
-the added observations; they do not make the snapshot atomic.
+defines the variable-length list and incomplete-count condition. Microsoft
+defines [TotalProcesses](https://learn.microsoft.com/en-us/windows/win32/api/winnt/ns-winnt-jobobject_basic_accounting_information)
+as a lifetime total including terminated members. These support the added
+observations and refusal; they do not make the snapshot atomic.
 
 ## Retained transcript fingerprints
 
@@ -121,3 +164,8 @@ This table preserves their content identities without publishing private paths.
 | `portable-final.log` | `b8568237a6b238b8b436d6a1342b8b43a2bb7e369232fbe7f6b44a9650057ca9` |
 | `affected-final.log` | `48c522f808bb0aa46d317bb70cee72db5f0cd4d6ee8acb534eedfb11e1bb7f4c` |
 | `native-independent.log` | `2bebc4ac0a75c042f33785dd74339f9882a4f296b8bbd88239491417dc3a5fef` |
+| `native-late-birth-red.log` | `17bc95d503e3d89f8b9f3c11f6aacf26833f8e1f69ddfb942211df6daa239d96` |
+| `native-late-birth-final.log` | `03b67eecd6eda0e60105cbacbf6c45e9fcbc02bd1a6aa9dec0236e2f529fdf68` |
+| `portable-late-birth-final.log` | `4476f0817043928ff9116d897042f7d621c3ceb632e545e7c7ba18e3ea24cfc6` |
+| `native-late-birth-independent.log` | `c321adff0124655ae17e9607a98c5a487b21842c0898485099d8e118cd809370` |
+| `portable-late-birth-independent.log` | `d0e64cad96f3fb603cb86ea873792bae8f039b189c8d0f95523e512326841c70` |
