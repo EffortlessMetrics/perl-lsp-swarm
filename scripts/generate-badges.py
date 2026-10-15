@@ -120,6 +120,11 @@ class WindowsJob:
         kernel32.AssignProcessToJobObject.restype = wintypes.BOOL
         kernel32.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]
         kernel32.TerminateJobObject.restype = wintypes.BOOL
+        kernel32.QueryInformationJobObject.argtypes = [
+            wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p,
+            wintypes.DWORD, ctypes.c_void_p,
+        ]
+        kernel32.QueryInformationJobObject.restype = wintypes.BOOL
         kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
         kernel32.CloseHandle.restype = wintypes.BOOL
 
@@ -156,14 +161,49 @@ class WindowsJob:
         ):
             self._raise_last_error("AssignProcessToJobObject")
 
+    def active_processes(self) -> int:
+        """Observe associated processes, including descendants after leader exit."""
+        class BasicAccountingInformation(ctypes.Structure):
+            _fields_ = [
+                ("TotalUserTime", ctypes.c_longlong),
+                ("TotalKernelTime", ctypes.c_longlong),
+                ("ThisPeriodTotalUserTime", ctypes.c_longlong),
+                ("ThisPeriodTotalKernelTime", ctypes.c_longlong),
+                ("TotalPageFaultCount", ctypes.c_uint32),
+                ("TotalProcesses", ctypes.c_uint32),
+                ("ActiveProcesses", ctypes.c_uint32),
+                ("TotalTerminatedProcesses", ctypes.c_uint32),
+            ]
+
+        if self._handle is None:
+            raise OSError("Windows job handle is closed; settlement unconfirmed")
+        accounting = BasicAccountingInformation()
+        if not self._kernel32.QueryInformationJobObject(
+            self._handle, 1, ctypes.byref(accounting), ctypes.sizeof(accounting), None
+        ):
+            self._raise_last_error("QueryInformationJobObject")
+        return accounting.ActiveProcesses
+
     def terminate(self) -> list[str]:
         failures: list[str] = []
         if self._handle is None:
-            return failures
+            return ["Windows job handle is closed; settlement unconfirmed"]
         if not self._kernel32.TerminateJobObject(self._handle, 1):
             error = ctypes.get_last_error()
             failures.append(f"TerminateJobObject failed: {ctypes.FormatError(error)}")
-        failures.extend(self.close())
+        # A successful termination request or leader wait does not prove that
+        # descendants have released their files. Retain the job for observation.
+        deadline = time.monotonic() + TERMINATION_GRACE_SECONDS
+        try:
+            while self.active_processes():
+                if time.monotonic() >= deadline:
+                    failures.append("Windows job settlement timed out; descendants may remain")
+                    break
+                time.sleep(0.01)
+        except OSError as error:
+            failures.append(f"Windows job settlement unconfirmed: {error}")
+        finally:
+            failures.extend(self.close())
         return failures
 
     def close(self) -> list[str]:
@@ -564,7 +604,7 @@ def run_ripr(root: Path, timeout_seconds: float = RIPR_TIMEOUT_SECONDS) -> str:
             else:
                 cleanup_failures.append(late_reader_failure)
         if failure is None and windows_job is not None:
-            cleanup_failures.extend(windows_job.close())
+            cleanup_failures.extend(windows_job.terminate())
         lifecycle_released = True
 
         stderr = stderr_bytes.decode("utf-8", errors="replace")

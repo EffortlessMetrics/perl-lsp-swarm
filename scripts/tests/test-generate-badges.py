@@ -946,5 +946,95 @@ class DirectRiprContainmentProof(unittest.TestCase):
         self.assertTrue(job.terminated)
 
 
+class WindowsJobSettlementTests(unittest.TestCase):
+    """Portable contract controls: kernel calls and process launches are fake."""
+
+    def job(self, counts):
+        job = generator.WindowsJob.__new__(generator.WindowsJob)
+        job._handle = 42
+        job._kernel32 = mock.Mock()
+        job._kernel32.TerminateJobObject.return_value = True
+        job._kernel32.CloseHandle.return_value = True
+
+        def query(handle, kind, pointer, size, returned):
+            self.assertEqual(handle, 42)
+            self.assertEqual(job._handle, 42, "job closed before settlement observation")
+            self.assertEqual(kind, 1)
+            self.assertEqual(size, 48)
+            pointer._obj.ActiveProcesses = next(counts)
+            return True
+        job._kernel32.QueryInformationJobObject.side_effect = query
+        return job
+
+    def test_termination_waits_for_descendants_before_closing_job(self):
+        job = self.job(iter([2, 1, 0]))
+        with mock.patch.object(generator.time, "sleep") as sleep:
+            self.assertEqual(job.terminate(), [])
+        self.assertEqual(job._kernel32.QueryInformationJobObject.call_count, 3)
+        self.assertEqual(sleep.call_count, 2)
+        job._kernel32.CloseHandle.assert_called_once_with(42)
+
+    def test_empty_job_completes_without_sleep(self):
+        job = self.job(iter([0]))
+        with mock.patch.object(generator.time, "sleep") as sleep:
+            self.assertEqual(job.terminate(), [])
+        sleep.assert_not_called()
+
+    def test_lingering_descendant_is_not_settled_at_deadline(self):
+        job = self.job(iter([1]))
+        with mock.patch.object(generator.time, "monotonic", side_effect=[0, 10]):
+            failures = job.terminate()
+        self.assertTrue(any("settlement timed out" in failure for failure in failures), failures)
+        job._kernel32.CloseHandle.assert_called_once_with(42)
+
+    def test_query_failure_is_not_empty_job(self):
+        job = self.job(iter([]))
+        job._kernel32.QueryInformationJobObject.side_effect = None
+        job._kernel32.QueryInformationJobObject.return_value = False
+        with mock.patch.object(generator.WindowsJob, "_raise_last_error", side_effect=OSError("query refused")):
+            failures = job.terminate()
+        self.assertTrue(any("query refused" in failure for failure in failures), failures)
+        job._kernel32.CloseHandle.assert_called_once_with(42)
+
+    def test_closed_handle_does_not_prove_settlement(self):
+        job = self.job(iter([]))
+        job._handle = None
+        self.assertTrue(job.terminate())
+        job._kernel32.QueryInformationJobObject.assert_not_called()
+
+    def run_successful_leader(self, failures):
+        process = mock.Mock()
+        process.stdout = io.BytesIO(b"valid producer output")
+        process.stderr = io.BytesIO()
+        process.stdin = io.BytesIO()
+        process.returncode = 0
+        process.poll.return_value = 0
+        job = mock.Mock()
+        job.terminate.return_value = failures
+        job.close.return_value = []
+        root = Path(__file__).parents[2]
+        launcher = Path(__file__).resolve()
+        # Resolve host paths before changing os.name; no native launcher runs.
+        with mock.patch.object(generator.os, "name", "nt"), mock.patch.object(
+            generator, "Path", return_value=launcher
+        ), mock.patch.object(generator, "WindowsJob", return_value=job), mock.patch.object(
+            generator.subprocess, "Popen", return_value=process
+        ):
+            if failures:
+                with self.assertRaisesRegex(RuntimeError, "cleanup incomplete.*settlement"):
+                    generator.run_ripr(root, timeout_seconds=1)
+            else:
+                self.assertEqual(generator.run_ripr(root, timeout_seconds=1), "valid producer output")
+        job.assign.assert_called_once_with(process)
+        job.terminate.assert_called_once_with()
+        job.close.assert_not_called()
+
+    def test_leader_exit_and_pipe_eof_still_settle_the_job(self):
+        self.run_successful_leader([])
+
+    def test_leader_success_cannot_mask_unsettled_descendants(self):
+        self.run_successful_leader(["Windows job settlement timed out; descendants may remain"])
+
+
 if __name__ == "__main__":
     unittest.main()
