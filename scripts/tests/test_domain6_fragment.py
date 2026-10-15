@@ -738,6 +738,84 @@ class Domain6GitQueryTest(unittest.TestCase):
         with self.assertRaisesRegex(self.generator.FragmentError, "malformed git ls-tree object"):
             self.generator.tree_blobs(head, ["plain"])
 
+    def test_tree_reads_bound_native_many_and_long_path_arguments(self) -> None:
+        self.write("present", "content")
+        head = self.commit("argument transport")
+        oid = self.query("rev-parse", "HEAD:present").strip()
+        original = self.generator.git
+        calls = []
+
+        def counted(*args):
+            calls.append(args)
+            return original(*args, cwd=self.root)
+
+        self.generator.git = counted
+        populations = [
+            ["scripts/" + "x" * 110 + f"{i:04}.py" for i in range(400)],
+            ["nested/" + "y" * 700 + f"{i:04}.py" for i in range(64)],
+            ["unicode/" + "\U0001f680" * 180 + ' space"' + f"{i:04}" for i in range(100)],
+        ]
+        for absent in populations:
+            with self.subTest(count=len(absent), length=len(absent[0])):
+                paths = ["present", *absent, "present"]
+                calls.clear()
+                self.assertEqual(self.generator.tree_blobs(head, paths),
+                                 {**dict.fromkeys(absent), "present": oid})
+                self.assertGreater(len(calls), 1)
+                self.assertLess(len(calls), len(paths) // 2, "retain batched reads")
+                self.assertEqual([path for call in calls for path in call[6:]], paths)
+
+        # Exercise the inclusive boundary through native Git, not only a mock.
+        prefix = ["git", "ls-tree", "-r", "-t", "-z", head, "--"]
+        fixed = len(subprocess.list2cmdline(prefix).encode("utf-16-le")) // 2 + 1
+        exact = "z" * (30000 - fixed - 1)
+        calls.clear()
+        self.assertEqual(self.generator.tree_blobs(head, [exact]), {exact: None})
+        self.assertEqual(len(calls), 1)
+
+    def test_tree_read_batches_count_quoted_utf16_and_exact_limit(self) -> None:
+        head = "a" * 40
+        # CreateProcessW has a 32767-unit ceiling; the 30000-unit budget leaves launcher headroom.
+        prefix = ["git", "ls-tree", "-r", "-t", "-z", head, "--"]
+        fixed = len(subprocess.list2cmdline(prefix).encode("utf-16-le")) // 2 + 1
+        exact = "x" * (30000 - fixed - 1)
+        quoted = ('\U0001f680 "' + "\\" * 3) * 2100
+        paths = [exact, quoted, quoted + "suffix", "tail", "tail"]
+        calls = []
+        self.generator.git = lambda *args: calls.append(args) or ""
+        self.assertEqual(self.generator.tree_blobs(head, paths), dict.fromkeys(paths))
+        sizes = [len(subprocess.list2cmdline(["git", *call]).encode("utf-16-le")) // 2 + 1
+                 for call in calls]
+        self.assertEqual(sizes[0], 30000)
+        self.assertTrue(all(size <= 30000 for size in sizes), sizes)
+        self.assertEqual([path for call in calls for path in call[6:]], paths)
+        calls.clear()
+        with self.assertRaisesRegex(self.generator.FragmentError, "argument.*limit"):
+            self.generator.tree_blobs(head, [exact + "x"])
+        self.assertEqual(calls, [], "oversized individual arguments fail before spawning")
+        self.assertEqual(self.generator.tree_blobs(head, []), {})
+        self.assertEqual(calls, [])
+
+    def test_tree_read_later_batch_errors_do_not_become_absence(self) -> None:
+        paths = ["x" * 20000, "y" * 20000]
+        for failure in (self.generator.FragmentError("later batch failed"),
+                        "malformed\0", "100644 blob invalid\tpath\0"):
+            calls = []
+
+            def query(*args):
+                calls.append(args)
+                if len(calls) == 1:
+                    return "100644 blob " + "a" * 40 + "\t" + paths[0] + "\0"
+                if isinstance(failure, Exception):
+                    raise failure
+                return failure
+
+            with self.subTest(failure=str(failure)):
+                self.generator.git = query
+                with self.assertRaises(self.generator.FragmentError):
+                    self.generator.tree_blobs("a" * 40, paths)
+                self.assertEqual(len(calls), 2)
+
     def test_history_errors_and_malformed_output_are_not_cached_as_absence(self) -> None:
         def failed(*args, cwd):
             raise self.generator.FragmentError("unavailable history")

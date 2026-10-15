@@ -2916,22 +2916,42 @@ def tree_blob(commit: str, path: str) -> str | None:
 def tree_blobs(commit: str, paths: list[str]) -> dict[str, str | None]:
     # Absence is proven by ls-tree (empty output), never by a failed
     # rev-parse. ls-tree already supplies the object ID: read all requested
-    # merge paths once instead of spawning ls-tree + rev-parse per path.
+    # merge paths in bounded batches instead of ls-tree + rev-parse per path.
     if not paths:
         return {}
-    listing = git("ls-tree", "-r", "-t", "-z", commit, "--", *paths)
+    # Python serializes argv with list2cmdline before CreateProcessW, whose
+    # 32767 UTF-16-unit limit includes the terminating NUL. Reserve headroom
+    # for the Git-for-Windows launcher expanding argv[0] to its real Git path.
+    # ls-tree has no --pathspec-from-file route: batch by serialized size,
+    # not path count. Use the same 30000-unit budget on every host.
+    prefix = ["git", "ls-tree", "-r", "-t", "-z", commit, "--"]
+    fixed_units = len(subprocess.list2cmdline(prefix).encode("utf-16-le")) // 2 + 1
+    batches: list[list[str]] = [[]]
+    units = fixed_units
+    for path in paths:
+        # Serialization of each argument is independent; add its separator.
+        added = len(subprocess.list2cmdline([path]).encode("utf-16-le")) // 2 + 1
+        if fixed_units + added > 30000:
+            raise FragmentError("git ls-tree argument exceeds Windows command-line limit")
+        if units + added > 30000:
+            batches.append([])
+            units = fixed_units
+        batches[-1].append(path)
+        units += added
     entries = {}
-    for entry in listing.split("\0"):
-        if not entry:
-            continue
-        try:
-            metadata, path = entry.split("\t", 1)
-            _mode, _kind, oid = metadata.split()
-        except ValueError as exc:
-            raise FragmentError("malformed git ls-tree record") from exc
-        if not re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", oid):
-            raise FragmentError("malformed git ls-tree object ID")
-        entries[path] = oid
+    for batch in batches:
+        listing = git(*prefix[1:], *batch)
+        for entry in listing.split("\0"):
+            if not entry:
+                continue
+            try:
+                metadata, path = entry.split("\t", 1)
+                _mode, _kind, oid = metadata.split()
+            except ValueError as exc:
+                raise FragmentError("malformed git ls-tree record") from exc
+            if not re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", oid):
+                raise FragmentError("malformed git ls-tree object ID")
+            entries[path] = oid
     return {path: entries.get(path) for path in paths}
 
 
