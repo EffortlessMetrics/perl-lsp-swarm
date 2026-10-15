@@ -112,6 +112,54 @@ class ConstrainedAdmissionTests(unittest.TestCase):
                 cargo.assert_not_called()
                 self.assert_unallocated()
 
+    def test_unsized_execution_preserves_normal_verbs_and_rechecks_default_guard(self):
+        # Exercise main's execution path, not just preflight. Disk quantities and
+        # Cargo/tree completion are fixtures, not measured workload/ownership proof.
+        fixture_root = self.root
+        for verb in ("build", "check", "test", "run", "bench", "doc"):
+            for scenario, product_status in (("pass", 0), ("product-failure", 101),
+                                              ("reserve-drop", None), ("percent-rise", None)):
+                with self.subTest(verb=verb, scenario=scenario):
+                    self.root = fixture_root / verb / scenario
+                    self.root.mkdir(parents=True)
+                    self.slot = self.root / "slot"
+                    self.paths = {key: self.slot / key for key in self.paths}
+                    lock = self.slot / "cargo-active"
+                    observations = []
+                    args = [verb, "-p", "small", "--locked"]
+
+                    def disk(path):
+                        leased = lock.exists()
+                        observations.append(leased)
+                        if leased and scenario == "reserve-drop":
+                            return self.Usage(64*self.gib, 25*self.gib, 39*self.gib)
+                        if leased and scenario == "percent-rise":
+                            # Plenty of free bytes, but the retained 85% guard fails.
+                            return self.Usage(1000*self.gib, 900*self.gib, 100*self.gib)
+                        return self.Usage(64*self.gib, 4*self.gib, 60*self.gib)
+
+                    def product(command, env):
+                        self.assertTrue(lock.is_dir())
+                        self.assertTrue(all(path.is_dir() for path in self.paths.values()))
+                        self.assertEqual(command[0], "cargo")
+                        self.assertEqual(command[-6:], [verb, "--target-dir",
+                                         str(self.paths["target"]), *args[1:]])
+                        self.assertEqual(env["CARGO_TARGET_DIR"], str(self.paths["target"]))
+                        self.assertEqual(env["CARGO_BUILD_BUILD_DIR"], str(self.paths["build"]))
+                        return product_status
+
+                    result, output, cargo = self.invoke(args, disk=disk, call=product)
+                    self.assertEqual(result, 75 if product_status is None else product_status, output)
+                    self.assertIn(False, observations)  # before acquiring the lease
+                    self.assertIn(True, observations)   # inside that lease
+                    self.assertFalse(lock.exists())
+                    if product_status is None:
+                        cargo.assert_not_called()
+                        self.assertIn("insufficient disk headroom", output)
+                        self.assertFalse(any(path.exists() for path in self.paths.values()))
+                    else:
+                        cargo.assert_called_once()
+
     def test_scoped_budget_cannot_bypass_active_request_and_reuses_after_release(self):
         nested = []
         def product(command, env):
