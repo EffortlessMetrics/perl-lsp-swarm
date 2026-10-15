@@ -127,7 +127,8 @@ impl LspServer {
                     "note": "rename blocker UX proof missing newName"
                 })));
             };
-            let Some((symbol, byte_offset)) = self.refactor_runtime_symbol(uri, line, character)
+            let Some((symbol, byte_offset)) =
+                self.refactor_runtime_symbol(uri, line, character, package_preview)
             else {
                 return Ok(Some(json!({
                     "provider": "rename",
@@ -459,7 +460,8 @@ impl LspServer {
             let (line, character) = req_position(&params)?;
             let include_edit_rollback_proof =
                 params.get("includeEditRollbackProof").and_then(Value::as_bool).unwrap_or(false);
-            let Some((symbol, byte_offset)) = self.refactor_runtime_symbol(uri, line, character)
+            let Some((symbol, byte_offset)) =
+                self.refactor_runtime_symbol(uri, line, character, false)
             else {
                 return self.record_safe_delete_decision_receipt(json!({
                     "provider": "safe_delete",
@@ -773,7 +775,8 @@ impl LspServer {
         let source_guard_context = source_guard_request.as_ref().and_then(|request| {
             let uri = req_uri(request).ok()?;
             let (line, character) = req_position(request).ok()?;
-            let (symbol, byte_offset) = self.refactor_runtime_symbol(uri, line, character)?;
+            let (symbol, byte_offset) =
+                self.refactor_runtime_symbol(uri, line, character, false)?;
             Some((uri, line, character, symbol, usize::try_from(byte_offset).ok()?))
         });
         let source_guard_result = source_guard_context.as_ref().and_then(
@@ -1076,16 +1079,20 @@ impl LspServer {
         uri: &str,
         line: u32,
         character: u32,
+        qualified: bool,
     ) -> Option<(String, u32)> {
         let documents = self.documents_guard();
         let doc = self.get_document(&documents, uri)?;
         let offset = self.pos16_to_offset(doc, line, character);
-        // Qualified names must survive extraction: `Foo::Bar` truncated to
-        // `Foo` resolves no semantic entity, so every refactor receipt on a
-        // package or qualified symbol fell back to `compiler_missing` even
-        // with both files open and indexed (#16644).
-        let (start, end) = Self::qualified_symbol_span_at(&doc.text, offset)?;
-        let symbol = doc.text.get(start..end)?.to_string();
+        let symbol = if qualified {
+            // The canonical package preview needs the complete `Foo::Bar`
+            // lookup key; a truncated `Foo` falls back to `compiler_missing`.
+            let (start, end) = Self::qualified_symbol_span_at(&doc.text, offset)?;
+            doc.text.get(start..end)?.to_string()
+        } else {
+            // Preserve generic receipt and live safe-delete token semantics.
+            self.get_token_at_position(&doc.text, offset)
+        };
         if symbol.is_empty() {
             return None;
         }

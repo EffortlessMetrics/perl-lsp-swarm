@@ -3721,10 +3721,7 @@ fn refactor_runtime_blocker_ux_safe_delete_live_pilot_blocks_non_subroutine_and_
             }]
         })))?
         .ok_or("missing package-wide safe-delete blocker result")?;
-    // The cursor sits inside `package SafeDelete::Boundary;`, so the runtime
-    // symbol extraction reports the full qualified package name rather than
-    // the trailing segment alone (#16644).
-    assert_safe_delete_live_source_guard_blocked(&package_result, "SafeDelete::Boundary")?;
+    assert_safe_delete_live_source_guard_blocked(&package_result, "Boundary")?;
 
     let explanation = explain_provider_decision(&server, "safe_delete")?;
     let request_receipt = request_receipt(&explanation)?;
@@ -3732,7 +3729,7 @@ fn refactor_runtime_blocker_ux_safe_delete_live_pilot_blocks_non_subroutine_and_
         request_receipt.get("provider_action").and_then(Value::as_str),
         Some("perl.safeDeleteSymbol")
     );
-    assert_eq!(request_receipt.get("symbol").and_then(Value::as_str), Some("SafeDelete::Boundary"));
+    assert_eq!(request_receipt.get("symbol").and_then(Value::as_str), Some("Boundary"));
     assert_eq!(
         request_receipt.get("reason").and_then(Value::as_str),
         Some("not_source_backed_exact_subroutine_definition")

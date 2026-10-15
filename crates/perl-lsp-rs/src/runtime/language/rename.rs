@@ -1040,7 +1040,7 @@ impl LspServer {
     /// [`Self::token_span_at`] stops at the first non-identifier character, so a
     /// cursor on an identifier segment of `Foo::Bar` yields only that segment
     /// (`Foo` or `Bar`). The semantic definition lookup resolves full canonical
-    /// package names by `ExactQualified` rank, so the refactor receipts must
+    /// package names by `ExactQualified` rank, so package previews must
     /// hand it the whole qualified span; a truncated segment resolves no entity
     /// and the receipt falls back to `compiler_missing` even though the
     /// compiler facts are present (#16644).
