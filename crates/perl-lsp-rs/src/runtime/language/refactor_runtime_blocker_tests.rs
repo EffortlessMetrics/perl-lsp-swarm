@@ -4674,10 +4674,7 @@ fn package_rename_preview_does_not_plan_against_stale_document_16644()
         result.get("compiler_receipt").is_none_or(Value::is_null),
         "stale document must not supply a compiler plan: {result}"
     );
-    assert_ne!(result.get("decision").and_then(Value::as_str), Some("allowed"));
-    assert_eq!(result.get("edits_applied").and_then(Value::as_bool), Some(false));
-    assert_eq!(result.get("returned_workspace_edit_count").and_then(Value::as_u64), Some(0));
-    assert_eq!(workspace_edit_change_count(&result["workspace_edit"])?, 0);
+    assert_package_preview_stale(&result)?;
     Ok(())
 }
 
@@ -4713,10 +4710,7 @@ fn package_rename_preview_does_not_plan_stale_definition_from_fresh_use_site_166
         result.get("compiler_receipt").is_none_or(Value::is_null),
         "fresh caller must not consume a stale definition's compiler plan: {result}"
     );
-    assert_ne!(result.get("decision").and_then(Value::as_str), Some("allowed"));
-    assert_eq!(result.get("edits_applied").and_then(Value::as_bool), Some(false));
-    assert_eq!(result.get("returned_workspace_edit_count").and_then(Value::as_u64), Some(0));
-    assert_eq!(workspace_edit_change_count(&result["workspace_edit"])?, 0);
+    assert_package_preview_stale(&result)?;
     Ok(())
 }
 
@@ -4752,5 +4746,61 @@ fn refactor_runtime_blocker_receipt_keeps_matching_sigil_variable_target_16644()
         workspace_edit_texts_for_uri(live_edit, SAFE_DELETE_BOUNDARY_URI)?,
         vec!["$RENAMED_CONFIG"]
     );
+    Ok(())
+}
+
+#[cfg(feature = "workspace")]
+fn assert_package_preview_stale(result: &Value) -> Result<(), Box<dyn std::error::Error>> {
+    assert_eq!(result.get("decision").and_then(Value::as_str), Some("blocked"));
+    assert_eq!(result.get("reason").and_then(Value::as_str), Some("stale_fact"));
+    assert_eq!(result.get("freshness").and_then(Value::as_str), Some("stale"));
+    assert_eq!(
+        result.get("fallback_state").and_then(Value::as_str),
+        Some("refresh_workspace_facts")
+    );
+    assert_ne!(result.pointer("/package_pilot/eligible").and_then(Value::as_bool), Some(true));
+    assert_eq!(
+        result
+            .pointer("/fallback_noise/compiler_plan_edit_count")
+            .and_then(Value::as_u64)
+            .unwrap_or(0),
+        0
+    );
+    let message = result
+        .get("user_message")
+        .and_then(Value::as_str)
+        .ok_or("missing stale preview message")?;
+    assert!(
+        message.contains("stale")
+            && message.contains("Refresh")
+            && !message.contains("compiler_missing"),
+        "{message}"
+    );
+    assert_eq!(result.get("edits_applied").and_then(Value::as_bool), Some(false));
+    assert_eq!(result.get("returned_workspace_edit_count").and_then(Value::as_u64), Some(0));
+    assert_eq!(workspace_edit_change_count(&result["workspace_edit"])?, 0);
+    Ok(())
+}
+
+#[cfg(feature = "workspace")]
+#[test]
+fn package_rename_preview_keeps_supported_target_when_position_has_no_symbol_16644()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = create_server();
+    let uri = "file:///workspace/no-symbol.pl";
+    open_document(&server, uri, "\n")?;
+    let result = server.handle_execute_command(Some(json!({
+        "command": "perl.previewPackageRename",
+        "arguments": [{"textDocument": {"uri": uri}, "position": {"line": 0, "character": 0}, "newName": "Foo::Baz"}]
+    })))?.ok_or("missing no-symbol package preview")?;
+    assert_eq!(result.get("new_name").and_then(Value::as_str), Some("Foo::Baz"));
+    assert_eq!(result.get("decision").and_then(Value::as_str), Some("fallback"));
+    assert_ne!(result.get("reason").and_then(Value::as_str), Some("invalid_new_name"));
+    assert_ne!(result.pointer("/package_pilot/eligible").and_then(Value::as_bool), Some(true));
+    let message =
+        result.get("user_message").and_then(Value::as_str).ok_or("missing unavailable message")?;
+    assert!(message.contains("Foo::Baz") && message.contains("unavailable"), "{message}");
+    assert_eq!(result.get("edits_applied").and_then(Value::as_bool), Some(false));
+    assert_eq!(workspace_edit_change_count(&result["workspace_edit"])?, 0);
     Ok(())
 }

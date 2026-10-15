@@ -233,9 +233,10 @@ impl LspServer {
             }
 
             let _ = self.check_index_readiness(IndexReadinessPolicy::WaitBriefly);
+            let observed_stale =
+                package_preview && self.workspace_index_stale_for_any_open_document();
             let facts_unavailable = if package_preview {
-                !self.package_rename_target_is_supported(new_name)
-                    || self.workspace_index_stale_for_any_open_document()
+                !self.package_rename_target_is_supported(new_name) || observed_stale
             } else {
                 self.workspace_index_stale_for_document(uri)
             };
@@ -293,7 +294,7 @@ impl LspServer {
                     },
                 );
 
-            let receipt = json!({
+            let mut receipt = json!({
                 "provider": "rename",
                 "symbol": symbol,
                 "new_name": new_name,
@@ -313,6 +314,12 @@ impl LspServer {
                 ),
                 "no_live_behavior_change": true
             });
+            if package_preview {
+                receipt["workspace_facts_stale"] = json!(observed_stale);
+                if observed_stale {
+                    receipt["fallback_noise"]["fallback_state"] = json!("workspace_index_stale");
+                }
+            }
             self.record_provider_decision_trace("rename", &receipt);
             Ok(Some(receipt))
         }
@@ -337,14 +344,24 @@ impl LspServer {
         &self,
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
+        let requested_new_name = params
+            .as_ref()
+            .and_then(|params| params.get("newName"))
+            .and_then(Value::as_str)
+            .map(str::to_owned);
         let Some(mut receipt) = self.rename_runtime_receipt(params, true)? else {
             return Ok(None);
         };
+        if let Some(name) = requested_new_name
+            && let Some(object) = receipt.as_object_mut()
+        {
+            object.entry("new_name".to_string()).or_insert(json!(name));
+        }
         let supported_new_name = receipt
             .get("new_name")
             .and_then(Value::as_str)
-            .is_some_and(|name| self.package_rename_target_is_supported(name));
-        let planned_workspace_edit = if supported_new_name {
+            .map(|name| self.package_rename_target_is_supported(name));
+        let planned_workspace_edit = if supported_new_name != Some(false) {
             receipt.get("live_provider_result").cloned().unwrap_or_else(|| json!({"changes": {}}))
         } else {
             json!({"changes": {}})
@@ -1834,7 +1851,7 @@ fn rename_live_provider_state(
 
 fn enrich_package_rename_preview_decision_trace(
     object: &mut serde_json::Map<String, Value>,
-    supported_new_name: bool,
+    supported_new_name: Option<bool>,
 ) {
     let package_pilot = object.get("package_pilot").and_then(Value::as_object);
     let fallback_noise = object.get("fallback_noise").and_then(Value::as_object);
@@ -1857,11 +1874,13 @@ fn enrich_package_rename_preview_decision_trace(
 
     let first_blocker = blocker_reasons.iter().filter_map(Value::as_str).next().unwrap_or_default();
     let (decision, reason, fact_source, confidence, freshness, fallback_state) =
-        if !supported_new_name {
+        if supported_new_name == Some(false) {
             // This target is outside the preview's supported identifier subset.
             // Refusal is runtime-owned and independent of index freshness; the
             // planning path applies the same predicate before querying facts.
             ("blocked", "invalid_new_name", "provider_runtime", "high", "not_applicable", "no_edit")
+        } else if object.get("workspace_facts_stale").and_then(Value::as_bool) == Some(true) {
+            ("blocked", "stale_fact", "compiler_fact", "low", "stale", "refresh_workspace_facts")
         } else {
             match (eligible, pilot_reason, blocker_count, first_blocker, fallback_state) {
                 (Some(true), _, _, _, _) => (
@@ -1971,6 +1990,13 @@ fn package_rename_preview_message(receipt: &Value) -> String {
         return format!(
             "Package rename preview refused for `{symbol}` -> `{new_name}`: \
              `{new_name}` is not a supported package rename target. No edits were applied."
+        );
+    }
+
+    if receipt.get("reason").and_then(Value::as_str) == Some("stale_fact") {
+        return format!(
+            "Package rename preview unavailable for `{symbol}` -> `{new_name}`: \
+             workspace facts are stale. Refresh workspace facts before retrying. No edits were applied."
         );
     }
 
@@ -2421,6 +2447,17 @@ mod package_name_validation_tests {
     #![allow(clippy::expect_used)]
 
     use super::LspServer;
+
+    #[test]
+    fn absent_target_is_availability_fallback_not_invalid_name() {
+        let mut receipt = serde_json::Map::new();
+        super::enrich_package_rename_preview_decision_trace(&mut receipt, None);
+        assert_eq!(receipt.get("decision").and_then(serde_json::Value::as_str), Some("fallback"));
+        assert_eq!(
+            receipt.get("reason").and_then(serde_json::Value::as_str),
+            Some("compiler_missing")
+        );
+    }
 
     #[test]
     fn accepts_supported_bare_and_qualified_package_targets() {
