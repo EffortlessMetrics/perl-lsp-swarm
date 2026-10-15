@@ -2910,37 +2910,33 @@ def resolution_files(sha: str, first_parent: str) -> list[str]:
 
 
 def tree_blob(commit: str, path: str) -> str | None:
+    return tree_blobs(commit, [path])[path]
+
+
+def tree_blobs(commit: str, paths: list[str]) -> dict[str, str | None]:
     # Absence is proven by ls-tree (empty output), never by a failed
-    # rev-parse: any git error below raises instead of masquerading as a
-    # deletion. Error direction stays fail-closed toward unit creation.
-    listing = git("ls-tree", commit, "--", path)
-    if not [line for line in listing.splitlines() if line.strip()]:
-        return None
-    proc = subprocess.run(
-        ["git", "rev-parse", f"{commit}:{path}"],
-        cwd=REPO_ROOT,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        check=False,
-    )
-    if proc.returncode != 0:
+    # rev-parse. ls-tree already supplies the object ID: read all requested
+    # merge paths once instead of spawning ls-tree + rev-parse per path.
+    if not paths:
+        return {}
+    listing = git("ls-tree", "-r", "-t", "-z", commit, "--", *paths)
+    entries = {}
+    for entry in listing.split("\0"):
+        if not entry:
+            continue
         try:
-            err = proc.stderr.decode("utf-8", errors="strict").strip()
-        except UnicodeDecodeError as exc:
-            raise FragmentError(
-                f"git rev-parse produced undecodable stderr: {exc}"
-            ) from exc
-        raise FragmentError(f"git rev-parse {commit}:{path} failed: {err}")
-    try:
-        return proc.stdout.decode("utf-8", errors="strict").strip()
-    except UnicodeDecodeError as exc:
-        raise FragmentError(
-            f"undecodable blob id for {commit}:{path}: {exc}"
-        ) from exc
+            metadata, path = entry.split("\t", 1)
+            _mode, _kind, oid = metadata.split()
+        except ValueError as exc:
+            raise FragmentError("malformed git ls-tree record") from exc
+        if not re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", oid):
+            raise FragmentError("malformed git ls-tree object ID")
+        entries[path] = oid
+    return {path: entries.get(path) for path in paths}
 
 
 class RangeHolderCache:
-    """Bounded, render-local memoization for exact range-holder queries."""
+    """Bounded, render-local path histories shared by object queries."""
 
     def __init__(self, repo_root: Path, start_sha: str, observed_head: str,
                  query=git, max_entries: int = 1024) -> None:
@@ -2951,26 +2947,56 @@ class RangeHolderCache:
         self.observed_head = observed_head
         self.query = query
         self.max_entries = max_entries
-        self._values: OrderedDict[tuple, tuple[object, tuple[str, ...]]] = OrderedDict()
+        self._values: OrderedDict[tuple, tuple[object, dict[str, tuple[str, ...]]]] = OrderedDict()
 
     def holders(self, blob_id: str, path: str) -> tuple[str, ...]:
         key = (str(self.repo_root), self.start_sha, self.observed_head,
-               blob_id, path, id(self.query))
+               path, id(self.query))
         if key in self._values:
             self._values.move_to_end(key)
-            return self._values[key][1]
+            return self._values[key][1].get(blob_id, ())
         raw = self.query(
-            "log", "--format=%H", f"--find-object={blob_id}",
+            "log", "--full-history", "--raw", "--no-abbrev", "-z", "-t", "--format=commit %H",
             f"{self.start_sha}..{self.observed_head}", "--", path,
             cwd=self.repo_root,
         )
-        value = tuple(sorted({line for line in raw.splitlines() if line.strip()}))
+        # Pickaxe (--find-object) walks histories that ordinary path
+        # simplification can hide after a merge. Preserve that full walk,
+        # pathspec and rename behavior. It matches either side of each raw filepair,
+        # including equal IDs (mode changes / unchanged-content renames).
+        # -t preserves its implicit tree-object matching as well.
+        holders: dict[str, set[str]] = {}
+        commit = None
+        records = iter(raw.split("\0"))
+        for record in records:
+            record = record.lstrip("\n")
+            if not record:
+                continue
+            if re.fullmatch(r"commit (?:[0-9a-f]{40}|[0-9a-f]{64})", record):
+                commit = record.removeprefix("commit ")
+                continue
+            fields = record.removeprefix(":").split()
+            if not record.startswith(":") or len(fields) != 5 or commit is None:
+                raise FragmentError("malformed git raw history record")
+            _old_mode, _new_mode, old, new, status = fields
+            try:
+                next(records)  # NUL-delimited path, never a history header.
+                if status.startswith(("R", "C")):
+                    next(records)
+            except StopIteration as exc:
+                raise FragmentError("truncated git raw history path") from exc
+            for oid in (old, new):
+                if not re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", oid):
+                    raise FragmentError("malformed git raw history object ID")
+                if oid != "0" * len(oid):
+                    holders.setdefault(oid, set()).add(commit)
+        value = {oid: tuple(sorted(commits)) for oid, commits in holders.items()}
         # Keep the callable alive until eviction so its numeric identity cannot
         # be recycled while a result for it remains cached.
         self._values[key] = (self.query, value)
         if len(self._values) > self.max_entries:
             self._values.popitem(last=False)
-        return value
+        return value.get(blob_id, ())
 
 
 def subject_shape(subject: str) -> str:
@@ -3082,8 +3108,9 @@ def classify_merges(
             continue
         uncovered: list[str] = []
         covered_notes: list[str] = []
+        blobs = tree_blobs(sha, files)
         for path in files:
-            blob_id = tree_blob(sha, path)
+            blob_id = blobs[path]
             if blob_id is None:
                 uncovered.append(f"{path} (deleted-in-merge)")
                 continue

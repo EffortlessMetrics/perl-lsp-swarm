@@ -142,6 +142,12 @@ def load_artifact() -> dict:
     return json.loads(ARTIFACT.read_text(encoding="utf-8"))
 
 
+def raw_history_fixture(commit: str) -> str:
+    return (
+        f"commit {commit}\0\n:100644 100644 {'a' * 40} {'b' * 40} M\0path\0"
+    )
+
+
 class Domain6FragmentTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -183,36 +189,37 @@ class Domain6FragmentTest(unittest.TestCase):
 
         def query(*args, cwd):
             calls.append((args, cwd))
-            return f"result-{len(calls)}\n"
+            return raw_history_fixture(f"{len(calls):040x}")
 
         root = REPO_ROOT.resolve()
         cache = generator.RangeHolderCache(root, "start-a", "head-a", query, 3)
-        self.assertEqual(cache.holders("blob-a", "path-a"), ("result-1",))
-        self.assertEqual(cache.holders("blob-a", "path-a"), ("result-1",))
+        self.assertEqual(cache.holders("a" * 40, "path-a"), (f"{1:040x}",))
+        self.assertEqual(cache.holders("a" * 40, "path-a"), (f"{1:040x}",))
+        self.assertEqual(cache.holders("b" * 40, "path-a"), (f"{1:040x}",))
+        self.assertEqual(cache.holders("c" * 40, "path-a"), ())
         self.assertEqual(len(calls), 1)
-        self.assertEqual(cache.holders("blob-b", "path-a"), ("result-2",))
-        self.assertEqual(cache.holders("blob-a", "path-b"), ("result-3",))
+        self.assertEqual(cache.holders("a" * 40, "path-b"), (f"{2:040x}",))
         cache.start_sha = "start-b"
-        self.assertEqual(cache.holders("blob-a", "path-a"), ("result-4",))
+        self.assertEqual(cache.holders("a" * 40, "path-a"), (f"{3:040x}",))
         cache.start_sha = "start-a"
         cache.observed_head = "head-b"
-        self.assertEqual(cache.holders("blob-a", "path-a"), ("result-5",))
+        self.assertEqual(cache.holders("a" * 40, "path-a"), (f"{4:040x}",))
         cache.observed_head = "head-a"
         cache.repo_root = root.parent
-        self.assertEqual(cache.holders("blob-a", "path-a"), ("result-6",))
+        self.assertEqual(cache.holders("a" * 40, "path-a"), (f"{5:040x}",))
         cache.repo_root = root
 
         def alternate_query(*args, cwd):
             calls.append((args, cwd))
-            return "alternate-result\n"
+            return raw_history_fixture("f" * 40)
 
         cache.query = alternate_query
-        self.assertEqual(cache.holders("blob-a", "path-a"), ("alternate-result",))
+        self.assertEqual(cache.holders("a" * 40, "path-a"), ("f" * 40,))
         cache.query = query
         # The original entry was evicted after exceeding the three-entry cap.
-        self.assertEqual(cache.holders("blob-a", "path-a"), ("result-8",))
+        self.assertEqual(cache.holders("a" * 40, "path-a"), (f"{7:040x}",))
         fresh_render = generator.RangeHolderCache(root, "start-a", "head-a", query)
-        self.assertEqual(fresh_render.holders("blob-a", "path-a"), ("result-9",))
+        self.assertEqual(fresh_render.holders("a" * 40, "path-a"), (f"{8:040x}",))
         self.assertLessEqual(len(cache._values), 3)
         self.assertEqual(calls[0][1], root)
 
@@ -235,15 +242,15 @@ class Domain6FragmentTest(unittest.TestCase):
             def __call__(self, *args, cwd):
                 return self.result
 
-        first = Query("first\n")
+        first = Query(raw_history_fixture("1" * 40))
         first_ref = weakref.ref(first)
         cache = generator.RangeHolderCache(REPO_ROOT, "start", "head", first, 1)
-        self.assertEqual(cache.holders("blob", "path"), ("first",))
-        cache.query = Query("second\n")
+        self.assertEqual(cache.holders("a" * 40, "path"), ("1" * 40,))
+        cache.query = Query(raw_history_fixture("2" * 40))
         del first
         gc.collect()
         self.assertIsNotNone(first_ref())
-        self.assertEqual(cache.holders("blob", "path"), ("second",))
+        self.assertEqual(cache.holders("a" * 40, "path"), ("2" * 40,))
         gc.collect()
         self.assertIsNone(first_ref())
         self.assertEqual(len(cache._values), 1)
@@ -603,6 +610,148 @@ class Domain6FragmentTest(unittest.TestCase):
             0,
             f"regeneration is not byte-identical:\n{proc.stdout}\n{proc.stderr}",
         )
+
+
+class Domain6GitQueryTest(unittest.TestCase):
+    """Real Git remains the oracle; no historical fixture artifacts are trusted."""
+
+    def setUp(self) -> None:
+        import importlib.util
+        import os
+        import tempfile
+
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.root = Path(temp.name)
+        # Foreign-repository fixtures must ignore calling-hook selectors,
+        # signing, hooks, templates and newline policies from the host.
+        self.env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+        empty = self.root / "empty"
+        empty.mkdir()
+        self.env.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=str(empty / "config"),
+                        GIT_CONFIG_SYSTEM=str(empty / "config"),
+                        GIT_AUTHOR_NAME="Domain6 fixture", GIT_COMMITTER_NAME="Domain6 fixture",
+                        GIT_AUTHOR_EMAIL="fixture@example.invalid",
+                        GIT_COMMITTER_EMAIL="fixture@example.invalid")
+        self.query("init", "-q", "--initial-branch=main", "--object-format=sha1",
+                   f"--template={empty}")
+        self.query("config", "core.hooksPath", str(empty))
+        self.query("config", "commit.gpgsign", "false")
+        self.query("config", "core.autocrlf", "false")
+        spec = importlib.util.spec_from_file_location("domain6_git_fixture", GENERATOR)
+        self.generator = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.generator)
+
+    def query(self, *args, cwd=None) -> str:
+        proc = subprocess.run(["git", *args], cwd=cwd or self.root, env=self.env,
+                              capture_output=True, text=True, check=False)
+        if proc.returncode:
+            error = self.generator.FragmentError if hasattr(self, "generator") else RuntimeError
+            raise error(proc.stderr)
+        return proc.stdout
+
+    def write(self, path: str, value: str) -> None:
+        target = self.root / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(value, encoding="utf-8")
+
+    def commit(self, subject: str) -> str:
+        self.query("add", "-A")
+        self.query("commit", "-qm", subject)
+        return self.query("rev-parse", "HEAD").strip()
+
+    def test_path_history_matches_find_object_and_shares_reads(self) -> None:
+        self.write("file", "base\n")
+        start = self.commit("base")
+        self.write("file", "A\n")
+        self.write("dir/one", "X\n")
+        self.write("dir/two", "Y\n")
+        self.commit("A and pair")
+        blob_a = self.query("rev-parse", "HEAD:file").strip()
+        blob_x = self.query("rev-parse", "HEAD:dir/one").strip()
+        tree = self.query("rev-parse", "HEAD:dir").strip()
+        self.write("file", "B\n")
+        self.commit("B")
+        self.write("file", "A\n")
+        self.write("dir/one", "Y\n")
+        self.write("dir/two", "X\n")
+        swap = self.commit("revert and swap")
+        self.query("mv", "file", "renamed")
+        rename = self.commit("unchanged-content rename")
+        self.query("update-index", "--chmod=+x", "renamed")
+        self.query("commit", "-qm", "mode only")
+        mode = self.query("rev-parse", "HEAD").strip()
+        (self.root / "renamed").unlink()
+        self.commit("delete")
+        self.query("checkout", "-qb", "side")
+        self.write("dir/one", "side\n")
+        self.commit("side")
+        self.query("checkout", "-q", "main")
+        self.write("other", "main\n")
+        self.commit("main")
+        self.query("merge", "--no-ff", "-qm", "adopt side", "side")
+        self.query("checkout", "-qb", "discarded")
+        self.write("dir/one", "transient\n")
+        transient_commit = self.commit("temporary side content")
+        transient = self.query("rev-parse", "HEAD:dir/one").strip()
+        self.write("dir/one", "side\n")
+        self.commit("revert side before merging")
+        self.query("checkout", "-q", "main")
+        self.query("merge", "--no-ff", "-qm", "merge treesame side", "discarded")
+        head = self.query("rev-parse", "HEAD").strip()
+        calls = []
+
+        def counted(*args, cwd):
+            calls.append(args)
+            return self.query(*args, cwd=cwd)
+
+        cache = self.generator.RangeHolderCache(self.root, start, head, counted)
+        for path in ("file", "renamed", "dir", "*"):
+            for oid in (blob_a, blob_x, tree, transient, "f" * 40):
+                with self.subTest(path=path, oid=oid):
+                    oracle = self.query("log", "--format=%H", f"--find-object={oid}",
+                                        f"{start}..{head}", "--", path)
+                    self.assertEqual(cache.holders(oid, path), tuple(sorted(oracle.splitlines())))
+        self.assertEqual(len(calls), 4, "one history read per path, shared by all object queries")
+        self.assertIn(swap, cache.holders(blob_x, "dir"))
+        self.assertIn(rename, cache.holders(blob_a, "*"))
+        self.assertIn(mode, cache.holders(blob_a, "renamed"))
+        self.assertIn(transient_commit, cache.holders(transient, "dir"))
+
+    def test_tree_reads_keep_exact_paths_absence_and_errors(self) -> None:
+        names = ["plain", "nested/leaf", "tab\tname", "line\nname", "special[a]"]
+        # Newline/tab paths are valid Git paths on POSIX; Windows cannot create them.
+        import os
+        if os.name == "nt":
+            names = ["plain", "nested/leaf", "special[a]"]
+        for name in names:
+            self.write(name, name)
+        names.append("nested")
+        head = self.commit("unusual paths")
+        self.generator.git = self.query
+        expected = {name: self.query("rev-parse", f"{head}:{name}").strip() for name in names}
+        expected["absent"] = None
+        self.assertEqual(self.generator.tree_blobs(head, names + ["absent"]), expected)
+        with self.assertRaises(self.generator.FragmentError):
+            self.generator.tree_blobs("f" * 40, ["plain"])
+        self.generator.git = lambda *args: "100644 blob invalid\tplain\0"
+        with self.assertRaisesRegex(self.generator.FragmentError, "malformed git ls-tree object"):
+            self.generator.tree_blobs(head, ["plain"])
+
+    def test_history_errors_and_malformed_output_are_not_cached_as_absence(self) -> None:
+        def failed(*args, cwd):
+            raise self.generator.FragmentError("unavailable history")
+
+        cache = self.generator.RangeHolderCache(self.root, "start", "head", failed)
+        with self.assertRaisesRegex(self.generator.FragmentError, "unavailable history"):
+            cache.holders("a" * 40, "path")
+        self.assertEqual(len(cache._values), 0)
+        for malformed in ("not raw history\0", "commit " + "1" * 40 + "\0\n:bad\0"):
+            with self.subTest(malformed=malformed):
+                cache.query = lambda *args, cwd: malformed
+                with self.assertRaises(self.generator.FragmentError):
+                    cache.holders("a" * 40, "path")
+                self.assertEqual(len(cache._values), 0)
 
 
 if __name__ == "__main__":
