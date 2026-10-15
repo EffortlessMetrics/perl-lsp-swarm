@@ -742,10 +742,12 @@ def check_capacity(paths, env, budget=None):
         policy = env.get("CARGO_STORAGE_POLICY", "percent")
         if policy not in ("percent", "byte-budget"):
             raise Denied("unknown CARGO_STORAGE_POLICY")
-        if "MIN_FREE_GB" not in env:
-            raise Denied("capacity requires an explicit reserve: use --preflight to capture scope, then --budget-file with a qualified reserve and total additional growth; compatibility host policies require MIN_FREE_GB")
+        if policy == "byte-budget" and "MIN_FREE_GB" not in env:
+            raise Denied("byte-budget requires an explicit reserve in MIN_FREE_GB; prefer --preflight then --budget-file for a scope-bound qualified reserve and total additional growth")
         try:
-            reserve_gib = float(env["MIN_FREE_GB"])
+            # Preserve supported unsized callers until their owners supply
+            # measured budgets automatically. Default retirement is not active.
+            reserve_gib = float(env.get("MIN_FREE_GB", "40"))
             floor = reserve_gib * 1024 ** 3
             if not math.isfinite(floor) or floor <= 0:
                 raise ValueError()

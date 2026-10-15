@@ -12,7 +12,7 @@ Inventory at main `4cc7960e61b685ce3b7e4cb9fe43b929bf900972`:
 
 | Entry | Capacity behavior | Adoption owner/action |
 | --- | --- | --- |
-| `scripts/cargo-admitted`, direct Python, admitted just recipes | Python percent policy defaulted to 40 GiB and 85% used; environment byte-budget also defaulted/clamped reserve to 40 GiB | This change removes implicit reserve and clamp. Supply scope-bound budget, or explicit compatibility host reserve. `cargo_cohort.py` consumes an already held admission lease rather than choosing a new capacity policy. |
+| `scripts/cargo-admitted`, direct Python, admitted just recipes | Python percent policy defaulted to 40 GiB and 85% used; environment byte-budget also defaulted/clamped reserve to 40 GiB | Default percent behavior is retained until caller migration. Only explicitly selected byte-budget requires its own reserve and removes the clamp; scope-bound budget remains preferred. `cargo_cohort.py` consumes an already held admission lease rather than choosing a new capacity policy. |
 | `scripts/cargo-safe` heavy verbs (`build`, `check`, `test`, `run`, `bench`, `doc`, `clippy`, `nextest`) | Separate Bash default 40 GiB/85%, shared target and optional sccache; checks only devplane before its lock | Migrate callers through canonical execution under #9567/#3230. Do not chain wrappers or remove this guard independently. |
 | `justfile` `cargo_safe` alias and direct legacy calls; `.cargo/config.toml` guidance; repository skills/tasks | Legacy projections or guidance, not additional threshold implementations | Adapter owners must preserve selected obligations, arguments, failure status and narrow rerun. Inventory aliases with `rg -n 'cargo_safe|cargo-safe|cargo-admitted' justfile .cargo .agents scripts`. |
 | `scripts/ci/pr_smoke_disk_guard.py` and CI workflow | Separate measured tier: 85 GiB footprint + 5 GiB reserve; not a 40 GiB default | Keep its independent measured protection; a focused local result cannot resize the hosted broad tier. |
@@ -75,8 +75,8 @@ Neither `basis_verified:false` nor a budget reference independently verifies siz
    paths only for the selected invocation; no global configuration change is needed.
 3. Unset capacity environment settings for the scope-bound route. Run
    `python scripts/cargo_admitted.py --preflight <exact Cargo arguments>`.
-   With no sizing this returns 75 and emits a DENY scope without allocating or
-   launching Cargo. Capture the emitted scope, rather than reconstructing it.
+   This uses the retained compatibility default and may pass or refuse capacity;
+   either result emits scope without allocating or launching Cargo. Capture the emitted scope, rather than reconstructing it.
 4. Create the existing schema-v1 budget file described in
    [constrained Cargo builds](CONSTRAINED_CARGO_BUILDS.md), with that exact scope,
    positive integer reserve/growth byte counts and a reference to the reviewed
@@ -95,17 +95,64 @@ Neither `basis_verified:false` nor a budget reference independently verifies siz
    callers have budgets. Roll back source/caller changes if qualification fails;
    preserve caches, original leases and investigation evidence for owner review.
 
-Compatibility `percent` and environment `byte-budget` policies require explicit
-positive finite `MIN_FREE_GB`. Byte-budget also requires total growth and its
-evidence reference. These remain operator host policies, not scope-bound measured
+Compatibility `percent` keeps its default 40 GiB reserve/85% used ceiling.
+Explicit environment `byte-budget` requires positive finite `MIN_FREE_GB`, total
+growth and its evidence reference. These remain operator host policies, not scope-bound measured
 profiles. No automatic small-workload sizing is supplied by this change.
 
 ## Regression evidence ceiling
 
 `python -m unittest discover -s scripts/tests -p 'test_cargo_admitted*.py'`
 exercises existing budget scope, destination, recheck and lease controls plus
-missing-sizing refusal even with abundant free space, retained preflight scope,
-and a declared byte-budget boundary below the old floor. Fixture byte counts are
+ordinary default preflight success and insufficient-space refusal, explicit
+byte-budget missing-reserve refusal, and a declared boundary below the old floor. Fixture byte counts are
 arithmetic controls only. Native Windows skips Linux ownership fixtures; a green
 Python result does not qualify Windows descendant settlement or representative
 Rust workload sizing. Broad builds are unnecessary to test this policy arithmetic.
+
+
+## Caller migration and exact remediation
+
+No ordinary caller found on the inspected main automatically supplies a **measured**
+budget. Removing the default now would replace normal commands with manual sizing,
+so default retirement is held. A budget file generator alone is not measured sizing.
+
+| Caller | Automatic measured sizing today | Current behavior and next action |
+| --- | --- | --- |
+| Direct `cargo-admitted`/Python, `just bench-ripr-quality` and `bench-ripr-e1` | None | Retained percent default; status 75 `insufficient disk headroom at PATH free_bytes=... required_free_bytes=... shortfall_bytes=... used_pct=...`. Use a qualified exact budget only for a measured closure; adapter owner must automate selecting/revalidating it before default retirement. |
+| Legacy just agent/package recipes through `cargo_safe`; hooks that bootstrap xtask or choose `pr-fast` | None | Legacy guard remains; do not tune it or skip proof. #9567/#17484/#17825/#17866/#17899 own projection/selection migration. |
+| Installer carrier `531fc5d7b98379326b9f01f8de92af03ea67c8b4`, #17480/#17861 | None | Direct admitted `perl-ci-hygiene` avoids heavyweight xtask, but separate install/check budgets remain operator-qualified. Preserve original writer and interrupted leases. |
+| `scripts/tests/test_lsp_revision_build.py` opt-in fixture | Automatic file creation, operator declaration only | 8 GiB reserve/1 GiB growth are fixture estimates, not measured general sizing. Preserve its preflight contract; it is outside the admission-suite glob. |
+| `scripts/tests/qualify_admitted_clippy.py` | Automatic file creation, fixture declaration only | 4 GiB reserve/2 GiB growth apply only to its offline dependency-free fixture. |
+| Footprint-worker `perl-test-must`/xtask experiments | No | Explicit scope-specific declarations and measurements; evidence below does not qualify ordinary callers automatically. |
+| Explicit environment `byte-budget` without reserve | No | Status 75: `byte-budget requires an explicit reserve in MIN_FREE_GB; prefer --preflight then --budget-file for a scope-bound qualified reserve and total additional growth`. Supply the reviewed reserve plus growth/evidence, or the exact scoped file. Do not guess values. |
+
+Interim worker evidence, not a universal allowance: native Windows SZ-Corsair-RS,
+base `4cc7960e61`, installed Rust/Cargo 1.95.0, `test -p perl-test-must --lib
+--profile agent --locked --offline`, jobs 2 and incremental disabled. Twelve tests
+passed; cold/warm elapsed 5.560/2.949 seconds, sampled file-storage peak
+3,667,243/3,629,474 bytes, cold own-tree peak RSS 280,207,360 bytes. Task-private
+H: target/build/temp with existing C: Cargo home; declared 40 GiB reserve + 1 GiB
+growth, `basis_verified:false`. C: had 123.6 GiB free but 96.68% used, so the
+percentage heuristic refused. These are worker-reported sampled observations,
+not exact allocated high-water marks or a proven portable bound. Evidence is
+retained under `H:/Temp/task6-build-footprint`. Edit/repeat, concurrent envelope,
+xtask comparison and Windows native descendant settlement remain unqualified.
+
+## Why native Windows skips tests
+
+At this candidate's 136-test run, 81 skips were intentional: 30 staged-Linux-Clippy,
+16 Linux process-local ownership, 14 Linux kernel-child ownership, seven Linux
+route controls, seven Linux ownership, six POSIX-only fixtures (open-directory,
+symlink replacement, executable, dangling link, non-UTF-8 path and trailing space),
+and one opt-in real offline Cargo A/B/A test. The other 55 passed. Junction tests
+can additionally skip where host privileges are unavailable; report actual counts.
+
+Run the same suite on supported native Linux/Python 3.11+ with child-table/pidfd
+capabilities, and exercise the alternate discovery profile's missing-child-table,
+detached TERM-ignore, ambiguity, unrelated-process preservation, ECHILD,
+original-lease release and repeat controls. Enable `CARGO_ADMITTED_REAL_BUILD_TEST=1`
+only after declaring the small offline fixture's installed toolchain and resource
+needs. Run the opt-in revision fixture separately when relevant. Linux results do
+not qualify Windows process-tree ownership (#17482); its native launcher authority
+and cancellation/settlement/release proof remain a separate adoption prerequisite.

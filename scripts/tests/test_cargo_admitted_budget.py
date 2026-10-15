@@ -74,30 +74,32 @@ class ConstrainedAdmissionTests(unittest.TestCase):
         self.assertFalse(self.slot.exists())
         self.assertFalse(any(path.exists() for path in self.paths.values()))
 
-    def test_missing_budget_refuses_even_with_abundant_capacity(self):
-        for env in ({}, {"MAX_USED_PCT": "100"},
-                    {"CARGO_STORAGE_POLICY": "byte-budget",
-                     "CARGO_EXPECTED_GROWTH_GB": "1",
-                     "CARGO_STORAGE_BUDGET_EVIDENCE": "fixture:missing-reserve"}):
-            with self.subTest(env=env):
-                self.env = env
-                result, output, cargo = self.invoke(self.args, disk=lambda path:
-                    self.Usage(2000*self.gib, 1000*self.gib, 1000*self.gib))
-                self.assertEqual(result, 75, output)
-                self.assertIn("explicit reserve", output)
-                cargo.assert_not_called()
-                self.assert_unallocated()
-
-    def test_missing_budget_preflight_still_returns_scope_for_sizing(self):
-        import json
-        result, output, cargo = self.invoke(["--preflight", *self.args], disk=lambda path:
+    def test_explicit_byte_budget_requires_its_own_reserve(self):
+        self.env = {"CARGO_STORAGE_POLICY": "byte-budget",
+                    "CARGO_EXPECTED_GROWTH_GB": "1",
+                    "CARGO_STORAGE_BUDGET_EVIDENCE": "fixture:missing-reserve"}
+        result, output, cargo = self.invoke(self.args, disk=lambda path:
             self.Usage(2000*self.gib, 1000*self.gib, 1000*self.gib))
         self.assertEqual(result, 75, output)
-        report = json.loads(output.split("cargo-admitted preflight: ", 1)[1])
-        self.assertEqual(report["scope"], self.document["scope"])
-        self.assertFalse(report["lease_acquired"])
+        self.assertIn("explicit reserve", output)
         cargo.assert_not_called()
         self.assert_unallocated()
+
+    def test_unsized_default_preflight_preserves_supported_caller_contract(self):
+        import json
+        for free, expected in ((60*self.gib, 0), (29*self.gib, 75)):
+            result, output, cargo = self.invoke(["--preflight", *self.args], disk=lambda path:
+                self.Usage(64*self.gib, 64*self.gib-free, free))
+            self.assertEqual(result, expected, output)
+            report = json.loads(output.split("cargo-admitted preflight: ", 1)[1])
+            self.assertEqual(report["scope"], self.document["scope"])
+            self.assertFalse(report["lease_acquired"])
+            if expected == 0:
+                self.assertEqual(report["admission"]["reserve_bytes"], 40*self.gib)
+            else:
+                self.assertIn("insufficient disk headroom", report["reason"])
+            cargo.assert_not_called()
+            self.assert_unallocated()
 
     def test_explicit_legacy_byte_budget_uses_declared_reserve_and_growth(self):
         self.env = {"CARGO_STORAGE_POLICY": "byte-budget", "MIN_FREE_GB": "8",

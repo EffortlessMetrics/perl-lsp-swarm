@@ -52,7 +52,7 @@ unoccupied lease path; exit 75 is refusal. An existing or dangling lease path
 remains occupied pending its owner's verification. A missing or invalid capacity
 observation is not a pass.
 
-The report includes the current request scope even when missing sizing
+The report includes the current request scope even when capacity policy
 refuses it. Byte shortfalls and unprobeable destinations are explicit. The
 existing resource descriptor on execution remains on stderr as well.
 
@@ -188,14 +188,16 @@ apportionment and host-wide reservations remain the executor programme's work.
 
 ## Compatibility, failure, and retained state
 
-Without `--budget-file`, both compatibility host policies require an explicit
-positive finite `MIN_FREE_GB`; there is no implicit 40 GiB reserve or minimum.
-Missing sizing refuses with status 75, even on a large empty volume. A refused
-`--preflight` still emits scope for the operator to size. See
-[capacity adoption](CARGO_CAPACITY_ADOPTION.md) for the measurement and rollout
-requirements. Legacy `cargo-safe` retains its separate guard until its callers
-are migrated; it must not wrap `cargo-admitted`. Profiles, compiler caches, old
-outputs and release/security/merge gates are unaffected.
+Without `--budget-file`, the default percent policy retains its 40 GiB reserve
+and 85% used ceiling until normal callers supply measured budgets automatically.
+Explicit environment `byte-budget` requires positive finite `MIN_FREE_GB`, total
+additional growth and an evidence reference; it has no universal reserve minimum.
+A missing reserve in that explicitly selected mode refuses with status 75 and
+names `MIN_FREE_GB` and the scope-bound `--budget-file` alternative. See
+[capacity adoption](CARGO_CAPACITY_ADOPTION.md) for the migration matrix and hold.
+Legacy `cargo-safe` retains its separate guard until its callers are migrated;
+it must not wrap `cargo-admitted`. Profiles, compiler caches, old outputs and
+release/security/merge gates are unaffected.
 
 Execution repeats capacity observation inside the existing lease before
 allocating build resources or attempting Cargo launch. If that observation or

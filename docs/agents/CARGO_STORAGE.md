@@ -96,14 +96,13 @@ cache volumes need a separately admitted route. Unsupported commands must be
 explicitly admitted by the root, not silently retried as raw Cargo.
 
 Before allocating any directory, admission checks the nearest existing ancestor
-of the slot, both target/build resources, Cargo home and temporary storage. There
-is no implicit reserve. Without a scope-bound `--budget-file`,
-compatibility host policies require an explicit positive finite `MIN_FREE_GB`.
-The default compatibility policy remains `percent`, with an inherited 85% used
-ceiling unless `MAX_USED_PCT` is explicit. That heuristic is not a measured
-workload requirement. Do not tune host settings simply to pass a build.
-See [guard retirement and adoption](../how-to/CARGO_CAPACITY_ADOPTION.md) before
-activating this change on an existing host.
+of the slot, both target/build resources, Cargo home and temporary storage. The
+compatibility `percent` policy retains its default 40 GiB reserve and 85% used
+ceiling until normal callers supply qualified budgets automatically. Do not replace
+that path with universal manual sizing. Neither heuristic is a measured workload
+requirement. Explicit host settings must not be tuned merely to pass a build.
+See [guard retirement and adoption](../how-to/CARGO_CAPACITY_ADOPTION.md) for the
+caller migration gaps and the activation hold.
 
 For constrained hosts, the existing route also accepts an exact-command
 `--preflight` and an explicit scope-bound `--budget-file`. See
@@ -119,7 +118,8 @@ small-cloud profile is supplied. Execution checks reserve plus total additional
 peak growth on every destination again inside the lease. This does not reserve
 bytes, enforce runtime quotas, attest all source/config/cache state, apportion
 separate volumes, admit compiler caches or account for cross-repository consumers.
-Without this option, the policies below require an explicit host reserve.
+Without this option, percent compatibility keeps its existing default; explicit
+byte-budget policy requires its own declared reserve.
 
 For a host with an evidenced byte budget, the root may explicitly select
 `CARGO_STORAGE_POLICY=byte-budget`. This requires an explicit positive finite
