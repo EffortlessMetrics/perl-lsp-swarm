@@ -1,0 +1,87 @@
+import dataclasses
+import json
+from pathlib import Path
+import unittest
+
+from model import Event, Subject, accepts, admit, group, material, result_name
+
+
+class CutoverFixtures(unittest.TestCase):
+    def setUp(self):
+        self.event = Event("labeled", "merge-ready")
+        self.subject = Subject("EffortlessMetrics/perl-lsp-swarm", 1,
+                               "a" * 40, "b" * 40, "c" * 40,
+                               "d" * 40, "e" * 40, 1, 1)
+        self.args = dict(e=self.event, expected=self.subject, receipt=self.subject,
+                         results={"compile": "success", "ripr": "success"},
+                         required_workers=["compile", "ripr"],
+                         live_head=self.subject.head, live_base=self.subject.base,
+                         live_label=True,
+                         merge_parents=(self.subject.base, self.subject.head),
+                         checkout=(self.subject.merge, self.subject.tree),
+                         elapsed_seconds=1199)
+
+    def test_control_qualifies(self):
+        self.assertTrue(accepts(**self.args))
+
+    def test_event_fixtures(self):
+        for case in json.loads(Path(__file__).with_name("events.json").read_text()):
+            with self.subTest(case=case["name"]):
+                event = Event(**case["event"])
+                self.assertEqual(admit(event), case["broad"])
+                self.assertEqual(material(event), case["required_identity"])
+
+    def test_ignored_labels_do_not_cancel_or_replace_pending(self):
+        # Model native pending-slot replacement, even cancel-in-progress:false.
+        pending = {group(self.event, "CI"): "qualification"}
+        for action in ("labeled", "unlabeled"):
+            other = Event(action, "documentation", run=2)
+            pending[group(other, "CI")] = "ignored"
+            self.assertEqual(pending[group(self.event, "CI")], "qualification")
+            self.assertNotEqual(result_name(other, "Compile All Targets (bit-rot guard)"),
+                                "Compile All Targets (bit-rot guard)")
+
+    def test_material_events_share_cancellation_domain(self):
+        for action in ("synchronize", "converted_to_draft", "unlabeled"):
+            self.assertEqual(group(Event(action, "merge-ready"), "CI"),
+                             group(self.event, "CI"))
+        self.assertNotEqual(group(self.event, "CI"), group(self.event, "ripr"))
+
+    def test_no_skipped_missing_or_partial_worker_can_pass(self):
+        for result in ("skipped", "cancelled", "failure", "neutral", "timed_out", ""):
+            self.assertFalse(accepts(**(self.args | {"results": {"compile": result,
+                                                                "ripr": "success"}})))
+        self.assertFalse(accepts(**(self.args | {"results": {}})))
+        self.assertFalse(accepts(**(self.args | {"required_workers": []})))
+
+    def test_source_binding_each_axis(self):
+        for field in dataclasses.fields(self.subject):
+            old = getattr(self.subject, field.name)
+            value = old + 1 if isinstance(old, int) else "wrong"
+            receipt = dataclasses.replace(self.subject, **{field.name: value})
+            with self.subTest(axis=field.name):
+                self.assertFalse(accepts(**(self.args | {"receipt": receipt})))
+
+    def test_stale_source_label_and_instrument_fail_closed(self):
+        mutations = [dict(live_head="new"), dict(live_base="new"),
+                     dict(live_label=False), dict(merge_parents=()),
+                     dict(checkout=(self.subject.head, self.subject.tree)),
+                     dict(checkout=(self.subject.merge, "wrong")),
+                     dict(elapsed_seconds=1201), dict(elapsed_seconds=-1)]
+        for mutation in mutations:
+            with self.subTest(mutation=mutation):
+                self.assertFalse(accepts(**(self.args | mutation)))
+
+    def test_twenty_minute_boundary(self):
+        self.assertTrue(accepts(**(self.args | {"elapsed_seconds": 1200})))
+
+    def test_inventory_pins_all_five_result_owners(self):
+        inventory = json.loads(Path(__file__).with_name("inventory.json").read_text())
+        self.assertEqual(len(inventory["workflows"]), 103)
+        self.assertEqual({r["name"] for r in inventory["required_results"]}, {
+            "Perl LSP Rust Small Result", "ripr+ New Gap Gate",
+            "Compile All Targets (bit-rot guard)", "Conflict marker check", "validate-title"})
+
+
+if __name__ == "__main__":
+    unittest.main()

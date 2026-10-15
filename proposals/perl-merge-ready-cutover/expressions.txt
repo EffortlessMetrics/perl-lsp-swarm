@@ -1,0 +1,22 @@
+# INACTIVE PORTING SKETCH. No hosted workflow consumes this file.
+# github.event_name == 'pull_request' throughout the PR qualification lane.
+# M means the following literal expression (not a GitHub variable):
+github.event_name == 'pull_request' && (contains(fromJSON('["opened","synchronize","reopened","ready_for_review","converted_to_draft"]'), github.event.action) || (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) && github.event.label.name == 'merge-ready') || (github.event.action == 'edited' && github.event.changes.base != null))
+
+# Job name: inline M in place of the symbolic M below. Never skip a protected name.
+name: ${{ M && 'Compile All Targets (bit-rot guard)' || 'Ignored metadata / Compile All Targets (bit-rot guard)' }}
+# Result job runs for all material events, even when admission/workers fail or skip.
+if: ${{ always() && M }}
+# Verdict STEP must reject missing admission and any non-success selected worker.
+# Ignored events skip only the alternative, unprotected name.
+
+# Concurrency: inline M. Unrelated events cannot cancel running OR replace pending.
+concurrency:
+  group: ${{ github.workflow }}-${{ M && format('pr-{0}', github.event.pull_request.number) || format('ignored-{0}', github.run_id) }}
+  cancel-in-progress: true
+
+# Worker admission (plus live snapshot/source validation by the admission job):
+if: ${{ github.event_name == 'pull_request' && github.event.action == 'labeled' && github.event.label.name == 'merge-ready' && github.event.pull_request.draft == false && github.run_attempt == 1 && contains(fromJSON('["main","master"]'), github.event.pull_request.base.ref) && needs.admission.outputs.accepted == 'true' }}
+
+# Repeat identity separation for EACH protected result producer in its own owner.
+# Scope non-PR maintenance separately; it must not reuse these qualification names.

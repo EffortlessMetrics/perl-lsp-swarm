@@ -1,0 +1,19 @@
+[
+  {"name":"opening", "event":{"action":"opened"}, "broad":false,"required_identity":true},
+  {"name":"push with label still attached", "event":{"action":"synchronize"}, "broad":false,"required_identity":true},
+  {"name":"Ready", "event":{"action":"ready_for_review"}, "broad":false,"required_identity":true},
+  {"name":"draft", "event":{"action":"converted_to_draft"}, "broad":false,"required_identity":true},
+  {"name":"reopen", "event":{"action":"reopened"}, "broad":false,"required_identity":true},
+  {"name":"explicit admission", "event":{"action":"labeled","label":"merge-ready"}, "broad":true,"required_identity":true},
+  {"name":"draft admission refused", "event":{"action":"labeled","label":"merge-ready","draft":true}, "broad":false,"required_identity":true},
+  {"name":"stacked target refused", "event":{"action":"labeled","label":"merge-ready","base_ref":"owner-branch"}, "broad":false,"required_identity":true},
+  {"name":"remove admission", "event":{"action":"unlabeled","label":"merge-ready"}, "broad":false,"required_identity":true},
+  {"name":"unrelated label", "event":{"action":"labeled","label":"bug"}, "broad":false,"required_identity":false},
+  {"name":"unrelated unlabel", "event":{"action":"unlabeled","label":"bug"}, "broad":false,"required_identity":false},
+  {"name":"title edit", "event":{"action":"edited"}, "broad":false,"required_identity":false},
+  {"name":"retarget", "event":{"action":"edited","base_changed":true}, "broad":false,"required_identity":true},
+  {"name":"main push", "event":{"action":"push","event":"push"}, "broad":false,"required_identity":false},
+  {"name":"native queue absent", "event":{"action":"checks_requested","event":"merge_group"}, "broad":false,"required_identity":false},
+  {"name":"manual dispatch absent", "event":{"action":"workflow_dispatch","event":"workflow_dispatch"}, "broad":false,"required_identity":false},
+  {"name":"rerun needs new admission", "event":{"action":"labeled","label":"merge-ready","attempt":2}, "broad":false,"required_identity":true}
+]
