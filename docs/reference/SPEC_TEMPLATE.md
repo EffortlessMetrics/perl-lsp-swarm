@@ -1,19 +1,56 @@
 # Spec Template
 
-**Purpose**: This document defines the canonical structure for every `.spec/<issue#>-<slug>/` directory
-produced by the spec-planner. It makes the spec-builder workflow, the spec-planner agent, and the
-`acceptance.md` section list agree on names — so deep-review confirms instead of discovers.
+**Purpose**: This document defines the builder-view structure when an accepted decision
+warrants a `.spec/<issue#>-<slug>/` packet. The packet derives from the controlling issue
+and linked contracts; it does not create a second authority or require a permanent spec
+for every localized bug. Use the current provider-native `compile-spec` skill to decide
+whether a durable contract or builder view is useful (see [#3983](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3983)).
 
 **Cross-references**:
 - Hazard classes: [docs/agents/SPEC_UPDATE_CHECKLIST.md §8](../agents/SPEC_UPDATE_CHECKLIST.md#8-hazard-class-invariants)
 - Subsystem defaults: [docs/reference/SUBSYSTEM_HAZARD_DEFAULTS.md](SUBSYSTEM_HAZARD_DEFAULTS.md)
 - Contract index: [docs/reference/PARSER_CONTRACTS.md](PARSER_CONTRACTS.md)
-- Patterns: [docs/concepts/multi-angle-haiku-early-spec.md](../concepts/multi-angle-haiku-early-spec.md), [docs/concepts/shift-left-ladder.md](../concepts/shift-left-ladder.md)
-- Workflow: [`.claude/workflows/spec-builder.js`](../../.claude/workflows/spec-builder.js) — the saved workflow that populates §Hazards, §Contracts, §API-Shape, §Test-Grid, §Blast-Radius in parallel
+- Current method: [DEVELOPMENT_METHOD.md](../agents/DEVELOPMENT_METHOD.md), [SKILL_CONTRACT.md](../agents/SKILL_CONTRACT.md)
+- Provider routes: [AGENTS.md](../../AGENTS.md), [CLAUDE.md](../../CLAUDE.md)
+- Historical examples: [multi-angle-haiku-early-spec.md](../concepts/multi-angle-haiku-early-spec.md), [shift-left-ladder.md](../concepts/shift-left-ladder.md), [saved spec-builder workflow](../../.claude/workflows/spec-builder.js). Their model choices, fixed fan-out, named personas, and Workflow tool are not prerequisites for this template.
 
-**When to run the spec-builder workflow**: For any non-trivial change (new feature, new protocol
-surface, shared interface change, recurring bug class fix). For trivial changes (one-line constant,
-typo, docs-only), populate the sections manually and mark non-applicable rows N/A with a reason.
+**Execution**: Check the current harness's available skills, tools, context reuse,
+review facilities, and host capacity before choosing execution mechanics. The applicable
+questions may run in one session or in bounded workers, sequentially or concurrently
+where independent. No model name, agent count, or provider-specific tool is required.
+Keep one candidate writer and return findings to that writer; preserve required
+independent review through differentiated evidence, methods, or review contexts.
+
+## Staged questions
+
+Use these questions through the current provider-native route. Resume existing coherent
+work at its earliest missing or stale judgment; do not replay stages for chronology.
+
+- **Plan challenge:** Does the plan address the current issue, semantic owner, real
+  consumer, and product vision? Is there a simpler existing mechanism? Which negative
+  case, alternative, or rollback condition could falsify the plan?
+- **Red-green proof:** What focused test fails for the intended defect on the before
+  state or a controlled realistic wrong implementation, with a passing control?
+  What minimal implementation makes it pass? Record
+  candidate identity, commands, observed results, and any unexecuted proof boundary.
+  For docs-only work, identify the relevant content/structure check instead of inventing
+  a behavioral red-green claim.
+- **Test quality:** Can a realistic wrong implementation still pass? Challenge the
+  oracle, negative and stale/error cases, and production-path reachability. Strengthen
+  affected proof without weakening expectations to obtain green status.
+- **Simplicity:** Can scaffolding, duplicate authority, or an unnecessary API be removed
+  while preserving the claim? Rerun affected proof after a material change.
+- **Docs and vision:** Do contracts, examples, support claims, and non-goals describe
+  the actual candidate? Does the resulting behavior still serve the current product
+  direction and its owner/consumer boundaries?
+
+Keep focused tests warm within the admitted session/build resources. Broaden proof only
+for affected seams or selected risk. Before publication inspect actual CI triggers;
+frequent local commits or safe branch updates do not require early qualification.
+Reserve the explicit integration gate for the reviewed candidate, budget it normally
+within 20 minutes, and report an over-budget or unavailable gate without weakening
+required checks. Final vision/current-state judgment and protected squash integration
+remain with the current repository route and live GitHub policy.
 
 ---
 
@@ -31,8 +68,13 @@ typo, docs-only), populate the sections manually and mark non-applicable rows N/
 
 ## checklist.md
 
-The builder's step-by-step guide. Every step must compile. The red-TDD builder reads this to know
-where to write failing tests. The builder reads it to know the change order.
+The builder's step-by-step guide. Separate an intentional behavioral red from a build
+failure: the regression test must compile and fail for the intended reason on the
+before state or a controlled realistic wrong implementation. For docs-only work or no
+executable subject, state the relevant content check and proof limit instead. Name the
+focused proof and implementation order without requiring separate personas.
+Rust command examples below are suggestions; select current owning-package commands
+through the admitted build route in [CARGO_STORAGE.md](../agents/CARGO_STORAGE.md).
 
 ```markdown
 # Implementation Checklist: #<issue> — <title>
@@ -54,8 +96,10 @@ where to write failing tests. The builder reads it to know the change order.
 
 ...
 
-### Step N: Final verification
-- **Verify:** `cargo test -p <crate> && cargo xtask fmt && cargo clippy -p <crate>`
+### Step N: Candidate verification
+- **Verify:** <focused regression, affected package tests, package formatting and lint commands>
+- **Review:** <test quality, simplicity, docs and vision findings/dispositions>
+- **Deferred gate:** <selected integration proof, budget, and what local checks do not establish>
 
 ## Callers and consumers
 
@@ -81,9 +125,9 @@ Files OUT of scope: <everything else — be explicit>
 The canonical sections are listed below. **All sections are required.** Mark non-applicable rows
 `N/A — <reason>` rather than omitting them — omission looks like oversight; `N/A` is explicit.
 
-The spec-builder workflow populates §Hazards, §Contracts, §API-Shape, §Test-Grid, and §Blast-Radius
-from six parallel haiku angles. The spec-planner seeds §Behavior and copies applicable rows from
-[SUBSYSTEM_HAZARD_DEFAULTS.md](SUBSYSTEM_HAZARD_DEFAULTS.md).
+Populate §Behavior, §Hazards, §Contracts, §API-Shape, §Test-Grid, and §Blast-Radius from
+current issue/source evidence and applicable [SUBSYSTEM_HAZARD_DEFAULTS.md](SUBSYSTEM_HAZARD_DEFAULTS.md)
+rows. These are analytical lenses and output sections, not a fixed worker roster.
 
 ```markdown
 # Acceptance Criteria: #<issue> — <title>
@@ -100,7 +144,7 @@ Tabular summary of what the change does. One row per distinct behavior.
 
 All tests pass: `cargo test -p <crate>`
 No clippy warnings: `cargo clippy -p <crate>`
-Formatted: `cargo xtask fmt`
+Formatted: `cargo fmt -p <crate> -- --check`
 
 ## §Hazards
 
@@ -150,7 +194,7 @@ N/A — `this change has no new public API surface`.
 ## §Test-Grid
 
 Enumeration of test cases covering axes of variation. Each row names the test function
-that discharges the invariant. The red-TDD builder writes failing versions of these tests.
+that discharges the invariant. Observe the intended failure before the fix where applicable.
 
 | Scenario | Kind | Test name | Invariant discharged |
 |---|---|---|---|
@@ -212,7 +256,7 @@ reconstructing the issue trail.
 
 ## Prior art / duplicates
 
-<Result of the prior-art scan (spec-builder angle C). If a similar function exists,
+<Result of the prior-art scan, including search scope and commands. If a similar function exists,
 name it and explain why this is not a duplicate. If no prior art found, state that.>
 
 ## Links
@@ -255,7 +299,7 @@ A bug where the parser panics on a specific input. Single-crate change.
 ```
 Step 1: Add test fixture file (CREATE) — verify cargo check passes
 Step 2: Fix the parse arm in crates/perl-parser/src/expressions/foo.rs — verify cargo check
-Step 3: cargo test -p perl-parser && cargo xtask fmt && cargo clippy -p perl-parser
+Step 3: Run affected package tests, package formatting and lint through the admitted build route
 ```
 
 **acceptance.md highlights**:
@@ -264,7 +308,8 @@ Step 3: cargo test -p perl-parser && cargo xtask fmt && cargo clippy -p perl-par
   PARSER-4 (recovery honesty — if the fix changes error-recovery behavior).
   Mark DAP/LSP/COV rows `N/A — parser-only change`.
 - §Contracts: cite PARSER_CONTRACTS.md §N if the fix involves a quote-like or known contract.
-- §Blast-Radius: confirm no LSP or DAP consumer is broken; run `cargo test --workspace --lib`.
+- §Blast-Radius: identify affected LSP/DAP consumers and run focused consumer proof;
+  reserve workspace proof for a selected broader risk or integration gate.
 
 **context.md highlights**:
 - Document the specific Perl input that triggered the panic.
@@ -282,7 +327,7 @@ Step 1: Add InlayHintParams struct + handler stub (CREATE or MODIFY) — verify 
 Step 2: Add capability declaration in features.toml — verify cargo check
 Step 3: Implement provider logic — verify cargo check
 Step 4: Register handler in dispatch — verify cargo check
-Step 5: cargo test -p perl-lsp-rs && cargo xtask fmt && cargo clippy -p perl-lsp-rs
+Step 5: Run affected package tests, package formatting and lint through the admitted build route
 ```
 
 **acceptance.md highlights**:
@@ -306,7 +351,7 @@ Adding adversarial tests to an existing suite. No production code changes.
 **checklist.md sketch**:
 ```
 Step 1: Add test cases to existing test file — verify cargo test -p <crate>
-Step 2: cargo xtask fmt && cargo clippy -p <crate>
+Step 2: Run package formatting and lint through the admitted build route
 ```
 
 **acceptance.md highlights**:
