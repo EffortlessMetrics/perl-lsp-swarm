@@ -979,6 +979,7 @@ class ReusableProducerTests(unittest.TestCase):
         for mutant in (call._replace(job_id="duplicate"),
                        call._replace(job_id="duplicate", strategy=True),
                        call._replace(job_id="duplicate", name=None, name_static=False),
+                       call._replace(name=None, name_static=False, raw_name=contract.RIPR_NAME_EXPRESSION),
                        call._replace(name="Other prefix"),
                        call._replace(continue_on_error=True), call._replace(name=None, name_static=False),
                        call._replace(condition_class="never"), call._replace(strategy=True)):
@@ -993,6 +994,7 @@ class ReusableProducerTests(unittest.TestCase):
         callee = contract.read_workflow(ROOT, OWNED_RUST_DRAFT_ROW["callee_source"])
         other = callee.jobs["classify"]
         for altered in (other._replace(strategy=True), other._replace(uses="other/repo/.github/workflows/child.yml@"+"a"*40),
+                        other._replace(name_static=False, name=None, raw_name=contract.RIPR_NAME_EXPRESSION),
                         other._replace(name_static=False, name=None)):
             jobs = dict(callee.jobs, classify=altered)
             with self.subTest(altered=altered), patch.object(contract, "read_workflow", return_value=callee._replace(jobs=jobs)):
@@ -1071,6 +1073,63 @@ class FiniteRequiredNameTests(unittest.TestCase):
                        FINITE_POLICY.replace('pr-material-required-name-v1', 'anything-v1')):
             with self.subTest(policy=policy):
                 self.assertIn("job_name_not_static", self.codes(policy=policy))
+
+    def test_literal_and_folded_expression_sources_are_not_flattened(self):
+        # YAML literal blocks retain these newlines inside the emitted string.
+        # The old parser joined them into the approved protected identity.
+        for indicator in ("|", "|-", "|+", ">", ">-", ">+"):
+            for field, expression, indent in (("name", FINITE_NAME, 4),
+                                               ("if", FINITE_IF, 4),
+                                               ("group", FINITE_GROUP, 2)):
+                replacement = (" " * indent + field + ": " + indicator + "\n"
+                               + " " * (indent + 2)
+                               + expression.replace("ripr+ New Gap Gate", "ripr+\n" + " " * (indent + 2) + "New Gap Gate"))
+                workflow = FINITE_WORKFLOW.replace(" " * indent + field + ": " + expression, replacement)
+                with self.subTest(indicator=indicator, field=field):
+                    self.assertIn("invalid_name_contract", self.codes(workflow=workflow))
+
+    def test_plain_scalar_continuations_and_quoted_expressions_refuse(self):
+        for field, expression, indent in (("name", FINITE_NAME, 4),
+                                           ("if", FINITE_IF, 4),
+                                           ("group", FINITE_GROUP, 2)):
+            for value in (expression + "\n" + " " * (indent + 2) + "unexpected",
+                          "'" + expression + "'", '"' + expression + '"'):
+                with self.subTest(field=field, value=value):
+                    workflow = FINITE_WORKFLOW.replace(" " * indent + field + ": " + expression,
+                                                       " " * indent + field + ": " + value)
+                    self.assertIn("invalid_name_contract", self.codes(workflow=workflow))
+
+    def test_activity_types_require_a_sequence_with_balanced_item_quotes(self):
+        raw = "[opened, synchronize, reopened, ready_for_review, converted_to_draft, labeled, unlabeled, edited]"
+        for value in ('"' + raw + '"', "'" + raw + "'", raw.replace("opened,", "'opened\",", 1),
+                      raw.replace("opened,", "opened',", 1), raw.replace("opened,", "''opened'',", 1)):
+            with self.subTest(value=value):
+                self.assertIn("invalid_name_contract", self.codes(
+                    workflow=FINITE_WORKFLOW.replace(raw, value)))
+        for quote in ("'", '"'):
+            with self.subTest(valid_quote=quote):
+                self.assertEqual("SUCCESS", self.validate(workflow=FINITE_WORKFLOW.replace(
+                    raw, "[" + ", ".join(quote + item + quote for item in raw[1:-1].split(", ")) + "]"))["status"])
+
+    def test_explicit_plain_failure_propagation_and_inline_comments_pass(self):
+        workflow = FINITE_WORKFLOW.replace("    runs-on:", "    continue-on-error: false # propagate\n    runs-on:")
+        workflow = workflow.replace(FINITE_NAME + "\n", FINITE_NAME + " # exact name\n")
+        self.assertEqual("SUCCESS", self.validate(workflow=workflow)["status"])
+        for value in ("|-\n      false", "false\n      unexpected", '"false"'):
+            with self.subTest(value=value):
+                self.assertIn("invalid_name_contract", self.codes(workflow=FINITE_WORKFLOW.replace(
+                    "    runs-on:", "    continue-on-error: " + value + "\n    runs-on:")))
+
+    def test_duplicate_direct_job_fields_and_ancestors_refuse(self):
+        for old, new in (("    name:", "    name: unexpected\n    name:"),
+                         ("    if:", "    if: false\n    if:"),
+                         ("    name:", '    "name": unexpected\n    name:'),
+                         ("    runs-on:", "    continue-on-error: true\n    continue-on-error: false\n    runs-on:"),
+                         ("  ripr:\n", "  ripr:\n    name: unexpected\n  ripr:\n"),
+                         ("jobs:\n", "jobs: {}\njobs:\n")):
+            with self.subTest(old=old, new=new):
+                self.assertIn("invalid_name_contract", self.codes(
+                    workflow=FINITE_WORKFLOW.replace(old, new)))
 
     def test_contract_cannot_be_borrowed_by_another_context_or_mapping(self):
         for old, new in (('job = "ripr"', 'job = "absent"'),

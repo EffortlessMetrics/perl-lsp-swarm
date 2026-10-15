@@ -103,6 +103,23 @@ events by workflow/PR; literal cancellation is enabled. A job-level concurrency
 override, reusable call, matrix, arbitrary/inverted expression, missing opt-in,
 unknown contract or failure suppression is refused.
 
+The finite opt-in accepts unique direct plain single-line name, result-condition
+and concurrency scalars, plus a direct inline activity-type sequence with balanced
+optional item quotes. Literal/folded blocks, scalar continuations, outer quoted
+expressions, a quoted sequence-shaped scalar, malformed activity quotes and duplicate
+direct job fields are refused. This narrow source grammar avoids flattening YAML
+newlines into a different protected identity; it is not a general YAML validator.
+These restrictions apply to the finite opt-in only, preserving existing static-name
+and reusable-producer parsing.
+
+Adversarial controls extend the original companion `37dae252c3436a91ae22034fdca0835e05b9cc1f`:
+that source flattened literal `ripr+\nNew Gap Gate` into the protected name and
+accepted a quoted sequence-shaped scalar or mismatched activity-item quotes.
+The focused tests now reject these forms through the production validator, retain
+balanced quoted activity items/plain failure propagation as positive controls,
+and refuse the finite expression in reusable caller/callee projections. These are
+local source-contract controls, not evidence of native Actions name emission.
+
 The producer index includes both finite alternatives even for unlisted emitters,
 so a second static or finite protected producer cannot hide behind the opt-in.
 Opaque dynamic expressions mentioning the protected identity are refused when

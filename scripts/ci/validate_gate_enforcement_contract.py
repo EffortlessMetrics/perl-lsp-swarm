@@ -102,6 +102,7 @@ class Job(NamedTuple):
     strategy: bool = False
     raw_name: str | None = None
     own_concurrency: bool = False
+    finite_source_valid: bool = False
 
 
 class Workflow(NamedTuple):
@@ -443,14 +444,23 @@ def _direct_field(lines: list[str], path: tuple[str, ...]) -> str | None:
     for depth, key in enumerate(path):
         matches = [i for i in range(start, end)
                    if lines[i].strip() and not lines[i].lstrip().startswith("#")
+                   and ":" in lines[i]
                    and _indent(lines[i]) == 2 * depth
                    and _unquote(lines[i].strip().split(":", 1)[0]) == key]
         if len(matches) != 1:
             return None
         index = matches[0]
-        raw, _ = _collect_block_value(lines, index, end, 2 * depth)
+        raw = _strip_inline_comment(lines[index].split(":", 1)[1]).strip()
         if depth == len(path) - 1:
-            return _unquote(raw)
+            # The opt-in proves exact source bytes, not an approximation of YAML
+            # scalar semantics. Literal blocks retain newlines; quoted scalars
+            # and continuations can also change the value we would otherwise see.
+            following = next((line for line in lines[index + 1:end]
+                              if line.strip() and not line.lstrip().startswith("#")), None)
+            if (not raw or raw[0] in "'\"|>"
+                    or (following is not None and _indent(following) > 2 * depth)):
+                return None
+            return raw
         if raw:
             return None
         start = index + 1
@@ -483,7 +493,17 @@ def read_workflow(root: Path, raw_path: str) -> Workflow:
                 break
         for position, (start, job_id) in enumerate(starts):
             end = starts[position + 1][0] if position + 1 < len(starts) else len(lines)
-            jobs[job_id] = _read_job(lines, start, end, job_id)
+            job = _read_job(lines, start, end, job_id)
+            keys = [_unquote(line.strip().split(":", 1)[0]) for line in lines[start + 1:end]
+                    if _indent(line) == 4 and line.strip()
+                    and not line.lstrip().startswith("#")]
+            jobs[job_id] = job._replace(finite_source_valid=(
+                len(keys) == len(set(keys))
+                and _direct_field(lines, ("jobs", job_id, "name")) == RIPR_NAME_EXPRESSION
+                and _direct_field(lines, ("jobs", job_id, "if")) == RIPR_RESULT_CONDITION
+                and ("continue-on-error" not in keys
+                     or _direct_field(lines, ("jobs", job_id, "continue-on-error")) == "false")
+            ))
     return Workflow(
         path=relative,
         sha256=_sha256(path),
@@ -659,11 +679,15 @@ def _ripr_name_contract_findings(entry: dict[str, Any], workflow: Workflow, job:
         failures.append("exact name expression")
     if job.condition != RIPR_RESULT_CONDITION:
         failures.append("always/material result condition")
+    if not job.finite_source_valid:
+        failures.append("unique plain single-line name/result source")
     if job.uses is not None or job.strategy or job.own_concurrency:
         failures.append("direct non-matrix result without a concurrency override")
     raw_types = workflow.pr_types or ""
-    types = [part.strip().strip("'\"") for part in raw_types[1:-1].split(",")]
+    tokens = [part.strip() for part in raw_types[1:-1].split(",")]
+    types = [_unquote(part) for part in tokens]
     if (not raw_types.startswith("[") or not raw_types.endswith("]")
+            or any(not re.fullmatch(r"[a-z_]+|'[a-z_]+'|\"[a-z_]+\"", part) for part in tokens)
             or len(types) != len(RIPR_PR_TYPES) or set(types) != RIPR_PR_TYPES):
         failures.append("complete explicit PR activity types")
     if (workflow.concurrency_group != RIPR_CONCURRENCY_GROUP
