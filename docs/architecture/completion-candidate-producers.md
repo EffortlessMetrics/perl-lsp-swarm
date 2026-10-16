@@ -8,9 +8,9 @@ Controlling issue #10949. The one live application route is #10229, pure merge/r
 
 ## Source binding
 
-The dispositions below were audited against this exact source. A change to any file listed here invalidates the audit and `check` fails until the rows are re-checked.
+The dispositions below were audited against the shipped (non-test) surface of the files listed here. A change to that shipped surface invalidates the audit and `check` fails until the rows are re-checked; test-only or formatting-only edits do not.
 
-- Digest: `sha256:e61f76dcbb280b69fdf5aa31aa462c106219122c60f1f5153bda2e1b49f52a91`
+- Digest: `sha256:4e0731e225a635e5dc770e5596bc55d4aacb70f6b72954081b845ddfa0144ca3`
 - Files (42):
   - `crates/perl-lsp-rs-core/src/providers/completion/completion.rs`
   - `crates/perl-lsp-rs-core/src/providers/completion/completion/builtins.rs`

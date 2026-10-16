@@ -90,18 +90,6 @@ outcome_owner = "#10230"
 # test setup in scanned completion/workspace.rs, and a test-only module already
 # excluded above. The 42-file product scan, discovered producer population,
 # authored dispositions, entry routes, delegations, and finalizer are unchanged.
-# Re-anchor 2026-09-29 (#16853): a silent `package` reopen no longer discards the
-# class model an earlier segment produced. The only scan-root change is
-# completion/workspace.rs, where `current_document_package_facts` now merges
-# per-segment class models through the semantic analyzer's canonical
-# `merge_reopened_class_models` instead of letting the last segment win. A new
-# test-only module in the same file is excluded above, and the analyzer crate is
-# not a scan root. No producer add/remove/re-channel: no new candidate-channel
-# function, no changed entry or delegations, and the finalizer route is
-# untouched. This widens what the existing workspace method row can report for a
-# reopened package — an inherited or composed method that was previously dropped
-# is now reachable — so it is a source re-audit, not a claim that completion
-# behavior is unchanged. Projection diff is digest-only.
 # Re-anchor 2026-09-29 (#16983): methods.rs gained two helpers and one
 # non-candidate parameter. `receiver_packages` returns `Option<Vec<String>>`
 # and `symbol_package` returns `&str`; neither takes a `&mut Vec<CompletionItem>`
@@ -147,15 +135,6 @@ outcome_owner = "#10230"
 # Re-anchor (same PR, CodeRabbit thread): canonical_document_identity now
 # normalizes URI-form identities via perl_uri::normalize_uri, matching the
 # workspace index's identity comparison; producer rows unchanged.
-# Re-anchor 2026-10-02 (merge of origin/main into #16853): main moved scanned
-# completion sources (lexical_visibility.rs, scope_distance.rs, variables.rs);
-# digest recomputed over the merged tree, producer rows unchanged.
-# Re-anchor 2026-10-02 (merge of #17045/#17043 into #16853): the freshness-seam
-# rewrite of completion/workspace.rs and this branch's per-segment class-model
-# merge compose — the reopened-consumer proof module was re-aimed at the seam's
-# 4-argument `collect_all_package_members_with_source` signature; no producer
-# add/remove/re-channel and no entry/finalizer change. Digest recomputed over
-# the merged tree.
 # Re-anchor 2026-10-02 (merge of #17045/#17043 into #16983): the freshness-seam
 # rewrite touched request/dispatch.rs beside this branch's type_engine threading
 # of the same call sites; both compose (URI argument retained on the workspace
@@ -168,11 +147,6 @@ outcome_owner = "#10230"
 # add/remove/re-channel, no entry/finalizer change. The methods row's
 # limitations text documents the combined predicate and the
 # receiver_packages=None fallback. Digest-only projection diff.
-# Re-anchor 2026-10-04 (merge of origin/main into #16853): main's #16983/#16988
-# receiver resolution landed in methods.rs beside this branch's per-segment
-# class-model merge in workspace.rs; the two compose on different seams of the
-# same workspace-methods pipeline. No producer add/remove/re-channel and no
-# entry/finalizer change. Digest recomputed over the merged tree.
 # Re-audit 2026-10-13 (#17779): joined the landed #17736 indexed lexical-sub
 # suppression with the runtime fallback name-token edits and application tests.
 # The same 42 scan files and 59 producer rows remain: no added/removed candidate
@@ -194,33 +168,7 @@ outcome_owner = "#10230"
 # now require both current and latest snapshots absent. All 42 scan files,
 # 59 producers, routes, finalizer seams, classifications and migration owners
 # retain their prior ceilings. Digest recomputed over the merged tree.
-# Re-anchor 2026-10-13 (merge of origin/main into #16853): main's #17844
-# completion-semantics repair (#17160/#17161/#17162) changed member collection
-# and catalog filtering inside existing producers (direct-membership query in
-# the workspace MRO walk, lexical-sub filtering in the indexed method push)
-# beside this branch's per-segment reopened class-model merge in
-# current_document_package_facts; the two compose on different seams of the same
-# workspace pipeline and neither reverts the other. No producer
-# add/remove/re-channel and no entry/finalizer change. Digest recomputed over
-# the merged tree.
-# Re-anchor 2026-10-12 (#16984 review): merge_reopened_class_models now
-# propagates `parents_explicit` onto the merged model when a reopened segment
-# explicitly declares ancestry, so an explicitly emptied `@ISA = ()` reset after
-# a silent segment is no longer refilled from the persisted index by the
-# workspace facts composition gate. The analyzer is not a scan root; the only
-# scan-root change is test-only in completion/completion/workspace.rs. No
-# producer add/remove/re-channel and no entry/finalizer change. This narrows
-# what the existing workspace method row can restore for an explicitly reset
-# reopened package — a source re-audit, not a claim that completion behavior is
-# unchanged. Digest recomputed over the edited sources.
-# Re-anchor 2026-10-14 (merge of origin/main into #16984): main moved scanned
-# completion source lexical_context.rs with a test-only edit (must-context
-# migration inside `#[cfg(test)] mod tests`); no producer behavior change, no
-# producer add/remove/re-channel and no entry/finalizer change. All other
-# merged files (perltidy outcome/checked, formatting legacy, diagnostics
-# internal_types, perl_critic analyzer/service, hover) are outside the 42 scan
-# roots. Digest recomputed over the merged tree.
-source_digest = "sha256:e61f76dcbb280b69fdf5aa31aa462c106219122c60f1f5153bda2e1b49f52a91"
+source_digest = "sha256:4e0731e225a635e5dc770e5596bc55d4aacb70f6b72954081b845ddfa0144ca3"
 
 [[delegations]]
 module = "dancer2"

@@ -1708,6 +1708,15 @@ impl LspServer {
                 let end_line = range.get("end")?.get("line")?.as_u64()? as u32;
                 let end_char = range.get("end")?.get("character")?.as_u64()? as u32;
                 let code = diag.get("code").and_then(Value::as_str)?.to_string();
+                // Parser findings are already recomputed from the accepted
+                // current parse above. Client context may contain an older
+                // finding whose coordinates still project into this document;
+                // it must not introduce parser repair authority of its own.
+                if matches!(code.as_str(), "PL001" | "PL002" | "PL003")
+                    || code.starts_with("parse-error-")
+                {
+                    return None;
+                }
                 let message = diag.get("message").and_then(Value::as_str)?.to_string();
 
                 let severity = match diag.get("severity").and_then(Value::as_u64) {
