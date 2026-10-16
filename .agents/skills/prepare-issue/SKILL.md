@@ -103,6 +103,8 @@ For every issue title/body, issue comment, or PR title/body mutation performed b
 7. Treat an observed matching comment as the completed write; never post a duplicate comment to obtain a cleaner response.
 8. Never report an issue, comment, or PR field as canonical from the local request alone. Repair a mismatch through a bounded new mutation and fresh readback, or return `NOT_PROVEN` with the observed mismatch.
 
+### Runtime-local state
+
 Keep worker identity, topology, task state, raw logs, provisional reasoning, and routine
 skill transitions runtime-local. Use only stable classification/risk labels; do not use
 labels or comments as lifecycle completion or lane ownership.
