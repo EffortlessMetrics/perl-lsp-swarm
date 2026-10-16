@@ -2798,12 +2798,56 @@ impl DebugAdapter {
                 };
             }
             let port = raw_port as u16;
+            // Validate both supplied aliases before selecting by presence below.
+            // A malformed shadowed alias is invalid too; null retains default semantics.
+            let json_type = |value: &Value| match value {
+                Value::Null => "null",
+                Value::Bool(_) => "boolean",
+                Value::Number(_) => "number",
+                Value::String(_) => "string",
+                Value::Array(_) => "array",
+                Value::Object(_) => "object",
+            };
+            for field in ["timeout", "timeoutMs"] {
+                if let Some(value) = args.get(field)
+                    && !value.is_null()
+                    && value.as_u64().is_none()
+                {
+                    return DapMessage::Response {
+                        seq,
+                        request_seq,
+                        success: false,
+                        command: "attach".to_string(),
+                        body: None,
+                        message: Some(format!(
+                            "Invalid {field}: expected a non-negative integer in milliseconds, got JSON {}",
+                            json_type(value)
+                        )),
+                    };
+                }
+            }
             let timeout = args
                 .get("timeout")
                 .or_else(|| args.get("timeoutMs"))
                 .and_then(|t| t.as_u64())
                 .map(Self::u64_to_u32_saturating);
-            let stop_on_entry = args.get("stopOnEntry").and_then(|s| s.as_bool()).unwrap_or(false);
+            let stop_on_entry = match args.get("stopOnEntry") {
+                None | Some(Value::Null) => false,
+                Some(Value::Bool(value)) => *value,
+                Some(value) => {
+                    return DapMessage::Response {
+                        seq,
+                        request_seq,
+                        success: false,
+                        command: "attach".to_string(),
+                        body: None,
+                        message: Some(format!(
+                            "Invalid stopOnEntry: expected a boolean, got JSON {}",
+                            json_type(value)
+                        )),
+                    };
+                }
+            };
 
             // TCP attachment mode (IMPLEMENTED)
             let mut config = TcpAttachConfig::new(normalized_host.to_string(), port);
