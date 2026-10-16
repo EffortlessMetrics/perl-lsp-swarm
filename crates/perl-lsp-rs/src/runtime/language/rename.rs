@@ -1035,6 +1035,75 @@ impl LspServer {
         Some((start_byte, end_byte))
     }
 
+    /// Extend a bare token span across `::` package separators.
+    ///
+    /// [`Self::token_span_at`] stops at the first non-identifier character, so a
+    /// cursor on an identifier segment of `Foo::Bar` yields only that segment
+    /// (`Foo` or `Bar`). The semantic definition lookup resolves full canonical
+    /// package names by `ExactQualified` rank, so package previews must
+    /// hand it the whole qualified span; a truncated segment resolves no entity
+    /// and the receipt falls back to `compiler_missing` even though the
+    /// compiler facts are present (#16644).
+    ///
+    /// A leading sigil stays part of the span (token behavior), and legacy
+    /// `'` package separators are deliberately not followed by this helper.
+    pub(crate) fn qualified_symbol_span_at(content: &str, offset: usize) -> Option<(usize, usize)> {
+        let (mut start, mut end) = Self::token_span_at(content, offset)?;
+        let is_ident_char = |ch: char| ch.is_alphanumeric() || ch == '_';
+
+        // Forward: swallow `::` + segment repeatedly (`Foo::Bar::Baz`).
+        while let Some(rest) = content.get(end..) {
+            if !rest.starts_with("::") {
+                break;
+            }
+            let Some(segment) = content.get(end + 2..) else { break };
+            let Some(first) = segment.chars().next() else { break };
+            if !is_ident_char(first) {
+                break;
+            }
+            let mut segment_end = end + 2 + first.len_utf8();
+            for ch in segment.chars().skip(1) {
+                if !is_ident_char(ch) {
+                    break;
+                }
+                segment_end += ch.len_utf8();
+            }
+            end = segment_end;
+        }
+
+        // Backward: swallow a preceding segment + `::` (`Bar` in `Foo::Bar`).
+        while let Some(prefix) = content.get(..start) {
+            if !prefix.ends_with("::") {
+                break;
+            }
+            let Some(before) = prefix.get(..prefix.len() - 2) else { break };
+            let mut segment_start = before.len();
+            let mut saw_segment = false;
+            for (idx, ch) in before.char_indices().rev() {
+                if !is_ident_char(ch) {
+                    break;
+                }
+                segment_start = idx;
+                saw_segment = true;
+            }
+            if !saw_segment {
+                break;
+            }
+            start = segment_start;
+        }
+
+        // Keep a directly attached sigil so a qualified variable reports like a
+        // bare one (`$Foo::Bar::BAZ`, matching `$CONFIG`).
+        if let Some(prefix) = content.get(..start)
+            && let Some(last) = prefix.chars().next_back()
+            && (last == '$' || last == '@' || last == '%')
+        {
+            start -= last.len_utf8();
+        }
+
+        Some((start, end))
+    }
+
     fn offset_is_inside_quoted_string(content: &str, offset: usize) -> bool {
         let mut in_single = false;
         let mut in_double = false;
@@ -2219,6 +2288,46 @@ mod tests {
         // bounds are byte offsets; slice with &text[start..end]
         assert_eq!(&text[start..end], "$value");
         Ok(())
+    }
+
+    fn qualified_span_at(text: &str, needle: &str) -> String {
+        let offset = text.find(needle).ok_or("missing needle").expect("test needle");
+        let (start, end) =
+            LspServer::qualified_symbol_span_at(text, offset).expect("span at needle");
+        text[start..end].to_string()
+    }
+
+    #[test]
+    fn qualified_symbol_span_covers_full_package_name_from_any_segment() {
+        let text = "package Foo::Bar;";
+        assert_eq!(qualified_span_at(text, "Foo::Bar;"), "Foo::Bar");
+        assert_eq!(qualified_span_at(text, "Bar;"), "Foo::Bar");
+    }
+
+    #[test]
+    fn qualified_symbol_span_covers_multi_segment_and_class_use() {
+        assert_eq!(qualified_span_at("Foo::Bar::Baz->method();", "Bar::Baz"), "Foo::Bar::Baz");
+        assert_eq!(qualified_span_at("my $obj = Foo::Bar->new();", "Foo::Bar->new"), "Foo::Bar");
+    }
+
+    #[test]
+    fn qualified_symbol_span_keeps_sigil_and_unqualified_tokens_unchanged() {
+        // Bare tokens keep the pinned `$value` behavior.
+        assert_eq!(qualified_span_at("my $value = 1;", "$value"), "$value");
+        // Fully-qualified variables report with their sigil from any cursor.
+        assert_eq!(
+            qualified_span_at("my $x = $Foo::Bar::BAZ;", "$Foo::Bar::BAZ;"),
+            "$Foo::Bar::BAZ"
+        );
+        assert_eq!(qualified_span_at("my $x = $Foo::Bar::BAZ;", "BAZ;"), "$Foo::Bar::BAZ");
+    }
+
+    #[test]
+    fn qualified_symbol_span_stops_before_incomplete_or_legacy_separator() {
+        // Trailing `::` has no following segment; do not swallow it.
+        assert_eq!(qualified_span_at("Foo::;", "Foo::;"), "Foo");
+        // Legacy `'` package separators are not followed by this helper.
+        assert_eq!(qualified_span_at("Foo'Bar;", "Foo'"), "Foo");
     }
 
     #[test]
