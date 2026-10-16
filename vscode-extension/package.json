@@ -490,8 +490,8 @@
             "default": "native",
             "scope": "machine",
             "order": 33,
-            "description": "Critic engine. Only 'native' (built-in, default) takes effect from VS Code settings; the server logs and ignores 'legacy' on this channel. Select the optional external perlcritic compatibility engine via .perl-lsp.toml instead.",
-            "markdownDescription": "Critic engine. Only `native` (built-in, default, no external tools) takes effect from VS Code settings; the server logs and ignores `legacy` on this channel. Select the optional external `perlcritic` compatibility engine via `.perl-lsp.toml` instead."
+            "description": "Critic engine. Only 'native' (built-in, default) takes effect from VS Code settings; the server logs and ignores 'legacy' on this channel. Legacy engine values supplied through VS Code settings are ignored; use the native critic settings to configure diagnostics.",
+            "markdownDescription": "Critic engine. Only `native` (built-in, default, no external tools) takes effect from VS Code settings; the server logs and ignores `legacy` on this channel. Legacy engine values supplied through VS Code settings are ignored; use the native critic settings to configure diagnostics."
           },
           "perl-lsp.critic.profile": {
             "type": "string",
