@@ -155,10 +155,12 @@ fn require_each_contains<'a>(
     Ok(())
 }
 
-/// The reviewed built-in overlap cohort (#11915/#11918): exactly these seven
+/// The reviewed built-in overlap cohort (#11915/#11918): exactly these nine
 /// checked identity constructors may exist. An eighth constructor must turn
 /// this gate red until it is consciously admitted here.
-const BUILT_IN_IDENTITY_CONSTRUCTORS: [&str; 7] = [
+const BUILT_IN_IDENTITY_CONSTRUCTORS: [&str; 9] = [
+    "built_in_missing_strict",
+    "built_in_missing_warnings",
     "built_in_literal_undef_comparison",
     "built_in_potentially_undef_comparison",
     "built_in_backtick_exec",
@@ -178,7 +180,7 @@ fn built_in_identity_constructors_admit_exactly_the_reviewed_overlap_cohort() ->
             let trimmed = line.trim_start();
             // Any function visibility/form declaring a built_in_ constructor
             // counts, so a `pub(crate) fn` or non-const variant cannot sneak
-            // an eighth cohort member past the pin.
+            // an unlisted cohort member past the pin.
             if !trimmed.starts_with("pub") || !trimmed.contains("fn ") {
                 return None;
             }
@@ -394,7 +396,7 @@ fn both_transports_feed_built_in_overlap_observations_into_the_seam() -> Result<
 fn transport_coincidence_dedup_stays_retired_for_upstream_merged_aliases() -> Result<(), String> {
     // #11918: duplicate prevention for the reviewed core/native alias pairs
     // moved upstream into the normalized seam. The transport-level #5088 XOR
-    // dedup must keep exempting exactly those pairs; restoring the collapse
+    // dedup must keep exempting migrated rows/pairs; restoring the collapse
     // here would silently mask a merge regression as "no duplicates".
     let source = production_source("runtime/diagnostics.rs")?;
     let dedup_start = source

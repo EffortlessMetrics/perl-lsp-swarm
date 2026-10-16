@@ -1,48 +1,8 @@
 ---
 source: crates/perl-lsp-rs/tests/lsp_pull_diag_snap.rs
-assertion_line: 134
 expression: changed
 ---
 items:
-  - code: PL101
-    codeDescription:
-      href: "https://docs.perl-lsp.org/errors/PL101"
-    data:
-      category: StrictWarnings
-      code: PL101
-      fixable: false
-      tags: []
-    message: "Consider adding 'use warnings;' for better error detection\nSuggestion: Add 'use warnings;' at the top of the file"
-    range:
-      end:
-        character: 0
-        line: 0
-      start:
-        character: 0
-        line: 0
-    relatedInformation:
-      - location:
-          range:
-            end:
-              character: 0
-              line: 0
-            start:
-              character: 0
-              line: 0
-          uri: "file:///snapshot-changed.pl"
-        message: "Suggestion: Add 'use warnings;' at the beginning of your script"
-      - location:
-          range:
-            end:
-              character: 0
-              line: 0
-            start:
-              character: 0
-              line: 0
-          uri: "file:///snapshot-changed.pl"
-        message: "Note: The 'use warnings' pragma enables helpful warning messages about questionable constructs, uninitialized values, and deprecated features."
-    severity: 2
-    source: perl-lsp
   - code: PL102
     codeDescription:
       href: "https://docs.perl-lsp.org/errors/PL102"
@@ -114,15 +74,17 @@ items:
         message: "ℹ️ Under 'use strict', all variables must be declared before use. Use 'my' for lexical scope or 'our' for package variables."
     severity: 1
     source: perl-lsp
-  - code: native.testing.require_use_warnings
+  - code: PL101
+    codeDescription:
+      href: "https://docs.perl-lsp.org/errors/PL101"
     data:
-      category: Syntax
-      code: native.testing.require_use_warnings
+      category: StrictWarnings
+      code: PL101
       explanation: Always use warnings to catch potential issues
       fixable: true
-      suppressionKey: native.testing.require_use_warnings
+      suppressionKey: PL101
       tags: []
-    message: Code does not use warnings
+    message: "Consider adding 'use warnings;' for better error detection\nSuggestion: Add 'use warnings;' at the top of the file"
     range:
       end:
         character: 0
@@ -130,6 +92,27 @@ items:
       start:
         character: 0
         line: 0
+    relatedInformation:
+      - location:
+          range:
+            end:
+              character: 0
+              line: 0
+            start:
+              character: 0
+              line: 0
+          uri: "file:///snapshot-changed.pl"
+        message: "Note: The 'use warnings' pragma enables helpful warning messages about questionable constructs, uninitialized values, and deprecated features."
+      - location:
+          range:
+            end:
+              character: 0
+              line: 0
+            start:
+              character: 0
+              line: 0
+          uri: "file:///snapshot-changed.pl"
+        message: "Suggestion: Add 'use warnings;' at the beginning of your script"
     severity: 2
     source: perl-lsp
 kind: full
