@@ -13,17 +13,8 @@ use std::path::{Path, PathBuf};
 
 type TestResult<T = ()> = Result<T, Box<dyn Error>>;
 
-const EXTERNAL_SELECTION_VERBS: &[&str] = &[
-    "select",
-    "choose",
-    "use",
-    "enable",
-    "run",
-    "execute",
-    "activate",
-    "configure",
-    "set",
-];
+const EXTERNAL_SELECTION_VERBS: &[&str] =
+    &["select", "choose", "use", "enable", "run", "execute", "activate", "configure", "set"];
 const EXTERNAL_SELECTION_PHRASES: &[&str] = &["switch to", "turn on", "opt into"];
 
 /// Resolve the repository root from xtask's compile-time manifest directory.
@@ -98,14 +89,10 @@ fn external_selection_segments(copy: &str) -> Vec<&str> {
         .filter(|segment| {
             let normalized = segment.replace('`', "").to_ascii_lowercase();
             let names_external_engine = contains_word(&normalized, "perlcritic")
-                || (contains_word(&normalized, "external")
-                    && contains_word(&normalized, "engine"));
-            let offers_selection = EXTERNAL_SELECTION_VERBS
-                .iter()
-                .any(|verb| contains_word(&normalized, verb))
-                || EXTERNAL_SELECTION_PHRASES
-                    .iter()
-                    .any(|phrase| normalized.contains(phrase));
+                || (contains_word(&normalized, "external") && contains_word(&normalized, "engine"));
+            let offers_selection =
+                EXTERNAL_SELECTION_VERBS.iter().any(|verb| contains_word(&normalized, verb))
+                    || EXTERNAL_SELECTION_PHRASES.iter().any(|phrase| normalized.contains(phrase));
             names_external_engine && offers_selection
         })
         .collect()
