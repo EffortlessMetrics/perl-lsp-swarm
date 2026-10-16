@@ -595,6 +595,28 @@ fn is_ident_char(ch: char) -> bool {
 }
 
 fn find_sub_name_in_text(text: &str, name: &str) -> Option<(usize, usize)> {
+    // Method-call spans include the receiver and arguments. Recognize a
+    // complete receiver followed by an arrow before considering any spelling
+    // match, so neither `$greet` in `$greet->greet($greet)` can win (#17448).
+    let trimmed = text.trim_start();
+    let receiver_start = text.len() - trimmed.len() + usize::from(trimmed.starts_with('$'));
+    if let Some(receiver) = perl_module::parse_module_token(text, receiver_start) {
+        let after_receiver = text.get(receiver.end..)?.trim_start();
+        if let Some(after_arrow) = after_receiver.strip_prefix("->") {
+            let method = after_arrow.trim_start();
+            if let Some(token) = perl_module::parse_module_token(method, 0)
+                && let Some(method_token) = method.get(..token.end)
+                && method_token.rsplit([':', '\'']).next() == Some(name)
+            {
+                let end = text.len() - method.len() + token.end;
+                return Some((end - name.len(), end));
+            }
+            // An indexed outer call can include an earlier chained method.
+            // Keep the existing narrowing for those spans rather than
+            // falling back to replacing the entire call expression.
+        }
+    }
+
     let mut search_from = 0;
     while let Some(relative_start) = text[search_from..].find(name) {
         let start = search_from + relative_start;
@@ -765,6 +787,22 @@ mod tests {
     use super::*;
     use std::sync::Arc;
     use url::Url;
+
+    #[test]
+    fn sub_name_narrowing_17448() {
+        for (text, name, expected) in [
+            ("$greet->greet($greet)", "greet", Some((8, 13))),
+            ("$café -> café($café)", "café", Some((10, 15))),
+            ("$greet->Greeter::greet($greet)", "greet", Some((17, 22))),
+            ("$greet->Greeter'greet($greet)", "greet", Some((16, 21))),
+            ("Greet::Factory->Greet($Greet)", "Greet", Some((16, 21))),
+            ("  $greet ->\n greet($greet)", "greet", Some((13, 18))),
+            ("Greeter::greet('->', $greet)", "greet", Some((9, 14))),
+            ("$self->other()->greet($self)", "greet", Some((16, 21))),
+        ] {
+            assert_eq!(find_sub_name_in_text(text, name), expected, "source: {text}");
+        }
+    }
 
     fn index_text(
         idx: &WorkspaceIndex,
