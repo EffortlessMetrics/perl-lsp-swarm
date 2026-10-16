@@ -106,6 +106,8 @@ on:
       - '.github/workflows/vscode-current-source-linux-smoke.yml'
       - '.github/workflows/vscode-installed-first-hour-windows.yml'
       - '.github/workflows/vim-hermetic-host.yml'
+      - '.github/workflows/sublime-real-host.yml'
+      - '.github/workflows/sublime-dap-real-host.yml'
       - '.github/workflows/ci.yml'
       - 'scripts/ci/verify_gate_receipt_freshness.py'
       - 'scripts/ci/test_verify_gate_receipt_freshness.py'

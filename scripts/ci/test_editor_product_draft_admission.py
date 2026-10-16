@@ -14,6 +14,8 @@ WORKFLOWS = {
     "vscode-current-source-linux-smoke.yml": ("current-source-linux-smoke",),
     "vscode-installed-first-hour-windows.yml": ("installed-first-hour-windows",),
     "vim-hermetic-host.yml": ("hermetic-host-run",),
+    "sublime-real-host.yml": ("host-journey",),
+    "sublime-dap-real-host.yml": ("exact-source-runtime-and-host",),
 }
 GUARD = "github.event_name != 'pull_request' || github.event.pull_request.draft == false"
 
@@ -56,7 +58,7 @@ class EditorProductDraftAdmissionTests(unittest.TestCase):
                     self.assertLess(body.index("    if:"), body.index("    runs-on:"))
                     self.assertFalse(admitted(expression, "pull_request", True))
                     self.assertTrue(admitted(expression, "pull_request", False))
-                    for event in ("workflow_dispatch", "schedule"):
+                    for event in ("workflow_dispatch", "schedule", "push", "merge_group"):
                         self.assertTrue(admitted(expression, event, None))
 
     def test_no_new_ready_or_label_trigger_is_invented(self):
