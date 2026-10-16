@@ -13,6 +13,19 @@ use std::path::{Path, PathBuf};
 
 type TestResult<T = ()> = Result<T, Box<dyn Error>>;
 
+const EXTERNAL_SELECTION_VERBS: &[&str] = &[
+    "select",
+    "choose",
+    "use",
+    "enable",
+    "run",
+    "execute",
+    "activate",
+    "configure",
+    "set",
+];
+const EXTERNAL_SELECTION_PHRASES: &[&str] = &["switch to", "turn on", "opt into"];
+
 /// Resolve the repository root from xtask's compile-time manifest directory.
 fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -87,13 +100,12 @@ fn external_selection_segments(copy: &str) -> Vec<&str> {
             let names_external_engine = contains_word(&normalized, "perlcritic")
                 || (contains_word(&normalized, "external")
                     && contains_word(&normalized, "engine"));
-            let offers_selection = contains_word(&normalized, "select")
-                || contains_word(&normalized, "choose")
-                || normalized.contains("switch to")
-                || normalized.contains("use the external")
-                || normalized.contains("enable the external")
-                || normalized.contains("run the external")
-                || normalized.contains("execute the external");
+            let offers_selection = EXTERNAL_SELECTION_VERBS
+                .iter()
+                .any(|verb| contains_word(&normalized, verb))
+                || EXTERNAL_SELECTION_PHRASES
+                    .iter()
+                    .any(|phrase| normalized.contains(phrase));
             names_external_engine && offers_selection
         })
         .collect()
@@ -138,6 +150,21 @@ fn external_selection_detection_is_sentence_local() {
         vec![" You can choose a perlcritic external engine from project settings"],
         external_selection_segments(misleading)
     );
+
+    for claim in [
+        "Use a perlcritic external engine from project settings.",
+        "Enable the external critic engine for this workspace.",
+        "Activate an external perlcritic engine.",
+        "Configure the external critic engine here.",
+        "Run a perlcritic external engine instead.",
+        "Execute the external critic engine for diagnostics.",
+        "Set the external critic engine in project settings.",
+        "Switch to an external critic engine.",
+        "Turn on the external critic engine.",
+        "Opt into an external critic engine.",
+    ] {
+        assert_eq!(vec![claim.trim_end_matches('.')], external_selection_segments(claim));
+    }
 
     let bounded = "Only native is configured here. Legacy values are ignored.";
     assert!(external_selection_segments(bounded).is_empty());
