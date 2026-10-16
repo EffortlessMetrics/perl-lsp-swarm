@@ -109,6 +109,13 @@ on:
       - 'scripts/ci/pr_smoke_disk_guard.py'
       - 'scripts/ci/test_pr_smoke_disk_guard.py'
       - 'scripts/ci/test_pr_smoke_workflow_guard.py'
+      - 'scripts/ci/test_editor_product_draft_admission.py'
+      - '.github/workflows/vscode-managed-binary-smoke.yml'
+      - '.github/workflows/vscode-current-source-linux-smoke.yml'
+      - '.github/workflows/vscode-installed-first-hour-windows.yml'
+      - '.github/workflows/vim-hermetic-host.yml'
+      - '.github/workflows/sublime-real-host.yml'
+      - '.github/workflows/sublime-dap-real-host.yml'
       - '.github/workflows/ci.yml'
       - 'scripts/ci/verify_gate_receipt_freshness.py'
       - 'scripts/ci/test_verify_gate_receipt_freshness.py'
@@ -442,6 +449,9 @@ jobs:
 
       - name: Run PR smoke disk-guard oracle tests (#15400/A2)
         run: python3 -m unittest scripts.ci.test_pr_smoke_disk_guard
+
+      - name: Prove editor product jobs reject draft allocation
+        run: python3 -m unittest scripts.ci.test_editor_product_draft_admission
 
       - name: Run PR Smoke workflow/helper compatibility controls (#17835)
         run: python3 -m unittest scripts.ci.test_pr_smoke_workflow_guard

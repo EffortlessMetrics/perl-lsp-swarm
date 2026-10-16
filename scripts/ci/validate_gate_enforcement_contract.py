@@ -25,7 +25,8 @@ APPLICABILITY = {
     "planned",
     "not-applicable",
 }
-PRODUCERS = {"repository-job", "external"}
+PRODUCERS = {"repository-job", "reusable-workflow-job", "external"}
+REUSABLE_FIELDS = frozenset({"callee_workflow", "callee_source", "callee_sha256", "callee_job"})
 REQUIRED_ENFORCEMENT = {
     "github-branch-protection",
     "github-ruleset",
@@ -41,7 +42,7 @@ RULESET_ENFORCEMENT = {
 }
 NON_REQUIRED_ENFORCEMENT = {"neither", "local", "not-proven"}
 WORKFLOW_RESULTS = {"propagate", "continue"}
-CHECK_ENTRY_FIELDS = frozenset(
+CHECK_ENTRY_FIELDS = REUSABLE_FIELDS | frozenset(
     {
         "name",
         "producer",
@@ -76,6 +77,8 @@ class Job(NamedTuple):
     continue_static: bool
     condition: str | None
     condition_class: str
+    uses: str | None = None
+    strategy: bool = False
 
 
 class Workflow(NamedTuple):
@@ -290,6 +293,8 @@ def _read_job(lines: list[str], start: int, end: int, job_id: str) -> Job:
     continue_on_error: bool | None = False
     continue_static = True
     condition: str | None = None
+    uses: str | None = None
+    strategy = False
 
     index = start + 1
     while index < end:
@@ -299,6 +304,12 @@ def _read_job(lines: list[str], start: int, end: int, job_id: str) -> Job:
             continue
         stripped = line.strip()
         key = _unquote(stripped.split(":", 1)[0].strip()) if ":" in stripped else ""
+        if key == "strategy":
+            strategy = True
+        if key == "uses":
+            raw, index = _collect_block_value(lines, index, end, 4)
+            uses = _unquote(raw)
+            continue
         if key == "name":
             raw, index = _collect_block_value(lines, index, end, 4)
             name_static = bool(raw) and "${{" not in raw
@@ -329,6 +340,8 @@ def _read_job(lines: list[str], start: int, end: int, job_id: str) -> Job:
         continue_static=continue_static,
         condition=condition,
         condition_class=_condition_class(condition),
+        uses=uses,
+        strategy=strategy,
     )
 
 
@@ -444,6 +457,78 @@ def build_producer_index(workflows: dict[str, Workflow]) -> dict[str, list[tuple
     return index
 
 
+def project_reusable_workflows(root: Path, workflows: dict[str, Workflow], entries: list[dict[str, Any]]) -> tuple[dict[str, Workflow], list[dict[str, str]], list[Finding]]:
+    """Project one-level native check names from reviewed immutable callee bytes.
+
+    This is static source consistency, not remote provenance or live app identity.
+    Native qualification and independent upstream-byte review remain required.
+    """
+    projected = {path: item._replace(jobs=dict(item.jobs)) for path, item in workflows.items()}
+    sources: dict[str, tuple[Workflow, str]] = {}
+    subjects: list[dict[str, str]] = []
+    findings: list[Finding] = []
+    for entry in entries:
+        if not isinstance(entry, dict) or entry.get("producer") != "reusable-workflow-job":
+            continue
+        name = str(entry.get("name", "<unnamed>"))
+        try:
+            if not isinstance(entry.get("workflow"), str):
+                raise ValueError("caller workflow path must be explicit")
+            for field in ("job", "callee_job"):
+                if not isinstance(entry.get(field), str) or not re.fullmatch(r"[A-Za-z0-9_.-]+", entry[field]):
+                    raise ValueError(f"{field} must be a static native job ID")
+            reference = entry.get("callee_workflow", "")
+            if not isinstance(reference, str) or not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/\.github/workflows/[A-Za-z0-9_.-]+\.ya?ml@[0-9a-f]{40}", reference):
+                raise ValueError("callee workflow must use an exact full-SHA repository reference")
+            digest = entry.get("callee_sha256", "")
+            if not isinstance(digest, str) or not re.fullmatch("[0-9a-f]{64}", digest):
+                raise ValueError("callee source digest is absent or malformed")
+            callee = read_workflow(root, entry.get("callee_source", ""))
+            if callee.sha256 != digest or "workflow_call" not in callee.events:
+                raise ValueError("callee bytes/digest or workflow_call trigger disagree")
+            old = sources.get(reference)
+            if old and (old[0].path != callee.path or old[0].sha256 != callee.sha256):
+                raise ValueError("one immutable reference has contradictory source evidence")
+            sources[reference] = (callee, digest)
+            caller = workflows.get(entry.get("workflow", ""))
+            call = caller.jobs.get(entry.get("job", "")) if caller else None
+            if call is None or call.uses != reference:
+                raise ValueError("declared caller does not invoke this immutable callee")
+            leaf = callee.jobs.get(entry.get("callee_job", ""))
+            if leaf is None or leaf.uses is not None or leaf.strategy or call.strategy:
+                raise ValueError("callee emitting job is absent, nested, or matrix-expanded")
+        except (ValueError, OSError) as error:
+            findings.append(Finding("invalid_reusable_producer", name, str(error)))
+    for reference, (callee, digest) in sorted(sources.items()):
+        subjects.append({"reference": reference, "path": callee.path, "sha256": digest})
+        # Include every caller of this pin and every direct callee job, including
+        # undeclared duplicates. A row does not get to curate its denominator.
+        for path, workflow in workflows.items():
+            for call in workflow.jobs.values():
+                if call.uses != reference:
+                    continue
+                if call.strategy or not call.name_static or not call.name:
+                    findings.append(Finding("ambiguous_reusable_emitter", reference,
+                                            f"{path}:{call.job_id} has a matrix or dynamic name"))
+                    continue
+                for leaf in callee.jobs.values():
+                    if leaf.uses is not None or leaf.strategy or not leaf.name_static or not leaf.name:
+                        findings.append(Finding("ambiguous_reusable_emitter", reference,
+                                                f"{callee.path}:{leaf.job_id} is nested, matrix-expanded or dynamically named"))
+                        continue
+                    key = call.job_id + "/" + leaf.job_id
+                    classes = {call.condition_class, leaf.condition_class}
+                    condition_class = "never" if "never" in classes else "unknown" if "unknown" in classes else "conditional" if "conditional" in classes else "always"
+                    static = call.name_static and leaf.name_static
+                    projected[path].jobs[key] = Job(
+                        key, f"{call.name} / {leaf.name}" if static else None, static,
+                        call.continue_on_error or leaf.continue_on_error,
+                        call.continue_static and leaf.continue_static,
+                        None, condition_class,
+                    )
+    return projected, subjects, findings
+
+
 def _string_list(value: Any, *, field: str, subject: str) -> list[str]:
     if (
         not isinstance(value, list)
@@ -547,7 +632,17 @@ def validate_context(
             findings.append(Finding("external_producer_has_job_contract", name, "external producer cannot declare repository job semantics"))
         return findings, False
 
-    if producer != "repository-job":
+    if producer == "reusable-workflow-job":
+        if entry.get("ruleset_integration_id") != 15368 or isinstance(entry.get("ruleset_integration_id"), bool) or entry.get("classic_app_id", 15368) != 15368:
+            findings.append(Finding("reusable_app_binding_mismatch", name, "native reusable checks require the GitHub Actions integration15368"))
+        if not isinstance(job_id, str) or not isinstance(entry.get("callee_job"), str):
+            findings.append(Finding("reusable_job_missing", name, "caller and callee job IDs must be explicit"))
+            return findings, False
+        job_id = job_id + "/" + entry["callee_job"]
+    elif producer == "repository-job":
+        if REUSABLE_FIELDS.intersection(entry):
+            findings.append(Finding("direct_job_has_callee_fields", name, "direct producers cannot borrow callee evidence"))
+    else:
         return findings, False
 
     if not isinstance(workflow, str) or workflow not in workflows:
@@ -632,6 +727,7 @@ def _canonical_context(entry: dict[str, Any]) -> dict[str, Any]:
         "classic_app_id",
         "ruleset_integration_id",
         "events",
+        "callee_workflow", "callee_source", "callee_sha256", "callee_job",
     )
     return {field: entry[field] for field in fields if field in entry}
 
@@ -655,9 +751,8 @@ def validate(root: Path, policy_path: Path) -> dict[str, Any]:
         raise ValueError("policy must contain at least one [[checks]] entry")
 
     workflows = read_workflow_catalog(root)
+    workflows, callee_subjects, findings = project_reusable_workflows(root, workflows, contexts)
     producer_index = build_producer_index(workflows)
-
-    findings: list[Finding] = []
     names: set[str] = set()
     mapped = 0
     canonical_contexts: list[dict[str, Any]] = []
@@ -699,6 +794,7 @@ def validate(root: Path, policy_path: Path) -> dict[str, Any]:
         "repository_dirty": repository_dirty,
         "policy": policy_subject,
         "workflow_catalog": workflow_subjects,
+        **({"reusable_workflow_sources": callee_subjects} if callee_subjects else {}),
     }
     subjects = {
         **exact_source_subject,

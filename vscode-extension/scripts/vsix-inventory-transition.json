@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "owner_issue": 16579,
-  "reason": "Accept the measured 372-byte onboarding regular-file classification, guarded metadata errors, and accurate unavailable startup diagnostic for #16579; only the reviewed onboarding bundle changes, with all 30 package members unchanged.",
-  "base_baseline_file_sha256": "382c054e80e80e8162de3373399f4401d1f9e4c79342d4447188a386a5eb8cf0",
-  "candidate_baseline_file_sha256": "a02591ea0bec713209f9f682fafa481ee70fc1db93c53f4856b479936c88ddc2",
-  "base_inventory_sha256": "00acc7c6104d69f3a9bb51ef6454b1a251133e7873d24dd7cc0cc1ca6c95d369",
-  "candidate_inventory_sha256": "039b3febe05d22900a49717990beb0e7267995db5e3322663e5792c43f60673f"
+  "owner_issue": 17018,
+  "reason": "Accept the measured 18-byte package.json increase from describing the external perlcritic engine as optional in both critic-setting descriptions for #17018; all 30 package members and every other member size are unchanged.",
+  "base_baseline_file_sha256": "a02591ea0bec713209f9f682fafa481ee70fc1db93c53f4856b479936c88ddc2",
+  "candidate_baseline_file_sha256": "8dbfd39a86d17ea8b4402b6ba87a3881b8fda04fd637802b14db5ccc3e85f44f",
+  "base_inventory_sha256": "039b3febe05d22900a49717990beb0e7267995db5e3322663e5792c43f60673f",
+  "candidate_inventory_sha256": "1c9d42ddb2cbda6e079623e0d6d564209610ed515f0cd66c33bea908881955ad"
 }

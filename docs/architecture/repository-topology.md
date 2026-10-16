@@ -70,6 +70,7 @@ The current monorepo and the product/integration repository after every split. R
 | `perl-regex` | perl-parser | published | `workspace_path` | #7398 |
 | `perl-release-readiness` | swarm-product | private | `workspace_path` | #7369 |
 | `perl-ripr-facts` | swarm-product | published | `workspace_path` | #7369 |
+| `perl-rust-small-verifier` | _pending_ | private | `workspace_path` | #7369 |
 | `perl-semantic-analyzer` | _pending_ | published | `workspace_path` | #7400 |
 | `perl-semantic-facts` | _pending_ | published | `workspace_path` | #7400 |
 | `perl-source-identity` | _pending_ | published | `workspace_path` | #7663 |
@@ -127,7 +128,7 @@ _No package currently lives here._
 
 ## Unresolved placement
 
-17 package(s) have no accepted future owner. Each names the issue that owns the
+18 package(s) have no accepted future owner. Each names the issue that owns the
 decision and the exact question, so unresolved placement stays visible instead of
 becoming a false final answer.
 
@@ -143,6 +144,7 @@ becoming a false final answer.
 | `perl-parser-bench` | #7400 | Parser-repository membership and public/private disposition are unresolved; #7400 owns the classification. |
 | `perl-parser-comparison` | #7400 | Parser-repository membership and public/private disposition are unresolved; #7400 owns the classification. |
 | `perl-parser-core` | #7400 | Parser-repository membership and public/private disposition are unresolved; #7400 owns the classification. |
+| `perl-rust-small-verifier` | #7369 | The canonical receipt entrypoint shares task-runner source; its future repository placement remains undecided. |
 | `perl-semantic-analyzer` | #7400 | Parser-repository membership and public/private disposition are unresolved; #7400 owns the classification. |
 | `perl-semantic-facts` | #7400 | Parser-repository membership and public/private disposition are unresolved; #7400 owns the classification. |
 | `perl-source-identity` | #7663 | Repository destination for the canonical lower source-identity owner is unresolved; #7663 owns the standalone package proof. |

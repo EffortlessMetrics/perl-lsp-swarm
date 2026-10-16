@@ -33,6 +33,8 @@ concurrency:
 
 jobs:
   exact-source-runtime-and-host:
+    # Interim draft exclusion; existing ready-PR and non-PR routes stay unchanged.
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     name: Sublime Debugger + perl-dap / Linux x64
     runs-on: ubuntu-latest
     timeout-minutes: 60

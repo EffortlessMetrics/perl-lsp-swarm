@@ -21,6 +21,9 @@ permissions:
 
 jobs:
   managed-binary-smoke:
+    # Interim draft exclusion before runner, matrix, setup, or cache allocation.
+    # Non-draft admission is unchanged; Ready alone is not reviewed CI approval.
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     name: VS Code smoke (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
@@ -119,6 +122,9 @@ jobs:
           retention-days: 14
 
   perl5-alias-smoke:
+    # Interim draft exclusion before runner, matrix, setup, or cache allocation.
+    # Non-draft admission is unchanged; Ready alone is not reviewed CI approval.
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     # Real-client alias proof for the perl/perl5 language-ID contract (#7699):
     # a perl5-classified document must flow activation → client → server with
     # published diagnostics and a provider result. Runs the focused smoke with

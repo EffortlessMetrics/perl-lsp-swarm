@@ -27,7 +27,7 @@ RUST_SMALL_KEY = ".github/workflows/em-ci-routed-rust.yml"
 
 DECLARED_REASON = (
     "Advisory receipt-producing dedicated formatter context. "
-    "Live merge blocking is owned by the required Perl LSP Rust Small Result "
+    "Live merge blocking is owned by the required Perl LSP Rust Small governed proof / Rust CI / Required "
     "path (#9127/#12320). Duplicate meta-shard fmt execution is retired by "
     "#9959. Settings-app promotion of this context remains #7087 and is not "
     "claimed here."
@@ -126,6 +126,16 @@ class HostedFormatterProducerTests(unittest.TestCase):
             required_checks=self.retired_required if required is None else required,
             workflows=texts,
         )
+
+    def test_governed_script_call_is_visible_to_producer_inventory(self) -> None:
+        body = producers.job_bodies(self.workflows[RUST_SMALL_KEY])["rust-small-proof"]
+        self.assertTrue(producers.job_hosts_formatter_producer(body))
+        duplicate = {".github/workflows/duplicate.yml": "jobs:\n" + body}
+        self.assertEqual(producers.undeclared_hosted_formatter_sites(duplicate), [".github/workflows/duplicate.yml:rust-small-proof"])
+
+    def test_governed_script_invoked_outside_owned_call_is_undeclared(self) -> None:
+        workflows = {".github/workflows/duplicate.yml": "jobs:\n  extra:\n    runs-on: ubuntu-latest\n    steps:\n      - run: bash .ci/rust-standard-proof.sh\n"}
+        self.assertEqual(producers.undeclared_hosted_formatter_sites(workflows), [".github/workflows/duplicate.yml:extra"])
 
     def test_current_tree_has_one_declared_hosted_formatter_inventory(self) -> None:
         producers.validate_hosted_formatter_inventory(
@@ -226,10 +236,9 @@ class HostedFormatterProducerTests(unittest.TestCase):
     def test_undeclared_cargo_fmt_in_rust_small_result_fails_closed(self) -> None:
         rust_small = self.retired_workflows[RUST_SMALL_KEY]
         broken_workflows = dict(self.retired_workflows)
-        broken_workflows[RUST_SMALL_KEY] = rust_small.replace(
-            "python3 -m unittest \\",
-            "cargo fmt --all -- --check\n          python3 -m unittest \\",
-            1,
+        broken_workflows[RUST_SMALL_KEY] = rust_small + (
+            "\n  rust-small-result:\n    runs-on: ubuntu-latest\n"
+            "    steps:\n      - run: cargo fmt --all -- --check\n"
         )
         with self.assertRaisesRegex(
             AssertionError,

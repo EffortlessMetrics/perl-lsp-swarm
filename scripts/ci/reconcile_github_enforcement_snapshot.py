@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -599,6 +600,7 @@ STATIC_CONTEXT_FIELDS = {
     "classic_app_id",
     "ruleset_integration_id",
     "events",
+    "callee_workflow", "callee_source", "callee_sha256", "callee_job",
 }
 
 
@@ -639,7 +641,7 @@ def validate_static(raw: Any) -> dict[str, Any]:
         subjects,
         "static_receipt.subjects",
         {"repository_sha", "policy", "contexts"},
-        {"repository_dirty", "workflow_catalog"},
+        {"repository_dirty", "workflow_catalog", "reusable_workflow_sources"},
     )
     policy = obj(subjects["policy"], "static_receipt.subjects.policy")
     closed(
@@ -647,6 +649,19 @@ def validate_static(raw: Any) -> dict[str, Any]:
         "static_receipt.subjects.policy",
         {"path", "sha256", "version", "source"},
     )
+
+    callee_sources = set()
+    for source in seq(subjects.get("reusable_workflow_sources", []), "reusable_workflow_sources"):
+        source = obj(source, "reusable source")
+        closed(source, "reusable source", {"reference", "path", "sha256"})
+        reference = text(source["reference"], "reusable source reference")
+        if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/\.github/workflows/[A-Za-z0-9_.-]+\.ya?ml@[0-9a-f]{40}", reference):
+            raise ContractError("reusable source reference is not immutable")
+        identity = (reference, text(source["path"], "reusable source path"),
+                    hex_digest(source["sha256"], "reusable source digest", 64))
+        if identity in callee_sources:
+            raise ContractError("duplicate reusable source identity")
+        callee_sources.add(identity)
 
     contexts: list[dict[str, Any]] = []
     names: set[str] = set()
@@ -662,6 +677,15 @@ def validate_static(raw: Any) -> dict[str, Any]:
             STATIC_CONTEXT_FIELDS
             - {"name", "producer", "policy_role", "enforcement"},
         )
+        if entry.get("producer") == "reusable-workflow-job":
+            identity = (text(entry.get("callee_workflow"), "callee_workflow"),
+                        text(entry.get("callee_source"), "callee_source"),
+                        hex_digest(entry.get("callee_sha256"), "callee_sha256", 64))
+            leaf = text(entry.get("callee_job"), "callee_job")
+            if identity not in callee_sources or not re.fullmatch(r"[A-Za-z0-9_.-]+", leaf):
+                raise ContractError("reusable context has no matching immutable source evidence")
+            if entry.get("ruleset_integration_id") != 15368:
+                raise ContractError("reusable context has the wrong GitHub Actions app binding")
         name = text(entry["name"], f"{field}.name")
         if name in names:
             raise ContractError(f"duplicate static context: {name}")
