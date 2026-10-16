@@ -323,7 +323,8 @@ impl ExportSymbolExtractor {
             if let (Some(start), Some(end)) =
                 (arg[open_pos..].find(|c: char| !c.is_whitespace()), arg.rfind(close))
             {
-                let content = &arg[open_pos + start + 1..end];
+                let delim_len = arg[open_pos + start..].chars().next().map_or(1, char::len_utf8);
+                let content = &arg[open_pos + start + delim_len..end];
                 return content.split_whitespace().any(|w| w == "Exporter");
             }
         }
@@ -563,6 +564,19 @@ mod tests {
         let mut parser = Parser::new(code);
         let ast = parser.parse().ok()?;
         ExportSymbolExtractor::extract(&ast)
+    }
+
+    /// A multi-byte `qw` delimiter must not panic Exporter detection: the
+    /// content slice starts after the whole delimiter char, not one byte
+    /// after its first byte.
+    #[test]
+    fn arg_contains_exporter_multibyte_delimiter_does_not_panic() {
+        assert!(ExportSymbolExtractor::arg_contains_exporter("qw\u{2022}Exporter\u{2022}"));
+        assert!(!ExportSymbolExtractor::arg_contains_exporter("qw\u{2022}Other\u{2022}"));
+        assert!(
+            ExportSymbolExtractor::arg_contains_exporter("qw(Exporter)"),
+            "the normalized qw(...) form keeps working"
+        );
     }
 
     #[test]
