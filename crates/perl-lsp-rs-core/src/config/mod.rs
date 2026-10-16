@@ -2791,6 +2791,12 @@ impl ServerConfig {
         if let Some(value) = options.perltidy_add_trailing_commas {
             self.perltidy_add_trailing_commas = Some(value);
         }
+        // #18023: options classified external-only in a discovered
+        // `.perltidyrc` profile have no native equivalent; name them instead
+        // of dropping them silently when the native engine is in force.
+        let external_only: Vec<&str> =
+            options.external_only_options.iter().map(String::as_str).collect();
+        self.warn_unsupported_native_format_options(&external_only);
     }
 }
 
@@ -4889,6 +4895,28 @@ profile = "recommended"
         assert!(
             !combined.contains("no effect with the native formatter"),
             "unset keys must not warn; captured:\n{combined}"
+        );
+    }
+
+    /// #18023: external-only options in a discovered `.perltidyrc` profile
+    /// warn by name under the native engine and stay silent under external.
+    #[test]
+    fn discovered_profile_external_only_options_warn_native_only() {
+        let suggestion =
+            crate::tooling::native_compat::classify_perltidy_profile("-ci=4\n").suggested_config;
+        assert_eq!(suggestion.external_only_options, vec!["-ci".to_string()]);
+
+        let mut config = ServerConfig::default();
+        let captured = capture_warnings(|| config.apply_perltidy_native_options(&suggestion));
+        assert_warned_contains(&captured, &["-ci", "native formatter"]);
+
+        let mut config =
+            ServerConfig { formatting_engine: FormatterMode::ExternalLegacy, ..Default::default() };
+        let captured = capture_warnings(|| config.apply_perltidy_native_options(&suggestion));
+        let combined = captured.join("\n");
+        assert!(
+            !combined.contains("no effect with the native formatter"),
+            "external legacy must not warn for external-only options; captured:\n{combined}"
         );
     }
 
