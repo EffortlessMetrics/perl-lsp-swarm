@@ -1430,6 +1430,17 @@ impl LspServer {
         let uri: Uri =
             uri_str.parse().map_err(|_| invalid_params("Invalid URI in textDocument.uri"))?;
 
+        // Desynchronized document (#17752): a rejected ranged didChange left
+        // retained last-good text that no longer claims currentness. Pull
+        // diagnostics must not reparse that predecessor or mint a reusable
+        // resultId from it; only an explicit full resync restores analysis.
+        {
+            let documents = self.documents.lock();
+            if self.get_document(&documents, uri_str).is_some_and(|doc| doc.full_sync_required()) {
+                return Ok(Some(Self::empty_full_diagnostic_report()));
+            }
+        }
+
         // Syntax-only short-circuit for pull diagnostics. Mirrors the
         // push-path gate in `publish_diagnostics`.
         if self.runtime_tuning.diagnostic_mode
