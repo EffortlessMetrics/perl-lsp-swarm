@@ -103,9 +103,9 @@ fn valid_thresholds_preserve_findings_and_clean_control() -> Result<()> {
     let directory = tempfile::tempdir()?;
     let source = directory.path().join("fixture.pl");
     fs::write(&source, SOURCE)?;
-    let receipt = directory.path().join("receipt.json");
-    let summary = directory.path().join("summary.md");
     for severity in 1..=5 {
+        let receipt = directory.path().join(format!("receipt-{severity}.json"));
+        let summary = directory.path().join(format!("summary-{severity}.md"));
         let output = command(severity, &source, &receipt, &summary)
             .args([
                 "--include",
