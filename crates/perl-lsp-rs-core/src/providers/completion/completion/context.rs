@@ -58,6 +58,26 @@ impl CompletionContext {
         self.prefix_start
     }
 
+    /// Replace the whole identifier at an actual arrow-method slot (#18009).
+    /// Filtering still uses the prefix before the cursor. Indirect dispatch
+    /// synthesizes an arrow prefix, so source must prove the arrow boundary
+    /// before extending its existing edit range.
+    pub(crate) fn method_text_edit_range(&self, source: &str) -> (usize, usize) {
+        let start = self.method_text_edit_start(source);
+        let suffix_len = if source.get(..start).is_some_and(|before| before.ends_with("->")) {
+            source.get(self.position..).map_or(0, |suffix| {
+                suffix
+                    .chars()
+                    .take_while(|ch| super::is_completion_identifier_char(*ch))
+                    .map(char::len_utf8)
+                    .sum()
+            })
+        } else {
+            0
+        };
+        (start, self.position + suffix_len)
+    }
+
     pub(crate) fn detect_current_package(symbol_table: &SymbolTable, position: usize) -> String {
         // First, check for innermost package scope containing the position.
         // Spans are half-open `[start, end)` — offsets equal to `end` are outside.

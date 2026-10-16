@@ -1185,6 +1185,7 @@ pub fn add_method_completions(
     type_engine: Option<&TypeInferenceEngine>,
 ) {
     let mut seen: HashSet<&str> = HashSet::new();
+    let method_text_edit_range = context.method_text_edit_range(source);
 
     let receiver_packages = receiver_packages(context, source, symbol_table, type_engine);
 
@@ -1239,7 +1240,7 @@ pub fn add_method_completions(
                 sort_text: Some(Cow::Owned(format!("1_{}", name))),
                 filter_text: Some(Cow::Owned(name.clone())),
                 additional_edits: vec![],
-                text_edit_range: Some((context.method_text_edit_start(source), context.position)),
+                text_edit_range: Some(method_text_edit_range),
                 commit_characters: None,
                 insert_text_format: InsertTextFormat::PlainText,
                 label_details: None,
@@ -1294,7 +1295,7 @@ pub fn add_method_completions(
                 sort_text: Some(Cow::Owned(format!("2_{}", method))),
                 filter_text: Some(Cow::Owned(method.to_string())),
                 additional_edits: vec![],
-                text_edit_range: Some((context.method_text_edit_start(source), context.position)),
+                text_edit_range: Some(method_text_edit_range),
                 commit_characters: None,
                 insert_text_format: InsertTextFormat::PlainText,
                 label_details: None,
@@ -1322,10 +1323,7 @@ pub fn add_method_completions(
                     sort_text: Some(Cow::Owned(format!("9_{}", method))), // Lower priority
                     filter_text: Some(Cow::Owned(method.to_string())),
                     additional_edits: vec![],
-                    text_edit_range: Some((
-                        context.method_text_edit_start(source),
-                        context.position,
-                    )),
+                    text_edit_range: Some(method_text_edit_range),
                     commit_characters: None,
                     insert_text_format: InsertTextFormat::PlainText,
                     label_details: None,
