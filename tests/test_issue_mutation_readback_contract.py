@@ -16,8 +16,11 @@ TRIGGER_PATHS = (*SKILL_PATHS, TEST_PATH, WORKFLOW_PATH)
 SECTION_HEADING = "### Canonical mutation readback"
 REQUIRED_MARKERS = (
     "Reject outgoing text containing a control character other than ordinary tab or newline.",
+    "Before creating an issue comment, read the target issue's existing comments and search for the intended content identity.",
+    "Treat an existing match as `APPLIED_AND_VERIFIED` and do not write a duplicate.",
     "A successful mutation response alone is not proof that the intended canonical state exists.",
     "Re-read the exact GitHub target after the mutation",
+    "compare the observed identity and field against the intended bytes or a deterministic normalized digest.",
     "APPLIED_AND_VERIFIED",
     "WRITE_REJECTED",
     "UNKNOWN_OUTCOME",
