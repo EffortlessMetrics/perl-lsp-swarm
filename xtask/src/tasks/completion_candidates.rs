@@ -784,8 +784,6 @@ fn normalize_newlines(text: &str) -> String {
 /// parse per file; iteration order through `files` is preserved so the digest
 /// stays stable.
 struct LoadedSources {
-    /// Path → UTF-8 source text, keyed by the same path used in `files`.
-    sources: BTreeMap<String, String>,
     /// Path → parsed `syn::File`, keyed by the same path used in `files`.
     asts: BTreeMap<String, syn::File>,
 }
@@ -794,17 +792,15 @@ struct LoadedSources {
 /// across every visitor so the working tree is read and parsed once per
 /// `discover` invocation, not four times.
 fn load_sources(root: &Path, files: &[String]) -> Result<LoadedSources> {
-    let mut sources = BTreeMap::new();
     let mut asts = BTreeMap::new();
     for file in files {
         let source = fs::read_to_string(root.join(file))
             .wrap_err_with(|| format!("failed to read {file}"))?;
         let parsed = syn::parse_file(&source)
             .wrap_err_with(|| format!("failed to parse {file} with syn"))?;
-        sources.insert(file.clone(), source);
         asts.insert(file.clone(), parsed);
     }
-    Ok(LoadedSources { sources, asts })
+    Ok(LoadedSources { asts })
 }
 
 /// Build the mechanical population from the working tree.
@@ -840,7 +836,7 @@ pub fn discover(root: &Path) -> Result<Discovered> {
         producers.iter().map(|producer| producer.function.clone()).collect();
     let (entry_direct_calls, post_finalizer_appends) =
         discover_entry_routes(root, &producer_names)?;
-    let source_digest = digest_files(&files, &loaded.sources)?;
+    let source_digest = digest_files(&files, &loaded.asts)?;
     let provider_references = discover_provider_references(&files, &loaded.asts)?;
 
     Ok(Discovered {
@@ -1336,27 +1332,157 @@ fn module_path_for(file: &str) -> String {
     format!("{crate_module}::{}", stem.replace('/', "::"))
 }
 
-/// SHA-256 over an ordered file list, binding each path to its bytes.
+/// SHA-256 over an ordered file list, binding each path to the canonical
+/// rendering of its test-stripped AST.
 ///
-/// `sources` is the cache populated by [`load_sources`] — pulling bytes
-/// from the cached `String` avoids a second read per file. The bytes fed to
-/// the hasher are identical to what a fresh `fs::read` would return, so the
-/// digest remains stable across the read consolidation.
-fn digest_files(files: &[String], sources: &BTreeMap<String, String>) -> Result<String> {
+/// `asts` is the cache populated by [`load_sources`]. Hashing the stripped
+/// AST rather than the raw bytes gives the digest the same definition of
+/// the scanned surface as the visitors: a `#[cfg(test)]`-only or
+/// `#[test]`-only edit cannot move it, while any shipped edit can. The
+/// rendering is the AST's `Debug` form with span lines removed (`quote` is
+/// not an `xtask` dependency, and spans would otherwise reintroduce the
+/// raw-position sensitivity this digest exists to remove).
+fn digest_files(files: &[String], asts: &BTreeMap<String, syn::File>) -> Result<String> {
     let mut hasher = Sha256::new();
     for path in files {
-        let source = sources
+        let parsed = asts
             .get(path)
-            .ok_or_else(|| color_eyre::eyre::eyre!("missing source cache entry for {path}"))?;
+            .ok_or_else(|| color_eyre::eyre::eyre!("missing AST cache entry for {path}"))?;
+        let rendered = render_stripped(parsed);
         // Length-prefix each field so a rename cannot collide with a content
         // change that happens to shift bytes across the boundary.
         hasher.update((path.len() as u64).to_le_bytes());
         hasher.update(path.as_bytes());
-        hasher.update((source.len() as u64).to_le_bytes());
-        hasher.update(source.as_bytes());
+        hasher.update((rendered.len() as u64).to_le_bytes());
+        hasher.update(rendered.as_bytes());
     }
     let hex: String = hasher.finalize().iter().map(|byte| format!("{byte:02x}")).collect();
     Ok(format!("sha256:{hex}"))
+}
+
+/// Canonical, position-insensitive rendering of the test-stripped AST.
+fn render_stripped(file: &syn::File) -> String {
+    format!("{:#?}", stripped_for_digest(file))
+        .lines()
+        .filter(|line| {
+            let trimmed = line.trim_start();
+            !trimmed.starts_with("span:") && !trimmed.starts_with("spans:")
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn is_test_gated(attrs: &[syn::Attribute]) -> bool {
+    has_cfg_test(attrs) || has_test_attribute(attrs)
+}
+
+fn item_is_test_gated(item: &syn::Item) -> bool {
+    let attrs: &[syn::Attribute] = match item {
+        syn::Item::Const(item) => &item.attrs,
+        syn::Item::Enum(item) => &item.attrs,
+        syn::Item::ExternCrate(item) => &item.attrs,
+        syn::Item::Fn(item) => &item.attrs,
+        syn::Item::ForeignMod(item) => &item.attrs,
+        syn::Item::Impl(item) => &item.attrs,
+        syn::Item::Macro(item) => &item.attrs,
+        syn::Item::Mod(item) => &item.attrs,
+        syn::Item::Static(item) => &item.attrs,
+        syn::Item::Struct(item) => &item.attrs,
+        syn::Item::Trait(item) => &item.attrs,
+        syn::Item::TraitAlias(item) => &item.attrs,
+        syn::Item::Type(item) => &item.attrs,
+        syn::Item::Union(item) => &item.attrs,
+        syn::Item::Use(item) => &item.attrs,
+        syn::Item::Verbatim(_) => return false,
+        _ => return false,
+    };
+    is_test_gated(attrs)
+}
+
+fn impl_item_is_test_gated(item: &syn::ImplItem) -> bool {
+    let attrs: &[syn::Attribute] = match item {
+        syn::ImplItem::Const(item) => &item.attrs,
+        syn::ImplItem::Fn(item) => &item.attrs,
+        syn::ImplItem::Macro(item) => &item.attrs,
+        syn::ImplItem::Type(item) => &item.attrs,
+        syn::ImplItem::Verbatim(_) => return false,
+        _ => return false,
+    };
+    is_test_gated(attrs)
+}
+
+fn trait_item_is_test_gated(item: &syn::TraitItem) -> bool {
+    let attrs: &[syn::Attribute] = match item {
+        syn::TraitItem::Const(item) => &item.attrs,
+        syn::TraitItem::Fn(item) => &item.attrs,
+        syn::TraitItem::Macro(item) => &item.attrs,
+        syn::TraitItem::Type(item) => &item.attrs,
+        syn::TraitItem::Verbatim(_) => return false,
+        _ => return false,
+    };
+    is_test_gated(attrs)
+}
+
+/// Clone `file` with every test-gated item, impl item, and trait item
+/// removed, recursing into inline modules, impl/trait bodies, and function
+/// bodies so nested test code is stripped as well.
+fn stripped_for_digest(file: &syn::File) -> syn::File {
+    let mut stripped = file.clone();
+    strip_items(&mut stripped.items);
+    stripped
+}
+
+fn strip_items(items: &mut Vec<syn::Item>) {
+    items.retain(|item| !item_is_test_gated(item));
+    for item in items.iter_mut() {
+        strip_item(item);
+    }
+}
+
+fn strip_item(item: &mut syn::Item) {
+    match item {
+        syn::Item::Mod(module) => {
+            if let Some((_, items)) = &mut module.content {
+                strip_items(items);
+            }
+        }
+        syn::Item::Impl(implementation) => strip_impl_items(&mut implementation.items),
+        syn::Item::Trait(trait_item) => strip_trait_items(&mut trait_item.items),
+        syn::Item::Fn(function) => strip_block_items(&mut function.block),
+        _ => {}
+    }
+}
+
+fn strip_impl_items(items: &mut Vec<syn::ImplItem>) {
+    items.retain(|item| !impl_item_is_test_gated(item));
+    for item in items.iter_mut() {
+        if let syn::ImplItem::Fn(function) = item {
+            strip_block_items(&mut function.block);
+        }
+    }
+}
+
+fn strip_trait_items(items: &mut Vec<syn::TraitItem>) {
+    items.retain(|item| !trait_item_is_test_gated(item));
+    for item in items.iter_mut() {
+        if let syn::TraitItem::Fn(function) = item
+            && let Some(block) = &mut function.default
+        {
+            strip_block_items(block);
+        }
+    }
+}
+
+fn strip_block_items(block: &mut syn::Block) {
+    block.stmts.retain(|stmt| match stmt {
+        syn::Stmt::Item(item) => !item_is_test_gated(item),
+        _ => true,
+    });
+    for stmt in block.stmts.iter_mut() {
+        if let syn::Stmt::Item(item) = stmt {
+            strip_item(item);
+        }
+    }
 }
 
 /// Collects append-channel functions and candidate constructions in one file.
@@ -1452,6 +1578,27 @@ impl<'ast> Visit<'ast> for SeamVisitor<'_> {
         }
         self.record(&node.sig.ident.to_string(), &node.sig);
         syn::visit::visit_impl_item_fn(self, node);
+    }
+
+    fn visit_trait_item_fn(&mut self, node: &'ast syn::TraitItemFn) {
+        if has_test_attribute(&node.attrs) || has_cfg_test(&node.attrs) {
+            return;
+        }
+        syn::visit::visit_trait_item_fn(self, node);
+    }
+
+    fn visit_item_const(&mut self, node: &'ast syn::ItemConst) {
+        if has_test_attribute(&node.attrs) || has_cfg_test(&node.attrs) {
+            return;
+        }
+        syn::visit::visit_item_const(self, node);
+    }
+
+    fn visit_item_static(&mut self, node: &'ast syn::ItemStatic) {
+        if has_test_attribute(&node.attrs) || has_cfg_test(&node.attrs) {
+            return;
+        }
+        syn::visit::visit_item_static(self, node);
     }
 
     /// Both candidate shapes count.
@@ -1834,7 +1981,17 @@ impl<'ast> Visit<'ast> for EntryCollector<'_> {
         syn::visit::visit_item_mod(self, node);
     }
 
+    fn visit_item_impl(&mut self, node: &'ast syn::ItemImpl) {
+        if has_cfg_test(&node.attrs) {
+            return;
+        }
+        syn::visit::visit_item_impl(self, node);
+    }
+
     fn visit_impl_item_fn(&mut self, node: &'ast syn::ImplItemFn) {
+        if has_test_attribute(&node.attrs) || has_cfg_test(&node.attrs) {
+            return;
+        }
         let name = node.sig.ident.to_string();
         if !ENTRY_POINTS.contains(&name.as_str()) {
             return;
@@ -2900,8 +3057,9 @@ pub fn render_markdown(ledger: &Ledger, discovered: &Discovered) -> String {
     let _ = writeln!(out);
     let _ = writeln!(
         out,
-        "The dispositions below were audited against this exact source. A change to any file \
-         listed here invalidates the audit and `check` fails until the rows are re-checked."
+        "The dispositions below were audited against the shipped (non-test) surface of the \
+         files listed here. A change to that shipped surface invalidates the audit and `check` \
+         fails until the rows are re-checked; test-only or formatting-only edits do not."
     );
     let _ = writeln!(out);
     let _ = writeln!(out, "- Digest: `{}`", ledger.source_digest);
@@ -3298,21 +3456,14 @@ mod tests {
 
         let loaded = load_sources(&root, &files).expect("load sources");
 
-        assert_eq!(
-            loaded.sources.len(),
-            expected,
-            "the source cache holds one entry per scanned file"
-        );
         assert_eq!(loaded.asts.len(), expected, "the AST cache holds one entry per scanned file");
 
         // The cache is the same view for every visitor: `loaded.asts[file]`
-        // and `loaded.sources[file]` reference the canonical entries the
-        // four siblings walk, not duplicates produced by independent reads.
-        // Two lookups in a row must hand back the same `syn::File` allocation
-        // — that is the proof that a visitor did not re-parse from scratch.
+        // references the canonical entry the four siblings walk, not a
+        // duplicate produced by independent reads. Two lookups in a row must
+        // hand back the same `syn::File` allocation — that is the proof that
+        // a visitor did not re-parse from scratch.
         for file in &files {
-            let source =
-                loaded.sources.get(file).unwrap_or_else(|| panic!("source cache misses {file}"));
             let first = loaded.asts.get(file).unwrap_or_else(|| panic!("AST cache misses {file}"));
             let second = loaded.asts.get(file).expect("AST cache stable across repeat lookups");
             assert_eq!(
@@ -3320,14 +3471,6 @@ mod tests {
                 std::ptr::from_ref(second),
                 "the AST for {file} must be the same allocation on every lookup; if a visitor \
                  began re-parsing the source, this identity check would fail"
-            );
-            // The cached source must match the bytes we just parsed into `first` —
-            // `syn::parse_file` is deterministic on identical input but a freshly
-            // re-parsed AST would live at a different address than `first`, which
-            // the previous assertion already detects.
-            assert!(
-                !source.is_empty(),
-                "the cached source for {file} is empty; the read step did not execute"
             );
         }
     }
@@ -4987,6 +5130,105 @@ mod tests {
         let mut seam = SeamVisitor::new(PROBE_FILE, &carriers);
         seam.visit_file(&unrelated);
         assert_eq!(seam.constructions, 0, "an unrelated struct is not a candidate");
+    }
+
+    fn digest_of(source: &str) -> String {
+        let files = vec!["probe.rs".to_string()];
+        let mut asts = BTreeMap::new();
+        asts.insert("probe.rs".to_string(), syn::parse_file(source).expect("probe parses"));
+        digest_files(&files, &asts).expect("digest runs")
+    }
+
+    /// Test-only edits must not move the digest, shipped edits must.
+    #[test]
+    fn digest_ignores_test_only_changes_and_binds_shipped_changes() {
+        let base = digest_of(
+            "fn shipped(c: &mut Vec<CompletionItem>) { shipped_producer(c); }\n\
+             #[cfg(test)] mod tests { fn helper() { let _ = 1; } }\n\
+             #[cfg(test)] impl Thing { fn extra() { let _ = 1; } }\n\
+             #[test] fn a_test() { let _ = 1; }",
+        );
+        let test_only = digest_of(
+            "fn shipped(c: &mut Vec<CompletionItem>) { shipped_producer(c); }\n\
+             #[cfg(test)] mod tests { fn helper() { let _ = 2; } fn more() {} }\n\
+             #[cfg(test)] impl Thing { fn extra() { let _ = 2; } }\n\
+             #[test] fn a_test() { let _ = 2; }",
+        );
+        assert_eq!(base, test_only, "a #[cfg(test)]-only edit must not move the digest");
+        let shipped = digest_of(
+            "fn shipped(c: &mut Vec<CompletionItem>) { other_producer(c); }\n\
+             #[cfg(test)] mod tests { fn helper() { let _ = 1; } }\n\
+             #[cfg(test)] impl Thing { fn extra() { let _ = 1; } }\n\
+             #[test] fn a_test() { let _ = 1; }",
+        );
+        assert_ne!(base, shipped, "a shipped-code edit must move the digest");
+    }
+
+    /// A `#[cfg(test)] impl` must not replace the shipped entry's call set.
+    #[test]
+    fn entry_collector_ignores_entry_points_in_cfg_test_impls() {
+        let file: syn::File = syn::parse_quote! {
+            struct S;
+            impl S {
+                fn handle_completion() {
+                    shipped_producer();
+                    let _ = sort_and_cap_completions(completions, cap);
+                }
+            }
+            #[cfg(test)]
+            impl S {
+                fn handle_completion() {
+                    let _ = sort_and_cap_completions(completions, cap);
+                    completions.push(item);
+                    test_only_producer();
+                }
+            }
+            impl S {
+                #[cfg(test)]
+                fn handle_completion() {
+                    let _ = sort_and_cap_completions(completions, cap);
+                    completions.push(item);
+                    test_only_producer();
+                }
+            }
+        };
+        let producers =
+            BTreeSet::from(["shipped_producer".to_string(), "test_only_producer".to_string()]);
+        let mut collector = EntryCollector {
+            producer_names: &producers,
+            calls: BTreeMap::new(),
+            post_finalizer_appends: Vec::new(),
+        };
+        collector.visit_file(&file);
+        let calls = collector.calls.get("handle_completion").expect("shipped entry collected");
+        assert!(calls.contains("shipped_producer"), "shipped call set kept: {calls:?}");
+        assert!(!calls.contains("test_only_producer"), "test impl overwrote calls: {calls:?}");
+        assert!(
+            collector.post_finalizer_appends.is_empty(),
+            "test impl fed post-finalizer appends"
+        );
+    }
+
+    /// Test-gated trait defaults and const/static items build no plane rows.
+    #[test]
+    fn seam_visitor_ignores_constructions_in_test_gated_trait_defaults() {
+        let file: syn::File = syn::parse_quote! {
+            trait Shipped {
+                fn build() { let _ = CompletionItem { label: a() }; }
+            }
+            trait TestOnly {
+                #[cfg(test)]
+                fn build() { let _ = CompletionItem { label: b() }; }
+            }
+            #[cfg(test)]
+            const C: CompletionItem = CompletionItem { label: c() };
+            #[cfg(test)]
+            static S: CompletionItem = CompletionItem { label: d() };
+        };
+        let carriers = BTreeSet::new();
+        let mut seam = SeamVisitor::new(PROBE_FILE, &carriers);
+        seam.visit_file(&file);
+        assert_eq!(seam.constructions, 1, "only the shipped trait default construction counts");
     }
 
     /// `not_applicable` on a real producer erases a classification rather than
