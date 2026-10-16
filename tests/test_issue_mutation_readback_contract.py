@@ -28,6 +28,7 @@ REQUIRED_MARKERS = (
     "do not retry until the exact target has been read back",
     "never post a duplicate comment",
     "Never report an issue, comment, or PR field as canonical from the local request alone.",
+    "Repair a mismatch through a bounded new mutation and fresh readback",
     "return `NOT_PROVEN` with the observed mismatch",
 )
 
