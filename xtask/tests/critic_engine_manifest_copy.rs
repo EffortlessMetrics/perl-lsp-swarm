@@ -21,16 +21,14 @@ fn repo_root() -> PathBuf {
 }
 
 fn critic_engine_setting(manifest: &Value) -> TestResult<&Value> {
-    let configurations = manifest
-        .pointer("/contributes/configuration")
-        .and_then(Value::as_array)
-        .ok_or_else(|| io::Error::other("manifest contributes.configuration must be an array"))?;
+    let configurations =
+        manifest.pointer("/contributes/configuration").and_then(Value::as_array).ok_or_else(
+            || io::Error::other("manifest contributes.configuration must be an array"),
+        )?;
 
     configurations
         .iter()
-        .find_map(|configuration| {
-            configuration.pointer("/properties/perl-lsp.critic.engine")
-        })
+        .find_map(|configuration| configuration.pointer("/properties/perl-lsp.critic.engine"))
         .ok_or_else(|| io::Error::other("manifest must define perl-lsp.critic.engine").into())
 }
 
