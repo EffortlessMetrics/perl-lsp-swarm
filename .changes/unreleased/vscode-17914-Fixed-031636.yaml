@@ -1,0 +1,9 @@
+project: vscode
+component: Editor behavior
+kind: Fixed
+body: Keep substitution and transliteration replacements and flags highlighted as lexical literals, including paired delimiters and multiline replacement boundaries.
+time: 2026-10-14T03:16:36Z
+custom:
+  PR: 17914
+  Slug: textmate-replacement-halves
+  Breaking: "no"

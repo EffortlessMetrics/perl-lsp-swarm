@@ -21,6 +21,14 @@ The grammar and its scope (`source.perl`) are resolved from the extension's own
 mapping that ships to users. No network, display, or WASM download is required —
 the engine runs fully offline.
 
+The replacement assertions in `replacement.test.cjs` also use the registered
+production grammar and Oniguruma WASM. They check both halves, escapes, flags,
+lexical replacement content (including `/ee`), and following-code boundaries.
+Paired delimiters balance within each half, including mixed delimiter types
+and newlines between halves. An unfinished half retains its
+lexical scope across lines until closed; a missing paired replacement opener
+ends at the pattern close. These tests do not assert semantic-token behavior.
+
 ## Layout
 
 ```
