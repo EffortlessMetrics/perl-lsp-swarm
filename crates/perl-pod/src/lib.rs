@@ -139,7 +139,7 @@ pub fn extract_pod(source: &str) -> PodDoc {
                 body.push('\n');
             }
             body.push_str("- ");
-            body.push_str(&strip_pod_formatting(item_text));
+            body.push_str(item_text);
             body.push('\n');
             continue;
         }
@@ -170,7 +170,7 @@ pub fn extract_pod(source: &str) -> PodDoc {
 
         // New head2 section — treated as method documentation
         if matches!(pod_command(line), Some("head2")) {
-            let heading = strip_pod_formatting(pod_command_arg(line, "=head2").trim());
+            let heading = strip_pod_formatting_display_text(pod_command_arg(line, "=head2").trim());
             flush_section(&mut doc, &current_section, &body, leading_list);
             body.clear();
             saw_any_head = true;
@@ -1015,6 +1015,47 @@ mod tests {
         let doc = extract_pod("=head1 DESCRIPTION\n\nSee L<File::Path> for details.\n\n=cut\n");
         let desc = doc.description.as_deref().unwrap_or("");
         assert_eq!(desc, "See [File::Path](perldoc://File::Path) for details.", "got: {desc}");
+    }
+
+    #[test]
+    fn method_item_link_label_renders_display_text_not_markdown() {
+        // Regression (#17984 review): =item labels were pre-rendered with
+        // the markdown renderer into body, so a plain method field flushed
+        // through the display-text renderer still carried perldoc:// links.
+        let source = "=head2 do_thing\n\n=over 4\n\n=item L<File::Path/The wanted function>\n\nDetails.\n\n=back\n\n=cut\n";
+        let doc = extract_pod(source);
+        let body = doc.methods.get("do_thing").map(String::as_str).unwrap_or("");
+        assert!(body.contains("- File::Path"), "got: {body}");
+        assert!(!body.contains("perldoc://"), "method body must carry no markdown link: {body:?}");
+    }
+
+    #[test]
+    fn head2_link_heading_renders_display_text_key() {
+        // Regression (#17984 review): =head2 headings became method keys
+        // via the markdown renderer, expanding L<> into a markdown link.
+        // Display text for L<Module/section> is the module part only.
+        let doc = extract_pod("=head2 L<File::Path/The wanted function>\n\nBody text.\n\n=cut\n");
+        assert!(doc.methods.contains_key("File::Path"), "got keys: {:?}", doc.methods.keys());
+        assert!(
+            doc.methods.keys().all(|key| !key.contains("perldoc://")),
+            "method key must carry no markdown link: {:?}",
+            doc.methods.keys()
+        );
+    }
+
+    #[test]
+    fn description_item_link_label_still_renders_markdown() {
+        // Preservation control (#17984): description is the sole markdown
+        // field, so an =item L<> label flushed through it still renders a
+        // markdown perldoc link after raw body accumulation.
+        let source =
+            "=head1 DESCRIPTION\n\n=over 4\n\n=item L<File::Path>\n\nDetails.\n\n=back\n\n=cut\n";
+        let doc = extract_pod(source);
+        let desc = doc.description.as_deref().unwrap_or("");
+        assert!(
+            desc.contains("[File::Path](perldoc://File::Path)"),
+            "description must keep markdown link, got: {desc}"
+        );
     }
 
     #[test]
