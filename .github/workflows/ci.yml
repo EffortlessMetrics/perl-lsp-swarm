@@ -429,6 +429,7 @@ jobs:
         # silently bit-rot. Unix remains the execution authority for the
         # Bash/chmod smoke.
         run: |
+          set -euo pipefail
           # Execute the public completion target before library smoke so a
           # separate library failure cannot suppress this Windows regression.
           if [[ " $WINDOWS_TEST_CRATES " == *" -p perllsp "* ]]; then
@@ -437,7 +438,13 @@ jobs:
           cargo test $WINDOWS_TEST_CRATES --locked --lib
           cargo test -p xtask --test release_artifact_size_smoke_script --locked --no-run
           if [[ " $WINDOWS_TEST_CRATES " == *" -p perl-ci-hygiene "* ]]; then
-            cargo test -p perl-ci-hygiene --locked --bin perl-ci-hygiene process::tests::
+            python_bin="$(command -v python3 || command -v python)"
+            "$python_bin" scripts/ci/test_check_hygiene_process_tests.py
+            # Cargo also exits zero for --lib or a filter selecting no tests.
+            # Keep the one execution and require its intended pass records.
+            process_log="$RUNNER_TEMP/hygiene-process-tests.log"
+            cargo test -p perl-ci-hygiene --locked --bin perl-ci-hygiene process::tests:: -- --format pretty --color never | tee "$process_log"
+            "$python_bin" scripts/ci/check_hygiene_process_tests.py "$process_log"
           fi
 
   # ── Conflict-marker guard: <1s, no toolchain needed ─────────────────
