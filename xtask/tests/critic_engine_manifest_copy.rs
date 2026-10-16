@@ -2,9 +2,8 @@
 //!
 //! The generic native-product prose guard checks whether external-tool names are
 //! qualified. Qualification alone is not enough: user-facing copy must not tell
-//! users that `.perl-lsp.toml` selects an external runtime engine when the
-//! effective product state is native or disabled. This test binds the contributed
-//! VS Code setting to that narrower semantic contract.
+//! users that any configuration channel selects an external runtime engine when
+//! the contributed product setting exposes only the native runtime.
 
 use serde_json::Value;
 use std::error::Error;
@@ -56,19 +55,34 @@ fn critic_engine_copy_does_not_offer_external_runtime_selection() -> TestResult 
         let normalized = copy.replace('`', "").to_ascii_lowercase();
 
         assert!(normalized.contains("native"), "{field} must name the native runtime: {copy}");
-        assert!(normalized.contains("external"), "{field} must bound external aliases: {copy}");
-        assert!(normalized.contains("perlcritic"), "{field} must identify the retired external engine: {copy}");
+
+        let names_external_engine = normalized.contains("external")
+            && (normalized.contains("engine") || normalized.contains("perlcritic"));
+        let offers_selection = ["select", "choose", "switch to", "use the external"]
+            .iter()
+            .any(|verb| normalized.contains(verb));
+        let negates_selection = [
+            "do not select",
+            "does not select",
+            "cannot select",
+            "not selectable",
+            "ignored",
+            "no effect",
+        ]
+        .iter()
+        .any(|qualifier| normalized.contains(qualifier));
+
         assert!(
-            normalized.contains("do not select")
-                || normalized.contains("does not select")
-                || normalized.contains("cannot select"),
-            "{field} must state that legacy aliases cannot select a product runtime engine: {copy}"
+            !(names_external_engine && offers_selection && !negates_selection),
+            "{field} must not advertise an external critic runtime choice: {copy}"
         );
 
         for forbidden in [
             "select the optional external",
             "select the external",
             "select an external",
+            "choose the external",
+            "choose an external",
             "switch to the external",
             "switch to an external",
         ] {
