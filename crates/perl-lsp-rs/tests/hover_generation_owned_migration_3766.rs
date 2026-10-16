@@ -202,8 +202,12 @@ sub greet {
         server.open_document(uri, code);
         std::thread::sleep(std::time::Duration::from_millis(50));
 
-        // Hover on the subroutine name
-        let hover = server.get_hover(uri, 10, 4); // "sub greet"
+        // Hover on the subroutine name. (0-based line 9 is `sub greet {`; col
+        // 8 is the `greet` name token. The former (10, 4) landed on the `my`
+        // inside the body: that position only ever showed the sub card through
+        // the enclosing-sub containment leak (#17296), so the POD assertions
+        // below were satisfied by the leak rather than by the name hover.)
+        let hover = server.get_hover(uri, 9, 8); // `greet` in "sub greet {"
         let content = semantic::hover_content(&hover).ok_or("expected hover for greet sub")?;
 
         // The hover should include the POD documentation
