@@ -3575,7 +3575,7 @@ fn expand_class_tiny_arg_to_names(arg: &str) -> Vec<String> {
         if let (Some(start), Some(end)) = (arg.find(open), arg.rfind(close))
             && start < end
         {
-            let content = &arg[start + 1..end];
+            let content = &arg[start + open.len_utf8()..end];
             return content
                 .split_whitespace()
                 .filter(|s| !s.is_empty())
@@ -3781,6 +3781,22 @@ mod tests {
     use super::*;
     use crate::parser::Parser;
     use perl_tdd_support::{must, must_some};
+
+    /// A multi-byte `qw` delimiter must not panic the Class::Tiny attribute
+    /// expansion: the content slice starts after the whole delimiter char,
+    /// not one byte after its first byte.
+    #[test]
+    fn class_tiny_qw_multibyte_delimiter_does_not_panic() {
+        assert_eq!(
+            expand_class_tiny_arg_to_names("qw\u{2022}name age\u{2022}"),
+            vec!["name".to_string(), "age".to_string()]
+        );
+        assert_eq!(
+            expand_class_tiny_arg_to_names("qw(name age)"),
+            vec!["name".to_string(), "age".to_string()],
+            "the normalized qw(...) form keeps working"
+        );
+    }
 
     /// DESTROY/AUTOLOAD are interpreter special-method hooks (perlobj), not
     /// real `UNIVERSAL::` subs (perldoc.perl.org/UNIVERSAL lists exactly
