@@ -186,6 +186,50 @@ class RevisionBuildTests(unittest.TestCase):
         self.build(root, "common-tag", False, "tag linked-tag")
         self.build(root, "tag-repeat", True, "tag linked-tag")
 
+    def test_linked_packed_refs_and_detached_head(self):
+        original = self.fixture("linked-packed-original")
+        previous = self.git(original, "rev-parse", "HEAD")
+        # Empty commits keep the source identical: only revision inputs change.
+        self.commit(original)
+        root = self.proof / "linked-packed"
+        self.git(original, "worktree", "add", "-q", "-b", "packed-probe", str(root))
+        self.git(original, "pack-refs", "--all", "--prune")
+        common = Path(self.git(root, "rev-parse", "--path-format=absolute", "--git-common-dir"))
+        private = Path(self.git(root, "rev-parse", "--absolute-git-dir"))
+        self.assertTrue((common / "packed-refs").is_file())
+        self.assertFalse((common / "refs/heads/packed-probe").exists())
+        self.assertFalse((private / "packed-refs").exists())
+        self.assertFalse((private / "config.worktree").exists())
+        cold = self.build(root, "packed-cold", False, self.revision(root))
+        watched = [Path(path) for path in cold["watchers"]]
+        self.build(root, "packed-warm", True, self.revision(root))
+        # HEAD belongs to the linked worktree; common HEAD is unchanged.
+        original_head = self.git(original, "rev-parse", "HEAD")
+        self.git(root, "checkout", "-q", "--detach", previous)
+        self.assertNotEqual(self.git(root, "rev-parse", "HEAD"), original_head)
+        self.build(root, "detached-switch", False, self.revision(root))
+        self.build(root, "detached-repeat", True, self.revision(root))
+        self.git(original, "tag", "detached-packed-tag", previous)
+        self.build(root, "common-tag-created", False, "tag detached-packed-tag")
+        self.build(root, "common-tag-repeat", True, "tag detached-packed-tag")
+        self.git(original, "pack-refs", "--all", "--prune")
+        self.assertFalse((common / "refs/tags/detached-packed-tag").exists())
+        self.build(root, "common-tag-packed", False, "tag detached-packed-tag")
+        self.build(root, "common-packed-repeat", True, "tag detached-packed-tag")
+        # Git's transient loose-ref lock also touches the empty tags directory.
+        # Preserve its timestamp so only packed-refs can expose this deletion.
+        tags = common / "refs/tags"
+        tags_stat = tags.stat()
+        self.git(original, "tag", "-d", "detached-packed-tag")
+        os.utime(tags, ns=(tags_stat.st_atime_ns, tags_stat.st_mtime_ns))
+        self.build(root, "common-packed-tag-deleted", False, self.revision(root))
+        self.build(root, "common-delete-repeat", True, self.revision(root))
+        self.assertIn(private / "HEAD", watched)
+        self.assertIn(common / "packed-refs", watched)
+        for path in watched:
+            resolved = path if path.is_absolute() else root / "crates/probe" / path
+            self.assertTrue(resolved.exists(), str(resolved))
+
     def test_export_without_git(self):
         root = self.fixture("export")
         # Admission still sees its fixture Git root; build-script discovery

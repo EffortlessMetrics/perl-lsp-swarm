@@ -12,6 +12,7 @@ use perl_semantic_facts::{
     AnchorId, Confidence, Provenance, ProviderFactFreshness, ProviderFactSourceKind,
     ProviderFactTrace, ProviderFallbackState, ProviderSurface,
 };
+use perl_symbol::{SymbolDecl, extract_symbol_decls};
 use perl_workspace::semantic_shadow_compare::{
     SemanticShadowCompareReceipt, ShadowQueryInput, ShadowQueryName, summarize_identities,
 };
@@ -43,6 +44,11 @@ pub struct DocumentSymbol {
 /// Assembler priority shared by source-backed callables and synthesized subtests.
 pub(crate) const CALLABLE_DOCUMENT_SYMBOL_PRIORITY: u8 = 3;
 
+// Join the compatibility outline to existing canonical declaration records.
+// A conflicting duplicate is retained as None and fails closed; no new span
+// model or presentation-parent identity is introduced.
+type DeclarationNames<'a> = HashMap<(SymbolKind, usize, usize, &'a str), Option<&'a SymbolDecl>>;
+
 /// Source-backed document-symbol live result.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
@@ -65,12 +71,34 @@ pub fn source_backed_document_symbols_from_ast(
 ) -> DocumentSymbolLiveResult {
     let extractor = SymbolExtractor::new_with_source(source);
     let symbol_table = extractor.extract(ast);
-    source_backed_document_symbols_from_table(&symbol_table, source)
+    let declarations = extract_symbol_decls(ast, None);
+    let mut declaration_names: DeclarationNames<'_> = HashMap::new();
+    for declaration in &declarations {
+        if matches!(declaration.kind, SymbolKind::Package | SymbolKind::Subroutine) {
+            let key = (
+                declaration.kind,
+                declaration.full_span.0,
+                declaration.full_span.1,
+                declaration.name.as_str(),
+            );
+            declaration_names
+                .entry(key)
+                .and_modify(|previous| {
+                    if previous.is_some_and(|record| record.anchor_span != declaration.anchor_span)
+                    {
+                        *previous = None;
+                    }
+                })
+                .or_insert(Some(declaration));
+        }
+    }
+    source_backed_document_symbols_from_table(&symbol_table, source, &declaration_names)
 }
 
 fn source_backed_document_symbols_from_table(
     symbol_table: &SymbolTable,
     source: &str,
+    declaration_names: &DeclarationNames<'_>,
 ) -> DocumentSymbolLiveResult {
     let mut symbols_by_scope: HashMap<ScopeId, Vec<Symbol>> = HashMap::new();
     for symbols in symbol_table.symbols.values() {
@@ -92,6 +120,7 @@ fn source_backed_document_symbols_from_table(
             symbol_table,
             &symbols_by_scope,
             source,
+            declaration_names,
             &mut fact_traces,
         ) {
             raw.push(document_symbol);
@@ -123,11 +152,13 @@ fn source_backed_document_symbol(
     symbol_table: &SymbolTable,
     symbols_by_scope: &HashMap<ScopeId, Vec<Symbol>>,
     source: &str,
+    declaration_names: &DeclarationNames<'_>,
     fact_traces: &mut Vec<ProviderFactTrace>,
 ) -> Option<DocumentSymbol> {
     if !is_source_backed(symbol, source) {
         return None;
     }
+    let selection_range = symbol_name_range(source, symbol, declaration_names)?;
 
     let mut children = Vec::new();
     if symbol.kind == SymbolKind::Package
@@ -145,7 +176,7 @@ fn source_backed_document_symbol(
                             continue;
                         }
                         if let Some(child_symbol) =
-                            source_backed_leaf_symbol(child, source, fact_traces)
+                            source_backed_leaf_symbol(child, source, declaration_names, fact_traces)
                         {
                             children.push((
                                 document_symbol_priority(child),
@@ -170,7 +201,7 @@ fn source_backed_document_symbol(
         detail: document_symbol_detail(symbol),
         kind: document_symbol_kind(symbol),
         range: symbol_range(source, symbol),
-        selection_range: symbol_name_range(source, symbol),
+        selection_range,
         children,
         sort_priority: document_symbol_priority(symbol),
     })
@@ -179,11 +210,13 @@ fn source_backed_document_symbol(
 fn source_backed_leaf_symbol(
     symbol: &Symbol,
     source: &str,
+    declaration_names: &DeclarationNames<'_>,
     fact_traces: &mut Vec<ProviderFactTrace>,
 ) -> Option<DocumentSymbol> {
     if !is_source_backed(symbol, source) {
         return None;
     }
+    let selection_range = symbol_name_range(source, symbol, declaration_names)?;
 
     fact_traces.push(source_backed_trace());
     Some(DocumentSymbol {
@@ -191,7 +224,7 @@ fn source_backed_leaf_symbol(
         detail: document_symbol_detail(symbol),
         kind: document_symbol_kind(symbol),
         range: symbol_range(source, symbol),
-        selection_range: symbol_name_range(source, symbol),
+        selection_range,
         children: Vec::new(),
         sort_priority: document_symbol_priority(symbol),
     })
@@ -219,7 +252,33 @@ fn symbol_range(source: &str, symbol: &Symbol) -> WireRange {
     WireRange::from_byte_offsets(source, symbol.location.start, symbol.location.end)
 }
 
-/// Return a [`WireRange`] spanning only the symbol's identifier name, not its full declaration.
+/// Project existing canonical package/subroutine name spans. Known missing,
+/// conflicting or invalid anchors cannot fall back to source-search inference.
+fn symbol_name_range(
+    source: &str,
+    symbol: &Symbol,
+    declaration_names: &DeclarationNames<'_>,
+) -> Option<WireRange> {
+    let key = (symbol.kind, symbol.location.start, symbol.location.end, symbol.name.as_str());
+    if let Some(declaration) = declaration_names.get(&key) {
+        let declaration = (*declaration)?;
+        let (start, end) = declaration.anchor_span?;
+        if start >= end
+            || start < declaration.full_span.0
+            || end > declaration.full_span.1
+            || source.get(start..end).is_none()
+        {
+            return None;
+        }
+        return Some(WireRange::from_byte_offsets(source, start, end));
+    }
+    // Compatibility for unported declaration families and synthesized symbols
+    // (phasers, typeglob callables, framework members, etc.). This bounded slice
+    // does not claim to complete their canonical-span migration under #8183.
+    Some(legacy_symbol_name_range(source, symbol))
+}
+
+/// Compatibility name inference for unported declaration families.
 ///
 /// Per LSP 3.17, `selectionRange` must pinpoint the symbol name alone (e.g. just `greet` in
 /// `sub greet { ... }`), while `range` covers the entire construct.  This helper performs a
@@ -229,7 +288,7 @@ fn symbol_range(source: &str, symbol: &Symbol) -> WireRange {
 /// If the name cannot be located within the bounds (malformed source, empty name, out-of-range
 /// location), the function falls back to `symbol_range()` — the full declaration span — so that
 /// clients always receive a valid, non-panicking range.
-fn symbol_name_range(source: &str, symbol: &Symbol) -> WireRange {
+fn legacy_symbol_name_range(source: &str, symbol: &Symbol) -> WireRange {
     if symbol.name.is_empty() {
         return symbol_range(source, symbol);
     }
@@ -426,6 +485,45 @@ mod tests {
     use perl_parser_core::Parser;
     use perl_tdd_support::must;
     use perl_workspace::semantic_shadow_compare::ShadowCompareVerdict;
+
+    #[test]
+    fn name_anchor_control_omits_missing_or_invalid_canonical_names() {
+        let source = "sub ub { 'ub' }";
+        for anchor in [None, Some((99, 101)), Some((4, 4)), Some((6, 4))] {
+            let mut ast = must(Parser::new(source).parse());
+            let baseline = source_backed_document_symbols_from_ast(&ast, source);
+            assert_eq!(baseline.symbols.len(), 1);
+            assert_eq!(baseline.symbols[0].name, "ub");
+            let mut changed = false;
+            ast.for_each_child_mut(|node| {
+                if let perl_parser_core::ast::NodeKind::Subroutine { name_span, .. } =
+                    &mut node.kind
+                {
+                    *name_span = anchor
+                        .map(|(start, end)| perl_parser_core::ast::SourceLocation { start, end });
+                    changed = true;
+                }
+            });
+            assert!(changed, "the real parsed declaration must be mutated");
+            let result = source_backed_document_symbols_from_ast(&ast, source);
+            assert!(
+                result.symbols.is_empty(),
+                "invalid name anchor {anchor:?} must not be guessed"
+            );
+            assert!(result.fact_traces.is_empty(), "omitted names must not claim exact facts");
+        }
+    }
+
+    #[test]
+    fn name_anchor_control_retains_unported_phase_and_typeglob_symbols() {
+        for (source, expected) in [("BEGIN { 1 }", "BEGIN"), ("*helper = sub { 2 };", "helper")] {
+            let ast = must(Parser::new(source).parse());
+            let result = source_backed_document_symbols_from_ast(&ast, source);
+            assert_eq!(result.symbols.len(), 1);
+            assert_eq!(result.symbols[0].name, expected);
+            assert!(!result.fact_traces.is_empty());
+        }
+    }
 
     #[test]
     fn source_backed_document_symbols_emit_fresh_primary_traces()
