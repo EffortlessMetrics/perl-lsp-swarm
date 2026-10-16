@@ -123,7 +123,7 @@ class IssueMutationReadbackContractTests(unittest.TestCase):
     def test_negative_controls_reject_incomplete_contracts(self) -> None:
         source = read(SKILL_PATHS[0])
         for marker in REQUIRED_MARKERS:
-            mutant = source.replace(marker, "", 1)
+            mutant = source.replace(marker, "")
             self.assertIn(
                 marker,
                 contract_violations(mutant),
