@@ -1,7 +1,7 @@
 use super::payloads::{
-    cancel_params, did_change_params, did_close_params, did_open_params, initialize_params,
-    initialize_result, null_or_empty_object, null_params, null_result, show_message_request_params,
-    show_message_request_result, window_message_params,
+    cancel_params, did_change_params, did_close_params, did_open_params, did_save_params,
+    initialize_params, initialize_result, null_or_empty_object, null_params, null_result,
+    show_message_request_params, show_message_request_result, window_message_params,
 };
 use super::{Direction, MessageKind, ProtocolVersion, SchemaError};
 use serde_json::Value;
@@ -57,6 +57,7 @@ static METHOD_SCHEMAS: &[MethodSchema] = &[
     notification!("textDocument/didChange", ClientToServer, Lsp317, did_change_params),
     notification!("textDocument/didClose", ClientToServer, Lsp317, did_close_params),
     notification!("textDocument/didOpen", ClientToServer, Lsp317, did_open_params),
+    notification!("textDocument/didSave", ClientToServer, Lsp317, did_save_params),
     // The base protocol lets either party cancel a request it previously sent.
     notification!("$/cancelRequest", ServerToClient, Lsp317, cancel_params),
     notification!("window/logMessage", ServerToClient, Lsp317, window_message_params),
