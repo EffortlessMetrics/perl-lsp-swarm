@@ -70,7 +70,7 @@ export function classifyStartupFailure(results: HealthCheckResult[]): string {
     return PERL_MISSING_MESSAGE;
   }
 
-  // LSP binary not found — use the explicit binary result rather than inference.
+  // Use the explicit binary error for missing, nonfile, and inspection failures.
   if (
     binaryResult &&
     binaryResult.ok === false &&
@@ -79,7 +79,7 @@ export function classifyStartupFailure(results: HealthCheckResult[]): string {
     const detail = binaryResult.detail.trimEnd();
     const detailWithPeriod = detail.endsWith('.') ? detail : `${detail}.`;
     return (
-      'Perl Language Server binary (perllsp) not found. ' +
+      'Perl Language Server binary (perllsp) is unavailable. ' +
       detailWithPeriod +
       ' Check the Output panel for download details or reinstall the extension.'
     );
@@ -264,12 +264,30 @@ export class OnboardingManager {
         detail: 'perl-lsp binary not found. Check Output for download details.',
       };
     }
-    if (!fs.existsSync(serverPath)) {
+    try {
+      const stat = fs.statSync(serverPath, { throwIfNoEntry: false });
+      if (!stat) {
+        return {
+          label,
+          ok: false,
+          status: HealthCheckStatus.Error,
+          detail: `perl-lsp binary path does not exist on disk: ${serverPath}`,
+        };
+      }
+      if (!stat.isFile()) {
+        return {
+          label,
+          ok: false,
+          status: HealthCheckStatus.Error,
+          detail: `perl-lsp binary path is not a regular file: ${serverPath}`,
+        };
+      }
+    } catch {
       return {
         label,
         ok: false,
         status: HealthCheckStatus.Error,
-        detail: `perl-lsp binary path does not exist on disk: ${serverPath}`,
+        detail: `Unable to inspect perl-lsp binary path: ${serverPath}`,
       };
     }
     return {
