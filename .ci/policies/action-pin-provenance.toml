@@ -512,3 +512,14 @@ action = 'EffortlessMetrics/em-ci-workflows/.github/workflows/rust.yml'
 sha = '752fad709cf3da63a69d004af2867b0e77ad0af2'
 kind = 'branch_commit'
 value = 'main (2026-10-15)'
+
+# Independently retained immutable public PR #24 source publication, base main.
+# https://github.com/EffortlessMetrics/em-ci-workflows/pull/24
+# Rust blob 678b8916e22a079b09df4eafa9db5fb247017bec; exact SHA256 and
+# central source marker are recorded in .ci/workflow-sources/README.md.
+# Source provenance only: no live runner allowance or dispatch admission.
+[[pin]]
+action = 'EffortlessMetrics/em-ci-workflows/.github/workflows/rust.yml'
+sha = 'd69e3c9cbc55ee8c5d084facfe18432cd4c28618'
+kind = 'branch_commit'
+value = 'main (2026-10-16)'

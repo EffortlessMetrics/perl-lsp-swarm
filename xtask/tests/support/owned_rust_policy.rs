@@ -21,7 +21,7 @@ pub fn validate(text: &str) -> TestResult<()> {
     }
     if call.get("uses").and_then(Value::as_str)
         != Some(
-            "EffortlessMetrics/em-ci-workflows/.github/workflows/rust.yml@752fad709cf3da63a69d004af2867b0e77ad0af2",
+            "EffortlessMetrics/em-ci-workflows/.github/workflows/rust.yml@d69e3c9cbc55ee8c5d084facfe18432cd4c28618",
         )
     {
         return Err("isolated owned policy revision drifted".into());
@@ -47,6 +47,7 @@ pub fn validate(text: &str) -> TestResult<()> {
     }
     for (key, expected) in [
         ("profile", "standard"),
+        ("perl_receipt_verifier", "lightweight-v1"),
         ("script", ".ci/rust-standard-proof.sh"),
         ("result_script", ".ci/rust-standard-result.sh"),
         ("artifact_lane", "perl-rust-small"),

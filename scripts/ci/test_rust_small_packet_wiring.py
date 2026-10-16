@@ -44,7 +44,7 @@ sys.exit(int(os.environ.get('PRODUCT_STATUS','0')))
         self.assertEqual((self.fixture.root / "rust-small-proof.json").read_bytes(),
                          self.fixture.source.read_bytes())
         self.assertEqual(self.log.read_text().splitlines(),
-                         ["fmt --all -- --check", "run -p xtask --locked -- rust-small-proof"])
+                         ["fmt --all -- --check", "run -p perl-rust-small-verifier --bin perl-rust-small-proof --locked"])
 
     def test_product_failure_exports_diagnostic_without_swallowing_status(self):
         result = self.run_proof(PRODUCT_STATUS="23")

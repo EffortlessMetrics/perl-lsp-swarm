@@ -102,7 +102,7 @@ class RustSmallEvidenceTests(unittest.TestCase):
         self.assertEqual(set(workflow["jobs"]), {"rust-small-proof"})
         call = workflow["jobs"]["rust-small-proof"]
         self.assertEqual(call["with"]["result_script"], ".ci/rust-standard-result.sh")
-        self.assertEqual(call["uses"], "EffortlessMetrics/em-ci-workflows/.github/workflows/rust.yml@752fad709cf3da63a69d004af2867b0e77ad0af2")
+        self.assertEqual(call["uses"], "EffortlessMetrics/em-ci-workflows/.github/workflows/rust.yml@d69e3c9cbc55ee8c5d084facfe18432cd4c28618")
         self.assertEqual(call["if"], "github.event_name == 'merge_group' || (github.event_name == 'workflow_dispatch' && inputs.pre_merge_admission && inputs.reviewed_sha == github.sha) || (false && github.event_name == 'pull_request' && github.event.action == 'auto_merge_enabled')")
         self.assertNotIn("secrets", call)
         self.assertNotIn("continue-on-error", call)

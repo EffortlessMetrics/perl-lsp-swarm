@@ -1,6 +1,21 @@
+Current source preparation selects public PR #24 merge `d69e3c9cbc55ee8c5d084facfe18432cd4c28618`.
+Exact `rust.yml` Git blob: `678b8916e22a079b09df4eafa9db5fb247017bec`; SHA256: `5a4211e361763029ba749d376c549482f3e41a7dd4b8eef977b247dd4bfc36a4`.
+Retained verbatim in `docs/ci/workflow-sources/em-ci-rust-d69e3c9c.yml` from the fetched immutable
+publication. Its source marker binds central em-ci
+`44ea9f77286694933d0abcce729f9bd1d6b6dc61`.
+This read-only reference is documentation used by the static source validator,
+not a locally executed workflow. It is stored under docs/ so upstream CI paths
+remain byte-exact without treating them as machine-local project configuration.
+The normal machine-path guard is unchanged.
+The caller explicitly selects `perl_receipt_verifier: lightweight-v1`.
+Live allowance is not approved or applied. This source preparation does not
+admit dispatch, change protection, or establish composed product timing.
+
+The following prior snapshots remain historical recovery evidence.
+
 # Immutable workflow source evidence
 
-Current consumer source candidate selects public PR #22 merge
+Prior consumer source candidate selected public PR #22 merge
 `752fad709cf3da63a69d004af2867b0e77ad0af2`, independently fetched from
 EffortlessMetrics/em-ci-workflows at the immutable reference. The exact
 `rust.yml` blob is `a01c520d215445bcf293beb18a4ee4ca98df6409`, retained

@@ -1,3 +1,27 @@
+## Current timing repair source preparation — 2026-10-16
+
+The current caller source selects public PR #24 immutable
+`d69e3c9cbc55ee8c5d084facfe18432cd4c28618`, Rust blob
+`678b8916e22a079b09df4eafa9db5fb247017bec`, generated from central
+`44ea9f77286694933d0abcce729f9bd1d6b6dc61`.
+The exact retained snapshot and SHA256 are in `workflow-sources/README.md`.
+`perl_receipt_verifier: lightweight-v1` selects the canonical-source lightweight
+verifier. The product script selects its separate no-argument producer binary;
+the original xtask commands remain supported. Semantic owner files, product argv,
+formatter, canonical producer identity, packet and native result binding remain.
+
+This source selection has no approved/applied live runner allowance. Do not dispatch
+it until separately admitted. Literal-false native admission remains dormant;
+manual exact-SHA and queue guards remain unchanged. No settings or release effects
+are bundled into this source preparation. Historical run `38850665896` functionally
+passed at `41964ee26d5917912a1d8f2805f48f6d50020b16` with approved `752fad`,
+but its 49m26s elapsed failed the 20-minute goal. No subtraction or local mocked
+product test establishes combined cold consumer timing. See
+`docs/ci/swarm-rust-small-proof.md` for measured phases and remaining acceptance.
+
+The previous source/proposal narrative follows as historical context; current
+identities and activation boundaries above supersede its candidate-status claims.
+
 # Proposed canonical Perl Rust Small transport
 
 Status: consumer source wiring, awaiting live allowance and qualification approval.

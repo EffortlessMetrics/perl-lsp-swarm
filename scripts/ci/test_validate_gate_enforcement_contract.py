@@ -915,9 +915,9 @@ OWNED_RUST_DRAFT_ROW = {
     "producer": "reusable-workflow-job",
     "workflow": ".github/workflows/em-ci-routed-rust.yml",
     "job": "rust-small-proof",
-    "callee_workflow": "EffortlessMetrics/em-ci-workflows/.github/workflows/rust.yml@752fad709cf3da63a69d004af2867b0e77ad0af2",
-    "callee_source": ".ci/workflow-sources/em-ci-rust-752fad70.yml",
-    "callee_sha256": "192a7202bfc2caee4a6ee66f57a352f85a1b8197106c538b8fb354525ea3cac0",
+    "callee_workflow": "EffortlessMetrics/em-ci-workflows/.github/workflows/rust.yml@d69e3c9cbc55ee8c5d084facfe18432cd4c28618",
+    "callee_source": "docs/ci/workflow-sources/em-ci-rust-d69e3c9c.yml",
+    "callee_sha256": "5a4211e361763029ba749d376c549482f3e41a7dd4b8eef977b247dd4bfc36a4",
     "callee_job": "result",
     "workflow_result": "propagate",
     "events": ["pull_request", "merge_group", "push", "workflow_dispatch"],
@@ -943,7 +943,7 @@ class ReusableProducerTests(unittest.TestCase):
         source = ROOT / OWNED_RUST_DRAFT_ROW["callee_source"]
         data = source.read_bytes()
         self.assertEqual(hashlib.sha1(b"blob " + str(len(data)).encode() + b"\0" + data).hexdigest(),
-                         "a01c520d215445bcf293beb18a4ee4ca98df6409")
+                         "678b8916e22a079b09df4eafa9db5fb247017bec")
 
     def test_candidate_declaration_matches_reviewed_proposed_row(self):
         import tomllib

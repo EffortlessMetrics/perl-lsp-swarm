@@ -62,9 +62,11 @@ jobs:
     if: github.event_name == 'merge_group' || (github.event_name == 'workflow_dispatch' && inputs.pre_merge_admission && inputs.reviewed_sha == github.sha) || (false && github.event_name == 'pull_request' && github.event.action == 'auto_merge_enabled')
     # The fixed standard capability pool is owned by EM CI. GitHub selects a
     # qualified runner; this consumer has no inventory token or host policy.
-    # Public PR #22 publishes canonical Perl custody and isolated owner validation.
-    uses: EffortlessMetrics/em-ci-workflows/.github/workflows/rust.yml@752fad709cf3da63a69d004af2867b0e77ad0af2  # main (2026-10-15)
+    # Public PR #24 publishes lightweight canonical validation. Live allowance
+    # for this source pin is separately unapproved; do not dispatch until admitted.
+    uses: EffortlessMetrics/em-ci-workflows/.github/workflows/rust.yml@d69e3c9cbc55ee8c5d084facfe18432cd4c28618  # main (2026-10-16)
     with:
+      perl_receipt_verifier: lightweight-v1
       profile: standard
       script: .ci/rust-standard-proof.sh
       result_script: .ci/rust-standard-result.sh

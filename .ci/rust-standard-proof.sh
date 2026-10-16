@@ -19,7 +19,7 @@ fi
 cargo fmt --all -- --check
 # Keep the original product status when retaining a genuine failure receipt.
 set +e
-cargo run -p xtask --locked -- rust-small-proof
+cargo run -p perl-rust-small-verifier --bin perl-rust-small-proof --locked
 product_status=$?
 set -e
 if [[ "${EM_CI_LANE:-}" == perl-rust-small ]]; then
