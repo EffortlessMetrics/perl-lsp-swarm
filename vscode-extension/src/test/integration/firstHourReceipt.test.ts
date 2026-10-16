@@ -3,6 +3,12 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import {
+  CURRENT_ACCESSIBILITY_INVENTORY,
+  buildInstalledAccessibilityReceipt,
+  accessibilityInventoryDigest,
+  validateAccessibilityReceipt,
+} from '../../accessibilityInventory';
+import {
   observeArtifact,
   requireSameArtifact,
   requireSameBytes,
@@ -78,6 +84,37 @@ function writeFirstHourReceipt(receipt: Record<string, unknown>): void {
     path.join(receiptsDir(), 'first_hour_vscode_receipt.json'),
     JSON.stringify(receipt, null, 2),
   );
+}
+
+/**
+ * Resolve a manifest title that may still carry `%nls.key%` indirection.
+ *
+ * `extension.packageJSON` usually resolves NLS keys, but the accessibility
+ * receipt must not depend on that host behavior: the raw key form is resolved
+ * against the installed `package.nls.json` as well.
+ */
+function resolveManifestTitle(
+  title: unknown,
+  nlsMessages: Record<string, string>,
+): string | undefined {
+  if (typeof title !== 'string') {
+    return undefined;
+  }
+  const indirection = /^%(.+)%$/.exec(title);
+  const key = indirection?.[1];
+  if (key !== undefined) {
+    const resolved = nlsMessages[key];
+    return typeof resolved === 'string' ? resolved : undefined;
+  }
+  return title;
+}
+
+interface InstalledManifest {
+  version?: string;
+  contributes?: {
+    commands?: Array<{ command?: string; title?: string }>;
+    menus?: { commandPalette?: Array<{ command?: string; when?: string }> };
+  };
 }
 
 function providerFailureMessage(moment: MomentResult, operation: 'completion'): string {
@@ -527,6 +564,93 @@ suite('First-hour VS Code receipt', function () {
     );
     const commandRegistrationMs = Math.round(monotonicNow() - commandWaitStart);
 
+    // Installed accessibility exercise (#7807/#7865): bind one receipt to the
+    // exact inventory the candidate carries and assert every
+    // extension-contributed keyboard route against the live host and the
+    // installed manifest. Native VS Code surfaces are deliberately not
+    // retested; screen-reader rows stay `not_proven` by construction.
+    const inventoryCommandRoutes = CURRENT_ACCESSIBILITY_INVENTORY.surfaces.flatMap((surface) =>
+      surface.keyboard_route !== null && surface.keyboard_route.startsWith('perl-lsp.')
+        ? [surface.keyboard_route]
+        : [],
+    );
+    for (const route of inventoryCommandRoutes) {
+      try {
+        await withTimeout(
+          `accessibility keyboard route ${route}`,
+          (async () => {
+            for (;;) {
+              const commands = await vscode.commands.getCommands(true);
+              if (commands.includes(route)) {
+                return;
+              }
+              await delay(100);
+            }
+          })(),
+          10_000,
+        );
+      } catch {
+        // A route that never registers must not abort the harness: the
+        // receipt below observes registration itself, records the route as
+        // `keyboard: 'failed'`, and surfaces an accessibility failure —
+        // aborting here would destroy that evidence instead of writing it.
+      }
+    }
+    const installedManifest = extension.packageJSON as InstalledManifest;
+    let nlsMessages: Record<string, string> = {};
+    try {
+      nlsMessages = JSON.parse(
+        fs.readFileSync(path.join(extension.extensionPath, 'package.nls.json'), 'utf8'),
+      ) as Record<string, string>;
+    } catch {
+      // No package.nls.json in the installed profile means no NLS indirection.
+    }
+    const commandTitles = new Map<string, string>();
+    for (const contributed of installedManifest.contributes?.commands ?? []) {
+      if (typeof contributed.command !== 'string') {
+        continue;
+      }
+      const title = resolveManifestTitle(contributed.title, nlsMessages);
+      if (typeof title === 'string') {
+        commandTitles.set(contributed.command, title);
+      }
+    }
+    const accessibilityReceipt = buildInstalledAccessibilityReceipt(
+      {
+        vsix_version: installedManifest.version ?? null,
+        vsix_sha256: process.env.PERL_LSP_VSIX_SHA256 ?? null,
+        vscode_version: vscode.version,
+        platform: process.platform,
+        inventory_digest: accessibilityInventoryDigest(CURRENT_ACCESSIBILITY_INVENTORY),
+      },
+      CURRENT_ACCESSIBILITY_INVENTORY,
+      {
+        registeredCommands: new Set(await vscode.commands.getCommands(true)),
+        commandTitles,
+        paletteHiddenCommands: new Set(
+          (installedManifest.contributes?.menus?.commandPalette ?? [])
+            .filter((entry) => entry.when === 'false')
+            .flatMap((entry) => (typeof entry.command === 'string' ? [entry.command] : [])),
+        ),
+      },
+    );
+    const accessibilityFailures = [
+      ...validateAccessibilityReceipt(accessibilityReceipt, CURRENT_ACCESSIBILITY_INVENTORY).map(
+        (error) => ({
+          moment: 'accessibility',
+          kind: 'accessibility_receipt_invalid',
+          message: error,
+        }),
+      ),
+      ...accessibilityReceipt.surfaces
+        .filter((row) => row.keyboard === 'failed' || row.semantic_labels === 'failed')
+        .map((row) => ({
+          moment: 'accessibility',
+          kind: 'accessibility_surface_failed',
+          message: `${row.surface_id}: keyboard=${row.keyboard} semantic_labels=${row.semantic_labels}`,
+        })),
+    ];
+
     const healthStart = monotonicNow();
     let health: Record<string, unknown>;
     try {
@@ -941,7 +1065,8 @@ suite('First-hour VS Code receipt', function () {
         count: badDiagnostics.length,
         messages: badDiagnostics.slice(0, 10).map((diagnostic) => diagnostic.message),
       },
-      failures: [],
+      accessibility: accessibilityReceipt,
+      failures: accessibilityFailures,
     };
 
     writeFirstHourReceipt(receipt);

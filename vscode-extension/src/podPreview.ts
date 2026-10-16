@@ -663,7 +663,16 @@ function updatePodPreviewContent(document: vscode.TextDocument): void {
   podPreviewPanel.webview.html = buildWebviewHtml(fileName, bodyHtml);
 }
 
-function buildWebviewHtml(title: string, bodyHtml: string): string {
+/**
+ * Wrap the converted body in the full webview document.
+ *
+ * Exported for the accessibility contract tests (#7807/#7865): the preview is
+ * the extension's one custom webview surface, so its semantic structure,
+ * keyboard usability, and theme-variable styling are asserted on exactly the
+ * HTML this function ships. Security escaping stays authoritative (#6030);
+ * these assertions only read the document, they never relax it.
+ */
+export function buildWebviewHtml(title: string, bodyHtml: string): string {
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -714,6 +723,13 @@ function buildWebviewHtml(title: string, bodyHtml: string): string {
       text-decoration: none;
     }
     a:hover { text-decoration: underline; }
+    /* Keyboard focus must stay visible under every theme, including high
+     * contrast: use the theme's own focus color and a 2px perimeter, the
+     * WCAG 2.4.13 (AA) focus-appearance minimum, robust at zoom. */
+    a:focus-visible {
+      outline: 2px solid var(--vscode-focusBorder, #007fd4);
+      outline-offset: 1px;
+    }
     ul, ol { padding-left: 1.5em; }
     li { margin: 0.3em 0; }
     p { margin: 0.6em 0; }
@@ -725,7 +741,9 @@ function buildWebviewHtml(title: string, bodyHtml: string): string {
   </style>
 </head>
 <body>
+<main>
 ${bodyHtml}
+</main>
 </body>
 </html>`;
 }

@@ -1,0 +1,9 @@
+project: vscode
+component: Editor behavior
+kind: Added
+body: The POD preview webview now ships a main landmark, a theme-variable focus indicator, and enforced semantic/theme/reflow accessibility contracts, and the installed VS Code smoke writes a candidate-bound accessibility receipt (keyboard routes, labels, and honest not-proven screen-reader rows) for the exact packaged VSIX (#7807, #7865).
+time: 2026-10-01T00:00:00Z
+custom:
+  PR: 17044
+  Slug: vscode-accessibility-installed-receipt
+  Breaking: "no"
