@@ -168,7 +168,11 @@ outcome_owner = "#10230"
 # now require both current and latest snapshots absent. All 42 scan files,
 # 59 producers, routes, finalizer seams, classifications and migration owners
 # retain their prior ceilings. Digest recomputed over the merged tree.
-source_digest = "sha256:c0279ef338f6389e943c7e209d40887b2d91ffeb34047d4280f03febb837ad95"
+# Re-audit 2026-10-16 (#18009): only arrow-method replacement extent changes.
+# Existing local, catalog, indexed, union and fallback method emitters reuse one
+# private context range helper; candidate channels, 42 scan files, 59 producer
+# rows, entry routes, finalizer and migration owners remain unchanged.
+source_digest = "sha256:933d722c4bedc931c486e8bed7d134d823237a64e40780781a235b4262993bb5"
 
 [[delegations]]
 module = "dancer2"

@@ -1895,7 +1895,7 @@ pub fn add_workspace_method_completions(
             completions.iter().map(|item| item.label.as_ref()).collect();
         workspace_method_symbols(&members, &existing_labels, method_prefix)
     };
-    let method_text_edit_range = (context.method_text_edit_start(source), context.position);
+    let method_text_edit_range = context.method_text_edit_range(source);
 
     if add_semantic_method_completions(
         completions,
@@ -1945,7 +1945,7 @@ pub fn add_workspace_method_completions(
             sort_text: Some(Cow::Owned(format!("{method_tier}_{}", symbol.name))), // tier 2=own, 3=inherited, after local (tier 1)
             filter_text: Some(Cow::Owned(symbol.name.clone())),
             additional_edits: vec![],
-            text_edit_range: Some((context.method_text_edit_start(source), context.position)),
+            text_edit_range: Some(method_text_edit_range),
             commit_characters: None,
             insert_text_format: InsertTextFormat::PlainText,
             label_details: None,
@@ -1977,6 +1977,7 @@ fn add_union_receiver_method_completions(
     current_document_uri: &str,
 ) {
     let method_prefix = context.prefix.rsplit("->").next().unwrap_or("");
+    let method_text_edit_range = context.method_text_edit_range(source);
     // Snapshot existing labels before any push to avoid borrow conflicts.
     let existing_labels: HashSet<String> =
         completions.iter().map(|item| item.label.as_ref().to_string()).collect();
@@ -2061,7 +2062,7 @@ fn add_union_receiver_method_completions(
                 sort_text: Some(Cow::Owned(format!("{sort_tier}_{}", symbol.name))),
                 filter_text: Some(Cow::Owned(symbol.name.clone())),
                 additional_edits: vec![],
-                text_edit_range: Some((context.method_text_edit_start(source), context.position)),
+                text_edit_range: Some(method_text_edit_range),
                 commit_characters: None,
                 insert_text_format: InsertTextFormat::PlainText,
                 label_details: None,
@@ -2100,6 +2101,7 @@ fn add_unknown_receiver_fallback(
     }
 
     let method_prefix = context.prefix.rsplit("->").next().unwrap_or("");
+    let method_text_edit_range = context.method_text_edit_range(source);
     let existing_labels: HashSet<&str> =
         completions.iter().map(|item| item.label.as_ref()).collect();
     let mut emitted: HashSet<String> = HashSet::new();
@@ -2145,7 +2147,7 @@ fn add_unknown_receiver_fallback(
                 sort_text: Some(Cow::Owned(format!("6_{}", symbol.name))),
                 filter_text: Some(Cow::Owned(symbol.name.clone())),
                 additional_edits: vec![],
-                text_edit_range: Some((context.method_text_edit_start(source), context.position)),
+                text_edit_range: Some(method_text_edit_range),
                 commit_characters: None,
                 insert_text_format: InsertTextFormat::PlainText,
                 label_details: None,

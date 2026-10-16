@@ -1,0 +1,9 @@
+project: product
+component: Editor behavior
+kind: Fixed
+body: Replace the remaining arrow-method identifier suffix when accepting completion in the middle of a token, including after edits and buffer reopen.
+time: 2026-10-16T08:00:49Z
+custom:
+  PR: "18014"
+  Slug: completion-method-suffix
+  Breaking: "no"

@@ -9118,10 +9118,9 @@ fn test_indirect_midword_cursor_offers_methods_with_insert_range()
 -> Result<(), Box<dyn std::error::Error>> {
     // Cursor in the MIDDLE of the method word (`pro|cess Child`): `indirect_word_end`
     // must scan forward from the cursor to the full word boundary to locate the
-    // `Child` receiver, so indirect routing still fires. The edit range uses the
-    // same insert semantics as every other completion provider — `(prefix_start,
-    // position)` — replacing the text before the cursor, identical to the arrow
-    // form (`$obj->pro|cess`). This is uniform server behavior, not indirect-specific.
+    // `Child` receiver, so indirect routing still fires. This indirect path
+    // retains its prefix-only edit; the actual arrow-token extent repair
+    // (#18009) must not change a synthesized arrow context's geometry.
     let index = indirect_child_parent_index()?;
 
     let code = "process Child";
@@ -9137,13 +9136,11 @@ fn test_indirect_midword_cursor_offers_methods_with_insert_range()
         completions.iter().any(|c| c.label == "speak"),
         "mid-word indirect cursor should still route through to methods; got {labels:?}"
     );
-    // Edit range replaces only the pre-cursor prefix (`pro`), consistent with the
-    // arrow path and all providers — the trailing `cess` is left by design, not
-    // a defect introduced by indirect routing.
+    // Keep the existing indirect edit outside the arrow-only repair.
     assert_eq!(
         run.text_edit_range,
         Some((0, pos)),
-        "indirect method edit range must match the uniform (prefix_start, position) insert semantics"
+        "indirect method edit range must retain its existing prefix-only geometry"
     );
     Ok(())
 }
