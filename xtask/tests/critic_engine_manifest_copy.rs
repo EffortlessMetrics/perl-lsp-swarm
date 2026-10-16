@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 
 type TestResult<T = ()> = Result<T, Box<dyn Error>>;
 
+/// Resolve the repository root from xtask's compile-time manifest directory.
 fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -20,6 +21,7 @@ fn repo_root() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(".."))
 }
 
+/// Return the contributed `perl-lsp.critic.engine` setting from the manifest.
 fn critic_engine_setting(manifest: &Value) -> TestResult<&Value> {
     let configurations =
         manifest.pointer("/contributes/configuration").and_then(Value::as_array).ok_or_else(
@@ -30,6 +32,71 @@ fn critic_engine_setting(manifest: &Value) -> TestResult<&Value> {
         .iter()
         .find_map(|configuration| configuration.pointer("/properties/perl-lsp.critic.engine"))
         .ok_or_else(|| io::Error::other("manifest must define perl-lsp.critic.engine").into())
+}
+
+/// Test whole-word containment without treating identifier suffixes as matches.
+fn contains_word(haystack: &str, needle: &str) -> bool {
+    let bytes = haystack.as_bytes();
+    let mut from = 0;
+    while let Some(pos) = haystack[from..].find(needle) {
+        let start = from + pos;
+        let end = start + needle.len();
+        let before_ok = start == 0 || !bytes[start - 1].is_ascii_alphanumeric();
+        let after_ok = end >= bytes.len() || !bytes[end].is_ascii_alphanumeric();
+        if before_ok && after_ok {
+            return true;
+        }
+        from = end;
+    }
+    false
+}
+
+/// Split prose on sentence and clause boundaries while preserving dotted paths.
+fn prose_segments(field: &str) -> Vec<&str> {
+    let mut segments = Vec::new();
+    let mut start = 0;
+    let mut chars = field.char_indices().peekable();
+    while let Some((index, character)) = chars.next() {
+        let boundary = match character {
+            ';' | '\n' => true,
+            '.' | '!' | '?' => chars.peek().is_none_or(|(_, next)| next.is_whitespace()),
+            _ => false,
+        };
+        if boundary {
+            segments.push(&field[start..index]);
+            start = index + character.len_utf8();
+        }
+    }
+    if start < field.len() {
+        segments.push(&field[start..]);
+    }
+    segments
+}
+
+/// Return first-mile prose segments that discuss selecting an external critic.
+///
+/// This setting exposes only `native`, so even correctly negated migration
+/// instructions belong in #9072's compatibility surfaces rather than here. The
+/// deliberately conservative rule avoids letting an unrelated later sentence
+/// such as "Legacy values are ignored" excuse an affirmative selection claim.
+fn external_selection_segments(copy: &str) -> Vec<&str> {
+    prose_segments(copy)
+        .into_iter()
+        .filter(|segment| {
+            let normalized = segment.replace('`', "").to_ascii_lowercase();
+            let names_external_engine = contains_word(&normalized, "perlcritic")
+                || (contains_word(&normalized, "external")
+                    && contains_word(&normalized, "engine"));
+            let offers_selection = contains_word(&normalized, "select")
+                || contains_word(&normalized, "choose")
+                || normalized.contains("switch to")
+                || normalized.contains("use the external")
+                || normalized.contains("enable the external")
+                || normalized.contains("run the external")
+                || normalized.contains("execute the external");
+            names_external_engine && offers_selection
+        })
+        .collect()
 }
 
 #[test]
@@ -53,43 +120,25 @@ fn critic_engine_copy_does_not_offer_external_runtime_selection() -> TestResult 
         let normalized = copy.replace('`', "").to_ascii_lowercase();
 
         assert!(normalized.contains("native"), "{field} must name the native runtime: {copy}");
-
-        let names_external_engine = normalized.contains("external")
-            && (normalized.contains("engine") || normalized.contains("perlcritic"));
-        let offers_selection = ["select", "choose", "switch to", "use the external"]
-            .iter()
-            .any(|verb| normalized.contains(verb));
-        let negates_selection = [
-            "do not select",
-            "does not select",
-            "cannot select",
-            "not selectable",
-            "ignored",
-            "no effect",
-        ]
-        .iter()
-        .any(|qualifier| normalized.contains(qualifier));
-
-        assert!(
-            !(names_external_engine && offers_selection && !negates_selection),
-            "{field} must not advertise an external critic runtime choice: {copy}"
+        assert_eq!(
+            Vec::<&str>::new(),
+            external_selection_segments(copy),
+            "{field} must not discuss selecting an external critic runtime: {copy}"
         );
-
-        for forbidden in [
-            "select the optional external",
-            "select the external",
-            "select an external",
-            "choose the external",
-            "choose an external",
-            "switch to the external",
-            "switch to an external",
-        ] {
-            assert!(
-                !normalized.contains(forbidden),
-                "{field} must not advertise external runtime selection via `{forbidden}`: {copy}"
-            );
-        }
     }
 
     Ok(())
+}
+
+#[test]
+fn external_selection_detection_is_sentence_local() {
+    let misleading = "Only native is configured here; legacy values are ignored. \
+        You can choose a perlcritic external engine from project settings.";
+    assert_eq!(
+        vec![" You can choose a perlcritic external engine from project settings"],
+        external_selection_segments(misleading)
+    );
+
+    let bounded = "Only native is configured here. Legacy values are ignored.";
+    assert!(external_selection_segments(bounded).is_empty());
 }
