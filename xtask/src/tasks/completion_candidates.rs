@@ -1342,6 +1342,9 @@ fn module_path_for(file: &str) -> String {
 /// rendering is the AST's `Debug` form with span lines removed (`quote` is
 /// not an `xtask` dependency, and spans would otherwise reintroduce the
 /// raw-position sensitivity this digest exists to remove).
+///
+/// A `syn` or `proc-macro2` update can change this rendering and require
+/// re-anchoring `source_digest` even when the scanned source is unchanged.
 fn digest_files(files: &[String], asts: &BTreeMap<String, syn::File>) -> Result<String> {
     let mut hasher = Sha256::new();
     for path in files {
@@ -1439,8 +1442,55 @@ fn strip_items(items: &mut Vec<syn::Item>) {
     }
 }
 
+/// Drop test-gated entries from a punctuated list, preserving the original
+/// values and punctuation for everything kept (and leaving the list
+/// untouched when nothing is gated, so the digest rendering cannot drift
+/// for a file whose shipped surface did not change).
+fn retain_shipped<T, P>(items: &mut syn::punctuated::Punctuated<T, P>, gated: impl Fn(&T) -> bool)
+where
+    T: Clone,
+    P: Clone,
+{
+    if !items.iter().any(|item| gated(item)) {
+        return;
+    }
+    let original = std::mem::take(items);
+    for pair in original.into_pairs() {
+        let (value, punct) = pair.into_tuple();
+        if gated(&value) {
+            continue;
+        }
+        match punct {
+            Some(punct) => {
+                items.push_value(value);
+                items.push_punct(punct);
+            }
+            None => items.push_value(value),
+        }
+    }
+}
+
+fn retain_shipped_fields(fields: &mut syn::Fields) {
+    match fields {
+        syn::Fields::Named(fields) => {
+            retain_shipped(&mut fields.named, |field| is_test_gated(&field.attrs));
+        }
+        syn::Fields::Unnamed(fields) => {
+            retain_shipped(&mut fields.unnamed, |field| is_test_gated(&field.attrs));
+        }
+        syn::Fields::Unit => {}
+    }
+}
+
 fn strip_item(item: &mut syn::Item) {
     match item {
+        syn::Item::Struct(structure) => retain_shipped_fields(&mut structure.fields),
+        syn::Item::Enum(enumeration) => {
+            retain_shipped(&mut enumeration.variants, |variant| is_test_gated(&variant.attrs));
+            for variant in &mut enumeration.variants {
+                retain_shipped_fields(&mut variant.fields);
+            }
+        }
         syn::Item::Mod(module) => {
             if let Some((_, items)) = &mut module.content {
                 strip_items(items);
@@ -1594,6 +1644,20 @@ impl<'ast> Visit<'ast> for SeamVisitor<'_> {
         syn::visit::visit_item_const(self, node);
     }
 
+    fn visit_impl_item_const(&mut self, node: &'ast syn::ImplItemConst) {
+        if is_test_gated(&node.attrs) {
+            return;
+        }
+        syn::visit::visit_impl_item_const(self, node);
+    }
+
+    fn visit_trait_item_const(&mut self, node: &'ast syn::TraitItemConst) {
+        if is_test_gated(&node.attrs) {
+            return;
+        }
+        syn::visit::visit_trait_item_const(self, node);
+    }
+
     fn visit_item_static(&mut self, node: &'ast syn::ItemStatic) {
         if has_test_attribute(&node.attrs) || has_cfg_test(&node.attrs) {
             return;
@@ -1707,7 +1771,12 @@ impl<'ast> Visit<'ast> for CarrierVisitor<'_> {
         if has_cfg_test(&node.attrs) {
             return;
         }
-        let held = node.fields.iter().map(|field| field.ty.clone()).collect();
+        let held = node
+            .fields
+            .iter()
+            .filter(|field| !is_test_gated(&field.attrs))
+            .map(|field| field.ty.clone())
+            .collect();
         self.containers.push((node.ident.to_string(), held));
         syn::visit::visit_item_struct(self, node);
     }
@@ -1722,7 +1791,9 @@ impl<'ast> Visit<'ast> for CarrierVisitor<'_> {
         let held = node
             .variants
             .iter()
+            .filter(|variant| !is_test_gated(&variant.attrs))
             .flat_map(|variant| variant.fields.iter())
+            .filter(|field| !is_test_gated(&field.attrs))
             .map(|field| field.ty.clone())
             .collect();
         self.containers.push((node.ident.to_string(), held));
@@ -5162,6 +5233,15 @@ mod tests {
              #[test] fn a_test() { let _ = 1; }",
         );
         assert_ne!(base, shipped, "a shipped-code edit must move the digest");
+        let field_base = digest_of(
+            "struct Thing { shipped: u8, #[cfg(test)] extra: u8 }\n\
+             enum E { A, #[cfg(test)] B(u8) }",
+        );
+        let field_test_only = digest_of(
+            "struct Thing { shipped: u8, #[cfg(test)] extra: u16 }\n\
+             enum E { A, #[cfg(test)] B(u16) }",
+        );
+        assert_eq!(field_base, field_test_only, "test-gated fields/variants must not move it");
     }
 
     /// A `#[cfg(test)] impl` must not replace the shipped entry's call set.
@@ -5224,6 +5304,11 @@ mod tests {
             const C: CompletionItem = CompletionItem { label: c() };
             #[cfg(test)]
             static S: CompletionItem = CompletionItem { label: d() };
+            struct Thing;
+            impl Thing {
+                #[cfg(test)]
+                const X: CompletionItem = CompletionItem { label: e() };
+            }
         };
         let carriers = BTreeSet::new();
         let mut seam = SeamVisitor::new(PROBE_FILE, &carriers);
