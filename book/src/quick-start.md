@@ -11,9 +11,10 @@ update after an edit.
 code --install-extension EffortlessMetrics.perl-lsp-rs
 ```
 
-The extension downloads the matching server binary for your platform. Open a
-`.pl` or `.pm` file and run **Perl: Run Health Check** from the Command Palette.
-Confirm the LSP binary check passes, then try the file below.
+The extension can download a server binary for your platform if one is not
+already available. Open a `.pl` or `.pm` file and run **Perl: Run Health Check**
+from the Command Palette. Confirm the LSP binary check passes, then try the
+file below.
 
 **Other editors:** use the
 [installation guide](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/how-to/INSTALLATION.md#prebuilt-releases)
