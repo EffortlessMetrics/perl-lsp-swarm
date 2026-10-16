@@ -388,3 +388,182 @@ fn test_workspace_diagnostic_with_previous_ids() -> Result<(), Box<dyn std::erro
 
     Ok(())
 }
+
+#[test]
+fn test_pull_diagnostics_suppressed_until_full_resync() -> Result<(), Box<dyn std::error::Error>> {
+    // #17752: after a ranged didChange is rejected under the Full sync
+    // envelope, pull diagnostics must not reparse retained last-good text.
+    // No reusable identity may survive desync. Accepted full text replacement
+    // and a new document instance restore currentness.
+    let root = tempfile::tempdir()?;
+    let root_uri = url::Url::from_directory_path(root.path()).map_err(|_| "root URI")?;
+    let uri = url::Url::from_file_path(root.path().join("desync.pl")).map_err(|_| "file URI")?;
+    let uri = uri.as_str();
+    let server = LspServer::new();
+    let initialized = server
+        .handle_request(JsonRpcRequest {
+            _jsonrpc: "2.0".into(),
+            id: Some(perl_lsp::protocol::JsonRpcId::Integer(1_i64)),
+            method: "initialize".into(),
+            params: Some(json!({"processId": 1, "rootUri": root_uri.as_str(), "capabilities": {}})),
+        })
+        .ok_or("initialize response")?;
+    assert!(initialized.error.is_none(), "initialize must succeed");
+    let capabilities = initialized.result.ok_or("initialize result")?;
+    assert_eq!(
+        capabilities["capabilities"]["textDocumentSync"]["change"], 1,
+        "the ranged-change refusal must exercise the advertised Full envelope"
+    );
+    let _ = server.handle_request(JsonRpcRequest {
+        _jsonrpc: "2.0".into(),
+        id: None,
+        method: "initialized".into(),
+        params: Some(json!({})),
+    });
+
+    let content = "use strict;\nuse warnings;\nmy $x = 1;\nprint $old;\n";
+    let _ = server.handle_request(JsonRpcRequest {
+        _jsonrpc: "2.0".into(),
+        id: None,
+        method: "textDocument/didOpen".into(),
+        params: Some(json!({
+            "textDocument": {"uri": uri, "languageId": "perl", "version": 1, "text": content}
+        })),
+    });
+
+    let pull = |id: i64,
+                previous: Option<&str>|
+     -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+        let response = server
+            .handle_request(JsonRpcRequest {
+                _jsonrpc: "2.0".into(),
+                id: Some(perl_lsp::protocol::JsonRpcId::Integer(id)),
+                method: "textDocument/diagnostic".into(),
+                params: Some(json!({"textDocument": {"uri": uri}, "previousResultId": previous})),
+            })
+            .ok_or("diagnostic request failed")?;
+        assert!(response.error.is_none(), "pull must succeed: {:?}", response.error);
+        assert_eq!(response.id, Some(perl_lsp::protocol::JsonRpcId::Integer(id)));
+        Ok(response.result.ok_or("response missing result")?)
+    };
+
+    let before = pull(2, None).map_err(|e| format!("initial pull failed: {e}"))?;
+    assert_eq!(before["kind"], "full");
+    assert!(before["resultId"].is_string(), "current document must mint a resultId");
+    assert!(
+        !before["items"].as_array().ok_or("items array")?.is_empty(),
+        "current document must report its diagnostics"
+    );
+
+    let previous_id = before["resultId"].as_str().ok_or("initial result ID")?;
+    assert!(
+        before["items"]
+            .as_array()
+            .ok_or("initial items")?
+            .iter()
+            .any(|item| item["message"].as_str().is_some_and(|message| message.contains("$old"))),
+        "initial report must identify the predecessor variable: {before}"
+    );
+    let unchanged = pull(3, Some(previous_id))?;
+    assert_eq!(unchanged["kind"], "unchanged", "healthy ID must be reusable");
+    assert_eq!(unchanged["resultId"], previous_id);
+
+    // Ranged change: rejected under the advertised Full envelope.
+    let _ = server.handle_request(JsonRpcRequest {
+        _jsonrpc: "2.0".into(),
+        id: None,
+        method: "textDocument/didChange".into(),
+        params: Some(json!({
+            "textDocument": {"uri": uri, "version": 2},
+            "contentChanges": [{
+                "range": {"start": {"line": 3, "character": 7}, "end": {"line": 3, "character": 8}},
+                "text": "z"
+            }]
+        })),
+    });
+
+    let desynced =
+        pull(4, Some(previous_id)).map_err(|e| format!("pull during desync failed: {e}"))?;
+    assert_eq!(desynced["kind"], "full");
+    assert!(
+        desynced["items"].as_array().ok_or("items array")?.is_empty(),
+        "desynchronized pull must not reparse retained text, got: {desynced}"
+    );
+    assert!(desynced.get("resultId").is_none(), "desynchronized pull must omit resultId");
+
+    // Different full text must replace predecessor findings and identity.
+    let replacement = content.replace("$old", "$new");
+    let _ = server.handle_request(JsonRpcRequest {
+        _jsonrpc: "2.0".into(),
+        id: None,
+        method: "textDocument/didChange".into(),
+        params: Some(json!({
+            "textDocument": {"uri": uri, "version": 3},
+            "contentChanges": [{"text": replacement}]
+        })),
+    });
+
+    let recovered =
+        pull(5, Some(previous_id)).map_err(|e| format!("pull after recovery failed: {e}"))?;
+    assert!(recovered["resultId"].is_string(), "resync must restore resultId minting");
+    assert!(
+        !recovered["items"].as_array().ok_or("items array")?.is_empty(),
+        "resync must restore real diagnostics, not blanket suppression"
+    );
+    assert_eq!(recovered["kind"], "full");
+    let recovered_id = recovered["resultId"].as_str().ok_or("recovered ID")?;
+    assert_ne!(recovered_id, previous_id, "replacement must invalidate predecessor identity");
+    let recovered_items = recovered["items"].as_array().ok_or("recovered items")?;
+    assert!(
+        recovered_items
+            .iter()
+            .any(|item| item["message"].as_str().is_some_and(|message| message.contains("$new"))),
+        "new finding missing: {recovered}"
+    );
+    assert!(
+        !recovered_items
+            .iter()
+            .any(|item| item["message"].as_str().is_some_and(|message| message.contains("$old"))),
+        "predecessor leaked: {recovered}"
+    );
+    let unchanged = pull(6, Some(recovered_id))?;
+    assert_eq!(unchanged["kind"], "unchanged");
+    assert_eq!(unchanged["resultId"], recovered_id);
+
+    // A new rejected change and close must not preserve either cached report.
+    let _ = server.handle_request(JsonRpcRequest {
+        _jsonrpc: "2.0".into(),
+        id: None,
+        method: "textDocument/didChange".into(),
+        params: Some(json!({
+            "textDocument": {"uri": uri, "version": 4},
+            "contentChanges": [{"range": {"start": {"line": 3, "character": 7},
+                "end": {"line": 3, "character": 8}}, "text": "z"}]
+        })),
+    });
+    let suppressed = pull(7, Some(recovered_id))?;
+    assert_eq!(suppressed, json!({"kind": "full", "items": []}));
+    let _ = server.handle_request(JsonRpcRequest {
+        _jsonrpc: "2.0".into(),
+        id: None,
+        method: "textDocument/didClose".into(),
+        params: Some(json!({"textDocument": {"uri": uri}})),
+    });
+    assert_eq!(pull(8, Some(recovered_id))?, json!({"kind": "full", "items": []}));
+
+    // Reopen at the same numeric version, replacing this predecessor generation.
+    // This does not prove identity invalidation for equal-generation reopen cases.
+    let _ = server.handle_request(JsonRpcRequest {
+        _jsonrpc: "2.0".into(),
+        id: None,
+        method: "textDocument/didOpen".into(),
+        params: Some(json!({"textDocument": {"uri": uri, "languageId": "perl",
+            "version": 3, "text": replacement}})),
+    });
+    let reopened = pull(9, Some(recovered_id))?;
+    assert_eq!(reopened["kind"], "full");
+    assert_eq!(reopened["items"], recovered["items"], "reopen must restore current findings");
+    assert_ne!(reopened["resultId"], recovered_id, "reopen must invalidate this predecessor ID");
+    assert!(reopened["resultId"].is_string());
+    Ok(())
+}
