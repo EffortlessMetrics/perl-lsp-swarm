@@ -105,7 +105,11 @@ pub(super) fn prepare_request(
 }
 
 fn auto_initialize_for_compat(server: &LspServer, request: &JsonRpcRequest) {
-    if !server.initialized.load(Ordering::Acquire)
+    // Preflight precedes routing's post-shutdown rejection. A client may
+    // shut down before sending initialized; its accepted contract survives,
+    // but a later request must not activate startup work on that session.
+    if !server.shutdown_received.load(Ordering::Acquire)
+        && !server.initialized.load(Ordering::Acquire)
         && server.initialization_accepted()
         && !is_lifecycle_method(&request.method)
     {

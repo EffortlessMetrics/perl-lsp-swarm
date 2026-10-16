@@ -116,6 +116,7 @@ mod tests {
             .and_then(|response| response.error)
             .map(|error| error.code);
         assert_eq!(after_initialize, Some(-32601));
+        assert!(server.is_initialized(), "live sessions still initialize for compatibility");
     }
 
     /// #17346: a `shutdown` sent before `initialize` must be rejected with
@@ -163,6 +164,38 @@ mod tests {
         assert!(
             shutdown.as_ref().is_some_and(|response| response.error.is_none()),
             "post-initialize shutdown must still succeed: {shutdown:?}"
+        );
+    }
+
+    #[test]
+    fn post_shutdown_request_does_not_complete_compat_initialization() {
+        let server = LspServer::new();
+        let initialize = server.handle_request(request(1, "initialize", Some(json!({}))));
+        assert!(
+            initialize.as_ref().is_some_and(|response| response.error.is_none()),
+            "initialize must accept the session: {initialize:?}"
+        );
+        assert!(!server.is_initialized(), "client has not sent initialized");
+
+        let shutdown = server.handle_request(request(2, "shutdown", None));
+        assert!(
+            shutdown.as_ref().is_some_and(|response| response.result == Some(Value::Null)),
+            "shutdown must return null: {shutdown:?}"
+        );
+        assert!(server.initialization_accepted(), "accepted contract survives shutdown");
+        assert!(!server.is_initialized());
+
+        // Preflight runs before routing's post-shutdown rejection. It must
+        // not register watchers, start indexing, or emit startup notifications
+        // by completing the compatibility initialization on this request.
+        let rejected = server.handle_request(request(3, "custom/unknown", None));
+        assert_eq!(
+            rejected.and_then(|response| response.error).map(|error| error.code),
+            Some(-32600)
+        );
+        assert!(
+            !server.is_initialized(),
+            "a rejected post-shutdown request must not activate the server"
         );
     }
 
