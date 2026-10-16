@@ -24,6 +24,9 @@ assert os.environ['RUSTUP_TOOLCHAIN']=='1.95.0'
 assert os.environ['RUSTUP_AUTO_INSTALL']=='0'
 assert os.environ['CARGO_BUILD_JOBS']=='2'
 assert os.environ['CARGO_TARGET_DIR']==os.environ['RUNNER_TEMP']+'/perl-receipt-validator-target'
+if sys.argv[1:]==['--version']:
+    print('cargo 1.95.0')
+    sys.exit(0)
 with open(os.environ['VERIFY_CAPTURE'],'w') as stream: json.dump(sys.argv[1:],stream)
 sys.exit(int(os.environ.get('VERIFY_EXIT','0')))
 """)

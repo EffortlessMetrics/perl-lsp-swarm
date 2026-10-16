@@ -7,11 +7,19 @@ receipt="$EM_CI_ARTIFACT_DIR/rust-small-proof.json"
 
 # This command validates the canonical retained receipt; it runs no product
 # steps. Cargo/build scripts must not inherit the policy's metadata credential.
-env -u GH_TOKEN -u GITHUB_TOKEN -u GH_ENTERPRISE_TOKEN -u GITHUB_ENTERPRISE_TOKEN \
-    RUSTUP_TOOLCHAIN=1.95.0 RUSTUP_AUTO_INSTALL=0 \
-    CARGO_TARGET_DIR="$RUNNER_TEMP/perl-receipt-validator-target" \
-    CARGO_BUILD_JOBS=2 \
+(
+    unset GH_TOKEN GITHUB_TOKEN GH_ENTERPRISE_TOKEN GITHUB_ENTERPRISE_TOKEN
+    export RUSTUP_TOOLCHAIN=1.95.0 RUSTUP_AUTO_INSTALL=0
+    export CARGO_TARGET_DIR="$RUNNER_TEMP/perl-receipt-validator-target"
+    export CARGO_BUILD_JOBS=2
+    # Guard the exact sanitized environment used by the verifier, including its
+    # version probe. Do not expose policy credentials to either Cargo invocation.
+    script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+    # shellcheck source=../lib/cargo-toolchain-guard.sh
+    . "$script_dir/../lib/cargo-toolchain-guard.sh"
+    cargo_toolchain_guard
     cargo run -p xtask --locked -- rust-small-proof --verify-receipt "$receipt"
+)
 
 # A coherent failure receipt can pass the Rust shape verifier. The completed
 # policy still requires actual product success, rather than diagnostic validity.
