@@ -35,7 +35,7 @@ def read(path: str) -> str:
 
 def readback_section(text: str) -> str:
     match = re.search(
-        rf"(?ms)^{re.escape(SECTION_HEADING)}\n\n(.*?)(?=^##\s|\Z)",
+        rf"(?ms)^{re.escape(SECTION_HEADING)}\n\n(.*?)(?=^#{{2,6}}\s|\Z)",
         text,
     )
     if match is None:
