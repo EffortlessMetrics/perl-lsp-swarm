@@ -1726,13 +1726,19 @@ impl LspServer {
         // Incoming client URIs are normalized to the same canonical keys the
         // handler emits, so an unchanged folder keeps its cached report valid
         // regardless of drive-letter/legacy spelling in the echo (#14862).
-        let previous_result_ids: Vec<(String, String)> = if let Some(params) = &params {
+        // An entry with a usable URI but a missing/non-string `value` is
+        // malformed, but dropping it entirely would also drop the URI from
+        // the tombstone pass below: a closed document would then keep its
+        // stale diagnostics forever (#17332). Keep the URI with no reusable
+        // ID so it can still be tombstoned, and simply never matches
+        // `unchanged` for a still-open document.
+        let previous_result_ids: Vec<(String, Option<String>)> = if let Some(params) = &params {
             if let Some(ids) = params["previousResultIds"].as_array() {
                 ids.iter()
                     .filter_map(|item| {
                         let uri = item["uri"].as_str()?;
-                        let id = item["value"].as_str()?;
-                        Some((self.normalize_uri_key(uri), id.to_string()))
+                        let id = item["value"].as_str().map(|value| value.to_string());
+                        Some((self.normalize_uri_key(uri), id))
                     })
                     .collect()
             } else {
@@ -1830,8 +1836,10 @@ impl LspServer {
             }
 
             // Check if we have a previous result ID for this document
-            let prev_id =
-                previous_result_ids.iter().find(|(u, _)| u == uri_str).map(|(_, id)| id.clone());
+            let prev_id = previous_result_ids
+                .iter()
+                .find(|(u, _)| u == uri_str)
+                .and_then(|(_, id)| id.clone());
 
             let Some(parsed) = doc.current_parsed() else { continue };
 
@@ -3258,6 +3266,78 @@ mod tests {
             closed_rows[0]["items"].as_array().map(Vec::len),
             Some(0),
             "tombstone must carry empty items so the client clears the file: {second}"
+        );
+        Ok(())
+    }
+
+    /// A malformed `previousResultIds` entry (missing or non-string
+    /// `value`) must not silently drop its URI: a closed document still
+    /// needs its empty tombstone row, and a still-open document must fall
+    /// back to a full report rather than `unchanged` (#17332).
+    #[test]
+    fn workspace_pull_tombstones_closed_document_with_malformed_previous_id()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let folder = temp.path().join("malformed-previous-id-project");
+        std::fs::create_dir_all(&folder)?;
+        std::fs::write(folder.join(".perl-lsp.toml"), "[perl]\nversion = \"5.20\"\n")?;
+        let survivor_uri = url::Url::from_file_path(folder.join("survivor.pl"))
+            .map_err(|()| "failed to build survivor URI")?
+            .to_string();
+        let closed_uri = url::Url::from_file_path(folder.join("closed.pl"))
+            .map_err(|()| "failed to build closed URI")?
+            .to_string();
+        let folder_uri = url::Url::from_directory_path(&folder)
+            .map_err(|()| "failed to build folder URI")?
+            .to_string();
+        let (server, _) = make_server_with_capture();
+        server.workspace_folders.lock().push(
+            crate::runtime::workspace_folder::WorkspaceFolderState::new(folder_uri)
+                .with_path(folder.clone()),
+        );
+        server.load_and_apply_project_config();
+        let source = "sub f ($x) { return $x; }\n";
+        server.test_handle_did_open(Some(json!({
+            "textDocument": {"uri": survivor_uri, "languageId": "perl", "version": 1, "text": source}
+        })))?;
+        server.test_handle_did_open(Some(json!({
+            "textDocument": {"uri": closed_uri, "languageId": "perl", "version": 1, "text": source}
+        })))?;
+        server.test_apply_did_close(&closed_uri)?;
+
+        let survivor_key = server.normalize_uri_key(&survivor_uri);
+        let closed_key = server.normalize_uri_key(&closed_uri);
+        let report = server
+            .handle_workspace_diagnostic(Some(json!({
+                "previousResultIds": [
+                    {"uri": survivor_uri, "value": 42},
+                    {"uri": closed_uri}
+                ]
+            })))?
+            .ok_or("workspace diagnostic response missing")?;
+        let items = report["items"].as_array().ok_or("items must be an array")?;
+        let rows_for = |uri: &str| {
+            items.iter().filter(|item| item["uri"].as_str() == Some(uri)).collect::<Vec<_>>()
+        };
+
+        let closed_rows = rows_for(&closed_key);
+        assert_eq!(
+            closed_rows.len(),
+            1,
+            "closed document with malformed previous ID must still be tombstoned: {report}"
+        );
+        assert_eq!(closed_rows[0]["kind"], "full");
+        assert_eq!(closed_rows[0]["items"].as_array().map(Vec::len), Some(0));
+
+        let survivor_rows = rows_for(&survivor_key);
+        assert_eq!(survivor_rows.len(), 1, "survivor must appear once: {report}");
+        assert_eq!(
+            survivor_rows[0]["kind"], "full",
+            "still-open document with malformed previous ID must not reuse it as unchanged: {report}"
+        );
+        assert!(
+            survivor_rows[0]["items"].as_array().is_some_and(|diag| !diag.is_empty()),
+            "still-open survivor must get its real diagnostics, not a tombstone: {report}"
         );
         Ok(())
     }
