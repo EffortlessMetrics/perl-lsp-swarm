@@ -122,15 +122,18 @@ impl SemanticAnalyzer {
     }
 
     /// Check whether a reference that is textually inside `symbol`'s
-    /// visibility region actually binds to a different, inner lexical
-    /// declaration of the same name and kind (#18115).
+    /// visibility region actually binds to a different declaration of the
+    /// same name and kind (#18115).
     ///
-    /// Walks the scope chain from the reference's scope up to (but not
-    /// including) `symbol`'s own scope. A `my`/`state` declaration of the
-    /// same name and kind in any of those scopes, positioned before the
-    /// reference, shadows `symbol` for that reference. `our` aliases the
-    /// package variable and `local` dynamically rebinds the same slot, so
-    /// neither shadows.
+    /// Walks the scope chain from the reference's scope outward. In each
+    /// scope, the latest capturing declaration whose statement has ended
+    /// at or before the reference owns the binding; the reference is
+    /// shadowed when that owner is not `symbol`. A lexical's scope begins
+    /// only after its declaring statement, so the initializer in
+    /// `my $x = $x` still binds outward. `my`/`state` declarations always
+    /// capture; `our` aliases the package variable, so it captures only
+    /// when the queried symbol is itself lexical; `local` dynamically
+    /// rebinds the same slot and never captures.
     pub(super) fn is_shadowed_by_inner_declaration(
         &self,
         symbol: &Symbol,
@@ -139,20 +142,35 @@ impl SemanticAnalyzer {
         let Some(candidates) = self.symbol_table.symbols.get(&symbol.name) else {
             return false;
         };
+        let symbol_is_lexical = matches!(symbol.declaration.as_deref(), Some("my" | "state"));
         let mut current_scope = reference.scope_id;
         loop {
+            let binding = candidates
+                .iter()
+                .filter(|candidate| {
+                    candidate.kind == symbol.kind
+                        && candidate.scope_id == current_scope
+                        && match candidate.declaration.as_deref() {
+                            Some("my" | "state") => true,
+                            Some("our") => symbol_is_lexical,
+                            _ => false,
+                        }
+                })
+                .filter(|candidate| {
+                    let statement_end = self
+                        .symbol_table
+                        .declaration_statement_ends
+                        .get(&candidate.location.start)
+                        .copied()
+                        .unwrap_or(candidate.location.end);
+                    reference.location.start >= statement_end
+                })
+                .max_by_key(|candidate| candidate.location.start);
+            if let Some(binding) = binding {
+                return binding.location.start != symbol.location.start;
+            }
             if current_scope == symbol.scope_id {
                 return false;
-            }
-            for candidate in candidates {
-                if candidate.kind == symbol.kind
-                    && candidate.scope_id == current_scope
-                    && candidate.location.start != symbol.location.start
-                    && matches!(candidate.declaration.as_deref(), Some("my" | "state"))
-                    && candidate.location.start <= reference.location.start
-                {
-                    return true;
-                }
             }
             let Some(scope) = self.symbol_table.scopes.get(&current_scope) else {
                 return false;

@@ -491,6 +491,57 @@ fn semantic_analyzer_find_all_references_excludes_shadowed_inner_uses()
 }
 
 #[test]
+fn semantic_analyzer_find_all_references_includes_initializer_rhs_of_shadowing_decl()
+-> Result<(), Box<dyn std::error::Error>> {
+    // #18115: in `{ my $x = $x; }` the RHS `$x` still binds to the OUTER
+    // variable (the inner scope begins after the declaring statement), so
+    // the outer query must include it, while the later inner use must not
+    // be included.
+    let code = "my $x = 1;\n{ my $x = $x; print $x; }\n";
+    let analyzer = parse_and_analyze(code);
+
+    let outer_decl = code.find("$x").ok_or("outer $x not found")?;
+    let outer_refs = analyzer.find_all_references(outer_decl, false);
+    assert_eq!(
+        outer_refs.len(),
+        1,
+        "outer $x has exactly the initializer-RHS use; got {outer_refs:?}"
+    );
+    let rhs = code.find("= $x").ok_or("RHS $x not found")? + 2;
+    assert!(
+        outer_refs.iter().any(|loc| loc.start == rhs),
+        "the included use must be the RHS reference; got {outer_refs:?}"
+    );
+
+    let inner_decl = code.find("my $x = $x").ok_or("inner $x not found")? + 3;
+    let inner_refs = analyzer.find_all_references(inner_decl, false);
+    assert_eq!(inner_refs.len(), 1, "inner $x has exactly the print use; got {inner_refs:?}");
+    Ok(())
+}
+
+#[test]
+fn semantic_analyzer_find_all_references_respects_same_scope_redeclaration()
+-> Result<(), Box<dyn std::error::Error>> {
+    // #18115: a second `my $x` in the same scope rebinds later uses; the
+    // first declaration's references stop at the redeclaration.
+    let code = "my $x = 1;\nprint $x;\nmy $x = 2;\nprint $x;\n";
+    let analyzer = parse_and_analyze(code);
+
+    let first_decl = code.find("$x").ok_or("first $x not found")?;
+    let first_refs = analyzer.find_all_references(first_decl, false);
+    assert_eq!(
+        first_refs.len(),
+        1,
+        "first $x has only the use before the redeclaration; got {first_refs:?}"
+    );
+
+    let second_decl = code.rfind("my $x").ok_or("second $x not found")? + 3;
+    let second_refs = analyzer.find_all_references(second_decl, false);
+    assert_eq!(second_refs.len(), 1, "second $x has only the use after it; got {second_refs:?}");
+    Ok(())
+}
+
+#[test]
 fn semantic_analyzer_empty_source() -> Result<(), Box<dyn std::error::Error>> {
     let analyzer = parse_and_analyze("");
     assert!(analyzer.semantic_tokens().is_empty());

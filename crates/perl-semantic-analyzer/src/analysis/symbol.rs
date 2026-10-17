@@ -206,6 +206,12 @@ pub struct SymbolTable {
     pub symbols: HashMap<String, Vec<Symbol>>,
     /// References indexed by name for find-all-references
     pub references: HashMap<String, Vec<SymbolReference>>,
+    /// End offset of the declaring statement, keyed by the declared
+    /// symbol's token start. A lexical's scope begins only after its
+    /// declaring statement, so references inside the statement (such as
+    /// the initializer in `my $x = $x`) still bind to an outer symbol of
+    /// the same name (#18115).
+    pub declaration_statement_ends: HashMap<usize, usize>,
     /// Scopes indexed by ID for hierarchical lookup
     pub scopes: HashMap<ScopeId, Scope>,
     /// Scope stack maintained during AST traversal
@@ -240,6 +246,7 @@ impl SymbolTable {
         let mut table = SymbolTable {
             symbols: HashMap::new(),
             references: HashMap::new(),
+            declaration_statement_ends: HashMap::new(),
             scopes: HashMap::new(),
             scope_stack: vec![0],
             next_scope_id: 1,
@@ -679,6 +686,9 @@ impl SymbolExtractor {
                     variable.location,
                     doc,
                 );
+                self.table
+                    .declaration_statement_ends
+                    .insert(variable.location.start, node.location.end);
                 if let Some(init) = initializer {
                     self.visit_node(init);
                 }
@@ -699,6 +709,9 @@ impl SymbolExtractor {
                         var.location,
                         doc.clone(),
                     );
+                    self.table
+                        .declaration_statement_ends
+                        .insert(var.location.start, node.location.end);
                 }
                 if let Some(init) = initializer {
                     self.visit_node(init);
