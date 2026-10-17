@@ -53,6 +53,36 @@ class RustSmallOwners:
         from .export_rust_small_receipt import export
         return export(self.environment, acquire_plan=self.acquire)
 
+    def execute_proof(self, proof_owner):
+        """Invoke the bound canonical producer after the existing allocation gate.
+
+        proof_owner(environment, *, acquire_plan) is trusted control code bound
+        to the existing proof entry point. This seam neither allocates a runner
+        nor grants admission. It preserves the producer's actual process status;
+        export metadata alone never certifies canonical product semantics.
+        """
+        if not callable(proof_owner):
+            raise Refused('canonical producer callback missing')
+        plan = self.acquire()
+        context_path = Path(self.environment['RUNNER_TEMP']) / 'em-ci-job-context.json'
+        before, _ = regular_bytes(context_path, 16384)
+        context = json.loads(before, object_pairs_hook=unique_object)
+        product_subject(self.environment, context, self.acquire)
+        metadata_tokens = {'GH_TOKEN', 'GITHUB_TOKEN', 'GH_ENTERPRISE_TOKEN', 'GITHUB_ENTERPRISE_TOKEN'}
+        proof_environment = {key: value for key, value in self.environment.items()
+                             if key not in metadata_tokens and not key.startswith('GIT_')}
+        status = proof_owner(proof_environment, acquire_plan=self.acquire)
+        if type(status) is not int or not 0 <= status <= 255:
+            raise Refused('canonical producer did not return a process exit status')
+        after, _ = regular_bytes(context_path, 16384)
+        if after != before or self.acquire() != plan:
+            raise Refused('producer context/request changed during execution')
+        product_subject(self.environment, context, self.acquire)
+        manifest = self.export()
+        if (status == 0) != (manifest['result'] == 'success'):
+            raise Refused('canonical producer exit differs from exported receipt outcome')
+        return status, manifest
+
     def result_environment(self):
         from .rust_standard_result import policy_environment
         return policy_environment(self.environment, acquire_plan=self.acquire)

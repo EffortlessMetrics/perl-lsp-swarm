@@ -7,6 +7,8 @@ from dataclasses import replace
 import hashlib
 import json
 from pathlib import Path
+import subprocess
+import sys
 import unittest
 from unittest import mock
 
@@ -82,6 +84,73 @@ class RuntimeCompositionTests(unittest.TestCase):
         reference = f'https://github.com/{plan["repository"]}/actions/runs/123/attempts/2#job-201'
         return admission.CommittedProof(plan['request_key'], 'verified', selected.selected, (),
                                         digest, reference)
+
+    def fresh_producer_packet(self):
+        for name in ('rust-small-proof.json', 'perl-rust-small-export.json', 'em-ci-job-context.json'):
+            (self.packet / name).unlink(missing_ok=True)
+
+    def test_execute_bound_producer_then_actual_export_preserves_native_control(self):
+        self.fresh_producer_packet()
+        self.owners.environment.update(GH_TOKEN='metadata-only', GIT_DIR='/wrong')
+        calls = []
+        def producer(environment, *, acquire_plan):
+            calls.append(acquire_plan())
+            self.assertNotIn('GH_TOKEN', environment)
+            self.assertNotIn('GIT_DIR', environment)
+            self.assertEqual(environment['GITHUB_SHA'], self.plan['control'])
+            self.assertNotEqual(environment['GITHUB_SHA'], self.plan['head'])
+            # Real child invocation, synthetic semantic producer. Its fixture
+            # receipt already exists at the exact H checkout.
+            return subprocess.run([sys.executable, '-c', 'raise SystemExit(0)'],
+                                  env=environment, check=False).returncode
+        status, manifest = self.owners.execute_proof(producer)
+        self.assertEqual((status, manifest['result']), (0, 'success'))
+        self.assertEqual(manifest['sha'], self.plan['control'])
+        self.assertEqual(calls, [self.plan])
+        self.assertEqual(json.loads((self.packet / 'rust-small-proof.json').read_bytes())
+                         ['subject']['git_sha'], self.plan['head'])
+        self.assertTrue(all(method == 'GET' for method, _ in self.api.calls))
+
+    def test_producer_failure_stays_failure_and_signals_cannot_export(self):
+        self.fresh_producer_packet()
+        self.bridge.receipt['result'] = 'product_failure'
+        self.bridge.write_receipt()
+        status, manifest = self.owners.execute_proof(lambda env, **kw: 7)
+        self.assertEqual((status, manifest['result']), (7, 'product_failure'))
+        self.fresh_producer_packet()
+        with self.assertRaises(ValueError):
+            self.owners.execute_proof(lambda env, **kw: -9)
+        self.assertFalse((self.packet / 'rust-small-proof.json').exists())
+
+    def test_producer_wrong_checkout_context_or_request_never_exports(self):
+        self.fresh_producer_packet()
+        source = self.bridge.workspace / 'source.txt'
+        source.write_text('dirty candidate')
+        called = []
+        with self.assertRaises(ValueError):
+            self.owners.execute_proof(lambda *args, **kw: called.append(1))
+        self.assertEqual(called, [])
+        self.bridge.git('checkout', '--', 'source.txt')
+        def change_context(environment, **kw):
+            self.bridge.fixture.context_path.write_text('{}')
+            return 0
+        with self.assertRaises(ValueError):
+            self.owners.execute_proof(change_context)
+        self.assertFalse((self.packet / 'rust-small-proof.json').exists())
+        self.bridge.write_context()
+        def move_request(environment, **kw):
+            self.api.subject = replace(self.api.subject, base='0' * 40)
+            return 0
+        with self.assertRaises(ValueError):
+            self.owners.execute_proof(move_request)
+        self.assertFalse((self.packet / 'rust-small-proof.json').exists())
+
+    def test_zero_process_status_cannot_contradict_product_failure(self):
+        self.fresh_producer_packet()
+        self.bridge.receipt['result'] = 'product_failure'
+        self.bridge.write_receipt()
+        with self.assertRaises(ValueError):
+            self.owners.execute_proof(lambda environment, **kw: 0)
 
     def test_import_owner_callback_feeds_existing_admission_join(self):
         authorities = admission.ExistingControlAuthorities(Path('/unused'),

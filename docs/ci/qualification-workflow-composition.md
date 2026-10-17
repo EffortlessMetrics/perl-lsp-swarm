@@ -63,6 +63,19 @@ success. The importer and semantic callbacks are trusted code boundaries, not
 candidate data. There is no CLI, environment flag or installed workflow that
 supplies these callbacks.
 
+The next execution seam is `execute_proof(proof_owner)`. After the existing
+allocator admits work, trusted control code supplies its bound canonical producer
+callback `(environment, *, acquire_plan) -> process_status`. The seam verifies
+exact H/tree and native context before invocation, strips metadata credentials and
+Git overrides from the child environment, reacquires context/request/checkout
+before export, and invokes the existing exporter with the same plan acquirer.
+It preserves failure process status and rejects signal/non-status values or an
+exit status contradicting the receipt outcome. This is an invocation boundary,
+not an allocator, command selector or canonical semantic verifier. Its child-process
+regression uses a synthetic producer; actual product execution is not claimed.
+The callback remains uninstalled in workflow entry points pending the canonical
+producer owner's invocation binding.
+
 The focused runtime regression invokes the actual bridge/export/result/admission
 and publication-preparation functions. Its native-import and canonical-semantic
 callbacks are synthetic fixtures; this is not product qualification or a claim
