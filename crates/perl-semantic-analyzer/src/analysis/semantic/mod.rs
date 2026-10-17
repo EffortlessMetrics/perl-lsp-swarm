@@ -990,6 +990,57 @@ sub add { 1 }
         Ok(())
     }
 
+    /// #17297: `for my $item (...)` must index `$item` as a lexical in the
+    /// loop scope, so hover/definition/references resolve it instead of
+    /// falling back to the enclosing sub.
+    #[test]
+    fn test_foreach_my_variable_is_indexed() -> Result<(), Box<dyn std::error::Error>> {
+        let code = r#"package WidgetGarden::Reducer;
+sub fold {
+    my ($self, $items, $initial, $combiner) = @_;
+    my $acc = $initial;
+    for my $item (@$items) {
+        $acc = $combiner->($acc, $item);
+    }
+    return $acc;
+}
+"#;
+        let mut parser = Parser::new(code);
+        let ast = parser.parse()?;
+        let analyzer = SemanticAnalyzer::analyze_with_source(&ast, code);
+
+        let items = analyzer.symbol_table().symbols.get("item").ok_or("item symbol missing")?;
+        let item = items
+            .iter()
+            .find(|s| s.kind == crate::symbol::SymbolKind::scalar())
+            .ok_or("item scalar symbol missing")?;
+        assert_eq!(item.declaration.as_deref(), Some("my"), "for-my iterator is a my lexical");
+
+        // Hover at the declaration and at the use site must resolve the
+        // variable, not the enclosing sub.
+        assert_eq!(item.location.start, code.find("for my $item").ok_or("decl not found")? + 7);
+        let decl_hover = analyzer.hover_at(item.location).ok_or("decl hover missing")?;
+        assert!(
+            decl_hover.signature.contains("$item"),
+            "decl hover should name $item, got: {}",
+            decl_hover.signature
+        );
+        let use_offset = code.rfind("$item").ok_or("use not found")?;
+        let refs = analyzer.symbol_table().find_references(item);
+        assert!(
+            refs.iter().any(|r| r.location.start == use_offset),
+            "use site must be recorded as a reference to the for-my lexical, got: {refs:?}"
+        );
+
+        // The production hover path calls `analyzer.find_definition(offset)`
+        // (perl-lsp-rs hover.rs); at the use site it must resolve the
+        // lexical itself, never the enclosing sub via containment fallback.
+        let definition = analyzer.find_definition(use_offset).ok_or("definition missing")?;
+        assert_eq!(definition.name, "item", "definition at use must be the lexical: {definition:?}");
+        assert_eq!(definition.location.start, item.location.start);
+        Ok(())
+    }
+
     #[test]
     fn test_extract_documentation_with_out_of_bounds_offset()
     -> Result<(), Box<dyn std::error::Error>> {

@@ -887,8 +887,49 @@ impl SymbolExtractor {
             NodeKind::Foreach { variable, list, body, continue_block: _ } => {
                 self.table.push_scope(ScopeKind::Block, node.location);
 
-                // The loop variable is implicitly declared
-                self.handle_variable_declaration("my", variable, &[], variable.location, None);
+                // The loop variable is implicitly declared. The parser
+                // wraps an explicit declarator (`for my $item (...)`) in a
+                // VariableDeclaration node; unwrap it so the lexical is
+                // actually indexed (#17297) — passing the wrapper to
+                // handle_variable_declaration silently recorded nothing.
+                match &variable.kind {
+                    NodeKind::VariableDeclaration {
+                        declarator,
+                        variable: inner,
+                        attributes,
+                        ..
+                    } => {
+                        let doc = self.extract_leading_comment(variable.location.start);
+                        self.handle_variable_declaration(
+                            declarator,
+                            inner,
+                            attributes,
+                            inner.location,
+                            doc,
+                        );
+                    }
+                    NodeKind::VariableListDeclaration { declarator, variables, attributes, .. } => {
+                        let doc = self.extract_leading_comment(variable.location.start);
+                        for var in variables {
+                            self.handle_variable_declaration(
+                                declarator,
+                                var,
+                                attributes,
+                                var.location,
+                                doc.clone(),
+                            );
+                        }
+                    }
+                    _ => {
+                        self.handle_variable_declaration(
+                            "my",
+                            variable,
+                            &[],
+                            variable.location,
+                            None,
+                        );
+                    }
+                }
                 self.visit_node(list);
                 self.visit_node(body);
 
