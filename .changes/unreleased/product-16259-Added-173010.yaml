@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Added
+body: Add complete warning catalogs for four exact Perl versions and immutable supplied warning-policy queries with distinct fatality, qualified evidence, and bounded wire admission.
+time: 2026-09-20T17:30:10Z
+custom:
+  PR: "16259"
+  Slug: supplied-warning-catalog-policy
+  Breaking: "no"
