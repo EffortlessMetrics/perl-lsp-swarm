@@ -1,0 +1,363 @@
+//! Content hygiene for handoff envelopes.
+//!
+//! A handoff crosses trust boundaries: it is produced in one workspace and
+//! read in another. Two classes of content must never make that crossing
+//! silently — credentials, and envelope-relative names that could escape the
+//! envelope on the reading side.
+//!
+//! Credential-bearing content is *refused*, not redacted, when it is part of
+//! an immutable Git object. Rewriting a commit message to hide a token would
+//! change the candidate; refusing tells the operator the truth instead.
+
+/// A credential or secret detected in retained content.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SecretFinding {
+    /// Field the finding was located in.
+    pub field: String,
+    /// Stable classification of what was matched, never the matched bytes.
+    pub kind: &'static str,
+}
+
+/// Markers that identify a credential wherever they appear in retained text.
+const CREDENTIAL_MARKERS: &[(&str, &str)] = &[
+    ("ghp_", "github_personal_access_token"),
+    ("gho_", "github_oauth_token"),
+    ("ghu_", "github_user_token"),
+    ("ghs_", "github_server_token"),
+    ("ghr_", "github_refresh_token"),
+    ("github_pat_", "github_fine_grained_token"),
+    ("xoxb-", "slack_bot_token"),
+    ("-----BEGIN OPENSSH PRIVATE KEY-----", "private_key"),
+    ("-----BEGIN RSA PRIVATE KEY-----", "private_key"),
+    ("-----BEGIN PRIVATE KEY-----", "private_key"),
+    // Assignment shapes for secrets that have no distinctive token prefix.
+    ("AWS_SECRET_ACCESS_KEY=", "aws_secret_access_key"),
+    ("_authToken=", "npm_auth_token"),
+];
+
+/// Scan one retained string for credential material.
+///
+/// Returns every distinct classification found so a receipt can name the
+/// class without ever echoing the secret itself.
+#[must_use]
+pub fn scan_secrets(field: &str, value: &str) -> Vec<SecretFinding> {
+    let mut findings: Vec<SecretFinding> = Vec::new();
+    let record = |kind: &'static str, findings: &mut Vec<SecretFinding>| {
+        if !findings.iter().any(|finding| finding.kind == kind) {
+            findings.push(SecretFinding { field: field.to_string(), kind });
+        }
+    };
+
+    for (marker, kind) in CREDENTIAL_MARKERS {
+        if value.contains(marker) {
+            record(kind, &mut findings);
+        }
+    }
+    if contains_aws_access_key_id(value) {
+        record("aws_access_key_id", &mut findings);
+    }
+    if contains_netrc_password(value) {
+        record("netrc_password", &mut findings);
+    }
+    if url_carries_credentials(value) {
+        record("url_embedded_credentials", &mut findings);
+    }
+    findings
+}
+
+/// Whether `value` contains a full AWS access-key id, `AKIA` plus 16 uppercase
+/// alphanumerics.
+///
+/// Matching the bare `AKIA` prefix refused ordinary prose — an identifier or a
+/// module name containing those four letters — and a producer has no override,
+/// so an over-broad marker makes legitimate candidates unexportable.
+#[must_use]
+pub fn contains_aws_access_key_id(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    bytes.windows(20).any(|window| {
+        window.starts_with(b"AKIA")
+            && window[4..].iter().all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit())
+    })
+}
+
+/// Whether `value` looks like a `.netrc` entry carrying a password.
+#[must_use]
+pub fn contains_netrc_password(value: &str) -> bool {
+    value.lines().any(|line| {
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        fields.windows(2).any(|pair| pair[0] == "password" && !pair[1].is_empty())
+            && fields.contains(&"machine")
+    })
+}
+
+/// Whether `value` contains a URL whose userinfo is credential material.
+///
+/// A userinfo with a password component is credential-bearing under any
+/// scheme, and a percent-encoded `%3A` hides that colon, so both count.
+///
+/// A *bare* userinfo is read by scheme, because the same syntax means
+/// different things:
+///
+/// - under `http`/`https` it is treated as credential material, since
+///   `https://<token>@github.com/owner/name` is the ordinary way a PAT is
+///   embedded in a remote and carries no colon at all;
+/// - under `ssh`, `git+ssh`, and `git` it is the login name. `ssh://git@host/…`
+///   is the plain SSH remote written in URL form, and SSH URLs do not carry
+///   passwords. Calling it credential-bearing put a *false*
+///   `remote_url_contained_credentials` in the manifest — a limitation no
+///   receiver can contradict, because the URL is deliberately never retained —
+///   and destroyed the repository identity of every workspace cloned that way.
+///
+/// `git@github.com:owner/name` has no `://` and is unaffected, so the scp-form
+/// SSH remote is not misread either.
+#[must_use]
+pub fn url_carries_credentials(value: &str) -> bool {
+    let Some(scheme_end) = value.find("://") else {
+        return false;
+    };
+    let scheme = value[..scheme_end].to_ascii_lowercase();
+    let after_scheme = &value[scheme_end + 3..];
+    // Only a `@` before the first path separator is a userinfo section; a `@`
+    // later in the URL belongs to the path or query.
+    let authority = after_scheme.split('/').next().unwrap_or_default();
+    let Some(at_index) = authority.find('@') else {
+        return false;
+    };
+    let userinfo = &authority[..at_index];
+    if userinfo.is_empty() {
+        return false;
+    }
+    if userinfo.contains(':') || userinfo.to_ascii_lowercase().contains("%3a") {
+        return true;
+    }
+    !matches!(scheme.as_str(), "ssh" | "git+ssh" | "git")
+}
+
+/// Whether a repository-relative path is safe to report and to join onto a root.
+///
+/// Git will not check out a tree containing `..` or an absolute entry, but a
+/// tree object holding one can still be written and packed, and this format
+/// hands inventory paths onward as data for other tools to act on. A path that
+/// escapes its root is refused here rather than passed along.
+#[must_use]
+pub fn is_safe_repository_path(value: &str) -> bool {
+    if value.is_empty() || value.len() > 4096 {
+        return false;
+    }
+    // `:` is refused for the same reason as a leading `/`: on Windows `C:name`
+    // is drive-relative, so a path carrying one escapes whatever root a
+    // consumer joins it onto. Git does not permit it in a tracked path there
+    // either, so nothing legitimate is lost.
+    if value.starts_with('/') || value.contains('\\') || value.contains('\0') || value.contains(':')
+    {
+        return false;
+    }
+    !value.split('/').any(|segment| segment.is_empty() || segment == "." || segment == "..")
+}
+
+/// Whether an envelope-relative name is safe to join onto a reader's root.
+///
+/// Absolute paths, drive letters, parent traversal, and backslash separators
+/// are all refused so a manifest cannot direct a reader outside the envelope.
+#[must_use]
+pub fn is_safe_envelope_name(value: &str) -> bool {
+    if value.is_empty() || value.len() > 255 {
+        return false;
+    }
+    if value.starts_with('/') || value.starts_with('\\') || value.contains('\\') {
+        return false;
+    }
+    if value.contains(':') {
+        return false;
+    }
+    if value.split('/').any(|segment| segment.is_empty() || segment == "." || segment == "..") {
+        return false;
+    }
+    !value.chars().any(char::is_control)
+}
+
+/// Whether a proof identifier is a stable lowercase token.
+#[must_use]
+pub fn is_proof_id(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    if bytes.is_empty() || bytes.len() > 128 || !bytes[0].is_ascii_alphanumeric() {
+        return false;
+    }
+    bytes.iter().all(|byte| {
+        byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'.' | b'_' | b'-')
+    })
+}
+
+/// Remove any userinfo from a URL, leaving the rest untouched.
+///
+/// Used only to compare a credential-bearing remote's `owner/name` against a
+/// caller's declaration. The result is never retained: it exists so a
+/// contradiction can be detected without the manifest ever seeing a URL.
+#[must_use]
+pub fn strip_url_userinfo(url: &str) -> String {
+    let Some(scheme_end) = url.find("://") else {
+        return url.to_string();
+    };
+    let (scheme, rest) = url.split_at(scheme_end + 3);
+    let (authority, path) = rest.split_once('/').unwrap_or((rest, ""));
+    let Some(at) = authority.rfind('@') else {
+        return url.to_string();
+    };
+    let separator = if path.is_empty() { "" } else { "/" };
+    format!("{scheme}{}{separator}{path}", &authority[at + 1..])
+}
+
+/// Whether `value` is a lowercase `owner/name` repository identity.
+///
+/// Deliberately structural: an identity that cannot be expressed as
+/// `owner/name` is not accepted in redacted or partial form, so no remote URL
+/// bytes — and therefore no embedded credentials — can survive into a
+/// manifest through this field.
+#[must_use]
+pub fn is_repository_identity(value: &str) -> bool {
+    let mut parts = value.split('/');
+    let (Some(owner), Some(name)) = (parts.next(), parts.next()) else {
+        return false;
+    };
+    if parts.next().is_some() || owner.is_empty() || name.is_empty() {
+        return false;
+    }
+    if value != value.to_lowercase() {
+        return false;
+    }
+    let acceptable = |segment: &str| {
+        // `.` and `..` are path traversal, not names, and this value is the one
+        // a downstream publisher resolves into a target. `is_safe_repository_path`
+        // has carried that rule all along; the field the whole identity tuple
+        // exists to protect did not. A leading `-` is refused for the same
+        // class of reason: it reads as an option to anything that interpolates
+        // the value into a command line.
+        // A leading `.` covers `.`, `..`, and `.git` alike — path-shaped
+        // segments no forge issues as a name — and a leading `-` reads as an
+        // option to anything that interpolates the value into a command line.
+        // Requiring the first character to be alphanumeric or `_` states the
+        // rule once instead of enumerating the hostile cases.
+        let Some(first) = segment.chars().next() else {
+            return false;
+        };
+        if !(first.is_ascii_alphanumeric() || first == '_') {
+            return false;
+        }
+        segment.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+    };
+    acceptable(owner) && acceptable(name)
+}
+
+/// Whether `value` is a lowercase host name a repository identity may name.
+///
+/// This is a shape check, not an allowlist: the format records which host an
+/// identity came from so a consumer can decide whether that host is one it is
+/// authorized to publish to. Deciding that here would bake one forge's policy
+/// into a general transport.
+#[must_use]
+pub fn is_repository_host(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 253
+        && value.contains('.')
+        && !value.starts_with('.')
+        && !value.ends_with('.')
+        && !value.contains("..")
+        && value
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '.' | '-'))
+}
+
+/// A repository identity read from a remote URL, with the host it names.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RemoteIdentity {
+    /// Lowercase hosting authority, without userinfo or port.
+    pub host: String,
+    /// Lowercase `owner/name`.
+    pub value: String,
+}
+
+/// Why a remote URL could not be used as an identity source.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RemoteIdentityError {
+    /// The URL embedded credentials, so none of its bytes may be retained.
+    CredentialsPresent,
+}
+
+impl std::fmt::Display for RemoteIdentityError {
+    /// Describe the refusal without echoing any byte of the URL.
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::CredentialsPresent => {
+                write!(formatter, "the configured remote URL embedded credentials")
+            }
+        }
+    }
+}
+
+impl std::error::Error for RemoteIdentityError {}
+
+/// Extract `owner/name` from a Git remote URL, refusing credential-bearing URLs.
+///
+/// A credential-bearing URL is an error rather than a redacted value, so the
+/// caller records the refusal as a limitation and no URL bytes are retained.
+pub fn repository_identity_from_remote(
+    url: &str,
+) -> Result<Option<RemoteIdentity>, RemoteIdentityError> {
+    let trimmed = url.trim();
+    if url_carries_credentials(trimmed) {
+        return Err(RemoteIdentityError::CredentialsPresent);
+    }
+    // Split the hosting authority from the path, for URL forms and for the SCP
+    // form (`host:owner/name`) alike. Both halves are load-bearing: the path
+    // supplies `owner/name`, and the authority is what makes that pair name one
+    // repository rather than one per forge.
+    let (authority, path) = if let Some(scheme_end) = trimmed.find("://") {
+        let scheme = trimmed[..scheme_end].to_lowercase();
+        let after_scheme = &trimmed[scheme_end + 3..];
+        // `file://` and other pathname schemes carry no hosting authority, so
+        // they can locate a clone but cannot establish which repository it is.
+        if scheme == "file" {
+            return Ok(None);
+        }
+        match after_scheme.split_once('/') {
+            Some((authority, path)) => (authority, path),
+            None => return Ok(None),
+        }
+    } else {
+        match trimmed.split_once(':') {
+            // A bare Windows drive letter or a relative path is not an
+            // authority; requiring a dot keeps this to real host names.
+            Some((authority, path)) if authority.contains('.') => (authority, path),
+            _ => return Ok(None),
+        }
+    };
+
+    // Userinfo is already refused above; a port is not part of repository
+    // identity and is dropped rather than retained.
+    let host = authority.rsplit('@').next().unwrap_or(authority);
+    let host = host.split(':').next().unwrap_or(host).to_lowercase();
+    if host.is_empty() || !host.contains('.') {
+        return Ok(None);
+    }
+
+    // A query or fragment is not part of the path, and splitting on `/` after
+    // it would pull segments out of the wrong place entirely.
+    let path = path.split(['?', '#', '\n', '\r']).next().unwrap_or(path);
+    let path = path.trim_start_matches('/').trim_end_matches('/');
+    let path = path.strip_suffix(".git").unwrap_or(path);
+    let segments: Vec<&str> = path.split('/').filter(|segment| !segment.is_empty()).collect();
+    // Exactly two segments, never the *last* two. Truncating a longer path is
+    // a guess, and it is a guess that names a real and possibly unrelated
+    // repository: `gitlab.com/group/subgroup/app` would become `subgroup/app`,
+    // which is someone's project on that same host. Nested namespaces are
+    // ordinary on GitLab and Azure DevOps, so this was not a corner case. An
+    // identity this reader cannot read exactly is not proven.
+    let [owner, name] = segments.as_slice() else {
+        return Ok(None);
+    };
+    let value = format!("{}/{}", owner.to_lowercase(), name.to_lowercase());
+    if !is_repository_identity(&value) || !is_repository_host(&host) {
+        return Ok(None);
+    }
+    Ok(Some(RemoteIdentity { host, value }))
+}
