@@ -459,6 +459,38 @@ foo();
 }
 
 #[test]
+fn semantic_analyzer_find_all_references_excludes_shadowed_inner_uses()
+-> Result<(), Box<dyn std::error::Error>> {
+    // #18115: uses of an inner `my $x` must not be reported as references
+    // to the outer `$x` (rename would otherwise rewrite the wrong binding).
+    let code = "my $x = 1;\nprint $x;\n{ my $x = 2; print $x; }\nprint $x;\n";
+    let analyzer = parse_and_analyze(code);
+
+    let outer_decl = code.find("$x").ok_or("outer $x not found")?;
+    let outer_refs = analyzer.find_all_references(outer_decl, false);
+    assert_eq!(
+        outer_refs.len(),
+        2,
+        "outer $x has two uses outside the shadowing block; got {outer_refs:?}"
+    );
+    let block_start = code.find('{').ok_or("block start not found")?;
+    let block_end = code.find('}').ok_or("block end not found")?;
+    assert!(
+        outer_refs.iter().all(|loc| loc.start < block_start || loc.start > block_end),
+        "no outer reference may point inside the shadowing block; got {outer_refs:?}"
+    );
+
+    let inner_decl = code.find("my $x = 2").ok_or("inner $x not found")? + 3;
+    let inner_refs = analyzer.find_all_references(inner_decl, false);
+    assert_eq!(inner_refs.len(), 1, "inner $x has exactly one use; got {inner_refs:?}");
+    assert!(
+        inner_refs.iter().all(|loc| loc.start > block_start && loc.start < block_end),
+        "inner reference must be inside the block; got {inner_refs:?}"
+    );
+    Ok(())
+}
+
+#[test]
 fn semantic_analyzer_empty_source() -> Result<(), Box<dyn std::error::Error>> {
     let analyzer = parse_and_analyze("");
     assert!(analyzer.semantic_tokens().is_empty());

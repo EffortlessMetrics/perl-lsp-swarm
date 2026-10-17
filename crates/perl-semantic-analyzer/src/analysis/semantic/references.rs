@@ -109,7 +109,9 @@ impl SemanticAnalyzer {
                 // Only include references of the same kind and in scope where the symbol is visible
                 if reference.kind == symbol.kind {
                     // Check if the symbol is visible from this reference's scope
-                    if self.is_symbol_visible(symbol, reference.scope_id) {
+                    if self.is_symbol_visible(symbol, reference.scope_id)
+                        && !self.is_shadowed_by_inner_declaration(symbol, reference)
+                    {
                         locations.push(reference.location);
                     }
                 }
@@ -117,6 +119,49 @@ impl SemanticAnalyzer {
         }
 
         locations
+    }
+
+    /// Check whether a reference that is textually inside `symbol`'s
+    /// visibility region actually binds to a different, inner lexical
+    /// declaration of the same name and kind (#18115).
+    ///
+    /// Walks the scope chain from the reference's scope up to (but not
+    /// including) `symbol`'s own scope. A `my`/`state` declaration of the
+    /// same name and kind in any of those scopes, positioned before the
+    /// reference, shadows `symbol` for that reference. `our` aliases the
+    /// package variable and `local` dynamically rebinds the same slot, so
+    /// neither shadows.
+    pub(super) fn is_shadowed_by_inner_declaration(
+        &self,
+        symbol: &Symbol,
+        reference: &crate::symbol::SymbolReference,
+    ) -> bool {
+        let Some(candidates) = self.symbol_table.symbols.get(&symbol.name) else {
+            return false;
+        };
+        let mut current_scope = reference.scope_id;
+        loop {
+            if current_scope == symbol.scope_id {
+                return false;
+            }
+            for candidate in candidates {
+                if candidate.kind == symbol.kind
+                    && candidate.scope_id == current_scope
+                    && candidate.location.start != symbol.location.start
+                    && matches!(candidate.declaration.as_deref(), Some("my" | "state"))
+                    && candidate.location.start <= reference.location.start
+                {
+                    return true;
+                }
+            }
+            let Some(scope) = self.symbol_table.scopes.get(&current_scope) else {
+                return false;
+            };
+            let Some(parent) = scope.parent else {
+                return false;
+            };
+            current_scope = parent;
+        }
     }
 
     /// Check if a symbol is visible from a given scope.
