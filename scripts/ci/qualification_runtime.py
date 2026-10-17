@@ -44,6 +44,10 @@ class RustSmallOwners:
                 or plan['repository'] != self.environment.get('GITHUB_REPOSITORY')
                 or plan['control'] != self.environment.get('GITHUB_SHA')):
             raise Refused('native control differs from acquired plan')
+        dispatcher = (f'{plan["repository"]}/{plan["workflow_path"]}'
+                      f'@refs/heads/{plan["control_branch"]}')
+        if self.environment.get('GITHUB_WORKFLOW_REF') != dispatcher:
+            raise Refused('native dispatcher workflow differs from acquired plan')
         return plan
 
     def capture(self, central_capture):
@@ -107,6 +111,10 @@ class RustSmallOwners:
             raise Refused('central native importer omitted its private packet')
         context_raw, _ = regular_bytes(root / 'em-ci-job-context.json', 16384)
         context = json.loads(context_raw, object_pairs_hook=unique_object)
+        if any(context.get(field) != self.environment.get(native) for field, native in
+               (('workflow', 'GITHUB_WORKFLOW'), ('workflow_ref', 'GITHUB_WORKFLOW_REF'),
+                ('event', 'GITHUB_EVENT_NAME'), ('ref', 'GITHUB_REF'))):
+            raise Refused('imported producer differs from native dispatcher workflow/event/ref')
         product_subject(self.environment, context, self.acquire)
         receipt_path = root / 'rust-small-proof.json'
         raw, _ = regular_bytes(receipt_path, MAX_RECEIPT_BYTES)

@@ -55,6 +55,12 @@ class RuntimeCompositionTests(unittest.TestCase):
         self.adapter = Adapter(self.api, self.api.subject)
         self.plan = self.adapter.snapshot()
         self.bridge.plan = self.plan
+        dispatcher_ref = (f'{self.plan["repository"]}/{self.plan["workflow_path"]}'
+                          f'@refs/heads/{self.plan["control_branch"]}')
+        self.bridge.env.update(GITHUB_WORKFLOW='Qualification Adapter Rehearsal',
+            GITHUB_WORKFLOW_REF=dispatcher_ref, GITHUB_REF='refs/heads/' + self.plan['control_branch'])
+        self.bridge.context.update(workflow=self.bridge.env['GITHUB_WORKFLOW'],
+            workflow_ref=dispatcher_ref, event='workflow_dispatch', ref=self.bridge.env['GITHUB_REF'])
         self.bridge.context['qualification_subject'] = {key: self.plan[key]
             for key in ('head', 'tree', 'base', 'control', 'request_key')}
         self.bridge.context['producer_check_run_id'] = 201
@@ -187,6 +193,26 @@ class RuntimeCompositionTests(unittest.TestCase):
             with self.subTest(selection=changed), self.assertRaises(ValueError):
                 self.owners.prepare_publication(123, 2)
         self.assertEqual(self.imports, [])
+
+    def test_foreign_native_dispatcher_refuses_before_current_run_import(self):
+        self.owners.environment['GITHUB_WORKFLOW_REF'] = (
+            self.plan['repository'] + '/.github/workflows/ci.yml@refs/heads/' + self.plan['control_branch'])
+        with mock.patch.object(self.owners, 'native_import', wraps=self.native_import) as imported:
+            with self.assertRaisesRegex(ValueError, 'native dispatcher workflow'):
+                self.owners.prepare_publication(123, 2)
+            imported.assert_not_called()
+
+    def test_imported_workflow_event_and_ref_must_match_native_dispatcher(self):
+        context_path = self.packet / 'em-ci-job-context.json'
+        for field, value in (('workflow_ref', self.plan['repository'] + '/.github/workflows/ci.yml@refs/heads/main'),
+                             ('workflow', 'CI definition'), ('event', 'pull_request'), ('ref', 'refs/heads/other')):
+            with self.subTest(field=field):
+                context_path.write_text(json.dumps({**self.bridge.context, field: value}))
+                with mock.patch.object(self.owners, 'canonical_owner', wraps=self.canonical_owner) as canonical:
+                    with self.assertRaisesRegex(ValueError, 'native dispatcher workflow/event/ref'):
+                        self.owners.prepare_publication(123, 2)
+                    canonical.assert_not_called()
+        context_path.write_text(json.dumps(self.bridge.context))
 
     def test_missing_capture_and_wrong_imported_origin_refuse(self):
         for change in ({'qualification_subject': {}}, {'sha': self.plan['head']},

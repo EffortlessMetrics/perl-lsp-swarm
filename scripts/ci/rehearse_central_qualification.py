@@ -49,6 +49,10 @@ def run_fixture(central):
        value=json.loads(json.dumps(value).replace('a'*40,t.plan['control']))
        setattr(f,name,value)
       f.plan=t.plan
+      for source in (f.subject, f.context):
+       source.update(workflow=t.owners.environment['GITHUB_WORKFLOW'],
+          workflow_ref=t.owners.environment['GITHUB_WORKFLOW_REF'], event='workflow_dispatch',
+          ref=t.owners.environment['GITHUB_REF'])
       f.context['qualification_subject']={k:t.plan[k] for k in ('head','tree','base','control','request_key')}
       f.evidence['sha']=t.plan['head']
       receipt=json.loads(f.files['rust-small-proof.json']); receipt['subject']['git_sha']=t.plan['head']
@@ -148,9 +152,15 @@ def run_actual(central, *, xtask, xtask_sha256, control_sha, workspace, warm_rec
         environment = dict(os.environ, **helper.environment(fixture))
         environment.update(GITHUB_REPOSITORY=plan['repository'], GITHUB_REPOSITORY_ID='7',
             GITHUB_SHA=control_sha, GITHUB_WORKSPACE=str(workspace), RUNNER_TEMP=str(temporary),
-            EM_CI_ARTIFACT_DIR=str(packet), EM_CI_LANE='perl-rust-small')
+            EM_CI_ARTIFACT_DIR=str(packet), EM_CI_LANE='perl-rust-small',
+            GITHUB_WORKFLOW='Qualification Adapter Rehearsal',
+            GITHUB_WORKFLOW_REF=(f'{plan["repository"]}/{plan["workflow_path"]}'
+                                 f'@refs/heads/{plan["control_branch"]}'),
+            GITHUB_REF='refs/heads/' + plan['control_branch'])
         fixture.plan = plan
-        fixture.subject.update(sha=control_sha, event='workflow_dispatch')
+        fixture.subject.update(sha=control_sha, event='workflow_dispatch',
+            workflow=environment['GITHUB_WORKFLOW'], workflow_ref=environment['GITHUB_WORKFLOW_REF'],
+            ref=environment['GITHUB_REF'])
         fixture.run.update(event='workflow_dispatch', head_sha=control_sha)
         fixture.run['repository']['id'] = fixture.run['head_repository']['id'] = 7
         fixture.producer['head_sha'] = fixture.check['head_sha'] = control_sha
