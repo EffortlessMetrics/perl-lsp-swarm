@@ -4529,3 +4529,25 @@ ast_kind = "attribute"
 container = "emit_workspace_symbol_probe_receipt"
 lint = "clippy::print_stderr"
 target_fingerprint = "policy:allow-ux-ws-symbol-receipt-15988"
+
+# A single lean startup trace receipt plus its not-executed marker must reach
+# UX CI logs. The emitter uses a print macro locally and direct descriptor IO
+# in CI. Scoped to the one emitter function; the skip print at the call site
+# was removed outright and its non-execution is classified by TraceStart.
+[[allow]]
+id = "allow-ux-lean-startup-trace-16977"
+kind = "lint_exception"
+family = "expect_attribute"
+path = "crates/perl-lsp-ux-tests/tests/ux_neovim_lean_startup_trace.rs"
+owner = "core/maintainers"
+classification = "reviewed_exception"
+reason = "One lean startup trace receipt and its not-executed marker must reach UX CI logs after a passing test; libtest discards captured print output and this target reports through its own typed receipt rather than the shared recorder schema."
+evidence = ["issue:16977", "test:a_missing_binary_is_non_execution_never_a_product_pass", "test:ux_neovim_lean_startup_trace_receipt"]
+created = "2026-09-29"
+review_after = "2026-12-28"
+
+[allow.selector]
+ast_kind = "attribute"
+container = "emit_lean_startup_trace_receipt"
+lint = "clippy::print_stdout"
+target_fingerprint = "policy:allow-ux-lean-startup-trace-16977"
