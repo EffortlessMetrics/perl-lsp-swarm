@@ -4602,15 +4602,18 @@ impl PerlLexer<'_> {
             return true;
         }
         let is_word = |c: u8| c.is_ascii_alphanumeric() || c == b'_';
-        prefix.iter().enumerate().any(|(i, _)| {
+        prefix.iter().enumerate().any(|(i, &c)| {
+            // Only a word start can begin an operator word; skipping the rest keeps
+            // the scan linear in the prefix length.
+            if !is_word(c) || (i > 0 && is_word(prefix[i - 1])) {
+                return false;
+            }
             let mut j = i;
             while j < prefix.len() && is_word(prefix[j]) {
                 j += 1;
             }
             let word = &prefix[i..j];
-            let starts_word = i == 0 || !is_word(prefix[i - 1]);
-            starts_word
-                && matches!(word, b"q" | b"qq" | b"qw" | b"qr" | b"m" | b"s" | b"tr" | b"y")
+            matches!(word, b"q" | b"qq" | b"qw" | b"qr" | b"m" | b"s" | b"tr" | b"y")
                 && prefix.get(j).is_none_or(|d| {
                     !d.is_ascii_whitespace()
                         && !is_word(*d)
