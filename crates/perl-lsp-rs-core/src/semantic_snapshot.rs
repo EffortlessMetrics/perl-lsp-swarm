@@ -1665,6 +1665,182 @@ pub struct FileSemanticSnapshotParts {
     pub project_fact_projection: Option<ProjectFactProjectionRef>,
 }
 
+/// Refusal when one input bundle does not bind (issue #16221): the typed
+/// form of the subject/parse/profile input rules. `from_parts` maps these
+/// into `FileSemanticSnapshotValidationError`; the construction cell entry
+/// reports them as a caller-local refusal, so the fail-closed refusal path
+/// is never handed inputs that refuse for the same reason.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum SnapshotInputBindingError {
+    /// The subject's full-source revision names a different logical source
+    /// than the subject.
+    #[error(
+        "full-source revision logical source {revision_source} does not match subject {subject_source}"
+    )]
+    FullSourceSubjectMismatch {
+        /// Logical source carried by the full-source revision.
+        revision_source: LogicalSourceId,
+        /// Logical source carried by the subject.
+        subject_source: LogicalSourceId,
+    },
+    /// The parse snapshot identity names a different parser input than the
+    /// subject.
+    #[error("parse snapshot digest {snapshot_digest} does not match parser input {input_digest}")]
+    ParserInputDigestMismatch {
+        /// Digest carried by the parse snapshot identity.
+        snapshot_digest: ContentDigest,
+        /// Digest carried by the subject's parser-input revision.
+        input_digest: ContentDigest,
+    },
+    /// The parse snapshot length disagrees with the parser-input length.
+    #[error("parse snapshot length {snapshot_len} does not match parser input length {input_len}")]
+    ParserInputLengthMismatch {
+        /// Length carried by the parse snapshot identity.
+        snapshot_len: u64,
+        /// Length carried by the subject's parser-input revision.
+        input_len: u64,
+    },
+    /// The profile fingerprint does not match its
+    /// schema/implementation/profile triple.
+    #[error("profile fingerprint {found} does not match its triple (expected {expected})")]
+    ProfileFingerprintMismatch {
+        /// Fingerprint recomputed over the triple.
+        expected: ContentDigest,
+        /// Fingerprint stored in the identity.
+        found: ContentDigest,
+    },
+}
+
+/// One authority for the three input-binding rules — full-source/subject,
+/// parse/subject digest and length, profile triple coherence — shared by
+/// the wire constructor (`validate_shape`) and the checked input bundle
+/// (`BoundSnapshotInputs::new`).
+fn validate_input_bindings(
+    profile: &SemanticProfileIdentity,
+    subject: &SemanticSubjectIdentity,
+    parse_snapshot: &ParseSnapshotIdentity,
+) -> Result<(), SnapshotInputBindingError> {
+    use SnapshotInputBindingError as B;
+    if subject.full_source_revision.logical_source_id != subject.logical_source_id {
+        return Err(B::FullSourceSubjectMismatch {
+            revision_source: subject.full_source_revision.logical_source_id.clone(),
+            subject_source: subject.logical_source_id.clone(),
+        });
+    }
+    if parse_snapshot.source_digest != subject.parser_input_revision.digest {
+        return Err(B::ParserInputDigestMismatch {
+            snapshot_digest: parse_snapshot.source_digest.clone(),
+            input_digest: subject.parser_input_revision.digest.clone(),
+        });
+    }
+    if parse_snapshot.source_len != subject.parser_input_revision.byte_len {
+        return Err(B::ParserInputLengthMismatch {
+            snapshot_len: parse_snapshot.source_len,
+            input_len: subject.parser_input_revision.byte_len,
+        });
+    }
+    let expected = SemanticProfileIdentity::fingerprint_over(
+        &profile.schema,
+        &profile.implementation,
+        &profile.profile,
+    );
+    if profile.fingerprint != expected {
+        return Err(B::ProfileFingerprintMismatch { expected, found: profile.fingerprint.clone() });
+    }
+    Ok(())
+}
+
+/// A subject/parse/profile bundle proven to bind (issue #16221): the parse
+/// snapshot names the subject's exact parser input, the subject's
+/// full-source revision names the subject itself, and the profile
+/// fingerprint matches its schema/implementation/profile triple.
+///
+/// The checked authority for those three input rules: [`FileSemanticSnapshotV1::from_parts`]
+/// reaches them through the same validation in `validate_shape`, and the
+/// total absent-family constructor reaches them here, at construction of
+/// this type, so the fail-closed refusal path has no failure branch of its
+/// own.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BoundSnapshotInputs {
+    profile: SemanticProfileIdentity,
+    subject: SemanticSubjectIdentity,
+    parse_snapshot: ParseSnapshotIdentity,
+}
+
+impl BoundSnapshotInputs {
+    /// Check the three input-binding rules and bind the bundle.
+    ///
+    /// # Errors
+    /// The typed binding refusal when any rule fails.
+    pub fn new(
+        profile: SemanticProfileIdentity,
+        subject: SemanticSubjectIdentity,
+        parse_snapshot: ParseSnapshotIdentity,
+    ) -> Result<Self, SnapshotInputBindingError> {
+        validate_input_bindings(&profile, &subject, &parse_snapshot)?;
+        Ok(Self { profile, subject, parse_snapshot })
+    }
+
+    /// The bound subject.
+    #[must_use]
+    pub(crate) const fn subject(&self) -> &SemanticSubjectIdentity {
+        &self.subject
+    }
+
+    /// The bound parse snapshot.
+    #[must_use]
+    pub(crate) const fn parse_snapshot(&self) -> &ParseSnapshotIdentity {
+        &self.parse_snapshot
+    }
+
+    /// Consume the bundle into its parts, in parts order.
+    #[must_use]
+    pub(crate) fn into_parts(
+        self,
+    ) -> (SemanticProfileIdentity, SemanticSubjectIdentity, ParseSnapshotIdentity) {
+        (self.profile, self.subject, self.parse_snapshot)
+    }
+}
+
+/// A terminal state restricted to the absent family: the type-level form
+/// of "nothing was completed, so no completed facts may be carried"
+/// (issue #16221). The only way to obtain one is the fixed constants or
+/// [`SemanticSnapshotTerminalState::is_absent_family`], so a constructor
+/// taking this type cannot assemble an absent snapshot under a complete
+/// or partial-recovered state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct AbsentTerminalState(SemanticSnapshotTerminalState);
+
+impl AbsentTerminalState {
+    /// No result is available for this ticket.
+    pub const UNAVAILABLE: Self = Self(SemanticSnapshotTerminalState::Unavailable);
+    /// Construction stopped through cooperative cancellation.
+    pub const CANCELLED: Self = Self(SemanticSnapshotTerminalState::Cancelled);
+    /// Construction stopped because a semantic resource budget was exhausted.
+    pub const BUDGET_EXHAUSTED: Self = Self(SemanticSnapshotTerminalState::BudgetExhausted);
+    /// Construction finished but was superseded before completion.
+    pub const STALE_OR_SUPERSEDED: Self = Self(SemanticSnapshotTerminalState::StaleOrSuperseded);
+    /// Construction failed for a product reason.
+    pub const PRODUCT_FAILURE: Self = Self(SemanticSnapshotTerminalState::ProductFailure);
+    /// An instrument/schema needed for the result failed.
+    pub const INSTRUMENT_OR_SCHEMA_FAILURE: Self =
+        Self(SemanticSnapshotTerminalState::InstrumentOrSchemaFailure);
+    /// Completion could not be observed; nothing may be claimed.
+    pub const NOT_PROVEN: Self = Self(SemanticSnapshotTerminalState::NotProven);
+
+    /// The absent state, when the state is in the absent family.
+    #[must_use]
+    pub const fn new(state: SemanticSnapshotTerminalState) -> Option<Self> {
+        if state.is_absent_family() { Some(Self(state)) } else { None }
+    }
+
+    /// The underlying terminal state.
+    #[must_use]
+    pub const fn state(self) -> SemanticSnapshotTerminalState {
+        self.0
+    }
+}
+
 /// One immutable ticket-bound completed semantic operation result
 /// (`file_semantic_snapshot.v1`).
 ///
@@ -1746,6 +1922,89 @@ impl FileSemanticSnapshotV1 {
             project_fact_projection.as_ref(),
         )?;
 
+        Ok(Self::assemble(
+            profile,
+            subject,
+            parse_snapshot,
+            contribution_set,
+            canonical_views,
+            work_receipt,
+            predecessor,
+            terminal_state,
+            completeness,
+            confidence,
+            limitations,
+            project_fact_projection,
+        ))
+    }
+
+    /// Total absent-family constructor (issue #16221): assembles an
+    /// absent-family terminal — no facts, canonical empty views, no
+    /// predecessor or projection, `not_proven` completeness, `unprovable`
+    /// confidence — with no failure branch of its own, so the fail-closed
+    /// refusal path cannot panic.
+    ///
+    /// Every shape rule the absent family carries is fixed here by
+    /// construction; the three input-binding rules are certified by
+    /// [`BoundSnapshotInputs`]. The receipt id is re-derived here through the
+    /// same instrument+sequence derivation [`Self::validate_shape`] checks,
+    /// so a caller-supplied receipt with a spliced `receipt_id` cannot
+    /// assemble a snapshot that its own checked deserialization would refuse.
+    /// The wire path keeps entering through [`Self::from_parts`], which keeps
+    /// every check.
+    #[must_use]
+    pub(crate) fn from_absent_family(
+        bound: BoundSnapshotInputs,
+        work_receipt: SemanticWorkReceipt,
+        state: AbsentTerminalState,
+    ) -> Self {
+        let (profile, subject, parse_snapshot) = bound.into_parts();
+        // `receipt_id` is a derived field, never an assertion of the caller:
+        // re-derive it from the receipt's own instrument + sequence, the one
+        // derivation `validate_shape` accepts.
+        let work_receipt = SemanticWorkReceipt::new(
+            work_receipt.work_kind,
+            work_receipt.instrument,
+            work_receipt.work_sequence,
+        );
+        Self::assemble(
+            profile,
+            subject,
+            parse_snapshot,
+            None,
+            Vec::new(),
+            work_receipt,
+            None,
+            state.state(),
+            SemanticCompleteness::NotProven,
+            SemanticConfidence::Unprovable,
+            SemanticLimitations::new(Vec::new()),
+            None,
+        )
+    }
+
+    /// Derived-field assembly shared by both constructors, so they agree
+    /// field-for-field by construction (issue #16221 proof obligation).
+    /// Canonicalizes views by kind and derives the accepted-ticket
+    /// reference and snapshot fingerprint.
+    // Same narrow exception as `validate_shape`: the parts are the
+    // snapshot's canonical identity surface.
+    #[allow(clippy::too_many_arguments)]
+    fn assemble(
+        profile: SemanticProfileIdentity,
+        subject: SemanticSubjectIdentity,
+        parse_snapshot: ParseSnapshotIdentity,
+        contribution_set: Option<SemanticContributionSetRef>,
+        mut canonical_views: Vec<MaterializedQueryViewRef>,
+        work_receipt: SemanticWorkReceipt,
+        predecessor: Option<SemanticPredecessorRef>,
+        terminal_state: SemanticSnapshotTerminalState,
+        completeness: SemanticCompleteness,
+        confidence: SemanticConfidence,
+        limitations: SemanticLimitations,
+        project_fact_projection: Option<ProjectFactProjectionRef>,
+    ) -> Self {
+        canonical_views.sort_by_key(|v| v.kind);
         let subject_fingerprint = subject.fingerprint();
         let accepted_ticket = AcceptedParserTicketRef {
             ticket_id: AcceptedParserTicketId::from_bound_parts(
@@ -1773,7 +2032,7 @@ impl FileSemanticSnapshotV1 {
             project_fact_projection.as_ref(),
         );
 
-        Ok(Self {
+        Self {
             schema_version: FileSemanticSnapshotSchemaVersion::V1,
             profile,
             subject,
@@ -1790,7 +2049,7 @@ impl FileSemanticSnapshotV1 {
             limitations,
             project_fact_projection,
             fingerprint,
-        })
+        }
     }
 
     /// Structural validation shared by the constructor and the wire path —
@@ -1817,38 +2076,25 @@ impl FileSemanticSnapshotV1 {
     ) -> Result<(), FileSemanticSnapshotValidationError> {
         use FileSemanticSnapshotValidationError as E;
 
-        // Subject coherence: full-source revision names this subject.
-        if subject.full_source_revision.logical_source_id != subject.logical_source_id {
-            return Err(E::FullSourceSubjectMismatch {
-                revision_source: subject.full_source_revision.logical_source_id.clone(),
-                subject_source: subject.logical_source_id.clone(),
-            });
-        }
-
-        // Parse snapshot names this subject's exact parser input.
-        if parse_snapshot.source_digest != subject.parser_input_revision.digest {
-            return Err(E::ParserInputDigestMismatch {
-                snapshot_digest: parse_snapshot.source_digest.clone(),
-                input_digest: subject.parser_input_revision.digest.clone(),
-            });
-        }
-        if parse_snapshot.source_len != subject.parser_input_revision.byte_len {
-            return Err(E::ParserInputLengthMismatch {
-                snapshot_len: parse_snapshot.source_len,
-                input_len: subject.parser_input_revision.byte_len,
-            });
-        }
-
-        // Profile triple is internally consistent.
-        if profile.fingerprint
-            != SemanticProfileIdentity::fingerprint_over(
-                &profile.schema,
-                &profile.implementation,
-                &profile.profile,
-            )
-        {
-            return Err(E::ProfileFingerprintMismatch);
-        }
+        // Subject/parse/profile input bindings: one authority shared with
+        // `BoundSnapshotInputs` and the total absent-family constructor
+        // (issue #16221).
+        validate_input_bindings(profile, subject, parse_snapshot).map_err(|error| match error {
+            SnapshotInputBindingError::FullSourceSubjectMismatch {
+                revision_source,
+                subject_source,
+            } => E::FullSourceSubjectMismatch { revision_source, subject_source },
+            SnapshotInputBindingError::ParserInputDigestMismatch {
+                snapshot_digest,
+                input_digest,
+            } => E::ParserInputDigestMismatch { snapshot_digest, input_digest },
+            SnapshotInputBindingError::ParserInputLengthMismatch { snapshot_len, input_len } => {
+                E::ParserInputLengthMismatch { snapshot_len, input_len }
+            }
+            SnapshotInputBindingError::ProfileFingerprintMismatch { .. } => {
+                E::ProfileFingerprintMismatch
+            }
+        })?;
 
         // Contribution set belongs to this exact subject and profile.
         let subject_fingerprint = subject.fingerprint();
@@ -3702,6 +3948,138 @@ mod tests {
         assert_eq!(
             serde_json::to_value(SemanticLimitationKind::SyntheticRepair).unwrap(),
             json!("synthetic_repair")
+        );
+    }
+
+    // ── Total absent-family constructor (issue #16221) ───────────────────
+
+    #[test]
+    fn absent_family_total_constructor_agrees_field_for_field_with_the_checked_constructor() {
+        let base = complete_fresh_full_parts();
+        let absent_states = [
+            (AbsentTerminalState::UNAVAILABLE, SemanticSnapshotTerminalState::Unavailable),
+            (AbsentTerminalState::CANCELLED, SemanticSnapshotTerminalState::Cancelled),
+            (AbsentTerminalState::BUDGET_EXHAUSTED, SemanticSnapshotTerminalState::BudgetExhausted),
+            (
+                AbsentTerminalState::STALE_OR_SUPERSEDED,
+                SemanticSnapshotTerminalState::StaleOrSuperseded,
+            ),
+            (AbsentTerminalState::PRODUCT_FAILURE, SemanticSnapshotTerminalState::ProductFailure),
+            (
+                AbsentTerminalState::INSTRUMENT_OR_SCHEMA_FAILURE,
+                SemanticSnapshotTerminalState::InstrumentOrSchemaFailure,
+            ),
+            (AbsentTerminalState::NOT_PROVEN, SemanticSnapshotTerminalState::NotProven),
+        ];
+        assert_eq!(absent_states.len(), 7, "the absent family has seven states");
+        for (absent, state) in absent_states {
+            let bound = BoundSnapshotInputs::new(
+                base.profile.clone(),
+                base.subject.clone(),
+                base.parse_snapshot.clone(),
+            )
+            .unwrap();
+            let ticket = AcceptedParserTicketId::from_bound_parts(
+                &base.subject.document_instance,
+                base.parse_snapshot.accepted_generation,
+                &base.parse_snapshot.source_digest,
+            );
+            let receipt = SemanticWorkReceipt::new(
+                SemanticWorkKind::FreshFull,
+                InstrumentIdentity::new(SemanticInstrumentKind::ConstructionCell, ticket.as_wire()),
+                base.parse_snapshot.accepted_generation,
+            );
+            let total = FileSemanticSnapshotV1::from_absent_family(bound, receipt.clone(), absent);
+            let checked = FileSemanticSnapshotV1::from_parts(FileSemanticSnapshotParts {
+                profile: base.profile.clone(),
+                subject: base.subject.clone(),
+                parse_snapshot: base.parse_snapshot.clone(),
+                contribution_set: None,
+                materialized_views: vec![],
+                work_receipt: receipt,
+                predecessor: None,
+                terminal_state: state,
+                completeness: SemanticCompleteness::NotProven,
+                confidence: SemanticConfidence::Unprovable,
+                limitations: SemanticLimitations::new(vec![]),
+                project_fact_projection: None,
+            })
+            .unwrap();
+            assert_eq!(total, checked, "field-for-field agreement for absent state {state}");
+            assert_eq!(total.terminal_state(), state);
+        }
+    }
+
+    #[test]
+    fn absent_family_constructor_refuses_a_spliced_receipt_id() {
+        // A caller can build a `SemanticWorkReceipt` literal whose public
+        // `receipt_id` field does not match its instrument + sequence. The
+        // total constructor is infallible, so the refusal is the splice
+        // itself: the id is re-derived through the same instrument+sequence
+        // derivation `validate_shape` checks, and the assembled snapshot
+        // survives its own checked deserialization — the round trip a spliced
+        // id used to fail (review finding on #16258,
+        // FC-ABSENT-RECEIPT-UNCHECKED).
+        let base = complete_fresh_full_parts();
+        let bound = BoundSnapshotInputs::new(
+            base.profile.clone(),
+            base.subject.clone(),
+            base.parse_snapshot.clone(),
+        )
+        .unwrap();
+        let ticket = AcceptedParserTicketId::from_bound_parts(
+            &base.subject.document_instance,
+            base.parse_snapshot.accepted_generation,
+            &base.parse_snapshot.source_digest,
+        );
+        let instrument =
+            InstrumentIdentity::new(SemanticInstrumentKind::ConstructionCell, ticket.as_wire());
+        let work_sequence = base.parse_snapshot.accepted_generation;
+        let spliced = SemanticWorkReceipt {
+            receipt_id: SemanticWorkReceiptId::from_instrument_and_sequence(
+                &InstrumentIdentity::new(SemanticInstrumentKind::ConstructionCell, "cell-1"),
+                999,
+            ),
+            work_kind: SemanticWorkKind::FreshFull,
+            instrument: instrument.clone(),
+            work_sequence,
+        };
+        assert_ne!(
+            spliced.receipt_id,
+            SemanticWorkReceiptId::from_instrument_and_sequence(&instrument, work_sequence),
+            "the fixture must actually splice a foreign receipt id"
+        );
+        let total = FileSemanticSnapshotV1::from_absent_family(
+            bound,
+            spliced,
+            AbsentTerminalState::NOT_PROVEN,
+        );
+        assert_eq!(
+            total.work_receipt().receipt_id,
+            SemanticWorkReceiptId::from_instrument_and_sequence(&instrument, work_sequence),
+            "the spliced id must not survive the total constructor"
+        );
+        let wire = serde_json::to_value(&total).unwrap();
+        let round_tripped = serde_json::from_value::<FileSemanticSnapshotV1>(wire).unwrap();
+        assert_eq!(
+            round_tripped, total,
+            "the assembled snapshot must pass its own checked deserialization"
+        );
+    }
+
+    #[test]
+    fn absent_terminal_state_only_names_absent_family_states() {
+        assert!(
+            AbsentTerminalState::new(SemanticSnapshotTerminalState::CompleteFreshFull).is_none(),
+            "a complete state must never name an absent terminal"
+        );
+        assert!(
+            AbsentTerminalState::new(SemanticSnapshotTerminalState::PartialRecovered).is_none()
+        );
+        assert_eq!(
+            AbsentTerminalState::new(SemanticSnapshotTerminalState::NotProven)
+                .map(AbsentTerminalState::state),
+            Some(SemanticSnapshotTerminalState::NotProven)
         );
     }
 
