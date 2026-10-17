@@ -1,0 +1,176 @@
+name: Native Product Readiness Contract
+
+# Narrow #17862/#7168 proof. No release or publication operation is available.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - '.github/workflows/native-product-readiness-contract.yml'
+      - 'crates/perl-release-readiness/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - '.cargo/config.toml'
+      - 'scripts/cargo-admitted'
+      - 'scripts/cargo_admitted.py'
+      - 'scripts/lib/cargo-toolchain-guard.sh'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/native-product-readiness-contract.yml'
+      - 'crates/perl-release-readiness/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - '.cargo/config.toml'
+      - 'scripts/cargo-admitted'
+      - 'scripts/cargo_admitted.py'
+      - 'scripts/lib/cargo-toolchain-guard.sh'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-product-readiness-${{ github.event.pull_request.number || github.event_name == 'push' && github.sha || github.ref }}
+  cancel-in-progress: ${{ github.event.action == 'synchronize' }}
+
+jobs:
+  native-product-contract:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      CARGO_BUILD_JOBS: '2'
+      RUST_TEST_THREADS: '2'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install repository-pinned Rust
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # stable (master)
+        with:
+          toolchain: '1.95.0'
+          components: rustfmt, clippy
+      - name: Prove checked decoding and strict package hygiene
+        shell: bash
+        env:
+          DEVPLANE: ${{ runner.temp }}/native-readiness-devplane
+          PROOF_ROOT: ${{ runner.temp }}/native-readiness-proof
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import re
+          import subprocess
+          import sys
+
+          root = Path(os.environ['PROOF_ROOT'])
+          root.mkdir(parents=True, exist_ok=False)
+          owner = [sys.executable, 'scripts/cargo_admitted.py']
+          native = Path('crates/perl-release-readiness/src/native_product.rs')
+          checked = native.read_bytes()
+          (root / 'native_product.rs.before').write_bytes(checked)
+          commit = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+          print('Evaluated checkout:', commit, flush=True)
+          (root / 'subject.json').write_text(json.dumps({
+              'checkout': commit,
+              'native_product_sha256': hashlib.sha256(checked).hexdigest(),
+              'validation_sha256': hashlib.sha256(native.with_suffix('')
+                  .joinpath('validation.rs').read_bytes()).hexdigest(),
+              'basis_verified': False,
+          }, indent=2) + '\n')
+
+          def recorded(argv, label):
+              print('+', ' '.join(argv), flush=True)
+              result = subprocess.run(argv, text=True, capture_output=True)
+              (root / (label + '.stdout')).write_text(result.stdout)
+              (root / (label + '.stderr')).write_text(result.stderr)
+              print(result.stdout, end='', flush=True)
+              print(result.stderr, end='', file=sys.stderr, flush=True)
+              print(label, 'exit', result.returncode, flush=True)
+              return result
+
+          def admitted(args, label):
+              # The native read-only preflight supplies exact host/command scope.
+              # The predeclared sizing below is not adjusted to observed free space.
+              observed = recorded(owner + ['--preflight', *args], label + '-scope')
+              prefix = 'cargo-admitted preflight: '
+              reports = [json.loads(line[len(prefix):]) for line in observed.stderr.splitlines()
+                         if line.startswith(prefix)]
+              if (observed.returncode not in (0, 75) or len(reports) != 1
+                      or not isinstance(reports[0].get('scope'), dict)):
+                  raise RuntimeError('native command scope was not acquired')
+              budget = root / (label + '-budget.json')
+              budget.write_text(json.dumps({
+                  'schema_version': 1, 'scope': reports[0]['scope'],
+                  'reserve_bytes': 8 * 1024**3,
+                  'expected_growth_bytes': 16 * 1024**3,
+                  'basis': ('#17862 bounded hosted qualification: one serial readiness-package '
+                            'library/test/lint lane, agent profile, jobs=2, cold dependency cache. '
+                            '16 GiB additional growth plus 8 GiB reserve is a conservative '
+                            'operator declaration, not a measured envelope.'),
+              }) + '\n')
+              qualified = recorded(owner + ['--preflight', '--budget-file', str(budget), *args],
+                                   label + '-admission')
+              if qualified.returncode != 0:
+                  raise RuntimeError('native admission refused; no raw Cargo fallback')
+              return recorded(['bash', 'scripts/cargo-admitted', '--budget-file', str(budget),
+                               *args], label)
+
+          tests = ['test', '-p', 'perl-release-readiness', '--lib', '--profile', 'agent',
+                   '--locked', 'native_product', '--', '--test-threads=2']
+          green = admitted(tests, 'candidate-green')
+          required = (
+              'valid_packet_preserves_rows_evidence_and_serialized_bytes',
+              'wrong_kind_or_schema_cannot_enter_the_v1_domain',
+              'empty_or_incomplete_or_extra_rows_are_rejected_not_repaired',
+              'exact_catalog_order_rejects_unknown_duplicate_and_swapped_rows',
+              'all_status_combinations_accept_only_the_earned_verdict',
+              'unknown_fields_remain_rejected_at_every_payload_layer',
+              'duplicate_json_keys_cannot_overwrite_an_earlier_verdict',
+              'assembled_missing_rows_remain_valid_not_proven',
+          )
+          if green.returncode != 0 or any(
+                  not re.search(r'test native_product::validation::tests::' + name
+                                + r' \.\.\. ok', green.stdout) for name in required):
+              raise RuntimeError('candidate did not execute all eight decoding controls successfully')
+
+          old = b'#[serde(try_from = "validation::NativeProductReadinessWire")]'
+          if checked.count(old) != 1:
+              raise RuntimeError('checked-deserializer control selector changed')
+          try:
+              native.write_bytes(checked.replace(old, b'#[serde(deny_unknown_fields)]', 1))
+              red_args = ['test', '-p', 'perl-release-readiness', '--lib', '--profile', 'agent',
+                          '--locked', 'native_product::validation::tests::'
+                          'wrong_kind_or_schema_cannot_enter_the_v1_domain',
+                          '--', '--exact', '--test-threads=1']
+              red = admitted(red_args, 'direct-derive-red')
+              if (red.returncode != 101 or 'wrong_kind_or_schema_cannot_enter_the_v1_domain ... FAILED'
+                      not in red.stdout or '0 passed; 1 failed;' not in red.stdout):
+                  raise RuntimeError('direct-derive control did not fail at the intended assertion')
+          finally:
+              native.write_bytes(checked)
+          if native.read_bytes() != checked:
+              raise RuntimeError('source restoration failed')
+          restored = admitted(tests, 'restored-green')
+          if restored.returncode != 0:
+              raise RuntimeError('restored candidate failed')
+          fmt = recorded(['cargo', 'fmt', '-p', 'perl-release-readiness', '--', '--check'], 'format')
+          lint = admitted(['clippy', '-p', 'perl-release-readiness', '--all-targets',
+                           '--profile', 'agent', '--locked', '--', '-D', 'warnings'], 'clippy')
+          clean = recorded(['git', 'diff', '--exit-code'], 'source-restored')
+          if any(result.returncode != 0 for result in (fmt, lint, clean)):
+              raise RuntimeError('package hygiene or source restoration is not green')
+          PY
+      - name: Retain qualification logs
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: native-readiness-proof-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/native-readiness-proof
+          if-no-files-found: error
+          retention-days: 14
