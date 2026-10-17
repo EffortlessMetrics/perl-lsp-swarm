@@ -849,6 +849,7 @@ impl<'a> PerlLexer<'a> {
                     // where a statement is expected; after a term, `\n=shift;` is an
                     // assignment continuation. Pod::Weaver-style commands follow a blank
                     // line, so a blank line also counts as statement-start context.
+                    // `=cut` only ends an active POD block; a stray one never opens POD.
                     let known = [
                         &b"=pod"[..],
                         b"=head",
@@ -859,34 +860,14 @@ impl<'a> PerlLexer<'a> {
                         b"=end",
                         b"=for",
                         b"=encoding",
-                        b"=cut",
                     ]
                     .iter()
                     .any(|c| remaining.starts_with(c));
-                    let after_blank_line = self.position == 0 || {
-                        let mut i = self.position - 1; // the line terminator before `=`
-                        if self.input_bytes[i] == b'\n' && i > 0 && self.input_bytes[i - 1] == b'\r'
-                        {
-                            i -= 1;
-                        }
-                        i > 0 && matches!(self.input_bytes[i - 1], b'\n' | b'\r')
-                    };
-                    let after_statement_end = self.input_bytes[..self.position]
-                        .iter()
-                        .rev()
-                        .find(|b| !b.is_ascii_whitespace())
-                        .is_none_or(|b| matches!(b, b';' | b'{'));
-                    // A generic word never swallows to EOF: a terminating `=cut` must exist.
-                    let has_later_cut = || {
-                        self.input_bytes[self.position..]
-                            .windows(5)
-                            .any(|w| matches!(w[0], b'\n' | b'\r') && &w[1..] == b"=cut")
-                    };
-                    let generic_pod = remaining.get(1).is_some_and(|b| b.is_ascii_alphabetic())
-                        && (after_blank_line
-                            || after_statement_end
-                            || !matches!(self.mode, LexerMode::ExpectOperator))
-                        && has_later_cut();
+                    let generic_pod = !known
+                        && !remaining.starts_with(b"=cut")
+                        && remaining.get(1).is_some_and(|b| b.is_ascii_alphabetic())
+                        && (self.pod_after_blank_line() || self.pod_after_statement_end())
+                        && self.pod_has_later_cut();
                     if known || generic_pod {
                         // Scan forward for \n=cut (end of POD block)
                         let search_start = self.position;
@@ -4562,3 +4543,67 @@ mod checkpoint_impl;
 mod test_format_debug;
 #[cfg(test)]
 mod tests;
+
+impl PerlLexer<'_> {
+    /// True at the start of input or when the previous physical line is blank
+    /// (empty or whitespace-only).
+    fn pod_after_blank_line(&self) -> bool {
+        let b = self.input_bytes;
+        let pos = self.position;
+        if pos == 0 {
+            return true;
+        }
+        // Start of the previous physical line.
+        let mut end = pos - 1; // line terminator before `=`
+        if b[end] == b'\n' && end > 0 && b[end - 1] == b'\r' {
+            end -= 1;
+        }
+        let start = b[..end].iter().rposition(|c| matches!(c, b'\n' | b'\r')).map_or(0, |i| i + 1);
+        b[start..end].iter().all(|c| matches!(c, b' ' | b'\t' | 0x0c))
+    }
+
+    /// True when the last significant byte before the cursor (ignoring whitespace and
+    /// line comments) is `;` or `{`, or when nothing precedes it.
+    fn pod_after_statement_end(&self) -> bool {
+        let b = self.input_bytes;
+        let mut end = self.position;
+        loop {
+            let start =
+                b[..end].iter().rposition(|c| matches!(c, b'\n' | b'\r')).map_or(0, |i| i + 1);
+            let mut line = &b[start..end];
+            // Cut a line comment (`#` at line start or after whitespace).
+            if let Some(h) = line
+                .iter()
+                .enumerate()
+                .position(|(i, c)| *c == b'#' && (i == 0 || line[i - 1].is_ascii_whitespace()))
+            {
+                line = &line[..h];
+            }
+            if let Some(last) = line.iter().rev().find(|c| !c.is_ascii_whitespace()) {
+                return matches!(last, b';' | b'{');
+            }
+            if start == 0 {
+                return true;
+            }
+            end = start - 1;
+        }
+    }
+
+    /// True when a line-start `=cut` exists at or after the cursor. The result is memoized so
+    /// many candidates cost one scan.
+    fn pod_has_later_cut(&mut self) -> bool {
+        let pos = self.position;
+        if let Some((from, found)) = self.pod_cut_cache
+            && from <= pos
+            && found.is_none_or(|f| f >= pos)
+        {
+            return found.is_some();
+        }
+        let b = self.input_bytes;
+        let found = (pos..b.len()).find(|&i| {
+            (i == 0 || matches!(b[i - 1], b'\n' | b'\r')) && b[i..].starts_with(b"=cut")
+        });
+        self.pod_cut_cache = Some((pos, found));
+        found.is_some()
+    }
+}

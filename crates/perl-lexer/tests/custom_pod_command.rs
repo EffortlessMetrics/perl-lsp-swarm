@@ -36,7 +36,45 @@ fn word_after_term_on_continuation_line_is_not_pod() {
         let toks = idents(&src);
         assert!(toks.iter().any(|t| t == word), "{word}: {toks:?}");
         assert!(toks.iter().any(|t| t == "two"), "{word}: {toks:?}");
+        // Without a later `=cut` and with one: the word must stay a token.
+        let src = format!("my $x\n={word};\n=cut\nsub two {{ 2 }}\n");
+        let toks = idents(&src);
+        assert!(toks.iter().any(|t| t == word), "{word} +cut: {toks:?}");
+        assert!(toks.iter().any(|t| t == "two"), "{word} +cut: {toks:?}");
     }
+}
+
+#[test]
+fn stray_cut_does_not_open_pod() {
+    let toks = idents("my $x = 1;\n=cut\nsub two { 2 }\n");
+    assert!(toks.iter().any(|t| t == "two"), "{toks:?}");
+}
+
+#[test]
+fn whitespace_only_line_counts_as_blank() {
+    let src = "sub one { 1 }\n \t\n=construct path\nunbalanced { text\n=cut\nsub two { 2 }\n";
+    let toks = idents(src);
+    assert!(toks.iter().any(|t| t == "two"), "{toks:?}");
+    assert!(!toks.iter().any(|t| t == "unbalanced"), "{toks:?}");
+}
+
+#[test]
+fn semicolon_in_comment_is_not_statement_end() {
+    let toks = idents("my $x # note;\n=shift;\n=cut\nsub two { 2 }\n");
+    assert!(toks.iter().any(|t| t == "shift"), "{toks:?}");
+    assert!(toks.iter().any(|t| t == "two"), "{toks:?}");
+}
+
+#[test]
+fn many_candidates_without_cut_is_linear() {
+    let mut src = String::from("my $x;\n");
+    for _ in 0..20000 {
+        src.push_str("my $y\n=foo;\n");
+    }
+    let start = std::time::Instant::now();
+    let toks = idents(&src);
+    assert!(toks.iter().filter(|t| *t == "foo").count() == 20000);
+    assert!(start.elapsed() < std::time::Duration::from_secs(5), "{:?}", start.elapsed());
 }
 
 #[test]
@@ -79,4 +117,25 @@ fn closing_brace_term_then_equals_word_is_not_pod() {
 fn generic_word_without_later_cut_is_not_swallowed() {
     let toks = idents("my $x = 1;\n\n=construct path\nsub two { 2 }\n");
     assert!(toks.iter().any(|t| t == "two"), "{toks:?}");
+}
+
+#[test]
+fn operator_or_bracket_continuation_is_not_pod() {
+    for (head, word) in [
+        ("my $x =\n", "lc"),
+        ("return\n", "foo"),
+        ("my $v = $c ? 1 :\n", "shift"),
+        ("my $v = $a and\n", "shift"),
+        ("my $v = $a ||\n", "shift"),
+        ("my $v = $a +\n", "shift"),
+        ("my @a = (1,\n", "shift"),
+        ("foo(\n", "shift"),
+        ("$x = [\n", "shift"),
+        ("$x = 1 if\n", "shift"),
+    ] {
+        let src = format!("{head}={word};\nsub tail {{ 1 }}\n=cut\n");
+        let toks = idents(&src);
+        assert!(toks.iter().any(|t| t == word), "{head:?}: {toks:?}");
+        assert!(toks.iter().any(|t| t == "tail"), "{head:?}: {toks:?}");
+    }
 }
