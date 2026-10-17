@@ -885,11 +885,14 @@ impl SymbolExtractor {
             }
 
             NodeKind::Foreach { variable, list, body, continue_block: _ } => {
-                self.table.push_scope(ScopeKind::Block, node.location);
-
-                // The loop variable is implicitly declared
-                self.handle_variable_declaration("my", variable, &[], variable.location, None);
+                // The list is evaluated in the enclosing scope: visit it
+                // before opening the loop scope so its references keep
+                // binding outer variables (`for my $x ($x)` — the list
+                // `$x` is the outer lexical, matching the scope
+                // analyzer's visibility ordering in scope_constructs.rs).
                 self.visit_node(list);
+                self.table.push_scope(ScopeKind::Block, node.location);
+                self.declare_foreach_iterator(variable);
                 self.visit_node(body);
 
                 self.table.pop_scope();
@@ -2026,12 +2029,14 @@ impl SymbolExtractor {
                     attributes: vec![format!("http_method={http_method}")],
                 });
 
-                // Legacy string-target -> Subroutine reference synthesis is
-                // Dancer v1 only: upstream Dancer v1 allows an action to be
-                // the name of a subroutine, while Dancer2 route construction
-                // requires a CodeRef handler (#8910 containment). This whole
-                // legacy route path is temporary pending the #8909 provider
-                // cutover (retirement gated on #8928).
+                // Preserve Dancer v1's legacy static string-target -> Subroutine
+                // reference contract; Dancer2 does not use it (#8910 containment).
+                // In the Dancer 1.3522 / Perl 5.40.1 minimal GET proof, quoted
+                // handlers compile and register but dispatch 500 under strict
+                // refs; the matching CodeRef dispatches 200 with "About".
+                // Navigation records the source reference independently of
+                // callback execution. This legacy path is temporary pending
+                // the #8909 provider cutover (retirement gated on #8928).
                 if matches!(web_framework, Some(WebFrameworkKind::Dancer))
                     && let Some(target_node) = args.get(1)
                     && let Some(target_name) =
@@ -3189,6 +3194,42 @@ impl SymbolExtractor {
     }
 
     /// Handle variable declaration
+    /// Declare a `foreach` loop iterator in the current (loop) scope.
+    ///
+    /// The parser wraps an explicit declarator (`for my $item (...)`) in a
+    /// `VariableDeclaration` node; unwrap it so the lexical is actually
+    /// indexed (#17297) — passing the wrapper to
+    /// `handle_variable_declaration` silently recorded nothing.
+    fn declare_foreach_iterator(&mut self, variable: &Node) {
+        match &variable.kind {
+            NodeKind::VariableDeclaration { declarator, variable: inner, attributes, .. } => {
+                let doc = self.extract_leading_comment(variable.location.start);
+                self.handle_variable_declaration(
+                    declarator,
+                    inner,
+                    attributes,
+                    inner.location,
+                    doc,
+                );
+            }
+            NodeKind::VariableListDeclaration { declarator, variables, attributes, .. } => {
+                let doc = self.extract_leading_comment(variable.location.start);
+                for var in variables {
+                    self.handle_variable_declaration(
+                        declarator,
+                        var,
+                        attributes,
+                        var.location,
+                        doc.clone(),
+                    );
+                }
+            }
+            _ => {
+                self.handle_variable_declaration("my", variable, &[], variable.location, None);
+            }
+        }
+    }
+
     fn handle_variable_declaration(
         &mut self,
         declarator: &str,

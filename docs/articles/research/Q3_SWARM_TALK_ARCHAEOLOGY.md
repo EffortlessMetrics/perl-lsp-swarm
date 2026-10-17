@@ -27,9 +27,9 @@ The repo was already moving in that direction in the Q3 swarm era.
 
 Local evidence:
 
-- [`docs/project/AGENTIC_DEV.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/project/AGENTIC_DEV.md) already contrasts AI-assisted work with AI-native, receipt-based work
-- [`docs/project/AGENTIC_DEVELOPMENT.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/project/AGENTIC_DEVELOPMENT.md) already treats DevLT as the scarce budget
-- [`docs/articles/research/TRUSTED_CHANGE_ARCHAEOLOGY.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/TRUSTED_CHANGE_ARCHAEOLOGY.md) shows the repo learning to trust receipts, catalogs, and mechanical gates instead of prose
+- [`docs/project/AGENTIC_DEV.md`](../../project/AGENTIC_DEV.md) already contrasts AI-assisted work with AI-native, receipt-based work
+- [`docs/project/AGENTIC_DEVELOPMENT.md`](../../project/AGENTIC_DEVELOPMENT.md) already treats DevLT as the scarce budget
+- [`docs/articles/research/TRUSTED_CHANGE_ARCHAEOLOGY.md`](TRUSTED_CHANGE_ARCHAEOLOGY.md) shows the repo learning to trust receipts, catalogs, and mechanical gates instead of prose
 
 So the talk did not invent the measurement model. It gave it a sharper language before the control plane fully hardened.
 
@@ -59,9 +59,9 @@ The repo already had a flow mindset in the Q3 swarm period.
 
 Local evidence:
 
-- [`docs/project/AGENT_SWARM_WORKFLOW.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/project/AGENT_SWARM_WORKFLOW.md) already describes isolated worktrees, disposable attempts, and staged validation
-- [`docs/articles/research/Q3_SWARM_PR_ARCHAEOLOGY.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/Q3_SWARM_PR_ARCHAEOLOGY.md) shows the Q3 era becoming PR-shaped and staged through review/integration/generation lanes
-- [`.claude/ORCHESTRATION_GUIDE.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.claude/ORCHESTRATION_GUIDE.md) already framed development as an iterative pipeline rather than a chat transcript
+- [`docs/project/AGENT_SWARM_WORKFLOW.md`](../../project/AGENT_SWARM_WORKFLOW.md) already describes isolated worktrees, disposable attempts, and staged validation
+- [`docs/articles/research/Q3_SWARM_PR_ARCHAEOLOGY.md`](Q3_SWARM_PR_ARCHAEOLOGY.md) shows the Q3 era becoming PR-shaped and staged through review/integration/generation lanes
+- [`.claude/ORCHESTRATION_GUIDE.md`](../../reference/archive/cycle-5-research/ORCHESTRATION_GUIDE.md) already framed development as an iterative pipeline rather than a chat transcript
 
 So the repo already knew that flow beats conversation. The talk simply made that explicit in product-language terms.
 
@@ -69,10 +69,10 @@ So the repo already knew that flow beats conversation. The talk simply made that
 
 Later control-plane files gave the flow model durable surfaces:
 
-- [`.claude/README.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.claude/README.md) names the canonical runtime surfaces
-- [`.claude/commands/`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.claude/commands/) turned flow entrypoints into reusable slash commands
-- [`.claude/skills/`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.claude/skills/) made procedures reusable instead of re-prompted
-- [`.claude/hooks/`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.claude/hooks/) made enforcement deterministic
+- [`.claude/README.md`](../../../.claude/README.md) names the canonical runtime surfaces
+- [`.claude/commands/`](https://github.com/EffortlessMetrics/perl-lsp-swarm/tree/bb93a2f6bb057418a7c1e2b3ac80e8529b7b2264/.claude/commands) turned flow entrypoints into reusable slash commands
+- [`.claude/skills/`](../../../.claude/skills/) made procedures reusable instead of re-prompted
+- [`.claude/hooks/`](https://github.com/EffortlessMetrics/perl-lsp-swarm/tree/96f35c79dd84af8dcc9695e1bb584c9fd6e9b9dd/.claude/hooks) made enforcement deterministic
 
 The talk described the motion. The later repo made the motion invocable.
 
@@ -95,9 +95,9 @@ It is a discipline of bounded work plus rich context, not vague autonomy.
 
 The Q3 swarm and its surrounding docs already pointed that way:
 
-- [`docs/project/AGENT_SWARM_WORKFLOW.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/project/AGENT_SWARM_WORKFLOW.md) emphasizes isolated worktrees and small slices
-- [`docs/articles/research/PR_SLICE_SIZE_ARCHAEOLOGY.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/PR_SLICE_SIZE_ARCHAEOLOGY.md) shows the repo preferring bounded PRs over oversized changes
-- [`docs/articles/research/PR_WAVE_ARCHAEOLOGY.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/PR_WAVE_ARCHAEOLOGY.md) shows the repo moving in bursts, not one giant stream
+- [`docs/project/AGENT_SWARM_WORKFLOW.md`](../../project/AGENT_SWARM_WORKFLOW.md) emphasizes isolated worktrees and small slices
+- [`docs/articles/research/PR_SLICE_SIZE_ARCHAEOLOGY.md`](PR_SLICE_SIZE_ARCHAEOLOGY.md) shows the repo preferring bounded PRs over oversized changes
+- [`docs/articles/research/PR_WAVE_ARCHAEOLOGY.md`](PR_WAVE_ARCHAEOLOGY.md) shows the repo moving in bursts, not one giant stream
 
 The repo was already discovering that large context only works when the task itself stays narrow.
 
@@ -165,8 +165,8 @@ It also names the failure modes explicitly:
 
 The repo already had the same conceptual skeleton:
 
-- [`docs/project/AGENTIC_DEV.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/project/AGENTIC_DEV.md) is receipt-first
-- [`docs/articles/SWARM_METHODOLOGY.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/SWARM_METHODOLOGY.md) already states "Code is cheap. Trusted change is not."
+- [`docs/project/AGENTIC_DEV.md`](../../project/AGENTIC_DEV.md) is receipt-first
+- [`docs/articles/SWARM_METHODOLOGY.md`](../SWARM_METHODOLOGY.md) already states "Code is cheap. Trusted change is not."
 - that same article already describes the author/critic split, build receipts, schema gravity, reward hacking, confabulation, and graceful exits
 
 So in this case, the talk and the repo were converging on the same vocabulary.
@@ -198,9 +198,9 @@ It also describes "flows and gates" as the real unit of orchestration: compose f
 
 This was already visible in earlier repo guidance:
 
-- [`docs/project/AGENT_SWARM_WORKFLOW.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/project/AGENT_SWARM_WORKFLOW.md) keeps worktree isolation central
-- [`docs/project/AGENTIC_DEV.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/project/AGENTIC_DEV.md) makes `just ci-gate` the canonical merge gate
-- [`docs/articles/research/TRUSTED_CHANGE_ARCHAEOLOGY.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/TRUSTED_CHANGE_ARCHAEOLOGY.md) shows trust moving from people to receipts and validation lanes
+- [`docs/project/AGENT_SWARM_WORKFLOW.md`](../../project/AGENT_SWARM_WORKFLOW.md) keeps worktree isolation central
+- [`docs/project/AGENTIC_DEV.md`](../../project/AGENTIC_DEV.md) makes `just ci-gate` the canonical merge gate
+- [`docs/articles/research/TRUSTED_CHANGE_ARCHAEOLOGY.md`](TRUSTED_CHANGE_ARCHAEOLOGY.md) shows trust moving from people to receipts and validation lanes
 
 ### What only became concrete later
 
@@ -231,14 +231,14 @@ The later repo evidence shows that the talk was not a separate philosophy. It wa
 
 ## Evidence Pointers
 
-- [`docs/project/AGENTIC_DEV.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/project/AGENTIC_DEV.md)
-- [`docs/project/AGENTIC_DEVELOPMENT.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/project/AGENTIC_DEVELOPMENT.md)
-- [`docs/project/AGENT_SWARM_WORKFLOW.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/project/AGENT_SWARM_WORKFLOW.md)
-- [`docs/articles/SWARM_METHODOLOGY.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/SWARM_METHODOLOGY.md)
-- [`docs/articles/research/Q3_SWARM_PR_ARCHAEOLOGY.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/Q3_SWARM_PR_ARCHAEOLOGY.md)
-- [`docs/articles/research/RECEIPTS_LIE_ARCHAEOLOGY.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/RECEIPTS_LIE_ARCHAEOLOGY.md)
-- [`docs/articles/research/TRUSTED_CHANGE_ARCHAEOLOGY.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/TRUSTED_CHANGE_ARCHAEOLOGY.md)
-- [`docs/articles/research/CONTROL_PLANE_ARCHAEOLOGY.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/CONTROL_PLANE_ARCHAEOLOGY.md)
-- [`docs/articles/research/SWARM_SURFACE_EVOLUTION.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/SWARM_SURFACE_EVOLUTION.md)
-- [`.claude/README.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.claude/README.md)
-- [`.claude/swarm-state/README.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.claude/swarm-state/README.md)
+- [`docs/project/AGENTIC_DEV.md`](../../project/AGENTIC_DEV.md)
+- [`docs/project/AGENTIC_DEVELOPMENT.md`](../../project/AGENTIC_DEVELOPMENT.md)
+- [`docs/project/AGENT_SWARM_WORKFLOW.md`](../../project/AGENT_SWARM_WORKFLOW.md)
+- [`docs/articles/SWARM_METHODOLOGY.md`](../SWARM_METHODOLOGY.md)
+- [`docs/articles/research/Q3_SWARM_PR_ARCHAEOLOGY.md`](Q3_SWARM_PR_ARCHAEOLOGY.md)
+- [`docs/articles/research/RECEIPTS_LIE_ARCHAEOLOGY.md`](RECEIPTS_LIE_ARCHAEOLOGY.md)
+- [`docs/articles/research/TRUSTED_CHANGE_ARCHAEOLOGY.md`](TRUSTED_CHANGE_ARCHAEOLOGY.md)
+- [`docs/articles/research/CONTROL_PLANE_ARCHAEOLOGY.md`](CONTROL_PLANE_ARCHAEOLOGY.md)
+- [`docs/articles/research/SWARM_SURFACE_EVOLUTION.md`](SWARM_SURFACE_EVOLUTION.md)
+- [`.claude/README.md`](../../../.claude/README.md)
+- [`.claude/swarm-state/README.md`](../../reference/archive/old-infrastructure/swarm-state/README.md)

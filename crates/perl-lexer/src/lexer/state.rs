@@ -35,6 +35,8 @@ pub struct PerlLexer<'a> {
     pub(crate) current_quote_op: Option<quote_handler::QuoteOperatorInfo>,
     pub(crate) qw_recovery_enabled: bool,
     pub(crate) eof_emitted: bool,
+    /// Memo of the next line-start `=cut`: `(scanned_from, position)`; `None` position means none.
+    pub(crate) pod_cut_cache: Option<(usize, Option<usize>)>,
     /// Temporary upper bound used while segmenting a heredoc body.
     pub(crate) scan_limit: Option<usize>,
     /// Optional logical source bound by a producer (#4851 / #7747).

@@ -287,6 +287,7 @@ impl LspServer {
             self.replay_last_client_settings_on_server_config();
             #[cfg(not(target_arch = "wasm32"))]
             self.clear_critic_dedup_if_moved(&critic_snapshot_before);
+            self.flush_client_notices();
             return complete;
         }
 
@@ -473,6 +474,7 @@ impl LspServer {
         // the post-initialize lifecycle. During `initialize` only local project
         // and initialization-option state may be applied; server→client requests
         // are not legal until after InitializeResult has been returned (#7708).
+        self.flush_client_notices();
         complete
     }
 

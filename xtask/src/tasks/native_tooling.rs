@@ -1840,7 +1840,7 @@ mod tests {
         assert_eq!(value["formatter"]["format_else_placement"], "separate-line");
         assert_eq!(value["formatter"]["format_keyword_spacing"], "compact");
         assert_eq!(value["formatter"]["format_trailing_comma"], "add-when-wrapped");
-        assert_eq!(value["critic"]["native_rule_count"], 28);
+        assert_eq!(value["critic"]["native_rule_count"], 31);
         assert_eq!(value["critic"]["critic_check_receipt_present"], true);
         assert_eq!(value["critic"]["critic_check_profile"], "strict");
         assert_eq!(value["critic"]["critic_check_files_checked"], 3);

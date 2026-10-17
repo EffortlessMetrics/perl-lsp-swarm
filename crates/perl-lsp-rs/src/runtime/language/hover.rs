@@ -788,6 +788,19 @@ impl LspServer {
                 if token == sym.name || token.is_empty() {
                     return true; // keep — cursor is directly on the symbol
                 }
+                // #17296: `find_definition` falls back to the enclosing sub for
+                // tokens it cannot resolve (built-ins, call-site package names).
+                // Presenting that sub as the hovered entity is confidently wrong:
+                // drop it so the generic token/builtin fallback can answer (or
+                // decline) for the actual token. A qualified symbol still matches
+                // through its last `::` segment (`Foo::bar` hovered as `bar`).
+                if matches!(
+                    sym.kind,
+                    crate::symbol::SymbolKind::Subroutine | crate::symbol::SymbolKind::Method
+                ) && sym.name.rsplit("::").next() != Some(token.as_str())
+                {
+                    return false;
+                }
                 true
             })
         } else {

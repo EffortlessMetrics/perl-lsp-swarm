@@ -246,6 +246,18 @@ not require a new full review merely because another commit was pushed.
 
 ## Finding disposition
 
+Read full paginated feedback, including ordinary PR issue comments and submitted
+review bodies, with `scripts/reviews/feedback <pr> <owner/repo>`. Its machine-readable
+`next_step` prompts content judgment; it does not certify convergence or review.
+`COMMENTED` is GitHub submission metadata, not a clean substantive conclusion.
+Zero unresolved threads does not dispose a concrete ordinary-comment finding.
+
+For a concern outside an inline thread, use the same disposition/evidence format below
+in a native PR conversation reply (`gh pr comment --body-file`), linking the exact
+source comment/review URL. Re-read the posted record and current concern before
+continuing. Do not manufacture a thread or resolve another thread as its proxy.
+Inline thread transitions remain owned by `scripts/reviews/disposition`.
+
 Before resolving a substantive thread, reply with one supported disposition and a
 concise engineering decision record:
 
