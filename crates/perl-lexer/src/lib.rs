@@ -4578,10 +4578,12 @@ impl PerlLexer<'_> {
                 .position(|(i, c)| *c == b'#' && (i == 0 || line[i - 1].is_ascii_whitespace()))
             {
                 // Strip only when the prefix cannot hold a string/regex/quote-like opener;
-                // when ambiguous keep the line, which leaves it as code (the safe side).
-                if !Self::may_open_quote_like(&line[..h]) {
-                    line = &line[..h];
+                // when ambiguous the `#` may be code or a comment, so report not-a-statement-end
+                // (the safe side: code is never dropped).
+                if Self::may_open_quote_like(&line[..h]) {
+                    return false;
                 }
+                line = &line[..h];
             }
             if let Some(last) = line.iter().rev().find(|c| !c.is_ascii_whitespace()) {
                 return matches!(last, b';' | b'{');

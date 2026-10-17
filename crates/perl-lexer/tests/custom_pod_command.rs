@@ -158,3 +158,13 @@ fn real_comments_keep_their_behavior() {
     assert!(toks.iter().any(|t| t == "tail"), "{toks:?}");
     assert!(!toks.iter().any(|t| t == "unbalanced"), "{toks:?}");
 }
+
+#[test]
+fn ambiguous_comment_line_is_not_a_statement_end() {
+    for head in ["my $x = 'a' # see foo;\n", "$a / $b # x;\n", "my $x = 'a' # see {\n"] {
+        let src = format!("{head}=shift;\nsub tail {{ 1 }}\n=cut\n");
+        let toks = idents(&src);
+        assert!(toks.iter().any(|t| t == "shift"), "{head:?}: {toks:?}");
+        assert!(toks.iter().any(|t| t == "tail"), "{head:?}: {toks:?}");
+    }
+}
