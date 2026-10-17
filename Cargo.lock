@@ -2141,7 +2141,6 @@ dependencies = [
 name = "perl-release-readiness"
 version = "0.17.0"
 dependencies = [
- "perl-tdd-support",
  "serde",
  "serde_json",
  "sha2",
