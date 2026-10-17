@@ -54,10 +54,16 @@ impl ExecutableFixture {
         let source = root.path().join("fixture.rs");
         let binary = root.path().join(format!("fixture{}", std::env::consts::EXE_SUFFIX));
         fs::write(&source, "fn main() {}\n")?;
-        let output = Command::new("rustc")
+        let mut compiler = Command::new("rustc");
+        compiler
             .args(["--edition", "2024", "-C", "opt-level=z", "-C", "panic=abort"])
             // Retain debug/symbol data so removing strip still fails the strict size check.
-            .args(["-C", "debuginfo=1", "-C", "strip=none"])
+            .args(["-C", "debuginfo=1", "-C", "strip=none"]);
+        // Match .cargo/config.toml's lossless native ELF debug compression.
+        // A directly invoked rustc does not inherit Cargo's target rustflags.
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        compiler.args(["-C", "link-arg=-Wl,--compress-debug-sections=zlib"]);
+        let output = compiler
             .arg(&source)
             .arg("-o")
             .arg(&binary)
