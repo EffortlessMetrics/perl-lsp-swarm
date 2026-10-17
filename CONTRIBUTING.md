@@ -10,22 +10,30 @@ provider-native repository contracts without creating a second workflow.
 
 ## Repository context
 
-Ordinary development happens in
-[`EffortlessMetrics/perl-lsp-swarm`](https://github.com/EffortlessMetrics/perl-lsp-swarm)
-on `main`. Clone this repository, open development issues here, and target pull requests
-here.
+`EffortlessMetrics/perl-lsp-swarm` on `main` is the active product-development and
+product-proof authority. Maintainers and authorized agent lanes converge product work
+there.
 
+The public contribution surface is
 [`EffortlessMetrics/perl-lsp`](https://github.com/EffortlessMetrics/perl-lsp) on
-`master` owns public release lineage and published artifacts. A merge to
+`master`. External contributors should clone or fork that repository, open public
+issues there, and target pull requests there. Before integrating a shared-product public
+PR, maintainers first reconcile accepted `perl-lsp-swarm/main` state into
+`perl-lsp/master`, review and prove the contribution against that current public base,
+and then reverse-converge the merged shared-product effect back into swarm. The public
+repository is contributor ingress, not a second independent product-development trunk.
+
+`perl-lsp/master` also owns public release lineage and published artifacts. A merge to
 `perl-lsp-swarm/main` is development state; it does not establish that a change is in a
 release, package registry, editor marketplace, or other public channel. Installation and
 release links may therefore point to `perl-lsp` intentionally.
 
 The current relationship is defined by
-[product identity](docs/reference/product-identity.md). The landed contributor-topology
-projection derives it from local authorities, but the bare command intentionally leaves live
-stage and channel status `NOT_PROVEN`; a captured `--observation` is required to project
-observed status:
+[product identity](docs/reference/product-identity.md) and the
+[publication sync protocol](docs/swarm/sync-protocol.md). The landed contributor-topology
+projection derives the repository roles from local authorities, but the bare command
+intentionally leaves live stage and channel status `NOT_PROVEN`; a captured
+`--observation` is required to project observed status:
 
 ```bash
 cargo run --locked -p xtask --bin contributor-topology
@@ -34,8 +42,8 @@ cargo run --locked -p xtask --bin contributor-topology
 ## Quick start
 
 ```bash
-git clone https://github.com/EffortlessMetrics/perl-lsp-swarm.git
-cd perl-lsp-swarm
+git clone https://github.com/EffortlessMetrics/perl-lsp.git
+cd perl-lsp
 
 # Recommended reproducible environment
 nix develop
@@ -394,18 +402,20 @@ Report security concerns through the process in
 
 A squash merge is not the end of the claim. Verify the landed effect, update the owning
 issue with what changed and what remains, preserve residual work, and remove only the
-branch, worktree, or scratch state created by the lane when it is safe.
+branch, worktree, or scratch state created by the lane when it is safe. For a shared-product
+PR merged through `perl-lsp/master`, maintainers also own the source-to-swarm reconciliation;
+external contributors do not need to retarget the PR to swarm.
 
 Do not delete dirty, unpushed, ambiguous, or salvageable work. The pull request, reviews,
 checks, issue, and landed commit are the durable record; runtime agent state is not.
 
 ## Community and licensing
 
-Use [development issues](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues) for
-confirmed defects and scoped implementation work. Keep reports reproducible, redact
-private data, and link the smallest relevant evidence. Public release and installation
-claims should still cite the publication repository or released artifact they concern;
-opening the development issue here does not promote swarm state to public availability.
+Use [public issues](https://github.com/EffortlessMetrics/perl-lsp/issues) for external bug
+reports and scoped contribution work. Internal swarm planning may use swarm issues, but
+contributors should not need swarm write access to participate. Keep reports reproducible,
+redact private data, and link the smallest relevant evidence. A public issue or PR still
+does not establish release or channel availability.
 
 Repository discussion/support surfaces may be enabled separately; do not use a feature
 proposal as a substitute for a verified bug report or accepted plan.
@@ -416,7 +426,7 @@ reports follow [SECURITY.md](SECURITY.md). Contributions are licensed under both
 
 ## Where to ask or start
 
-- [Open development issues](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues)
+- [Open public issues](https://github.com/EffortlessMetrics/perl-lsp/issues)
 - [Project roadmap](docs/project/ROADMAP.md)
 - [Commands reference](docs/reference/COMMANDS_REFERENCE.md)
 - [Architecture reference](docs/reference/ARCHITECTURE.md)

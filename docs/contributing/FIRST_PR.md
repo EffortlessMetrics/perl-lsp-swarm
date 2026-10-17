@@ -4,27 +4,26 @@ Five minutes to read. Then clone and go.
 
 ## Repository context
 
-Ordinary development happens in
-[`EffortlessMetrics/perl-lsp-swarm`](https://github.com/EffortlessMetrics/perl-lsp-swarm)
-on `main`. Clone this repository, open development issues here, and target pull requests
-here.
+`EffortlessMetrics/perl-lsp-swarm` on `main` is the active product-development and
+product-proof authority, but it is not the public PR ingress.
 
+External contributors work through
 [`EffortlessMetrics/perl-lsp`](https://github.com/EffortlessMetrics/perl-lsp) on
-`master` owns public release lineage and published artifacts. A merge to
-`perl-lsp-swarm/main` is development state; it does not establish that a change is in a
-release, package registry, editor marketplace, or other public channel.
+`master`: clone or fork that repository, open public issues there, and target pull
+requests there. Maintainers reconcile accepted swarm state into the public repository
+before integrating a shared-product contribution, then reverse-converge the merged shared
+product change back into swarm. You do not need write access to `perl-lsp-swarm` to
+contribute.
 
-The repository roles are defined by local product, sync, and release authorities and derived
-by the landed contributor-topology projection. Its bare command intentionally leaves live
-stage and channel status `NOT_PROVEN`; a captured `--observation` is required to project
-observed status. Public installation and release links may therefore point to `perl-lsp`
-intentionally; source-work instructions should point here.
+`perl-lsp/master` also owns public release lineage and published artifacts. Neither a
+swarm merge nor a public contribution PR proves that a change has reached a release,
+package registry, editor marketplace, or other public channel.
 
 ## 1. Clone and branch
 
 ```bash
-git clone https://github.com/EffortlessMetrics/perl-lsp-swarm.git
-cd perl-lsp-swarm
+git clone https://github.com/EffortlessMetrics/perl-lsp.git
+cd perl-lsp
 git switch -c fix/short-description
 ```
 
@@ -81,15 +80,15 @@ Start from an existing issue when one owns the work. Keep one pull request cente
 - proof that can distinguish the intended change from a realistic wrong result;
 - explicit non-goals and a bounded rollback.
 
-Browse the development backlog explicitly in this repository:
+Browse the public contribution backlog explicitly in `perl-lsp`:
 
 ```bash
 # A bounded view of the open backlog
-gh issue list --repo EffortlessMetrics/perl-lsp-swarm --state open --limit 10
+gh issue list --repo EffortlessMetrics/perl-lsp --state open --limit 10
 
 # Beginner-friendly slices; either list can legitimately be empty
-gh issue list --repo EffortlessMetrics/perl-lsp-swarm --state open --label "good first issue"
-gh issue list --repo EffortlessMetrics/perl-lsp-swarm --state open --label size/S
+gh issue list --repo EffortlessMetrics/perl-lsp --state open --label "good first issue"
+gh issue list --repo EffortlessMetrics/perl-lsp --state open --label size/S
 ```
 
 The live label names are `good first issue`, `size/XS`, `size/S`, `size/M`, and `size/L`; the filtered
@@ -157,16 +156,16 @@ stash state is shared across worktrees.
 git add <files>
 git commit -m "fix(scope): describe the change (#NNNN)"
 git push -u origin HEAD
-gh pr create --repo EffortlessMetrics/perl-lsp-swarm
+gh pr create --repo EffortlessMetrics/perl-lsp
 ```
 
-Contributors without write access to `perl-lsp-swarm` cannot push a branch to it. Fork
-first and push to the fork; the pull request still targets this repository:
+Contributors without write access to `perl-lsp` should fork it and push to the fork; the
+pull request still targets the public repository:
 
 ```bash
-gh repo fork EffortlessMetrics/perl-lsp-swarm --remote --remote-name fork
+gh repo fork EffortlessMetrics/perl-lsp --remote --remote-name fork
 git push -u fork HEAD
-gh pr create --repo EffortlessMetrics/perl-lsp-swarm
+gh pr create --repo EffortlessMetrics/perl-lsp
 ```
 
 Use a conventional title with the controlling issue number:
@@ -181,6 +180,11 @@ The pull-request body should state the claim, controlling issue, changed seam, p
 proof not run, risk and rollback, non-goals, and any `NOT_PROVEN` boundary.
 
 ## 8. Review and integration
+
+For a shared-product public PR, maintainers first bring `perl-lsp/master` current with
+accepted `perl-lsp-swarm/main` state before integration. After the public PR merges, the
+shared-product effect is reconciled back into swarm. The contributor keeps one PR against
+`perl-lsp`; maintainers own both synchronization boundaries.
 
 Review is semantic and cumulative, not a fixed two-pass conveyor. Reviewers challenge the
 claim, proof discrimination, production reachability, semantic ownership, risk, and
