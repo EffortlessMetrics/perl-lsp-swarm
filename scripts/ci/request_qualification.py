@@ -120,7 +120,15 @@ class Eligibility:
 
 
 def unavailable_eligibility(plan: dict) -> Eligibility:
-    return Eligibility('NOT_PROVEN', 'candidate_readiness.v1 producer unavailable (#10057)')
+    try:
+        from .candidate_readiness import production
+    except ImportError:
+        try:
+            from candidate_readiness import production
+        except ImportError:
+            from scripts.ci.candidate_readiness import production
+    result = production(plan)
+    return Eligibility(result['classification'], result['reason'])
 
 
 class Adapter:
