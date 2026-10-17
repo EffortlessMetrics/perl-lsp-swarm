@@ -45,7 +45,7 @@ pub fn add_builtin_completions(
                 sort_text: Some(Cow::Owned(format!("3_{}", builtin))),
                 filter_text: Some(Cow::Borrowed(builtin)),
                 additional_edits: vec![],
-                text_edit_range: Some((context.prefix_start, context.position)),
+                text_edit_range: Some((context.prefix_start, context.suffix_end)),
                 commit_characters: None,
                 insert_text_format: InsertTextFormat::for_authored_body(insert_text),
                 label_details: None,

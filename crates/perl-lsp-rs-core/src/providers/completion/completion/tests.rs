@@ -357,6 +357,67 @@ fn test_function_completion_mid_token_replaces_whole_token()
     Ok(())
 }
 
+/// Mid-token builtin, keyword, and package-member completions must
+/// replace the whole token, so applying the edit does not duplicate the
+/// suffix after the cursor (#18108).
+#[test]
+fn test_builtin_keyword_package_completion_mid_token_replaces_whole_token()
+-> Result<(), Box<dyn std::error::Error>> {
+    // Builtin: `pri|nt`
+    let code = "print \"hi\";\n";
+    let cursor = 3;
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new(&ast);
+    let completions = provider.get_completions(code, cursor);
+    let item = completions
+        .iter()
+        .find(|c| c.label == "print")
+        .ok_or("print builtin completion missing")?;
+    let (start, end) = item.text_edit_range.ok_or("builtin range missing")?;
+    assert_eq!(&code[start..end], "print", "builtin edit must cover the whole token");
+    let insert = item.insert_text.as_deref().ok_or("builtin insert missing")?;
+    let applied = format!("{}{}{}", &code[..start], insert, &code[end..]);
+    assert!(!applied.contains("printnt"), "builtin edit duplicated the suffix: {applied}");
+
+    // Keyword: `whi|le`
+    let code = "while (1) { }\n";
+    let cursor = 3;
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new(&ast);
+    let completions = provider.get_completions(code, cursor);
+    let item = completions
+        .iter()
+        .find(|c| c.label == "while")
+        .ok_or("while keyword completion missing")?;
+    let (start, end) = item.text_edit_range.ok_or("keyword range missing")?;
+    assert_eq!(&code[start..end], "while", "keyword edit must cover the whole token");
+
+    // Package member: `Foo::bar|ley`
+    let index = Arc::new(WorkspaceIndex::new());
+    index.index_file(
+        Url::parse("file:///lib/Foo.pm")?,
+        "package Foo;\nsub barley { }\n1;\n".to_string(),
+    )?;
+    let code = "use strict;\nFoo::barley";
+    let cursor = code.len() - 3; // after `Foo::bar`
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index(&ast, Some(index));
+    let completions = provider.get_completions(code, cursor);
+    let item = completions
+        .iter()
+        .find(|c| c.insert_text.as_deref() == Some("Foo::barley"))
+        .ok_or("Foo::barley package completion missing")?;
+    let (start, end) = item.text_edit_range.ok_or("package range missing")?;
+    assert_eq!(&code[start..end], "Foo::barley", "package edit must cover the whole token");
+    let insert = item.insert_text.as_deref().ok_or("package insert missing")?;
+    let applied = format!("{}{}{}", &code[..start], insert, &code[end..]);
+    assert_eq!(applied, code, "package edit must reproduce the source exactly");
+    Ok(())
+}
+
 #[test]
 fn dash_trigger_after_multibyte_receiver_keeps_char_boundary()
 -> Result<(), Box<dyn std::error::Error>> {
