@@ -29,7 +29,9 @@ Inspect the live PR state first.
 For an open PR, establish the current provider-native substantive result before reading
 integration green as permission to merge.
 
-Read cumulative submitted reviews and useful clean conclusions, localized findings and
+Read complete paginated feedback with `scripts/reviews/feedback <pr> <owner/repo>`:
+ordinary issue comments, full review bodies (including substantive `COMMENTED` concerns),
+cumulative submitted reviews and useful clean conclusions, localized findings and
 evidence-backed dispositions (terminal `fixed`, `refuted`, `superseded`, and
 `post-merge-follow-up`; non-terminal `current-blocker`, `blocked-by-prerequisite`, and
 `not-proven` whose threads stay open), the current candidate
@@ -96,7 +98,8 @@ non-zero result is `MERGE_BLOCKED`, routed to `$address-review-comments`, and is
 Verify live GitHub facts:
 
 - PR is ready, not draft;
-- required checks are current for the candidate;
+- the union of applicable branch rulesets and classic branch protection is known,
+  with required contexts and producer/app identity current for the candidate;
 - the sanctioned thread enumerator reports `unresolved_count` of 0;
 - no current `CHANGES_REQUESTED` review remains;
 - deliberately requested reviewers are not still pending where their judgment is part
@@ -132,6 +135,15 @@ Re-run `scripts/reviews/threads <pr> --unresolved-only --json` immediately befor
 merge. A non-zero `unresolved_count` is `MERGE_BLOCKED`; route through
 `address-review-comments`. Reacquire current head, base applicability, required
 results, review/findings and protection together before the final judgment.
+Read ordinary-comment dispositions as well as thread resolution, and verify semantic
+review binding with `check-pr-semantic-review-currentness.py --expected-head` for this
+observed head. Missing/stale binding or unavailable protection is `NOT_PROVEN`.
+Inspect terminal selected qualification evidence (skipped/draft-no-proof is not passing
+proof), then explicitly assess whether the candidate still fits current repository
+behavior and accepted product vision. Record that separate final judgment before the
+expected-head protected merge. A new substantive finding routes back to repair even
+when the SHA is unchanged. These boundary reads do not require rerunning unchanged
+proof or a full review on every routine push.
 
 Under #3390, pending qualification does not authorize auto-merge, enqueueing, or a
 probe that bypasses missing proof. Retain the owning lead through ordinary in-window

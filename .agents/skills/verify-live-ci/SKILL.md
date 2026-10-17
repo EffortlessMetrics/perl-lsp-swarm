@@ -20,7 +20,8 @@ Read one current GitHub snapshot for the selected PR:
 
 - cumulative substantive review result;
 - draft/ready state and any still-valid draft purpose;
-- required checks discovered from live policy and relevant advisory checks;
+- required checks from the union of applicable branch rulesets AND classic branch
+  protection, including producer/app identity, plus selected advisory checks;
 - unresolved review threads and current `CHANGES_REQUESTED` reviews;
 - deliberately requested reviewers still pending;
 - mergeability, conflicts, queue/ruleset state, and explicit prerequisites;
@@ -178,6 +179,26 @@ expected PR/head or merge subject
 If read-back fails, is contradictory, or names another subject, preserve the action
 failure or return `NOT_PROVEN`. Do not take a second status-production action from the
 same snapshot; re-read only after the named wake event.
+
+## Terminal inspection and ownership
+
+For the selected late qualification, retain one accountable owner through terminal
+run/attempt inspection, then the separate vision/current-repository judgment and
+protected merge decision. Use supported completion events or bounded checks during
+the ordinary wait window. Do not return an ownerless `PR_IN_FLIGHT` merely because a
+worker ended. On a real interruption, name `continuation_owner`, `next_action`, the
+exact request/head/merge subject and run/attempt, pending contexts and `wake_event` in
+the existing handoff packet; require receiver acceptance before transferring ownership.
+Missing ownership is `NOT_PROVEN`, not a successful handoff. Do not add a state registry,
+recurring poller, or repeat unchanged snapshots.
+
+At terminal completion ask: did the selected tests actually execute on the admitted
+subject? Inspect result/log/artifact content, not only the badge. `SKIPPED`, `NEUTRAL`,
+`draft-no-proof`, and "no analysis executed" do not prove tests passed, even if a wrapper
+is green. Preserve not-applicable separately with policy evidence; mandatory selected
+proof still needs actual execution. Carry required union and reporting identity through
+terminal results; do not drop the slow tail. Then return the evidence to
+`$merge-reconcile` for its final current-repository/vision and protection judgment.
 
 ## Live evidence classification
 

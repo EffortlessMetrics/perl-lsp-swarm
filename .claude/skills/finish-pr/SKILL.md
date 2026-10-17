@@ -68,6 +68,26 @@ Return PR/candidate identity, claim and non-goals, current finding dispositions,
 current or stale, substantive review result, integration posture, exact remote wait and
 wake event, limitations/`NOT_PROVEN`, merge/closeout result, and next route.
 
+## Just-in-time finishing questions
+
+At feedback entry ask: have I read complete paginated thread messages, ordinary issue
+comments, and review bodies, including substantive `COMMENTED` findings? Use
+`scripts/reviews/feedback <pr> <owner/repo>` via `address-review-comments`; neither
+zero unresolved threads nor native convergence answers this content question.
+
+After a candidate change ask: which dimensions changed, and does the semantic review
+still bind? Run `python3 scripts/ci/check-pr-semantic-review-currentness.py <pr>
+<owner/repo> --expected-head <observed-head>` at the review-to-integration boundary.
+A stale or missing binding is `NOT_PROVEN`; refresh affected review rather than
+replaying every lens or treating the old green review as current. Preserve unaffected
+proof with its original subject. This check verifies binding, not finding disposition.
+
+At a CI handoff ask: who owns terminal inspection and the final judgment? Carry the
+selected request, head/merge subject, run/attempt, pending contexts, accountable owner,
+next action and exact wake event in the existing return packet. An unowned in-flight
+handoff is `NOT_PROVEN`; keep the invoking owner until a named receiver accepts it.
+GitHub owning a transition does not transfer responsibility for reading its result.
+
 ## Procedure
 
 Enter at the earliest useful point:
