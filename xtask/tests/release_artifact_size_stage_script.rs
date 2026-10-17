@@ -40,17 +40,45 @@ fn package_name() -> String {
     format!("perllsp-{VERSION}-{TARGET}")
 }
 
-/// Build a throwaway repository root whose release directory holds two real,
-/// strippable executables. The test binary itself is the most convenient real
-/// ELF/Mach-O available on whichever host runs this suite.
-fn staged_root() -> Result<TempDir> {
+/// Own a tiny native executable, including compiler sidecars, until this test ends.
+/// Use the existing Rust toolchain rather than requiring a host-specific C driver.
+struct ExecutableFixture {
+    root: TempDir,
+    binary: PathBuf,
+}
+
+impl ExecutableFixture {
+    fn new() -> Result<Self> {
+        let root = tempfile::tempdir()?;
+        let source = root.path().join("fixture.rs");
+        let binary = root.path().join(format!("fixture{}", std::env::consts::EXE_SUFFIX));
+        fs::write(&source, "fn main() {}\n")?;
+        let output = Command::new("rustc")
+            .args(["--edition", "2024", "-C", "opt-level=z", "-C", "panic=abort"])
+            // Retain debug/symbol data so removing strip still fails the strict size check.
+            .args(["-C", "debuginfo=1", "-C", "strip=none"])
+            .arg(&source)
+            .arg("-o")
+            .arg(&binary)
+            .output()
+            .context("compiling the native executable fixture")?;
+        ensure!(
+            output.status.success(),
+            "fixture compilation failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        Ok(Self { root, binary })
+    }
+}
+
+/// Reuse the owned fixture for independent copies: strip must never mutate its source.
+fn staged_root(fixture: &ExecutableFixture) -> Result<TempDir> {
     let root = tempfile::tempdir()?;
     let build_dir = root.path().join("target").join(TARGET).join("release");
     fs::create_dir_all(&build_dir)?;
-    let source = std::env::current_exe().context("locating the test executable")?;
     for binary in BINARIES {
-        fs::copy(&source, build_dir.join(binary))
-            .with_context(|| format!("seeding {binary} from {}", source.display()))?;
+        fs::copy(&fixture.binary, build_dir.join(binary))
+            .with_context(|| format!("seeding {binary} from {}", fixture.binary.display()))?;
     }
     for extra in ["README.md", "LICENSE-APACHE", "LICENSE-MIT"] {
         fs::write(root.path().join(extra), format!("{extra} placeholder\n"))?;
@@ -79,7 +107,8 @@ fn sha256(path: &Path) -> Result<String> {
 
 #[test]
 fn staging_packages_stripped_binaries_whose_archive_matches_the_directory() -> Result<()> {
-    let root = staged_root()?;
+    let fixture = ExecutableFixture::new()?;
+    let root = staged_root(&fixture)?;
     let unstripped =
         fs::metadata(root.path().join("target").join(TARGET).join("release").join(BINARIES[0]))?
             .len();
@@ -137,7 +166,8 @@ fn staging_packages_stripped_binaries_whose_archive_matches_the_directory() -> R
 
 #[test]
 fn staging_keeps_each_variant_in_its_own_directory() -> Result<()> {
-    let root = staged_root()?;
+    let fixture = ExecutableFixture::new()?;
+    let root = staged_root(&fixture)?;
     for variant in ["baseline", "candidate"] {
         let output = stage(root.path(), variant)?;
         ensure!(
@@ -175,7 +205,8 @@ fn staging_rejects_an_unknown_variant() -> Result<()> {
 
 #[test]
 fn staging_fails_closed_when_a_binary_was_not_built() -> Result<()> {
-    let root = staged_root()?;
+    let fixture = ExecutableFixture::new()?;
+    let root = staged_root(&fixture)?;
     fs::remove_file(root.path().join("target").join(TARGET).join("release").join(BINARIES[1]))?;
 
     let output = stage(root.path(), "baseline")?;
@@ -200,7 +231,8 @@ fn staging_fails_closed_when_a_binary_cannot_be_stripped() -> Result<()> {
         Command::new("strip").arg("--version").output().is_ok_and(|output| output.status.success());
     ensure!(has_strip, "this contract needs a working `strip` on the test host");
 
-    let root = staged_root()?;
+    let fixture = ExecutableFixture::new()?;
+    let root = staged_root(&fixture)?;
     // Unlike release.yml, which tolerates a failed strip, the measurement lane
     // must not compare an unstripped binary against a stripped one.
     fs::write(
@@ -217,5 +249,48 @@ fn staging_fails_closed_when_a_binary_cannot_be_stripped() -> Result<()> {
         String::from_utf8_lossy(&output.stderr).contains("refusing to package unstripped"),
         "the failure must be the packaging refusal, not an unrelated shell error"
     );
+    Ok(())
+}
+
+#[test]
+#[allow(clippy::print_stderr)]
+fn staging_fixture_reuse_and_cleanup_preserve_the_source() -> Result<()> {
+    let fixture = ExecutableFixture::new()?;
+    let source_hash = sha256(&fixture.binary)?;
+    let source_bytes = fs::metadata(&fixture.binary)?.len();
+    let test_bytes = fs::metadata(std::env::current_exe()?)?.len();
+    eprintln!(
+        "fixture seed measurement: test_executable_bytes={test_bytes} \
+         native_fixture_bytes={source_bytes} copies_per_root=2"
+    );
+    ensure!(
+        source_bytes < test_bytes,
+        "native fixture ({source_bytes} bytes) must be smaller than the test executable ({test_bytes} bytes)"
+    );
+    for _ in 0..3 {
+        let root = staged_root(&fixture)?;
+        for binary in BINARIES {
+            let seeded = root.path().join("target").join(TARGET).join("release").join(binary);
+            ensure!(fs::metadata(&seeded)?.len() == source_bytes, "fixture copy changed size");
+            ensure!(sha256(&seeded)? == source_hash, "fixture copy changed bytes");
+        }
+        let output = stage(root.path(), "baseline")?;
+        ensure!(
+            output.status.success(),
+            "reused fixture failed staging: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let root_path = root.path().to_path_buf();
+        root.close()?;
+        ensure!(!root_path.exists(), "the staging fixture was not cleaned up");
+        ensure!(sha256(&fixture.binary)? == source_hash, "staging mutated its source fixture");
+        ensure!(
+            fs::read_to_string(fixture.root.path().join("fixture.rs"))? == "fn main() {}\n",
+            "staging cleanup removed or changed the fixture source"
+        );
+    }
+    let fixture_path = fixture.root.path().to_path_buf();
+    fixture.root.close()?;
+    ensure!(!fixture_path.exists(), "the executable fixture was not cleaned up");
     Ok(())
 }
