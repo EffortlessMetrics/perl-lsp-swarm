@@ -844,9 +844,43 @@ impl<'a> PerlLexer<'a> {
                     // Check if this starts a POD section (=pod, =head, =over, etc.)
                     // Use byte-safe checks — avoid slicing &str at arbitrary byte positions
                     let remaining = &self.input_bytes[self.position..];
-                    // Perl treats any line-start `=<letter>` as a POD command (including
-                    // non-standard ones such as Pod::Weaver's `=construct`) until `=cut`.
-                    if remaining.get(1).is_some_and(|b| b.is_ascii_alphabetic()) {
+                    // Standard commands always start POD at a line start. Other
+                    // `=<letter>` words (e.g. Pod::Weaver's `=construct`) start POD only
+                    // where a statement is expected; after a term, `\n=shift;` is an
+                    // assignment continuation. Pod::Weaver-style commands follow a blank
+                    // line, so a blank line also counts as statement-start context.
+                    let known = [
+                        &b"=pod"[..],
+                        b"=head",
+                        b"=over",
+                        b"=item",
+                        b"=back",
+                        b"=begin",
+                        b"=end",
+                        b"=for",
+                        b"=encoding",
+                        b"=cut",
+                    ]
+                    .iter()
+                    .any(|c| remaining.starts_with(c));
+                    let after_blank_line = self.position == 0 || {
+                        let mut i = self.position - 1; // the line terminator before `=`
+                        if self.input_bytes[i] == b'\n' && i > 0 && self.input_bytes[i - 1] == b'\r'
+                        {
+                            i -= 1;
+                        }
+                        i > 0 && matches!(self.input_bytes[i - 1], b'\n' | b'\r')
+                    };
+                    let after_statement_end = self.input_bytes[..self.position]
+                        .iter()
+                        .rev()
+                        .find(|b| !b.is_ascii_whitespace())
+                        .is_none_or(|b| matches!(b, b';' | b'}' | b'{'));
+                    let generic_pod = remaining.get(1).is_some_and(|b| b.is_ascii_alphabetic())
+                        && (after_blank_line
+                            || after_statement_end
+                            || !matches!(self.mode, LexerMode::ExpectOperator));
+                    if known || generic_pod {
                         // Scan forward for \n=cut (end of POD block)
                         let search_start = self.position;
                         let mut found_cut = false;

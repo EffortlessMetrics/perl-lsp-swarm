@@ -28,3 +28,30 @@ fn equals_followed_by_non_letter_is_not_pod() {
     let toks = idents("my $x\n= 1;\nsub two { 2 }\n");
     assert!(toks.iter().any(|t| t == "="), "{toks:?}");
 }
+
+#[test]
+fn word_after_term_on_continuation_line_is_not_pod() {
+    for word in ["shift", "lc", "uc", "map", "join", "sort", "scalar"] {
+        let src = format!("my $x\n={word};\nsub two {{ 2 }}\n");
+        let toks = idents(&src);
+        assert!(toks.iter().any(|t| t == word), "{word}: {toks:?}");
+        assert!(toks.iter().any(|t| t == "two"), "{word}: {toks:?}");
+    }
+}
+
+#[test]
+fn custom_pod_command_after_statement_end_or_block_is_pod() {
+    for prefix in ["my $x = 1;\n", "sub one { 1 }\n", "sub one { 1 }\n\n", "my $y\n\n"] {
+        let src = format!("{prefix}=construct path\nunbalanced {{ text\n=cut\nsub two {{ 2 }}\n");
+        let toks = idents(&src);
+        assert!(toks.iter().any(|t| t == "two"), "{prefix:?}: {toks:?}");
+        assert!(!toks.iter().any(|t| t == "unbalanced"), "{prefix:?}: {toks:?}");
+    }
+}
+
+#[test]
+fn equals_word_inside_heredoc_and_string_is_untouched() {
+    let src = "my $h = <<'EOT';\n=construct path\nEOT\nmy $s = \"a\n=foo\nb\";\nsub two { 2 }\n";
+    let toks = idents(src);
+    assert!(toks.iter().any(|t| t == "two"), "{toks:?}");
+}
