@@ -22,7 +22,8 @@ ROOTS = ('.github/workflows/ci.yml', '.github/workflows/ripr.yml',
 POLICY = '.ci/policies/required-checks.toml'
 DISPATCH_PATHS = ('.github/workflows/aggregate-ci-lane-history.yml',
                   '.github/workflows/post-merge-status.yml',
-                  'xtask/tests/lane_history_ci_dispatch_contract.rs')
+                  'xtask/tests/lane_history_ci_dispatch_contract.rs',
+                  'xtask/tests/post_merge_status_regen_tests.rs')
 ORDINARY = {'pull_request', 'pull_request_target', 'merge_group', 'push'}
 
 
@@ -37,7 +38,8 @@ def staged_tree():
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)
         for name in (*[path.relative_to(ROOT).as_posix() for path in
-                       sorted((ROOT / '.github/workflows').glob('*.y*ml'))], POLICY, DISPATCH_PATHS[-1]):
+                       sorted((ROOT / '.github/workflows').glob('*.y*ml'))], POLICY,
+                     *[path for path in DISPATCH_PATHS if path.startswith('xtask/')]):
             target = root / name
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(ROOT / name, target)

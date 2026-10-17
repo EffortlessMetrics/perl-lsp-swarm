@@ -3,7 +3,7 @@
 Status: staged source; activation is **NOT_PROVEN**. Neither the root-trigger
 patch nor a publisher permission is enabled. This procedure does not authorize
 settings changes, a check writer, dispatch or cutover. Generated-PR product
-dispatch removal and its Rust contract are also inside the unapplied leaf;
+dispatch removal and both Rust regressions are also inside the unapplied leaf;
 tracked source retains current producers. The integration owner must
 review the final combined source and current observations before requesting that
 operation. Do not land the generated-PR dispatch removal alone while required
@@ -35,12 +35,12 @@ checks. No step below waives a required context or changes protection settings.
 
 | Order | Concrete change and qualification | Runtime effect / hold |
 | --- | --- | --- |
-| 1 | Review and integrate the corrected documentation and inert Perl owners/factory from PR18067, retaining the metadata-only rehearsal and unapplied seven-file root patch. Recheck the selected docs command on its actual corrected H. | Source prerequisites only; no factory caller, product-trigger removal or new check writer. Existing main/PR validation still runs normally. |
+| 1 | Review and integrate the corrected documentation and inert Perl owners/factory from PR18067, retaining the metadata-only rehearsal and unapplied eight-file root patch. Recheck the selected docs command on its actual corrected H. | Source prerequisites only; no factory caller, product-trigger removal or new check writer. Existing main/PR validation still runs normally. |
 | 2 | Review/integrate canonical em-ci PR246; verify its generated public projection and allow the existing distribution process to propose the exact public generation. Review/qualify that generated PR before selecting its full SHA. | Not assumed inert: a main push touching rust.yml/distribution can open a public distribution PR when the existing enable variable is true. No runner image paths are changed. No consumer pin or checks:write activation follows merely from preparing source. |
 | 3 | Bind the reviewed factory to the actual prior/current central importer and existing resource owner; select the qualified public central SHA in an explicit manual-only native rehearsal route. Keep ordinary automatic callers/roots on their existing generation until their migration is qualified. | **Activates explicit rehearsal execution**, with real H/tree/B/S capture, actual allocator and authenticated packet custody. It does not activate checks:write or the automatic trigger cutover. Source binding/pin changes are reviewed together by the integration owner. |
 | 4 | Run that native no-write route for the chosen corrected H with current reviews and genuinely admissible warm evidence. Exercise success, real failure and stale-subject/attempt refusal; retain exact result/artifact and native readback. | Executes product qualification, but publishes no H check. Local fixtures cannot replace the genuine attempt. A failed old-H receipt stays failed and cannot be copied onto corrected H. |
 | 5 | After the separately pending publisher authorization, install the reviewed narrow writer, readback/uncertain-write recovery and stale-result invalidation, then qualify its exact H/App behavior. | **First step that would activate checks:write. HELD.** The current source does not grant it. Existing central reporter code is not repurposed as an implicit grant. |
-| 6 | After complete current protection/permission observation and reviewed operational rollback, apply the coordinated seven-file root/policy/generated-dispatch transition and qualified consumer joins; verify every required native context on its actual subject and run the short final gate. | **Automatic product-trigger cutover. HELD.** Preserve current producers and generated dispatches until this step. |
+| 6 | After complete current protection/permission observation and reviewed operational rollback, apply the coordinated eight-file root/policy/generated-dispatch transition and qualified consumer joins; verify every required native context on its actual subject and run the short final gate. | **Automatic product-trigger cutover. HELD.** Preserve current producers and generated dispatches until this step. |
 
 Rollback before step 5 is source/pin rollback through the existing integration
 owner; no check history needs deletion. Steps 5–6 retain the separately reviewed
@@ -112,8 +112,8 @@ the exact affected attempts; do not certify their result or start duplicate work
    generation. Preserve unrelated changes; do not force-reset main.
 3. For the unchanged staged root leaf, `git apply --unidiff-zero --reverse --check
    .ci/staged/17903-root-triggers.patch` followed by reverse application restores
-   all seven files byte-for-byte (three roots, policy, two generated-PR workflows
-   and their Rust contract). Use `--unidiff-zero` for application and reversal:
+   all eight files byte-for-byte (three roots, policy, two generated-PR workflows
+   and both Rust regressions). Use `--unidiff-zero` for application and reversal:
    the dispatch/contract projection uses zero-context hunks. The regression proves this only for that exact
    leaf. If files changed during integration, produce and review a contextual
    revert against the actual cutover commit; do not force an outdated patch.
