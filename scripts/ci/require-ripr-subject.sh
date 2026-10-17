@@ -40,7 +40,8 @@ case "${GITHUB_EVENT_NAME:-}" in
       not_proven "integration commit must have exactly two parents"
     [[ "${parent_shas[1]}" == "$RIPR_EVENT_HEAD_SHA" ]] ||
       not_proven "integration second parent differs from the event head"
-    # The merge ref may include a descendant base. The operand remains event A.
+    # Retain event A as provenance. The PR producer authenticates parent P
+    # separately for the P...E integration comparison.
     git merge-base --is-ancestor "$RIPR_BASE_SHA" "${parent_shas[0]}" ||
       not_proven "integration base ancestry unavailable or contradictory"
     ;;
