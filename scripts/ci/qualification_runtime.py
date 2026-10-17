@@ -91,6 +91,8 @@ class RustSmallOwners:
             raise Refused('native election changed during owner admission')
         current_attempt()
         context = self.capture(central_capture)
+        if rehearse_event(self.adapter.api, event, self.environment) != elected:
+            raise Refused('native election changed during context capture')
         self.adapter.current(plan)
         current_attempt()
         return dict(result, status='READY_FOR_ALLOCATION', context=context,

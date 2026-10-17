@@ -343,6 +343,15 @@ class RuntimeCompositionTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'in-progress'):
                 self.owners.enter_native(event, capture)
 
+    def test_native_late_duplicate_during_capture_refuses_stale_admission(self):
+        event = {'inputs': {'request': json.dumps(self.plan)}}
+        def capture(environment, **kw):
+            self.api.extra_rows = [dict(self.api.row, id=122)]
+            return {'qualification_subject': self.plan}
+        with mock.patch.object(self.owners, 'eligibility', return_value=runtime.Eligibility('READY', 'fixture')):
+            with self.assertRaisesRegex(ValueError, 'election changed during context capture'):
+                self.owners.enter_native(event, capture)
+
     def test_canonical_failure_remains_failure_and_wrong_attempt_refuses(self):
         original = self.canonical_owner(self.packet / 'rust-small-proof.json', self.plan, self.selected)
         self.owners.canonical_owner = lambda *args: replace(original, disposition='failure', failed=('cargo-current',))
