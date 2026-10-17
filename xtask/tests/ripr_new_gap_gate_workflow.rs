@@ -252,7 +252,7 @@ fn gate_lane_identity(route: GateRoute<'_>) -> (&'static str, &'static str) {
 
 fn fallback_quality_gate_command(check: bool) -> String {
     let command = format!(
-        "cargo xtask quality-gate --mode enforce-new-ripr --ripr-receipt target/receipts/quality/ripr-plus.json --ripr-pr-receipt target/ripr/pr/repo-exposure.json --review-receipt target/ripr/review/comments.json --ripr-base {FALLBACK_BASE} --ripr-head {FALLBACK_EVALUATED} --receipt target/receipts/quality/quality-gate-ripr.json --summary target/receipts/quality/quality-gate-ripr.md"
+        "cargo xtask quality-gate --mode enforce-new-ripr --ripr-receipt target/receipts/quality/ripr-plus.json --ripr-pr-receipt target/ripr/pr/repo-exposure.json --review-receipt target/ripr/review/comments.json --ripr-base {FALLBACK_BASE} --ripr-head {FALLBACK_EVALUATED} --ripr-pr-head {FALLBACK_RAW_HEAD} --receipt target/receipts/quality/quality-gate-ripr.json --summary target/receipts/quality/quality-gate-ripr.md"
     );
     if check { format!("{command} --check") } else { command.to_owned() }
 }
@@ -1039,13 +1039,14 @@ ripr() {
           [ "$9" = "--review-receipt" ] && [ "${10}" = "target/ripr/review/comments.json" ] || return 1
           [ "${11}" = "--ripr-base" ] && [ "${12}" = "$FAKE_BASE" ] || return 1
           [ "${13}" = "--ripr-head" ] && [ "${14}" = "$FAKE_HEAD" ] || return 1
-          [ "${15}" = "--receipt" ] && [ "${16}" = "target/receipts/quality/quality-gate-ripr.json" ] || return 1
-          [ "${17}" = "--summary" ] && [ "${18}" = "target/receipts/quality/quality-gate-ripr.md" ] || return 1
-          if [ "$#" -eq 19 ]; then [ "${19}" = "--check" ] || return 1; elif [ "$#" -ne 18 ]; then return 1; fi
+          [ "${15}" = "--ripr-pr-head" ] && [ "${16}" = "$FAKE_PR_HEAD_SHA" ] || return 1
+          [ "${17}" = "--receipt" ] && [ "${18}" = "target/receipts/quality/quality-gate-ripr.json" ] || return 1
+          [ "${19}" = "--summary" ] && [ "${20}" = "target/receipts/quality/quality-gate-ripr.md" ] || return 1
+          if [ "$#" -eq 21 ]; then [ "${21}" = "--check" ] || return 1; elif [ "$#" -ne 20 ]; then return 1; fi
           mkdir -p target/receipts/quality
           decision=pass
           if [ "${FAKE_QUALITY_GATE:-pass}" = "fail" ]; then decision=fail; fi
-          if [ "$#" -eq 18 ]; then
+          if [ "$#" -eq 20 ]; then
             printf '{"schema_version":1,"kind":"quality_gate","mode":"enforce-new-ripr","decision":"%s","head":"%s"}\n' "$decision" "$FAKE_HEAD" > target/receipts/quality/quality-gate-ripr.json
             printf 'decision: %s\nhead: %s\n' "$decision" "$FAKE_HEAD" > target/receipts/quality/quality-gate-ripr.md
           else
