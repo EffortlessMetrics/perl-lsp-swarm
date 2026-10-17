@@ -6,6 +6,7 @@
 //! Previously the standalone `perl-lsp-transport` crate; absorbed into
 //! `perl-lsp-rs-core::transport` in Wave G3 (#4535).
 
+mod document_symbol_probe;
 pub mod framing;
 pub mod incoming;
 
