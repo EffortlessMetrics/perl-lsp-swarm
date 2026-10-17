@@ -161,10 +161,28 @@ class PublicationHookTests(unittest.TestCase):
         pushed = self.change("scripts/example.py")
         self.change("scripts/later.py")
         result, calls = self.invoke([(pushed, "refs/heads/topic", self.base)])
-        # Refusal is permitted; success must evaluate the exact submitted SHA.
-        if result.returncode == 0:
-            publication = self.assert_publication_only(calls)[0]
-            self.assertEqual(publication[publication.index("--head") + 1], pushed)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(calls, [], "mismatching checkout must refuse before Cargo")
+        self.assertIn("matching checkout", result.stderr)
+
+    def test_later_nonhead_ref_prevents_all_cargo(self):
+        earlier = self.change("scripts/example.py")
+        head = self.change("scripts/later.py")
+        result, calls = self.invoke([(head, "refs/heads/current", self.base),
+                                     (earlier, "refs/heads/other", self.base)])
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(calls, [], "whole batch admission must precede the first Cargo call")
+        self.assertIn(earlier, result.stderr)
+        self.assertIn("refs/heads/topic", result.stderr)
+
+    def test_annotated_tag_at_head_keeps_literal_pushed_object(self):
+        self.change("scripts/example.py")
+        self.git("tag", "-a", "fixture-tag", "-m", "fixture")
+        tag = self.git("rev-parse", "fixture-tag")
+        result, calls = self.invoke([(tag, "refs/tags/fixture-tag", self.base)])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        publication = self.assert_publication_only(calls)[0]
+        self.assertEqual(publication[publication.index("--head") + 1], tag)
 
     def test_validation_child_isolates_hook_git_selectors(self):
         head = self.change("scripts/example.py")

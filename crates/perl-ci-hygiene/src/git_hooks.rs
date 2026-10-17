@@ -126,7 +126,7 @@ pub(crate) fn pre_push_hook_script() -> &'static str {
 # Hook logic version (#17431 review wave 3): bump the integer below on EVERY
 # guard-logic change. Self-heal only upgrades (checkout > installed) and
 # never downgrades; unmarked legacy hooks count as version 0.
-# pre-push-hook-version: 2
+# pre-push-hook-version: 3
 
 set -euo pipefail
 
@@ -283,6 +283,24 @@ if [ "$IS_DELETE_ONLY" = true ]; then
     echo "Branch deletion — skipping CI gate"
     exit 0
 fi
+
+# Reject an unsupported batch before admission/bootstrap or any earlier ref's checks.
+# Peel for checkout comparison, but keep the literal pushed objects below.
+if ! HEAD_COMMIT="$(git rev-parse --verify 'HEAD^{commit}')"; then
+    echo "NOT PROVEN: checked-out HEAD does not resolve to a commit." >&2
+    exit 1
+fi
+for line in "${PUSH_REFS[@]+"${PUSH_REFS[@]}"}"; do
+    [ -z "$line" ] && continue
+    read -r local_ref local_sha _remote_ref _remote_sha <<< "$line"
+    [ "$local_sha" = "$ZERO_SHA" ] && continue
+    if ! pushed_commit="$(git rev-parse --verify "$local_sha^{commit}" 2>/dev/null)" ||
+        [ "$pushed_commit" != "$HEAD_COMMIT" ]; then
+        printf 'NOT PROVEN: pushed ref %s (%s) does not match checked-out HEAD %s; push it from a matching checkout.\n' \
+            "$local_ref" "$local_sha" "$HEAD_COMMIT" >&2
+        exit 1
+    fi
+done
 
 # Publication consistency is separate from candidate preparation and late
 # qualification (#17940). Check each exact committed ref without a filename classifier.
@@ -655,7 +673,7 @@ mod tests {
         // upgrades (and refuses that one push).
         let hook = pre_push_hook_script();
         for marker in [
-            "# pre-push-hook-version: 2",
+            "# pre-push-hook-version: 3",
             "hook_version()",
             "\"$checkout_version\" -gt \"$installed_version\"",
             "keeping the installed hook. Update this branch/worktree",

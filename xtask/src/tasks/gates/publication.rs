@@ -99,10 +99,13 @@ pub(super) fn plan(
     )?;
     let head = resolved.head_sha.context("publication head did not resolve")?;
     let resolved_base = resolved.base_sha.context("publication base did not resolve")?;
+    // Annotated tags have their own pushed object identity. Baseline equality
+    // concerns the underlying commit, while receipts retain the literal object.
+    let head_commit = git(root, &["rev-parse", "--verify", &format!("{head}^{{commit}}")])?;
     // A new branch needs an established merge base. An acquisition failure or
     // self-comparison is NOT PROVEN, never eight vacuous successful checks.
     let base = if base == "auto" {
-        if resolved_base == head {
+        if resolved_base == head_commit {
             bail!(
                 "automatic publication base equals pushed head; establish the real branch baseline"
             );
@@ -112,7 +115,7 @@ pub(super) fn plan(
     } else {
         resolved_base
     };
-    if config.base_ref.as_deref() == Some("auto") && base == head {
+    if config.base_ref.as_deref() == Some("auto") && base == head_commit {
         bail!(
             "effective automatic publication merge-base equals pushed head; establish the real branch baseline"
         );
@@ -301,8 +304,44 @@ mod tests {
     }
 
     #[test]
+    fn publication_annotated_tag_keeps_object_identity_with_a_real_baseline() -> Result<()> {
+        let (dir, base, head) = fixture()?;
+        fixture_git(dir.path(), &["tag", "-a", "publication-fixture", "-m", "fixture"])?;
+        let tag = fixture_git(dir.path(), &["rev-parse", "publication-fixture"])?;
+        assert_ne!(tag, head);
+        let policy =
+            super::super::load_policy_for_inspection(&dir.path().join(".ci/gate-policy.yaml"))?;
+        let result = plan(dir.path(), &policy, &config("auto", &tag))?;
+        assert_eq!(result.base, base);
+        assert_eq!(
+            result.staged_tree_oid,
+            Some(fixture_git(dir.path(), &["rev-parse", "HEAD^{tree}"])?)
+        );
+        assert!(result.selected.iter().all(|row| row.reason.contains(&tag)));
+        Ok(())
+    }
+
+    #[test]
+    fn publication_auto_base_rejects_annotated_tag_at_its_peeled_commit() -> Result<()> {
+        let (dir, _base, head) = fixture()?;
+        fixture_git(dir.path(), &["tag", "-a", "publication-fixture", "-m", "fixture"])?;
+        let tag = fixture_git(dir.path(), &["rev-parse", "publication-fixture"])?;
+        assert_ne!(tag, head);
+        fixture_git(dir.path(), &["update-ref", "refs/remotes/origin/main", &head])?;
+        let policy =
+            super::super::load_policy_for_inspection(&dir.path().join(".ci/gate-policy.yaml"))?;
+        assert!(
+            plan(dir.path(), &policy, &config("auto", &tag)).is_err(),
+            "annotated tag object must not disguise an automatic self-baseline"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn publication_auto_base_rejects_remote_descendant_of_pushed_head() -> Result<()> {
         let (dir, _base, head) = fixture()?;
+        fixture_git(dir.path(), &["tag", "-a", "publication-fixture", "-m", "fixture"])?;
+        let tag = fixture_git(dir.path(), &["rev-parse", "publication-fixture"])?;
         let policy =
             super::super::load_policy_for_inspection(&dir.path().join(".ci/gate-policy.yaml"))?;
         fs::write(dir.path().join("later.rs"), "fn later() {}\n")?;
@@ -313,10 +352,12 @@ mod tests {
         fixture_git(dir.path(), &["checkout", "--detach", &head])?;
         assert_ne!(child, head);
         assert_eq!(fixture_git(dir.path(), &["merge-base", &child, &head])?, head);
-        assert!(
-            plan(dir.path(), &policy, &config("auto", &head)).is_err(),
-            "a remote descendant cannot make a new-branch publication vacuously pass"
-        );
+        for submitted in [&head, &tag] {
+            assert!(
+                plan(dir.path(), &policy, &config("auto", submitted)).is_err(),
+                "a remote descendant cannot make commit or annotated-tag publication vacuously pass"
+            );
+        }
         Ok(())
     }
 
