@@ -74,7 +74,8 @@ pub fn render_human(projection: &Projection) -> String {
             static_topology.publication_branch,
             publication_sha
         ),
-        format!("issues/prs: {}", static_topology.issue_repository),
+        format!("issues: {}", static_topology.issue_repository),
+        format!("prs: {}", static_topology.pull_request_repository),
         format!("promotion: {}", static_topology.promotion_protocol),
         format!("stage: {}", observation.stage.as_str()),
     ];
