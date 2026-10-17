@@ -662,6 +662,71 @@ fn range_request_parses_exactly_once() -> Result<(), Box<dyn std::error::Error>>
 }
 
 // ---------------------------------------------------------------------------
+// NPC-003 — facade-guarded and two-pass requests count exactly one pipeline
+// ---------------------------------------------------------------------------
+
+#[test]
+fn guarded_heredoc_range_refusal_records_one_pipeline_invocation() {
+    let source = "print <<'EOF';\nmy$x=1;\nEOF\nmy$y=2;\n";
+    let body = TextRange::new(TextPosition::new(1, 0), TextPosition::new(2, 0));
+    let mut counters = NativePipelineCounters::default();
+
+    let typed = NativeFormatter::new().format_range_typed_with_counters(
+        source,
+        body,
+        &FormatConfig::default(),
+        &FormatContext::default(),
+        &mut counters,
+    );
+
+    assert_eq!(typed.outcome.reason, FormatReasonCode::LiteralPreservationUnsupported);
+    assert_eq!(counters.pipeline_invocations, 1, "one pipeline per guarded range request");
+    assert_eq!(counters.parse_gate_invocations, 0, "the guard refuses before any parse gate runs");
+    assert_eq!(counters.edits_derived, 0);
+    assert_eq!(counters.replacement_bytes, 0);
+}
+
+#[test]
+fn shielded_marker_range_request_counts_one_pipeline_invocation() {
+    let source = "my$x=\"<<EOF\";\nmy$y=1;\n";
+    let range = TextRange::new(TextPosition::new(0, 0), TextPosition::new(2, 0));
+    let mut counters = NativePipelineCounters::default();
+
+    let typed = NativeFormatter::new().format_range_typed_with_counters(
+        source,
+        range,
+        &FormatConfig::default(),
+        &FormatContext::default(),
+        &mut counters,
+    );
+
+    assert_eq!(typed.outcome.disposition, FormatDisposition::Applied);
+    assert_eq!(
+        counters.pipeline_invocations, 1,
+        "only the returned attempt may count for one range request"
+    );
+}
+
+#[test]
+fn shielded_marker_document_request_counts_one_pipeline_invocation() {
+    let source = "my$x=\"<<EOF\";\nmy$y=1;\n";
+    let mut counters = NativePipelineCounters::default();
+
+    let typed = NativeFormatter::new().format_document_typed_with_counters(
+        source,
+        &FormatConfig::default(),
+        &FormatContext::default(),
+        &mut counters,
+    );
+
+    assert_eq!(typed.outcome.disposition, FormatDisposition::Applied);
+    assert_eq!(
+        counters.pipeline_invocations, 1,
+        "only the returned attempt may count for one document request"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // NPC-008 — exact subject identity for receipt consumption
 // ---------------------------------------------------------------------------
 
