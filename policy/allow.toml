@@ -4529,3 +4529,22 @@ ast_kind = "attribute"
 container = "emit_workspace_symbol_probe_receipt"
 lint = "clippy::print_stderr"
 target_fingerprint = "policy:allow-ux-ws-symbol-receipt-15988"
+
+# Scenario 43's tagged JSON receipt appears in libtest failure output before
+# assertions are checked. The generic run receipt has no per-probe/freshness fields.
+[[allow]]
+id = "allow-ux-scenario43-receipt-16953"
+kind = "lint_exception"
+family = "expect_attribute"
+path = "crates/perl-lsp-ux-tests/tests/ux_scenario_43_modern_oo_workspace_symbol_noise.rs"
+owner = "core/maintainers"
+classification = "reviewed_exception"
+reason = "The tagged JSON scenario receipt keeps per-probe and freshness evidence visible when an assertion fails; the generic UX run receipt contains only outcome, assertions, and timing. Passing test output remains captured by libtest."
+evidence = ["issue:16953", "test:scenario_43_modern_oo_workspace_symbol_noise_receipt"]
+created = "2026-09-29"
+review_after = "2026-12-28"
+
+[allow.selector]
+ast_kind = "attribute"
+lint = "clippy::print_stderr"
+target_fingerprint = "policy:allow-ux-scenario43-receipt-16953"
