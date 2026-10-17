@@ -103,10 +103,7 @@ pub(crate) struct WorkspaceTopologyTransitionGate {
     pub(crate) started: std::sync::mpsc::Sender<()>,
     pub(crate) release: std::sync::mpsc::Receiver<()>,
 }
-use perl_tdd_support::{
-    tdd_basic::TestGenerator,
-    test_runner::{TestKind, TestRunner},
-};
+use perl_tdd_support::test_runner::{TestKind, TestRunner};
 
 use crate::call_hierarchy_provider::CallHierarchyProvider;
 use crate::cancellation::{GLOBAL_CANCELLATION_REGISTRY, PerlLspCancellationToken};
