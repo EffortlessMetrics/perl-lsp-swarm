@@ -74,7 +74,8 @@ class PublicationTests(unittest.TestCase):
             with self.subTest(changes=changes), self.assertRaises(ValueError): self.prepare()
 
     def test_complete_success_only_and_real_partial_product_failure_preserved(self):
-        for changes in ({'executed': 9}, {'failed': 1}, {'selected': True}, {'executed': False}):
+        for changes in ({'executed': 9}, {'failed': 1}, {'selected': True}, {'executed': False},
+                        {'selected': True, 'executed': True}):
             with self.subTest(changes=changes), self.assertRaises(ValueError):
                 self.prepare(replace(self.proof, **changes))
         failure = self.prepare(replace(self.proof, result='product_failure', executed=3, failed=1))

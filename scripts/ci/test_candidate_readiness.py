@@ -210,6 +210,18 @@ class ExistingAdapterTests(unittest.TestCase):
                 self.assertTrue('GIT_DIR' not in kwargs.get('env', os.environ), 'Git override reached source guard')
                 self.assertTrue('GH_TOKEN' not in kwargs.get('env', os.environ), 'Metadata token reached source guard')
 
+    def test_untracked_control_file_refuses_before_any_authority_acquisition(self):
+        def command(argv, **kwargs):
+            output = PLAN['control'] + '\n' if 'rev-parse' in argv else ''
+            if 'status' in argv:
+                output = '?? scripts/ci/shadow_module.py\n'
+            return subprocess.CompletedProcess(argv, 0, output, '')
+        with mock.patch.object(admission.subprocess, 'run', side_effect=command), \
+             mock.patch.object(admission, 'ExistingControlAuthorities', return_value=ExistingOwners()) as owner:
+            result = admission.production(PLAN)
+        self.assertEqual(result['classification'], 'NOT_PROVEN')
+        owner.assert_not_called()
+
     def test_production_requires_clean_control_source(self):
         result = admission.production(PLAN)
         self.assertEqual(result['classification'], 'NOT_PROVEN')

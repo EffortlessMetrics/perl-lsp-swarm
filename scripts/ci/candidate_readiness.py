@@ -247,8 +247,9 @@ def production(plan: dict, *, selection_owner=None, committed_owner=None, applic
                               text=True, timeout=10, check=True).stdout.strip()
         if head != plan['control']:
             return {'classification': 'NOT_PROVEN', 'reason': '#10057 admission requires exact clean control source S'}
-        dirty = subprocess.run(['git', '-c', 'core.fsmonitor=false', 'diff', '--quiet', '--no-ext-diff', 'HEAD', '--'], cwd=root, env=git_env, timeout=10, check=False)
-        if dirty.returncode != 0:
+        status = subprocess.run(['git', '-c', 'core.fsmonitor=false', 'status', '--porcelain', '--untracked-files=all'],
+                                cwd=root, env=git_env, capture_output=True, text=True, timeout=10, check=False)
+        if status.returncode != 0 or status.stdout.strip():
             return {'classification': 'NOT_PROVEN', 'reason': '#10057 admission requires exact clean control source S'}
         result = evaluate(plan, ExistingControlAuthorities(root, selection_owner=selection_owner,
             committed_owner=committed_owner, applicability_owner=applicability_owner))
