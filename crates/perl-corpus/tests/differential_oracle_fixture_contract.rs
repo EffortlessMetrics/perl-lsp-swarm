@@ -361,8 +361,8 @@ fn import_export_fixture_is_a_declared_two_file_module_graph() -> TestResult {
     let paths = import_export_fixture_paths()?;
     let consumer_path = &paths.consumer;
     let producer_path = &paths.producer;
-    let producer = fs::read_to_string(&producer_path)?;
-    let consumer = fs::read_to_string(&consumer_path)?;
+    let producer = fs::read_to_string(producer_path)?;
+    let consumer = fs::read_to_string(consumer_path)?;
 
     assert_contains(&producer, "package Accuracy::ImportsExports;", "producer module")?;
     assert_contains(&producer, "use Exporter qw(import);", "producer module")?;
@@ -481,7 +481,7 @@ fn import_export_fixture_compiles_with_only_the_declared_module_root() -> TestRe
     let consumer = &paths.consumer;
     let root = &paths.module_root;
     let mut command = isolated_perl_command()?;
-    command.current_dir(&root).arg("-I").arg(&root).arg("-c").arg(&consumer);
+    command.current_dir(root).arg("-I").arg(root).arg("-c").arg(consumer);
 
     let output = run_bounded(command, "ImportExport fixture syntax check")?;
     require_success(&output, "ImportExport fixture syntax check")?;
@@ -496,7 +496,7 @@ fn import_export_fixture_loads_the_expected_imported_symbol() -> TestResult {
     let consumer = &paths.consumer;
     let root = &paths.module_root;
     let mut command = isolated_perl_command()?;
-    command.current_dir(&root).arg("-I").arg(&root).arg("-e").arg(IMPORT_PROBE).arg(&consumer);
+    command.current_dir(root).arg("-I").arg(root).arg("-e").arg(IMPORT_PROBE).arg(consumer);
 
     let output = run_bounded(command, "ImportExport fixture load probe")?;
     require_success(&output, "ImportExport fixture load probe")?;

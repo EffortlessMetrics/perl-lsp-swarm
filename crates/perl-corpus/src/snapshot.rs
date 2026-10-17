@@ -304,6 +304,7 @@ pub fn source_hash(source: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use perl_test_must::must_with;
 
     fn sample_entry(fixture_id: &str) -> SnapshotEntry {
         SnapshotEntry {
@@ -363,16 +364,16 @@ mod tests {
         let entry = sample_entry("foo");
         let manifest = manifest_with(vec![entry.clone()]);
 
-        let mut manifest_value = serde_json::to_value(&manifest).expect("serialize manifest");
+        let mut manifest_value = must_with(serde_json::to_value(&manifest), "serialize manifest");
         manifest_value["semantic_correctness"] = serde_json::json!(true);
         assert!(serde_json::from_value::<SnapshotManifest>(manifest_value).is_err());
 
-        let mut entry_value = serde_json::to_value(&entry).expect("serialize entry");
+        let mut entry_value = must_with(serde_json::to_value(&entry), "serialize entry");
         entry_value["source_path"] = serde_json::json!("/tmp/foo.pl");
         assert!(serde_json::from_value::<SnapshotEntry>(entry_value).is_err());
 
         let mut summary_value =
-            serde_json::to_value(&entry.hir_summary).expect("serialize HIR summary");
+            must_with(serde_json::to_value(&entry.hir_summary), "serialize HIR summary");
         summary_value["semantic_pass"] = serde_json::json!(true);
         assert!(serde_json::from_value::<HirSummary>(summary_value).is_err());
     }
@@ -492,8 +493,8 @@ mod tests {
                 dynamic_boundary_count: 0,
             },
         };
-        let json = serde_json::to_string(&entry).expect("serialize");
-        let back: SnapshotEntry = serde_json::from_str(&json).expect("deserialize");
+        let json = must_with(serde_json::to_string(&entry), "serialize");
+        let back: SnapshotEntry = must_with(serde_json::from_str(&json), "deserialize");
         assert_eq!(back, entry);
     }
 }
