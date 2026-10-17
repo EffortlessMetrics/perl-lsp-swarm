@@ -25,6 +25,8 @@ use crate::evidence::{Outcome, dap, product_surface, readiness};
 use crate::indicator::{EvidenceRef, IndicatorStatus};
 use crate::profile::KwaliteeProfile;
 
+mod validation;
+
 /// Payload kind stamped into every emitted receipt.
 pub const NATIVE_PRODUCT_KIND: &str = "native_product_readiness";
 /// Payload schema version.
@@ -132,8 +134,11 @@ pub struct NativeProductRow {
 }
 
 /// The canonical native-product readiness payload.
+///
+/// Deserialization validates the v1 identity, exact ordered catalog, and earned
+/// verdict. It rejects malformed packets instead of normalizing them.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(try_from = "validation::NativeProductReadinessWire")]
 pub struct NativeProductReadiness {
     /// Payload kind; always [`NATIVE_PRODUCT_KIND`].
     pub kind: String,
