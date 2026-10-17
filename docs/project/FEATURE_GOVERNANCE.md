@@ -144,8 +144,14 @@ Profile selection happens through:
 The core crate acts as the bridge between the TOML catalog and the Rust type
 system. At build time, `build.rs` includes the local `build_catalog.rs` module to:
 
-1. Locate `features.toml` (checking `FEATURES_TOML_OVERRIDE` env var, then the
-   workspace root, then a vendored `features_sot.toml` fallback).
+1. Locate the catalog deterministically: `FEATURES_TOML_OVERRIDE` is
+   test/tooling-only and identity-recorded; workspace `features.toml` is
+   preferred in-tree; crate-local `features_sot.toml` is the package-isolated
+   fallback. Package-isolated resolution never walks to a workspace checkout
+   and hard-fails on missing, stale, malformed, wrong-projection, wrong-package,
+   or empty/minimal fallbacks (#9201). Source kind, SHA-256 digest, projection
+   class, and package identity are recorded into generated modules and
+   `cargo xtask features check`.
 2. Parse and validate the catalog (no empty IDs, no duplicates).
 3. Render a generated Rust module with:
    - `ALL_FEATURES: &[Feature]` -- every feature row as a const array.

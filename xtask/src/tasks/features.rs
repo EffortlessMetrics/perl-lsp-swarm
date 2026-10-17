@@ -23,6 +23,42 @@ pub fn invariants() -> Result<()> {
     check_invariants()
 }
 
+/// Inspectable workspace / package-fallback / override resolver (#9201).
+pub fn check(
+    mode: Option<String>,
+    package: Option<String>,
+    manifest_dir: Option<PathBuf>,
+    override_path: Option<PathBuf>,
+    authority: Option<PathBuf>,
+    root: Option<PathBuf>,
+) -> Result<()> {
+    let root = match root {
+        Some(root) => root,
+        None => crate::utils::project_root().context("resolving workspace root")?,
+    };
+    let mode = match mode.as_deref() {
+        None => None,
+        Some("workspace") => Some(xtask::catalog_source::CheckMode::Workspace),
+        Some("package") => Some(xtask::catalog_source::CheckMode::Package),
+        Some("override") => Some(xtask::catalog_source::CheckMode::Override),
+        Some(other) => {
+            bail!("unknown --mode {other}; expected workspace, package, or override")
+        }
+    };
+    let results = xtask::catalog_source::check(&xtask::catalog_source::CheckRequest {
+        root,
+        mode,
+        package,
+        manifest_dir,
+        override_path,
+        authority_path: authority,
+    })?;
+    for result in &results {
+        println!("{}", xtask::catalog_source::format_ok(result));
+    }
+    Ok(())
+}
+
 fn load_features() -> Result<Catalog> {
     let manifest_dir = env::current_dir().context("Failed to get current working directory")?;
     let (catalog, _) = perl_lsp_rs_core::feature_catalog::load_catalog_for_build(&manifest_dir)

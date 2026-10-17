@@ -85,6 +85,7 @@ tempfile.workspace = true
 
 perl-tdd-support = { workspace = true }
 perl-test-must = { workspace = true }
+sha2.workspace = true
 
 # Serial test execution for env-mutating tests (prevents races on PLENV_*, PERLBREW_*, PATH)
 serial_test = "4.0.1"
@@ -94,6 +95,7 @@ toml = "1.1.2"
 # Wave Final PR B: perl-feature-catalog absorbed; build.rs uses inline catalog via include!()
 serde = { workspace = true, features = ["derive"] }
 toml = "1.1.2"
+sha2.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.31.3", features = ["signal", "poll"] }  # For SIGINT handling (AC9) and bounded stdio polling
