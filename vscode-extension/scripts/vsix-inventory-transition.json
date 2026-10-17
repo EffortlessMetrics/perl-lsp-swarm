@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "owner_issue": 17985,
-  "reason": "Accept the measured 114-byte package.json growth for the truthful native-only critic-engine description and its review-driven correction in #17985; all 30 package members and the emitted extension bundle remain otherwise unchanged.",
-  "base_baseline_file_sha256": "a02591ea0bec713209f9f682fafa481ee70fc1db93c53f4856b479936c88ddc2",
-  "candidate_baseline_file_sha256": "f658e1a682e1fee5a4d4053e0f846cac2b46e8dd7aa423f0c5373234912c7289",
-  "base_inventory_sha256": "039b3febe05d22900a49717990beb0e7267995db5e3322663e5792c43f60673f",
-  "candidate_inventory_sha256": "06a1d7fca3d31ccba5cc400078f968034fc5365fcd5ce393cf40fdfda22be423"
+  "owner_issue": 18022,
+  "reason": "Accept the measured 271-byte perltidy diagnostic bundle increase for #18022 atop the accepted main manifest change; preserve all 30 package members and current main manifest bytes.",
+  "base_baseline_file_sha256": "f658e1a682e1fee5a4d4053e0f846cac2b46e8dd7aa423f0c5373234912c7289",
+  "candidate_baseline_file_sha256": "43ca997018cb0eb725263ecd3f62b58ceba2b16f18aadb738c77b1c7222d91f8",
+  "base_inventory_sha256": "06a1d7fca3d31ccba5cc400078f968034fc5365fcd5ce393cf40fdfda22be423",
+  "candidate_inventory_sha256": "63dda88c158ac62b01cd5227792cf3721b3c363da587a01a4639319da66eff4c"
 }
