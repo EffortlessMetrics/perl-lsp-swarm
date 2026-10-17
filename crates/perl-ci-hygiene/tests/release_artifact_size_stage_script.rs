@@ -5,7 +5,8 @@
 //! working tree is clean. Both properties are established by
 //! `scripts/ci/release_artifact_size_stage.sh`, which otherwise runs only on a
 //! macOS runner nobody watches. These tests exercise it directly with real
-//! executables so the packaging contract is proven on every ordinary CI run.
+//! executables. Keep this script-only contract in the CI hygiene crate so its
+//! focused target does not build xtask's parser/LSP dependencies and binaries.
 
 use std::{
     fs,
@@ -20,9 +21,9 @@ const TARGET: &str = "x86_64-apple-darwin";
 const VERSION: &str = "9.9.9";
 const BINARIES: [&str; 2] = ["perllsp", "perl-dap"];
 
-/// The workspace root: `xtask/..` without an unwrap on an optional parent.
+/// The workspace root, independent of the test process's working directory.
 fn project_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
 fn script() -> PathBuf {
@@ -109,10 +110,6 @@ fn sha256(path: &Path) -> Result<String> {
 fn staging_packages_stripped_binaries_whose_archive_matches_the_directory() -> Result<()> {
     let fixture = ExecutableFixture::new()?;
     let root = staged_root(&fixture)?;
-    let unstripped =
-        fs::metadata(root.path().join("target").join(TARGET).join("release").join(BINARIES[0]))?
-            .len();
-
     let output = stage(root.path(), "baseline")?;
     ensure!(output.status.success(), "staging failed: {}", String::from_utf8_lossy(&output.stderr));
 
@@ -140,14 +137,13 @@ fn staging_packages_stripped_binaries_whose_archive_matches_the_directory() -> R
             sha256(&staged)? == sha256(&extracted.path().join(package_name()).join(binary))?,
             "`{binary}` differs between the staged directory and the archive"
         );
+        // Strictly smaller: <= would also pass if staging omitted strip.
+        let unstripped = root.path().join("target").join(TARGET).join("release").join(binary);
+        ensure!(
+            fs::metadata(&staged)?.len() < fs::metadata(unstripped)?.len(),
+            "`{binary}` was not stripped, so the post-strip claim would be false"
+        );
     }
-    // Strictly smaller, not `<=`: `strip` can only shrink or leave a file
-    // alone, so `<=` would hold for an implementation that dropped the `strip`
-    // call entirely and could not discriminate one.
-    ensure!(
-        fs::metadata(package_dir.join(BINARIES[0]))?.len() < unstripped,
-        "the staged binary was not stripped, so the post-strip claim would be false"
-    );
 
     // A staging directory outside `target/` would dirty the checkout, and the
     // instrument records `subject_complete` only for a clean tree.
@@ -273,6 +269,15 @@ fn staging_fixture_reuse_and_cleanup_preserve_the_source() -> Result<()> {
             let seeded = root.path().join("target").join(TARGET).join("release").join(binary);
             ensure!(fs::metadata(&seeded)?.len() == source_bytes, "fixture copy changed size");
             ensure!(sha256(&seeded)? == source_hash, "fixture copy changed bytes");
+            // An independently writable copy must not alias the seed or its sibling.
+            fs::write(&seeded, "copy isolation probe\n")?;
+            ensure!(sha256(&fixture.binary)? == source_hash, "a copy aliases its source fixture");
+            for sibling in BINARIES.into_iter().filter(|sibling| *sibling != binary) {
+                let sibling_path =
+                    root.path().join("target").join(TARGET).join("release").join(sibling);
+                ensure!(sha256(&sibling_path)? == source_hash, "fixture copies alias each other");
+            }
+            fs::copy(&fixture.binary, &seeded)?;
         }
         let output = stage(root.path(), "baseline")?;
         ensure!(

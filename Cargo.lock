@@ -1671,6 +1671,7 @@ dependencies = [
 name = "perl-ci-hygiene"
 version = "0.17.0"
 dependencies = [
+ "anyhow",
  "chrono",
  "clap",
  "color-eyre",
@@ -1679,6 +1680,7 @@ dependencies = [
  "regex",
  "serde_json",
  "syn 3.0.6",
+ "tempfile",
  "toml",
  "walkdir",
 ]

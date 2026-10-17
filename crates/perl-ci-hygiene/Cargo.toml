@@ -22,7 +22,9 @@ walkdir.workspace = true
 toml = "1.1.2"
 
 [dev-dependencies]
+anyhow.workspace = true
 perl-test-must = { path = "../perl-test-must" }
+tempfile.workspace = true
 
 [lints]
 workspace = true
