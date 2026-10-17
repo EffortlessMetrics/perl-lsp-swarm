@@ -271,6 +271,85 @@ fn symbol_at_cursor_returns_none_in_whitespace() -> Result<(), Box<dyn std::erro
 }
 
 #[test]
+fn receiver_resolution_inner_block_does_not_leak_to_outer_use()
+-> Result<(), Box<dyn std::error::Error>> {
+    // #18122: an inner block's reassignment wins inside the block but must not
+    // leak to a use after the block.
+    let code = "my $obj = Dog->new;\n{ my $obj = Cat->new; $obj->meow; }\n$obj->bark;\n";
+    let mut parser = Parser::new(code);
+    let ast = parser.parse()?;
+
+    let inside_offset = code.find("meow").ok_or("missing meow call")?;
+    let inside = symbol_at_cursor(&ast, inside_offset, "main").ok_or("no symbol inside block")?;
+    assert_eq!(inside.pkg.as_ref(), "Cat");
+    assert_eq!(inside.name.as_ref(), "meow");
+
+    let outside_offset = code.find("bark").ok_or("missing bark call")?;
+    let outside =
+        symbol_at_cursor(&ast, outside_offset, "main").ok_or("no symbol outside block")?;
+    assert_eq!(outside.pkg.as_ref(), "Dog");
+    assert_eq!(outside.name.as_ref(), "bark");
+    Ok(())
+}
+
+#[test]
+fn receiver_resolution_later_assignment_in_same_scope_wins()
+-> Result<(), Box<dyn std::error::Error>> {
+    let code = "my $obj = Dog->new;\n$obj = Cat->new;\n$obj->meow;\n";
+    let mut parser = Parser::new(code);
+    let ast = parser.parse()?;
+
+    let offset = code.find("meow").ok_or("missing meow call")?;
+    let key = symbol_at_cursor(&ast, offset, "main").ok_or("no symbol at meow")?;
+    assert_eq!(key.pkg.as_ref(), "Cat");
+    assert_eq!(key.name.as_ref(), "meow");
+    Ok(())
+}
+
+#[test]
+fn receiver_resolution_bless_infers_package() -> Result<(), Box<dyn std::error::Error>> {
+    // #18122: `bless {}, 'Dog'` is a constructor for receiver purposes.
+    let code = "my $obj = bless {}, 'Dog';\n$obj->bark;\n";
+    let mut parser = Parser::new(code);
+    let ast = parser.parse()?;
+
+    let offset = code.find("bark").ok_or("missing bark call")?;
+    let key = symbol_at_cursor(&ast, offset, "main").ok_or("no symbol at bark")?;
+    assert_eq!(key.pkg.as_ref(), "Dog");
+    assert_eq!(key.name.as_ref(), "bark");
+    Ok(())
+}
+
+#[test]
+fn receiver_resolution_bless_assignment_form_infers_package()
+-> Result<(), Box<dyn std::error::Error>> {
+    let code = "my $obj;\n$obj = bless {}, 'Cat';\n$obj->meow;\n";
+    let mut parser = Parser::new(code);
+    let ast = parser.parse()?;
+
+    let offset = code.find("meow").ok_or("missing meow call")?;
+    let key = symbol_at_cursor(&ast, offset, "main").ok_or("no symbol at meow")?;
+    assert_eq!(key.pkg.as_ref(), "Cat");
+    assert_eq!(key.name.as_ref(), "meow");
+    Ok(())
+}
+
+#[test]
+fn receiver_resolution_unknown_receiver_has_no_current_package_fallback()
+-> Result<(), Box<dyn std::error::Error>> {
+    // #18122: an unknown receiver must resolve to nothing, not to the current
+    // package.
+    let code = "package Foo;\n$mystery->bark;\n";
+    let mut parser = Parser::new(code);
+    let ast = parser.parse()?;
+
+    let offset = code.find("bark").ok_or("missing bark call")?;
+    let sym = symbol_at_cursor(&ast, offset, "Foo");
+    assert!(sym.is_none(), "unknown receiver must not fall back to Foo, got {sym:?}");
+    Ok(())
+}
+
+#[test]
 fn declaration_provider_new_and_build_parent_map() -> Result<(), Box<dyn std::error::Error>> {
     let code = "sub greet { my $name = 'World'; }";
     let mut parser = Parser::new(code);

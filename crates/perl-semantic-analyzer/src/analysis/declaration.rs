@@ -1556,18 +1556,53 @@ fn looks_like_package_name(name: &str) -> bool {
     name.contains("::") || name.chars().next().is_some_and(|ch| ch.is_ascii_uppercase())
 }
 
+/// One recorded `my $var = <constructor>` / `$var = <constructor>` binding.
+///
+/// Resolution is scope-aware (#18122): a binding applies at a use site only
+/// when the scope enclosing the assignment also contains the use site and the
+/// assignment precedes it. An inner block's reassignment therefore wins inside
+/// that block and never leaks to uses after the block.
+#[derive(Debug, Clone)]
+struct ReceiverBinding {
+    var_name: String,
+    package: String,
+    scope_start: usize,
+    scope_end: usize,
+    assign_end: usize,
+}
+
+type ReceiverBindings = Vec<ReceiverBinding>;
+
+fn lookup_receiver_package(
+    bindings: &[ReceiverBinding],
+    var_name: &str,
+    use_offset: usize,
+) -> Option<String> {
+    bindings
+        .iter()
+        .filter(|binding| {
+            binding.var_name == var_name
+                && binding.assign_end <= use_offset
+                && binding.scope_start <= use_offset
+                && use_offset <= binding.scope_end
+        })
+        .max_by_key(|binding| binding.assign_end)
+        .map(|binding| binding.package.clone())
+}
+
 fn infer_receiver_package(
     object: &Node,
     current_pkg: &str,
-    receiver_packages: &std::collections::HashMap<String, String>,
+    receiver_bindings: &[ReceiverBinding],
+    use_offset: usize,
 ) -> Option<String> {
     if let NodeKind::Identifier { name } = &object.kind {
         return Some(name.clone());
     }
 
     if let Some(name) = node_variable_name(object) {
-        if let Some(package_name) = receiver_packages.get(name) {
-            return Some(package_name.clone());
+        if let Some(package_name) = lookup_receiver_package(receiver_bindings, name, use_offset) {
+            return Some(package_name);
         }
 
         if matches!(name, "self" | "this" | "class") {
@@ -1582,14 +1617,43 @@ fn infer_receiver_package(
     None
 }
 
+/// The package named by a literal class argument: `'Dog'`, `"Dog"`, or a
+/// bareword `Dog`. Dynamic expressions (variables, `shift`, calls) return
+/// `None` — their class is not statically known and must not be guessed.
+fn literal_package_name(node: &Node) -> Option<String> {
+    match &node.kind {
+        NodeKind::String { value, .. } => {
+            let trimmed = value.trim().trim_matches('\'').trim_matches('"').trim();
+            if trimmed.is_empty() { None } else { Some(trimmed.to_string()) }
+        }
+        NodeKind::Identifier { name } => Some(name.clone()),
+        _ => None,
+    }
+}
+
+/// The package a `bless` call produces: `bless $ref, 'Pkg'` is `Pkg`,
+/// `bless $ref` is the current package (Perl semantics), and a dynamic class
+/// argument (`bless $ref, $class`) stays unresolved.
+fn infer_bless_package(args: &[Node], current_pkg: &str) -> Option<String> {
+    match args.get(1) {
+        Some(package_node) => literal_package_name(package_node),
+        None if !args.is_empty() => Some(current_pkg.to_string()),
+        None => None,
+    }
+}
+
 fn infer_constructor_package(
     rhs: &Node,
     current_pkg: &str,
-    receiver_packages: &std::collections::HashMap<String, String>,
+    receiver_bindings: &[ReceiverBinding],
+    use_offset: usize,
 ) -> Option<String> {
     match &rhs.kind {
         NodeKind::MethodCall { method, object, .. } if method == "new" => {
-            infer_receiver_package(object, current_pkg, receiver_packages)
+            infer_receiver_package(object, current_pkg, receiver_bindings, use_offset)
+        }
+        NodeKind::FunctionCall { name, args } if name == "bless" => {
+            infer_bless_package(args, current_pkg)
         }
         NodeKind::FunctionCall { name, .. } => {
             name.rsplit_once("::").map(|(package_name, _)| package_name.to_string())
@@ -1598,42 +1662,60 @@ fn infer_constructor_package(
     }
 }
 
+fn is_receiver_scope_boundary(node: &Node) -> bool {
+    matches!(
+        node.kind,
+        NodeKind::Program { .. }
+            | NodeKind::Block { .. }
+            | NodeKind::Subroutine { .. }
+            | NodeKind::Method { .. }
+    )
+}
+
 fn record_receiver_assignment(
     node: &Node,
-    offset: usize,
+    use_offset: usize,
     current_pkg: &str,
-    receiver_packages: &mut std::collections::HashMap<String, String>,
+    bindings: &mut ReceiverBindings,
+    scope: (usize, usize),
 ) {
-    if node.location.start > offset {
+    if node.location.start > use_offset {
         return;
     }
 
-    if node.location.end <= offset {
-        match &node.kind {
-            NodeKind::VariableDeclaration { variable, initializer, .. } => {
-                if let (Some(variable_name), Some(initializer)) =
-                    (node_variable_name(variable), initializer.as_ref())
-                    && let Some(package_name) =
-                        infer_constructor_package(initializer, current_pkg, receiver_packages)
-                {
-                    receiver_packages.insert(variable_name.to_string(), package_name);
-                }
+    let scope = if is_receiver_scope_boundary(node) {
+        (node.location.start, node.location.end)
+    } else {
+        scope
+    };
+
+    if node.location.end <= use_offset {
+        let constructor_rhs = match &node.kind {
+            NodeKind::VariableDeclaration { variable, initializer: Some(initializer), .. } => {
+                node_variable_name(variable).map(|name| (name, initializer.as_ref()))
             }
             NodeKind::Assignment { lhs, rhs, .. } => {
-                if let Some(variable_name) = node_variable_name(lhs)
-                    && let Some(package_name) =
-                        infer_constructor_package(rhs, current_pkg, receiver_packages)
-                {
-                    receiver_packages.insert(variable_name.to_string(), package_name);
-                }
+                node_variable_name(lhs).map(|name| (name, rhs.as_ref()))
             }
-            _ => {}
+            _ => None,
+        };
+        if let Some((variable_name, rhs)) = constructor_rhs
+            && let Some(package_name) =
+                infer_constructor_package(rhs, current_pkg, bindings, use_offset)
+        {
+            bindings.push(ReceiverBinding {
+                var_name: variable_name.to_string(),
+                package: package_name,
+                scope_start: scope.0,
+                scope_end: scope.1,
+                assign_end: node.location.end,
+            });
         }
     }
 
     for child in get_node_children(node) {
-        if child.location.start <= offset {
-            record_receiver_assignment(child, offset, current_pkg, receiver_packages);
+        if child.location.start <= use_offset {
+            record_receiver_assignment(child, use_offset, current_pkg, bindings, scope);
         }
     }
 }
@@ -1681,10 +1763,17 @@ pub fn method_argument_bareword_key(
     }
     let word = bareword_at_offset(source_text, offset)?;
 
-    let mut receiver_packages = std::collections::HashMap::new();
-    record_receiver_assignment(ast, offset, current_pkg, &mut receiver_packages);
-    let pkg = infer_receiver_package(object, current_pkg, &receiver_packages)
-        .unwrap_or_else(|| current_pkg.to_string());
+    let mut receiver_bindings: ReceiverBindings = Vec::new();
+    record_receiver_assignment(
+        ast,
+        offset,
+        current_pkg,
+        &mut receiver_bindings,
+        (ast.location.start, ast.location.end),
+    );
+    // No current-package fallback (#18122): an unknown receiver yields no key
+    // instead of a confident wrong-package answer.
+    let pkg = infer_receiver_package(object, current_pkg, &receiver_bindings, offset)?;
 
     Some(SymbolKey { pkg: pkg.into(), name: word.into(), sigil: None, kind: SymKind::Sub })
 }
@@ -2241,10 +2330,17 @@ fn symbol_at_cursor_internal(
                     return None;
                 }
             }
-            let mut receiver_packages = std::collections::HashMap::new();
-            record_receiver_assignment(ast, offset, current_pkg, &mut receiver_packages);
-            let pkg = infer_receiver_package(object, current_pkg, &receiver_packages)
-                .unwrap_or_else(|| current_pkg.to_string());
+            let mut receiver_bindings: ReceiverBindings = Vec::new();
+            record_receiver_assignment(
+                ast,
+                offset,
+                current_pkg,
+                &mut receiver_bindings,
+                (ast.location.start, ast.location.end),
+            );
+            // No current-package fallback (#18122): an unknown receiver
+            // resolves to no symbol instead of the current package.
+            let pkg = infer_receiver_package(object, current_pkg, &receiver_bindings, offset)?;
             Some(SymbolKey {
                 pkg: pkg.into(),
                 name: method.clone().into(),
