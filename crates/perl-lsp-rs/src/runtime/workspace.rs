@@ -2012,6 +2012,12 @@ impl LspServer {
         // republish runs once, after the metadata refresh below (#17332).
         let mut watched_delete = false;
 
+        // Whether a CREATED/CHANGED event was processed immediately (not
+        // queued for the debounced batch); those change the facts open
+        // consumers resolved through just as a delete does, so they earn
+        // the same republish tail (#17332).
+        let mut watched_create_or_change = false;
+
         for change in params.changes {
             let uri = change.uri.to_string();
             let change_type = change.typ;
@@ -2055,6 +2061,7 @@ impl LspServer {
                     // processing so degraded modes never lose events.
                     metadata_roots.extend(self.project_metadata_roots_for_uri(&uri));
                     self.process_file_watcher_uri_immediate(&uri);
+                    watched_create_or_change = true;
                 }
                 _ => {}
             }
@@ -2069,19 +2076,12 @@ impl LspServer {
         // publications (e2e mode, or a missing/unavailable debouncer) use the
         // refreshed facts — a deleted metadata file retires its include root
         // here — and a bulk delete costs one sweep instead of one per change.
-        // Matches the `handle_did_delete_files` seam order.
-        if watched_delete {
-            if self.client_supports_pull_diags.load(Ordering::Relaxed) {
-                // #17332 pull remainder: the push republish below is a no-op
-                // for a pull-diagnostics client, so its open consumers would
-                // keep stale findings after a dependency delete. Ask it to
-                // re-pull instead, mirroring the include-path seam.
-                if let Err(error) = self.request_diagnostic_refresh() {
-                    tracing::warn!(%error, "Failed to refresh pull diagnostics after watched delete");
-                }
-            } else {
-                self.republish_open_document_diagnostics();
-            }
+        // Matches the `handle_did_delete_files` seam order. A create or
+        // change processed immediately earns the same tail: restoring or
+        // editing a dependency must clear (or introduce) findings in open
+        // consumers with no buffer edit (#17332).
+        if watched_delete || watched_create_or_change {
+            self.refresh_diagnostics_after_watched_change();
         }
 
         // This is a notification, no response needed
@@ -2104,6 +2104,31 @@ impl LspServer {
         // folder once for the whole batch (#13640).
         let metadata_roots = self.project_metadata_roots_for_batch(uris.iter().map(String::as_str));
         self.refresh_project_metadata_facts(&metadata_roots);
+
+        // The batch only ever carries CREATED/CHANGED events, and the
+        // re-index above changed facts open consumers may have resolved
+        // through: republish (or ask pull clients to re-pull) once for the
+        // whole batch, mirroring the DELETED tail (#17332).
+        if !uris.is_empty() {
+            self.refresh_diagnostics_after_watched_change();
+        }
+    }
+
+    /// Republish diagnostics for open consumers after watched-file facts
+    /// changed, or ask a pull-diagnostics client to re-pull (#17332).
+    ///
+    /// The push republish is a no-op for a pull-diagnostics client, so its
+    /// open consumers would keep stale findings after a dependency delete,
+    /// restore, or edit. Ask it to re-pull instead, mirroring the
+    /// include-path seam.
+    fn refresh_diagnostics_after_watched_change(&self) {
+        if self.client_supports_pull_diags.load(Ordering::Relaxed) {
+            if let Err(error) = self.request_diagnostic_refresh() {
+                tracing::warn!(%error, "Failed to refresh pull diagnostics after watched file change");
+            }
+        } else {
+            self.republish_open_document_diagnostics();
+        }
     }
 
     /// Evict every indexed URI whose filesystem path is a descendant of
