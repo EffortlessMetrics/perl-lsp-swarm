@@ -321,6 +321,42 @@ proc
     assert!(completions.iter().any(|c| c.label == "process_items"));
 }
 
+/// Mid-token subroutine completion must replace the whole token, so
+/// applying the edit does not duplicate the suffix after the cursor
+/// (#18105).
+#[test]
+fn test_function_completion_mid_token_replaces_whole_token()
+-> Result<(), Box<dyn std::error::Error>> {
+    let code = "sub process_data { 1 }\nprocess_data;\n";
+    let cursor = code.find("process_data;").ok_or("call site missing")? + 4; // after `proc`
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new(&ast);
+    let completions = provider.get_completions(code, cursor);
+    let item = completions
+        .iter()
+        .find(|c| c.label == "process_data")
+        .ok_or("process_data completion missing")?;
+    let (start, end) = item.text_edit_range.ok_or("text edit range missing")?;
+    assert_eq!(&code[start..end], "process_data", "edit must cover the whole token");
+    let insert = item.insert_text.as_deref().ok_or("insert text missing")?;
+    let applied = format!("{}{}{}", &code[..start], insert, &code[end..]);
+    assert!(
+        applied.contains("process_data();") && !applied.contains("()ess_data"),
+        "applied edit must not duplicate the suffix: {applied}"
+    );
+
+    // End-of-token control: range still ends at the cursor.
+    let end_cursor = code.find("process_data;").ok_or("call site missing")? + "process_data".len();
+    let completions = provider.get_completions(code, end_cursor);
+    let item = completions
+        .iter()
+        .find(|c| c.label == "process_data")
+        .ok_or("process_data completion missing at end of token")?;
+    assert_eq!(item.text_edit_range.map(|(_, e)| e), Some(end_cursor));
+    Ok(())
+}
+
 #[test]
 fn dash_trigger_after_multibyte_receiver_keeps_char_boundary()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -4000,6 +4036,7 @@ fn ctx_for(prefix: &str, current_package: &str, source_position: usize) -> Compl
         current_package: current_package.to_string(),
         prefix: prefix.to_string(),
         prefix_start: source_position.saturating_sub(prefix.len()),
+        suffix_end: source_position,
         cursor_scope_id: 0,
     }
 }
