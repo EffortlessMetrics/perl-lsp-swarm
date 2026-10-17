@@ -2,20 +2,24 @@
 # Startup validation for a provisioned Linux cloud image; see docs/how-to/CLOUD_STARTUP.md.
 set -euo pipefail
 
-repo="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+script_dir="${BASH_SOURCE[0]%/*}"
+if [[ "$script_dir" == "${BASH_SOURCE[0]}" ]]; then
+    script_dir=.
+fi
+repo="$(cd -- "$script_dir/.." && pwd)"
 shared="${PERL_LSP_CLOUD_SHARED:-/workspace/shared}"
 export CARGO_HOME="$shared/cargo"
 export RUSTUP_HOME="$shared/rustup"
 export DEVPLANE="$shared/devplane/perl-lsp-swarm"
 export npm_config_cache="$shared/npm-cache"
-export PATH="$CARGO_HOME/bin:$shared/node-v26.6.0-linux-x64/bin:$PATH"
+export PATH="$CARGO_HOME/bin:$shared/node-v26.6.0-linux-x64/bin${PATH:+:$PATH}"
 # A standalone assignment preserves parser failure under set -e.
 RUSTUP_TOOLCHAIN="$(python3 - "$repo/rust-toolchain.toml" <<'PY'
 import pathlib
 import sys
 import tomllib
 
-channel = tomllib.loads(pathlib.Path(sys.argv[1]).read_text())["toolchain"]["channel"]
+channel = tomllib.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))["toolchain"]["channel"]
 if not isinstance(channel, str) or not channel.strip():
     raise ValueError("rust-toolchain.toml must declare a nonempty toolchain channel")
 print(channel)

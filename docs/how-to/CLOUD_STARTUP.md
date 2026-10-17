@@ -37,6 +37,10 @@ malformed toolchain configuration stops before tool commands run.
 matches the provisioned image used for this entry; supported versions remain
 owned by `vscode-extension`'s `npm run doctor`, not by this pathname. A missing
 Node directory can use the existing PATH's Node when the doctor accepts it.
+An empty inherited PATH does not add the current directory to command lookup;
+checkout resolution uses Bash builtins before the selected tool paths are set.
+The TOML pin and fixture text are read explicitly as UTF-8, including under an
+ASCII locale.
 
 Startup verifies installed Rust/Cargo/just commands, calls the existing declared
 release-tag preparation, then runs `just devplane-init` and
@@ -59,7 +63,8 @@ checkout and mocked tools. They cover startup completion, two distinct checkout
 pins, missing/malformed pin refusal before tool commands, absence of startup's
 capacity/job overrides, history-before-layout-preflight ordering, disabled
 automatic Rust installation, the complete operation sequence, and refusal to
-run npm ci after the toolchain doctor fails:
+run npm ci after the toolchain doctor fails. Empty-PATH and ASCII-locale
+subcases protect command lookup and UTF-8 pin handling:
 
 ```bash
 bash -n scripts/cloud-startup
