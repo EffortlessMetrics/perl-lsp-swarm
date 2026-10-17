@@ -206,14 +206,13 @@ fn evaluate(
         &args.ripr_head,
         args.ripr_pr_head.as_deref(),
     )?;
-    if let Some(subject) = subject.as_ref() {
-        if subject["evaluated_sha"].as_str() != Some(head.as_str())
-            || args.ripr_baseline_commit.is_some()
-        {
-            bail!(
-                "PR comparison requires exact evaluated checkout and head-bound repository-wide RIPR proof"
-            );
-        }
+    if let Some(subject) = subject.as_ref()
+        && (subject["evaluated_sha"].as_str() != Some(head.as_str())
+            || args.ripr_baseline_commit.is_some())
+    {
+        bail!(
+            "PR comparison requires exact evaluated checkout and head-bound repository-wide RIPR proof"
+        );
     }
     if args.ripr_pr_head.is_some() {
         for path in [&args.ripr_pr_receipt, &args.review_receipt] {
@@ -229,14 +228,12 @@ fn evaluate(
         }
     } else {
         for path in [&args.ripr_pr_receipt, &args.review_receipt] {
-            if let Ok(text) = fs::read_to_string(path) {
-                if let Ok(packet) = serde_json::from_str::<Value>(&text) {
-                    if packet.get("comparison_subject").is_some()
-                        || packet.get("pr_head_sha").is_some_and(|v| !v.is_null())
-                    {
-                        bail!("PR receipts require independent --ripr-pr-head input");
-                    }
-                }
+            if let Ok(text) = fs::read_to_string(path)
+                && let Ok(packet) = serde_json::from_str::<Value>(&text)
+                && (packet.get("comparison_subject").is_some()
+                    || packet.get("pr_head_sha").is_some_and(|v| !v.is_null()))
+            {
+                bail!("PR receipts require independent --ripr-pr-head input");
             }
         }
     }

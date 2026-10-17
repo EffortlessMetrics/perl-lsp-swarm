@@ -1440,10 +1440,10 @@ fn write_pr_evidence(repo: &Path, options: &PrEvidenceOptions) -> Result<()> {
     {
         bail!("RIPR comparison changed during analysis");
     }
-    if let Some(subject) = subject.as_ref() {
-        if ingestion.analysis_base.as_ref() != Some(&subject["comparison_base_sha"]) {
-            bail!("RIPR raw producer comparison base differs from authenticated P");
-        }
+    if let Some(subject) = subject.as_ref()
+        && ingestion.analysis_base.as_ref() != Some(&subject["comparison_base_sha"])
+    {
+        bail!("RIPR raw producer comparison base differs from authenticated P");
     }
     let mut packet = pr_evidence_packet_from_summary(
         options,
