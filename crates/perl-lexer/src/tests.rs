@@ -771,3 +771,64 @@ fn checkpoint_restore_does_not_replay_pod_cut_memo() {
     // The memo is a pure cache: it stays valid or is recomputed, and the answer is identical.
     assert!(lexer.pod_has_later_cut(), "answer after restore matches answer before");
 }
+
+#[test]
+fn skip_whitespace_consumes_each_known_pod_command_through_cut() {
+    for cmd in ["=pod", "=head1", "=over", "=item", "=back", "=begin", "=end", "=for", "=encoding"]
+    {
+        let source = format!("1;\n{cmd} text\nbody\n=cut\nrest");
+        let mut lexer = lexer_at_equals(&source);
+        lexer.skip_whitespace_and_comments();
+        assert_eq!(lexer.position, source.len() - "rest".len(), "{cmd}");
+
+        // Known commands do not need a later `=cut`; they run to end of input.
+        let open = format!("1;\n{cmd} text\nbody\n");
+        let mut lexer = lexer_at_equals(&open);
+        lexer.skip_whitespace_and_comments();
+        assert_eq!(lexer.position, open.len(), "{cmd} without =cut");
+    }
+}
+
+#[test]
+fn skip_whitespace_does_not_open_pod_at_a_stray_cut() {
+    let source = "1;\n\n=cut\nrest";
+    let mut lexer = lexer_at_equals(source);
+    let at = lexer.position;
+    lexer.skip_whitespace_and_comments();
+    assert_eq!(lexer.position, at, "a stray =cut stays code");
+}
+
+#[test]
+fn skip_whitespace_opens_generic_pod_only_with_context_and_later_cut() {
+    let opens = "1;\n\n=construct x\nbody\n=cut\nrest";
+    let mut lexer = lexer_at_equals(opens);
+    lexer.skip_whitespace_and_comments();
+    assert_eq!(lexer.position, opens.len() - "rest".len());
+
+    let no_cut = "1;\n\n=construct x\nbody\nrest";
+    let mut lexer = lexer_at_equals(no_cut);
+    let at = lexer.position;
+    lexer.skip_whitespace_and_comments();
+    assert_eq!(lexer.position, at, "no later =cut keeps it code");
+
+    let continuation = "my $x\n=construct x\n=cut\nrest";
+    let mut lexer = lexer_at_equals(continuation);
+    let at = lexer.position;
+    lexer.skip_whitespace_and_comments();
+    assert_eq!(lexer.position, at, "no blank line or statement end keeps it code");
+}
+
+#[test]
+fn pod_after_blank_line_reads_only_the_immediately_previous_line() {
+    for (source, expected) in [
+        ("a\n\n=construct x\n=cut\n", true),
+        ("a\n\nb\n=construct x\n=cut\n", false),
+        ("a\r\n\r\n=construct x\r\n=cut\r\n", true),
+        ("a\r\n\r\nb\r\n=construct x\r\n=cut\r\n", false),
+        ("a\n \t\n=construct x\n=cut\n", true),
+        ("a\n b \n=construct x\n=cut\n", false),
+    ] {
+        let lexer = lexer_at_equals(source);
+        assert_eq!(lexer.pod_after_blank_line(), expected, "{source:?}");
+    }
+}
