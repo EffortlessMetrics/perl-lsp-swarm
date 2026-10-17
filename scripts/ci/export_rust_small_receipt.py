@@ -40,7 +40,16 @@ def regular_bytes(path: Path, limit: int) -> tuple[bytes, os.stat_result]:
         os.close(descriptor)
 
 
-def export(environment: dict[str, str]) -> dict:
+def export(environment: dict[str, str], *, acquire_plan=None) -> dict:
+    # The installed `python3 -I` exporter stays stdlib-only. The bridge is an
+    # in-process trusted-control composition, never a new script/path override.
+    hooks = {}
+    if acquire_plan is not None:
+        if not __package__:
+            raise ValueError('subject bridge requires trusted in-process composition')
+        from .rust_small_subject import product_subject
+        from .rust_small_evidence import unique_object
+        hooks['object_pairs_hook'] = unique_object
     required = ("GITHUB_WORKSPACE", "RUNNER_TEMP", "GITHUB_REPOSITORY", "GITHUB_SHA",
                 "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT", "EM_CI_ARTIFACT_DIR",
                 "GITHUB_JOB", "GITHUB_WORKFLOW", "GITHUB_WORKFLOW_REF", "GITHUB_EVENT_NAME", "GITHUB_REF")
@@ -70,7 +79,7 @@ def export(environment: dict[str, str]) -> dict:
     if environment["GITHUB_JOB"] not in ("standard", "hosted", "hosted-fallback"):
         raise ValueError("unsupported standard producer job")
     context_bytes, _ = regular_bytes(temporary / "em-ci-job-context.json", 16384)
-    context = json.loads(context_bytes)
+    context = json.loads(context_bytes, **hooks)
     expected = {
         "schema": "em-ci-job-context.v1", "repository": environment["GITHUB_REPOSITORY"],
         "sha": environment["GITHUB_SHA"], "run_id": environment["GITHUB_RUN_ID"],
@@ -81,6 +90,7 @@ def export(environment: dict[str, str]) -> dict:
     }
     if any(context.get(key) != value for key, value in expected.items()):
         raise ValueError("central producer identity mismatch")
+    acquired = product_subject(environment, context, acquire_plan) if acquire_plan is not None else None
     entered = datetime.datetime.strptime(context["proof_started_at"], "%Y-%m-%dT%H:%M:%SZ")
     entered_ns = int(entered.replace(tzinfo=datetime.timezone.utc).timestamp()) * 10**9
     source = Path(environment["GITHUB_WORKSPACE"]) / "target/receipts/rust-small-proof.json"
@@ -91,7 +101,8 @@ def export(environment: dict[str, str]) -> dict:
     if receipt.get("schema_version") != "rust_small_proof.v1":
         raise ValueError("canonical receipt schema missing")
     subject = receipt.get("subject", {})
-    if subject.get("git_sha") != environment["GITHUB_SHA"] or subject.get("worktree_dirty") is not False:
+    proof_sha = acquired['head'] if acquired is not None else environment["GITHUB_SHA"]
+    if subject.get("git_sha") != proof_sha or subject.get("worktree_dirty") is not False:
         raise ValueError("canonical receipt source mismatch")
     if receipt.get("result") not in ("success", "product_failure", "not_completed", "instrument_failure"):
         raise ValueError("canonical receipt outcome missing")
@@ -102,6 +113,8 @@ def export(environment: dict[str, str]) -> dict:
         "member": {"path": "rust-small-proof.json", "bytes": len(data),
                    "sha256": hashlib.sha256(data).hexdigest()},
     }
+    if acquired is not None and product_subject(environment, context, acquire_plan) != acquired:
+        raise ValueError('acquired subject changed during export')
     # Exclusive writes into an immutable-owner-created fresh root. A failed
     # export can leave partial staging; central publication must reject it.
     with (root / "rust-small-proof.json").open("xb") as stream:
