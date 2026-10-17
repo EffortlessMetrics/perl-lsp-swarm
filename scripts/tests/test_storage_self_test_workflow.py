@@ -76,6 +76,64 @@ def storage_steps(text):
     return steps
 
 
+def mapping_block(text, key, indent):
+    """Select one literal mapping in this workflow's supported block shape."""
+    name = re.escape(key)
+    pattern = r"(?m)^ {%d}(?:%s|'%s'|\"%s\"):[ \t]*(?:#[^\n]*)?(?:\n|\Z)" % (indent, name, name, name)
+    matches = list(re.finditer(pattern, text))
+    if len(matches) != 1:
+        raise AssertionError('missing or duplicate workflow mapping: ' + key)
+    lines = []
+    for line in text[matches[0].end():].splitlines():
+        if line.strip() and not line.lstrip().startswith('#'):
+            if len(line) - len(line.lstrip(' ')) <= indent:
+                break
+        lines.append(line)
+    return '\n'.join(lines)
+
+
+def literal_scalar(value):
+    """Read only plain or simply quoted scalars; unsupported YAML fails closed."""
+    value = value.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
+        quote = value[0]
+        value = value[1:-1]
+        if quote in value or '\\' in value:
+            raise AssertionError('unsupported quoted workflow scalar')
+        return value
+    if not value or any(char in value for char in "#[]{}&*!|>'\"\\"):
+        raise AssertionError('unsupported workflow scalar')
+    return value
+
+
+def pull_request_paths(text):
+    events = mapping_block(text, 'on', 0)
+    pull_request = mapping_block(events, 'pull_request', 2)
+    paths = mapping_block(pull_request, 'paths', 4)
+    result = []
+    for line in paths.splitlines():
+        if not line.strip() or line.lstrip().startswith('#'):
+            continue
+        match = re.fullmatch(r'      -[ \t]+(.+)', line)
+        if match is None:
+            raise AssertionError('unsupported pull_request.paths entry')
+        result.append(literal_scalar(match[1]))
+    return result
+
+
+def toolchain_inputs(step):
+    inputs = mapping_block(step['source'], 'with', 8)
+    result = {}
+    for line in inputs.splitlines():
+        if not line.strip() or line.lstrip().startswith('#'):
+            continue
+        match = re.fullmatch(r'          ([a-z-]+):[ \t]*(.+)', line)
+        if match is None or match[1] in result:
+            raise AssertionError('unsupported or duplicate Rust toolchain input')
+        result[match[1]] = literal_scalar(match[2])
+    return result
+
+
 def command(pattern):
     return "python3 -m unittest discover -s scripts/tests -p '" + pattern + "' -v"
 
@@ -143,8 +201,7 @@ class StorageSelfTestWorkflow(unittest.TestCase):
         names = [step['name'] for step in self.steps]
         toolchain = self.steps[names.index(TOOLCHAIN)]
         self.assertNotIn('if', toolchain)
-        self.assertIn('          toolchain: 1.95.0\n', toolchain['source'])
-        self.assertIn('          components: clippy\n', toolchain['source'])
+        self.assertEqual(toolchain_inputs(toolchain), {'toolchain': '1.95.0', 'components': 'clippy'})
         previous = names.index(TOOLCHAIN)
         for name, expected in NATIVE.items():
             with self.subTest(step=name):
@@ -195,9 +252,50 @@ class StorageSelfTestWorkflow(unittest.TestCase):
                 self.assertEqual(result, 'cancelled')
 
     def test_own_contract_and_workflow_changes_are_selected(self):
-        self.assertIn("      - 'scripts/tests/" + SELF_TEST + "'\n", self.text)
-        self.assertIn("      - '.github/workflows/ci-gate-self-tests.yml'\n", self.text)
+        paths = pull_request_paths(self.text)
+        self.assertEqual(paths.count('scripts/tests/' + SELF_TEST), 1)
+        self.assertEqual(paths.count('.github/workflows/ci-gate-self-tests.yml'), 1)
         self.selected(SELF_TEST)
+
+    def test_path_mentions_outside_pull_request_paths_do_not_count(self):
+        path = 'scripts/tests/' + SELF_TEST
+        original = "      - '" + path + "'\n"
+        fixture = 'on:\n  pull_request:\n    paths:\n' + original
+        for replacement in ('', "      # " + path + "\n"):
+            changed = fixture.replace(original, replacement, 1)
+            changed += "\n# " + path + "\nother:\n  paths:\n" + original
+            with self.subTest(replacement=replacement):
+                self.assertNotIn(path, pull_request_paths(changed))
+        changed = fixture.replace(SELF_TEST, 'other.py', 1)
+        self.assertNotIn(path, pull_request_paths(changed))
+
+    def test_path_scalar_quoting_preserves_the_selected_identity(self):
+        path = 'scripts/tests/' + SELF_TEST
+        for scalar in (path, "'" + path + "'", '"' + path + '"'):
+            with self.subTest(scalar=scalar):
+                fixture = 'on:\n  pull_request:\n    paths:\n      - ' + scalar + '\n'
+                self.assertEqual(pull_request_paths(fixture), [path])
+
+    def test_toolchain_quoting_does_not_relax_the_qualified_pin(self):
+        source = 'Install Rust\n        with:\n          toolchain: %s\n          components: clippy\n'
+        for value in ('1.95.0', "'1.95.0'", '"1.95.0"'):
+            with self.subTest(value=value):
+                self.assertEqual(toolchain_inputs({'source': source % ('  ' + value)}),
+                                 {'toolchain': '1.95.0', 'components': 'clippy'})
+        self.assertNotEqual(toolchain_inputs({'source': source % '1.96.0'})['toolchain'], '1.95.0')
+
+    def test_ambiguous_or_unsupported_selection_fields_refuse(self):
+        prefix = 'on:\n  pull_request:\n'
+        malformed = [prefix + '    paths: []\n',
+                     prefix + '    paths:\n    paths:\n',
+                     prefix + '    paths:\n      - *unresolved-path\n']
+        for text in malformed:
+            with self.subTest(text=text):
+                with self.assertRaises(AssertionError):
+                    pull_request_paths(text)
+        duplicate = {'source': 'Install Rust\n        with:\n          components: clippy\n          components: clippy\n'}
+        with self.assertRaises(AssertionError):
+            toolchain_inputs(duplicate)
 
     def test_recording_model_rejects_unknown_conditions(self):
         with self.assertRaisesRegex(AssertionError, 'unexpected execution condition'):
