@@ -9658,14 +9658,9 @@ fn test_signature_param_visible_in_body_only() {
 
 /// `for`/`foreach` iterator variables follow lexical admission rules.
 ///
-/// BOUNDED (#8941): the current SymbolTable does not represent bare
-/// `for my $x (...)` iterators at all — the analyzer's Foreach handler
-/// receives a VariableDeclaration node its recorder silently skips, so no
-/// symbol exists to admit or reject (producer gap transferred to #7423/
-/// #7424). Until canonical loop bindings land, this test pins that neither
-/// half fabricates candidates: nothing appears inside or after the loop,
-/// and admission of a *represented* loop lexical is covered by the
-/// predicate unit tests in lexical_visibility.
+/// The analyzer records `for my $x (...)` iterators as lexicals in the
+/// loop scope (#17297), so completion admission is exercised for real:
+/// the iterator is offered inside its loop and nowhere after it.
 #[test]
 fn test_foreach_iterator_scoped_to_loop() {
     let inside_code = concat!("for my $loop_item (1 .. 3) {\n", "    $loop\n", "}\n");
@@ -9678,15 +9673,13 @@ fn test_foreach_iterator_scoped_to_loop() {
 
     let labels = variable_labels(&completions);
     assert!(
-        !labels.iter().any(|l| l.contains("loop_item")),
-        "unrepresented iterators must not be fabricated; got {labels:?}"
+        labels.iter().any(|l| l.contains("loop_item")),
+        "represented loop iterator must be offered inside its loop; got {labels:?}"
     );
 
-    // The analyzer genuinely lacks the binding: confirm the producer gap
-    // rather than an admission rejection, so #7423/#7424 own the fix.
     assert!(
-        !provider.symbol_table.symbols.contains_key("loop_item"),
-        "analyzer now records foreach iterators — revisit this seam for real admission coverage"
+        provider.symbol_table.symbols.contains_key("loop_item"),
+        "analyzer must record foreach iterators (#17297)"
     );
 
     let after_code = concat!("for my $loop_item (1 .. 3) {\n", "    1;\n", "}\n", "$loop\n");
