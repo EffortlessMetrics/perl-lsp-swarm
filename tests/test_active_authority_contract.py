@@ -91,9 +91,9 @@ KNOWN_SKILLS = frozenset(
 )
 
 # The `main` ruleset (id 16664791) sets `required_review_thread_resolution`, so an
-# armed auto-merge with one open bot or outdated thread never fires and reports no
-# failure. The finishing skills must state the precondition in identical words.
-THREAD_PRECONDITION = "zero unresolved review threads is a precondition of arming auto-merge"
+# protected integration with one open bot or outdated thread is blocked. The
+# finishing skills must retain that precondition after routine auto-merge retires.
+THREAD_PRECONDITION = "zero unresolved review threads is a precondition of protected integration"
 
 SEMANTIC_PARITY_MARKERS: dict[str, tuple[str, ...]] = {
     "address-review-comments": ("NOT_PROVEN", "final-challenge", THREAD_PRECONDITION),
@@ -116,8 +116,8 @@ SEMANTIC_PARITY_MARKERS: dict[str, tuple[str, ...]] = {
         "NOT_PROVEN",
         THREAD_PRECONDITION,
         "--match-head-commit",
-        "autoMergeRequest",
-        "Return `PR_IN_FLIGHT` only after a fresh GitHub read confirms",
+        "pending qualification does not authorize auto-merge",
+        "read the durable PR/commit state",
     ),
     "orchestrate-work": ("NOT_PROVEN", "deliver-pr", "review-pr", "verify-live-ci"),
     "prepare-issue": ("PLAN_READY", "NOT_PROVEN", "prepare-proof"),

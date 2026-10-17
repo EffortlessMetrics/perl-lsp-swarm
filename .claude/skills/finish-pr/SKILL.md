@@ -213,6 +213,9 @@ results and live protection, and zero unresolved threads of any author. An open 
 is `MERGE_BLOCKED`, routed through `address-review-comments`, not a pending-run excuse.
 The actual protected merge and read-back remain single-sourced in `merge-reconcile`.
 
+The live ruleset requires thread resolution: zero unresolved review threads is a
+precondition of protected integration.
+
 ## Useful GitHub boundary
 
 Publish candidate-wide route/proof/limitation changes in the PR body or a compact PR

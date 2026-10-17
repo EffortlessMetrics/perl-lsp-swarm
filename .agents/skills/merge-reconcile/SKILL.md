@@ -117,6 +117,9 @@ INTEGRATION_READY
 → protected squash merge
 ```
 
+The live ruleset requires thread resolution: zero unresolved review threads is a
+precondition of protected integration.
+
 ## Protected merge
 
 Use the current head SHA only as compare-and-swap protection at the instant of merge:
