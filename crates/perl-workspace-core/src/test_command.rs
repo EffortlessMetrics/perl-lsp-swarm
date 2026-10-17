@@ -25,7 +25,7 @@
 
 use std::collections::BTreeMap;
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::Digest;
 use crate::environment::{
@@ -389,7 +389,15 @@ pub struct TestCommandCandidate {
 }
 
 /// A deterministic set of independent test-command candidates.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// `Deserialize` is implemented through a wire form that calls
+/// [`TestCommandPlan::validate`] before returning the typed value. A deserialized
+/// plan therefore carries the same authority as one built through
+/// [`plan_test_commands`]; cache and transport consumers can hand a decoded
+/// plan to anyone who expects this type without a second validation pass, and
+/// tampered bytes are rejected at the deserialization boundary rather than
+/// silently trusted until the consumer asks a `ready_*` question.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct TestCommandPlan {
     /// Plan schema version.
@@ -408,7 +416,119 @@ pub struct TestCommandPlan {
     pub fingerprint: Digest,
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TestCommandPlanWire {
+    schema_version: u32,
+    workspace_id: String,
+    environment_fingerprint: EnvironmentFingerprint,
+    configuration_generation: u64,
+    candidates: Vec<TestCommandCandidate>,
+    limitations: Vec<EnvironmentLimitation>,
+    fingerprint: Digest,
+}
+
+impl<'de> Deserialize<'de> for TestCommandPlan {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let wire = TestCommandPlanWire::deserialize(deserializer)?;
+        let plan = Self {
+            schema_version: wire.schema_version,
+            workspace_id: wire.workspace_id,
+            environment_fingerprint: wire.environment_fingerprint,
+            configuration_generation: wire.configuration_generation,
+            candidates: wire.candidates,
+            limitations: wire.limitations,
+            fingerprint: wire.fingerprint,
+        };
+        plan.validate().map_err(serde::de::Error::custom)?;
+        Ok(plan)
+    }
+}
+
 impl TestCommandPlan {
+    /// Re-check builder invariants for a deserialized or reconstructed plan.
+    ///
+    /// Transport and cache consumers must treat a failed validation as
+    /// non-authoritative: do not consult `ready_candidates` or
+    /// `public_receipt` on an invalid value, and do not rely on its
+    /// `fingerprint` as evidence of the snapshot it claims to describe.
+    ///
+    /// The checks are symmetric with what
+    /// [`ProjectEnvironmentSnapshot::validate`] does for snapshots, scaled
+    /// down to the fields a plan carries: schema compatibility with the
+    /// reader, fingerprint honesty against current content, candidate binding
+    /// to the snapshot the plan claims to describe, admission consistency
+    /// with the requirements a candidate lists, and an argv guard re-checked
+    /// at the boundary rather than assumed from construction.
+    pub fn validate(&self) -> Result<(), TestCommandPlanValidationError> {
+        if self.schema_version != TEST_COMMAND_PLAN_SCHEMA_VERSION {
+            return Err(TestCommandPlanValidationError::UnsupportedSchemaVersion {
+                schema_version: self.schema_version,
+            });
+        }
+        if self.workspace_id.is_empty() {
+            return Err(TestCommandPlanValidationError::EmptyWorkspaceId);
+        }
+
+        let recomputed = compute_plan_fingerprint(
+            self.workspace_id.as_str(),
+            &self.environment_fingerprint,
+            self.configuration_generation,
+            &self.candidates,
+            &self.limitations,
+        );
+        if recomputed != self.fingerprint {
+            return Err(TestCommandPlanValidationError::FingerprintMismatch);
+        }
+
+        for (index, candidate) in self.candidates.iter().enumerate() {
+            if candidate.environment_fingerprint != self.environment_fingerprint {
+                return Err(
+                    TestCommandPlanValidationError::CandidateEnvironmentFingerprintMismatch {
+                        candidate_index: index,
+                        candidate_id: candidate.id.clone(),
+                        plan_fingerprint: self.environment_fingerprint.clone(),
+                        candidate_fingerprint: candidate.environment_fingerprint.clone(),
+                    },
+                );
+            }
+            if candidate.configuration_generation != self.configuration_generation {
+                return Err(
+                    TestCommandPlanValidationError::CandidateConfigurationGenerationMismatch {
+                        candidate_index: index,
+                        candidate_id: candidate.id.clone(),
+                        plan_generation: self.configuration_generation,
+                        candidate_generation: candidate.configuration_generation,
+                    },
+                );
+            }
+            if candidate.admission == TestCommandAdmission::Ready {
+                for requirement in &candidate.required_generated_state {
+                    if requirement.state != GeneratedStateFreshness::Current {
+                        return Err(TestCommandPlanValidationError::AdmissionExceedsRequirements {
+                            candidate_index: index,
+                            candidate_id: candidate.id.clone(),
+                            artifact: requirement.artifact,
+                            observed_state: requirement.state,
+                        });
+                    }
+                }
+            }
+            for argument in &candidate.argv {
+                if is_absolute_path(argument) {
+                    return Err(TestCommandPlanValidationError::AbsolutePathInCandidateArgv {
+                        candidate_index: index,
+                        candidate_id: candidate.id.clone(),
+                        kind: candidate.kind,
+                        argument: argument.clone(),
+                    });
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     /// Candidates whose generated-state preconditions hold.
     ///
     /// Readiness is not authorization; the caller still owns policy.
@@ -585,6 +705,165 @@ impl std::fmt::Display for TestCommandPlanError {
 }
 
 impl std::error::Error for TestCommandPlanError {}
+
+/// Error returned while re-validating a [`TestCommandPlan`].
+///
+/// Symmetric with [`EnvironmentBuildError`] but scoped to the fields a plan
+/// carries. Each variant names the predicate that failed and the inputs that
+/// disagreed, so a cache or transport consumer can log a precise diagnosis
+/// instead of guessing why the deserialized bytes were refused.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TestCommandPlanValidationError {
+    /// The plan's `schema_version` does not match [`TEST_COMMAND_PLAN_SCHEMA_VERSION`].
+    UnsupportedSchemaVersion {
+        /// The version stamped on the decoded plan.
+        schema_version: u32,
+    },
+    /// The plan's `workspace_id` is empty.
+    ///
+    /// A plan that does not name a workspace cannot be tied back to a snapshot,
+    /// so its fingerprint is not meaningful authority.
+    EmptyWorkspaceId,
+    /// The plan's stored fingerprint does not match the value recomputed from
+    /// its current content.
+    ///
+    /// The most common cause is a tampered plan; a plan rebuilt through
+    /// [`plan_test_commands`] never produces this mismatch. Cache and transport
+    /// consumers must treat the bytes as non-authoritative on this finding.
+    FingerprintMismatch,
+    /// A candidate carries a snapshot identity that differs from the plan's.
+    ///
+    /// The candidate's `admission` decision was made against a snapshot it no
+    /// longer claims to belong to; trusting it would let a Ready verdict
+    /// outlive the inputs that justified it.
+    CandidateEnvironmentFingerprintMismatch {
+        /// Position of the offending candidate in [`TestCommandPlan::candidates`].
+        candidate_index: usize,
+        /// Candidate identity copied from [`TestCommandCandidate::id`].
+        candidate_id: String,
+        /// Environment fingerprint the plan claims.
+        plan_fingerprint: EnvironmentFingerprint,
+        /// Environment fingerprint stamped on the candidate.
+        candidate_fingerprint: EnvironmentFingerprint,
+    },
+    /// A candidate carries a configuration generation that differs from the plan's.
+    CandidateConfigurationGenerationMismatch {
+        /// Position of the offending candidate in [`TestCommandPlan::candidates`].
+        candidate_index: usize,
+        /// Candidate identity copied from [`TestCommandCandidate::id`].
+        candidate_id: String,
+        /// Configuration generation the plan claims.
+        plan_generation: u64,
+        /// Configuration generation stamped on the candidate.
+        candidate_generation: u64,
+    },
+    /// A candidate is marked [`TestCommandAdmission::Ready`] while one of its
+    /// `required_generated_state` entries is not
+    /// [`GeneratedStateFreshness::Current`].
+    ///
+    /// A decoded Ready whose requirements do not all read `Current` is
+    /// rejected rather than trusted: the admission verdict must be the
+    /// conclusion of the listed requirements, not a parallel claim that
+    /// disagrees with them.
+    AdmissionExceedsRequirements {
+        /// Position of the offending candidate in [`TestCommandPlan::candidates`].
+        candidate_index: usize,
+        /// Candidate identity copied from [`TestCommandCandidate::id`].
+        candidate_id: String,
+        /// Artifact whose state did not match the admission verdict.
+        artifact: GeneratedArtifact,
+        /// State recorded for that artifact.
+        observed_state: GeneratedStateFreshness,
+    },
+    /// A candidate's `argv` contains an absolute path.
+    ///
+    /// The construction path refuses absolute arguments before they reach a
+    /// receipt; the validator re-checks at the boundary so a tampered wire
+    /// form cannot reintroduce one and leak it into a public projection.
+    ///
+    /// The validator does not re-check for option-shaped arguments: a
+    /// candidate's argv legitimately contains runner flags like `prove -l`
+    /// or `prove -b`, so distinguishing a path argument from a flag would
+    /// require coupling to the construction's layout. The construction path
+    /// keeps option-shaped names out of path positions by design (see
+    /// [`TestRootArguments`]), and the absolute-path check is the
+    /// load-bearing boundary guard — it is what a tampered wire form could
+    /// reintroduce to leak host filesystem information into a public receipt.
+    AbsolutePathInCandidateArgv {
+        /// Position of the offending candidate in [`TestCommandPlan::candidates`].
+        candidate_index: usize,
+        /// Candidate identity copied from [`TestCommandCandidate::id`].
+        candidate_id: String,
+        /// Runner family that would receive the offending argument.
+        kind: TestRunnerKind,
+        /// The offending argument.
+        argument: String,
+    },
+}
+
+impl std::fmt::Display for TestCommandPlanValidationError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UnsupportedSchemaVersion { schema_version } => write!(
+                formatter,
+                "test command plan schema_version {schema_version} does not match reader \
+                 version {TEST_COMMAND_PLAN_SCHEMA_VERSION}"
+            ),
+            Self::EmptyWorkspaceId => {
+                formatter.write_str("test command plan workspace_id is empty")
+            }
+            Self::FingerprintMismatch => formatter.write_str(
+                "test command plan fingerprint does not match the value recomputed from \
+                 current content",
+            ),
+            Self::CandidateEnvironmentFingerprintMismatch {
+                candidate_index,
+                candidate_id,
+                plan_fingerprint,
+                candidate_fingerprint,
+            } => write!(
+                formatter,
+                "candidate {candidate_id} at index {candidate_index} carries environment \
+                 fingerprint {candidate_fingerprint} but the plan describes \
+                 {plan_fingerprint}"
+            ),
+            Self::CandidateConfigurationGenerationMismatch {
+                candidate_index,
+                candidate_id,
+                plan_generation,
+                candidate_generation,
+            } => write!(
+                formatter,
+                "candidate {candidate_id} at index {candidate_index} carries configuration \
+                 generation {candidate_generation} but the plan describes \
+                 {plan_generation}"
+            ),
+            Self::AdmissionExceedsRequirements {
+                candidate_index,
+                candidate_id,
+                artifact,
+                observed_state,
+            } => write!(
+                formatter,
+                "candidate {candidate_id} at index {candidate_index} is marked Ready while \
+                 {} requirement {} is {}",
+                artifact.producer(),
+                artifact.identity_tag(),
+                observed_state.identity_tag(),
+            ),
+            Self::AbsolutePathInCandidateArgv { candidate_index, candidate_id, kind, argument } => {
+                write!(
+                    formatter,
+                    "candidate {candidate_id} at index {candidate_index} carries an absolute-path \
+                 argument for {} runner: `{argument}`",
+                    kind.identity_tag(),
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for TestCommandPlanValidationError {}
 
 /// Plan every independent test command the environment supports.
 ///
@@ -1481,7 +1760,14 @@ fn is_absolute_path(value: &str) -> bool {
         && (bytes[2] == b'/' || bytes[2] == b'\\')
 }
 
-fn compute_plan_fingerprint(
+/// Recompute the fingerprint the [`TestCommandPlan`] constructor stamps on a
+/// freshly built plan.
+///
+/// Exposed at `pub(crate)` so [`TestCommandPlan::validate`] can re-derive the
+/// plan fingerprint from current content and compare it against the stored
+/// value; cache and transport consumers that pass the plan through a wire
+/// form rely on that comparison to refuse tampered bytes.
+pub(crate) fn compute_plan_fingerprint(
     workspace_id: &str,
     environment_fingerprint: &EnvironmentFingerprint,
     configuration_generation: u64,
