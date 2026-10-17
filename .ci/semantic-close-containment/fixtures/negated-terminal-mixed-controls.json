@@ -1,0 +1,89 @@
+{
+  "schema_version": "semantic_close_containment_fixture.v1",
+  "provenance": {
+    "captured_at": "2026-10-11",
+    "sources": [
+      "https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/15009"
+    ],
+    "subject_shas": [],
+    "boundary": "Synthetic opposite-direction and identity controls. Each row belongs to its own keyword occurrence; same-number foreign issues and inline examples must not donate negation to a positive relation. Existing fences and blockquote exclusion remain unchanged."
+  },
+  "repository": "effortlessmetrics/perl-lsp-swarm",
+  "pull_request": {
+    "number": 9901509,
+    "title": "Local-negation boundary controls",
+    "body": "Closes #9001509; does not fix OtherOrg/OtherRepo#9001509; resolves #9001510.\nNever resolves https://github.com/OtherOrg/ThirdRepo/issues/9001509.\nNot only closes #9001511.\nExample: `does not close #9001511`.\nExample: `does not close #9001511\ncontinued`.\n\n```text\ndoes not close #9001512\n```\n\n> does not close #9001513\nlazy continuation does not close #9001514"
+  },
+  "issues": [
+    {
+      "repository": "effortlessmetrics/perl-lsp-swarm",
+      "number": 9001509,
+      "title": "Synthetic bounded relation subject",
+      "body": "## Acceptance\nThe named work is established."
+    },
+    {
+      "repository": "otherorg/otherrepo",
+      "number": 9001509,
+      "title": "Synthetic bounded relation subject",
+      "body": "## Acceptance\nThe named work is established."
+    },
+    {
+      "repository": "effortlessmetrics/perl-lsp-swarm",
+      "number": 9001510,
+      "title": "Synthetic bounded relation subject",
+      "body": "## Acceptance\nThe named work is established."
+    },
+    {
+      "repository": "otherorg/thirdrepo",
+      "number": 9001509,
+      "title": "Synthetic bounded relation subject",
+      "body": "## Acceptance\nThe named work is established."
+    },
+    {
+      "repository": "effortlessmetrics/perl-lsp-swarm",
+      "number": 9001511,
+      "title": "Synthetic bounded relation subject",
+      "body": "## Acceptance\nThe named work is established."
+    }
+  ],
+  "expected": {
+    "aggregate_code": "FAIL_NEGATED_TERMINAL_RELATION",
+    "rows": [
+      {
+        "repository": "effortlessmetrics/perl-lsp-swarm",
+        "issue_number": 9001509,
+        "code": "PASS_NO_HIGH_CONFIDENCE_CONTRADICTION"
+      },
+      {
+        "repository": "otherorg/otherrepo",
+        "issue_number": 9001509,
+        "code": "FAIL_NEGATED_TERMINAL_RELATION"
+      },
+      {
+        "repository": "effortlessmetrics/perl-lsp-swarm",
+        "issue_number": 9001510,
+        "code": "PASS_NO_HIGH_CONFIDENCE_CONTRADICTION"
+      },
+      {
+        "repository": "otherorg/thirdrepo",
+        "issue_number": 9001509,
+        "code": "FAIL_NEGATED_TERMINAL_RELATION"
+      },
+      {
+        "repository": "effortlessmetrics/perl-lsp-swarm",
+        "issue_number": 9001511,
+        "code": "PASS_NO_HIGH_CONFIDENCE_CONTRADICTION"
+      },
+      {
+        "repository": "effortlessmetrics/perl-lsp-swarm",
+        "issue_number": 9001511,
+        "code": "PASS_NO_HIGH_CONFIDENCE_CONTRADICTION"
+      },
+      {
+        "repository": "effortlessmetrics/perl-lsp-swarm",
+        "issue_number": 9001511,
+        "code": "PASS_NO_HIGH_CONFIDENCE_CONTRADICTION"
+      }
+    ]
+  }
+}
