@@ -2121,7 +2121,7 @@ impl LspServer {
     /// open consumers would keep stale findings after a dependency delete,
     /// restore, or edit. Ask it to re-pull instead, mirroring the
     /// include-path seam.
-    fn refresh_diagnostics_after_watched_change(&self) {
+    pub(crate) fn refresh_diagnostics_after_watched_change(&self) {
         if self.client_supports_pull_diags.load(Ordering::Relaxed) {
             if let Err(error) = self.request_diagnostic_refresh() {
                 tracing::warn!(%error, "Failed to refresh pull diagnostics after watched file change");
@@ -2530,10 +2530,12 @@ impl LspServer {
             let mut metadata_roots: std::collections::BTreeSet<std::path::PathBuf> =
                 std::collections::BTreeSet::new();
 
+            let mut processed_any = false;
             for file in files {
                 let Some(uri) = file["uri"].as_str() else {
                     continue;
                 };
+                processed_any = true;
 
                 metadata_roots.extend(self.project_metadata_roots_for_uri(uri));
 
@@ -2574,7 +2576,9 @@ impl LspServer {
             // Push clients get no refresh request from `refresh_all`; the
             // created file changed what open consumers resolve through, so
             // republish them directly, mirroring the delete tail (#18116).
-            self.republish_open_document_diagnostics();
+            if processed_any {
+                self.republish_open_document_diagnostics();
+            }
         }
 
         // This is a notification, no response needed
@@ -2594,6 +2598,7 @@ impl LspServer {
             let mut metadata_roots: std::collections::BTreeSet<std::path::PathBuf> =
                 std::collections::BTreeSet::new();
 
+            let mut processed_any = false;
             for file in files {
                 let Some(old_uri) = file["oldUri"].as_str() else {
                     continue;
@@ -2601,6 +2606,7 @@ impl LspServer {
                 let Some(new_uri) = file["newUri"].as_str() else {
                     continue;
                 };
+                processed_any = true;
 
                 // Normalize URIs so the index and pinned_doc_map_for
                 // lookups (which use normalize_uri_key / uri_key) match
@@ -2723,7 +2729,9 @@ impl LspServer {
             // Push clients get no refresh request from `refresh_all`; the
             // rename changed what open consumers resolve through, so
             // republish them directly, mirroring the delete tail (#18116).
-            self.republish_open_document_diagnostics();
+            if processed_any {
+                self.republish_open_document_diagnostics();
+            }
         }
 
         // This is a notification, no response needed

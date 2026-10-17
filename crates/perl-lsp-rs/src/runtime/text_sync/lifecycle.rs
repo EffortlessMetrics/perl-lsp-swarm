@@ -185,9 +185,9 @@ impl LspServer {
                         if accepted {
                             self.refresh_metadata_for_document_uri(uri);
                             // The saved text became the indexed facts open
-                            // consumers resolve through; republish them
+                            // consumers resolve through; refresh them
                             // instead of waiting for a watcher echo (#18116).
-                            self.republish_open_document_diagnostics();
+                            self.refresh_diagnostics_after_watched_change();
                         }
                     }
                     return result;
@@ -246,7 +246,7 @@ impl LspServer {
                             "Re-cohering workspace index from saved buffer for {} (#8041)",
                             normalized_uri
                         );
-                        self.commit_live_save_reconciliation(
+                        let outcome = self.commit_live_save_reconciliation(
                             index,
                             &normalized_uri,
                             url,
@@ -255,7 +255,10 @@ impl LspServer {
                             text,
                             "#8041 backing-file re-cohere",
                         );
-                        index_recommitted = true;
+                        index_recommitted = matches!(
+                            outcome,
+                            Some(SourceCommitOutcome::Accepted | SourceCommitOutcome::NoOp)
+                        );
                     } else if index.is_index_generation_stale(&normalized_uri, doc_gen_val.get())
                         && let Ok(url) = url::Url::parse(&normalized_uri)
                     {
@@ -267,7 +270,7 @@ impl LspServer {
                         // #11305: the captured accepted generation is the
                         // commit identity -- it is no longer discarded in
                         // favor of the initial-import path.
-                        self.commit_live_save_reconciliation(
+                        let outcome = self.commit_live_save_reconciliation(
                             index,
                             &normalized_uri,
                             url,
@@ -276,7 +279,10 @@ impl LspServer {
                             text,
                             "stale-index reconciliation",
                         );
-                        index_recommitted = true;
+                        index_recommitted = matches!(
+                            outcome,
+                            Some(SourceCommitOutcome::Accepted | SourceCommitOutcome::NoOp)
+                        );
                     }
                 }
 
@@ -285,7 +291,7 @@ impl LspServer {
                 // same way the watched-file tails do (#18116); relying on the
                 // client's watcher to echo the save is client-dependent.
                 if index_recommitted {
-                    self.republish_open_document_diagnostics();
+                    self.refresh_diagnostics_after_watched_change();
                 }
             }
 
