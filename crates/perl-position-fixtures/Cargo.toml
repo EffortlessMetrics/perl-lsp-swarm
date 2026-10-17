@@ -1,0 +1,15 @@
+[package]
+name = "perl-position-fixtures"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+description = "Independent raw-byte source-coordinate conformance fixtures"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+
+[lints]
+workspace = true

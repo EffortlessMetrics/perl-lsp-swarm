@@ -82,6 +82,7 @@ members = [
     # (perl-lsp-config absorbed into perl-lsp-rs-core::config — Wave Final PR B)
     "crates/perl-diagnostics",
     "crates/perl-position-tracking",
+    "crates/perl-position-fixtures",
     "crates/perl-symbol",
     "crates/perl-module",
     "crates/perl-line-index",
