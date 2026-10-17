@@ -120,7 +120,8 @@ class ActualRehearsalTests(unittest.TestCase):
         with mock.patch.dict(os.environ, PYTHONPATH='/control/S', CARGO_TARGET_DIR='/admitted/H-target'):
             report = self.run_actual()
         rows = [json.loads(line) for line in self.trace.read_text().splitlines()]
-        producer_index = next(i for i, row in enumerate(rows) if row['argv'] == ['rust-small-proof'])
+        producer_index = next(i for i, row in enumerate(rows) if row['argv'] ==
+                              ['--worktree-root', str(self.workspace), 'rust-small-proof'])
         self.assertEqual(producer_index, 2)  # Detailed entry + actual Adapter.explain.
         self.assertTrue(all('--verify-receipt' in row['argv'] for row in rows[:producer_index]))
         self.assertIn('--verify-receipt', rows[-1]['argv'])

@@ -74,20 +74,42 @@ actual `.ci/policies/required-checks.toml` bytes in clean S. These definitions a
 explicit caller contracts, not automatic acceptance of earlier arbitrary hashes.
 
 A bounded pre-push plan does not prove the full Rust Small lane. Conversely, the
-full Rust Small lane does not prove unrelated local selected commands. Every
-pre-push selected command must have exactly matching successful argv in the
-Rust-verified warm receipt; otherwise this adapter refuses with the missing
-native owner proof boundary. No command equivalence, shell execution, classifier
-clone or selective denominator is invented. Unsupported broad fallback also
-refuses. Selected/deferred planner outputs remain in the digest; deferred
-commands remain explicit integration obligations alongside all required contexts.
+full Rust Small lane does not prove unrelated local selected commands. Exact
+successful argv already present in the Rust-verified warm receipt can satisfy
+the matching local selection. Otherwise the same authenticated warm packet must
+also carry `command-proof-set.json`, the existing command-evidence owner's
+`command-proof-set.v1` output. Its digest and exact selected argv enter the
+portfolio; the complete packet is reacquired after planning and at entry.
+Missing evidence refuses; Rust Small's vocabulary and denominator remain intact.
 
-Ordinary package Rust plans select scoped check, Clippy and all-target tests
-that the current Rust Small receipt does not record verbatim. Those plans, as
-well as docs/workflow/editor plans, remain NOT_PROVEN until authenticated native
-local-command execution evidence is supplied by their existing owner. No real
-owner-produced admissible portfolio is established here. The positive synthetic
-fixture exercises the binding only; it does not establish full local admission.
+`qualification_local_commands.produce(canonical, environment, acquire_plan=...,
+output=absolute_fresh_private_path, command_timeout_secs=...)` invokes existing
+trusted xtask `--worktree-root H command-evidence proof-set --spec ABS --json`.
+The spec comes from the actual `pre-push-plan`, with exact ordered argv, cwd H and
+candidate H. It preserves the owner's actual JSON and failure exit; it never
+writes pass fields. The caller must hold the existing resource lease and enforce
+its absolute deadline. Checked native workspace, canonical execution workspace
+and captured `product_workspace` must agree before any execution. Metadata
+credentials and Git/Python overrides are stripped; admitted Cargo paths remain.
+Shell command selections refuse rather than being silently reinterpreted.
+
+The binder consumes only an already authenticated packet. It checks the actual
+owner schema, every selected command, native producer workspace, candidate H,
+complete success/exit/termination, and serial timestamps within native proof
+entry/finish (including whole-second capture precision). Consumer paths may
+differ from producer paths. Native H warm packets can bootstrap without an S
+capture; S packets require exact captured H/tree/B/S/key. Neither local JSON nor
+a caller-supplied path authenticates native execution.
+
+**The native packet extension is not installed.** The current central owner
+accepts exactly its Rust receipt/export/context members and has no producer
+workspace capture. A follow-on must admit only this optional closed filename,
+bind its bytes through that same native run/attempt/artifact and custody path,
+and capture the actual producer workspace before product execution. Until then,
+ordinary package scoped check, Clippy/all-target, docs/workflow/editor selections
+absent from Rust Small remain NOT_PROVEN. Source fixtures prove the adapter join,
+not actual scoped Cargo execution or native provenance. Deferred planner outputs
+and all required contexts remain integration obligations.
 
 ## Existing integration results and allocation
 

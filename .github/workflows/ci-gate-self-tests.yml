@@ -113,6 +113,10 @@ on:
       - 'scripts/ci/qualification_publication.py'
       - 'scripts/ci/test_qualification_publication.py'
       # Compiler-free runtime/canonical/completion composition and H/S custody.
+      - 'scripts/ci/qualification_native_adapters.py'
+      - 'scripts/ci/test_qualification_native_adapters.py'
+      - 'scripts/ci/qualification_local_commands.py'
+      - 'scripts/ci/test_qualification_local_commands.py'
       - 'scripts/ci/qualification_runtime.py'
       - 'scripts/ci/test_qualification_runtime.py'
       - 'scripts/ci/rust_small_canonical_owner.py'
@@ -477,6 +481,8 @@ jobs:
           scripts.ci.test_request_qualification
           scripts.ci.test_candidate_readiness
           scripts.ci.test_qualification_publication
+          scripts.ci.test_qualification_native_adapters
+          scripts.ci.test_qualification_local_commands
           scripts.ci.test_qualification_runtime
           scripts.ci.test_rust_small_canonical_owner
           scripts.ci.test_qualification_completion

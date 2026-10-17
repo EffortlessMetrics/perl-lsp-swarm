@@ -8,7 +8,6 @@ receipt observations, never from the bounded pre-push command subset.
 import hashlib
 import json
 import os
-import shlex
 from pathlib import Path
 import subprocess
 import tomllib
@@ -65,7 +64,7 @@ class NativeEntryOwners:
             raise Refused('native required context/app inventory incomplete')
         return required
 
-    def warm(self, plan):
+    def warm(self, plan, *, with_packet=False):
         self.current(plan)
         if str(self.warm_run_id) == self.environment.get('GITHUB_RUN_ID'):
             raise Refused('entry proof cannot use its own native run, including earlier attempts')
@@ -126,7 +125,8 @@ class NativeEntryOwners:
         self.current(plan)
         reference = (f'https://github.com/{plan["repository"]}/actions/runs/{self.warm_run_id}'
                      f'/attempts/{self.warm_run_attempt}#job-{check_id}')
-        return document, hashlib.sha256(raw).hexdigest(), reference
+        result = document, hashlib.sha256(raw).hexdigest(), reference
+        return (*result, root) if with_packet else result
 
     def portfolio(self, plan):
         """Return actual owner outputs/digest for Subject creation or validation.
@@ -134,7 +134,7 @@ class NativeEntryOwners:
         Portfolio digest excludes request_key (which itself includes this digest).
         It retains deferred commands: local bounded proof never satisfies them.
         """
-        receipt, _, reference = self.warm(plan)
+        receipt, _, reference, packet = self.warm(plan, with_packet=True)
         prepush = decode(invoke(self.canonical, 'pre-push-plan', '--base', plan['base'],
                                 '--head', plan['head'], '--format', 'json'))
         scope = decode(invoke(self.canonical, 'ci-scope', '--base', plan['base'],
@@ -144,16 +144,24 @@ class NativeEntryOwners:
                 or scope.get('schema_version') != 2 or scope.get('base') != plan['base']
                 or scope.get('head_sha') != plan['head']):
             raise Refused('existing planner subject/schema/posture differs')
+        from .qualification_local_commands import MEMBER, bind_authenticated, selected_argv
         observed = {tuple(step['argv']) for step in receipt['steps'] if step.get('outcome') == 'ok'}
-        if any(tuple(shlex.split(row['command'])) not in observed for row in prepush['selected']):
-            raise Refused('selected local command lacks actual canonical warm execution; native owner proof required')
+        local = None
+        if any(argv not in observed for argv in selected_argv(prepush, plan)):
+            if not (packet / MEMBER).exists():
+                raise Refused('selected local command lacks actual canonical warm execution; native owner proof required')
+            local = bind_authenticated(packet, plan, prepush)
         required = self.required(plan)
         portfolio = dict(pre_push=prepush, ci_scope=scope,
                          rust_small=[{'name': step['name'], 'argv': step['argv']} for step in receipt['steps']],
                          required_checks=required)
+        if local is not None:
+            portfolio['local_commands'] = dict(receipt_sha256=local.receipt_sha256,
+                                                argv=[list(argv) for argv in local.argv])
         # Planning may resolve metadata. Reverify clean exact H and immutable
         # warm proof rather than trusting that planning was side-effect free.
-        if self.warm(plan)[0] != receipt:
+        again, _, _, packet = self.warm(plan, with_packet=True)
+        if again != receipt or (local is not None and bind_authenticated(packet, plan, prepush) != local):
             raise Refused('warm proof moved while acquiring owner portfolio')
         return portfolio, digest(portfolio), reference
 
@@ -168,6 +176,9 @@ class NativeEntryOwners:
             tuple(dict.fromkeys(obligations)), reference)
 
     def entry_committed(self, plan, selected):
+        # Rebind every selected local command at admission, not just the fixed
+        # Rust Small receipt that supplies the committed-proof vocabulary.
+        self.selection(plan)
         receipt, receipt_digest, reference = self.warm(plan)
         names = tuple(row['name'] for row in receipt['steps'])
         if (not isinstance(selected, Selection) or selected.subject_key != plan['request_key']

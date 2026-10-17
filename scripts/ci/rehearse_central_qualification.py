@@ -216,7 +216,7 @@ def run_actual(central, *, xtask, xtask_sha256, control_sha, workspace, warm_rec
             child_environment = {key: value for key, value in child_environment.items()
                                  if key not in {'PYTHONPATH', 'PYTHONHOME'}}
             with (output / 'qualification.log').open('wb') as log:
-                process = subprocess.run([str(xtask), 'rust-small-proof'], cwd=workspace,
+                process = subprocess.run([str(xtask), '--worktree-root', str(workspace), 'rust-small-proof'], cwd=workspace,
                     env=child_environment, stdout=log, stderr=subprocess.STDOUT, check=False)
             if verifier.executable_identity() != tool_identity:
                 raise Refused('canonical producer executable changed during execution')
