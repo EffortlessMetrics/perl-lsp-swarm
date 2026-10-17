@@ -13,6 +13,7 @@ use crate::providers::diagnostics::unreachable_code::check_unreachable_code;
 use perl_parser_core::Node;
 use perl_parser_core::NodeKind;
 use perl_parser_core::position::{Position, Range};
+use perl_parser_core::syntax::source_context::{SourceRegionIndex, SourceRegionKind};
 use perl_pragma::PragmaTracker;
 use perl_semantic_analyzer::scope_analyzer::{IssueKind, ScopeAnalyzer, ScopeIssue};
 
@@ -2534,18 +2535,31 @@ fn has_use_statement_line(line: &str, feature: &str) -> bool {
 fn missing_pod_sections(source: &str) -> Vec<MissingPodSection> {
     const REQUIRED: &[&str] = &["NAME", "DESCRIPTION"];
 
+    let region_index = SourceRegionIndex::build(source);
     let mut has_pod = false;
     let mut sections = Vec::new();
     let mut first_pod_span = None;
     let mut byte_offset = 0;
 
     for line in source.split_inclusive('\n') {
+        // POD-looking lines inside heredoc bodies and __DATA__/__END__
+        // payloads are data, not documentation: they must neither satisfy
+        // a required section nor mark the file as having POD. This follows
+        // the SourceRegionIndex pattern used by native_suppressions.
+        let line_start = byte_offset;
+        byte_offset += line.len();
+        if matches!(
+            region_index.kind_at_offset(line_start),
+            SourceRegionKind::Heredoc | SourceRegionKind::DataSection
+        ) {
+            continue;
+        }
         let line_without_newline = line.trim_end_matches(['\r', '\n']);
         let trimmed = line_without_newline.trim_start();
 
         if let Some(section) = trimmed.strip_prefix("=head1") {
             has_pod = true;
-            first_pod_span.get_or_insert((byte_offset, byte_offset + line_without_newline.len()));
+            first_pod_span.get_or_insert((line_start, line_start + line_without_newline.len()));
 
             let section_name = section
                 .split_whitespace()
@@ -2562,10 +2576,8 @@ fn missing_pod_sections(source: &str) -> Vec<MissingPodSection> {
             || trimmed.starts_with("=begin")
         {
             has_pod = true;
-            first_pod_span.get_or_insert((byte_offset, byte_offset + line_without_newline.len()));
+            first_pod_span.get_or_insert((line_start, line_start + line_without_newline.len()));
         }
-
-        byte_offset += line.len();
     }
 
     if !has_pod {
@@ -4864,6 +4876,66 @@ mod tests {
             registry.check(&no_pod_ctx).is_empty(),
             "native rule only checks existing POD sections to avoid noisy opt-in diagnostics"
         );
+    }
+
+    #[test]
+    fn native_require_pod_sections_rule_ignores_head1_inside_heredoc() {
+        // =head1 lines in a heredoc body are string data, not POD: they must
+        // not mark the file as having POD at all.
+        let source = "use strict;\nuse warnings;\nmy $doc = <<'END_DOC';\n=head1 NAME\n\nFake - payload\n\n=head1 DESCRIPTION\n\nPayload.\nEND_DOC\nprint $doc;\n1;\n";
+        let ast = parse_source(source);
+        let config = CriticConfig::default();
+        let ctx = CriticContext::new(source, &ast, &config);
+        let registry = NativeCriticRegistry::with_rules(vec![Box::new(RequirePodSectionsRule)]);
+
+        assert!(
+            registry.check(&ctx).is_empty(),
+            "heredoc payload =head1 lines must not count as POD"
+        );
+    }
+
+    #[test]
+    fn native_require_pod_sections_rule_ignores_head1_inside_data_section() {
+        for marker in ["__DATA__", "__END__"] {
+            let source = format!(
+                "use strict;\nuse warnings;\nprint 1;\n1;\n{marker}\n=head1 NAME\n\nFake - payload\n\n=head1 DESCRIPTION\n\nPayload.\n"
+            );
+            let ast = parse_source(&source);
+            let config = CriticConfig::default();
+            let ctx = CriticContext::new(&source, &ast, &config);
+            let registry = NativeCriticRegistry::with_rules(vec![Box::new(RequirePodSectionsRule)]);
+
+            assert!(
+                registry.check(&ctx).is_empty(),
+                "{marker} payload =head1 lines must not count as POD"
+            );
+        }
+    }
+
+    #[test]
+    fn native_require_pod_sections_rule_payload_does_not_satisfy_missing_section() {
+        // Real POD is missing DESCRIPTION; a heredoc =head1 DESCRIPTION is
+        // payload and must not mask the real missing-section finding.
+        let heredoc_source = "use strict;\nuse warnings;\nmy $doc = <<'END_DOC';\n=head1 DESCRIPTION\n\nPayload.\nEND_DOC\n=head1 NAME\n\nApp::Demo - demo module\n\n=cut\n\n1;\n";
+        let ast = parse_source(heredoc_source);
+        let config = CriticConfig::default();
+        let ctx = CriticContext::new(heredoc_source, &ast, &config);
+        let registry = NativeCriticRegistry::with_rules(vec![Box::new(RequirePodSectionsRule)]);
+
+        let findings = registry.check(&ctx);
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].message, "POD is missing required =head1 DESCRIPTION section");
+
+        // Real POD is missing NAME; a __DATA__ =head1 NAME is payload and
+        // must not mask the real missing-section finding.
+        let data_source = "use strict;\nuse warnings;\n=head1 DESCRIPTION\n\nDemo.\n\n=cut\n\n1;\n__DATA__\n=head1 NAME\n\nFake - payload\n";
+        let ast = parse_source(data_source);
+        let ctx = CriticContext::new(data_source, &ast, &config);
+        let registry = NativeCriticRegistry::with_rules(vec![Box::new(RequirePodSectionsRule)]);
+
+        let findings = registry.check(&ctx);
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].message, "POD is missing required =head1 NAME section");
     }
 
     #[test]
