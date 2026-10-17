@@ -2076,6 +2076,7 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tracing-subscriber",
+ "unicode-ident",
 ]
 
 [[package]]
