@@ -1,0 +1,9 @@
+project: product
+component: LSP server
+kind: Fixed
+body: "Open files that depend on a module now get fresh diagnostics when that module is saved in the editor, created, or renamed into place. Previously only watched-file events refreshed consumers, so saving a dependency or renaming a module into place left other open files showing stale errors (or stale clean state) until they were edited."
+time: 2026-10-17T00:00:00Z
+custom:
+  PR: "18120"
+  Slug: save-rename-republish
+  Breaking: "no"
