@@ -2570,6 +2570,11 @@ impl LspServer {
             if let Err(e) = self.refresh_controller.refresh_all(self) {
                 tracing::warn!("Failed to refresh client after file creations: {}", e);
             }
+
+            // Push clients get no refresh request from `refresh_all`; the
+            // created file changed what open consumers resolve through, so
+            // republish them directly, mirroring the delete tail (#18116).
+            self.republish_open_document_diagnostics();
         }
 
         // This is a notification, no response needed
@@ -2714,6 +2719,11 @@ impl LspServer {
             if let Err(e) = self.refresh_controller.refresh_all(self) {
                 tracing::warn!(error = %e, "Failed to refresh client after file renames");
             }
+
+            // Push clients get no refresh request from `refresh_all`; the
+            // rename changed what open consumers resolve through, so
+            // republish them directly, mirroring the delete tail (#18116).
+            self.republish_open_document_diagnostics();
         }
 
         // This is a notification, no response needed

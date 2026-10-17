@@ -184,6 +184,10 @@ impl LspServer {
                         };
                         if accepted {
                             self.refresh_metadata_for_document_uri(uri);
+                            // The saved text became the indexed facts open
+                            // consumers resolve through; republish them
+                            // instead of waiting for a watcher echo (#18116).
+                            self.republish_open_document_diagnostics();
                         }
                     }
                     return result;
@@ -230,6 +234,7 @@ impl LspServer {
                             .then(|| (doc_gen_val, d.generation.clone(), d.text_str().to_string()))
                     })
                 };
+                let mut index_recommitted = false;
                 if let Some((doc_gen_val, instance, text)) = doc_info
                     && let Some(coordinator) = self.coordinator()
                 {
@@ -250,6 +255,7 @@ impl LspServer {
                             text,
                             "#8041 backing-file re-cohere",
                         );
+                        index_recommitted = true;
                     } else if index.is_index_generation_stale(&normalized_uri, doc_gen_val.get())
                         && let Ok(url) = url::Url::parse(&normalized_uri)
                     {
@@ -270,7 +276,16 @@ impl LspServer {
                             text,
                             "stale-index reconciliation",
                         );
+                        index_recommitted = true;
                     }
+                }
+
+                // A save that recommitted this file's indexed facts changed
+                // what open consumers resolve through it. Republish them the
+                // same way the watched-file tails do (#18116); relying on the
+                // client's watcher to echo the save is client-dependent.
+                if index_recommitted {
+                    self.republish_open_document_diagnostics();
                 }
             }
 

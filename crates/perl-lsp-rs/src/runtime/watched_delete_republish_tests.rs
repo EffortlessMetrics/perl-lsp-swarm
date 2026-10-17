@@ -416,3 +416,91 @@ fn watched_create_requests_pull_diagnostic_refresh() -> Result<(), Box<dyn std::
         std::thread::sleep(Duration::from_millis(10));
     }
 }
+
+// -------------------------------------------------------------------------
+// Save / file-operation tails (#18116)
+//
+// The watched-file tails above republish open consumers after external
+// mutation. Two dependency-change seams earned no tail: saving an open
+// dependency (no watched event is guaranteed to echo the save) and
+// `didCreateFiles`/`didRenameFiles` (whose `refresh_all` tail only sends
+// pull-refresh requests, so push consumers never republish).
+// -------------------------------------------------------------------------
+
+/// #18116 regression: saving an open dependency must republish open
+/// consumers even when no watched event echoes the save. (Content
+/// freshness after republish is pinned by the rename test below;
+/// module resolution for this fixture is filesystem-based.)
+#[cfg(feature = "workspace")]
+#[test]
+fn dependency_save_republishes_open_consumer_diagnostics() -> Result<(), Box<dyn std::error::Error>>
+{
+    let (server, output, app_uri, alpha_uri, _alpha_path, _dir) = open_consumer_fixture()?;
+    let publish_keys = [app_uri.clone(), server.normalize_uri_key(&app_uri)];
+
+    // Open the dependency as a buffer, as a user editing it would.
+    server.test_apply_did_open(&alpha_uri, "package Local::Alpha;\nsub helper { 1 }\n1;\n", 1)?;
+
+    // Baseline: the open consumer resolves, so its publish set is clean.
+    let baseline_len = wait_for_publish(&output, &publish_keys, 0, false, "baseline never clean")?;
+
+    // Save the dependency with new text; no watched event is delivered,
+    // so only the save tail can republish the consumer. Before the repair
+    // the consumer received no publish at all after this point.
+    server.handle_did_save(Some(json!({
+        "textDocument": { "uri": alpha_uri },
+        "text": "package Local::Alpha;\nsub helper { 2 }\n1;\n"
+    })))?;
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let messages = output.messages()?;
+        let republished = messages
+            .iter()
+            .skip(baseline_len)
+            .any(|message| is_publish_for(message, &publish_keys));
+        if republished {
+            return Ok(());
+        }
+        assert!(
+            Instant::now() < deadline,
+            "dependency save never republished the open consumer: tail {messages:?}"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// #18116 regression: renaming a file into the path an open consumer
+/// resolves must clear the consumer's stale module-not-found diagnostic
+/// for push clients (the `refresh_all` tail alone sends them nothing).
+#[cfg(feature = "workspace")]
+#[test]
+fn file_operation_rename_clears_stale_consumer_diagnostics()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (server, output, app_uri, alpha_uri, alpha_path, dir) =
+        open_consumer_fixture_with_dependency(false)?;
+    let publish_keys = [app_uri.clone(), server.normalize_uri_key(&app_uri)];
+
+    // Baseline: without the dependency the open consumer is stale (PL701).
+    let baseline_len = wait_for_publish(&output, &publish_keys, 0, true, "baseline never stale")?;
+
+    // Stage the module under a non-resolving name, then rename it into
+    // place through the file-operation seam only.
+    let staging_path = dir.path().join("lib").join("Local").join("Staging.pm");
+    std::fs::write(&staging_path, "package Local::Alpha;\nsub helper { 1 }\n1;\n")?;
+    let staging_uri =
+        url::Url::from_file_path(&staging_path).map_err(|_| "invalid staging URI")?.to_string();
+    std::fs::rename(&staging_path, &alpha_path)?;
+    server.handle_did_rename_files(Some(json!({
+        "files": [{ "oldUri": staging_uri, "newUri": alpha_uri }]
+    })))?;
+
+    wait_for_publish(
+        &output,
+        &publish_keys,
+        baseline_len,
+        false,
+        "didRenameFiles never cleared the open consumer",
+    )?;
+    Ok(())
+}
