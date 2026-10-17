@@ -55,8 +55,8 @@ cargo xtask corpus-audit      # Run corpus audit for coverage analysis
 | `corpus-audit` | Corpus coverage analysis |
 | `parse-rust` | Parse with pure Rust parser |
 | `bump-version` | Bump version numbers across project |
-| `publish-crates` | Publish crates to crates.io |
-| `publish-vscode` | Publish VSCode extension |
+| `publish-crates` | Packaging dry-run verifier; direct publication disabled (workflow-gated) |
+| `publish-vscode` | Refuses direct publication; publication is workflow-gated |
 | `features` | Manage feature catalog and LSP compliance |
 
 ### Features

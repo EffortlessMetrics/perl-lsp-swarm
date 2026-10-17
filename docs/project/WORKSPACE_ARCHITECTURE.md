@@ -369,8 +369,9 @@ workspace management:
   and split-candidate report
 - **`cargo xtask gates`** -- Run CI gates with JSON receipt generation,
   baseline comparison, and tier selection
-- **`cargo xtask publish-crates`** -- Publish all crates in topological
-  order, with dry-run support
+- **`cargo xtask publish-crates --dry-run`** -- Read-only packaging
+  verification; direct publication is disabled and routed through the
+  gated `publish-crates.yml` workflow
 - **`cargo xtask bump-version`** -- Coordinate version bumps across
   Cargo.toml files, package.json, and source code
 - **`cargo xtask features verify`** -- Verify LSP features match the

@@ -49,7 +49,7 @@ xtask subcommands (`cargo xtask <subcommand>`).
 | `release-turnkey` | `release_turnkey.rs` | -- | PR-driven release orchestration |
 | `performance-hardening` | `hardening.rs` | -- | Production performance hardening checks |
 | `bump-version` | `bump_version.rs` | 184 | Bump version numbers across project |
-| `publish-crates` | `publish.rs` | 203 | Publish crates to crates.io |
+| `publish-crates` | `publish.rs` | 203 | Packaging dry-run verifier; direct publication disabled (workflow-gated) |
 | `forbid-fatal-constructs` | `forbid_fatal_constructs.rs` | -- | Run forbidden fatal construct checks via perl-ci-hygiene |
 | `forensics-dossier` | `forensics.rs` | -- | Generate complete PR dossier artifacts |
 | `forensics-harvest` | `forensics.rs` | -- | Harvest PR forensics metadata |
@@ -62,7 +62,7 @@ xtask subcommands (`cargo xtask <subcommand>`).
 | `gh-triage` | `github.rs` | -- | Show issues missing required label taxonomy |
 | `ci-hygiene` | `ci_hygiene.rs` | -- | Pass-through to `perl-ci-hygiene` subcommands |
 | `worktree-cleanup` | `worktrees.rs` | 71 | Remove stale `.claude/worktrees` entries |
-| `publish-vscode` | `publish.rs` | -- | Publish VSCode extension |
+| `publish-vscode` | `publish.rs` | -- | Refuses direct publication; publication is workflow-gated |
 | `populate-book` | `populate_book.rs` | -- | Populate mdBook source directory from docs |
 | `e2e-validate` | `e2e_validate.rs` | -- | Run end-to-end validation suite |
 | `verify-publication-facts` | `publication_facts.rs` | -- | Verify PUBLICATION_FACTS_LEDGER metrics |
