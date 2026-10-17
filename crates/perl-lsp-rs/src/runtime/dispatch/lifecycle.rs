@@ -63,6 +63,10 @@ impl LspServer {
             tracing::warn!(error = %e, "Failed to send pending startup logMessage");
         }
 
+        // Forward any client-visible notices recorded while applying
+        // configuration during initialize (#18056).
+        self.flush_client_notices();
+
         // File watcher dynamic registration is intentionally separate from
         // feature-specific dynamic registrations such as inline completion.
         self.register_file_watchers_if_needed();
