@@ -63,8 +63,10 @@ operation refuses; the dispatch may already exist and must be inspected by its
 original subject. No rerun, merge, check-write or auto-merge endpoint is allowed.
 
 Concurrent dispatches may create multiple native metadata runs. The rehearsal
-serializes their concurrency group without cancellation and elects the lowest
-observed matching run ID. This is metadata convergence, not an exactly-once
+protects the running member from cancellation, but GitHub keeps only one pending
+member by default: a newer pending run can cancel an older pending duplicate before
+its election code executes. Surviving runs elect the lowest observed matching run
+ID. This is metadata convergence, not an exactly-once
 product-execution guarantee: listing/dispatch races and non-FIFO concurrency remain.
 Do not place expensive product work behind this election without qualifying the
 allocation protocol. Run/artifact inventories are deliberately bounded to one
