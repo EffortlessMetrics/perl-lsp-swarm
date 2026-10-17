@@ -195,7 +195,8 @@ define_diagnostic_codes! {
     /// `readpipe()` function call executes shell commands (equivalent to qx//)
     SecurityReadpipe => "PL606",
     /// Interpolated or concatenated variables form the SQL text passed to a
-    /// DBI statement-taking method (`prepare`/`prepare_cached`/`do`) (#5035)
+    /// reviewed DBI SQL-text sink (`prepare`/`prepare_cached`/`do`/`selectrow_*`/
+    /// `selectall_*`/`selectcol_arrayref`) (#5035 / #16864)
     SecuritySqlInjection => "PL607",
     /// Substitution replacement is evaluated as Perl code by the `e`/`ee`
     /// modifier (`s/pat/repl/e`) (#9818)
