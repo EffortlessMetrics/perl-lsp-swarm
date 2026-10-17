@@ -226,18 +226,55 @@ Freeze the exact ledger bytes/digest used by the publication packet.
 The projection starts from the complete tree of `S`. Every intended difference
 must be declared in the release's projection manifest before the join.
 
-The swarm currently provides `cargo xtask sync-divergence scaffold` and
-`cargo xtask sync-divergence check` for reconciliation. It does not currently
-provide a `publication-sync` projection subcommand or a swarm-owned producer for
-`P`.
+The swarm provides `cargo xtask sync-divergence scaffold` and
+`cargo xtask sync-divergence check` for reconciliation, and
+`cargo xtask publication-sync plan` for the manifest (#7972):
 
-This runbook therefore treats projection generation as a hard prerequisite, not
-as an operation that this checkout can perform. Before a release transaction,
-identify a separately reviewed producer whose output is bound to `R`, `S`, the
-reconciliation evidence, and the manifest. If no accepted producer is
-available, stop here. Do not infer one from a command name, invoke an
-unimplemented `cargo xtask` path, or replace the missing producer with a manual
-exclusion checklist.
+```bash
+cargo xtask publication-sync plan \
+  --manifest <publication_sync_manifest.v1.json> \
+  --repo-root . \
+  --receipt target/receipts/publication-sync-plan.json
+```
+
+`plan` is read-only. It validates the manifest against
+`schemas/publication_sync_manifest.v1.schema.json`, verifies every declared
+release-input digest, proves the declared reconciliation receipt passed and
+reconciled exactly this `S` against this `R`, checks each projection row, and
+emits a deterministic `pass|blocked|not_proven` receipt carrying the canonical
+manifest digest. It changes no branch, worktree, or tree.
+
+**`plan` is not a producer for `P`.** It judges a manifest you already have; it
+does not derive the projected tree, and it does not yet inventory candidate
+destination-context translations from the live `R` and `S` trees (#7973).
+
+This runbook therefore still treats projection generation as a hard
+prerequisite, not as an operation that this checkout can perform. Before a
+release transaction, identify a separately reviewed producer whose output is
+bound to `R`, `S`, the reconciliation evidence, and the manifest. If no accepted
+producer is available, stop here. Do not infer one from a command name, invoke
+an unimplemented `cargo xtask` path, or replace the missing producer with a
+manual exclusion checklist. A `pass` from `plan` is evidence about the manifest
+only; it is not authorization to publish.
+
+Concretely, a `pass` does **not** establish any of the following. A consumer
+that treats the receipt as publication evidence owns each one:
+
+- **Row completeness.** `plan` judges the rows a manifest declares. It cannot
+  see a difference from `S` that nobody wrote down, so an undeclared exclusion
+  is invisible to it.
+- **Blob identity.** Row paths are checked for shape and product classification
+  against the checkout, not compared against Git blob hashes in `S` or `R`.
+- **Plan currentness.** Freshness is judged against the manifest's `planned_at`
+  so replay is deterministic — the same manifest and inputs always yield the
+  same receipt. That determinism is exactly why `plan` cannot notice that a
+  receipt has aged: a plan whose live-control evidence was fresh when it was
+  written stays `pass` forever. The gate that consumes the receipt must bound
+  how old a plan may be at the moment of publication.
+
+`plan` does bind its own answers to the commit it was run against: the
+repository root must be at the manifest's `prepared_swarm_sha`, or the receipt
+is `not_proven` rather than a judgment about some other tree.
 
 The final manifest must cover, where applicable:
 
