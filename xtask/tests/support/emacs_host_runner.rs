@@ -698,6 +698,62 @@ pub fn build_receipt(
     }
 }
 
+/// Validate that a receipt is fresh for `plan`: a receipt produced by another
+/// run (different candidate, fixture, client bytes, or host build) cannot
+/// satisfy the current run's obligations. This is the stale-receipt law; it
+/// composes with the fresh-output-root refusal that prevents a prior run's
+/// artifacts from being inherited at all.
+///
+/// Mirrors [`vim_host_runner::validate_receipt_binding`] so every editor
+/// runner in this substrate enforces the same binding seams at the producer
+/// boundary (#15338). The emacs family has multiple admissible client
+/// subjects (`bundled_eglot`, `external_eglot`, `lsp_mode`), so the client_id
+/// equality is parameterized by the run plan rather than pinned to one
+/// constant.
+pub fn validate_receipt_binding(
+    receipt: &EditorClientCompatReceipt,
+    plan: &EmacsHostRunPlan,
+) -> Result<()> {
+    receipt.validate()?;
+    ensure!(
+        receipt.host.product == "emacs",
+        "receipt subject is not the emacs/eglot-lsp-mode host runner subject"
+    );
+    ensure!(
+        receipt.host.client_id == plan.identity.client.client_id,
+        "receipt binds client {} but the run plan pins {}",
+        receipt.host.client_id,
+        plan.identity.client.client_id
+    );
+    ensure!(
+        receipt.host.version == plan.identity.emacs_version,
+        "receipt binds emacs {} but the run plan pins {}",
+        receipt.host.version,
+        plan.identity.emacs_version
+    );
+    ensure!(
+        receipt.host.executable_sha256 == plan.identity.emacs_build_sha256,
+        "receipt binds a different Emacs executable build"
+    );
+    ensure!(
+        receipt.candidate_sha == plan.identity.candidate_sha,
+        "receipt binds a different repository candidate commit"
+    );
+    ensure!(
+        receipt.server.artifact_sha256 == plan.identity.candidate_artifact_sha256,
+        "receipt binds a different perllsp candidate artifact"
+    );
+    ensure!(
+        receipt.workspace_fixture.digest == plan.identity.fixture.digest,
+        "receipt binds a different workspace fixture"
+    );
+    ensure!(
+        receipt.integration.driver_sha256 == plan.identity.driver_sha256,
+        "receipt binds a different driver"
+    );
+    Ok(())
+}
+
 pub fn default_not_proven_diagnostics() -> DiagnosticsIdentity {
     DiagnosticsIdentity {
         advertised_mode: DiagnosticMode::NotProven,
