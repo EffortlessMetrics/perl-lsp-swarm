@@ -1975,6 +1975,21 @@ export function expandConfiguredServerPath(userPath: string): string {
   return userPath;
 }
 
+/// Resolve a configured server path for validation and spawning: expand a
+/// leading `~`, and resolve relative paths against the first workspace
+/// folder (settings authors mean the project root, not the extension
+/// host's working directory). Exported for testing.
+export function resolveConfiguredServerPath(
+  userPath: string,
+  workspaceRoot: string | undefined,
+): string {
+  const expanded = expandConfiguredServerPath(userPath);
+  if (path.isAbsolute(expanded) || !workspaceRoot) {
+    return expanded;
+  }
+  return path.join(workspaceRoot, expanded);
+}
+
 /// Why a configured server path cannot be spawned, or null when it can.
 /// Existence alone is not enough: a directory passes `existsSync` and then
 /// fails at spawn with a misleading permission diagnosis (#18118).
@@ -1992,7 +2007,14 @@ export function configuredServerPathProblem(
   if (!stat.isFile()) {
     return 'not-a-file';
   }
-  if (process.platform !== 'win32') {
+  if (process.platform === 'win32') {
+    // Windows has no executable bit; a spawnable server must carry an
+    // executable extension, otherwise CreateProcess rejects it at spawn.
+    const ext = path.extname(userPath).toLowerCase();
+    if (!['.exe', '.com', '.bat', '.cmd'].includes(ext)) {
+      return 'not-executable';
+    }
+  } else {
     try {
       fs.accessSync(userPath, fs.constants.X_OK);
     } catch {
@@ -2028,7 +2050,12 @@ async function getServerPath(
   // First check user settings
   const config = vscode.workspace.getConfiguration('perl-lsp');
   const configuredPath = config.get<string>('serverPath');
-  const userPath = configuredPath ? expandConfiguredServerPath(configuredPath) : configuredPath;
+  const userPath = configuredPath
+    ? resolveConfiguredServerPath(
+        configuredPath,
+        vscode.workspace.workspaceFolders?.[0]?.uri.fsPath,
+      )
+    : configuredPath;
   const problem = userPath ? configuredServerPathProblem(userPath) : null;
 
   if (userPath && !problem) {

@@ -27,6 +27,7 @@ import {
   diagnoseConfiguredServerPath,
   expandConfiguredServerPath,
   rejectConfiguredServerPath,
+  resolveConfiguredServerPath,
   explainDiagnosticCommand,
   explainProviderDecisionCommand,
   presentFormattingProviderError,
@@ -240,7 +241,7 @@ describe('configuredServerPathProblem (perl-lsp.serverPath validation)', () => {
   test('accepts a regular file', () => {
     const dir = makeTempDir();
     try {
-      const file = path.join(dir, 'perllsp');
+      const file = path.join(dir, process.platform === 'win32' ? 'perllsp.exe' : 'perllsp');
       fs.writeFileSync(file, '#!/bin/sh\n');
       if (process.platform !== 'win32') {
         fs.chmodSync(file, 0o755);
@@ -249,6 +250,31 @@ describe('configuredServerPathProblem (perl-lsp.serverPath validation)', () => {
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  test('rejects a non-executable-extension file on Windows', () => {
+    if (process.platform !== 'win32') {
+      return;
+    }
+    const dir = makeTempDir();
+    try {
+      const file = path.join(dir, 'perllsp.txt');
+      fs.writeFileSync(file, 'not a binary');
+      expect(configuredServerPathProblem(file)).toBe('not-executable');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('resolves relative paths against the workspace root', () => {
+    const root = path.join(os.tmpdir(), 'ws-root');
+    expect(resolveConfiguredServerPath('bin/perllsp', root)).toBe(
+      path.join(root, 'bin', 'perllsp'),
+    );
+    expect(resolveConfiguredServerPath('~/bin/perllsp', root)).toBe(
+      path.join(os.homedir(), 'bin', 'perllsp'),
+    );
+    expect(resolveConfiguredServerPath('bin/perllsp', undefined)).toBe('bin/perllsp');
   });
 
   test('rejects a non-executable regular file off Windows', () => {
