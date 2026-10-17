@@ -101,15 +101,47 @@ differ from producer paths. Native H warm packets can bootstrap without an S
 capture; S packets require exact captured H/tree/B/S/key. Neither local JSON nor
 a caller-supplied path authenticates native execution.
 
-**The native packet extension is not installed.** The current central owner
-accepts exactly its Rust receipt/export/context members and has no producer
-workspace capture. A follow-on must admit only this optional closed filename,
-bind its bytes through that same native run/attempt/artifact and custody path,
-and capture the actual producer workspace before product execution. Until then,
-ordinary package scoped check, Clippy/all-target, docs/workflow/editor selections
-absent from Rust Small remain NOT_PROVEN. Source fixtures prove the adapter join,
-not actual scoped Cargo execution or native provenance. Deferred planner outputs
-and all required contexts remain integration obligations.
+The canonical central PR246 source now admits this optional closed filename via
+`command_member={path,bytes,sha256}` in the existing export manifest, captures
+native `product_workspace`, and retains the same artifact/run/attempt/custody,
+Perl-only four-member ZIP and two-MiB packet bound. The Perl exporter takes the
+optional trusted in-process `command_receipt` path; its CLI/environment cannot
+activate it. Historical packets retain their existing shape. This source is not
+yet installed in a native workflow generation. The consumer still refuses
+missing scoped check, Clippy/all-target, docs/workflow/editor execution evidence.
+Deferred planner outputs and all required contexts remain integration obligations.
+
+## Trusted factory and checkout
+
+`qualification_native_factory.compose_native` wires the existing canonical,
+entry, readiness and runtime owners and sets product workspace to its exact H
+checkout. It checks loaded clean S and actual H/tree, creates a detached native
+Git checkout when needed, and preserves it for evidence/recovery. Missing H/B
+objects are fetched by exact SHA; a shallow S graph is completed because the
+existing ci-scope owner uses triple-dot/merge-base planning. Branches are not moved. Checkout hooks,
+fsmonitor and every configured executable Git filter are disabled per invocation
+before materialization; repository settings are not changed. H's effective filter
+configuration is observed after `--no-checkout`, so conditional config cannot
+execute a smudge/process filter before allocation. This native CI checkout does
+not invoke a candidate developer-hook installer.
+
+`execute_native` uses actual `enter_native` election/admission and
+`allocate_and_execute`. Native central capture is persisted before H executes;
+actual proof entry is recorded after lease waiting/revalidation and before the
+runtime's immutable producer snapshot. The trusted installed xtask executes
+`--worktree-root H rust-small-proof` with metadata credentials stripped. An
+optional local command output runs the existing proof-set owner first and exports
+its unchanged bytes; actual local failure stops before Rust execution/export.
+A qualification may instead consume its distinct authenticated warm command proof
+without rerunning that unchanged proof in the new attempt.
+
+The installer supplies existing authenticated prior/current central importers,
+central `capture_context` and the real allocation lifetime. There is no new
+module loader, request-JSON authority or allocator implementation. The retained
+admitted runner can own the whole local rehearsal's subprocess tree; a null
+context or JSON claim is not allocation. Production installation still needs the
+real native job bindings and updated central pin. Tests use explicitly bounded
+API/review/tool/allocation fixtures; a local rehearsal is not native qualification.
 
 ## Existing integration results and allocation
 
@@ -136,3 +168,21 @@ synthetic xtask/importer/native API/allocator boundaries. They establish source
 behavior, not canonical Rust execution, authenticated native artifact import or
 resource containment. Preserve the operator's separate build/admission procedure
 and pending publisher decision. Cutover remains inactive.
+
+## Requirements versus additional hardening
+
+| Check | Existing requirement or purpose |
+| --- | --- |
+| Exact clean S, current H/tree/B, dispatch/attempt and review/warm evidence | Existing `Adapter.snapshot`, production readiness and `product_subject` requirements; the factory reuses them. |
+| Optional closed command member and native producer workspace | Required to extend central's existing closed packet/context contract without bypassing authentication or confusing producer and consumer paths. |
+| Resource lease and child settlement | Existing repository resource admission. The factory binds the real owner; no new allocator or approval stage is introduced. |
+| Checkout hook/filter overrides | Implementation repair for a demonstrated path executing candidate-selected code before that lease; per-invocation controls, not repository settings. |
+| Native size and custody bounds | Existing central two-MiB packet, decoded-program and private-file guards remain enforced. |
+| Current protection observation and publisher approval | Apply to coordinated cutover/check publication, not source tests or a local rehearsal. No extra approval is required for the authorized source work. |
+
+A native qualification still requires the actual trusted control source and native
+attempt. Current default-branch source must contain the installed entrypoint and
+central generation; local fixture rows cannot create that event or authenticate a
+warm producer. Report a missing installation or native packet as that specific
+source/evidence boundary, rather than treating all connector/artifact access as
+unavailable. An unrelated native artifact is not interchangeable warm evidence.

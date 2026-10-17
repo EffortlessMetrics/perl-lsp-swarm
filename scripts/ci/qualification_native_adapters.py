@@ -252,7 +252,7 @@ class NativeEntryOwners:
         return tuple(findings)
 
 
-def allocate_and_execute(owners, event, capture, *, allocation_owner, proof_owner):
+def allocate_and_execute(owners, event, capture, *, allocation_owner, proof_owner, command_receipt=None, before_execute=None):
     """Bind the existing allocator's context-manager lifetime to actual execution.
 
     allocation_owner(plan, selection) must acquire/release the native desktop
@@ -273,4 +273,7 @@ def allocate_and_execute(owners, event, capture, *, allocation_owner, proof_owne
         again = owners.enter_native(event, retained_context)
         if again['status'] != 'READY_FOR_ALLOCATION' or owners.acquire() != plan:
             raise Refused('native admission moved while awaiting allocation')
-        return owners.execute_proof(proof_owner)
+        if before_execute is not None:
+            before_execute(owners.environment, acquire_plan=owners.acquire)
+        return (owners.execute_proof(proof_owner, command_receipt=command_receipt)
+                if command_receipt is not None else owners.execute_proof(proof_owner))

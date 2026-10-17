@@ -62,6 +62,32 @@ class ExportTests(unittest.TestCase):
         self.assertEqual(set(p.name for p in self.root.iterdir()),
                          {"rust-small-proof.json", "perl-rust-small-export.json"})
 
+    def test_optional_command_owner_bytes_extend_only_existing_private_manifest(self):
+        self.context['product_workspace']=str(self.workspace.resolve())
+        self.context_path.write_text(json.dumps(self.context))
+        source=self.runner/'command-proof-set.json'
+        raw=json.dumps(dict(schema_version='command-proof-set.v1',commands=[{'id':'actual-owner'}],result='FAILURE')).encode()
+        source.write_bytes(raw)
+        manifest=export(self.env,command_receipt=source)
+        self.assertEqual((self.root/source.name).read_bytes(),raw)
+        self.assertEqual(manifest['command_member'],dict(path=source.name,bytes=len(raw),sha256=hashlib.sha256(raw).hexdigest()))
+        self.assertEqual(json.loads(raw)['result'],'FAILURE')
+        self.assertEqual(manifest['result'],'success')  # Rust result remains its owner's result.
+
+    def test_optional_command_proof_missing_capture_old_linked_or_foreign_refuses_before_writes(self):
+        source=self.runner/'command-proof-set.json'
+        source.write_text(json.dumps(dict(schema_version='command-proof-set.v1',commands=[{}],result='SUCCESS')))
+        with self.assertRaises(ValueError):export(self.env,command_receipt=source)
+        self.assertEqual(list(self.root.iterdir()),[])
+        self.context['product_workspace']=str(self.workspace.resolve())
+        self.context_path.write_text(json.dumps(self.context))
+        os.utime(source,(1,1))
+        with self.assertRaises(ValueError):export(self.env,command_receipt=source)
+        self.assertEqual(list(self.root.iterdir()),[])
+        source.unlink();source.symlink_to(self.source)
+        with self.assertRaises(ValueError):export(self.env,command_receipt=source)
+        self.assertEqual(list(self.root.iterdir()),[])
+
     def test_failure_receipt_is_diagnostic_and_never_relabelled_success(self):
         self.receipt["result"] = "product_failure"
         self.source.write_text(json.dumps(self.receipt))

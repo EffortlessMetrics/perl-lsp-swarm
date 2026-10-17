@@ -40,7 +40,8 @@ def regular_bytes(path: Path, limit: int) -> tuple[bytes, os.stat_result]:
         os.close(descriptor)
 
 
-def export(environment: dict[str, str], *, acquire_plan=None, expected_process_status=None) -> dict:
+def export(environment: dict[str, str], *, acquire_plan=None, expected_process_status=None,
+           command_receipt: Path | None = None) -> dict:
     # The installed `python3 -I` exporter stays stdlib-only. The bridge is an
     # in-process trusted-control composition, never a new script/path override.
     hooks = {}
@@ -117,10 +118,35 @@ def export(environment: dict[str, str], *, acquire_plan=None, expected_process_s
         "member": {"path": "rust-small-proof.json", "bytes": len(data),
                    "sha256": hashlib.sha256(data).hexdigest()},
     }
+    command_data = None
+    if command_receipt is not None:
+        # Trusted in-process producer supplies this path; dispatch/environment
+        # cannot select another receipt or activate this optional extension.
+        if (not isinstance(command_receipt, Path) or not command_receipt.is_absolute()
+                or not command_receipt.is_relative_to(temporary)
+                or command_receipt.resolve().is_relative_to(Path(environment['GITHUB_WORKSPACE']).resolve())
+                or context.get('product_workspace') != str(Path(environment['GITHUB_WORKSPACE']).resolve())):
+            raise ValueError('command proof lacks native workspace/private temporary custody')
+        command_data, command_metadata = regular_bytes(command_receipt, MAX_RECEIPT_BYTES)
+        command_proof = json.loads(command_data, **hooks)
+        if (command_metadata.st_mtime_ns < entered_ns
+                or command_proof.get('schema_version') != 'command-proof-set.v1'
+                or not isinstance(command_proof.get('commands'), list) or not command_proof['commands']
+                or not isinstance(command_proof.get('result'), str)):
+            raise ValueError('command proof missing actual owner schema/generation')
+        # Export is custody, not a new result classifier. Existing command owner
+        # retains every failure; readiness consumes complete actual SUCCESS.
+        manifest['command_member'] = dict(path='command-proof-set.json', bytes=len(command_data),
+                                          sha256=hashlib.sha256(command_data).hexdigest())
+        if regular_bytes(command_receipt, MAX_RECEIPT_BYTES)[0] != command_data:
+            raise ValueError('command proof changed during custody preparation')
     if acquired is not None and product_subject(environment, context, acquire_plan) != acquired:
         raise ValueError('acquired subject changed during export')
     # Exclusive writes into an immutable-owner-created fresh root. A failed
     # export can leave partial staging; central publication must reject it.
+    if command_data is not None:
+        with (root / 'command-proof-set.json').open('xb') as stream:
+            stream.write(command_data)
     with (root / "rust-small-proof.json").open("xb") as stream:
         stream.write(data)
     with (root / "perl-rust-small-export.json").open("x", encoding="utf-8") as stream:
