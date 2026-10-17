@@ -169,10 +169,10 @@ recorded its review history.
 
 ## Evidence Pointers
 
-- [REVIEW_LABEL_ARCHAEOLOGY.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/REVIEW_LABEL_ARCHAEOLOGY.md)
-- [RECEIPTS_LIE_ARCHAEOLOGY.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/RECEIPTS_LIE_ARCHAEOLOGY.md)
-- [GATE_RECEIPT_FORENSICS_ARCHAEOLOGY.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/GATE_RECEIPT_FORENSICS_ARCHAEOLOGY.md)
-- [PR_REVIEW_LOOP_ARCHAEOLOGY.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/PR_REVIEW_LOOP_ARCHAEOLOGY.md)
-- [PR_LIFECYCLE_ARCHAEOLOGY.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/PR_LIFECYCLE_ARCHAEOLOGY.md)
+- [REVIEW_LABEL_ARCHAEOLOGY.md](REVIEW_LABEL_ARCHAEOLOGY.md)
+- [RECEIPTS_LIE_ARCHAEOLOGY.md](RECEIPTS_LIE_ARCHAEOLOGY.md)
+- [GATE_RECEIPT_FORENSICS_ARCHAEOLOGY.md](GATE_RECEIPT_FORENSICS_ARCHAEOLOGY.md)
+- [PR_REVIEW_LOOP_ARCHAEOLOGY.md](PR_REVIEW_LOOP_ARCHAEOLOGY.md)
+- [PR_LIFECYCLE_ARCHAEOLOGY.md](PR_LIFECYCLE_ARCHAEOLOGY.md)
 - GitHub PR archive snapshot on `2026-03-19`
 - PR `#153`, PR `#160`, PR `#205`, PR `#209`, PR `#237`, PR `#248`

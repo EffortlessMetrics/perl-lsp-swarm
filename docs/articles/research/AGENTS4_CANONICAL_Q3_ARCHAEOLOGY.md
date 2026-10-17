@@ -29,7 +29,7 @@ with matching top-level flow files:
 What makes `agents4` special is the degree of perl-lsp-specific specialization
 inside that structure.
 
-[`.claude/agents4/issue-to-draft.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.claude/agents4/issue-to-draft.md)
+[`.claude/agents4/issue-to-draft.md`](../../reference/archive/agents-history/agents4/issue-to-draft.md)
 anchors the generative phase in repo-native concerns:
 
 - Perl parsing feature specifications
@@ -81,7 +81,7 @@ The flow files in `agents4` do more than split work into stages.
 They distinguish which kinds of proof belong in which stage.
 
 In
-[`.claude/agents4/issue-to-draft.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.claude/agents4/issue-to-draft.md),
+[`.claude/agents4/issue-to-draft.md`](../../reference/archive/agents-history/agents4/issue-to-draft.md),
 the gate evolution table says:
 
 - Generative establishes `benchmarks`
@@ -113,7 +113,7 @@ pipeline. It is a staged evidence pipeline for this codebase.
 
 ## 4. The Customizer Layer Makes The Adaptation Explicit
 
-[`.claude/agents4/agent-customizer-generative.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.claude/agents4/agent-customizer-generative.md)
+[`.claude/agents4/agent-customizer-generative.md`](../../reference/archive/agents-history/agents4/agent-customizer-generative.md)
 spells out the specialization directly.
 
 It tells subagents to adapt generic workflows to:
@@ -165,7 +165,7 @@ of the story.
 
 That is why the two notes belong together:
 
-- [MERGECODE_ROOTS_ARCHAEOLOGY.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/MERGECODE_ROOTS_ARCHAEOLOGY.md)
+- [MERGECODE_ROOTS_ARCHAEOLOGY.md](MERGECODE_ROOTS_ARCHAEOLOGY.md)
   explains where some of the doctrine came from
 - this note explains why `agents4` is the best preserved canonical Q3 swarm
   surface for this repo itself
@@ -179,11 +179,11 @@ In short:
 
 ## Evidence Pointers
 
-- [`.claude/agents4/issue-to-draft.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.claude/agents4/issue-to-draft.md)
-- [`.claude/agents4/draft-to-pr.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.claude/agents4/draft-to-pr.md)
-- [`.claude/agents4/pr-to-merge.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.claude/agents4/pr-to-merge.md)
-- [`.claude/agents4/agent-customizer-generative.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.claude/agents4/agent-customizer-generative.md)
-- [CONTROL_PLANE_ARCHAEOLOGY.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/CONTROL_PLANE_ARCHAEOLOGY.md)
-- [Q3_SWARM_PR_ARCHAEOLOGY.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/Q3_SWARM_PR_ARCHAEOLOGY.md)
-- [MERGECODE_ROOTS_ARCHAEOLOGY.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/MERGECODE_ROOTS_ARCHAEOLOGY.md)
+- [`.claude/agents4/issue-to-draft.md`](../../reference/archive/agents-history/agents4/issue-to-draft.md)
+- [`.claude/agents4/draft-to-pr.md`](../../reference/archive/agents-history/agents4/draft-to-pr.md)
+- [`.claude/agents4/pr-to-merge.md`](../../reference/archive/agents-history/agents4/pr-to-merge.md)
+- [`.claude/agents4/agent-customizer-generative.md`](../../reference/archive/agents-history/agents4/agent-customizer-generative.md)
+- [CONTROL_PLANE_ARCHAEOLOGY.md](CONTROL_PLANE_ARCHAEOLOGY.md)
+- [Q3_SWARM_PR_ARCHAEOLOGY.md](Q3_SWARM_PR_ARCHAEOLOGY.md)
+- [MERGECODE_ROOTS_ARCHAEOLOGY.md](MERGECODE_ROOTS_ARCHAEOLOGY.md)
 - commits `104bdc17e`, `46196e37d`, `58ce94542`, `7f5b5290d`

@@ -1,0 +1,87 @@
+#!/usr/bin/env python3
+"""Read complete PR feedback for content judgment, never a merge/review verdict.
+
+Reuse the sanctioned paginated thread enumerator for resolution identity. REST
+pagination supplies full inline messages/replies, ordinary issue comments, and all
+submitted review bodies (not latestReviews). No text heuristic decides whether a
+concern was repaired, superseded, or refuted; that remains the invoking skill's job.
+"""
+import argparse
+import json
+from pathlib import Path
+import subprocess
+import sys
+
+
+def read_json(command):
+    result = subprocess.run(command, check=True, capture_output=True,
+                            text=True, encoding="utf-8")
+    return json.loads(result.stdout)
+
+
+def pages(repo, endpoint):
+    raw = read_json(["gh", "api", "--paginate", "--slurp",
+                     f"repos/{repo}/{endpoint}?per_page=100"])
+    if not isinstance(raw, list) or not raw or not all(isinstance(p, list) for p in raw):
+        raise ValueError("expected complete slurped REST pages")
+    rows = [row for page in raw for row in page]
+    for row in rows:
+        if (not isinstance(row, dict) or not isinstance(row.get("id"), int)
+                or not isinstance(row.get("body"), str)
+                or not isinstance(row.get("html_url"), str)):
+            raise ValueError("feedback omitted identity, URL, or full body")
+    if len({row["id"] for row in rows}) != len(rows):
+        raise ValueError("duplicate feedback identity across pages")
+    return rows
+
+
+def collect(pr, repo):
+    def head():
+        metadata = read_json(["gh", "api", f"repos/{repo}/pulls/{pr}"])
+        value = metadata["head"]["sha"]
+        if not isinstance(value, str) or len(value) != 40:
+            raise ValueError("missing PR head identity")
+        return value
+
+    before = head()
+    threads = read_json(["bash", str(Path(__file__).with_name("threads")),
+                         str(pr), repo, "--json"])
+    if not isinstance(threads.get("threads"), list) or not isinstance(threads.get("unresolved_count"), int):
+        raise ValueError("incomplete thread inventory")
+    inline = pages(repo, f"pulls/{pr}/comments")
+    comments = pages(repo, f"issues/{pr}/comments")
+    reviews = pages(repo, f"pulls/{pr}/reviews")
+    if head() != before:
+        raise ValueError("PR head moved during feedback acquisition; reacquire")
+    return {
+        "schema_version": "pr_feedback.v1", "pr": pr, "repo": repo,
+        "observed_head": before, "acquisition_mode": "gh_live",
+        "threads": threads, "inline_comments": inline,
+        "issue_comments": comments, "reviews": reviews,
+        "review_currentness": "NOT_PROVEN",
+        "next_step": "address-review-comments",
+        "content_judgment_required": True,
+        "prompt": "Read full bodies and replies, including COMMENTED reviews. Zero unresolved threads does not dispose ordinary-comment findings. Verify dispositions and semantic currentness before live CI.",
+    }
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("pr", type=int)
+    parser.add_argument("repo", help="owner/repo")
+    args = parser.parse_args()
+    try:
+        result = collect(args.pr, args.repo)
+    except (subprocess.CalledProcessError, OSError, ValueError, KeyError, TypeError) as error:
+        # Do not echo raw API output or credentials from child diagnostics.
+        print(json.dumps({"schema_version": "pr_feedback.v1", "pr": args.pr,
+                          "repo": args.repo, "review_currentness": "NOT_PROVEN",
+                          "next_step": "repair-feedback-acquisition",
+                          "reason": type(error).__name__}))
+        return 2
+    print(json.dumps(result))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

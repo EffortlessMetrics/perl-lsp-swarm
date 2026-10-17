@@ -134,6 +134,13 @@ pub struct ServerConfig {
     /// Formatter engine used for LSP formatting requests.
     pub formatting_engine: FormatterMode,
 
+    /// Client-visible notices recorded during configuration application
+    /// (e.g. documented formatting keys the native engine cannot honor).
+    /// The runtime drains these after each apply and forwards them to the
+    /// client; never serialized into config payloads.
+    #[serde(default, skip)]
+    pub(crate) pending_client_notices: Vec<String>,
+
     /// Whether to format on save (willSaveWaitUntil). Default `true` for
     /// backward compatibility. When `false`, manual formatting via
     /// `textDocument/formatting` still works — only the automatic save
@@ -428,6 +435,7 @@ impl Default for ServerConfig {
             perltidy_extra_args: Vec::new(),
             perltidy_timeout_secs: 10,
             ai_completion: AiCompletionConfig::default(),
+            pending_client_notices: Vec::new(),
         }
     }
 }
@@ -437,7 +445,7 @@ impl ServerConfig {
     /// have no native-engine equivalent, so a documented key never drops
     /// silently on the default path (#18023). These options apply only to
     /// the external legacy formatter.
-    pub(crate) fn warn_unsupported_native_format_options(&self, keys: &[&str]) {
+    pub(crate) fn warn_unsupported_native_format_options(&mut self, keys: &[&str]) {
         if keys.is_empty() || self.formatting_engine != FormatterMode::Native {
             return;
         }
@@ -447,6 +455,25 @@ impl ServerConfig {
             "formatting options have no effect with the native formatter and will be ignored; \
              they apply only to the external legacy formatter",
         );
+        // Also record a client-visible notice (#18056): most users never
+        // read server logs, and silently-ignored settings were the original
+        // #18023 complaint. The runtime drains and dedups these.
+        self.pending_client_notices.push(format!(
+            "Perl LSP: formatting options have no effect with the native formatter and will be \
+             ignored: {}. They apply only to the external legacy formatter \
+             (set formatting.engine to \"external-legacy\" to use them).",
+            keys.join(", ")
+        ));
+    }
+
+    /// Drain client-visible notices recorded since the last drain.
+    pub fn take_client_notices(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.pending_client_notices)
+    }
+
+    /// Number of client-visible notices currently pending a drain.
+    pub fn pending_client_notices_len(&self) -> usize {
+        self.pending_client_notices.len()
     }
 
     /// Update configuration from LSP settings

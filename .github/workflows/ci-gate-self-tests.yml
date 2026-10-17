@@ -106,6 +106,41 @@ on:
       # to either half must re-run the self-test gate.
       - 'scripts/ci/evaluate_ci_gate.py'
       - 'scripts/ci/test_evaluate_ci_gate.py'
+      - 'scripts/ci/request_qualification.py'
+      - 'scripts/ci/test_request_qualification.py'
+      - 'scripts/ci/candidate_readiness.py'
+      - 'scripts/ci/test_candidate_readiness.py'
+      - 'scripts/ci/qualification_publication.py'
+      - 'scripts/ci/test_qualification_publication.py'
+      # Compiler-free runtime/canonical/completion composition and H/S custody.
+      - 'scripts/ci/qualification_native_factory.py'
+      - 'scripts/ci/test_qualification_native_factory.py'
+      - 'scripts/ci/qualification_native_adapters.py'
+      - 'scripts/ci/test_qualification_native_adapters.py'
+      - 'scripts/ci/qualification_local_commands.py'
+      - 'scripts/ci/test_qualification_local_commands.py'
+      - 'scripts/ci/qualification_runtime.py'
+      - 'scripts/ci/test_qualification_runtime.py'
+      - 'scripts/ci/rust_small_canonical_owner.py'
+      - 'scripts/ci/test_rust_small_canonical_owner.py'
+      - 'scripts/ci/qualification_completion.py'
+      - 'scripts/ci/test_qualification_completion.py'
+      - 'scripts/ci/rehearse_central_qualification.py'
+      - 'scripts/ci/test_rehearse_central_qualification.py'
+      - 'scripts/ci/rust_small_subject.py'
+      - 'scripts/ci/test_rust_small_subject_bridge.py'
+      - 'scripts/ci/export_rust_small_receipt.py'
+      - 'scripts/ci/test_export_rust_small_receipt.py'
+      - '.ci/staged/17903-root-triggers.patch'
+      - '.ci/policies/required-checks.toml'
+      - 'scripts/ci/test_staged_qualification_workflow_cutover.py'
+      - 'scripts/ci/test_generated_pr_metadata_dispatch.py'
+      - '.github/workflows/em-ci-routed-rust.yml'
+      - '.github/workflows/post-merge-status.yml'
+      - '.github/workflows/aggregate-ci-lane-history.yml'
+      - 'scripts/ci/rust_standard_result.py'
+      - 'scripts/ci/rust_small_evidence.py'
+      - '.github/workflows/qualification-rehearsal.yml'
       - 'scripts/ci/pr_smoke_disk_guard.py'
       - 'scripts/ci/test_pr_smoke_disk_guard.py'
       - 'scripts/ci/test_pr_smoke_workflow_guard.py'
@@ -438,6 +473,27 @@ jobs:
 
       - name: Run semantic-currentness policy-surface tests
         run: python3 -m unittest tests.test_semantic_review_currentness
+
+      - name: Provision YAML reader for staged source shell fixtures
+        run: python3 -m pip install --disable-pip-version-check 'PyYAML==6.0.2'
+
+      - name: Run staged qualification request/result adapter tests
+        run: >-
+          python3 -B -m unittest
+          scripts.ci.test_request_qualification
+          scripts.ci.test_candidate_readiness
+          scripts.ci.test_qualification_publication
+          scripts.ci.test_qualification_native_factory
+          scripts.ci.test_qualification_native_adapters
+          scripts.ci.test_qualification_local_commands
+          scripts.ci.test_qualification_runtime
+          scripts.ci.test_rust_small_canonical_owner
+          scripts.ci.test_qualification_completion
+          scripts.ci.test_rehearse_central_qualification
+          scripts.ci.test_rust_small_subject_bridge
+          scripts.ci.test_export_rust_small_receipt
+          scripts.ci.test_staged_qualification_workflow_cutover
+          scripts.ci.test_generated_pr_metadata_dispatch
 
       - name: Run ci-gate evaluation oracle tests (#15400/A2)
         run: python3 -m unittest scripts.ci.test_evaluate_ci_gate
