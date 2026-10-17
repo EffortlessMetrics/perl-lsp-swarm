@@ -449,3 +449,47 @@ fn orphaned_else_recovery_keeps_the_block_visible_and_the_error_recorded() -> Te
     );
     Ok(())
 }
+
+// #17000 — `while ()` is a valid idiom, but the parser still fabricates its
+// `1` operand. Unlike a written `while (1)`, that condition is not a
+// source-backed literal. The surrounding loop and real block remain parsed.
+#[test]
+fn empty_while_marks_only_supplied_condition_recovered() -> TestResult {
+    let file = lower_source("while () { 42; }\n");
+    assert_eq!(loops(&file).len(), 1, "the loop shell must remain visible");
+    let loop_item = file
+        .items
+        .iter()
+        .find(|item| matches!(item.kind, HirKind::LoopShell(_)))
+        .ok_or("missing while loop shell")?;
+    assert_eq!(loop_item.recovery_confidence, RecoveryConfidence::Parsed);
+    assert_eq!(
+        only_number_literal(&file, "1")?.recovery_confidence,
+        RecoveryConfidence::Recovered,
+        "the zero-width implicit condition must not claim Parsed",
+    );
+    assert_eq!(
+        only_number_literal(&file, "42")?.recovery_confidence,
+        RecoveryConfidence::Parsed,
+        "the written loop-body literal must retain Parsed provenance",
+    );
+    Ok(())
+}
+
+#[test]
+fn empty_while_provenance_does_not_leak_to_written_siblings() -> TestResult {
+    let file = lower_source("while () { 42; } while (1) { 43; }\n");
+    assert_eq!(loops(&file).len(), 2, "both loops must be retained");
+    let ones = number_literals(&file, "1");
+    assert_eq!(ones.len(), 2, "expected the supplied and written condition");
+    assert_eq!(ones[0].recovery_confidence, RecoveryConfidence::Recovered);
+    assert_eq!(ones[1].recovery_confidence, RecoveryConfidence::Parsed);
+    for value in ["42", "43"] {
+        assert_eq!(
+            only_number_literal(&file, value)?.recovery_confidence,
+            RecoveryConfidence::Parsed,
+            "real body content must remain source-backed",
+        );
+    }
+    Ok(())
+}

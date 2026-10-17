@@ -1263,7 +1263,7 @@ impl Lowerer {
                 );
                 self.visit_children(node, confidence);
             }
-            NodeKind::While { continue_block, keyword, .. } => {
+            NodeKind::While { condition, continue_block, keyword, .. } => {
                 let kind = match keyword.as_deref() {
                     Some("until") => LoopKind::Until,
                     _ => LoopKind::While,
@@ -1283,7 +1283,22 @@ impl Lowerer {
                     self.package_context.clone(),
                     Some(self.current_scope()),
                 );
-                self.visit_children(node, confidence);
+                // The parser supplies a zero-width `Number("1")` for the valid
+                // `while ()` infinite-loop idiom (#17000). That number was not
+                // written by the author: only its literal fact is Recovered.
+                // The loop shell and real body/continue children remain Parsed.
+                // Reuse the same child-order-preserving visitor as orphaned
+                // `else` (#15032), never a second manual AST traversal.
+                if is_synthesized_true_condition(condition) {
+                    self.visit_children_distinguishing(
+                        node,
+                        confidence,
+                        condition,
+                        RecoveryConfidence::Recovered,
+                    );
+                } else {
+                    self.visit_children(node, confidence);
+                }
             }
             NodeKind::For { init, condition, continue_block, .. } => {
                 let label = self.pending_label.take();
