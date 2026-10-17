@@ -73,20 +73,6 @@ mod operation;
 use operation::{NestedCoreUsage, ParserOperationContext};
 pub use operation::{ParserConfigIdentity, ParserOperationId};
 
-/// Strip Perl-style line comments from `qw()` content.
-///
-/// In Perl, `#` inside `qw()` begins a comment that extends to the end of the
-/// line (see perlop: "A # character within the list is treated as a comment
-/// character"). This function removes those comment segments so that
-/// `split_whitespace()` sees only the actual list elements.
-fn strip_qw_comments(content: &str) -> String {
-    content
-        .lines()
-        .map(|line| if let Some(pos) = line.find('#') { &line[..pos] } else { line })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
 /// Upper bound on retained test-only decision events, so a large source cannot
 /// grow the trace without bound.
 #[cfg(test)]
@@ -744,17 +730,6 @@ mod unclosed_block_recovery_tests;
 mod use_overload_tests;
 #[cfg(test)]
 mod x_repetition_tests;
-
-#[cfg(test)]
-mod strip_qw_comments_unit_tests {
-    use super::strip_qw_comments;
-
-    #[test]
-    fn test_strip_basic() {
-        let result = strip_qw_comments("foo # comment\n bar");
-        assert_eq!(result.split_whitespace().collect::<Vec<_>>(), vec!["foo", "bar"]);
-    }
-}
 
 #[cfg(test)]
 mod operation_context_unit_tests {

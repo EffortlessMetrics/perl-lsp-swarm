@@ -342,6 +342,14 @@ impl<'a> Parser<'a> {
         {
             self.advance_token()?; // consume )
             let body = self.parse_block()?;
+            let continue_block = if self.peek_kind() == Some(TokenKind::Continue)
+                && self.tokens.peek_second().ok().is_some_and(|t| t.kind() == TokenKind::LeftBrace)
+            {
+                self.advance_token()?; // consume 'continue'
+                Some(Box::new(self.parse_block()?))
+            } else {
+                None
+            };
             let end = self.previous_position();
 
             // Create implicit $_ variable, retaining the declaration in the list.
@@ -355,7 +363,7 @@ impl<'a> Parser<'a> {
                     variable: Box::new(implicit_var),
                     list,
                     body: Box::new(body),
-                    continue_block: None, // No continue block for implicit foreach
+                    continue_block,
                 },
                 SourceLocation { start, end },
             );
