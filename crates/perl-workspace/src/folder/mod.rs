@@ -2,12 +2,21 @@
 //!
 //! Converts workspace folder entries into local filesystem paths with
 //! deterministic behavior for both plain paths and `file://` URIs.
+//! Relative and non-filesystem `workspaceFolders` values are rejected
+//! rather than manufactured into `file:///` URIs.
+
+mod admission;
 
 use std::path::PathBuf;
 
 #[cfg(not(target_arch = "wasm32"))]
 use perl_uri::uri_to_fs_path;
 use serde_json::Value;
+
+pub use admission::{
+    WorkspaceFolderAdmission, WorkspaceFolderRejection, WorkspaceFolderRejectionKind,
+    admit_workspace_folder_uris, classify_workspace_folder_entry,
+};
 
 /// URI lists extracted from an LSP workspace folder change event.
 #[non_exhaustive]
@@ -53,7 +62,7 @@ pub fn workspace_folder_to_path(workspace_folder: &str) -> PathBuf {
     PathBuf::from(workspace_folder)
 }
 
-fn has_file_uri_scheme(value: &str) -> bool {
+pub(super) fn has_file_uri_scheme(value: &str) -> bool {
     value.get(..5).is_some_and(|prefix| prefix.eq_ignore_ascii_case("file:"))
 }
 
@@ -68,7 +77,7 @@ fn trim_file_uri_prefix(value: &str) -> &str {
 /// Used to block the `trim_file_uri_prefix` last-resort path in
 /// [`workspace_folder_to_path`] so that remote hostnames cannot leak into the
 /// returned `PathBuf`.
-fn file_uri_has_remote_host(value: &str) -> bool {
+pub(super) fn file_uri_has_remote_host(value: &str) -> bool {
     url::Url::parse(value)
         .ok()
         .filter(|u| u.scheme() == "file")
@@ -107,21 +116,19 @@ fn parse_file_uri_fallback(workspace_folder: &str) -> Option<PathBuf> {
     }
 }
 
-/// Extract workspace folder URIs from an LSP `workspaceFolders` array.
+/// Extract admitted workspace folder URIs from an LSP `workspaceFolders` array.
 ///
-/// Invalid entries are ignored.
+/// Non-entries (wrong JSON type, name-only objects) are ignored. Relative
+/// paths and non-filesystem URIs are omitted rather than manufactured into
+/// `file:///` roots. Request handlers that can return `-32602` should use
+/// [`admit_workspace_folder_uris`] so those rejections are typed.
 #[must_use]
 pub fn extract_workspace_folder_uris(workspace_folders: &[Value]) -> Vec<String> {
     workspace_folders
         .iter()
-        .filter_map(|folder| match folder {
-            Value::String(uri) => Some(uri.clone()),
-            Value::Object(_) => folder
-                .get("uri")
-                .and_then(Value::as_str)
-                .map(std::string::ToString::to_string)
-                .or_else(|| folder.get("path").and_then(Value::as_str).map(root_path_to_file_uri)),
-            _ => None,
+        .filter_map(|folder| match classify_workspace_folder_entry(folder) {
+            WorkspaceFolderAdmission::Admitted(uri) => Some(uri),
+            WorkspaceFolderAdmission::Ignored | WorkspaceFolderAdmission::Rejected(_) => None,
         })
         .collect()
 }
@@ -146,36 +153,30 @@ pub fn extract_workspace_folder_change(event: &Value) -> WorkspaceFolderChange {
 
 /// Convert a legacy LSP `rootPath` string to a `file://` URI.
 ///
-/// This keeps behavior deterministic across absolute POSIX and Windows-style paths.
+/// Absolute POSIX and Windows-style paths convert honestly. Relative
+/// `rootPath` values keep the historical conversion used by deprecated
+/// initialize `rootPath` callers. `workspaceFolders` admission never uses
+/// this function for relative paths.
 #[must_use]
 pub fn root_path_to_file_uri(root_path: &str) -> String {
     if has_file_uri_scheme(root_path) {
         return root_path.to_string();
     }
 
-    let path = std::path::Path::new(root_path);
-    url::Url::from_file_path(path).map_or_else(
-        |_| {
-            if root_path.starts_with('/') {
-                format!("file://{}", root_path)
-            } else {
-                let normalized = root_path.replace('\\', "/");
-                // Preserve legacy behavior (force an absolute-looking file URI for
-                // non-absolute paths) while ensuring URI-safe percent encoding.
-                let pseudo_absolute = format!("/{normalized}");
-                url::Url::from_file_path(std::path::Path::new(&pseudo_absolute))
-                    .map_or_else(|_| format!("file:///{}", normalized), |uri| uri.to_string())
-            }
-        },
-        |uri| uri.to_string(),
-    )
+    admission::try_absolute_path_to_file_uri(root_path).unwrap_or_else(|| {
+        let normalized = root_path.replace('\\', "/");
+        let pseudo_absolute = format!("/{normalized}");
+        url::Url::from_file_path(std::path::Path::new(&pseudo_absolute))
+            .map_or_else(|_| format!("file:///{normalized}"), |uri| uri.to_string())
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        extract_workspace_folder_change, extract_workspace_folder_uris, root_path_to_file_uri,
-        workspace_folder_to_path,
+        WorkspaceFolderAdmission, WorkspaceFolderRejectionKind, admit_workspace_folder_uris,
+        classify_workspace_folder_entry, extract_workspace_folder_change,
+        extract_workspace_folder_uris, root_path_to_file_uri, workspace_folder_to_path,
     };
     use serde_json::json;
     use std::path::PathBuf;
@@ -257,6 +258,191 @@ mod tests {
         ];
         let uris = extract_workspace_folder_uris(&entries);
         assert_eq!(uris, vec!["file:///one", "file:///two", "file:///three", "file:///four"]);
+    }
+
+    #[test]
+    fn relative_path_is_not_manufactured_into_a_file_uri() {
+        let entries = vec![json!({"path": "relative/rel2", "name": "rel2"})];
+        let extracted = extract_workspace_folder_uris(&entries);
+        assert!(
+            extracted.iter().all(|uri| !uri.starts_with("file:///relative")),
+            "relative path must not become file:///relative/rel2, got {extracted:?}"
+        );
+        assert!(extracted.is_empty(), "relative path must not be registered, got {extracted:?}");
+
+        let rejection = admit_workspace_folder_uris(&entries).expect_err("relative path");
+        assert_eq!(rejection.kind, WorkspaceFolderRejectionKind::RelativePath);
+        assert_eq!(rejection.input, "relative/rel2");
+        assert!(
+            !rejection.message().contains("file:///relative/rel2"),
+            "rejection must not advertise a manufactured URI: {}",
+            rejection.message()
+        );
+
+        // The deprecated rootPath helper may still convert relative strings;
+        // workspaceFolders admission must not consult that branch.
+        let legacy = root_path_to_file_uri("relative/rel2");
+        assert!(
+            legacy.starts_with("file:"),
+            "legacy rootPath helper remains available for initialize.rootPath, got {legacy}"
+        );
+        assert!(extract_workspace_folder_uris(&entries).is_empty());
+        assert!(admit_workspace_folder_uris(&entries).is_err());
+    }
+
+    #[test]
+    fn relative_uri_string_is_not_passed_through_as_a_root() {
+        let entries = vec![json!({"uri": "just/a/relative/uri", "name": "rel3"})];
+        assert!(extract_workspace_folder_uris(&entries).is_empty());
+        let rejection = admit_workspace_folder_uris(&entries).expect_err("relative uri");
+        assert_eq!(rejection.kind, WorkspaceFolderRejectionKind::RelativeUri);
+    }
+
+    #[test]
+    fn non_filesystem_schemes_are_rejected_instead_of_registered() {
+        for (uri, kind) in [
+            ("untitled:Untitled-1", WorkspaceFolderRejectionKind::NonFilesystemScheme),
+            ("git:///repo", WorkspaceFolderRejectionKind::NonFilesystemScheme),
+            (
+                "vscode-remote://ssh-remote+host/workspace",
+                WorkspaceFolderRejectionKind::NonFilesystemScheme,
+            ),
+            ("file://evil.example.com/share/project", WorkspaceFolderRejectionKind::RemoteFileHost),
+        ] {
+            let entries = vec![json!({"uri": uri, "name": "virtual"})];
+            assert!(
+                extract_workspace_folder_uris(&entries).is_empty(),
+                "{uri} must not be extracted as a filesystem root"
+            );
+            let rejection =
+                admit_workspace_folder_uris(&entries).expect_err("non-filesystem folder");
+            assert_eq!(rejection.kind, kind, "uri={uri}");
+            assert_eq!(rejection.input, uri);
+        }
+    }
+
+    #[test]
+    fn mixed_valid_and_relative_folders_fail_admission_without_keeping_the_valid_root() {
+        let entries = vec![
+            json!({"uri": "file:///tmp/ws", "name": "ws"}),
+            json!({"path": "relative/rel2", "name": "rel2"}),
+        ];
+        let extracted = extract_workspace_folder_uris(&entries);
+        assert_eq!(extracted, vec!["file:///tmp/ws"]);
+
+        let rejection = admit_workspace_folder_uris(&entries).expect_err("mixed folders");
+        assert_eq!(rejection.kind, WorkspaceFolderRejectionKind::RelativePath);
+    }
+
+    #[test]
+    fn name_only_and_non_entry_shapes_stay_ignored_not_invalid_params() {
+        let entries = vec![json!({"name": "no-uri-here"}), json!(42), json!(null)];
+        assert!(extract_workspace_folder_uris(&entries).is_empty());
+        let admitted = admit_workspace_folder_uris(&entries).expect("ignored non-entries");
+        assert!(admitted.is_empty());
+        assert!(matches!(
+            classify_workspace_folder_entry(&json!({"name": "no-uri-here"})),
+            WorkspaceFolderAdmission::Ignored
+        ));
+    }
+
+    #[test]
+    fn dotted_and_parent_relative_paths_are_rejected() {
+        for path in [".", "..", "./lib", "../outside"] {
+            let rejection = admit_workspace_folder_uris(&[json!({"path": path})])
+                .expect_err("dotted relative path");
+            assert_eq!(rejection.kind, WorkspaceFolderRejectionKind::RelativePath);
+            assert_eq!(rejection.input, path);
+        }
+    }
+
+    #[test]
+    fn empty_uri_is_rejected() {
+        let rejection =
+            admit_workspace_folder_uris(&[json!({"uri": "   "})]).expect_err("empty uri");
+        assert_eq!(rejection.kind, WorkspaceFolderRejectionKind::Empty);
+    }
+
+    #[test]
+    fn relative_file_scheme_without_absolute_path_is_rejected() {
+        let rejection = admit_workspace_folder_uris(&[json!({"uri": "file:relative/rel2"})])
+            .expect_err("relative file URI");
+        assert_eq!(rejection.kind, WorkspaceFolderRejectionKind::RelativeUri);
+        assert!(extract_workspace_folder_uris(&[json!("file:relative/rel2")]).is_empty());
+    }
+
+    #[test]
+    fn absolute_file_uri_that_happens_to_look_like_a_relative_name_is_still_admitted() {
+        // A client that actually sent file:///relative/rel2 named an absolute
+        // path /relative/rel2. That is not the manufacturing bug.
+        let admitted = admit_workspace_folder_uris(&[json!({"uri": "file:///relative/rel2"})])
+            .expect("absolute file URI");
+        assert_eq!(admitted, vec!["file:///relative/rel2"]);
+    }
+
+    #[test]
+    fn relative_root_path_helper_still_manufactures_for_legacy_initialize() {
+        let uri = root_path_to_file_uri("relative/rel2");
+        assert!(uri.starts_with("file:"), "legacy rootPath conversion, got {uri}");
+        assert_ne!(uri, "relative/rel2");
+    }
+
+    #[test]
+    fn unc_style_path_is_rejected_as_a_remote_file_host() {
+        // `Url::from_file_path` can rewrite `//host/share` into
+        // `file://host/share`. Admission must reject that as remote, not
+        // manufacture a filesystem root.
+        for path in ["//evil.example.com/share/project", r"\\evil.example.com\share\project"] {
+            let entries = vec![json!({"path": path, "name": "unc"})];
+            assert!(
+                extract_workspace_folder_uris(&entries).is_empty(),
+                "{path} must not become a workspace root"
+            );
+            let rejection = admit_workspace_folder_uris(&entries).expect_err("UNC path");
+            assert_eq!(
+                rejection.kind,
+                WorkspaceFolderRejectionKind::RemoteFileHost,
+                "UNC-style path {path} must be classified as a remote host"
+            );
+            assert_eq!(rejection.input, path);
+            assert!(
+                !rejection.message().contains("file://evil.example.com"),
+                "rejection must not advertise a manufactured URI: {}",
+                rejection.message()
+            );
+        }
+    }
+
+    #[test]
+    fn four_slash_file_uri_is_an_honest_absolute_local_path_not_unc() {
+        // rust `url` 2.x (WHATWG) collapses `file:////host/share` to an empty
+        // authority and path `/host/share`. That is the same class as
+        // `file:///relative/rel2`: a client-named absolute local path, not a
+        // remote UNC root (`\\host\share`). Path-origin `//host/share` remains
+        // RemoteFileHost via `is_unc_style_path` before conversion.
+        let uri = "file:////evil.example.com/share/project";
+        let parsed = url::Url::parse(uri).expect("four-slash file URI parses");
+        assert!(
+            parsed.host_str().is_none(),
+            "four-slash form must not carry the host in the authority, got {:?}",
+            parsed.host_str()
+        );
+        assert_eq!(
+            parsed.path(),
+            "/evil.example.com/share/project",
+            "rust url must collapse extra slashes; a `//host` path would be UNC"
+        );
+
+        let admitted = admit_workspace_folder_uris(&[json!({"uri": uri, "name": "unc-uri"})])
+            .expect("collapsed four-slash is an absolute local file URI");
+        assert_eq!(admitted, vec![uri]);
+
+        let path = workspace_folder_to_path(uri);
+        let native = path.to_string_lossy();
+        assert!(
+            !native.starts_with(r"\\") && !native.starts_with("//"),
+            "admitted four-slash URI must not resolve to a UNC path, got {native}"
+        );
     }
 
     #[test]
