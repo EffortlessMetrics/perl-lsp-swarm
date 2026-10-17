@@ -4577,7 +4577,11 @@ impl PerlLexer<'_> {
                 .enumerate()
                 .position(|(i, c)| *c == b'#' && (i == 0 || line[i - 1].is_ascii_whitespace()))
             {
-                line = &line[..h];
+                // Strip only when the prefix cannot hold a string/regex/quote-like opener;
+                // when ambiguous keep the line, which leaves it as code (the safe side).
+                if !Self::may_open_quote_like(&line[..h]) {
+                    line = &line[..h];
+                }
             }
             if let Some(last) = line.iter().rev().find(|c| !c.is_ascii_whitespace()) {
                 return matches!(last, b';' | b'{');
@@ -4587,6 +4591,32 @@ impl PerlLexer<'_> {
             }
             end = start - 1;
         }
+    }
+
+    /// Conservative: true if `prefix` has a quote or `/` character, or a quote-like
+    /// operator word (`q qq qw qr m s tr y`) followed by a delimiter.
+    fn may_open_quote_like(prefix: &[u8]) -> bool {
+        if prefix.iter().any(|c| matches!(c, b'"' | b'\'' | b'`' | b'/')) {
+            return true;
+        }
+        let is_word = |c: u8| c.is_ascii_alphanumeric() || c == b'_';
+        prefix.iter().enumerate().any(|(i, _)| {
+            let mut j = i;
+            while j < prefix.len() && is_word(prefix[j]) {
+                j += 1;
+            }
+            let word = &prefix[i..j];
+            let starts_word = i == 0 || !is_word(prefix[i - 1]);
+            starts_word
+                && matches!(word, b"q" | b"qq" | b"qw" | b"qr" | b"m" | b"s" | b"tr" | b"y")
+                && prefix.get(j).is_none_or(|d| {
+                    !d.is_ascii_whitespace()
+                        && !is_word(*d)
+                        && *d != b','
+                        && *d != b';'
+                        && *d != b')'
+                })
+        })
     }
 
     /// True when a line-start `=cut` exists at or after the cursor. The result is memoized so

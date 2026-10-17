@@ -139,3 +139,22 @@ fn operator_or_bracket_continuation_is_not_pod() {
         assert!(toks.iter().any(|t| t == "tail"), "{head:?}: {toks:?}");
     }
 }
+
+#[test]
+fn hash_inside_string_or_regex_is_not_a_comment() {
+    for head in ["my $s = \"foo; # x\"\n", "my $s = qr/a; #b/\n", "my $s = q{a; #b}\n"] {
+        let src = format!("{head}=shift;\nsub tail {{ 1 }}\n=cut\n");
+        let toks = idents(&src);
+        assert!(toks.iter().any(|t| t == "shift"), "{head:?}: {toks:?}");
+        assert!(toks.iter().any(|t| t == "tail"), "{head:?}: {toks:?}");
+    }
+}
+
+#[test]
+fn real_comments_keep_their_behavior() {
+    let toks = idents("my $x # note;\n=shift;\nsub tail { 1 }\n=cut\n");
+    assert!(toks.iter().any(|t| t == "shift") && toks.iter().any(|t| t == "tail"), "{toks:?}");
+    let toks = idents("$x = 1; # c\n=construct path\nunbalanced { text\n=cut\nsub tail { 1 }\n");
+    assert!(toks.iter().any(|t| t == "tail"), "{toks:?}");
+    assert!(!toks.iter().any(|t| t == "unbalanced"), "{toks:?}");
+}
