@@ -18,6 +18,14 @@ on:
       - 'scripts/cargo-admitted'
       - 'scripts/cargo_admitted.py'
       - 'scripts/cargo_cohort.py'
+      # Parser-policy proofs inspect Cargo graphs; their CI consumer must not
+      # bootstrap the product-linked xtask integration harness (#18016).
+      - 'scripts/tests/test_xtask_parser_dependencies.py'
+      - 'scripts/tests/test_xtask_parser_policy_route.py'
+      - 'xtask/tests/parser_dependency_graph.rs'
+      - 'xtask/Cargo.toml'
+      - 'crates/**/Cargo.toml'
+      - 'Cargo.lock'
       - 'scripts/tests/test_cargo_cohort.py'
       - 'scripts/tests/test_cargo_admitted_storage.py'
       - 'scripts/tests/test_cargo_admitted_budget.py'
@@ -650,6 +658,24 @@ jobs:
             echo "" >> "$GITHUB_STEP_SUMMARY"
             echo "The per-worktree target-dir isolation contract regressed. Check the step output above for the failed case." >> "$GITHUB_STEP_SUMMARY"
           fi
+
+  parser-policy-self-test:
+    name: Parser dependency policy self-test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - name: Install pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # stable (master)
+        with:
+          toolchain: '1.95.0'
+      - name: Check direct policy route and failure controls
+        run: python3 scripts/tests/test_xtask_parser_policy_route.py
+      - name: Populate selected Cargo graph without compiling
+        run: cargo tree -p xtask --features parser-tasks --locked --edges normal,build --prefix none --format '{p}' > /dev/null
+      - name: Run all three parser dependency policy assertions
+        run: python3 scripts/tests/test_xtask_parser_dependencies.py
 
   cargo-admitted-storage-self-test:
     name: Cargo admitted storage self-test

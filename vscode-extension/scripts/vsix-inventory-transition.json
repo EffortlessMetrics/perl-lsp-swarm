@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "owner_issue": 17989,
-  "reason": "Accept the measured 271-byte perltidy setup-feedback bundle change owned by PR #17989; all 30 package members remain unchanged. The owner number identifies this existing PR, not a newly created controlling issue.",
+  "owner_issue": 17985,
+  "reason": "Accept the measured 114-byte package.json growth for the truthful native-only critic-engine description and its review-driven correction in #17985; all 30 package members and the emitted extension bundle remain otherwise unchanged.",
   "base_baseline_file_sha256": "a02591ea0bec713209f9f682fafa481ee70fc1db93c53f4856b479936c88ddc2",
-  "candidate_baseline_file_sha256": "f71082b3b8939a62578bf218cd456cffab992e9c790eda18558a6b24117aa24c",
+  "candidate_baseline_file_sha256": "f658e1a682e1fee5a4d4053e0f846cac2b46e8dd7aa423f0c5373234912c7289",
   "base_inventory_sha256": "039b3febe05d22900a49717990beb0e7267995db5e3322663e5792c43f60673f",
-  "candidate_inventory_sha256": "0a2b4f7011384e51239592bb14dc5c77d61e02002fd3f788b63d9282ae11eee3"
+  "candidate_inventory_sha256": "06a1d7fca3d31ccba5cc400078f968034fc5365fcd5ce393cf40fdfda22be423"
 }
