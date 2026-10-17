@@ -263,7 +263,7 @@ json_output() {
     # LSP benchmarks
     if [[ -z "$CATEGORY" || "$CATEGORY" == "lsp" ]]; then
         echo "    \"lsp\": {"
-        run_criterion_bench "perl-lsp-rs" "rope_performance_benchmark" "lsp"
+        run_criterion_bench "perl-lsp-rs" "rope_performance_benchmark" "lsp" "benchmarks"
         echo "      \"_category\": \"lsp\""
         echo "    },"
     fi
