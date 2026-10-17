@@ -155,11 +155,20 @@ fn staging_keeps_each_variant_in_its_own_directory() -> Result<()> {
 
 #[test]
 fn staging_rejects_an_unknown_variant() -> Result<()> {
-    let root = staged_root()?;
+    // Variant validation precedes binary inspection, so an empty isolated root is sufficient.
+    let root = tempfile::tempdir()?;
     let output = stage(root.path(), "adopted")?;
     ensure!(
         output.status.code() == Some(2),
         "an unknown variant must be a usage error, not a silent third measurement"
+    );
+    ensure!(
+        String::from_utf8_lossy(&output.stderr).contains("unknown variant adopted"),
+        "the usage error must name the unknown variant"
+    );
+    ensure!(
+        fs::read_dir(root.path())?.next().is_none(),
+        "an unknown variant must not create staging files"
     );
     Ok(())
 }
