@@ -145,9 +145,10 @@ class ReceiptProblemTests(unittest.TestCase):
         }
         with tempfile.TemporaryDirectory() as directory:
             receipt = Path(directory) / "receipt.json"
-            summary = Path(directory) / "summary.md"
             for label, (payload, cause) in cases.items():
                 with self.subTest(label=label):
+                    summary = Path(directory) / f"{label}.md"
+                    self.assertFalse(summary.exists())
                     receipt.write_bytes(payload)
                     # Match the workflow entry point, including its summary env var.
                     result = subprocess.run(
@@ -164,6 +165,7 @@ class ReceiptProblemTests(unittest.TestCase):
                         result.stdout,
                     )
                     self.assertIn(cause, result.stdout)
+                    self.assertTrue(summary.is_file(), f"{label}: summary was not created")
                     written = summary.read_text(encoding="utf-8")
                     self.assertIn(cause, written)
                     self.assertNotIn("Non-success gates: none recorded.", written)
