@@ -71,6 +71,19 @@ files are byte-identical to #18068. Only the bridge/export test closure is impor
 full carrier workflow/result tests require that owner's additional source and
 were not qualified here.
 
+A cross-repository fixture executes the actual central embedded capture,
+authenticated import and custody functions before the actual Perl H/S composition
+and payload preparation. It also rejects rewriting native check identity to H.
+Only canonical semantic verification remains synthetic in this rehearsal:
+
+```sh
+python3 -B -m scripts.ci.rehearse_central_qualification /path/to/em-ci
+```
+
+The central checkout must contain the corresponding optional acquire-plan source
+hooks. This command executes that checkout's existing fixture loader, not live
+GitHub endpoints, product commands or a publisher.
+
 ## Actual runtime joins still needed
 
 1. The adapter now calls the real #10057 admission join by default. It requires
