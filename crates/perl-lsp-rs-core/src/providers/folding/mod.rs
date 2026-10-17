@@ -20,7 +20,7 @@ pub struct FoldingRangeExtractor {
 /// with optimal editor experience.
 ///
 /// # Performance Characteristics
-/// - Memory footprint: 24 bytes per range (optimized for large files)
+/// - Memory footprint: 32 bytes per range (optimized for large files)
 /// - Range calculation: <1μs per fold region
 /// - LSP serialization: Direct mapping to protocol types
 #[derive(Debug, Clone)]
@@ -31,6 +31,13 @@ pub struct FoldingRange {
     pub end_offset: usize, // Changed from end_line to end_offset
     /// Type of folding region for editor-specific handling
     pub kind: Option<FoldingRangeKind>,
+    /// Whether `end_offset` lands at the last content byte of a body line
+    /// rather than on a closing-delimiter line (`}` of a block). Closing
+    /// lines stay visible in editors, so the LSP conversion decrements the
+    /// raw end line for delimiter-terminated spans; content-terminated
+    /// spans (heredoc bodies, `#endregion` markers) must keep the line
+    /// containing `end_offset` as the inclusive end line (#17299).
+    pub end_offset_on_content_line: bool,
 }
 
 /// Classification of foldable regions for optimal editor experience.
@@ -93,6 +100,7 @@ impl FoldingRangeExtractor {
                     start_offset: token.start,
                     end_offset: token.end,
                     kind: Some(FoldingRangeKind::Region),
+                    end_offset_on_content_line: true,
                 });
             }
 
@@ -152,6 +160,7 @@ impl FoldingRangeExtractor {
                                 start_offset,
                                 end_offset: line_end_offset,
                                 kind: Some(FoldingRangeKind::Region),
+                                end_offset_on_content_line: true,
                             });
                         }
                     }
@@ -314,7 +323,7 @@ impl FoldingRangeExtractor {
                 // Single-line bodies still drop out later via the
                 // multiline-only LSP filter.
                 if let Some(body) = body_span.as_ref() {
-                    self.add_range_from_locations(body, body, Some(FoldingRangeKind::Region));
+                    self.add_range_from_content_span(body, Some(FoldingRangeKind::Region));
                 }
             }
 
@@ -391,7 +400,12 @@ impl FoldingRangeExtractor {
 
         // Only add if it's not trivial
         if end_offset > start_offset.saturating_add(1) {
-            self.ranges.push(FoldingRange { start_offset, end_offset, kind });
+            self.ranges.push(FoldingRange {
+                start_offset,
+                end_offset,
+                kind,
+                end_offset_on_content_line: false,
+            });
         }
     }
 
@@ -406,7 +420,36 @@ impl FoldingRangeExtractor {
         let end_offset = end.end;
 
         if end_offset > start_offset.saturating_add(1) {
-            self.ranges.push(FoldingRange { start_offset, end_offset, kind });
+            self.ranges.push(FoldingRange {
+                start_offset,
+                end_offset,
+                kind,
+                end_offset_on_content_line: false,
+            });
+        }
+    }
+
+    /// Add a folding range from a span whose end offset lands at the last
+    /// content byte of its final line rather than on a closing-delimiter
+    /// line (heredoc bodies). The LSP conversion must keep the line
+    /// containing the end offset as the inclusive end line instead of
+    /// stepping back one line, which would leave the last body line
+    /// unfolded (#17299).
+    fn add_range_from_content_span(
+        &mut self,
+        span: &SourceLocation,
+        kind: Option<FoldingRangeKind>,
+    ) {
+        let start_offset = span.start;
+        let end_offset = span.end;
+
+        if end_offset > start_offset.saturating_add(1) {
+            self.ranges.push(FoldingRange {
+                start_offset,
+                end_offset,
+                kind,
+                end_offset_on_content_line: true,
+            });
         }
     }
 }
@@ -493,6 +536,10 @@ mod tests {
 
         assert!(ranges.iter().any(|range| range.start_offset == 0 && range.end_offset == 27));
         assert!(ranges.iter().any(|range| range.start_offset == 29 && range.end_offset == 56));
+        assert!(
+            ranges.iter().all(|range| !range.end_offset_on_content_line),
+            "node spans end on closing-delimiter lines, not content lines"
+        );
     }
 
     #[test]
@@ -523,6 +570,10 @@ mod tests {
             matches!(ranges[0].kind, Some(FoldingRangeKind::Region)),
             "kind must be Region: {:?}",
             ranges[0].kind
+        );
+        assert!(
+            ranges[0].end_offset_on_content_line,
+            "heredoc body spans end at content, so the LSP conversion must keep the end line (#17299)"
         );
 
         // Without an attached body span (empty/unterminated heredoc) nothing
