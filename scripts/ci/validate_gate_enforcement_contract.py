@@ -449,7 +449,8 @@ def read_workflow(root: Path, raw_path: str) -> Workflow:
             end = starts[position + 1][0] if position + 1 < len(starts) else len(lines)
             if job_id in jobs:
                 source_shape_supported = False
-            jobs[job_id] = _read_job(lines, start, end, job_id)
+            else:
+                jobs[job_id] = _read_job(lines, start, end, job_id)
     return Workflow(
         path=relative,
         sha256=_sha256(path),

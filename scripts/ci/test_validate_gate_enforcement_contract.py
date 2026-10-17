@@ -1075,6 +1075,18 @@ class QualificationCallerTests(unittest.TestCase):
         subjects = {row['subject'] for row in result['findings'] if row['code'] == 'qualification_unresolved_caller'}
         self.assertEqual(subjects, {'.github/workflows/mid.yml', '.github/workflows/top.yml'})
 
+    def test_duplicate_job_preserves_first_edge_while_refusing_source(self):
+        code, result = self.run_catalog({'duplicate.yml': self.caller() +
+                                        '  call:\n    steps: []\n'})
+        self.assertEqual(code, 1)
+        findings = {row['code'] for row in result['findings']}
+        self.assertIn('qualification_catalog_unsupported', findings)
+        self.assertIn('qualification_unresolved_caller', findings)
+        source = next(row for row in result['qualification_catalog']
+                      if row['path'] == '.github/workflows/duplicate.yml')
+        self.assertEqual(source['reusable_edges'],
+                         [{'job': 'call', 'target': './.github/workflows/ci.yml'}])
+
     def test_hidden_unselected_edges_refuse(self):
         for source in ('on: push\njobs: {call: {uses: ./.github/workflows/ci.yml}}',
                        'on: {workflow_run: {workflows: [CI], types: [completed]}}\njobs:\n  finalize:\n    steps: []',
