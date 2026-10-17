@@ -158,6 +158,37 @@ class ExecutionTests(unittest.TestCase):
         self.assertFalse(self.log.exists())
         self.assertEqual(list(self.fixture.packet.iterdir()),[])
 
+    def test_duplicate_native_run_never_captures_allocates_or_launches_product(self):
+        self.fixture.api.extra_rows = [dict(self.fixture.api.row, id=122)]
+        result = self.run_native()
+        self.assertEqual(result['status'], 'NOT_PROVEN')
+        self.assertEqual(result['canonical_run_id'], 122)
+        self.assertFalse(result['rehearsal_elected'])
+        self.assertEqual((result['selected'], result['executed'], result['failed']), (0, 0, 0))
+        self.assertIsNone(result['check_run_id'])
+        self.assertEqual(self.trace, [])
+        self.assertFalse(self.context.exists())
+        self.assertFalse(self.log.exists())
+        self.assertEqual(list(self.fixture.packet.iterdir()), [])
+
+    def test_duplicate_discovered_while_waiting_for_allocation_releases_without_product(self):
+        @contextmanager
+        def raced(plan, selection):
+            self.trace.append('allocation')
+            self.fixture.api.extra_rows = [dict(self.fixture.api.row, id=122)]
+            try:
+                yield
+            finally:
+                self.trace.append('release')
+        with self.assertRaisesRegex(ValueError, 'admission moved while awaiting allocation'):
+            factory.execute_native(self.fixture.owners,
+                {'inputs': {'request': json.dumps(self.fixture.plan)}},
+                self.capture, allocation_owner=raced, log_path=self.log)
+        self.assertEqual(self.trace, ['capture', 'allocation', 'release'])
+        self.assertNotIn('proof_started_at', json.loads(self.context.read_bytes()))
+        self.assertFalse(self.log.exists())
+        self.assertEqual(list(self.fixture.packet.iterdir()), [])
+
     def test_stale_attempt_during_allocation_never_starts_proof(self):
         @contextmanager
         def moved(plan,selection):
