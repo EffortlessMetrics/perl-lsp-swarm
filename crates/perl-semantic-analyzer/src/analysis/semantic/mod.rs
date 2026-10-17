@@ -1036,8 +1036,38 @@ sub fold {
         // (perl-lsp-rs hover.rs); at the use site it must resolve the
         // lexical itself, never the enclosing sub via containment fallback.
         let definition = analyzer.find_definition(use_offset).ok_or("definition missing")?;
-        assert_eq!(definition.name, "item", "definition at use must be the lexical: {definition:?}");
+        assert_eq!(
+            definition.name, "item",
+            "definition at use must be the lexical: {definition:?}"
+        );
         assert_eq!(definition.location.start, item.location.start);
+        Ok(())
+    }
+
+    /// `for my $x ($x)`: the list `$x` still binds the outer lexical; only
+    /// body references bind the loop variable (scope-analyzer ordering).
+    #[test]
+    fn test_foreach_my_list_binds_outer_variable() -> Result<(), Box<dyn std::error::Error>> {
+        let code = "sub f {\n    my $x = 1;\n    for my $x ($x) {\n        print $x;\n    }\n}\n";
+        let mut parser = Parser::new(code);
+        let ast = parser.parse()?;
+        let analyzer = SemanticAnalyzer::analyze_with_source(&ast, code);
+
+        let outer_offset = code.find("my $x = 1").ok_or("outer not found")? + 3;
+        let loop_offset = code.find("for my $x").ok_or("loop not found")? + 7;
+        let list_offset = code.find("($x)").ok_or("list not found")? + 1;
+        let body_offset = code.rfind("print $x").ok_or("body not found")? + 6;
+
+        let list_def = analyzer.find_definition(list_offset).ok_or("list definition missing")?;
+        assert_eq!(
+            list_def.location.start, outer_offset,
+            "list $x must resolve to the outer lexical, got: {list_def:?}"
+        );
+        let body_def = analyzer.find_definition(body_offset).ok_or("body definition missing")?;
+        assert_eq!(
+            body_def.location.start, loop_offset,
+            "body $x must resolve to the loop lexical, got: {body_def:?}"
+        );
         Ok(())
     }
 

@@ -885,52 +885,14 @@ impl SymbolExtractor {
             }
 
             NodeKind::Foreach { variable, list, body, continue_block: _ } => {
-                self.table.push_scope(ScopeKind::Block, node.location);
-
-                // The loop variable is implicitly declared. The parser
-                // wraps an explicit declarator (`for my $item (...)`) in a
-                // VariableDeclaration node; unwrap it so the lexical is
-                // actually indexed (#17297) — passing the wrapper to
-                // handle_variable_declaration silently recorded nothing.
-                match &variable.kind {
-                    NodeKind::VariableDeclaration {
-                        declarator,
-                        variable: inner,
-                        attributes,
-                        ..
-                    } => {
-                        let doc = self.extract_leading_comment(variable.location.start);
-                        self.handle_variable_declaration(
-                            declarator,
-                            inner,
-                            attributes,
-                            inner.location,
-                            doc,
-                        );
-                    }
-                    NodeKind::VariableListDeclaration { declarator, variables, attributes, .. } => {
-                        let doc = self.extract_leading_comment(variable.location.start);
-                        for var in variables {
-                            self.handle_variable_declaration(
-                                declarator,
-                                var,
-                                attributes,
-                                var.location,
-                                doc.clone(),
-                            );
-                        }
-                    }
-                    _ => {
-                        self.handle_variable_declaration(
-                            "my",
-                            variable,
-                            &[],
-                            variable.location,
-                            None,
-                        );
-                    }
-                }
+                // The list is evaluated in the enclosing scope: visit it
+                // before opening the loop scope so its references keep
+                // binding outer variables (`for my $x ($x)` — the list
+                // `$x` is the outer lexical, matching the scope
+                // analyzer's visibility ordering in scope_constructs.rs).
                 self.visit_node(list);
+                self.table.push_scope(ScopeKind::Block, node.location);
+                self.declare_foreach_iterator(variable);
                 self.visit_node(body);
 
                 self.table.pop_scope();
@@ -3232,6 +3194,42 @@ impl SymbolExtractor {
     }
 
     /// Handle variable declaration
+    /// Declare a `foreach` loop iterator in the current (loop) scope.
+    ///
+    /// The parser wraps an explicit declarator (`for my $item (...)`) in a
+    /// `VariableDeclaration` node; unwrap it so the lexical is actually
+    /// indexed (#17297) — passing the wrapper to
+    /// `handle_variable_declaration` silently recorded nothing.
+    fn declare_foreach_iterator(&mut self, variable: &Node) {
+        match &variable.kind {
+            NodeKind::VariableDeclaration { declarator, variable: inner, attributes, .. } => {
+                let doc = self.extract_leading_comment(variable.location.start);
+                self.handle_variable_declaration(
+                    declarator,
+                    inner,
+                    attributes,
+                    inner.location,
+                    doc,
+                );
+            }
+            NodeKind::VariableListDeclaration { declarator, variables, attributes, .. } => {
+                let doc = self.extract_leading_comment(variable.location.start);
+                for var in variables {
+                    self.handle_variable_declaration(
+                        declarator,
+                        var,
+                        attributes,
+                        var.location,
+                        doc.clone(),
+                    );
+                }
+            }
+            _ => {
+                self.handle_variable_declaration("my", variable, &[], variable.location, None);
+            }
+        }
+    }
+
     fn handle_variable_declaration(
         &mut self,
         declarator: &str,
