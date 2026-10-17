@@ -1834,6 +1834,49 @@ impl LspServer {
                 previous_result_ids.iter().find(|(u, _)| u == uri_str).map(|(_, id)| id.clone());
 
             let Some(parsed) = doc.current_parsed() else { continue };
+
+            // Syntax-only short-circuit for workspace pull. Mirrors the
+            // push-path gate in `publish_diagnostics` and the document-pull
+            // gate above: report parse errors (plus canonical regex
+            // findings) only, and skip the semantic / critic /
+            // module-resolution stack, so a latency harness measuring
+            // `workspace/diagnostic` sees the same reduced subject as the
+            // other two transports (#17332). No resultId is minted: an ID
+            // computed under the reduced subject must not be reusable as
+            // `unchanged` under the full subject.
+            if self.runtime_tuning.diagnostic_mode
+                == perl_lsp_rs_core::runtime::tuning::DiagnosticMode::SyntaxOnly
+            {
+                if generation.load(std::sync::atomic::Ordering::SeqCst) != *gen_at_snapshot {
+                    continue;
+                }
+                if doc.full_sync_required() {
+                    items.push(json!({
+                        "uri": uri_str,
+                        "version": doc.version,
+                        "kind": "full",
+                        "items": []
+                    }));
+                    continue;
+                }
+                let parse_errors = parsed.parse_errors_arc();
+                let regex_analysis = parsed.regex_analysis().cloned();
+                let syntax_items = Self::syntax_only_lsp_diagnostics(
+                    &parse_errors,
+                    regex_analysis.as_deref(),
+                    &doc.text,
+                    &doc.line_starts,
+                    markup_message_support,
+                );
+                items.push(json!({
+                    "uri": uri_str,
+                    "version": doc.version,
+                    "kind": "full",
+                    "items": syntax_items
+                }));
+                continue;
+            }
+
             if let Some(ast) = parsed.ast() {
                 let parse_errors = parsed.parse_errors();
                 // `workspace/diagnostic` is a third production evaluation route
@@ -7071,6 +7114,89 @@ print $x;
             .unwrap_or_default();
         assert!(!items.is_empty(), "syntax-only pull must report parse errors; got {items:?}");
         items
+    }
+
+    /// Workspace pull must honor SyntaxOnly exactly like push and
+    /// document pull (#17332): parse errors survive, the semantic /
+    /// module-resolution stack does not run, and no reusable resultId is
+    /// minted under the reduced subject.
+    #[test]
+    fn workspace_pull_syntax_only_reports_parse_errors_only()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut tuning = perl_lsp_rs_core::runtime::tuning::RuntimeTuning::normal_defaults();
+        tuning.diagnostic_mode = perl_lsp_rs_core::runtime::tuning::DiagnosticMode::SyntaxOnly;
+        let server = message_union_server(tuning, false);
+        let broken_uri = message_union_uri("17332_ws_syntax_only_broken.pl");
+        let missing_uri = message_union_uri("17332_ws_syntax_only_missing.pl");
+        server.test_apply_did_open(&broken_uri, MESSAGE_UNION_PARSE_ERROR_DOCUMENT, 1)?;
+        server.test_apply_did_open(
+            &missing_uri,
+            "use strict;\nuse Local::Missing;\nprint Local::Missing::helper(), \"\\n\";\n",
+            1,
+        )?;
+
+        let report = server
+            .handle_workspace_diagnostic(Some(json!({ "previousResultIds": [] })))?
+            .ok_or("syntax-only workspace pull response missing")?;
+        let rows = report["items"].as_array().ok_or("workspace pull items missing")?;
+        let row_for = |uri: &str| {
+            rows.iter().find(|row| {
+                row["uri"].as_str().is_some_and(|u| {
+                    u == uri || server.normalize_uri_key(u) == server.normalize_uri_key(uri)
+                })
+            })
+        };
+        let codes_for = |row: &Value| -> Vec<String> {
+            row["items"]
+                .as_array()
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(|item| item["code"].as_str().map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+
+        let broken_row = row_for(&broken_uri).ok_or("broken document row missing")?;
+        assert_eq!(broken_row["kind"], "full");
+        assert!(
+            codes_for(broken_row).iter().any(|code| code == DiagnosticCode::ParseError.as_str()),
+            "syntax-only workspace pull must keep parse errors: {broken_row}"
+        );
+
+        let missing_row = row_for(&missing_uri).ok_or("missing-module document row missing")?;
+        assert_eq!(missing_row["kind"], "full");
+        assert!(
+            missing_row.get("resultId").is_none(),
+            "syntax-only workspace pull must not mint a reusable resultId: {missing_row}"
+        );
+        let missing_codes = codes_for(missing_row);
+        assert!(
+            !missing_codes.iter().any(|code| code == "PL701"),
+            "syntax-only workspace pull must skip module resolution: {missing_row}"
+        );
+
+        // Control: the same fixture under normal tuning does emit PL701, so
+        // the absence above is the gate and not a dead fixture.
+        let control = message_union_server(
+            perl_lsp_rs_core::runtime::tuning::RuntimeTuning::normal_defaults(),
+            false,
+        );
+        let control_uri = message_union_uri("17332_ws_syntax_only_missing.pl");
+        control.test_apply_did_open(
+            &control_uri,
+            "use strict;\nuse Local::Missing;\nprint Local::Missing::helper(), \"\\n\";\n",
+            1,
+        )?;
+        let control_report = control
+            .handle_workspace_diagnostic(Some(json!({ "previousResultIds": [] })))?
+            .ok_or("control workspace pull response missing")?;
+        assert!(
+            control_report.to_string().contains("PL701"),
+            "control workspace pull must emit PL701: {control_report}"
+        );
+        Ok(())
     }
 
     /// Syntax-only mode must still publish canonical regex findings (#7024).
