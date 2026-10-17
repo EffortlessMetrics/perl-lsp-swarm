@@ -401,8 +401,8 @@ cat >"${SILENT_LOG}" <<'EOF'
 2026-08-26T00:12:30Z info: exposure pass 3/5
 EOF
 
-expect_eq "API DISCRIMINATOR core: exit-143 annotation classifies infra-no-proof" \
-  "infra-no-proof" "$(classify_api_field "${ANN_143}" "${STEPS_CONCLUDED}" "" classification)"
+expect_eq "API DISCRIMINATOR core: lone exit-143 annotation fails closed" \
+  "ripr-failure" "$(classify_api_field "${ANN_143}" "${STEPS_CONCLUDED}" "" classification)"
 
 expect_eq "API: lost-communication annotation classifies infra-no-proof" \
   "infra-no-proof" "$(classify_api_field "${ANN_LOST}" "${STEPS_CONCLUDED}" "" classification)"
@@ -472,9 +472,8 @@ expect_eq "API: missing annotations file is absent evidence, not positive eviden
 # that must never take the retry path.
 expect_eq "API GUARD: 143 annotation + failed receipt-capable gate step + no receipt is a genuine red"   "ripr-failure" "$(classify_api_field "${ANN_143}" "${STEPS_GATE_FAILED}" "" classification)"
 
-# The guard must not disturb the eviction shape: a skipped gate step with a
-# 143 annotation and no receipt stays infra-no-proof.
-expect_eq "API GUARD: 143 annotation + skipped gate step + no receipt still arms"   "infra-no-proof" "$(classify_api_field "${ANN_143}" "${STEPS_CONCLUDED}" "" classification)"
+# A skipped gate does not turn SIGTERM into proof of runner eviction.
+expect_eq "API GUARD: lone 143 + skipped gate step + no receipt fails closed"   "ripr-failure" "$(classify_api_field "${ANN_143}" "${STEPS_CONCLUDED}" "" classification)"
 
 expect_eq "API GUARD: unreadable steps state with no scanned receipt fails closed"   "ripr-failure" "$(classify_api_field "${ANN_143}" "${WORK}/does-not-exist-steps.json" "" classification)"
 
@@ -483,6 +482,18 @@ expect_eq "API GUARD: 143 annotation + failed Docker gate step + no receipt is a
 expect_eq "API GUARD: receipt_scanned field carries into api-evidence output"   "false" "$(classify_api_field "${ANN_143}" "${STEPS_CONCLUDED}" "" receipt_scanned)"
 
 expect_eq "API GUARD: receipt_capable_failed field carries into api-evidence output"   "false" "$(classify_api_field "${ANN_143}" "${STEPS_CONCLUDED}" "" receipt_capable_failed)"
+
+# SIGTERM is also produced by RIPR itself; preserve diagnostics, not authority.
+LONE_143="${WORK}/lone-143.log"
+printf '%s\n' 'Process completed with exit code 143.' >"${LONE_143}"
+expect_eq "lone log 143 fails closed" "ripr-failure" "$(classify_field "${LONE_143}" classification)"
+expect_eq "lone log 143 remains diagnostic" "1" "$(classify_field "${LONE_143}" sigterm143_matches)"
+expect_eq "lone API 143 remains diagnostic" "1" "$(classify_api_field "${ANN_143}" "${STEPS_CONCLUDED}" "" sigterm143_matches)"
+expect_eq "scanned silent log cannot make lone API 143 eviction proof" "ripr-failure" "$(classify_api_field "${ANN_143}" "${STEPS_CONCLUDED}" "${SILENT_LOG}" classification)"
+ANN_SHUTDOWN_143="${WORK}/ann-shutdown-143.json"
+printf '%s\n' '[{"message":"Process completed with exit code 143."},{"message":"The runner has received a shutdown signal."}]' >"${ANN_SHUTDOWN_143}"
+expect_eq "independent shutdown alongside API 143 still proves teardown" "infra-no-proof" "$(classify_api_field "${ANN_SHUTDOWN_143}" "${STEPS_CONCLUDED}" "" classification)"
+expect_eq "genuine receipt still outranks shutdown alongside 143" "ripr-failure" "$(classify_api_field "${ANN_SHUTDOWN_143}" "${STEPS_CONCLUDED}" "${RECEIPT_LOG}" classification)"
 
 if bash "$CLASSIFIER" --api-evidence "${ANN_EMPTY}" >/dev/null 2>&1; then
   fail "incomplete api-evidence arguments must be a usage error"
