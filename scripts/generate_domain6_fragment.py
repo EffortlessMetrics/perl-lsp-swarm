@@ -3586,15 +3586,6 @@ def main(argv: list[str]) -> int:
         "differ (deterministic-render proof)",
     )
     args = parser.parse_args(argv)
-    try:
-        payload = build_document()
-    except FragmentError as exc:
-        print(f"domain6 fragment failed: {exc}", file=sys.stderr)
-        return 1
-    data = render_bytes(payload)
-    if b"\r" in data:
-        print("domain6 fragment failed: rendered bytes contain CR", file=sys.stderr)
-        return 1
     if args.check:
         try:
             expected = args.out.read_bytes()
@@ -3608,6 +3599,16 @@ def main(argv: list[str]) -> int:
                 file=sys.stderr,
             )
             return 2
+    try:
+        payload = build_document()
+    except FragmentError as exc:
+        print(f"domain6 fragment failed: {exc}", file=sys.stderr)
+        return 1
+    data = render_bytes(payload)
+    if b"\r" in data:
+        print("domain6 fragment failed: rendered bytes contain CR", file=sys.stderr)
+        return 1
+    if args.check:
         if data != expected:
             print(
                 "domain6 fragment drifted: regeneration is not "

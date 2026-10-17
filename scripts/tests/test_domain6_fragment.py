@@ -547,20 +547,8 @@ class Domain6FragmentTest(unittest.TestCase):
     def test_check_rejects_crlf_mutation(self) -> None:
         import tempfile
 
-        # --check builds the document before it inspects the output file:
-        # without the pinned range, resolve_range() exits 1 before the
-        # CRLF branch, so skip cleanly instead of proving nothing.
-        for sha in (START_SHA, OBSERVED_HEAD):
-            probe = subprocess.run(
-                ["git", "cat-file", "-t", sha],
-                cwd=REPO_ROOT,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                check=False,
-            )
-            if probe.returncode != 0:
-                self.skipTest(f"pinned history range unavailable ({sha})")
-
+        # Invalid canonical bytes refuse before history reconstruction.
+        # This negative therefore needs no pinned Git range.
         raw = ARTIFACT.read_bytes()
         with tempfile.NamedTemporaryFile(
             suffix=".json", delete=False
@@ -610,6 +598,85 @@ class Domain6FragmentTest(unittest.TestCase):
             0,
             f"regeneration is not byte-identical:\n{proc.stdout}\n{proc.stderr}",
         )
+
+
+class Domain6CheckPreflightTest(unittest.TestCase):
+    """Invalid check inputs must not trigger historical reconstruction."""
+
+    def setUp(self) -> None:
+        import importlib.util
+        import tempfile
+
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.output = Path(temp.name) / "fragment.json"
+        spec = importlib.util.spec_from_file_location("domain6_check_fixture", GENERATOR)
+        self.generator = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.generator)
+        self.payload = {"coverage": {"digest": "fixture"}}
+
+    def test_crlf_refuses_before_building_history(self) -> None:
+        import contextlib
+        import io
+        from unittest.mock import patch
+
+        self.output.write_bytes(b"{\r\n}\r\n")
+        error = io.StringIO()
+        with patch.object(self.generator, "build_document", side_effect=AssertionError("history must not run")) as build, contextlib.redirect_stderr(error):
+            self.assertEqual(self.generator.main(["--check", "--out", str(self.output)]), 2)
+        build.assert_not_called()
+        self.assertIn("contains CRLF; canonical bytes are LF-only", error.getvalue())
+
+    def test_missing_file_refuses_before_building_history(self) -> None:
+        import contextlib
+        import io
+        from unittest.mock import patch
+
+        with patch.object(self.generator, "build_document", side_effect=AssertionError("history must not run")) as build, contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(self.generator.main(["--check", "--out", str(self.output)]), 1)
+        build.assert_not_called()
+
+    def test_valid_match_still_builds_once(self) -> None:
+        import contextlib
+        import io
+        from unittest.mock import patch
+
+        self.output.write_bytes(self.generator.render_bytes(self.payload))
+        with patch.object(self.generator, "build_document", return_value=self.payload) as build, contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(self.generator.main(["--check", "--out", str(self.output)]), 0)
+        build.assert_called_once_with()
+
+    def test_valid_drift_still_builds_once(self) -> None:
+        import contextlib
+        import io
+        from unittest.mock import patch
+
+        self.output.write_bytes(b"{}\n")
+        with patch.object(self.generator, "build_document", return_value=self.payload) as build, contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(self.generator.main(["--check", "--out", str(self.output)]), 2)
+        build.assert_called_once_with()
+
+    def test_valid_input_retains_builder_failure(self) -> None:
+        import contextlib
+        import io
+        from unittest.mock import patch
+
+        self.output.write_bytes(b"{}\n")
+        error = io.StringIO()
+        with patch.object(self.generator, "build_document", side_effect=self.generator.FragmentError("history unavailable")) as build, contextlib.redirect_stderr(error):
+            self.assertEqual(self.generator.main(["--check", "--out", str(self.output)]), 1)
+        build.assert_called_once_with()
+        self.assertIn("history unavailable", error.getvalue())
+
+    def test_write_mode_does_not_require_existing_file(self) -> None:
+        import contextlib
+        import io
+        from unittest.mock import patch
+
+        with patch.object(self.generator, "build_document", return_value=self.payload) as build, contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(self.generator.main(["--out", str(self.output)]), 0)
+        build.assert_called_once_with()
+        self.assertEqual(self.output.read_bytes(), self.generator.render_bytes(self.payload))
 
 
 class Domain6GitQueryTest(unittest.TestCase):
