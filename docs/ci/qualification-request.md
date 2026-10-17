@@ -127,3 +127,46 @@ Existing `ci-gate-self-tests.yml` runs these inexpensive controls on relevant so
 changes. No extra workflow lifecycle producer or parallel policy parser is added.
 The existing non-Rust policy covers `scripts/**`, `docs/**` and workflow YAML; the
 Rust-owned inventory/check remains mandatory in qualification.
+
+## Executable source rehearsal and current integration mapping
+
+The explicit rehearsal now runs these existing interfaces after native subject
+acquisition, on the immutable control checkout S:
+
+```
+python3 -B scripts/ci/validate_gate_enforcement_contract.py --root . --receipt rehearsal-diagnostics/gate-enforcement-contract.json
+python3 -B tests/test_docs_agents_contract_workflows.py
+```
+
+The first is the existing required-context/producer source mapper (18 configured
+contexts, 17 mapped jobs at the inspected source); its static success explicitly
+retains `live_enforcement_status: NOT_PROVEN`. The second is the exact command of
+`docs_agents_contract_workflows` in `.ci/gate-policy.yaml`, an existing bounded
+51-test diagnostic. Its log and the existing validator receipt are uploaded as
+`qualification-diagnostics-<key>-<attempt>`, separately from the unchanged zero-
+execution `not_proven` qualification manifest, including when diagnostics fail.
+These commands are diagnostic execution on S, not product selection/execution on H.
+The CLI integration test exercises the real process/native-context entry with a
+bounded fake GET-only GitHub service, then the real source validator on a clean
+tracked checkout, verifying diagnostic success cannot alter the result manifest.
+It is synthetic native transport coverage, not an actual hosted run.
+
+Concrete authorities and source gaps, inspected October 17:
+
+| Seam | Actual implementation and remaining executable change |
+| --- | --- |
+| Semantic review | `check-pr-semantic-review-currentness.py` acquires reviews and evaluates cumulative markers; all required review sections and exactly one result declaration are mandatory. A marker string alone is rejected. |
+| Known findings/threads | `check-pr-review-convergence` calls the paginated core and emits `pr_review_convergence.v2`; it handles native facts and cannot substitute for semantic review or committed proof. |
+| Required obligations | `.ci/policies/required-checks.toml` and `validate_gate_enforcement_contract.py` map existing contexts/producers. They do not select changed-path product obligations or authenticate completed proof. |
+| Risk/command selection | `xtask/src/tasks/ci_subject.rs` explicit mode plus `ci_scope.rs` own subject and risk-sensitive lane selection; `.ci/gate-policy.yaml` and the existing shard runner own gate commands. Do not copy their selection logic into this adapter. |
+| Committed Rust Small proof | `rust_small_proof.rs` owns `rust_small_proof.v1`, all ten commands, exact clean source/toolchain/profile/census and outcome verification. Receipt freshness/presence helpers alone do not prove execution or producer custody. |
+| Export/import owner | #16134 head `382a0d10c9402f47391ef35ad8b4b09cb230a61b` adds `export_rust_small_receipt.py`, `rust_small_evidence.py`, isolated native import and canonical Rust verification through the pinned central workflow. Those interfaces remain the custody/semantic owners. |
+| H versus S bridge | That carrier's `rust_standard_result.policy_environment` requires dispatch `pre_merge_admission=true` and `reviewed_sha == GITHUB_SHA`, then sets candidate/evaluated source to that same SHA. It does not yet consume separate adapter H/B and dispatcher S. Coordinate this exact change with #16134; do not merely assert explicit ci_subject support wires it. |
+| H/app publication | The caller and central `d69e3c9cbc55ee8c5d084facfe18432cd4c28618` use read-only checks access and native workflow jobs. No installed publisher emits this adapter's H/check/external-ID/attempt contract. No permission grant or alternate publisher is introduced here. |
+| Entry join | #10057 is open with no implementation carrier found in the inspected PR search. Joining canonical review/native findings with authenticated exact committed proof and actual selection remains unimplemented; the final pre-merge guard must not be reused to authorize its own future CI. |
+
+This finite rehearsal executes real source/policy code and retains its result while
+preserving the distinct integration gaps. A hosted attempt requires publication
+of the workflow/control source on the default branch first. Do not dispatch the
+#16134 carrier's unapproved central pin or treat these diagnostic reports as
+admission, complete mandatory proof or permission to merge.
