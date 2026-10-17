@@ -90,7 +90,7 @@ KNOWN_SKILLS = frozenset(
     }
 )
 
-# The `main` ruleset (id 16664791) sets `required_review_thread_resolution`, so an
+# The `main` ruleset (id 16664791) sets `required_review_thread_resolution`, so
 # protected integration with one open bot or outdated thread is blocked. The
 # finishing skills must retain that precondition after routine auto-merge retires.
 THREAD_PRECONDITION = "zero unresolved review threads is a precondition of protected integration"
