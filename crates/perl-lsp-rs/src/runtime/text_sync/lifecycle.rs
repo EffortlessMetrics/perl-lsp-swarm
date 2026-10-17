@@ -2,9 +2,8 @@ use super::{
     Arc, AtomicU32, JsonRpcError, LspServer, NonZeroU32, Value, invalid_params, json,
     source_path_from_uri,
 };
-use crate::runtime::BackingFileTransition;
 #[cfg(feature = "workspace")]
-use crate::runtime::workspace::read_watched_file_content;
+use crate::runtime::workspace::read_perl_source_file_with_byte_limit;
 #[cfg(feature = "workspace")]
 use perl_workspace::workspace_index::{SourceCommit, SourceCommitOutcome};
 
@@ -22,84 +21,119 @@ impl LspServer {
 
             tracing::debug!("Document closed: {}", uri);
 
-            // Open-buffer authority (#8041): consume any pending backing-file
-            // transition BEFORE eviction so this handoff resolves exactly once
-            // and no stale marker leaks into a successor session.
-            let backing_transition = self.take_backing_file_transition(uri);
-
             // Notify coordinator of pending change to track cleanup work
             #[cfg(feature = "workspace")]
             if let Some(coordinator) = self.coordinator() {
                 coordinator.notify_change(uri);
             }
 
-            self.evict_open_document_session_state(uri);
-            self.clear_formatting_receipt_for_close(uri);
-
-            // If the closed document has no backing file on disk it existed only in
-            // the editor buffer (e.g. a new unsaved file or a test virtual document).
-            // Remove it from the workspace index so `workspace/symbol` does not
-            // return stale entries after close.
-            //
-            // For files that do exist on disk, closing the editor buffer leaves the
-            // workspace index intact: the file is still part of the project and a
-            // workspace scan would re-discover it.
-            //
-            // Exception (#8041): when the open session diverged from disk
-            // (external change observed, or external delete recorded), the
-            // retained snapshot would be pre-divergence bytes. Closed-file
-            // authority is stable CURRENT disk source, so drop the old entry
-            // and re-index from a fresh disk read.
+            // Close returns source authority to the URI target, including when
+            // the editor discards an ordinary unsaved edit without a watcher
+            // event. Retire its indexed buffer facts with the session so failed
+            // disk reads cannot leave discarded source searchable.
             #[cfg(feature = "workspace")]
-            {
-                let file_on_disk = source_path_from_uri(uri).map(|p| p.exists()).unwrap_or(false);
-                let session_diverged = matches!(
-                    backing_transition,
-                    Some(BackingFileTransition::Changed | BackingFileTransition::Deleted)
-                );
-                if !file_on_disk {
-                    if let Some(coordinator) = self.coordinator() {
-                        for key in Self::uri_key_variants(uri) {
-                            coordinator.index().remove_file(&key);
-                        }
+            let mut retired_index_version = 0;
+            let _closed_open_session = {
+                #[cfg(feature = "workspace")]
+                let _transition = self.indexing_transition_lock.lock();
+                let was_open = self.document_is_open(uri);
+                // Consume divergence under the same transition lock as eviction;
+                // the marker must not leak into a successor open session.
+                let _backing_transition = self.take_backing_file_transition(uri);
+                self.evict_open_document_session_state(uri);
+                self.clear_formatting_receipt_for_close(uri);
+                #[cfg(feature = "workspace")]
+                if was_open && let Some(coordinator) = self.coordinator() {
+                    for key in Self::uri_key_variants(uri) {
+                        coordinator.index().remove_file(&key);
                     }
-                } else {
-                    if session_diverged && let Some(coordinator) = self.coordinator() {
-                        for key in Self::uri_key_variants(uri) {
-                            coordinator.index().remove_file(&key);
-                        }
-                        if let Some(content) =
-                            read_watched_file_content(uri, "closed-file authority reload")
-                            && let Ok(url) = url::Url::parse(uri)
-                        {
-                            // #8041 owns this close-handoff semantic (a fresh
-                            // disk read after divergence). The index entry was
-                            // just removed, so this is an explicit
-                            // initial-import role, not a live document
-                            // generation commit.
-                            match coordinator.index().index_initial_file(url, content) {
-                                Ok(()) => {
-                                    tracing::debug!(
-                                        "Re-indexed {} from current disk on close (#8041)",
-                                        uri
-                                    );
-                                }
-                                Err(e) => {
-                                    tracing::warn!("Failed to re-index {} on close: {}", uri, e);
-                                }
+                    retired_index_version = coordinator.index().write_version();
+                }
+                was_open
+            };
+
+            #[cfg(feature = "workspace")]
+            if _closed_open_session && let Some(coordinator) = self.coordinator() {
+                // Disk I/O stays outside the transition lock. Use the same
+                // regular-file and Perl admission authority as discovery and
+                // watchers: a directory/FIFO or declassified script is not
+                // current Perl source. Repeated close of an unopened URI does
+                // not create a new filesystem read surface.
+                // The index revision is global: an unrelated write also
+                // invalidates a read. One fresh retry preserves availability
+                // without letting sustained mutation make close unbounded.
+                for _ in 0..2 {
+                    let content = source_path_from_uri(uri).and_then(|path| {
+                        let url = url::Url::from_file_path(&path).ok()?;
+                        let admission = self.discovery_admission_config(&path);
+                        let byte_limit = crate::state::max_file_size_bytes();
+                        match read_perl_source_file_with_byte_limit(
+                            &path,
+                            &admission,
+                            Some(byte_limit),
+                        ) {
+                            // Decode before canonical binary classification: valid
+                            // UTF-16 bytes contain NULs, and __DATA__ may be binary.
+                            // Decoding can expand bytes beyond the ingress ceiling.
+                            Ok(content) => content
+                                .filter(|text| {
+                                    text.len() <= byte_limit
+                                        && !perl_parser_core::source_file::is_binary_content(text)
+                                })
+                                .map(|content| (url, content)),
+                            Err(error) => {
+                                tracing::debug!(
+                                    "Failed to reload closed-file source {}: {}",
+                                    path.display(),
+                                    error
+                                );
+                                None
                             }
                         }
-                    }
-                    // File is on disk: retain the index entry (symbols are still
-                    // valid) but reset the generation counters so the reopened
-                    // document — whose first accepted generation restarts at 1
-                    // (#11305) — is not blocked by the stale high-water mark
-                    // from the previous session (#5438).
-                    if let Some(coordinator) = self.coordinator() {
-                        for key in Self::uri_key_variants(uri) {
-                            coordinator.index().reset_generation_for_close(&key);
+                    });
+                    #[cfg(test)]
+                    {
+                        let hook = self.close_disk_loaded_hook.lock().take();
+                        if let Some(hook) = hook {
+                            hook();
                         }
                     }
+                    let _transition = self.indexing_transition_lock.lock();
+                    // A successor buffer remains authoritative. A watcher or
+                    // scan sharing this transition lock can also publish newer
+                    // closed-source facts while our disk read is off-lock.
+                    if self.document_is_open(uri) {
+                        break;
+                    }
+                    let current_revision = coordinator.index().write_version();
+                    if current_revision != retired_index_version {
+                        retired_index_version = current_revision;
+                        continue;
+                    }
+                    let restored = if let Some((url, content)) = content {
+                        // Closed-source initial import has no live generation.
+                        // Use the resolved file identity, including equivalent
+                        // URI spellings accepted by the close eviction surface.
+                        match coordinator.index().index_initial_file(url, content) {
+                            Ok(()) => true,
+                            Err(error) => {
+                                tracing::warn!("Failed to re-index {} on close: {}", uri, error);
+                                false
+                            }
+                        }
+                    } else {
+                        false
+                    };
+                    if !restored {
+                        // A fresh retry may reject backing or fail to import
+                        // after a watcher published intervening facts. Its
+                        // unchanged revision lets this failed handoff retire
+                        // those obsolete facts too.
+                        for key in Self::uri_key_variants(uri) {
+                            coordinator.index().remove_file(&key);
+                        }
+                    }
+                    break;
                 }
             }
 
