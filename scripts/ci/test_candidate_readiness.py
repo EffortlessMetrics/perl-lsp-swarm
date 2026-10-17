@@ -172,6 +172,22 @@ class ExistingAdapterTests(unittest.TestCase):
         with mock.patch.object(authority, 'command', return_value=row):
             self.assertEqual(authority.semantic_review(PLAN).classification, 'NOT_PROVEN')
 
+    def test_concrete_owner_ports_reject_empty_json_applicability(self):
+        source = ExistingOwners()
+        for supplied in ({}, [], '', None):
+            authority = admission.ExistingControlAuthorities(Path.cwd(),
+                selection_owner=source.selection, committed_owner=source.committed_proof,
+                applicability_owner=lambda plan: supplied)
+            with mock.patch.object(authority, 'semantic_review', return_value=source.semantic), \
+                 mock.patch.object(authority, 'native_review', return_value=source.native):
+                self.assertEqual(admission.evaluate(PLAN, authority)['classification'], 'NOT_PROVEN')
+        authority = admission.ExistingControlAuthorities(Path.cwd(),
+            selection_owner=source.selection, committed_owner=source.committed_proof,
+            applicability_owner=lambda plan: ())
+        with mock.patch.object(authority, 'semantic_review', return_value=source.semantic), \
+             mock.patch.object(authority, 'native_review', return_value=source.native):
+            self.assertEqual(admission.evaluate(PLAN, authority)['classification'], 'READY')
+
     def test_actual_default_adapter_cannot_certify_missing_proof_ports(self):
         authority = admission.ExistingControlAuthorities(Path.cwd())
         with mock.patch.object(authority, 'semantic_review', return_value=ExistingOwners().semantic), \

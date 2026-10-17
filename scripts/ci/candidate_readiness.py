@@ -136,7 +136,11 @@ def evaluate(plan: dict, authorities: Authorities) -> dict:
                         'reference': proof.producer_reference,
                         'canonical_receipt_sha256': proof.canonical_receipt_sha256})
 
-    for finding in authorities.integration_findings(plan):
+    findings = authorities.integration_findings(plan)
+    if not isinstance(findings, tuple):
+        gap('integration_applicability_observation_unavailable')
+        findings = ()
+    for finding in findings:
         if not isinstance(finding, IntegrationFinding) or finding.subject_key != key or not finding.reference:
             gap('integration_finding_unbound')
         elif finding.disposition == 'unresolved_failure':
