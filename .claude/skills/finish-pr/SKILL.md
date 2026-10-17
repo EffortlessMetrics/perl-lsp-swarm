@@ -195,25 +195,23 @@ review, CI classification, and oracle work may assist.
 - a combined-tree interaction is repaired in the smallest affected candidate;
 - only affected proof and review are refreshed.
 
-When GitHub owns the next transition—pending checks, requested review, merge queue, or
-armed auto-merge—record the exact pending fact and wake event once when useful and
-return `PR_IN_FLIGHT`. Do not poll unchanged state or call the wider goal blocked. A
-remote integration wait does not make a still-current substantive review stale.
+After substantive review, select the candidate intended to land and consume the
+actual #17900 qualification operation through `verify-live-ci`. Missing capability
+is `NOT_PROVEN` with its producer blocker; a push or Ready toggle is not a request.
+Keep mandatory selected proof and reporting identity intact during staged cutover.
 
-Arm auto-merge only when substantive review is `REVIEW_CURRENT` and
-`scripts/reviews/threads <pr> --unresolved-only --json` reports `unresolved_count` of
-0: zero unresolved review threads is a precondition of arming auto-merge. The `main`
-ruleset requires review-thread resolution, so bot threads (Devin, Gemini, Codex,
-CodeRabbit, cubic) and outdated threads count exactly like human ones, and an armed PR
-with one open thread sits silently blocked. Disposition and resolve them through
-`address-review-comments` first; an open thread is `MERGE_BLOCKED`, not
-`PR_IN_FLIGHT`.
+Record an accepted matching run/attempt as `PR_IN_FLIGHT`. Keep the same useful lead
+through an ordinary in-window wait, terminal result inspection, separate final
+vision/current-repository judgment, protected merge and landing read-back. Use supported
+waits/events or bounded checks without a polling child. A real interruption, unusual
+capacity delay or exhausted window gets an exact resumable handoff. Pending checks do
+not stale otherwise current substantive review.
 
-An armed auto-merge that appears stalled is usually waiting on the slowest required
-context, not broken: `ripr+ New Gap Gate` is the tail of the required union. The
-manual probe merge mechanism, its compare-and-swap SHA guard, and the waiver bar are
-single-sourced in `merge-reconcile` — follow that skill's text rather than a second
-copy here.
+Do not arm routine auto-merge or enqueue. Qualification completion has no merge side
+effect. Before explicit integration, require `REVIEW_CURRENT`, current mandatory
+results and live protection, and zero unresolved threads of any author. An open thread
+is `MERGE_BLOCKED`, routed through `address-review-comments`, not a pending-run excuse.
+The actual protected merge and read-back remain single-sourced in `merge-reconcile`.
 
 ## Useful GitHub boundary
 
