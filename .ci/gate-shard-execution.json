@@ -203,6 +203,10 @@
     "unsafe_prod_check": {
       "requires": [],
       "on_dependency_failure": "blocked_not_proven"
+    },
+    "secret_scan": {
+      "requires": [],
+      "on_dependency_failure": "blocked_not_proven"
     }
   }
 }
