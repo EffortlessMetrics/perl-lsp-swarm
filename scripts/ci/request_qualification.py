@@ -49,10 +49,13 @@ def decode(raw: bytes) -> Any:
                 raise Refused('duplicate JSON field')
             result[key] = value
         return result
+    def reject_constant(_):
+        raise Refused('nonfinite JSON')
+
     if len(raw) > MAX_BYTES:
         raise Refused('response exceeds adapter bound')
     return json.loads(raw, object_pairs_hook=pairs,
-                      parse_constant=lambda _: (_ for _ in ()).throw(Refused('nonfinite JSON')))
+                      parse_constant=reject_constant)
 
 
 class GitHub:
