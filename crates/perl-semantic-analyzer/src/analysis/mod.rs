@@ -54,6 +54,10 @@ pub mod receiver_facts;
 pub mod scope_analyzer;
 /// Semantic analyzer and token classification.
 pub mod semantic;
+/// Function::Parameters / Method::Signatures activation-site extraction (#16808).
+pub mod signature_keyword_activation;
+/// Literal fun/func/method declaration extraction (#16808).
+pub mod signature_keyword_declarations;
 /// Symbol extraction and symbol table construction.
 pub mod symbol;
 /// Rich type facts for expression and receiver inference.
