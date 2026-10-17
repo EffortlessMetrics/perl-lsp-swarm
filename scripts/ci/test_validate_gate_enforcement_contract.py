@@ -1034,5 +1034,108 @@ jobs:
                 self.assertNotEqual(result['status'], 'SUCCESS')
 
 
+class QualificationCallerTests(unittest.TestCase):
+    """Exercise the real CLI/catalog; never substitute a second YAML parser."""
+
+    def run_catalog(self, extra):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fixture(root, REQUIRED.replace('["pull_request", "merge_group"]', '["workflow_dispatch"]'),
+                    workflow=QualificationSourceTests.source())
+            for name, source in extra.items():
+                (root / '.github/workflows' / name).write_text(source)
+            commit_all(root, 'caller perimeter')
+            run = subprocess.run([sys.executable, str(SCRIPT), '--root', str(root), '--json',
+                                  '--qualification-source', '.github/workflows/ci.yml'],
+                                 capture_output=True, text=True, timeout=10)
+            self.assertIn(run.returncode, (0, 1), run.stderr)
+            return run.returncode, json.loads(run.stdout)
+
+    @staticmethod
+    def caller(target='ci.yml', event='pull_request', condition=''):
+        return (f'on: {event}\njobs:\n  call:\n'
+                f'    uses: ./.github/workflows/{target}\n' + condition)
+
+    def test_incoming_automatic_manual_and_false_guarded_callers_refuse(self):
+        for event in ('pull_request', 'pull_request_target', 'push', 'merge_group',
+                      'workflow_dispatch', 'workflow_call'):
+            for guard in ('', '    if: false\n'):
+                with self.subTest(event=event, guard=guard):
+                    code, result = self.run_catalog({'caller.yml': self.caller(event=event, condition=guard)})
+                    self.assertEqual(code, 1)
+                    self.assertTrue(any(row['code'] == 'qualification_unresolved_caller' and
+                                        row['subject'].endswith('/caller.yml') for row in result['findings']))
+
+    def test_transitive_and_cyclic_callers_do_not_disappear(self):
+        code, result = self.run_catalog({
+            'mid.yml': self.caller(event='workflow_call') + '  cycle:\n    uses: ./.github/workflows/top.yml\n',
+            'top.yml': self.caller(target='mid.yml', event='push'),
+        })
+        self.assertEqual(code, 1)
+        subjects = {row['subject'] for row in result['findings'] if row['code'] == 'qualification_unresolved_caller'}
+        self.assertEqual(subjects, {'.github/workflows/mid.yml', '.github/workflows/top.yml'})
+
+    def test_duplicate_job_preserves_first_edge_while_refusing_source(self):
+        code, result = self.run_catalog({'duplicate.yml': self.caller() +
+                                        '  call:\n    steps: []\n'})
+        self.assertEqual(code, 1)
+        findings = {row['code'] for row in result['findings']}
+        self.assertIn('qualification_catalog_unsupported', findings)
+        self.assertIn('qualification_unresolved_caller', findings)
+        source = next(row for row in result['qualification_catalog']
+                      if row['path'] == '.github/workflows/duplicate.yml')
+        self.assertEqual(source['reusable_edges'],
+                         [{'job': 'call', 'target': './.github/workflows/ci.yml'}])
+
+    def test_hidden_unselected_edges_refuse(self):
+        for source in ('on: push\njobs: {call: {uses: ./.github/workflows/ci.yml}}',
+                       'on: {workflow_run: {workflows: [CI], types: [completed]}}\njobs:\n  finalize:\n    steps: []',
+                       "'on': workflow_run\njobs:\n  finalize:\n    steps: []",
+                       'on: push\njobs:\n  call: *alias',
+                       'on: push\njobs:\n  call:\n    &key uses: ./.github/workflows/ci.yml',
+                       self.caller() + '  call:\n    steps: []\n'):
+            with self.subTest(source=source):
+                code, result = self.run_catalog({'hidden.yml': source})
+                self.assertEqual(code, 1)
+                self.assertIn('qualification_catalog_unsupported', {row['code'] for row in result['findings']})
+
+    def test_remote_missing_dynamic_and_merge_edges_are_unresolved(self):
+        for target in ('owner/repo/.github/workflows/ci.yml@main', './.github/workflows/missing.yml',
+                       '${{ inputs.workflow }}'):
+            with self.subTest(target=target):
+                code, result = self.run_catalog({'remote.yml': 'on: push\njobs:\n  call:\n    uses: ' + target})
+                self.assertEqual(code, 1)
+                self.assertIn('qualification_catalog_unresolved_reusable', {row['code'] for row in result['findings']})
+
+    def test_dispatch_and_result_paths_need_provenance_even_with_false_guard(self):
+        for command in ('gh workflow run ci.yml', 'gh api repos/o/r/actions/workflows/ci.yml/dispatches',
+                        '>-\n          gh workflow\n          run ci.yml',
+                        '|\n          gh workflow \\\n          run ci.yml',
+                        'await github.rest.actions.createWorkflowDispatch({})',
+                        'gh api repos/o/r/dispatches', 'await github.rest.repos.createDispatchEvent({})'):
+            with self.subTest(command=command):
+                code, result = self.run_catalog({'dispatch.yml':
+                    'on: push\njobs:\n  dispatch:\n    if: false\n    steps:\n      - run: ' + command})
+                self.assertEqual(code, 1)
+                self.assertIn('qualification_unresolved_dispatch', {row['code'] for row in result['findings']})
+        code, result = self.run_catalog({'result.yml':
+            'on:\n  workflow_run:\n    workflows: [CI]\n    types: [completed]\njobs:\n  finalize:\n    steps: []'})
+        self.assertEqual(code, 1)
+        self.assertIn('qualification_unresolved_result_path', {row['code'] for row in result['findings']})
+        self.assertEqual(result['qualification_status'], 'NOT_PROVEN')
+
+    def test_metadata_and_unrelated_local_reusable_paths_remain_in_inventory(self):
+        code, result = self.run_catalog({
+            'metadata.yml': 'on: pull_request\njobs:\n  inspect:\n    steps: []\n# gh workflow run ci.yml',
+            'unrelated.yml': self.caller(target='metadata.yml'),
+        })
+        self.assertEqual(code, 0)
+        rows = {row['path']: row for row in result['qualification_catalog']}
+        self.assertEqual(len(rows), 3)
+        self.assertEqual(rows['.github/workflows/metadata.yml']['role'], 'unresolved-not-selected')
+        self.assertEqual(rows['.github/workflows/ci.yml']['role'], 'selected-qualification')
+        self.assertEqual(result['qualification_status'], 'NOT_PROVEN')
+
+
 if __name__ == "__main__":
     unittest.main()
