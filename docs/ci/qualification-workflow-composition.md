@@ -1,7 +1,7 @@
 # Staged workflow composition for explicit qualification
 
 This branch composes the exact #18066 adapter source at
-`1a3d5e780212c0af0fd6586c286cfd7c692f2b39` with #18063's source perimeter and
+`80a20786588be34e33214064ea7ab7f8a1270582` with #18063's source perimeter and
 the two generated-PR dispatch repairs. It is not an activated late qualification
 generation. No required check, protection, runner allowance or permission is changed.
 
@@ -57,7 +57,11 @@ These gaps are in current executable source, not inferred from open issue labels
    admission output. The adapter owner must supply the real eligibility boundary
    and qualified allocation handoff before a root can consume it. Reuse existing
    semantic-review/currentness and convergence owners; do not add another readiness
-   engine or infer readiness from a caller-provided hash.
+   engine or infer readiness from a caller-provided hash. After native-context
+   binding, the composed rehearsal now executes the existing policy validator and
+   docs-agents diagnostic on control S, retaining their reports separately. These
+   are real diagnostic commands; they do not execute the selected product proof on
+   H or change the zero-execution NOT_PROVEN result manifest.
 2. The legacy roots are not callable consumers of that accepted run. CI's normal
    dispatch resolver requires head == GITHUB_SHA, whereas the adapter correctly
    binds control S separately from H/tree/B. The existing `ci_subject` explicit
