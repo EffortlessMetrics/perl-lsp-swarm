@@ -4571,11 +4571,12 @@ impl PerlLexer<'_> {
             let start =
                 b[..end].iter().rposition(|c| matches!(c, b'\n' | b'\r')).map_or(0, |i| i + 1);
             let mut line = &b[start..end];
-            // Cut a line comment (`#` at line start or after whitespace).
+            // Cut a line comment. A `#` starts one anywhere outside a quote-like construct
+            // except directly after `$` (`$#array`, `$#{expr}`, `$#$ref`).
             if let Some(h) = line
                 .iter()
                 .enumerate()
-                .position(|(i, c)| *c == b'#' && (i == 0 || line[i - 1].is_ascii_whitespace()))
+                .position(|(i, c)| *c == b'#' && (i == 0 || line[i - 1] != b'$'))
             {
                 // Strip only when the prefix cannot hold a string/regex/quote-like opener;
                 // when ambiguous the `#` may be code or a comment, so report not-a-statement-end
