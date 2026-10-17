@@ -388,6 +388,50 @@ class TransportAndEntryTests(unittest.TestCase):
             self.assertIn('#10057', json.loads(result.stdout)['reason'])
             self.assertFalse(sentinel.exists())
 
+    def test_native_cli_rehearsal_and_existing_policy_diagnostics_never_qualify(self):
+        api = GitHub()
+        api.rows = [api.run()]
+        plan = api.plan()
+        root_repo = SCRIPT.parents[2]
+        paths = ['repos/owner/repo', 'repos/owner/repo/pulls/3',
+                 'repos/owner/repo/git/ref/heads/main', 'repos/owner/repo/git/commits/' + H,
+                 'repos/owner/repo/actions/workflows/qualification-rehearsal.yml',
+                 'repos/owner/repo/actions/workflows/9/runs?event=workflow_dispatch&head_sha=' + S + '&per_page=100',
+                 'repos/owner/repo/actions/runs/21']
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            responses = root / 'responses.json'
+            responses.write_text(json.dumps({path: api.get(path) for path in paths}))
+            event = root / 'event.json'
+            event.write_text(json.dumps({'inputs': {'request': json.dumps(plan)}}))
+            gh = root / 'gh'
+            gh.write_text('#!' + sys.executable + '\nimport json,os,sys\n'
+                          'assert sys.argv[3] == "GET", "rehearsal attempted mutation"\n'
+                          'print(json.dumps(json.load(open(os.environ["RESPONSES"]))[sys.argv[4]]))\n')
+            gh.chmod(0o755)
+            env = dict(os.environ, PATH=str(root) + os.pathsep + os.environ['PATH'],
+                       RESPONSES=str(responses), GITHUB_EVENT_PATH=str(event),
+                       GITHUB_EVENT_NAME='workflow_dispatch', GITHUB_REPOSITORY='owner/repo',
+                       GITHUB_SHA=S, GITHUB_RUN_ID='21', GITHUB_RUN_ATTEMPT='1')
+            result = subprocess.run([sys.executable, '-B', str(SCRIPT), 'rehearse-event'],
+                                    cwd=root, env=env, capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual(json.loads(result.stdout)['qualification_result'], 'NOT_PROVEN')
+            manifest_path = root / 'rehearsal-result/qualification-result.json'
+            before = manifest_path.read_bytes()
+            manifest = json.loads(before)
+            self.assertEqual((manifest['run_id'], manifest['run_attempt']), (21, 1))
+            self.assertEqual((manifest['selected'], manifest['executed'], manifest['failed']), (0, 0, 0))
+            receipt = root / 'gate-enforcement-contract.json'
+            check = subprocess.run([sys.executable, '-B', str(SCRIPT.with_name('validate_gate_enforcement_contract.py')),
+                                    '--root', str(root_repo), '--receipt', str(receipt)],
+                                   capture_output=True, text=True, timeout=20)
+            self.assertEqual(check.returncode, 0, check.stdout + check.stderr)
+            report = json.loads(receipt.read_bytes())
+            self.assertEqual(report['status'], 'SUCCESS')
+            self.assertEqual(report['live_enforcement_status'], 'NOT_PROVEN')
+            self.assertEqual(manifest_path.read_bytes(), before)
+
     def test_rehearsal_workflow_has_only_explicit_dispatch_entry(self):
         contract_path = SCRIPT.with_name('validate_gate_enforcement_contract.py')
         spec = importlib.util.spec_from_file_location('qualification_contract', contract_path)
