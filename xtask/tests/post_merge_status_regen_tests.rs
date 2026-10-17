@@ -70,8 +70,6 @@ fn assert_dispatch_loop_behavior(
     dispatch_run: &str,
     dispatch_order: &[String],
     branch: &str,
-    base_sha: &str,
-    head_sha: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use std::process::{Command, Output};
 
@@ -79,10 +77,7 @@ fn assert_dispatch_loop_behavior(
     let stub_dir = temp_dir.path().join("bin");
     fs::create_dir(&stub_dir)?;
     let stub_gh = stub_dir.join("gh");
-    // Record the full argument vector for every call and tolerate any arity:
-    // ci.yml's workflow_dispatch requires `-f base_sha=… -f head_sha=…`
-    // (#13019), so a five-arg stub would reject exactly the call this fixture
-    // must admit — and did, leaving this test red on main unobserved (#15100).
+    // Record every metadata dispatch with its complete argument vector.
     fs::write(
         &stub_gh,
         "#!/usr/bin/env bash\n\
@@ -93,10 +88,7 @@ fn assert_dispatch_loop_behavior(
     let mut permissions = fs::metadata(&stub_gh)?.permissions();
     permissions.set_mode(0o755);
     fs::set_permissions(&stub_gh, permissions)?;
-    // Stub every dispatch call, not just the first: the ci.yml special case
-    // precedes the bare `elif` dispatch, and an unstubbed suffix would invoke
-    // the real gh — failing hermeticity and, on an authenticated machine,
-    // dispatching real workflows.
+    // Stub every dispatch call: no fixture may reach authenticated GitHub.
     let simulation_run =
         dispatch_run.replace("gh workflow run", &format!("{} workflow run", stub_gh.display()));
     assert_ne!(simulation_run, dispatch_run, "dispatch step must invoke gh workflow run");
@@ -113,8 +105,6 @@ fn assert_dispatch_loop_behavior(
             .arg(&simulation_run)
             .env("PATH", path)
             .env("BRANCH", branch)
-            .env("BASE_SHA", base_sha)
-            .env("GENERATED_HEAD_SHA", head_sha)
             .env("GH_LOG", &log_path);
         if let Some(fail_workflow) = fail_workflow {
             command.env("FAIL_WORKFLOW", fail_workflow);
@@ -145,20 +135,9 @@ fn assert_dispatch_loop_behavior(
         "all-success dispatch run failed: {}",
         String::from_utf8_lossy(&success_output.stderr)
     );
-    // ci.yml's workflow_dispatch requires the dispatched subject's exact
-    // base/head SHAs (#13019); every other required workflow declares no
-    // dispatch inputs and stays bare (#13355).
     let expected_calls = dispatch_order
         .iter()
-        .map(|workflow| {
-            if workflow == "ci.yml" {
-                format!(
-                    "workflow run {workflow} --ref {branch} -f base_sha={base_sha} -f head_sha={head_sha}"
-                )
-            } else {
-                format!("workflow run {workflow} --ref {branch}")
-            }
-        })
+        .map(|workflow| format!("workflow run {workflow} --ref {branch}"))
         .collect::<Vec<_>>();
     assert_eq!(success_calls, expected_calls, "all required dispatches must run in workflow order");
 
@@ -376,11 +355,10 @@ fn test_required_checks_record_workflow_dispatch_route() -> Result<(), Box<dyn s
     Ok(())
 }
 
-/// The generated-PR workflow must dispatch every workflow that owns a required
-/// check and retain a failing step result when any individual dispatch fails
-/// (#11731).
+/// Publication wakes title metadata only, preserving failure propagation.
+/// Product proof is a separate explicit request in the staged #17903 generation.
 #[test]
-fn test_post_merge_workflow_dispatches_all_required_checks()
+fn test_post_merge_workflow_dispatches_metadata_only()
 -> Result<(), Box<dyn std::error::Error>> {
     let root = project_root();
     let workflow_path = root.join(".github/workflows/post-merge-status.yml");
@@ -420,7 +398,10 @@ fn test_post_merge_workflow_dispatches_all_required_checks()
     let policy_path = root.join(".ci/policies/required-checks.toml");
     let policy_text = fs::read_to_string(policy_path)?;
     let policy: TomlValue = toml::from_str(&policy_text)?;
-    let required_workflows = required_workflows(&policy)?;
+    let mut required_workflows = required_workflows(&policy)?;
+    for product in ["ci.yml", "em-ci-routed-rust.yml", "ripr.yml"] {
+        required_workflows.remove(product);
+    }
     assert!(
         !required_workflows.is_empty(),
         "required-checks.toml must declare at least one required workflow"
@@ -456,17 +437,10 @@ fn test_post_merge_workflow_dispatches_all_required_checks()
         "generated-PR dispatch step must continue after an individual failure and fail overall"
     );
 
-    // The ci.yml dispatch arm reads its subject identity from step env
-    // (#13355); both names must be declared so the simulated invocation is
-    // the one the workflow really makes.
-    let step_env = dispatch_step
-        .get("env")
-        .and_then(Value::as_mapping)
-        .ok_or("generated-PR dispatch step must declare env")?;
-    for required_env in ["BASE_SHA", "GENERATED_HEAD_SHA"] {
+    for product in ["ci.yml", "em-ci-routed-rust.yml", "ripr.yml"] {
         assert!(
-            step_env.keys().any(|key| key.as_str() == Some(required_env)),
-            "generated-PR dispatch step must declare {required_env} for the ci.yml subject inputs"
+            !dispatched_workflows.contains(product),
+            "publication must not request product qualification: {product}"
         );
     }
 
@@ -475,8 +449,6 @@ fn test_post_merge_workflow_dispatches_all_required_checks()
         dispatch_run,
         &dispatch_order,
         dispatch_branch,
-        "0123456789abcdef0123456789abcdef01234567",
-        "89abcdef0123456789abcdef0123456789abcdef",
     )?;
 
     Ok(())
