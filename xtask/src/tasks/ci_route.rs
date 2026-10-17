@@ -246,7 +246,7 @@ const CI_POLICY_PACK: ProofPack = ProofPack {
         // borderline-repeat confirmation without a native runner.
         "cargo test -p xtask --test release_artifact_size_shadow_workflow --profile agent --locked -- --nocapture",
         "cargo test -p xtask --test release_artifact_size_disposition --profile agent --locked -- --nocapture",
-        "cargo test -p xtask --test release_artifact_size_stage_script --profile agent --locked -- --nocapture",
+        "cargo test -p perl-ci-hygiene --test release_artifact_size_stage_script --profile agent --locked -- --nocapture",
         "cargo test -p xtask --test release_artifact_size_smoke_script --profile agent --locked -- --nocapture",
         "cargo test -p xtask --example release_artifact_size --profile agent --locked -- --nocapture",
     ],
@@ -822,7 +822,7 @@ fn route_file(file: &str, route: &mut RouteBuilder) {
                 | "xtask/src/bin/release_artifact_size/render.rs"
                 | "xtask/tests/release_artifact_size_disposition.rs"
                 | "xtask/tests/release_artifact_size_shadow_workflow.rs"
-                | "xtask/tests/release_artifact_size_stage_script.rs"
+                | "crates/perl-ci-hygiene/tests/release_artifact_size_stage_script.rs"
                 | "xtask/tests/release_artifact_size_smoke_script.rs"
         )
     {
@@ -1956,6 +1956,27 @@ mod tests {
             receipt.skipped_by_policy.get("patch-coverage-ci-policy").map(String::as_str),
             Some(NON_LCOV_COVERAGE_SKIP_REASON)
         );
+        Ok(())
+    }
+
+    #[test]
+    fn ci_route_staging_script_and_test_select_the_ci_hygiene_target() -> Result<()> {
+        for file in [
+            "scripts/ci/release_artifact_size_stage.sh",
+            "crates/perl-ci-hygiene/tests/release_artifact_size_stage_script.rs",
+        ] {
+            let receipt =
+                route_receipt("origin/main", "HEAD", vec![file.to_string()], "ci-route.v1")?;
+            assert_eq!(receipt.changed_surfaces, vec!["ci-policy"], "{file}");
+            assert!(receipt.required_proof_packs.iter().any(|pack| {
+                pack.id == "ci-policy-focused"
+                    && pack.commands.iter().any(|command| {
+                        command
+                            == "cargo test -p perl-ci-hygiene --test release_artifact_size_stage_script --profile agent --locked -- --nocapture"
+                    })
+            }), "{file} must execute the relocated staging contract");
+            assert!(receipt.coverage_proof_packs.is_empty(), "{file} is a non-LCOV contract");
+        }
         Ok(())
     }
 

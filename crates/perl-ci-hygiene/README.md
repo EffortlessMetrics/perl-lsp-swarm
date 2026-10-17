@@ -44,7 +44,7 @@ It lives here because it needs no xtask parser or LSP implementation.
 Run it through the repository's [Cargo admission route](../../docs/agents/CARGO_STORAGE.md):
 
 ```bash
-scripts/cargo-admitted test -p perl-ci-hygiene --test release_artifact_size_stage_script --locked -- --nocapture
+scripts/cargo-admitted test -p perl-ci-hygiene --test release_artifact_size_stage_script --profile agent --locked -- --nocapture
 ```
 
 The host needs the pinned Rust toolchain, Bash, `strip`, `tar`, and `sha256sum`.

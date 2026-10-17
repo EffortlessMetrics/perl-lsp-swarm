@@ -104,7 +104,7 @@ closed structurally rather than by convention:
 
 Because the lane never runs on a pull request, its contract is proven by
 `xtask/tests/release_artifact_size_shadow_workflow.rs`,
-`xtask/tests/release_artifact_size_stage_script.rs`, and
+`crates/perl-ci-hygiene/tests/release_artifact_size_stage_script.rs`, and
 `xtask/tests/release_artifact_size_disposition.rs`, which bind the workflow,
 the staging adapter, production `release.yml` flags, and repeat confirmation
 to the instrument's own constants in
